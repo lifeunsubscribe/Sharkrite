@@ -41,11 +41,26 @@ MODE="full"
 
 # Parse args and detect intent
 ARGS=()
+WORKFLOW_FLAGS=()
 FILTER=""
+SUPERVISED=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --quick)
       MODE="quick"
+      shift
+      ;;
+    --supervised)
+      SUPERVISED=true
+      WORKFLOW_FLAGS+=("--supervised")
+      shift
+      ;;
+    --auto)
+      WORKFLOW_FLAGS+=("--auto")
+      shift
+      ;;
+    --bypass-blockers)
+      WORKFLOW_FLAGS+=("--bypass-blockers")
       shift
       ;;
     --followup)
@@ -70,19 +85,26 @@ while [[ $# -gt 0 ]]; do
       echo "Automate GitHub issues with Claude Code"
       echo ""
       echo "Usage:"
-      echo "  forge <issue>              Process single issue (full lifecycle)"
+      echo "  forge <issue>              Process single issue (unsupervised, default)"
+      echo "  forge <issue> --supervised Process single issue (supervised, bypasses blockers)"
       echo "  forge <issue1> <issue2>    Process multiple issues (batch)"
       echo "  forge <issue> --quick      Work + PR only, skip review/merge"
       echo "  forge --followup           Security debt report + batch process"
       echo "  forge --init               Initialize .forge/ in current project"
       echo "  forge --dry-run <...>      Print execution plan without running"
       echo ""
+      echo "Workflow flags:"
+      echo "  --supervised               Supervised mode (bypasses blockers with warnings)"
+      echo "  --bypass-blockers          Unsupervised blocker bypass (warnings to Slack)"
+      echo ""
       echo "Project: $FORGE_PROJECT_NAME"
       echo "Root:    $FORGE_PROJECT_ROOT"
       echo "Config:  $FORGE_PROJECT_ROOT/$FORGE_DATA_DIR/config"
       echo ""
       echo "Examples:"
-      echo "  forge 21                   # Full lifecycle"
+      echo "  forge 21                   # Full lifecycle (unsupervised, default)"
+      echo "  forge 21 --supervised      # Supervised: bypasses blockers with warnings"
+      echo "  forge 21 --bypass-blockers # Unsupervised: bypass blockers, warn via Slack"
       echo "  forge 21 45                # Batch process issues"
       echo "  forge 21 --quick           # Quick mode: work + PR only"
       echo "  forge --followup           # Process security-debt issues"
@@ -154,18 +176,88 @@ if [ "$MODE" = "init" ]; then
   exit 0
 fi
 
+# Resolve a text description to an issue number by creating a GitHub issue
+resolve_or_create_issue() {
+  local input="$1"
+
+  # Already a number — return as-is
+  if [[ "$input" =~ ^[0-9]+$ ]]; then
+    echo "$input"
+    return 0
+  fi
+
+  # Text description — create a GitHub issue
+  print_info "Creating GitHub issue from description..." >&2
+  local issue_url
+  issue_url=$(gh issue create --title "$input" --body "Created by forge from CLI description." 2>&1)
+  if [ $? -ne 0 ]; then
+    print_error "Failed to create GitHub issue: $issue_url" >&2
+    exit 1
+  fi
+
+  # Extract issue number from URL (e.g., https://github.com/owner/repo/issues/42)
+  local issue_number
+  issue_number=$(echo "$issue_url" | grep -oE '[0-9]+$')
+  if [ -z "$issue_number" ]; then
+    print_error "Could not extract issue number from: $issue_url" >&2
+    exit 1
+  fi
+
+  print_success "Created issue #${issue_number}: ${input}" >&2
+  echo "$issue_number"
+}
+
+# Pre-flight: check Claude CLI is available
+if ! command -v claude &>/dev/null && ! command -v claude-code &>/dev/null; then
+  print_error "Claude CLI not found"
+  echo ""
+  echo "Forge requires Claude Code to run workflows."
+  echo "Install it with: npm install -g @anthropic-ai/claude-code"
+  echo "Then authenticate: claude"
+  echo ""
+  exit 1
+fi
+
+# Pre-flight: check gh CLI and auth
+if ! command -v gh &>/dev/null; then
+  print_error "GitHub CLI (gh) not found"
+  echo ""
+  echo "Forge requires the GitHub CLI."
+  echo "Install it with: brew install gh"
+  echo "Then authenticate: gh auth login"
+  echo ""
+  exit 1
+fi
+
+if ! gh auth status &>/dev/null; then
+  print_error "GitHub CLI not authenticated"
+  echo ""
+  echo "Run: gh auth login"
+  echo ""
+  exit 1
+fi
+
 # Smart routing
 if [ ${#ARGS[@]} -eq 0 ] && [ -z "$FILTER" ]; then
   print_error "No issues specified"
   echo "Run 'forge --help' for usage"
   exit 1
 elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "full" ]; then
+  # Resolve text descriptions to issue numbers
+  ISSUE_NUMBER=$(resolve_or_create_issue "${ARGS[0]}")
   # Full lifecycle: work -> PR -> review -> fixes -> merge
-  exec "$FORGE_LIB_DIR/core/workflow-runner.sh" "${ARGS[0]}" --auto
+  # Default to unsupervised (--auto) unless --supervised was explicitly passed
+  if [ "$SUPERVISED" = false ]; then
+    exec "$FORGE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" --auto "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
+  else
+    exec "$FORGE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
+  fi
 elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "quick" ]; then
+  # Resolve text descriptions to issue numbers
+  ISSUE_NUMBER=$(resolve_or_create_issue "${ARGS[0]}")
   # Quick mode: work -> PR only (skip review wait and merge)
-  print_info "Quick mode: issue #${ARGS[0]} (work + PR, skip review/merge)"
-  "$FORGE_LIB_DIR/core/claude-workflow.sh" "${ARGS[0]}" --auto
+  print_info "Quick mode: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
+  "$FORGE_LIB_DIR/core/claude-workflow.sh" "$ISSUE_NUMBER" --auto
   "$FORGE_LIB_DIR/core/create-pr.sh" --auto
   print_success "Quick mode complete — PR created, skipping review/merge"
   exit 0

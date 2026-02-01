@@ -23,6 +23,7 @@ source "$FORGE_LIB_DIR/utils/session-tracker.sh"
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 RESUME_MODE=false
+BYPASS_BLOCKERS=false
 
 # Script paths (all in core/)
 CLAUDE_WORKFLOW="$FORGE_LIB_DIR/core/claude-workflow.sh"
@@ -106,6 +107,17 @@ handle_blocker() {
       echo "   forge ${issue_number}"
       ;;
 
+    auth_changes|architectural_docs|protected_scripts)
+      echo "1. Review the changes shown above"
+      echo "2. To bypass this blocker:"
+      echo ""
+      echo "   # Supervised mode (bypasses all blockers with terminal warnings):"
+      echo "   forge ${issue_number} --supervised"
+      echo ""
+      echo "   # Or unsupervised bypass (warnings sent to Slack):"
+      echo "   forge ${issue_number} --bypass-blockers"
+      ;;
+
     infrastructure|database_migration)
       echo "1. Review the changes shown above"
       echo "2. Test locally if needed"
@@ -151,23 +163,40 @@ handle_blocker() {
 
   echo ""
 
-  # In unsupervised mode, handle batch vs single issue
-  if [ "$WORKFLOW_MODE" = "unsupervised" ]; then
-    if [ "$is_batch_mode" = "true" ] && [ "$blocks_batch" = "true" ]; then
-      print_warning "Blocker affects entire batch - stopping batch processing"
-      exit 1
-    elif [ "$is_batch_mode" = "true" ]; then
-      print_warning "Blocker only affects this issue - continuing with next issue"
-      increment_failed
-      return 1
+  # Supervised mode: user is watching — prompt before bypassing
+  if [ "$WORKFLOW_MODE" = "supervised" ]; then
+    print_warning "⚠️  BLOCKER: $blocker_type"
+    echo ""
+    read -p "Review the above. Continue anyway? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      print_warning "Blocker acknowledged — continuing workflow"
+      return 0
     else
-      # Single issue mode - just exit
+      print_info "Workflow paused. Run 'forge ${issue_number}' to resume later."
       exit 1
     fi
   fi
 
-  # In supervised mode, always stop
-  exit 1
+  # Unsupervised + --bypass-blockers: bypass all blockers, warnings sent to Slack
+  if [ "$BYPASS_BLOCKERS" = true ]; then
+    print_warning "Blocker bypassed (--bypass-blockers): $blocker_type"
+    print_info "Warning sent to Slack — continuing workflow"
+    return 0
+  fi
+
+  # Unsupervised without bypass: stop on blockers
+  if [ "$is_batch_mode" = "true" ] && [ "$blocks_batch" = "true" ]; then
+    print_warning "Blocker affects entire batch - stopping batch processing"
+    exit 1
+  elif [ "$is_batch_mode" = "true" ]; then
+    print_warning "Blocker only affects this issue - continuing with next issue"
+    increment_failed
+    return 1
+  else
+    # Single issue unsupervised mode - stop
+    exit 1
+  fi
 }
 
 # ===================================================================
@@ -341,6 +370,8 @@ EOF
       print_info "Starting fresh on issue #${issue_number}"
 
       # Call claude-workflow.sh to create worktree and do development
+      # claude-workflow.sh handles detecting uncommitted changes internally
+      # (its SKIP_CLAUDE flag triggers when changes exist in the worktree)
       if [ "$WORKFLOW_MODE" = "supervised" ]; then
         "$CLAUDE_WORKFLOW" "$issue_number"
       else
@@ -609,6 +640,13 @@ phase_completion() {
   get_session_summary
   echo ""
 
+  # Clean up session state file now that workflow is complete
+  local state_file="${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/session-state-${issue_number}.json"
+  if [ -f "$state_file" ]; then
+    rm -f "$state_file"
+    print_info "Cleaned up session state for issue #${issue_number}"
+  fi
+
   print_success "Issue #${issue_number} workflow complete!"
   return 0
 }
@@ -799,12 +837,13 @@ EOF
 main() {
   # Parse arguments
   if [ $# -lt 1 ]; then
-    echo "Usage: $0 ISSUE_NUMBER [--supervised|--unsupervised|--auto]"
+    echo "Usage: $0 ISSUE_NUMBER [--supervised|--unsupervised|--auto] [--bypass-blockers]"
     echo ""
     echo "Options:"
-    echo "  --supervised      Requires manual confirmations (default)"
-    echo "  --unsupervised    Fully automated mode (alias: --auto)"
-    echo "  --auto            Same as --unsupervised"
+    echo "  --supervised        Requires manual confirmations (default)"
+    echo "  --unsupervised      Fully automated mode (alias: --auto)"
+    echo "  --auto              Same as --unsupervised"
+    echo "  --bypass-blockers   Report blockers as warnings without stopping the workflow"
     echo ""
     echo "Environment Variables:"
     echo "  WORKFLOW_MODE           supervised or unsupervised (default: supervised)"
@@ -819,6 +858,13 @@ main() {
   local issue_number="$1"
   shift
 
+  # Validate issue number is a positive integer (text descriptions should be resolved by bin/forge)
+  if ! [[ "$issue_number" =~ ^[0-9]+$ ]] || [ "$issue_number" -le 0 ] 2>/dev/null; then
+    print_error "Invalid issue number: $issue_number (must be positive integer)"
+    print_info "Hint: forge accepts text descriptions — they get auto-created as GitHub issues"
+    exit 1
+  fi
+
   # Parse flags
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -828,6 +874,9 @@ main() {
       --unsupervised|--auto)
         WORKFLOW_MODE="unsupervised"
         ;;
+      --bypass-blockers)
+        BYPASS_BLOCKERS=true
+        ;;
       *)
         print_error "Unknown flag: $1"
         exit 1
@@ -836,24 +885,28 @@ main() {
     shift
   done
 
-  # Initialize session if not resuming
-  if [ "$RESUME_MODE" = false ]; then
-    init_session "$WORKFLOW_MODE"
+  # Check for saved session state from a previous blocker
+  local state_file="${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/session-state-${issue_number}.json"
+  if [ -f "$state_file" ]; then
+    local saved_reason=$(jq -r '.reason // "unknown"' "$state_file" 2>/dev/null)
+    local saved_worktree=$(jq -r '.worktree_path // ""' "$state_file" 2>/dev/null)
+
+    print_info "Found saved session state (blocker: $saved_reason)"
+
+    # Use saved worktree path if it still exists
+    if [ -n "$saved_worktree" ] && [ "$saved_worktree" != "null" ] && [ -d "$saved_worktree" ]; then
+      WORKTREE_PATH="$saved_worktree"
+      export WORKTREE_PATH
+      RESUME_MODE=true
+      print_success "Resuming from worktree: $WORKTREE_PATH"
+    else
+      print_warning "Saved worktree no longer exists - starting fresh"
+    fi
   fi
 
-  # If resuming, load state
-  if [ "$RESUME_MODE" = true ]; then
-    local state_file="${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/session-state-${issue_number}.json"
-    if [ ! -f "$state_file" ]; then
-      print_error "Resume mode but state file not found: $state_file"
-      exit 1
-    fi
-
-    # Extract worktree path from state
-    WORKTREE_PATH=$(jq -r '.worktree_path' "$state_file")
-    export WORKTREE_PATH
-
-    print_info "Resuming from saved state"
+  # Initialize session (fresh or resumed)
+  if [ "$RESUME_MODE" = false ]; then
+    init_session "$WORKFLOW_MODE"
   fi
 
   # Run the workflow

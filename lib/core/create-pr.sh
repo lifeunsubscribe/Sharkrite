@@ -302,6 +302,30 @@ Automated review in progress..." 2>/dev/null || true
   fi
 fi
 
+# Check if an automated reviewer is likely installed on this repo
+# Look for recent comments from known review bots on any PR
+REVIEW_BOT_DETECTED=false
+RECENT_BOT_COMMENT=$(gh api "repos/{owner}/{repo}/issues/comments?per_page=30&sort=created&direction=desc" \
+  --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude" or .user.login == "github-actions[bot]" and (.body | test("review|CRITICAL|WARNING|MINOR"; "i")))] | length' \
+  2>/dev/null || echo "0")
+
+if [ "${RECENT_BOT_COMMENT:-0}" -gt 0 ]; then
+  REVIEW_BOT_DETECTED=true
+fi
+
+if [ "$REVIEW_BOT_DETECTED" = false ]; then
+  print_warning "No automated review bot detected on this repo"
+  echo ""
+  echo "  Forge looks for review comments from: claude[bot], github-actions[bot]"
+  echo "  To enable automated reviews, install the Claude for GitHub app:"
+  echo "  https://github.com/apps/claude"
+  echo ""
+  print_info "Skipping review wait — PR is ready for manual review"
+  echo "  PR: ${PR_URL:-#$PR_NUMBER}"
+  echo ""
+  exit 0
+fi
+
 # Now wait for automated review
 if [ "$AUTO_MODE" = false ]; then
   print_header "⏳ Waiting for Automated Claude Code Review"

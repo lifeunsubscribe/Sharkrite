@@ -170,11 +170,24 @@ send_blocker_notification() {
     resume_cmd="forge ${actual_issue}"
   fi
 
+  # Get repo URL for clickable links
+  local repo_url
+  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+
+  # Check if this blocker type is bypassable in supervised mode
+  local bypass_hint=""
+  case "$blocker_type" in
+    auth_changes|architectural_docs|protected_scripts|infrastructure|database_migration|expensive_services)
+      bypass_hint="
+_To bypass: \`${resume_cmd} --supervised\` (terminal warnings) or \`${resume_cmd} --bypass-blockers\` (Slack warnings)_"
+      ;;
+  esac
+
   local message=":rotating_light: *Workflow Blocker Detected*
 
 *Type:* ${blocker_type}
-*Issue:* #${issue_number}
-$([ -n "$pr_number" ] && echo "*PR:* #${pr_number}")
+*Issue:* $([ -n "$repo_url" ] && echo "<${repo_url}/issues/${issue_number}|#${issue_number}>" || echo "#${issue_number}")
+$([ -n "$pr_number" ] && [ -n "$repo_url" ] && echo "*PR:* <${repo_url}/pull/${pr_number}|#${pr_number}>" || ([ -n "$pr_number" ] && echo "*PR:* #${pr_number}"))
 $([ -n "$worktree_path" ] && echo "*Worktree:* \`${worktree_path}\`")
 
 *Details:*
@@ -183,7 +196,7 @@ ${details}
 *To Resume:*
 \`\`\`
 ${resume_cmd}
-\`\`\`
+\`\`\`${bypass_hint}
 
 *Blocker occurred:* $(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -198,9 +211,13 @@ send_completion_notification() {
   local files_changed="${4:-?}"
   local followup_issues="${5:-0}"
 
-  local message="✅ *Issue #${issue_number} Complete*
+  # Get repo URL for clickable links
+  local repo_url
+  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
 
-*PR #${pr_number}:* ${pr_title}
+  local message="✅ *Issue $([ -n "$repo_url" ] && echo "<${repo_url}/issues/${issue_number}|#${issue_number}>" || echo "#${issue_number}") Complete*
+
+*PR $([ -n "$repo_url" ] && echo "<${repo_url}/pull/${pr_number}|#${pr_number}>" || echo "#${pr_number}"):* ${pr_title}
 *Files Changed:* ${files_changed}
 *Follow-up Issues:* ${followup_issues}
 

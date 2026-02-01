@@ -60,6 +60,7 @@ detect_auth_changes() {
     echo "Files: $(echo "$auth_files" | tr '\n' ', ')"
     echo ""
     echo "Auth changes require extra security review"
+    echo "Tip: Run in supervised mode (forge <issue>) to review and approve manually"
     return 1
   fi
 
@@ -78,6 +79,7 @@ detect_doc_changes() {
     echo "Docs: $(echo "$doc_files" | tr '\n' ', ')"
     echo ""
     echo "Architecture changes may require manual review"
+    echo "Tip: Run in supervised mode (forge <issue>) to review and approve manually"
     return 1
   fi
 
@@ -178,12 +180,6 @@ detect_credentials_expired() {
 
 detect_protected_scripts() {
   local pr_number=$1
-  local workflow_mode="${2:-unsupervised}"  # Default to unsupervised for safety
-
-  # In supervised mode, user will review changes before merge anyway
-  if [ "$workflow_mode" = "supervised" ]; then
-    return 0
-  fi
 
   # Use configurable protected script pattern
   local protected_pattern="$BLOCKER_PROTECTED_SCRIPTS"
@@ -268,9 +264,9 @@ check_blockers() {
         blocker_type="expensive_services"
         blocker_details=$(detect_expensive_services "$pr_number" 2>&1)
         blocker_detected=true
-      elif ! detect_protected_scripts "$pr_number" "$workflow_mode"; then
+      elif ! detect_protected_scripts "$pr_number"; then
         blocker_type="protected_scripts"
-        blocker_details=$(detect_protected_scripts "$pr_number" "$workflow_mode" 2>&1)
+        blocker_details=$(detect_protected_scripts "$pr_number" 2>&1)
         blocker_detected=true
       fi
       ;;

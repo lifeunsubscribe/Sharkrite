@@ -23,12 +23,90 @@ if [ -z "${FORGE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
+# Source session tracker for interrupt state saving
+source "$FORGE_LIB_DIR/utils/session-tracker.sh"
+
 # Store the absolute path to THIS script for re-execution
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # Early output to confirm script is running
 echo "🚀 Claude Workflow Starting..."
 echo ""
+
+# Trap handler for safe exit on interrupt
+cleanup_on_interrupt() {
+  local exit_code=$?
+
+  echo ""
+  echo -e "\033[1;33m⚠️  Workflow interrupted!\033[0m"
+
+  # Check if we're in a worktree
+  if git rev-parse --is-inside-work-tree &>/dev/null; then
+    local current_dir=$(pwd)
+    local main_repo
+    main_repo=$(git worktree list | head -1 | awk '{print $1}')
+
+    # Check for uncommitted changes (exclude untracked files)
+    local uncommitted
+    uncommitted=$(git status --porcelain | grep -vE "^\?\?" | wc -l | tr -d ' ')
+
+    if [ "$uncommitted" -gt 0 ]; then
+      echo -e "\033[0;34mℹ️  Found $uncommitted uncommitted change(s)\033[0m"
+
+      if [ "$AUTO_MODE" = true ]; then
+        # In auto mode, always commit WIP
+        local branch_name
+        branch_name=$(git branch --show-current)
+        local commit_msg="WIP: interrupted work on ${branch_name}"
+
+        git add -A
+        git commit -m "$commit_msg" 2>/dev/null || true
+        echo -e "\033[0;32m✅ Changes committed: $commit_msg\033[0m"
+
+        # Push in auto mode
+        git push -u origin "$branch_name" 2>/dev/null || echo -e "\033[1;33m⚠️  Push failed (changes are committed locally)\033[0m"
+      else
+        # In supervised mode, ask the user
+        read -p "Commit changes before exiting? (y/n) " -n 1 -r
+        echo
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          local branch_name
+          branch_name=$(git branch --show-current)
+          local commit_msg="WIP: interrupted work on ${branch_name}"
+
+          git add -A
+          git commit -m "$commit_msg" 2>/dev/null || true
+          echo -e "\033[0;32m✅ Changes committed\033[0m"
+
+          read -p "Push to remote? (y/n) " -n 1 -r
+          echo
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            git push -u origin "$branch_name" 2>/dev/null || echo -e "\033[1;33m⚠️  Push failed\033[0m"
+          fi
+        fi
+      fi
+    fi
+
+    # Save session state for resume if we have enough context
+    if [ -n "${ISSUE_NUMBER:-}" ] && [ -n "$current_dir" ]; then
+      save_session_state "${ISSUE_NUMBER}" "interrupted" "$current_dir" 2>/dev/null || true
+      echo -e "\033[0;34mℹ️  Session state saved — run 'forge ${ISSUE_NUMBER}' to resume\033[0m"
+    fi
+
+    # Navigate back to main repo if in worktree
+    if [ -n "$main_repo" ] && [ "$current_dir" != "$main_repo" ]; then
+      echo -e "\033[0;34mℹ️  Returning to main repository...\033[0m"
+      cd "$main_repo" || cd "$HOME"
+      echo -e "\033[0;32m✅ Exited worktree: $current_dir\033[0m"
+      echo -e "\033[0;34mℹ️  Your work is preserved in the worktree\033[0m"
+    fi
+  fi
+
+  exit ${exit_code}
+}
+
+trap cleanup_on_interrupt INT TERM
 
 # Parse arguments - Two-pass to detect flags before processing issue number
 AUTO_MODE=false
@@ -1069,10 +1147,63 @@ elif [ "$ALREADY_IN_CLAUDE" = true ]; then
   print_info "Claude Code work complete - proceeding to post-workflow"
   echo ""
 else
+  # Set timeout for Claude Code (configurable via FORGE_CLAUDE_TIMEOUT, default 2 hours)
+  CLAUDE_TIMEOUT=${FORGE_CLAUDE_TIMEOUT:-7200}
+  print_info "Launching Claude Code (timeout: ${CLAUDE_TIMEOUT}s)..."
+
   if [ "$AUTO_MODE" = true ]; then
-    $CLAUDE_CMD --permission-mode bypassPermissions "$CLAUDE_PROMPT"
+    timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --permission-mode bypassPermissions "$CLAUDE_PROMPT" &
+    CLAUDE_PID=$!
   else
-    $CLAUDE_CMD "$CLAUDE_PROMPT"
+    timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD "$CLAUDE_PROMPT" &
+    CLAUDE_PID=$!
+  fi
+
+  # In auto mode, show periodic heartbeat while waiting
+  if [ "$AUTO_MODE" = true ]; then
+    (
+      elapsed=0
+      while kill -0 $CLAUDE_PID 2>/dev/null; do
+        sleep 60
+        elapsed=$((elapsed + 60))
+        echo "⏱️  Claude Code running... (${elapsed}s elapsed)"
+      done
+    ) &
+    HEARTBEAT_PID=$!
+  fi
+
+  # Wait for Claude Code to complete
+  CLAUDE_EXIT_CODE=0
+  wait $CLAUDE_PID || CLAUDE_EXIT_CODE=$?
+
+  # Stop heartbeat if running
+  if [ -n "${HEARTBEAT_PID:-}" ]; then
+    kill $HEARTBEAT_PID 2>/dev/null || true
+    wait $HEARTBEAT_PID 2>/dev/null || true
+  fi
+
+  # Handle timeout (exit code 124 from timeout command)
+  if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
+    print_error "Claude Code timed out after ${CLAUDE_TIMEOUT}s"
+    print_info "Checking for uncommitted work..."
+
+    if [ "$(git status --porcelain | wc -l | tr -d ' ')" -gt 0 ]; then
+      print_warning "Found uncommitted changes - committing before exit"
+      # Fall through to post-workflow to commit changes
+    else
+      print_error "No changes detected - workflow failed"
+      exit 1
+    fi
+  elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
+    print_error "Claude Code exited with error code $CLAUDE_EXIT_CODE"
+    print_info "Checking for uncommitted work..."
+
+    if [ "$(git status --porcelain | wc -l | tr -d ' ')" -gt 0 ]; then
+      print_warning "Found uncommitted changes - will attempt to save work"
+      # Fall through to post-workflow to commit changes
+    else
+      exit 1
+    fi
   fi
 fi
 
@@ -1339,6 +1470,18 @@ if [[ "$CURRENT_PATH" == *"$(basename "$FORGE_WORKTREE_DIR")"* ]] || [ -n "$WORK
   echo "  Location: ${WORKTREE_PATH:-$CURRENT_PATH}"
   echo "  Changes here won't affect other terminals or main worktree"
   echo "  Worktree will be cleaned up after PR merge"
+fi
+
+# Post-workflow cleanup: Exit worktree and return to main repo
+CURRENT_PATH=$(pwd)
+MAIN_REPO=$(git worktree list | head -1 | awk '{print $1}')
+
+if [ -n "$MAIN_REPO" ] && [ "$CURRENT_PATH" != "$MAIN_REPO" ]; then
+  echo ""
+  print_info "Workflow complete - returning to main repository"
+  cd "$MAIN_REPO" || cd "$HOME"
+  print_success "Exited worktree: $CURRENT_PATH"
+  print_info "To return to worktree: cd $CURRENT_PATH"
 fi
 
 echo ""
