@@ -351,6 +351,53 @@ else
 fi
 echo ""
 
+# Check 13: GitHub Actions Workflow
+print_info "Checking GitHub Actions workflow..."
+
+WORKFLOW_FILE="$FORGE_PROJECT_ROOT/.github/workflows/claude-code-review.yml"
+INSTRUCTIONS_FILE="$FORGE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md"
+
+if [ -f "$WORKFLOW_FILE" ]; then
+  print_success "Claude Code review workflow found"
+
+  # Check permissions
+  if grep -q "pull-requests: write" "$WORKFLOW_FILE"; then
+    print_success "PR write permissions configured"
+  elif grep -q "pull-requests: read" "$WORKFLOW_FILE"; then
+    print_error "PR permissions are read-only (needs 'write' for comments)"
+    print_info "Edit $WORKFLOW_FILE: change 'pull-requests: read' to 'pull-requests: write'"
+    ISSUES_FOUND=$((ISSUES_FOUND + 1))
+
+    if [ "$FIX_MODE" = true ]; then
+      sed -i '' 's/pull-requests: read/pull-requests: write/' "$WORKFLOW_FILE"
+      print_success "Fixed: Updated permissions to write"
+      ISSUES_FOUND=$((ISSUES_FOUND - 1))
+    fi
+  fi
+
+  # Check if instructions file exists
+  if [ -f "$INSTRUCTIONS_FILE" ]; then
+    print_success "Review instructions file found"
+  else
+    print_warning "Review instructions file missing"
+    print_info "Create: .github/claude-code/pr-review-instructions.md"
+    print_info "Or run: forge --init (will offer to create it)"
+  fi
+
+  # Check if workflow references the instructions
+  if grep -q "pr-review-instructions.md" "$WORKFLOW_FILE"; then
+    print_success "Workflow references instructions file"
+  else
+    print_warning "Workflow may not be using instructions file"
+    print_info "Ensure prompt includes: 'Read .github/claude-code/pr-review-instructions.md'"
+  fi
+
+else
+  print_warning "No Claude Code review workflow found"
+  print_info "Run 'forge --init' to create one"
+fi
+echo ""
+
 # Summary
 print_header "📊 Validation Summary"
 

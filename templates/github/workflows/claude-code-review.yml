@@ -1,0 +1,37 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write  # Required for gh pr comment
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are conducting a code review for this PR.
+
+            IMPORTANT: Read and follow ALL instructions in .github/claude-code/pr-review-instructions.md
+
+            Your review MUST:
+            1. Follow the severity classification (CRITICAL/HIGH/MEDIUM/LOW)
+            2. Use the exact output format specified
+            3. Be thorough but constructive
+
+            Post your complete review as a PR comment using `gh pr comment`.
+          claude_args: '--allowed-tools "Bash(cat:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'

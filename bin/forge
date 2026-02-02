@@ -167,6 +167,117 @@ if [ "$MODE" = "init" ]; then
   fi
 
   print_success "Forge initialized for $FORGE_PROJECT_NAME"
+
+  # ─────────────────────────────────────────────────────────────────
+  # GitHub Workflow Setup (optional)
+  # ─────────────────────────────────────────────────────────────────
+
+  echo ""
+  print_info "GitHub Workflow Setup"
+
+  if [ -d ".github/workflows" ] && [ -f ".github/workflows/claude-code-review.yml" ]; then
+    print_success "Claude Code review workflow already exists"
+
+    # Check for permission issues
+    if grep -q "pull-requests: read" .github/workflows/claude-code-review.yml 2>/dev/null; then
+      print_warning "Workflow may have permission issues"
+      print_info "Change 'pull-requests: read' to 'pull-requests: write' for comments to work"
+    fi
+  else
+    echo ""
+    read -p "Set up Claude Code review workflow? (y/n) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      # Create directories
+      mkdir -p .github/workflows
+      mkdir -p .github/claude-code
+
+      # Copy core review workflow and instructions
+      cp "$FORGE_INSTALL_DIR/templates/github/workflows/claude-code-review.yml" .github/workflows/
+      cp "$FORGE_INSTALL_DIR/templates/github/claude-code/pr-review-instructions.md" .github/claude-code/
+      print_success "Created .github/workflows/claude-code-review.yml"
+      print_success "Created .github/claude-code/pr-review-instructions.md"
+
+      # Optional: Interactive @claude workflow
+      echo ""
+      read -p "Enable @claude mentions in issues/PRs? (y/n) " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        cp "$FORGE_INSTALL_DIR/templates/github/workflows/claude-interactive.yml" .github/workflows/claude.yml
+        print_success "Created .github/workflows/claude.yml"
+      fi
+
+      # Optional: Merge notifications
+      echo ""
+      read -p "Send Slack notifications on PR merge? (y/n) " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        cp "$FORGE_INSTALL_DIR/templates/github/workflows/pr-merged-notification.yml" .github/workflows/
+        print_success "Created .github/workflows/pr-merged-notification.yml"
+        print_info "Add SLACK_WEBHOOK secret to enable notifications"
+      fi
+
+      # Copy README
+      cp "$FORGE_INSTALL_DIR/templates/github/README.md" .github/
+
+      # Optional: PR template
+      if [ ! -f ".github/PULL_REQUEST_TEMPLATE.md" ]; then
+        echo ""
+        read -p "Create PR template? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          cp "$FORGE_INSTALL_DIR/templates/github/PULL_REQUEST_TEMPLATE.md" .github/
+          print_success "Created .github/PULL_REQUEST_TEMPLATE.md"
+        fi
+      fi
+
+      # ─────────────────────────────────────────────────────────────
+      # Codebase Scan (future: theme detection)
+      # ─────────────────────────────────────────────────────────────
+
+      echo ""
+      print_info "Theme Detection (coming soon)"
+      print_info "Future versions will scan your codebase to customize review instructions"
+      print_info "with project-specific checks (multi-tenant, AWS, compliance, etc.)"
+
+      # Placeholder for future scan logic:
+      # echo ""
+      # read -p "Scan codebase to customize review instructions? (y/n) " -n 1 -r
+      # echo
+      # if [[ $REPLY =~ ^[Yy]$ ]]; then
+      #   source "$FORGE_LIB_DIR/utils/theme-scanner.sh"
+      #   scan_and_append_themes
+      # fi
+
+      # ─────────────────────────────────────────────────────────────
+      # Setup Instructions
+      # ─────────────────────────────────────────────────────────────
+
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      print_warning "Manual setup required:"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo ""
+      echo "  1. Get OAuth token:"
+      echo "     claude auth login --github"
+      echo ""
+      echo "  2. Add secret to repo:"
+      echo "     Settings > Secrets > Actions > New repository secret"
+      echo "     Name: CLAUDE_CODE_OAUTH_TOKEN"
+      echo "     Value: [paste token]"
+      echo ""
+      if [[ -f ".github/workflows/pr-merged-notification.yml" ]]; then
+        echo "  3. (Optional) Add SLACK_WEBHOOK secret for merge notifications"
+        echo ""
+      fi
+      echo "  Customize review criteria:"
+      echo "     .github/claude-code/pr-review-instructions.md"
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    fi
+  fi
+
   echo ""
   print_info "Next steps:"
   echo "  1. Edit .forge/config with project-specific settings"

@@ -1,0 +1,65 @@
+name: PR Merged Notification
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify-merge:
+    name: Send Merge Notification
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gather PR information
+        id: pr-info
+        run: |
+          echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "pr_title=${{ github.event.pull_request.title }}" >> $GITHUB_OUTPUT
+          echo "pr_author=${{ github.event.pull_request.user.login }}" >> $GITHUB_OUTPUT
+          echo "pr_url=${{ github.event.pull_request.html_url }}" >> $GITHUB_OUTPUT
+          echo "base_branch=${{ github.event.pull_request.base.ref }}" >> $GITHUB_OUTPUT
+          echo "head_branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          echo "merged_by=${{ github.event.pull_request.merged_by.login }}" >> $GITHUB_OUTPUT
+          echo "files_changed=${{ github.event.pull_request.changed_files }}" >> $GITHUB_OUTPUT
+          echo "additions=${{ github.event.pull_request.additions }}" >> $GITHUB_OUTPUT
+          echo "deletions=${{ github.event.pull_request.deletions }}" >> $GITHUB_OUTPUT
+
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK != '' }}
+        run: |
+          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "PR #${{ steps.pr-info.outputs.pr_number }} merged: ${{ steps.pr-info.outputs.pr_title }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*<${{ steps.pr-info.outputs.pr_url }}|PR #${{ steps.pr-info.outputs.pr_number }}>* merged to `${{ steps.pr-info.outputs.base_branch }}`\n*${{ steps.pr-info.outputs.pr_title }}*\n\nAuthor: ${{ steps.pr-info.outputs.pr_author }} | Merged by: ${{ steps.pr-info.outputs.merged_by }}\nChanges: ${{ steps.pr-info.outputs.files_changed }} files (+${{ steps.pr-info.outputs.additions }}/-${{ steps.pr-info.outputs.deletions }})"
+                  }
+                }
+              ]
+            }'
+
+      - name: Summary
+        run: |
+          echo "## PR Merged" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**PR #${{ steps.pr-info.outputs.pr_number }}:** ${{ steps.pr-info.outputs.pr_title }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** \`${{ steps.pr-info.outputs.head_branch }}\` -> \`${{ steps.pr-info.outputs.base_branch }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Author:** ${{ steps.pr-info.outputs.pr_author }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Merged by:** ${{ steps.pr-info.outputs.merged_by }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Changes:** ${{ steps.pr-info.outputs.files_changed }} files (+${{ steps.pr-info.outputs.additions }}/-${{ steps.pr-info.outputs.deletions }})" >> $GITHUB_STEP_SUMMARY
