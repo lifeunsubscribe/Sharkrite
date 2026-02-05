@@ -15,17 +15,17 @@
 #   - "NO_ACTIONABLE_ITEMS" = all dismissed
 #   - Assessment content = filtered ACTIONABLE items only
 #
-# Requires: config.sh sourced (for FORGE_PROJECT_ROOT, FORGE_INSTALL_DIR, etc.)
+# Requires: config.sh sourced (for RITE_PROJECT_ROOT, RITE_INSTALL_DIR, etc.)
 
 set -euo pipefail
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
 
-source "$FORGE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/colors.sh"
 
 PR_NUMBER="$1"
 REVIEW_FILE="$2"
@@ -59,23 +59,23 @@ fi
 # Load project-specific assessment context (dynamic, not hardcoded)
 # =============================================================================
 # Priority:
-#   1. $REPO/.forge/assessment-prompt.md (project-specific override)
+#   1. $REPO/.rite/assessment-prompt.md (project-specific override)
 #   2. $REPO/CLAUDE.md (extract relevant sections dynamically)
-#   3. $FORGE_INSTALL_DIR/templates/assessment-prompt.md (generic fallback)
+#   3. $RITE_INSTALL_DIR/templates/assessment-prompt.md (generic fallback)
 
 ASSESSMENT_CONTEXT=""
 
-if [ -f "$FORGE_PROJECT_ROOT/$FORGE_DATA_DIR/assessment-prompt.md" ]; then
+if [ -f "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/assessment-prompt.md" ]; then
   # Project has a custom assessment prompt — use it
-  ASSESSMENT_CONTEXT=$(cat "$FORGE_PROJECT_ROOT/$FORGE_DATA_DIR/assessment-prompt.md")
-  print_info "Using project-specific assessment context (.forge/assessment-prompt.md)" >&2
-elif [ -f "$FORGE_PROJECT_ROOT/CLAUDE.md" ]; then
+  ASSESSMENT_CONTEXT=$(cat "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/assessment-prompt.md")
+  print_info "Using project-specific assessment context (.rite/assessment-prompt.md)" >&2
+elif [ -f "$RITE_PROJECT_ROOT/CLAUDE.md" ]; then
   # Extract relevant sections from project's CLAUDE.md
   # Look for security, architecture, and standards sections
-  ASSESSMENT_CONTEXT=$(sed -n '/[Ss]ecurity/,/^## /p' "$FORGE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -100 || echo "")
+  ASSESSMENT_CONTEXT=$(sed -n '/[Ss]ecurity/,/^## /p' "$RITE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -100 || echo "")
 
   # Also grab commit conventions if present
-  CONVENTIONS=$(sed -n '/[Cc]ommit [Cc]onventions\|[Gg]it.*[Cc]onventions/,/^## /p' "$FORGE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -50 || echo "")
+  CONVENTIONS=$(sed -n '/[Cc]ommit [Cc]onventions\|[Gg]it.*[Cc]onventions/,/^## /p' "$RITE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -50 || echo "")
   if [ -n "$CONVENTIONS" ]; then
     ASSESSMENT_CONTEXT="${ASSESSMENT_CONTEXT}
 
@@ -86,12 +86,12 @@ ${CONVENTIONS}"
     print_info "Using assessment context extracted from CLAUDE.md" >&2
   else
     # CLAUDE.md exists but no relevant sections found — use generic
-    ASSESSMENT_CONTEXT=$(cat "$FORGE_INSTALL_DIR/templates/assessment-prompt.md" 2>/dev/null || echo "")
+    ASSESSMENT_CONTEXT=$(cat "$RITE_INSTALL_DIR/templates/assessment-prompt.md" 2>/dev/null || echo "")
     print_info "Using generic assessment context (CLAUDE.md had no relevant sections)" >&2
   fi
 else
   # No project-specific context — use generic template
-  ASSESSMENT_CONTEXT=$(cat "$FORGE_INSTALL_DIR/templates/assessment-prompt.md" 2>/dev/null || echo "")
+  ASSESSMENT_CONTEXT=$(cat "$RITE_INSTALL_DIR/templates/assessment-prompt.md" 2>/dev/null || echo "")
   print_info "Using generic assessment context (no CLAUDE.md found)" >&2
 fi
 
@@ -99,7 +99,7 @@ fi
 PROJECT_CONTEXT_SECTION="$ASSESSMENT_CONTEXT"
 
 # Check for project-specific security guide
-if [ -f "$FORGE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
+if [ -f "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
   PROJECT_CONTEXT_SECTION="${PROJECT_CONTEXT_SECTION}
 - See docs/security/DEVELOPMENT-GUIDE.md: Known security patterns, accepted risks, documented issues"
 fi
@@ -236,7 +236,7 @@ if [ "$AUTO_MODE" = true ]; then
   # Input is strictly controlled: only PR review text from GitHub API.
   # Assessment task is read-only: classify review items (no code execution).
   # Falls back gracefully on failure.
-  ASSESSMENT_TIMEOUT="${FORGE_ASSESSMENT_TIMEOUT:-120}"
+  ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-120}"
 
   # Capture stderr to debug issues while keeping stdout clean for piping
   CLAUDE_STDERR=$(mktemp)
@@ -261,7 +261,7 @@ if [ "$AUTO_MODE" = true ]; then
   # Check for timeout (exit code 124)
   if [ $ASSESSMENT_EXIT_CODE -eq 124 ]; then
     print_warning "Claude assessment timed out after ${ASSESSMENT_TIMEOUT}s"
-    print_info "Try increasing timeout: export FORGE_ASSESSMENT_TIMEOUT=300"
+    print_info "Try increasing timeout: export RITE_ASSESSMENT_TIMEOUT=300"
     print_info "Falling back to creating issue with all items"
     echo "ALL_ITEMS"
     exit 0

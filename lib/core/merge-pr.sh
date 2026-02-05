@@ -13,13 +13,13 @@ set -e
 
 # Source forge configuration
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
 # Source scratchpad manager
-if [ -f "$FORGE_LIB_DIR/utils/scratchpad-manager.sh" ]; then
-  source "$FORGE_LIB_DIR/utils/scratchpad-manager.sh"
+if [ -f "$RITE_LIB_DIR/utils/scratchpad-manager.sh" ]; then
+  source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 fi
 
 # Parse arguments
@@ -629,7 +629,7 @@ fi
 
 # Documentation completeness check
 print_header "📚 Documentation Assessment"
-DOC_ASSESSMENT_SCRIPT="$FORGE_LIB_DIR/core/assess-documentation.sh"
+DOC_ASSESSMENT_SCRIPT="$RITE_LIB_DIR/core/assess-documentation.sh"
 
 if [ -f "$DOC_ASSESSMENT_SCRIPT" ]; then
   if [ "$AUTO_MODE" = true ]; then
@@ -835,8 +835,8 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
   fi
 
   # Create follow-up issues from review "skip" items
-  if [ -f "$FORGE_LIB_DIR/utils/create-followup-issues.sh" ]; then
-    source "$FORGE_LIB_DIR/utils/create-followup-issues.sh"
+  if [ -f "$RITE_LIB_DIR/utils/create-followup-issues.sh" ]; then
+    source "$RITE_LIB_DIR/utils/create-followup-issues.sh"
 
     if [ "$AUTO_MODE" = false ]; then
       print_header "📋 Creating Follow-up Issues"
@@ -884,7 +884,7 @@ ${ISSUES_LIST}
       "elements": [
         {
           "type": "mrkdwn",
-          "text": "Repository: \`${FORGE_PROJECT_NAME}\` | Branch: \`${PR_HEAD}\` → \`${PR_BASE}\`"
+          "text": "Repository: \`${RITE_PROJECT_NAME}\` | Branch: \`${PR_HEAD}\` → \`${PR_BASE}\`"
         }
       ]
     }
@@ -1186,7 +1186,7 @@ EOF
           # Step 4: Clean up stale worktrees
           print_info "Checking for stale worktrees..."
 
-          EXISTING_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $FORGE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
+          EXISTING_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
 
           STALE_COUNT=0
           REMOVED_COUNT=0
@@ -1269,7 +1269,7 @@ EOF
             ACTIVE_WORKTREES_LIST=""
 
             # Re-scan to get current active worktrees
-            CURRENT_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $FORGE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
+            CURRENT_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
             if [ -n "$CURRENT_WORKTREES" ]; then
               while IFS= read -r wt_path; do
                 [ -z "$wt_path" ] && continue
@@ -1317,7 +1317,7 @@ ${ACTIVE_WORKTREES_LIST}
       "elements": [
         {
           "type": "mrkdwn",
-          "text": "Repository: \`${FORGE_PROJECT_NAME}\` | Triggered by PR #$PR_NUMBER merge"
+          "text": "Repository: \`${RITE_PROJECT_NAME}\` | Triggered by PR #$PR_NUMBER merge"
         }
       ]
     }

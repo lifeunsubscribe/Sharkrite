@@ -1,6 +1,6 @@
 #!/bin/bash
-# .forge/blockers.conf - Project-specific blocker path patterns
-# Place this file at $REPO_ROOT/.forge/blockers.conf
+# .rite/blockers.conf - Project-specific blocker path patterns
+# Place this file at $REPO_ROOT/.rite/blockers.conf
 # Uses grep -E extended regex patterns (pipe-separated alternatives).
 
 # =============================================================================

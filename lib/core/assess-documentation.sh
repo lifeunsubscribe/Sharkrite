@@ -7,11 +7,11 @@ set -euo pipefail
 
 # Source forge configuration
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
-source "$FORGE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/colors.sh"
 
 PR_NUMBER="$1"
 AUTO_MODE="${2:-}"
@@ -65,8 +65,8 @@ fi
 
 # Get project README sections if available (configurable per project)
 README_SECTIONS=""
-if [ -n "${FORGE_SCRIPTS_README:-}" ] && [ -f "$FORGE_SCRIPTS_README" ]; then
-  README_SECTIONS=$(grep "^##" "$FORGE_SCRIPTS_README" | head -20)
+if [ -n "${RITE_SCRIPTS_README:-}" ] && [ -f "$RITE_SCRIPTS_README" ]; then
+  README_SECTIONS=$(grep "^##" "$RITE_SCRIPTS_README" | head -20)
 elif [ -f "README.md" ]; then
   README_SECTIONS=$(grep "^##" README.md | head -20)
 fi

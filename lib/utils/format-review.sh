@@ -4,7 +4,7 @@
 # Usage: format-review.sh <review_file>
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/config.sh"
 fi

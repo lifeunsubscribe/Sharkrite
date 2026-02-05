@@ -10,15 +10,15 @@ set -euo pipefail
 # ===================================================================
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
 
 # Source all library modules
-source "$FORGE_LIB_DIR/utils/notifications.sh"
-source "$FORGE_LIB_DIR/utils/blocker-rules.sh"
-source "$FORGE_LIB_DIR/utils/session-tracker.sh"
+source "$RITE_LIB_DIR/utils/notifications.sh"
+source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -26,10 +26,10 @@ RESUME_MODE=false
 BYPASS_BLOCKERS=false
 
 # Script paths (all in core/)
-CLAUDE_WORKFLOW="$FORGE_LIB_DIR/core/claude-workflow.sh"
-CREATE_PR="$FORGE_LIB_DIR/core/create-pr.sh"
-ASSESS_RESOLVE="$FORGE_LIB_DIR/core/assess-and-resolve.sh"
-MERGE_PR="$FORGE_LIB_DIR/core/merge-pr.sh"
+CLAUDE_WORKFLOW="$RITE_LIB_DIR/core/claude-workflow.sh"
+CREATE_PR="$RITE_LIB_DIR/core/create-pr.sh"
+ASSESS_RESOLVE="$RITE_LIB_DIR/core/assess-and-resolve.sh"
+MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 
 # ===================================================================
 # UTILITY FUNCTIONS
@@ -100,7 +100,7 @@ handle_blocker() {
     credentials_expired)
       echo "1. Refresh AWS credentials:"
       echo ""
-      echo "   aws sso login --profile ${FORGE_AWS_PROFILE:-default}"
+      echo "   aws sso login --profile ${RITE_AWS_PROFILE:-default}"
       echo ""
       echo "2. Resume workflow:"
       echo ""
@@ -363,7 +363,7 @@ EOF
         return 0
       else
         print_error "PR exists but worktree not found - manual intervention required"
-        print_error "Run: git worktree add $FORGE_WORKTREE_DIR/$pr_branch $pr_branch"
+        print_error "Run: git worktree add $RITE_WORKTREE_DIR/$pr_branch $pr_branch"
         return 1
       fi
     else
@@ -422,10 +422,24 @@ phase_create_pr() {
 
   # Call create-pr.sh (pushes commits if needed, waits for review to appear)
   # Does NOT run assessment - that happens in Phase 3
+  # create-pr.sh may exit with code 10 if early blocker detection triggers
+  set +e  # Temporarily disable exit-on-error to capture exit code
   if [ "$WORKFLOW_MODE" = "supervised" ]; then
     "$CREATE_PR"
   else
     "$CREATE_PR" --auto
+  fi
+  local create_pr_exit=$?
+  set -e  # Re-enable exit-on-error
+
+  # Handle exit codes from create-pr.sh
+  if [ $create_pr_exit -eq 10 ]; then
+    # Blocker detected in early detection (BLOCKER_TYPE and BLOCKER_DETAILS already exported)
+    print_warning "Early blocker detected in PR phase"
+    return 1
+  elif [ $create_pr_exit -ne 0 ]; then
+    print_error "create-pr.sh failed with exit code: $create_pr_exit"
+    return 1
   fi
 
   return 0
@@ -641,7 +655,7 @@ phase_completion() {
   echo ""
 
   # Clean up session state file now that workflow is complete
-  local state_file="${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/session-state-${issue_number}.json"
+  local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
   if [ -f "$state_file" ]; then
     rm -f "$state_file"
     print_info "Cleaned up session state for issue #${issue_number}"
@@ -849,8 +863,8 @@ main() {
     echo "  WORKFLOW_MODE           supervised or unsupervised (default: supervised)"
     echo "  SLACK_WEBHOOK           Slack webhook URL for notifications"
     echo "  EMAIL_NOTIFICATION_ADDRESS   Email for notifications"
-    echo "  FORGE_SNS_TOPIC_ARN    AWS SNS topic for SMS notifications"
-    echo "  FORGE_AWS_PROFILE      AWS profile for credentials (default: default)"
+    echo "  RITE_SNS_TOPIC_ARN    AWS SNS topic for SMS notifications"
+    echo "  RITE_AWS_PROFILE      AWS profile for credentials (default: default)"
     echo ""
     exit 1
   fi
@@ -886,7 +900,7 @@ main() {
   done
 
   # Check for saved session state from a previous blocker
-  local state_file="${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/session-state-${issue_number}.json"
+  local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
   if [ -f "$state_file" ]; then
     local saved_reason=$(jq -r '.reason // "unknown"' "$state_file" 2>/dev/null)
     local saved_worktree=$(jq -r '.worktree_path // ""' "$state_file" 2>/dev/null)
@@ -904,9 +918,14 @@ main() {
     fi
   fi
 
-  # Initialize session (fresh or resumed)
-  if [ "$RESUME_MODE" = false ]; then
-    init_session "$WORKFLOW_MODE"
+  # Initialize session (always create fresh session with current start_time)
+  # Even when resuming, we start a fresh Claude process with a new context window,
+  # so we reset start_time and issues_completed to track THIS session's usage
+  init_session "$WORKFLOW_MODE"
+
+  # Restore worktree path from saved state if resuming
+  if [ "$RESUME_MODE" = true ] && [ -n "$WORKTREE_PATH" ]; then
+    set_current_worktree "$WORKTREE_PATH"
   fi
 
   # Run the workflow

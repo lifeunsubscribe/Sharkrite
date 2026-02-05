@@ -4,7 +4,7 @@
 # Usage: source this file and call session tracking functions
 #
 # Expects config.sh to be already loaded (provides SESSION_STATE_FILE,
-# FORGE_PROJECT_NAME, FORGE_WORKTREE_DIR, FORGE_DATA_DIR)
+# RITE_PROJECT_NAME, RITE_WORKTREE_DIR, RITE_DATA_DIR)
 
 # Initialize session tracking
 init_session() {
@@ -111,12 +111,12 @@ should_save_and_exit() {
   local elapsed_hours=$(get_elapsed_hours)
 
   # Conservative limits (from blocker-rules.sh)
-  if [ "$issues_completed" -ge "${FORGE_MAX_ISSUES_PER_SESSION:-8}" ]; then
+  if [ "$issues_completed" -ge "${RITE_MAX_ISSUES_PER_SESSION:-8}" ]; then
     echo "token_limit"
     return 0
   fi
 
-  if [ "$elapsed_hours" -ge "${FORGE_MAX_SESSION_HOURS:-4}" ]; then
+  if [ "$elapsed_hours" -ge "${RITE_MAX_SESSION_HOURS:-4}" ]; then
     echo "time_limit"
     return 0
   fi
@@ -131,8 +131,8 @@ save_session_state() {
   local reason="$2"
   local worktree_path="$3"
 
-  local data_dir="${FORGE_DATA_DIR:-.forge}"
-  local state_file="${FORGE_PROJECT_ROOT:-.}/${data_dir}/session-state-${issue_number}.json"
+  local data_dir="${RITE_DATA_DIR:-.rite}"
+  local state_file="${RITE_PROJECT_ROOT:-.}/${data_dir}/session-state-${issue_number}.json"
 
   cat > "$state_file" <<EOF
 {
@@ -159,8 +159,8 @@ create_resume_script() {
   local pr_number="${5:-}"
 
   local timestamp=$(date +%Y%m%d-%H%M%S)
-  local data_dir="${FORGE_DATA_DIR:-.forge}"
-  local resume_script="${FORGE_PROJECT_ROOT:-.}/${data_dir}/resume-${issue_number}-${timestamp}.sh"
+  local data_dir="${RITE_DATA_DIR:-.rite}"
+  local resume_script="${RITE_PROJECT_ROOT:-.}/${data_dir}/resume-${issue_number}-${timestamp}.sh"
 
   cat > "$resume_script" <<EOF
 #!/bin/bash
@@ -238,7 +238,7 @@ case "\$BLOCKER_TYPE" in
   credentials_expired)
     echo "🔑 AWS Credentials Expired"
     echo ""
-    echo "Run: aws sso login --profile \${FORGE_AWS_PROFILE:-default}"
+    echo "Run: aws sso login --profile \${RITE_AWS_PROFILE:-default}"
     echo "Then continue with this script."
     echo ""
     ;;

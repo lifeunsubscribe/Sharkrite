@@ -10,7 +10,7 @@
 #   cleanup-worktrees.sh --auto    # Auto mode - remove all stale worktrees
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/config.sh"
 fi
@@ -41,7 +41,7 @@ if [[ "${1:-}" == "--auto" ]]; then
 fi
 
 MAIN_WORKTREE=$(git rev-parse --show-toplevel)
-WORKTREE_BASE="$FORGE_WORKTREE_DIR"
+WORKTREE_BASE="$RITE_WORKTREE_DIR"
 
 print_header "🌳 Worktree Cleanup Manager"
 

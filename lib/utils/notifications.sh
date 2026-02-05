@@ -3,15 +3,15 @@
 # Multi-channel notification system (Slack, Email, SMS)
 # Usage: source this file and call notification functions
 #
-# Expects config.sh to be already loaded (provides FORGE_SNS_TOPIC_ARN,
-# FORGE_AWS_PROFILE, FORGE_EMAIL_FROM, FORGE_PROJECT_NAME, SLACK_WEBHOOK,
+# Expects config.sh to be already loaded (provides RITE_SNS_TOPIC_ARN,
+# RITE_AWS_PROFILE, RITE_EMAIL_FROM, RITE_PROJECT_NAME, SLACK_WEBHOOK,
 # EMAIL_NOTIFICATION_ADDRESS)
 
 # Configuration from environment (with config.sh defaults)
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
 EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
-SNS_TOPIC_ARN="${FORGE_SNS_TOPIC_ARN:-}"
-AWS_PROFILE="${FORGE_AWS_PROFILE:-default}"
+SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
+AWS_PROFILE="${RITE_AWS_PROFILE:-default}"
 
 # Send Slack notification
 send_slack() {
@@ -29,7 +29,7 @@ send_slack() {
 
   local payload=$(cat <<EOF
 {
-  "text": "${icon} ${FORGE_PROJECT_NAME:-Forge} Workflow",
+  "text": "${icon} ${RITE_PROJECT_NAME:-Forge} Workflow",
   "blocks": [
     {
       "type": "section",
@@ -43,7 +43,7 @@ send_slack() {
       "elements": [
         {
           "type": "mrkdwn",
-          "text": "Sent: $(date '+%Y-%m-%d %H:%M:%S') | Repo: \`${FORGE_PROJECT_NAME:-unknown}\`"
+          "text": "Sent: $(date '+%Y-%m-%d %H:%M:%S') | Repo: \`${RITE_PROJECT_NAME:-unknown}\`"
         }
       ]
     }
@@ -78,8 +78,8 @@ send_email() {
     return 0
   fi
 
-  if [ -z "$FORGE_EMAIL_FROM" ]; then
-    echo "⚠️  FORGE_EMAIL_FROM not set, skipping email"
+  if [ -z "$RITE_EMAIL_FROM" ]; then
+    echo "⚠️  RITE_EMAIL_FROM not set, skipping email"
     return 0
   fi
 
@@ -87,7 +87,7 @@ send_email() {
   [ "$urgency" = "urgent" ] && subject="🚨 URGENT: $subject"
 
   aws ses send-email \
-    --from "$FORGE_EMAIL_FROM" \
+    --from "$RITE_EMAIL_FROM" \
     --to "$EMAIL_ADDRESS" \
     --subject "$subject" \
     --text "$message" \
@@ -108,7 +108,7 @@ send_sms() {
   local message="$1"
 
   if [ -z "$SNS_TOPIC_ARN" ]; then
-    echo "⚠️  FORGE_SNS_TOPIC_ARN not set, skipping SMS"
+    echo "⚠️  RITE_SNS_TOPIC_ARN not set, skipping SMS"
     return 1
   fi
 

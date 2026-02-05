@@ -6,7 +6,7 @@
 # Requires: config.sh sourced first (for $BLOCKER_* pattern variables)
 
 # Source notifications library
-source "$FORGE_LIB_DIR/utils/notifications.sh"
+source "$RITE_LIB_DIR/utils/notifications.sh"
 
 # Blocker detection functions
 
@@ -152,14 +152,14 @@ detect_session_limit() {
   local issues_completed="${1:-0}"
   local elapsed_hours="${2:-0}"
 
-  if [ "$issues_completed" -ge "${FORGE_MAX_ISSUES_PER_SESSION:-8}" ]; then
+  if [ "$issues_completed" -ge "${RITE_MAX_ISSUES_PER_SESSION:-8}" ]; then
     echo "BLOCKER: Approaching token limit ($issues_completed issues completed)"
     echo ""
     echo "Starting fresh session to prevent quality degradation"
     return 1
   fi
 
-  if [ "$elapsed_hours" -ge "${FORGE_MAX_SESSION_HOURS:-4}" ]; then
+  if [ "$elapsed_hours" -ge "${RITE_MAX_SESSION_HOURS:-4}" ]; then
     echo "BLOCKER: Approaching session time limit (${elapsed_hours} hours elapsed)"
     echo ""
     echo "Saving state for next session"
@@ -171,7 +171,7 @@ detect_session_limit() {
 
 detect_credentials_expired() {
   # Check AWS credentials using configured profile
-  if ! aws sts get-caller-identity --profile "${FORGE_AWS_PROFILE:-default}" &>/dev/null; then
+  if ! aws sts get-caller-identity --profile "${RITE_AWS_PROFILE:-default}" &>/dev/null; then
     return 1
   fi
 

@@ -1,6 +1,6 @@
 #!/bin/bash
-# .forge/config - Project-specific Forge configuration
-# Place this file at $REPO_ROOT/.forge/config
+# .rite/config - Project-specific Sharkrite configuration
+# Place this file at $REPO_ROOT/.rite/config
 # These settings override global config for this project only.
 
 # =============================================================================
@@ -8,21 +8,21 @@
 # =============================================================================
 
 # Override auto-detected project name (defaults to repo directory name)
-# FORGE_PROJECT_NAME="my-project"
+# RITE_PROJECT_NAME="my-project"
 
 # =============================================================================
 # Worktree Location
 # =============================================================================
 
 # Override worktree directory for this project
-# FORGE_WORKTREE_DIR="$HOME/Dev/my-project-worktrees"
+# RITE_WORKTREE_DIR="$HOME/Dev/my-project-worktrees"
 
 # =============================================================================
 # Scratchpad Location
 # =============================================================================
 
-# Override scratchpad file path (defaults to .forge/scratch.md)
-# SCRATCHPAD_FILE="$FORGE_PROJECT_ROOT/.forge/scratch.md"
+# Override scratchpad file path (defaults to .rite/scratch.md)
+# SCRATCHPAD_FILE="$RITE_PROJECT_ROOT/.rite/scratch.md"
 
 # =============================================================================
 # AWS Integration
@@ -32,7 +32,7 @@
 # SKIP_AWS_CHECK=true
 
 # AWS profile override for this project
-# FORGE_AWS_PROFILE="my-aws-profile"
+# RITE_AWS_PROFILE="my-aws-profile"
 
 # =============================================================================
 # Workflow Defaults
@@ -42,4 +42,4 @@
 # WORKFLOW_MODE="supervised"
 
 # Assessment timeout for this project (complex projects may need longer)
-# FORGE_ASSESSMENT_TIMEOUT=120
+# RITE_ASSESSMENT_TIMEOUT=120

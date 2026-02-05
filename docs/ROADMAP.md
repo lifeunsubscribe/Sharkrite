@@ -1,4 +1,4 @@
-# FlowForge Roadmap
+# Sharkrite Roadmap
 
 ## Current Version (2.x)
 
@@ -12,7 +12,7 @@
 - Slack/email notifications
 
 ### Recent Additions
-- GitHub workflow templates (`forge --init`)
+- GitHub workflow templates (`rite --init`)
 - Base review instructions with severity format
 - Workflow permission validation
 
@@ -108,35 +108,35 @@ review_additions:
 ```
 
 #### Phase 3: Smart Updates
-- Re-scan on each `forge --init` (detect new themes)
+- Re-scan on each `rite --init` (detect new themes)
 - Show diff of what changed in review instructions
-- Allow manual theme overrides: `forge config --themes add healthcare`
+- Allow manual theme overrides: `rite config --themes add healthcare`
 
 ---
 ## Planned: Workflow Commands (3.x)
 
-### Issue Dashboard (`forge status`)
+### Issue Dashboard (`rite status`)
 
 **Free feature** — Project health at a glance.
 
 ```bash
-forge status              # Dashboard overview
-forge status --list       # All issues with descriptions
-forge status 42           # Deep dive on specific issue
+rite status              # Dashboard overview
+rite status --list       # All issues with descriptions
+rite status 42           # Deep dive on specific issue
 ```
 
-**Dashboard view (`forge status`):**
+**Dashboard view (`rite status`):**
 - Open issue count by priority (P0/P1/P2) and type (feature, bug, docs, debt)
 - Assignment distribution
 - Recent activity (merges, reviews, blocks)
 - Suggested next actions based on priority
 
-**List view (`forge status --list`):**
+**List view (`rite status --list`):**
 - All open issues with titles and brief descriptions
 - Grouped by assignee and/or classification
 - Status indicators (in progress, blocked, ready)
 
-**Issue detail (`forge status 42`):**
+**Issue detail (`rite status 42`):**
 - Full issue description
 - Implementation progress markers
 - Related PRs and their status
@@ -145,14 +145,14 @@ forge status 42           # Deep dive on specific issue
 
 ---
 
-### Retroactive Review (`forge review`)
+### Retroactive Review (`rite review`)
 
 **Paid feature** — Audit already-merged code.
 
 ```bash
-forge review --pr 42        # Review by PR number
-forge review --issue 42     # Review by issue (finds associated PR)  
-forge 42 --review-only      # Shorthand for --issue
+rite review --pr 42        # Review by PR number
+rite review --issue 42     # Review by issue (finds associated PR)  
+rite 42 --review-only      # Shorthand for --issue
 ```
 
 **Use cases:**
@@ -169,22 +169,22 @@ forge 42 --review-only      # Shorthand for --issue
 
 ---
 
-### Issue Generation (`forge plan`)
+### Issue Generation (`rite plan`)
 
 **Tiered feature** — Convert documentation to actionable issues.
 
 ```bash
-forge plan docs/Phase-2.md          # Generate issues from spec
-forge plan --preview                # Show what would be created
-forge plan --roadmap docs/ROADMAP.md  # Parse roadmap format
+rite plan docs/Phase-2.md          # Generate issues from spec
+rite plan --preview                # Show what would be created
+rite plan --roadmap docs/ROADMAP.md  # Parse roadmap format
 ```
 
-**Free tier (`forge plan --preview`):**
+**Free tier (`rite plan --preview`):**
 - Parse documentation manually
 - Preview generated issues in terminal
 - Copy/paste to create manually
 
-**Paid tier (`forge plan`):**
+**Paid tier (`rite plan`):**
 - Full issue generation with:
   - Titles and descriptions
   - Implementation details
@@ -194,7 +194,7 @@ forge plan --roadmap docs/ROADMAP.md  # Parse roadmap format
 - Batch create via GitHub API
 - Auto-detect doc changes and suggest new issues
 
-**Advanced (`forge plan --roadmap`):**
+**Advanced (`rite plan --roadmap`):**
 - Parse phased roadmap documents
 - Generate issues organized by phase
 - Track phase completion
@@ -207,31 +207,31 @@ forge plan --roadmap docs/ROADMAP.md  # Parse roadmap format
 | Feature | Free | Pro |
 |---------|------|-----|
 | Core workflow (issue → merge) | ✅ | ✅ |
-| `forge status` (dashboard) | ✅ | ✅ |
-| `forge status --list` | ✅ | ✅ |
-| `forge status 42` (detail) | ✅ | ✅ |
-| `forge plan --preview` | ✅ | ✅ |
+| `rite status` (dashboard) | ✅ | ✅ |
+| `rite status --list` | ✅ | ✅ |
+| `rite status 42` (detail) | ✅ | ✅ |
+| `rite plan --preview` | ✅ | ✅ |
 | Base + standard themes | ✅ | ✅ |
 | Codebase scanning | ✅ | ✅ |
 | Compliance themes (HIPAA, PCI, SOC2) | ❌ | ✅ |
-| `forge review` (retroactive) | ❌ | ✅ |
-| `forge plan` (full generation) | ❌ | ✅ |
-| `forge plan --roadmap` | ❌ | ✅ |
+| `rite review` (retroactive) | ❌ | ✅ |
+| `rite plan` (full generation) | ❌ | ✅ |
+| `rite plan --roadmap` | ❌ | ✅ |
 | Interactive config UI | ❌ | ✅ |
 | Team mode | ❌ | ✅ |
 
 ---
 
-## Dogfooding: Using Forge on Forge
+## Dogfooding: Using Sharkrite on Sharkrite
 
-Once the theme system and issue generation are stable, FlowForge development itself can use Forge:
+Once the theme system and issue generation are stable, Sharkrite development itself can use Forge:
 
-1. **Issues:** Create issues in the forge repo for new features
-2. **Workflow:** Set up `.github/workflows/claude-code-review.yml` in forge repo
+1. **Issues:** Create issues in the rite repo for new features
+2. **Workflow:** Set up `.github/workflows/claude-code-review.yml` in rite repo
 3. **Themes:** Detect "CLI tool" and "bash scripting" patterns
-4. **Meta:** Use `forge plan docs/ROADMAP.md` to generate implementation issues
+4. **Meta:** Use `rite plan docs/ROADMAP.md` to generate implementation issues
 
-This closes the loop: Forge improves Forge.
+This closes the loop: Sharkrite improves Sharkrite.
 
 ---
 

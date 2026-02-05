@@ -3,10 +3,10 @@
 # Manage scratchpad lifecycle: read security findings, update after PR merge
 # Usage: source this file and call functions
 #
-# Requires: config.sh sourced (for SCRATCHPAD_FILE, FORGE_INSTALL_DIR)
+# Requires: config.sh sourced (for SCRATCHPAD_FILE, RITE_INSTALL_DIR)
 
 # Use configured scratchpad path (set by config.sh)
-SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$FORGE_PROJECT_ROOT/$FORGE_DATA_DIR/scratch.md}"
+SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
 
 # Update scratchpad with security findings from PR review
 update_scratchpad_from_pr() {
@@ -138,12 +138,12 @@ _No active work — run `forge <issue>` to start_\
 }
 
 # Initialize scratchpad structure if missing
-# Uses template from $FORGE_INSTALL_DIR/templates/scratchpad.md
+# Uses template from $RITE_INSTALL_DIR/templates/scratchpad.md
 init_scratchpad() {
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
     # Copy from template if available, otherwise create minimal structure
-    if [ -f "$FORGE_INSTALL_DIR/templates/scratchpad.md" ]; then
-      cp "$FORGE_INSTALL_DIR/templates/scratchpad.md" "$SCRATCHPAD_FILE"
+    if [ -f "$RITE_INSTALL_DIR/templates/scratchpad.md" ]; then
+      cp "$RITE_INSTALL_DIR/templates/scratchpad.md" "$SCRATCHPAD_FILE"
     else
       # Minimal fallback if template not found
       cat > "$SCRATCHPAD_FILE" <<'EOF'

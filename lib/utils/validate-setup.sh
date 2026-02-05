@@ -6,7 +6,7 @@
 #   validate-setup.sh --fix     # Auto-fix issues where possible
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/config.sh"
 fi
@@ -36,7 +36,7 @@ if [ "${1:-}" = "--fix" ]; then
   FIX_MODE=true
 fi
 
-cd "$FORGE_PROJECT_ROOT"
+cd "$RITE_PROJECT_ROOT"
 
 ISSUES_FOUND=0
 
@@ -91,7 +91,7 @@ if command -v aws &>/dev/null; then
     print_success "AWS credentials valid"
   else
     print_warning "AWS credentials expired or not configured"
-    print_info "Run: aws sso login --profile ${FORGE_AWS_PROFILE:-default}"
+    print_info "Run: aws sso login --profile ${RITE_AWS_PROFILE:-default}"
   fi
 else
   print_warning "AWS CLI not installed (optional for some workflows)"
@@ -103,7 +103,7 @@ echo ""
 print_info "Checking required directories..."
 
 REQUIRED_DIRS=(
-  "$FORGE_DATA_DIR"
+  "$RITE_DATA_DIR"
 )
 
 for dir in "${REQUIRED_DIRS[@]}"; do
@@ -125,12 +125,12 @@ echo ""
 # Check 6: Forge installation
 print_info "Checking forge installation..."
 
-REQUIRED_FORGE_DIRS=(
-  "$FORGE_LIB_DIR/utils"
-  "$FORGE_LIB_DIR/core"
+REQUIRED_RITE_DIRS=(
+  "$RITE_LIB_DIR/utils"
+  "$RITE_LIB_DIR/core"
 )
 
-for dir in "${REQUIRED_FORGE_DIRS[@]}"; do
+for dir in "${REQUIRED_RITE_DIRS[@]}"; do
   if [ -d "$dir" ]; then
     print_success "$dir exists"
   else
@@ -144,9 +144,9 @@ echo ""
 print_info "Checking required library scripts..."
 
 REQUIRED_LIBS=(
-  "$FORGE_LIB_DIR/utils/config.sh"
-  "$FORGE_LIB_DIR/utils/notifications.sh"
-  "$FORGE_LIB_DIR/utils/session-tracker.sh"
+  "$RITE_LIB_DIR/utils/config.sh"
+  "$RITE_LIB_DIR/utils/notifications.sh"
+  "$RITE_LIB_DIR/utils/session-tracker.sh"
 )
 
 for lib in "${REQUIRED_LIBS[@]}"; do
@@ -175,12 +175,12 @@ echo ""
 print_info "Checking required core scripts..."
 
 REQUIRED_SCRIPTS=(
-  "$FORGE_LIB_DIR/core/workflow-runner.sh"
-  "$FORGE_LIB_DIR/core/claude-workflow.sh"
-  "$FORGE_LIB_DIR/core/create-pr.sh"
-  "$FORGE_LIB_DIR/core/assess-and-resolve.sh"
-  "$FORGE_LIB_DIR/core/merge-pr.sh"
-  "$FORGE_LIB_DIR/core/batch-process-issues.sh"
+  "$RITE_LIB_DIR/core/workflow-runner.sh"
+  "$RITE_LIB_DIR/core/claude-workflow.sh"
+  "$RITE_LIB_DIR/core/create-pr.sh"
+  "$RITE_LIB_DIR/core/assess-and-resolve.sh"
+  "$RITE_LIB_DIR/core/merge-pr.sh"
+  "$RITE_LIB_DIR/core/batch-process-issues.sh"
 )
 
 for script in "${REQUIRED_SCRIPTS[@]}"; do
@@ -244,7 +244,7 @@ EOF
 
 ## Current Work
 
-_No active work - start new issue with forge_
+_No active work - start new issue with rite_
 
 ---
 EOF
@@ -275,7 +275,7 @@ _User-managed section - Claude does not auto-modify_
 
 ## Current Work
 
-_No active work - start new issue with forge_
+_No active work - start new issue with rite_
 
 ---
 
@@ -321,15 +321,15 @@ echo ""
 # Check 11: Worktree base directory
 print_info "Checking worktree base directory..."
 
-if [ -d "$FORGE_WORKTREE_DIR" ]; then
+if [ -d "$RITE_WORKTREE_DIR" ]; then
   print_success "Worktree base directory exists"
-  print_info "  Path: $FORGE_WORKTREE_DIR"
+  print_info "  Path: $RITE_WORKTREE_DIR"
 else
   print_info "Worktree base directory does NOT exist (will be created on first use)"
 
   if [ "$FIX_MODE" = true ]; then
-    mkdir -p "$FORGE_WORKTREE_DIR"
-    print_success "Created: $FORGE_WORKTREE_DIR"
+    mkdir -p "$RITE_WORKTREE_DIR"
+    print_success "Created: $RITE_WORKTREE_DIR"
   fi
 fi
 echo ""
@@ -337,7 +337,7 @@ echo ""
 # Check 12: Session tracking directory
 print_info "Checking session tracking directory..."
 
-SESSION_DIR="$FORGE_DATA_DIR/sessions"
+SESSION_DIR="$RITE_DATA_DIR/sessions"
 
 if [ -d "$SESSION_DIR" ]; then
   print_success "Session tracking directory exists"
@@ -354,8 +354,8 @@ echo ""
 # Check 13: GitHub Actions Workflow
 print_info "Checking GitHub Actions workflow..."
 
-WORKFLOW_FILE="$FORGE_PROJECT_ROOT/.github/workflows/claude-code-review.yml"
-INSTRUCTIONS_FILE="$FORGE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md"
+WORKFLOW_FILE="$RITE_PROJECT_ROOT/.github/workflows/claude-code-review.yml"
+INSTRUCTIONS_FILE="$RITE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md"
 
 if [ -f "$WORKFLOW_FILE" ]; then
   print_success "Claude Code review workflow found"

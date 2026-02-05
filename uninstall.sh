@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# uninstall.sh - Uninstall Forge CLI
-# Removes runtime and optionally config. Never touches project .forge/ directories.
+# uninstall.sh - Uninstall Sharkrite CLI
+# Removes runtime and optionally config. Never touches project .rite/ directories.
 
 set -euo pipefail
 
@@ -14,30 +14,30 @@ print_success() { echo -e "${GREEN}✅ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 
-INSTALL_DIR="$HOME/.forge"
-CONFIG_DIR="$HOME/.config/forge"
-BIN_DIR="${FORGE_BIN_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="$HOME/.rite"
+CONFIG_DIR="$HOME/.config/rite"
+BIN_DIR="${RITE_BIN_DIR:-$HOME/.local/bin}"
 
 echo ""
-echo "Forge Uninstaller"
+echo "Sharkrite Uninstaller"
 echo "================="
 echo ""
 
 # Step 1: Remove symlink
-if [ -L "$BIN_DIR/forge" ]; then
-  rm "$BIN_DIR/forge"
-  print_success "Removed symlink: $BIN_DIR/forge"
-elif [ -f "$BIN_DIR/forge" ]; then
-  rm "$BIN_DIR/forge"
-  print_success "Removed binary: $BIN_DIR/forge"
+if [ -L "$BIN_DIR/rite" ]; then
+  rm "$BIN_DIR/rite"
+  print_success "Removed symlink: $BIN_DIR/rite"
+elif [ -f "$BIN_DIR/rite" ]; then
+  rm "$BIN_DIR/rite"
+  print_success "Removed binary: $BIN_DIR/rite"
 else
-  print_info "No symlink found at $BIN_DIR/forge"
+  print_info "No symlink found at $BIN_DIR/rite"
 fi
 
 # Step 2: Remove installation directory
 if [ -d "$INSTALL_DIR" ]; then
   echo ""
-  read -p "Remove Forge runtime at $INSTALL_DIR? (y/N): " REMOVE_INSTALL
+  read -p "Remove Sharkrite runtime at $INSTALL_DIR? (y/N): " REMOVE_INSTALL
   if [[ "$REMOVE_INSTALL" =~ ^[Yy]$ ]]; then
     rm -rf "$INSTALL_DIR"
     print_success "Removed $INSTALL_DIR"
@@ -51,7 +51,7 @@ fi
 # Step 3: Remove config directory
 if [ -d "$CONFIG_DIR" ]; then
   echo ""
-  read -p "Remove Forge config at $CONFIG_DIR? (y/N): " REMOVE_CONFIG
+  read -p "Remove Sharkrite config at $CONFIG_DIR? (y/N): " REMOVE_CONFIG
   if [[ "$REMOVE_CONFIG" =~ ^[Yy]$ ]]; then
     rm -rf "$CONFIG_DIR"
     print_success "Removed $CONFIG_DIR"
@@ -63,6 +63,6 @@ else
 fi
 
 echo ""
-print_success "Forge uninstalled"
-print_info "Project .forge/ directories were NOT removed (they belong to each project)"
+print_success "Sharkrite uninstalled"
+print_info "Project .rite/ directories were NOT removed (they belong to each project)"
 echo ""

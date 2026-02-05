@@ -1,31 +1,31 @@
 #!/bin/bash
-# ~/.config/forge/config - Global Forge configuration
+# ~/.config/rite/config - Global Sharkrite configuration
 # These settings apply across all projects unless overridden by project config.
-# Copy to: ~/.config/forge/config
+# Copy to: ~/.config/rite/config
 
 # =============================================================================
 # Worktree Management
 # =============================================================================
 
 # Base directory for all project worktrees
-# Each project gets a subdirectory: $FORGE_WORKTREE_BASE/<project>-worktrees/
-# FORGE_WORKTREE_BASE="$HOME/Dev/forge-worktrees"
+# Each project gets a subdirectory: $RITE_WORKTREE_BASE/<project>-worktrees/
+# RITE_WORKTREE_BASE="$HOME/Dev/rite-worktrees"
 
 # =============================================================================
 # Session Limits
 # =============================================================================
 
 # Maximum issues to process before requiring fresh session
-# FORGE_MAX_ISSUES_PER_SESSION=8
+# RITE_MAX_ISSUES_PER_SESSION=8
 
 # Maximum hours before session timeout
-# FORGE_MAX_SESSION_HOURS=4
+# RITE_MAX_SESSION_HOURS=4
 
 # Maximum auto-fix retries before creating follow-up issue
-# FORGE_MAX_RETRIES=3
+# RITE_MAX_RETRIES=3
 
 # Claude CLI timeout for assessment (seconds)
-# FORGE_ASSESSMENT_TIMEOUT=120
+# RITE_ASSESSMENT_TIMEOUT=120
 
 # =============================================================================
 # Notifications (optional)
@@ -38,13 +38,13 @@
 # EMAIL_NOTIFICATION_ADDRESS="you@example.com"
 
 # AWS profile for SES/SNS notifications
-# FORGE_AWS_PROFILE="default"
+# RITE_AWS_PROFILE="default"
 
 # SNS topic ARN for SMS notifications (urgent blockers only)
-# FORGE_SNS_TOPIC_ARN=""
+# RITE_SNS_TOPIC_ARN=""
 
 # Email sender address (requires SES verified identity)
-# FORGE_EMAIL_FROM=""
+# RITE_EMAIL_FROM=""
 
 # =============================================================================
 # AWS Integration (optional)

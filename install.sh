@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# install.sh - Install Forge CLI
+# install.sh - Install Sharkrite CLI
 # Idempotent: safe to run multiple times (updates existing installation)
 #
 # Installation layout:
-#   ~/.forge/           - Forge runtime (lib/, templates/, config/)
-#   ~/.local/bin/forge  - Symlink to bin/forge (or custom location)
-#   ~/.config/forge/    - User configuration (preserved on update)
+#   ~/.rite/           - Sharkrite runtime (lib/, templates/, config/)
+#   ~/.local/bin/rite  - Symlink to bin/rite (or custom location)
+#   ~/.config/rite/    - User configuration (preserved on update)
 
 set -euo pipefail
 
@@ -31,11 +31,11 @@ print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Installation targets
-INSTALL_DIR="$HOME/.forge"
-CONFIG_DIR="$HOME/.config/forge"
-BIN_DIR="${FORGE_BIN_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="$HOME/.rite"
+CONFIG_DIR="$HOME/.config/rite"
+BIN_DIR="${RITE_BIN_DIR:-$HOME/.local/bin}"
 
-print_header "Forge Installer"
+print_header "Sharkrite Installer"
 
 # =============================================================================
 # Step 1: Check Dependencies
@@ -81,7 +81,7 @@ fi
 # =============================================================================
 
 if [ -d "$INSTALL_DIR" ]; then
-  print_info "Existing Forge installation detected at $INSTALL_DIR"
+  print_info "Existing Sharkrite installation detected at $INSTALL_DIR"
   print_info "Updating... (your configs in $CONFIG_DIR will be preserved)"
   echo ""
   IS_UPDATE=true
@@ -93,7 +93,7 @@ fi
 # Step 3: Create Installation Directory
 # =============================================================================
 
-echo "Installing Forge to $INSTALL_DIR..."
+echo "Installing Sharkrite to $INSTALL_DIR..."
 
 mkdir -p "$INSTALL_DIR"
 
@@ -115,7 +115,7 @@ cp -R "$SOURCE_DIR/config" "$INSTALL_DIR/config"
 
 # Make all scripts executable
 find "$INSTALL_DIR" -name "*.sh" -exec chmod +x {} \;
-chmod +x "$INSTALL_DIR/bin/forge"
+chmod +x "$INSTALL_DIR/bin/rite"
 
 print_success "Runtime installed to $INSTALL_DIR"
 
@@ -126,7 +126,7 @@ print_success "Runtime installed to $INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
-  cp "$SOURCE_DIR/config/forge.conf.example" "$CONFIG_DIR/config"
+  cp "$SOURCE_DIR/config/rite.conf.example" "$CONFIG_DIR/config"
   print_success "Created global config: $CONFIG_DIR/config"
 else
   print_info "Global config preserved: $CONFIG_DIR/config"
@@ -139,12 +139,12 @@ fi
 mkdir -p "$BIN_DIR"
 
 # Remove old symlink if it exists
-if [ -L "$BIN_DIR/forge" ]; then
-  rm "$BIN_DIR/forge"
+if [ -L "$BIN_DIR/rite" ]; then
+  rm "$BIN_DIR/rite"
 fi
 
-ln -sf "$INSTALL_DIR/bin/forge" "$BIN_DIR/forge"
-print_success "Symlink created: $BIN_DIR/forge -> $INSTALL_DIR/bin/forge"
+ln -sf "$INSTALL_DIR/bin/rite" "$BIN_DIR/rite"
+print_success "Symlink created: $BIN_DIR/rite -> $INSTALL_DIR/bin/rite"
 
 # Check if BIN_DIR is in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^${BIN_DIR}$"; then
@@ -167,30 +167,30 @@ echo ""
 print_header "Installation Complete"
 
 if [ "$IS_UPDATE" = true ]; then
-  print_success "Forge updated successfully"
+  print_success "Sharkrite updated successfully"
 else
-  print_success "Forge installed successfully"
+  print_success "Sharkrite installed successfully"
 fi
 
 echo ""
 echo "  Installation:  $INSTALL_DIR"
 echo "  Config:        $CONFIG_DIR/config"
-echo "  Binary:        $BIN_DIR/forge"
+echo "  Binary:        $BIN_DIR/rite"
 echo ""
 
 if [ "$NEEDS_PATH_UPDATE" = true ]; then
   echo "  Next steps:"
   echo "    1. Add $BIN_DIR to your PATH (see above)"
   echo "    2. Restart your shell or run: source ~/.zshrc"
-  echo "    3. cd into a git repo and run: forge --init"
-  echo "    4. Process your first issue: forge 21"
+  echo "    3. cd into a git repo and run: rite --init"
+  echo "    4. Process your first issue: rite 21"
 else
   echo "  Next steps:"
-  echo "    1. cd into a git repo and run: forge --init"
-  echo "    2. Edit .forge/config with project-specific settings"
-  echo "    3. Process your first issue: forge 21"
+  echo "    1. cd into a git repo and run: rite --init"
+  echo "    2. Edit .rite/config with project-specific settings"
+  echo "    3. Process your first issue: rite 21"
 fi
 
 echo ""
-echo "  Run 'forge --help' for usage information."
+echo "  Run 'rite --help' for usage information."
 echo ""

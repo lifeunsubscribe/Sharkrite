@@ -11,12 +11,12 @@ Forge automates the full lifecycle of GitHub issue development: branch creation,
 ### Install
 
 ```bash
-git clone <repo-url> /tmp/forge-install
-cd /tmp/forge-install
+git clone <repo-url> /tmp/rite-install
+cd /tmp/rite-install
 ./install.sh
 ```
 
-This installs to `~/.forge/` and symlinks `forge` into `~/.local/bin/`.
+This installs to `~/.rite/` and symlinks `forge` into `~/.local/bin/`.
 
 ### Prerequisites
 
@@ -29,38 +29,38 @@ This installs to `~/.forge/` and symlinks `forge` into `~/.local/bin/`.
 
 ```bash
 cd your-repo
-forge --init
+rite --init
 ```
 
-Creates `.forge/` directory with default config and scratchpad.
+Creates `.rite/` directory with default config and scratchpad.
 
 ### Usage
 
 ```bash
 # Process single issue (full lifecycle: work → PR → review → fixes → merge)
-forge 21
+rite 21
 
 # Quick mode (work → PR only, skip review/merge)
-forge 21 --quick
+rite 21 --quick
 
 # Process multiple issues in batch
-forge 21 45 31
+rite 21 45 31
 
 # Auto-discover and process follow-up pairs
-forge --followup
+rite --followup
 
 # Dry run (show what would happen without executing)
-forge 21 --dry-run
+rite 21 --dry-run
 
 # Help
-forge --help
+rite --help
 ```
 
 **Smart routing:**
-- `forge 21` → Full lifecycle (workflow-runner.sh)
-- `forge 21 --quick` → Work + PR only (claude-workflow.sh + create-pr.sh)
-- `forge 21 45` → Batch mode (batch-process-issues.sh)
-- `forge --followup` → Batch mode with follow-up filter
+- `rite 21` → Full lifecycle (workflow-runner.sh)
+- `rite 21 --quick` → Work + PR only (claude-workflow.sh + create-pr.sh)
+- `rite 21 45` → Batch mode (batch-process-issues.sh)
+- `rite --followup` → Batch mode with follow-up filter
 
 ---
 
@@ -100,43 +100,43 @@ Issue #21 → workflow-runner.sh
 Forge uses a layered config system:
 
 ```
-Defaults → ~/.config/forge/config (global) → .forge/config (project) → Environment variables
+Defaults → ~/.config/rite/config (global) → .rite/config (project) → Environment variables
 ```
 
-### Project Config (`.forge/config`)
+### Project Config (`.rite/config`)
 
-Created by `forge --init`. Key settings:
+Created by `rite --init`. Key settings:
 
 ```bash
 # Worktree base directory
-FORGE_WORKTREE_DIR="$HOME/Dev/worktrees/myproject"
+RITE_WORKTREE_DIR="$HOME/Dev/worktrees/myproject"
 
 # Session limits
-FORGE_MAX_ISSUES_PER_SESSION=8
-FORGE_MAX_SESSION_HOURS=4
+RITE_MAX_ISSUES_PER_SESSION=8
+RITE_MAX_SESSION_HOURS=4
 
 # Claude assessment timeout (seconds)
-FORGE_ASSESSMENT_TIMEOUT=120
+RITE_ASSESSMENT_TIMEOUT=120
 ```
 
 See [config/project.conf.example](config/project.conf.example) for all options.
 
-### Global Config (`~/.config/forge/config`)
+### Global Config (`~/.config/rite/config`)
 
 Settings that apply across all projects:
 
 ```bash
 # Notifications
 SLACK_WEBHOOK_URL="https://hooks.slack.com/..."
-FORGE_EMAIL_FROM="forge@example.com"
+RITE_EMAIL_FROM="forge@example.com"
 
 # AWS profile for notifications
-FORGE_AWS_PROFILE="default"
+RITE_AWS_PROFILE="default"
 ```
 
-See [config/forge.conf.example](config/forge.conf.example) for all options.
+See [config/rite.conf.example](config/rite.conf.example) for all options.
 
-### Blocker Rules (`.forge/blockers.conf`)
+### Blocker Rules (`.rite/blockers.conf`)
 
 Customize which file patterns trigger blocker detection:
 
@@ -152,7 +152,7 @@ See [config/blockers.conf.example](config/blockers.conf.example) for all pattern
 
 Control how Claude assesses PR review issues:
 
-1. **`.forge/assessment-prompt.md`** — Full custom assessment prompt (highest priority)
+1. **`.rite/assessment-prompt.md`** — Full custom assessment prompt (highest priority)
 2. **`CLAUDE.md`** — Forge extracts security/conventions sections automatically
 3. **Generic fallback** — Built-in assessment criteria from `templates/assessment-prompt.md`
 
@@ -162,7 +162,7 @@ Control how Claude assesses PR review issues:
 
 ```
 forge/
-├── bin/forge                        # CLI entry point
+├── bin/rite                        # CLI entry point
 ├── lib/
 │   ├── core/                        # Core workflow scripts
 │   │   ├── workflow-runner.sh       # Central orchestrator (5 phases)
@@ -189,10 +189,10 @@ forge/
 │   ├── forge.conf.example          # Global config template
 │   ├── project.conf.example        # Per-project config template
 │   └── blockers.conf.example       # Blocker patterns template
-├── templates/                       # Templates for forge --init
+├── templates/                       # Templates for rite --init
 │   ├── scratchpad.md               # Scratchpad structure
 │   ├── assessment-prompt.md        # Generic assessment criteria
-│   └── gitignore                   # .forge/.gitignore template
+│   └── gitignore                   # .rite/.gitignore template
 ├── install.sh                       # Installer (idempotent)
 ├── uninstall.sh                     # Uninstaller
 └── README.md                        # This file
@@ -204,7 +204,7 @@ forge/
 
 ### 10 Blocker Rules
 
-Prevents accidental bad merges. Each rule is configurable via `.forge/blockers.conf`:
+Prevents accidental bad merges. Each rule is configurable via `.rite/blockers.conf`:
 
 1. **Infrastructure Changes** — CDK, IAM, CloudFormation, Terraform
 2. **Database Migrations** — Prisma, Alembic, raw SQL migrations
@@ -254,12 +254,12 @@ When CRITICAL issues are found:
 
 ---
 
-## Per-Project `.forge/` Directory
+## Per-Project `.rite/` Directory
 
-Created by `forge --init`:
+Created by `rite --init`:
 
 ```
-.forge/
+.rite/
 ├── config              # Project settings (committed)
 ├── blockers.conf       # Blocker patterns (committed)
 ├── assessment-prompt.md # Custom assessment context (committed, optional)
@@ -284,16 +284,16 @@ aws sso login --profile your-profile
 ### "Session limit reached"
 ```bash
 # Check session state
-cat .forge/session-state/current-session.json
+cat .rite/session-state/current-session.json
 
 # Clear manually (auto-resets after timeout)
-rm .forge/session-state/current-session.json
+rm .rite/session-state/current-session.json
 ```
 
 ### "Worktree limit exceeded"
 ```bash
 # Auto-cleanup merged branches
-forge cleanup-worktrees
+rite cleanup-worktrees
 
 # Or manual
 git worktree list
@@ -316,12 +316,12 @@ git worktree remove /path/to/stale-worktree
 ## Uninstall
 
 ```bash
-~/.forge/uninstall.sh
+~/.rite/uninstall.sh
 # Or if you have the source:
 ./uninstall.sh
 ```
 
-Removes runtime and symlink. Prompts before removing config. Never touches project `.forge/` directories.
+Removes runtime and symlink. Prompts before removing config. Never touches project `.rite/` directories.
 
 ---
 
@@ -329,12 +329,12 @@ Removes runtime and symlink. Prompts before removing config. Never touches proje
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FORGE_WORKTREE_DIR` | Worktree base directory | `~/Dev/worktrees/$PROJECT` |
-| `FORGE_MAX_ISSUES_PER_SESSION` | Max issues per session | `8` |
-| `FORGE_MAX_SESSION_HOURS` | Max session duration (hours) | `4` |
-| `FORGE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `120` |
-| `FORGE_AWS_PROFILE` | AWS profile for notifications | `default` |
-| `FORGE_BIN_DIR` | Override symlink location | `~/.local/bin` |
+| `RITE_WORKTREE_DIR` | Worktree base directory | `~/Dev/worktrees/$PROJECT` |
+| `RITE_MAX_ISSUES_PER_SESSION` | Max issues per session | `8` |
+| `RITE_MAX_SESSION_HOURS` | Max session duration (hours) | `4` |
+| `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `120` |
+| `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
+| `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |
 | `SLACK_WEBHOOK_URL` | Slack webhook for notifications | — |
-| `FORGE_EMAIL_FROM` | Email sender for notifications | — |
-| `FORGE_SNS_TOPIC_ARN` | AWS SNS topic for SMS | — |
+| `RITE_EMAIL_FROM` | Email sender for notifications | — |
+| `RITE_SNS_TOPIC_ARN` | AWS SNS topic for SMS | — |

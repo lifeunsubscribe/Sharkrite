@@ -1,4 +1,4 @@
-# Contributing to FlowForge
+# Contributing to Sharkrite
 
 Thanks for your interest in contributing!
 
@@ -7,19 +7,19 @@ Thanks for your interest in contributing!
 1. Fork the repo
 2. Clone your fork
 3. Make changes
-4. Test locally: `./install.sh` then `forge --help`
+4. Test locally: `./install.sh` then `rite --help`
 5. Submit a PR
 
 ## Development Setup
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/flowforge.git
-cd flowforge
+git clone https://github.com/YOUR_USERNAME/sharkrite.git
+cd sharkrite
 
 # Symlink for live editing (optional)
 ./install.sh
-rm -rf ~/.forge/lib
-ln -s $(pwd)/lib ~/.forge/lib
+rm -rf ~/.rite/lib
+ln -s $(pwd)/lib ~/.rite/lib
 ```
 
 ## What We're Looking For
@@ -35,7 +35,7 @@ ln -s $(pwd)/lib ~/.forge/lib
 - Keep bash portable (no bash 5+ features)
 - Follow existing code style
 - Update README if adding features
-- Test with `forge --dry-run` before submitting
+- Test with `rite --dry-run` before submitting
 
 ## Questions?
 

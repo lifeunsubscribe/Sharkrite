@@ -12,7 +12,7 @@ _User-managed section — add your reminders here_
 
 ## Current Work
 
-_No active work — run `forge <issue>` to start_
+_No active work — run `rite <issue>` to start_
 
 ---
 

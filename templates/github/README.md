@@ -43,4 +43,4 @@ As your project grows, Forge can automatically append theme-specific checks
 
 **Wrong severity classifications?**
 - Edit pr-review-instructions.md to adjust criteria
-- Run `forge config --themes` to see detected patterns
+- Run `rite config --themes` to see detected patterns

@@ -19,14 +19,14 @@ set -euo pipefail
 
 # Source forge configuration
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
 # Source libraries
-source "$FORGE_LIB_DIR/utils/session-tracker.sh"
-source "$FORGE_LIB_DIR/utils/notifications.sh"
-source "$FORGE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/utils/session-tracker.sh"
+source "$RITE_LIB_DIR/utils/notifications.sh"
+source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -187,7 +187,7 @@ if [ -n "$FILTER_TYPE" ]; then
       echo ""
 
       # Fetch up to max issues for batch processing (prioritize HIGH first)
-      MAX_ISSUES="${FORGE_MAX_ISSUES_PER_SESSION:-8}"
+      MAX_ISSUES="${RITE_MAX_ISSUES_PER_SESSION:-8}"
       ISSUE_LIST=($(echo "$DEBT_ISSUES" | jq -r '.number' | head -$MAX_ISSUES))
 
       print_success "Queued ${#ISSUE_LIST[@]} security-debt issues for processing"
@@ -272,7 +272,7 @@ if [ "$AWS_REQUIRED" = true ]; then
   print_info "Checking AWS credentials (required for infrastructure changes)..."
   if ! aws sts get-caller-identity &>/dev/null; then
     print_error "AWS credentials expired"
-    print_info "Run: aws sso login --profile ${FORGE_AWS_PROFILE}"
+    print_info "Run: aws sso login --profile ${RITE_AWS_PROFILE}"
     send_blocker_notification "AWS Credentials Expired" "batch-${ISSUE_LIST[0]}" "" "" "This workflow involves infrastructure/AWS changes that require valid AWS credentials."
     exit 1
   fi
@@ -292,7 +292,7 @@ ELAPSED_HOURS=$(awk "BEGIN {print ($CURRENT_TIME - $SESSION_START) / 3600}")
 
 # Validate batch won't exceed limits
 PROJECTED_TOTAL=$((ISSUES_COMPLETED + TOTAL_ISSUES))
-MAX_ISSUES_LIMIT="${FORGE_MAX_ISSUES_PER_SESSION:-8}"
+MAX_ISSUES_LIMIT="${RITE_MAX_ISSUES_PER_SESSION:-8}"
 
 if [ "$PROJECTED_TOTAL" -gt "$MAX_ISSUES_LIMIT" ]; then
   print_warning "Batch would exceed session limit ($MAX_ISSUES_LIMIT issues)"
@@ -542,7 +542,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   export BATCH_MODE=true
 
   # Run workflow with exit code handling
-  if "$FORGE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised; then
+  if "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised; then
     ISSUE_END_TIME=$(date +%s)
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
@@ -858,9 +858,9 @@ create_batch_resume_script() {
   done
 
   # Create resume directory
-  mkdir -p "${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/.resume"
+  mkdir -p "${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/.resume"
 
-  local resume_script="${FORGE_PROJECT_ROOT}/${FORGE_DATA_DIR}/.resume/resume-batch-${blocked_issue}.sh"
+  local resume_script="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/.resume/resume-batch-${blocked_issue}.sh"
 
   cat > "$resume_script" <<EOF
 #!/bin/bash

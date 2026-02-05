@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
@@ -54,7 +54,7 @@ fi
 
 # Safety check: Prevent unbounded recursion
 # Can be overridden via environment variable
-MAX_RETRIES="${FORGE_MAX_RETRIES:-3}"
+MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
 if [ "$RETRY_COUNT" -gt "$MAX_RETRIES" ]; then
   echo "❌ Maximum retry limit exceeded ($RETRY_COUNT > $MAX_RETRIES)"
   echo "Preventing unbounded recursion - manual intervention required"
@@ -419,8 +419,8 @@ FORMATTED_TIME=$(format_review_timestamp "$REVIEW_TIME")
 print_header "📄 Code Review: $FORMATTED_TIME"
 
 # Compact display: format review using dedicated formatter
-if [ -f "$FORGE_LIB_DIR/utils/format-review.sh" ]; then
-  "$FORGE_LIB_DIR/utils/format-review.sh" "$REVIEW_FILE"
+if [ -f "$RITE_LIB_DIR/utils/format-review.sh" ]; then
+  "$RITE_LIB_DIR/utils/format-review.sh" "$REVIEW_FILE"
 else
   # Fallback: simple compact display
   cat "$REVIEW_FILE" | sed '/^$/N;/^\n$/d'
@@ -437,7 +437,7 @@ print_header "🤖 Smart Assessment (Claude CLI)"
 
 ACTIONABLE_COUNT=0
 
-if [ -f "$FORGE_LIB_DIR/core/assess-review-issues.sh" ]; then
+if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   # Only show retry count if actually retrying (count > 0)
   if [ "$RETRY_COUNT" -gt 0 ]; then
     print_info "Running Claude CLI assessment (retry $RETRY_COUNT/3)..."
@@ -450,13 +450,13 @@ if [ -f "$FORGE_LIB_DIR/core/assess-review-issues.sh" ]; then
   # and categorizes ALL contents, outputting filtered ACTIONABLE items to stdout
   if [ "$AUTO_MODE" = true ]; then
     ASSESSMENT_STDERR=$(mktemp)
-    ASSESSMENT_RESULT=$("$FORGE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" --auto 2>"$ASSESSMENT_STDERR")
+    ASSESSMENT_RESULT=$("$RITE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" --auto 2>"$ASSESSMENT_STDERR")
     ASSESSMENT_EXIT_CODE=$?
     ASSESSMENT_ERROR=$(cat "$ASSESSMENT_STDERR")
     rm -f "$ASSESSMENT_STDERR"
   else
     ASSESSMENT_STDERR=$(mktemp)
-    ASSESSMENT_RESULT=$("$FORGE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" 2>"$ASSESSMENT_STDERR")
+    ASSESSMENT_RESULT=$("$RITE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" 2>"$ASSESSMENT_STDERR")
     ASSESSMENT_EXIT_CODE=$?
     ASSESSMENT_ERROR=$(cat "$ASSESSMENT_STDERR")
     rm -f "$ASSESSMENT_STDERR"
@@ -893,7 +893,7 @@ This approach allows all fixes to be completed together in a focused PR."
     echo ""
 
     # EXEC into batch processor (replaces current process)
-    exec "$FORGE_LIB_DIR/core/batch-process-issues.sh" "$FOLLOWUP_NUMBER" "$ORIGINAL_ISSUE" --auto --smart-wait
+    exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "$FOLLOWUP_NUMBER" "$ORIGINAL_ISSUE" --auto --smart-wait
   elif [ -n "${BATCH_MODE:-}" ]; then
     print_info "In batch mode - skipping auto-queue (prevents recursion)"
   fi

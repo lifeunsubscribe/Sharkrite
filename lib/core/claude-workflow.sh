@@ -18,13 +18,13 @@
 set -euo pipefail
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
 # Source session tracker for interrupt state saving
-source "$FORGE_LIB_DIR/utils/session-tracker.sh"
+source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
 # Store the absolute path to THIS script for re-execution
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -389,8 +389,8 @@ if command -v claude-code &> /dev/null; then
 fi
 
 # Apply model override if configured
-if [ -n "${FORGE_CLAUDE_MODEL:-}" ]; then
-  CLAUDE_CMD="$CLAUDE_CMD --model $FORGE_CLAUDE_MODEL"
+if [ -n "${RITE_CLAUDE_MODEL:-}" ]; then
+  CLAUDE_CMD="$CLAUDE_CMD --model $RITE_CLAUDE_MODEL"
 fi
 
 CURRENT_BRANCH=$(git branch --show-current)
@@ -480,11 +480,11 @@ if [ -z "$ISSUE_NUMBER" ]; then
     echo ""
 
     # Jump directly to PR workflow script - skip everything else
-    if [ -f "$FORGE_LIB_DIR/core/create-pr.sh" ]; then
+    if [ -f "$RITE_LIB_DIR/core/create-pr.sh" ]; then
       if [ "$AUTO_MODE" = true ]; then
-        exec "$FORGE_LIB_DIR/core/create-pr.sh" --auto
+        exec "$RITE_LIB_DIR/core/create-pr.sh" --auto
       else
-        exec "$FORGE_LIB_DIR/core/create-pr.sh"
+        exec "$RITE_LIB_DIR/core/create-pr.sh"
       fi
     else
       print_error "create-pr.sh not found"
@@ -630,7 +630,7 @@ If the changes are unrelated work, answer UNRELATED."
   echo ""
 
   # Worktree mode: Create isolated working directory (MANDATORY)
-  # FORGE_WORKTREE_DIR set by config.sh
+  # RITE_WORKTREE_DIR set by config.sh
 
   # Sanitize branch name to prevent path traversal
   # Remove: . (dot), .. (parent dir), leading/trailing slashes, multiple consecutive slashes
@@ -640,16 +640,16 @@ If the changes are unrelated work, answer UNRELATED."
   SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME#-}"     # Remove leading dash
   SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME%-}"     # Remove trailing dash
 
-  WORKTREE_PATH="$FORGE_WORKTREE_DIR/$SAFE_BRANCH_NAME"
+  WORKTREE_PATH="$RITE_WORKTREE_DIR/$SAFE_BRANCH_NAME"
 
     # Create worktrees directory if it doesn't exist
-    mkdir -p "$FORGE_WORKTREE_DIR"
+    mkdir -p "$RITE_WORKTREE_DIR"
 
     # Check existing worktrees
     echo ""
     print_step "Checking existing worktrees..."
 
-    EXISTING_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $FORGE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
+    EXISTING_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
     WORKTREE_COUNT=0
     MAX_WORKTREES=5
 
@@ -841,11 +841,11 @@ If the changes are unrelated work, answer UNRELATED."
     fi
 
     # Symlink forge data dir to share scratchpad and context across worktrees
-    FORGE_DATA_PATH="$MAIN_WORKTREE/$FORGE_DATA_DIR"
-    if [ -d "$FORGE_DATA_PATH" ]; then
-      print_info "Symlinking $FORGE_DATA_DIR directory for shared scratchpad..."
-      rm -rf "$WORKTREE_PATH/$FORGE_DATA_DIR" 2>/dev/null || true
-      ln -s "$FORGE_DATA_PATH" "$WORKTREE_PATH/$FORGE_DATA_DIR"
+    RITE_DATA_PATH="$MAIN_WORKTREE/$RITE_DATA_DIR"
+    if [ -d "$RITE_DATA_PATH" ]; then
+      print_info "Symlinking $RITE_DATA_DIR directory for shared scratchpad..."
+      rm -rf "$WORKTREE_PATH/$RITE_DATA_DIR" 2>/dev/null || true
+      ln -s "$RITE_DATA_PATH" "$WORKTREE_PATH/$RITE_DATA_DIR"
       print_success "Shared scratchpad linked"
     fi
 
@@ -1152,8 +1152,8 @@ elif [ "$ALREADY_IN_CLAUDE" = true ]; then
   print_info "Claude Code work complete - proceeding to post-workflow"
   echo ""
 else
-  # Set timeout for Claude Code (configurable via FORGE_CLAUDE_TIMEOUT, default 2 hours)
-  CLAUDE_TIMEOUT=${FORGE_CLAUDE_TIMEOUT:-7200}
+  # Set timeout for Claude Code (configurable via RITE_CLAUDE_TIMEOUT, default 2 hours)
+  CLAUDE_TIMEOUT=${RITE_CLAUDE_TIMEOUT:-7200}
   print_info "Launching Claude Code (timeout: ${CLAUDE_TIMEOUT}s)..."
 
   if [ "$AUTO_MODE" = true ]; then
@@ -1360,9 +1360,9 @@ if git ls-files --stage | grep -q '^120000.*\.claude$'; then
   print_warning "Removed .claude symlink from staging (worktree-specific)"
 fi
 
-if git ls-files --stage | grep -q "^120000.*${FORGE_DATA_DIR}$"; then
-  git reset HEAD "$FORGE_DATA_DIR" 2>/dev/null || true
-  print_warning "Removed $FORGE_DATA_DIR symlink from staging (worktree-specific)"
+if git ls-files --stage | grep -q "^120000.*${RITE_DATA_DIR}$"; then
+  git reset HEAD "$RITE_DATA_DIR" 2>/dev/null || true
+  print_warning "Removed $RITE_DATA_DIR symlink from staging (worktree-specific)"
 fi
 
 if git ls-files --stage | grep -q '^120000.*backend/node_modules$'; then
@@ -1415,7 +1415,7 @@ if [ "$AUTO_MODE" = false ]; then
   print_header "🔗 Pull Request & Review Workflow"
 fi
 
-if [ -f "$FORGE_LIB_DIR/core/create-pr.sh" ]; then
+if [ -f "$RITE_LIB_DIR/core/create-pr.sh" ]; then
   # create-pr.sh handles everything:
   # - Detects if PR exists for current branch
   # - Creates PR if needed
@@ -1423,9 +1423,9 @@ if [ -f "$FORGE_LIB_DIR/core/create-pr.sh" ]; then
   # - Assesses review issues and determines action
   # - Provides merge recommendation
   if [ "$AUTO_MODE" = true ]; then
-    "$FORGE_LIB_DIR/core/create-pr.sh" --auto
+    "$RITE_LIB_DIR/core/create-pr.sh" --auto
   else
-    "$FORGE_LIB_DIR/core/create-pr.sh"
+    "$RITE_LIB_DIR/core/create-pr.sh"
   fi
 else
   # Fallback if create-pr.sh not found
@@ -1469,7 +1469,7 @@ fi
 
 # Check if still in worktree
 CURRENT_PATH=$(pwd)
-if [[ "$CURRENT_PATH" == *"$(basename "$FORGE_WORKTREE_DIR")"* ]] || [ -n "$WORKTREE_PATH" ]; then
+if [[ "$CURRENT_PATH" == *"$(basename "$RITE_WORKTREE_DIR")"* ]] || [ -n "$WORKTREE_PATH" ]; then
   echo ""
   print_info "You are in an isolated worktree"
   echo "  Location: ${WORKTREE_PATH:-$CURRENT_PATH}"

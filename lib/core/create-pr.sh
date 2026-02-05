@@ -9,10 +9,13 @@
 set -euo pipefail
 
 # Source config if not already loaded
-if [ -z "${FORGE_LIB_DIR:-}" ]; then
+if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
+
+# Source blocker rules for early detection
+source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 
 # Parse arguments
 AUTO_MODE=false
@@ -75,7 +78,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" ]]; then
     print_info "On $CURRENT_BRANCH branch - looking for worktree for issue #$ISSUE_NUMBER..."
 
     # Find worktree with this issue number
-    TARGET_WORKTREE=$(git worktree list --porcelain | grep -E "^worktree $FORGE_WORKTREE_DIR" | sed 's/^worktree //' | while read -r wt_path; do
+    TARGET_WORKTREE=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' | while read -r wt_path; do
       wt_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "")
       if echo "$wt_branch" | grep -qE "issue-?$ISSUE_NUMBER"; then
         echo "$wt_path"
@@ -302,6 +305,59 @@ Automated review in progress..." 2>/dev/null || true
   fi
 fi
 
+# Early blocker detection: Check for file-based blockers BEFORE waiting for review
+# This prevents wasting time waiting for a review that will be blocked anyway
+print_info "Running pre-review blocker checks..."
+
+# Check for various file-based blockers
+blocker_detected=false
+blocker_type=""
+blocker_details=""
+
+if ! detect_infrastructure_changes "$PR_NUMBER" 2>&1 >/dev/null; then
+  blocker_type="infrastructure"
+  blocker_details=$(detect_infrastructure_changes "$PR_NUMBER" 2>&1)
+  blocker_detected=true
+elif ! detect_database_migrations "$PR_NUMBER" 2>&1 >/dev/null; then
+  blocker_type="database_migration"
+  blocker_details=$(detect_database_migrations "$PR_NUMBER" 2>&1)
+  blocker_detected=true
+elif ! detect_auth_changes "$PR_NUMBER" 2>&1 >/dev/null; then
+  blocker_type="auth_changes"
+  blocker_details=$(detect_auth_changes "$PR_NUMBER" 2>&1)
+  blocker_detected=true
+elif ! detect_doc_changes "$PR_NUMBER" 2>&1 >/dev/null; then
+  blocker_type="architectural_docs"
+  blocker_details=$(detect_doc_changes "$PR_NUMBER" 2>&1)
+  blocker_detected=true
+elif ! detect_expensive_services "$PR_NUMBER" 2>&1 >/dev/null; then
+  blocker_type="expensive_services"
+  blocker_details=$(detect_expensive_services "$PR_NUMBER" 2>&1)
+  blocker_detected=true
+elif ! detect_protected_scripts "$PR_NUMBER" 2>&1 >/dev/null; then
+  blocker_type="protected_scripts"
+  blocker_details=$(detect_protected_scripts "$PR_NUMBER" 2>&1)
+  blocker_detected=true
+fi
+
+if [ "$blocker_detected" = true ]; then
+  print_warning "Blocker detected: $blocker_type"
+  echo ""
+  echo "$blocker_details"
+  echo ""
+  print_info "This PR requires manual review before proceeding"
+  print_info "Run in supervised mode to review and approve: forge <issue> --supervised"
+  echo ""
+
+  # Export blocker details for workflow-runner to handle
+  export BLOCKER_TYPE="$blocker_type"
+  export BLOCKER_DETAILS="$blocker_details"
+  exit 10  # Exit code 10 signals blocker detected
+fi
+
+print_success "No file-based blockers detected"
+echo ""
+
 # Check if an automated reviewer is likely installed on this repo
 # Look for recent comments from known review bots on any PR
 REVIEW_BOT_DETECTED=false
@@ -325,6 +381,9 @@ if [ "$REVIEW_BOT_DETECTED" = false ]; then
   echo ""
   exit 0
 fi
+
+# Set up SIGINT trap for clean Ctrl-C exit during review wait
+trap 'echo ""; print_warning "Review wait interrupted by user (Ctrl-C)"; exit 130' SIGINT
 
 # Now wait for automated review
 if [ "$AUTO_MODE" = false ]; then
@@ -442,7 +501,7 @@ while [ "$PR_READY" != true ] && [ $ELAPSED -lt $MAX_TOTAL_WAIT ]; do
         echo ""
 
         # Smart assessment: Check if old review issues are already resolved
-        ASSESS_SCRIPT="$FORGE_LIB_DIR/core/assess-review-issues.sh"
+        ASSESS_SCRIPT="$RITE_LIB_DIR/core/assess-review-issues.sh"
         if [ -f "$ASSESS_SCRIPT" ]; then
           print_info "Assessing old review to check if issues are resolved..."
 
