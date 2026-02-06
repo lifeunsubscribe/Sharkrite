@@ -293,9 +293,24 @@ fi
 print_header "📊 PR Review Assessment - PR #$PR_NUMBER"
 
 # Fetch PR review from Claude for GitHub
-REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1]' 2>/dev/null || echo "{}")
+GH_STDERR=$(mktemp)
+REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1]' 2>"$GH_STDERR") || {
+  GH_ERROR=$(cat "$GH_STDERR")
+  rm -f "$GH_STDERR"
+  print_error "Failed to fetch PR #$PR_NUMBER"
+  if [ -n "$GH_ERROR" ]; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "GitHub CLI Error:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "$GH_ERROR"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  fi
+  exit 1
+}
+rm -f "$GH_STDERR"
 
-if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ]; then
+if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "null" ]; then
   print_error "No review found from Claude for GitHub"
   echo "Ensure Claude for GitHub app reviewed this PR"
   exit 1
@@ -322,8 +337,16 @@ echo ""
 # Get review timestamp
 REVIEW_TIME=$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/null)
 
-# Get latest commit timestamp
-LATEST_COMMIT_TIME=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].committedDate' 2>/dev/null)
+# Get latest commit timestamp (warn but continue if this fails)
+GH_STDERR=$(mktemp)
+LATEST_COMMIT_TIME=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].committedDate' 2>"$GH_STDERR") || {
+  GH_ERROR=$(cat "$GH_STDERR")
+  if [ -n "$GH_ERROR" ]; then
+    print_warning "Could not fetch commit timestamps: $GH_ERROR"
+  fi
+  LATEST_COMMIT_TIME=""
+}
+rm -f "$GH_STDERR"
 
 # Check if there are commits after the review
 if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then

@@ -72,6 +72,12 @@ handle_blocker() {
   local blocker_details="${BLOCKER_DETAILS:-No details available}"
   local worktree_path="${WORKTREE_PATH:-}"
 
+  # Early exit if already approved in supervised mode - skip the whole wall
+  if [ "$WORKFLOW_MODE" = "supervised" ] && has_approved_blocker "$issue_number" "$blocker_type"; then
+    print_info "ℹ️  Blocker $blocker_type (previously approved — continuing)"
+    return 0
+  fi
+
   print_header "🚨 BLOCKER DETECTED: $blocker_type"
 
   echo "$blocker_details"
@@ -85,12 +91,17 @@ handle_blocker() {
   # Save session state (no resume script)
   save_session_state "$issue_number" "$blocker_type" "$worktree_path"
 
-  # Send notifications ONLY for mid-workflow failures (not pre-start)
-  if [ "$context" != "pre-start" ]; then
+  # Helper to send notification (deduped, only when workflow stops or bypasses)
+  _send_blocker_notif() {
+    if [ "$context" = "pre-start" ]; then
+      return  # No notification for pre-start failures
+    fi
+    if has_sent_notification "$issue_number" "blocker:$blocker_type"; then
+      return  # Already sent
+    fi
     send_blocker_notification "$blocker_type" "$issue_number" "$pr_number" "$worktree_path" "$blocker_details"
-  else
-    echo "ℹ️  Note: Initial check failed - no notification sent"
-  fi
+    add_sent_notification "$issue_number" "blocker:$blocker_type"
+  }
 
   # Show context-aware next steps
   echo ""
@@ -104,18 +115,21 @@ handle_blocker() {
       echo ""
       echo "2. Resume workflow:"
       echo ""
-      echo "   forge ${issue_number}"
+      echo "   rite ${issue_number}"
       ;;
 
     auth_changes|architectural_docs|protected_scripts)
       echo "1. Review the changes shown above"
-      echo "2. To bypass this blocker:"
-      echo ""
-      echo "   # Supervised mode (bypasses blockers with terminal approval):"
-      echo "   forge ${issue_number} --supervised"
-      echo ""
-      echo "   # Or unsupervised bypass (warnings sent to Slack):"
-      echo "   forge ${issue_number} --bypass-blockers"
+      # Only show bypass instructions if not already in supervised/bypass mode
+      if [ "$WORKFLOW_MODE" != "supervised" ] && [ "$BYPASS_BLOCKERS" != "true" ]; then
+        echo "2. To bypass this blocker:"
+        echo ""
+        echo "   # Supervised mode (bypasses blockers with terminal approval):"
+        echo "   rite ${issue_number} --supervised"
+        echo ""
+        echo "   # Or unsupervised bypass (warnings sent to Slack):"
+        echo "   rite ${issue_number} --bypass-blockers"
+      fi
       ;;
 
     infrastructure|database_migration)
@@ -124,7 +138,7 @@ handle_blocker() {
       echo "3. Confirm it's safe to proceed"
       echo "4. Resume workflow:"
       echo ""
-      echo "   forge ${issue_number}"
+      echo "   rite ${issue_number}"
       ;;
 
     test_failures|build_failures)
@@ -133,7 +147,7 @@ handle_blocker() {
       echo "3. Push fixes to the branch"
       echo "4. Resume workflow:"
       echo ""
-      echo "   forge ${issue_number}"
+      echo "   rite ${issue_number}"
       ;;
 
     critical_issues)
@@ -142,14 +156,14 @@ handle_blocker() {
       echo "3. Push fixes and wait for new review"
       echo "4. Resume workflow:"
       echo ""
-      echo "   forge ${issue_number}"
+      echo "   rite ${issue_number}"
       ;;
 
     session_limit|token_limit)
       echo "1. Take a break (session limits reached)"
       echo "2. Resume in fresh session when ready:"
       echo ""
-      echo "   forge ${issue_number}"
+      echo "   rite ${issue_number}"
       ;;
 
     *)
@@ -157,7 +171,7 @@ handle_blocker() {
       echo "2. Take necessary action"
       echo "3. Resume workflow when ready:"
       echo ""
-      echo "   forge ${issue_number}"
+      echo "   rite ${issue_number}"
       ;;
   esac
 
@@ -170,22 +184,24 @@ handle_blocker() {
     read -p "Review the above. Continue anyway? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+      add_approved_blocker "$issue_number" "$blocker_type"
       print_warning "Blocker acknowledged — continuing workflow"
       return 0
     else
-      print_info "Workflow paused. Run 'forge ${issue_number}' to resume later."
+      _send_blocker_notif  # Send notification only when user declines
+      print_info "Workflow paused. Run 'rite ${issue_number}' to resume later."
       exit 1
     fi
   fi
 
-  # Unsupervised + --bypass-blockers: bypass all blockers, warnings sent to Slack
+  # Unsupervised + --bypass-blockers: bypass all blockers silently
   if [ "$BYPASS_BLOCKERS" = true ]; then
     print_warning "Blocker bypassed (--bypass-blockers): $blocker_type"
-    print_info "Warning sent to Slack — continuing workflow"
     return 0
   fi
 
   # Unsupervised without bypass: stop on blockers
+  _send_blocker_notif  # Send notification when stopping
   if [ "$is_batch_mode" = "true" ] && [ "$blocks_batch" = "true" ]; then
     print_warning "Blocker affects entire batch - stopping batch processing"
     exit 1
@@ -208,8 +224,9 @@ phase_pre_start_checks() {
 
   # Check credentials (blocker handler will print header if needed)
   if ! check_blockers "pre-start"; then
-    handle_blocker "pre-start" "$issue_number"
-    return 1
+    if ! handle_blocker "pre-start" "$issue_number"; then
+      return 1
+    fi
   fi
 
   # Check session limits
@@ -217,8 +234,9 @@ phase_pre_start_checks() {
   local elapsed_hours=$(get_elapsed_hours)
 
   if ! check_blockers "session-check" "$issues_completed" "$elapsed_hours"; then
-    handle_blocker "session-check" "$issue_number"
-    return 1
+    if ! handle_blocker "session-check" "$issue_number"; then
+      return 1
+    fi
   fi
 
   print_success "Pre-start checks passed"
@@ -434,9 +452,18 @@ phase_create_pr() {
 
   # Handle exit codes from create-pr.sh
   if [ $create_pr_exit -eq 10 ]; then
-    # Blocker detected in early detection (BLOCKER_TYPE and BLOCKER_DETAILS already exported)
-    print_warning "Early blocker detected in PR phase"
-    return 1
+    # Blocker detected in early detection - load blocker info and handle properly
+    if [ -f "${RITE_PROJECT_ROOT:-.}/.rite/early-blocker.env" ]; then
+      source "${RITE_PROJECT_ROOT:-.}/.rite/early-blocker.env"
+      rm -f "${RITE_PROJECT_ROOT:-.}/.rite/early-blocker.env"
+    fi
+    # handle_blocker returns 0 if user approves (supervised) or bypass enabled
+    # handle_blocker exits 1 if user declines or unsupervised without bypass
+    if ! handle_blocker "pre-merge" "$issue_number" "${PR_NUMBER:-}"; then
+      return 1
+    fi
+    # User approved - continue workflow (skip to phase 3 since PR already exists)
+    return 0
   elif [ $create_pr_exit -ne 0 ]; then
     print_error "create-pr.sh failed with exit code: $create_pr_exit"
     return 1
@@ -465,8 +492,11 @@ phase_assess_and_resolve() {
   # Check for blockers before merge
   # Pass WORKFLOW_MODE so protected script blocker can allow supervised mode
   if ! check_blockers "pre-merge" "$pr_number" "$issue_number" "$WORKFLOW_MODE"; then
-    handle_blocker "pre-merge" "$issue_number" "$pr_number"
-    return 1
+    # handle_blocker returns 0 if user approves/bypasses, non-zero if declined/stopped
+    if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
+      return 1
+    fi
+    # User approved - continue with assessment
   fi
 
   # Call assess-and-resolve.sh (pass issue number and retry count)
@@ -478,22 +508,27 @@ phase_assess_and_resolve() {
   # In AUTO_MODE with CRITICAL issues, it will output filtered review content to stdout
   # and exit with code 2 (no temp files needed - we capture stdout directly)
 
-  # Run assessment and capture stdout (for exit code 2), let stderr display directly
+  # Run assessment and capture stdout (for exit code 2) and stderr (for errors)
   local review_content=""
   local assess_stdout=$(mktemp)
+  local assess_stderr=$(mktemp)
 
-  # Run assessment - stderr goes directly to terminal, stdout captured for fixes
   echo "[WORKFLOW-RUNNER] About to call assess-and-resolve.sh..." >&2
   echo "[WORKFLOW-RUNNER] PR: $pr_number, Issue: $issue_number, Retry: $retry_count" >&2
 
   set +e  # Temporarily disable exit-on-error to capture exit code properly
   if [ "$WORKFLOW_MODE" = "supervised" ]; then
-    "$ASSESS_RESOLVE" "$pr_number" "$issue_number" "$retry_count" > "$assess_stdout"
+    "$ASSESS_RESOLVE" "$pr_number" "$issue_number" "$retry_count" > "$assess_stdout" 2>"$assess_stderr"
   else
-    "$ASSESS_RESOLVE" "$pr_number" "$issue_number" "$retry_count" --auto > "$assess_stdout"
+    "$ASSESS_RESOLVE" "$pr_number" "$issue_number" "$retry_count" --auto > "$assess_stdout" 2>"$assess_stderr"
   fi
   local assessment_result=$?
   set -e  # Re-enable exit-on-error
+
+  # Show assessment output (progress on success, errors on failure)
+  if [ -s "$assess_stderr" ]; then
+    cat "$assess_stderr" >&2
+  fi
 
   echo "[WORKFLOW-RUNNER] Assessment returned exit code: $assessment_result" >&2
 
@@ -516,7 +551,7 @@ phase_assess_and_resolve() {
     [[ ! "$dismissed_count" =~ ^[0-9]+$ ]] && dismissed_count=0
   fi
 
-  # Cleanup temp file
+  # Keep stderr for potential error display, cleanup stdout
   rm -f "$assess_stdout"
 
   if [ $assessment_result -eq 2 ]; then
@@ -562,9 +597,16 @@ phase_assess_and_resolve() {
     phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$next_retry"
     return $?
   elif [ $assessment_result -ne 0 ]; then
-    print_error "Assessment failed"
+    print_error "Assessment failed with exit code: $assessment_result"
+    echo ""
+    echo "To re-run manually:"
+    echo "  cd $WORKTREE_PATH"
+    echo "  $ASSESS_RESOLVE $pr_number $issue_number $retry_count"
+    echo ""
+    rm -f "$assess_stderr"
     return 1
   fi
+  rm -f "$assess_stderr"
 
   # Assessment complete - decision already shown in Phase 3 header
   # (No redundant summary needed - assess-and-resolve.sh already printed decision box)
@@ -875,7 +917,7 @@ main() {
   # Validate issue number is a positive integer (text descriptions should be resolved by bin/forge)
   if ! [[ "$issue_number" =~ ^[0-9]+$ ]] || [ "$issue_number" -le 0 ] 2>/dev/null; then
     print_error "Invalid issue number: $issue_number (must be positive integer)"
-    print_info "Hint: forge accepts text descriptions — they get auto-created as GitHub issues"
+    print_info "Hint: rite accepts text descriptions — they get auto-created as GitHub issues"
     exit 1
   fi
 

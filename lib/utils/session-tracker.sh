@@ -277,8 +277,8 @@ export EMAIL_NOTIFICATION_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
 export SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
 export ISSUE_NUMBER=\$ISSUE_NUMBER
 
-# Call forge to continue
-forge \$ISSUE_NUMBER --resume
+# Call rite to continue
+rite \$ISSUE_NUMBER --resume
 
 EOF
 
@@ -310,6 +310,75 @@ Total Processed: $((completed + failed))
 EOF
 }
 
+# Track an approved blocker to avoid re-prompting
+add_approved_blocker() {
+  local issue_number="$1"
+  local blocker_type="$2"
+
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    init_session
+  fi
+
+  # Add to approved_blockers array (keyed by issue:blocker_type)
+  local key="${issue_number}:${blocker_type}"
+  local temp=$(mktemp)
+  jq ".approved_blockers = ((.approved_blockers // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
+  mv "$temp" "$SESSION_STATE_FILE"
+}
+
+# Check if a blocker was already approved for this issue
+has_approved_blocker() {
+  local issue_number="$1"
+  local blocker_type="$2"
+
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    return 1  # No session = not approved
+  fi
+
+  local key="${issue_number}:${blocker_type}"
+  local found=$(jq -r ".approved_blockers // [] | index(\"$key\") != null" "$SESSION_STATE_FILE" 2>/dev/null)
+
+  if [ "$found" = "true" ]; then
+    return 0  # Already approved
+  else
+    return 1  # Not approved
+  fi
+}
+
+# Track a sent notification to avoid duplicates
+add_sent_notification() {
+  local issue_number="$1"
+  local notification_type="$2"  # e.g., "blocker:auth_changes"
+
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    init_session
+  fi
+
+  local key="${issue_number}:${notification_type}"
+  local temp=$(mktemp)
+  jq ".sent_notifications = ((.sent_notifications // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
+  mv "$temp" "$SESSION_STATE_FILE"
+}
+
+# Check if a notification was already sent for this issue
+has_sent_notification() {
+  local issue_number="$1"
+  local notification_type="$2"
+
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    return 1  # No session = not sent
+  fi
+
+  local key="${issue_number}:${notification_type}"
+  local found=$(jq -r ".sent_notifications // [] | index(\"$key\") != null" "$SESSION_STATE_FILE" 2>/dev/null)
+
+  if [ "$found" = "true" ]; then
+    return 0  # Already sent
+  else
+    return 1  # Not sent
+  fi
+}
+
 # Clean up session state
 cleanup_session() {
   rm -f "$SESSION_STATE_FILE"
@@ -332,5 +401,9 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f save_session_state
   export -f create_resume_script
   export -f get_session_summary
+  export -f add_approved_blocker
+  export -f has_approved_blocker
+  export -f add_sent_notification
+  export -f has_sent_notification
   export -f cleanup_session
 fi

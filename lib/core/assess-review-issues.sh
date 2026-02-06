@@ -104,6 +104,46 @@ if [ -f "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
 - See docs/security/DEVELOPMENT-GUIDE.md: Known security patterns, accepted risks, documented issues"
 fi
 
+# =============================================================================
+# Known error detection - helps identify specific failures for fallback logic
+# =============================================================================
+
+detect_claude_error() {
+  local error_output="$1"
+  local exit_code="$2"
+
+  # AJV/OAuth bug - GitHub MCP server schema validation failure
+  if echo "$error_output" | grep -qiE "ajv|schema.*validation|oauth.*fail|token.*invalid|mcp.*error"; then
+    echo "OAUTH_AJV_BUG"
+    return 0
+  fi
+
+  # Rate limiting
+  if echo "$error_output" | grep -qiE "rate.?limit|too many requests|429"; then
+    echo "RATE_LIMITED"
+    return 0
+  fi
+
+  # Authentication expired
+  if echo "$error_output" | grep -qiE "unauthorized|401|auth.*expired|login required"; then
+    echo "AUTH_EXPIRED"
+    return 0
+  fi
+
+  # Network/connection issues
+  if echo "$error_output" | grep -qiE "connection.*refused|network.*error|timeout|ECONNREFUSED"; then
+    echo "NETWORK_ERROR"
+    return 0
+  fi
+
+  # Unknown error
+  echo "UNKNOWN"
+  return 1
+}
+
+# Export detected error for use by workflow-runner
+export CLAUDE_ERROR_TYPE=""
+
 # Create assessment prompt for Claude
 ASSESSMENT_PROMPT="You are assessing a code review.
 
@@ -266,11 +306,47 @@ if [ "$AUTO_MODE" = true ]; then
     echo "ALL_ITEMS"
     exit 0
   elif [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
+    # Detect specific error type
+    CLAUDE_ERROR_TYPE=$(detect_claude_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
+    export CLAUDE_ERROR_TYPE
+
     print_error "Claude CLI exited with code $ASSESSMENT_EXIT_CODE"
+    echo "" >&2
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+
+    case "$CLAUDE_ERROR_TYPE" in
+      OAUTH_AJV_BUG)
+        echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
+        echo "This is a known SDK issue affecting PR review operations." >&2
+        echo "Workaround: Retry or use fallback assessment." >&2
+        ;;
+      RATE_LIMITED)
+        echo -e "${YELLOW}Rate limited by API${NC}" >&2
+        echo "Wait a few minutes before retrying." >&2
+        ;;
+      AUTH_EXPIRED)
+        echo -e "${YELLOW}Authentication expired${NC}" >&2
+        echo "Run: claude /login" >&2
+        ;;
+      NETWORK_ERROR)
+        echo -e "${YELLOW}Network connectivity issue${NC}" >&2
+        echo "Check your internet connection." >&2
+        ;;
+      *)
+        echo -e "${YELLOW}Unknown error${NC}" >&2
+        ;;
+    esac
+
     if [ -n "$CLAUDE_ERROR" ]; then
-      print_error "Claude stderr: $CLAUDE_ERROR"
+      echo "" >&2
+      echo "Full error output:" >&2
+      echo "$CLAUDE_ERROR" >&2
     fi
-    ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE)"
+    echo "" >&2
+
+    ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE, type: $CLAUDE_ERROR_TYPE)"
   fi
 else
   # SUPERVISED MODE: Interactive Claude session with permission prompts
@@ -285,16 +361,56 @@ else
   rm -f "$CLAUDE_STDERR"
 
   if [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
+    # Detect specific error type
+    CLAUDE_ERROR_TYPE=$(detect_claude_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
+    export CLAUDE_ERROR_TYPE
+
     print_error "Claude CLI exited with code $ASSESSMENT_EXIT_CODE"
+    echo "" >&2
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+
+    case "$CLAUDE_ERROR_TYPE" in
+      OAUTH_AJV_BUG)
+        echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
+        echo "This is a known SDK issue affecting PR review operations." >&2
+        echo "Workaround: Retry or use fallback assessment." >&2
+        ;;
+      RATE_LIMITED)
+        echo -e "${YELLOW}Rate limited by API${NC}" >&2
+        echo "Wait a few minutes before retrying." >&2
+        ;;
+      AUTH_EXPIRED)
+        echo -e "${YELLOW}Authentication expired${NC}" >&2
+        echo "Run: claude /login" >&2
+        ;;
+      NETWORK_ERROR)
+        echo -e "${YELLOW}Network connectivity issue${NC}" >&2
+        echo "Check your internet connection." >&2
+        ;;
+      *)
+        echo -e "${YELLOW}Unknown error${NC}" >&2
+        ;;
+    esac
+
     if [ -n "$CLAUDE_ERROR" ]; then
-      print_error "Claude stderr: $CLAUDE_ERROR"
+      echo "" >&2
+      echo "Full error output:" >&2
+      echo "$CLAUDE_ERROR" >&2
     fi
-    ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE)"
+    echo "" >&2
+
+    ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE, type: $CLAUDE_ERROR_TYPE)"
   fi
 fi
 
 if [[ "$ASSESSMENT_OUTPUT" == "ERROR:"* ]] || [ -z "$ASSESSMENT_OUTPUT" ]; then
-  print_warning "Claude assessment unavailable, falling back to heuristic filter" >&2
+  if [ -n "$CLAUDE_ERROR_TYPE" ] && [ "$CLAUDE_ERROR_TYPE" != "UNKNOWN" ]; then
+    print_warning "Claude assessment failed ($CLAUDE_ERROR_TYPE), falling back to heuristic filter" >&2
+  else
+    print_warning "Claude assessment unavailable, falling back to heuristic filter" >&2
+  fi
   print_info "Using middle-ground fallback: CRITICAL + HIGH only (excluding MEDIUM/LOW)" >&2
 
   # Heuristic fallback: Only CRITICAL and HIGH issues
