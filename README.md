@@ -234,23 +234,92 @@ Scratchpad tracks security findings across PRs:
 4. Claude Code avoids repeating same patterns
 5. Last 5 PRs in "Recent", last 20 in archive
 
+### Review Generation
+
+Reviews can come from two sources:
+
+1. **Claude for GitHub App** — Automatic reviews on PR creation (requires app installation)
+2. **Local Review** — Run Claude CLI locally to generate reviews
+
+```bash
+# Preview a review without posting
+lib/core/local-review.sh 42
+
+# Generate and post review to PR
+lib/core/local-review.sh 42 --post
+
+# Use in automation
+lib/core/local-review.sh 42 --post --auto
+```
+
+Configure default method in `.rite/config`:
+```bash
+RITE_REVIEW_METHOD=local  # or "app" or "auto" (default)
+```
+
 ### Smart Review Assessment
 
 Uses Claude CLI for intelligent PR review filtering:
 
-- **ACTIONABLE_NOW** — Fix in this PR cycle (security, bugs, quick wins)
-- **ACTIONABLE_LATER** — Valid but defer to follow-up issue
+- **ACTIONABLE_NOW** — Fix in this PR: security issues, bugs, valid concerns within scope
+- **ACTIONABLE_LATER** — Valid but out-of-scope, defer to tech-debt issue
 - **DISMISSED** — Not worth tracking (style preferences, theoretical edge cases)
 
 Each item shows severity, category, and reasoning for the decision.
 
-### Auto-Fix Loop
+#### Assessment Caching
 
-When CRITICAL issues are found:
-1. Saves filtered review → calls `claude-workflow.sh --fix-review`
-2. Push fixes → wait for new review → reassess
-3. Loop up to 3 times
-4. If still CRITICAL after 3 loops → create follow-up issue
+Assessments are cached by SHA256 hash of review content + model for determinism:
+
+```bash
+# Cache location
+.rite/assessment-cache/
+
+# Cache is invalidated when:
+# - New review is posted (local-review.sh --post)
+# - PR is merged (merge-pr.sh)
+```
+
+#### Model Consistency
+
+Reviews and assessments use the same model for consistent results:
+
+```bash
+# Configure in .rite/config or environment
+RITE_REVIEW_MODEL=opus  # default
+
+# Model is embedded in review metadata:
+# <!-- sharkrite-local-review model:opus timestamp:... -->
+```
+
+### Fix Loop & Tech-Debt Flow
+
+When ACTIONABLE_NOW items exist:
+
+```
+Loop (max 3 retries):
+  1. Claude Code fixes ACTIONABLE_NOW items
+  2. Commit and push
+  3. New review generated
+  4. Re-assess (same criteria every loop)
+  5. If ACTIONABLE_NOW = 0 → exit loop
+  6. If still has items → repeat
+
+After max retries:
+  - All ACTIONABLE_LATER items → tech-debt labeled issue
+  - Remaining ACTIONABLE_NOW → also goes to tech-debt
+  - Proceed to blocker check → merge or block
+```
+
+### Reopening Closed Issues
+
+To run the PR loop on a previously closed issue:
+
+```bash
+rite review <issue-number>
+```
+
+This reopens the issue and runs the full workflow (work → PR → review → fixes → merge).
 
 ---
 

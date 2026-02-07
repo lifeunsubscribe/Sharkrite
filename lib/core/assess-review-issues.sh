@@ -279,19 +279,19 @@ For EVERY finding, suggestion, or improvement mentioned:
 THREE-STATE CATEGORIZATION:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ACTIONABLE_NOW - Fix in this PR cycle (BE CONSERVATIVE):
+ACTIONABLE_NOW - Fix in this PR cycle:
   - CRITICAL security vulnerabilities (always, no exceptions)
-  - HIGH bugs that would BREAK the specific feature being implemented
+  - HIGH bugs that would break the feature being implemented
   - Issues that make the PR UNMERGEABLE (build fails, tests fail)
-  - NOTHING ELSE unless explicitly in the original issue scope
+  - Any valid concern WITHIN the original issue scope
+  - Quick fixes (<10min) that a reasonable engineer would include
 
 ACTIONABLE_LATER - Valid concern, create follow-up issue:
-  - HIGH issues that don't block this specific feature
-  - MEDIUM bugs and quality issues
-  - Refactors and improvements (even good ones!)
+  - Issues OUTSIDE the original issue scope (scope creep)
+  - Large refactors requiring architectural changes (>1 hour)
+  - Changes that touch unrelated code/systems
+  - Improvements that need their own focused PR
   - Test coverage gaps in code NOT directly related to the issue
-  - \"While we're here\" fixes
-  - Standards violations that don't break functionality
 
 DISMISSED - Not worth tracking:
   - Pure style preferences (no functional impact)
@@ -299,10 +299,8 @@ DISMISSED - Not worth tracking:
   - Theoretical edge cases (unlikely in production)
   - Over-engineering (premature optimization)
   - Already documented as accepted patterns
-  - Improvements to unrelated code
   - \"Nice to have\" without clear, immediate benefit
-  - LOW priority items (almost always dismissed)
-  - Anything not in the original issue scope AND not a security issue
+  - LOW priority items that don't affect functionality
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT:
@@ -334,40 +332,30 @@ CATEGORY GUIDE:
 ---
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CRITICAL DECISION CRITERIA:
+DECISION CRITERIA:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CONSERVATIVE SCOPE ASSESSMENT (prefer deferral over expansion):
-  - The ORIGINAL ISSUE SCOPE above defines what this PR is for
-  - ONLY mark ACTIONABLE_NOW if the issue is:
-    * A CRITICAL security vulnerability (always fix)
-    * A HIGH bug that would break the specific feature being changed
-    * Directly blocking the original issue from being complete
-  - Everything else should be ACTIONABLE_LATER or DISMISSED
-  - \"Scope creep\" includes:
-    * Improvements to code not in the original issue
-    * Refactors that weren't requested
-    * Style/quality issues that don't affect functionality
-    * \"While we're here\" fixes
+ACTIONABLE_NOW (fix now) IF:
+  - Security vulnerability (CRITICAL always, HIGH if exploitable)
+  - Bug that breaks the feature being implemented
+  - Valid concern WITHIN the original issue scope
+  - Quick fix (<10min) that a reasonable engineer would include
+  - Build or test failure
 
-STRICT SCOPE BOUNDARY:
-  - If it wasn't in the original issue description → DISMISSED or ACTIONABLE_LATER
-  - If it's a \"nice to have\" or \"improvement\" → ACTIONABLE_LATER at best
-  - If the reviewer says \"consider\" or \"might want to\" → DISMISSED
-  - Only CRITICAL security issues can expand scope beyond original issue
-  - A reasonable engineer would include it if they noticed it
-
-DEFER ONLY IF:
-  - Large refactor requiring architectural changes (>1 hour)
-  - Touches completely unrelated code/systems
+ACTIONABLE_LATER (defer to tech-debt) IF:
+  - Valid concern but OUTSIDE original issue scope
+  - Large refactor requiring >1 hour of work
+  - Touches unrelated code or systems
   - Requires design discussion or new dependencies
   - Would need its own test suite or documentation update
 
-DISMISS IF:
+DISMISSED (not worth tracking) IF:
   - Pure style preference with no functional benefit
-  - Unrelated to files being modified
-  - Hypothetical concern without evidence
+  - Reviewer says \"consider\" or \"might want to\"
+  - Theoretical concern without concrete evidence
   - Already documented as intentional
+  - LOW priority with no clear benefit
+  - Unrelated to files being modified
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
