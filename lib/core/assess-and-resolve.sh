@@ -538,9 +538,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   # assess-review-issues.sh performs HOLISTIC analysis of entire PR comment
   # and categorizes ALL contents, outputting filtered ACTIONABLE items to stdout
   # Use process substitution to show stderr in real-time (Claude output streams to terminal)
-  # Pass RETRY_COUNT via environment so assessment can be more strict on later retries
   ASSESSMENT_STDERR=$(mktemp)
-  export RITE_RETRY_COUNT="$RETRY_COUNT"
   if [ "$AUTO_MODE" = true ]; then
     ASSESSMENT_RESULT=$("$RITE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" --auto 2> >(tee "$ASSESSMENT_STDERR" >&2))
     ASSESSMENT_EXIT_CODE=$?

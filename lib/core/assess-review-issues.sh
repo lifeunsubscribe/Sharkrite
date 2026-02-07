@@ -127,55 +127,6 @@ print_info "Assessing review issues with Claude..."
 # Read full review content
 REVIEW_CONTENT=$(cat "$REVIEW_FILE")
 
-# Retry-aware strictness: On retry 2+, only CRITICAL issues should be ACTIONABLE_NOW
-RETRY_COUNT="${RITE_RETRY_COUNT:-0}"
-if [ "$RETRY_COUNT" -ge 2 ]; then
-  RETRY_MODE_INSTRUCTIONS="
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️  RETRY MODE (Attempt $RETRY_COUNT/3) - STRICT ASSESSMENT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-This PR has already gone through multiple fix cycles. To prevent infinite loops:
-
-ACTIONABLE_NOW ONLY FOR:
-  - CRITICAL security vulnerabilities that MUST be fixed before merge
-  - Nothing else
-
-ALL OTHER ISSUES → ACTIONABLE_LATER or DISMISSED
-  - HIGH bugs → ACTIONABLE_LATER (create follow-up issue)
-  - MEDIUM issues → ACTIONABLE_LATER or DISMISSED
-  - LOW suggestions → DISMISSED
-  - Anything marked 'consider' or 'might want to' → DISMISSED
-
-The goal is to CLOSE THIS PR, not achieve perfection.
-Technical debt issues will be tracked in a follow-up issue.
-
-"
-  print_warning "Retry $RETRY_COUNT: Using strict assessment mode (only CRITICAL → ACTIONABLE_NOW)"
-elif [ "$RETRY_COUNT" -eq 1 ]; then
-  RETRY_MODE_INSTRUCTIONS="
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ℹ️  RETRY MODE (Attempt 1/3) - FOCUSED ASSESSMENT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-This is a retry after previous fixes. Be more conservative:
-
-ACTIONABLE_NOW ONLY FOR:
-  - CRITICAL security vulnerabilities
-  - HIGH bugs that directly break the feature being implemented
-
-ACTIONABLE_LATER FOR:
-  - Everything else that's a valid concern
-
-DISMISSED FOR:
-  - Style preferences, suggestions, 'nice to have'
-
-"
-  print_info "Retry 1: Using focused assessment mode"
-else
-  RETRY_MODE_INSTRUCTIONS=""
-fi
-
 # Get original issue context for scope assessment
 ISSUE_CONTEXT=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE 'Closes #[0-9]+|Fixes #[0-9]+|Resolves #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -n "$ISSUE_CONTEXT" ]; then
@@ -275,7 +226,7 @@ export CLAUDE_ERROR_TYPE=""
 
 # Create assessment prompt for Claude
 ASSESSMENT_PROMPT="You are assessing a code review.
-${RETRY_MODE_INSTRUCTIONS}
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DETERMINISM REQUIREMENT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -287,7 +238,7 @@ Rules:
 - Do NOT use probabilistic language (\"might\", \"could\", \"possibly\")
 - Make DEFINITIVE decisions for each item
 - When genuinely uncertain between two classifications, ALWAYS choose
-  the more conservative option (but see RETRY MODE above if present):
+  the more conservative option:
     * ACTIONABLE_NOW over ACTIONABLE_LATER
     * ACTIONABLE_LATER over DISMISSED
 - Apply the same reasoning pattern to similar issues
