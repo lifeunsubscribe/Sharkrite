@@ -311,15 +311,22 @@ After max retries:
   - Proceed to blocker check → merge or block
 ```
 
-### Reopening Closed Issues
+### Local Review Command
 
-To run the PR loop on a previously closed issue:
+Generate and post reviews without the Claude for GitHub app:
 
 ```bash
-rite review <issue-number>
+# Preview review (does not post)
+lib/core/local-review.sh <pr-number>
+
+# Generate and post to PR
+lib/core/local-review.sh <pr-number> --post
+
+# Automation mode (non-interactive)
+lib/core/local-review.sh <pr-number> --post --auto
 ```
 
-This reopens the issue and runs the full workflow (work → PR → review → fixes → merge).
+This is useful when Claude for GitHub is unavailable or you want faster local review generation.
 
 ---
 
