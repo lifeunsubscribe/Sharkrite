@@ -1118,10 +1118,12 @@ else
 
   # Push to create remote branch
   if ! git push -u origin "$BRANCH_NAME" 2>/dev/null; then
-    # Stale remote branch from a previous undo'd run — delete it, then push normally
-    print_warning "Remote branch has stale history — deleting and re-pushing"
-    git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
-    git push -u origin "$BRANCH_NAME" 2>/dev/null || true
+    # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
+    # Force push instead of delete+recreate — delete closes any linked PR.
+    print_warning "Remote branch diverged — force pushing to sync"
+    git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+    git push -u --force-with-lease origin "$BRANCH_NAME" 2>/dev/null || \
+      git push -u --force origin "$BRANCH_NAME" 2>/dev/null || true
   fi
 
   # Create draft PR

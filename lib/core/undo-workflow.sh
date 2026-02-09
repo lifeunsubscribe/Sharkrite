@@ -262,6 +262,9 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
   if [ -n "$BRANCH_NAME" ]; then
     if git push origin "main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
       echo -n "  "; print_success "Reset remote branch to main (clean slate)"
+      # Update local tracking ref so next run sees the reset (avoids stale origin/branch
+      # causing non-fast-forward push → branch deletion → PR closure → new PR)
+      git fetch origin "$BRANCH_NAME" 2>/dev/null || true
     else
       echo -n "  "; print_warning "Failed to reset remote branch"
       UNDO_ERRORS=$((UNDO_ERRORS + 1))
