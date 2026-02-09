@@ -169,6 +169,106 @@ rite 42 --review-only      # Shorthand for --issue
 
 ---
 
+### Codebase Scan (`rite scan`)
+
+**Tiered feature** — Read-only analysis that finds problems and builds project knowledge.
+
+```bash
+rite scan backend/src/auth/         # Scan a specific directory
+rite scan "src/**/*.ts"             # Scan by glob pattern
+rite scan --security                # Security-focused scan
+rite scan --dead-code               # Find unused exports, orphaned files
+rite scan --alignment               # Check code against CLAUDE.md conventions
+rite scan --docs                    # Generate/update project documentation
+rite scan --docs --update           # Write suggested CLAUDE.md updates directly
+rite scan backend/ --create-issues  # Create GitHub issues for findings
+```
+
+**How it differs from `rite review`:**
+
+| | `rite review` | `rite scan` |
+|---|---|---|
+| Scope | Single PR diff | Directory / module / codebase |
+| Trigger | PR number | Path or glob pattern |
+| Context | What changed | What exists |
+| Goal | Approve/reject PR | Surface improvements, gaps, debt |
+
+**Focus modes:**
+
+| Mode | What it finds |
+|------|--------------|
+| `--security` | OWASP top 10, hardcoded secrets, auth gaps, injection vectors |
+| `--dead-code` | Unused exports, orphaned files, unreachable branches, stale dependencies |
+| `--alignment` | Deviations from CLAUDE.md patterns, inconsistent naming, style drift |
+| `--docs` | Undocumented patterns, missing CLAUDE.md sections, doc/code drift |
+| `--dependencies` | Outdated deps, known CVEs, unused packages, version conflicts |
+| (no flag) | All of the above, general health check |
+
+**Read-only enforcement:**
+Claude runs with maximum tool restrictions — no Write, Edit, or mutating Bash. Only Read, Glob, Grep, and read-only Bash (`ls`, `wc`, `npm ls`, `cat package.json`). The `--docs --update` flag is the single exception, allowing writes only to CLAUDE.md and docs/.
+
+**Output:** Structured findings report (same severity system as reviews: CRITICAL/HIGH/MEDIUM/LOW), printed to stdout or saved to `.rite/scans/`. When `--create-issues` is passed, findings above a threshold become GitHub issues — feeding directly back into the `rite <issue>` workflow.
+
+#### Documentation Generation (`rite scan --docs`)
+
+This is where scan creates a feedback loop with the rest of Sharkrite:
+
+```
+  rite scan --docs
+       │
+       ▼
+  Analyzes codebase structure, patterns, conventions
+       │
+       ▼
+  Suggests CLAUDE.md additions:
+    - Architectural patterns it detected
+    - Conventions used but not documented
+    - Common pitfalls it inferred from code
+       │
+       ▼
+  Better CLAUDE.md
+       │
+       ▼
+  Future `rite <issue>` sessions have more context
+       │
+       ▼
+  Less scope creep, more accurate implementations
+       │
+       ▼
+  `rite scan --alignment` detects less drift
+```
+
+**What `--docs` detects:**
+
+- **Undocumented patterns**: "All API handlers follow `handler.ts` + `schema.ts` + `handler.test.ts` convention, but CLAUDE.md doesn't mention this"
+- **Convention drift**: "CLAUDE.md says use `camelCase` for functions, but 12 files in `lib/utils/` use `snake_case`"
+- **Missing architecture docs**: "No documentation for the multi-tenant query filtering pattern used in 23 files"
+- **Stale docs**: "CLAUDE.md references `lib/auth/passport.ts` which was deleted in commit abc123"
+- **Theme hints**: "Detected Prisma + multi-tenant patterns — consider adding the multi-tenant theme"
+
+**Implementation:**
+
+```
+lib/core/scan-workflow.sh     # Main scan orchestrator
+  - Parse target path/glob
+  - Select focus mode prompt
+  - Run Claude in read-only mode
+  - Format and output findings
+  - Optionally create issues
+
+templates/scan/
+  security.md                 # Security scan prompt
+  dead-code.md                # Dead code scan prompt
+  alignment.md                # Alignment scan prompt
+  docs.md                     # Documentation scan prompt
+  general.md                  # Combined scan prompt
+```
+
+**Free tier:** `--security`, `--dead-code`, `--alignment`, `--docs` (preview)
+**Pro tier:** `--docs --update` (write changes), `--create-issues`, `--dependencies` (CVE database), scheduled scans
+
+---
+
 ### Issue Generation (`rite plan`)
 
 **Tiered feature** — Convert documentation to actionable issues.
@@ -212,7 +312,10 @@ rite plan --roadmap docs/ROADMAP.md  # Parse roadmap format
 | `rite status 42` (detail) | ✅ | ✅ |
 | `rite plan --preview` | ✅ | ✅ |
 | Base + standard themes | ✅ | ✅ |
-| Codebase scanning | ✅ | ✅ |
+| `rite scan` (security, dead-code, alignment, docs preview) | ✅ | ✅ |
+| `rite scan --docs --update` (write CLAUDE.md) | ❌ | ✅ |
+| `rite scan --create-issues` | ❌ | ✅ |
+| `rite scan --dependencies` (CVE database) | ❌ | ✅ |
 | Compliance themes (HIPAA, PCI, SOC2) | ❌ | ✅ |
 | `rite review` (retroactive) | ❌ | ✅ |
 | `rite plan` (full generation) | ❌ | ✅ |

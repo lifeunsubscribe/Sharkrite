@@ -71,7 +71,7 @@ EOF
   local existing_entries=$(echo "$after_recent" | sed '/^## /Q' | grep -A 9999 "^### PR #" | head -c 5000 || echo "")
 
   # Count existing entries
-  local entry_count=$(echo "$existing_entries" | grep -c "^### PR #" || echo "0")
+  local entry_count=$(echo "$existing_entries" | grep -c "^### PR #" || true)
 
   # Keep only last 4 entries if we have 5+ (since we're adding new one)
   if [ "$entry_count" -ge 4 ]; then
@@ -94,7 +94,7 @@ EOF
 
   # Archive management: keep last 20 entries in archive
   if grep -q "## Completed Work Archive" "$temp_file"; then
-    local archive_count=$(sed -n '/## Completed Work Archive/,/^## /p' "$temp_file" | grep -c "^### PR #" || echo "0")
+    local archive_count=$(sed -n '/## Completed Work Archive/,/^## /p' "$temp_file" | grep -c "^### PR #" || true)
 
     if [ "$archive_count" -gt 20 ]; then
       echo "Trimming archive to last 20 entries"

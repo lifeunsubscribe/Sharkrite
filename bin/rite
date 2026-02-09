@@ -39,6 +39,8 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 
 # Default mode: full lifecycle (workflow-runner)
 MODE="full"
+RITE_LOG_FILE="${RITE_LOG_FILE:-}"
+RITE_LOG_AUTO=false
 
 # Parse args and detect intent
 ARGS=()
@@ -73,6 +75,14 @@ while [[ $# -gt 0 ]]; do
       FILTER="--followup"
       shift
       ;;
+    --log)
+      RITE_LOG_AUTO=true
+      shift
+      ;;
+    --log=*)
+      RITE_LOG_FILE="${1#--log=}"
+      shift
+      ;;
     --dry-run)
       # Already parsed above
       shift
@@ -98,10 +108,13 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --followup           Security debt report + batch process"
       echo "  rite --init               Initialize .rite/ in current project"
       echo "  rite --dry-run <...>      Print execution plan without running"
+      echo "  rite <issue> --log        Full lifecycle with output logging"
       echo ""
       echo "Workflow flags:"
       echo "  --supervised               Supervised mode (bypasses blockers with warnings)"
       echo "  --bypass-blockers          Unsupervised blocker bypass (warnings to Slack)"
+      echo "  --log                      Log all output to .rite/logs/rite-{issue}-{timestamp}.log"
+      echo "  --log=FILE                 Log all output to specified file"
       echo ""
       echo "Project: $RITE_PROJECT_NAME"
       echo "Root:    $RITE_PROJECT_ROOT"
@@ -130,6 +143,38 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Set up logging if --log was specified
+if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
+  LOG_ISSUE="${ARGS[0]:-session}"
+  LOG_TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
+  RITE_LOG_FILE="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/logs/rite-${LOG_ISSUE}-${LOG_TIMESTAMP}.log"
+fi
+
+if [ -n "$RITE_LOG_FILE" ]; then
+  mkdir -p "$(dirname "$RITE_LOG_FILE")"
+
+  # Write log header
+  {
+    echo "=== Sharkrite Log ==="
+    echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Command: rite ${ARGS[*]:-} (mode=$MODE)"
+    echo "Project: ${RITE_PROJECT_NAME:-unknown}"
+    echo "Version: $VERSION"
+    echo "==="
+    echo ""
+  } > "$RITE_LOG_FILE"
+
+  # Single tee for both stdout and stderr to avoid log interleaving.
+  # Two separate tee processes (one per fd) race when appending to the same file,
+  # causing non-deterministic output ordering. Merging stderr into the tee'd stdout
+  # ensures all output flows through one pipe and arrives in execution order.
+  exec > >(tee >(strip_ansi >> "$RITE_LOG_FILE"))
+  exec 2>&1
+
+  export RITE_LOG_FILE
+  print_info "Logging to: $RITE_LOG_FILE"
+fi
 
 # Handle init mode
 if [ "$MODE" = "init" ]; then

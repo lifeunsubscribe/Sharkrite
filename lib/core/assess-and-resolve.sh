@@ -296,7 +296,7 @@ fi
 # Fetch PR review (from Claude for GitHub bot OR local sharkrite review)
 # (header already printed by workflow-runner.sh with PR + issue context)
 GH_STDERR=$(mktemp)
-REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review -->")))] | .[-1]' 2>"$GH_STDERR") || {
+REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1]' 2>"$GH_STDERR") || {
   GH_ERROR=$(cat "$GH_STDERR")
   rm -f "$GH_STDERR"
   print_error "Failed to fetch PR #$PR_NUMBER"
@@ -462,7 +462,7 @@ if [ "$RETRY_COUNT" -eq 0 ]; then
   echo ""
 
   # Check if there's a newer review (bot accounts OR local sharkrite reviews)
-  ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review -->")))] | sort_by(.createdAt) | reverse' 2>/dev/null)
+  ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | sort_by(.createdAt) | reverse' 2>/dev/null)
 
   NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | select(.createdAt > "'"$LATEST_COMMIT_TIME"'")] | length' 2>/dev/null || echo "0")
 
@@ -504,7 +504,7 @@ if [ "$RETRY_COUNT" -eq 0 ]; then
     sleep 2  # Brief pause for GitHub API to reflect new comment
 
     # Sort by createdAt descending and get the newest review (not just last in array)
-    REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review -->")))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null) || true
+    REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null) || true
 
     if [ -n "$REVIEW_JSON" ] && [ "$REVIEW_JSON" != "null" ]; then
       REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null || echo "")

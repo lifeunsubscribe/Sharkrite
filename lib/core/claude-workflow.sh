@@ -48,7 +48,7 @@ cleanup_on_interrupt() {
 
     # Check for uncommitted changes (exclude untracked files)
     local uncommitted
-    uncommitted=$(git status --porcelain | grep -vE "^\?\?" | wc -l | tr -d ' ')
+    uncommitted=$(git status --porcelain | grep -vE "^\?\?" | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')
 
     if [ "$uncommitted" -gt 0 ]; then
       echo -e "\033[0;34mℹ️  Found $uncommitted uncommitted change(s)\033[0m"
@@ -113,14 +113,14 @@ AUTO_MODE=false
 FIX_REVIEW_MODE=false
 ISSUE_NUMBER=""
 ISSUE_DESC=""
-REVIEW_FILE=""
+FIX_PR_NUMBER=""
 
 # First pass: detect flags
 for arg in "$@"; do
   case $arg in
     --auto) AUTO_MODE=true ;;
     --fix-review) FIX_REVIEW_MODE=true ;;
-    --review-file=*) REVIEW_FILE="${arg#*=}" ;;
+    --pr-number=*) FIX_PR_NUMBER="${arg#*=}" ;;
   esac
 done
 
@@ -131,12 +131,12 @@ while [[ $# -gt 0 ]]; do
       # Already processed in first pass
       shift
       ;;
-    --review-file)
-      # Next arg is the file path
-      REVIEW_FILE="$2"
+    --pr-number)
+      # Next arg is the PR number
+      FIX_PR_NUMBER="$2"
       shift 2
       ;;
-    --review-file=*)
+    --pr-number=*)
       # Already processed in first pass
       shift
       ;;
@@ -234,17 +234,26 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   # Now run the fix-review logic inline
   print_header "🔧 Review Fix Mode"
 
-  # Read review content from file (preferred) or stdin (fallback)
-  if [ -n "$REVIEW_FILE" ] && [ -f "$REVIEW_FILE" ]; then
-    print_info "Reading review content from file: $REVIEW_FILE"
-    REVIEW_CONTENT=$(cat "$REVIEW_FILE")
+  # Fetch latest assessment from PR comment (single source of truth)
+  if [ -n "$FIX_PR_NUMBER" ]; then
+    print_info "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
+    REVIEW_CONTENT=$(gh pr view "$FIX_PR_NUMBER" --json comments \
+      --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' \
+      2>/dev/null || echo "")
+
+    # Strip the assessment header metadata (everything before the --- separator)
+    # to give Claude just the assessment items
+    if [ -n "$REVIEW_CONTENT" ] && echo "$REVIEW_CONTENT" | grep -q "^---$"; then
+      REVIEW_CONTENT=$(echo "$REVIEW_CONTENT" | sed -n '/^---$/,$p' | tail -n +2)
+    fi
   else
-    print_info "Reading review content from stdin..."
+    print_info "No PR number provided, reading review content from stdin..."
     REVIEW_CONTENT=$(cat)
   fi
 
-  if [ -z "$REVIEW_CONTENT" ]; then
-    print_error "No review content received"
+  if [ -z "$REVIEW_CONTENT" ] || [ "$REVIEW_CONTENT" = "null" ]; then
+    print_error "No assessment found on PR #${FIX_PR_NUMBER:-unknown}"
+    print_info "Expected a comment with <!-- sharkrite-assessment --> marker"
     exit 1
   fi
 
@@ -258,7 +267,10 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   LOW_ISSUES=$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Ll]ow/,/^##[^#]/p' | grep -E '^### [0-9]+\.' || echo "")
 
   # Build fix prompt - tool restrictions are enforced by --disallowedTools flag
-  FIX_PROMPT="## Review Issues to Fix
+  FIX_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) fix-review session.
+Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
+
+## Review Issues to Fix
 
 The automated PR review found issues that need to be addressed.
 All context is provided below - fix the ACTIONABLE items in the code.
@@ -300,7 +312,7 @@ $(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Ll]ow/,/^##[^#]/p')
   if [ "$AUTO_MODE" = true ]; then
     EXIT_INSTRUCTION="Session will end automatically when you finish making all fixes."
   else
-    EXIT_INSTRUCTION="Exit the session when you have finished making all fixes."
+    EXIT_INSTRUCTION="When you have finished making all fixes, immediately exit with \`/exit\`. The rite workflow will handle commit and push."
   fi
 
   FIX_PROMPT+="## Instructions
@@ -327,9 +339,9 @@ $EXIT_INSTRUCTION"
   FIX_TIMEOUT=${RITE_FIX_TIMEOUT:-1800}
 
   # CODE-BASED TOOL RESTRICTIONS (not prompt-based)
-  # Block gh, curl, and other network commands to prevent Claude from fetching external data
-  # This is enforced by the CLI, not by instructions that Claude can ignore
-  DISALLOWED_TOOLS='Bash(gh *),Bash(gh),Bash(curl *),Bash(wget *),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*)'
+  # Block git commit/push (post-workflow handles them), gh, and network commands.
+  # This is enforced by the CLI, not by instructions that Claude can ignore.
+  DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *)'
 
   # Write prompt to temp file (more reliable than passing as argument)
   FIX_PROMPT_FILE=$(mktemp)
@@ -347,7 +359,7 @@ $EXIT_INSTRUCTION"
     if [ $FIX_EXIT_CODE -eq 124 ]; then
       print_warning "Fix timeout reached (${FIX_TIMEOUT}s) - checking for changes..."
       # Even on timeout, we might have partial fixes
-      if [ "$(git status --porcelain | grep -vE '^\?\?' | wc -l | tr -d ' ')" -gt 0 ]; then
+      if [ "$(git status --porcelain | grep -vE '^\?\?' | { grep -v '\.gitignore$' || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
         print_info "Found uncommitted changes - will commit what we have"
       else
         print_error "No fixes made before timeout"
@@ -1039,20 +1051,29 @@ If the changes are unrelated work, answer UNRELATED."
     fi
 fi
 
-# Ensure symlink patterns in .gitignore don't use trailing slashes.
+# Ensure symlink patterns are present in .gitignore WITHOUT trailing slashes.
 # "foo/" only matches directories, but symlinks are files (mode 120000).
-# This runs on ALL paths (new worktree + continuation) to fix existing worktrees.
+# This runs on ALL paths (new worktree + continuation + fix iteration) to handle:
+#   - Worktrees created from older commits missing patterns
+#   - Patterns accidentally removed during Claude's development session
+#   - Old trailing-slash forms that don't match symlinks
 for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
-  if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
-    if ! grep -qxF "$_pattern" .gitignore 2>/dev/null; then
-      sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
-    fi
+  # Already has the correct (no-slash) entry — nothing to do
+  if [ -f .gitignore ] && grep -qxF "$_pattern" .gitignore 2>/dev/null; then
+    continue
   fi
+  # Has the old trailing-slash form — upgrade it
+  if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
+    sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
+    continue
+  fi
+  # Pattern missing entirely — add it
+  echo "$_pattern" >> .gitignore
 done
 
-# Check git status
+# Check git status (filter .gitignore — modified by sharkrite's symlink pattern repair)
 print_header "📊 Repository Status"
-git status --short
+git status --short | grep -v "\.gitignore$" || true
 
 # Count uncommitted changes (exclude untracked files and .gitignore)
 # Only count modified (M), added (A), deleted (D), renamed (R), copied (C) files
@@ -1122,7 +1143,6 @@ _Draft PR created automatically by rite for tracking purposes._"
     --head "$BRANCH_NAME" \
     --title "$PR_TITLE" \
     --body "$PR_BODY" \
-    $(if [ -n "$ISSUE_NUMBER" ]; then echo "--label enhancement"; fi) \
     2>/dev/null || print_warning "PR creation failed (may already exist)"
 
   # Get PR number
@@ -1232,13 +1252,18 @@ if [ "$AUTO_MODE" = true ]; then
   AUTO_MODE_INSTRUCTION="Proceed directly to implementation (auto mode - no approval needed)"
   AUTO_MODE_FINAL_NOTE="**Auto Mode**: Complete all phases automatically. After Phase 5:
 1. Provide a brief summary of what you implemented
-2. The post-workflow script will automatically handle commit, push, and PR creation"
+2. Exit immediately — the rite workflow will automatically handle commit, push, and PR creation"
 else
   AUTO_MODE_INSTRUCTION="Wait for my approval before implementing"
-  AUTO_MODE_FINAL_NOTE="After Phase 4, I'll review and we'll commit together."
+  AUTO_MODE_FINAL_NOTE="**When all phases are complete**: Provide a brief summary of what you implemented, then immediately exit the session with \`/exit\`. The rite workflow will automatically handle commit, push, and PR creation — do NOT commit, push, or create PRs yourself."
 fi
 
-CLAUDE_PROMPT="Task: ${ISSUE_DESC}
+CLAUDE_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) automated workflow session.
+The workflow tool is called **rite** — not \"forge\" or any other name.
+When this session ends, the rite workflow automatically handles commit, push, and PR creation.
+Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
+
+Task: ${ISSUE_DESC}
 ${SECURITY_PROMPT}
 ## Workflow Instructions
 
@@ -1309,7 +1334,7 @@ ${PHASE_0_INSTRUCTIONS}
 
 ${AUTO_MODE_FINAL_NOTE}
 
-Ready to start? Begin with Phase 0: Requirements Clarification."
+Begin with Phase 0: Requirements Clarification."
 
 echo "Starting Sharkrite with task:"
 echo "\"$ISSUE_DESC\""
@@ -1351,18 +1376,30 @@ else
   # Supervised mode: full interactive experience
   CLAUDE_EXIT_CODE=0
 
+  # Block git commit/push and gh — post-workflow handles all git operations and PR creation.
+  # Without this, Claude commits inside the session, then post-workflow tries to commit again.
+  # --disallowedTools is enforced by the CLI even with --dangerously-skip-permissions.
+  DEV_DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *)'
+
+  # Capture Claude stderr for diagnostics (was 2>/dev/null — hid all errors)
+  CLAUDE_STDERR_FILE=$(mktemp)
+
   if [ "$AUTO_MODE" = true ]; then
     # Auto mode: --print for auto-exit, stream-json for real-time tool visibility.
     # --print with default text format only shows assistant text — tool calls (edits,
     # bash commands) are invisible. stream-json streams ALL events; jq formats them.
-    CLAUDE_STREAM_ARGS="--print --dangerously-skip-permissions --output-format stream-json"
+    # NOTE: --disallowedTools must be quoted separately because its value contains spaces
+    # (e.g., "Bash(gh *)"). Cannot embed in CLAUDE_STREAM_ARGS which is expanded unquoted.
+    # --verbose is required with --print --output-format stream-json (CLI validation)
     if [ -n "$TIMEOUT_CMD" ]; then
-      $TIMEOUT_CMD "${CLAUDE_TIMEOUT}" $CLAUDE_CMD $CLAUDE_STREAM_ARGS "$CLAUDE_PROMPT" 2>/dev/null | \
+      $TIMEOUT_CMD "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
+        --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
+        "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" | \
         jq --unbuffered -rj '
           if .type == "assistant" then
             (.message.content[]? |
-              if .type == "text" then .text
-              elif .type == "tool_use" then "\n⚡ " + .name + "\n"
+              if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
+              elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
               else empty end)
           elif .type == "result" then
             .result // empty
@@ -1370,12 +1407,14 @@ else
         ' 2>/dev/null || true
       CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
     else
-      $CLAUDE_CMD $CLAUDE_STREAM_ARGS "$CLAUDE_PROMPT" 2>/dev/null | \
+      $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
+        --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
+        "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" | \
         jq --unbuffered -rj '
           if .type == "assistant" then
             (.message.content[]? |
-              if .type == "text" then .text
-              elif .type == "tool_use" then "\n⚡ " + .name + "\n"
+              if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
+              elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
               else empty end)
           elif .type == "result" then
             .result // empty
@@ -1386,9 +1425,9 @@ else
   else
     # Supervised mode: interactive with approval prompts
     if [ -n "$TIMEOUT_CMD" ]; then
-      $TIMEOUT_CMD "${CLAUDE_TIMEOUT}" $CLAUDE_CMD "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
+      $TIMEOUT_CMD "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --disallowedTools "$DEV_DISALLOWED_TOOLS" "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
     else
-      $CLAUDE_CMD "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
+      $CLAUDE_CMD --disallowedTools "$DEV_DISALLOWED_TOOLS" "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
     fi
   fi
 
@@ -1398,7 +1437,7 @@ else
     print_error "Sharkrite timed out after ${CLAUDE_TIMEOUT}s"
     print_info "Checking for uncommitted work..."
 
-    if [ "$(git status --porcelain | wc -l | tr -d ' ')" -gt 0 ]; then
+    if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
       print_warning "Found uncommitted changes - committing before exit"
       # Fall through to post-workflow to commit changes
     else
@@ -1416,13 +1455,32 @@ else
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
     print_info "Checking for uncommitted work..."
 
-    if [ "$(git status --porcelain | wc -l | tr -d ' ')" -gt 0 ]; then
+    if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
       print_warning "Found uncommitted changes - will attempt to save work"
       # Fall through to post-workflow to commit changes
     else
       exit 1
     fi
   fi
+
+  # Diagnostic output (visible in log, helps debug "no work" situations)
+  if [ -n "${RITE_LOG_FILE:-}" ]; then
+    echo ""
+    echo "[DIAG] Claude session exit code: $CLAUDE_EXIT_CODE"
+    echo "[DIAG] Working directory: $(pwd)"
+    echo "[DIAG] Git status (porcelain):"
+    git status --porcelain 2>/dev/null | head -20 || echo "  (none)"
+    echo "[DIAG] File changes vs origin/main:"
+    git diff --stat origin/main..HEAD 2>/dev/null || echo "  (none)"
+    if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
+      echo "[DIAG] Claude stderr (last 30 lines):"
+      tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /'
+    else
+      echo "[DIAG] Claude stderr: (empty)"
+    fi
+    echo ""
+  fi
+  rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
 fi
 
 # Post-Claude workflow
@@ -1430,17 +1488,30 @@ if [ "${SKIP_TO_PR:-false}" = true ]; then
   # PR already exists, skip commit/push and go straight to PR workflow
   echo ""
 else
+  # Re-ensure symlink patterns in .gitignore after Claude's session.
+  # Claude may have modified .gitignore during development, dropping patterns.
+  for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
+    if [ -f .gitignore ] && grep -qxF "$_pattern" .gitignore 2>/dev/null; then
+      continue
+    fi
+    if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
+      sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
+      continue
+    fi
+    echo "$_pattern" >> .gitignore
+  done
+
   if [ "$AUTO_MODE" = false ]; then
     print_header "📝 Post-Implementation Workflow"
     echo "Sharkrite session complete. Let's review what changed."
     echo ""
   fi
 
-  # Show changes
+  # Show changes (filter .gitignore — modified by sharkrite's symlink pattern repair)
   if [ "$AUTO_MODE" = false ]; then
-    git status --short
+    git status --short | grep -v "\.gitignore$" || true
   fi
-  CHANGES_COUNT=$(git status --porcelain | wc -l)
+  CHANGES_COUNT=$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')
 
 if [ $CHANGES_COUNT -eq 0 ]; then
   print_info "No new changes detected"
@@ -1484,7 +1555,8 @@ else
   print_success "$CHANGES_COUNT file(s) changed"
   echo ""
 
-  # Show diff stats
+  # Show diff stats (.gitignore appears here but is excluded from the commit
+  # at line ~1634 via git reset HEAD .gitignore — display is accurate to working tree)
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   git diff --stat
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1588,6 +1660,10 @@ if [ "$AUTO_MODE" = false ]; then
   if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo "Enter custom commit message:"
     read -e CUSTOM_MSG
+    if [ -z "$CUSTOM_MSG" ]; then
+      print_info "Empty message — skipping commit. Changes preserved in worktree."
+      exit 0
+    fi
     COMMIT_MSG="$CUSTOM_MSG"
   fi
 elif [ "$AUTO_MODE" = false ]; then
@@ -1619,6 +1695,11 @@ if git ls-files --stage | grep -q '^120000.*node_modules$'; then
   print_warning "Removed node_modules symlink from staging (worktree-specific)"
 fi
 
+# Exclude .gitignore from commit — sharkrite modifies it to add symlink ignore
+# patterns (.rite, .claude, node_modules) but these shouldn't be committed to
+# the target repo. The working tree copy stays modified (needed for ignore rules).
+git reset HEAD .gitignore 2>/dev/null || true
+
 git commit -m "$COMMIT_MSG" > /dev/null
 
 if [ "$AUTO_MODE" = true ]; then
@@ -1649,27 +1730,25 @@ fi  # End of "if CHANGES_COUNT > 0" block
 fi  # End of "if SKIP_TO_PR" block
 
 # PR workflow - automatically handled by create-pr.sh
-# This runs whether or not there were new changes (existing commits may need PR)
-if [ "$AUTO_MODE" = false ]; then
-  print_header "🔗 Pull Request & Review Workflow"
-fi
-
-if [ -f "$RITE_LIB_DIR/core/create-pr.sh" ]; then
-  # create-pr.sh handles everything:
-  # - Detects if PR exists for current branch
-  # - Creates PR if needed
-  # - Waits for automated review (dynamic wait time)
-  # - Assesses review issues and determines action
-  # - Provides merge recommendation
-  if [ "$AUTO_MODE" = true ]; then
-    "$RITE_LIB_DIR/core/create-pr.sh" --auto
-  else
-    "$RITE_LIB_DIR/core/create-pr.sh"
-  fi
+# Skip when called by workflow-runner.sh (RITE_ORCHESTRATED) — Phase 2/3 handle PR/review.
+# Only run when claude-workflow.sh is invoked standalone (e.g., rite 42 --quick).
+if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
+  print_info "Orchestrated mode — skipping PR workflow (handled by workflow-runner Phase 2/3)"
 else
-  # Fallback if create-pr.sh not found
-  print_warning "create-pr.sh not found, skipping PR workflow"
-  print_info "Manually create PR with: gh pr create"
+  if [ "$AUTO_MODE" = false ]; then
+    print_header "🔗 Pull Request & Review Workflow"
+  fi
+
+  if [ -f "$RITE_LIB_DIR/core/create-pr.sh" ]; then
+    if [ "$AUTO_MODE" = true ]; then
+      "$RITE_LIB_DIR/core/create-pr.sh" --auto
+    else
+      "$RITE_LIB_DIR/core/create-pr.sh"
+    fi
+  else
+    print_warning "create-pr.sh not found, skipping PR workflow"
+    print_info "Manually create PR with: gh pr create"
+  fi
 fi
 
 # Summary

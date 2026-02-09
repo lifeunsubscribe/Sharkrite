@@ -21,6 +21,11 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 
+# Strip ANSI escape sequences (for log files)
+strip_ansi() {
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
+}
+
 # Export for use in subshells
 export RED GREEN YELLOW BLUE MAGENTA CYAN NC
-export -f print_header print_success print_error print_warning print_info print_step 2>/dev/null || true
+export -f print_header print_success print_error print_warning print_info print_step strip_ansi 2>/dev/null || true

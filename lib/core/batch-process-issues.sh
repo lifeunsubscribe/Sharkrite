@@ -132,10 +132,10 @@ if [ -n "$FILTER_TYPE" ]; then
         ISSUE_BODY=$(echo "$issue_json" | jq -r '.body // ""')
 
         # Count tasks by priority in this issue's body
-        CRITICAL_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "CRITICAL" || echo "0")
-        HIGH_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "HIGH" || echo "0")
-        MEDIUM_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "MEDIUM" || echo "0")
-        LOW_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "LOW" || echo "0")
+        CRITICAL_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "CRITICAL" || true)
+        HIGH_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "HIGH" || true)
+        MEDIUM_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "MEDIUM" || true)
+        LOW_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "LOW" || true)
 
         # Add CRITICAL to HIGH count (treat as HIGH priority)
         HIGH_IN_ISSUE=$((HIGH_IN_ISSUE + CRITICAL_IN_ISSUE))
@@ -568,7 +568,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       fi
 
       # Check for security doc updates
-      SECURITY_DOC_UPDATED=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path' 2>/dev/null | grep -c "docs/security/DEVELOPMENT-GUIDE.md" || echo "0")
+      SECURITY_DOC_UPDATED=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path' 2>/dev/null | grep -c "docs/security/DEVELOPMENT-GUIDE.md" || true)
       if [ "$SECURITY_DOC_UPDATED" -gt 0 ]; then
         SECURITY_UPDATES+=("PR #$PR_NUMBER: Updated DEVELOPMENT-GUIDE.md with findings from #$ISSUE_NUM")
       fi

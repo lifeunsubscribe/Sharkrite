@@ -174,7 +174,7 @@ echo ""
 # PR
 if [ -n "$PR_NUMBER" ]; then
   if [ "$PR_STATE" = "OPEN" ]; then
-    echo "  PR #$PR_NUMBER .............. close + delete remote branch"
+    echo "  PR #$PR_NUMBER .............. revert to draft + reset branch to main"
   elif [ "$PR_STATE" = "CLOSED" ]; then
     echo "  PR #$PR_NUMBER .............. already closed (skip)"
   fi
@@ -184,7 +184,7 @@ fi
 
 # Review comments
 if [ -n "$PR_NUMBER" ]; then
-  echo "  Review comments ......... delete sharkrite reviews + assessments"
+  echo "  Review comments ......... delete sharkrite comments"
 else
   echo "  Review comments ......... no PR (skip)"
 fi
@@ -249,36 +249,39 @@ echo "🔒 PR Cleanup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
-  if gh pr close "$PR_NUMBER" --delete-branch 2>/dev/null; then
-    echo -n "  "; print_success "Closed PR #$PR_NUMBER and deleted remote branch"
+  # Revert to draft instead of closing — avoids PR number stacking on rerun.
+  # The next `rite` run finds the existing draft PR and reuses it.
+  if gh pr ready --undo "$PR_NUMBER" 2>/dev/null; then
+    echo -n "  "; print_success "Reverted PR #$PR_NUMBER to draft"
   else
-    # Try closing without branch deletion
-    if gh pr close "$PR_NUMBER" 2>/dev/null; then
-      echo -n "  "; print_success "Closed PR #$PR_NUMBER"
+    echo -n "  "; print_info "PR #$PR_NUMBER may already be a draft"
+  fi
+
+  # Reset the remote branch to main's HEAD (clean code slate).
+  # The draft PR stays linked to this branch; next run pushes new work to it.
+  if [ -n "$BRANCH_NAME" ]; then
+    if git push origin "main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
+      echo -n "  "; print_success "Reset remote branch to main (clean slate)"
     else
-      echo -n "  "; print_warning "Failed to close PR #$PR_NUMBER"
+      echo -n "  "; print_warning "Failed to reset remote branch"
       UNDO_ERRORS=$((UNDO_ERRORS + 1))
     fi
   fi
 elif [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "CLOSED" ]; then
   echo -n "  "; print_info "PR #$PR_NUMBER already closed"
-else
-  echo -n "  "; print_info "No PR to close"
-fi
-
-# Always try to delete the remote branch explicitly — gh pr close --delete-branch
-# is unreliable and only attempts deletion as part of the close operation.
-# Without this, re-runs create a fresh local branch from main that can't push
-# because the remote still has the old diverged history.
-if [ -n "$BRANCH_NAME" ]; then
-  if git push origin --delete "$BRANCH_NAME" 2>/dev/null; then
-    echo -n "  "; print_success "Deleted remote branch: $BRANCH_NAME"
-  else
-    echo -n "  "; print_info "Remote branch already deleted or not found"
+  # Delete orphaned remote branch if it still exists
+  if [ -n "$BRANCH_NAME" ]; then
+    if git push origin --delete "$BRANCH_NAME" 2>/dev/null; then
+      echo -n "  "; print_success "Deleted orphaned remote branch: $BRANCH_NAME"
+    else
+      echo -n "  "; print_info "Remote branch already deleted or not found"
+    fi
   fi
+else
+  echo -n "  "; print_info "No PR to reset"
 fi
 
-# --- 3.2: Delete sharkrite review comments and dismiss formal reviews ---
+# --- 3.2: Delete sharkrite review and assessment comments ---
 
 if [ -n "$PR_NUMBER" ]; then
   echo ""
@@ -289,7 +292,7 @@ if [ -n "$PR_NUMBER" ]; then
   REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
 
   if [ -n "$REPO" ]; then
-    # Delete sharkrite review comments (PR comments containing the marker)
+    # Delete sharkrite PR comments (reviews + assessments are all posted as comments)
     COMMENT_IDS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
       '.[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-assessment")) | .id' 2>/dev/null || echo "")
 
@@ -300,22 +303,10 @@ if [ -n "$PR_NUMBER" ]; then
       fi
     done
 
-    # Dismiss formal PR reviews from sharkrite
-    REVIEW_IDS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate --jq \
-      '.[] | select(.body | contains("sharkrite-local-review")) | .id' 2>/dev/null || echo "")
-
-    DISMISSED_REVIEWS=0
-    for rid in $REVIEW_IDS; do
-      if gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$rid/dismissals" -X PUT \
-        -f message="Dismissed by undo workflow" 2>/dev/null; then
-        DISMISSED_REVIEWS=$((DISMISSED_REVIEWS + 1))
-      fi
-    done
-
-    if [ $DELETED_COMMENTS -gt 0 ] || [ $DISMISSED_REVIEWS -gt 0 ]; then
-      echo -n "  "; print_success "Removed $DELETED_COMMENTS comment(s) and dismissed $DISMISSED_REVIEWS review(s)"
+    if [ $DELETED_COMMENTS -gt 0 ]; then
+      echo -n "  "; print_success "Removed $DELETED_COMMENTS comment(s)"
     else
-      echo -n "  "; print_info "No sharkrite reviews found to clean up"
+      echo -n "  "; print_info "No sharkrite comments found to clean up"
     fi
   else
     echo -n "  "; print_warning "Could not determine repo - skipping review cleanup"
@@ -450,6 +441,9 @@ fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  Issue #$ISSUE_NUMBER is ready to be re-worked."
+if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
+  echo "  PR #$PR_NUMBER preserved as draft (will be reused on next run)."
+fi
 echo "  Run 'rite $ISSUE_NUMBER' to start fresh."
 echo ""
 

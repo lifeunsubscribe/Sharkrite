@@ -225,9 +225,9 @@ if [ "$PR_EXISTS" = false ]; then
 
   # Get file changes summary
   FILES_CHANGED=$(git diff --name-status origin/$BASE_BRANCH..HEAD 2>/dev/null || git diff --name-status HEAD~1..HEAD)
-  FILES_ADDED=$(echo "$FILES_CHANGED" | grep -c '^A' || echo "0")
-  FILES_MODIFIED=$(echo "$FILES_CHANGED" | grep -c '^M' || echo "0")
-  FILES_DELETED=$(echo "$FILES_CHANGED" | grep -c '^D' || echo "0")
+  FILES_ADDED=$(echo "$FILES_CHANGED" | grep -c '^A' || true)
+  FILES_MODIFIED=$(echo "$FILES_CHANGED" | grep -c '^M' || true)
+  FILES_DELETED=$(echo "$FILES_CHANGED" | grep -c '^D' || true)
 
   # Build PR body
   PR_BODY=$(cat <<EOF
@@ -499,7 +499,7 @@ LATEST_COMMIT_TIME=$(gh pr view $PR_NUMBER --json commits \
 
 # Check for reviews from Claude bots OR local reviews (marked with sharkrite-local-review)
 EXISTING_REVIEW_DATA=$(gh pr view $PR_NUMBER --json comments \
-  --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review -->")))] | .[-1] | {body: .body, createdAt: .createdAt}' \
+  --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1] | {body: .body, createdAt: .createdAt}' \
   2>/dev/null)
 
 EXISTING_REVIEW_TIME=$(echo "$EXISTING_REVIEW_DATA" | jq -r '.createdAt' 2>/dev/null)
@@ -557,7 +557,7 @@ while [ "$PR_READY" != true ] && [ $ELAPSED -lt $MAX_TOTAL_WAIT ]; do
 
   # Check for Sharkrite review comments with timestamp (bot accounts OR local reviews)
   REVIEW_DATA=$(gh pr view $PR_NUMBER --json comments \
-    --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude-code" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review -->")))] | .[-1] | {body: .body, createdAt: .createdAt, author: .author.login}' \
+    --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude-code" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1] | {body: .body, createdAt: .createdAt, author: .author.login}' \
     2>/dev/null)
 
   LATEST_REVIEW=$(echo "$REVIEW_DATA" | jq -r '.body' 2>/dev/null)

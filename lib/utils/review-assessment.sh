@@ -36,7 +36,7 @@ assess_pr_review() {
   # Get the LATEST review only (use jq array indexing, not tail)
   # Includes bot accounts AND local reviews (marked with sharkrite-local-review)
   local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
-    --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude-code" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review -->")))] | .[-1] | .body' \
+    --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude-code" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1] | .body' \
     2>/dev/null)
 
   # Validate gh CLI returned valid data

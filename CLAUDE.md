@@ -103,9 +103,21 @@ rite --dry-run
 rite 42 --supervised
 ```
 
+## Claude Session Prompt Design (CRITICAL)
+
+The prompt passed to Claude Code in `claude-workflow.sh` must include:
+
+1. **Sharkrite identity** — Claude doesn't know what tool invoked it. Without explicit context, it hallucinates names like "forge". The prompt must state: "You are running inside a Sharkrite (`rite`) workflow session."
+2. **Git/GH prohibition** — Claude must NOT run `git commit`, `git push`, `gh pr create`, etc. The post-workflow script handles all of this. Enforce via **both** prompt instructions AND `--disallowedTools`. Prompt-only prohibition is insufficient — Claude ignores it. `--disallowedTools` is enforced by the CLI and cannot be bypassed. Both the main dev session and fix-review session must use it.
+3. **Explicit exit instructions** — In supervised mode, Claude runs interactively and will sit idle forever after completing work unless told to `/exit`. Auto mode uses `--print` which auto-exits.
+   - Supervised: "When all phases are complete, immediately exit with `/exit`"
+   - Auto: `--print` handles exit; prompt says "session will end automatically"
+4. **No "Ready to start?" or open-ended questions at end** — The prompt should end with a directive ("Begin with Phase 0"), not a question that invites Claude to wait for confirmation.
+
 ## Common Pitfalls
 
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
 - **Exit codes**: `assess-and-resolve.sh` uses exit 2 for "loop to fix", exit 0 for "ready to merge", exit 1 for "manual intervention needed".
+- **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.

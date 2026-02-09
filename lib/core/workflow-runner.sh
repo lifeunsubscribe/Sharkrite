@@ -515,9 +515,9 @@ EOF
 
           # Call claude-workflow.sh to do the actual development work
           if [ "$WORKFLOW_MODE" = "supervised" ]; then
-            "$CLAUDE_WORKFLOW" "$issue_number"
+            RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
           else
-            "$CLAUDE_WORKFLOW" "$issue_number" --auto
+            RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
           fi
 
           WORKFLOW_EXIT=$?
@@ -530,9 +530,27 @@ EOF
           return 0
         fi
       else
-        print_error "PR exists but worktree not found - manual intervention required"
-        print_error "Run: git worktree add $RITE_WORKTREE_DIR/$pr_branch $pr_branch"
-        return 1
+        # PR exists but no worktree (e.g., after undo reverted PR to draft and removed worktree)
+        # Run development to create worktree and implement the fix
+        print_info "PR #$pr_number exists but worktree not found — running development"
+
+        local workflow_exit=0
+        set +e
+        if [ "$WORKFLOW_MODE" = "supervised" ]; then
+          RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
+        else
+          RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
+        fi
+        workflow_exit=$?
+        set -e
+
+        if [ $workflow_exit -ne 0 ]; then
+          print_error "Development workflow failed (exit code: $workflow_exit)"
+          return $workflow_exit
+        fi
+
+        print_success "Development phase complete"
+        return 0
       fi
     else
       print_info "Starting fresh on issue #${issue_number}"
@@ -540,11 +558,21 @@ EOF
       # Call claude-workflow.sh to create worktree and do development
       # claude-workflow.sh handles detecting uncommitted changes internally
       # (its SKIP_CLAUDE flag triggers when changes exist in the worktree)
+      # RITE_ORCHESTRATED tells claude-workflow.sh to skip its internal PR/review
+      # workflow — those are handled by Phase 2/3 of the orchestrator.
+      local workflow_exit=0
+      set +e
       if [ "$WORKFLOW_MODE" = "supervised" ]; then
-        "$CLAUDE_WORKFLOW" "$issue_number"
+        RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
       else
-        # Unsupervised: pass --auto flag
-        "$CLAUDE_WORKFLOW" "$issue_number" --auto
+        RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
+      fi
+      workflow_exit=$?
+      set -e
+
+      if [ $workflow_exit -ne 0 ]; then
+        print_error "Development workflow failed (exit code: $workflow_exit)"
+        return $workflow_exit
       fi
 
       # Extract worktree path - look for any non-main worktree created for this issue
@@ -565,6 +593,19 @@ EOF
       fi
 
       set_current_worktree "$WORKTREE_PATH"
+
+      # Verify development actually produced work (file changes vs main)
+      local file_changes
+      file_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+
+      if [ "$file_changes" -eq 0 ]; then
+        print_warning "No work was produced in the development phase"
+        print_info "claude-workflow.sh exited with code $workflow_exit but made no file changes"
+        print_info "Aborting workflow — nothing to push or review"
+        return 1
+      fi
+
+      print_info "Development produced $file_changes file(s) changed"
     fi
   fi
 
@@ -579,12 +620,14 @@ phase_create_pr() {
 
   cd "$WORKTREE_PATH"
 
-  # Extract PR number from git branch metadata or gh pr view
+  # Get OPEN PR for current branch (gh pr list returns open PRs only;
+  # gh pr view returns closed PRs too, which causes wrong-PR-number bugs
+  # when a previous draft was closed during a no-work cleanup)
   local branch_name=$(git rev-parse --abbrev-ref HEAD)
-  PR_NUMBER=$(gh pr view "$branch_name" --json number --jq '.number' 2>/dev/null || echo "")
+  PR_NUMBER=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null || echo "")
 
-  if [ -z "$PR_NUMBER" ]; then
-    print_error "PR not created or not found"
+  if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+    print_error "No open PR found for branch '$branch_name'"
     return 1
   fi
 
@@ -731,39 +774,33 @@ phase_assess_and_resolve() {
     fi
 
     # Call claude-workflow.sh in fix mode to address the review issues
-    # Pass review via file argument (not stdin) to preserve TTY for Claude's interactive mode
+    # Pass PR number so it can fetch the latest assessment from PR comments
     cd "$WORKTREE_PATH" || return 1
 
     if [ -n "$review_content" ]; then
-      # Save review in worktree's .rite/ directory (cleaned up with worktree on merge)
-      local rite_dir="$WORKTREE_PATH/.rite"
-      mkdir -p "$rite_dir"
-      local review_file="$rite_dir/review-assessment-retry${retry_count}.md"
-      echo "$review_content" > "$review_file"
-
-      print_info "Saved review assessment to: .rite/review-assessment-retry${retry_count}.md"
+      # Assessment is already posted as a PR comment (<!-- sharkrite-assessment --> marker).
+      # Pass PR number so claude-workflow.sh can fetch the latest assessment directly.
+      print_info "Assessment available as PR #$pr_number comment (retry $retry_count)"
 
       # Respect supervised/unsupervised mode
       if [ "$WORKFLOW_MODE" = "supervised" ]; then
-        "$CLAUDE_WORKFLOW" "$issue_number" --fix-review --review-file "$review_file"
+        RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --fix-review --pr-number "$pr_number"
       else
-        "$CLAUDE_WORKFLOW" "$issue_number" --fix-review --review-file "$review_file" --auto
+        RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --fix-review --pr-number "$pr_number" --auto
       fi
       local fix_result=$?
-
-      # Don't delete review_file - keeps history until worktree cleanup on merge
 
       if [ $fix_result -ne 0 ]; then
         print_error "Claude workflow fix mode failed (exit code: $fix_result)"
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "Troubleshooting:"
-        echo "  1. Check the review file: $review_file"
+        echo "  1. Check the latest assessment comment on PR #$pr_number"
         echo "  2. The Claude session may have timed out or errored"
         echo "  3. Run manually to debug:"
         echo "     cd $WORKTREE_PATH"
-        echo "     cat $review_file"
-        echo "     $CLAUDE_WORKFLOW $issue_number --fix-review --review-file $review_file"
+        echo "     gh pr view $pr_number --json comments --jq '[.comments[] | select(.body | contains(\"sharkrite-assessment\"))] | .[-1].body'"
+        echo "     $CLAUDE_WORKFLOW $issue_number --fix-review --pr-number $pr_number"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
         return 1

@@ -96,7 +96,7 @@ PR_DIFF=$(gh pr diff "$PR_NUMBER" 2>&1) || {
 }
 
 DIFF_LINES=$(echo "$PR_DIFF" | wc -l | tr -d ' ')
-DIFF_FILES=$(echo "$PR_DIFF" | grep -c "^diff --git" || echo "0")
+DIFF_FILES=$(echo "$PR_DIFF" | grep -c "^diff --git" || true)
 print_info "Diff size: $DIFF_FILES files, $DIFF_LINES lines"
 echo ""
 
@@ -303,7 +303,7 @@ REVIEW_COMMENT="<!-- sharkrite-local-review model:${EFFECTIVE_MODEL} timestamp:$
 $REVIEW_OUTPUT"
 
 if [ "$POST_REVIEW" = true ]; then
-  # Parse review to determine verdict
+  # Parse review for summary display
   # Prefer the structured Findings line (e.g. "Findings: [CRITICAL: 0 | HIGH: 1 | ...]")
   # to avoid matching severity keywords in metadata/reasoning text
   FINDINGS_LINE=$(echo "$REVIEW_OUTPUT" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+ \| MEDIUM: [0-9]+ \| LOW: [0-9]+" | head -1 || true)
@@ -320,50 +320,22 @@ if [ "$POST_REVIEW" = true ]; then
     LOW_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*low|💡.*low|minor suggestion" || true)
   fi
 
-  # Check for explicit approval in review output
-  HAS_APPROVE=$(echo "$REVIEW_OUTPUT" | grep -ciE "Overall.*APPROVE|Assessment.*APPROVE|\*\*APPROVE\*\*" || echo "0")
+  # Post as PR comment (same location as Claude for GitHub app reviews,
+  # enabling seamless switching between local and app review methods)
+  print_info "Posting review to PR #$PR_NUMBER..."
 
-  # Determine review verdict
-  # - CRITICAL issues = request changes (blocking)
-  # - No CRITICAL + explicit APPROVE = approve
-  # - Otherwise = comment (non-blocking feedback)
-  REVIEW_VERDICT="--comment"
-  VERDICT_LABEL="COMMENT"
-
-  if [ "$CRITICAL_COUNT" -gt 0 ]; then
-    REVIEW_VERDICT="--request-changes"
-    VERDICT_LABEL="REQUEST_CHANGES"
-    print_warning "Review contains $CRITICAL_COUNT CRITICAL issue(s) - requesting changes"
-  elif [ "$HAS_APPROVE" -gt 0 ] && [ "$HIGH_COUNT" -eq 0 ]; then
-    REVIEW_VERDICT="--approve"
-    VERDICT_LABEL="APPROVE"
-    print_success "Review passed - approving PR"
-  else
-    print_info "Review has non-blocking findings - posting as comment"
-  fi
-
-  # Post as formal PR review (not just a comment)
-  print_info "Posting formal review to PR #$PR_NUMBER ($VERDICT_LABEL)..."
-
-  REVIEW_RESULT=$(gh pr review "$PR_NUMBER" $REVIEW_VERDICT --body "$REVIEW_COMMENT" 2>&1) || {
-    # If formal review fails (e.g., already reviewed), fall back to comment
-    print_warning "Formal review failed, falling back to PR comment"
-    print_info "Reason: $REVIEW_RESULT"
-
-    REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body "$REVIEW_COMMENT" 2>&1) || {
-      print_error "Failed to post review"
-      echo "$REVIEW_RESULT"
-      echo ""
-      echo "Review content (not posted):"
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "$REVIEW_OUTPUT"
-      exit 1
-    }
+  REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body "$REVIEW_COMMENT" 2>&1) || {
+    print_error "Failed to post review"
+    echo "$REVIEW_RESULT"
+    echo ""
+    echo "Review content (not posted):"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "$REVIEW_OUTPUT"
+    exit 1
   }
 
   echo ""
   print_success "Review posted successfully!"
-  echo "  Verdict: $VERDICT_LABEL"
   echo ""
 
   # Output summary
