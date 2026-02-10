@@ -343,7 +343,7 @@ fi
 if [ "$AUTO_MODE" = false ]; then
   print_info "Fetching PR details..."
 fi
-PR_DETAILS=$(gh pr view $PR_NUMBER --json number,title,state,isDraft,mergeable,url,baseRefName,headRefName,reviews,statusCheckRollup 2>/dev/null)
+PR_DETAILS=$(gh pr view $PR_NUMBER --json number,title,state,isDraft,mergeable,url,baseRefName,headRefName,statusCheckRollup 2>/dev/null)
 
 if [ -z "$PR_DETAILS" ]; then
   print_error "Could not fetch PR #$PR_NUMBER"
@@ -440,28 +440,7 @@ else
   echo "  None configured"
 fi
 
-# Check 5: GitHub Reviews (formal reviews, not comments)
-echo ""
-echo -e "${BLUE}👥 GitHub Reviews${NC}"
-REVIEWS=$(echo "$PR_DETAILS" | jq -r '.reviews // []')
-REVIEW_COUNT=$(echo "$REVIEWS" | jq 'length')
-
-if [ "$REVIEW_COUNT" -gt 0 ]; then
-  APPROVED_COUNT=$(echo "$REVIEWS" | jq -r '[.[] | select(.state == "APPROVED")] | length')
-  CHANGES_REQUESTED=$(echo "$REVIEWS" | jq -r '[.[] | select(.state == "CHANGES_REQUESTED")] | length')
-
-  echo "  Total: $REVIEW_COUNT | Approved: $APPROVED_COUNT"
-
-  if [ "$CHANGES_REQUESTED" -gt 0 ]; then
-    print_warning "$CHANGES_REQUESTED reviewer(s) requested changes"
-  elif [ "$APPROVED_COUNT" -gt 0 ]; then
-    print_success "$APPROVED_COUNT approving review(s)"
-  fi
-else
-  echo "  None submitted"
-fi
-
-# Check 6: Sharkrite code review (via PR comments or formal reviews)
+# Check 5: Sharkrite code review (via PR comments or formal reviews)
 echo ""
 echo -e "${BLUE}🦈 Sharkrite Review${NC}"
 CLAUDE_REVIEW_FOUND=false
@@ -634,7 +613,6 @@ if [ "$AUTO_MODE" = false ]; then
   print_header "✅ All Validations Passed"
   echo "  • PR state: open, not draft, mergeable"
   echo "  • Status checks: ${REQUIRED_CHECKS_COUNT:-0} required (all passed)"
-  echo "  • GitHub reviews: ${APPROVED_COUNT:-0} approved"
   echo "  • Sharkrite review: $([ "$CLAUDE_REVIEW_FOUND" = true ] && echo "passed" || echo "not required")"
   echo ""
 fi
