@@ -16,6 +16,12 @@ _No active work — run `rite <issue>` to start_
 
 ---
 
+## Encountered Issues (Needs Triage)
+
+_Out-of-scope issues discovered during development. Auto-triaged to tech-debt issues at merge._
+
+---
+
 ## Recent Security Findings (Last 5 PRs)
 
 _Security issues found in recent PR reviews. Sharkrite updates this automatically._

@@ -717,6 +717,21 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
   echo ""
   print_success "Branch $PR_HEAD has been merged into $PR_BASE"
 
+  # Create tech-debt issues from encountered issues BEFORE clearing scratchpad
+  if type create_tech_debt_issues &>/dev/null; then
+    print_info "Creating tech-debt issues from encountered issues..."
+    DEBT_COUNT=$(create_tech_debt_issues "$PR_NUMBER")
+    if [ "$DEBT_COUNT" -gt 0 ]; then
+      print_success "Created $DEBT_COUNT tech-debt issue(s)"
+    else
+      print_info "No new tech-debt issues to create"
+    fi
+    # Clear encountered issues after processing
+    if type clear_encountered_issues &>/dev/null; then
+      clear_encountered_issues
+    fi
+  fi
+
   # Clear "Current Work" section in scratchpad (merge complete)
   if type clear_current_work &>/dev/null; then
     clear_current_work

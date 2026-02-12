@@ -15,6 +15,7 @@ lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides ac
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/utils/blocker-rules.sh        # Blocker detection functions
 lib/utils/config.sh               # Config loading, path setup
+lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 ```
 
 ### Workflow Phases
@@ -121,3 +122,4 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
 - **Exit codes**: `assess-and-resolve.sh` uses exit 2 for "loop to fix", exit 0 for "ready to merge", exit 1 for "manual intervention needed".
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
+- **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`

@@ -147,45 +147,54 @@ while [[ $# -gt 0 ]]; do
         shift
       # Normal mode: fetch issue details from GitHub
       elif [[ "$1" =~ ^[0-9]+$ ]]; then
-        # Validate issue number is a positive integer
-        if [ "$1" -le 0 ] 2>/dev/null; then
-          echo "❌ Invalid issue number: $1 (must be positive integer)"
-          exit 1
-        fi
-        ISSUE_NUMBER="$1"
-        echo "▶  Fetching issue #$ISSUE_NUMBER from GitHub..."
-        # Fetch issue details from GitHub
-        ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" --json title,body,state 2>/dev/null || echo "")
-        if [ -n "$ISSUE_JSON" ] && [ "$ISSUE_JSON" != "null" ]; then
-          ISSUE_DESC=$(echo "$ISSUE_JSON" | jq -r '.title')
-          ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
-          ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
-
-          # Validate issue has meaningful content
-          if [ -z "$ISSUE_DESC" ] || [ "$ISSUE_DESC" = "null" ]; then
-            echo "❌ Issue #$ISSUE_NUMBER has no title"
-            echo "   Cannot proceed without a task description"
+        # If normalization already ran (called from bin/rite or workflow-runner.sh),
+        # skip internal issue parsing — just grab the issue number
+        if [ -n "${NORMALIZED_SUBJECT:-}" ] && [ -n "${WORK_DESCRIPTION:-}" ]; then
+          ISSUE_NUMBER="$1"
+          ISSUE_DESC="${NORMALIZED_SUBJECT}"
+          echo "✅ Using pre-normalized issue data: $ISSUE_DESC"
+          shift
+        else
+          # Validate issue number is a positive integer
+          if [ "$1" -le 0 ] 2>/dev/null; then
+            echo "❌ Invalid issue number: $1 (must be positive integer)"
             exit 1
           fi
+          ISSUE_NUMBER="$1"
+          echo "▶  Fetching issue #$ISSUE_NUMBER from GitHub..."
+          # Fetch issue details from GitHub
+          ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" --json title,body,state 2>/dev/null || echo "")
+          if [ -n "$ISSUE_JSON" ] && [ "$ISSUE_JSON" != "null" ]; then
+            ISSUE_DESC=$(echo "$ISSUE_JSON" | jq -r '.title')
+            ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
+            ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
 
-          # Warn if body is empty (but don't fail - title might be enough)
-          if [ -z "$ISSUE_BODY" ] || [ "$ISSUE_BODY" = "null" ]; then
-            echo "⚠️  Issue #$ISSUE_NUMBER has no description body"
-            echo "   Will use title only: $ISSUE_DESC"
+            # Validate issue has meaningful content
+            if [ -z "$ISSUE_DESC" ] || [ "$ISSUE_DESC" = "null" ]; then
+              echo "❌ Issue #$ISSUE_NUMBER has no title"
+              echo "   Cannot proceed without a task description"
+              exit 1
+            fi
+
+            # Warn if body is empty (but don't fail - title might be enough)
+            if [ -z "$ISSUE_BODY" ] || [ "$ISSUE_BODY" = "null" ]; then
+              echo "⚠️  Issue #$ISSUE_NUMBER has no description body"
+              echo "   Will use title only: $ISSUE_DESC"
+            fi
+
+            # Warn if issue is closed
+            if [ "$ISSUE_STATE" = "CLOSED" ]; then
+              echo "⚠️  Issue #$ISSUE_NUMBER is already CLOSED"
+              echo "   Proceeding anyway (may be reopening work)"
+            fi
+
+            echo "✅ Issue loaded: $ISSUE_DESC"
+          else
+            echo "❌ Issue #$ISSUE_NUMBER not found on GitHub"
+            exit 1
           fi
-
-          # Warn if issue is closed
-          if [ "$ISSUE_STATE" = "CLOSED" ]; then
-            echo "⚠️  Issue #$ISSUE_NUMBER is already CLOSED"
-            echo "   Proceeding anyway (may be reopening work)"
-          fi
-
-          echo "✅ Issue loaded: $ISSUE_DESC"
-        else
-          echo "❌ Issue #$ISSUE_NUMBER not found on GitHub"
-          exit 1
+          shift
         fi
-        shift
       else
         ISSUE_DESC="$1"
         shift
@@ -656,8 +665,11 @@ else
       exit 1
     fi
 
-    # Sanitize branch name
-    SANITIZED_DESC=$(echo "$ISSUE_DESC" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | cut -c1-50)
+    # Sanitize branch name — use NORMALIZED_SUBJECT if available, strip type prefix first
+    local _branch_source="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
+    # Strip conventional commit prefix (e.g., "fix: " or "feat(auth): ") before sanitizing — branch gets PREFIX/ from detection logic
+    _branch_source=$(echo "$_branch_source" | sed -E 's/^[a-z]+(\([^)]*\))?: //')
+    SANITIZED_DESC=$(echo "$_branch_source" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | cut -c1-50)
 
     # Validate sanitized result
     if [ -z "$SANITIZED_DESC" ] || [ ${#SANITIZED_DESC} -lt 3 ]; then
@@ -1135,12 +1147,12 @@ else
   fi
 
   # Create draft PR
-  PR_TITLE="$ISSUE_DESC"
+  PR_TITLE="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
   PR_BODY="## Work in Progress
 
 $(if [ -n "$ISSUE_NUMBER" ]; then echo "Closes #$ISSUE_NUMBER"; fi)
 
-This PR is being worked on. Implementation details will be updated as work progresses.
+${WORK_DESCRIPTION:-This PR is being worked on. Implementation details will be updated as work progresses.}
 
 ---
 _Draft PR created automatically by rite for tracking purposes._"
@@ -1229,6 +1241,27 @@ $SECURITY_CONTEXT
 "
 fi
 
+ENCOUNTERED_ISSUES_PROMPT="
+
+## Encountered Issues Protocol
+
+When you discover issues NOT in scope for this issue (test failures, security concerns, code smells, deprecations, missing docs):
+
+1. Do NOT fix them (stay focused on current issue)
+2. Do NOT block on them (proceed with your work)
+3. DO log them to the scratchpad under \"## Encountered Issues (Needs Triage)\":
+
+Format:
+- **YYYY-MM-DD** | \`file:line\` | category | Brief description | Affects: [feature/behavior] | Fix: [intended fix] | Done: [acceptance criteria]
+
+Categories: test-failure, security, code-smell, missing-docs, deprecation, performance
+
+Example:
+- **2026-02-10** | \`response.test.ts:45\` | test-failure | CORS header assertion expects 'X-Content-Type-Options' | Affects: API security headers compliance | Fix: Add X-Content-Type-Options to CORS_HEADERS constant in response.ts | Done: All response.test.ts CORS tests pass
+
+This creates visibility without scope creep. Issues will be triaged into tech-debt tickets at merge time.
+"
+
 if [ "$AUTO_MODE" = true ]; then
   PHASE_0_INSTRUCTIONS="**AUTO MODE: Make reasonable assumptions and proceed without stopping for clarification.**
 
@@ -1273,8 +1306,8 @@ The workflow tool is called **rite** — not \"forge\" or any other name.
 When this session ends, the rite workflow automatically handles commit, push, and PR creation.
 Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
 
-Task: ${ISSUE_DESC}
-${SECURITY_PROMPT}
+Task: ${WORK_DESCRIPTION:-$ISSUE_DESC}
+${SECURITY_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
 ## Workflow Instructions
 
 **IMPORTANT: Use the TodoWrite tool to track progress throughout this workflow.**
@@ -1641,19 +1674,23 @@ if [ "$AUTO_MODE" = false ]; then
   print_status "Generating commit message..."
 fi
 
-# Extract commit type from branch name
-COMMIT_TYPE="feat"
-if [[ "$BRANCH_NAME" =~ ^(fix|feat|docs|test|refactor|chore)/ ]]; then
-  COMMIT_TYPE=$(echo "$BRANCH_NAME" | cut -d'/' -f1)
-fi
-
-# Build commit message from issue description (not branch name, which is truncated/mangled).
-# ISSUE_DESC is the GitHub issue title, e.g., "fix: password regex missing anchor - allows technical 4-char match"
-# If it already has a conventional commit prefix, use it as-is; otherwise prepend the type.
-if echo "$ISSUE_DESC" | grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:"; then
-  COMMIT_SUBJECT="$ISSUE_DESC"
+# Build commit message — NORMALIZED_SUBJECT already has the conventional commit prefix
+# and is <=50 chars. Fall back to legacy logic for direct invocations without normalization.
+if [ -n "${NORMALIZED_SUBJECT:-}" ]; then
+  COMMIT_SUBJECT="$NORMALIZED_SUBJECT"
 else
-  COMMIT_SUBJECT="${COMMIT_TYPE}: ${ISSUE_DESC}"
+  # Fallback: extract commit type from branch name
+  COMMIT_TYPE="feat"
+  if [[ "$BRANCH_NAME" =~ ^(fix|feat|docs|test|refactor|chore)/ ]]; then
+    COMMIT_TYPE=$(echo "$BRANCH_NAME" | cut -d'/' -f1)
+  fi
+
+  # Build commit message from issue description (not branch name, which is truncated/mangled).
+  if echo "$ISSUE_DESC" | grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:"; then
+    COMMIT_SUBJECT="$ISSUE_DESC"
+  else
+    COMMIT_SUBJECT="${COMMIT_TYPE}: ${ISSUE_DESC}"
+  fi
 fi
 
 # Add body with changed files summary (before staging, so use working tree diff)
