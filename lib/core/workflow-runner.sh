@@ -361,6 +361,13 @@ handle_blocker() {
 phase_pre_start_checks() {
   local issue_number="$1"
 
+  # Bootstrap internal docs if missing or sparse
+  RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-${RITE_PROJECT_ROOT}/.rite/docs}"
+  if [ ! -f "${RITE_INTERNAL_DOCS_DIR}/architecture.md" ] || \
+     [ "$(find "${RITE_INTERNAL_DOCS_DIR}" -name "*.md" 2>/dev/null | wc -l)" -lt 3 ]; then
+    source "$RITE_LIB_DIR/core/bootstrap-docs.sh"
+  fi
+
   # Check credentials (blocker handler will print header if needed)
   if ! check_blockers "pre-start"; then
     if ! handle_blocker "pre-start" "$issue_number"; then
@@ -650,11 +657,17 @@ phase_create_pr() {
   # NOT assessment comments (sharkrite-assessment marker) or other bot comments.
   # Previously, matching by author alone caused assessment comments to be counted
   # as "current reviews," skipping review regeneration after fix commits.
+  # Compare review timestamp against the latest WORK commit, excluding mainline
+  # sync merge commits (e.g., GitHub "Update branch" button). These merges don't
+  # change the scope of the PR's work, so the existing review is still valid.
+  # Phase 4 (merge) handles the divergence resolution separately.
   local review_check=$(gh pr view "$PR_NUMBER" --json comments,commits --jq '
-    (.commits[-1].committedDate // "") as $commit_time |
+    ([.commits[] | select(
+      .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
+    )][-1].committedDate // "") as $work_commit_time |
     [.comments[] | select(
       (.body | contains("<!-- sharkrite-local-review")) and
-      (.createdAt > $commit_time)
+      ($work_commit_time != "" and .createdAt > $work_commit_time)
     )] | length
   ' 2>/dev/null || echo "0")
 
@@ -676,7 +689,11 @@ phase_create_pr() {
   set -e  # Re-enable exit-on-error
 
   # Handle exit codes from create-pr.sh
-  if [ $create_pr_exit -ne 0 ]; then
+  if [ $create_pr_exit -eq 2 ]; then
+    # Divergence resolved but needs re-review (foreign commits pulled in)
+    print_info "Divergence resolved — review cycle will re-run in Phase 3"
+    return 0  # Fall through to Phase 3 naturally
+  elif [ $create_pr_exit -ne 0 ]; then
     print_error "create-pr.sh failed with exit code: $create_pr_exit"
     return 1
   fi
@@ -947,6 +964,38 @@ phase_merge_pr() {
   if ! check_blockers "pre-merge" "$pr_number" "$issue_number" "$WORKFLOW_MODE"; then
     if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
       return 1
+    fi
+  fi
+
+  # Pre-merge head verification: ensure PR head hasn't changed since assessment.
+  # Catches foreign commits pushed between Phase 3 (assess) and Phase 4 (merge).
+  source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+
+  local local_head
+  local_head=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || echo "")
+  local auto_flag="false"
+  [ "$WORKFLOW_MODE" = "unsupervised" ] && auto_flag="true"
+
+  if [ -n "$local_head" ] && ! verify_pr_head "$pr_number" "$local_head"; then
+    print_warning "PR head changed since assessment — checking for foreign commits"
+    local branch_name
+    branch_name=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+    if [ -n "$branch_name" ] && detect_divergence "$branch_name"; then
+      local div_result=0
+      handle_push_divergence "$branch_name" "$issue_number" "$pr_number" "$auto_flag" || div_result=$?
+
+      if [ $div_result -eq 2 ]; then
+        # Need re-review — go back to Phase 2→3
+        print_info "Re-entering review loop due to foreign commits"
+        phase_create_pr "$issue_number"
+        phase_assess_and_resolve "$issue_number" "$PR_NUMBER" 0
+        # Fall through to retry merge after re-assessment
+      elif [ $div_result -ne 0 ]; then
+        print_error "Cannot merge — PR head diverged and could not be resolved"
+        return 1
+      fi
+      # div_result=0: resolved, continue to merge
     fi
   fi
 
@@ -1226,7 +1275,7 @@ run_workflow() {
     if [ -n "$_issue_json" ] && [ "$_issue_json" != "null" ]; then
       ISSUE_DESC=$(echo "$_issue_json" | jq -r '.title // ""')
       ISSUE_BODY=$(echo "$_issue_json" | jq -r '.body // ""')
-      RITE_SKIP_APPROVAL=true normalize_existing_issue
+      normalize_existing_issue
       export NORMALIZED_SUBJECT WORK_DESCRIPTION
     fi
   fi
@@ -1281,9 +1330,13 @@ run_workflow() {
   if [ -n "${PR_NUMBER:-}" ] && [ "$PR_NUMBER" != "null" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
     print_status "Inspecting PR #$PR_NUMBER state..."
 
-    # Get latest commit time, review/assessment comments, and follow-up markers in one API call
+    # Get latest WORK commit time (excluding mainline sync merges like "Update branch"),
+    # review/assessment comments, and follow-up markers in one API call.
+    # Mainline sync merges don't change PR scope, so the review is still valid.
     local pr_state_json=$(gh pr view "$PR_NUMBER" --json comments,commits --jq '{
-      latest_commit: (.commits[-1].committedDate // ""),
+      latest_commit: ([.commits[] | select(
+        .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
+      )][-1].committedDate // ""),
       latest_review: ([.comments[] | select(
         .author.login == "claude" or .author.login == "claude[bot]" or
         .author.login == "github-actions[bot]" or

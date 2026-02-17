@@ -4,6 +4,9 @@ session-state/
 *.log
 .resume/
 
+# Sharkrite internal docs (machine-optimized, not for version control)
+docs/
+
 # Committed files (team shares these):
 # config
 # blockers.conf
