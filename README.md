@@ -155,22 +155,22 @@ See [config/project.conf.example](config/project.conf.example) for all options, 
 
 ## Safety
 
-### 10 blocker rules
+Sharkrite uses a two-tier safety system: review sensitivity hints that sharpen the review, and hard gates that stop the merge.
 
-Sharkrite detects risky changes and pauses the workflow before they merge:
+### Review sensitivity
 
-1. Infrastructure changes (CDK, Terraform, CloudFormation)
-2. Database migrations
-3. Auth configuration changes
-4. Architectural documentation modifications
-5. Critical review issues
-6. Test/build failures
-7. Expensive cloud services (RDS, NAT Gateway)
-8. Session limits exceeded
-9. AWS credentials expired
-10. Protected workflow scripts modified
+When changed files match sensitive patterns (auth, infrastructure, migrations, docs, expensive services, workflow scripts), the review prompt gets targeted guidance — "verify no changes to authentication flow" instead of a generic review. This makes the review more thorough without interrupting the workflow.
 
-Each rule is configurable in `.rite/blockers.conf`.
+Patterns are configurable in `.rite/blockers.conf`. See [docs/configuration.md](docs/configuration.md) for details.
+
+### Hard merge gates
+
+Only content-aware conditions block a merge:
+
+- **Critical review findings** — CRITICAL severity issues must be fixed or approved
+- **Test/build failures** — non-zero exit from test suite
+- **Session limits** — configurable issue count and time limits
+- **AWS credentials expired** — deployment credentials invalid
 
 ### Security feedback loop
 
@@ -203,7 +203,7 @@ sharkrite/
 │   │   └── batch-process-issues.sh
 │   └── utils/                   # Shared libraries
 │       ├── config.sh            # Layered config loader
-│       ├── blocker-rules.sh     # 10 configurable rules
+│       ├── blocker-rules.sh     # Hard gates + review sensitivity
 │       ├── scratchpad-manager.sh
 │       ├── session-tracker.sh
 │       └── ...

@@ -334,81 +334,20 @@ Automated review in progress..." 2>/dev/null || true
   fi
 fi
 
-# Early blocker detection: Check for file-based blockers BEFORE waiting for review
-# This prevents wasting time waiting for a review that will be blocked anyway
-echo "Running pre-review blocker checks..."
+# Early sensitivity detection: identify file patterns that will inform review focus.
+# These do NOT block anything — they give early awareness of what the review will scrutinize.
+print_status "Checking review sensitivity areas..."
 
-# Check for various file-based blockers
-# Temporarily disable exit-on-error so blocker check failures don't crash the script
-blocker_detected=false
-blocker_type=""
-blocker_details=""
+set +e
+sensitivity_hints=$(detect_sensitivity_areas "$PR_NUMBER" 2>/dev/null)
+set -e
 
-set +e  # Disable exit-on-error for blocker detection
-(
-  # Run in subshell to isolate any failures
-  detect_infrastructure_changes "$PR_NUMBER" >/dev/null 2>&1
-)
-if [ $? -ne 0 ]; then
-  blocker_type="infrastructure"
-  blocker_details=$(detect_infrastructure_changes "$PR_NUMBER" 2>&1 || echo "Infrastructure changes detected")
-  blocker_detected=true
-fi
-
-if [ "$blocker_detected" = false ]; then
-  ( detect_database_migrations "$PR_NUMBER" >/dev/null 2>&1 )
-  if [ $? -ne 0 ]; then
-    blocker_type="database_migration"
-    blocker_details=$(detect_database_migrations "$PR_NUMBER" 2>&1 || echo "Database migration detected")
-    blocker_detected=true
-  fi
-fi
-
-if [ "$blocker_detected" = false ]; then
-  ( detect_auth_changes "$PR_NUMBER" >/dev/null 2>&1 )
-  if [ $? -ne 0 ]; then
-    blocker_type="auth_changes"
-    blocker_details=$(detect_auth_changes "$PR_NUMBER" 2>&1 || echo "Auth changes detected")
-    blocker_detected=true
-  fi
-fi
-
-if [ "$blocker_detected" = false ]; then
-  ( detect_doc_changes "$PR_NUMBER" >/dev/null 2>&1 )
-  if [ $? -ne 0 ]; then
-    blocker_type="architectural_docs"
-    blocker_details=$(detect_doc_changes "$PR_NUMBER" 2>&1 || echo "Architectural doc changes detected")
-    blocker_detected=true
-  fi
-fi
-
-if [ "$blocker_detected" = false ]; then
-  ( detect_expensive_services "$PR_NUMBER" >/dev/null 2>&1 )
-  if [ $? -ne 0 ]; then
-    blocker_type="expensive_services"
-    blocker_details=$(detect_expensive_services "$PR_NUMBER" 2>&1 || echo "Expensive services detected")
-    blocker_detected=true
-  fi
-fi
-
-if [ "$blocker_detected" = false ]; then
-  ( detect_protected_scripts "$PR_NUMBER" >/dev/null 2>&1 )
-  if [ $? -ne 0 ]; then
-    blocker_type="protected_scripts"
-    blocker_details=$(detect_protected_scripts "$PR_NUMBER" 2>&1 || echo "Protected script changes detected")
-    blocker_detected=true
-  fi
-fi
-set -e  # Re-enable exit-on-error
-
-if [ "$blocker_detected" = true ]; then
-  # Non-blocking warning: blockers will gate at merge time (not here)
-  # This gives the user early awareness while still letting review/assessment run
-  print_warning "Blocker detected: $blocker_type (will require approval before merge)"
-  echo "$blocker_details" | head -5
-  echo ""
+if [ -n "$sensitivity_hints" ]; then
+  # Extract category names from "### Sensitivity: ..." headers
+  sensitivity_areas=$(echo "$sensitivity_hints" | grep "^### Sensitivity:" | sed 's/^### Sensitivity: //' | paste -sd ', ' -)
+  print_info "Review focus areas: $sensitivity_areas"
 else
-  print_success "No file-based blockers detected"
+  print_success "No special sensitivity areas detected"
 fi
 echo ""
 

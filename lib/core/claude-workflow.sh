@@ -681,7 +681,7 @@ else
     fi
 
     # Sanitize branch name — use NORMALIZED_SUBJECT if available, strip type prefix first
-    local _branch_source="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
+    _branch_source="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
     # Strip conventional commit prefix (e.g., "fix: " or "feat(auth): ") before sanitizing — branch gets PREFIX/ from detection logic
     _branch_source=$(echo "$_branch_source" | sed -E 's/^[a-z]+(\([^)]*\))?: //')
     SANITIZED_DESC=$(echo "$_branch_source" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | cut -c1-50)

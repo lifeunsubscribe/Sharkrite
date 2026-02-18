@@ -24,6 +24,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 
 # Parse arguments
 PR_NUMBER="${1:-}"
@@ -169,6 +170,22 @@ fi
 # filtering previously-addressed items. If fixed items no longer appear in the
 # diff, the review simply won't flag them — which is the correct behavior.
 
+# Detect sensitivity areas from changed file patterns for enhanced review focus
+SENSITIVITY_SECTION=""
+if [ -n "$PR_NUMBER" ]; then
+  SENSITIVITY_HINTS=$(detect_sensitivity_areas "$PR_NUMBER")
+  if [ -n "$SENSITIVITY_HINTS" ]; then
+    SENSITIVITY_SECTION="
+
+## Review Sensitivity Areas
+
+The following areas were detected in the changed files and warrant extra scrutiny. These are focus areas, not blockers. Apply heightened rigor to these specific aspects.
+
+${SENSITIVITY_HINTS}"
+    print_status "Sensitivity areas detected — review will apply extra focus"
+  fi
+fi
+
 # Get current timestamp for review metadata
 REVIEW_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -178,6 +195,7 @@ EFFECTIVE_MODEL="${RITE_REVIEW_MODEL:-opus}"
 # Build the full prompt
 REVIEW_PROMPT="$REVIEW_INSTRUCTIONS
 $PROJECT_CONTEXT
+${SENSITIVITY_SECTION:-}
 
 ---
 

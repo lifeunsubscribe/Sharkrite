@@ -8,12 +8,12 @@ AI-powered GitHub workflow automation CLI. Pure bash, uses Claude Code for devel
 bin/rite                          # CLI entrypoint (arg parsing, dispatch)
 lib/core/workflow-runner.sh       # Main orchestrator (phases 1-5, retry loop)
 lib/core/claude-workflow.sh       # Claude Code session (dev work + fix mode)
-lib/core/create-pr.sh             # PR creation, push, early blocker warnings
+lib/core/create-pr.sh             # PR creation, push, early sensitivity detection
 lib/core/local-review.sh          # Generate code review via Claude
 lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
-lib/utils/blocker-rules.sh        # Blocker detection functions
+lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
@@ -22,9 +22,9 @@ lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, enc
 ### Workflow Phases
 
 1. **Development** — Claude implements the fix in a worktree
-2. **Push/PR** — Push commits, create/update PR, print blocker warnings
+2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review, assess findings, fix ACTIONABLE_NOW items (up to 3 retries)
-4. **Merge** — Blocker gate (requires approval), then merge PR
+4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
 
 ### Data Flow
@@ -79,15 +79,29 @@ FINDINGS=$(echo "$output" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+" | head -
 
 Use `.rite` (no trailing slash). `.rite/` only matches directories, but in worktrees `.rite` is a symlink (git mode 120000 = file).
 
-## Blocker System
+## Safety System
 
-Blockers detect risky changes (auth, infra, migrations, etc.) and require human approval.
+Two-tier approach: review sensitivity hints + hard merge gates.
 
-- **Early warning** in `create-pr.sh`: Non-blocking, just prints what was detected
-- **Gate** in `phase_merge_pr`: Blocking, requires approval before merge proceeds
+### Review Sensitivity Hints (path-based)
+
+Path-based detectors (infrastructure, migrations, auth, docs, expensive services, protected scripts) inject focused review guidance into the review prompt. They do NOT block merges.
+
+- Detected in `create-pr.sh` early checks (informational)
+- Injected into review prompt by `local-review.sh` via `detect_sensitivity_areas()`
+- Patterns configured in `.rite/blockers.conf` (same `BLOCKER_*` variables)
+
+### Hard Merge Gates (content-aware)
+
+Only content-aware and practical conditions block merges:
+
+- **CRITICAL review findings** — requires fix or approval
+- **Test/build failures** — non-zero exit from test suite
+- **Session limits** — token/time limits reached
+- **AWS credentials expired** — deployment credentials invalid
 - **Supervised mode**: Interactive `read -p` prompt for approval
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
-- Approvals are remembered per-issue via `has_approved_blocker()`
+- Approvals remembered per-issue via `has_approved_blocker()`
 
 ## Testing
 

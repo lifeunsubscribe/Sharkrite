@@ -1,7 +1,15 @@
 #!/bin/bash
 # lib/utils/blocker-rules.sh
-# The 10 Blocker Rules - automatic workflow stopping conditions
-# Usage: source this file and call check_blockers()
+# Two-tier safety system: review sensitivity hints + hard merge gates
+#
+# Sensitivity hints (path-based): inject focus areas into the review prompt
+#   infrastructure, migrations, auth, docs, expensive services, protected scripts
+#
+# Hard gates (content-aware): block merges until resolved
+#   critical review findings, test failures, session limits, credential expiry
+#
+# Usage: source this file, call check_blockers() for gates or
+#        detect_sensitivity_areas() for review hints
 #
 # Requires: config.sh sourced first (for $BLOCKER_* pattern variables)
 
@@ -215,7 +223,109 @@ detect_protected_scripts() {
   return 0
 }
 
-# Main blocker check function
+# Detect sensitivity areas for review enhancement.
+# Fetches changed files once, matches all patterns in memory, returns
+# structured hints on stdout. Always exits 0 (informational, never blocks).
+detect_sensitivity_areas() {
+  local pr_number=$1
+  local hints=""
+
+  # Fetch changed file paths once (single API call)
+  local changed_files
+  changed_files=$(gh pr view "$pr_number" --json files --jq '.files[].path' 2>/dev/null || echo "")
+
+  if [ -z "$changed_files" ]; then
+    return 0
+  fi
+
+  # Infrastructure
+  local infra_matches
+  infra_matches=$(echo "$changed_files" | grep -iE "$BLOCKER_INFRASTRUCTURE_PATHS" || true)
+  if [ -n "$infra_matches" ]; then
+    hints+="### Sensitivity: Infrastructure Changes
+Files:
+$(echo "$infra_matches" | sed 's/^/  /')
+Guidance: Verify infrastructure changes are intentional and correctly scoped. Check for missing environment guards, unintended production impact, and appropriate cost controls.
+
+"
+  fi
+
+  # Database migrations
+  local migration_matches
+  migration_matches=$(echo "$changed_files" | grep -iE "$BLOCKER_MIGRATION_PATHS" || true)
+  if [ -n "$migration_matches" ]; then
+    hints+="### Sensitivity: Database Migrations
+Files:
+$(echo "$migration_matches" | sed 's/^/  /')
+Guidance: Verify migration is reversible or has a rollback plan. Check for data loss risk in column drops or type changes. Confirm indexes for new foreign keys and correct migration ordering.
+
+"
+  fi
+
+  # Auth changes (exclude tests and docs, same as the detector)
+  local auth_matches
+  auth_matches=$(echo "$changed_files" | grep -iE "$BLOCKER_AUTH_PATHS" | grep -viE "tests?/|docs?/" || true)
+  if [ -n "$auth_matches" ]; then
+    hints+="### Sensitivity: Authentication / Authorization
+Files:
+$(echo "$auth_matches" | sed 's/^/  /')
+Guidance: Verify no changes to authentication flow, token validation, session management, or authorization checks. Distinguish whether control flow was modified vs. only logging, formatting, or error message changes.
+
+"
+  fi
+
+  # Architectural docs
+  local doc_matches
+  doc_matches=$(echo "$changed_files" | grep -iE "$BLOCKER_DOC_PATHS" || true)
+  if [ -n "$doc_matches" ]; then
+    hints+="### Sensitivity: Architectural Documentation
+Files:
+$(echo "$doc_matches" | sed 's/^/  /')
+Guidance: Verify documentation changes accurately reflect the current system state. Check for outdated references or incorrect behavioral descriptions.
+
+"
+  fi
+
+  # Expensive services (scan diff for service names)
+  local expensive_matches
+  expensive_matches=$(gh pr diff "$pr_number" 2>/dev/null | grep -oiE "$BLOCKER_EXPENSIVE_SERVICES" | sort -u || true)
+  if [ -n "$expensive_matches" ]; then
+    hints+="### Sensitivity: Expensive Cloud Services
+Services referenced:
+$(echo "$expensive_matches" | sed 's/^/  /')
+Guidance: Verify cost implications of referenced cloud services. Check for appropriate instance sizing, auto-scaling limits, and lifecycle policies.
+
+"
+  fi
+
+  # Protected scripts
+  local protected_matches=""
+  IFS='|' read -ra _protected_list <<< "$BLOCKER_PROTECTED_SCRIPTS"
+  for _script in "${_protected_list[@]}"; do
+    local _match
+    _match=$(echo "$changed_files" | grep -F "$_script" || true)
+    if [ -n "$_match" ]; then
+      protected_matches+="$_match"$'\n'
+    fi
+  done
+  protected_matches=$(echo "$protected_matches" | sed '/^$/d')
+  if [ -n "$protected_matches" ]; then
+    hints+="### Sensitivity: Workflow Scripts Modified
+Files:
+$(echo "$protected_matches" | sed 's/^/  /')
+Guidance: Verify changes do not break the CI/CD pipeline, review loop, or merge process. Check for regressions in error handling and exit code propagation.
+
+"
+  fi
+
+  if [ -n "$hints" ]; then
+    echo "$hints"
+  fi
+
+  return 0
+}
+
+# Main blocker check function (hard gates only)
 check_blockers() {
   local context="$1"  # "pre-start", "pre-commit", "pre-merge", "session-check"
   local pr_number="${2:-}"
@@ -249,17 +359,11 @@ check_blockers() {
         return 1
       fi
 
-      # Run all PR-based checks.
-      # Capture output on the first call to avoid running each detector twice
-      # (once for exit code, once for output) which caused duplicate blocker text.
+      # Content-aware hard gates only. Path-based checks (infrastructure,
+      # migrations, auth, docs, expensive services, protected scripts) are now
+      # handled as review sensitivity hints via detect_sensitivity_areas().
       local _det_output
-      local _det_checks=("infrastructure:detect_infrastructure_changes"
-                         "database_migration:detect_database_migrations"
-                         "auth_changes:detect_auth_changes"
-                         "architectural_docs:detect_doc_changes"
-                         "critical_issues:detect_critical_issues"
-                         "expensive_services:detect_expensive_services"
-                         "protected_scripts:detect_protected_scripts")
+      local _det_checks=("critical_issues:detect_critical_issues")
 
       for _check in "${_det_checks[@]}"; do
         local _type="${_check%%:*}"
@@ -305,9 +409,6 @@ get_blocker_urgency() {
   local blocker_type="$1"
 
   case "$blocker_type" in
-    infrastructure|database_migration|auth_changes|architectural_docs|expensive_services|protected_scripts)
-      echo "urgent"
-      ;;
     critical_issues)
       echo "high"
       ;;
@@ -346,6 +447,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f detect_session_limit
   export -f detect_credentials_expired
   export -f detect_protected_scripts
+  export -f detect_sensitivity_areas
   export -f check_blockers
   export -f get_blocker_urgency
   export -f is_blocking_batch

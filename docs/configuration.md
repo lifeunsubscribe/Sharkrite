@@ -39,15 +39,17 @@ RITE_AWS_PROFILE="default"
 
 See [config/rite.conf.example](../config/rite.conf.example) for all options.
 
-## Blocker Rules (`.rite/blockers.conf`)
+## Sensitivity Patterns (`.rite/blockers.conf`)
 
-Customize which file patterns trigger blocker detection:
+These patterns control which file paths trigger review sensitivity hints. When matched, the review prompt gets targeted guidance for that area (e.g., "verify no changes to authentication flow"). They do not block merges.
 
 ```bash
 BLOCKER_INFRASTRUCTURE_PATHS="(cdk|cloudformation|terraform|pulumi)"
 BLOCKER_MIGRATION_PATHS="(prisma/migrations|migrations/|alembic/)"
 BLOCKER_AUTH_PATHS="(auth|cognito|jwt|oauth|session)"
 ```
+
+The `BLOCKER_` variable prefix is a legacy name — these patterns now drive review focus, not merge gates.
 
 See [config/blockers.conf.example](../config/blockers.conf.example) for all patterns.
 
