@@ -95,12 +95,11 @@ SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT
 # Sharkrite timeout (seconds, default 2 hours)
 RITE_CLAUDE_TIMEOUT="${RITE_CLAUDE_TIMEOUT:-7200}"
 
-# Claude model (empty = use default, e.g. "opus", "sonnet", "haiku")
-RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-}"
+# Claude model for development sessions (full ID so labels show exact version)
+RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5-20250929}"
 
-# Model for reviews and assessments (default: opus for quality)
-# Review and assessment MUST use same model for consistency
-RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-opus}"
+# Model for reviews and assessments — opus for quality (must match for consistency)
+RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5-20251101}"
 
 # Review method: "app" | "local" | "auto" (default: local)
 #   - "app": Use Claude for GitHub app only (fail if not installed)

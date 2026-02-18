@@ -8,6 +8,7 @@
 #   0 - All issues resolved or tracked
 #   1 - Manual intervention required (supervisor decision needed)
 #   2 - Critical issues require fixes (restart PR cycle, outputs filtered review to stdout)
+#   3 - Review is stale (commits newer than review — route back to Phase 2 for fresh review)
 #
 # Data flow (auto mode):
 #   - Calls assess-review-issues.sh to filter ACTIONABLE items
@@ -367,7 +368,7 @@ extract_review_model() {
   if [ -n "$model" ]; then
     echo "$model"
   else
-    echo "${RITE_REVIEW_MODEL:-opus}"
+    echo "$RITE_REVIEW_MODEL"
   fi
 }
 
@@ -414,12 +415,12 @@ else
   export RITE_REVIEW_FORMAT="markdown"
 fi
 
-# Check if review is stale (commits pushed after review)
-# SKIP on retry > 0: We just generated fixes and a new review in the previous cycle.
-# Re-checking for stale would create an infinite loop of regenerating reviews.
+# Check if review is stale (commits pushed after review).
+# Runs on every invocation, including retries. Phase 2 should push fix commits
+# and generate a fresh review before Phase 3 re-enters, but if that fails
+# (e.g., push skipped, review generation failed), this catches it as a safety net.
 if [ "$RETRY_COUNT" -gt 0 ]; then
-  print_info "Retry $RETRY_COUNT: Skipping stale check (review was generated this cycle)"
-  REVIEW_TIME=$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/null)
+  print_status "Retry $RETRY_COUNT: Checking review currency..."
 else
   print_status "Checking if review is current..."
 fi
@@ -428,22 +429,19 @@ echo ""
 # Get review timestamp
 REVIEW_TIME="${REVIEW_TIME:-$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/null)}"
 
-# Only check for stale reviews on first run (RETRY_COUNT == 0)
-# On retries, we just fixed issues and pushed - the review is from this cycle
-if [ "$RETRY_COUNT" -eq 0 ]; then
-  # Get latest commit timestamp (warn but continue if this fails)
-  GH_STDERR=$(mktemp)
-  LATEST_COMMIT_TIME=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].committedDate' 2>"$GH_STDERR") || {
-    GH_ERROR=$(cat "$GH_STDERR")
-    if [ -n "$GH_ERROR" ]; then
-      print_warning "Could not fetch commit timestamps: $GH_ERROR"
-    fi
-    LATEST_COMMIT_TIME=""
-  }
-  rm -f "$GH_STDERR"
+# Get latest commit timestamp (warn but continue if this fails)
+GH_STDERR=$(mktemp)
+LATEST_COMMIT_TIME=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].committedDate' 2>"$GH_STDERR") || {
+  GH_ERROR=$(cat "$GH_STDERR")
+  if [ -n "$GH_ERROR" ]; then
+    print_warning "Could not fetch commit timestamps: $GH_ERROR"
+  fi
+  LATEST_COMMIT_TIME=""
+}
+rm -f "$GH_STDERR"
 
-  # Check if there are commits after the review
-  if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
+# Check if there are commits after the review
+if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
   # Convert ISO timestamps to seconds since epoch for reliable comparison
   # Portable date parsing: detect GNU vs BSD date
   if date --version >/dev/null 2>&1; then
@@ -457,70 +455,33 @@ if [ "$RETRY_COUNT" -eq 0 ]; then
   fi
 
   if [ "$COMMIT_EPOCH" -gt "$REVIEW_EPOCH" ]; then
-  print_warning "Review is stale - commits pushed after review"
-  echo "  Review created: $REVIEW_TIME"
-  echo "  Latest commit:  $LATEST_COMMIT_TIME"
-  echo ""
-
-  # Check if there's a newer review (bot accounts OR local sharkrite reviews)
-  ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | sort_by(.createdAt) | reverse' 2>/dev/null)
-
-  NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | select(.createdAt > "'"$LATEST_COMMIT_TIME"'")] | length' 2>/dev/null || echo "0")
-
-  if [ "$NEWER_REVIEW_COUNT" -gt 0 ]; then
-    print_info "Found newer review after latest commit - using that instead"
-    REVIEW_JSON=$(echo "$ALL_REVIEWS" | jq '.[0]' 2>/dev/null)
-    REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null)
-    echo "$REVIEW_BODY" > "$REVIEW_FILE"
-
-    # Re-parse issue counts from new review
-    CRITICAL_COUNT=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep -c '^### [0-9]' 2>/dev/null | head -1)
-    CRITICAL_COUNT=${CRITICAL_COUNT:-0}
-    HIGH_COUNT=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep -c '^### [0-9]' 2>/dev/null | head -1)
-    HIGH_COUNT=${HIGH_COUNT:-0}
-    MEDIUM_COUNT=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep -c '^### [0-9]' 2>/dev/null | head -1)
-    MEDIUM_COUNT=${MEDIUM_COUNT:-0}
-    LOW_COUNT=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep -c '^### [0-9]' 2>/dev/null | head -1)
-    LOW_COUNT=${LOW_COUNT:-0}
-
-    print_success "✓ Using current review (created after latest commit)"
+    print_warning "Review is stale — commits pushed after review"
+    echo "  Review created: $REVIEW_TIME"
+    echo "  Latest commit:  $LATEST_COMMIT_TIME"
     echo ""
-  else
-    # Use shared review helper for consistent stale review handling
-    # This respects RITE_REVIEW_METHOD config (app, local, auto)
-    if [ "$AUTO_MODE" = true ]; then
-      handle_stale_review "$PR_NUMBER" --auto || {
-        print_warning "Could not refresh review"
-        print_info "Continuing with stale review as fallback (issues may already be fixed)"
-      }
+
+    # Check if there's a newer review we missed (bot accounts OR local sharkrite reviews)
+    ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | sort_by(.createdAt) | reverse' 2>/dev/null)
+
+    NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | select(.createdAt > "'"$LATEST_COMMIT_TIME"'")] | length' 2>/dev/null || echo "0")
+
+    if [ "$NEWER_REVIEW_COUNT" -gt 0 ]; then
+      # A newer review exists — use it instead
+      print_info "Found newer review after latest commit — using that instead"
+      REVIEW_JSON=$(echo "$ALL_REVIEWS" | jq '.[0]' 2>/dev/null)
+      REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null)
+      echo "$REVIEW_BODY" > "$REVIEW_FILE"
+      print_success "Using current review (created after latest commit)"
+      echo ""
     else
-      handle_stale_review "$PR_NUMBER" || {
-        print_warning "Could not refresh review"
-        print_info "Continuing with stale review as fallback (issues may already be fixed)"
-      }
-    fi
-
-    # Re-fetch the review after posting new one
-    print_status "Fetching updated review..."
-    sleep 2  # Brief pause for GitHub API to reflect new comment
-
-    # Sort by createdAt descending and get the newest review (not just last in array)
-    REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null) || true
-
-    if [ -n "$REVIEW_JSON" ] && [ "$REVIEW_JSON" != "null" ]; then
-      REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null || echo "")
-      REVIEW_TIME=$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/null)
-
-      if [ -n "$REVIEW_BODY" ] && [ "$REVIEW_BODY" != "null" ]; then
-        echo "$REVIEW_BODY" > "$REVIEW_FILE"
-        print_success "✅ Fresh review obtained and will be used for assessment"
-        echo ""
-      fi
+      # No current review exists. Route back to Phase 2 for proper
+      # push + review generation via the standard pipeline (create-pr.sh
+      # → local-review.sh). Phase 3 should only assess, not generate.
+      print_info "No current review found — routing back to review phase"
+      exit 3
     fi
   fi
   fi
-  fi
-fi  # End of RETRY_COUNT == 0 stale check block
 
 # ============================================================================
 # RAW REVIEW DISPLAY: Show what Claude will see (compact format for debugging)
@@ -890,9 +851,80 @@ $(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "L
     FOLLOWUP_DESCRIPTION="This issue consolidates all review feedback items that should be addressed. Items are grouped by priority."
   fi
 
-  FOLLOWUP_BODY="## $FOLLOWUP_TITLE_PREFIX: PR #$PR_NUMBER
+  # Build follow-up issue body using the structure from templates/issue-template.md.
+  # Sections: Description, Claude Context, Acceptance Criteria, Done Definition,
+  # Scope Boundary, Dependencies, Time Estimate.
+
+  # --- Gather data for template sections ---
+
+  # Claude Context: extract changed file paths from the PR
+  CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path' 2>/dev/null || echo "")
+  CLAUDE_CONTEXT=""
+  if [ -n "$CHANGED_FILES" ]; then
+    CLAUDE_CONTEXT=$(echo "$CHANGED_FILES" | sed 's/^/- `/' | sed 's/$/`/')
+  fi
+
+  # Acceptance Criteria: extract item titles and severities from assessment headers
+  ACCEPTANCE_ITEMS=""
+  if [ -n "${FILTERED_CONTENT:-}" ]; then
+    # Parse "### Title - ACTIONABLE_NOW" or "### Title - ACTIONABLE_LATER" headers
+    # Use process substitution to avoid subshell variable loss
+    while IFS= read -r _ac_line; do
+      _ac_title=$(echo "$_ac_line" | sed 's/^### //; s/ - ACTIONABLE_.*//')
+      # Look up severity for this item (lines after the header in assessment)
+      _ac_severity=$(echo "$FILTERED_CONTENT" | grep -A 3 -F "$_ac_line" | grep -oE "Severity:.*" | head -1 | sed 's/Severity:[[:space:]]*//' | sed 's/\*//g')
+      _ac_severity=${_ac_severity:-MEDIUM}
+      ACCEPTANCE_ITEMS="${ACCEPTANCE_ITEMS}
+- [ ] [$_ac_severity] $_ac_title"
+    done < <(echo "$FILTERED_CONTENT" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
+    # Trim leading newline
+    ACCEPTANCE_ITEMS=$(echo "$ACCEPTANCE_ITEMS" | sed '/^$/d')
+  fi
+  # Fallback if no items extracted
+  if [ -z "$ACCEPTANCE_ITEMS" ]; then
+    ACCEPTANCE_ITEMS="- [ ] Address all CRITICAL/HIGH priority issues
+- [ ] Address MEDIUM priority issues
+- [ ] Consider LOW priority suggestions"
+  fi
+
+  # Done Definition: based on severity mix
+  if [ "$CRITICAL_COUNT" -gt 0 ]; then
+    DONE_DEFINITION="All CRITICAL and HIGH items resolved and verified; MEDIUM/LOW addressed or explicitly deferred with justification."
+  elif [ "$HIGH_COUNT" -gt 0 ]; then
+    DONE_DEFINITION="All HIGH items resolved and verified; MEDIUM/LOW addressed or deferred with justification."
+  else
+    DONE_DEFINITION="All MEDIUM items addressed; LOW items considered and deferred if not applicable."
+  fi
+
+  # Time Estimate: aggregate from Fix Effort metadata if available
+  TIME_ESTIMATE=""
+  if [ -n "${FILTERED_CONTENT:-}" ]; then
+    effort_10min=$(echo "$FILTERED_CONTENT" | grep -c "Fix Effort:.*<10min" || true)
+    effort_1hr=$(echo "$FILTERED_CONTENT" | grep -c "Fix Effort:.*<1hr" || true)
+    effort_gt1hr=$(echo "$FILTERED_CONTENT" | grep -c "Fix Effort:.*>1hr" || true)
+    if [ "$effort_gt1hr" -gt 0 ]; then
+      TIME_ESTIMATE="4hr"
+    elif [ "$effort_1hr" -gt 1 ]; then
+      TIME_ESTIMATE="2hr"
+    elif [ "$effort_1hr" -gt 0 ] || [ "$effort_10min" -gt 2 ]; then
+      TIME_ESTIMATE="1hr"
+    elif [ "$effort_10min" -gt 0 ]; then
+      TIME_ESTIMATE="30min"
+    fi
+  fi
+
+  # PR metadata
+  PR_BRANCH_NAME=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "unknown")
+
+  # --- Build issue body ---
+
+  FOLLOWUP_BODY="## Description
 
 $FOLLOWUP_DESCRIPTION$ASSESSMENT_NOTE
+
+**Source PR:** #$PR_NUMBER
+**Branch:** $PR_BRANCH_NAME
+**Review Date:** $(date +%Y-%m-%d)
 
 ---
 
@@ -918,42 +950,40 @@ $(if [ "$MEDIUM_COUNT" -gt 0 ]; then echo "$MEDIUM_ISSUES"; else echo "_No MEDIU
 
 $(if [ "$LOW_COUNT" -gt 0 ]; then echo "$LOW_ISSUES"; else echo "_No LOW priority issues_"; fi)
 
----
-
-## Context
-
-**Source PR:** #$PR_NUMBER
-**Branch:** $(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "unknown")
-**Review Date:** $(date +%Y-%m-%d)
-
-⚠️ **Important:** Work should be done on the same branch as the parent PR to update it directly.
+## Claude Context
+Files to read before starting:
+$CLAUDE_CONTEXT
 
 ## Acceptance Criteria
-
-- [ ] Address all HIGH priority issues
-- [ ] Address all MEDIUM priority issues
-- [ ] Consider LOW priority suggestions
+$ACCEPTANCE_ITEMS
 - [ ] Verify fixes with tests
-- [ ] Update security documentation if needed
+- [ ] Update documentation if applicable
 
-## Implementation Notes
+## Done Definition
+$DONE_DEFINITION
 
-- This is a batched issue combining multiple review items for easier processing
-- Can be completed in a single focused PR
-- Smaller, security-focused changes are easier to review and approve
-- Close this issue when all HIGH/MEDIUM items are resolved
+## Scope Boundary
+- DO: Address the specific review findings listed above
+- DO NOT: Refactor surrounding code, add new features, or modify unrelated files
+
+## Dependencies
+After: #${ISSUE_NUMBER:-$PR_NUMBER}
+$([ -n "${TIME_ESTIMATE:-}" ] && echo "
+## Time Estimate
+$TIME_ESTIMATE" || echo "")
 
 ---
 
-_Auto-generated consolidated follow-up from PR review_"
+_Auto-generated follow-up from PR #$PR_NUMBER review_"
 
   # Determine issue title and search term based on type
+  # Title format follows templates/issue-template.md convention: [type] Brief description
   if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    ISSUE_TITLE="Security Debt: PR #$PR_NUMBER"
-    ISSUE_SEARCH="Security Debt: PR #$PR_NUMBER"
+    ISSUE_TITLE="[tech-debt] Review feedback from PR #$PR_NUMBER"
+    ISSUE_SEARCH="Review feedback from PR #$PR_NUMBER"
   else
-    ISSUE_TITLE="Review Follow-up: PR #$PR_NUMBER"
-    ISSUE_SEARCH="Review Follow-up: PR #$PR_NUMBER"
+    ISSUE_TITLE="[review-follow-up] Review feedback from PR #$PR_NUMBER"
+    ISSUE_SEARCH="Review feedback from PR #$PR_NUMBER"
   fi
 
   # Check if issue already exists for this PR

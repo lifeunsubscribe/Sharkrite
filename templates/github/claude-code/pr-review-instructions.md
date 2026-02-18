@@ -93,53 +93,15 @@ Use ONLY for issues that would cause immediate harm if merged:
 
 ## Output Format
 
-Your review MUST include TWO parts:
-1. A hidden JSON block for machine parsing (REQUIRED)
-2. Human-readable markdown (REQUIRED)
+Your review MUST include exactly TWO parts in this order:
+1. Human-readable markdown (REQUIRED) — this goes FIRST
+2. A hidden JSON block for machine parsing (REQUIRED) — this goes at the END
 
-### Part 1: JSON Data Block (Hidden)
+**IMPORTANT:** Do NOT include any visible JSON code blocks, metadata summaries, or structured data before the human-readable review. The review must start immediately with the `## 📋 Code Review` heading. The ONLY JSON in your output is the hidden HTML comment block at the very end.
 
-Start your review with this hidden block:
+### Part 1: Human-Readable Review
 
-```markdown
-<!-- sharkrite-review-data
-{
-  "metadata": {
-    "model": "[model name from context]",
-    "timestamp": "[ISO 8601 timestamp]",
-    "files_analyzed": [count]
-  },
-  "summary": {
-    "critical": [count],
-    "high": [count],
-    "medium": [count],
-    "low": [count],
-    "verdict": "BLOCK_MERGE|NEEDS_WORK|APPROVE_WITH_COMMENTS|APPROVED"
-  },
-  "items": [
-    {
-      "id": 1,
-      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
-      "category": "Security|BugRisk|CodeQuality|Performance|Testing",
-      "title": "Brief issue title",
-      "file": "path/to/file.ts",
-      "line": 42,
-      "problem": "Description of the issue",
-      "impact": "Why this matters",
-      "recommendation": "How to fix it"
-    }
-  ],
-  "positive": [
-    "Good thing observed",
-    "Another good thing"
-  ]
-}
--->
-```
-
-### Part 2: Human-Readable Review
-
-Structure your review as follows:
+Start your review with this format:
 
 ```markdown
 ## 📋 Code Review
@@ -215,6 +177,46 @@ Structure your review as follows:
 **Next Steps:**
 - [ ] [First action item]
 - [ ] [Second action item]
+```
+
+### Part 2: JSON Data Block (Hidden)
+
+End your review with this hidden block (after all human-readable content):
+
+```markdown
+<!-- sharkrite-review-data
+{
+  "metadata": {
+    "model": "[model name from context]",
+    "timestamp": "[ISO 8601 timestamp]",
+    "files_analyzed": [count]
+  },
+  "summary": {
+    "critical": [count],
+    "high": [count],
+    "medium": [count],
+    "low": [count],
+    "verdict": "BLOCK_MERGE|NEEDS_WORK|APPROVE_WITH_COMMENTS|APPROVED"
+  },
+  "items": [
+    {
+      "id": 1,
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "category": "Security|BugRisk|CodeQuality|Performance|Testing",
+      "title": "Brief issue title",
+      "file": "path/to/file.ts",
+      "line": 42,
+      "problem": "Description of the issue",
+      "impact": "Why this matters",
+      "recommendation": "How to fix it"
+    }
+  ],
+  "positive": [
+    "Good thing observed",
+    "Another good thing"
+  ]
+}
+-->
 ```
 
 ## Verdict Rules

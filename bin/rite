@@ -3,13 +3,15 @@
 # Smart dispatcher that routes to appropriate workflow
 #
 # Usage:
-#   rite <issue>              Process single issue (full lifecycle)
-#   rite <issue1> <issue2>    Process multiple issues (batch)
-#   rite <issue> --quick      Work + PR only, skip review/merge
-#   rite <issue> --undo       Undo workflow: close PR, clean up artifacts
-#   rite --followup           Auto-discover follow-up pairs
-#   rite --init               Initialize .rite/ in current project
-#   rite --dry-run <...>      Print execution plan without running
+#   rite <issue>                  Full lifecycle (default)
+#   rite <issue> --dev-and-pr     Dev + PR only, skip review/merge
+#   rite <issue> --review-latest  Generate and post review
+#   rite <issue> --assess-and-fix Assess review + fix loop
+#   rite <issue> --status         Read-only workflow state overview
+#   rite <issue> --undo           Undo: close PR, cleanup
+#   rite --followup               Auto-discover follow-up pairs
+#   rite --init                   Initialize .rite/ in current project
+#   rite --dry-run <...>          Print execution plan without running
 
 set -euo pipefail
 
@@ -49,8 +51,20 @@ FILTER=""
 SUPERVISED=false
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --quick)
-      MODE="quick"
+    --dev-and-pr)
+      MODE="dev-and-pr"
+      shift
+      ;;
+    --review-latest)
+      MODE="review-latest"
+      shift
+      ;;
+    --assess-and-fix)
+      MODE="assess-and-fix"
+      shift
+      ;;
+    --status)
+      MODE="status"
       shift
       ;;
     --undo)
@@ -113,16 +127,19 @@ while [[ $# -gt 0 ]]; do
       echo "Automate GitHub issues with Claude Code"
       echo ""
       echo "Usage:"
-      echo "  rite <issue>              Process single issue (unsupervised, default)"
-      echo "  rite <issue> --supervised Process single issue (supervised, bypasses blockers)"
-      echo "  rite <issue1> <issue2>    Process multiple issues (batch)"
-      echo "  rite <issue> --quick      Work + PR only, skip review/merge"
-      echo "  rite <issue> --undo       Undo workflow: close PR, clean up artifacts"
-      echo "  rite --pr <number>        Run by PR number (resolves linked issue)"
-      echo "  rite --followup           Security debt report + batch process"
-      echo "  rite --init               Initialize .rite/ in current project"
-      echo "  rite --dry-run <...>      Print execution plan without running"
-      echo "  rite <issue> --no-log     Full lifecycle without logging (logs are on by default)"
+      echo "  rite <issue>                  Process single issue (unsupervised, default)"
+      echo "  rite <issue> --supervised     Process single issue (supervised mode)"
+      echo "  rite <issue1> <issue2>        Process multiple issues (batch)"
+      echo "  rite <issue> --dev-and-pr     Dev + PR only, skip review/merge"
+      echo "  rite <issue> --review-latest  Generate and post review for latest code"
+      echo "  rite <issue> --assess-and-fix Assess review + fix loop"
+      echo "  rite <issue> --status         Show workflow status for an issue"
+      echo "  rite <issue> --undo           Undo workflow: close PR, clean up artifacts"
+      echo "  rite --pr <number>            Run by PR number (resolves linked issue)"
+      echo "  rite --followup               Security debt report + batch process"
+      echo "  rite --init                   Initialize .rite/ in current project"
+      echo "  rite --dry-run <...>          Print execution plan without running"
+      echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
       echo "Workflow flags:"
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
@@ -130,20 +147,29 @@ while [[ $# -gt 0 ]]; do
       echo "  --no-log                   Disable logging (logs are on by default)"
       echo "  --log=FILE                 Log to a specific file instead of auto-generated path"
       echo ""
+      echo "Phase commands (run individual workflow phases):"
+      echo "  --dev-and-pr               Dev + PR only, skip review/merge"
+      echo "  --review-latest            Generate and post review for latest code"
+      echo "  --assess-and-fix           Assess review findings + fix loop (up to 3 retries)"
+      echo "  --status                   Show workflow status overview"
+      echo ""
       echo "Project: $RITE_PROJECT_NAME"
       echo "Root:    $RITE_PROJECT_ROOT"
       echo "Config:  $RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
       echo ""
       echo "Examples:"
-      echo "  rite 21                   # Full lifecycle (unsupervised, default)"
-      echo "  rite 21 --supervised      # Supervised: approve hard gates interactively"
-      echo "  rite 21 --bypass-blockers # Skip hard gates (CRITICAL findings, session limits)"
-      echo "  rite 21 45                # Batch process issues"
-      echo "  rite 21 --quick           # Quick mode: work + PR only"
-      echo "  rite 21 --undo            # Undo: close PR, clean branches/worktree/state"
-      echo "  rite --pr 72              # Run by PR number"
-      echo "  rite --followup           # Process tech-debt issues"
-      echo "  rite 21 --dry-run         # See what would happen"
+      echo "  rite 21                    # Full lifecycle (unsupervised, default)"
+      echo "  rite 21 --supervised       # Supervised: approve hard gates interactively"
+      echo "  rite 21 --bypass-blockers  # Skip hard gates (CRITICAL findings, session limits)"
+      echo "  rite 21 45                 # Batch process issues"
+      echo "  rite 21 --dev-and-pr       # Dev + PR only (skip review/merge)"
+      echo "  rite 21 --review-latest    # Generate and post review"
+      echo "  rite 21 --assess-and-fix   # Assess review + fix loop"
+      echo "  rite 21 --status           # Show workflow status"
+      echo "  rite 21 --undo             # Undo: close PR, clean branches/worktree/state"
+      echo "  rite --pr 72               # Run by PR number"
+      echo "  rite --followup            # Process tech-debt issues"
+      echo "  rite 21 --dry-run          # See what would happen"
       echo ""
       echo "Sharkrite - Master your workflows."
       exit 0
@@ -160,6 +186,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Set up logging (on by default, --no-log to disable)
+# Read-only commands skip logging
+if [ "$MODE" = "status" ]; then
+  RITE_LOG_AUTO=false
+fi
 if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   LOG_ISSUE="${ARGS[0]:-session}"
   LOG_TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
@@ -242,6 +272,13 @@ if [ "$MODE" = "init" ]; then
     print_success "Created .rite/.gitignore"
   else
     print_info ".rite/.gitignore already exists, skipping"
+  fi
+
+  if [ ! -f "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/issue-template.md" ]; then
+    cp "$RITE_INSTALL_DIR/templates/issue-template.md" "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/issue-template.md"
+    print_success "Created .rite/issue-template.md"
+  else
+    print_info ".rite/issue-template.md already exists, skipping"
   fi
 
   # Create backward-compat symlink if .claude/ exists
@@ -419,6 +456,16 @@ if [ -n "${PR_INPUT:-}" ]; then
   ARGS=("$LINKED_ISSUE")
 fi
 
+# Record a run to the persistent history file (independent of logs)
+# Single file for all issues: .rite/run-history.log
+# Format: "timestamp issue_number mode"
+record_run() {
+  local issue="$1" mode="$2"
+  local history_file="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/run-history.log"
+  mkdir -p "$(dirname "$history_file")"
+  echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
+}
+
 # Smart routing
 if [ ${#ARGS[@]} -eq 0 ] && [ -z "$FILTER" ]; then
   print_error "No issues specified"
@@ -426,6 +473,7 @@ if [ ${#ARGS[@]} -eq 0 ] && [ -z "$FILTER" ]; then
   exit 1
 elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "full" ]; then
   normalize_and_resolve "${ARGS[0]}"
+  record_run "$ISSUE_NUMBER" "full"
   # Full lifecycle: work -> PR -> review -> fixes -> merge
   # Default to unsupervised (--auto) unless --supervised was explicitly passed
   if [ "$SUPERVISED" = false ]; then
@@ -433,15 +481,383 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "full" ]; then
   else
     exec "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
   fi
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "quick" ]; then
-  # Normalize and resolve (runs in main shell)
+elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "dev-and-pr" ]; then
   normalize_and_resolve "${ARGS[0]}"
-  # Quick mode: work -> PR only (skip review wait and merge)
-  print_info "Quick mode: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
+  record_run "$ISSUE_NUMBER" "dev-and-pr"
+  print_info "Dev + PR: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
   "$RITE_LIB_DIR/core/claude-workflow.sh" "$ISSUE_NUMBER" --auto
   "$RITE_LIB_DIR/core/create-pr.sh" --auto
-  print_success "Quick mode complete — PR created, skipping review/merge"
+  print_success "Dev + PR complete — PR created, skipping review/merge"
   exit 0
+
+elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
+  # Status mode: read-only overview of issue workflow state
+  # Skips normalize_and_resolve (no Claude call needed for status)
+  STATUS_ISSUE="${ARGS[0]}"
+  if [[ ! "$STATUS_ISSUE" =~ ^[0-9]+$ ]]; then
+    print_error "--status requires an issue number"
+    exit 1
+  fi
+
+  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
+  # ── Issue info ──
+  ISSUE_JSON=$(gh issue view "$STATUS_ISSUE" --json title,state,createdAt,closedAt,labels 2>/dev/null || echo "")
+  if [ -z "$ISSUE_JSON" ] || [ "$ISSUE_JSON" = "null" ]; then
+    print_error "Issue #$STATUS_ISSUE not found"
+    exit 1
+  fi
+
+  ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
+  ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
+  ISSUE_CREATED=$(echo "$ISSUE_JSON" | jq -r '.createdAt // ""' | cut -dT -f1)
+  ISSUE_LABELS=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | join(", ")' 2>/dev/null || echo "")
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo " Issue #$STATUS_ISSUE: $ISSUE_TITLE"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+
+  # State indicator
+  if [ "$ISSUE_STATE" = "CLOSED" ]; then
+    echo "  State:      CLOSED (since $(echo "$ISSUE_JSON" | jq -r '.closedAt // ""' | cut -dT -f1))"
+  else
+    echo "  State:      OPEN (created $ISSUE_CREATED)"
+  fi
+  [ -n "$ISSUE_LABELS" ] && echo "  Labels:     $ISSUE_LABELS"
+
+  # ── PR info ──
+  if detect_pr_for_issue "$STATUS_ISSUE"; then
+    PR_JSON=$(gh pr view "$PR_NUMBER" --json state,title,headRefName,additions,deletions,changedFiles,commits,createdAt,mergedAt 2>/dev/null || echo "{}")
+    PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
+    PR_BRANCH_NAME=$(echo "$PR_JSON" | jq -r '.headRefName // ""')
+    PR_ADDITIONS=$(echo "$PR_JSON" | jq -r '.additions // 0')
+    PR_DELETIONS=$(echo "$PR_JSON" | jq -r '.deletions // 0')
+    PR_FILES=$(echo "$PR_JSON" | jq -r '.changedFiles // 0')
+    PR_COMMITS=$(echo "$PR_JSON" | jq -r '.commits | length // 0')
+    PR_CREATED=$(echo "$PR_JSON" | jq -r '.createdAt // ""' | cut -dT -f1)
+
+    echo ""
+    echo "  PR:         #$PR_NUMBER ($PR_STATE)"
+    echo "  Branch:     $PR_BRANCH_NAME"
+    echo "  Changes:    $PR_FILES file(s), +$PR_ADDITIONS -$PR_DELETIONS"
+    echo "  Commits:    $PR_COMMITS (since $PR_CREATED)"
+
+    if [ "$PR_STATE" = "MERGED" ]; then
+      PR_MERGED=$(echo "$PR_JSON" | jq -r '.mergedAt // ""' | cut -dT -f1)
+      echo "  Merged:     $PR_MERGED"
+    fi
+
+    # ── Worktree ──
+    if detect_worktree_for_pr "$PR_NUMBER"; then
+      echo "  Worktree:   $WORKTREE_PATH"
+
+      # Check for uncommitted changes
+      UNCOMMITTED=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -cvE "^\?\?" || true)
+      if [ "$UNCOMMITTED" -gt 0 ]; then
+        echo "  Uncommitted: $UNCOMMITTED file(s)"
+      fi
+
+      # Check for unpushed commits
+      _WT_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+      _WT_LOCAL=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || echo "")
+      _WT_REMOTE=$(git -C "$WORKTREE_PATH" rev-parse "origin/$_WT_BRANCH" 2>/dev/null || echo "")
+      if [ "$_WT_LOCAL" != "$_WT_REMOTE" ] && [ -n "$_WT_LOCAL" ] && [ -n "$_WT_REMOTE" ]; then
+        _UNPUSHED=$(git -C "$WORKTREE_PATH" log --oneline "origin/$_WT_BRANCH..HEAD" 2>/dev/null | wc -l | tr -d ' ')
+        echo "  Unpushed:   $_UNPUSHED commit(s)"
+      fi
+    else
+      echo "  Worktree:   none"
+    fi
+
+    # ── Review state ──
+    detect_review_state "$PR_NUMBER" "${WORKTREE_PATH:-}"
+
+    echo ""
+    if [ "$HAS_REVIEW" = "true" ]; then
+      # Extract model and timestamp from review marker
+      REVIEW_MODEL=$(echo "$REVIEW_BODY" | grep -oE 'model:[a-z0-9-]+' | head -1 | sed 's/model://' || echo "unknown")
+      REVIEW_DATE=$(echo "$REVIEW_TIME" | cut -dT -f1)
+      if [ "$REVIEW_IS_CURRENT" = "true" ]; then
+        echo "  Review:     Current ($REVIEW_MODEL, $REVIEW_DATE)"
+      else
+        echo "  Review:     Stale ($REVIEW_MODEL, $REVIEW_DATE) — code pushed since"
+      fi
+
+      # Extract findings summary from review body
+      FINDINGS_LINE=$(echo "$REVIEW_BODY" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+ \| MEDIUM: [0-9]+ \| LOW: [0-9]+" | head -1 || echo "")
+      [ -n "$FINDINGS_LINE" ] && echo "  Findings:   $FINDINGS_LINE"
+    else
+      echo "  Review:     None"
+    fi
+
+    # ── Assessment state ──
+    ASSESS_BODY=$(gh pr view "$PR_NUMBER" --json comments --jq '
+      [.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
+      sort_by(.createdAt) | reverse | .[0].body // ""
+    ' 2>/dev/null || echo "")
+
+    if [ -n "$ASSESS_BODY" ] && [ "$ASSESS_BODY" != "" ]; then
+      NOW_CT=$(echo "$ASSESS_BODY" | grep -c "^### .* - ACTIONABLE_NOW" || true)
+      LATER_CT=$(echo "$ASSESS_BODY" | grep -c "^### .* - ACTIONABLE_LATER" || true)
+      DISMISSED_CT=$(echo "$ASSESS_BODY" | grep -c "^### .* - DISMISSED" || true)
+      echo "  Assessment: NOW=$NOW_CT  LATER=$LATER_CT  DISMISSED=$DISMISSED_CT"
+    else
+      echo "  Assessment: None"
+    fi
+
+    # ── Follow-up issues ──
+    FOLLOWUP_MARKERS=$(gh pr view "$PR_NUMBER" --json comments --jq '
+      [.comments[].body | capture("sharkrite-followup-issue:(?<num>[0-9]+)") | .num] | join(", ")
+    ' 2>/dev/null || echo "")
+
+    if [ -n "$FOLLOWUP_MARKERS" ]; then
+      echo "  Follow-ups: #$FOLLOWUP_MARKERS"
+    fi
+  else
+    echo ""
+    echo "  PR:         None"
+  fi
+
+  # ── Session state ──
+  STATE_FILE="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${STATUS_ISSUE}.json"
+  if [ -f "$STATE_FILE" ]; then
+    SAVED_PHASE=$(jq -r '.phase // "unknown"' "$STATE_FILE" 2>/dev/null)
+    SAVED_REASON=$(jq -r '.reason // "unknown"' "$STATE_FILE" 2>/dev/null)
+    SAVED_RETRY=$(jq -r '.retry_count // 0' "$STATE_FILE" 2>/dev/null)
+    SAVED_AT=$(jq -r '.saved_at_human // ""' "$STATE_FILE" 2>/dev/null)
+    echo ""
+    echo "  Session:    Saved at phase '$SAVED_PHASE' ($SAVED_REASON)"
+    [ "$SAVED_RETRY" -gt 0 ] 2>/dev/null && echo "  Retries:    $SAVED_RETRY/3"
+    [ -n "$SAVED_AT" ] && echo "  Saved at:   $SAVED_AT"
+  fi
+
+  # ── Runs ──
+  HISTORY_FILE="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/run-history.log"
+  RUN_COUNT=0
+  LAST_RUN=""
+  if [ -f "$HISTORY_FILE" ]; then
+    RUN_COUNT=$(grep -c " ${STATUS_ISSUE} " "$HISTORY_FILE" || true)
+    LAST_RUN=$(grep " ${STATUS_ISSUE} " "$HISTORY_FILE" | tail -1 || echo "")
+  fi
+  LOG_DIR="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/logs"
+  LATEST_LOG=""
+  if [ -d "$LOG_DIR" ]; then
+    LATEST_LOG=$(ls -1t "$LOG_DIR"/rite-${STATUS_ISSUE}-*.log 2>/dev/null | head -1)
+  fi
+  if [ "$RUN_COUNT" -gt 0 ]; then
+    echo ""
+    LAST_TIME=$(echo "$LAST_RUN" | cut -d' ' -f1 | cut -dT -f1)
+    LAST_MODE=$(echo "$LAST_RUN" | cut -d' ' -f3-)
+    echo "  Runs:       $RUN_COUNT total (last: $LAST_MODE on $LAST_TIME)"
+    [ -n "$LATEST_LOG" ] && echo "  Latest log: $(basename "$LATEST_LOG")"
+  fi
+
+  # ── Phase indicator ──
+  echo ""
+  if [ "$ISSUE_STATE" = "CLOSED" ]; then
+    echo "  Phase:      Complete"
+  elif [ -z "${PR_NUMBER:-}" ]; then
+    echo "  Phase:      Not started — run 'rite $STATUS_ISSUE --dev-and-pr'"
+  elif [ "$HAS_REVIEW" != "true" ]; then
+    echo "  Phase:      Needs review — run 'rite $STATUS_ISSUE --review-latest'"
+  elif [ "$REVIEW_IS_CURRENT" != "true" ]; then
+    echo "  Phase:      Review stale — run 'rite $STATUS_ISSUE --review-latest'"
+  elif [ -n "$ASSESS_BODY" ] && [ "${NOW_CT:-0}" -gt 0 ]; then
+    echo "  Phase:      Needs fixes ($NOW_CT items) — run 'rite $STATUS_ISSUE --assess-and-fix'"
+  elif [ -z "$ASSESS_BODY" ] || [ "$ASSESS_BODY" = "" ]; then
+    echo "  Phase:      Needs assessment — run 'rite $STATUS_ISSUE --assess-and-fix'"
+  else
+    echo "  Phase:      Ready to merge — run 'rite $STATUS_ISSUE'"
+  fi
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  exit 0
+
+elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
+  normalize_and_resolve "${ARGS[0]}"
+  record_run "$ISSUE_NUMBER" "review-latest"
+  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
+  # Find PR for this issue
+  if ! detect_pr_for_issue "$ISSUE_NUMBER"; then
+    print_error "No open PR found for issue #$ISSUE_NUMBER"
+    print_info "Run 'rite $ISSUE_NUMBER --dev-and-pr' first to create a PR"
+    exit 1
+  fi
+  print_info "Found PR #$PR_NUMBER for issue #$ISSUE_NUMBER"
+
+  # Check if PR has any code changes
+  DIFF_LINES=$(gh pr diff "$PR_NUMBER" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${DIFF_LINES:-0}" -eq 0 ]; then
+    print_error "No code to review — PR #$PR_NUMBER has no diff from main"
+    exit 1
+  fi
+
+  # Detect worktree for more accurate timestamp comparison
+  detect_worktree_for_pr "$PR_NUMBER" 2>/dev/null || true
+  detect_review_state "$PR_NUMBER" "${WORKTREE_PATH:-}"
+
+  if [ "$HAS_REVIEW" = "true" ] && [ "$REVIEW_IS_CURRENT" = "true" ]; then
+    # Review exists and is current — show it, prompt if supervised
+    echo ""
+    print_info "Current review exists for PR #$PR_NUMBER:"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # Strip HTML comment markers for display
+    echo "$REVIEW_BODY" | sed '/^<!-- sharkrite-/d; /^-->$/d'
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    if [ "$SUPERVISED" = true ]; then
+      read -p "Review is still current. Re-review anyway? (y/n) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Review is current — no action taken"
+        exit 0
+      fi
+    else
+      print_info "Review is current — no action needed"
+      exit 0
+    fi
+  elif [ "$HAS_REVIEW" = "true" ]; then
+    print_info "Review exists but is stale (code pushed since) — generating fresh review"
+  else
+    print_info "No existing review — generating review"
+  fi
+
+  # Generate and post review
+  if [ "$SUPERVISED" = true ]; then
+    "$RITE_LIB_DIR/core/local-review.sh" "$PR_NUMBER" --post
+  else
+    "$RITE_LIB_DIR/core/local-review.sh" "$PR_NUMBER" --post --auto
+  fi
+  print_success "Review posted for PR #$PR_NUMBER"
+  exit 0
+
+elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
+  normalize_and_resolve "${ARGS[0]}"
+  record_run "$ISSUE_NUMBER" "assess-and-fix"
+  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
+  # Find PR for this issue
+  if ! detect_pr_for_issue "$ISSUE_NUMBER"; then
+    print_error "No open PR found for issue #$ISSUE_NUMBER"
+    print_info "Run 'rite $ISSUE_NUMBER --dev-and-pr' first"
+    exit 1
+  fi
+  print_info "Found PR #$PR_NUMBER for issue #$ISSUE_NUMBER"
+
+  # Find worktree
+  if ! detect_worktree_for_pr "$PR_NUMBER"; then
+    print_error "No worktree found for PR #$PR_NUMBER"
+    print_info "Run 'rite $ISSUE_NUMBER --dev-and-pr' first to create a worktree"
+    exit 1
+  fi
+  print_info "Using worktree: $WORKTREE_PATH"
+
+  # Check for current review
+  detect_review_state "$PR_NUMBER" "$WORKTREE_PATH"
+  if [ "$HAS_REVIEW" != "true" ] || [ "$REVIEW_IS_CURRENT" != "true" ]; then
+    print_error "No current review found for PR #$PR_NUMBER"
+    if [ "$HAS_REVIEW" = "true" ]; then
+      print_info "Review exists but is stale (code pushed since last review)"
+    fi
+    print_info "Run 'rite $ISSUE_NUMBER --review-latest' first"
+    exit 1
+  fi
+
+  # Assess and fix loop
+  CLAUDE_WORKFLOW="$RITE_LIB_DIR/core/claude-workflow.sh"
+  CREATE_PR="$RITE_LIB_DIR/core/create-pr.sh"
+  ASSESS_RESOLVE="$RITE_LIB_DIR/core/assess-and-resolve.sh"
+
+  cd "$WORKTREE_PATH"
+
+  RETRY=0
+  MAX_RETRIES=3
+  FINAL_EXIT=0
+
+  while true; do
+    print_info "Assessment round $((RETRY + 1)) of $((MAX_RETRIES + 1))"
+
+    # Run assessment. assess-and-resolve.sh routes display output to stderr
+    # and pipes filtered assessment content to stdout on exit 2.
+    # We capture stdout (assessment data) and let stderr stream to terminal.
+    ASSESS_STDOUT=$(mktemp)
+    set +e
+    "$ASSESS_RESOLVE" "$PR_NUMBER" "$ISSUE_NUMBER" "$RETRY" --auto > "$ASSESS_STDOUT"
+    ASSESS_EXIT=$?
+    set -e
+
+    ASSESS_CONTENT=$(cat "$ASSESS_STDOUT")
+    rm -f "$ASSESS_STDOUT"
+
+    if [ $ASSESS_EXIT -eq 0 ]; then
+      # Done — assessment passes (may have created follow-up issues)
+      print_success "Assessment complete — PR #$PR_NUMBER is ready to merge"
+      FINAL_EXIT=0
+      break
+
+    elif [ $ASSESS_EXIT -eq 2 ]; then
+      # ACTIONABLE_NOW items found — fix and loop
+      if [ $RETRY -ge $MAX_RETRIES ]; then
+        print_error "Maximum retries ($MAX_RETRIES) reached"
+        FINAL_EXIT=1
+        break
+      fi
+
+      print_info "ACTIONABLE_NOW items found — running fix cycle (retry $((RETRY + 1))/$MAX_RETRIES)"
+
+      # Run Claude in fix mode
+      cd "$WORKTREE_PATH"
+      set +e
+      RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$ISSUE_NUMBER" --fix-review --pr-number "$PR_NUMBER" --auto
+      FIX_EXIT=$?
+      set -e
+
+      if [ $FIX_EXIT -ne 0 ]; then
+        print_error "Fix cycle failed (exit code: $FIX_EXIT)"
+        FINAL_EXIT=1
+        break
+      fi
+
+      # Push fixes and trigger fresh review
+      cd "$WORKTREE_PATH"
+      set +e
+      "$CREATE_PR" --auto
+      PUSH_EXIT=$?
+      set -e
+
+      if [ $PUSH_EXIT -ne 0 ] && [ $PUSH_EXIT -ne 2 ]; then
+        print_error "Push/review failed (exit code: $PUSH_EXIT)"
+        FINAL_EXIT=1
+        break
+      fi
+
+      RETRY=$((RETRY + 1))
+
+    elif [ $ASSESS_EXIT -eq 3 ]; then
+      # Stale review — push + fresh review, don't increment retry
+      print_info "Review is stale — triggering fresh review"
+      cd "$WORKTREE_PATH"
+      set +e
+      "$CREATE_PR" --auto
+      set -e
+
+    else
+      # Exit 1 or other — manual intervention needed
+      print_error "Assessment requires manual intervention (exit code: $ASSESS_EXIT)"
+      FINAL_EXIT=1
+      break
+    fi
+  done
+
+  exit $FINAL_EXIT
+
 elif [ "$MODE" = "undo" ] && [ ${#ARGS[@]} -ne 1 ]; then
   print_error "--undo requires exactly one issue number"
   echo "Usage: rite <issue> --undo"

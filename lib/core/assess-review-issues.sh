@@ -387,7 +387,7 @@ DISMISSED (not worth tracking) IF:
 IMPORTANT: Read the ENTIRE review. Don't just look for numbered lists - assess ALL findings, suggestions, and improvements mentioned anywhere in the review (including sections like 'Minor Suggestions', 'Nice to Have', 'Optional Improvements', etc.)."
 
 # Determine effective model (from review metadata or config)
-EFFECTIVE_MODEL="${RITE_ASSESSMENT_MODEL:-${RITE_REVIEW_MODEL:-opus}}"
+EFFECTIVE_MODEL="${RITE_ASSESSMENT_MODEL:-$RITE_REVIEW_MODEL}"
 
 # =============================================================================
 # FRESHNESS CHECK: Reuse existing assessment if no commits since last one

@@ -554,10 +554,8 @@ else
   exit 1
 fi
 
-# Apply model override if configured
-if [ -n "${RITE_CLAUDE_MODEL:-}" ]; then
-  CLAUDE_CMD="$CLAUDE_CMD --model $RITE_CLAUDE_MODEL"
-fi
+# Apply configured model
+CLAUDE_CMD="$CLAUDE_CMD --model $RITE_CLAUDE_MODEL"
 
 CURRENT_BRANCH=$(git branch --show-current)
 
@@ -1198,8 +1196,7 @@ fi
 print_header "🦈 Starting Sharkrite Session"
 
 # Show model info
-EFFECTIVE_MODEL="${RITE_CLAUDE_MODEL:-opus}"
-echo "⚡ Powered by Claude ($EFFECTIVE_MODEL)"
+echo "⚡ Powered by Claude ($RITE_CLAUDE_MODEL)"
 echo ""
 
 # Show workflow summary

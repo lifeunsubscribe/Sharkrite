@@ -16,6 +16,7 @@ lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
+lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 ```
 
@@ -103,6 +104,49 @@ Only content-aware and practical conditions block merges:
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
 - Approvals remembered per-issue via `has_approved_blocker()`
 
+## Phase Commands
+
+Individual workflow phases can be run standalone via flags. All default to auto/unsupervised mode.
+
+```bash
+rite 42                    # Full lifecycle (phases 1-5)
+rite 42 --status           # Read-only: show workflow state overview
+rite 42 --dev-and-pr       # Phase 1-2: dev + PR only, skip review/merge
+rite 42 --review-latest    # Phase 2 (review only): generate + post review
+rite 42 --assess-and-fix   # Phase 3: assess review + fix loop (up to 3 retries)
+rite 42 --undo             # Cleanup: close PR, delete branch/worktree
+```
+
+**`--status`** shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
+
+**`--review-latest`** checks review staleness: no review → generates; stale → regenerates; current → prints existing review and exits (in supervised mode, prompts to re-review).
+
+**`--assess-and-fix`** requires a current review. Handles the full fix loop internally: assess → fix → push → re-review → re-assess. Creates follow-up issues for ACTIONABLE_LATER items.
+
+The full `rite <issue>` resume correctly detects state (via PR comments/commits) and skips completed phases, so running standalone commands then resuming with the full lifecycle works seamlessly.
+
+### PR Detection (`lib/utils/pr-detection.sh`)
+
+Shared utilities used by standalone commands and the orchestrator:
+
+- `detect_pr_for_issue ISSUE_NUMBER` — finds PR by body text search (Closes #N)
+- `detect_worktree_for_pr PR_NUMBER` — finds local worktree for PR branch
+- `detect_review_state PR_NUMBER [WORKTREE_PATH]` — checks review existence and currency
+
+Uses local git timestamps when worktree is available (avoids GitHub API eventual consistency).
+
+## Follow-up Issue Template
+
+Follow-up issues (tech-debt, review follow-ups) use the structure from `templates/issue-template.md`:
+
+- **Claude Context**: Changed files from the PR (auto-populated)
+- **Acceptance Criteria**: Item-specific from assessment (e.g., `[HIGH] Fix input validation`)
+- **Done Definition**: Generated from severity mix
+- **Scope Boundary**: Static DO/DO NOT (address findings only)
+- **Time Estimate**: Aggregated from Fix Effort metadata in assessment
+
+Project-local override: `.rite/issue-template.md` (copied on `rite --init`).
+
 ## Testing
 
 ```bash
@@ -115,7 +159,15 @@ rm -rf ~/.rite/lib && ln -s $(pwd)/lib ~/.rite/lib
 # Dry run
 rite --dry-run
 
-# Test single phase
+# Check issue state before running
+rite 42 --status
+
+# Test individual phases
+rite 42 --dev-and-pr       # Dev + PR only
+rite 42 --review-latest    # Review only
+rite 42 --assess-and-fix   # Assess + fix loop
+
+# Test full lifecycle
 rite 42 --supervised
 ```
 
@@ -139,6 +191,6 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
-- **Exit codes**: `assess-and-resolve.sh` uses exit 2 for "loop to fix", exit 0 for "ready to merge", exit 1 for "manual intervention needed".
+- **Exit codes**: `assess-and-resolve.sh` uses exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2".
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`

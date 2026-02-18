@@ -653,27 +653,48 @@ phase_create_pr() {
 
   # Check if a valid REVIEW already exists (newer than latest commit).
   # If so, skip the entire PR phase — nothing to push, nothing to review.
-  # IMPORTANT: Only match actual review comments (sharkrite-local-review marker),
+  #
+  # IMPORTANT: Use LOCAL git commit timestamps, not GitHub API commits.
+  # After a fix loop, claude-workflow.sh pushes commits, but the GitHub API
+  # has eventual consistency — the commits list may not include the new commit
+  # yet, making the old review appear "current". This caused an infinite fix
+  # loop: fix → skip push/review → re-assess stale review → find same issue
+  # → fix again. Using local git log avoids this race condition entirely.
+  #
+  # Only match actual review comments (sharkrite-local-review marker),
   # NOT assessment comments (sharkrite-assessment marker) or other bot comments.
-  # Previously, matching by author alone caused assessment comments to be counted
-  # as "current reviews," skipping review regeneration after fix commits.
-  # Compare review timestamp against the latest WORK commit, excluding mainline
-  # sync merge commits (e.g., GitHub "Update branch" button). These merges don't
-  # change the scope of the PR's work, so the existing review is still valid.
-  # Phase 4 (merge) handles the divergence resolution separately.
-  local review_check=$(gh pr view "$PR_NUMBER" --json comments,commits --jq '
-    ([.commits[] | select(
-      .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
-    )][-1].committedDate // "") as $work_commit_time |
-    [.comments[] | select(
-      (.body | contains("<!-- sharkrite-local-review")) and
-      ($work_commit_time != "" and .createdAt > $work_commit_time)
-    )] | length
-  ' 2>/dev/null || echo "0")
+  # Exclude mainline sync merge commits (e.g., GitHub "Update branch" button)
+  # from the comparison — they don't change the PR's work scope.
+  # Phase 4 (merge) handles divergence resolution separately.
+  local local_head=$(git rev-parse HEAD 2>/dev/null || echo "")
+  local remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || echo "")
 
-  if [ "${review_check:-0}" -gt 0 ]; then
-    print_info "PR #$PR_NUMBER already has a current review — skipping push/review phase"
-    return 0
+  if [ "$local_head" = "$remote_head" ]; then
+    # All commits already pushed — check review currency using LOCAL commit time
+    # (avoids GitHub API eventual consistency issues).
+    #
+    # IMPORTANT: Output commit time in UTC to match the GitHub API's UTC timestamps.
+    # git log --format=%cI outputs local timezone (e.g., 2026-02-17T19:45-07:00),
+    # while API returns UTC (2026-02-18T02:45Z). String comparison of mixed timezones
+    # gives wrong results (different calendar dates for the same instant).
+    local latest_local_commit_time
+    latest_local_commit_time=$(TZ=UTC git log -1 --format='%cd' --date=format:'%Y-%m-%dT%H:%M:%SZ' --grep="^Merge branch.*\(main\|master\|develop\)" --grep="^Merge pull request.*from.*/main" --invert-grep HEAD 2>/dev/null || echo "")
+
+    local latest_review_time
+    latest_review_time=$(gh pr view "$PR_NUMBER" --json comments --jq '
+      [.comments[] | select(
+        .body | contains("<!-- sharkrite-local-review")
+      )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""
+    ' 2>/dev/null || echo "")
+
+    if [ -n "$latest_review_time" ] && [ -n "$latest_local_commit_time" ]; then
+      if [[ "$latest_review_time" > "$latest_local_commit_time" ]]; then
+        print_info "PR #$PR_NUMBER already has a current review — skipping push/review phase"
+        return 0
+      fi
+    fi
+  else
+    print_info "Unpushed commits detected — proceeding to push and review"
   fi
 
   # Call create-pr.sh (pushes commits if needed, waits for review to appear)
@@ -776,10 +797,10 @@ phase_assess_and_resolve() {
 
   # Call assess-and-resolve.sh (pass issue number and retry count)
   # This will categorize ALL review issues and either:
-  # - If actionable_count == 0: exit 0 (merge)
-  # - If actionable_count > 0 AND retry < 3: exit 2 (loop to fix)
-  # - If retry >= 3 AND CRITICAL+ACTIONABLE: create follow-up, exit 1 (block merge)
-  # - If retry >= 3 AND no CRITICAL: create tech-debt, exit 0 (allow merge)
+  # - exit 0: actionable_count == 0 → merge
+  # - exit 1: retry >= 3 AND CRITICAL+ACTIONABLE → create follow-up, block merge
+  # - exit 2: actionable_count > 0 AND retry < 3 → loop to fix (outputs review to stdout)
+  # - exit 3: review is stale → route back to Phase 2 for fresh review
   # In AUTO_MODE with CRITICAL issues, it will output filtered review content to stdout
   # and exit with code 2 (no temp files needed - we capture stdout directly)
 
@@ -897,6 +918,26 @@ phase_assess_and_resolve() {
     # Increment retry count and recurse
     local next_retry=$((retry_count + 1))
     phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$next_retry"
+    return $?
+  elif [ $assessment_result -eq 3 ]; then
+    # Review is stale — route back to Phase 2 for push + fresh review,
+    # then re-enter Phase 3 to assess the new review.
+    # Guard against infinite stale→Phase2→stale loops (max 2 reroutes).
+    local stale_reroute_count="${STALE_REROUTE_COUNT:-0}"
+    if [ "$stale_reroute_count" -ge 2 ]; then
+      print_error "Stale review loop detected — rerouted $stale_reroute_count times without generating a fresh review"
+      print_info "The review at $PR_NUMBER may need manual regeneration:"
+      print_status "  rite review $PR_NUMBER"
+      rm -f "$assess_stderr"
+      return 1
+    fi
+    export STALE_REROUTE_COUNT=$((stale_reroute_count + 1))
+
+    print_warning "Review is stale — routing back to Phase 2 for fresh review (reroute $((stale_reroute_count + 1))/2)"
+    rm -f "$assess_stderr"
+
+    phase_create_pr "$issue_number"
+    phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$retry_count"
     return $?
   elif [ $assessment_result -ne 0 ]; then
     print_error "Assessment failed with exit code: $assessment_result"
@@ -1356,8 +1397,17 @@ run_workflow() {
     local pr_has_followup=$(echo "$pr_state_json" | jq -r '.has_followup // false' 2>/dev/null)
 
     # Determine state: review current? assessment exists? assessment approves?
+    # First check for unpushed local commits — if local HEAD differs from
+    # remote, the review can't be current (it doesn't cover unpushed work).
     local review_is_current=false
-    if [ -n "$pr_latest_review" ] && [ -n "$pr_latest_commit" ]; then
+    local _local_head=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || echo "")
+    local _pr_branch_name=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    local _remote_head=$(git -C "$WORKTREE_PATH" rev-parse "origin/$_pr_branch_name" 2>/dev/null || echo "")
+
+    if [ "$_local_head" != "$_remote_head" ]; then
+      # Unpushed commits exist — review is definitely stale
+      print_info "PR state: unpushed local commits detected — review needs refresh"
+    elif [ -n "$pr_latest_review" ] && [ -n "$pr_latest_commit" ]; then
       # ISO timestamp comparison works lexicographically
       if [[ "$pr_latest_review" > "$pr_latest_commit" ]]; then
         review_is_current=true

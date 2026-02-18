@@ -190,7 +190,7 @@ fi
 REVIEW_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Use consistent model for reviews (matches assessment model for determinism)
-EFFECTIVE_MODEL="${RITE_REVIEW_MODEL:-opus}"
+EFFECTIVE_MODEL="$RITE_REVIEW_MODEL"
 
 # Build the full prompt
 REVIEW_PROMPT="$REVIEW_INSTRUCTIONS
@@ -224,7 +224,7 @@ $PR_DIFF
 
 ---
 
-Please provide your code review following the output format specified above. Remember to include both the hidden JSON data block AND the human-readable markdown review."
+Please provide your code review following the output format specified above. Start with the human-readable markdown review, then end with the hidden JSON data block."
 
 # Estimate review time based on diff size
 if [ "$DIFF_LINES" -lt 100 ]; then
@@ -238,8 +238,9 @@ fi
 print_status "Running Sharkrite review (estimated: $ESTIMATE)..."
 echo ""
 
-# Run Claude to generate the review
-CLAUDE_STDERR=$(mktemp)
+# Run Claude to generate the review (with retry on empty output)
+# Claude CLI --print occasionally returns empty stdout with exit 0
+# (transient API error). Retry once before failing.
 
 # Build Claude args with model flag
 CLAUDE_ARGS="--print"
@@ -247,30 +248,43 @@ if [ -n "$EFFECTIVE_MODEL" ]; then
   CLAUDE_ARGS="$CLAUDE_ARGS --model $EFFECTIVE_MODEL"
 fi
 
-if [ "$AUTO_MODE" = true ]; then
-  # Non-interactive mode
-  REVIEW_OUTPUT=$(echo "$REVIEW_PROMPT" | claude $CLAUDE_ARGS --dangerously-skip-permissions 2>"$CLAUDE_STDERR")
-  REVIEW_EXIT=$?
-else
-  # Interactive mode (shows Claude's thinking)
-  REVIEW_OUTPUT=$(echo "$REVIEW_PROMPT" | claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR")
-  REVIEW_EXIT=$?
-fi
+MAX_REVIEW_ATTEMPTS=2
+REVIEW_ATTEMPT=0
+REVIEW_OUTPUT=""
+CLAUDE_ERROR=""
 
-CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
-rm -f "$CLAUDE_STDERR"
+while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; do
+  REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
+  CLAUDE_STDERR=$(mktemp)
 
-if [ $REVIEW_EXIT -ne 0 ]; then
-  print_error "Claude review failed (exit code: $REVIEW_EXIT)"
-  if [ -n "$CLAUDE_ERROR" ]; then
-    echo "Error output:"
-    echo "$CLAUDE_ERROR"
+  if [ "$AUTO_MODE" = true ]; then
+    REVIEW_OUTPUT=$(echo "$REVIEW_PROMPT" | claude $CLAUDE_ARGS --dangerously-skip-permissions 2>"$CLAUDE_STDERR")
+    REVIEW_EXIT=$?
+  else
+    REVIEW_OUTPUT=$(echo "$REVIEW_PROMPT" | claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR")
+    REVIEW_EXIT=$?
   fi
-  exit 1
-fi
+
+  CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
+  rm -f "$CLAUDE_STDERR"
+
+  if [ $REVIEW_EXIT -ne 0 ]; then
+    print_error "Claude review failed (exit code: $REVIEW_EXIT)"
+    if [ -n "$CLAUDE_ERROR" ]; then
+      echo "Error output:"
+      echo "$CLAUDE_ERROR"
+    fi
+    exit 1
+  fi
+
+  if [ -z "$REVIEW_OUTPUT" ] && [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]; then
+    print_warning "Claude returned empty review (attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS) — retrying in 3s..."
+    sleep 3
+  fi
+done
 
 if [ -z "$REVIEW_OUTPUT" ]; then
-  print_error "Claude returned empty review"
+  print_error "Claude returned empty review after $MAX_REVIEW_ATTEMPTS attempts"
   if [ -n "$CLAUDE_ERROR" ]; then
     echo "stderr output:" >&2
     echo "$CLAUDE_ERROR" >&2
