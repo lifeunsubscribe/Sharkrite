@@ -1005,11 +1005,11 @@ phase_merge_pr() {
   # - Merge PR
   # - Clean up worktree
   # - Send notifications
-  if [ "$WORKFLOW_MODE" = "supervised" ]; then
-    "$MERGE_PR" "$pr_number"
-  else
-    "$MERGE_PR" "$pr_number" --auto
-  fi
+  #
+  # Always pass --auto when orchestrated. The blocker gate above is the real
+  # decision point; by this line, merge is approved. merge-pr.sh's interactive
+  # prompts (proceed with merge?, delete branch?, close issue?) are redundant.
+  "$MERGE_PR" "$pr_number" --auto
 
   local merge_result=$?
 

@@ -163,39 +163,11 @@ $(head -200 "$RITE_PROJECT_ROOT/CLAUDE.md")"
   print_status "Loaded project context from CLAUDE.md"
 fi
 
-# Load previous assessment context if available (for iteration awareness)
-PREVIOUS_ASSESSMENT_CONTEXT=""
-PREVIOUS_ASSESSMENT=$(gh pr view "$PR_NUMBER" --json comments \
-  --jq '[.comments[] | select(.body | contains("sharkrite-assessment"))] | .[-1] | .body' \
-  2>/dev/null)
-
-if [ -n "$PREVIOUS_ASSESSMENT" ] && [ "$PREVIOUS_ASSESSMENT" != "null" ]; then
-  print_status "Found previous assessment - excluding resolved items from review"
-
-  # Extract counts from previous assessment
-  PREV_NOW=$(echo "$PREVIOUS_ASSESSMENT" | grep -oE "ACTIONABLE_NOW:\*\* [0-9]+" | grep -oE "[0-9]+" || echo "0")
-  PREV_LATER=$(echo "$PREVIOUS_ASSESSMENT" | grep -oE "ACTIONABLE_LATER:\*\* [0-9]+" | grep -oE "[0-9]+" || echo "0")
-  PREV_DISMISSED=$(echo "$PREVIOUS_ASSESSMENT" | grep -oE "DISMISSED:\*\* [0-9]+" | grep -oE "[0-9]+" || echo "0")
-  PREV_TOTAL=$((PREV_NOW + PREV_LATER + PREV_DISMISSED))
-
-  PREVIOUS_ASSESSMENT_CONTEXT="
-
----
-
-## Iteration Context
-
-This is a follow-up review. A previous assessment classified ${PREV_TOTAL} findings:
-- ${PREV_NOW} were fixed in the latest commit(s)
-- ${PREV_LATER} were deferred to follow-up issues
-- ${PREV_DISMISSED} were dismissed as non-issues
-
-**IMPORTANT: Review ONLY the current state of the code in the diff below.**
-Do NOT re-flag previously identified items. They are already handled.
-Your Findings counts must reflect ONLY genuinely new issues in the current code.
-If all code looks correct, your counts should be CRITICAL: 0, HIGH: 0, etc.
-
----"
-fi
+# NOTE: No iteration context is injected here. The review must always be a fresh,
+# unbiased analysis of the current code state. The assessment step
+# (assess-review-issues.sh) handles comparing findings against issue scope and
+# filtering previously-addressed items. If fixed items no longer appear in the
+# diff, the review simply won't flag them — which is the correct behavior.
 
 # Get current timestamp for review metadata
 REVIEW_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -206,7 +178,6 @@ EFFECTIVE_MODEL="${RITE_REVIEW_MODEL:-opus}"
 # Build the full prompt
 REVIEW_PROMPT="$REVIEW_INSTRUCTIONS
 $PROJECT_CONTEXT
-$PREVIOUS_ASSESSMENT_CONTEXT
 
 ---
 

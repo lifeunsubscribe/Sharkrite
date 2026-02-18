@@ -54,7 +54,8 @@ CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
 # LAYER 1: INTERNAL DOCS (always runs)
 # =====================================================================
 
-print_header "📚 Internal Documentation Update"
+# Track results for one-liner summary (populated by each assess_internal_* function)
+INTERNAL_UPDATED=()
 
 mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
 
@@ -98,13 +99,14 @@ assess_internal_changelog() {
     echo ""
   } >> "$doc_file"
 
-  echo "  📝 changelog.md ✓" >&2
+  INTERNAL_UPDATED+=("changelog")
 }
 
 assess_internal_security() {
   local pr_number="$1"
   local pr_diff="$2"
   local changed_files="$3"
+  local pr_title="$4"
   local doc_file="${RITE_INTERNAL_DOCS_DIR}/security.md"
 
   # Check if diff touches security-relevant files
@@ -172,7 +174,7 @@ SECURITY_EOF
     echo "" >> "$doc_file"
     echo "$security_output" >> "$doc_file"
     echo "" >> "$doc_file"
-    echo "  🔒 security.md ✓" >&2
+    INTERNAL_UPDATED+=("security")
   fi
 }
 
@@ -253,7 +255,7 @@ ARCH_EOF
       echo "" >> "$doc_file"
       echo "$arch_output" >> "$doc_file"
       echo "" >> "$doc_file"
-      echo "  🏗️  architecture.md ✓" >&2
+      INTERNAL_UPDATED+=("architecture")
     fi
   fi
 }
@@ -324,7 +326,7 @@ API_EOF
       echo "" >> "$doc_file"
       echo "$api_output" >> "$doc_file"
       echo "" >> "$doc_file"
-      echo "  📖 api.md ✓" >&2
+      INTERNAL_UPDATED+=("api")
     fi
   fi
 }
@@ -333,6 +335,7 @@ assess_internal_adr() {
   local pr_number="$1"
   local pr_diff="$2"
   local pr_body="$3"
+  local pr_title="$4"
   local adr_dir="${RITE_INTERNAL_DOCS_DIR}/adr"
 
   # Check if diff introduces a pattern change (new category, rule type, phase, approach substitution)
@@ -375,6 +378,9 @@ assess_internal_adr() {
     return 0
   fi
 
+  # Build compact file list for the Files: metadata line
+  local changed_files_list=$(echo "$CHANGED_FILES" | head -10 | tr '\n' ', ' | sed 's/,$//')
+
   # Generate ADR via Claude
   local prompt_file=$(mktemp)
   cat > "$prompt_file" <<ADR_EOF
@@ -384,6 +390,7 @@ Output ONLY a single ADR document in this exact format. No extra text before or 
 
 **Date:** $(date +%Y-%m-%d)
 **PR:** #${pr_number}
+**Files:** ${changed_files_list}
 **Context:** <1-2 lines from PR body and diff explaining why this change was needed>
 **Decision:** <1-2 lines describing what was changed>
 **Tradeoffs:** <1-2 lines on what was gained vs lost>
@@ -409,17 +416,17 @@ ADR_EOF
 
     local adr_file="${adr_dir}/${next_num_padded}-${brief_title}.md"
     echo "$adr_output" > "$adr_file"
-    echo "  📝 ADR created: ${adr_file}" >&2
+    INTERNAL_UPDATED+=("ADR-${next_num_padded}")
   fi
 }
 
 # --- Run internal doc assessments ---
 
 assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"
-assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
+assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" "$PR_TITLE"
 assess_internal_architecture "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
 assess_internal_api "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
-assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY"
+assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY" "$PR_TITLE"
 
 # Commit internal doc changes if any
 if [ -n "$(git diff --name-only .rite/docs/ 2>/dev/null)" ] || [ -n "$(git ls-files --others --exclude-standard .rite/docs/ 2>/dev/null)" ]; then
@@ -428,147 +435,118 @@ if [ -n "$(git diff --name-only .rite/docs/ 2>/dev/null)" ] || [ -n "$(git ls-fi
 fi
 
 # =====================================================================
-# LAYER 2: USER PROJECT DOCS (existing code, only if doc-sync.md exists)
+# COMBINED OUTPUT HEADER
+# =====================================================================
+
+print_header "📚 Documentation"
+
+# Internal docs one-liner summary
+if [ ${#INTERNAL_UPDATED[@]} -gt 0 ]; then
+  INTERNAL_SUMMARY=$(printf '%s ✓  ' "${INTERNAL_UPDATED[@]}")
+  print_success "  Internal: ${INTERNAL_SUMMARY% }"
+else
+  print_info "  Internal: up to date"
+fi
+
+# =====================================================================
+# LAYER 2: USER PROJECT DOCS (only if doc-sync.md exists)
 # =====================================================================
 
 DOC_SYNC_FILE="${RITE_PROJECT_ROOT}/.rite/doc-sync.md"
 
-if [ -f "$DOC_SYNC_FILE" ]; then
-  print_header "📚 Project Documentation Sync"
-  print_info "Using custom instructions from .rite/doc-sync.md"
-
-  # Read custom sync instructions
-  DOC_SYNC_INSTRUCTIONS=$(cat "$DOC_SYNC_FILE")
-
-  # =============================================================================
-  # STATIC OUTPUT HEADER
-  # =============================================================================
-
+if [ ! -f "$DOC_SYNC_FILE" ]; then
   echo ""
-  echo "PR #$PR_NUMBER: $PR_TITLE"
-  echo ""
+  exit 0
+fi
 
-  # =============================================================================
-  # EXTRACT DOC ITEMS FROM SHARKRITE REVIEW
-  # =============================================================================
+# Read custom sync instructions
+DOC_SYNC_INSTRUCTIONS=$(cat "$DOC_SYNC_FILE")
 
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "📋 Review Context"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+# --- Gather context (quiet — no output) ---
 
-  # Look for Sharkrite review in formal reviews first, then comments
-  SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-review-data"))] | .[-1] | .body // ""' 2>/dev/null)
+# Look for Sharkrite review in formal reviews first, then comments
+SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-review-data"))] | .[-1] | .body // ""' 2>/dev/null)
 
-  if [ -z "$SHARKRITE_REVIEW" ] || [ "$SHARKRITE_REVIEW" = "null" ]; then
-    SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-review-data"))] | .[-1] | .body // ""' 2>/dev/null)
+if [ -z "$SHARKRITE_REVIEW" ] || [ "$SHARKRITE_REVIEW" = "null" ]; then
+  SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-review-data"))] | .[-1] | .body // ""' 2>/dev/null)
+fi
+
+# Extract documentation-related items from review
+DOC_ITEMS_FROM_REVIEW=""
+REVIEW_HAS_DOC_ITEMS=false
+
+if [ -n "$SHARKRITE_REVIEW" ] && [ "$SHARKRITE_REVIEW" != "null" ]; then
+  DOC_ITEMS_FROM_REVIEW=$(echo "$SHARKRITE_REVIEW" | grep -iE "(documentation|docs/|README|CLAUDE\.md|update.*doc|missing.*doc|add.*doc)" | head -20 || echo "")
+  if [ -n "$DOC_ITEMS_FROM_REVIEW" ]; then
+    REVIEW_HAS_DOC_ITEMS=true
   fi
+fi
 
-  # Extract documentation-related items from review
-  DOC_ITEMS_FROM_REVIEW=""
-  REVIEW_HAS_DOC_ITEMS=false
+# Get changed files (excluding docs/)
+CHANGED_FILES_NO_DOCS=$(echo "$PR_DATA" | jq -r '.files[].path' | grep -v '^docs/' | head -20 || true)
 
-  if [ -n "$SHARKRITE_REVIEW" ] && [ "$SHARKRITE_REVIEW" != "null" ]; then
-    print_success "  Found Sharkrite review"
+# Get commit messages for context
+COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[].messageHeadline' | head -10)
 
-    # Extract doc-related mentions (look for documentation, docs, README, CLAUDE.md patterns)
-    DOC_ITEMS_FROM_REVIEW=$(echo "$SHARKRITE_REVIEW" | grep -iE "(documentation|docs/|README|CLAUDE\.md|update.*doc|missing.*doc|add.*doc)" | head -20 || echo "")
+# Get current documentation structure
+DOC_FILES=$(find docs/ -name "*.md" 2>/dev/null | sort || echo "")
 
-    if [ -n "$DOC_ITEMS_FROM_REVIEW" ]; then
-      REVIEW_HAS_DOC_ITEMS=true
-      DOC_ITEM_COUNT=$(echo "$DOC_ITEMS_FROM_REVIEW" | wc -l | tr -d ' ')
-      print_info "  Found $DOC_ITEM_COUNT documentation-related items in review"
-    else
-      print_info "  No documentation items flagged in review"
-    fi
-  else
-    print_warning "  No Sharkrite review found - will perform standalone assessment"
+# Get CLAUDE.md sections if it exists
+CLAUDE_MD_SECTIONS=""
+if [ -f "CLAUDE.md" ]; then
+  CLAUDE_MD_SECTIONS=$(grep "^##" CLAUDE.md | head -30 || true)
+fi
+
+# Get project README sections if available (configurable per project)
+README_SECTIONS=""
+if [ -n "${RITE_SCRIPTS_README:-}" ] && [ -f "$RITE_SCRIPTS_README" ]; then
+  README_SECTIONS=$(grep "^##" "$RITE_SCRIPTS_README" | head -20 || true)
+elif [ -f "README.md" ]; then
+  README_SECTIONS=$(grep "^##" README.md | head -20 || true)
+fi
+
+# Get table of contents from each major doc to understand coverage
+ARCHITECTURE_DOCS=""
+for doc in docs/architecture/*.md; do
+  if [ -f "$doc" ]; then
+    ARCHITECTURE_DOCS="$ARCHITECTURE_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
   fi
+done
 
-  echo ""
-
-  # =============================================================================
-  # GATHER CONTEXT
-  # =============================================================================
-
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "📁 Changed Files"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  # Get changed files (excluding docs/)
-  CHANGED_FILES_NO_DOCS=$(echo "$PR_DATA" | jq -r '.files[].path' | grep -v '^docs/' | head -20 || true)
-  FILE_COUNT=$(echo "$CHANGED_FILES_NO_DOCS" | wc -l | xargs)
-
-  echo "  Code files changed: $FILE_COUNT"
-
-  # Get commit messages for context
-  COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[].messageHeadline' | head -10)
-
-  # Get current documentation structure
-  DOC_FILES=$(find docs/ -name "*.md" 2>/dev/null | sort || echo "")
-
-  # Get CLAUDE.md sections if it exists
-  CLAUDE_MD_SECTIONS=""
-  if [ -f "CLAUDE.md" ]; then
-    CLAUDE_MD_SECTIONS=$(grep "^##" CLAUDE.md | head -30 || true)
+PROJECT_DOCS=""
+for doc in docs/project/*.md; do
+  if [ -f "$doc" ]; then
+    PROJECT_DOCS="$PROJECT_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
   fi
+done
 
-  # Get project README sections if available (configurable per project)
-  README_SECTIONS=""
-  if [ -n "${RITE_SCRIPTS_README:-}" ] && [ -f "$RITE_SCRIPTS_README" ]; then
-    README_SECTIONS=$(grep "^##" "$RITE_SCRIPTS_README" | head -20 || true)
-  elif [ -f "README.md" ]; then
-    README_SECTIONS=$(grep "^##" README.md | head -20 || true)
+WORKFLOW_DOCS=""
+for doc in docs/workflows/*.md; do
+  if [ -f "$doc" ]; then
+    WORKFLOW_DOCS="$WORKFLOW_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
   fi
+done
 
-  # Get table of contents from each major doc to understand coverage
-  ARCHITECTURE_DOCS=""
-  for doc in docs/architecture/*.md; do
-    if [ -f "$doc" ]; then
-      ARCHITECTURE_DOCS="$ARCHITECTURE_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-    fi
-  done
+SECURITY_DOCS=""
+for doc in docs/security/*.md; do
+  if [ -f "$doc" ]; then
+    SECURITY_DOCS="$SECURITY_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
+  fi
+done
 
-  PROJECT_DOCS=""
-  for doc in docs/project/*.md; do
-    if [ -f "$doc" ]; then
-      PROJECT_DOCS="$PROJECT_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-    fi
-  done
+DEVELOPMENT_DOCS=""
+for doc in docs/development/*.md; do
+  if [ -f "$doc" ]; then
+    DEVELOPMENT_DOCS="$DEVELOPMENT_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
+  fi
+done
 
-  WORKFLOW_DOCS=""
-  for doc in docs/workflows/*.md; do
-    if [ -f "$doc" ]; then
-      WORKFLOW_DOCS="$WORKFLOW_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-    fi
-  done
+# --- Assessment ---
 
-  SECURITY_DOCS=""
-  for doc in docs/security/*.md; do
-    if [ -f "$doc" ]; then
-      SECURITY_DOCS="$SECURITY_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-    fi
-  done
-
-  DEVELOPMENT_DOCS=""
-  for doc in docs/development/*.md; do
-    if [ -f "$doc" ]; then
-      DEVELOPMENT_DOCS="$DEVELOPMENT_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-    fi
-  done
-
-  # =============================================================================
-  # DOCUMENTATION ASSESSMENT
-  # =============================================================================
-
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "🔍 Assessment"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  # Build assessment prompt - include review context if available
-  REVIEW_CONTEXT_SECTION=""
-  if [ "$REVIEW_HAS_DOC_ITEMS" = true ]; then
-    REVIEW_CONTEXT_SECTION="
+# Build assessment prompt - include review context if available
+REVIEW_CONTEXT_SECTION=""
+if [ "$REVIEW_HAS_DOC_ITEMS" = true ]; then
+  REVIEW_CONTEXT_SECTION="
 **Documentation Items from Sharkrite Review:**
 The code review already identified these documentation-related items. Use these as your primary guide:
 \`\`\`
@@ -577,19 +555,19 @@ $DOC_ITEMS_FROM_REVIEW
 
 Focus on addressing the specific items mentioned in the review.
 "
-  fi
+fi
 
-  # Pre-compute doc structure (avoid nested $() inside heredoc)
-  CLAUDE_MD_INLINE=$(echo "$CLAUDE_MD_SECTIONS" | head -10 | tr '\n' ';')
-  README_INLINE=""
-  if [ -n "$README_SECTIONS" ]; then
-    README_INLINE="- README.md (project overview): $(echo "$README_SECTIONS" | head -10 | tr '\n' ';')"
-  fi
+# Pre-compute doc structure (avoid nested $() inside heredoc)
+CLAUDE_MD_INLINE=$(echo "$CLAUDE_MD_SECTIONS" | head -10 | tr '\n' ';')
+README_INLINE=""
+if [ -n "$README_SECTIONS" ]; then
+  README_INLINE="- README.md (project overview): $(echo "$README_SECTIONS" | head -10 | tr '\n' ';')"
+fi
 
-  # Build assessment prompt in temp file (heredoc inside $() is fragile —
-  # PR body content can contain shell metacharacters that break parsing)
-  ASSESS_PROMPT_FILE=$(mktemp)
-  cat > "$ASSESS_PROMPT_FILE" <<ASSESS_PROMPT_EOF
+# Build assessment prompt in temp file (heredoc inside $() is fragile —
+# PR body content can contain shell metacharacters that break parsing)
+ASSESS_PROMPT_FILE=$(mktemp)
+cat > "$ASSESS_PROMPT_FILE" <<ASSESS_PROMPT_EOF
 You are reviewing a pull request to assess if documentation needs updating.
 
 **Custom Instructions:**
@@ -650,65 +628,53 @@ REASON: <Brief explanation>
 - Comment improvements
 ASSESS_PROMPT_EOF
 
-  print_info "Analyzing documentation requirements..."
+print_info "  Project docs: analyzing..."
 
-  # Run assessment
-  ASSESSMENT_OUTPUT=$(claude --print --dangerously-skip-permissions < "$ASSESS_PROMPT_FILE" 2>&1)
-  rm -f "$ASSESS_PROMPT_FILE"
+# Run assessment
+ASSESSMENT_OUTPUT=$(claude --print --dangerously-skip-permissions < "$ASSESS_PROMPT_FILE" 2>&1)
+rm -f "$ASSESS_PROMPT_FILE"
 
-  # =============================================================================
-  # APPLY UPDATES
-  # =============================================================================
+# --- Apply or report ---
 
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━���━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "📝 Updates"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
+  DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //')
+  REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //')
 
-  if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
-    DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //')
-    REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //')
+  print_info "  Project docs: $DOCS_TO_UPDATE"
+  print_info "  Reason: $REASON"
 
-    echo "  Status: Updates needed"
-    echo "  Files: $DOCS_TO_UPDATE"
-    echo "  Reason: $REASON"
+  # In supervised mode, confirm before applying
+  APPLY_UPDATES=true
+  if [ "$AUTO_MODE" != "--auto" ]; then
     echo ""
-
-    # In supervised mode, confirm before applying
-    APPLY_UPDATES=true
-    if [ "$AUTO_MODE" != "--auto" ]; then
-      echo ""
-      read -p "Apply documentation updates? (Y/n): " APPLY_DOCS
-      if [[ "$APPLY_DOCS" =~ ^[Nn]$ ]]; then
-        APPLY_UPDATES=false
-        read -p "Continue with merge without doc updates? (y/N): " CONTINUE
-        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-          print_info "Merge cancelled - update documentation first"
-          exit 2
-        fi
+    read -p "Apply documentation updates? (Y/n): " APPLY_DOCS
+    if [[ "$APPLY_DOCS" =~ ^[Nn]$ ]]; then
+      APPLY_UPDATES=false
+      read -p "Continue with merge without doc updates? (y/N): " CONTINUE
+      if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+        print_info "Merge cancelled - update documentation first"
+        exit 2
       fi
     fi
+  fi
 
-    if [ "$APPLY_UPDATES" = true ]; then
-      # For each file that needs updating, read current content and generate update
-      IFS=',' read -ra FILES_ARRAY <<< "$DOCS_TO_UPDATE"
-      UPDATED_FILES=()
-      SKIPPED_FILES=()
+  if [ "$APPLY_UPDATES" = true ]; then
+    IFS=',' read -ra FILES_ARRAY <<< "$DOCS_TO_UPDATE"
+    UPDATED_FILES=()
+    SKIPPED_FILES=()
 
-      for doc_file in "${FILES_ARRAY[@]}"; do
-        doc_file=$(echo "$doc_file" | xargs)  # trim whitespace
+    for doc_file in "${FILES_ARRAY[@]}"; do
+      doc_file=$(echo "$doc_file" | xargs)  # trim whitespace
 
-        if [ ! -f "$doc_file" ]; then
-          SKIPPED_FILES+=("$doc_file (does not exist, skipping)")
-          continue
-        fi
+      if [ ! -f "$doc_file" ]; then
+        SKIPPED_FILES+=("$doc_file (not found)")
+        continue
+      fi
 
-        echo "  Updating: $doc_file"
+      CURRENT_CONTENT=$(cat "$doc_file")
 
-        CURRENT_CONTENT=$(cat "$doc_file")
-
-        UPDATE_PROMPT_FILE=$(mktemp)
-        cat > "$UPDATE_PROMPT_FILE" <<UPDATE_PROMPT_EOF
+      UPDATE_PROMPT_FILE=$(mktemp)
+      cat > "$UPDATE_PROMPT_FILE" <<UPDATE_PROMPT_EOF
 You are updating documentation to reflect code changes from a PR.
 
 **Documentation Update Rule:**
@@ -746,54 +712,37 @@ Update this documentation file to reflect the PR changes. Output the COMPLETE up
 Output ONLY the complete updated markdown file, nothing else.
 UPDATE_PROMPT_EOF
 
-        CLAUDE_EXIT=0
-        UPDATED_CONTENT=$(claude --print --dangerously-skip-permissions < "$UPDATE_PROMPT_FILE" 2>&1) || CLAUDE_EXIT=$?
-        rm -f "$UPDATE_PROMPT_FILE"
+      CLAUDE_EXIT=0
+      UPDATED_CONTENT=$(claude --print --dangerously-skip-permissions < "$UPDATE_PROMPT_FILE" 2>&1) || CLAUDE_EXIT=$?
+      rm -f "$UPDATE_PROMPT_FILE"
 
-        if [ $CLAUDE_EXIT -eq 0 ] && [ -n "$UPDATED_CONTENT" ]; then
-          # Verify update looks reasonable (not truncated)
-          ORIGINAL_SIZE=$(echo "$CURRENT_CONTENT" | wc -l)
-          NEW_SIZE=$(echo "$UPDATED_CONTENT" | wc -l)
-          MIN_SIZE=$((ORIGINAL_SIZE * 80 / 100))
+      if [ $CLAUDE_EXIT -eq 0 ] && [ -n "$UPDATED_CONTENT" ]; then
+        # Verify update looks reasonable (not truncated)
+        ORIGINAL_SIZE=$(echo "$CURRENT_CONTENT" | wc -l)
+        NEW_SIZE=$(echo "$UPDATED_CONTENT" | wc -l)
+        MIN_SIZE=$((ORIGINAL_SIZE * 80 / 100))
 
-          if [ "$NEW_SIZE" -lt "$MIN_SIZE" ]; then
-            SKIPPED_FILES+=("$doc_file (truncated output)")
-            continue
-          fi
-
-          # Backup original
-          cp "$doc_file" "${doc_file}.backup-$(date +%s)"
-
-          # Apply update
-          echo "$UPDATED_CONTENT" > "$doc_file"
-          UPDATED_FILES+=("$doc_file")
-          print_success "    ✓ Updated"
-        else
-          SKIPPED_FILES+=("$doc_file (generation failed)")
+        if [ "$NEW_SIZE" -lt "$MIN_SIZE" ]; then
+          SKIPPED_FILES+=("$doc_file (truncated output)")
+          continue
         fi
-      done
 
-      echo ""
+        # Backup original
+        cp "$doc_file" "${doc_file}.backup-$(date +%s)"
 
-      # =============================================================================
-      # SUMMARY
-      # =============================================================================
+        # Apply update
+        echo "$UPDATED_CONTENT" > "$doc_file"
+        UPDATED_FILES+=("$doc_file")
+      else
+        SKIPPED_FILES+=("$doc_file (generation failed)")
+      fi
+    done
 
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "📊 Summary"
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if [ ${#UPDATED_FILES[@]} -gt 0 ]; then
+      # Git add and commit
+      git add "${UPDATED_FILES[@]}"
 
-      if [ ${#UPDATED_FILES[@]} -gt 0 ]; then
-        echo "  Updated: ${#UPDATED_FILES[@]} file(s)"
-        for f in "${UPDATED_FILES[@]}"; do
-          echo "    ✓ $f"
-        done
-
-        # Git add the updated docs
-        git add "${UPDATED_FILES[@]}"
-
-        # Commit doc updates
-        COMMIT_MSG="docs: update documentation for PR #$PR_NUMBER
+      COMMIT_MSG="docs: update documentation for PR #$PR_NUMBER
 
 Auto-updated by doc assessment:
 - Files: ${UPDATED_FILES[*]}
@@ -801,24 +750,19 @@ Auto-updated by doc assessment:
 
 Related: #$PR_NUMBER"
 
-        if git commit -m "$COMMIT_MSG" 2>/dev/null; then
-          echo ""
-          echo "  Committed: docs update for PR #$PR_NUMBER"
-
-          # Push doc updates so they're on the PR branch before merge
-          if git push 2>/dev/null; then
-            echo "  Pushed: doc updates included in PR"
-          else
-            print_warning "  Could not push doc updates — they will be local-only"
-          fi
+      if git commit -m "$COMMIT_MSG" 2>/dev/null; then
+        if git push 2>/dev/null; then
+          print_success "  Project docs: updated ${#UPDATED_FILES[@]} file(s) and pushed"
         else
-          echo ""
-          echo "  Note: No changes to commit (docs may already be up to date)"
+          print_success "  Project docs: updated ${#UPDATED_FILES[@]} file(s) (push failed — local only)"
         fi
+      else
+        print_info "  Project docs: no changes to commit"
+      fi
 
-        # Send Slack notification
-        if [ -n "${SLACK_WEBHOOK:-}" ]; then
-          SLACK_MESSAGE=$(cat <<EOF
+      # Send Slack notification
+      if [ -n "${SLACK_WEBHOOK:-}" ]; then
+        SLACK_MESSAGE=$(cat <<EOF
 {
   "text": "📚 *Documentation Auto-Updated*",
   "blocks": [
@@ -833,45 +777,25 @@ Related: #$PR_NUMBER"
 }
 EOF
 )
-          curl -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "$SLACK_MESSAGE" \
-            --silent --output /dev/null
-        fi
-      else
-        echo "  Updated: 0 files"
+        curl -X POST "$SLACK_WEBHOOK" \
+          -H "Content-Type: application/json" \
+          -d "$SLACK_MESSAGE" \
+          --silent --output /dev/null
       fi
-
-      if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
-        echo ""
-        echo "  Skipped: ${#SKIPPED_FILES[@]} file(s)"
-        for f in "${SKIPPED_FILES[@]}"; do
-          echo "    ⚠ $f"
-        done
-      fi
-
-      echo ""
-
-      # Don't block merge - docs are updated (or attempted)
-      exit 0
+    else
+      print_info "  Project docs: 0 files updated"
     fi
-  else
-    echo "  Status: No updates needed"
-    REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || echo "Documentation is current")
-    echo "  Reason: $REASON"
-    echo ""
 
-    # Still show summary for consistency
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "📊 Summary"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  ✅ Documentation is up to date"
-    echo ""
+    if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
+      for f in "${SKIPPED_FILES[@]}"; do
+        print_warning "  Skipped: $f"
+      done
+    fi
   fi
-
 else
-  print_info "No .rite/doc-sync.md found — skipping project doc sync"
-  print_info "Internal docs updated at .rite/docs/"
+  REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || echo "Documentation is current")
+  print_success "  Project docs: up to date ($REASON)"
 fi
 
+echo ""
 exit 0

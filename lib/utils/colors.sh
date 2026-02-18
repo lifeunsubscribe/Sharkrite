@@ -22,9 +22,12 @@ print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_status() { echo -e "${BLUE}$1${NC}"; }
 print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 
-# Strip ANSI escape sequences (for log files)
+# Strip ANSI escape sequences (for log files).
+# Uses perl with autoflush ($|=1) instead of sed. sed block-buffers when
+# writing to a file, so on process exit unflushed data is lost — truncating
+# logs mid-line. perl autoflush writes every line immediately.
 strip_ansi() {
-  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
+  perl -pe 'BEGIN { $| = 1 } s/\e\[[0-9;]*[a-zA-Z]//g'
 }
 
 # Export for use in subshells

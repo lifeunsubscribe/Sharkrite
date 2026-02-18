@@ -159,9 +159,29 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   if [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then
     print_status "Pushing new commits to PR..."
     if ! git push origin "$CURRENT_BRANCH"; then
-      print_error "Failed to push commits to remote"
-      print_info "Your branch may be behind the remote. Try: git pull --rebase origin $CURRENT_BRANCH"
-      exit 1
+      # Push failed — likely remote ahead of local (foreign commits)
+      print_warning "Push rejected — checking for remote divergence"
+
+      source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+
+      if detect_divergence "$CURRENT_BRANCH"; then
+        div_result=0
+        handle_push_divergence "$CURRENT_BRANCH" "$ISSUE_NUMBER" "$PR_NUMBER" "$AUTO_MODE" || div_result=$?
+
+        if [ $div_result -eq 2 ]; then
+          # Re-enter review loop — exit with code 2 so workflow-runner knows
+          print_info "Divergence resolved — re-entering review cycle"
+          exit 2
+        elif [ $div_result -ne 0 ]; then
+          print_error "Divergence could not be resolved"
+          exit 1
+        fi
+        # div_result=0: resolved, push succeeded inside handler
+      else
+        # Push failed for another reason (permissions, network, etc.)
+        print_error "Failed to push commits to remote (not a divergence issue)"
+        exit 1
+      fi
     fi
     PUSHED_NEW_COMMITS=true
     print_success "Pushed new commits"

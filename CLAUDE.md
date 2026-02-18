@@ -15,6 +15,7 @@ lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides ac
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/utils/blocker-rules.sh        # Blocker detection functions
 lib/utils/config.sh               # Config loading, path setup
+lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 ```
 
@@ -114,6 +115,10 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
    - Supervised: "When all phases are complete, immediately exit with `/exit`"
    - Auto: `--print` handles exit; prompt says "session will end automatically"
 4. **No "Ready to start?" or open-ended questions at end** — The prompt should end with a directive ("Begin with Phase 0"), not a question that invites Claude to wait for confirmation.
+
+## Git Commits
+
+- **No co-author lines.** Do not add `Co-Authored-By` to commit messages.
 
 ## Common Pitfalls
 

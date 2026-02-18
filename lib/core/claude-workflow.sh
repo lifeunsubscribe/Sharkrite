@@ -444,7 +444,22 @@ Changes made via automated workflow (rite --fix-review mode)."
   }
 
   print_status "Pushing fixes to remote..."
-  git push
+  if ! git push; then
+    # Push failed — check for remote divergence
+    print_warning "Push rejected — checking for divergence"
+    source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+
+    _div_branch=$(git branch --show-current)
+    if detect_divergence "$_div_branch"; then
+      handle_push_divergence "$_div_branch" "${ISSUE_NUMBER:-}" "${FIX_PR_NUMBER:-}" "$AUTO_MODE" || {
+        print_error "Could not resolve divergence during fix-review push"
+        exit 1
+      }
+    else
+      print_error "Push failed (not a divergence issue)"
+      exit 1
+    fi
+  fi
 
   print_success "Fixes committed and pushed successfully"
   exit 0
@@ -1674,23 +1689,33 @@ if [ "$AUTO_MODE" = false ]; then
   print_status "Generating commit message..."
 fi
 
-# Build commit message — NORMALIZED_SUBJECT already has the conventional commit prefix
-# and is <=50 chars. Fall back to legacy logic for direct invocations without normalization.
-if [ -n "${NORMALIZED_SUBJECT:-}" ]; then
-  COMMIT_SUBJECT="$NORMALIZED_SUBJECT"
-else
-  # Fallback: extract commit type from branch name
-  COMMIT_TYPE="feat"
-  if [[ "$BRANCH_NAME" =~ ^(fix|feat|docs|test|refactor|chore)/ ]]; then
-    COMMIT_TYPE=$(echo "$BRANCH_NAME" | cut -d'/' -f1)
-  fi
+# Build commit message — detect conventional commit prefix from title keywords,
+# then prepend to the subject. NORMALIZED_SUBJECT is prefix-free (clean issue title).
+COMMIT_TYPE="feat"
+if [[ "$BRANCH_NAME" =~ ^(fix|feat|docs|test|refactor|chore)/ ]]; then
+  COMMIT_TYPE=$(echo "$BRANCH_NAME" | cut -d'/' -f1)
+fi
 
-  # Build commit message from issue description (not branch name, which is truncated/mangled).
-  if echo "$ISSUE_DESC" | grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:"; then
-    COMMIT_SUBJECT="$ISSUE_DESC"
-  else
-    COMMIT_SUBJECT="${COMMIT_TYPE}: ${ISSUE_DESC}"
+COMMIT_SOURCE="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
+if echo "$COMMIT_SOURCE" | grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:"; then
+  # Title already has a prefix (e.g., from older issues) — use as-is
+  COMMIT_SUBJECT="$COMMIT_SOURCE"
+else
+  # Detect prefix from keywords if branch didn't provide one
+  if [ "$COMMIT_TYPE" = "feat" ]; then
+    if echo "$COMMIT_SOURCE" | grep -iqE '(fix|bug|issue|error)'; then
+      COMMIT_TYPE="fix"
+    elif echo "$COMMIT_SOURCE" | grep -iqE '(docs|documentation|readme)'; then
+      COMMIT_TYPE="docs"
+    elif echo "$COMMIT_SOURCE" | grep -iqE '(test|testing|spec)'; then
+      COMMIT_TYPE="test"
+    elif echo "$COMMIT_SOURCE" | grep -iqE '(refactor|cleanup|improve)'; then
+      COMMIT_TYPE="refactor"
+    elif echo "$COMMIT_SOURCE" | grep -iqE '(chore|setup|config)'; then
+      COMMIT_TYPE="chore"
+    fi
   fi
+  COMMIT_SUBJECT="${COMMIT_TYPE}: ${COMMIT_SOURCE}"
 fi
 
 # Add body with changed files summary (before staging, so use working tree diff)
@@ -1784,7 +1809,21 @@ else
 fi
 
 # Push with upstream tracking
-git push -u origin "$BRANCH_NAME"
+if ! git push -u origin "$BRANCH_NAME"; then
+  # Push failed — check for remote divergence
+  print_warning "Push rejected — checking for divergence"
+  source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+
+  if detect_divergence "$BRANCH_NAME"; then
+    handle_push_divergence "$BRANCH_NAME" "${ISSUE_NUMBER:-}" "" "$AUTO_MODE" || {
+      print_error "Could not resolve divergence during post-dev push"
+      exit 1
+    }
+  else
+    print_error "Push failed (not a divergence issue)"
+    exit 1
+  fi
+fi
 print_success "Pushed to origin/$BRANCH_NAME"
 echo ""
 fi  # End of "if CHANGES_COUNT > 0" block

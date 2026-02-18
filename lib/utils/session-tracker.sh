@@ -10,6 +10,15 @@
 init_session() {
   local mode="${1:-supervised}"  # supervised or unsupervised
 
+  # Preserve cross-run state (blocker approvals, notification dedup).
+  # Session counters reset, but approvals and dedup are per-issue and must survive.
+  local existing_approvals="[]"
+  local existing_notifications="[]"
+  if [ -f "$SESSION_STATE_FILE" ]; then
+    existing_approvals=$(jq -c '.approved_blockers // []' "$SESSION_STATE_FILE" 2>/dev/null || echo "[]")
+    existing_notifications=$(jq -c '.sent_notifications // []' "$SESSION_STATE_FILE" 2>/dev/null || echo "[]")
+  fi
+
   cat > "$SESSION_STATE_FILE" <<EOF
 {
   "start_time": $(date +%s),
@@ -18,6 +27,8 @@ init_session() {
   "issues_failed": 0,
   "current_issue": null,
   "worktree_path": null,
+  "approved_blockers": $existing_approvals,
+  "sent_notifications": $existing_notifications,
   "last_update": $(date +%s)
 }
 EOF

@@ -703,10 +703,54 @@ if [ "$AUTO_MODE" = false ]; then
   print_header "🚀 Merging PR #$PR_NUMBER"
 fi
 
-# Merge without --delete-branch flag (we'll handle branch cleanup manually)
-# This prevents gh CLI from trying to delete a branch that's checked out in a worktree
-MERGE_OUTPUT=$(gh pr merge $PR_NUMBER --$MERGE_METHOD 2>&1)
-MERGE_EXIT_CODE=$?
+# Atomic merge with SHA verification: use the GitHub API merge endpoint with the
+# sha parameter to reject the merge if the PR head changed since we last checked.
+# This prevents foreign commits from being silently merged between assessment and merge.
+EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+REPO_NAME=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+
+if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
+  # Use API merge for atomic head verification
+  MERGE_OUTPUT=$(gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+    -X PUT \
+    -f merge_method="$MERGE_METHOD" \
+    -f sha="$EXPECTED_HEAD" \
+    2>&1)
+  MERGE_EXIT_CODE=$?
+
+  # Check for SHA mismatch (API returns error when head changed)
+  if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "Head branch was modified|409"; then
+    print_error "PR head changed during merge — someone pushed commits after assessment"
+    print_info "Expected HEAD: ${EXPECTED_HEAD:0:12}"
+
+    # Attempt divergence recovery
+    source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+    DIV_BRANCH="$PR_HEAD"
+    if detect_divergence "$DIV_BRANCH"; then
+      DIV_RESULT=0
+      handle_push_divergence "$DIV_BRANCH" "${ISSUE_NUMBER:-}" "$PR_NUMBER" "$AUTO_MODE" || DIV_RESULT=$?
+
+      if [ $DIV_RESULT -eq 0 ]; then
+        # Divergence resolved — retry the merge with updated head
+        EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+        MERGE_OUTPUT=$(gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+          -X PUT \
+          -f merge_method="$MERGE_METHOD" \
+          -f sha="$EXPECTED_HEAD" \
+          2>&1)
+        MERGE_EXIT_CODE=$?
+      else
+        print_error "Could not resolve divergence at merge time"
+        MERGE_EXIT_CODE=1
+      fi
+    fi
+  fi
+else
+  # Fallback: gh pr merge (no SHA verification available)
+  print_info "Using fallback merge (no SHA verification)"
+  MERGE_OUTPUT=$(gh pr merge $PR_NUMBER --$MERGE_METHOD 2>&1)
+  MERGE_EXIT_CODE=$?
+fi
 
 if [ $MERGE_EXIT_CODE -eq 0 ]; then
   if [ "$AUTO_MODE" = false ]; then

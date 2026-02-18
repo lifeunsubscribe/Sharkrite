@@ -2,14 +2,15 @@
 # lib/utils/normalize-issue.sh - Issue title normalization and structured issue generation
 #
 # Produces two variables for downstream consumers:
-#   NORMALIZED_SUBJECT  — Git subject line (<=50 chars, imperative, conventional commit prefix)
+#   NORMALIZED_SUBJECT  — Clean issue title (<=50 chars, imperative, no commit prefix)
 #   WORK_DESCRIPTION    — Full context for Claude dev prompt and PR body
 #
 # Two paths:
 #   normalize_piped_input "$text"  — Generate structured issue from freeform text via Claude
 #   normalize_existing_issue       — Bash-only cleanup of existing issue title
 #
-# Both paths always prompt for approval (interactive read -p), even in --auto mode.
+# Path A prompts for approval before creating the GitHub issue.
+# Path B auto-applies deterministic cleanup (no prompt).
 
 # Source colors if not already loaded
 if ! declare -f print_info &>/dev/null; then
@@ -78,29 +79,31 @@ Generate a structured GitHub issue. Make reasonable assumptions about implementa
 
 Output format (follow EXACTLY):
 
-TITLE: <imperative mood, conventional commit prefix, <=50 chars>
+TITLE: <imperative mood, <=50 chars, NO prefix>
 BODY:
-<2-3 sentence description of the problem/task scope>
+## Description
+<2-3 sentences: what needs to be done and why>
 
-### Approach
-<1-3 bullet points describing the intended implementation fix/strategy>
+## Acceptance Criteria
+<2-4 bullet checkboxes with concrete verification commands or assertions>
+- [ ] Criterion: \`command to verify\`
 
-### Done when
-<2-4 bullet points of concrete acceptance criteria — how to verify the issue is resolved>
+## Done Definition
+<One sentence. A human reads this and knows whether to stop iterating.>
 
-### Assumptions
-<bulleted list of assumptions made about scope, boundaries, or implementation details>
+## Scope Boundary
+- DO: <specific actions in scope>
+- DO NOT: <specific actions out of scope>
 
 Rules:
 - Title MUST be <=50 characters (this is a hard limit for git subject lines)
-- Title MUST start with a conventional commit prefix: fix:, feat:, docs:, test:, refactor:, chore:
 - Title MUST use imperative mood (\"fix bug\" not \"fixes bug\" or \"fixed bug\")
 - Title should describe WHAT to do, not HOW
-- Approach should describe the intended fix strategy concisely
-- Done criteria should be verifiable (testable assertions, not vague \"works correctly\")
-- Assumptions should capture scope boundaries (what's in/out of this issue)
+- Title must NOT have a conventional commit prefix (no fix:, feat:, etc.)
+- Acceptance criteria MUST be verifiable (testable assertions, not vague \"works correctly\")
+- Scope boundary should capture what's in/out of this issue
 - Do NOT use markdown formatting in the title (no **, *, \`, #)
-- Do NOT ask questions — make reasonable assumptions and list them"
+- Do NOT ask questions — make reasonable assumptions and state them in Scope Boundary"
 
   local generated_title=""
   local generated_body=""
@@ -133,7 +136,7 @@ Rules:
       print_warning "Claude CLI not found — falling back to bash cleanup" >&2
     fi
 
-    generated_title=$(_bash_cleanup_title "$input_text")
+    generated_title=$(_cleanup_title "$input_text")
     generated_body="$input_text"
   fi
 
@@ -236,58 +239,34 @@ normalize_existing_issue() {
   local original_title="$ISSUE_DESC"
 
   local cleaned
-  cleaned=$(_bash_cleanup_title "$original_title")
+  cleaned=$(_cleanup_title "$original_title")
 
-  # Build WORK_DESCRIPTION from full issue content
+  # Build WORK_DESCRIPTION — use cleaned title + any split remainder + body
+  local full_context="$cleaned"
+  if [ -n "${_TITLE_REMAINDER:-}" ]; then
+    full_context="${cleaned} — ${_TITLE_REMAINDER}"
+  fi
+
   if [ -n "${ISSUE_BODY:-}" ] && [ "$ISSUE_BODY" != "null" ]; then
-    WORK_DESCRIPTION="${ISSUE_DESC}
+    WORK_DESCRIPTION="${full_context}
 
 ${ISSUE_BODY}"
   else
-    WORK_DESCRIPTION="$ISSUE_DESC"
+    WORK_DESCRIPTION="$full_context"
   fi
 
-  # If title changed, prompt for approval (unless RITE_SKIP_APPROVAL is set)
-  if [ "$cleaned" != "$original_title" ] && [ "${RITE_SKIP_APPROVAL:-false}" != "true" ]; then
-    echo "" >&2
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
-    echo -e "${BLUE} Issue #${ISSUE_NUMBER} — Title Cleanup${NC}" >&2
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
-    echo "" >&2
-    echo -e "Original: ${YELLOW}${original_title}${NC}" >&2
-    echo -e "Cleaned:  ${GREEN}${cleaned}${NC}" >&2
-    echo "" >&2
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+  # Already normalized: ≤50, no markdown, no prefix stripped, imperative mood.
+  if [ "$cleaned" = "$original_title" ] && _is_imperative_title "$cleaned"; then
+    NORMALIZED_SUBJECT="$cleaned"
+    return 0
+  fi
 
-    while true; do
-      read -p "Accept cleaned title? (y/n/e to edit) " -n 1 -r </dev/tty
-      echo >&2
-
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-        break
-      elif [[ $REPLY =~ ^[Nn]$ ]]; then
-        # Use original title
-        cleaned="$original_title"
-        # Still apply essential cleanup (prefix) but keep length as-is
-        if ! echo "$cleaned" | grep -qE '^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:'; then
-          local prefix
-          prefix=$(_detect_commit_prefix "$cleaned")
-          cleaned="${prefix}: ${cleaned}"
-        fi
-        print_info "Using original title (with prefix if needed): $cleaned" >&2
-        break
-      elif [[ $REPLY =~ ^[Ee]$ ]]; then
-        echo -n "Enter new title: " >&2
-        read -r cleaned </dev/tty
-        cleaned=$(echo "$cleaned" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //')
-        if [ ${#cleaned} -gt 50 ]; then
-          cleaned=$(_truncate_at_word_boundary "$cleaned" 50)
-          print_warning "Title truncated to 50 chars: $cleaned" >&2
-        fi
-        echo -e "New title: ${GREEN}${cleaned}${NC}" >&2
-        break
-      fi
-    done
+  # Show what changed
+  if [ "$cleaned" != "$original_title" ]; then
+    print_info "Title: ${cleaned}" >&2
+    if [ -n "${_TITLE_REMAINDER:-}" ]; then
+      print_info "  (context moved to description)" >&2
+    fi
   fi
 
   NORMALIZED_SUBJECT="$cleaned"
@@ -298,8 +277,50 @@ ${ISSUE_BODY}"
 # INTERNAL HELPERS
 # ===================================================================
 
+# Check if title uses imperative mood (verb-noun format).
+# Rejects articles, gerunds (-ing), past tense (-ed), pronouns.
+_is_imperative_title() {
+  local first_word
+  first_word=$(echo "$1" | awk '{print tolower($1)}')
+
+  # Reject articles, determiners, pronouns
+  case "$first_word" in
+    the|a|an|this|that|these|those|it|its|we|our|my|i) return 1 ;;
+  esac
+
+  # Reject gerund (-ing) or past participle (-ed)
+  case "$first_word" in
+    *ing|*ed) return 1 ;;
+  esac
+
+  return 0
+}
+
+# Find a natural split point in text that fits within max_len.
+# Tries structural breaks (dashes) then contextual conjunctions.
+# Prints the title portion on success, returns 1 on failure.
+_find_natural_split() {
+  local text="$1"
+  local max_len="$2"
+  local lower
+  lower=$(echo "$text" | tr '[:upper:]' '[:lower:]')
+
+  local pat prefix pos
+  for pat in " - " " — " " – " " because " " since " " when " " so that " " which " " due to " " in order to "; do
+    prefix="${lower%%${pat}*}"
+    if [ "$prefix" != "$lower" ]; then
+      pos=${#prefix}
+      if [ "$pos" -le "$max_len" ] && [ "$pos" -ge 10 ]; then
+        echo "${text:0:$pos}"
+        return 0
+      fi
+    fi
+  done
+
+  return 1
+}
+
 # Detect conventional commit prefix from keywords in the title.
-# Same logic as claude-workflow.sh:670-682.
 _detect_commit_prefix() {
   local text="$1"
   local prefix="feat"
@@ -319,26 +340,70 @@ _detect_commit_prefix() {
   echo "$prefix"
 }
 
-# Bash-only title cleanup (deterministic, no Claude needed).
-# Used for Path B and as fallback for Path A on Claude failure.
-_bash_cleanup_title() {
+# Use Claude to condense a long title into ≤50 char imperative form.
+# Returns 0 on success (prints condensed title), 1 on failure.
+_paraphrase_title() {
+  local long_title="$1"
+  local claude_cmd
+  claude_cmd=$(_detect_claude_cmd)
+  [ -n "$claude_cmd" ] || return 1
+
+  print_info "Condensing title..." >&2
+
+  local result
+  result=$(printf "Condense this into an imperative-mood title, maximum 50 characters. Output ONLY the condensed title — no quotes, no prefix, no explanation.\n\n%s" "$long_title" | $claude_cmd --print 2>/dev/null) || return 1
+
+  # Validate: single line, strip formatting, strip prefix Claude might add
+  result=$(echo "$result" | head -1 | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //; s/^"//; s/"$//')
+  result=$(echo "$result" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //')
+
+  if [ -n "$result" ] && [ ${#result} -le 50 ]; then
+    echo "$result"
+    return 0
+  fi
+
+  return 1
+}
+
+# Title cleanup: strips markdown/prefix, splits or paraphrases long titles.
+# Sets _TITLE_REMAINDER with context split off or full original for paraphrased titles.
+_cleanup_title() {
   local title="$1"
+  _TITLE_REMAINDER=""
 
   # 1. Strip markdown artifacts
   local cleaned
   cleaned=$(echo "$title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //')
 
-  # 2. Ensure conventional commit prefix
-  if ! echo "$cleaned" | grep -qE '^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:'; then
-    local prefix
-    prefix=$(_detect_commit_prefix "$cleaned")
-    cleaned="${prefix}: ${cleaned}"
+  # 2. Strip conventional commit prefix (prefix moves to commit time)
+  cleaned=$(echo "$cleaned" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //')
+
+  # 3. Already short enough? Done.
+  if [ ${#cleaned} -le 50 ]; then
+    echo "$cleaned"
+    return
   fi
 
-  # 3. Truncate to 50 chars at word boundary
-  if [ ${#cleaned} -gt 50 ]; then
-    cleaned=$(_truncate_at_word_boundary "$cleaned" 50)
-  fi
+  # 4. Try splitting at a natural break point
+  local split_title
+  split_title=$(_find_natural_split "$cleaned" 50) && {
+    _TITLE_REMAINDER="${cleaned:${#split_title}}"
+    # Strip leading separators and whitespace from remainder
+    _TITLE_REMAINDER=$(echo "$_TITLE_REMAINDER" | sed -E 's/^[[:space:]]*[-–—]+[[:space:]]*//')
+    echo "$split_title"
+    return
+  }
 
-  echo "$cleaned"
+  # 5. No natural split — full original goes to description
+  _TITLE_REMAINDER="$cleaned"
+
+  # 5a. Claude paraphrase: condense into imperative ≤50
+  local paraphrased
+  paraphrased=$(_paraphrase_title "$cleaned") && {
+    echo "$paraphrased"
+    return
+  }
+
+  # 5b. Last resort: truncate (Claude unavailable)
+  echo "$(_truncate_at_word_boundary "$cleaned" 50)"
 }

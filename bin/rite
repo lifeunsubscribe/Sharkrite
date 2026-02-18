@@ -176,7 +176,7 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   # Auto-prune: keep last 20 logs, delete older ones
   RITE_LOG_DIR="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/logs"
   if [ -d "$RITE_LOG_DIR" ]; then
-    LOG_COUNT=$(ls -1 "$RITE_LOG_DIR"/rite-*.log 2>/dev/null | wc -l | tr -d ' ')
+    LOG_COUNT=$(ls -1 "$RITE_LOG_DIR"/rite-*.log 2>/dev/null | wc -l | tr -d ' ') || true
     if [ "$LOG_COUNT" -gt 20 ]; then
       ls -1t "$RITE_LOG_DIR"/rite-*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
     fi
@@ -425,7 +425,6 @@ if [ ${#ARGS[@]} -eq 0 ] && [ -z "$FILTER" ]; then
   echo "Run 'rite --help' for usage"
   exit 1
 elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "full" ]; then
-  # Normalize and resolve (runs in main shell — sets ISSUE_NUMBER, NORMALIZED_SUBJECT, etc.)
   normalize_and_resolve "${ARGS[0]}"
   # Full lifecycle: work -> PR -> review -> fixes -> merge
   # Default to unsupervised (--auto) unless --supervised was explicitly passed
