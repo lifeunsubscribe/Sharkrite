@@ -9,12 +9,7 @@
 #   --post    Post the review as a PR comment (default: preview only)
 #   --auto    Use --dangerously-skip-permissions for automation
 #
-# This replaces Claude for GitHub's auto-review with a local Sharkrite session.
-# Benefits:
-#   - No dependency on external service
-#   - Faster (no webhook latency)
-#   - Works when Claude for GitHub is down/broken
-#   - Same review quality (same Claude model)
+# Runs a local Sharkrite review using Claude and posts findings as a PR comment.
 
 set -euo pipefail
 
@@ -69,12 +64,6 @@ fi
 
 print_header "🦈 Sharkrite Code Review - PR #$PR_NUMBER"
 echo ""
-
-# Display review method (set by create-pr.sh or review-helper.sh)
-if [ -n "${RITE_REVIEW_REASON:-}" ]; then
-  print_info "Review method: Local Sharkrite"
-  print_status "   Reason: $RITE_REVIEW_REASON"
-fi
 
 # Get PR info
 print_status "Fetching PR information..."
@@ -318,8 +307,7 @@ if [ "$POST_REVIEW" = true ]; then
     LOW_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*low|💡.*low|minor suggestion" || true)
   fi
 
-  # Post as PR comment (same location as Claude for GitHub app reviews,
-  # enabling seamless switching between local and app review methods)
+  # Post as PR comment
   print_status "Posting review to PR #$PR_NUMBER..."
 
   REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body "$REVIEW_COMMENT" 2>&1) || {

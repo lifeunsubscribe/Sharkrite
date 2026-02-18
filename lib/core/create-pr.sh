@@ -23,6 +23,9 @@ source "$RITE_LIB_DIR/utils/review-helper.sh"
 # Source PR summary helpers for changes-summary section in PR body
 source "$RITE_LIB_DIR/utils/pr-summary.sh"
 
+# Source PR detection for shared commit timestamp utility
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
 # Parse arguments
 AUTO_MODE=false
 ISSUE_NUMBER=""
@@ -351,247 +354,19 @@ else
 fi
 echo ""
 
-# Determine review method based on config (app, local, or auto)
-# This respects RITE_REVIEW_METHOD from config.sh
-REVIEW_METHOD="${RITE_REVIEW_METHOD:-auto}"
-
-if ! should_wait_for_app_review; then
-  # Config says use local, or auto mode with no app detected
-  if [ "$REVIEW_METHOD" = "local" ]; then
-    export RITE_REVIEW_REASON="RITE_REVIEW_METHOD=local (config preference)"
-
-    if [ "$AUTO_MODE" = true ]; then
-      trigger_local_review "$PR_NUMBER" --auto || {
-        print_error "Local review failed"
-        exit 1
-      }
-    else
-      trigger_local_review "$PR_NUMBER" || {
-        print_error "Local review failed"
-        exit 1
-      }
-    fi
-
-    print_success "Local review posted to PR #$PR_NUMBER"
-    echo ""
-    exit 0
-  else
-    # Auto mode, no app detected - this is fallback
-    export RITE_REVIEW_REASON="RITE_REVIEW_METHOD=auto (fallback: no GitHub app detected)"
-
-    if [ "$AUTO_MODE" = true ]; then
-      trigger_local_review "$PR_NUMBER" --auto || {
-        print_error "Local review failed"
-        exit 1
-      }
-    else
-      trigger_local_review "$PR_NUMBER" || {
-        print_error "Local review failed"
-        exit 1
-      }
-    fi
-
-    print_success "Local review posted to PR #$PR_NUMBER"
-    echo ""
-    exit 0
-  fi
-fi
-
-# If we get here, we're waiting for the GitHub app review
-print_header "🔍 Review Method Selection"
-if [ "$REVIEW_METHOD" = "app" ]; then
-  print_info "Review method: GitHub App"
-  print_status "   Reason: RITE_REVIEW_METHOD=app (config preference)"
+# Trigger local Sharkrite review
+if [ "$AUTO_MODE" = true ]; then
+  trigger_local_review "$PR_NUMBER" --auto || {
+    print_error "Local review failed"
+    exit 1
+  }
 else
-  print_info "Review method: GitHub App"
-  print_status "   Reason: RITE_REVIEW_METHOD=auto (default: app detected)"
-fi
-echo ""
-
-# Set up SIGINT trap for clean Ctrl-C exit during review wait
-trap 'echo ""; print_warning "Review wait interrupted by user (Ctrl-C)"; exit 130' SIGINT
-
-# Now wait for automated review
-if [ "$AUTO_MODE" = false ]; then
-  print_header "⏳ Waiting for Automated Sharkrite Review"
+  trigger_local_review "$PR_NUMBER" || {
+    print_error "Local review failed"
+    exit 1
+  }
 fi
 
-# Dynamic wait time based on PR complexity
-# Base: 90s + additional time based on:
-# - Files changed (5s per file, max 60s)
-# - Lines changed (0.1s per line, max 60s)
-FILES_COUNT=$(git diff --numstat origin/$BASE_BRANCH..HEAD 2>/dev/null | wc -l | tr -d ' ')
-LINES_CHANGED=$(git diff --stat origin/$BASE_BRANCH..HEAD 2>/dev/null | tail -1 | grep -oE '[0-9]+' | head -1 || echo "100")
-
-# Calculate dynamic wait
-BASE_WAIT=90
-FILE_WAIT=$((FILES_COUNT * 5))
-[ "$FILE_WAIT" -gt 60 ] && FILE_WAIT=60
-
-LINE_WAIT=$((LINES_CHANGED / 10))
-[ "$LINE_WAIT" -gt 60 ] && LINE_WAIT=60
-
-INITIAL_WAIT=$((BASE_WAIT + FILE_WAIT + LINE_WAIT))
-
-print_status "Dynamic wait time: ${INITIAL_WAIT}s (base: ${BASE_WAIT}s + files: ${FILE_WAIT}s + complexity: ${LINE_WAIT}s)"
-print_status "PR size: $FILES_COUNT files, ~$LINES_CHANGED lines changed"
-echo ""
-
-# Initialize PR_READY flag
-PR_READY=false
-
-# Check if review already exists before waiting
-LATEST_COMMIT_TIME=$(gh pr view $PR_NUMBER --json commits \
-  --jq '.commits[-1].committedDate' 2>/dev/null)
-
-# Check for reviews from Claude bots OR local reviews (marked with sharkrite-local-review)
-EXISTING_REVIEW_DATA=$(gh pr view $PR_NUMBER --json comments \
-  --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1] | {body: .body, createdAt: .createdAt}' \
-  2>/dev/null)
-
-EXISTING_REVIEW_TIME=$(echo "$EXISTING_REVIEW_DATA" | jq -r '.createdAt' 2>/dev/null)
-
-# Check if review was created after latest commit
-if [ -n "$EXISTING_REVIEW_TIME" ] && [ "$EXISTING_REVIEW_TIME" != "null" ] && \
-   [ -n "$LATEST_COMMIT_TIME" ] && [ "$LATEST_COMMIT_TIME" != "null" ]; then
-  # Compare timestamps
-  if [[ "$EXISTING_REVIEW_TIME" > "$LATEST_COMMIT_TIME" ]] || [[ "$EXISTING_REVIEW_TIME" == "$LATEST_COMMIT_TIME" ]]; then
-    print_success "Review found! (created after latest commit)"
-    PR_READY=true
-  fi
-fi
-
-# Only wait if no review exists yet
-if [ "$PR_READY" != true ]; then
-  print_status "Waiting for Sharkrite review comment on PR #$PR_NUMBER..."
-  echo "  Checking for comments from: claude, claude-code, github-actions[bot]"
-  echo "  Looking for: comment posted AFTER latest commit"
-  echo ""
-
-  # Live countdown timer (only show if terminal is interactive)
-  if [ -t 1 ]; then
-    # Interactive terminal - show live countdown
-    REMAINING=$INITIAL_WAIT
-    while [ $REMAINING -gt 0 ]; do
-      printf "\r⏳ Waiting: %ds remaining (will check every 15s after initial wait)..." "$REMAINING"
-      sleep 1
-      REMAINING=$((REMAINING - 1))
-    done
-    printf "\r✓ Initial wait complete (${INITIAL_WAIT}s)                                     \n"
-  else
-    # Non-interactive (piped) - just sleep without countdown
-    sleep "$INITIAL_WAIT"
-    echo "✓ Initial wait complete (${INITIAL_WAIT}s)"
-  fi
-fi
-
-# Check for review every 15 seconds for up to 2 more minutes if needed
-MAX_ADDITIONAL_WAIT=120
-ELAPSED=$INITIAL_WAIT
-CHECK_INTERVAL=15
-
-# PR_READY tracks whether PR is ready to proceed to next phase:
-#   - true = fresh review found OR old review issues resolved -> proceed to assess-and-resolve
-#   - false = no review yet OR old review with unresolved issues -> keep waiting
-
-MAX_TOTAL_WAIT=$((INITIAL_WAIT + MAX_ADDITIONAL_WAIT))
-
-# Wait for PR to be ready (either fresh review or old issues resolved)
-while [ "$PR_READY" != true ] && [ $ELAPSED -lt $MAX_TOTAL_WAIT ]; do
-  # Get latest commit timestamp and review timestamp to ensure review is fresh
-  LATEST_COMMIT_TIME=$(gh pr view $PR_NUMBER --json commits \
-    --jq '.commits[-1].committedDate' 2>/dev/null)
-
-  # Check for Sharkrite review comments with timestamp (bot accounts OR local reviews)
-  REVIEW_DATA=$(gh pr view $PR_NUMBER --json comments \
-    --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude-code" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1] | {body: .body, createdAt: .createdAt, author: .author.login}' \
-    2>/dev/null)
-
-  LATEST_REVIEW=$(echo "$REVIEW_DATA" | jq -r '.body' 2>/dev/null)
-  REVIEW_TIME=$(echo "$REVIEW_DATA" | jq -r '.createdAt' 2>/dev/null)
-  REVIEW_AUTHOR=$(echo "$REVIEW_DATA" | jq -r '.author' 2>/dev/null)
-
-  if [ -n "$LATEST_REVIEW" ] && [ "$LATEST_REVIEW" != "null" ]; then
-    # Verify review is newer than latest commit
-    if [ -n "$REVIEW_TIME" ] && [ -n "$LATEST_COMMIT_TIME" ]; then
-      if [[ "$REVIEW_TIME" > "$LATEST_COMMIT_TIME" ]]; then
-        print_success "Review found from @$REVIEW_AUTHOR!"
-        echo "  Latest commit: $LATEST_COMMIT_TIME"
-        echo "  Review posted: $REVIEW_TIME (✓ after commit)"
-        PR_READY=true
-        break
-      else
-        echo ""
-        print_info "Found comment from @$REVIEW_AUTHOR, but it's older than latest commit"
-        echo "  Latest commit: $LATEST_COMMIT_TIME"
-        echo "  Review posted: $REVIEW_TIME (✗ before commit)"
-        echo ""
-
-        # Smart assessment: Check if old review issues are already resolved
-        ASSESS_SCRIPT="$RITE_LIB_DIR/core/assess-review-issues.sh"
-        if [ -f "$ASSESS_SCRIPT" ]; then
-          print_status "Assessing old review to check if issues are resolved..."
-
-          # Use process substitution (no temp files) to pass review content
-          ASSESSMENT_RESULT=$("$ASSESS_SCRIPT" "$PR_NUMBER" <(echo "$LATEST_REVIEW") 2>/dev/null || echo "ASSESSMENT_FAILED")
-
-          if [ "$ASSESSMENT_RESULT" = "NO_ACTIONABLE_ITEMS" ]; then
-            print_success "Old review has no actionable items remaining - fixes appear successful!"
-            PR_READY=true
-            break
-          elif [ "$ASSESSMENT_RESULT" = "ASSESSMENT_FAILED" ]; then
-            print_status "Could not assess review, continuing to wait for fresh review..."
-          else
-            print_status "Old review still has actionable items, continuing to wait for fresh review..."
-          fi
-        else
-          print_status "Assessment script not found, continuing to wait for fresh review..."
-        fi
-      fi
-    else
-      print_success "Review found from @$REVIEW_AUTHOR!"
-      PR_READY=true
-      break
-    fi
-  fi
-
-  # Live countdown for next check
-  print_status "No review yet... checking again in ${CHECK_INTERVAL}s (${ELAPSED}s elapsed of ${MAX_TOTAL_WAIT}s max)"
-
-  if [ -t 1 ]; then
-    # Interactive terminal - show live countdown
-    REMAINING=$CHECK_INTERVAL
-    while [ $REMAINING -gt 0 ]; do
-      printf "\r⏳ Next check in: %ds..." "$REMAINING"
-      sleep 1
-      REMAINING=$((REMAINING - 1))
-    done
-    printf "\r🔍 Checking for review...                          \n"
-  else
-    # Non-interactive - just sleep
-    sleep "$CHECK_INTERVAL"
-    echo "🔍 Checking for review..."
-  fi
-
-  ELAPSED=$((ELAPSED + CHECK_INTERVAL))
-done
-
-if [ "$PR_READY" = false ]; then
-  print_warning "No automated review found after ${ELAPSED}s"
-  echo ""
-  echo "The review may still be running. You can:"
-  echo "  1. Wait and re-run: $0"
-  echo "  2. Check manually: $PR_URL"
-  echo "  3. Proceed anyway with merge"
-  echo ""
-  exit 0
-fi
-
-# Review found - success!
-if [ -n "${REVIEW_AUTHOR:-}" ] && [ "$REVIEW_AUTHOR" != "null" ]; then
-  print_success "Review received from @${REVIEW_AUTHOR}"
-else
-  print_success "Review received"
-fi
+print_success "Review posted to PR #$PR_NUMBER"
 echo ""
 exit 0

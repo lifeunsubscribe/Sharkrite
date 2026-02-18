@@ -101,12 +101,6 @@ RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5-20250929}"
 # Model for reviews and assessments — opus for quality (must match for consistency)
 RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5-20251101}"
 
-# Review method: "app" | "local" | "auto" (default: local)
-#   - "app": Use Claude for GitHub app only (fail if not installed)
-#   - "local": Use local Sharkrite review only (never wait for app)
-#   - "auto": Try app first, fallback to local if not available or stale
-RITE_REVIEW_METHOD="${RITE_REVIEW_METHOD:-local}"
-
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 
@@ -172,7 +166,6 @@ export SESSION_STATE_FILE
 export RITE_CLAUDE_TIMEOUT
 export RITE_CLAUDE_MODEL
 export RITE_REVIEW_MODEL
-export RITE_REVIEW_METHOD
 export RITE_DRY_RUN
 export SKIP_AWS_CHECK
 export BLOCKER_INFRASTRUCTURE_PATHS

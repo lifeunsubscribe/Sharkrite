@@ -21,6 +21,7 @@ source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -678,7 +679,8 @@ phase_create_pr() {
     # while API returns UTC (2026-02-18T02:45Z). String comparison of mixed timezones
     # gives wrong results (different calendar dates for the same instant).
     local latest_local_commit_time
-    latest_local_commit_time=$(TZ=UTC git log -1 --format='%cd' --date=format:'%Y-%m-%dT%H:%M:%SZ' --grep="^Merge branch.*\(main\|master\|develop\)" --grep="^Merge pull request.*from.*/main" --invert-grep HEAD 2>/dev/null || echo "")
+    get_latest_work_commit_time "." "$PR_NUMBER"
+    latest_local_commit_time="$LATEST_COMMIT_TIME"
 
     local latest_review_time
     latest_review_time=$(gh pr view "$PR_NUMBER" --json comments --jq '
@@ -1371,13 +1373,13 @@ run_workflow() {
   if [ -n "${PR_NUMBER:-}" ] && [ "$PR_NUMBER" != "null" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
     print_status "Inspecting PR #$PR_NUMBER state..."
 
-    # Get latest WORK commit time (excluding mainline sync merges like "Update branch"),
-    # review/assessment comments, and follow-up markers in one API call.
-    # Mainline sync merges don't change PR scope, so the review is still valid.
-    local pr_state_json=$(gh pr view "$PR_NUMBER" --json comments,commits --jq '{
-      latest_commit: ([.commits[] | select(
-        .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
-      )][-1].committedDate // ""),
+    # Get latest work commit time from LOCAL git (avoids GitHub API eventual consistency).
+    # Mainline sync merge commits are filtered out (don't change PR's work scope).
+    get_latest_work_commit_time "$WORKTREE_PATH" "$PR_NUMBER"
+    local pr_latest_commit="$LATEST_COMMIT_TIME"
+
+    # Get review/assessment/followup state from API (comments are immediately consistent)
+    local pr_state_json=$(gh pr view "$PR_NUMBER" --json comments --jq '{
       latest_review: ([.comments[] | select(
         .author.login == "claude" or .author.login == "claude[bot]" or
         .author.login == "github-actions[bot]" or
@@ -1390,8 +1392,6 @@ run_workflow() {
         .body | contains("sharkrite-followup-issue:")
       )] | length > 0)
     }' 2>/dev/null || echo "{}")
-
-    local pr_latest_commit=$(echo "$pr_state_json" | jq -r '.latest_commit // ""' 2>/dev/null)
     local pr_latest_review=$(echo "$pr_state_json" | jq -r '.latest_review // ""' 2>/dev/null)
     local pr_latest_assessment=$(echo "$pr_state_json" | jq -r '.latest_assessment // ""' 2>/dev/null)
     local pr_has_followup=$(echo "$pr_state_json" | jq -r '.has_followup // false' 2>/dev/null)

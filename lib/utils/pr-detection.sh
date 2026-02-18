@@ -94,6 +94,47 @@ detect_worktree_for_pr() {
   return 0
 }
 
+# get_latest_work_commit_time [WORKTREE_PATH] [PR_NUMBER]
+#
+# Gets the latest non-merge work commit time in UTC ISO 8601 format.
+# Prefers local git (always up-to-date after push, no eventual consistency).
+# Falls back to GitHub API when no worktree available.
+# Filters out mainline sync merge commits (e.g., GitHub "Update branch" button).
+#
+# CRITICAL: Uses --date=format-local: (NOT --date=format:) with TZ=UTC.
+# --date=format: ignores TZ and outputs local time with a fake Z suffix.
+# --date=format-local: respects TZ=UTC and outputs true UTC.
+#
+# Sets: LATEST_COMMIT_TIME (e.g., "2026-02-18T02:45:23Z", or "" if none found)
+# Returns: 0 always
+get_latest_work_commit_time() {
+  local worktree_path="${1:-.}"
+  local pr_number="${2:-}"
+
+  LATEST_COMMIT_TIME=""
+
+  # Try local git first (always up-to-date, no GitHub API eventual consistency)
+  if [ -n "$worktree_path" ] && [ -d "$worktree_path" ] && \
+     git -C "$worktree_path" rev-parse --git-dir >/dev/null 2>&1; then
+    LATEST_COMMIT_TIME=$(TZ=UTC git -C "$worktree_path" log -1 \
+      --date=format-local:'%Y-%m-%dT%H:%M:%SZ' --format='%cd' \
+      --grep="^Merge branch.*\(main\|master\|develop\)" \
+      --grep="^Merge pull request.*from.*/main" \
+      --invert-grep HEAD 2>/dev/null || echo "")
+  fi
+
+  # Fall back to GitHub API if local git unavailable or returned empty
+  if [ -z "$LATEST_COMMIT_TIME" ] && [ -n "$pr_number" ]; then
+    LATEST_COMMIT_TIME=$(gh pr view "$pr_number" --json commits --jq '
+      [.commits[] | select(
+        .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
+      )][-1].committedDate // ""
+    ' 2>/dev/null || echo "")
+  fi
+
+  return 0
+}
+
 # detect_review_state PR_NUMBER [WORKTREE_PATH]
 #
 # Checks the review state for a PR: whether a review exists and if it's current.
@@ -152,24 +193,28 @@ detect_review_state() {
       return 0
     fi
 
-    # Get latest non-merge commit time from local git
-    latest_commit_time=$(git -C "$worktree_path" log -1 --format=%cI \
-      --grep="^Merge branch.*\(main\|master\|develop\)" \
-      --grep="^Merge pull request.*from.*/main" \
-      --invert-grep HEAD 2>/dev/null || echo "")
+    # Get latest non-merge commit time (shared function handles local vs API)
+    get_latest_work_commit_time "$worktree_path" "$pr_number"
+    latest_commit_time="$LATEST_COMMIT_TIME"
   else
-    # No worktree — fall back to GitHub API commit timestamps
-    # Exclude mainline sync merge commits from comparison
-    latest_commit_time=$(gh pr view "$pr_number" --json commits --jq '
-      [.commits[] | select(
-        .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
-      )][-1].committedDate // ""
-    ' 2>/dev/null || echo "")
+    # No worktree — shared function falls back to GitHub API
+    get_latest_work_commit_time "" "$pr_number"
+    latest_commit_time="$LATEST_COMMIT_TIME"
   fi
 
-  # Compare timestamps (ISO 8601 — lexicographic comparison works)
+  # Compare timestamps using epoch seconds (handles mixed timezone formats)
   if [ -n "$REVIEW_TIME" ] && [ -n "$latest_commit_time" ]; then
-    if [[ "$REVIEW_TIME" > "$latest_commit_time" ]]; then
+    local commit_epoch review_epoch
+    if date --version >/dev/null 2>&1; then
+      # GNU date (Linux)
+      commit_epoch=$(date -d "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
+      review_epoch=$(date -d "$REVIEW_TIME" "+%s" 2>/dev/null || echo "0")
+    else
+      # BSD date (macOS) — timestamps are UTC format (ending in Z)
+      commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
+      review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$REVIEW_TIME" "+%s" 2>/dev/null || echo "0")
+    fi
+    if [ "$review_epoch" -gt "$commit_epoch" ]; then
       REVIEW_IS_CURRENT="true"
     fi
   elif [ -n "$REVIEW_TIME" ] && [ -z "$latest_commit_time" ]; then

@@ -27,6 +27,7 @@ fi
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -470,7 +471,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     # If smart-wait enabled and this looks like a parent issue, wait for review
     if [ "$SMART_WAIT" = true ]; then
       # Check if this issue's PR was just updated by a previous issue in batch
-      PR_UPDATED=$(gh pr view "$EXISTING_PR" --json commits --jq '.commits[-1].committedDate' 2>/dev/null || echo "")
+      get_latest_work_commit_time "" "$EXISTING_PR"
+      PR_UPDATED="$LATEST_COMMIT_TIME"
       REVIEW_TIME=$(gh pr view "$EXISTING_PR" --json comments --jq '.comments | map(select(.author.login == "claude")) | .[-1].createdAt' 2>/dev/null || echo "")
 
       if [ -n "$PR_UPDATED" ] && [ -n "$REVIEW_TIME" ] && [[ "$PR_UPDATED" > "$REVIEW_TIME" ]]; then

@@ -26,6 +26,9 @@ fi
 # Source review helper for consistent review method handling
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 
+# Source PR detection for shared commit timestamp utility
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
 # Redirect all display output to stderr (stdout reserved for filtered content on exit 2)
 exec 3>&1  # Save original stdout for filtered content output
 exec 1>&2  # Redirect stdout to stderr for all print functions
@@ -295,7 +298,7 @@ if ! command -v jq &> /dev/null; then
   exit 1
 fi
 
-# Fetch PR review (from Claude for GitHub bot OR local sharkrite review)
+# Fetch PR review (local sharkrite review comment)
 # (header already printed by workflow-runner.sh with PR + issue context)
 GH_STDERR=$(mktemp)
 REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1]' 2>"$GH_STDERR") || {
@@ -429,16 +432,8 @@ echo ""
 # Get review timestamp
 REVIEW_TIME="${REVIEW_TIME:-$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/null)}"
 
-# Get latest commit timestamp (warn but continue if this fails)
-GH_STDERR=$(mktemp)
-LATEST_COMMIT_TIME=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].committedDate' 2>"$GH_STDERR") || {
-  GH_ERROR=$(cat "$GH_STDERR")
-  if [ -n "$GH_ERROR" ]; then
-    print_warning "Could not fetch commit timestamps: $GH_ERROR"
-  fi
-  LATEST_COMMIT_TIME=""
-}
-rm -f "$GH_STDERR"
+# Get latest commit timestamp (local git preferred, API fallback)
+get_latest_work_commit_time "." "$PR_NUMBER"
 
 # Check if there are commits after the review
 if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then

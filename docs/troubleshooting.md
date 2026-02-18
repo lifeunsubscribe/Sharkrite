@@ -44,9 +44,8 @@ rite 42 --bypass-blockers
 
 ## "PR review not found"
 
-- If using local review: check Claude CLI is authenticated (`claude`)
-- If using Claude for GitHub app: ensure the app is installed on the repo
-- Review may still be running — Sharkrite uses dynamic wait with backoff
+- Check Claude CLI is authenticated (`claude`)
+- Review may still be running — check logs for progress
 - Check PR status: `gh pr view <PR_NUMBER>`
 
 ## Uninstall

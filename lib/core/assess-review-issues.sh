@@ -27,6 +27,9 @@ fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
+# Source PR detection for shared commit timestamp utility
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
 # =============================================================================
 # FRESHNESS CHECK: Skip assessment if no commits since last assessment
 # =============================================================================
@@ -45,10 +48,9 @@ check_assessment_freshness() {
     return 1  # No assessment exists
   fi
 
-  # Get latest commit timestamp on the PR
-  local latest_commit_time
-  latest_commit_time=$(gh pr view "$pr_number" --json commits \
-    --jq '.commits[-1].committedDate' 2>/dev/null || echo "")
+  # Get latest commit timestamp (local git preferred, API fallback)
+  get_latest_work_commit_time "." "$pr_number"
+  local latest_commit_time="$LATEST_COMMIT_TIME"
 
   if [ -z "$latest_commit_time" ]; then
     return 1  # Can't determine, run fresh

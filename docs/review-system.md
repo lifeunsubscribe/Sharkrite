@@ -1,15 +1,8 @@
 # Review System
 
-## Review Sources
+## Local Review
 
-Reviews can come from two sources:
-
-1. **Local Review** — Run Claude CLI locally to generate reviews (default)
-2. **Claude for GitHub App** — Automatic reviews on PR creation (requires app installation)
-
-### Local Review Command
-
-Generate and post reviews without the Claude for GitHub app:
+Reviews are generated locally using Claude CLI and posted as PR comments.
 
 ```bash
 # Preview review (does not post)
@@ -20,11 +13,6 @@ lib/core/local-review.sh <pr-number> --post
 
 # Automation mode (non-interactive)
 lib/core/local-review.sh <pr-number> --post --auto
-```
-
-Configure the default review method in `.rite/config`:
-```bash
-RITE_REVIEW_METHOD=local  # or "app" or "auto" (default)
 ```
 
 ## Review Assessment
