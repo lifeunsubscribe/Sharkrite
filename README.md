@@ -1,391 +1,218 @@
-# Sharkrite
+# 🦈 Sharkrite
 
-**AI-powered GitHub workflow automation CLI — process issues end-to-end with Claude Code**
+**Automate your GitHub workflow end-to-end with Claude Code.**
 
-Sharkrite automates the full lifecycle of GitHub issue development: branch creation, Claude Code development, PR creation, review assessment, fix loops, and merge — with intelligent blocker detection and security feedback loops.
+Sharkrite takes a GitHub issue and runs the full development lifecycle — branch, develop, PR, review, fix, merge — so you can focus on architecture, not plumbing.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## Quick Start
+## What it does
+
+```
+rite 42
+```
+
+That's it. Sharkrite will:
+
+1. Create an isolated worktree and branch for the issue
+2. Invoke Claude Code with full project context and security findings
+3. Create a PR with acceptance criteria from the issue
+4. Generate a code review, then assess findings by severity
+5. Auto-fix critical issues (up to 3 cycles)
+6. Merge when clean, save security findings for next time
+
+In supervised mode, you approve each step. In auto mode, it runs unattended. Something go wrong? `rite 42 --undo` rolls back the PR, branch, and worktree.
+
+---
+
+## Quick start
+
+### Prerequisites
+
+- [git](https://git-scm.com/)
+- [gh](https://cli.github.com/) — GitHub CLI
+- [jq](https://jqlang.github.io/jq/) — JSON processor
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
 
 ### Install
 
 ```bash
-git clone <repo-url> /tmp/rite-install
-cd /tmp/rite-install
-./install.sh
+git clone https://github.com/lifeunsubscribe/sharkrite.git /tmp/sharkrite
+cd /tmp/sharkrite && ./install.sh
 ```
 
-This installs to `~/.rite/` and symlinks `rite` into `~/.local/bin/`.
-
-### Prerequisites
-
-- **git** — version control
-- **gh** — GitHub CLI (`brew install gh`)
-- **jq** — JSON parsing (`brew install jq`)
-- **claude** — Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
-
-### Initialize a Project
+### Initialize a project
 
 ```bash
 cd your-repo
 rite --init
 ```
 
-Creates `.rite/` directory with default config and scratchpad.
-
-### Usage
-
-```bash
-# Process single issue (full lifecycle: work → PR → review → fixes → merge)
-rite 21
-
-# Quick mode (work → PR only, skip review/merge)
-rite 21 --quick
-
-# Process multiple issues in batch
-rite 21 45 31
-
-# Auto-discover and process follow-up pairs
-rite --followup
-
-# Dry run (show what would happen without executing)
-rite 21 --dry-run
-
-# Help
-rite --help
-```
-
-**Smart routing:**
-- `rite 21` → Full lifecycle (workflow-runner.sh)
-- `rite 21 --quick` → Work + PR only (claude-workflow.sh + create-pr.sh)
-- `rite 21 45` → Batch mode (batch-process-issues.sh)
-- `rite --followup` → Batch mode with follow-up filter
+This creates a `.rite/` directory with default config and a scratchpad for tracking security findings across PRs.
 
 ---
 
-## How It Works
+## Usage
+
+```bash
+# Full lifecycle — issue to merge (unsupervised by default)
+rite 42
+
+# Supervised mode — approve each phase
+rite 42 --supervised
+
+# Quick mode — develop + PR only, skip review/merge
+rite 42 --quick
+
+# Batch process multiple issues
+rite 21 45 31
+
+# Run by PR number (resolves linked issue)
+rite --pr 72
+
+# Auto-discover and process security follow-ups
+rite --followup
+
+# Undo a workflow — close PR, clean up branches and worktree
+rite 42 --undo
+
+# Dry run — see what would happen
+rite 42 --dry-run
+```
+
+---
+
+## How it works
 
 ```
-Issue #21 → workflow-runner.sh
-              ↓
-         Phase 1: claude-workflow.sh (development with Claude Code)
-              ↓
-         Phase 2: create-pr.sh (creates PR, waits for review)
-              ↓
-         Phase 3: assess-and-resolve.sh (assesses review)
-              ↓
-         CRITICAL found? → claude-workflow.sh --fix-review
-              ↓                    ↓
-         Loop up to 3x     Push fixes, wait for new review
-              ↓
-         Clean? → merge-pr.sh
-              ↓
-         Done. Security findings saved to scratchpad.
+         ┌─────────────────────────────────────┐
+         │            rite 42                   │
+         └──────────────┬──────────────────────┘
+                        ▼
+              ┌─────────────────┐
+              │  Pre-flight     │  Validate credentials,
+              │  checks         │  check session limits
+              └────────┬────────┘
+                       ▼
+              ┌─────────────────┐
+              │  Development    │  Claude Code works in
+              │  (worktree)     │  isolated worktree with
+              │                 │  scratchpad context
+              └────────┬────────┘
+                       ▼
+              ┌─────────────────┐
+              │  PR creation    │  Push commits, create PR,
+              │  + review       │  generate code review
+              └────────┬────────┘
+                       ▼
+              ┌─────────────────┐     ┌──────────────┐
+              │  Review         │────▶│  Fix loop     │
+              │  assessment     │     │  (up to 3x)   │
+              │                 │◀────│               │
+              └────────┬────────┘     └──────────────┘
+                       ▼
+              ┌─────────────────┐
+              │  Merge +        │  Save security findings,
+              │  cleanup        │  clean worktree
+              └─────────────────┘
 ```
 
-### Phases
+### Review assessment
 
-1. **Pre-Start Checks** — Validate credentials, check session limits
-2. **Claude Workflow** — Development with Claude Code in isolated worktree
-3. **Create PR** — Create PR, wait for automated review with dynamic wait times
-4. **Assess & Resolve** — Categorize review issues using Claude CLI (ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED)
-5. **Merge PR** — Merge if safe, update documentation, save security findings
-6. **Completion** — Notifications, cleanup
+Sharkrite categorizes every review finding:
+
+- **ACTIONABLE_NOW** — Fix in this PR cycle (security issues, bugs)
+- **ACTIONABLE_LATER** — Valid but deferred to a follow-up issue
+- **DISMISSED** — Not worth tracking (style preferences, theoretical edge cases)
+
+Critical findings trigger an automatic fix loop. Medium findings become follow-up GitHub issues. Low findings are batched into a single cleanup issue.
 
 ---
 
 ## Configuration
 
-Sharkrite uses a layered config system:
+Layered config system — global defaults, project overrides, environment variables:
 
 ```
-Defaults → ~/.config/rite/config (global) → .rite/config (project) → Environment variables
+~/.config/rite/config  →  .rite/config  →  ENV vars
 ```
 
-### Project Config (`.rite/config`)
+### Key settings
 
-Created by `rite --init`. Key settings:
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `RITE_MAX_ISSUES_PER_SESSION` | 8 | Session issue limit |
+| `RITE_MAX_SESSION_HOURS` | 4 | Session time limit |
+| `RITE_MAX_RETRIES` | 3 | Fix loop attempts |
+| `RITE_ASSESSMENT_TIMEOUT` | 120s | Claude assessment timeout |
+| `WORKFLOW_MODE` | unsupervised | `supervised` or `unsupervised` |
 
-```bash
-# Worktree base directory
-RITE_WORKTREE_DIR="$HOME/Dev/worktrees/myproject"
-
-# Session limits
-RITE_MAX_ISSUES_PER_SESSION=8
-RITE_MAX_SESSION_HOURS=4
-
-# Claude assessment timeout (seconds)
-RITE_ASSESSMENT_TIMEOUT=120
-```
-
-See [config/project.conf.example](config/project.conf.example) for all options.
-
-### Global Config (`~/.config/rite/config`)
-
-Settings that apply across all projects:
-
-```bash
-# Notifications
-SLACK_WEBHOOK_URL="https://hooks.slack.com/..."
-RITE_EMAIL_FROM="sharkrite@example.com"
-
-# AWS profile for notifications
-RITE_AWS_PROFILE="default"
-```
-
-See [config/rite.conf.example](config/rite.conf.example) for all options.
-
-### Blocker Rules (`.rite/blockers.conf`)
-
-Customize which file patterns trigger blocker detection:
-
-```bash
-BLOCKER_INFRASTRUCTURE_PATHS="(cdk|cloudformation|terraform|pulumi)"
-BLOCKER_MIGRATION_PATHS="(prisma/migrations|migrations/|alembic/)"
-BLOCKER_AUTH_PATHS="(auth|cognito|jwt|oauth|session)"
-```
-
-See [config/blockers.conf.example](config/blockers.conf.example) for all patterns.
-
-### Assessment Customization
-
-Control how Claude assesses PR review issues:
-
-1. **`.rite/assessment-prompt.md`** — Full custom assessment prompt (highest priority)
-2. **`CLAUDE.md`** — Sharkrite extracts security/conventions sections automatically
-3. **Generic fallback** — Built-in assessment criteria from `templates/assessment-prompt.md`
+See [config/project.conf.example](config/project.conf.example) for all options, or [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ---
 
-## Project Structure
+## Safety
+
+### 10 blocker rules
+
+Sharkrite detects risky changes and pauses the workflow before they merge:
+
+1. Infrastructure changes (CDK, Terraform, CloudFormation)
+2. Database migrations
+3. Auth configuration changes
+4. Architectural documentation modifications
+5. Critical review issues
+6. Test/build failures
+7. Expensive cloud services (RDS, NAT Gateway)
+8. Session limits exceeded
+9. AWS credentials expired
+10. Protected workflow scripts modified
+
+Each rule is configurable in `.rite/blockers.conf`.
+
+### Security feedback loop
+
+Security findings persist across PRs via the scratchpad:
+
+```
+PR review finds issue → saved to scratchpad → next Claude Code session
+loads scratchpad → avoids repeating the same pattern
+```
+
+The last 5 PRs stay in "Recent Findings." The last 20 are archived.
+
+---
+
+## Project structure
 
 ```
 sharkrite/
-├── bin/rite                        # CLI entry point
+├── bin/rite                     # CLI entry point
 ├── lib/
-│   ├── core/                        # Core workflow scripts
-│   │   ├── workflow-runner.sh       # Central orchestrator (5 phases)
-│   │   ├── claude-workflow.sh       # Claude Code development + worktree management
-│   │   ├── create-pr.sh            # PR creation + review waiting
-│   │   ├── assess-and-resolve.sh   # Review assessment + fix loop
-│   │   ├── assess-review-issues.sh # Claude CLI issue categorization
-│   │   ├── assess-documentation.sh # Pre-merge doc completeness check
-│   │   ├── merge-pr.sh             # PR merge + scratchpad update
-│   │   └── batch-process-issues.sh # Multi-issue batch processing
-│   └── utils/                       # Shared libraries
-│       ├── config.sh               # Layered configuration loader
-│       ├── colors.sh               # Terminal colors and print helpers
-│       ├── blocker-rules.sh        # 10 configurable blocker rules
-│       ├── scratchpad-manager.sh   # Security feedback loop
-│       ├── session-tracker.sh      # Session state and limits
-│       ├── notifications.sh        # Slack/Email/SMS notifications
-│       ├── format-review.sh        # Review content formatting
-│       ├── create-followup-issues.sh # GitHub issue creation
-│       ├── review-assessment.sh    # Assessment display helpers
-│       ├── cleanup-worktrees.sh    # Worktree cleanup utility
-│       └── validate-setup.sh       # Prerequisites validator
-├── config/                          # Example configurations
-│   ├── rite.conf.example          # Global config template
-│   ├── project.conf.example        # Per-project config template
-│   └── blockers.conf.example       # Blocker patterns template
-├── templates/                       # Templates for rite --init
-│   ├── scratchpad.md               # Scratchpad structure
-│   ├── assessment-prompt.md        # Generic assessment criteria
-│   └── gitignore                   # .rite/.gitignore template
-├── install.sh                       # Installer (idempotent)
-├── uninstall.sh                     # Uninstaller
-└── README.md                        # This file
+│   ├── core/                    # Workflow phases
+│   │   ├── workflow-runner.sh   # Central orchestrator
+│   │   ├── claude-workflow.sh   # Claude Code development
+│   │   ├── create-pr.sh        # PR creation + review
+│   │   ├── local-review.sh     # Local review generation
+│   │   ├── assess-and-resolve.sh
+│   │   ├── assess-review-issues.sh
+│   │   ├── assess-documentation.sh
+│   │   ├── merge-pr.sh         # Merge + scratchpad update
+│   │   └── batch-process-issues.sh
+│   └── utils/                   # Shared libraries
+│       ├── config.sh            # Layered config loader
+│       ├── blocker-rules.sh     # 10 configurable rules
+│       ├── scratchpad-manager.sh
+│       ├── session-tracker.sh
+│       └── ...
+├── config/                      # Example configs
+├── templates/                   # Init templates
+├── docs/                        # Extended documentation
+├── install.sh
+└── uninstall.sh
 ```
-
----
-
-## Features
-
-### 10 Blocker Rules
-
-Prevents accidental bad merges. Each rule is configurable via `.rite/blockers.conf`:
-
-1. **Infrastructure Changes** — CDK, IAM, CloudFormation, Terraform
-2. **Database Migrations** — Prisma, Alembic, raw SQL migrations
-3. **Authentication/Authorization** — Cognito, JWT, OAuth, session logic
-4. **Architectural Documentation** — CLAUDE.md, architecture docs
-5. **CRITICAL Issues in Review** — Security risks, data integrity
-6. **Test/Build Failures** — Failed CI checks
-7. **Expensive AWS Services** — RDS, Aurora, NAT Gateway, EC2
-8. **Session Limits** — Configurable issue count and time limits
-9. **AWS Credentials Expired** — SSO session timeout
-10. **Protected Scripts Changed** — Workflow scripts modified
-
-### Smart Worktree Management
-
-- **Auto-detect**: Finds existing worktree for issue
-- **Auto-navigate**: Switches to correct worktree
-- **Auto-stash**: Stashes changes before navigation, pops when returning
-- **Auto-cleanup**: Removes merged branches at limit
-
-### Security Feedback Loop
-
-Scratchpad tracks security findings across PRs:
-
-1. PR review finds security issues
-2. `merge-pr.sh` extracts findings to scratchpad
-3. Next issue loads scratchpad into Claude Code context
-4. Claude Code avoids repeating same patterns
-5. Last 5 PRs in "Recent", last 20 in archive
-
-### Review Generation
-
-Reviews can come from two sources:
-
-1. **Claude for GitHub App** — Automatic reviews on PR creation (requires app installation)
-2. **Local Review** — Run Claude CLI locally to generate reviews
-
-```bash
-# Preview a review without posting
-lib/core/local-review.sh 42
-
-# Generate and post review to PR
-lib/core/local-review.sh 42 --post
-
-# Use in automation
-lib/core/local-review.sh 42 --post --auto
-```
-
-Configure default method in `.rite/config`:
-```bash
-RITE_REVIEW_METHOD=local  # or "app" or "auto" (default)
-```
-
-### Smart Review Assessment
-
-Uses Claude CLI for intelligent PR review filtering:
-
-- **ACTIONABLE_NOW** — Fix in this PR: security issues, bugs, valid concerns within scope
-- **ACTIONABLE_LATER** — Valid but out-of-scope, defer to tech-debt issue
-- **DISMISSED** — Not worth tracking (style preferences, theoretical edge cases)
-
-Each item shows severity, category, and reasoning for the decision.
-
-#### Assessment Caching
-
-Assessments are cached by SHA256 hash of review content + model for determinism:
-
-```bash
-# Cache location
-.rite/assessment-cache/
-
-# Cache is invalidated when:
-# - New review is posted (local-review.sh --post)
-# - PR is merged (merge-pr.sh)
-```
-
-#### Model Consistency
-
-Reviews and assessments use the same model for consistent results:
-
-```bash
-# Configure in .rite/config or environment
-RITE_REVIEW_MODEL=opus  # default
-
-# Model is embedded in review metadata:
-# <!-- sharkrite-local-review model:opus timestamp:... -->
-```
-
-### Fix Loop & Tech-Debt Flow
-
-When ACTIONABLE_NOW items exist:
-
-```
-Loop (max 3 retries):
-  1. Claude Code fixes ACTIONABLE_NOW items
-  2. Commit and push
-  3. New review generated
-  4. Re-assess (same criteria every loop)
-  5. If ACTIONABLE_NOW = 0 → exit loop
-  6. If still has items → repeat
-
-After max retries:
-  - All ACTIONABLE_LATER items → tech-debt labeled issue
-  - Remaining ACTIONABLE_NOW → also goes to tech-debt
-  - Proceed to blocker check → merge or block
-```
-
-### Local Review Command
-
-Generate and post reviews without the Claude for GitHub app:
-
-```bash
-# Preview review (does not post)
-lib/core/local-review.sh <pr-number>
-
-# Generate and post to PR
-lib/core/local-review.sh <pr-number> --post
-
-# Automation mode (non-interactive)
-lib/core/local-review.sh <pr-number> --post --auto
-```
-
-This is useful when Claude for GitHub is unavailable or you want faster local review generation.
-
----
-
-## Per-Project `.rite/` Directory
-
-Created by `rite --init`:
-
-```
-.rite/
-├── config              # Project settings (committed)
-├── blockers.conf       # Blocker patterns (committed)
-├── assessment-prompt.md # Custom assessment context (committed, optional)
-├── .gitignore          # Ignores runtime files below
-├── scratch.md          # Working notes + security findings (gitignored)
-├── session-state/      # Session tracking JSON (gitignored)
-└── *.log               # Runtime logs (gitignored)
-```
-
-**Committed**: `config`, `blockers.conf`, `assessment-prompt.md`
-**Gitignored**: `scratch.md`, `session-state/`, `*.log`
-
----
-
-## Troubleshooting
-
-### "AWS credentials expired"
-```bash
-aws sso login --profile your-profile
-```
-
-### "Session limit reached"
-```bash
-# Check session state
-cat .rite/session-state/current-session.json
-
-# Clear manually (auto-resets after timeout)
-rm .rite/session-state/current-session.json
-```
-
-### "Worktree limit exceeded"
-```bash
-# Auto-cleanup merged branches
-rite cleanup-worktrees
-
-# Or manual
-git worktree list
-git worktree remove /path/to/stale-worktree
-```
-
-### "Blocker detected"
-```bash
-# Resume scripts are auto-created
-.resume/resume-ISSUE_NUMBER.sh
-```
-
-### "PR review not found"
-- Ensure Claude for GitHub app is installed on the repo
-- Review may still be running (wait longer)
-- Check: `gh pr view PR_NUMBER`
 
 ---
 
@@ -393,24 +220,26 @@ git worktree remove /path/to/stale-worktree
 
 ```bash
 ~/.rite/uninstall.sh
-# Or if you have the source:
+# Or from source:
 ./uninstall.sh
 ```
 
-Removes runtime and symlink. Prompts before removing config. Never touches project `.rite/` directories.
+Removes runtime files and symlink. Prompts before removing config. Never touches project `.rite/` directories.
 
 ---
 
-## Environment Variables
+## Contributing
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `RITE_WORKTREE_DIR` | Worktree base directory | `~/Dev/worktrees/$PROJECT` |
-| `RITE_MAX_ISSUES_PER_SESSION` | Max issues per session | `8` |
-| `RITE_MAX_SESSION_HOURS` | Max session duration (hours) | `4` |
-| `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `120` |
-| `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
-| `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |
-| `SLACK_WEBHOOK_URL` | Slack webhook for notifications | — |
-| `RITE_EMAIL_FROM` | Email sender for notifications | — |
-| `RITE_SNS_TOPIC_ARN` | AWS SNS topic for SMS | — |
+See [CONTRIBUTIONS.md](CONTRIBUTIONS.md).
+
+```bash
+git clone https://github.com/lifeunsubscribe/sharkrite.git
+cd sharkrite
+./install.sh  # Symlinks for live editing
+```
+
+---
+
+## License
+
+[MIT](LICENSE) — Sarah Wadley
