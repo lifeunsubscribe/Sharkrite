@@ -2,6 +2,8 @@
 
 AI-powered GitHub workflow automation CLI. Pure bash, uses Claude Code for development and review.
 
+**Mako** — the Claude Code assistant for this repo. Named after the fastest shark.
+
 ## Architecture
 
 ```
@@ -137,7 +139,7 @@ Uses local git timestamps when worktree is available (avoids GitHub API eventual
 
 ## Follow-up Issue Template
 
-Follow-up issues (tech-debt, review follow-ups) use the structure from `templates/issue-template.md`:
+Follow-up issues (tech-debt, review follow-ups) follow the structure in `templates/issue-template.md`:
 
 - **Claude Context**: Changed files from the PR (auto-populated)
 - **Acceptance Criteria**: Item-specific from assessment (e.g., `[HIGH] Fix input validation`)
@@ -145,7 +147,7 @@ Follow-up issues (tech-debt, review follow-ups) use the structure from `template
 - **Scope Boundary**: Static DO/DO NOT (address findings only)
 - **Time Estimate**: Aggregated from Fix Effort metadata in assessment
 
-Project-local override: `.rite/issue-template.md` (copied on `rite --init`).
+**Note:** The template is a reference document. `assess-and-resolve.sh` and `assess-review-issues.sh` hardcode the issue body structure inline rather than loading the template file. `rite --init` copies it to `.rite/issue-template.md` but nothing reads it back. Customizing the local copy has no effect yet.
 
 ## Testing
 

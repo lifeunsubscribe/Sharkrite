@@ -45,33 +45,7 @@ MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 # UTILITY FUNCTIONS
 # ===================================================================
 
-print_header() {
-  echo ""
-  echo "==========================================="
-  echo "$1"
-  echo "==========================================="
-  echo ""
-}
-
-print_info() {
-  echo "ℹ️  $1"
-}
-
-print_success() {
-  echo "✅ $1"
-}
-
-print_error() {
-  echo "❌ ERROR: $1" >&2
-}
-
-print_warning() {
-  echo "⚠️  WARNING: $1"
-}
-
-print_status() {
-  echo "$1"
-}
+source "$RITE_LIB_DIR/utils/colors.sh"
 
 # ===================================================================
 # GRACEFUL EXIT HANDLING
@@ -636,8 +610,16 @@ EOF
 
 phase_create_pr() {
   local issue_number="$1"
+  local loop_mode="${2:-}"
 
-  print_header "Phase 2: Push Work and Wait for Review"
+  # Compact header on fix loop iterations (--loop), full header on normal entry/resume
+  if [ "$loop_mode" = "--loop" ]; then
+    echo ""
+    print_status "Fix loop: pushing fixes and re-reviewing..."
+    echo ""
+  else
+    print_header "Phase 2: Push Work and Wait for Review"
+  fi
 
   cd "$WORKTREE_PATH"
 
@@ -733,7 +715,14 @@ phase_assess_and_resolve() {
   # Track retry count globally for interrupt handler
   CURRENT_RETRY="$retry_count"
 
-  print_header "Phase 3: Assess Review and Resolve Issues"
+  # Compact header on fix loop iterations (retry > 0), full header on normal entry/resume
+  if [ "$retry_count" -gt 0 ]; then
+    echo ""
+    print_status "Fix loop ($retry_count/$max_retries): assessing review..."
+    echo ""
+  else
+    print_header "Phase 3: Assess Review and Resolve Issues"
+  fi
 
   # Check if a passing assessment already exists (idempotency on resume).
   # Only check on first entry (retry_count=0) — retries should always re-assess.
@@ -915,9 +904,9 @@ phase_assess_and_resolve() {
     fi
 
     # After fixes, restart from Phase 2 (create/update PR)
-    phase_create_pr "$issue_number"
+    phase_create_pr "$issue_number" --loop
 
-    # Increment retry count and recurse
+    # Increment retry count and recurse (compact headers via retry_count > 0)
     local next_retry=$((retry_count + 1))
     phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$next_retry"
     return $?
@@ -938,7 +927,7 @@ phase_assess_and_resolve() {
     print_warning "Review is stale — routing back to Phase 2 for fresh review (reroute $((stale_reroute_count + 1))/2)"
     rm -f "$assess_stderr"
 
-    phase_create_pr "$issue_number"
+    phase_create_pr "$issue_number" --loop
     phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$retry_count"
     return $?
   elif [ $assessment_result -ne 0 ]; then
@@ -955,10 +944,6 @@ phase_assess_and_resolve() {
 
   # Assessment complete - decision already shown in Phase 3 header
   # (No redundant summary needed - assess-and-resolve.sh already printed decision box)
-
-  if [ "$WORKFLOW_MODE" = "unsupervised" ]; then
-    print_info "Auto mode: proceeding to merge workflow"
-  fi
 
   return 0
 }
@@ -1130,10 +1115,14 @@ phase_completion() {
 run_workflow() {
   local issue_number="$1"
 
-  print_header "🤖 Automated Workflow Runner 🤖"
+  echo ""
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${GREEN}🤖 Automated Workflow Runner${NC}"
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
 
   echo "🚀 Processing issue #${issue_number} (full lifecycle)"
-  echo "✅ Session initialized (mode: $WORKFLOW_MODE)"
+  echo -e "${GREEN}Session initialized (mode: $WORKFLOW_MODE)${NC}"
   echo ""
 
   # Check if issue is already closed
@@ -1271,8 +1260,8 @@ run_workflow() {
           print_warning "Skipping worktree cleanup — $active_worktrees other active worktree(s) detected (batch run?)"
         else
           if git worktree remove "$wt_path" --force 2>/dev/null; then
-            [ "$cleaned_anything" = false ] && echo "🧹 Cleaning up artifacts:" && cleaned_anything=true
-            print_success "  Removed worktree: $(basename "$wt_path")"
+            [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+            print_success "Removed worktree: $(basename "$wt_path")"
           fi
         fi
       fi
@@ -1280,16 +1269,16 @@ run_workflow() {
       # 2. Delete local branch if it still exists
       if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
         if git branch -D "$pr_branch" 2>/dev/null; then
-          [ "$cleaned_anything" = false ] && echo "🧹 Cleaning up artifacts:" && cleaned_anything=true
-          print_success "  Deleted local branch: $pr_branch"
+          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+          print_success "Deleted local branch: $pr_branch"
         fi
       fi
 
       # 3. Delete remote branch if it still exists
       if git ls-remote --heads origin "$pr_branch" 2>/dev/null | grep -q "$pr_branch"; then
         if git push origin --delete "$pr_branch" 2>/dev/null; then
-          [ "$cleaned_anything" = false ] && echo "🧹 Cleaning up artifacts:" && cleaned_anything=true
-          print_success "  Deleted remote branch: origin/$pr_branch"
+          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+          print_success "Deleted remote branch: origin/$pr_branch"
         fi
       fi
 
@@ -1297,8 +1286,8 @@ run_workflow() {
       local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
       if [ -f "$state_file" ]; then
         rm -f "$state_file"
-        [ "$cleaned_anything" = false ] && echo "🧹 Cleaning up artifacts:" && cleaned_anything=true
-        print_success "  Removed session state: session-state-${issue_number}.json"
+        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        print_success "Removed session state: session-state-${issue_number}.json"
       fi
 
       if [ "$cleaned_anything" = true ]; then
@@ -1650,7 +1639,6 @@ main() {
 
   # Run the workflow
   if run_workflow "$issue_number"; then
-    print_success "Workflow completed successfully"
     exit 0
   else
     print_error "Workflow failed"

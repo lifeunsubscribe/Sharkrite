@@ -138,8 +138,25 @@ print_assessment_details() {
     echo "🔴 ACTIONABLE_NOW (fix in this PR):" >&2
     echo "" >&2
 
-    # Parse each item
+    # Parse each item (pure awk — no system() calls to avoid shell injection
+    # from backticks/quotes in Claude's reasoning text)
     echo "$assessment_content" | awk '
+      function wrap(prefix, text, width,    words, n, line, i, indent) {
+        indent = "            "
+        n = split(text, words, " ")
+        line = prefix
+        for (i = 1; i <= n; i++) {
+          if (length(line) + length(words[i]) + 1 > width && line != prefix) {
+            print line
+            line = indent words[i]
+          } else if (line == prefix) {
+            line = line words[i]
+          } else {
+            line = line " " words[i]
+          }
+        }
+        if (line != "") print line
+      }
       /^### .* - ACTIONABLE_NOW/ {
         in_item = 1
         title = $0
@@ -157,9 +174,7 @@ print_assessment_details() {
       in_item && /^\*\*Reasoning:\*\*/ {
         reasoning = $0
         gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
-        # Print reasoning with proper wrapping using fold
-        printf "    Reason: "
-        system("echo \"" reasoning "\" | fold -w 76 -s | sed \"2,\\$s/^/            /\"")
+        wrap("    Reason: ", reasoning, 76)
         next
       }
       in_item && /^\*\*Fix Effort:\*\*/ {
@@ -185,6 +200,22 @@ print_assessment_details() {
     echo ""
 
     echo "$assessment_content" | awk '
+      function wrap(prefix, text, width,    words, n, line, i, indent) {
+        indent = "            "
+        n = split(text, words, " ")
+        line = prefix
+        for (i = 1; i <= n; i++) {
+          if (length(line) + length(words[i]) + 1 > width && line != prefix) {
+            print line
+            line = indent words[i]
+          } else if (line == prefix) {
+            line = line words[i]
+          } else {
+            line = line " " words[i]
+          }
+        }
+        if (line != "") print line
+      }
       /^### .* - ACTIONABLE_LATER/ {
         in_item = 1
         title = $0
@@ -202,17 +233,13 @@ print_assessment_details() {
       in_item && /^\*\*Reasoning:\*\*/ {
         reasoning = $0
         gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
-        # Print reasoning with proper wrapping using fold
-        printf "    Reason: "
-        system("echo \"" reasoning "\" | fold -w 76 -s | sed \"2,\\$s/^/            /\"")
+        wrap("    Reason: ", reasoning, 76)
         next
       }
       in_item && /^\*\*Defer Reason:\*\*/ {
         defer = $0
         gsub(/^\*\*Defer Reason:\*\* /, "", defer)
-        # Print defer reason with proper wrapping using fold
-        printf "    Defer: "
-        system("echo \"" defer "\" | fold -w 76 -s | sed \"2,\\$s/^/            /\"")
+        wrap("    Defer: ", defer, 76)
         printf "\n"
         in_item = 0
         next
@@ -231,6 +258,22 @@ print_assessment_details() {
     echo ""
 
     echo "$assessment_content" | awk '
+      function wrap(prefix, text, width,    words, n, line, i, indent) {
+        indent = "            "
+        n = split(text, words, " ")
+        line = prefix
+        for (i = 1; i <= n; i++) {
+          if (length(line) + length(words[i]) + 1 > width && line != prefix) {
+            print line
+            line = indent words[i]
+          } else if (line == prefix) {
+            line = line words[i]
+          } else {
+            line = line " " words[i]
+          }
+        }
+        if (line != "") print line
+      }
       /^### .* - DISMISSED/ {
         in_item = 1
         title = $0
@@ -242,9 +285,7 @@ print_assessment_details() {
       in_item && /^\*\*Reasoning:\*\*/ {
         reasoning = $0
         gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
-        # Print reasoning with proper wrapping using fold
-        printf "    Reason: "
-        system("echo \"" reasoning "\" | fold -w 76 -s | sed \"2,\\$s/^/            /\"")
+        wrap("    Reason: ", reasoning, 76)
         printf "\n"
         in_item = 0
         next
@@ -573,18 +614,14 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
 
     # Decision tree based on three-state counts
     if [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -eq 0 ]; then
-      print_success "✅ All items dismissed - PR is ready to merge!"
-
-      if [ "$AUTO_MODE" = true ]; then
-        print_info "Auto mode: proceeding to merge workflow"
-      fi
+      print_success "All items dismissed — PR is ready to merge!"
 
       exit 0
 
     elif [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
       # Only ACTIONABLE_LATER items - create tech-debt issue and merge
       print_info "✅ No immediate fixes needed"
-      print_status "📝 Creating tech-debt issue for $ACTIONABLE_LATER_COUNT deferred items..."
+      print_status "Creating tech-debt issue for $ACTIONABLE_LATER_COUNT deferred items..."
 
       # Set flag to create tech-debt issue, then exit 0 to allow merge
       CREATE_SECURITY_DEBT=true

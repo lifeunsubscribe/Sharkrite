@@ -29,24 +29,13 @@ source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
+source "$RITE_LIB_DIR/utils/colors.sh"
 
-print_header() {
-  echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "${BLUE}$1${NC}"
-  echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-}
-
-print_success() { echo -e "${GREEN}✅ $1${NC}"; }
-print_error() { echo -e "${RED}❌ $1${NC}"; }
-print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
-print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+# Batch processing requires associative arrays (bash 4+)
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "Error: Batch processing requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
 
 # Check dependencies
 if ! command -v gh &> /dev/null; then
@@ -239,12 +228,17 @@ FAILED_ISSUES=()
 BLOCKED_ISSUES=()
 SKIPPED_ISSUES=()
 
+# Per-issue tracking (associative arrays, requires bash 4+)
+declare -A ISSUE_STATUS
+declare -A ISSUE_TIME
+declare -A ISSUE_PR
+declare -A ISSUE_BRANCH
+declare -A PR_CHANGES
+
 # Summary arrays
-# NOTE: Associative arrays require bash 4+, but macOS ships with bash 3.2
-# For now, skipping detailed status tracking - using simple indexed arrays instead
-declare -a SECURITY_UPDATES=()   # Track security doc updates
-declare -a NEW_ISSUES_CREATED=() # Track new tech-debt issues
-declare -a FAILED_PAIRS=()       # Track failed parent-child pairs
+SECURITY_UPDATES=()
+NEW_ISSUES_CREATED=()
+FAILED_PAIRS=()
 
 print_header "🚀 Batch Processing Started"
 echo "Total Issues: $TOTAL_ISSUES"
@@ -326,7 +320,7 @@ print_info "Scanning all issues for potential blockers before starting..."
 echo ""
 
 PREFLIGHT_BLOCKERS=()
-declare -A PREFLIGHT_BLOCKER_DETAILS
+PREFLIGHT_BLOCKER_MSGS=()
 
 for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # Check if issue has an open PR
@@ -341,7 +335,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       # Extract blocker type from check_blockers output
       BLOCKER_TYPE=$(echo "$BLOCKER_CHECK" | grep -o "BLOCKER:.*" | head -1 || echo "Unknown blocker")
       PREFLIGHT_BLOCKERS+=("$ISSUE_NUM")
-      PREFLIGHT_BLOCKER_DETAILS["$ISSUE_NUM"]="$BLOCKER_TYPE (PR #$PR_NUMBER)"
+      PREFLIGHT_BLOCKER_MSGS+=("$BLOCKER_TYPE (PR #$PR_NUMBER)")
       print_warning "⚠️  Issue #$ISSUE_NUM: $BLOCKER_TYPE"
     }
   fi
@@ -356,8 +350,8 @@ if [ ${#PREFLIGHT_BLOCKERS[@]} -gt 0 ]; then
   print_info "The following issues have potential blockers:"
   echo ""
 
-  for ISSUE_NUM in "${PREFLIGHT_BLOCKERS[@]}"; do
-    echo "  • Issue #$ISSUE_NUM: ${PREFLIGHT_BLOCKER_DETAILS[$ISSUE_NUM]}"
+  for i in "${!PREFLIGHT_BLOCKERS[@]}"; do
+    echo "  • Issue #${PREFLIGHT_BLOCKERS[$i]}: ${PREFLIGHT_BLOCKER_MSGS[$i]}"
   done
 
   echo ""
@@ -549,8 +543,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
-    # Get PR number from latest PR for this issue
-    PR_NUMBER=$(gh pr list --search "issue:$ISSUE_NUM" --state all --limit 1 --json number --jq '.[0].number' 2>/dev/null || echo "")
+    # Get PR number for this issue (search by body text, most recent first)
+    PR_NUMBER=$(gh pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number' 2>/dev/null || echo "")
 
     print_success "Issue #$ISSUE_NUM completed successfully"
     if [ -n "$PR_NUMBER" ]; then
@@ -591,9 +585,6 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     if [ "$SMART_WAIT" = true ] && [ -n "$PR_NUMBER" ]; then
       send_notification "✅ Auto-Merge Success!" "Issue #$ISSUE_NUM completed and PR #$PR_NUMBER merged automatically! Duration: $((ISSUE_DURATION / 60))m" "success"
     fi
-
-    # Update session state
-    record_issue_completion "$ISSUE_NUM" "$PR_NUMBER"
 
   else
     EXIT_CODE=$?

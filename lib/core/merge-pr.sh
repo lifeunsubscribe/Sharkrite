@@ -661,6 +661,9 @@ else
   print_info "Skipping documentation check"
 fi
 
+# Check for security findings and update guide (part of documentation phase)
+update_security_guide_from_pr "$PR_NUMBER"
+
 # Confirm merge
 if [ "$AUTO_MODE" = false ]; then
   echo ""
@@ -679,18 +682,20 @@ else
   MERGE_STRATEGY=1
 fi
 
+print_header "🔀 Merge & Cleanup"
+
 case $MERGE_STRATEGY in
   1)
     MERGE_METHOD="squash"
-    print_info "Using squash merge"
+    echo "Using squash merge (recommended)"
     ;;
   2)
     MERGE_METHOD="merge"
-    print_info "Using merge commit"
+    echo "Using merge commit"
     ;;
   3)
     MERGE_METHOD="rebase"
-    print_info "Using rebase merge"
+    echo "Using rebase merge"
     ;;
   *)
     print_warning "Invalid choice, defaulting to squash"
@@ -757,18 +762,13 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
     print_header "✅ PR Merged Successfully"
   fi
 
-  echo "Merge completed!"
-  echo ""
-  print_success "Branch $PR_HEAD has been merged into $PR_BASE"
+  print_success "PR #$PR_NUMBER merged into $PR_BASE"
 
   # Create tech-debt issues from encountered issues BEFORE clearing scratchpad
   if type create_tech_debt_issues &>/dev/null; then
-    print_info "Creating tech-debt issues from encountered issues..."
     DEBT_COUNT=$(create_tech_debt_issues "$PR_NUMBER")
     if [ "$DEBT_COUNT" -gt 0 ]; then
       print_success "Created $DEBT_COUNT tech-debt issue(s)"
-    else
-      print_info "No new tech-debt issues to create"
     fi
     # Clear encountered issues after processing
     if type clear_encountered_issues &>/dev/null; then
@@ -780,37 +780,6 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
   if type clear_current_work &>/dev/null; then
     clear_current_work
   fi
-
-  # Delete remote branch manually (since we didn't use --delete-branch flag)
-  echo ""
-  print_status "Cleaning up remote branch..."
-  sleep 2  # Give GitHub a moment to process the merge
-
-  if git ls-remote --heads origin "$PR_HEAD" 2>/dev/null | grep -q "$PR_HEAD"; then
-    if git push origin --delete "$PR_HEAD" 2>/dev/null; then
-      print_success "✓ Remote branch deleted: origin/$PR_HEAD"
-    else
-      print_warning "Could not delete remote branch (may require permissions)"
-    fi
-  else
-    print_success "✓ Remote branch already deleted: origin/$PR_HEAD"
-  fi
-
-  # Check for local branch
-  if git show-ref --verify --quiet refs/heads/"$PR_HEAD"; then
-    print_info "✓ Local branch still exists: $PR_HEAD (will be cleaned up below)"
-  else
-    print_success "✓ Local branch already deleted: $PR_HEAD"
-  fi
-
-  echo ""
-  print_info "📚 Branch cleanup explained:"
-  echo "   • Local branch: Lives on your machine only"
-  echo "   • Remote branch: Lives on GitHub (origin/$PR_HEAD)"
-  echo "   • Both are deleted after merge to keep repo clean"
-
-  # Check for security findings and update guide
-  update_security_guide_from_pr "$PR_NUMBER"
 
   # Update scratchpad with security findings (BEFORE clearing context)
   if type update_scratchpad_from_pr &>/dev/null; then
@@ -912,6 +881,31 @@ EOF
     echo "  None (all items addressed in PR)"
   fi
 
+  # ─── Cleanup: branches + worktree ───
+  echo ""
+  print_status "Cleaning up..."
+  sleep 2  # Give GitHub a moment to process the merge
+
+  # Delete remote branch
+  if git ls-remote --heads origin "$PR_HEAD" 2>/dev/null | grep -q "$PR_HEAD"; then
+    if git push origin --delete "$PR_HEAD" 2>/dev/null; then
+      print_success "Deleted remote branch: origin/$PR_HEAD"
+    else
+      print_warning "Could not delete remote branch (may require permissions)"
+    fi
+  else
+    print_info "Remote branch already deleted: origin/$PR_HEAD"
+  fi
+
+  if [ "${RITE_VERBOSE:-false}" = "true" ]; then
+    echo ""
+    print_info "Branch cleanup explained:"
+    echo "   • Local branch: Lives on your machine only"
+    echo "   • Remote branch: Lives on GitHub (origin/$PR_HEAD)"
+    echo "   • Both are deleted after merge to keep repo clean"
+    echo ""
+  fi
+
   # Cleanup local branch if it exists
   if [ "$CURRENT_BRANCH" = "$PR_HEAD" ]; then
     if [ "$AUTO_MODE" = true ]; then
@@ -966,11 +960,13 @@ EOF
     MAIN_WORKTREE=$(git worktree list | head -1 | awk '{print $1}')
 
     if [ "$CURRENT_DIR" != "$MAIN_WORKTREE" ]; then
-      print_info "Cleaning up worktree: $CURRENT_DIR"
+      print_status "Cleaning up worktree..."
 
       # Clean up only this branch's notes from shared scratchpad
       if [ -f "$SCRATCHPAD_FILE" ]; then
-        print_status "Cleaning up notes for branch: $PR_HEAD..."
+        if [ "${RITE_VERBOSE:-false}" = "true" ]; then
+          print_status "Cleaning up notes for branch: $PR_HEAD..."
+        fi
 
         # Create backup before modification
         SCRATCHPAD_BACKUP="${SCRATCHPAD_FILE}.backup-$(date +%s)"
@@ -1048,7 +1044,9 @@ EOF
 
         # Replace scratchpad with cleaned version
         mv "$TEMP_SCRATCH" "$SCRATCHPAD_FILE"
-        print_success "Scratchpad cleaned (removed notes for $PR_HEAD, kept other branches)"
+        if [ "${RITE_VERBOSE:-false}" = "true" ]; then
+          print_success "Scratchpad cleaned (removed notes for $PR_HEAD, kept other branches)"
+        fi
 
         # Check if deep clean is needed (shared sections)
         SCRATCHPAD_SIZE=$(wc -c < "$SCRATCHPAD_FILE" 2>/dev/null || echo "0")
@@ -1364,105 +1362,40 @@ EOF
         SCRATCHPAD_DIR=$(dirname "$SCRATCHPAD_FILE")
         SCRATCHPAD_BASENAME=$(basename "$SCRATCHPAD_FILE")
         find "$SCRATCHPAD_DIR" -name "${SCRATCHPAD_BASENAME}.backup-*" -type f 2>/dev/null | sort -r | tail -n +6 | xargs rm -f 2>/dev/null || true
-        print_success "Scratchpad backup created: $(basename "$SCRATCHPAD_BACKUP")"
-      fi
-
-      # Clean up worktree for reuse (don't delete it)
-      print_status "Cleaning worktree for future reuse..."
-
-      cd "$CURRENT_DIR"
-      UNCOMMITTED=$(git status --porcelain 2>/dev/null || echo "")
-
-      if [ -n "$UNCOMMITTED" ]; then
-        echo ""
-        print_warning "Worktree has uncommitted changes - categorizing for cleanup:"
-        echo ""
-
-        # Categorize changes
-        TESTING_ARTIFACTS=$(echo "$UNCOMMITTED" | grep -E '(coverage/|\.test-results/|\.nyc_output/|test-results\.xml)' || echo "")
-        DEPENDENCIES=$(echo "$UNCOMMITTED" | grep -E '(package\.json|package-lock\.json|node_modules/)' || echo "")
-        AWS_TEST=$(echo "$UNCOMMITTED" | grep -E '(\.env\.test|\.aws/|credentials)' || echo "")
-        OTHER=$(echo "$UNCOMMITTED" | grep -vE '(coverage/|\.test-results/|package\.json|package-lock\.json|node_modules/|\.env\.test|\.aws/)' || echo "")
-
-        # Show categorized changes
-        if [ -n "$TESTING_ARTIFACTS" ]; then
-          echo "📊 Testing artifacts (will be discarded):"
-          echo "$TESTING_ARTIFACTS" | sed 's/^/  /'
-          echo ""
-        fi
-
-        if [ -n "$DEPENDENCIES" ]; then
-          echo "📦 Dependency changes (will be stashed):"
-          echo "$DEPENDENCIES" | sed 's/^/  /'
-          echo ""
-        fi
-
-        if [ -n "$AWS_TEST" ]; then
-          echo "☁️  AWS test configuration (will be stashed):"
-          echo "$AWS_TEST" | sed 's/^/  /'
-          echo ""
-        fi
-
-        if [ -n "$OTHER" ]; then
-          echo "📝 Other uncommitted files (will be stashed):"
-          echo "$OTHER" | sed 's/^/  /'
-          echo ""
-        fi
-
-        # Auto-clean testing artifacts
-        if [ -n "$TESTING_ARTIFACTS" ]; then
-          echo "$TESTING_ARTIFACTS" | while read -r line; do
-            file=$(echo "$line" | awk '{print $2}')
-            rm -rf "$file" 2>/dev/null || true
-          done
-          print_info "Discarded testing artifacts"
-        fi
-
-        # Stash everything else
-        STASH_MSG="Worktree auto-cleanup: $PR_HEAD (PR #$PR_NUMBER) - $(date +%Y-%m-%d)"
-        if git stash push -m "$STASH_MSG" 2>/dev/null; then
-          print_success "Stashed remaining changes: $STASH_MSG"
+        if [ "${RITE_VERBOSE:-false}" = "true" ]; then
+          print_success "Scratchpad backup created: $(basename "$SCRATCHPAD_BACKUP")"
         fi
       fi
 
-      # Switch back to main branch in this worktree (ready for next use)
-      git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
-
-      # Return to main worktree
+      # Remove worktree — work is merged, nothing to preserve
       cd "$MAIN_WORKTREE"
-      echo ""
-      if [ "$AUTO_MODE" = false ]; then
-        print_header "📁 Worktree Cleanup Complete"
+
+      if git worktree remove "$CURRENT_DIR" --force 2>/dev/null; then
+        print_success "Removed worktree: $(basename "$CURRENT_DIR")"
+      else
+        print_warning "Could not remove worktree: $CURRENT_DIR"
+        print_info "Remove manually: git worktree remove '$CURRENT_DIR' --force"
       fi
-      print_success "✓ Switched from worktree to main repository"
-      print_success "✓ Worktree cleaned and ready for reuse"
-      echo ""
-      print_info "Current location: $MAIN_WORKTREE"
-      print_info "Worktree still exists at: $CURRENT_DIR (ready for next feature)"
-      echo ""
-      print_info "💡 Worktree explained:"
-      echo "   • This PR's work is done and merged"
-      echo "   • You're now back in the main repo (not the worktree)"
-      echo "   • The worktree directory still exists for future use"
-      echo "   • Use rite to create new feature worktrees"
       CURRENT_DIR="$MAIN_WORKTREE"
     fi
 
-  if [ "$AUTO_MODE" = false ]; then
-    print_header "🎉 Merge Complete"
+  if [ "${RITE_VERBOSE:-false}" = "true" ]; then
+    if [ "$AUTO_MODE" = false ]; then
+      print_header "🎉 Merge Complete"
+    fi
+    echo "Summary:"
+    echo "  ✓ PR #$PR_NUMBER merged into $PR_BASE"
+    echo "  ✓ Remote branch deleted: origin/$PR_HEAD"
+    echo "  ✓ Local branch deleted: $PR_HEAD"
+    echo "  ✓ Security guide updated (if applicable)"
+    echo "  ✓ Scratchpad cleaned"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Verify deployment if applicable"
+    echo "  2. Monitor for any issues"
+    echo "  3. Update project board if using one"
+    echo ""
   fi
-  echo "Summary:"
-  echo "  ✓ PR #$PR_NUMBER merged into $PR_BASE"
-  echo "  ✓ Remote branch deleted: origin/$PR_HEAD"
-  echo "  ✓ Local branch deleted: $PR_HEAD"
-  echo "  ✓ Security guide updated (if applicable)"
-  echo "  ✓ Scratchpad cleaned"
-  echo ""
-  echo "Next steps:"
-  echo "  1. Verify deployment if applicable"
-  echo "  2. Monitor for any issues"
-  echo "  3. Update project board if using one"
-  echo ""
   echo "PR URL: $PR_URL"
   echo ""
 

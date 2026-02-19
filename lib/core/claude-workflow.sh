@@ -360,18 +360,33 @@ $EXIT_INSTRUCTION"
   if [ "$AUTO_MODE" = true ]; then
     print_status "Auto mode: Claude will exit automatically when fixes complete (timeout: ${FIX_TIMEOUT}s)"
     set +e  # Temporarily disable exit-on-error to capture timeout
-    # Detect timeout command (gtimeout on macOS via coreutils, timeout on Linux)
-    if command -v gtimeout >/dev/null 2>&1; then
-      gtimeout "$FIX_TIMEOUT" $CLAUDE_CMD --print --dangerously-skip-permissions --disallowedTools "$DISALLOWED_TOOLS" < "$FIX_PROMPT_FILE"
-    elif command -v timeout >/dev/null 2>&1; then
-      timeout "$FIX_TIMEOUT" $CLAUDE_CMD --print --dangerously-skip-permissions --disallowedTools "$DISALLOWED_TOOLS" < "$FIX_PROMPT_FILE"
-    else
-      $CLAUDE_CMD --print --dangerously-skip-permissions --disallowedTools "$DISALLOWED_TOOLS" < "$FIX_PROMPT_FILE"
-    fi
-    FIX_EXIT_CODE=$?
-    set -e
 
-    rm -f "$FIX_PROMPT_FILE"
+    # Use stream-json for real-time tool visibility (same as dev phase).
+    # --verbose is required with --print --output-format stream-json (CLI validation).
+    # Prompt passed as argument (not stdin) so jq pipe can use stdin.
+    FIX_STDERR_FILE=$(mktemp)
+    TIMEOUT_CMD=""
+    if command -v gtimeout >/dev/null 2>&1; then
+      TIMEOUT_CMD="gtimeout $FIX_TIMEOUT"
+    elif command -v timeout >/dev/null 2>&1; then
+      TIMEOUT_CMD="timeout $FIX_TIMEOUT"
+    fi
+
+    $TIMEOUT_CMD $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
+      --disallowedTools "$DISALLOWED_TOOLS" --output-format stream-json \
+      "$FIX_PROMPT" 2>"$FIX_STDERR_FILE" | \
+      jq --unbuffered -rj '
+        if .type == "assistant" then
+          (.message.content[]? |
+            if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
+            elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
+            else empty end)
+        else empty end
+      ' 2>/dev/null || true
+    FIX_EXIT_CODE=${PIPESTATUS[0]}
+
+    rm -f "$FIX_PROMPT_FILE" "$FIX_STDERR_FILE"
+    set -e
 
     if [ $FIX_EXIT_CODE -eq 124 ]; then
       print_warning "Fix timeout reached (${FIX_TIMEOUT}s) - checking for changes..."

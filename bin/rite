@@ -97,6 +97,10 @@ while [[ $# -gt 0 ]]; do
       RITE_LOG_AUTO=false
       shift
       ;;
+    --verbose)
+      export RITE_VERBOSE=true
+      shift
+      ;;
     --log=*)
       RITE_LOG_FILE="${1#--log=}"
       shift
@@ -145,6 +149,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
       echo "  --no-log                   Disable logging (logs are on by default)"
+      echo "  --verbose                  Show extra detail (branch cleanup explanations, etc.)"
       echo "  --log=FILE                 Log to a specific file instead of auto-generated path"
       echo ""
       echo "Phase commands (run individual workflow phases):"
@@ -467,7 +472,12 @@ record_run() {
 }
 
 # Smart routing
-if [ ${#ARGS[@]} -eq 0 ] && [ -z "$FILTER" ]; then
+# Filter-only mode (e.g. --followup) dispatches to batch before any ARGS access,
+# since ${#ARGS[@]} on an empty array crashes bash 3.2 with set -u.
+if [ -n "$FILTER" ] && [ -z "${ARGS[0]:-}" ]; then
+  print_info "Batch processing ${#ARGS[@]+"${#ARGS[@]}"} issues"
+  exec "$RITE_LIB_DIR/core/batch-process-issues.sh" ${ARGS[@]+"${ARGS[@]}"} ${FILTER} --auto
+elif [ -z "${ARGS[0]:-}" ] && [ -z "$FILTER" ]; then
   print_error "No issues specified"
   echo "Run 'rite --help' for usage"
   exit 1
@@ -502,7 +512,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
   source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
   # ── Issue info ──
-  ISSUE_JSON=$(gh issue view "$STATUS_ISSUE" --json title,state,createdAt,closedAt,labels 2>/dev/null || echo "")
+  ISSUE_JSON=$(gh issue view "$STATUS_ISSUE" --json title,state,createdAt,closedAt,labels,url 2>/dev/null || echo "")
   if [ -z "$ISSUE_JSON" ] || [ "$ISSUE_JSON" = "null" ]; then
     print_error "Issue #$STATUS_ISSUE not found"
     exit 1
@@ -526,9 +536,26 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
     echo "  State:      OPEN (created $ISSUE_CREATED)"
   fi
   [ -n "$ISSUE_LABELS" ] && echo "  Labels:     $ISSUE_LABELS"
+  ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.url // ""')
+  [ -n "$ISSUE_URL" ] && echo "  URL:        $ISSUE_URL"
 
   # ── PR info ──
-  if detect_pr_for_issue "$STATUS_ISSUE"; then
+  # detect_pr_for_issue searches open PRs only. For closed/merged issues,
+  # fall back to searching merged then closed PRs.
+  if ! detect_pr_for_issue "$STATUS_ISSUE"; then
+    PR_NUMBER=$(gh pr list --state merged --json number,body --limit 100 2>/dev/null | \
+      jq --arg issue "$STATUS_ISSUE" -r \
+      '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+      head -1)
+    if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+      PR_NUMBER=$(gh pr list --state closed --json number,body --limit 100 2>/dev/null | \
+        jq --arg issue "$STATUS_ISSUE" -r \
+        '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+        head -1)
+    fi
+    [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
+  fi
+  if [ -n "$PR_NUMBER" ]; then
     PR_JSON=$(gh pr view "$PR_NUMBER" --json state,title,headRefName,additions,deletions,changedFiles,commits,createdAt,mergedAt 2>/dev/null || echo "{}")
     PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
     PR_BRANCH_NAME=$(echo "$PR_JSON" | jq -r '.headRefName // ""')

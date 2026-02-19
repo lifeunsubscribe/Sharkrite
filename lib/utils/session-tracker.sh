@@ -310,15 +310,15 @@ get_session_summary() {
   local elapsed=$(format_elapsed_time)
   local mode=$(echo "$session_info" | jq -r '.mode')
 
-  cat <<EOF
-📊 Session Summary
-==================
-Mode: $mode
-Duration: $elapsed
-Issues Completed: $completed
-Issues Failed: $failed
-Total Processed: $((completed + failed))
-EOF
+  echo "📊 Session Summary"
+  echo "=================="
+  echo "Mode: $mode"
+  echo "Duration: $elapsed"
+  echo "Issues Completed: $completed"
+  if [ "$failed" -gt 0 ] 2>/dev/null; then
+    echo "Issues Failed: $failed"
+  fi
+  echo "Total Processed: $((completed + failed))"
 }
 
 # Track an approved blocker to avoid re-prompting

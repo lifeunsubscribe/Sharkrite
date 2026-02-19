@@ -252,36 +252,36 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
   # Revert to draft instead of closing — avoids PR number stacking on rerun.
   # The next `rite` run finds the existing draft PR and reuses it.
   if gh pr ready --undo "$PR_NUMBER" 2>/dev/null; then
-    echo -n "  "; print_success "Reverted PR #$PR_NUMBER to draft"
+    print_success "Reverted PR #$PR_NUMBER to draft"
   else
-    echo -n "  "; print_info "PR #$PR_NUMBER may already be a draft"
+    print_info "PR #$PR_NUMBER may already be a draft"
   fi
 
   # Reset the remote branch to main's HEAD (clean code slate).
   # The draft PR stays linked to this branch; next run pushes new work to it.
   if [ -n "$BRANCH_NAME" ]; then
     if git push origin "main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
-      echo -n "  "; print_success "Reset remote branch to main (clean slate)"
+      print_success "Reset remote branch to main (clean slate)"
       # Update local tracking ref so next run sees the reset (avoids stale origin/branch
       # causing non-fast-forward push → branch deletion → PR closure → new PR)
       git fetch origin "$BRANCH_NAME" 2>/dev/null || true
     else
-      echo -n "  "; print_warning "Failed to reset remote branch"
+      print_warning "Failed to reset remote branch"
       UNDO_ERRORS=$((UNDO_ERRORS + 1))
     fi
   fi
 elif [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "CLOSED" ]; then
-  echo -n "  "; print_info "PR #$PR_NUMBER already closed"
+  print_info "PR #$PR_NUMBER already closed"
   # Delete orphaned remote branch if it still exists
   if [ -n "$BRANCH_NAME" ]; then
     if git push origin --delete "$BRANCH_NAME" 2>/dev/null; then
-      echo -n "  "; print_success "Deleted orphaned remote branch: $BRANCH_NAME"
+      print_success "Deleted orphaned remote branch: $BRANCH_NAME"
     else
-      echo -n "  "; print_info "Remote branch already deleted or not found"
+      print_info "Remote branch already deleted or not found"
     fi
   fi
 else
-  echo -n "  "; print_info "No PR to reset"
+  print_info "No PR to reset"
 fi
 
 # --- 3.2: Delete sharkrite review and assessment comments ---
@@ -307,12 +307,12 @@ if [ -n "$PR_NUMBER" ]; then
     done
 
     if [ $DELETED_COMMENTS -gt 0 ]; then
-      echo -n "  "; print_success "Removed $DELETED_COMMENTS comment(s)"
+      print_success "Removed $DELETED_COMMENTS comment(s)"
     else
-      echo -n "  "; print_info "No sharkrite comments found to clean up"
+      print_info "No sharkrite comments found to clean up"
     fi
   else
-    echo -n "  "; print_warning "Could not determine repo - skipping review cleanup"
+    print_warning "Could not determine repo - skipping review cleanup"
     UNDO_ERRORS=$((UNDO_ERRORS + 1))
   fi
 fi
@@ -329,13 +329,13 @@ if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
     local_state=$(gh issue view "$issue_num" --json state --jq '.state' 2>/dev/null || echo "")
     if [ "$local_state" = "OPEN" ]; then
       if gh issue close "$issue_num" --comment "Closed by undo of issue #$ISSUE_NUMBER (PR #${PR_NUMBER:-unknown})" 2>/dev/null; then
-        echo -n "  "; print_success "Closed follow-up issue #$issue_num"
+        print_success "Closed follow-up issue #$issue_num"
       else
-        echo -n "  "; print_warning "Failed to close follow-up issue #$issue_num"
+        print_warning "Failed to close follow-up issue #$issue_num"
         UNDO_ERRORS=$((UNDO_ERRORS + 1))
       fi
     else
-      echo -n "  "; print_info "Follow-up issue #$issue_num already closed"
+      print_info "Follow-up issue #$issue_num already closed"
     fi
   done
 fi
@@ -351,15 +351,15 @@ if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
   # Make sure we're not inside the worktree
   CURRENT_DIR=$(pwd)
   if [[ "$CURRENT_DIR" == "$WORKTREE_PATH"* ]]; then
-    echo -n "  "; print_info "Currently inside worktree, switching to project root"
+    print_status "Switching to project root..."
     cd "$RITE_PROJECT_ROOT"
   fi
 
   if git worktree remove "$WORKTREE_PATH" --force 2>/dev/null; then
-    echo -n "  "; print_success "Removed worktree: $(basename "$WORKTREE_PATH")"
+    print_success "Removed worktree: $(basename "$WORKTREE_PATH")"
   else
-    echo -n "  "; print_warning "Failed to remove worktree: $WORKTREE_PATH"
-    echo -n "  "; print_info "Try manually: git worktree remove '$WORKTREE_PATH' --force"
+    print_warning "Failed to remove worktree: $WORKTREE_PATH"
+    print_info "Try manually: git worktree remove '$WORKTREE_PATH' --force"
     UNDO_ERRORS=$((UNDO_ERRORS + 1))
   fi
 fi
@@ -379,9 +379,9 @@ if [ "$LOCAL_BRANCH_EXISTS" = true ] && [ -n "$BRANCH_NAME" ]; then
   fi
 
   if git branch -D "$BRANCH_NAME" >/dev/null 2>&1; then
-    echo -n "  "; print_success "Deleted local branch: $BRANCH_NAME"
+    print_success "Deleted local branch: $BRANCH_NAME"
   else
-    echo -n "  "; print_warning "Failed to delete local branch: $BRANCH_NAME"
+    print_warning "Failed to delete local branch: $BRANCH_NAME"
     UNDO_ERRORS=$((UNDO_ERRORS + 1))
   fi
 fi
@@ -395,7 +395,7 @@ if [ "$SESSION_STATE_EXISTS" = true ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   rm -f "$STATE_FILE"
-  echo -n "  "; print_success "Removed session state"
+  print_success "Removed session state"
 fi
 
 # --- 3.7: Clear scratchpad ---
@@ -407,9 +407,9 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 if type clear_current_work &>/dev/null; then
   clear_current_work >/dev/null 2>&1
-  echo -n "  "; print_success "Cleared Current Work section"
+  print_success "Cleared Current Work section"
 else
-  echo -n "  "; print_info "No scratchpad to clear"
+  print_info "No scratchpad to clear"
 fi
 
 # --- 3.8: Reopen original issue ---
@@ -421,9 +421,9 @@ if [ "$ISSUE_STATE" = "closed" ] || [ "$ISSUE_STATE" = "CLOSED" ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   if gh issue reopen "$ISSUE_NUMBER" --comment "Reopened by undo (PR #${PR_NUMBER:-unknown} was closed without merging)" 2>/dev/null; then
-    echo -n "  "; print_success "Reopened issue #$ISSUE_NUMBER"
+    print_success "Reopened issue #$ISSUE_NUMBER"
   else
-    echo -n "  "; print_warning "Failed to reopen issue #$ISSUE_NUMBER"
+    print_warning "Failed to reopen issue #$ISSUE_NUMBER"
     UNDO_ERRORS=$((UNDO_ERRORS + 1))
   fi
 fi

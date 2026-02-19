@@ -310,20 +310,28 @@ ACTIONABLE_NOW - Fix in this PR cycle:
   - Changes in the SAME file/module that are directly related
 
 ACTIONABLE_LATER - Valid concern, create follow-up issue:
+  - Functional inconsistencies across the codebase (e.g., different validation
+    rules for the same concept in different files)
+  - Security-relevant findings that are out of scope but real and verifiable
+  - Bugs or inconsistencies discovered incidentally that aren't blocking the PR
+  - Missing tests for existing functionality (not new code in this PR)
   - Changes to UNRELATED systems or modules (different domain entirely)
   - Large refactors requiring NEW architectural patterns (>2 hours)
   - Breaking changes to PUBLIC APIs affecting external consumers
   - Work requiring NEW dependencies or significant infrastructure changes
   - Items that need design discussion or team consensus first
 
+  KEY DISTINCTION: \"Out of scope\" is NOT the same as \"not worth tracking.\"
+  A finding can be BOTH out of scope for the current PR AND worth creating
+  a follow-up issue. If it's a real, verifiable problem (not opinion), it
+  belongs in ACTIONABLE_LATER even if the fix is small.
+
 DISMISSED - Not worth tracking:
-  - Pure style preferences (no functional impact)
-  - Suggestions using words like \"consider\", \"might\", \"could\"
-  - Theoretical edge cases (unlikely in production)
-  - Over-engineering (premature optimization)
-  - Already documented as accepted patterns
-  - \"Nice to have\" without clear, immediate benefit
-  - LOW priority items that don't affect functionality
+  - Pure style/formatting preferences (no functional impact)
+  - \"Could also do X instead of Y\" where both approaches are valid
+  - Over-engineering suggestions (add abstraction, make configurable, etc.)
+  - Speculative edge cases with no evidence of real impact
+  - Already documented as accepted patterns or intentional decisions
   - Items already covered by ACTIONABLE_NOW (avoid duplicates)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -369,19 +377,25 @@ ACTIONABLE_NOW (fix now) IF:
   - Changes in the SAME module that are directly related
 
 ACTIONABLE_LATER (defer to tech-debt) IF:
+  - Functional inconsistency across files (e.g., validation rule X in one file,
+    contradicting rule Y in another — even if small to fix)
+  - Security-relevant finding that is real and verifiable but out of PR scope
+  - Bug discovered incidentally (reproducible, not speculative)
+  - Missing tests for existing (not new) functionality
   - Changes to UNRELATED systems (different module/domain entirely)
   - Large refactor requiring >2 hours AND new architectural patterns
   - Breaking changes to PUBLIC APIs affecting external consumers
   - Requires NEW dependencies or significant infrastructure changes
   - Needs design discussion or team consensus before implementing
 
+  REMEMBER: A real bug that is out of scope is ACTIONABLE_LATER, not DISMISSED.
+
 DISMISSED (not worth tracking) IF:
-  - Pure style preference with no functional benefit
-  - Reviewer says \"consider\" or \"might want to\"
-  - Theoretical concern without concrete evidence
-  - Already documented as intentional
-  - LOW priority with no clear benefit
-  - Unrelated to files being modified
+  - Pure style/formatting preference with no functional benefit
+  - \"Could also do X\" where both approaches are equally valid
+  - Over-engineering suggestion (premature abstraction, add configurability)
+  - Speculative concern without concrete evidence or reproduction steps
+  - Already documented as intentional or accepted pattern
   - Duplicates an item already classified as ACTIONABLE_NOW
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -443,7 +443,7 @@ print_header "📚 Documentation"
 # Internal docs one-liner summary
 if [ ${#INTERNAL_UPDATED[@]} -gt 0 ]; then
   INTERNAL_SUMMARY=$(printf '%s ✓  ' "${INTERNAL_UPDATED[@]}")
-  print_success "  Internal: ${INTERNAL_SUMMARY% }"
+  echo -e "${GREEN}    Internal: ${INTERNAL_SUMMARY% }${NC}"
 else
   print_info "  Internal: up to date"
 fi
@@ -628,7 +628,7 @@ REASON: <Brief explanation>
 - Comment improvements
 ASSESS_PROMPT_EOF
 
-print_info "  Project docs: analyzing..."
+echo "    Project docs: analyzing..."
 
 # Run assessment
 ASSESSMENT_OUTPUT=$(claude --print --dangerously-skip-permissions < "$ASSESS_PROMPT_FILE" 2>&1)
@@ -640,8 +640,8 @@ if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
   DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //')
   REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //')
 
-  print_info "  Project docs: $DOCS_TO_UPDATE"
-  print_info "  Reason: $REASON"
+  echo "    Project docs: $DOCS_TO_UPDATE"
+  echo "    Reason: $REASON"
 
   # In supervised mode, confirm before applying
   APPLY_UPDATES=true
@@ -712,8 +712,21 @@ Update this documentation file to reflect the PR changes. Output the COMPLETE up
 Output ONLY the complete updated markdown file, nothing else.
 UPDATE_PROMPT_EOF
 
+      # Retry loop for transient empty Claude CLI responses (exit 0 + empty stdout).
+      # Same pattern as local-review.sh: max 2 attempts, 3s delay.
+      MAX_DOC_ATTEMPTS=2
+      DOC_ATTEMPT=0
       CLAUDE_EXIT=0
-      UPDATED_CONTENT=$(claude --print --dangerously-skip-permissions < "$UPDATE_PROMPT_FILE" 2>&1) || CLAUDE_EXIT=$?
+      UPDATED_CONTENT=""
+      while [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ] && [ -z "$UPDATED_CONTENT" ]; do
+        DOC_ATTEMPT=$((DOC_ATTEMPT + 1))
+        CLAUDE_EXIT=0
+        UPDATED_CONTENT=$(claude --print --dangerously-skip-permissions < "$UPDATE_PROMPT_FILE" 2>&1) || CLAUDE_EXIT=$?
+        if [ $CLAUDE_EXIT -eq 0 ] && [ -z "$UPDATED_CONTENT" ] && [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ]; then
+          print_warning "Claude returned empty doc update (attempt $DOC_ATTEMPT/$MAX_DOC_ATTEMPTS) — retrying in 3s..."
+          sleep 3
+        fi
+      done
       rm -f "$UPDATE_PROMPT_FILE"
 
       if [ $CLAUDE_EXIT -eq 0 ] && [ -n "$UPDATED_CONTENT" ]; then
@@ -752,12 +765,12 @@ Related: #$PR_NUMBER"
 
       if git commit -m "$COMMIT_MSG" 2>/dev/null; then
         if git push 2>/dev/null; then
-          print_success "  Project docs: updated ${#UPDATED_FILES[@]} file(s) and pushed"
+          echo -e "${GREEN}    Project docs: updated ${#UPDATED_FILES[@]} file(s) and pushed${NC}"
         else
-          print_success "  Project docs: updated ${#UPDATED_FILES[@]} file(s) (push failed — local only)"
+          echo "    Project docs: updated ${#UPDATED_FILES[@]} file(s) (push failed — local only)"
         fi
       else
-        print_info "  Project docs: no changes to commit"
+        echo "    Project docs: no changes to commit"
       fi
 
       # Send Slack notification
@@ -783,7 +796,7 @@ EOF
           --silent --output /dev/null
       fi
     else
-      print_info "  Project docs: 0 files updated"
+      echo "    Project docs: 0 files updated"
     fi
 
     if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
@@ -794,7 +807,7 @@ EOF
   fi
 else
   REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || echo "Documentation is current")
-  print_success "  Project docs: up to date ($REASON)"
+  echo -e "${GREEN}    Project docs: up to date ($REASON)${NC}"
 fi
 
 echo ""
