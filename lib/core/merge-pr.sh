@@ -83,6 +83,9 @@ print_status() {
   echo -e "${BLUE}$1${NC}"
 }
 
+# Verbose-aware output (requires RITE_VERBOSE=true or --supervised)
+source "$RITE_LIB_DIR/utils/logging.sh"
+
 # Helper: Add or update "Last Updated" timestamp in documentation
 update_doc_timestamp() {
   local doc_path="$1"
@@ -339,14 +342,10 @@ if [ -z "$PR_NUMBER" ]; then
   print_success "Found PR #$PR_NUMBER for branch $CURRENT_BRANCH"
 fi
 
-if [ "$AUTO_MODE" = false ]; then
-  print_header "🔍 PR Merge Workflow - PR #$PR_NUMBER"
-fi
+verbose_header "🔍 PR Merge Workflow - PR #$PR_NUMBER"
 
 # Fetch PR details
-if [ "$AUTO_MODE" = false ]; then
-  print_status "Fetching PR details..."
-fi
+verbose_status "Fetching PR details..."
 PR_DETAILS=$(gh pr view $PR_NUMBER --json number,title,state,isDraft,mergeable,url,baseRefName,headRefName,statusCheckRollup 2>/dev/null)
 
 if [ -z "$PR_DETAILS" ]; then
@@ -363,7 +362,7 @@ PR_URL=$(echo "$PR_DETAILS" | jq -r '.url')
 PR_BASE=$(echo "$PR_DETAILS" | jq -r '.baseRefName')
 PR_HEAD=$(echo "$PR_DETAILS" | jq -r '.headRefName')
 
-if [ "$AUTO_MODE" = false ]; then
+if is_verbose; then
   print_header "📋 PR Information"
   echo "Title: $PR_TITLE"
   echo "Number: #$PR_NUMBER"
@@ -383,8 +382,8 @@ VALIDATION_FAILED=false
 if [ "$PR_STATE" != "OPEN" ]; then
   print_error "PR is not open (state: $PR_STATE)"
   VALIDATION_FAILED=true
-elif [ "$AUTO_MODE" = false ]; then
-  print_success "PR is open"
+else
+  verbose_success "PR is open"
 fi
 
 # Check 2: PR must not be a draft (only show error, not success - it's expected)
@@ -402,8 +401,8 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
   else
     print_info "Mergeable state is uncertain, will attempt merge anyway"
   fi
-elif [ "$AUTO_MODE" = false ]; then
-  print_success "PR is mergeable"
+else
+  verbose_success "PR is mergeable"
 fi
 
 # Check 4: Status checks
@@ -518,9 +517,7 @@ if [ "$CLAUDE_REVIEW_FOUND" = true ] && [ "$CRITICAL_COUNT" -eq 0 ]; then
   MEDIUM_COUNT=$(echo "$LATEST_CLAUDE_REVIEW" | grep -oiE 'MEDIUM[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1)
 
   if [ -n "$HIGH_COUNT" ] && [ "$HIGH_COUNT" -gt 0 ] || [ -n "$MEDIUM_COUNT" ] && [ "$MEDIUM_COUNT" -gt 0 ]; then
-    if [ "$AUTO_MODE" = false ]; then
-      print_header "📊 Issue Assessment"
-    fi
+    verbose_header "📊 Issue Assessment"
     echo "Found HIGH: ${HIGH_COUNT:-0} | MEDIUM: ${MEDIUM_COUNT:-0}"
     echo ""
     echo "Analyzing whether these issues are worth investigating..."
@@ -704,9 +701,7 @@ case $MERGE_STRATEGY in
 esac
 
 # Perform merge
-if [ "$AUTO_MODE" = false ]; then
-  print_header "🚀 Merging PR #$PR_NUMBER"
-fi
+verbose_header "🚀 Merging PR #$PR_NUMBER"
 
 # Atomic merge with SHA verification: use the GitHub API merge endpoint with the
 # sha parameter to reject the merge if the PR head changed since we last checked.
@@ -758,9 +753,7 @@ else
 fi
 
 if [ $MERGE_EXIT_CODE -eq 0 ]; then
-  if [ "$AUTO_MODE" = false ]; then
-    print_header "✅ PR Merged Successfully"
-  fi
+  verbose_header "✅ PR Merged Successfully"
 
   print_success "PR #$PR_NUMBER merged into $PR_BASE"
 
@@ -889,7 +882,7 @@ EOF
   # Delete remote branch
   if git ls-remote --heads origin "$PR_HEAD" 2>/dev/null | grep -q "$PR_HEAD"; then
     if git push origin --delete "$PR_HEAD" 2>/dev/null; then
-      print_success "Deleted remote branch: origin/$PR_HEAD"
+      echo -e "${GREEN}  ✓ Deleted remote branch: origin/$PR_HEAD${NC}"
     else
       print_warning "Could not delete remote branch (may require permissions)"
     fi
@@ -914,7 +907,7 @@ EOF
       # "fatal: 'main' is already used by worktree". The orchestrator handles
       # worktree removal separately.
       git branch -D $PR_HEAD 2>/dev/null || true
-      print_success "Deleted local branch: $PR_HEAD"
+      echo -e "${GREEN}  ✓ Deleted local branch: $PR_HEAD${NC}"
     else
       print_info "You are currently on the merged branch"
       echo ""
@@ -930,7 +923,7 @@ EOF
   elif git branch --list | grep -q "^  $PR_HEAD\$"; then
     if [ "$AUTO_MODE" = true ]; then
       git branch -D $PR_HEAD 2>/dev/null || true
-      print_success "Deleted local branch: $PR_HEAD"
+      echo -e "${GREEN}  ✓ Deleted local branch: $PR_HEAD${NC}"
     else
       print_info "Local branch $PR_HEAD still exists"
       echo ""
@@ -1371,7 +1364,7 @@ EOF
       cd "$MAIN_WORKTREE"
 
       if git worktree remove "$CURRENT_DIR" --force 2>/dev/null; then
-        print_success "Removed worktree: $(basename "$CURRENT_DIR")"
+        echo -e "${GREEN}  ✓ Removed worktree: $(basename "$CURRENT_DIR")${NC}"
       else
         print_warning "Could not remove worktree: $CURRENT_DIR"
         print_info "Remove manually: git worktree remove '$CURRENT_DIR' --force"
@@ -1379,10 +1372,8 @@ EOF
       CURRENT_DIR="$MAIN_WORKTREE"
     fi
 
-  if [ "${RITE_VERBOSE:-false}" = "true" ]; then
-    if [ "$AUTO_MODE" = false ]; then
-      print_header "🎉 Merge Complete"
-    fi
+  if is_verbose; then
+    verbose_header "🎉 Merge Complete"
     echo "Summary:"
     echo "  ✓ PR #$PR_NUMBER merged into $PR_BASE"
     echo "  ✓ Remote branch deleted: origin/$PR_HEAD"
@@ -1401,9 +1392,7 @@ EOF
 
   exit 0
 else
-  if [ "$AUTO_MODE" = false ]; then
-    print_header "❌ Merge Failed"
-  fi
+  verbose_header "❌ Merge Failed"
   echo ""
   echo "Error output:"
   echo "$MERGE_OUTPUT"

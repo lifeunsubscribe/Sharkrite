@@ -7,6 +7,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
+DIM='\033[2m'
 NC='\033[0m' # No Color
 
 print_header() {
@@ -31,5 +32,5 @@ strip_ansi() {
 }
 
 # Export for use in subshells
-export RED GREEN YELLOW BLUE MAGENTA CYAN NC
+export RED GREEN YELLOW BLUE MAGENTA CYAN DIM NC
 export -f print_header print_success print_error print_warning print_info print_status print_step strip_ansi 2>/dev/null || true

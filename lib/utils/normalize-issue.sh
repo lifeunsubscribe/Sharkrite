@@ -270,6 +270,12 @@ ${ISSUE_BODY}"
   fi
 
   NORMALIZED_SUBJECT="$cleaned"
+
+  # Update GitHub title so future runs don't need to condense again
+  if [ -n "${ISSUE_NUMBER:-}" ] && [ "$cleaned" != "$original_title" ]; then
+    gh issue edit "$ISSUE_NUMBER" --title "$cleaned" 2>/dev/null || true
+  fi
+
   return 0
 }
 

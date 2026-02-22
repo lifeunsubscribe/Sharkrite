@@ -71,6 +71,9 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_status() { echo -e "${BLUE}$1${NC}"; }
 
+# Verbose-aware output (requires RITE_VERBOSE=true or --supervised)
+source "$RITE_LIB_DIR/utils/logging.sh"
+
 # Check dependencies
 if ! command -v gh &> /dev/null; then
   print_error "GitHub CLI required: brew install gh"
@@ -117,9 +120,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" ]]; then
   fi
 fi
 
-if [ "$AUTO_MODE" = false ]; then
-  print_header "🔍 Checking for Existing PR"
-fi
+verbose_header "🔍 Checking for Existing PR"
 
 # Check if PR already exists for this branch
 EXISTING_PR=$(gh pr list --head "$CURRENT_BRANCH" --json number,title,url,state,isDraft --jq '.[0]' 2>/dev/null || echo "")
@@ -150,8 +151,6 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   if [ "$IS_DRAFT" = "true" ]; then
     print_status "PR is draft - marking as ready for review..."
     gh pr ready "$PR_NUMBER" 2>/dev/null || print_warning "Could not mark PR as ready"
-    print_success "PR marked as ready for review"
-    echo ""
   fi
 
   # Push new commits if needed
@@ -221,9 +220,7 @@ fi
 
 # If PR doesn't exist, create it
 if [ "$PR_EXISTS" = false ]; then
-  if [ "$AUTO_MODE" = false ]; then
-    print_header "📝 Creating New Pull Request"
-  fi
+  verbose_header "📝 Creating New Pull Request"
 
   # If issue number provided, fetch issue details
   if [ ! -z "$ISSUE_NUMBER" ]; then

@@ -5,7 +5,6 @@
 #   rite 19 21 31 32              # Process specific issues
 #   rite --label bug              # Process all issues with label
 #   rite --milestone v1.0         # Process all issues in milestone
-#   rite --followup               # Auto-discover follow-up pairs (max 4)
 #
 # Features:
 #   - Unsupervised batch processing (--auto mode for all issues)
@@ -60,10 +59,6 @@ while [[ $# -gt 0 ]]; do
       SMART_WAIT=true
       shift
       ;;
-    --followup|--follow-ups)
-      FILTER_TYPE="followup"
-      shift
-      ;;
     --label)
       FILTER_TYPE="label"
       FILTER_VALUE="$2"
@@ -94,95 +89,6 @@ if [ -n "$FILTER_TYPE" ]; then
   print_info "Filter: $FILTER_TYPE = $FILTER_VALUE"
 
   case "$FILTER_TYPE" in
-    followup)
-      print_info "🔍 Tech Debt Management Mode"
-      echo ""
-
-      # Fetch all tech-debt issues with full body content
-      DEBT_ISSUES=$(gh issue list --label "tech-debt" --state open --json number,title,labels,body 2>/dev/null || echo "")
-
-      if [ -z "$DEBT_ISSUES" ]; then
-        print_success "No tech debt issues found - clean slate!"
-        exit 0
-      fi
-
-      # Count total debt issues
-      TOTAL_DEBT=$(echo "$DEBT_ISSUES" | jq -s 'length')
-
-      # Parse task counts from issue bodies
-      TOTAL_TASKS=0
-      HIGH_TASKS=0
-      MEDIUM_TASKS=0
-      LOW_TASKS=0
-      HIGH_ISSUES=0
-      MEDIUM_ISSUES=0
-      LOW_ISSUES=0
-
-      while IFS= read -r issue_json; do
-        ISSUE_BODY=$(echo "$issue_json" | jq -r '.body // ""')
-
-        # Count tasks by priority in this issue's body
-        CRITICAL_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "CRITICAL" || true)
-        HIGH_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "HIGH" || true)
-        MEDIUM_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "MEDIUM" || true)
-        LOW_IN_ISSUE=$(echo "$ISSUE_BODY" | grep -c "LOW" || true)
-
-        # Add CRITICAL to HIGH count (treat as HIGH priority)
-        HIGH_IN_ISSUE=$((HIGH_IN_ISSUE + CRITICAL_IN_ISSUE))
-
-        # Accumulate totals
-        HIGH_TASKS=$((HIGH_TASKS + HIGH_IN_ISSUE))
-        MEDIUM_TASKS=$((MEDIUM_TASKS + MEDIUM_IN_ISSUE))
-        LOW_TASKS=$((LOW_TASKS + LOW_IN_ISSUE))
-
-        # Count issues that contain each priority
-        [ $HIGH_IN_ISSUE -gt 0 ] && HIGH_ISSUES=$((HIGH_ISSUES + 1))
-        [ $MEDIUM_IN_ISSUE -gt 0 ] && MEDIUM_ISSUES=$((MEDIUM_ISSUES + 1))
-        [ $LOW_IN_ISSUE -gt 0 ] && LOW_ISSUES=$((LOW_ISSUES + 1))
-      done < <(echo "$DEBT_ISSUES" | jq -c '.[]')
-
-      TOTAL_TASKS=$((HIGH_TASKS + MEDIUM_TASKS + LOW_TASKS))
-
-      # Generate comprehensive tech debt report
-      print_header "📊 Tech Debt Report"
-      echo -e "${YELLOW}Total Outstanding: $TOTAL_DEBT issue(s) containing $TOTAL_TASKS task(s)${NC}"
-      echo ""
-
-      echo "Task Priority Breakdown:"
-      if [ "$HIGH_TASKS" -gt 0 ]; then
-        echo -e "${RED}  🔴 High:   $HIGH_TASKS task(s) across $HIGH_ISSUES issue(s)${NC}"
-      fi
-      if [ "$MEDIUM_TASKS" -gt 0 ]; then
-        echo -e "${YELLOW}  🟡 Medium: $MEDIUM_TASKS task(s) across $MEDIUM_ISSUES issue(s)${NC}"
-      fi
-      if [ "$LOW_TASKS" -gt 0 ]; then
-        echo -e "${BLUE}  🔵 Low:    $LOW_TASKS task(s) across $LOW_ISSUES issue(s)${NC}"
-      fi
-      echo ""
-
-      # Show detailed breakdown of what each issue concerns
-      print_info "Issues in Tech Debt:"
-      echo ""
-      echo "$DEBT_ISSUES" | jq -s '.[:8]' | jq -r '.[] |
-        "  #\(.number): \(.title)" +
-        (if (.labels[] | select(.name == "High Priority")) then " [🔴 HIGH]"
-         elif (.labels[] | select(.name == "Medium Priority")) then " [🟡 MEDIUM]"
-         elif (.labels[] | select(.name == "Low Priority")) then " [🔵 LOW]"
-         else "" end)' | sed 's/^/  /'
-
-      if [ "$TOTAL_DEBT" -gt 8 ]; then
-        echo ""
-        echo -e "${YELLOW}  ... and $((TOTAL_DEBT - 8)) more issue(s)${NC}"
-      fi
-      echo ""
-
-      # Fetch up to max issues for batch processing (prioritize HIGH first)
-      MAX_ISSUES="${RITE_MAX_ISSUES_PER_SESSION:-8}"
-      ISSUE_LIST=($(echo "$DEBT_ISSUES" | jq -r '.number' | head -$MAX_ISSUES))
-
-      print_success "Queued ${#ISSUE_LIST[@]} tech-debt issues for processing"
-      echo ""
-      ;;
     label)
       FETCHED_ISSUES=$(gh issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' | tr '\n' ' ')
       ;;
@@ -194,14 +100,12 @@ if [ -n "$FILTER_TYPE" ]; then
       ;;
   esac
 
-  # Convert to array (unless already built in followup mode)
-  if [ "$FILTER_TYPE" != "followup" ]; then
-    read -ra ISSUE_LIST <<< "$FETCHED_ISSUES"
+  # Convert to array
+  read -ra ISSUE_LIST <<< "$FETCHED_ISSUES"
 
-    print_success "Found ${#ISSUE_LIST[@]} issues"
-    echo "Issues: ${ISSUE_LIST[*]}"
-    echo ""
-  fi
+  print_success "Found ${#ISSUE_LIST[@]} issues"
+  echo "Issues: ${ISSUE_LIST[*]}"
+  echo ""
 fi
 
 # Validate we have issues to process
@@ -212,7 +116,6 @@ if [ ${#ISSUE_LIST[@]} -eq 0 ]; then
   echo "  rite 19 21 31 32              # Process specific issues"
   echo "  rite --label bug              # Process all issues with label"
   echo "  rite --milestone v1.0         # Process all issues in milestone"
-  echo "  rite --followup               # Auto-discover follow-up pairs (max 4)"
   echo ""
   exit 1
 fi

@@ -76,6 +76,48 @@ else
   print_success "All dependencies found"
 fi
 
+# Check bash version (batch processing requires bash 4+ for associative arrays)
+BASH_MAJOR="${BASH_VERSINFO[0]}"
+if [ "$BASH_MAJOR" -lt 4 ]; then
+  print_warning "System bash is version $BASH_VERSION (bash 4+ required for batch processing)"
+
+  # Check if a newer bash exists at common Homebrew locations
+  NEWER_BASH=""
+  for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$candidate" ]; then
+      CANDIDATE_VER=$("$candidate" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo "0")
+      if [ "$CANDIDATE_VER" -ge 4 ]; then
+        NEWER_BASH="$candidate"
+        break
+      fi
+    fi
+  done
+
+  if [ -n "$NEWER_BASH" ]; then
+    print_success "Found bash 4+ at $NEWER_BASH"
+    print_info "Ensure $(dirname "$NEWER_BASH") is before /bin in your PATH"
+  elif command -v brew &>/dev/null; then
+    echo ""
+    read -p "Install bash 4+ via Homebrew? (Y/n): " INSTALL_BASH
+    if [[ ! "$INSTALL_BASH" =~ ^[Nn]$ ]]; then
+      echo "Installing bash via Homebrew..."
+      brew install bash
+      BREW_BASH="$(brew --prefix)/bin/bash"
+      if [ -x "$BREW_BASH" ]; then
+        print_success "Bash installed: $BREW_BASH"
+        print_info "Ensure $(brew --prefix)/bin is before /bin in your PATH"
+      fi
+    fi
+  else
+    print_warning "Homebrew not found. Install bash 4+ manually:"
+    echo "  1. Install Homebrew: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+    echo "  2. brew install bash"
+    echo "  3. Add /opt/homebrew/bin to your PATH before /bin"
+  fi
+else
+  print_success "Bash $BASH_VERSION (4+ requirement met)"
+fi
+
 # =============================================================================
 # Step 2: Detect Existing Installation
 # =============================================================================
@@ -189,6 +231,20 @@ else
   echo "    1. cd into a git repo and run: rite --init"
   echo "    2. Edit .rite/config with project-specific settings"
   echo "    3. Process your first issue: rite 21"
+fi
+
+# Verify bash 4+ is reachable in PATH
+ENV_BASH=$(command -v bash 2>/dev/null || echo "/bin/bash")
+ENV_BASH_VER=$("$ENV_BASH" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo "0")
+if [ "$ENV_BASH_VER" -lt 4 ]; then
+  echo ""
+  print_warning "bash in PATH ($ENV_BASH) is still version $("$ENV_BASH" --version | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+  print_info "Batch processing (rite --label, multi-issue) requires bash 4+"
+  BREW_PREFIX=$(brew --prefix 2>/dev/null || echo "/opt/homebrew")
+  echo "  Add to your shell profile (~/.zshrc or ~/.bashrc):"
+  echo ""
+  echo "    export PATH=\"${BREW_PREFIX}/bin:\$PATH\""
+  echo ""
 fi
 
 echo ""

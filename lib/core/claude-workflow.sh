@@ -29,9 +29,11 @@ source "$RITE_LIB_DIR/utils/session-tracker.sh"
 # Store the absolute path to THIS script for re-execution
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-# Early output to confirm script is running
-echo "🦈 Sharkrite Workflow Starting..."
-echo ""
+# Early output to confirm script is running (skip on re-entry from worktree navigation)
+if [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
+  echo "🦈 Initializing Sharkrite workflow..."
+  echo ""
+fi
 
 # Trap handler for safe exit on interrupt
 cleanup_on_interrupt() {
@@ -152,7 +154,7 @@ while [[ $# -gt 0 ]]; do
         if [ -n "${NORMALIZED_SUBJECT:-}" ] && [ -n "${WORK_DESCRIPTION:-}" ]; then
           ISSUE_NUMBER="$1"
           ISSUE_DESC="${NORMALIZED_SUBJECT}"
-          echo "✅ Using pre-normalized issue data: $ISSUE_DESC"
+          print_success "Issue: $ISSUE_DESC"
           shift
         else
           # Validate issue number is a positive integer
@@ -223,6 +225,10 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_status() { echo -e "${BLUE}$1${NC}"; }
 print_step() { echo -e "${CYAN}▶  $1${NC}"; }
+
+
+# Verbose-aware output (requires RITE_VERBOSE=true or --supervised)
+source "$RITE_LIB_DIR/utils/logging.sh"
 
 # ===================================================================
 # EARLY EXIT FOR FIX-REVIEW MODE
@@ -832,52 +838,31 @@ If the changes are unrelated work, answer UNRELATED."
   SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME#-}"     # Remove leading dash
   SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME%-}"     # Remove trailing dash
 
+  # Abbreviate prefix for shorter folder names: feat- → ft-, fix- → fx-, etc.
+  SAFE_BRANCH_NAME=$(echo "$SAFE_BRANCH_NAME" | sed -E '
+    s/^feat-/ft-/; s/^fix-/fx-/; s/^refactor-/rf-/;
+    s/^docs-/dc-/; s/^test-/ts-/; s/^chore-/ch-/'
+  )
+  # Truncate at word boundary, max 35 chars
+  if [ ${#SAFE_BRANCH_NAME} -gt 35 ]; then
+    SAFE_BRANCH_NAME=$(echo "${SAFE_BRANCH_NAME:0:35}" | sed 's/-[^-]*$//')
+  fi
+
   WORKTREE_PATH="$RITE_WORKTREE_DIR/$SAFE_BRANCH_NAME"
 
     # Create worktrees directory if it doesn't exist
     mkdir -p "$RITE_WORKTREE_DIR"
 
-    # Check existing worktrees
-    echo ""
-    print_step "Checking existing worktrees..."
-
+    # Count existing worktrees for limit check
     EXISTING_WORKTREES=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' || echo "")
     WORKTREE_COUNT=0
     MAX_WORKTREES=5
 
     if [ -n "$EXISTING_WORKTREES" ]; then
-      echo ""
-      echo "📁 Active worktrees:"
-
       while IFS= read -r wt_path; do
         [ -z "$wt_path" ] && continue
         WORKTREE_COUNT=$((WORKTREE_COUNT + 1))
-
-        # Get branch name for this worktree
-        WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "unknown")
-
-        # Check for uncommitted changes
-        UNCOMMITTED_COUNT=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-
-        # Check last modification time
-        LAST_MODIFIED=$(find "$wt_path" -type f -name "*.ts" -o -name "*.js" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
-        if [ -n "$LAST_MODIFIED" ]; then
-          DAYS_OLD=$(( ( $(date +%s) - LAST_MODIFIED ) / 86400 ))
-        else
-          DAYS_OLD="?"
-        fi
-
-        STATUS_ICON="✓"
-        if [ "$UNCOMMITTED_COUNT" -gt 0 ]; then
-          STATUS_ICON="⚠️ "
-        fi
-
-        echo "  $STATUS_ICON $WT_BRANCH - $(basename "$wt_path")"
-        [ "$UNCOMMITTED_COUNT" -gt 0 ] && echo "     └─ $UNCOMMITTED_COUNT uncommitted files"
-        [ "$DAYS_OLD" != "?" ] && [ "$DAYS_OLD" -gt 7 ] && echo "     └─ Last modified: $DAYS_OLD days ago"
       done <<< "$EXISTING_WORKTREES"
-
-      echo ""
 
       # Check if at limit
       if [ "$WORKTREE_COUNT" -ge "$MAX_WORKTREES" ]; then
@@ -990,7 +975,7 @@ If the changes are unrelated work, answer UNRELATED."
       fi
 
       # Try to add worktree - git will error if it already exists (handles TOCTOU race)
-      if ! git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" 2>/dev/null; then
+      if ! git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1; then
         # Worktree might have been created by another process (race condition)
         # Check if it exists now and use it
         if [ -d "$WORKTREE_PATH" ]; then
@@ -1002,7 +987,7 @@ If the changes are unrelated work, answer UNRELATED."
       fi
     else
       # Create new branch in worktree - git handles race condition
-      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" 2>/dev/null; then
+      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" >/dev/null 2>&1; then
         # Check if worktree exists (possible race condition)
         if [ -d "$WORKTREE_PATH" ]; then
           print_info "Worktree was created by another process - using it"
@@ -1047,19 +1032,15 @@ If the changes are unrelated work, answer UNRELATED."
 
     # Symlink node_modules to save disk space (if project has them)
     if [ -d "$MAIN_WORKTREE/node_modules" ]; then
-      print_status "Symlinking node_modules from main worktree..."
       cd "$WORKTREE_PATH"
       rm -rf node_modules 2>/dev/null || true
       ln -s "$MAIN_WORKTREE/node_modules" node_modules
       cd "$WORKTREE_PATH"
-      print_success "node_modules symlinked"
     elif [ -d "$MAIN_WORKTREE/backend/node_modules" ]; then
-      print_status "Symlinking backend/node_modules from main worktree..."
       cd "$WORKTREE_PATH/backend" 2>/dev/null || true
       rm -rf node_modules 2>/dev/null || true
       ln -s "$MAIN_WORKTREE/backend/node_modules" node_modules 2>/dev/null || true
       cd "$WORKTREE_PATH"
-      print_success "node_modules symlinked"
     fi
 
     # Symlink rite data dir to share scratchpad and context across worktrees
@@ -1121,6 +1102,10 @@ done
 
 # Check git status (filter .gitignore — modified by sharkrite's symlink pattern repair)
 print_header "📊 Repository Status"
+echo "📋 Issue: ${ISSUE_NUMBER:+#$ISSUE_NUMBER - }$ISSUE_DESC"
+echo "   Branch: $BRANCH_NAME"
+echo "   Location: $(pwd)"
+echo ""
 git status --short | grep -v "\.gitignore$" || true
 
 # Count uncommitted changes (exclude untracked files and .gitignore)
@@ -1161,17 +1146,29 @@ if [ "$EXISTING_PR" != "{}" ] && [ -n "$EXISTING_PR" ]; then
 else
   # Create empty commit for PR (will be amended later with real changes)
   if ! git log --oneline -1 | grep -q "chore: initialize work"; then
-    git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}"
+    commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1)
+    # Format: [branch hash] message — show branch/hash on one line, message indented below
+    branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/')
+    commit_msg=$(echo "$commit_output" | head -1 | sed 's/^[^]]*] //')
+    echo "$branch_info"
+    echo "	$commit_msg"
   fi
 
   # Push to create remote branch
-  if ! git push -u origin "$BRANCH_NAME" 2>/dev/null; then
+  if push_output=$(git push -u origin "$BRANCH_NAME" 2>&1); then
+    # Format: split "set up to track" onto its own line
+    echo "$push_output" | while IFS= read -r line; do
+      if [[ "$line" == *"set up to track"* ]]; then
+        echo "$line" | sed "s/ set up to track /\n	set up to track /"
+      fi
+    done
+  else
     # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
     # Force push instead of delete+recreate — delete closes any linked PR.
     print_warning "Remote branch diverged — force pushing to sync"
     git fetch origin "$BRANCH_NAME" 2>/dev/null || true
-    git push -u --force-with-lease origin "$BRANCH_NAME" 2>/dev/null || \
-      git push -u --force origin "$BRANCH_NAME" 2>/dev/null || true
+    git push -u --force-with-lease origin "$BRANCH_NAME" >/dev/null 2>&1 || \
+      git push -u --force origin "$BRANCH_NAME" >/dev/null 2>&1 || true
   fi
 
   # Create draft PR
@@ -1210,15 +1207,16 @@ fi
 # Build Claude Code prompt
 print_header "🦈 Starting Sharkrite Session"
 
-# Show model info
-echo "⚡ Powered by Claude ($RITE_CLAUDE_MODEL)"
-echo ""
-
-# Show workflow summary
-echo "📋 Workflow Summary:"
-echo "   Issue: ${ISSUE_NUMBER:+#$ISSUE_NUMBER - }$ISSUE_DESC"
-echo "   Branch: $BRANCH_NAME"
-echo "   Location: $(pwd)"
+# Show model info — derive friendly name from model ID
+# claude-sonnet-4-5-20250929 → Claude Sonnet 4.5
+# claude-opus-4-6 → Claude Opus 4.6
+_model_base="${RITE_CLAUDE_MODEL#claude-}"
+_model_base="${_model_base%-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]}"
+_model_name="${_model_base%%-[0-9]*}"
+_model_ver="${_model_base#"$_model_name"-}"
+_model_ver="${_model_ver//-/.}"
+_model_name="$(echo "${_model_name:0:1}" | tr '[:lower:]' '[:upper:]')${_model_name:1}"
+echo "⚡ Powered by Claude $_model_name $_model_ver"
 echo ""
 
 # Read scratchpad security findings if available
@@ -1567,14 +1565,12 @@ else
     echo "$_pattern" >> .gitignore
   done
 
-  if [ "$AUTO_MODE" = false ]; then
-    print_header "📝 Post-Implementation Workflow"
-    echo "Sharkrite session complete. Let's review what changed."
-    echo ""
-  fi
+  verbose_header "📝 Post-Implementation Workflow"
+  verbose_echo "Sharkrite session complete. Let's review what changed."
+  verbose_echo ""
 
   # Show changes (filter .gitignore — modified by sharkrite's symlink pattern repair)
-  if [ "$AUTO_MODE" = false ]; then
+  if is_verbose; then
     git status --short | grep -v "\.gitignore$" || true
   fi
   CHANGES_COUNT=$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')
@@ -1634,8 +1630,6 @@ if [ "$AUTO_MODE" = false ]; then
   echo
   RUN_TESTS=$REPLY
 else
-  # Auto mode: skip tests (will be run in CI)
-  print_info "Skipping tests (will run in CI)"
   RUN_TESTS="n"
 fi
 
@@ -1764,8 +1758,8 @@ if [ "$AUTO_MODE" = false ]; then
     fi
     COMMIT_MSG="$CUSTOM_MSG"
   fi
-elif [ "$AUTO_MODE" = false ]; then
-  print_info "Using auto-generated commit message: $COMMIT_MSG"
+else
+  verbose_info "Using auto-generated commit message: $COMMIT_MSG"
 fi
 
 # Create commit (use -A to respect .gitignore)
@@ -1820,8 +1814,8 @@ else
   echo "🚀 Pushing to remote..."
 fi
 
-# Push with upstream tracking
-if ! git push -u origin "$BRANCH_NAME"; then
+# Push with upstream tracking (suppress git's verbose output)
+if ! git push -u origin "$BRANCH_NAME" >/dev/null 2>&1; then
   # Push failed — check for remote divergence
   print_warning "Push rejected — checking for divergence"
   source "$RITE_LIB_DIR/utils/divergence-handler.sh"
@@ -1847,9 +1841,7 @@ fi  # End of "if SKIP_TO_PR" block
 if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
   print_info "Orchestrated mode — skipping PR workflow (handled by workflow-runner Phase 2/3)"
 else
-  if [ "$AUTO_MODE" = false ]; then
-    print_header "🔗 Pull Request & Review Workflow"
-  fi
+  verbose_header "🔗 Pull Request & Review Workflow"
 
   if [ -f "$RITE_LIB_DIR/core/create-pr.sh" ]; then
     if [ "$AUTO_MODE" = true ]; then
@@ -1879,22 +1871,26 @@ if [ ! -z "$PR_JSON" ] && [ "$PR_JSON" != "null" ]; then
   PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
   PR_URL=$(echo "$PR_JSON" | jq -r '.url')
 
-  echo "Next steps:"
-  echo "  1. Review PR: $PR_URL"
-  echo "  2. Wait for automated review (handled by create-pr.sh)"
-  echo "  3. Address feedback if any (assess-and-resolve.sh)"
-  echo "  4. Merge when approved"
+  if is_verbose; then
+    echo "Next steps:"
+    echo "  1. Review PR: $PR_URL"
+    echo "  2. Wait for automated review (handled by create-pr.sh)"
+    echo "  3. Address feedback if any (assess-and-resolve.sh)"
+    echo "  4. Merge when approved"
 
-  if [ -n "$WORKTREE_PATH" ]; then
-    echo ""
-    print_info "Worktree will be cleaned up after merge"
-    echo "  Location: $WORKTREE_PATH"
+    if [ -n "$WORKTREE_PATH" ]; then
+      echo ""
+      verbose_info "Worktree will be cleaned up after merge"
+      echo "  Location: $WORKTREE_PATH"
+    fi
   fi
 else
-  echo "Next steps:"
-  echo "  1. PR creation handled by create-pr.sh"
-  echo "  2. Automated review will follow"
-  echo "  3. Merge when approved"
+  if is_verbose; then
+    echo "Next steps:"
+    echo "  1. PR creation handled by create-pr.sh"
+    echo "  2. Automated review will follow"
+    echo "  3. Merge when approved"
+  fi
 fi
 
 # Check if still in worktree

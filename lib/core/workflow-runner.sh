@@ -1261,7 +1261,7 @@ run_workflow() {
         else
           if git worktree remove "$wt_path" --force 2>/dev/null; then
             [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-            print_success "Removed worktree: $(basename "$wt_path")"
+            echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
           fi
         fi
       fi
@@ -1270,7 +1270,7 @@ run_workflow() {
       if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
         if git branch -D "$pr_branch" 2>/dev/null; then
           [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-          print_success "Deleted local branch: $pr_branch"
+          echo -e "${GREEN}  ✓ Deleted local branch: $pr_branch${NC}"
         fi
       fi
 
@@ -1278,7 +1278,7 @@ run_workflow() {
       if git ls-remote --heads origin "$pr_branch" 2>/dev/null | grep -q "$pr_branch"; then
         if git push origin --delete "$pr_branch" 2>/dev/null; then
           [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-          print_success "Deleted remote branch: origin/$pr_branch"
+          echo -e "${GREEN}  ✓ Deleted remote branch: origin/$pr_branch${NC}"
         fi
       fi
 
@@ -1356,6 +1356,32 @@ run_workflow() {
         fi
       fi
     fi
+  fi
+
+  # ── Stale branch check (before inspecting PR state — avoid wasted API calls on stale PRs) ──
+  if [ -n "${PR_NUMBER:-}" ] && [ "$PR_NUMBER" != "null" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+    local stale_result=0
+    set +e
+    check_stale_branch "$WORKTREE_PATH" "$PR_NUMBER" "$issue_number" "$WORKFLOW_MODE"
+    stale_result=$?
+    set -e
+
+    if [ $stale_result -eq 10 ]; then
+      # Restarted fresh — clear all resume state so workflow falls through
+      PR_NUMBER=""
+      CURRENT_PR=""
+      WORKTREE_PATH=""
+      RESUME_MODE=false
+      skip_to_phase=""
+      unset PR_NUMBER 2>/dev/null || true
+      export -n PR_NUMBER 2>/dev/null || true
+      print_info "Workflow will start fresh on issue #$issue_number"
+    elif [ $stale_result -eq 1 ]; then
+      return 1
+    fi
+    # 0 = branch current or merged main, continue normally
   fi
 
   # ── Inspect PR state to skip completed phases ──

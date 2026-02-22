@@ -64,14 +64,19 @@ RITE_LIB_DIR="${RITE_LIB_DIR:-$RITE_INSTALL_DIR/lib}"
 RITE_DATA_DIR="${RITE_DATA_DIR:-.rite}"
 
 # Worktrees (global, organized by project)
-RITE_WORKTREE_BASE="${RITE_WORKTREE_BASE:-$HOME/Dev/rite-worktrees}"
-RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${RITE_PROJECT_NAME}-worktrees}"
+RITE_WORKTREE_BASE="${RITE_WORKTREE_BASE:-$HOME/Dev/rite-wt}"
+# Abbreviate project name to initials: clearance-screener → cs, sharkrite → sh
+_project_abbrev=$(echo "$RITE_PROJECT_NAME" | sed 's/\([a-z]\)[a-z]*/\1/g; s/-//g')
+# Single-char abbreviations are ambiguous — use first 2 chars of single-word names
+[ ${#_project_abbrev} -le 1 ] && _project_abbrev="${RITE_PROJECT_NAME:0:2}"
+RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-wt}"
 
 # Session limits
 RITE_MAX_ISSUES_PER_SESSION="${RITE_MAX_ISSUES_PER_SESSION:-8}"
 RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-4}"
 RITE_MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
 RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-120}"
+RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
 
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -95,11 +100,11 @@ SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT
 # Sharkrite timeout (seconds, default 2 hours)
 RITE_CLAUDE_TIMEOUT="${RITE_CLAUDE_TIMEOUT:-7200}"
 
-# Claude model for development sessions (full ID so labels show exact version)
-RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5-20250929}"
+# Claude model for development sessions (alias without date = always latest snapshot)
+RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}"
 
 # Model for reviews and assessments — opus for quality (must match for consistency)
-RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5-20251101}"
+RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5}"
 
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
@@ -154,6 +159,7 @@ export RITE_MAX_ISSUES_PER_SESSION
 export RITE_MAX_SESSION_HOURS
 export RITE_MAX_RETRIES
 export RITE_ASSESSMENT_TIMEOUT
+export RITE_STALE_BRANCH_THRESHOLD
 export WORKFLOW_MODE
 export RITE_AWS_PROFILE
 export RITE_SNS_TOPIC_ARN

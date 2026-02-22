@@ -9,7 +9,8 @@
 #   rite <issue> --assess-and-fix Assess review + fix loop
 #   rite <issue> --status         Read-only workflow state overview
 #   rite <issue> --undo           Undo: close PR, cleanup
-#   rite --followup               Auto-discover follow-up pairs
+#   rite --status                 Repo-wide status overview
+#   rite --status --by-label      Repo-wide status grouped by label
 #   rite --init                   Initialize .rite/ in current project
 #   rite --dry-run <...>          Print execution plan without running
 
@@ -47,7 +48,7 @@ RITE_LOG_AUTO=true  # Logging on by default
 # Parse args and detect intent
 ARGS=()
 WORKFLOW_FLAGS=()
-FILTER=""
+LABEL_FILTER=""
 SUPERVISED=false
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -73,6 +74,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --supervised)
       SUPERVISED=true
+      export RITE_VERBOSE="${RITE_VERBOSE:-true}"  # supervised implies verbose
       WORKFLOW_FLAGS+=("--supervised")
       shift
       ;;
@@ -84,9 +86,8 @@ while [[ $# -gt 0 ]]; do
       WORKFLOW_FLAGS+=("--bypass-blockers")
       shift
       ;;
-    --followup)
-      MODE="batch"
-      FILTER="--followup"
+    --by-label|--group-by-label)
+      LABEL_FILTER="--by-label"
       shift
       ;;
     --log)
@@ -138,9 +139,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite <issue> --review-latest  Generate and post review for latest code"
       echo "  rite <issue> --assess-and-fix Assess review + fix loop"
       echo "  rite <issue> --status         Show workflow status for an issue"
+      echo "  rite --status                 Repo-wide status overview"
+      echo "  rite --status --by-label      Repo-wide status grouped by label"
       echo "  rite <issue> --undo           Undo workflow: close PR, clean up artifacts"
       echo "  rite --pr <number>            Run by PR number (resolves linked issue)"
-      echo "  rite --followup               Security debt report + batch process"
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
@@ -156,7 +158,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --dev-and-pr               Dev + PR only, skip review/merge"
       echo "  --review-latest            Generate and post review for latest code"
       echo "  --assess-and-fix           Assess review findings + fix loop (up to 3 retries)"
-      echo "  --status                   Show workflow status overview"
+      echo "  --status                   Show workflow status (per-issue or repo-wide)"
+      echo "  --by-label                 Group repo-wide status by label"
       echo ""
       echo "Project: $RITE_PROJECT_NAME"
       echo "Root:    $RITE_PROJECT_ROOT"
@@ -173,7 +176,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite 21 --status           # Show workflow status"
       echo "  rite 21 --undo             # Undo: close PR, clean branches/worktree/state"
       echo "  rite --pr 72               # Run by PR number"
-      echo "  rite --followup            # Process tech-debt issues"
+      echo "  rite --status              # Repo-wide status overview"
+      echo "  rite --status --by-label   # Status grouped by label"
       echo "  rite 21 --dry-run          # See what would happen"
       echo ""
       echo "Sharkrite - Master your workflows."
@@ -472,12 +476,12 @@ record_run() {
 }
 
 # Smart routing
-# Filter-only mode (e.g. --followup) dispatches to batch before any ARGS access,
-# since ${#ARGS[@]} on an empty array crashes bash 3.2 with set -u.
-if [ -n "$FILTER" ] && [ -z "${ARGS[0]:-}" ]; then
-  print_info "Batch processing ${#ARGS[@]+"${#ARGS[@]}"} issues"
-  exec "$RITE_LIB_DIR/core/batch-process-issues.sh" ${ARGS[@]+"${ARGS[@]}"} ${FILTER} --auto
-elif [ -z "${ARGS[0]:-}" ] && [ -z "$FILTER" ]; then
+# Repo-wide status (--status with no issue number)
+if [ "$MODE" = "status" ] && [ -z "${ARGS[0]:-}" ]; then
+  source "$RITE_LIB_DIR/utils/repo-status.sh"
+  repo_wide_status "${LABEL_FILTER:-}"
+  exit 0
+elif [ -z "${ARGS[0]:-}" ]; then
   print_error "No issues specified"
   echo "Run 'rite --help' for usage"
   exit 1
@@ -593,6 +597,21 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
       if [ "$_WT_LOCAL" != "$_WT_REMOTE" ] && [ -n "$_WT_LOCAL" ] && [ -n "$_WT_REMOTE" ]; then
         _UNPUSHED=$(git -C "$WORKTREE_PATH" log --oneline "origin/$_WT_BRANCH..HEAD" 2>/dev/null | wc -l | tr -d ' ')
         echo "  Unpushed:   $_UNPUSHED commit(s)"
+      fi
+
+      # Check how far behind main
+      _MB=$(git -C "$WORKTREE_PATH" merge-base HEAD origin/main 2>/dev/null || echo "")
+      if [ -n "$_MB" ]; then
+        _BEHIND=$(git -C "$WORKTREE_PATH" rev-list --count "${_MB}..origin/main" 2>/dev/null || echo "0")
+        if [ "$_BEHIND" -gt 0 ]; then
+          if [ "$_BEHIND" -ge "${RITE_STALE_BRANCH_THRESHOLD:-10}" ]; then
+            echo -e "  Behind main: ${RED}$_BEHIND commits (will restart fresh)${NC}"
+          else
+            echo "  Behind main: $_BEHIND commits (will auto-merge main)"
+          fi
+        else
+          echo "  Behind main: up to date"
+        fi
       fi
     else
       echo "  Worktree:   none"
@@ -896,8 +915,8 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "undo" ]; then
     exit 1
   fi
   exec "$RITE_LIB_DIR/core/undo-workflow.sh" "${ARGS[0]}"
-elif [ ${#ARGS[@]} -gt 1 ] || [ -n "$FILTER" ]; then
+elif [ ${#ARGS[@]} -gt 1 ]; then
   # Batch mode
   print_info "Batch processing ${#ARGS[@]} issues"
-  exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "${ARGS[@]}" ${FILTER} --auto
+  exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "${ARGS[@]}" --auto
 fi

@@ -19,7 +19,9 @@ lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
+lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
+lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart
 ```
 
 ### Workflow Phases
@@ -106,20 +108,34 @@ Only content-aware and practical conditions block merges:
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
 - Approvals remembered per-issue via `has_approved_blocker()`
 
+### Stale Branch Handling
+
+When resuming an issue with an existing PR, the branch is checked against `origin/main`. Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
+
+- **Below threshold**: Merge `origin/main` into the feature branch (like GitHub "Update branch"), push. No force-push needed since history isn't rewritten. The final merge is a squash anyway.
+- **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
+- **At/above threshold (supervised)**: Prompt with 4 options (restart recommended, merge, continue, abort).
+
+Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 10 to signal "restarted fresh" — caller resets all resume state variables.
+
 ## Phase Commands
 
 Individual workflow phases can be run standalone via flags. All default to auto/unsupervised mode.
 
 ```bash
 rite 42                    # Full lifecycle (phases 1-5)
-rite 42 --status           # Read-only: show workflow state overview
+rite 42 --status           # Read-only: show workflow state overview for issue
+rite --status              # Repo-wide: worktrees, open issues with phases, recently closed
+rite --status --by-label   # Repo-wide status grouped by label
 rite 42 --dev-and-pr       # Phase 1-2: dev + PR only, skip review/merge
 rite 42 --review-latest    # Phase 2 (review only): generate + post review
 rite 42 --assess-and-fix   # Phase 3: assess review + fix loop (up to 3 retries)
 rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 ```
 
-**`--status`** shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
+**`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
+
+**`--status`** (repo-wide, no issue number) shows all worktrees with staleness, open issues with workflow phase (Not started, Dev/PR, Needs review, Review stale, Needs fixes, Ready to merge), and recently closed issues with close dates. Use `--by-label` to group open issues by label.
 
 **`--review-latest`** checks review staleness: no review → generates; stale → regenerates; current → prints existing review and exits (in supervised mode, prompts to re-review).
 

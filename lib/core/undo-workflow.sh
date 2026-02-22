@@ -356,7 +356,7 @@ if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
   fi
 
   if git worktree remove "$WORKTREE_PATH" --force 2>/dev/null; then
-    print_success "Removed worktree: $(basename "$WORKTREE_PATH")"
+    echo -e "${GREEN}  ✓ Removed worktree: $(basename "$WORKTREE_PATH")${NC}"
   else
     print_warning "Failed to remove worktree: $WORKTREE_PATH"
     print_info "Try manually: git worktree remove '$WORKTREE_PATH' --force"
@@ -379,7 +379,7 @@ if [ "$LOCAL_BRANCH_EXISTS" = true ] && [ -n "$BRANCH_NAME" ]; then
   fi
 
   if git branch -D "$BRANCH_NAME" >/dev/null 2>&1; then
-    print_success "Deleted local branch: $BRANCH_NAME"
+    echo -e "${GREEN}  ✓ Deleted local branch: $BRANCH_NAME${NC}"
   else
     print_warning "Failed to delete local branch: $BRANCH_NAME"
     UNDO_ERRORS=$((UNDO_ERRORS + 1))
