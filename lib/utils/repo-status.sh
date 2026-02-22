@@ -648,17 +648,38 @@ repo_wide_status() {
     echo -e "  ${CYAN}Worktree Details:${NC}"
     echo -e "  ${BLUE}─────────────────────────────────────────────────────${NC}"
     for i in "${!WT_BRANCHES[@]}"; do
+      local branch="${WT_BRANCHES[$i]}"
+
+      # Extract issue number: try branch name pattern, then open PR body lookup
+      local wt_issue_num=""
+      if [[ "$branch" =~ issue-?([0-9]+) ]]; then
+        wt_issue_num="${BASH_REMATCH[1]}"
+      fi
+      if [ -z "$wt_issue_num" ] && [ -n "${open_prs_json:-}" ]; then
+        local _pr_body
+        _pr_body=$(echo "$open_prs_json" | jq -r --arg b "$branch" \
+          '[.[] | select(.headRefName == $b)] | .[0].body // ""' 2>/dev/null || echo "")
+        wt_issue_num=$(echo "$_pr_body" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+      fi
+
+      local issue_prefix
+      if [ -n "$wt_issue_num" ]; then
+        issue_prefix="$(_issue_link "$wt_issue_num" 6 "$repo_url")  "
+      else
+        issue_prefix="        "
+      fi
+
       local padded_branch
-      padded_branch=$(pad_str "$(truncate_str "${WT_BRANCHES[$i]}" 30)" 32)
+      padded_branch=$(pad_str "$(truncate_str "$branch" 22)" 24)
       local padded_status
       padded_status=$(pad_str "${WT_STATUSES[$i]}" 16)
       local behind="${WT_BEHIND_MAIN[$i]:-0}"
       if [ "$behind" -gt 0 ]; then
         local behind_color="${YELLOW}"
         [ "$behind" -ge "${RITE_STALE_BRANCH_THRESHOLD:-10}" ] && behind_color="${RED}"
-        echo -e "  ${padded_branch}${padded_status}  ${WT_AGES[$i]}  ${behind_color}${behind} behind${NC}"
+        echo -e "  ${issue_prefix}${padded_branch}${padded_status}  ${WT_AGES[$i]}  ${behind_color}${behind} behind${NC}"
       else
-        echo -e "  ${padded_branch}${padded_status}  ${WT_AGES[$i]}"
+        echo -e "  ${issue_prefix}${padded_branch}${padded_status}  ${WT_AGES[$i]}"
       fi
     done
     echo ""
