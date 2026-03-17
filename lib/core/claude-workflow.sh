@@ -1374,7 +1374,7 @@ ${PHASE_0_INSTRUCTIONS}
      - **DO NOT skip the workflow - this branch has the completed work**
 3. If work is incomplete, continue with analysis:
    - Read relevant files to understand the codebase
-   - **If a \\"Files to Read\\" entry doesn't exist:**
+   - **If a Files to Read entry doesn't exist:**
      - Check whether a listed dependency (After: #N / Blocked by: #N) accounts for its creation
      - If yes: note the absence and continue — do NOT create or stub it out
      - If no dependency covers it: log it to the scratchpad as an encountered issue (category: \`missing-dependency\`, description: what file is missing and why it matters), then continue without creating it
