@@ -974,7 +974,7 @@ EOF
             flock 200  # Wait for lock
           fi
         else
-          local lock_attempts=0
+          lock_attempts=0
           while ! mkdir "$LOCKFILE" 2>/dev/null; do
             if [ $lock_attempts -eq 0 ]; then
               print_warning "Scratchpad locked by another process, waiting..."
