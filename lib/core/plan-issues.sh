@@ -320,6 +320,7 @@ This ensures nothing is silently dropped. If the doc mentions an entity, endpoin
 - First issue should have \`Dependencies: None\`
 - Follow logical dependency order: infrastructure → data models → core logic → API → tests → docs
 - Include specific, real file paths from the project (based on context)
+- **"Files to Read" must only list files that currently exist.** If a file is created by a dependency issue, do not list it there — reference the dependency issue in "Related Issues" instead
 - Acceptance criteria must have verification commands
 - Done definitions must be concrete and bounded (no "when it works" or "when it's clean")
 - Scope boundaries must have explicit DO / DO NOT
