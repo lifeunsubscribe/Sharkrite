@@ -45,6 +45,17 @@
 # RITE_ASSESSMENT_TIMEOUT=120
 
 # =============================================================================
+# Plan Command (rite plan)
+# =============================================================================
+
+# Default architectural doc(s) for `rite plan` when no doc path is specified.
+# Space-separated, relative to project root.
+# RITE_PLAN_DOCS="docs/architecture/implementation-phases.md docs/roadmap.md"
+
+# Maximum time estimate per issue before requiring decomposition (default: 2hr)
+# RITE_PLAN_MAX_ESTIMATE="2hr"
+
+# =============================================================================
 # Documentation
 # =============================================================================
 
