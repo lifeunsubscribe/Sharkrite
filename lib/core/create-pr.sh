@@ -197,22 +197,36 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   # CURRENT_HEAD == PR_HEAD.
   EXISTING_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null || echo "")
 
-  if [ "$PUSHED_NEW_COMMITS" = true ] || ! echo "$EXISTING_BODY" | grep -qF "$SUMMARY_START"; then
+  MISSING_CLOSE_REF=false
+  if [ -n "${ISSUE_NUMBER:-}" ] && ! echo "$EXISTING_BODY" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+'; then
+    MISSING_CLOSE_REF=true
+  fi
+
+  if [ "$PUSHED_NEW_COMMITS" = true ] || ! echo "$EXISTING_BODY" | grep -qF "$SUMMARY_START" || [ "$MISSING_CLOSE_REF" = true ]; then
     print_status "Updating PR description..."
     FRESH_SUMMARY=$(build_changes_summary "$BASE_BRANCH")
 
     if [ -n "$EXISTING_BODY" ]; then
       UPDATED_BODY=$(replace_changes_summary "$EXISTING_BODY" "$FRESH_SUMMARY")
     else
-      ISSUE_LINK=$(echo "$EXISTING_BODY" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1)
       UPDATED_BODY="## Summary
-
-${ISSUE_LINK:+$ISSUE_LINK}
 
 ${FRESH_SUMMARY}"
     fi
 
-    gh pr edit "$PR_NUMBER" --body "$UPDATED_BODY" 2>/dev/null || print_warning "Could not update PR description"
+    # Inject "Closes #N" if issue number is known but not referenced in body
+    if [ "$MISSING_CLOSE_REF" = true ]; then
+      UPDATED_BODY="Closes #${ISSUE_NUMBER}
+
+${UPDATED_BODY}"
+      print_info "Added issue reference (Closes #${ISSUE_NUMBER}) to PR body"
+    fi
+
+    # Use temp file to avoid shell metacharacter issues in body
+    PR_BODY_FILE=$(mktemp)
+    printf '%s' "$UPDATED_BODY" > "$PR_BODY_FILE"
+    gh pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE" 2>/dev/null || print_warning "Could not update PR description"
+    rm -f "$PR_BODY_FILE"
     print_success "PR description updated"
   fi
   echo ""
@@ -297,12 +311,16 @@ EOF
     fi
   fi
 
+  # Write body to temp file to avoid shell metacharacter issues
+  PR_BODY_FILE=$(mktemp)
+  printf '%s' "$PR_BODY" > "$PR_BODY_FILE"
+
   # Build PR creation args
   PR_ARGS=(
     --base "$BASE_BRANCH"
     --head "$CURRENT_BRANCH"
     --title "$PR_TITLE"
-    --body "$PR_BODY"
+    --body-file "$PR_BODY_FILE"
   )
 
   # Add labels if available
@@ -312,8 +330,10 @@ EOF
 
   # Create the PR
   PR_URL=$(gh pr create "${PR_ARGS[@]}")
+  GH_PR_EXIT=$?
+  rm -f "$PR_BODY_FILE"
 
-  if [ $? -eq 0 ]; then
+  if [ $GH_PR_EXIT -eq 0 ]; then
     # Extract PR number from URL
     PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 

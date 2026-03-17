@@ -965,12 +965,27 @@ EOF
         SCRATCHPAD_BACKUP="${SCRATCHPAD_FILE}.backup-$(date +%s)"
         cp "$SCRATCHPAD_FILE" "$SCRATCHPAD_BACKUP"
 
-        # Use file locking to prevent concurrent modification
+        # Use file locking to prevent concurrent modification (portable: flock on Linux, mkdir on macOS)
         LOCKFILE="${SCRATCHPAD_FILE}.lock"
-        exec 200>"$LOCKFILE"
-        if ! flock -n 200; then
-          print_warning "Scratchpad locked by another process, waiting..."
-          flock 200  # Wait for lock
+        if command -v flock >/dev/null 2>&1; then
+          exec 200>"$LOCKFILE"
+          if ! flock -n 200; then
+            print_warning "Scratchpad locked by another process, waiting..."
+            flock 200  # Wait for lock
+          fi
+        else
+          local lock_attempts=0
+          while ! mkdir "$LOCKFILE" 2>/dev/null; do
+            if [ $lock_attempts -eq 0 ]; then
+              print_warning "Scratchpad locked by another process, waiting..."
+            fi
+            lock_attempts=$((lock_attempts + 1))
+            if [ $lock_attempts -ge 30 ]; then
+              print_warning "Lock timeout, proceeding anyway"
+              break
+            fi
+            sleep 1
+          done
         fi
 
         # Create temp file for cleaned scratchpad
@@ -1348,8 +1363,12 @@ EOF
       fi
 
       # Release file lock
-        flock -u 200 2>/dev/null || true
-        exec 200>&-
+        if command -v flock >/dev/null 2>&1; then
+          flock -u 200 2>/dev/null || true
+          exec 200>&-
+        else
+          rmdir "$LOCKFILE" 2>/dev/null || true
+        fi
 
         # Clean up old backups (keep last 5)
         SCRATCHPAD_DIR=$(dirname "$SCRATCHPAD_FILE")

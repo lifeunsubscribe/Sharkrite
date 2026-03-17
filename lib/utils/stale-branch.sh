@@ -221,9 +221,14 @@ _stale_close_and_cleanup() {
   local comment_body
   comment_body=$(format_stale_close_comment "$worktree_path" "$behind")
 
-  if ! gh pr comment "$pr_number" --body "$comment_body" 2>/dev/null; then
+  # Use temp file to avoid shell metacharacter issues in body
+  local comment_file
+  comment_file=$(mktemp)
+  printf '%s' "$comment_body" > "$comment_file"
+  if ! gh pr comment "$pr_number" --body-file "$comment_file" 2>/dev/null; then
     print_warning "Failed to post close comment on PR #$pr_number"
   fi
+  rm -f "$comment_file"
 
   # 2. Close PR
   if gh pr close "$pr_number" 2>/dev/null; then

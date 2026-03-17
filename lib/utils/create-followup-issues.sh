@@ -188,15 +188,19 @@ ${RECOMMENDATION}
 EOF
 )
 
-  # Create the issue
+  # Create the issue (via temp file to avoid shell metacharacter issues)
+  local body_file
+  body_file=$(mktemp)
+  printf '%s' "$ISSUE_BODY" > "$body_file"
   NEW_ISSUE_NUMBER=$(gh issue create \
     --title "$ISSUE_TITLE" \
-    --body "$ISSUE_BODY" \
+    --body-file "$body_file" \
     --label "pr-review" \
     --label "$PRIORITY_LABEL" \
     --label "$TYPE_LABEL" \
     --json number \
     --jq '.number' 2>/dev/null)
+  rm -f "$body_file"
 
   if [ -n "$NEW_ISSUE_NUMBER" ]; then
     echo "✅ Created issue #$NEW_ISSUE_NUMBER: $ISSUE_TITLE"

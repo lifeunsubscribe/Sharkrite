@@ -307,18 +307,44 @@ if [ "$POST_REVIEW" = true ]; then
     LOW_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*low|💡.*low|minor suggestion" || true)
   fi
 
-  # Post as PR comment
+  # Post as PR comment (via temp file to avoid shell interpretation of
+  # backticks and $() in code blocks within the review content)
   print_status "Posting review to PR #$PR_NUMBER..."
 
-  REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body "$REVIEW_COMMENT" 2>&1) || {
-    print_error "Failed to post review"
+  COMMENT_FILE=$(mktemp)
+  printf '%s' "$REVIEW_COMMENT" > "$COMMENT_FILE"
+
+  post_attempt=0
+  post_max=3
+  post_success=false
+  while [ $post_attempt -lt $post_max ]; do
+    post_attempt=$((post_attempt + 1))
+    REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1) && {
+      post_success=true
+      break
+    }
+    # Retry on transient GitHub errors (502, 503, network)
+    if echo "$REVIEW_RESULT" | grep -qE "502|503|timeout|connection"; then
+      if [ $post_attempt -lt $post_max ]; then
+        print_warning "GitHub API error (attempt $post_attempt/$post_max), retrying in 5s..."
+        sleep 5
+        continue
+      fi
+    else
+      break  # Non-transient error, don't retry
+    fi
+  done
+  rm -f "$COMMENT_FILE"
+
+  if [ "$post_success" != true ]; then
+    print_error "Failed to post review after $post_attempt attempt(s)"
     echo "$REVIEW_RESULT"
     echo ""
     echo "Review content (not posted):"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "$REVIEW_OUTPUT"
     exit 1
-  }
+  fi
 
   echo ""
   print_success "Review posted successfully!"
