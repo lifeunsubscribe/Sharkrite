@@ -1026,11 +1026,10 @@ EOF
 ---
 EOF
 )
-          # Use awk to insert after "## Completed Work Archive" header
-          awk -v entry="$ARCHIVE_ENTRY" '
-            /^## Completed Work Archive/ { print; print entry; next }
-            { print }
-          ' "$TEMP_SCRATCH" > "$TEMP_SCRATCH.2"
+          # Insert after "## Completed Work Archive" header
+          # Avoid awk -v with multiline value (BSD awk rejects embedded newlines)
+          ARCHIVE_LINE=$(grep -n "^## Completed Work Archive" "$TEMP_SCRATCH" | head -1 | cut -d: -f1)
+          { head -n "$ARCHIVE_LINE" "$TEMP_SCRATCH"; echo "$ARCHIVE_ENTRY"; tail -n +"$((ARCHIVE_LINE + 1))" "$TEMP_SCRATCH"; } > "$TEMP_SCRATCH.2"
           mv "$TEMP_SCRATCH.2" "$TEMP_SCRATCH"
         else
           # Create archive section
