@@ -271,6 +271,12 @@ Files:
 $(echo "$auth_matches" | sed 's/^/  /')
 Guidance: Verify no changes to authentication flow, token validation, session management, or authorization checks. Distinguish whether control flow was modified vs. only logging, formatting, or error message changes.
 
+For auth code specifically, check each of the following — these are the most common auth vulnerabilities and should be verified even if not cited in the diff:
+- **Timing attacks**: Does any auth failure return immediately without doing equivalent work? (e.g. skipping password hash for non-existent users leaks email existence via timing)
+- **Role/privilege assignment**: Is the role or permission level assigned from user-supplied input? Can a user self-elevate? Check every place the role field is written, not just the validation layer.
+- **Input normalization**: Are emails/usernames lowercased consistently before lookup and storage? Case-inconsistent lookups create duplicate accounts and auth bypasses.
+- **Partial fix gaps**: If this PR includes prior fixes, check that the fix was applied everywhere the vulnerable pattern appears — not just the cited line.
+
 "
   fi
 

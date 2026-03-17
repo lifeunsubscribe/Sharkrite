@@ -335,7 +335,8 @@ $(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Ll]ow/,/^##[^#]/p')
 
 1. **Read the issues listed above** - all context is provided
 2. **Fix each issue** - make the necessary code changes
-3. **Verify your fixes** - ensure the changes address the concerns
+3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
+4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
 
 The workflow will automatically commit, push, and request a new review.
 

@@ -172,6 +172,18 @@ The following areas were detected in the changed files and warrant extra scrutin
 
 ${SENSITIVITY_HINTS}"
     print_status "Sensitivity areas detected — review will apply extra focus"
+
+    # If auth sensitivity detected and project has a security guide, inject it
+    if echo "$SENSITIVITY_HINTS" | grep -q "Authentication" && \
+       [ -f "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
+      SECURITY_GUIDE=$(cat "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md")
+      SENSITIVITY_SECTION="${SENSITIVITY_SECTION}
+
+## Project Security Guide
+
+${SECURITY_GUIDE}"
+      print_status "Injected project security guide into review"
+    fi
   fi
 fi
 
