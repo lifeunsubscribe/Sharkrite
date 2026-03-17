@@ -26,6 +26,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/labels.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -109,6 +110,125 @@ ASSESSMENT_JSON_SCHEMA='{
   },
   "required": ["items"]
 }'
+
+# =============================================================================
+# PRIOR DECISIONS LEDGER: Build context of prior assessment decisions for this PR
+# =============================================================================
+# Fetches all previous sharkrite-assessment comments for the PR and extracts
+# DISMISSED and ACTIONABLE_LATER items. Passed to the assessor so it can
+# inherit prior decisions rather than re-litigating stable findings.
+#
+# Deduplication: processes oldest-to-newest; most recent classification wins.
+# The assessor's instruction requires active justification (specific code change
+# in the relevant area) to override a prior DISMISSED decision.
+
+build_prior_decisions_ledger() {
+  local pr_number="$1"
+
+  # Fetch all sharkrite assessment comments, oldest first
+  local assessments_json
+  assessments_json=$(gh pr view "$pr_number" --json comments \
+    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt)' \
+    2>/dev/null || echo "[]")
+
+  local count
+  count=$(echo "$assessments_json" | jq 'length' 2>/dev/null || echo "0")
+  [ "$count" -eq 0 ] && echo "" && return 0
+
+  # Associative arrays for dedup — most recent classification per title wins
+  declare -A d_states d_reasons d_timestamps d_files
+
+  local i comment_body timestamp assessment_content changed_files
+  local _cur_title _cur_state _cur_reason
+
+  for i in $(seq 0 $((count - 1))); do
+    comment_body=$(echo "$assessments_json" | jq -r ".[$i].body" 2>/dev/null || echo "")
+    timestamp=$(echo "$assessments_json" | jq -r ".[$i].createdAt" 2>/dev/null || echo "")
+
+    # Assessment content lives after the '---' separator in the comment body
+    assessment_content=$(echo "$comment_body" | sed -n '/^---$/,$p' | tail -n +2)
+    [ -z "$assessment_content" ] && continue
+
+    # Files changed since this assessment (informational — lets assessor judge relevance)
+    changed_files=""
+    if [ -n "$timestamp" ]; then
+      changed_files=$(git log --name-only --pretty=format: --after="$timestamp" HEAD 2>/dev/null \
+        | sort -u | grep -v '^$' | head -20 | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g' || true)
+    fi
+
+    # Parse DISMISSED and ACTIONABLE_LATER items via awk with structured prefix output
+    # (avoids pipe-in-data issues with IFS splitting)
+    while IFS= read -r line; do
+      case "$line" in
+        ITEM_TITLE:*) _cur_title="${line#ITEM_TITLE:}" ;;
+        ITEM_STATE:*) _cur_state="${line#ITEM_STATE:}" ;;
+        ITEM_REASON:*) _cur_reason="${line#ITEM_REASON:}" ;;
+        ITEM_END)
+          if [ -n "${_cur_title:-}" ]; then
+            d_states["$_cur_title"]="$_cur_state"
+            d_reasons["$_cur_title"]="$_cur_reason"
+            d_timestamps["$_cur_title"]="$timestamp"
+            d_files["$_cur_title"]="$changed_files"
+          fi
+          _cur_title="" _cur_state="" _cur_reason=""
+          ;;
+      esac
+    done < <(echo "$assessment_content" | awk '
+      /^### .* - DISMISSED$/ || /^### .* - ACTIONABLE_LATER$/ {
+        if (title != "") {
+          print "ITEM_TITLE:" title
+          print "ITEM_STATE:" item_state
+          print "ITEM_REASON:" reasoning
+          print "ITEM_END"
+        }
+        line = $0; gsub(/^### /, "", line)
+        item_state = line; gsub(/^.* - /, "", item_state)
+        title = line; gsub(/ - [A-Z_]+$/, "", title)
+        reasoning = ""
+        next
+      }
+      /^### / {
+        if (title != "") {
+          print "ITEM_TITLE:" title
+          print "ITEM_STATE:" item_state
+          print "ITEM_REASON:" reasoning
+          print "ITEM_END"
+          title = ""; reasoning = ""; item_state = ""
+        }
+        next
+      }
+      title != "" && /^\*\*Reasoning:\*\*/ {
+        reasoning = $0; gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
+      }
+      END {
+        if (title != "") {
+          print "ITEM_TITLE:" title
+          print "ITEM_STATE:" item_state
+          print "ITEM_REASON:" reasoning
+          print "ITEM_END"
+        }
+      }
+    ')
+  done
+
+  # Build formatted ledger from deduplicated entries
+  local ledger=""
+  for title in "${!d_states[@]}"; do
+    local entry
+    entry="### ${title} - ${d_states[$title]}
+**Reasoning:** ${d_reasons[$title]}
+**Classified:** ${d_timestamps[$title]}"
+    if [ -n "${d_files[$title]}" ]; then
+      entry="${entry}
+**Files changed since:** ${d_files[$title]}"
+    fi
+    ledger="${ledger}${entry}
+
+"
+  done
+
+  echo "$ledger"
+}
 
 PR_NUMBER="$1"
 REVIEW_FILE="$2"
@@ -206,6 +326,37 @@ if [ -f "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
 fi
 
 # =============================================================================
+# PRIOR DECISIONS LEDGER: Fetch prior assessment decisions for this PR
+# =============================================================================
+# On first run this is empty. On retry loops it contains all prior DISMISSED
+# and ACTIONABLE_LATER decisions so the assessor can inherit stable decisions
+# rather than re-litigating findings that already have settled classifications.
+
+print_status "Fetching prior assessment decisions..."
+PRIOR_DECISIONS_LEDGER=$(build_prior_decisions_ledger "$PR_NUMBER" 2>/dev/null || echo "")
+
+PRIOR_DECISIONS_SECTION=""
+if [ -n "$PRIOR_DECISIONS_LEDGER" ]; then
+  PRIOR_ITEM_COUNT=$(echo "$PRIOR_DECISIONS_LEDGER" | grep -c "^### " || true)
+  print_status "Loaded $PRIOR_ITEM_COUNT prior decision(s) into assessor context"
+  PRIOR_DECISIONS_SECTION="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRIOR ASSESSMENT DECISIONS FOR THIS PR:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The following findings were classified in earlier assessment iterations for this PR.
+Inherit these decisions unless you can identify a specific, relevant code change
+that directly addresses the concern raised. \"Files changed\" alone is NOT grounds to
+override a prior DISMISSED decision — you must identify a concrete change in the
+specific area the finding concerns (e.g. the finding is about function X, and
+function X was actually modified since the dismissal).
+
+${PRIOR_DECISIONS_LEDGER}
+"
+else
+  print_status "No prior assessment decisions found (first iteration)"
+fi
+
+# =============================================================================
 # Known error detection - helps identify specific failures for fallback logic
 # =============================================================================
 
@@ -277,7 +428,7 @@ PROJECT CONTEXT:
 
 $PROJECT_CONTEXT_SECTION
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+$PRIOR_DECISIONS_SECTION━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CODE REVIEW TO ASSESS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -349,6 +500,7 @@ For each item, use EXACTLY this format (no deviations):
 **Category:** {Security|CodeQuality|Standards|ScopeCreep|QuickWin}
 **Reasoning:** {1-2 sentences: Why this categorization?}
 **Context:** {How does this relate to original issue scope and project goals?}
+{FOR ACTIONABLE_NOW: **Location:** {specific file path and/or function name where fix should land}}
 {FOR ACTIONABLE_NOW: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR}}
 
@@ -627,13 +779,16 @@ ASSESSMENT_COMMENT="<!-- sharkrite-assessment pr:${PR_NUMBER} iteration:1 timest
 
 ${ASSESSMENT_OUTPUT}"
 
-# Post assessment as PR comment
+# Post assessment as PR comment (via temp file to avoid shell metacharacter issues)
 print_status "Posting assessment to PR #$PR_NUMBER..."
-if gh pr comment "$PR_NUMBER" --body "$ASSESSMENT_COMMENT" >/dev/null 2>&1; then
+ASSESSMENT_BODY_FILE=$(mktemp)
+printf '%s' "$ASSESSMENT_COMMENT" > "$ASSESSMENT_BODY_FILE"
+if gh pr comment "$PR_NUMBER" --body-file "$ASSESSMENT_BODY_FILE" >/dev/null 2>&1; then
   print_success "Assessment posted to PR"
 else
   print_warning "Failed to post assessment comment (continuing anyway)"
 fi
+rm -f "$ASSESSMENT_BODY_FILE"
 
 # =============================================================================
 # CREATE/UPDATE TECH-DEBT ISSUES FOR ACTIONABLE_LATER ITEMS
@@ -642,8 +797,10 @@ fi
 if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   print_status "Processing $ACTIONABLE_LATER_COUNT ACTIONABLE_LATER items..."
 
-  # Get existing open tech-debt issues to check for duplicates
-  EXISTING_ISSUES=$(gh issue list --state open --label "tech-debt" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
+  # Get existing open tech-debt and review-follow-up issues to check for duplicates
+  EXISTING_TECH_DEBT=$(gh issue list --state open --label "tech-debt" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
+  EXISTING_FOLLOWUPS=$(gh issue list --state open --label "review-follow-up" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
+  EXISTING_ISSUES=$(printf '%s\n%s' "$EXISTING_TECH_DEBT" "$EXISTING_FOLLOWUPS" | grep -v '^$' || echo "")
 
   # Also check for issues already linked to this PR
   PR_LINKED_ISSUES=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE "Follow-up.*#[0-9]+" | grep -oE "#[0-9]+" || echo "")
@@ -652,22 +809,8 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
 
-  # Extract ACTIONABLE_LATER sections from assessment
-  echo "$ASSESSMENT_OUTPUT" | awk '
-    /^### .* - ACTIONABLE_LATER$/ {
-      in_later = 1
-      title = $0
-      gsub(/^### /, "", title)
-      gsub(/ - ACTIONABLE_LATER$/, "", title)
-      print "TITLE:" title
-    }
-    in_later && /^\*\*Severity:\*\*/ { print $0 }
-    in_later && /^\*\*Category:\*\*/ { print $0 }
-    in_later && /^\*\*Reasoning:\*\*/ { print $0 }
-    in_later && /^\*\*Context:\*\*/ { print $0 }
-    in_later && /^\*\*Defer Reason:\*\*/ { print $0; print "---END---"; in_later = 0 }
-    in_later && /^### / && !/ACTIONABLE_LATER/ { print "---END---"; in_later = 0 }
-  ' | while read -r line; do
+  # Extract ACTIONABLE_LATER sections from assessment (process substitution avoids subshell variable loss)
+  while read -r line; do
     case "$line" in
       TITLE:*)
         ITEM_TITLE="${line#TITLE:}"
@@ -693,21 +836,18 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_DEFER="${line#\*\*Defer Reason:\*\* }"
         ;;
       ---END---)
-        # Check for duplicate by fuzzy matching title
+        # Stage 1: fuzzy title match against cached issue list (both tech-debt and review-follow-up)
         DUPLICATE_ISSUE=""
         if [ -n "$EXISTING_ISSUES" ]; then
-          # Simple fuzzy match: check if any existing issue title contains key words from this title
           TITLE_WORDS=$(echo "$ITEM_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ')
           while IFS=: read -r issue_num issue_title; do
             EXISTING_WORDS=$(echo "$issue_title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ')
-            # Count matching words
             MATCH_COUNT=0
             for word in $TITLE_WORDS; do
               if [ ${#word} -gt 3 ] && echo "$EXISTING_WORDS" | grep -qw "$word"; then
                 MATCH_COUNT=$((MATCH_COUNT + 1))
               fi
             done
-            # If more than 2 significant words match, consider it a duplicate
             if [ "$MATCH_COUNT" -ge 2 ]; then
               DUPLICATE_ISSUE="$issue_num"
               break
@@ -715,24 +855,55 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           done <<< "$EXISTING_ISSUES"
         fi
 
+        # Stage 2: description match via GitHub search (catches same finding re-flagged across different PRs)
+        if [ -z "$DUPLICATE_ISSUE" ] && [ -n "$ITEM_REASONING" ]; then
+          REASONING_KEYWORDS=$(echo "$ITEM_REASONING" | tr '[:upper:]' '[:lower:]' | \
+            tr -cs 'a-z0-9' ' ' | tr ' ' '\n' | awk 'length>4' | head -5 | tr '\n' ' ')
+          if [ -n "${REASONING_KEYWORDS// /}" ]; then
+            SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
+            [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
+              SEARCH_QUALIFIER="sharkrite-source-issue:${RITE_ISSUE_NUMBER} $REASONING_KEYWORDS in:body"
+            DUPLICATE_ISSUE=$(gh issue list \
+              --state open \
+              --search "$SEARCH_QUALIFIER" \
+              --json number \
+              --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || echo "")
+          fi
+        fi
+
         if [ -n "$DUPLICATE_ISSUE" ]; then
-          # Update existing issue with new context
-          print_info "  Updating existing issue #$DUPLICATE_ISSUE: $ITEM_TITLE"
-          UPDATE_COMMENT="## Additional Context from PR #${PR_NUMBER}
+          # Only update if the existing body is missing content we have
+          EXISTING_BODY=$(gh issue view "$DUPLICATE_ISSUE" --json body --jq '.body' 2>/dev/null || echo "")
+          REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60)
+          if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
+            print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
+          else
+            print_info "  Updating #$DUPLICATE_ISSUE with new content: $ITEM_TITLE"
+            UPDATED_BODY="${EXISTING_BODY}
+
+---
+
+## Additional Assessment (PR #${PR_NUMBER})
 
 **Severity:** ${ITEM_SEVERITY}
 **Reasoning:** ${ITEM_REASONING}
 **Context:** ${ITEM_CONTEXT}
 **Defer Reason:** ${ITEM_DEFER}
 
-_Added by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_"
+_Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
 
-          gh issue comment "$DUPLICATE_ISSUE" --body "$UPDATE_COMMENT" >/dev/null 2>&1 && \
-            UPDATED_ISSUES="${UPDATED_ISSUES}#${DUPLICATE_ISSUE} "
+            EDIT_BODY_FILE=$(mktemp)
+            printf '%s' "$UPDATED_BODY" > "$EDIT_BODY_FILE"
+            gh issue edit "$DUPLICATE_ISSUE" --body-file "$EDIT_BODY_FILE" >/dev/null 2>&1 && \
+              UPDATED_ISSUES="${UPDATED_ISSUES}#${DUPLICATE_ISSUE} "
+            rm -f "$EDIT_BODY_FILE"
+          fi
         else
           # Create new issue
           print_info "  Creating issue: $ITEM_TITLE"
-          ISSUE_BODY="## From PR #${PR_NUMBER} Assessment
+          SOURCE_ISSUE_MARKER=""
+          [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- sharkrite-source-issue:${RITE_ISSUE_NUMBER} -->"
+          ISSUE_BODY="${SOURCE_ISSUE_MARKER}## From PR #${PR_NUMBER} Assessment
 
 **Severity:** ${ITEM_SEVERITY}
 **Category:** ${ITEM_CATEGORY}
@@ -750,11 +921,15 @@ ${ITEM_DEFER}
 _Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
 _Parent PR: #${PR_NUMBER}_"
 
+          CREATE_BODY_FILE=$(mktemp)
+          printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
+          ensure_labels_exist "tech-debt,from-review"
           ISSUE_URL=$(gh issue create \
             --title "$ITEM_TITLE" \
-            --body "$ISSUE_BODY" \
+            --body-file "$CREATE_BODY_FILE" \
             --label "tech-debt" \
             --label "from-review" 2>/dev/null || echo "")
+          rm -f "$CREATE_BODY_FILE"
 
           if [ -n "$ISSUE_URL" ]; then
             NEW_ISSUE=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$' || echo "")
@@ -768,13 +943,23 @@ _Parent PR: #${PR_NUMBER}_"
         fi
         ;;
     esac
-  done
+  done < <(echo "$ASSESSMENT_OUTPUT" | awk '
+    /^### .* - ACTIONABLE_LATER$/ {
+      in_later = 1
+      title = $0
+      gsub(/^### /, "", title)
+      gsub(/ - ACTIONABLE_LATER$/, "", title)
+      print "TITLE:" title
+    }
+    in_later && /^\*\*Severity:\*\*/ { print $0 }
+    in_later && /^\*\*Category:\*\*/ { print $0 }
+    in_later && /^\*\*Reasoning:\*\*/ { print $0 }
+    in_later && /^\*\*Context:\*\*/ { print $0 }
+    in_later && /^\*\*Defer Reason:\*\*/ { print $0; print "---END---"; in_later = 0 }
+    in_later && /^### / && !/ACTIONABLE_LATER/ { print "---END---"; in_later = 0 }
+  ')
 
   # Update PR body with follow-up issue links
-  # NOTE: CREATED_ISSUES/UPDATED_ISSUES are set inside a pipe subshell above,
-  # so their values are lost here. This block won't trigger until the awk|while
-  # pipeline is refactored to avoid the subshell (e.g., process substitution).
-  # For now, issue creation still works — the PR body just doesn't get updated.
   if [ -n "$CREATED_ISSUES" ] || [ -n "$UPDATED_ISSUES" ]; then
     print_status "Updating PR body with follow-up issue links..."
 
@@ -802,9 +987,12 @@ ${NEW_ISSUES_LINE}")
 - Updated: ${UPDATED_ISSUES:-none}"
     fi
 
-    gh pr edit "$PR_NUMBER" --body "$UPDATED_BODY" >/dev/null 2>&1 && \
+    PR_EDIT_BODY_FILE=$(mktemp)
+    printf '%s' "$UPDATED_BODY" > "$PR_EDIT_BODY_FILE"
+    gh pr edit "$PR_NUMBER" --body-file "$PR_EDIT_BODY_FILE" >/dev/null 2>&1 && \
       print_success "PR body updated with follow-up links" || \
       print_warning "Failed to update PR body"
+    rm -f "$PR_EDIT_BODY_FILE"
   fi
 fi
 

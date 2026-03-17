@@ -25,6 +25,7 @@ fi
 
 # Source review helper for consistent review method handling
 source "$RITE_LIB_DIR/utils/review-helper.sh"
+source "$RITE_LIB_DIR/utils/labels.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -175,6 +176,12 @@ print_assessment_details() {
         reasoning = $0
         gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
         wrap("    Reason: ", reasoning, 76)
+        next
+      }
+      in_item && /^\*\*Location:\*\*/ {
+        location = $0
+        gsub(/^\*\*Location:\*\* /, "", location)
+        printf "    Location: %s\n", location
         next
       }
       in_item && /^\*\*Fix Effort:\*\*/ {
@@ -576,6 +583,8 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   # Use process substitution to show stderr in real-time (Claude output streams to terminal)
   ASSESSMENT_STDERR=$(mktemp)
   ASSESSMENT_EXIT_CODE=0
+  # Export source issue number so assess-review-issues.sh can scope dedup searches
+  export RITE_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
   if [ "$AUTO_MODE" = true ]; then
     ASSESSMENT_RESULT=$("$RITE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" --auto 2> >(tee "$ASSESSMENT_STDERR" >&2)) || ASSESSMENT_EXIT_CODE=$?
   else
@@ -950,7 +959,10 @@ $(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "L
 
   # --- Build issue body ---
 
-  FOLLOWUP_BODY="## Description
+  SOURCE_ISSUE_MARKER=""
+  [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- sharkrite-source-issue:${ISSUE_NUMBER} -->"
+  FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- sharkrite-parent-pr:${PR_NUMBER} -->
+## Description
 
 $FOLLOWUP_DESCRIPTION$ASSESSMENT_NOTE
 
@@ -1018,14 +1030,23 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     ISSUE_SEARCH="Review feedback from PR #$PR_NUMBER"
   fi
 
-  # Check if issue already exists for this PR
-  EXISTING_ISSUE=$(gh issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
-    jq -r '.[] | select(.state == "OPEN") | .number' 2>/dev/null || echo "")
+  # Check if issue already exists: prefer source-issue scoped body search, fallback to title search
+  EXISTING_ISSUE=""
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    EXISTING_ISSUE=$(gh issue list \
+      --state open \
+      --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
+      --json number \
+      --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || echo "")
+  fi
+  if [ -z "$EXISTING_ISSUE" ]; then
+    EXISTING_ISSUE=$(gh issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
+      jq -r '.[] | select(.state == "OPEN") | .number' 2>/dev/null || echo "")
+  fi
 
   if [ -n "$EXISTING_ISSUE" ]; then
     echo ""
-    print_success "📋 Follow-up issue already exists: #$EXISTING_ISSUE"
-    print_info "Skipping duplicate issue creation"
+    print_success "📋 Follow-up issue already exists: #$EXISTING_ISSUE (skipping duplicate)"
     issue_url=$(gh issue view "$EXISTING_ISSUE" --json url --jq '.url' 2>/dev/null || echo "")
     echo "  URL: $issue_url"
     echo ""
@@ -1035,11 +1056,11 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   else
     # Determine label type based on context and severity
     if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-      ISSUE_LABELS="tech-debt,parent-pr:$PR_NUMBER"
+      ISSUE_LABELS="tech-debt"
     elif [ "$CRITICAL_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="review-follow-up,parent-pr:$PR_NUMBER"
+      ISSUE_LABELS="review-follow-up"
     else
-      ISSUE_LABELS="tech-debt,parent-pr:$PR_NUMBER"
+      ISSUE_LABELS="tech-debt"
     fi
 
     # Add priority labels based on highest severity
@@ -1051,13 +1072,19 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       ISSUE_LABELS="$ISSUE_LABELS,enhancement"
     fi
 
-    # Create consolidated follow-up issue
+    # Ensure all required labels exist (create missing ones rather than failing)
+    ensure_labels_exist "$ISSUE_LABELS"
+
+    # Create consolidated follow-up issue (via temp file to avoid shell metacharacter issues)
+    FOLLOWUP_BODY_FILE=$(mktemp)
+    printf '%s' "$FOLLOWUP_BODY" > "$FOLLOWUP_BODY_FILE"
     FOLLOWUP_ISSUE=""
     if FOLLOWUP_ISSUE=$(gh issue create \
       --title "$ISSUE_TITLE" \
-      --body "$FOLLOWUP_BODY" \
+      --body-file "$FOLLOWUP_BODY_FILE" \
       --label "$ISSUE_LABELS" \
       2>&1); then
+      rm -f "$FOLLOWUP_BODY_FILE"
       FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_ISSUE" | grep -oE '[0-9]+$' || echo "")
       echo ""
       print_success "✅ Follow-up issue created: #$FOLLOWUP_NUMBER"
@@ -1077,8 +1104,12 @@ All review feedback has been grouped into a single issue for batch processing:
 
 This approach allows all fixes to be completed together in a focused PR."
 
-      gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY" 2>/dev/null || true
+      COMMENT_BODY_FILE=$(mktemp)
+      printf '%s' "$COMMENT_BODY" > "$COMMENT_BODY_FILE"
+      gh pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null || true
+      rm -f "$COMMENT_BODY_FILE"
     else
+      rm -f "$FOLLOWUP_BODY_FILE"
       print_warning "Failed to create consolidated follow-up issue"
     fi
   fi
