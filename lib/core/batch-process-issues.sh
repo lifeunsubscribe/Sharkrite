@@ -32,6 +32,11 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 
 # Batch processing requires associative arrays (bash 4+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
   echo "Error: Batch processing requires bash 4+. Install via: brew install bash" >&2
   exit 1
 fi
@@ -226,8 +231,9 @@ PREFLIGHT_BLOCKERS=()
 PREFLIGHT_BLOCKER_MSGS=()
 
 for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
-  # Check if issue has an open PR
-  PR_NUMBER=$(gh pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:title in:body" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+  # Check if issue has an open PR (use shared detection for accurate body-based matching)
+  PR_NUMBER=""
+  detect_pr_for_issue "$ISSUE_NUM" 2>/dev/null || true
 
   if [ -n "$PR_NUMBER" ]; then
     print_info "Issue #$ISSUE_NUM has PR #$PR_NUMBER - checking for blockers..."
@@ -313,12 +319,12 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   fi
 
   # Check if this is a follow-up issue with parent PR dependency
-  ISSUE_LABELS=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+  ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body' 2>/dev/null || echo "")
   PARENT_PR=""
 
-  if echo "$ISSUE_LABELS" | grep -q "parent-pr:"; then
-    # Extract parent PR number from label (format: parent-pr:39)
-    PARENT_PR=$(echo "$ISSUE_LABELS" | grep -oE 'parent-pr:[0-9]+' | cut -d: -f2)
+  if echo "$ISSUE_BODY" | grep -q "sharkrite-parent-pr:"; then
+    # Extract parent PR number from body marker
+    PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2)
 
     if [ -n "$PARENT_PR" ]; then
       # Check if parent PR is still open
@@ -473,7 +479,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       fi
 
       # Check for new tech-debt issues created
-      NEW_DEBT_ISSUE=$(gh issue list --label "tech-debt,parent-pr:$PR_NUMBER" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+      NEW_DEBT_ISSUE=$(gh issue list --label "tech-debt" --state open --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
       if [ -n "$NEW_DEBT_ISSUE" ]; then
         NEW_ISSUES_CREATED+=("Issue #$NEW_DEBT_ISSUE (from PR #$PR_NUMBER)")
       fi

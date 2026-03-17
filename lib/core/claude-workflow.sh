@@ -496,11 +496,11 @@ find_worktree_for_task() {
   # If task is a number, it's an issue number - search by linked PR
   if [[ "$task" =~ ^[0-9]+$ ]]; then
     # Check if this is a follow-up issue with parent PR
-    local issue_labels=$(gh issue view "$task" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+    local issue_body=$(gh issue view "$task" --json body --jq '.body' 2>/dev/null || echo "")
 
-    if echo "$issue_labels" | grep -q "parent-pr:"; then
-      # Extract parent PR number and use its branch
-      local parent_pr=$(echo "$issue_labels" | grep -oE 'parent-pr:[0-9]+' | cut -d: -f2)
+    if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
+      # Extract parent PR number from body marker
+      local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2)
 
       if [ -n "$parent_pr" ]; then
         pr_branch=$(gh pr view "$parent_pr" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
@@ -1184,13 +1184,17 @@ _Draft PR created automatically by rite for tracking purposes._"
 
   print_status "Creating draft PR..."
 
+  # Use temp file to avoid shell metacharacter issues in body
+  DRAFT_BODY_FILE=$(mktemp)
+  printf '%s' "$PR_BODY" > "$DRAFT_BODY_FILE"
   gh pr create \
     --draft \
     --base main \
     --head "$BRANCH_NAME" \
     --title "$PR_TITLE" \
-    --body "$PR_BODY" \
+    --body-file "$DRAFT_BODY_FILE" \
     2>/dev/null || print_warning "PR creation failed (may already exist)"
+  rm -f "$DRAFT_BODY_FILE"
 
   # Get PR number
   PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null)

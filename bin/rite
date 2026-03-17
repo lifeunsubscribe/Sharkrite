@@ -11,6 +11,7 @@
 #   rite <issue> --undo           Undo: close PR, cleanup
 #   rite --status                 Repo-wide status overview
 #   rite --status --by-label      Repo-wide status grouped by label
+#   rite plan [doc] [instructions] Generate issues from architectural docs
 #   rite --init                   Initialize .rite/ in current project
 #   rite --dry-run <...>          Print execution plan without running
 
@@ -123,6 +124,13 @@ while [[ $# -gt 0 ]]; do
       MODE="init"
       shift
       ;;
+    plan)
+      MODE="plan"
+      shift
+      # Collect remaining args for plan (doc paths + natural language)
+      PLAN_ARGS=("$@")
+      shift $#
+      ;;
     --version|-v)
       echo "rite version $VERSION"
       exit 0
@@ -142,7 +150,9 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --status                 Repo-wide status overview"
       echo "  rite --status --by-label      Repo-wide status grouped by label"
       echo "  rite <issue> --undo           Undo workflow: close PR, clean up artifacts"
-      echo "  rite --pr <number>            Run by PR number (resolves linked issue)"
+      echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
+      echo "  rite plan --preview [doc]     Preview issues without creating them"
+      echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
@@ -175,7 +185,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite 21 --assess-and-fix   # Assess review + fix loop"
       echo "  rite 21 --status           # Show workflow status"
       echo "  rite 21 --undo             # Undo: close PR, clean branches/worktree/state"
-      echo "  rite --pr 72               # Run by PR number"
+      echo "  rite --pr 72               # Run by PR number (orphan PRs handled automatically)"
+      echo "  rite plan docs/phases.md   # Generate issues from doc"
+      echo "  rite plan \"phases 2-4\"     # Natural language filtering"
+      echo "  rite plan --preview        # Preview without creating"
       echo "  rite --status              # Repo-wide status overview"
       echo "  rite --status --by-label   # Status grouped by label"
       echo "  rite 21 --dry-run          # See what would happen"
@@ -205,7 +218,9 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
 
   # Log filename keyed by issue number. When the arg is a description string
   # (not yet an issue number), use "new" — the issue gets created later.
-  if [[ "$LOG_ISSUE" =~ ^[0-9]+$ ]]; then
+  if [ "$MODE" = "plan" ]; then
+    LOG_SLUG="plan"
+  elif [[ "$LOG_ISSUE" =~ ^[0-9]+$ ]]; then
     LOG_SLUG="$LOG_ISSUE"
   else
     LOG_SLUG="new"
@@ -299,41 +314,37 @@ if [ "$MODE" = "init" ]; then
   print_success "Sharkrite initialized for $RITE_PROJECT_NAME"
 
   # ─────────────────────────────────────────────────────────────────
-  # GitHub Workflow Setup (optional)
+  # GitHub Setup (auto-created)
   # ─────────────────────────────────────────────────────────────────
 
   echo ""
-  print_info "GitHub Workflow Setup"
+  print_info "GitHub Setup"
 
-  # Note: The GitHub Actions auto-review workflow (claude-code-review.yml) is
-  # deprecated. Sharkrite uses local reviews via local-review.sh instead.
-  # The @claude interactive workflow is still supported.
+  # Deprecation warning for old auto-review workflow
   if [ -f ".github/workflows/claude-code-review.yml" ]; then
     print_warning "Found deprecated claude-code-review.yml workflow"
     print_info "Sharkrite now uses local reviews — this GitHub Actions workflow can be removed"
   fi
 
-  if [ ! -f ".github/workflows/claude.yml" ]; then
-    echo ""
-    read -p "Enable @claude mentions in issues/PRs? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      mkdir -p .github/workflows
-      cp "$RITE_INSTALL_DIR/templates/github/workflows/claude-interactive.yml" .github/workflows/claude.yml
-      print_success "Created .github/workflows/claude.yml"
-    fi
-  else
-    print_success "@claude interactive workflow already exists"
-  fi
-
-  # Ensure review instructions exist (used by local-review.sh)
+  # Review instructions (used by local-review.sh) — always create
   if [ ! -f ".github/claude-code/pr-review-instructions.md" ]; then
     mkdir -p .github/claude-code
     cp "$RITE_INSTALL_DIR/templates/github/claude-code/pr-review-instructions.md" .github/claude-code/
     print_success "Created .github/claude-code/pr-review-instructions.md"
+  else
+    print_info ".github/claude-code/pr-review-instructions.md already exists, skipping"
   fi
 
-  # Optional: Merge notifications
+  # PR template — always create (sharkrite creates PRs, every repo needs this)
+  if [ ! -f ".github/PULL_REQUEST_TEMPLATE.md" ]; then
+    mkdir -p .github
+    cp "$RITE_INSTALL_DIR/templates/github/PULL_REQUEST_TEMPLATE.md" .github/
+    print_success "Created .github/PULL_REQUEST_TEMPLATE.md"
+  else
+    print_info ".github/PULL_REQUEST_TEMPLATE.md already exists, skipping"
+  fi
+
+  # Optional: Slack merge notifications
   if [ ! -f ".github/workflows/pr-merged-notification.yml" ]; then
     echo ""
     read -p "Send Slack notifications on PR merge? (y/n) " -n 1 -r
@@ -346,18 +357,6 @@ if [ "$MODE" = "init" ]; then
     fi
   fi
 
-  # Optional: PR template
-  if [ ! -f ".github/PULL_REQUEST_TEMPLATE.md" ]; then
-    echo ""
-    read -p "Create PR template? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      mkdir -p .github
-      cp "$RITE_INSTALL_DIR/templates/github/PULL_REQUEST_TEMPLATE.md" .github/
-      print_success "Created .github/PULL_REQUEST_TEMPLATE.md"
-    fi
-  fi
-
   echo ""
   print_info "Next steps:"
   echo "  1. Edit .rite/config with project-specific settings"
@@ -365,6 +364,13 @@ if [ "$MODE" = "init" ]; then
   echo "  3. Run 'rite 21' to process your first issue"
   echo ""
   exit 0
+fi
+
+# Handle plan mode (before normalize — plan doesn't need issue normalization)
+if [ "$MODE" = "plan" ]; then
+  source "$RITE_LIB_DIR/core/plan-issues.sh"
+  plan_issues "${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}"
+  exit $?
 fi
 
 # Source normalization utilities
@@ -450,18 +456,114 @@ fi
 
 # Resolve --pr to issue number
 if [ -n "${PR_INPUT:-}" ]; then
-  print_status "Resolving PR #$PR_INPUT to linked issue..."
-  PR_BODY=$(gh pr view "$PR_INPUT" --json body --jq '.body' 2>/dev/null || echo "")
-  if [ -z "$PR_BODY" ]; then
+  print_status "Resolving PR #$PR_INPUT..."
+  PR_JSON=$(gh pr view "$PR_INPUT" --json body,title,headRefName,state 2>/dev/null || echo "")
+  if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
     print_error "Could not fetch PR #$PR_INPUT"
     exit 1
   fi
-  LINKED_ISSUE=$(echo "$PR_BODY" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
-  if [ -z "$LINKED_ISSUE" ]; then
-    print_error "PR #$PR_INPUT has no linked issue (expected 'Closes #N' in body)"
+  PR_STATE=$(echo "$PR_JSON" | jq -r '.state // ""')
+  if [ "$PR_STATE" != "OPEN" ]; then
+    print_error "PR #$PR_INPUT is not open (state: $(echo "$PR_STATE" | tr '[:upper:]' '[:lower:]'))"
     exit 1
   fi
-  print_success "PR #$PR_INPUT → issue #$LINKED_ISSUE"
+  PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+  LINKED_ISSUE=$(echo "$PR_BODY" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+  if [ -z "$LINKED_ISSUE" ]; then
+    # Orphan PR — no linked issue. Handle based on staleness.
+    PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // ""')
+    PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName // ""')
+    print_info "PR #$PR_INPUT has no linked issue"
+
+    # Check staleness using remote branch (no local worktree needed)
+    COMMITS_BEHIND=0
+    if [ -n "$PR_BRANCH" ]; then
+      git fetch origin main 2>/dev/null || true
+      git fetch origin "$PR_BRANCH" 2>/dev/null || true
+      MERGE_BASE=$(git merge-base "origin/$PR_BRANCH" "origin/main" 2>/dev/null || echo "")
+      if [ -n "$MERGE_BASE" ]; then
+        COMMITS_BEHIND=$(git rev-list --count "${MERGE_BASE}..origin/main" 2>/dev/null || echo "0")
+      fi
+    fi
+
+    THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
+
+    # Shared cleanup: close PR and remove branch/worktree artifacts
+    _close_orphan_pr() {
+      local comment="$1"
+      gh pr comment "$PR_INPUT" --body "$comment" 2>/dev/null || true
+      gh pr close "$PR_INPUT" 2>/dev/null && print_info "Closed PR #$PR_INPUT" || print_warning "Failed to close PR #$PR_INPUT"
+      if [ -n "$PR_BRANCH" ]; then
+        LOCAL_WT=$(git worktree list 2>/dev/null | grep "\[$PR_BRANCH\]" | awk '{print $1}' || echo "")
+        if [ -n "$LOCAL_WT" ] && [ -d "$LOCAL_WT" ]; then
+          git worktree remove "$LOCAL_WT" --force 2>/dev/null && print_info "Removed worktree: $(basename "$LOCAL_WT")" || true
+        fi
+        git branch -D "$PR_BRANCH" 2>/dev/null && print_info "Deleted local branch: $PR_BRANCH" || true
+        git push origin --delete "$PR_BRANCH" 2>/dev/null && print_info "Deleted remote branch: $PR_BRANCH" || true
+      fi
+    }
+
+    if [ "$COMMITS_BEHIND" -ge "$THRESHOLD" ]; then
+      print_warning "PR #$PR_INPUT is $COMMITS_BEHIND commits behind main (threshold: $THRESHOLD)"
+
+      ORPHAN_RESTART=true
+      if [ "${SUPERVISED:-false}" = true ]; then
+        echo ""
+        echo "Options:"
+        echo "  1) Clean up only — close PR and delete branch/worktree, exit"
+        echo "  2) Restart fresh — close PR, create issue, start new implementation"
+        echo ""
+        read -p "Choose [1/2]: " -n 1 -r
+        echo
+        [[ "$REPLY" != "2" ]] && ORPHAN_RESTART=false
+      fi
+
+      if [ "$ORPHAN_RESTART" = false ]; then
+        _close_orphan_pr ":arrows_counterclockwise: Closing: Branch is ${COMMITS_BEHIND} commits behind main. No new issue created."
+        print_success "Stale PR closed"
+        exit 0
+      fi
+
+      # Create issue then close PR with reference to it
+      if [ -n "$PR_BODY" ]; then
+        ISSUE_BODY="$(printf 'Tracked from orphan PR #%s.\n\n---\n\n**Original PR description:**\n\n%s' "$PR_INPUT" "$PR_BODY")"
+      else
+        ISSUE_BODY="Tracked from orphan PR #${PR_INPUT}."
+      fi
+      ISSUE_URL=$(gh issue create --title "$PR_TITLE" --body "$ISSUE_BODY" 2>/dev/null || echo "")
+      LINKED_ISSUE=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$' || echo "")
+      if [ -z "$LINKED_ISSUE" ]; then
+        print_error "Failed to create issue for PR #$PR_INPUT"
+        exit 1
+      fi
+      print_success "Created issue #$LINKED_ISSUE"
+
+      _close_orphan_pr ":arrows_counterclockwise: Closing: Branch is ${COMMITS_BEHIND} commits behind main.
+
+Fresh implementation will be started on issue #${LINKED_ISSUE}."
+      print_success "Stale PR closed — restarting fresh on issue #$LINKED_ISSUE"
+    else
+      # Not stale: create issue, link it in the PR body, continue normally
+      if [ -n "$PR_BODY" ]; then
+        ISSUE_BODY="$(printf 'Tracked from orphan PR #%s.\n\n---\n\n**Original PR description:**\n\n%s' "$PR_INPUT" "$PR_BODY")"
+      else
+        ISSUE_BODY="Tracked from orphan PR #${PR_INPUT}."
+      fi
+      ISSUE_URL=$(gh issue create --title "$PR_TITLE" --body "$ISSUE_BODY" 2>/dev/null || echo "")
+      LINKED_ISSUE=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$' || echo "")
+      if [ -z "$LINKED_ISSUE" ]; then
+        print_error "Failed to create issue for PR #$PR_INPUT"
+        exit 1
+      fi
+      print_success "Created issue #$LINKED_ISSUE"
+      NEW_BODY="$(printf 'Closes #%s\n\n%s' "$LINKED_ISSUE" "$PR_BODY")"
+      gh pr edit "$PR_INPUT" --body "$NEW_BODY" 2>/dev/null \
+        && print_success "Linked issue #$LINKED_ISSUE to PR #$PR_INPUT" \
+        || print_warning "Could not update PR body (issue still created)"
+    fi
+  else
+    print_success "PR #$PR_INPUT → issue #$LINKED_ISSUE"
+  fi
   ARGS=("$LINKED_ISSUE")
 fi
 

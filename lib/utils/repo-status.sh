@@ -301,17 +301,20 @@ truncate_str() {
   fi
 }
 
-# Right-pad string to fixed width (character-aware, not byte-aware).
-# macOS bash 3.2's printf counts bytes for %-Ns padding, which breaks
-# alignment when multibyte characters like … (3 bytes, 1 column) are present.
-# Using ${#str} (character count) avoids this.
+# Right-pad string to fixed width.
+# With LC_CTYPE=C (common on macOS), ${#str} and printf both count bytes.
+# The ellipsis character … is 3 bytes but 1 display column, so strings
+# containing it come up 2 columns short. Detect and compensate.
 pad_str() {
   local str="$1" width="$2"
   local len=${#str}
-  if [ "$len" -ge "$width" ]; then
+  local correction=0
+  case "$str" in *"…"*) correction=2 ;; esac
+  local pad=$(( width - len + correction ))
+  if [ "$pad" -le 0 ]; then
     printf '%s' "$str"
   else
-    printf '%s%*s' "$str" $((width - len)) ""
+    printf '%s%*s' "$str" "$pad" ""
   fi
 }
 
@@ -650,9 +653,12 @@ repo_wide_status() {
     for i in "${!WT_BRANCHES[@]}"; do
       local branch="${WT_BRANCHES[$i]}"
 
-      # Extract issue number: try branch name pattern, then open PR body lookup
+      # Extract issue number: try branch name, worktree path, open PR body, then gh lookup
       local wt_issue_num=""
       if [[ "$branch" =~ issue-?([0-9]+) ]]; then
+        wt_issue_num="${BASH_REMATCH[1]}"
+      fi
+      if [ -z "$wt_issue_num" ] && [[ "${WT_PATHS[$i]}" =~ issue-?([0-9]+) ]]; then
         wt_issue_num="${BASH_REMATCH[1]}"
       fi
       if [ -z "$wt_issue_num" ] && [ -n "${open_prs_json:-}" ]; then
@@ -661,10 +667,23 @@ repo_wide_status() {
           '[.[] | select(.headRefName == $b)] | .[0].body // ""' 2>/dev/null || echo "")
         wt_issue_num=$(echo "$_pr_body" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
       fi
+      local wt_pr_num=""
+      if [ -z "$wt_issue_num" ]; then
+        local _fallback_pr
+        _fallback_pr=$(gh pr list --head "$branch" --state all --json number,body --limit 1 \
+          --jq '.[0] // empty' 2>/dev/null || echo "")
+        if [ -n "$_fallback_pr" ]; then
+          wt_pr_num=$(echo "$_fallback_pr" | jq -r '.number // ""' 2>/dev/null || true)
+          wt_issue_num=$(echo "$_fallback_pr" | jq -r '.body // ""' | \
+            grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        fi
+      fi
 
       local issue_prefix
       if [ -n "$wt_issue_num" ]; then
         issue_prefix="$(_issue_link "$wt_issue_num" 6 "$repo_url")  "
+      elif [ -n "$wt_pr_num" ]; then
+        issue_prefix="$(_pr_link "$wt_pr_num" "$repo_url")  "
       else
         issue_prefix="        "
       fi

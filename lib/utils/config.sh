@@ -106,6 +106,10 @@ RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}"
 # Model for reviews and assessments — opus for quality (must match for consistency)
 RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5}"
 
+# Plan command: default architectural doc(s) to reference (space-separated, project-relative)
+RITE_PLAN_DOCS="${RITE_PLAN_DOCS:-}"
+RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
+
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 
@@ -172,6 +176,8 @@ export SESSION_STATE_FILE
 export RITE_CLAUDE_TIMEOUT
 export RITE_CLAUDE_MODEL
 export RITE_REVIEW_MODEL
+export RITE_PLAN_DOCS
+export RITE_PLAN_MAX_ESTIMATE
 export RITE_DRY_RUN
 export SKIP_AWS_CHECK
 export BLOCKER_INFRASTRUCTURE_PATHS

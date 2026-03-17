@@ -570,14 +570,16 @@ EOF
         return $workflow_exit
       fi
 
-      # Extract worktree path - look for any non-main worktree created for this issue
-      # Try multiple patterns: issue number in path, or get the most recently created worktree
-      MAIN_WORKTREE=$(git rev-parse --show-toplevel)
-      WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
+      # Extract worktree path via PR branch name (reliable with parallel runs)
+      # claude-workflow.sh creates a draft PR early, so we can find it by issue link
+      if detect_pr_for_issue "$issue_number"; then
+        detect_worktree_for_pr "$PR_NUMBER" || true
+      fi
 
-      # If not found by issue number, get the most recently modified worktree
+      # Fallback: match issue number in worktree path
       if [ -z "$WORKTREE_PATH" ]; then
-        WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | xargs -I {} stat -f "%m %N" {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+        MAIN_WORKTREE=$(git rev-parse --show-toplevel)
+        WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
       fi
 
       if [ -z "$WORKTREE_PATH" ]; then

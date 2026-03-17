@@ -15,6 +15,7 @@ lib/core/local-review.sh          # Generate code review via Claude
 lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
+lib/core/plan-issues.sh           # Issue generation from architectural docs
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
@@ -131,6 +132,9 @@ rite 42 --dev-and-pr       # Phase 1-2: dev + PR only, skip review/merge
 rite 42 --review-latest    # Phase 2 (review only): generate + post review
 rite 42 --assess-and-fix   # Phase 3: assess review + fix loop (up to 3 retries)
 rite 42 --undo             # Cleanup: close PR, delete branch/worktree
+rite plan docs/phases.md   # Generate issues from architectural doc
+rite plan "phases 2-4"     # Natural language doc filtering
+rite plan --preview        # Preview issues without creating
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
@@ -140,6 +144,8 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 **`--review-latest`** checks review staleness: no review → generates; stale → regenerates; current → prints existing review and exits (in supervised mode, prompts to re-review).
 
 **`--assess-and-fix`** requires a current review. Handles the full fix loop internally: assess → fix → push → re-review → re-assess. Creates follow-up issues for ACTIONABLE_LATER items.
+
+**`rite plan`** generates GitHub issues from architectural docs. Loads the doc + project CLAUDE.md + the issue runbook (`docs/issue-runbook.md`) and generates well-structured issues via Claude. Interactive feedback loop: preview → approve/adjust → create. Supports natural language instructions for filtering (e.g., `rite plan "phases 2-4 except auth"`). Default doc(s) configured via `RITE_PLAN_DOCS` in `.rite/config`. Issues follow the runbook template: title format, labels (phase + category + priority), time estimates (Fibonacci, capped at 2hr), Claude Context, acceptance criteria with verification commands, done definitions, scope boundaries, and dependency chains.
 
 The full `rite <issue>` resume correctly detects state (via PR comments/commits) and skips completed phases, so running standalone commands then resuming with the full lifecycle works seamlessly.
 

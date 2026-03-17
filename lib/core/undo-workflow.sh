@@ -96,10 +96,10 @@ fi
 FOLLOWUP_ISSUES=()
 
 if [ -n "$PR_NUMBER" ]; then
-  # Method 1: Issues with label "parent-pr:{PR}"
+  # Method 1: Issues with body marker "sharkrite-parent-pr:{PR}"
   while IFS= read -r num; do
     [ -n "$num" ] && FOLLOWUP_ISSUES+=("$num")
-  done < <(gh issue list --label "parent-pr:$PR_NUMBER" --state all --json number --jq '.[].number' 2>/dev/null || echo "")
+  done < <(gh issue list --state all --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[].number' 2>/dev/null || echo "")
 
   # Method 2: PR comment markers <!-- sharkrite-followup-issue:N -->
   while IFS= read -r num; do
