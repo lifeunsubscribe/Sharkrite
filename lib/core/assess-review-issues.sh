@@ -125,19 +125,19 @@ ASSESSMENT_JSON_SCHEMA='{
 build_prior_decisions_ledger() {
   local pr_number="$1"
 
-  # Fetch all sharkrite assessment comments, oldest first
+  # Fetch all sharkrite assessment comments, newest first
+  # (newest-first + skip-if-seen = latest classification wins, no declare -A needed)
   local assessments_json
   assessments_json=$(gh pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt)' \
+    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse' \
     2>/dev/null || echo "[]")
 
   local count
   count=$(echo "$assessments_json" | jq 'length' 2>/dev/null || echo "0")
   [ "$count" -eq 0 ] && echo "" && return 0
 
-  # Associative arrays for dedup — most recent classification per title wins
-  declare -A d_states d_reasons d_timestamps d_files
-
+  local ledger=""
+  local seen_titles=""  # newline-separated list of titles already recorded
   local i comment_body timestamp assessment_content changed_files
   local _cur_title _cur_state _cur_reason
 
@@ -165,10 +165,22 @@ build_prior_decisions_ledger() {
         ITEM_REASON:*) _cur_reason="${line#ITEM_REASON:}" ;;
         ITEM_END)
           if [ -n "${_cur_title:-}" ]; then
-            d_states["$_cur_title"]="$_cur_state"
-            d_reasons["$_cur_title"]="$_cur_reason"
-            d_timestamps["$_cur_title"]="$timestamp"
-            d_files["$_cur_title"]="$changed_files"
+            # Skip if we already recorded this title (newest-first means first-seen = latest)
+            if ! printf '%s\n' "$seen_titles" | grep -qxF "$_cur_title"; then
+              seen_titles="${seen_titles}
+${_cur_title}"
+              local entry
+              entry="### ${_cur_title} - ${_cur_state}
+**Reasoning:** ${_cur_reason}
+**Classified:** ${timestamp}"
+              if [ -n "$changed_files" ]; then
+                entry="${entry}
+**Files changed since:** ${changed_files}"
+              fi
+              ledger="${ledger}${entry}
+
+"
+            fi
           fi
           _cur_title="" _cur_state="" _cur_reason=""
           ;;
@@ -209,22 +221,6 @@ build_prior_decisions_ledger() {
         }
       }
     ')
-  done
-
-  # Build formatted ledger from deduplicated entries
-  local ledger=""
-  for title in "${!d_states[@]}"; do
-    local entry
-    entry="### ${title} - ${d_states[$title]}
-**Reasoning:** ${d_reasons[$title]}
-**Classified:** ${d_timestamps[$title]}"
-    if [ -n "${d_files[$title]}" ]; then
-      entry="${entry}
-**Files changed since:** ${d_files[$title]}"
-    fi
-    ledger="${ledger}${entry}
-
-"
   done
 
   echo "$ledger"
