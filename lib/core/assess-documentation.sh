@@ -91,13 +91,25 @@ assess_internal_changelog() {
   # Build file list (compact)
   local file_list=$(echo "$changed_files" | head -5 | tr '\n' ', ' | sed 's/,$//')
 
-  # Append entry
+  # Append entry (merge under existing date header if present)
   local today=$(date +%Y-%m-%d)
-  {
-    echo "## $today"
-    echo "- ${change_type}: ${pr_title} (#${pr_number}) [${file_list}]"
-    echo ""
-  } >> "$doc_file"
+  local entry="- ${change_type}: ${pr_title} (#${pr_number}) [${file_list}]"
+
+  if grep -q "^## $today" "$doc_file" 2>/dev/null; then
+    # Insert entry after existing date header (BSD sed compatible)
+    local tmp_file=$(mktemp)
+    awk -v date="## $today" -v entry="$entry" '
+      $0 == date { print; print entry; inserted=1; next }
+      { print }
+    ' "$doc_file" > "$tmp_file"
+    mv "$tmp_file" "$doc_file"
+  else
+    {
+      echo "## $today"
+      echo "$entry"
+      echo ""
+    } >> "$doc_file"
+  fi
 
   INTERNAL_UPDATED+=("changelog")
 }
@@ -427,6 +439,198 @@ assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" "$PR_TITLE"
 assess_internal_architecture "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
 assess_internal_api "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
 assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY" "$PR_TITLE"
+
+# --- Reconciliation pass: fold PR deltas into baseline ---
+# Triggered when a doc accumulates 3+ PR sections. Merges append-only deltas
+# back into the baseline so stale top-level statements get corrected.
+
+reconcile_internal_doc() {
+  local doc_file="$1"
+  local doc_name="$2"
+
+  [ -f "$doc_file" ] || return 0
+
+  # Count PR delta sections (## PR #N headers)
+  local pr_section_count
+  pr_section_count=$(grep -c "^## PR #" "$doc_file" 2>/dev/null || true)
+
+  # Only reconcile when 3+ PR sections have accumulated
+  if [ "$pr_section_count" -lt 3 ]; then
+    return 0
+  fi
+
+  local current_content
+  current_content=$(cat "$doc_file")
+  local current_lines
+  current_lines=$(echo "$current_content" | wc -l | tr -d ' ')
+
+  local prompt_file
+  prompt_file=$(mktemp)
+  cat > "$prompt_file" <<RECONCILE_EOF
+Output ONLY the reconciled document. No explanations before or after.
+
+This ${doc_name} document has a baseline section followed by incremental PR delta sections.
+The PR deltas contain newer, more accurate information that may contradict the baseline.
+
+Your task: merge ALL PR delta information INTO the baseline sections, then REMOVE the PR delta
+sections. The result should be a single cohesive document with no "## PR #N" sections remaining.
+
+Rules:
+- When a PR delta contradicts the baseline, the PR delta is correct (it's newer)
+- Preserve all information from PR deltas — fold it into the appropriate baseline section
+- If the baseline says something like "No X found" but a PR delta documents X, UPDATE the baseline
+- Keep the same top-level structure and format as the baseline
+- Do NOT add prose, explanations, or summaries — maintain machine-formatted reference style
+- Do NOT lose any information from either baseline or deltas
+
+Current document:
+${current_content}
+RECONCILE_EOF
+
+  local reconciled_output
+  reconciled_output=$(claude --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  rm -f "$prompt_file"
+
+  if [ -z "$reconciled_output" ]; then
+    return 0
+  fi
+
+  # Truncation safety: reconciled doc should be at least 60% of original
+  local new_lines
+  new_lines=$(echo "$reconciled_output" | wc -l | tr -d ' ')
+  local min_lines=$((current_lines * 60 / 100))
+
+  if [ "$new_lines" -lt "$min_lines" ]; then
+    print_warning "  Reconciliation of $doc_name skipped (output too short: ${new_lines} vs ${current_lines} lines)"
+    return 0
+  fi
+
+  # Verify PR sections were actually merged (no ## PR # headers should remain)
+  local remaining_pr_sections
+  remaining_pr_sections=$(echo "$reconciled_output" | grep -c "^## PR #" 2>/dev/null || true)
+  if [ "$remaining_pr_sections" -gt 0 ]; then
+    print_warning "  Reconciliation of $doc_name skipped (PR sections not merged)"
+    return 0
+  fi
+
+  echo "$reconciled_output" > "$doc_file"
+  INTERNAL_UPDATED+=("${doc_name}(reconciled)")
+}
+
+# Run reconciliation on docs that accumulate PR deltas
+reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/security.md" "security"
+reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/architecture.md" "architecture"
+reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/api.md" "api"
+
+# --- Cross-document consistency validation ---
+# Same logic as bootstrap-docs.sh but runs during assessment when a reconciliation
+# just happened (docs were rewritten, good time to catch cross-doc drift).
+
+_validate_cross_doc_consistency() {
+  local docs_dir="$1"
+  local arch_file="${docs_dir}/architecture.md"
+  local api_file="${docs_dir}/api.md"
+  local security_file="${docs_dir}/security.md"
+
+  # Need at least 2 docs
+  local doc_count=0
+  [ -f "$arch_file" ] && doc_count=$((doc_count + 1))
+  [ -f "$api_file" ] && doc_count=$((doc_count + 1))
+  [ -f "$security_file" ] && doc_count=$((doc_count + 1))
+  [ "$doc_count" -lt 2 ] && return 0
+
+  local arch_content="" api_content="" security_content=""
+  [ -f "$arch_file" ] && arch_content=$(cat "$arch_file")
+  [ -f "$api_file" ] && api_content=$(cat "$api_file")
+  [ -f "$security_file" ] && security_content=$(cat "$security_file")
+
+  local prompt_file=$(mktemp)
+  cat > "$prompt_file" <<VALIDATE_EOF
+You are validating consistency across multiple generated documentation files.
+Find CONTRADICTIONS between documents — places where two docs state different facts
+about the same thing (e.g., different default values, conflicting file lists, one doc
+says a feature exists while another says it doesn't).
+
+Output format — ONLY output contradictions found. If none, output exactly: NO_CONTRADICTIONS
+
+For each contradiction:
+CONTRADICTION: <brief description>
+FILE1: <filename> LINE: "<the contradicting text>"
+FILE2: <filename> LINE: "<the contradicting text>"
+CORRECTION: <which file is likely correct and what the fix is>
+
+Rules:
+- Only flag actual contradictions (same fact, different values)
+- Do NOT flag omissions (one doc has info the other lacks)
+- Do NOT flag stylistic differences
+- Focus on: default values, file paths, feature existence claims, configuration
+
+--- architecture.md ---
+${arch_content}
+
+--- api.md ---
+${api_content}
+
+--- security.md ---
+${security_content}
+VALIDATE_EOF
+
+  local validation_output
+  validation_output=$(claude --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  rm -f "$prompt_file"
+
+  if [ -z "$validation_output" ] || echo "$validation_output" | grep -q "^NO_CONTRADICTIONS"; then
+    return 0
+  fi
+
+  # Apply corrections per file
+  for target_file in "$arch_file" "$api_file" "$security_file"; do
+    [ -f "$target_file" ] || continue
+    local target_name=$(basename "$target_file")
+    echo "$validation_output" | grep -q "$target_name" || continue
+
+    local current_content=$(cat "$target_file")
+    local fix_prompt_file=$(mktemp)
+    cat > "$fix_prompt_file" <<FIX_EOF
+Apply ONLY the corrections listed below to this document. Change nothing else.
+Output the COMPLETE corrected file.
+
+Corrections to apply:
+${validation_output}
+
+Current ${target_name}:
+${current_content}
+FIX_EOF
+
+    local fixed_output
+    fixed_output=$(claude --print --dangerously-skip-permissions < "$fix_prompt_file" 2>/dev/null) || true
+    rm -f "$fix_prompt_file"
+
+    if [ -n "$fixed_output" ]; then
+      local orig_lines=$(echo "$current_content" | wc -l | tr -d ' ')
+      local fixed_lines=$(echo "$fixed_output" | wc -l | tr -d ' ')
+      local min_lines=$((orig_lines * 80 / 100))
+      if [ "$fixed_lines" -ge "$min_lines" ]; then
+        echo "$fixed_output" > "$target_file"
+        INTERNAL_UPDATED+=("${target_name}(consistency-fix)")
+      fi
+    fi
+  done
+}
+
+# Only run cross-doc validation when a reconciliation actually happened
+# (indicated by "(reconciled)" in INTERNAL_UPDATED)
+RECONCILED=false
+for item in "${INTERNAL_UPDATED[@]}"; do
+  if echo "$item" | grep -q "reconciled"; then
+    RECONCILED=true
+    break
+  fi
+done
+
+if [ "$RECONCILED" = true ]; then
+  _validate_cross_doc_consistency "${RITE_INTERNAL_DOCS_DIR}"
+fi
 
 # Commit internal doc changes if any
 if [ -n "$(git diff --name-only .rite/docs/ 2>/dev/null)" ] || [ -n "$(git ls-files --others --exclude-standard .rite/docs/ 2>/dev/null)" ]; then
