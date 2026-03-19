@@ -257,11 +257,14 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
     print_info "PR #$PR_NUMBER may already be a draft"
   fi
 
-  # Reset the remote branch to main's HEAD (clean code slate).
+  # Reset the remote branch to origin/main's HEAD (clean code slate).
   # The draft PR stays linked to this branch; next run pushes new work to it.
+  # IMPORTANT: Use origin/main (not local main) — local main may be behind after
+  # batch merges that updated remote but never fast-forwarded the local ref.
   if [ -n "$BRANCH_NAME" ]; then
-    if git push origin "main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
-      print_success "Reset remote branch to main (clean slate)"
+    git fetch origin main 2>/dev/null || true
+    if git push origin "origin/main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
+      print_success "Reset remote branch to origin/main (clean slate)"
       # Update local tracking ref so next run sees the reset (avoids stale origin/branch
       # causing non-fast-forward push → branch deletion → PR closure → new PR)
       git fetch origin "$BRANCH_NAME" 2>/dev/null || true
@@ -376,6 +379,9 @@ if [ "$LOCAL_BRANCH_EXISTS" = true ] && [ -n "$BRANCH_NAME" ]; then
   CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
   if [ "$CURRENT_BRANCH" = "$BRANCH_NAME" ]; then
     git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
+    # Fast-forward local main to match origin — after batch merges, local main
+    # is behind origin/main, and the next rite run branches from local HEAD
+    git merge --ff-only origin/main 2>/dev/null || true
   fi
 
   if git branch -D "$BRANCH_NAME" >/dev/null 2>&1; then

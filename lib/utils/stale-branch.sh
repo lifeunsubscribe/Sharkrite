@@ -113,7 +113,7 @@ format_stale_close_comment() {
   commit_messages=$(git -C "$worktree_path" log --oneline origin/main..HEAD 2>/dev/null || echo "(none)")
 
   local changed_files
-  changed_files=$(git -C "$worktree_path" diff --name-only origin/main..HEAD 2>/dev/null || echo "(none)")
+  changed_files=$(git -C "$worktree_path" diff --name-only origin/main...HEAD 2>/dev/null || echo "(none)")
 
   cat <<EOF
 :arrows_counterclockwise: Closing: Branch is ${behind} commits behind main.

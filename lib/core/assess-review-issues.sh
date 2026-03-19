@@ -537,6 +537,9 @@ ACTIONABLE_LATER (defer to tech-debt) IF:
   - Needs design discussion or team consensus before implementing
 
   REMEMBER: A real bug that is out of scope is ACTIONABLE_LATER, not DISMISSED.
+  BUT: Speculative optimizations for scale/features that don't exist yet are
+  DISMISSED, not ACTIONABLE_LATER. \"Might need an index someday\" is not a
+  real, verifiable problem — it's a prediction about future load.
 
 DISMISSED (not worth tracking) IF:
   - Pure style/formatting preference with no functional benefit
@@ -545,6 +548,10 @@ DISMISSED (not worth tracking) IF:
   - Speculative concern without concrete evidence or reproduction steps
   - Already documented as intentional or accepted pattern
   - Duplicates an item already classified as ACTIONABLE_NOW
+  - ScopeCreep items that are speculative AND require functionality, scale,
+    or infrastructure that does not currently exist (e.g., indexes for queries
+    that aren't written, pagination for datasets that aren't large, retention
+    policies for logs that aren't accumulating)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -584,20 +591,17 @@ if [ "$AUTO_MODE" = true ]; then
     CLAUDE_ARGS="$CLAUDE_ARGS --model $EFFECTIVE_MODEL"
   fi
 
-  # Run Claude assessment with timeout (use gtimeout on macOS if available)
-  # Use tee to display output while also capturing it
-  if command -v gtimeout >/dev/null 2>&1; then
-    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | gtimeout "$ASSESSMENT_TIMEOUT" claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR" | tee /dev/stderr)
-    ASSESSMENT_EXIT_CODE=${PIPESTATUS[1]}
-  elif command -v timeout >/dev/null 2>&1; then
-    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | timeout "$ASSESSMENT_TIMEOUT" claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR" | tee /dev/stderr)
-    ASSESSMENT_EXIT_CODE=${PIPESTATUS[1]}
+  # Run Claude assessment with timeout via shared utility
+  # Use tee to display output while also capturing it.
+  # Capture exit code via a temp file — PIPESTATUS doesn't survive $() subshells.
+  _exit_file=$(mktemp)
+  if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
+    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | { $RITE_TIMEOUT_CMD "$ASSESSMENT_TIMEOUT" claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
   else
-    # No timeout available - run without timeout (macOS default)
-    print_info "Running without timeout (install coreutils for timeout support: brew install coreutils)"
-    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR" | tee /dev/stderr)
-    ASSESSMENT_EXIT_CODE=${PIPESTATUS[0]}
+    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | { claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
   fi
+  ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
+  rm -f "$_exit_file"
 
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"

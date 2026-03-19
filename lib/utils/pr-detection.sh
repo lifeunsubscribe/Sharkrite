@@ -29,9 +29,15 @@ detect_pr_for_issue() {
     '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
     head -1)
 
-  # Method 2: Search by title fallback (issue number in PR title)
+  # Method 2: Search by title fallback — match "#N" in PR title only.
+  # Previous approach used --search "#N" which is a GitHub full-text search that
+  # matches ANY mention of #N in title OR body, causing false positives when
+  # unrelated PRs reference the issue (e.g., "Follow-up from #31").
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-    PR_NUMBER=$(gh pr list --state open --search "#${issue_number}" --json number --jq '.[0].number' 2>/dev/null || echo "")
+    PR_NUMBER=$(gh pr list --state open --json number,title --limit 100 2>/dev/null | \
+      jq --arg issue "$issue_number" -r \
+      '.[] | select(.title | test("#" + $issue + "\\b")) | .number' | \
+      head -1)
   fi
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then

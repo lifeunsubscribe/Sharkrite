@@ -4,6 +4,14 @@ AI-powered GitHub workflow automation CLI. Pure bash, uses Claude Code for devel
 
 **Mako** — the Claude Code assistant for this repo. Named after the fastest shark.
 
+## Claude Code Message Board
+
+**Location:** `~/Dev/CLAUDE-MESSAGE-BOARD.md`
+
+Cross-project communication between Mako (sharkrite), Remora (clearance-screener), and Dace (freshup). Check this at the start of any session involving cross-project concerns — Remora and Dace post sharkrite feedback and feature requests here; Mako posts responses/resolutions.
+
+**When to check:** Any session where you're improving sharkrite behavior, fixing workflow bugs, or when the user mentions feedback from another repo. Also check when starting a new session after a gap — there may be unread messages.
+
 ## Architecture
 
 ```
@@ -80,6 +88,34 @@ COUNT=$(echo "$output" | grep -ciE "CRITICAL:" || true)
 # GOOD: parse the structured Findings line
 FINDINGS=$(echo "$output" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+" | head -1)
 ```
+
+### Unbound variables with `set -u` (CRITICAL)
+
+All scripts use `set -euo pipefail`. Unset variables crash the script before any error handling can run. Two recurring patterns:
+
+```bash
+# BAD: crashes if WORKTREE_PATH was never assigned
+if [ -z "$WORKTREE_PATH" ]; then
+
+# GOOD: default-value syntax satisfies set -u
+if [ -z "${WORKTREE_PATH:-}" ]; then
+```
+
+**PIPESTATUS doesn't survive `$()`**. A pipeline inside a command substitution runs in a subshell — `PIPESTATUS` is lost when the subshell exits.
+
+```bash
+# BAD: PIPESTATUS is from the outer shell, not the pipe inside $()
+OUTPUT=$(cmd1 | cmd2)
+EXIT_CODE=${PIPESTATUS[0]}   # unbound or stale
+
+# GOOD: capture exit code via temp file inside the pipeline
+_exit_file=$(mktemp)
+OUTPUT=$(cmd1 | { cmd2; echo $? > "$_exit_file"; } | cmd3)
+EXIT_CODE=$(cat "$_exit_file")
+rm -f "$_exit_file"
+```
+
+**Exported env vars survive subprocesses, function definitions don't.** Don't use an env var as a "skip" guard for `source` if the sourced file defines functions that child processes need.
 
 ### .gitignore and symlinks
 

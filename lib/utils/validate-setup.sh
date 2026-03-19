@@ -99,21 +99,21 @@ else
 fi
 echo ""
 
-# Check 4b: GNU coreutils (for timeout on macOS)
-print_info "Checking GNU coreutils..."
-if command -v gtimeout &>/dev/null; then
-  print_success "GNU coreutils installed (gtimeout available)"
-elif command -v timeout &>/dev/null; then
-  # Check if it's GNU timeout (Linux) or BSD timeout
-  if timeout --version 2>/dev/null | grep -q "GNU"; then
-    print_success "GNU timeout available"
-  else
-    print_warning "BSD timeout found (may not support all features)"
-    print_info "Install GNU coreutils: brew install coreutils"
-  fi
+# Check 4b: Timeout command (auto-installs if missing via shared utility)
+print_info "Checking timeout command..."
+if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
+  print_success "Timeout available ($RITE_TIMEOUT_CMD)"
 else
-  print_warning "No timeout command found (assessments will run without timeout)"
-  print_info "Install: brew install coreutils"
+  # Trigger the shared detection + install prompt
+  if [ -f "$RITE_LIB_DIR/utils/timeout.sh" ]; then
+    source "$RITE_LIB_DIR/utils/timeout.sh"
+    ensure_timeout_cmd
+  fi
+  if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
+    print_success "Timeout now available ($RITE_TIMEOUT_CMD)"
+  else
+    print_warning "No timeout command (workflows will run without timeout protection)"
+  fi
 fi
 echo ""
 

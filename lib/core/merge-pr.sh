@@ -396,8 +396,37 @@ fi
 if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
   print_warning "PR mergeable state: $PR_MERGEABLE"
   if [ "$PR_MERGEABLE" = "CONFLICTING" ]; then
-    print_error "PR has merge conflicts that must be resolved"
-    VALIDATION_FAILED=true
+    # In batch mode, try merging main into the feature branch to resolve
+    if [ "${BATCH_MODE:-false}" = true ]; then
+      print_info "Batch mode: attempting to merge main into feature branch..."
+      git fetch origin main 2>/dev/null || true
+
+      if git merge origin/main --no-edit 2>/dev/null; then
+        if git push origin "$PR_HEAD" 2>/dev/null; then
+          print_success "Merged main into branch and pushed — re-checking mergeable state"
+          # Give GitHub a moment to update mergeable state
+          sleep 3
+          PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+          if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
+            print_success "PR is now mergeable"
+          else
+            print_error "PR still not mergeable after merging main (state: $PR_MERGEABLE)"
+            VALIDATION_FAILED=true
+          fi
+        else
+          print_error "Push failed after merging main"
+          git reset --hard HEAD~1 2>/dev/null || true
+          VALIDATION_FAILED=true
+        fi
+      else
+        git merge --abort 2>/dev/null || true
+        print_error "PR has merge conflicts that could not be auto-resolved"
+        VALIDATION_FAILED=true
+      fi
+    else
+      print_error "PR has merge conflicts that must be resolved"
+      VALIDATION_FAILED=true
+    fi
   else
     print_info "Mergeable state is uncertain, will attempt merge anyway"
   fi
@@ -550,20 +579,12 @@ Focus only on HIGH and MEDIUM priority issues. Be concise."
     # Get assessment (using Claude via a simple temp file approach)
     ASSESSMENT_FILE=$(mktemp)
 
-    # Detect Claude CLI (same detection as claude-workflow.sh)
-    CLAUDE_CMD=""
-    if command -v claude-code &> /dev/null; then
-      CLAUDE_CMD="claude-code"
-    elif command -v npx &> /dev/null; then
-      CLAUDE_CMD="npx @anthropic-ai/claude-code"
-    fi
-
     # Try to use Claude if available, otherwise provide manual assessment prompt
-    if [ -n "$CLAUDE_CMD" ]; then
+    if command -v claude &> /dev/null; then
       # Use temp file instead of pipe to avoid command injection
       PROMPT_FILE=$(mktemp)
       echo "$ANALYSIS_PROMPT" > "$PROMPT_FILE"
-      $CLAUDE_CMD --no-cache < "$PROMPT_FILE" > "$ASSESSMENT_FILE" 2>/dev/null || echo "Manual assessment needed" > "$ASSESSMENT_FILE"
+      run_with_timeout 120 claude --print --dangerously-skip-permissions < "$PROMPT_FILE" > "$ASSESSMENT_FILE" 2>/dev/null || echo "Manual assessment needed" > "$ASSESSMENT_FILE"
       rm -f "$PROMPT_FILE"
     else
       # Fallback: Show issues and let user decide
@@ -955,6 +976,10 @@ EOF
     if [ "$CURRENT_DIR" != "$MAIN_WORKTREE" ]; then
       print_status "Cleaning up worktree..."
 
+      # Move to main worktree FIRST — deep clean may remove stale worktrees
+      # (including the current one), which invalidates our cwd
+      cd "$MAIN_WORKTREE"
+
       # Clean up only this branch's notes from shared scratchpad
       if [ -f "$SCRATCHPAD_FILE" ]; then
         if [ "${RITE_VERBOSE:-false}" = "true" ]; then
@@ -974,8 +999,27 @@ EOF
             flock 200  # Wait for lock
           fi
         else
+          # Clean up leftover flock-style lock file (regular file, not directory).
+          # flock creates a regular file; mkdir lock uses a directory. If flock was
+          # previously available but isn't now, the stale file blocks mkdir forever.
+          if [ -f "$LOCKFILE" ]; then
+            rm -f "$LOCKFILE"
+          fi
           lock_attempts=0
           while ! mkdir "$LOCKFILE" 2>/dev/null; do
+            # Check if the holding process is still alive
+            if [ -f "$LOCKFILE/pid" ]; then
+              lock_pid=$(cat "$LOCKFILE/pid" 2>/dev/null || echo "")
+              if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+                # Holding process is dead — reclaim stale lock
+                rm -rf "$LOCKFILE" 2>/dev/null
+                continue
+              fi
+            else
+              # Lock dir exists but no PID file — crashed between mkdir and PID write
+              rm -rf "$LOCKFILE" 2>/dev/null
+              continue
+            fi
             if [ $lock_attempts -eq 0 ]; then
               print_warning "Scratchpad locked by another process, waiting..."
             fi
@@ -986,6 +1030,8 @@ EOF
             fi
             sleep 1
           done
+          # Write our PID so other processes can check liveness
+          echo $$ > "$LOCKFILE/pid" 2>/dev/null || true
         fi
 
         # Create temp file for cleaned scratchpad
@@ -1174,14 +1220,16 @@ EOF
             { print }
           ' "$SCRATCHPAD_FILE" >> "$DEEP_CLEAN_TEMP"
 
-          # Show summary of what was removed
           ORIGINAL_LINES=$(wc -l < "$SCRATCHPAD_FILE")
           NEW_LINES=$(wc -l < "$DEEP_CLEAN_TEMP")
-          REMOVED_LINES=$(( ORIGINAL_LINES - NEW_LINES ))
 
           mv "$DEEP_CLEAN_TEMP" "$SCRATCHPAD_FILE"
-          print_success "Deep clean complete (removed $REMOVED_LINES lines, kept last 20 archived PRs)"
-          echo "   New size: $(( $(wc -c < "$SCRATCHPAD_FILE") / 1024 ))KB"
+          FINAL_SIZE_KB=$(( $(wc -c < "$SCRATCHPAD_FILE") / 1024 ))
+          if [ "$NEW_LINES" -lt "$ORIGINAL_LINES" ]; then
+            print_success "Deep clean complete (pruned $(( ORIGINAL_LINES - NEW_LINES )) lines, kept last 20 archived PRs, ${FINAL_SIZE_KB}KB)"
+          else
+            print_success "Deep clean complete (nothing to prune, kept last 20 archived PRs, ${FINAL_SIZE_KB}KB)"
+          fi
 
           # Check HIGH PRIORITY completion status
           print_status "Checking HIGH PRIORITY items completion status..."
@@ -1217,14 +1265,22 @@ EOF
             while IFS= read -r wt_path; do
               [ -z "$wt_path" ] && continue
 
+              # Skip the worktree we're about to remove ourselves (prevents double-remove)
+              [ "$wt_path" = "$CURRENT_DIR" ] && continue
+
               WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "unknown")
               UNCOMMITTED_COUNT=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
               # Check if branch has been merged/deleted
               BRANCH_EXISTS=$(git show-ref --verify --quiet refs/heads/"$WT_BRANCH" && echo "yes" || echo "no")
 
-              # Check last modification
-              LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" \) 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
+              # Check last modification (any source file, not just .ts/.js)
+              LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/vendor/*" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
+
+              # Fallback: check ANY file modification if no source files found
+              if [ -z "$LAST_MODIFIED" ]; then
+                LAST_MODIFIED=$(find "$wt_path" -type f -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
+              fi
 
               if [ -n "$LAST_MODIFIED" ]; then
                 DAYS_OLD=$(( ( $(date +%s) - LAST_MODIFIED ) / 86400 ))
@@ -1234,6 +1290,21 @@ EOF
 
               IS_STALE=false
               STALE_REASON=""
+
+              # In batch mode, protect worktrees belonging to sibling issues
+              if [ "${BATCH_MODE:-false}" = true ] && [ -n "${BATCH_ISSUE_LIST:-}" ]; then
+                WT_PROTECTED=false
+                for batch_issue in $BATCH_ISSUE_LIST; do
+                  # Check if this worktree's branch references a batch issue number
+                  if echo "$WT_BRANCH" | grep -qE "(^|[^0-9])${batch_issue}([^0-9]|$)"; then
+                    WT_PROTECTED=true
+                    break
+                  fi
+                done
+                if [ "$WT_PROTECTED" = true ]; then
+                  continue
+                fi
+              fi
 
               # Determine if stale (same logic as cleanup-worktrees.sh)
               if [ "$BRANCH_EXISTS" = "no" ]; then
@@ -1274,7 +1345,7 @@ EOF
             print_status "Sending deep clean summary to Slack..."
 
             # Calculate totals
-            SCRATCHPAD_LINES_REMOVED=$(( ORIGINAL_LINES - NEW_LINES ))
+            SCRATCHPAD_LINES_REMOVED=$(( ORIGINAL_LINES > NEW_LINES ? ORIGINAL_LINES - NEW_LINES : 0 ))
 
             # Build removed worktrees list
             REMOVED_WORKTREES_LIST=""
@@ -1366,6 +1437,7 @@ EOF
           flock -u 200 2>/dev/null || true
           exec 200>&-
         else
+          rm -f "$LOCKFILE/pid" 2>/dev/null || true
           rmdir "$LOCKFILE" 2>/dev/null || true
         fi
 
@@ -1379,8 +1451,7 @@ EOF
       fi
 
       # Remove worktree — work is merged, nothing to preserve
-      cd "$MAIN_WORKTREE"
-
+      # (already cd'd to MAIN_WORKTREE at top of this block)
       if git worktree remove "$CURRENT_DIR" --force 2>/dev/null; then
         echo -e "${GREEN}  ✓ Removed worktree: $(basename "$CURRENT_DIR")${NC}"
       else

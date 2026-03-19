@@ -1114,27 +1114,13 @@ This approach allows all fixes to be completed together in a focused PR."
     fi
   fi
 
-  # Auto-queue batch processing if not already in batch mode
-  if [ -n "${FOLLOWUP_NUMBER:-}" ] && [ -z "${BATCH_MODE:-}" ]; then
-    print_header "🚀 Handing Off to Batch Workflow"
-
-    # Find original issue that created this PR
-    ORIGINAL_ISSUE=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
-
-    print_success "Follow-up issue #$FOLLOWUP_NUMBER ready for batch processing"
-    echo ""
-    print_info "Workflow plan:"
-    print_status "  1. Fix issues in #$FOLLOWUP_NUMBER → update PR #$PR_NUMBER"
-    print_status "  2. Wait for new review (up to 15 minutes)"
-    print_status "  3. Merge #$ORIGINAL_ISSUE if review passes"
-    echo ""
-    print_status "Transitioning to batch workflow..."
-    echo ""
-
-    # EXEC into batch processor (replaces current process)
-    exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "$FOLLOWUP_NUMBER" "$ORIGINAL_ISSUE" --auto --smart-wait
-  elif [ -n "${BATCH_MODE:-}" ]; then
-    print_info "In batch mode - skipping auto-queue (prevents recursion)"
+  # Follow-up issues are independent work — don't process them inline.
+  # The exec into batch-process-issues.sh caused state corruption: it would
+  # run the follow-up as a full lifecycle on the same PR, then try to re-process
+  # the original issue in a confused state. Follow-ups should be picked up
+  # by a separate `rite <issue>` invocation.
+  if [ -n "${FOLLOWUP_NUMBER:-}" ]; then
+    print_info "Follow-up issue #$FOLLOWUP_NUMBER created — run \`rite $FOLLOWUP_NUMBER\` separately to address it"
   fi
 fi
 

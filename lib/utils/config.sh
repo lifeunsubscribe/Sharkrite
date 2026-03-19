@@ -116,6 +116,12 @@ RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 # Skip AWS checks (for non-AWS projects)
 SKIP_AWS_CHECK="${SKIP_AWS_CHECK:-true}"
 
+# Test gate: run tests before commit in auto mode (set to "true" to skip for slow suites)
+RITE_SKIP_TESTS="${RITE_SKIP_TESTS:-false}"
+
+# Custom test command (auto-detected from project structure if unset)
+RITE_TEST_CMD="${RITE_TEST_CMD:-}"
+
 # =============================================================================
 # STEP 3: Load Global Config (~/.config/rite/config)
 # =============================================================================
@@ -180,12 +186,26 @@ export RITE_PLAN_DOCS
 export RITE_PLAN_MAX_ESTIMATE
 export RITE_DRY_RUN
 export SKIP_AWS_CHECK
+export RITE_SKIP_TESTS
+export RITE_TEST_CMD
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS
 export BLOCKER_DOC_PATHS
 export BLOCKER_PROTECTED_SCRIPTS
 export BLOCKER_EXPENSIVE_SERVICES
+
+# =============================================================================
+# STEP 6b: Timeout Command Detection
+# =============================================================================
+# Source the shared timeout utility and resolve RITE_TIMEOUT_CMD once.
+# This sets RITE_TIMEOUT_CMD to "gtimeout", "timeout", or "" (unavailable).
+# If missing, prompts to install coreutils (auto-installs in unsupervised mode).
+
+if [ -f "$RITE_LIB_DIR/utils/timeout.sh" ]; then
+  source "$RITE_LIB_DIR/utils/timeout.sh"
+  ensure_timeout_cmd
+fi
 
 # =============================================================================
 # STEP 7: Create Project Data Directory If Needed

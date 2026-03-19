@@ -442,7 +442,7 @@ Answer with ONLY ONE WORD:
 Answer:
 EOF
 
-            RELEVANCE=$(claude < "$PROMPT_FILE" 2>/dev/null | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
+            RELEVANCE=$(claude --print < "$PROMPT_FILE" 2>/dev/null | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
             rm -f "$PROMPT_FILE"
 
             # If Claude CLI failed or returned nothing, fail hard
