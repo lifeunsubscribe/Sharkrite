@@ -495,9 +495,10 @@ EOF
           fi
         fi
 
-        # Check if PR has actual file changes (not just placeholder commit)
+        # Check if PR has actual file changes (not just placeholder commit).
+        # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
         cd "$WORKTREE_PATH" || exit 1
-        FILE_CHANGES=$(git diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+        FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
 
         if [ "$FILE_CHANGES" -gt 0 ]; then
           print_info "PR #$pr_number has $FILE_CHANGES file(s) changed — skipping development phase"
@@ -516,9 +517,23 @@ EOF
           fi
 
           WORKFLOW_EXIT=$?
-          if [ $WORKFLOW_EXIT -ne 0 ]; then
+          if [ $WORKFLOW_EXIT -eq 3 ]; then
+            BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
+            if ! handle_blocker "pre-merge" "$issue_number"; then
+              return 1
+            fi
+          elif [ $WORKFLOW_EXIT -ne 0 ]; then
             print_error "Development workflow failed"
             return $WORKFLOW_EXIT
+          fi
+
+          # Re-check if development actually produced work
+          local post_dev_changes
+          post_dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+          if [ "${post_dev_changes:-0}" -eq 0 ]; then
+            print_warning "No work was produced in the development phase"
+            print_info "Aborting workflow — nothing to push or review"
+            return 1
           fi
 
           print_success "Development phase complete"
@@ -539,13 +554,27 @@ EOF
         workflow_exit=$?
         set -e
 
-        if [ $workflow_exit -ne 0 ]; then
+        if [ $workflow_exit -eq 3 ]; then
+          BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
+          if ! handle_blocker "pre-merge" "$issue_number"; then
+            return 1
+          fi
+        elif [ $workflow_exit -ne 0 ]; then
           print_error "Development workflow failed (exit code: $workflow_exit)"
           return $workflow_exit
         fi
 
-        print_success "Development phase complete"
-        return 0
+        # Detect worktree created by claude-workflow.sh (same logic as fresh-start path)
+        if detect_pr_for_issue "$issue_number"; then
+          detect_worktree_for_pr "$PR_NUMBER" || true
+        fi
+        if [ -z "${WORKTREE_PATH:-}" ]; then
+          local _main_wt=$(git rev-parse --show-toplevel)
+          WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
+        fi
+        if [ -n "${WORKTREE_PATH:-}" ]; then
+          set_current_worktree "$WORKTREE_PATH"
+        fi
       fi
     else
       print_info "Starting fresh on issue #${issue_number}"
@@ -565,7 +594,12 @@ EOF
       workflow_exit=$?
       set -e
 
-      if [ $workflow_exit -ne 0 ]; then
+      if [ $workflow_exit -eq 3 ]; then
+        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
+        if ! handle_blocker "pre-merge" "$issue_number"; then
+          return 1
+        fi
+      elif [ $workflow_exit -ne 0 ]; then
         print_error "Development workflow failed (exit code: $workflow_exit)"
         return $workflow_exit
       fi
@@ -577,23 +611,33 @@ EOF
       fi
 
       # Fallback: match issue number in worktree path
-      if [ -z "$WORKTREE_PATH" ]; then
+      if [ -z "${WORKTREE_PATH:-}" ]; then
         MAIN_WORKTREE=$(git rev-parse --show-toplevel)
         WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
       fi
 
-      if [ -z "$WORKTREE_PATH" ]; then
-        print_error "Worktree not found after claude-workflow.sh"
-        print_info "Available worktrees:"
-        git worktree list
+      if [ -z "${WORKTREE_PATH:-}" ]; then
+        # claude-workflow.sh may have closed the draft PR and cleaned up the branch
+        # when Claude made no commits (e.g. API error, or concluded "already done").
+        # In that case exit 0 is expected — treat as "no work produced".
+        if [ $workflow_exit -eq 0 ]; then
+          print_warning "Development phase completed but no worktree found"
+          print_info "claude-workflow.sh likely cleaned up an empty branch (no commits made)"
+          print_info "Aborting workflow — nothing to push or review"
+        else
+          print_error "Worktree not found after claude-workflow.sh"
+          print_info "Available worktrees:"
+          git worktree list
+        fi
         return 1
       fi
 
       set_current_worktree "$WORKTREE_PATH"
 
-      # Verify development actually produced work (file changes vs main)
+      # Verify development actually produced work (file changes vs main).
+      # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
       local file_changes
-      file_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+      file_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
 
       if [ "$file_changes" -eq 0 ]; then
         print_warning "No work was produced in the development phase"
@@ -1048,6 +1092,16 @@ phase_merge_pr() {
     return 1
   fi
 
+  # merge-pr.sh runs inside the worktree and can't delete the branch it has checked
+  # out (git refuses to delete a branch checked out in the current worktree). After
+  # merge-pr.sh returns the worktree is gone, but the CWD is now a deleted directory.
+  # Use -C with the main repo root so git commands resolve correctly.
+  local _merged_branch
+  _merged_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+  if [ -n "$_merged_branch" ] && git -C "$RITE_PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$_merged_branch" 2>/dev/null; then
+    git -C "$RITE_PROJECT_ROOT" branch -D "$_merged_branch" 2>/dev/null || true
+  fi
+
   print_success "PR #${pr_number} merged successfully"
   increment_completed
 
@@ -1140,13 +1194,28 @@ run_workflow() {
     local pr_state=""
     local pr_merged=""
     local pr_summary=""
+    local pr_branch=""
 
     if [ -n "$pr_number" ]; then
       local pr_data=$(gh pr view "$pr_number" --json state,mergedAt,body,headRefName 2>/dev/null)
       pr_state=$(echo "$pr_data" | jq -r '.state')
       pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
       pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5)
-      local pr_branch=$(echo "$pr_data" | jq -r '.headRefName')
+      pr_branch=$(echo "$pr_data" | jq -r '.headRefName')
+    fi
+
+    # Fallback: issue was manually closed (no closedByPullRequestsReferences).
+    # Search closed PRs for "Closes #N" to find the branch for artifact cleanup.
+    if [ -z "$pr_branch" ]; then
+      local closed_pr_number
+      closed_pr_number=$(gh pr list --state closed --json number,body --limit 50 2>/dev/null | \
+        jq --arg issue "$issue_number" -r \
+        '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+        head -1)
+      if [ -n "$closed_pr_number" ]; then
+        pr_branch=$(gh pr view "$closed_pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+        [ -z "$pr_number" ] && pr_number="$closed_pr_number"
+      fi
     fi
 
     # Calculate time since closed (portable date parsing)
@@ -1243,28 +1312,13 @@ run_workflow() {
       local cleaned_anything=false
 
       # 1. Remove worktree if it exists for this branch
+      # Worktrees are isolated — removing one doesn't affect others, so no need
+      # to check sibling worktree status. Safe to remove even during batch runs.
       local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
       if [ -n "$wt_path" ]; then
-        # Safety: check if other worktrees are actively in use (batch run)
-        local active_worktrees=0
-        local other_worktrees=$(git worktree list --porcelain | grep -E "^worktree ${RITE_WORKTREE_DIR:-__none__}" | sed 's/^worktree //' | grep -v "^$wt_path$" || echo "")
-        if [ -n "$other_worktrees" ]; then
-          while IFS= read -r other_wt; do
-            [ -z "$other_wt" ] && continue
-            local other_uncommitted=$(git -C "$other_wt" status --porcelain 2>/dev/null | grep -vE "^\?\?" | wc -l | tr -d ' ')
-            if [ "$other_uncommitted" -gt 0 ]; then
-              active_worktrees=$((active_worktrees + 1))
-            fi
-          done <<< "$other_worktrees"
-        fi
-
-        if [ "$active_worktrees" -gt 0 ]; then
-          print_warning "Skipping worktree cleanup — $active_worktrees other active worktree(s) detected (batch run?)"
-        else
-          if git worktree remove "$wt_path" --force 2>/dev/null; then
-            [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-            echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
-          fi
+        if git worktree remove "$wt_path" --force 2>/dev/null; then
+          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+          echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
         fi
       fi
 
@@ -1349,7 +1403,7 @@ run_workflow() {
       if [ -n "$_pr_branch" ]; then
         local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}')
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
-          local _file_changes=$(git -C "$_wt_path" diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+          local _file_changes=$(git -C "$_wt_path" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
           if [ "$_file_changes" -gt 0 ]; then
             WORKTREE_PATH="$_wt_path"
             set_current_worktree "$WORKTREE_PATH"
@@ -1454,7 +1508,7 @@ run_workflow() {
       print_info "PR state: review current, no assessment → running assessment"
     else
       # Review stale or missing — skip dev if work exists, run from push/review
-      local _dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+      local _dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
       if [ "${_dev_changes:-0}" -gt 0 ]; then
         skip_to_phase="create-pr"
         print_info "PR state: dev complete, review needs refresh → running from push/review"

@@ -26,6 +26,12 @@ fi
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
+# Source timeout wrapper (config.sh sources it, but is skipped when RITE_LIB_DIR is pre-set)
+if [ -f "$RITE_LIB_DIR/utils/timeout.sh" ] && ! declare -f run_with_timeout >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/timeout.sh"
+  ensure_timeout_cmd
+fi
+
 # Store the absolute path to THIS script for re-execution
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
@@ -275,55 +281,35 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
 
   print_info "Review content received ($(echo "$REVIEW_CONTENT" | wc -l) lines)"
 
-  # Extract all ACTIONABLE issues (regardless of priority)
-  # The filtered review will only contain items Claude assessed as ACTIONABLE
-  CRITICAL_ISSUES=$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' | grep -E '^### [0-9]+\.' || echo "")
-  HIGH_ISSUES=$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Hh]igh/,/^##[^#]/p' | grep -E '^### [0-9]+\.' || echo "")
-  MEDIUM_ISSUES=$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Mm]edium/,/^##[^#]/p' | grep -E '^### [0-9]+\.' || echo "")
-  LOW_ISSUES=$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Ll]ow/,/^##[^#]/p' | grep -E '^### [0-9]+\.' || echo "")
+  # Extract ONLY the ACTIONABLE_NOW items from the assessment
+  # Assessment format: ### Title - ACTIONABLE_NOW\n**Severity:** ...\n**Category:** ...\n...
+  # Each item runs from its ### header to the next ### header (or EOF)
+  ACTIONABLE_NOW_ITEMS=$(echo "$REVIEW_CONTENT" | awk '
+    /^### .* - ACTIONABLE_NOW$/ { printing=1 }
+    /^### .* - (ACTIONABLE_LATER|DISMISSED)$/ { printing=0 }
+    /^(✅|───|━━)/ { printing=0 }
+    printing { print }
+  ')
+
+  if [ -z "$ACTIONABLE_NOW_ITEMS" ]; then
+    print_warning "No ACTIONABLE_NOW items found in assessment — nothing to fix"
+    exit 0
+  fi
+
+  ACTIONABLE_NOW_COUNT=$(echo "$ACTIONABLE_NOW_ITEMS" | grep -c "^### .* - ACTIONABLE_NOW" || true)
 
   # Build fix prompt - tool restrictions are enforced by --disallowedTools flag
   FIX_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) fix-review session.
 Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
 
-## Review Issues to Fix
+## Review Issues to Fix ($ACTIONABLE_NOW_COUNT items)
 
-The automated PR review found issues that need to be addressed.
-All context is provided below - fix the ACTIONABLE items in the code.
+The assessment identified the following issues that MUST be fixed in this PR.
+Each item includes a title, severity, location, and fix effort estimate.
+Fix ONLY these specific items — do not look for other issues.
 
+$ACTIONABLE_NOW_ITEMS
 "
-
-  if [ -n "$CRITICAL_ISSUES" ]; then
-    FIX_PROMPT+="### CRITICAL Issues
-
-$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Cc]ritical/,/^##[^#]/p')
-
-"
-  fi
-
-  if [ -n "$HIGH_ISSUES" ]; then
-    FIX_PROMPT+="### HIGH Priority Issues
-
-$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Hh]igh/,/^##[^#]/p')
-
-"
-  fi
-
-  if [ -n "$MEDIUM_ISSUES" ]; then
-    FIX_PROMPT+="### MEDIUM Priority Issues
-
-$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Mm]edium/,/^##[^#]/p')
-
-"
-  fi
-
-  if [ -n "$LOW_ISSUES" ]; then
-    FIX_PROMPT+="### LOW Priority Issues
-
-$(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Ll]ow/,/^##[^#]/p')
-
-"
-  fi
 
   if [ "$AUTO_MODE" = true ]; then
     EXIT_INSTRUCTION="Session will end automatically when you finish making all fixes."
@@ -333,8 +319,8 @@ $(echo "$REVIEW_CONTENT" | sed -n '/^## .*[Ll]ow/,/^##[^#]/p')
 
   FIX_PROMPT+="## Instructions
 
-1. **Read the issues listed above** - all context is provided
-2. **Fix each issue** - make the necessary code changes
+1. **Fix each ACTIONABLE_NOW item above** - the title, location, and fix effort are provided. Do NOT fetch PR comments or look for other issues — everything you need is in this prompt
+2. **Make the necessary code changes** at the locations specified in each item
 3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
 4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
 
@@ -372,14 +358,8 @@ $EXIT_INSTRUCTION"
     # --verbose is required with --print --output-format stream-json (CLI validation).
     # Prompt passed as argument (not stdin) so jq pipe can use stdin.
     FIX_STDERR_FILE=$(mktemp)
-    TIMEOUT_CMD=""
-    if command -v gtimeout >/dev/null 2>&1; then
-      TIMEOUT_CMD="gtimeout $FIX_TIMEOUT"
-    elif command -v timeout >/dev/null 2>&1; then
-      TIMEOUT_CMD="timeout $FIX_TIMEOUT"
-    fi
 
-    $TIMEOUT_CMD $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
+    run_with_timeout "$FIX_TIMEOUT" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$DISALLOWED_TOOLS" --output-format stream-json \
       "$FIX_PROMPT" 2>"$FIX_STDERR_FILE" | \
       jq --unbuffered -rj '
@@ -418,16 +398,8 @@ $EXIT_INSTRUCTION"
     rm -f "$FIX_PROMPT_FILE"
 
     set +e
-    if command -v gtimeout >/dev/null 2>&1; then
-      gtimeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
-      FIX_EXIT_CODE=$?
-    elif command -v timeout >/dev/null 2>&1; then
-      timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
-      FIX_EXIT_CODE=$?
-    else
-      $CLAUDE_CMD --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
-      FIX_EXIT_CODE=$?
-    fi
+    run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
+    FIX_EXIT_CODE=$?
     set -e
 
     if [ "${FIX_EXIT_CODE:-0}" -eq 124 ]; then
@@ -661,8 +633,9 @@ if [ -z "$ISSUE_NUMBER" ]; then
       exit 0
     fi
 
-    # PR exists but is it just a placeholder? Check for actual file changes
-    FILE_CHANGES=$(git diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+    # PR exists but is it just a placeholder? Check for actual file changes.
+    # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
+    FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
 
     if [ "$FILE_CHANGES" -gt 0 ]; then
       # PR has real work - jump directly to PR workflow
@@ -849,6 +822,16 @@ If the changes are unrelated work, answer UNRELATED."
     SAFE_BRANCH_NAME=$(echo "${SAFE_BRANCH_NAME:0:35}" | sed 's/-[^-]*$//')
   fi
 
+  # In batch mode, append batch context to worktree name for identification
+  if [ "${BATCH_MODE:-false}" = true ] && [ -n "${BATCH_ISSUE_LIST:-}" ]; then
+    BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')"
+    # Keep total path reasonable: truncate suffix if too long
+    if [ ${#BATCH_SUFFIX} -gt 20 ]; then
+      BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-' | cut -c1-19)"
+    fi
+    SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME}${BATCH_SUFFIX}"
+  fi
+
   WORKTREE_PATH="$RITE_WORKTREE_DIR/$SAFE_BRANCH_NAME"
 
     # Create worktrees directory if it doesn't exist
@@ -958,6 +941,12 @@ If the changes are unrelated work, answer UNRELATED."
     fi
 
     echo ""
+
+    # Fetch latest main so new branches start from current remote state
+    # Critical for batch mode: after issue N merges, issue N+1 must branch from updated main
+    print_status "Fetching latest origin/main..."
+    git fetch origin main 2>/dev/null || print_warning "Failed to fetch origin/main - using local state"
+
     print_status "Creating worktree at: $WORKTREE_PATH"
 
     # Check if branch already exists
@@ -977,21 +966,52 @@ If the changes are unrelated work, answer UNRELATED."
 
       # Try to add worktree - git will error if it already exists (handles TOCTOU race)
       if ! git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1; then
-        # Worktree might have been created by another process (race condition)
-        # Check if it exists now and use it
+        # Worktree directory exists — verify it's on the expected branch.
+        # A previous run may have left the worktree on a different branch
+        # (e.g., fell back to main after empty-branch cleanup).
         if [ -d "$WORKTREE_PATH" ]; then
-          print_info "Worktree was created by another process - using it"
+          ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+          if [ "$ACTUAL_BRANCH" = "$BRANCH_NAME" ]; then
+            print_info "Worktree already exists on correct branch - using it"
+          else
+            print_warning "Worktree exists but on wrong branch ($ACTUAL_BRANCH), expected $BRANCH_NAME"
+            print_status "Removing stale worktree and recreating..."
+            git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || rm -rf "$WORKTREE_PATH"
+            git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1 || {
+              print_error "Failed to recreate worktree"
+              exit 1
+            }
+          fi
         else
           print_error "Failed to create worktree"
           exit 1
         fi
       fi
     else
-      # Create new branch in worktree - git handles race condition
-      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" >/dev/null 2>&1; then
-        # Check if worktree exists (possible race condition)
+      # Create new branch in worktree from origin/main - git handles race condition
+      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" origin/main >/dev/null 2>&1; then
+        # Worktree directory exists — verify it's on the expected branch.
         if [ -d "$WORKTREE_PATH" ]; then
-          print_info "Worktree was created by another process - using it"
+          ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+          if [ "$ACTUAL_BRANCH" = "$BRANCH_NAME" ]; then
+            print_info "Worktree already exists on correct branch - using it"
+          else
+            print_warning "Worktree exists but on wrong branch ($ACTUAL_BRANCH), expected $BRANCH_NAME"
+            print_status "Removing stale worktree and recreating..."
+            git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || rm -rf "$WORKTREE_PATH"
+            # Branch may already exist from a previous run — use it if so, otherwise create
+            if git show-ref --verify --quiet refs/heads/"$BRANCH_NAME"; then
+              git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1 || {
+                print_error "Failed to recreate worktree (existing branch)"
+                exit 1
+              }
+            else
+              git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" origin/main >/dev/null 2>&1 || {
+                print_error "Failed to recreate worktree (new branch)"
+                exit 1
+              }
+            fi
+          fi
         else
           print_error "Failed to create worktree and branch"
           exit 1
@@ -1100,6 +1120,27 @@ for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
   # Pattern missing entirely — add it
   echo "$_pattern" >> .gitignore
 done
+
+# Defensive merge: ensure branch is up-to-date with origin/main before starting work
+# Prevents merge conflicts at PR time, especially in batch mode where earlier issues
+# merge to main while later issues are still working on stale branches.
+# New branches (just created from origin/main) will show 0 behind — this is a no-op for them.
+if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
+  git fetch origin main 2>/dev/null || true
+  BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
+  if [ "$BEHIND_COUNT" -gt 0 ]; then
+    print_status "Branch is $BEHIND_COUNT commit(s) behind main — merging origin/main..."
+    if git merge origin/main --no-edit 2>/dev/null; then
+      print_success "Merged origin/main into branch"
+    else
+      # Merge conflict — abort and fail fast rather than auto-resolving
+      git merge --abort 2>/dev/null || true
+      print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
+      print_info "Resolve manually: git merge origin/main"
+      exit 1
+    fi
+  fi
+fi
 
 # Check git status (filter .gitignore — modified by sharkrite's symlink pattern repair)
 print_header "📊 Repository Status"
@@ -1437,17 +1478,6 @@ else
   CLAUDE_TIMEOUT=${RITE_CLAUDE_TIMEOUT:-7200}
   print_status "Launching Sharkrite (timeout: ${CLAUDE_TIMEOUT}s)..."
 
-  # Detect timeout command (gtimeout on macOS via coreutils, timeout on Linux)
-  if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout"
-  elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout"
-  else
-    print_warning "No timeout command found - running without timeout"
-    print_info "Install coreutils for timeout support: brew install coreutils"
-    TIMEOUT_CMD=""
-  fi
-
   # Both modes run in FOREGROUND for streaming output
   # Auto mode: uses --permission-mode bypassPermissions (no approval prompts)
   # Supervised mode: full interactive experience
@@ -1468,40 +1498,21 @@ else
     # NOTE: --disallowedTools must be quoted separately because its value contains spaces
     # (e.g., "Bash(gh *)"). Cannot embed in CLAUDE_STREAM_ARGS which is expanded unquoted.
     # --verbose is required with --print --output-format stream-json (CLI validation)
-    if [ -n "$TIMEOUT_CMD" ]; then
-      $TIMEOUT_CMD "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
-        --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
-        "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" | \
-        jq --unbuffered -rj '
-          if .type == "assistant" then
-            (.message.content[]? |
-              if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
-              elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
-              else empty end)
-          else empty end
-        ' 2>/dev/null || true
-      CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
-    else
-      $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
-        --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
-        "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" | \
-        jq --unbuffered -rj '
-          if .type == "assistant" then
-            (.message.content[]? |
-              if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
-              elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
-              else empty end)
-          else empty end
-        ' 2>/dev/null || true
-      CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
-    fi
+    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
+      --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
+      "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" | \
+      jq --unbuffered -rj '
+        if .type == "assistant" then
+          (.message.content[]? |
+            if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
+            elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
+            else empty end)
+        else empty end
+      ' 2>/dev/null || true
+    CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
   else
     # Supervised mode: interactive with approval prompts
-    if [ -n "$TIMEOUT_CMD" ]; then
-      $TIMEOUT_CMD "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --disallowedTools "$DEV_DISALLOWED_TOOLS" "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
-    else
-      $CLAUDE_CMD --disallowedTools "$DEV_DISALLOWED_TOOLS" "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
-    fi
+    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --disallowedTools "$DEV_DISALLOWED_TOOLS" "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
   fi
 
   # Handle exit codes
@@ -1522,7 +1533,6 @@ else
     print_error "Command not found (exit code 127)"
     print_error "This usually means a required tool is missing."
     print_info "Check that 'claude' CLI is installed: npm install -g @anthropic-ai/claude-code"
-    print_info "Check that 'gtimeout' is installed on macOS: brew install coreutils"
     exit 127
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
@@ -1544,7 +1554,7 @@ else
     echo "[DIAG] Git status (porcelain):"
     git status --porcelain 2>/dev/null | head -20 || echo "  (none)"
     echo "[DIAG] File changes vs origin/main:"
-    git diff --stat origin/main..HEAD 2>/dev/null || echo "  (none)"
+    git diff --stat origin/main...HEAD 2>/dev/null || echo "  (none)"
     if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
       echo "[DIAG] Claude stderr (last 30 lines):"
       tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /'
@@ -1588,8 +1598,9 @@ if [ $CHANGES_COUNT -eq 0 ]; then
   print_info "No new changes detected"
   echo ""
 
-  # Check if there are any actual file changes (more reliable than commit message parsing)
-  FILE_CHANGES=$(git diff --name-only origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+  # Check if there are any actual file changes (more reliable than commit message parsing).
+  # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
+  FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
 
   if [ "$FILE_CHANGES" -eq 0 ]; then
     # No work was done in the dev phase - exit early
@@ -1633,60 +1644,106 @@ else
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
-  # Run tests
-if [ "$AUTO_MODE" = false ]; then
-  read -p "🧪 Run tests before committing? (y/n) " -n 1 -r
-  echo
-  RUN_TESTS=$REPLY
-else
-  RUN_TESTS="n"
-fi
-
-if [[ $RUN_TESTS =~ ^[Yy]$ ]]; then
-  print_status "Running tests..."
-
-  if [ -f "package.json" ]; then
-    if npm test 2>&1; then
-      print_success "All tests passed"
+  # Run tests before commit.
+  # Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
+  # Supervised mode: prompt the user.
+  # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
+  _run_tests=false
+  if [ "$AUTO_MODE" = true ]; then
+    if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
+      print_info "Skipping tests (RITE_SKIP_TESTS=true)"
     else
-      print_warning "Some tests failed"
-
-      if [ "$AUTO_MODE" = false ]; then
-        echo ""
-        read -p "Continue with commit anyway? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-          print_info "Fix tests and run again"
-          exit 1
-        fi
-      else
-        print_warning "Continuing anyway (auto mode)"
-      fi
+      _run_tests=true
     fi
-  elif [ -f "backend/package.json" ]; then
-    cd backend
-    if npm test 2>&1; then
-      print_success "All tests passed"
-    else
-      print_warning "Some tests failed"
-
-      if [ "$AUTO_MODE" = false ]; then
-        echo ""
-        read -p "Continue with commit anyway? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-          print_info "Fix tests and run again"
-          exit 1
-        fi
-      else
-        print_warning "Continuing anyway (auto mode)"
-      fi
-    fi
-    cd ..
   else
-    print_warning "No package.json found, skipping tests"
+    read -p "🧪 Run tests before committing? (y/n) " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] && _run_tests=true
   fi
-fi
+
+  if [ "$_run_tests" = true ]; then
+    # Detect test command: RITE_TEST_CMD override → auto-detect from project structure
+    _test_cmd="${RITE_TEST_CMD:-}"
+    _test_subdir=""
+
+    if [ -z "$_test_cmd" ]; then
+      if [ -f "package.json" ]; then
+        _test_cmd="npm test"
+      elif [ -f "backend/package.json" ]; then
+        _test_cmd="npm test"
+        _test_subdir="backend"
+      elif [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] || [ -f "setup.cfg" ] || [ -f "setup.py" ] || [ -d "tests" ]; then
+        # If no venv exists yet but requirements.txt does, create one so the gate
+        # doesn't fail with "No module named pytest" on the system python.
+        if [ ! -f ".venv/bin/python" ] && [ ! -f "venv/bin/python" ] && [ ! -f "env/bin/python" ] && [ -f "requirements.txt" ]; then
+          print_status "No venv found — creating .venv and installing requirements..."
+          python3 -m venv .venv 2>/dev/null && .venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
+        fi
+        # Prefer venv python (already has dependencies installed) over system python
+        if [ -f ".venv/bin/python" ]; then
+          _test_cmd=".venv/bin/python -m pytest"
+        elif [ -f "venv/bin/python" ]; then
+          _test_cmd="venv/bin/python -m pytest"
+        elif [ -f "env/bin/python" ]; then
+          _test_cmd="env/bin/python -m pytest"
+        elif command -v python3 >/dev/null 2>&1; then
+          _test_cmd="python3 -m pytest"
+        else
+          _test_cmd="python -m pytest"
+        fi
+      elif [ -f "Makefile" ] && grep -q "^test:" "Makefile" 2>/dev/null; then
+        _test_cmd="make test"
+      fi
+    fi
+
+    if [ -z "$_test_cmd" ]; then
+      print_warning "No test runner detected — skipping tests"
+    else
+      # Source .env.test or .env if present so tests have required env vars
+      # (e.g. JWT_SECRET_KEY, DATABASE_URL). Run in subshell to avoid polluting
+      # the outer environment.
+      _env_file=""
+      [ -f ".env.test" ] && _env_file=".env.test"
+      [ -z "$_env_file" ] && [ -f ".env" ] && _env_file=".env"
+
+      print_status "Running tests ($_test_cmd)..."
+      _test_exit=0
+      _run_tests() {
+        if [ -n "$_env_file" ]; then
+          set -a
+          # shellcheck disable=SC1090
+          source "$_env_file" 2>/dev/null || true
+          set +a
+        fi
+        eval "$_test_cmd"
+      }
+      if [ -n "$_test_subdir" ]; then
+        (cd "$_test_subdir" && _run_tests) || _test_exit=$?
+      else
+        (_run_tests) || _test_exit=$?
+      fi
+
+      if [ "$_test_exit" -eq 0 ]; then
+        print_success "All tests passed"
+      else
+        print_warning "Tests failed (exit $_test_exit)"
+        if [ "$AUTO_MODE" = true ]; then
+          print_error "Cannot commit — test suite must pass in auto mode"
+          print_info "Fix failures and resume: rite $ISSUE_NUMBER"
+          print_info "To skip the test gate: export RITE_SKIP_TESTS=true"
+          exit 3
+        else
+          echo ""
+          read -p "Continue with commit anyway? (y/n) " -n 1 -r
+          echo
+          if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Fix tests and run again"
+            exit 1
+          fi
+        fi
+      fi
+    fi
+  fi
 
 # Commit workflow
 if [ "$AUTO_MODE" = false ]; then

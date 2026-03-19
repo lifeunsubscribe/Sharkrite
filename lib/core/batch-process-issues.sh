@@ -30,6 +30,14 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
+# Record a run to the persistent history file
+record_run() {
+  local issue="$1" mode="$2"
+  local history_file="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/run-history.log"
+  mkdir -p "$(dirname "$history_file")"
+  echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
+}
+
 # Batch processing requires associative arrays (bash 4+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -95,13 +103,13 @@ if [ -n "$FILTER_TYPE" ]; then
 
   case "$FILTER_TYPE" in
     label)
-      FETCHED_ISSUES=$(gh issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ')
       ;;
     milestone)
-      FETCHED_ISSUES=$(gh issue list --milestone "$FILTER_VALUE" --state open --json number --jq '.[].number' | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh issue list --milestone "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ')
       ;;
     state)
-      FETCHED_ISSUES=$(gh issue list --state "$FILTER_VALUE" --json number --jq '.[].number' | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh issue list --state "$FILTER_VALUE" --json number --jq '.[].number' | sort -n | tr '\n' ' ')
       ;;
   esac
 
@@ -164,7 +172,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title --jq '.title' 2>/dev/null || echo "")
 
   # Check if issue involves AWS operations
-  if echo "$ISSUE_LABELS,$ISSUE_TITLE" | grep -qiE "(infrastructure|deployment|aws|lambda|cognito|dynamodb|s3|ses|sns)"; then
+  if echo "$ISSUE_LABELS,$ISSUE_TITLE" | grep -qiE "\b(infrastructure|deployment|aws|lambda|cognito|dynamodb|s3|ses|sns)\b"; then
     AWS_REQUIRED=true
     break
   fi
@@ -213,9 +221,11 @@ if [ "$PROJECTED_TOTAL" -gt "$MAX_ISSUES_LIMIT" ]; then
     exit 1
   fi
 
-  print_warning "Limiting batch to $ALLOWED_ISSUES issues"
+  SKIPPED_BY_LIMIT=("${ISSUE_LIST[@]:$ALLOWED_ISSUES}")
   ISSUE_LIST=("${ISSUE_LIST[@]:0:$ALLOWED_ISSUES}")
   TOTAL_ISSUES=${#ISSUE_LIST[@]}
+  print_warning "Limiting batch to $ALLOWED_ISSUES issues: ${ISSUE_LIST[*]}"
+  print_info "Deferred to next session: ${SKIPPED_BY_LIMIT[*]}"
   echo ""
 fi
 
@@ -291,6 +301,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   CURRENT_ISSUE=$((COMPLETED_ISSUES + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]} + ${#SKIPPED_ISSUES[@]} + 1))
 
   print_header "📌 Processing Issue #$ISSUE_NUM ($CURRENT_ISSUE/$TOTAL_ISSUES)"
+  record_run "$ISSUE_NUM" "batch"
 
   # Fetch issue details
   ISSUE_DETAILS=$(gh issue view "$ISSUE_NUM" --json title,labels,state 2>/dev/null || echo "{}")
@@ -358,6 +369,29 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       elif [ "$PARENT_PR_STATE" = "MERGED" ]; then
         print_success "✅ Parent PR #$PARENT_PR is merged - proceeding with follow-up"
       fi
+    fi
+  fi
+
+  # Check if issue depends on another issue that failed/was skipped in this batch
+  # Parses "After: #N" and "Dependencies\nAfter: #N" patterns from issue body
+  DEP_ISSUES=$(echo "$ISSUE_BODY" | grep -oE 'After: #[0-9]+' | grep -oE '[0-9]+' || true)
+  if [ -n "$DEP_ISSUES" ]; then
+    DEP_FAILED=false
+    FAILED_DEP=""
+    for dep_num in $DEP_ISSUES; do
+      dep_status="${ISSUE_STATUS[$dep_num]:-}"
+      if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
+        DEP_FAILED=true
+        FAILED_DEP="$dep_num"
+        break
+      fi
+    done
+    if [ "$DEP_FAILED" = true ]; then
+      print_warning "Dependency #$FAILED_DEP failed/blocked — skipping issue #$ISSUE_NUM"
+      SKIPPED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="dep_failed"
+      echo ""
+      continue
     fi
   fi
 
@@ -445,6 +479,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   # Export BATCH_MODE flag so nested scripts know we're in batch processing
   export BATCH_MODE=true
+  # Export full issue list so nested scripts (e.g., merge cleanup) can protect sibling worktrees
+  export BATCH_ISSUE_LIST="${ISSUE_LIST[*]}"
 
   # Run workflow with exit code handling
   if "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised; then
@@ -663,7 +699,8 @@ if [ $COMPLETED_ISSUES -gt 0 ]; then
     if [ "${ISSUE_STATUS[$ISSUE_NUM]}" = "completed" ]; then
       PR_NUM=${ISSUE_PR[$ISSUE_NUM]:-""}
       BRANCH=${ISSUE_BRANCH[$ISSUE_NUM]:-"unknown"}
-      CHANGES=${PR_CHANGES[$PR_NUM]:-"N/A"}
+      CHANGES="N/A"
+      [ -n "$PR_NUM" ] && CHANGES=${PR_CHANGES[$PR_NUM]:-"N/A"}
       NOTIFICATION_MESSAGE="$NOTIFICATION_MESSAGE
 • \`$BRANCH\` → PR #$PR_NUM ($CHANGES)"
     fi
