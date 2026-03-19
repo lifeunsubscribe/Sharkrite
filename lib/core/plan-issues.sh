@@ -436,8 +436,13 @@ Do not leave this implicit. If the read model for this entity differs from a rel
 **E. System-managed fields in update schemas.**
 Scan each entity model for fields managed by later-phase system logic (counters like \`times_cooked\`, computed scores, auto-timestamps). For each such field, add a criterion to the schema issue: "Field X is excluded from the Update schema (system-managed — write logic deferred to Phase Y)."
 
-**F. Simpler versions of deferred features.**
-For each ⏭️ deferral, ask: does a simpler version of this feature exist that requires none of the deferred phase's dependencies? If yes, include the simpler version in the current phase and defer only the full version.
+**F. Deferral validity and simpler versions.**
+Before deferring a feature, ask: does it actually depend on something from the later phase, or does it only touch models that already exist?
+
+- A feature that touches two existing models (cross-domain) is NOT a reason for deferral — it is a reason for its own issue. Give it its own issue with explicit scope boundaries for which domains it modifies. "Touches multiple models" ≠ "deferred to Phase N."
+- A feature is only deferrable if it depends on a model, endpoint, or system that will not exist until a later phase. If all required models already exist, it belongs in the current phase.
+- For a legitimately deferred feature, ask: does a simpler version exist that requires none of the later phase's dependencies? If yes, include the simpler version and defer only the full version.
+- A "simpler version" of a filter means filtering by a value stored in the entity's own fields — no joins to user profiles or other entities. For example: `?has_variation=vegan` checks a JSON key on the recipe itself (simple, current phase). `?dietary_compatible=true` that compares recipe variation_groups against a user's dietary_profile JSON field is a cross-domain filter — it is NOT a simpler version; it is the full version with a user-profile join. If no simpler version genuinely exists, the deferral stands as-is — do not bundle the full version into a 1-hour filter issue.
 
 **G. Time estimate calibration.**
 Use these baselines before setting TIME fields:
@@ -566,6 +571,20 @@ PROMPT_EOF
     echo ""
     return 1
   fi
+
+  # Normalize structural markers before any parsing.
+  # jq -rj (join mode) emits text chunks with no added newlines, so when Claude
+  # outputs ---END--- immediately followed by commentary in the next streaming
+  # event, they concatenate on the same line: "---END---Now I have a complete..."
+  # This breaks the exact-match checks in dedup, display, and create_issues.
+  # Strip anything after the marker on the same line to restore clean delimiters.
+  local normalized
+  normalized=$(mktemp)
+  sed \
+    -e 's/^---END---.*$/---END---/' \
+    -e 's/^---ISSUE---.*$/---ISSUE---/' \
+    "$temp_file" > "$normalized"
+  mv "$normalized" "$temp_file"
 
   # Deduplicate issues — Claude sometimes repeats the full issue set.
   # Keep only the first occurrence of each issue (by title).
