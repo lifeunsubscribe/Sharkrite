@@ -1525,12 +1525,22 @@ else
     #
     # IMPORTANT: --disallowedTools is variadic (<tools...>) and eats positional args — the prompt
     # MUST be passed via stdin (not as a positional arg) or it disappears into the tools list.
-    # Use a temp file + stdin redirect (not a pipe) to preserve exit code without PIPESTATUS.
+    # Use stream-json for real-time tool visibility (same as auto mode); --verbose is required.
+    # PIPESTATUS[0] captures Claude's exit code through the jq pipe.
     _DEV_PROMPT_FILE=$(mktemp)
     printf '%s' "$CLAUDE_PROMPT" > "$_DEV_PROMPT_FILE"
-    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --dangerously-skip-permissions \
-      --disallowedTools "$DEV_DISALLOWED_TOOLS" \
-      < "$_DEV_PROMPT_FILE" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
+    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
+      --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
+      < "$_DEV_PROMPT_FILE" 2>"$CLAUDE_STDERR_FILE" | \
+      jq --unbuffered -rj '
+        if .type == "assistant" then
+          (.message.content[]? |
+            if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
+            elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
+            else empty end)
+        else empty end
+      ' 2>/dev/null || true
+    CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
     rm -f "$_DEV_PROMPT_FILE"
   fi
 
