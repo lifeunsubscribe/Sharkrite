@@ -602,10 +602,20 @@ EOF
         detect_worktree_for_pr "$PR_NUMBER" || true
       fi
 
-      # Fallback: match issue number in worktree path
+      # Fallback: match issue number in worktree path.
+      # Handles batch naming like _b98-109-112- (matches -N- or _bN-) and
+      # simple naming like issue-N or #N.
       if [ -z "${WORKTREE_PATH:-}" ]; then
         MAIN_WORKTREE=$(git rev-parse --show-toplevel)
-        WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
+        WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
+          grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1)
+      fi
+
+      # Last resort: read handoff file written by claude-workflow.sh
+      local _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+      if [ -z "${WORKTREE_PATH:-}" ] && [ -f "$_handoff_file" ]; then
+        WORKTREE_PATH=$(cat "$_handoff_file" 2>/dev/null || echo "")
+        rm -f "$_handoff_file"
       fi
 
       if [ -n "${WORKTREE_PATH:-}" ]; then

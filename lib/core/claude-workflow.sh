@@ -1092,6 +1092,12 @@ If the changes are unrelated work, answer UNRELATED."
     # Store worktree path for cleanup later
     export CLAUDE_WORKTREE_PATH="$WORKTREE_PATH"
 
+    # Write handoff file so workflow-runner.sh can find this worktree even when
+    # RITE_ORCHESTRATED=true (no PR created during dev, so PR-based detection fails).
+    if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
+      echo "$WORKTREE_PATH" > "${RITE_STATE_DIR}/worktree-handoff-${ISSUE_NUMBER}.txt" 2>/dev/null || true
+    fi
+
     # Check for relevant stashed changes and auto-apply if they're from this branch
     LATEST_STASH_BRANCH=$(git stash list 2>/dev/null | head -1 | grep -oE 'WIP on [^:]+|On [^:]+' | sed 's/.*On //' | sed 's/WIP on //' || echo "")
 
