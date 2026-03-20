@@ -554,18 +554,9 @@ EOF
         workflow_exit=$?
         set -e
 
-        if [ $workflow_exit -eq 3 ]; then
-          BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
-          if ! handle_blocker "pre-merge" "$issue_number"; then
-            return 1
-          fi
-        elif [ $workflow_exit -ne 0 ]; then
-          print_error "Development workflow failed (exit code: $workflow_exit)"
-          return $workflow_exit
-        fi
-
-        # Detect worktree created by claude-workflow.sh (same logic as fresh-start path)
-        if detect_pr_for_issue "$issue_number"; then
+        # Detect worktree created by claude-workflow.sh before handling any blocker,
+        # so the worktree path is saved in session state for branch-update on resume.
+        if detect_pr_for_issue "$issue_number" 2>/dev/null; then
           detect_worktree_for_pr "$PR_NUMBER" || true
         fi
         if [ -z "${WORKTREE_PATH:-}" ]; then
@@ -574,6 +565,16 @@ EOF
         fi
         if [ -n "${WORKTREE_PATH:-}" ]; then
           set_current_worktree "$WORKTREE_PATH"
+        fi
+
+        if [ $workflow_exit -eq 3 ]; then
+          BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
+          if ! handle_blocker "pre-merge" "$issue_number"; then
+            return 1
+          fi
+        elif [ $workflow_exit -ne 0 ]; then
+          print_error "Development workflow failed (exit code: $workflow_exit)"
+          return $workflow_exit
         fi
       fi
     else
@@ -594,18 +595,9 @@ EOF
       workflow_exit=$?
       set -e
 
-      if [ $workflow_exit -eq 3 ]; then
-        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
-        if ! handle_blocker "pre-merge" "$issue_number"; then
-          return 1
-        fi
-      elif [ $workflow_exit -ne 0 ]; then
-        print_error "Development workflow failed (exit code: $workflow_exit)"
-        return $workflow_exit
-      fi
-
       # Extract worktree path via PR branch name (reliable with parallel runs)
-      # claude-workflow.sh creates a draft PR early, so we can find it by issue link
+      # claude-workflow.sh creates a draft PR early, so we can find it by issue link.
+      # Done BEFORE the blocker check so the path is saved in session state on test failure.
       if detect_pr_for_issue "$issue_number"; then
         detect_worktree_for_pr "$PR_NUMBER" || true
       fi
@@ -614,6 +606,20 @@ EOF
       if [ -z "${WORKTREE_PATH:-}" ]; then
         MAIN_WORKTREE=$(git rev-parse --show-toplevel)
         WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
+      fi
+
+      if [ -n "${WORKTREE_PATH:-}" ]; then
+        set_current_worktree "$WORKTREE_PATH"
+      fi
+
+      if [ $workflow_exit -eq 3 ]; then
+        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
+        if ! handle_blocker "pre-merge" "$issue_number"; then
+          return 1
+        fi
+      elif [ $workflow_exit -ne 0 ]; then
+        print_error "Development workflow failed (exit code: $workflow_exit)"
+        return $workflow_exit
       fi
 
       if [ -z "${WORKTREE_PATH:-}" ]; then
@@ -1438,6 +1444,27 @@ run_workflow() {
       return 1
     fi
     # 0 = branch current or merged main, continue normally
+  fi
+
+  # ── Update branch against main for worktree-without-PR resume (e.g., dev-phase test failures) ──
+  # The stale branch check above requires PR_NUMBER and is skipped when development never
+  # created a PR (e.g., tests failed before push). Update here so the retry gets a fresh baseline.
+  if [ "$RESUME_MODE" = true ] && [ -z "${PR_NUMBER:-}" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    git -C "$WORKTREE_PATH" fetch origin main 2>/dev/null || true
+    local _behind_main
+    _behind_main=$(git -C "$WORKTREE_PATH" rev-list --count "HEAD..origin/main" 2>/dev/null || echo "0")
+    if [ "${_behind_main:-0}" -gt 0 ]; then
+      print_status "Branch is $_behind_main commit(s) behind main — updating before retry..."
+      local _dev_branch
+      _dev_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+      if git -C "$WORKTREE_PATH" merge origin/main --no-edit 2>/dev/null; then
+        [ -n "$_dev_branch" ] && git -C "$WORKTREE_PATH" push origin "$_dev_branch" 2>/dev/null || true
+        print_success "Branch updated against main"
+      else
+        git -C "$WORKTREE_PATH" merge --abort 2>/dev/null || true
+        print_warning "Could not auto-update branch against main — resuming anyway"
+      fi
+    fi
   fi
 
   # ── Inspect PR state to skip completed phases ──
