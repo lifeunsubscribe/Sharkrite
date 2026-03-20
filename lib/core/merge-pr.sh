@@ -654,6 +654,7 @@ echo ""
 DOC_ASSESSMENT_SCRIPT="$RITE_LIB_DIR/core/assess-documentation.sh"
 
 if [ -f "$DOC_ASSESSMENT_SCRIPT" ]; then
+  print_status "Running documentation assessment (this may take a minute)..."
   DOC_EXIT_CODE=0
   if [ "$AUTO_MODE" = true ]; then
     "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" --auto || DOC_EXIT_CODE=$?

@@ -20,9 +20,12 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 # Timeout per Claude call in doc assessment (seconds)
 DOC_CLAUDE_TIMEOUT="${RITE_DOC_CLAUDE_TIMEOUT:-120}"
 
-# Build the claude command prefix with optional timeout
+# Build the claude command prefix with timeout
+# Use RITE_TIMEOUT_CMD if set, otherwise fall back to system `timeout` command
 if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
   CLAUDE_WITH_TIMEOUT="$RITE_TIMEOUT_CMD $DOC_CLAUDE_TIMEOUT claude"
+elif command -v timeout &>/dev/null; then
+  CLAUDE_WITH_TIMEOUT="timeout $DOC_CLAUDE_TIMEOUT claude"
 else
   CLAUDE_WITH_TIMEOUT="claude"
 fi
@@ -188,6 +191,7 @@ Diff (truncated):
 ${pr_diff}
 SECURITY_EOF
 
+  print_status "  Assessing security findings..."
   local security_output
   security_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -266,6 +270,7 @@ Diff (truncated):
 ${pr_diff}
 ARCH_EOF
 
+  print_status "  Assessing architecture..."
   local arch_output
   arch_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -338,6 +343,7 @@ Diff (truncated):
 ${pr_diff}
 API_EOF
 
+  print_status "  Assessing API changes..."
   local api_output
   api_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -427,6 +433,7 @@ Diff (truncated):
 ${pr_diff}
 ADR_EOF
 
+  print_status "  Checking for ADR-worthy decisions..."
   local adr_output
   adr_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -499,6 +506,7 @@ Current document:
 ${current_content}
 RECONCILE_EOF
 
+  print_status "  Reconciling doc updates..."
   local reconciled_output
   reconciled_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
