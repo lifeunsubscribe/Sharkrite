@@ -1137,6 +1137,15 @@ if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
   if [ "$BEHIND_COUNT" -gt 0 ]; then
     print_status "Branch is $BEHIND_COUNT commit(s) behind main — merging origin/main..."
     if git merge origin/main --no-edit 2>/dev/null; then
+      # Verify merge didn't introduce silent semantic conflicts
+      source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+      if ! verify_post_merge "."; then
+        print_warning "Merge with main introduced test failures — reverting merge"
+        git reset --hard HEAD~1 2>/dev/null || true
+        print_error "Silent semantic conflict: merge succeeds but tests fail ($BEHIND_COUNT commits behind)"
+        print_info "Resolve manually: git merge origin/main, then fix failing tests"
+        exit 1
+      fi
       print_success "Merged origin/main into branch"
     else
       # Merge conflict — abort and fail fast rather than auto-resolving
@@ -1374,7 +1383,7 @@ if [ "$AUTO_MODE" = true ]; then
 1. Provide a brief summary of what you implemented
 2. Exit immediately — the rite workflow will automatically handle commit, push, and PR creation"
 else
-  AUTO_MODE_INSTRUCTION="Wait for my approval before implementing"
+  AUTO_MODE_INSTRUCTION="Proceed directly to implementation (supervised mode - approval prompts are handled by the rite workflow, not by pausing here)"
   AUTO_MODE_FINAL_NOTE="**When all phases are complete**: Provide a brief summary of what you implemented, then immediately exit the session with \`/exit\`. The rite workflow will automatically handle commit, push, and PR creation — do NOT commit, push, or create PRs yourself."
 fi
 
