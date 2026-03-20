@@ -398,9 +398,14 @@ $EXIT_INSTRUCTION"
     rm -f "$FIX_PROMPT_FILE"
 
     set +e
+    local _fix_prompt_file
+    _fix_prompt_file=$(mktemp)
+    printf '%s' "$FIX_PROMPT" > "$_fix_prompt_file"
     run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --print --dangerously-skip-permissions \
-      --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
+      --disallowedTools "$DISALLOWED_TOOLS" \
+      < "$_fix_prompt_file"
     FIX_EXIT_CODE=$?
+    rm -f "$_fix_prompt_file"
     set -e
 
     if [ "${FIX_EXIT_CODE:-0}" -eq 124 ]; then
@@ -1517,9 +1522,17 @@ else
     # can't be answered in non-interactive mode). --disallowedTools provides the safety boundary.
     # User watches real-time output and can abort with Ctrl-C; rite's own blocker prompts still
     # pause for approval on sensitive changes.
+    #
+    # IMPORTANT: --disallowedTools is variadic (<tools...>) and eats positional args — the prompt
+    # MUST be passed via stdin (not as a positional arg) or it disappears into the tools list.
+    # Use a temp file + stdin redirect (not a pipe) to preserve exit code without PIPESTATUS.
+    local _dev_prompt_file
+    _dev_prompt_file=$(mktemp)
+    printf '%s' "$CLAUDE_PROMPT" > "$_dev_prompt_file"
     run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --dangerously-skip-permissions \
       --disallowedTools "$DEV_DISALLOWED_TOOLS" \
-      "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
+      < "$_dev_prompt_file" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
+    rm -f "$_dev_prompt_file"
   fi
 
   # Handle exit codes
@@ -1543,6 +1556,10 @@ else
     exit 127
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
+    if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
+      echo "Claude stderr:"
+      cat "$CLAUDE_STDERR_FILE"
+    fi
     print_status "Checking for uncommitted work..."
 
     if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
