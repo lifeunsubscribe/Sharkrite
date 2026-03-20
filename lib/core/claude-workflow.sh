@@ -398,7 +398,7 @@ $EXIT_INSTRUCTION"
     rm -f "$FIX_PROMPT_FILE"
 
     set +e
-    run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
+    run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --print --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
     FIX_EXIT_CODE=$?
     set -e
 
@@ -1511,8 +1511,10 @@ else
       ' 2>/dev/null || true
     CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
   else
-    # Supervised mode: interactive with approval prompts
-    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --disallowedTools "$DEV_DISALLOWED_TOOLS" "$CLAUDE_PROMPT" || CLAUDE_EXIT_CODE=$?
+    # Supervised mode: --print is required by CLI when --disallowedTools is present (CLI 2.1.37+).
+    # Claude still runs to completion and shows output; the user watches via the rite session.
+    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --disallowedTools "$DEV_DISALLOWED_TOOLS" \
+      "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
   fi
 
   # Handle exit codes
