@@ -1208,7 +1208,9 @@ if [ "$EXISTING_PR" != "{}" ] && [ -n "$EXISTING_PR" ]; then
   echo ""
 else
   # Create empty commit for PR (will be amended later with real changes)
-  if ! git log --oneline -1 | grep -q "chore: initialize work"; then
+  # Check commits AHEAD of main only — a "chore: initialize work" on main itself
+  # (from a merged PR) must not suppress creating a new init commit for this branch.
+  if ! git log --oneline origin/main..HEAD 2>/dev/null | grep -q "chore: initialize work"; then
     commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1)
     # Format: [branch hash] message — show branch/hash on one line, message indented below
     branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/')
