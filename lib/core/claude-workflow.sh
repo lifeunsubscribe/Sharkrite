@@ -1526,13 +1526,12 @@ else
     # IMPORTANT: --disallowedTools is variadic (<tools...>) and eats positional args — the prompt
     # MUST be passed via stdin (not as a positional arg) or it disappears into the tools list.
     # Use a temp file + stdin redirect (not a pipe) to preserve exit code without PIPESTATUS.
-    local _dev_prompt_file
-    _dev_prompt_file=$(mktemp)
-    printf '%s' "$CLAUDE_PROMPT" > "$_dev_prompt_file"
+    _DEV_PROMPT_FILE=$(mktemp)
+    printf '%s' "$CLAUDE_PROMPT" > "$_DEV_PROMPT_FILE"
     run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --dangerously-skip-permissions \
       --disallowedTools "$DEV_DISALLOWED_TOOLS" \
-      < "$_dev_prompt_file" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
-    rm -f "$_dev_prompt_file"
+      < "$_DEV_PROMPT_FILE" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
+    rm -f "$_DEV_PROMPT_FILE"
   fi
 
   # Handle exit codes
