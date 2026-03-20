@@ -393,38 +393,43 @@ if [ "$PR_IS_DRAFT" = "true" ]; then
 fi
 
 # Check 3: PR must be mergeable
+# GitHub computes mergeability lazily — UNKNOWN means not computed yet. Retry a few times.
+if [ "$PR_MERGEABLE" = "UNKNOWN" ]; then
+  print_status "Waiting for GitHub to compute mergeability..."
+  for _i in 1 2 3; do
+    sleep 3
+    PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+    [ "$PR_MERGEABLE" != "UNKNOWN" ] && break
+  done
+fi
+
 if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
   print_warning "PR mergeable state: $PR_MERGEABLE"
   if [ "$PR_MERGEABLE" = "CONFLICTING" ]; then
-    # In batch mode, try merging main into the feature branch to resolve
-    if [ "${BATCH_MODE:-false}" = true ]; then
-      print_info "Batch mode: attempting to merge main into feature branch..."
-      git fetch origin main 2>/dev/null || true
+    # Always attempt to auto-resolve by merging main into the feature branch
+    print_info "Attempting to merge main into feature branch to resolve conflicts..."
+    git fetch origin main 2>/dev/null || true
 
-      if git merge origin/main --no-edit 2>/dev/null; then
-        if git push origin "$PR_HEAD" 2>/dev/null; then
-          print_success "Merged main into branch and pushed — re-checking mergeable state"
-          # Give GitHub a moment to update mergeable state
-          sleep 3
-          PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
-          if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
-            print_success "PR is now mergeable"
-          else
-            print_error "PR still not mergeable after merging main (state: $PR_MERGEABLE)"
-            VALIDATION_FAILED=true
-          fi
+    if git merge origin/main --no-edit 2>/dev/null; then
+      if git push origin "$PR_HEAD" 2>/dev/null; then
+        print_success "Merged main into branch and pushed — re-checking mergeable state"
+        # Give GitHub a moment to update mergeable state
+        sleep 3
+        PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+        if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
+          print_success "PR is now mergeable"
         else
-          print_error "Push failed after merging main"
-          git reset --hard HEAD~1 2>/dev/null || true
+          print_error "PR still not mergeable after merging main (state: $PR_MERGEABLE)"
           VALIDATION_FAILED=true
         fi
       else
-        git merge --abort 2>/dev/null || true
-        print_error "PR has merge conflicts that could not be auto-resolved"
+        print_error "Push failed after merging main"
+        git reset --hard HEAD~1 2>/dev/null || true
         VALIDATION_FAILED=true
       fi
     else
-      print_error "PR has merge conflicts that must be resolved"
+      git merge --abort 2>/dev/null || true
+      print_error "PR has merge conflicts that could not be auto-resolved"
       VALIDATION_FAILED=true
     fi
   else
@@ -730,14 +735,19 @@ verbose_header "🚀 Merging PR #$PR_NUMBER"
 EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
 REPO_NAME=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
 
+_do_merge() {
+  # Attempt merge and capture output + exit code, immune to set -e.
+  # Usage: _do_merge <cmd...>
+  # Sets MERGE_OUTPUT and MERGE_EXIT_CODE in the caller's scope.
+  MERGE_OUTPUT=$("$@" 2>&1) && MERGE_EXIT_CODE=0 || MERGE_EXIT_CODE=$?
+}
+
 if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
   # Use API merge for atomic head verification
-  MERGE_OUTPUT=$(gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+  _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
     -X PUT \
     -f merge_method="$MERGE_METHOD" \
-    -f sha="$EXPECTED_HEAD" \
-    2>&1)
-  MERGE_EXIT_CODE=$?
+    -f sha="$EXPECTED_HEAD"
 
   # Check for SHA mismatch (API returns error when head changed)
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "Head branch was modified|409"; then
@@ -754,23 +764,52 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
       if [ $DIV_RESULT -eq 0 ]; then
         # Divergence resolved — retry the merge with updated head
         EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-        MERGE_OUTPUT=$(gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+        _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
           -X PUT \
           -f merge_method="$MERGE_METHOD" \
-          -f sha="$EXPECTED_HEAD" \
-          2>&1)
-        MERGE_EXIT_CODE=$?
+          -f sha="$EXPECTED_HEAD"
       else
         print_error "Could not resolve divergence at merge time"
         MERGE_EXIT_CODE=1
       fi
     fi
   fi
+
+  # Handle "not mergeable" — branch may be behind main; try updating and retry once
+  if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable|405"; then
+    print_warning "PR is not mergeable — attempting branch update against main"
+    git fetch origin main 2>/dev/null || true
+    if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+      print_status "Branch updated — retrying merge..."
+      sleep 3
+      EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+      _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+        -X PUT \
+        -f merge_method="$MERGE_METHOD" \
+        -f sha="$EXPECTED_HEAD"
+    else
+      git merge --abort 2>/dev/null || true
+      print_error "Could not update branch against main"
+    fi
+  fi
 else
   # Fallback: gh pr merge (no SHA verification available)
   print_info "Using fallback merge (no SHA verification)"
-  MERGE_OUTPUT=$(gh pr merge $PR_NUMBER --$MERGE_METHOD 2>&1)
-  MERGE_EXIT_CODE=$?
+  _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+
+  # Handle "not mergeable" in fallback path — branch may be behind main
+  if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
+    print_warning "PR is not mergeable — attempting branch update against main"
+    git fetch origin main 2>/dev/null || true
+    if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+      print_status "Branch updated — retrying merge..."
+      sleep 3
+      _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+    else
+      git merge --abort 2>/dev/null || true
+      print_error "Could not update branch against main"
+    fi
+  fi
 fi
 
 if [ $MERGE_EXIT_CODE -eq 0 ]; then
