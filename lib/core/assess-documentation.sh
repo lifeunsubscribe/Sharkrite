@@ -537,10 +537,16 @@ RECONCILE_EOF
   INTERNAL_UPDATED+=("${doc_name}(reconciled)")
 }
 
-# Run reconciliation on docs that accumulate PR deltas
-reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/security.md" "security"
-reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/architecture.md" "architecture"
-reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/api.md" "api"
+# Run reconciliation in parallel — each call writes to its own file, no shared state
+_reconcile_pids=()
+reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/security.md" "security" &
+_reconcile_pids+=($!)
+reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/architecture.md" "architecture" &
+_reconcile_pids+=($!)
+reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/api.md" "api" &
+_reconcile_pids+=($!)
+for _pid in "${_reconcile_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
+unset _reconcile_pids
 
 # --- Cross-document consistency validation ---
 # Same logic as bootstrap-docs.sh but runs during assessment when a reconciliation
@@ -649,6 +655,7 @@ for item in "${INTERNAL_UPDATED[@]}"; do
 done
 
 if [ "$RECONCILED" = true ]; then
+  print_status "  Validating cross-doc consistency..."
   _validate_cross_doc_consistency "${RITE_INTERNAL_DOCS_DIR}"
 fi
 
