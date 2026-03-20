@@ -1340,7 +1340,7 @@ run_workflow() {
 
       # 2. Delete local branch if it still exists
       if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
-        if git branch -D "$pr_branch" 2>/dev/null; then
+        if git branch -D "$pr_branch" >/dev/null 2>&1; then
           [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
           echo -e "${GREEN}  ✓ Deleted local branch: $pr_branch${NC}"
         fi

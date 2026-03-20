@@ -967,8 +967,9 @@ EOF
       # in a worktree, main is checked out elsewhere and checkout fails with
       # "fatal: 'main' is already used by worktree". The orchestrator handles
       # worktree removal separately.
+      # Note: deletion may silently fail if branch is checked out in this worktree;
+      # workflow-runner.sh will clean it up after removing the worktree.
       git branch -D $PR_HEAD 2>/dev/null || true
-      echo -e "${GREEN}  ✓ Deleted local branch: $PR_HEAD${NC}"
     else
       print_info "You are currently on the merged branch"
       echo ""
@@ -983,8 +984,9 @@ EOF
     fi
   elif git branch --list | grep -q "^  $PR_HEAD\$"; then
     if [ "$AUTO_MODE" = true ]; then
+      # Branch exists but we're not on it — leftover from a worktree that was
+      # already removed. Delete silently; no need to surface this to the user.
       git branch -D $PR_HEAD 2>/dev/null || true
-      echo -e "${GREEN}  ✓ Deleted local branch: $PR_HEAD${NC}"
     else
       print_info "Local branch $PR_HEAD still exists"
       echo ""
