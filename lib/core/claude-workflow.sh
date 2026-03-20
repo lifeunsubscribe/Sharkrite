@@ -398,7 +398,8 @@ $EXIT_INSTRUCTION"
     rm -f "$FIX_PROMPT_FILE"
 
     set +e
-    run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --print --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
+    run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --print --dangerously-skip-permissions \
+      --disallowedTools "$DISALLOWED_TOOLS" "$FIX_PROMPT"
     FIX_EXIT_CODE=$?
     set -e
 
@@ -1512,8 +1513,12 @@ else
     CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
   else
     # Supervised mode: --print is required by CLI when --disallowedTools is present (CLI 2.1.37+).
-    # Claude still runs to completion and shows output; the user watches via the rite session.
-    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --disallowedTools "$DEV_DISALLOWED_TOOLS" \
+    # --print is non-interactive, so --dangerously-skip-permissions is needed (permission prompts
+    # can't be answered in non-interactive mode). --disallowedTools provides the safety boundary.
+    # User watches real-time output and can abort with Ctrl-C; rite's own blocker prompts still
+    # pause for approval on sensitive changes.
+    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --dangerously-skip-permissions \
+      --disallowedTools "$DEV_DISALLOWED_TOOLS" \
       "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" || CLAUDE_EXIT_CODE=$?
   fi
 
