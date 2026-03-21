@@ -44,6 +44,18 @@ Analyze all changed files across these dimensions:
 - Edge cases tested
 - Mocks appropriate
 
+### 6. 🔗 Cross-File Impact (IMPORTANT)
+
+The diff alone is not sufficient. For any of the following changes, you MUST trace downstream consumers before concluding the change is safe:
+
+- **Renamed or removed exports** (functions, classes, constants, variables): Grep the codebase for all import/usage sites. Verify every caller uses the new name or is updated in this diff.
+- **Changed function signatures** (added/removed/reordered parameters, changed return type): Find all callsites and confirm they pass the correct arguments and handle the new return shape.
+- **Modified globals or module-level state** (singletons, config objects, registries): Identify all modules that import or reference the global at load time. Verify initialization order is preserved.
+- **Changed data formats** (serialization, API response shapes, log formats): Trace consumers — parsers, test assertions, downstream services — and verify they expect the new format.
+- **Moved or restructured files**: Check for hardcoded import paths, dynamic imports, and configuration references to the old path.
+
+If you cannot confirm compatibility from the diff alone, flag it. A finding like "renamed `limiter` to `rate_limiter` but `middleware.py` still imports `limiter`" is HIGH or CRITICAL depending on whether it causes a runtime crash. Do not assume that because the diff is internally consistent, the rest of the codebase is compatible.
+
 ## Severity Classification
 
 ### 🔴 CRITICAL (Must Fix Before Merge)

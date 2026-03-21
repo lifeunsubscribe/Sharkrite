@@ -67,8 +67,11 @@ CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
 # LAYER 1: INTERNAL DOCS (always runs)
 # =====================================================================
 
-# Track results for one-liner summary (populated by each assess_internal_* function)
+# Track results for one-liner summary.
+# Functions run in parallel subshells, so use marker files instead of a shared array.
 INTERNAL_UPDATED=()
+_MARKER_DIR=$(mktemp -d)
+_mark_updated() { touch "$_MARKER_DIR/$1"; }
 
 mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
 
@@ -124,7 +127,7 @@ assess_internal_changelog() {
     } >> "$doc_file"
   fi
 
-  INTERNAL_UPDATED+=("changelog")
+  _mark_updated "changelog"
 }
 
 assess_internal_security() {
@@ -191,7 +194,7 @@ Diff (truncated):
 ${pr_diff}
 SECURITY_EOF
 
-  print_status "  Assessing security findings..."
+  verbose_info "  Assessing security findings..."
   local security_output
   security_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -200,7 +203,7 @@ SECURITY_EOF
     echo "" >> "$doc_file"
     echo "$security_output" >> "$doc_file"
     echo "" >> "$doc_file"
-    INTERNAL_UPDATED+=("security")
+    _mark_updated "security"
   fi
 }
 
@@ -270,7 +273,7 @@ Diff (truncated):
 ${pr_diff}
 ARCH_EOF
 
-  print_status "  Assessing architecture..."
+  verbose_info "  Assessing architecture..."
   local arch_output
   arch_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -282,7 +285,7 @@ ARCH_EOF
       echo "" >> "$doc_file"
       echo "$arch_output" >> "$doc_file"
       echo "" >> "$doc_file"
-      INTERNAL_UPDATED+=("architecture")
+      _mark_updated "architecture"
     fi
   fi
 }
@@ -343,7 +346,7 @@ Diff (truncated):
 ${pr_diff}
 API_EOF
 
-  print_status "  Assessing API changes..."
+  verbose_info "  Assessing API changes..."
   local api_output
   api_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -354,7 +357,7 @@ API_EOF
       echo "" >> "$doc_file"
       echo "$api_output" >> "$doc_file"
       echo "" >> "$doc_file"
-      INTERNAL_UPDATED+=("api")
+      _mark_updated "api"
     fi
   fi
 }
@@ -433,7 +436,7 @@ Diff (truncated):
 ${pr_diff}
 ADR_EOF
 
-  print_status "  Checking for ADR-worthy decisions..."
+  verbose_info "  Checking for ADR-worthy decisions..."
   local adr_output
   adr_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -447,17 +450,32 @@ ADR_EOF
 
     local adr_file="${adr_dir}/${next_num_padded}-${brief_title}.md"
     echo "$adr_output" > "$adr_file"
-    INTERNAL_UPDATED+=("ADR-${next_num_padded}")
+    _mark_updated "ADR-${next_num_padded}"
   fi
 }
 
 # --- Run internal doc assessments ---
 
+# Changelog is instant (no Claude call) — run inline
 assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"
-assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" "$PR_TITLE"
-assess_internal_architecture "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
-assess_internal_api "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES"
-assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY" "$PR_TITLE"
+
+# Claude-calling assessments run in parallel (each writes to its own file)
+_assess_pids=()
+assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" "$PR_TITLE" &
+_assess_pids+=($!)
+assess_internal_architecture "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" &
+_assess_pids+=($!)
+assess_internal_api "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" &
+_assess_pids+=($!)
+assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY" "$PR_TITLE" &
+_assess_pids+=($!)
+for _pid in "${_assess_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
+unset _assess_pids
+
+# Collect marker files into INTERNAL_UPDATED array
+for _marker in "$_MARKER_DIR"/*; do
+  [ -f "$_marker" ] && INTERNAL_UPDATED+=("$(basename "$_marker")")
+done
 
 # --- Reconciliation pass: fold PR deltas into baseline ---
 # Triggered when a doc accumulates 3+ PR sections. Merges append-only deltas
@@ -506,7 +524,7 @@ Current document:
 ${current_content}
 RECONCILE_EOF
 
-  print_status "  Reconciling doc updates..."
+  verbose_info "  Reconciling doc updates..."
   local reconciled_output
   reconciled_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
   rm -f "$prompt_file"
@@ -534,7 +552,7 @@ RECONCILE_EOF
   fi
 
   echo "$reconciled_output" > "$doc_file"
-  INTERNAL_UPDATED+=("${doc_name}(reconciled)")
+  _mark_updated "${doc_name}(reconciled)"
 }
 
 # Run reconciliation in parallel — each call writes to its own file, no shared state
@@ -547,6 +565,18 @@ reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/api.md" "api" &
 _reconcile_pids+=($!)
 for _pid in "${_reconcile_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
 unset _reconcile_pids
+
+# Re-collect markers after reconciliation
+for _marker in "$_MARKER_DIR"/*; do
+  [ -f "$_marker" ] || continue
+  _name="$(basename "$_marker")"
+  # Skip if already in array
+  _found=false
+  for _existing in "${INTERNAL_UPDATED[@]}"; do
+    [ "$_existing" = "$_name" ] && { _found=true; break; }
+  done
+  [ "$_found" = false ] && INTERNAL_UPDATED+=("$_name")
+done
 
 # --- Cross-document consistency validation ---
 # Same logic as bootstrap-docs.sh but runs during assessment when a reconciliation
@@ -638,7 +668,7 @@ FIX_EOF
       local min_lines=$((orig_lines * 80 / 100))
       if [ "$fixed_lines" -ge "$min_lines" ]; then
         echo "$fixed_output" > "$target_file"
-        INTERNAL_UPDATED+=("${target_name}(consistency-fix)")
+        _mark_updated "${target_name}(consistency-fix)"
       fi
     fi
   done
@@ -655,21 +685,30 @@ for item in "${INTERNAL_UPDATED[@]}"; do
 done
 
 if [ "$RECONCILED" = true ]; then
-  print_status "  Validating cross-doc consistency..."
+  verbose_info "  Validating cross-doc consistency..."
   _validate_cross_doc_consistency "${RITE_INTERNAL_DOCS_DIR}"
 fi
 
-# Commit internal doc changes if any
-if [ -n "$(git diff --name-only .rite/docs/ 2>/dev/null)" ] || [ -n "$(git ls-files --others --exclude-standard .rite/docs/ 2>/dev/null)" ]; then
-  git add .rite/docs/
-  git commit -m "docs(rite): update internal docs for PR #$PR_NUMBER" 2>/dev/null || true
-fi
+# Internal docs (.rite/docs/) are gitignored in target projects — no commit needed.
+# The files are written directly to the local .rite/docs/ directory.
 
 # =====================================================================
 # COMBINED OUTPUT HEADER
 # =====================================================================
 
 print_header "📚 Documentation"
+
+# Final marker collection (picks up cross-doc consistency fixes)
+for _marker in "$_MARKER_DIR"/*; do
+  [ -f "$_marker" ] || continue
+  _name="$(basename "$_marker")"
+  _found=false
+  for _existing in "${INTERNAL_UPDATED[@]}"; do
+    [ "$_existing" = "$_name" ] && { _found=true; break; }
+  done
+  [ "$_found" = false ] && INTERNAL_UPDATED+=("$_name")
+done
+rm -rf "$_MARKER_DIR"
 
 # Internal docs one-liner summary
 if [ ${#INTERNAL_UPDATED[@]} -gt 0 ]; then

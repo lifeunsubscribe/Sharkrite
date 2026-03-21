@@ -612,10 +612,12 @@ EOF
       fi
 
       # Last resort: read handoff file written by claude-workflow.sh
-      local _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
-      if [ -z "${WORKTREE_PATH:-}" ] && [ -f "$_handoff_file" ]; then
-        WORKTREE_PATH=$(cat "$_handoff_file" 2>/dev/null || echo "")
-        rm -f "$_handoff_file"
+      if [ -z "${WORKTREE_PATH:-}" ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+        local _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+        if [ -f "$_handoff_file" ]; then
+          WORKTREE_PATH=$(cat "$_handoff_file" 2>/dev/null || echo "")
+          rm -f "$_handoff_file"
+        fi
       fi
 
       if [ -n "${WORKTREE_PATH:-}" ]; then
@@ -945,7 +947,13 @@ phase_assess_and_resolve() {
       fi
       local fix_result=$?
 
-      if [ $fix_result -ne 0 ]; then
+      if [ $fix_result -eq 3 ]; then
+        # Test failure during fix-review — route through blocker handler
+        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed after review fixes — see output above"
+        if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
+          return 1
+        fi
+      elif [ $fix_result -ne 0 ]; then
         print_error "Claude workflow fix mode failed (exit code: $fix_result)"
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1112,6 +1120,11 @@ phase_merge_pr() {
   # out (git refuses to delete a branch checked out in the current worktree). After
   # merge-pr.sh returns the worktree is gone, but the CWD is now a deleted directory.
   # Use -C with the main repo root so git commands resolve correctly.
+  #
+  # Prune stale worktree metadata first — git worktree remove sometimes leaves
+  # entries in .git/worktrees/, causing branch -D to fail with "checked out at".
+  git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
+
   local _merged_branch
   _merged_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
   if [ -n "$_merged_branch" ] && git -C "$RITE_PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$_merged_branch" 2>/dev/null; then

@@ -54,6 +54,8 @@ verify_post_merge() {
         test_cmd="$worktree_path/venv/bin/python -m pytest"
       elif [ -f "$worktree_path/env/bin/python" ]; then
         test_cmd="$worktree_path/env/bin/python -m pytest"
+      elif [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "$RITE_PROJECT_ROOT/.venv/bin/python" ]; then
+        test_cmd="$RITE_PROJECT_ROOT/.venv/bin/python -m pytest"
       elif command -v python3 >/dev/null 2>&1; then
         test_cmd="python3 -m pytest"
       else
@@ -77,16 +79,6 @@ verify_post_merge() {
   [ -z "$env_file" ] && [ -f "$worktree_path/.env" ] && env_file="$worktree_path/.env"
 
   local test_exit=0
-  _run_verify_tests() {
-    if [ -n "$env_file" ]; then
-      set -a
-      # shellcheck disable=SC1090
-      source "$env_file" 2>/dev/null || true
-      set +a
-    fi
-    eval "$test_cmd"
-  }
-
   local run_dir="$worktree_path"
   [ -n "$test_subdir" ] && run_dir="$worktree_path/$test_subdir"
 
@@ -96,7 +88,23 @@ verify_post_merge() {
     timeout_cmd="timeout $verify_timeout"
   fi
 
-  (cd "$run_dir" && $timeout_cmd _run_verify_tests) 2>&1 | sed 's/^/  /' >&2 || test_exit=$?
+  # Run inside a subshell: source env file, then run the test command.
+  # timeout wraps the test command directly (an external binary) rather than
+  # a shell function, which external commands cannot exec.
+  (
+    cd "$run_dir"
+    if [ -n "$env_file" ]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "$env_file" 2>/dev/null || true
+      set +a
+    fi
+    if [ -n "$timeout_cmd" ]; then
+      $timeout_cmd sh -c "$test_cmd"
+    else
+      eval "$test_cmd"
+    fi
+  ) 2>&1 | sed 's/^/  /' >&2 || test_exit=$?
 
   if [ "$test_exit" -eq 124 ]; then
     echo "⚠️  Post-merge verification timed out after ${verify_timeout}s — skipping" >&2

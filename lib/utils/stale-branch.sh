@@ -14,6 +14,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
 
 # ===================================================================
 # PUBLIC: Detection
@@ -163,6 +164,29 @@ _stale_merge_main() {
       git stash pop 2>/dev/null || {
         print_warning "Stash pop had conflicts — stash preserved (run 'git stash pop' manually)"
       }
+    fi
+
+    # Verify merge didn't introduce silent semantic conflicts (tests pass)
+    if ! verify_post_merge "$worktree_path"; then
+      print_warning "Merge succeeded at git level but tests fail — possible semantic conflict"
+      git reset --hard HEAD~1 2>/dev/null || true
+      if [ "$workflow_mode" = "supervised" ]; then
+        echo "" >&2
+        echo "The merge with main introduced test failures." >&2
+        echo "Options:" >&2
+        echo "  c) Continue without merging main (keep working on stale branch)" >&2
+        echo "  d) Abort workflow" >&2
+        read -p "Choose [c/d]: " -n 1 -r >&2
+        echo >&2
+        case "$REPLY" in
+          c|C) return 0 ;;
+          *)   return 1 ;;
+        esac
+      else
+        print_error "Post-merge verification failed — cannot proceed in auto mode"
+        print_info "Run 'rite \$issue_number --supervised' to resolve manually"
+        return 1
+      fi
     fi
 
     # Push the merge commit

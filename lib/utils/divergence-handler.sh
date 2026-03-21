@@ -21,6 +21,9 @@ if [ -f "$RITE_LIB_DIR/utils/notifications.sh" ]; then
   source "$RITE_LIB_DIR/utils/notifications.sh"
 fi
 
+# Source post-merge verification
+source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+
 # ===================================================================
 # OUTPUT HELPERS (stderr only — stdout reserved for pipe data)
 # ===================================================================
@@ -442,7 +445,44 @@ _do_rebase_and_push() {
     esac
   fi
 
-  # Rebase succeeded — push
+  # Verify rebase didn't introduce silent semantic conflicts (tests pass)
+  if ! verify_post_merge "."; then
+    _div_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
+    # Undo the rebase
+    if [ -n "${DIVERGENCE_LOCAL_HEAD:-}" ]; then
+      git reset --hard "$DIVERGENCE_LOCAL_HEAD" 2>/dev/null || true
+    fi
+
+    if [ "$auto_mode" = "true" ]; then
+      _div_error "Post-rebase verification failed — blocking in auto mode"
+      _send_divergence_notification "${issue_number:-}" "${pr_number:-}" "SEMANTIC_CONFLICT" \
+        "Rebase succeeded but tests fail — silent semantic conflict"
+      return 1
+    fi
+
+    echo "" >&2
+    echo "The rebase introduced test failures (silent semantic conflict)." >&2
+    echo "Options:" >&2
+    echo "  c) Force-push local work (discard foreign commits)" >&2
+    echo "  d) Abort" >&2
+    read -p "Choose [c/d]: " -n 1 -r >&2
+    echo >&2
+    case "$REPLY" in
+      c|C)
+        if ! git push --force-with-lease origin "$branch_name"; then
+          _div_error "Force-push failed"
+          return 1
+        fi
+        _div_success "Force-push succeeded"
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+
+  # Rebase succeeded and verified — push
   if ! git push origin "$branch_name"; then
     _div_error "Push failed after rebase"
     return 1

@@ -541,95 +541,9 @@ else
   echo "  Not found"
 fi
 
-# Analyze HIGH and MEDIUM issues if review exists
-if [ "$CLAUDE_REVIEW_FOUND" = true ] && [ "$CRITICAL_COUNT" -eq 0 ]; then
-  # Extract HIGH and MEDIUM issues
-  HIGH_ISSUES=$(echo "$LATEST_CLAUDE_REVIEW" | sed -n '/### HIGH Priority/,/### MEDIUM\|###.*Priority\|---/p' | grep -v "^###" || true)
-  MEDIUM_ISSUES=$(echo "$LATEST_CLAUDE_REVIEW" | sed -n '/### MEDIUM Priority/,/### LOW\|###.*Priority\|---/p' | grep -v "^###" || true)
-
-  HIGH_COUNT=$(echo "$LATEST_CLAUDE_REVIEW" | grep -oiE 'HIGH[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1)
-  MEDIUM_COUNT=$(echo "$LATEST_CLAUDE_REVIEW" | grep -oiE 'MEDIUM[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1)
-
-  if [ -n "$HIGH_COUNT" ] && [ "$HIGH_COUNT" -gt 0 ] || [ -n "$MEDIUM_COUNT" ] && [ "$MEDIUM_COUNT" -gt 0 ]; then
-    verbose_header "📊 Issue Assessment"
-    echo "Found HIGH: ${HIGH_COUNT:-0} | MEDIUM: ${MEDIUM_COUNT:-0}"
-    echo ""
-    echo "Analyzing whether these issues are worth investigating..."
-    echo ""
-
-    # Save review to temp file for analysis
-    REVIEW_FILE=$(mktemp)
-    echo "$LATEST_CLAUDE_REVIEW" > "$REVIEW_FILE"
-
-    # Create analysis prompt
-    ANALYSIS_PROMPT="Review the following Sharkrite review findings and provide a brief assessment for each HIGH and MEDIUM issue:
-
-For each issue, provide:
-1. **Issue Name** (one line summary)
-2. **Worth Fixing?** (Yes/No/Already Fixed/Skip)
-3. **Reasoning** (2-3 sentences explaining why)
-
-Format as:
-### Issue: [Name]
-**Verdict:** [Worth Fixing/Skip/Already Fixed]
-**Reasoning:** [Brief explanation]
-
----
-
-Review to analyze:
-$(cat "$REVIEW_FILE")
-
-Focus only on HIGH and MEDIUM priority issues. Be concise."
-
-    # Get assessment (using Claude via a simple temp file approach)
-    ASSESSMENT_FILE=$(mktemp)
-
-    # Try to use Claude if available, otherwise provide manual assessment prompt
-    if command -v claude &> /dev/null; then
-      # Use temp file instead of pipe to avoid command injection
-      PROMPT_FILE=$(mktemp)
-      echo "$ANALYSIS_PROMPT" > "$PROMPT_FILE"
-      run_with_timeout 120 claude --print --dangerously-skip-permissions < "$PROMPT_FILE" > "$ASSESSMENT_FILE" 2>/dev/null || echo "Manual assessment needed" > "$ASSESSMENT_FILE"
-      rm -f "$PROMPT_FILE"
-    else
-      # Fallback: Show issues and let user decide
-      cat > "$ASSESSMENT_FILE" << EOF
-### Manual Assessment Required
-
-**HIGH Issues (${HIGH_COUNT:-0}):**
-$HIGH_ISSUES
-
-**MEDIUM Issues (${MEDIUM_COUNT:-0}):**
-$MEDIUM_ISSUES
-
-Unable to auto-analyze (Claude CLI not available).
-Review issues above and decide if fixes are needed before merge.
-EOF
-    fi
-
-    cat "$ASSESSMENT_FILE"
-    echo ""
-
-    # Cleanup temp files
-    rm -f "$REVIEW_FILE" "$ASSESSMENT_FILE"
-
-    # In auto mode, proceed with merge; in interactive mode, ask user
-    if [ "$AUTO_MODE" = false ]; then
-      echo ""
-      read -t 30 -p "Proceed with merge despite HIGH/MEDIUM issues? (y/n) " -n 1 -r || REPLY="n"
-      echo
-      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Merge cancelled - address issues first"
-        echo ""
-        echo "To view issues in detail:"
-          echo "  gh pr view $PR_NUMBER --web"
-        exit 1
-      fi
-    else
-      print_info "Auto mode: proceeding with merge (HIGH/MEDIUM issues are non-blocking)"
-    fi
-  fi
-fi
+# HIGH/MEDIUM issues are already handled by Phase 3 (assess-and-resolve.sh).
+# ACTIONABLE_NOW items are fixed in the fix loop; ACTIONABLE_LATER items become
+# follow-up issues. No need to re-assess here at merge time.
 
 # Summary of validation
 echo ""
@@ -650,40 +564,10 @@ echo "  • Status checks: ${REQUIRED_CHECKS_COUNT:-0} required (all passed)"
 echo "  • Sharkrite review: $([ "$CLAUDE_REVIEW_FOUND" = true ] && echo "passed" || echo "not required")"
 echo ""
 
-# Documentation completeness check (header printed by the script itself)
+# Documentation assessment runs post-merge (see below) to avoid blocking the merge.
+# Internal docs (.rite/docs/) are gitignored in target projects, and Layer 2 user
+# doc updates commit separately — neither needs to land on the feature branch.
 DOC_ASSESSMENT_SCRIPT="$RITE_LIB_DIR/core/assess-documentation.sh"
-
-if [ -f "$DOC_ASSESSMENT_SCRIPT" ]; then
-  print_status "Running documentation assessment (this may take a minute)..."
-  DOC_EXIT_CODE=0
-  if [ "$AUTO_MODE" = true ]; then
-    "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" --auto || DOC_EXIT_CODE=$?
-  else
-    "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" || DOC_EXIT_CODE=$?
-  fi
-
-  if [ $DOC_EXIT_CODE -ne 0 ]; then
-    if [ $DOC_EXIT_CODE -eq 2 ]; then
-      # User explicitly cancelled in the doc assessment prompt
-      print_info "Merge cancelled"
-      exit 1
-    fi
-    # Assessment script failed unexpectedly
-    print_warning "Documentation assessment failed (error code $DOC_EXIT_CODE)"
-    if [ "$AUTO_MODE" = true ]; then
-      print_warning "Auto mode: proceeding with merge (docs can be updated manually)"
-    else
-      read -p "Continue with merge anyway? (y/N): " CONTINUE
-      if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-        print_info "Merge cancelled"
-        exit 1
-      fi
-    fi
-  fi
-else
-  print_warning "Documentation assessment script not found: $DOC_ASSESSMENT_SCRIPT"
-  print_info "Skipping documentation check"
-fi
 
 # Check for security findings and update guide (part of documentation phase)
 update_security_guide_from_pr "$PR_NUMBER"
@@ -817,6 +701,18 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
   verbose_header "✅ PR Merged Successfully"
 
   print_success "PR #$PR_NUMBER merged into $PR_BASE"
+
+  # Start doc assessment in the background (runs concurrently with tech-debt, cleanup)
+  _DOC_PID=""
+  _DOC_LOG=$(mktemp)
+  if [ -f "$DOC_ASSESSMENT_SCRIPT" ]; then
+    if [ "$AUTO_MODE" = true ]; then
+      "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" --auto > "$_DOC_LOG" 2>&1 &
+    else
+      "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" > "$_DOC_LOG" 2>&1 &
+    fi
+    _DOC_PID=$!
+  fi
 
   # Create tech-debt issues from encountered issues BEFORE clearing scratchpad
   if type create_tech_debt_issues &>/dev/null; then
@@ -1500,6 +1396,10 @@ EOF
         print_warning "Could not remove worktree: $CURRENT_DIR"
         print_info "Remove manually: git worktree remove '$CURRENT_DIR' --force"
       fi
+      # Prune stale worktree metadata so branch -D doesn't fail with "checked out at"
+      git worktree prune 2>/dev/null || true
+      # Retry branch deletion now that worktree is fully pruned
+      git branch -D "$PR_HEAD" 2>/dev/null || true
       CURRENT_DIR="$MAIN_WORKTREE"
     fi
 
@@ -1518,6 +1418,22 @@ EOF
     echo "  3. Update project board if using one"
     echo ""
   fi
+  # Wait for background doc assessment and report results
+  if [ -n "${_DOC_PID:-}" ]; then
+    _doc_exit=0
+    wait "$_DOC_PID" 2>/dev/null || _doc_exit=$?
+
+    if [ -s "$_DOC_LOG" ]; then
+      # Show the summary output (Documentation header + results)
+      cat "$_DOC_LOG"
+    fi
+
+    if [ $_doc_exit -ne 0 ] && [ $_doc_exit -ne 2 ]; then
+      print_warning "Documentation assessment finished with errors (exit $_doc_exit)"
+    fi
+  fi
+  rm -f "${_DOC_LOG:-}"
+
   echo "PR URL: $PR_URL"
   echo ""
 

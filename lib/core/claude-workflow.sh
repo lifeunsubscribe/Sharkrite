@@ -237,6 +237,116 @@ print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 source "$RITE_LIB_DIR/utils/logging.sh"
 
 # ===================================================================
+# TEST GATE (shared by dev and fix-review paths)
+# Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
+# Supervised mode: prompt the user.
+# Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
+# ===================================================================
+run_test_gate() {
+  local _should_run=false
+  if [ "$AUTO_MODE" = true ]; then
+    if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
+      print_info "Skipping tests (RITE_SKIP_TESTS=true)"
+      return 0
+    fi
+    _should_run=true
+  else
+    read -p "🧪 Run tests before committing? (y/n) " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] && _should_run=true
+  fi
+
+  if [ "$_should_run" != true ]; then
+    return 0
+  fi
+
+  # Detect test command: RITE_TEST_CMD override → auto-detect from project structure
+  local _test_cmd="${RITE_TEST_CMD:-}"
+  local _test_subdir=""
+
+  if [ -z "$_test_cmd" ]; then
+    if [ -f "package.json" ]; then
+      _test_cmd="npm test"
+    elif [ -f "backend/package.json" ]; then
+      _test_cmd="npm test"
+      _test_subdir="backend"
+    elif [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] || [ -f "setup.cfg" ] || [ -f "setup.py" ] || [ -d "tests" ]; then
+      # If no venv exists yet but requirements.txt does, create one so the gate
+      # doesn't fail with "No module named pytest" on the system python.
+      if [ ! -f ".venv/bin/python" ] && [ ! -f "venv/bin/python" ] && [ ! -f "env/bin/python" ] && [ -f "requirements.txt" ]; then
+        print_status "No venv found — creating .venv and installing requirements..."
+        python3 -m venv .venv 2>/dev/null && .venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
+      fi
+      # Prefer venv python (already has dependencies installed) over system python
+      if [ -f ".venv/bin/python" ]; then
+        _test_cmd=".venv/bin/python -m pytest"
+      elif [ -f "venv/bin/python" ]; then
+        _test_cmd="venv/bin/python -m pytest"
+      elif [ -f "env/bin/python" ]; then
+        _test_cmd="env/bin/python -m pytest"
+      elif [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "$RITE_PROJECT_ROOT/.venv/bin/python" ]; then
+        _test_cmd="$RITE_PROJECT_ROOT/.venv/bin/python -m pytest"
+      elif command -v python3 >/dev/null 2>&1; then
+        _test_cmd="python3 -m pytest"
+      else
+        _test_cmd="python -m pytest"
+      fi
+    elif [ -f "Makefile" ] && grep -q "^test:" "Makefile" 2>/dev/null; then
+      _test_cmd="make test"
+    fi
+  fi
+
+  if [ -z "$_test_cmd" ]; then
+    print_warning "No test runner detected — skipping tests"
+    return 0
+  fi
+
+  # Source .env.test or .env if present so tests have required env vars
+  # (e.g. JWT_SECRET_KEY, DATABASE_URL). Run in subshell to avoid polluting
+  # the outer environment.
+  local _env_file=""
+  [ -f ".env.test" ] && _env_file=".env.test"
+  [ -z "$_env_file" ] && [ -f ".env" ] && _env_file=".env"
+
+  print_status "Running tests ($_test_cmd)..."
+  local _test_exit=0
+  _run_test_cmd() {
+    if [ -n "$_env_file" ]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "$_env_file" 2>/dev/null || true
+      set +a
+    fi
+    eval "$_test_cmd"
+  }
+  if [ -n "$_test_subdir" ]; then
+    (cd "$_test_subdir" && _run_test_cmd) || _test_exit=$?
+  else
+    (_run_test_cmd) || _test_exit=$?
+  fi
+
+  if [ "$_test_exit" -eq 0 ]; then
+    print_success "All tests passed"
+  else
+    print_warning "Tests failed (exit $_test_exit)"
+    if [ "$AUTO_MODE" = true ]; then
+      print_error "Cannot commit — test suite must pass in auto mode"
+      print_info "Fix failures and resume: rite ${ISSUE_NUMBER:-}"
+      print_info "To skip the test gate: export RITE_SKIP_TESTS=true"
+      exit 3
+    else
+      echo ""
+      read -p "Continue with commit anyway? (y/n) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Fix tests and run again"
+        exit 1
+      fi
+    fi
+  fi
+}
+
+# ===================================================================
 # EARLY EXIT FOR FIX-REVIEW MODE
 # Must run before any worktree navigation to preserve stdin
 # ===================================================================
@@ -414,6 +524,10 @@ $EXIT_INSTRUCTION"
   fi
 
   print_success "Review fix session complete"
+
+  # Run test gate before committing fixes (same gate as dev phase).
+  # Without this, review fixes that break tests slip through to merge.
+  run_test_gate
 
   # Commit and push the fixes
   print_status "Committing fixes..."
@@ -1694,106 +1808,8 @@ else
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
-  # Run tests before commit.
-  # Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
-  # Supervised mode: prompt the user.
-  # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
-  _run_tests=false
-  if [ "$AUTO_MODE" = true ]; then
-    if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
-      print_info "Skipping tests (RITE_SKIP_TESTS=true)"
-    else
-      _run_tests=true
-    fi
-  else
-    read -p "🧪 Run tests before committing? (y/n) " -n 1 -r
-    echo
-    [[ $REPLY =~ ^[Yy]$ ]] && _run_tests=true
-  fi
-
-  if [ "$_run_tests" = true ]; then
-    # Detect test command: RITE_TEST_CMD override → auto-detect from project structure
-    _test_cmd="${RITE_TEST_CMD:-}"
-    _test_subdir=""
-
-    if [ -z "$_test_cmd" ]; then
-      if [ -f "package.json" ]; then
-        _test_cmd="npm test"
-      elif [ -f "backend/package.json" ]; then
-        _test_cmd="npm test"
-        _test_subdir="backend"
-      elif [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] || [ -f "setup.cfg" ] || [ -f "setup.py" ] || [ -d "tests" ]; then
-        # If no venv exists yet but requirements.txt does, create one so the gate
-        # doesn't fail with "No module named pytest" on the system python.
-        if [ ! -f ".venv/bin/python" ] && [ ! -f "venv/bin/python" ] && [ ! -f "env/bin/python" ] && [ -f "requirements.txt" ]; then
-          print_status "No venv found — creating .venv and installing requirements..."
-          python3 -m venv .venv 2>/dev/null && .venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
-        fi
-        # Prefer venv python (already has dependencies installed) over system python
-        if [ -f ".venv/bin/python" ]; then
-          _test_cmd=".venv/bin/python -m pytest"
-        elif [ -f "venv/bin/python" ]; then
-          _test_cmd="venv/bin/python -m pytest"
-        elif [ -f "env/bin/python" ]; then
-          _test_cmd="env/bin/python -m pytest"
-        elif command -v python3 >/dev/null 2>&1; then
-          _test_cmd="python3 -m pytest"
-        else
-          _test_cmd="python -m pytest"
-        fi
-      elif [ -f "Makefile" ] && grep -q "^test:" "Makefile" 2>/dev/null; then
-        _test_cmd="make test"
-      fi
-    fi
-
-    if [ -z "$_test_cmd" ]; then
-      print_warning "No test runner detected — skipping tests"
-    else
-      # Source .env.test or .env if present so tests have required env vars
-      # (e.g. JWT_SECRET_KEY, DATABASE_URL). Run in subshell to avoid polluting
-      # the outer environment.
-      _env_file=""
-      [ -f ".env.test" ] && _env_file=".env.test"
-      [ -z "$_env_file" ] && [ -f ".env" ] && _env_file=".env"
-
-      print_status "Running tests ($_test_cmd)..."
-      _test_exit=0
-      _run_tests() {
-        if [ -n "$_env_file" ]; then
-          set -a
-          # shellcheck disable=SC1090
-          source "$_env_file" 2>/dev/null || true
-          set +a
-        fi
-        eval "$_test_cmd"
-      }
-      if [ -n "$_test_subdir" ]; then
-        (cd "$_test_subdir" && _run_tests) || _test_exit=$?
-      else
-        (_run_tests) || _test_exit=$?
-      fi
-
-      if [ "$_test_exit" -eq 0 ]; then
-        print_success "All tests passed"
-      else
-        print_warning "Tests failed (exit $_test_exit)"
-        if [ "$AUTO_MODE" = true ]; then
-          print_error "Cannot commit — test suite must pass in auto mode"
-          print_info "Fix failures and resume: rite $ISSUE_NUMBER"
-          print_info "To skip the test gate: export RITE_SKIP_TESTS=true"
-          exit 3
-        else
-          echo ""
-          read -p "Continue with commit anyway? (y/n) " -n 1 -r
-          echo
-          if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Fix tests and run again"
-            exit 1
-          fi
-        fi
-      fi
-    fi
-  fi
+  # Run test gate before commit (shared function handles auto/supervised + exit 3)
+  run_test_gate
 
 # Commit workflow
 if [ "$AUTO_MODE" = false ]; then
