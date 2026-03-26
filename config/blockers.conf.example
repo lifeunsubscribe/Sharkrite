@@ -46,4 +46,5 @@
 # =============================================================================
 
 # AWS/cloud services that may significantly increase costs
-# BLOCKER_EXPENSIVE_SERVICES="rds|aurora|nat|ec2|fargate|sagemaker|redshift"
+# Uses \b word boundaries to prevent substring matches (e.g., "nat" in "concatenate")
+# BLOCKER_EXPENSIVE_SERVICES="\brds\b|\baurora\b|\bnatgateway\b|\bnat_gateway\b|\bec2\b|\bfargate\b|\bsagemaker\b|\bredshift\b"

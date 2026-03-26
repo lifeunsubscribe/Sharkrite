@@ -1,0 +1,274 @@
+#!/bin/bash
+# bin/rite-health-report — Sharkrite Operational Health Report
+#
+# Two-stage pipeline:
+#   1. Bash collects raw data from logs, rtk stats, git history, previous reports
+#   2. Claude analyzes the data and generates an actionable markdown report
+#
+# Writes report to .rite/reports/rite-health-YYYYMMDD.md
+#
+# Usage:
+#   rite-health-report              # Generate new report
+#   rite-health-report --latest     # Display most recent report without regenerating
+#   rite-health-report --display    # Generate and display (used by rite --rtk-report)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+DATA_DIR="${RITE_DATA_DIR:-.rite}"
+LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
+REPORTS_DIR="$PROJECT_ROOT/$DATA_DIR/reports"
+DISPLAY_MODE=false
+MIN_WORKFLOWS=3
+
+# Parse args
+case "${1:-}" in
+  --latest)
+    latest=$(find "$REPORTS_DIR" -name "rite-health-*.md" 2>/dev/null | sort | tail -1)
+    if [ -n "$latest" ]; then
+      cat "$latest"
+    else
+      echo "No health reports found in $REPORTS_DIR"
+    fi
+    exit 0
+    ;;
+  --display)
+    DISPLAY_MODE=true
+    ;;
+esac
+
+# Pre-checks
+if ! command -v claude &>/dev/null; then
+  echo "Error: claude CLI not found. Required for report analysis."
+  exit 1
+fi
+
+if ! command -v jq &>/dev/null; then
+  echo "Error: jq not found. Required for data parsing."
+  exit 1
+fi
+
+mkdir -p "$REPORTS_DIR"
+
+TODAY=$(date +%Y-%m-%d)
+TODAY_COMPACT=$(date +%Y%m%d)
+REPORT_FILE="$REPORTS_DIR/rite-health-${TODAY_COMPACT}.md"
+
+# =============================================================================
+# Date helpers (BSD/GNU compatible)
+# =============================================================================
+
+epoch_days_ago() {
+  local days="$1"
+  if date -v-${days}d +%s &>/dev/null 2>&1; then
+    date -v-${days}d +%s
+  else
+    date -d "${days} days ago" +%s
+  fi
+}
+
+date_from_compact() {
+  local compact="$1"
+  if date -j -f "%Y%m%d" "$compact" +%s 2>/dev/null; then
+    return 0
+  else
+    date -d "$compact" +%s 2>/dev/null || echo "0"
+  fi
+}
+
+WEEK_AGO_EPOCH=$(epoch_days_ago 7)
+
+# =============================================================================
+# Stage 1: Collect raw data
+# =============================================================================
+
+# --- Recent log files (past 7 days) ---
+RECENT_LOGS=()
+if [ -d "$LOGS_DIR" ]; then
+  while IFS= read -r logfile; do
+    _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}-[0-9]{6}' | tail -1 | cut -d- -f1)
+    if [ -n "$_log_date" ]; then
+      _log_epoch=$(date_from_compact "$_log_date")
+      if [ "${_log_epoch:-0}" -ge "$WEEK_AGO_EPOCH" ] 2>/dev/null; then
+        RECENT_LOGS+=("$logfile")
+      fi
+    fi
+  done < <(find "$LOGS_DIR" -name "rite-*.log" -type f 2>/dev/null | sort)
+fi
+
+# --- Extract diagnostic lines from recent logs ---
+DIAG_LINES=""
+TIMING_LINES=""
+for logfile in "${RECENT_LOGS[@]+"${RECENT_LOGS[@]}"}"; do
+  DIAG_LINES+=$(grep '\[diag\]' "$logfile" 2>/dev/null || true)
+  DIAG_LINES+=$'\n'
+  TIMING_LINES+=$(grep '\[timing\].*END' "$logfile" 2>/dev/null || true)
+  TIMING_LINES+=$'\n'
+done
+
+# Clean up blank lines
+DIAG_LINES=$(echo "$DIAG_LINES" | sed '/^$/d')
+TIMING_LINES=$(echo "$TIMING_LINES" | sed '/^$/d')
+
+# --- Count workflow completions (minimum data gate) ---
+WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
+
+if [ "$WORKFLOW_COUNT" -lt "$MIN_WORKFLOWS" ]; then
+  {
+    echo "# Sharkrite Health Report — $TODAY"
+    echo ""
+    echo "Insufficient data: $WORKFLOW_COUNT workflow completions in the past 7 days (need $MIN_WORKFLOWS+)."
+    echo ""
+    echo "This report will generate automatically once enough workflows have run with diagnostic logging enabled."
+  } > "$REPORT_FILE"
+  echo "Insufficient data ($WORKFLOW_COUNT workflows, need $MIN_WORKFLOWS+). Report skipped."
+  if [ "$DISPLAY_MODE" = "true" ]; then
+    cat "$REPORT_FILE"
+  fi
+  exit 0
+fi
+
+# --- rtk stats (if installed) ---
+RTK_STATS=""
+if command -v rtk &>/dev/null; then
+  RTK_STATS=$(rtk gain --format json 2>/dev/null || echo "rtk gain failed")
+fi
+
+# --- Recent sharkrite changes (git log on the tool itself) ---
+SHARKRITE_CHANGES=""
+if [ -d "$PROJECT_ROOT/.git" ]; then
+  SHARKRITE_CHANGES=$(cd "$PROJECT_ROOT" && git log --oneline --since="7 days ago" --stat 2>/dev/null || echo "No recent commits")
+fi
+
+# --- Previous reports (last 2 for trend context) ---
+PREV_REPORTS=""
+prev_files=$(find "$REPORTS_DIR" -name "rite-health-*.md" ! -name "rite-health-${TODAY_COMPACT}.md" 2>/dev/null | sort | tail -2)
+for prev_file in $prev_files; do
+  PREV_REPORTS+="--- $(basename "$prev_file") ---"$'\n'
+  PREV_REPORTS+=$(cat "$prev_file" 2>/dev/null || true)
+  PREV_REPORTS+=$'\n\n'
+done
+
+# =============================================================================
+# Stage 2: Build prompt and invoke Claude
+# =============================================================================
+
+PROMPT_FILE=$(mktemp)
+trap 'rm -f "$PROMPT_FILE"' EXIT
+
+cat > "$PROMPT_FILE" << 'SYSTEM_PROMPT'
+You are an operational analyst for Sharkrite, an AI-powered GitHub workflow automation CLI. You are generating a weekly health report based on diagnostic log data.
+
+## Your Task
+
+Analyze the provided data and produce a concise markdown health report. Be direct and actionable. No fluff.
+
+## Report Sections
+
+1. **Summary** — 2-3 sentence overview of the week
+2. **Metrics** — Issues processed, token savings (if rtk active), fix loop iterations, phase durations
+3. **Health Checks** — Flag anything concerning using these absolute thresholds:
+   - Fix iterations avg > 2.0 → WARNING
+   - Any phase failing > 30% of the time → WARNING
+   - Phase 1 (dev) duration avg > 20 min → WATCH
+   - rtk savings < 30% avg → WATCH (possible over-compression)
+   - Any issue hitting max fix iterations (3) → flag that specific issue
+   - Review finding 0 issues consistently → WATCH (review prompt may be too lenient)
+   - CRITICAL findings appearing → flag
+4. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
+5. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
+6. **Action Items** — Specific, actionable recommendations. Examples:
+   - "Consider adding `gh pr diff` to rtk exclude list — Phase 3 fix iterations up"
+   - "Phase 1 duration trending down — rtk compression appears effective"
+   - "Review severity skewing toward LOW — tighten review prompt for more meaningful findings"
+   If everything looks healthy, say "No action needed — continue monitoring."
+
+## Data Format
+
+- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`
+- `[timing]` lines show phase durations: `END phase_name (Xm Xs)`
+- rtk stats are JSON from `rtk gain --format json`
+- Git log shows recent tool changes with file stats
+- Previous reports provide trend context
+
+## Constraints
+
+- Output ONLY the markdown report. No preamble, no explanation of your process.
+- Keep it scannable — use bullet points, not paragraphs.
+- Be specific when flagging issues (mention issue numbers, phase names, exact metrics).
+- If data is sparse for a section, say so briefly and move on.
+SYSTEM_PROMPT
+
+cat >> "$PROMPT_FILE" << DATABLOCK
+
+---
+
+## Diagnostic Log Lines (past 7 days)
+
+$DIAG_LINES
+
+## Phase Timing Lines (past 7 days)
+
+$TIMING_LINES
+
+## rtk Token Stats (cumulative)
+
+$RTK_STATS
+
+## Recent Sharkrite Tool Changes (past 7 days)
+
+$SHARKRITE_CHANGES
+
+## Previous Reports
+
+$PREV_REPORTS
+
+---
+
+Generate the Sharkrite weekly health report for $TODAY.
+DATABLOCK
+
+# --- Invoke provider ---
+echo "Generating health report..."
+
+# Source provider abstraction
+RITE_LIB_DIR="${RITE_LIB_DIR:-$SCRIPT_DIR/../lib}"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+provider_detect_cli || exit 1
+
+REPORT_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "" true 2>/dev/null) || {
+  echo "Error: Provider analysis failed (exit code $?)"
+  exit 1
+}
+
+if [ -z "$REPORT_OUTPUT" ]; then
+  echo "Error: Claude returned empty output"
+  exit 1
+fi
+
+# Write report
+echo "$REPORT_OUTPUT" > "$REPORT_FILE"
+echo "" >> "$REPORT_FILE"
+echo "---" >> "$REPORT_FILE"
+echo "*Generated by rite-health-report on $(date '+%Y-%m-%d %H:%M:%S')*" >> "$REPORT_FILE"
+
+echo "Report written to: $REPORT_FILE"
+
+if [ "$DISPLAY_MODE" = "true" ]; then
+  echo ""
+  cat "$REPORT_FILE"
+fi
+
+# --- Auto-prune reports older than 90 days ---
+PRUNE_EPOCH=$(epoch_days_ago 90)
+find "$REPORTS_DIR" -name "rite-health-*.md" -type f 2>/dev/null | while read -r old_report; do
+  _old_date=$(echo "$old_report" | grep -oE '[0-9]{8}' | tail -1)
+  if [ -n "$_old_date" ]; then
+    _old_epoch=$(date_from_compact "$_old_date")
+    if [ "${_old_epoch:-999999999999}" -lt "$PRUNE_EPOCH" ] 2>/dev/null; then
+      rm -f "$old_report"
+    fi
+  fi
+done

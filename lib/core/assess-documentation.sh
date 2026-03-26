@@ -16,19 +16,11 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
-# Timeout per Claude call in doc assessment (seconds)
+# Timeout per provider call in doc assessment (seconds)
 DOC_CLAUDE_TIMEOUT="${RITE_DOC_CLAUDE_TIMEOUT:-120}"
-
-# Build the claude command prefix with timeout
-# Use RITE_TIMEOUT_CMD if set, otherwise fall back to system `timeout` command
-if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
-  CLAUDE_WITH_TIMEOUT="$RITE_TIMEOUT_CMD $DOC_CLAUDE_TIMEOUT claude"
-elif command -v timeout &>/dev/null; then
-  CLAUDE_WITH_TIMEOUT="timeout $DOC_CLAUDE_TIMEOUT claude"
-else
-  CLAUDE_WITH_TIMEOUT="claude"
-fi
 
 PR_NUMBER="$1"
 AUTO_MODE="${2:-}"
@@ -38,20 +30,9 @@ if [ -z "$PR_NUMBER" ]; then
   exit 1
 fi
 
-# Check Claude CLI availability
-if ! command -v claude &> /dev/null; then
-  print_error "❌ Claude CLI not found"
-  print_warning "Install: npm install -g @anthropic-ai/claude-cli"
-  print_warning "Setup: claude setup-token"
-  exit 1
-fi
-
-# Test Claude CLI
-if ! echo "test" | claude --print --dangerously-skip-permissions &> /dev/null; then
-  print_error "❌ Claude CLI not authenticated or not working"
-  print_warning "Run: claude setup-token"
-  exit 1
-fi
+# Check provider CLI availability and authentication
+provider_detect_cli || exit 1
+provider_validate_cli || exit 1
 
 # =====================================================================
 # SHARED DATA (computed once, used by both layers)
@@ -196,7 +177,7 @@ SECURITY_EOF
 
   verbose_info "  Assessing security findings..."
   local security_output
-  security_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  security_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$security_output" ]; then
@@ -275,7 +256,7 @@ ARCH_EOF
 
   verbose_info "  Assessing architecture..."
   local arch_output
-  arch_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  arch_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$arch_output" ]; then
@@ -348,7 +329,7 @@ API_EOF
 
   verbose_info "  Assessing API changes..."
   local api_output
-  api_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  api_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$api_output" ]; then
@@ -438,7 +419,7 @@ ADR_EOF
 
   verbose_info "  Checking for ADR-worthy decisions..."
   local adr_output
-  adr_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  adr_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$adr_output" ]; then
@@ -526,7 +507,7 @@ RECONCILE_EOF
 
   verbose_info "  Reconciling doc updates..."
   local reconciled_output
-  reconciled_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  reconciled_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -z "$reconciled_output" ]; then
@@ -632,7 +613,7 @@ ${security_content}
 VALIDATE_EOF
 
   local validation_output
-  validation_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  validation_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -z "$validation_output" ] || echo "$validation_output" | grep -q "^NO_CONTRADICTIONS"; then
@@ -659,7 +640,7 @@ ${current_content}
 FIX_EOF
 
     local fixed_output
-    fixed_output=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$fix_prompt_file" 2>/dev/null) || true
+    fixed_output=$(provider_run_prompt_with_timeout "$(cat "$fix_prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
     rm -f "$fix_prompt_file"
 
     if [ -n "$fixed_output" ]; then
@@ -901,7 +882,7 @@ ASSESS_PROMPT_EOF
 echo "    Project docs: analyzing..."
 
 # Run assessment
-ASSESSMENT_OUTPUT=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$ASSESS_PROMPT_FILE" 2>&1)
+ASSESSMENT_OUTPUT=$(provider_run_prompt_with_timeout "$(cat "$ASSESS_PROMPT_FILE")" "" true "$DOC_CLAUDE_TIMEOUT" 2>&1)
 rm -f "$ASSESS_PROMPT_FILE"
 
 # --- Apply or report ---
@@ -991,7 +972,7 @@ UPDATE_PROMPT_EOF
       while [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ] && [ -z "$UPDATED_CONTENT" ]; do
         DOC_ATTEMPT=$((DOC_ATTEMPT + 1))
         CLAUDE_EXIT=0
-        UPDATED_CONTENT=$($CLAUDE_WITH_TIMEOUT --print --dangerously-skip-permissions < "$UPDATE_PROMPT_FILE" 2>&1) || CLAUDE_EXIT=$?
+        UPDATED_CONTENT=$(provider_run_prompt_with_timeout "$(cat "$UPDATE_PROMPT_FILE")" "" true "$DOC_CLAUDE_TIMEOUT" 2>&1) || CLAUDE_EXIT=$?
         if [ $CLAUDE_EXIT -eq 0 ] && [ -z "$UPDATED_CONTENT" ] && [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ]; then
           print_warning "Claude returned empty doc update (attempt $DOC_ATTEMPT/$MAX_DOC_ATTEMPTS) — retrying in 3s..."
           sleep 3

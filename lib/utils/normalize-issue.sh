@@ -19,18 +19,11 @@ if ! declare -f print_info &>/dev/null; then
   fi
 fi
 
-# Detect Claude CLI (consistent with claude-workflow.sh)
-_detect_claude_cmd() {
-  if command -v claude &>/dev/null; then
-    echo "claude"
-  elif command -v claude-code &>/dev/null; then
-    echo "claude-code"
-  elif [ -f "$HOME/.claude/claude" ]; then
-    echo "$HOME/.claude/claude"
-  else
-    echo ""
-  fi
-}
+# Source provider abstraction
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+  load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+fi
 
 # Truncate a string to max_len at a word boundary.
 # Usage: _truncate_at_word_boundary "$string" max_len
@@ -62,9 +55,6 @@ _truncate_at_word_boundary() {
 # Returns: 0 on approval, 1 on rejection
 normalize_piped_input() {
   local input_text="$1"
-
-  local claude_cmd
-  claude_cmd=$(_detect_claude_cmd)
 
   # Build the Claude prompt
   local prompt
@@ -108,7 +98,7 @@ Rules:
   local generated_title=""
   local generated_body=""
 
-  if [ -n "$claude_cmd" ]; then
+  if provider_detect_cli 2>/dev/null; then
     # Write prompt to temp file for stdin passing
     local prompt_file
     prompt_file=$(mktemp)
@@ -117,7 +107,7 @@ Rules:
     print_info "Generating structured issue from description..." >&2
 
     local claude_output
-    claude_output=$($claude_cmd --print < "$prompt_file" 2>/dev/null) || true
+    claude_output=$(provider_run_prompt "$(cat "$prompt_file")" "" false 2>/dev/null) || true
     rm -f "$prompt_file"
 
     if [ -n "$claude_output" ]; then
@@ -130,8 +120,8 @@ Rules:
 
   # Fallback if Claude failed or unavailable: bash-only cleanup
   if [ -z "$generated_title" ]; then
-    if [ -n "$claude_cmd" ]; then
-      print_warning "Claude generation failed — falling back to bash cleanup" >&2
+    if provider_detect_cli 2>/dev/null; then
+      print_warning "Provider generation failed — falling back to bash cleanup" >&2
     else
       print_warning "Claude CLI not found — falling back to bash cleanup" >&2
     fi
@@ -355,14 +345,12 @@ _detect_commit_prefix() {
 # Returns 0 on success (prints condensed title), 1 on failure.
 _paraphrase_title() {
   local long_title="$1"
-  local claude_cmd
-  claude_cmd=$(_detect_claude_cmd)
-  [ -n "$claude_cmd" ] || return 1
+  provider_detect_cli 2>/dev/null || return 1
 
   print_info "Condensing title..." >&2
 
   local result
-  result=$(printf "Condense this into an imperative-mood title, maximum 50 characters. Output ONLY the condensed title — no quotes, no prefix, no explanation.\n\n%s" "$long_title" | $claude_cmd --print 2>/dev/null) || return 1
+  result=$(provider_run_classify "$(printf "Condense this into an imperative-mood title, maximum 50 characters. Output ONLY the condensed title — no quotes, no prefix, no explanation.\n\n%s" "$long_title")") || return 1
 
   # Validate: single line, strip formatting, strip prefix Claude might add
   result=$(echo "$result" | head -1 | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //; s/^"//; s/"$//')

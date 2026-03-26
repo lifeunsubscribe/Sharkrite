@@ -12,6 +12,10 @@ Cross-project communication between Mako (sharkrite), Remora (clearance-screener
 
 **When to check:** Any session where you're improving sharkrite behavior, fixing workflow bugs, or when the user mentions feedback from another repo. Also check when starting a new session after a gap — there may be unread messages.
 
+## Behavioral Design
+
+**Reference:** `docs/architecture/behavioral-design.md` — living document of design decisions, behavioral contracts, and rejected approaches. Check before modifying any subsystem. Update when adding or changing behavior.
+
 ## Architecture
 
 ```
@@ -24,8 +28,11 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
+lib/providers/provider-interface.sh # Provider abstraction dispatcher
+lib/providers/claude.sh           # Claude Code CLI provider (primary)
+lib/providers/gemini.sh           # Gemini CLI provider (skeleton)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
-lib/utils/config.sh               # Config loading, path setup
+lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
@@ -91,7 +98,7 @@ FINDINGS=$(echo "$output" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+" | head -
 
 ### Unbound variables with `set -u` (CRITICAL)
 
-All scripts use `set -euo pipefail`. Unset variables crash the script before any error handling can run. Two recurring patterns:
+All scripts use `set -euo pipefail`. Unset variables crash the script before any error handling can run. Three recurring patterns:
 
 ```bash
 # BAD: crashes if WORKTREE_PATH was never assigned
@@ -99,6 +106,16 @@ if [ -z "$WORKTREE_PATH" ]; then
 
 # GOOD: default-value syntax satisfies set -u
 if [ -z "${WORKTREE_PATH:-}" ]; then
+```
+
+**Never reference a variable before ensuring it's set.** When adding a variable to a file that doesn't currently use it (e.g., `$ISSUE_NUMBER` in a script that only had `$PR_NUMBER`), every reference must use `${VAR:-fallback}` — even in string interpolation. The variable may not be in scope depending on the call path.
+
+```bash
+# BAD: crashes when called standalone (ISSUE_NUMBER not exported by caller)
+print_header "Review — Issue #$ISSUE_NUMBER"
+
+# GOOD: fallback to another identifier
+print_header "Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
 ```
 
 **PIPESTATUS doesn't survive `$()`**. A pipeline inside a command substitution runs in a subshell — `PIPESTATUS` is lost when the subshell exits.
@@ -113,6 +130,16 @@ _exit_file=$(mktemp)
 OUTPUT=$(cmd1 | { cmd2; echo $? > "$_exit_file"; } | cmd3)
 EXIT_CODE=$(cat "$_exit_file")
 rm -f "$_exit_file"
+```
+
+**`local` only works inside functions.** Several scripts (`batch-process-issues.sh`, `assess-and-resolve.sh`) run logic in the main script body, not inside functions. Using `local` there crashes with `local: can only be used in a function`. Use plain variable assignment with `_` prefix instead.
+
+```bash
+# BAD: crashes in main script body
+local dep_state=""
+
+# GOOD: plain assignment (prefix with _ to signal local-ish scope)
+_dep_state=""
 ```
 
 **Exported env vars survive subprocesses, function definitions don't.** Don't use an env var as a "skip" guard for `source` if the sourced file defines functions that child processes need.
@@ -171,6 +198,8 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
+rite --health-report       # Generate + display operational health report
+rite --health-report --latest  # Show most recent report
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
@@ -254,3 +283,78 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Exit codes**: `assess-and-resolve.sh` uses exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2".
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
+
+## Token Optimization (rtk)
+
+**Status:** Trial (installed 2026-03-24)
+**Assessment:** `docs/research/rtk-assessment.md`
+
+[rtk](https://github.com/rtk-ai/rtk) is a CLI proxy that compresses terminal output before Claude Code sees it. Installed as a PreToolUse hook — it rewrites Bash tool commands (e.g., `git status` → `rtk git status`) and returns compressed output.
+
+### What rtk affects
+
+- **Only Claude Code Bash tool calls.** Sharkrite's own scripts (`workflow-runner.sh`, `assess-and-resolve.sh`, etc.) call `git`/`gh`/`jq` directly — rtk never touches them.
+- **Phase 1 (development)** is where savings happen: `git status`, `git diff`, test runs, `grep`, `cat`, `ls`, etc.
+- **Phases 2-5** are unaffected. All Sharkrite `gh` calls use `--json` which rtk passes through unfiltered.
+- **stdin piping** (fix-review mode) is unaffected — the hook only rewrites command strings, not stdin.
+
+### Configuration
+
+```
+~/.config/rtk/config.toml     # Global config (exclusions, tracking, limits)
+.rtk/filters.toml             # Project-local filter overrides (committable)
+~/.claude/hooks/rtk-rewrite.sh # The PreToolUse hook (created by rtk init)
+```
+
+**Excluded commands:** `cat`, `head`, `tail` — rtk rewrites these to `rtk read` which strips code comments. This can cause Claude to write code that doesn't match a file's existing commenting style.
+
+### Diagnosing rtk issues
+
+If Claude behaves oddly during development (re-running commands, misinterpreting results, style mismatches):
+
+```bash
+# Check what rtk is doing
+RTK_TOML_DEBUG=1 rtk git status     # Shows which filter matched
+
+# Check savings stats
+rtk stats                            # Overall savings
+rtk stats --detail                   # Per-command breakdown
+
+# Temporarily disable (removes hook, keeps binary)
+rtk init --global --uninstall
+
+# Re-enable
+rtk init --global --hook-only
+
+# Exclude a specific command
+# Edit ~/.config/rtk/config.toml → [hooks] exclude_commands = ["cat", "head", "tail", "<cmd>"]
+```
+
+### Weekly health report
+
+A launchd job (`com.sharkrite.health-report`) runs every Monday at 9:07 AM and generates `.rite/reports/rite-health-YYYYMMDD.md`. It collects diagnostic log data, rtk stats, recent sharkrite git changes, and previous reports, then pipes everything to Claude for analysis.
+
+The report uses **absolute thresholds** (not before/after comparison):
+- Fix iterations avg > 2.0 → WARNING
+- Any phase failing > 30% → WARNING
+- Phase 1 duration avg > 20 min → WATCH
+- rtk savings < 30% → WATCH
+
+Skips entirely if fewer than 3 workflow completions in the past 7 days.
+
+```bash
+rite --health-report              # Generate and display now
+rite --health-report --latest     # Show most recent without regenerating
+```
+
+### Diagnostic logging
+
+Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation:
+
+- `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
+- `ASSESSMENT` — per-issue assessment counts (NOW/LATER/DISMISSED)
+- `REVIEW` — review severity counts (CRITICAL/HIGH/MEDIUM/LOW)
+- `PHASE_FAILED` — which phase failed and for which issue
+- `SESSION` — Claude session mode and exit code
+
+If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

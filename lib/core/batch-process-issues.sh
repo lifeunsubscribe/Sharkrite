@@ -156,42 +156,31 @@ SECURITY_UPDATES=()
 NEW_ISSUES_CREATED=()
 FAILED_PAIRS=()
 
-print_header "🚀 Batch Processing Started"
-echo "Total Issues: $TOTAL_ISSUES"
-echo "Issues: ${ISSUE_LIST[*]}"
-echo "Mode: Unsupervised (--auto)"
-echo ""
-
 # Pre-start checks
 print_info "Running pre-start checks..."
 
-# Check if any issues require AWS credentials (infrastructure, deployment, AWS service changes)
-AWS_REQUIRED=false
-for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
-  ISSUE_LABELS=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
-  ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title --jq '.title' 2>/dev/null || echo "")
+# AWS credential check — warn only, don't block. If creds are actually needed,
+# tests will fail (which IS a hard gate).
+if detect_aws_project && ! detect_credentials_expired; then
+  print_warning "AWS credentials expired — run: aws sso login --profile ${RITE_AWS_PROFILE}"
+fi
 
-  # Check if issue involves AWS operations
-  if echo "$ISSUE_LABELS,$ISSUE_TITLE" | grep -qiE "\b(infrastructure|deployment|aws|lambda|cognito|dynamodb|s3|ses|sns)\b"; then
-    AWS_REQUIRED=true
-    break
+# Filter out issues that are actively running in another process.
+_all_procs=$(ps -eo pid,command 2>/dev/null || true)
+_active_matches=$(echo "$_all_procs" | grep -E "(workflow-runner|claude-workflow)\.sh" | grep -v "grep" || true)
+_filtered_list=()
+_active_skipped=()
+for _issue_num in "${ISSUE_LIST[@]}"; do
+  if echo "$_active_matches" | grep -qE " ${_issue_num}( |$)"; then
+    _active_skipped+=("$_issue_num")
+  else
+    _filtered_list+=("$_issue_num")
   fi
 done
-
-# Only check AWS credentials if actually needed
-if [ "$AWS_REQUIRED" = true ]; then
-  print_info "Checking AWS credentials (required for infrastructure changes)..."
-  if ! aws sts get-caller-identity &>/dev/null; then
-    print_error "AWS credentials expired"
-    print_info "Run: aws sso login --profile ${RITE_AWS_PROFILE}"
-    send_blocker_notification "AWS Credentials Expired" "batch-${ISSUE_LIST[0]}" "" "" "This workflow involves infrastructure/AWS changes that require valid AWS credentials."
-    exit 1
-  fi
-  print_success "AWS credentials valid"
-else
-  print_info "AWS credentials not required for these issues"
-  # Export flag to skip AWS checks in nested workflow scripts
-  export SKIP_AWS_CHECK=true
+if [ ${#_active_skipped[@]} -gt 0 ]; then
+  print_warning "Skipping issues already running: ${_active_skipped[*]}"
+  ISSUE_LIST=("${_filtered_list[@]}")
+  TOTAL_ISSUES=${#ISSUE_LIST[@]}
 fi
 
 # Check session limits upfront
@@ -230,6 +219,11 @@ if [ "$PROJECTED_TOTAL" -gt "$MAX_ISSUES_LIMIT" ]; then
 fi
 
 print_success "Pre-start checks passed"
+echo ""
+
+print_header "🚀 Batch Processing Started"
+echo "Issues: ${ISSUE_LIST[*]} ($TOTAL_ISSUES total)"
+echo "Mode: Unsupervised (--auto)"
 echo ""
 
 # Pre-flight blocker scan: Check all issues for potential blockers upfront
@@ -291,12 +285,8 @@ send_notification_all "🚀 *Batch Processing Started*
 *Pre-flight Blockers:* ${#PREFLIGHT_BLOCKERS[@]}
 *Mode:* Unsupervised" "normal"
 
-echo "DEBUG: About to start processing ${#ISSUE_LIST[@]} issues" >&2
-echo "DEBUG: ISSUE_LIST=${ISSUE_LIST[*]}" >&2
-
 # Process each issue
 for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
-  echo "DEBUG: Starting loop iteration for issue $ISSUE_NUM" >&2
   ISSUE_START_TIME=$(date +%s)
   CURRENT_ISSUE=$((COMPLETED_ISSUES + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]} + ${#SKIPPED_ISSUES[@]} + 1))
 
@@ -373,27 +363,64 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   fi
 
   # Check if issue depends on another issue that failed/was skipped in this batch
-  # Parses "After: #N" and "Dependencies\nAfter: #N" patterns from issue body
-  DEP_ISSUES=$(echo "$ISSUE_BODY" | grep -oE 'After: #[0-9]+' | grep -oE '[0-9]+' || true)
+  # Parses "After: #N", "After #N", "Depends on #N" patterns from issue body
+  DEP_ISSUES=$(echo "$ISSUE_BODY" | grep -oiE '(After:? #|Depends on #|Blocked by:? #)[0-9]+' | grep -oE '[0-9]+' || true)
   if [ -n "$DEP_ISSUES" ]; then
     DEP_FAILED=false
     FAILED_DEP=""
+    DEP_REASON=""
     for dep_num in $DEP_ISSUES; do
       dep_status="${ISSUE_STATUS[$dep_num]:-}"
       if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
         DEP_FAILED=true
         FAILED_DEP="$dep_num"
+        DEP_REASON="$dep_status in this batch"
+        break
+      fi
+      # Also check if dep issue is still open with an unmerged PR
+      dep_issue_state=$(gh issue view "$dep_num" --json state --jq '.state' 2>/dev/null || echo "")
+      if [ "$dep_issue_state" = "OPEN" ]; then
+        DEP_FAILED=true
+        FAILED_DEP="$dep_num"
+        DEP_REASON="issue still open (PR not merged)"
         break
       fi
     done
     if [ "$DEP_FAILED" = true ]; then
-      print_warning "Dependency #$FAILED_DEP failed/blocked — skipping issue #$ISSUE_NUM"
+      print_warning "Dependency #$FAILED_DEP not ready (${DEP_REASON:-unknown}) — skipping issue #$ISSUE_NUM"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="dep_failed"
       echo ""
       continue
     fi
   fi
+
+  # Check if issue is actively being worked on (worktree exists with a running rite/claude process)
+  _active_wt=""
+  if detect_pr_for_issue "$ISSUE_NUM" 2>/dev/null; then
+    detect_worktree_for_pr "$PR_NUMBER" 2>/dev/null || true
+    _active_wt="${WORKTREE_PATH:-}"
+  fi
+  if [ -z "$_active_wt" ]; then
+    _main_wt=$(git rev-parse --show-toplevel)
+    _active_wt=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | \
+      grep -E "(issue.?${ISSUE_NUM}|#${ISSUE_NUM}|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$)" | head -1 || true)
+  fi
+  if [ -n "$_active_wt" ]; then
+    # Check if a rite or claude process is running for this issue
+    _loop_procs=$(ps -eo pid,command 2>/dev/null || true)
+    if echo "$_loop_procs" | grep -qE "workflow-runner\.sh ${ISSUE_NUM}( |$)" || \
+       echo "$_loop_procs" | grep -qE "claude-workflow\.sh ${ISSUE_NUM}( |$)"; then
+      print_warning "Issue #$ISSUE_NUM is actively running in another process — skipping"
+      SKIPPED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="active"
+      echo ""
+      continue
+    fi
+  fi
+  # Reset PR_NUMBER — detect_pr_for_issue sets it globally
+  PR_NUMBER=""
+  WORKTREE_PATH=""
 
   # Check if issue already has open PR (must have "Closes #XX" in body)
   EXISTING_PR=""
@@ -413,7 +440,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       REVIEW_TIME=$(gh pr view "$EXISTING_PR" --json comments --jq '.comments | map(select(.author.login == "claude")) | .[-1].createdAt' 2>/dev/null || echo "")
 
       if [ -n "$PR_UPDATED" ] && [ -n "$REVIEW_TIME" ] && [[ "$PR_UPDATED" > "$REVIEW_TIME" ]]; then
-        print_info "⏰ Smart Wait: PR #$EXISTING_PR updated after review"
+        print_info "⏰ Smart Wait: issue #$ISSUE_NUM updated after review"
         print_info "Waiting for new review (timeout: 15 minutes, poll every 2 min)..."
         echo ""
 
@@ -469,7 +496,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     fi
 
     # Otherwise, proceed - workflow will use worktree for this PR's branch
-    print_info "Will continue work on PR #$EXISTING_PR in worktree"
+    print_info "Will continue work on issue #$ISSUE_NUM in worktree"
     echo ""
   fi
 

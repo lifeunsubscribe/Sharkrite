@@ -185,6 +185,41 @@ detect_session_limit() {
   return 0
 }
 
+detect_aws_project() {
+  # Detect whether this repo uses AWS by checking for local indicators.
+  # Fast, zero API calls. Cached per session via RITE_AWS_PROJECT.
+  if [ -n "${RITE_AWS_PROJECT:-}" ]; then
+    [ "$RITE_AWS_PROJECT" = "true" ]
+    return $?
+  fi
+
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # IaC markers (most definitive signal)
+  for marker in cdk.json samconfig.toml serverless.yml serverless.yaml template.yaml template.yml; do
+    if [ -f "$project_root/$marker" ]; then
+      export RITE_AWS_PROJECT=true
+      return 0
+    fi
+  done
+
+  # Terraform with AWS provider
+  if find "$project_root" -maxdepth 2 -name '*.tf' -print -quit 2>/dev/null | grep -q . && \
+     grep -rlq 'provider\s*"aws"' "$project_root" --include='*.tf' --max-depth=2 2>/dev/null; then
+    export RITE_AWS_PROJECT=true
+    return 0
+  fi
+
+  # Dependency manifests — only counts as AWS project if ALSO has IaC markers.
+  # Having boto3 as a library dependency doesn't mean the project deploys to AWS
+  # or needs credentials at runtime. Require at least one IaC file (checked above)
+  # to promote a dependency-only match. Without IaC, silently skip.
+  # Projects can override with RITE_AWS_PROJECT=true in .rite/config.
+
+  export RITE_AWS_PROJECT=false
+  return 1
+}
+
 detect_credentials_expired() {
   # Check AWS credentials using configured profile
   if ! aws sts get-caller-identity --profile "${RITE_AWS_PROFILE:-default}" &>/dev/null; then
@@ -344,14 +379,8 @@ check_blockers() {
 
   case "$context" in
     pre-start)
-      # Check session and credentials before starting
-      if [ "${SKIP_AWS_CHECK:-true}" != "true" ]; then
-        if ! detect_credentials_expired; then
-          blocker_type="credentials_expired"
-          blocker_details="AWS credentials are expired"
-          blocker_detected=true
-        fi
-      fi
+      # AWS credentials are checked as a warning, not a blocker.
+      # If creds are actually needed, tests will fail (hard gate).
       ;;
 
     pre-commit)
@@ -392,10 +421,7 @@ check_blockers() {
         blocker_type="session_limit"
         blocker_details=$(detect_session_limit "$issues_completed" "$elapsed_hours" 2>&1)
         blocker_detected=true
-      elif [ "${SKIP_AWS_CHECK:-true}" != "true" ] && ! detect_credentials_expired; then
-        blocker_type="credentials_expired"
-        blocker_details="AWS credentials expired during processing"
-        blocker_detected=true
+      # AWS creds not checked here — test failures catch real AWS dependency issues
       fi
       ;;
   esac

@@ -19,7 +19,10 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
 # Parse arguments
 PR_NUMBER="${1:-}"
@@ -62,7 +65,12 @@ if [[ ! $PR_NUMBER =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-print_header "🦈 Sharkrite Code Review - PR #$PR_NUMBER"
+# Resolve issue number: from env (workflow), or from PR body (standalone)
+if [ -z "${ISSUE_NUMBER:-}" ]; then
+  ISSUE_NUMBER=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+fi
+
+print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
 echo ""
 
 # Get PR info
@@ -105,7 +113,11 @@ if [ "$DIFF_FILES" -eq 0 ] || [ -z "$PR_DIFF" ] || [ "$PR_DIFF" = "" ]; then
   echo "  • All changes were reverted"
   echo "  • Branch is identical to base"
   echo ""
-  exit 0
+  # Exit non-zero so callers know no review was generated.
+  # Previously exited 0, which caused silent failures in the fix loop:
+  # create-pr.sh thought the review succeeded, but nothing was posted,
+  # leading to infinite stale-review reroutes in workflow-runner.sh.
+  exit 1
 fi
 
 # Load review instructions template
@@ -236,18 +248,15 @@ else
   ESTIMATE="2-4 minutes"
 fi
 
+_timer_start "review_generation"
 print_status "Running Sharkrite review (estimated: $ESTIMATE)..."
 echo ""
 
-# Run Claude to generate the review (with retry on empty output)
-# Claude CLI --print occasionally returns empty stdout with exit 0
+# Run provider to generate the review (with retry on empty output)
+# Provider CLI occasionally returns empty stdout with exit 0
 # (transient API error). Retry once before failing.
 
-# Build Claude args with model flag
-CLAUDE_ARGS="--print"
-if [ -n "$EFFECTIVE_MODEL" ]; then
-  CLAUDE_ARGS="$CLAUDE_ARGS --model $EFFECTIVE_MODEL"
-fi
+provider_detect_cli || exit 1
 
 MAX_REVIEW_ATTEMPTS=2
 REVIEW_ATTEMPT=0
@@ -258,19 +267,14 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
   CLAUDE_STDERR=$(mktemp)
 
-  if [ "$AUTO_MODE" = true ]; then
-    REVIEW_OUTPUT=$(echo "$REVIEW_PROMPT" | claude $CLAUDE_ARGS --dangerously-skip-permissions 2>"$CLAUDE_STDERR")
-    REVIEW_EXIT=$?
-  else
-    REVIEW_OUTPUT=$(echo "$REVIEW_PROMPT" | claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR")
-    REVIEW_EXIT=$?
-  fi
+  REVIEW_OUTPUT=$(provider_run_prompt "$REVIEW_PROMPT" "$EFFECTIVE_MODEL" "$AUTO_MODE" 2>"$CLAUDE_STDERR") || true
+  REVIEW_EXIT=${PIPESTATUS[0]:-$?}
 
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
 
-  if [ $REVIEW_EXIT -ne 0 ]; then
-    print_error "Claude review failed (exit code: $REVIEW_EXIT)"
+  if [ "${REVIEW_EXIT:-0}" -ne 0 ]; then
+    print_error "Review failed (exit code: $REVIEW_EXIT)"
     if [ -n "$CLAUDE_ERROR" ]; then
       echo "Error output:"
       echo "$CLAUDE_ERROR"
@@ -279,13 +283,13 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   fi
 
   if [ -z "$REVIEW_OUTPUT" ] && [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]; then
-    print_warning "Claude returned empty review (attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS) — retrying in 3s..."
+    print_warning "Provider returned empty review (attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS) — retrying in 3s..."
     sleep 3
   fi
 done
 
 if [ -z "$REVIEW_OUTPUT" ]; then
-  print_error "Claude returned empty review after $MAX_REVIEW_ATTEMPTS attempts"
+  print_error "Provider returned empty review after $MAX_REVIEW_ATTEMPTS attempts"
   if [ -n "$CLAUDE_ERROR" ]; then
     echo "stderr output:" >&2
     echo "$CLAUDE_ERROR" >&2
@@ -293,6 +297,7 @@ if [ -z "$REVIEW_OUTPUT" ]; then
   exit 1
 fi
 
+_timer_end "review_generation"
 print_success "Review generated successfully"
 echo ""
 
@@ -318,6 +323,9 @@ if [ "$POST_REVIEW" = true ]; then
     MEDIUM_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*medium|📋.*medium priority" || true)
     LOW_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*low|💡.*low|minor suggestion" || true)
   fi
+
+  # Diagnostic logging for health reports
+  _diag "REVIEW issue=${ISSUE_NUMBER:-?} critical=${CRITICAL_COUNT:-0} high=${HIGH_COUNT:-0} medium=${MEDIUM_COUNT:-0} low=${LOW_COUNT:-0}"
 
   # Post as PR comment (via temp file to avoid shell interpretation of
   # backticks and $() in code blocks within the review content)

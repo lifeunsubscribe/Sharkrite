@@ -1,5 +1,6 @@
 # Sharkrite - Per-developer files (do not commit)
 scratch.md
+scratch.md.*
 session-state/
 *.log
 .resume/

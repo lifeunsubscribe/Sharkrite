@@ -587,7 +587,7 @@ repo_wide_status() {
 
   # --- Recently closed ---
   local closed_issues_json
-  closed_issues_json=$(gh issue list --state closed --json number,title,labels,closedAt --limit 10 2>/dev/null || echo "[]")
+  closed_issues_json=$(gh issue list --state closed --json number,title,labels,closedAt --limit 5 2>/dev/null || echo "[]")
 
   local closed_count
   closed_count=$(echo "$closed_issues_json" | jq 'length' 2>/dev/null || echo "0")

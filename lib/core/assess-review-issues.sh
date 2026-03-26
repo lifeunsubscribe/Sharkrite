@@ -26,10 +26,15 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
+# Source provider abstraction
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
 # =============================================================================
 # FRESHNESS CHECK: Skip assessment if no commits since last assessment
@@ -352,43 +357,7 @@ else
   print_status "No prior assessment decisions found (first iteration)"
 fi
 
-# =============================================================================
-# Known error detection - helps identify specific failures for fallback logic
-# =============================================================================
-
-detect_claude_error() {
-  local error_output="$1"
-  local exit_code="$2"
-
-  # AJV/OAuth bug - GitHub MCP server schema validation failure
-  if echo "$error_output" | grep -qiE "ajv|schema.*validation|oauth.*fail|token.*invalid|mcp.*error"; then
-    echo "OAUTH_AJV_BUG"
-    return 0
-  fi
-
-  # Rate limiting
-  if echo "$error_output" | grep -qiE "rate.?limit|too many requests|429"; then
-    echo "RATE_LIMITED"
-    return 0
-  fi
-
-  # Authentication expired
-  if echo "$error_output" | grep -qiE "unauthorized|401|auth.*expired|login required"; then
-    echo "AUTH_EXPIRED"
-    return 0
-  fi
-
-  # Network/connection issues
-  if echo "$error_output" | grep -qiE "connection.*refused|network.*error|timeout|ECONNREFUSED"; then
-    echo "NETWORK_ERROR"
-    return 0
-  fi
-
-  # Unknown error
-  echo "UNKNOWN"
-  return 1
-}
-
+# Error detection now handled by provider_detect_error() from provider abstraction.
 # Export detected error for use by workflow-runner
 export CLAUDE_ERROR_TYPE=""
 
@@ -498,6 +467,7 @@ For each item, use EXACTLY this format (no deviations):
 **Context:** {How does this relate to original issue scope and project goals?}
 {FOR ACTIONABLE_NOW: **Location:** {specific file path and/or function name where fix should land}}
 {FOR ACTIONABLE_NOW: **Fix Effort:** {<10min|<1hr|>1hr}}
+{FOR ACTIONABLE_LATER: **Location:** {specific file(s), module, or domain this finding applies to — must be concrete enough that someone unfamiliar with the PR can find the right code}}
 {FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR}}
 
 DO NOT add any summary section, recommendations, or extra text after the items.
@@ -541,12 +511,17 @@ ACTIONABLE_LATER (defer to tech-debt) IF:
   DISMISSED, not ACTIONABLE_LATER. \"Might need an index someday\" is not a
   real, verifiable problem — it's a prediction about future load.
 
+**LOW severity + ACTIONABLE_LATER:** LOW items create issue overhead that rarely justifies the tracking cost. A LOW finding should only be ACTIONABLE_LATER if it represents a **real functional or security concern** — not code style, hypothetical improvements, or \"consider doing X\" suggestions. When in doubt, DISMISS LOW items. Examples:
+  - LOW + ACTIONABLE_LATER: Missing input validation that could cause a real (not theoretical) data integrity issue
+  - LOW + DISMISSED: \"Consider adding logging\", \"unnecessary type ignore comment\", \"could optimize this query\"
+
 DISMISSED (not worth tracking) IF:
   - Pure style/formatting preference with no functional benefit
   - \"Could also do X\" where both approaches are equally valid
   - Over-engineering suggestion (premature abstraction, add configurability)
   - Speculative concern without concrete evidence or reproduction steps
   - Already documented as intentional or accepted pattern
+  - LOW severity suggestion phrased as \"consider\", \"might want to\", or \"could\"
   - Duplicates an item already classified as ACTIONABLE_NOW
   - ScopeCreep items that are speculative AND require functionality, scale,
     or infrastructure that does not currently exist (e.g., indexes for queries
@@ -570,13 +545,14 @@ if FRESH_ASSESSMENT=$(check_assessment_freshness "$PR_NUMBER" 2>/dev/null); then
   exit 0
 fi
 
+_timer_start "claude_assessment"
 print_status "Running Claude assessment (this may take 30-60 seconds)..."
 
 # Run Claude assessment - mode depends on supervised vs unsupervised
 if [ "$AUTO_MODE" = true ]; then
   # UNSUPERVISED MODE: Use --print and --dangerously-skip-permissions for automation
   #
-  # SECURITY NOTE: --dangerously-skip-permissions is used intentionally for automation.
+  # SECURITY NOTE: Permission bypass is used intentionally for automation.
   # Input is strictly controlled: only PR review text from GitHub API.
   # Assessment task is read-only: classify review items (no code execution).
   # Falls back gracefully on failure.
@@ -585,21 +561,11 @@ if [ "$AUTO_MODE" = true ]; then
   # Capture stderr to debug issues while keeping stdout clean for piping
   CLAUDE_STDERR=$(mktemp)
 
-  # Build Claude args with model flag for consistency
-  CLAUDE_ARGS="--print --dangerously-skip-permissions"
-  if [ -n "$EFFECTIVE_MODEL" ]; then
-    CLAUDE_ARGS="$CLAUDE_ARGS --model $EFFECTIVE_MODEL"
-  fi
-
-  # Run Claude assessment with timeout via shared utility
+  # Run provider assessment with timeout.
   # Use tee to display output while also capturing it.
   # Capture exit code via a temp file — PIPESTATUS doesn't survive $() subshells.
   _exit_file=$(mktemp)
-  if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
-    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | { $RITE_TIMEOUT_CMD "$ASSESSMENT_TIMEOUT" claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
-  else
-    ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | { claude $CLAUDE_ARGS 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
-  fi
+  ASSESSMENT_OUTPUT=$({ provider_run_prompt_with_timeout "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" true "$ASSESSMENT_TIMEOUT" 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
   ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
   rm -f "$_exit_file"
 
@@ -608,24 +574,24 @@ if [ "$AUTO_MODE" = true ]; then
 
   # Check for timeout (exit code 124)
   if [ $ASSESSMENT_EXIT_CODE -eq 124 ]; then
-    print_warning "Claude assessment timed out after ${ASSESSMENT_TIMEOUT}s"
+    print_warning "Assessment timed out after ${ASSESSMENT_TIMEOUT}s"
     print_info "Try increasing timeout: export RITE_ASSESSMENT_TIMEOUT=300"
     print_info "Falling back to creating issue with all items"
     echo "ALL_ITEMS"
     exit 0
   elif [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
     # Detect specific error type
-    CLAUDE_ERROR_TYPE=$(detect_claude_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
+    CLAUDE_ERROR_TYPE=$(provider_detect_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
     export CLAUDE_ERROR_TYPE
 
-    print_error "Claude CLI exited with code $ASSESSMENT_EXIT_CODE"
+    print_error "Provider exited with code $ASSESSMENT_EXIT_CODE"
     echo "" >&2
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
     echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 
     case "$CLAUDE_ERROR_TYPE" in
-      OAUTH_AJV_BUG)
+      PROVIDER_BUG)
         echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
         echo "This is a known SDK issue affecting PR review operations." >&2
         echo "Workaround: Retry or use fallback assessment." >&2
@@ -662,32 +628,25 @@ else
   print_status "You can review and approve Claude's assessment decisions"
   echo ""
 
-  # Build Claude args with model flag for consistency
-  # Note: Using --print because stdin piping breaks interactive TTY
-  CLAUDE_ARGS_SUPERVISED="--print"
-  if [ -n "$EFFECTIVE_MODEL" ]; then
-    CLAUDE_ARGS_SUPERVISED="$CLAUDE_ARGS_SUPERVISED --model $EFFECTIVE_MODEL"
-  fi
-
   CLAUDE_STDERR=$(mktemp)
-  ASSESSMENT_OUTPUT=$(echo "$ASSESSMENT_PROMPT" | claude $CLAUDE_ARGS_SUPERVISED 2>"$CLAUDE_STDERR" | tee /dev/stderr)
+  ASSESSMENT_OUTPUT=$(provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR" | tee /dev/stderr)
   ASSESSMENT_EXIT_CODE=${PIPESTATUS[0]}
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
 
   if [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
     # Detect specific error type
-    CLAUDE_ERROR_TYPE=$(detect_claude_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
+    CLAUDE_ERROR_TYPE=$(provider_detect_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
     export CLAUDE_ERROR_TYPE
 
-    print_error "Claude CLI exited with code $ASSESSMENT_EXIT_CODE"
+    print_error "Provider exited with code $ASSESSMENT_EXIT_CODE"
     echo "" >&2
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
     echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 
     case "$CLAUDE_ERROR_TYPE" in
-      OAUTH_AJV_BUG)
+      PROVIDER_BUG)
         echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
         echo "This is a known SDK issue affecting PR review operations." >&2
         echo "Workaround: Retry or use fallback assessment." >&2
@@ -741,6 +700,7 @@ if [[ "$ASSESSMENT_OUTPUT" == "ERROR:"* ]] || [ -z "$ASSESSMENT_OUTPUT" ]; then
   exit 0
 fi
 
+_timer_end "claude_assessment"
 print_success "Assessment complete"
 
 # Parse assessment to check for actionable items (NOW or LATER)
@@ -836,6 +796,13 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_DEFER="${line#\*\*Defer Reason:\*\* }"
         ;;
       ---END---)
+        # Severity gate: LOW findings are logged but do not justify issue overhead.
+        # They accumulate noise in the tracker and rarely get addressed.
+        if echo "$ITEM_SEVERITY" | grep -qi "LOW"; then
+          print_info "  Skipped (LOW severity): $ITEM_TITLE" >&2
+          continue
+        fi
+
         # Stage 1: fuzzy title match against cached issue list (both tech-debt and review-follow-up)
         DUPLICATE_ISSUE=""
         if [ -n "$EXISTING_ISSUES" ]; then

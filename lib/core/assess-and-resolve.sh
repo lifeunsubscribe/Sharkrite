@@ -34,8 +34,8 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 exec 3>&1  # Save original stdout for filtered content output
 exec 1>&2  # Redirect stdout to stderr for all print functions
 
-# DEBUG: Trap to catch what's causing non-zero exit
-trap 'echo "[ASSESS-RESOLVE TRAP] Exit code: $? at line $LINENO" >&2' ERR
+# Log unexpected exits for diagnostics (log-only, not visible in terminal)
+trap '_diag "ASSESS_RESOLVE_ERR exit=$? line=$LINENO"' ERR
 
 # Temp file cleanup trap handler (minimal - only for initial review fetch)
 cleanup() {
@@ -349,7 +349,7 @@ fi
 # Fetch PR review (local sharkrite review comment)
 # (header already printed by workflow-runner.sh with PR + issue context)
 GH_STDERR=$(mktemp)
-REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1]' 2>"$GH_STDERR") || {
+REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0]' 2>"$GH_STDERR") || {
   GH_ERROR=$(cat "$GH_STDERR")
   rm -f "$GH_STDERR"
   print_error "Failed to fetch PR #$PR_NUMBER"
@@ -503,10 +503,27 @@ if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
     echo "  Latest commit:  $LATEST_COMMIT_TIME"
     echo ""
 
-    # Check if there's a newer review we missed (bot accounts OR local sharkrite reviews)
-    ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | sort_by(.createdAt) | reverse' 2>/dev/null)
+    # Check if there's a newer review we missed (match only actual review comments)
+    ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse' 2>/dev/null)
 
-    NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | select(.createdAt > "'"$LATEST_COMMIT_TIME"'")] | length' 2>/dev/null || echo "0")
+    # Compare using epoch seconds (not jq string comparison) for reliable cross-format matching
+    NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | .createdAt] | map(sub("Z$";"") | split("T") | .[0] + "T" + .[1]) | map(. > "'"$LATEST_COMMIT_TIME"'" | if . then 1 else 0 end) | add // 0' 2>/dev/null || echo "0")
+    # Fallback: use the already-computed COMMIT_EPOCH for a proper epoch comparison
+    if [ "$NEWER_REVIEW_COUNT" -eq 0 ] && [ -n "$ALL_REVIEWS" ]; then
+      # Check the newest review's createdAt against commit epoch
+      _newest_review_time=$(echo "$ALL_REVIEWS" | jq -r '.[0].createdAt // ""' 2>/dev/null)
+      if [ -n "$_newest_review_time" ]; then
+        _newest_epoch=0
+        if date --version >/dev/null 2>&1; then
+          _newest_epoch=$(date -d "$_newest_review_time" "+%s" 2>/dev/null || echo "0")
+        else
+          _newest_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$_newest_review_time" "+%s" 2>/dev/null || echo "0")
+        fi
+        if [ "$_newest_epoch" -gt "$COMMIT_EPOCH" ]; then
+          NEWER_REVIEW_COUNT=1
+        fi
+      fi
+    fi
 
     if [ "$NEWER_REVIEW_COUNT" -gt 0 ]; then
       # A newer review exists — use it instead
@@ -615,15 +632,18 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "📊 Assessment Summary:"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    print_status "  • ACTIONABLE_NOW: $ACTIONABLE_NOW_COUNT items (fix in this PR)"
+    print_status "  • ACTIONABLE_NOW: $ACTIONABLE_NOW_COUNT items (fix now)"
     print_status "  • ACTIONABLE_LATER: $ACTIONABLE_LATER_COUNT items (defer to tech-debt)"
     print_status "  • DISMISSED: $DISMISSED_COUNT items (not worth tracking)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
+    # Diagnostic logging for health reports
+    _diag "ASSESSMENT issue=${ISSUE_NUMBER} retry=${RETRY_COUNT} now=${ACTIONABLE_NOW_COUNT} later=${ACTIONABLE_LATER_COUNT} dismissed=${DISMISSED_COUNT}"
+
     # Decision tree based on three-state counts
     if [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -eq 0 ]; then
-      print_success "All items dismissed — PR is ready to merge!"
+      print_success "All items dismissed — ready to merge!"
 
       exit 0
 
@@ -773,13 +793,25 @@ echo ""
 
 # ============================================================================
 # FOLLOW-UP ISSUE CREATION
-# Only reached if at retry limit with items remaining
+# Reached when ACTIONABLE_LATER items need tech-debt issues, or
+# when retry limit is hit with remaining ACTIONABLE_NOW/CRITICAL items.
 # ============================================================================
 
 # Skip old decision tree if we already handled it above
 if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "false" ] && [ "${CREATE_SECURITY_DEBT:-false}" = "false" ]; then
   print_info "No follow-up issues needed - assessment handled everything"
   exit 0
+fi
+
+# Determine the merge decision NOW, before follow-up issue creation.
+# Follow-up creation is best-effort — if it crashes (gh API error, network issue),
+# it must NOT override the merge decision. The CREATE_SECURITY_DEBT path means
+# "no ACTIONABLE_NOW items, ready to merge" — a failed `gh issue create` shouldn't
+# turn that into "assessment failed, block merge."
+MERGE_EXIT_CODE=0
+if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
+  # CRITICAL items at retry limit — genuinely cannot merge
+  MERGE_EXIT_CODE=1
 fi
 
 # Handle tech-debt case (retry limit reached, no CRITICAL items)
@@ -805,6 +837,9 @@ if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
 fi
 
 # Create consolidated follow-up issue if needed
+# Disable errexit: follow-up issue creation is best-effort and must not
+# override the merge decision (MERGE_EXIT_CODE) if any gh/grep/jq call fails.
+set +e
 if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   print_header "📝 Creating Consolidated Follow-up Issue"
 
@@ -857,14 +892,32 @@ $(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "L
     LOW_COUNT=${LOW_COUNT:-0}
 
     print_info "Issue counts: CRITICAL=$CRITICAL_COUNT, HIGH=$HIGH_COUNT, MEDIUM=$MEDIUM_COUNT, LOW=$LOW_COUNT"
+
+    # Drop LOW items — they accumulate noise without justifying issue overhead.
+    # Log them for visibility but exclude from the follow-up issue.
+    if [ "$LOW_COUNT" -gt 0 ]; then
+      print_info "Excluding $LOW_COUNT LOW-severity item(s) from follow-up issue (not worth tracking)"
+    fi
+    LOW_ISSUES=""
+    LOW_COUNT=0
   else
     # Fallback: Extract all issues from review using sed (when Claude unavailable)
     CRITICAL_ISSUES=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
     HIGH_ISSUES=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
     MEDIUM_ISSUES=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
-    LOW_ISSUES=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
+    LOW_ISSUES=""
+    LOW_COUNT=0
   fi
 
+  # If only LOWs existed and we just filtered them all out, skip issue creation
+  if [ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && [ "$MEDIUM_COUNT" -eq 0 ]; then
+    print_info "All remaining items are LOW severity — skipping follow-up issue creation"
+    CREATE_FOLLOWUP_ISSUES=false
+  fi
+fi
+
+# Gate: only proceed if we still have items worth tracking after LOW filtering
+if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   # Build consolidated issue body
   ASSESSMENT_NOTE=""
   if [ "$USE_FILTERED" = true ]; then
@@ -915,6 +968,8 @@ $(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "L
       # Look up severity for this item (lines after the header in assessment)
       _ac_severity=$(echo "$FILTERED_CONTENT" | grep -A 3 -F "$_ac_line" | grep -oE "Severity:.*" | head -1 | sed 's/Severity:[[:space:]]*//' | sed 's/\*//g')
       _ac_severity=${_ac_severity:-MEDIUM}
+      # Skip LOW items — excluded from follow-up issues
+      if echo "$_ac_severity" | grep -qi "LOW"; then continue; fi
       ACCEPTANCE_ITEMS="${ACCEPTANCE_ITEMS}
 - [ ] [$_ac_severity] $_ac_title"
     done < <(echo "$FILTERED_CONTENT" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
@@ -956,6 +1011,7 @@ $(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "L
 
   # PR metadata
   PR_BRANCH_NAME=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "unknown")
+  PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title' 2>/dev/null || echo "")
 
   # --- Build issue body ---
 
@@ -966,7 +1022,7 @@ $(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "L
 
 $FOLLOWUP_DESCRIPTION$ASSESSMENT_NOTE
 
-**Source PR:** #$PR_NUMBER
+**Source PR:** #$PR_NUMBER$([ -n "$PR_TITLE" ] && echo " — $PR_TITLE")
 **Branch:** $PR_BRANCH_NAME
 **Review Date:** $(date +%Y-%m-%d)
 
@@ -1022,12 +1078,20 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
   # Determine issue title and search term based on type
   # Title format follows templates/issue-template.md convention: [type] Brief description
+  # Include PR title for domain context (e.g., "[tech-debt] Grocery filtering: review feedback from PR #132")
+  _pr_context=""
+  if [ -n "${PR_TITLE:-}" ]; then
+    # Truncate long PR titles to keep issue title under ~80 chars
+    _pr_context=$(echo "$PR_TITLE" | cut -c1-50 | sed 's/[[:space:]]*$//')
+    [ ${#PR_TITLE} -gt 50 ] && _pr_context="${_pr_context}..."
+    _pr_context="${_pr_context}: "
+  fi
   if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    ISSUE_TITLE="[tech-debt] Review feedback from PR #$PR_NUMBER"
-    ISSUE_SEARCH="Review feedback from PR #$PR_NUMBER"
+    ISSUE_TITLE="[tech-debt] ${_pr_context}review feedback from PR #$PR_NUMBER"
+    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
   else
-    ISSUE_TITLE="[review-follow-up] Review feedback from PR #$PR_NUMBER"
-    ISSUE_SEARCH="Review feedback from PR #$PR_NUMBER"
+    ISSUE_TITLE="[review-follow-up] ${_pr_context}review feedback from PR #$PR_NUMBER"
+    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
   fi
 
   # Check if issue already exists: prefer source-issue scoped body search, fallback to title search
@@ -1123,29 +1187,22 @@ This approach allows all fixes to be completed together in a focused PR."
     print_info "Follow-up issue #$FOLLOWUP_NUMBER created — run \`rite $FOLLOWUP_NUMBER\` separately to address it"
   fi
 fi
+set -e  # Re-enable errexit after follow-up issue creation
 
-# Final summary
+# Final summary — use MERGE_EXIT_CODE (decided before follow-up creation)
 print_header "✅ Assessment Complete"
-
-if [ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && [ "$MEDIUM_COUNT" -eq 0 ] && [ "$LOW_COUNT" -eq 0 ]; then
-  print_success "No issues found - PR approved!"
-  echo ""
-  echo "Ready to merge"
-  exit 0
-fi
 
 echo "Summary of actions taken:"
 [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -n "${FOLLOWUP_NUMBER:-}" ] && echo "  ✅ Follow-up issue #$FOLLOWUP_NUMBER created for HIGH/MEDIUM items"
 [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -z "${FOLLOWUP_NUMBER:-}" ] && echo "  ⚠️  Follow-up issue creation failed (items not tracked)"
-[ "${CREATE_LOW_BATCH:-false}" = true ] && [ "$LOW_COUNT" -gt 0 ] && echo "  ✅ Batched LOW priority items into single issue"
-[ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && echo "  ✅ No blocking issues - safe to merge"
+[ "${CREATE_LOW_BATCH:-false}" = true ] && [ "${LOW_COUNT:-0}" -gt 0 ] && echo "  ✅ Batched LOW priority items into single issue"
 
 echo ""
 
-if [ "$CRITICAL_COUNT" -eq 0 ]; then
+if [ "$MERGE_EXIT_CODE" -eq 0 ]; then
   print_success "All issues resolved or tracked - ready to proceed"
   exit 0
 else
-  print_error "CRITICAL issues require fixes"
-  exit 2
+  print_error "CRITICAL issues remain — manual intervention required"
+  exit 1
 fi

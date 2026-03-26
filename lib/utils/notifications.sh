@@ -138,17 +138,17 @@ send_notification_all() {
   echo ""
   echo "📢 Sending notifications ($urgency)..."
 
-  # Always send to Slack and Email
-  send_slack "$message" "$urgency"
+  # All sends are best-effort — failures must not kill the caller under set -e
+  send_slack "$message" "$urgency" || true
 
   # Format message for email (convert markdown to plain text)
   local email_message=$(echo "$message" | sed 's/\*\*//g' | sed 's/`//g' | sed 's/^#\+ //')
   local email_subject=$(echo "$email_message" | head -1 | cut -c 1-50)
-  send_email "$email_subject" "$email_message" "$urgency"
+  send_email "$email_subject" "$email_message" "$urgency" || true
 
   # Only send SMS for urgent notifications
   if [ "$urgency" = "urgent" ]; then
-    send_sms "$message"
+    send_sms "$message" || true
   fi
 
   echo ""

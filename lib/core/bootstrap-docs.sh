@@ -11,6 +11,8 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
 RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-${RITE_PROJECT_ROOT}/.rite/docs}"
 
@@ -49,9 +51,9 @@ if [ "$FILE_COUNT" -gt 500 ]; then
   fi
 fi
 
-# Check Claude CLI availability
-if ! command -v claude &> /dev/null; then
-  print_warning "Claude CLI not found — skipping bootstrap (internal docs will build incrementally)"
+# Check provider CLI availability
+if ! provider_detect_cli 2>/dev/null; then
+  print_warning "Provider CLI not found — skipping bootstrap (internal docs will build incrementally)"
   return 0 2>/dev/null || exit 0
 fi
 
@@ -60,6 +62,14 @@ echo "🔍 Bootstrapping internal docs from codebase..."
 echo ""
 
 mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
+
+# Gather existing project docs once (shared across prompts)
+EXISTING_PROJECT_DOCS=""
+for _doc in CLAUDE.md README.md docs/**/*.md doc/**/*.md; do
+  if [ -f "$_doc" ]; then
+    EXISTING_PROJECT_DOCS="$EXISTING_PROJECT_DOCS\n--- $_doc ---\n$(head -30 "$_doc")\n"
+  fi
+done
 
 # =====================================================================
 # CHANGELOG
@@ -89,7 +99,7 @@ Git log:
 PROMPT_EOF
     echo "$GIT_LOG" >> "$PROMPT_FILE"
 
-    CHANGELOG_OUTPUT=$(claude --print --dangerously-skip-permissions < "$PROMPT_FILE" 2>/dev/null) || true
+    CHANGELOG_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "" true 2>/dev/null) || true
     rm -f "$PROMPT_FILE"
 
     if [ -n "$CHANGELOG_OUTPUT" ]; then
@@ -156,9 +166,12 @@ ${BLOCKER_CONFIG}
 
 Package audit (truncated):
 ${PKG_AUDIT}
+
+Existing project docs (headers):
+$(echo -e "$EXISTING_PROJECT_DOCS")
 PROMPT_EOF
 
-  SECURITY_OUTPUT=$(claude --print --dangerously-skip-permissions < "$PROMPT_FILE" 2>/dev/null) || true
+  SECURITY_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "" true 2>/dev/null) || true
   rm -f "$PROMPT_FILE"
 
   if [ -n "$SECURITY_OUTPUT" ]; then
@@ -226,12 +239,7 @@ if ! _skip_existing "$ARCH_FILE"; then
     CONFIG_PATTERNS=$(head -150 CLAUDE.md)
   fi
 
-  EXISTING_DOCS=""
-  for doc in docs/**/*.md CLAUDE.md README.md; do
-    if [ -f "$doc" ]; then
-      EXISTING_DOCS="$EXISTING_DOCS\n--- $doc ---\n$(head -30 "$doc")\n"
-    fi
-  done
+  EXISTING_DOCS="$EXISTING_PROJECT_DOCS"
 
   # Detect stub/empty source files (< 10 lines, common indicator of unbuilt modules)
   STUB_FILES=$(find . -maxdepth 4 -type f \
@@ -301,7 +309,7 @@ Existing docs (headers):
 $(echo -e "$EXISTING_DOCS")
 PROMPT_EOF
 
-  ARCH_OUTPUT=$(claude --print --dangerously-skip-permissions < "$PROMPT_FILE" 2>/dev/null) || true
+  ARCH_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "" true 2>/dev/null) || true
   rm -f "$PROMPT_FILE"
 
   if [ -n "$ARCH_OUTPUT" ]; then
@@ -389,9 +397,12 @@ ${CONFIG_DEFAULTS}
 
 Exit codes:
 $(echo -e "$EXIT_CODES")
+
+Existing project docs (headers):
+$(echo -e "$EXISTING_PROJECT_DOCS")
 PROMPT_EOF
 
-  API_OUTPUT=$(claude --print --dangerously-skip-permissions < "$PROMPT_FILE" 2>/dev/null) || true
+  API_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "" true 2>/dev/null) || true
   rm -f "$PROMPT_FILE"
 
   if [ -n "$API_OUTPUT" ]; then
@@ -479,7 +490,7 @@ ${security_content}
 VALIDATE_EOF
 
   local validation_output
-  validation_output=$(claude --print --dangerously-skip-permissions < "$prompt_file" 2>/dev/null) || true
+  validation_output=$(provider_run_prompt "$(cat "$prompt_file")" "" true 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -z "$validation_output" ] || echo "$validation_output" | grep -q "^NO_CONTRADICTIONS"; then
@@ -518,7 +529,7 @@ ${current_content}
 FIX_EOF
 
     local fixed_output
-    fixed_output=$(claude --print --dangerously-skip-permissions < "$fix_prompt_file" 2>/dev/null) || true
+    fixed_output=$(provider_run_prompt "$(cat "$fix_prompt_file")" "" true 2>/dev/null) || true
     rm -f "$fix_prompt_file"
 
     if [ -n "$fixed_output" ]; then

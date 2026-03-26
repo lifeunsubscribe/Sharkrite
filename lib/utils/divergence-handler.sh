@@ -191,8 +191,11 @@ Answer with ONLY ONE WORD: TRIVIAL, RELATED, or UNRELATED
 CLASSIFY_EOF
 
   local classification=""
-  if command -v claude &>/dev/null; then
-    classification=$(claude --print < "$prompt_file" 2>/dev/null | grep -oiE "(TRIVIAL|RELATED|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
+  # Load utility provider for classification
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+  load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+  if provider_detect_cli 2>/dev/null; then
+    classification=$(provider_run_classify "$(cat "$prompt_file")" | grep -oiE "(TRIVIAL|RELATED|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
   fi
   rm -f "$prompt_file"
 

@@ -33,10 +33,10 @@ assess_pr_review() {
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
-  # Get the LATEST review only (use jq array indexing, not tail)
-  # Includes bot accounts AND local reviews (marked with sharkrite-local-review)
+  # Get the LATEST review only (match by body marker, not author — avoids picking up
+  # assessment or other bot comments). Sorted by createdAt to ensure newest first.
   local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
-    --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude-code" or .author.login == "github-actions[bot]" or (.body | contains("<!-- sharkrite-local-review")))] | .[-1] | .body' \
+    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0].body' \
     2>/dev/null)
 
   # Validate gh CLI returned valid data

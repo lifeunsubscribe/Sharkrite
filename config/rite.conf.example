@@ -31,6 +31,11 @@
 # Notifications (optional)
 # =============================================================================
 
+# Enable notifications for this config scope (default: false)
+# Notifications are opt-in — even if SLACK_WEBHOOK is set in your environment,
+# notifications won't fire unless this is explicitly set to "true".
+# RITE_NOTIFICATIONS="true"
+
 # Slack webhook URL for workflow notifications
 # SLACK_WEBHOOK="https://hooks.slack.com/services/..."
 
@@ -50,5 +55,29 @@
 # AWS Integration (optional)
 # =============================================================================
 
-# Skip AWS credential checks (set to true for non-AWS projects)
-# SKIP_AWS_CHECK=true
+# AWS credential checks are auto-detected from repo dependencies and IaC markers.
+
+# =============================================================================
+# Provider Selection (per-phase)
+# =============================================================================
+
+# Available providers: claude, gemini
+# Each workflow phase can use a different provider.
+# All default to "claude" — existing configs need no changes.
+
+# Provider for development + fix sessions (agentic with tool restrictions)
+# RITE_DEV_PROVIDER="claude"
+
+# Provider for reviews, assessments, and planning (text-in/text-out)
+# RITE_REVIEW_PROVIDER="claude"
+
+# Provider for utility calls (classification, normalization, health reports)
+# RITE_UTILITY_PROVIDER="claude"
+
+# Claude models (used when provider is "claude")
+# RITE_CLAUDE_MODEL="claude-sonnet-4-5"
+# RITE_REVIEW_MODEL="claude-opus-4-5"
+
+# Gemini models (used when provider is "gemini")
+# RITE_GEMINI_DEV_MODEL="gemini-2.5-pro"
+# RITE_GEMINI_REVIEW_MODEL="gemini-2.5-pro"

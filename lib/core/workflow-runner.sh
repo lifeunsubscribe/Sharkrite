@@ -22,6 +22,7 @@ source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -46,6 +47,7 @@ MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 # ===================================================================
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/logging.sh"
 
 # ===================================================================
 # GRACEFUL EXIT HANDLING
@@ -336,10 +338,16 @@ handle_blocker() {
 phase_pre_start_checks() {
   local issue_number="$1"
 
-  # Bootstrap internal docs if missing or sparse
+  # Bootstrap internal docs if any required file is missing
   RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-${RITE_PROJECT_ROOT}/.rite/docs}"
-  if [ ! -f "${RITE_INTERNAL_DOCS_DIR}/architecture.md" ] || \
-     [ "$(find "${RITE_INTERNAL_DOCS_DIR}" -name "*.md" 2>/dev/null | wc -l)" -lt 3 ]; then
+  local _needs_bootstrap=false
+  for _required_doc in architecture.md api.md security.md changelog.md; do
+    if [ ! -f "${RITE_INTERNAL_DOCS_DIR}/${_required_doc}" ]; then
+      _needs_bootstrap=true
+      break
+    fi
+  done
+  if [ "$_needs_bootstrap" = true ]; then
     source "$RITE_LIB_DIR/core/bootstrap-docs.sh"
   fi
 
@@ -442,13 +450,14 @@ Answer with ONLY ONE WORD:
 Answer:
 EOF
 
-            RELEVANCE=$(claude --print < "$PROMPT_FILE" 2>/dev/null | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
+            load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+            RELEVANCE=$(provider_run_classify "$(cat "$PROMPT_FILE")" | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
             rm -f "$PROMPT_FILE"
 
             # If Claude CLI failed or returned nothing, fail hard
             if [ -z "$RELEVANCE" ]; then
-              echo "   ❌ Claude CLI failed to analyze changes"
-              echo "   ❌ Cannot proceed without determining relevance"
+              echo "   Provider CLI failed to analyze changes"
+              echo "   Cannot proceed without determining relevance"
               echo ""
               echo "   Uncommitted changes:"
               echo "$UNCOMMITTED_FILES" | sed 's/^/   /'
@@ -501,12 +510,12 @@ EOF
         FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
 
         if [ "$FILE_CHANGES" -gt 0 ]; then
-          print_info "PR #$pr_number has $FILE_CHANGES file(s) changed — skipping development phase"
+          print_info "Issue #$issue_number has $FILE_CHANGES file(s) changed — skipping development phase"
           print_success "Development phase complete"
           return 0
         else
           # PR exists but has no real work - need to run development
-          print_info "PR #$pr_number exists but has no implementation yet"
+          print_info "Issue #$issue_number has a PR but no implementation yet"
           print_status "Running development phase..."
 
           # Call claude-workflow.sh to do the actual development work
@@ -521,6 +530,33 @@ EOF
             BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
             if ! handle_blocker "pre-merge" "$issue_number"; then
               return 1
+            fi
+          elif [ $WORKFLOW_EXIT -eq 4 ]; then
+            # No work produced — retry once
+            print_warning "Development session produced no changes — retrying once"
+            echo ""
+            if [ "$WORKFLOW_MODE" = "supervised" ]; then
+              RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
+            else
+              RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
+            fi
+            WORKFLOW_EXIT=$?
+            if [ $WORKFLOW_EXIT -eq 4 ]; then
+              print_error "Development produced no changes after retry"
+              print_info "Issue may need manual investigation or a clearer description"
+              # Clean up empty draft PR
+              if [ -n "${pr_number:-}" ]; then
+                local _pr_adds
+                _pr_adds=$(gh pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
+                if [ "${_pr_adds:-0}" -eq 0 ]; then
+                  gh pr close "$pr_number" --delete-branch 2>/dev/null || true
+                  print_info "Closed empty draft PR #$pr_number"
+                fi
+              fi
+              return 1
+            elif [ $WORKFLOW_EXIT -ne 0 ] && [ $WORKFLOW_EXIT -ne 3 ]; then
+              print_error "Development workflow failed on retry (exit code: $WORKFLOW_EXIT)"
+              return $WORKFLOW_EXIT
             fi
           elif [ $WORKFLOW_EXIT -ne 0 ]; then
             print_error "Development workflow failed"
@@ -542,7 +578,7 @@ EOF
       else
         # PR exists but no worktree (e.g., after undo reverted PR to draft and removed worktree)
         # Run development to create worktree and implement the fix
-        print_info "PR #$pr_number exists but worktree not found — running development"
+        print_info "Issue #$issue_number has a PR but worktree not found — running development"
 
         local workflow_exit=0
         set +e
@@ -629,24 +665,62 @@ EOF
         if ! handle_blocker "pre-merge" "$issue_number"; then
           return 1
         fi
+      elif [ $workflow_exit -eq 4 ]; then
+        # Exit 4 = session completed but no work produced. Retry once.
+        print_warning "Development session produced no changes — retrying once"
+        echo ""
+
+        set +e
+        if [ "$WORKFLOW_MODE" = "supervised" ]; then
+          RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
+        else
+          RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
+        fi
+        workflow_exit=$?
+        set -e
+
+        # Re-discover worktree after retry
+        if detect_pr_for_issue "$issue_number"; then
+          detect_worktree_for_pr "$PR_NUMBER" || true
+        fi
+        if [ -z "${WORKTREE_PATH:-}" ]; then
+          MAIN_WORKTREE=$(git rev-parse --show-toplevel)
+          WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
+            grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1)
+        fi
+
+        if [ $workflow_exit -eq 4 ]; then
+          print_error "Development produced no changes after retry"
+          print_info "Issue may need manual investigation or a clearer description"
+
+          # Clean up empty draft PR so it doesn't cause stale worktree loops on next run
+          if [ -n "${PR_NUMBER:-}" ]; then
+            local _pr_additions
+            _pr_additions=$(gh pr view "$PR_NUMBER" --json additions --jq '.additions' 2>/dev/null || echo "0")
+            if [ "${_pr_additions:-0}" -eq 0 ]; then
+              gh pr close "$PR_NUMBER" --delete-branch 2>/dev/null || true
+              print_info "Closed empty draft PR #$PR_NUMBER"
+            fi
+          fi
+          return 1
+        elif [ $workflow_exit -eq 3 ]; then
+          BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
+          if ! handle_blocker "pre-merge" "$issue_number"; then
+            return 1
+          fi
+        elif [ $workflow_exit -ne 0 ]; then
+          print_error "Development workflow failed on retry (exit code: $workflow_exit)"
+          return $workflow_exit
+        fi
       elif [ $workflow_exit -ne 0 ]; then
         print_error "Development workflow failed (exit code: $workflow_exit)"
         return $workflow_exit
       fi
 
       if [ -z "${WORKTREE_PATH:-}" ]; then
-        # claude-workflow.sh may have closed the draft PR and cleaned up the branch
-        # when Claude made no commits (e.g. API error, or concluded "already done").
-        # In that case exit 0 is expected — treat as "no work produced".
-        if [ $workflow_exit -eq 0 ]; then
-          print_warning "Development phase completed but no worktree found"
-          print_info "claude-workflow.sh likely cleaned up an empty branch (no commits made)"
-          print_info "Aborting workflow — nothing to push or review"
-        else
-          print_error "Worktree not found after claude-workflow.sh"
-          print_info "Available worktrees:"
-          git worktree list
-        fi
+        print_error "Worktree not found after claude-workflow.sh"
+        print_info "Available worktrees:"
+        git worktree list
         return 1
       fi
 
@@ -736,8 +810,18 @@ phase_create_pr() {
     ' 2>/dev/null || echo "")
 
     if [ -n "$latest_review_time" ] && [ -n "$latest_local_commit_time" ]; then
-      if [[ "$latest_review_time" > "$latest_local_commit_time" ]]; then
-        print_info "PR #$PR_NUMBER already has a current review — skipping push/review phase"
+      # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison.
+      # Matches the epoch comparison in assess-and-resolve.sh (line ~500).
+      local review_epoch commit_epoch
+      if date --version >/dev/null 2>&1; then
+        review_epoch=$(date -d "$latest_review_time" "+%s" 2>/dev/null || echo "0")
+        commit_epoch=$(date -d "$latest_local_commit_time" "+%s" 2>/dev/null || echo "0")
+      else
+        review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_review_time" "+%s" 2>/dev/null || echo "0")
+        commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_local_commit_time" "+%s" 2>/dev/null || echo "0")
+      fi
+      if [ "$review_epoch" -gt 0 ] && [ "$commit_epoch" -gt 0 ] && [ "$review_epoch" -gt "$commit_epoch" ]; then
+        print_info "Issue #$issue_number already has a current review — skipping push/review phase"
         return 0
       fi
     fi
@@ -810,7 +894,7 @@ phase_assess_and_resolve() {
         if [ "$existing_later" -gt 0 ] && [ "$has_followup" != "true" ]; then
           print_info "Assessment passes but $existing_later ACTIONABLE_LATER items need tech-debt issues — running Phase 3"
         else
-          print_info "PR #$pr_number already has a passing assessment (0 ACTIONABLE_NOW) — skipping assessment phase"
+          print_info "Issue #$issue_number already has a passing assessment (0 ACTIONABLE_NOW) — skipping assessment phase"
           [ "$existing_later" -gt 0 ] && print_status "  ($existing_later ACTIONABLE_LATER items already have follow-up issues)"
           return 0
         fi
@@ -865,8 +949,8 @@ phase_assess_and_resolve() {
   local assess_stderr=$(mktemp)
 
   # Show assessment header with progress indicator
-  print_header "📊 PR Review Assessment"
-  print_status "Analyzing PR #$pr_number for issue #$issue_number..."
+  print_header "📊 Review Assessment — Issue #$issue_number"
+  print_status "Analyzing issue #$issue_number (PR #$pr_number)..."
   local assess_start_time=$(date +%s)
 
   set +e  # Temporarily disable exit-on-error to capture exit code properly
@@ -912,7 +996,7 @@ phase_assess_and_resolve() {
 
     if [ $now_count -gt 0 ] || [ $later_count -gt 0 ] || [ $dismissed_count -gt 0 ]; then
       print_info "Decision breakdown:"
-      print_status "  • ACTIONABLE_NOW: $now_count items (fixing in this PR)"
+      print_status "  • ACTIONABLE_NOW: $now_count items (fix now)"
       [ $later_count -gt 0 ] && print_status "  • ACTIONABLE_LATER: $later_count items (deferred)"
       [ $dismissed_count -gt 0 ] && print_status "  • DISMISSED: $dismissed_count items (ignored)"
     fi
@@ -974,7 +1058,10 @@ phase_assess_and_resolve() {
     fi
 
     # After fixes, restart from Phase 2 (create/update PR)
-    phase_create_pr "$issue_number" --loop
+    if ! phase_create_pr "$issue_number" --loop; then
+      print_error "Failed to push fixes and regenerate review"
+      return 1
+    fi
 
     # Increment retry count and recurse (compact headers via retry_count > 0)
     local next_retry=$((retry_count + 1))
@@ -997,7 +1084,44 @@ phase_assess_and_resolve() {
     print_warning "Review is stale — routing back to Phase 2 for fresh review (reroute $((stale_reroute_count + 1))/2)"
     rm -f "$assess_stderr"
 
-    phase_create_pr "$issue_number" --loop
+    if ! phase_create_pr "$issue_number" --loop; then
+      print_error "Failed to regenerate review during stale reroute"
+      return 1
+    fi
+
+    # Validate that a fresh review was actually posted before re-entering assessment.
+    # Without this, a silent review generation failure causes assess-and-resolve to
+    # see the same stale review → exit 3 again → infinite reroute loop.
+    local _post_reroute_review_time
+    _post_reroute_review_time=$(gh pr view "$PR_NUMBER" --json comments --jq '
+      [.comments[] | select(
+        .body | contains("<!-- sharkrite-local-review")
+      )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""
+    ' 2>/dev/null || echo "")
+
+    # Ensure commit time is available (phase_create_pr may skip computing it)
+    if [ -z "${LATEST_COMMIT_TIME:-}" ]; then
+      get_latest_work_commit_time "$WORKTREE_PATH" "$PR_NUMBER"
+    fi
+
+    if [ -n "$_post_reroute_review_time" ] && [ -n "${LATEST_COMMIT_TIME:-}" ]; then
+      local _rr_review_epoch _rr_commit_epoch
+      if date --version >/dev/null 2>&1; then
+        _rr_review_epoch=$(date -d "$_post_reroute_review_time" "+%s" 2>/dev/null || echo "0")
+        _rr_commit_epoch=$(date -d "$LATEST_COMMIT_TIME" "+%s" 2>/dev/null || echo "0")
+      else
+        _rr_review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$_post_reroute_review_time" "+%s" 2>/dev/null || echo "0")
+        _rr_commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$LATEST_COMMIT_TIME" "+%s" 2>/dev/null || echo "0")
+      fi
+      if [ "$_rr_review_epoch" -gt 0 ] && [ "$_rr_commit_epoch" -gt 0 ] && \
+         [ "$_rr_review_epoch" -le "$_rr_commit_epoch" ]; then
+        print_error "Review regeneration did not produce a fresh review (review still older than latest commit)"
+        print_info "Review: $_post_reroute_review_time  Commit: $LATEST_COMMIT_TIME"
+        print_info "Manual regeneration: rite $issue_number --review-latest"
+        return 1
+      fi
+    fi
+
     phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$retry_count"
     return $?
   elif [ $assessment_result -ne 0 ]; then
@@ -1022,7 +1146,7 @@ phase_merge_pr() {
   local issue_number="$1"
   local pr_number="$2"
 
-  print_header "Phase 4: Merge PR and Update Docs"
+  print_header "Phase 4: Merge and Update Docs"
 
   cd "$WORKTREE_PATH"
 
@@ -1131,7 +1255,7 @@ phase_merge_pr() {
     git -C "$RITE_PROJECT_ROOT" branch -D "$_merged_branch" 2>/dev/null || true
   fi
 
-  print_success "PR #${pr_number} merged successfully"
+  print_success "Issue #${issue_number} merged successfully (PR #${pr_number})"
   increment_completed
 
   # Restore stashed unrelated work if any (after merge completes)
@@ -1180,7 +1304,25 @@ phase_completion() {
   # Show session summary
   echo ""
   get_session_summary
+
+  # Show rtk token savings if available
+  local rtk_summary
+  rtk_summary=$(_rtk_summary 2>/dev/null || true)
+  if [ -n "${rtk_summary:-}" ]; then
+    echo "  $rtk_summary"
+  fi
   echo ""
+
+  # Log structured completion line for weekly health report aggregation
+  local phase1_saved="0"
+  local phase3_saved="0"
+  if command -v rtk &>/dev/null; then
+    phase1_saved=$(_rtk_phase_delta "phase1_start" "phase1_end" 2>/dev/null || echo "0")
+    phase3_saved=$(_rtk_phase_delta "phase1_end" "phase3_end" 2>/dev/null || echo "0")
+  fi
+  # Log regardless of rtk — fix_iterations is useful on its own.
+  # Phase durations are already in [timing] END lines; Claude parses those directly.
+  _diag "WORKFLOW_COMPLETE issue=${issue_number} fix_iterations=${CURRENT_RETRY:-0} phase1_saved=${phase1_saved} phase3_saved=${phase3_saved}"
 
   # Clean up session state file now that workflow is complete
   local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
@@ -1492,7 +1634,7 @@ run_workflow() {
 
   # ── Inspect PR state to skip completed phases ──
   if [ -n "${PR_NUMBER:-}" ] && [ "$PR_NUMBER" != "null" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
-    print_status "Inspecting PR #$PR_NUMBER state..."
+    print_status "Inspecting issue #$issue_number state..."
 
     # Get latest work commit time from LOCAL git (avoids GitHub API eventual consistency).
     # Mainline sync merge commits are filtered out (don't change PR's work scope).
@@ -1502,9 +1644,7 @@ run_workflow() {
     # Get review/assessment/followup state from API (comments are immediately consistent)
     local pr_state_json=$(gh pr view "$PR_NUMBER" --json comments --jq '{
       latest_review: ([.comments[] | select(
-        .author.login == "claude" or .author.login == "claude[bot]" or
-        .author.login == "github-actions[bot]" or
-        (.body | contains("<!-- sharkrite-local-review"))
+        .body | contains("<!-- sharkrite-local-review")
       )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""),
       latest_assessment: ([.comments[] | select(
         .body | contains("<!-- sharkrite-assessment")
@@ -1527,10 +1667,18 @@ run_workflow() {
 
     if [ "$_local_head" != "$_remote_head" ]; then
       # Unpushed commits exist — review is definitely stale
-      print_info "PR state: unpushed local commits detected — review needs refresh"
+      print_info "Unpushed local commits detected — review needs refresh"
     elif [ -n "$pr_latest_review" ] && [ -n "$pr_latest_commit" ]; then
-      # ISO timestamp comparison works lexicographically
-      if [[ "$pr_latest_review" > "$pr_latest_commit" ]]; then
+      # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison
+      local _rev_epoch _com_epoch
+      if date --version >/dev/null 2>&1; then
+        _rev_epoch=$(date -d "$pr_latest_review" "+%s" 2>/dev/null || echo "0")
+        _com_epoch=$(date -d "$pr_latest_commit" "+%s" 2>/dev/null || echo "0")
+      else
+        _rev_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$pr_latest_review" "+%s" 2>/dev/null || echo "0")
+        _com_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$pr_latest_commit" "+%s" 2>/dev/null || echo "0")
+      fi
+      if [ "$_rev_epoch" -gt 0 ] && [ "$_com_epoch" -gt 0 ] && [ "$_rev_epoch" -gt "$_com_epoch" ]; then
         review_is_current=true
       fi
     fi
@@ -1544,26 +1692,26 @@ run_workflow() {
         # Check: if ACTIONABLE_LATER items exist, tech-debt issues must be created first
         if [ "$actionable_later" -gt 0 ] && [ "$pr_has_followup" != "true" ]; then
           skip_to_phase="assess-resolve"
-          print_info "PR state: assessment passes but $actionable_later ACTIONABLE_LATER items need tech-debt issues"
+          print_info "Assessment passes but $actionable_later ACTIONABLE_LATER items need tech-debt issues"
         else
           skip_to_phase="merge"
-          print_info "PR state: review current, assessment passes → skipping to merge"
+          print_info "Review current, assessment passes → skipping to merge"
         fi
       else
         skip_to_phase="assess-resolve"
-        print_info "PR state: assessment has $actionable_now ACTIONABLE_NOW items → entering fix loop"
+        print_info "Assessment has $actionable_now ACTIONABLE_NOW items → entering fix loop"
       fi
     elif [ "$review_is_current" = true ]; then
       skip_to_phase="assess-resolve"
-      print_info "PR state: review current, no assessment → running assessment"
+      print_info "Review current, no assessment → running assessment"
     else
       # Review stale or missing — skip dev if work exists, run from push/review
       local _dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
       if [ "${_dev_changes:-0}" -gt 0 ]; then
         skip_to_phase="create-pr"
-        print_info "PR state: dev complete, review needs refresh → running from push/review"
+        print_info "Dev complete, review needs refresh → running from push/review"
       else
-        print_info "PR state: no implementation yet → running from development"
+        print_info "No implementation yet → running from development"
       fi
     fi
   fi
@@ -1573,11 +1721,11 @@ run_workflow() {
     print_header "Resume Summary"
     if [ "$skip_to_phase" = "merge" ]; then
       print_success "Phase 1: Development — complete"
-      print_success "Phase 2: Push & PR — PR #${PR_NUMBER} open"
+      print_success "Phase 2: Push & PR — open (PR #${PR_NUMBER})"
       print_success "Phase 3: Review & Assessment — all items resolved"
     elif [ "$skip_to_phase" = "assess-resolve" ]; then
       print_success "Phase 1: Development — complete"
-      print_success "Phase 2: Push & PR — PR #${PR_NUMBER} open"
+      print_success "Phase 2: Push & PR — open (PR #${PR_NUMBER})"
     elif [ "$skip_to_phase" = "create-pr" ]; then
       print_success "Phase 1: Development — complete"
     fi
@@ -1595,20 +1743,31 @@ run_workflow() {
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "claude-workflow" ]; then
     CURRENT_PHASE="claude-workflow"
     skip_to_phase=""  # Clear skip flag after reaching target
+    _rtk_snapshot "phase1_start"
+    _timer_start "phase1_development"
     if ! phase_claude_workflow "$issue_number"; then
+      _timer_end "phase1_development"
+      _rtk_snapshot "phase1_end"
+      _diag "PHASE_FAILED issue=${issue_number} phase=claude-workflow"
       print_error "Workflow phase failed"
       return 1
     fi
+    _timer_end "phase1_development"
+    _rtk_snapshot "phase1_end"
   fi
 
   # Phase 2: Push work and wait for review
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "create-pr" ]; then
     CURRENT_PHASE="create-pr"
     skip_to_phase=""
+    _timer_start "phase2_push_review"
     if ! phase_create_pr "$issue_number"; then
+      _timer_end "phase2_push_review"
+      _diag "PHASE_FAILED issue=${issue_number} phase=create-pr"
       print_error "PR phase failed"
       return 1
     fi
+    _timer_end "phase2_push_review"
   fi
 
   # Phase 3: Assess review and resolve issues (auto-fix loop)
@@ -1616,9 +1775,13 @@ run_workflow() {
     CURRENT_PHASE="assess-resolve"
     CURRENT_PR="$PR_NUMBER"
     skip_to_phase=""
+    _timer_start "phase3_assess_resolve"
     # Pass RESUME_RETRY if resuming mid-loop (ensures follow-up creation happens)
     local start_retry="${RESUME_RETRY:-0}"
     if ! phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$start_retry"; then
+      _timer_end "phase3_assess_resolve"
+      _rtk_snapshot "phase3_end"
+      _diag "PHASE_FAILED issue=${issue_number} phase=assess-resolve"
       print_error "Assessment phase failed"
       echo ""
       echo "The workflow stopped during Phase 3 (Assess & Resolve)."
@@ -1626,16 +1789,22 @@ run_workflow() {
       echo ""
       return 1
     fi
+    _timer_end "phase3_assess_resolve"
+    _rtk_snapshot "phase3_end"
   fi
 
   # Phase 4: Merge PR and update docs
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "merge" ]; then
     CURRENT_PHASE="merge"
     skip_to_phase=""
+    _timer_start "phase4_merge"
     if ! phase_merge_pr "$issue_number" "$PR_NUMBER"; then
+      _timer_end "phase4_merge"
+      _diag "PHASE_FAILED issue=${issue_number} phase=merge"
       print_error "Merge phase failed"
       return 1
     fi
+    _timer_end "phase4_merge"
   fi
 
   # Phase 5: Completion and notifications
@@ -1669,7 +1838,8 @@ main() {
     echo ""
     echo "Environment Variables:"
     echo "  WORKFLOW_MODE           supervised or unsupervised (default: supervised)"
-    echo "  SLACK_WEBHOOK           Slack webhook URL for notifications"
+    echo "  RITE_NOTIFICATIONS      Enable notifications: true/false (default: false)"
+    echo "  SLACK_WEBHOOK           Slack webhook URL (requires RITE_NOTIFICATIONS=true)"
     echo "  EMAIL_NOTIFICATION_ADDRESS   Email for notifications"
     echo "  RITE_SNS_TOPIC_ARN    AWS SNS topic for SMS notifications"
     echo "  RITE_AWS_PROFILE      AWS profile for credentials (default: default)"
@@ -1759,10 +1929,10 @@ main() {
   export RESUME_PHASE
   export RESUME_RETRY
 
-  # Initialize session (always create fresh session with current start_time)
-  # Even when resuming, we start a fresh Claude process with a new context window,
-  # so we reset start_time and issues_completed to track THIS session's usage
-  init_session "$WORKFLOW_MODE"
+  # Initialize session — but not when called from batch mode (batch owns the session)
+  if [ "${BATCH_MODE:-false}" != "true" ]; then
+    init_session "$WORKFLOW_MODE"
+  fi
 
   # Restore worktree path from saved state if resuming
   if [ "$RESUME_MODE" = true ] && [ -n "$WORKTREE_PATH" ]; then

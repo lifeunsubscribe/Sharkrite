@@ -28,11 +28,29 @@
 # AWS Integration
 # =============================================================================
 
-# Skip AWS credential checks (true for non-AWS projects)
-# SKIP_AWS_CHECK=true
-
+# AWS credential checks are auto-detected from repo dependencies and IaC markers.
+# Override the detected profile if needed:
 # AWS profile override for this project
 # RITE_AWS_PROFILE="my-aws-profile"
+
+# =============================================================================
+# Notifications (opt-in)
+# =============================================================================
+
+# Enable notifications for this project (default: false)
+# RITE_NOTIFICATIONS="true"
+
+# Slack webhook URL (or set globally in ~/.config/rite/config)
+# SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+# =============================================================================
+# Provider Selection (per-phase, overrides global config)
+# =============================================================================
+
+# Mix providers per phase. E.g., use Gemini for dev but Claude for review:
+# RITE_DEV_PROVIDER="gemini"
+# RITE_REVIEW_PROVIDER="claude"
+# RITE_UTILITY_PROVIDER="claude"
 
 # =============================================================================
 # Workflow Defaults

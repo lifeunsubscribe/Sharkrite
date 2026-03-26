@@ -57,9 +57,25 @@ if ! command -v jq &>/dev/null; then
   MISSING_DEPS+=("jq - brew install jq")
 fi
 
-if ! command -v claude &>/dev/null; then
-  MISSING_DEPS+=("claude (Claude CLI) - npm install -g @anthropic-ai/claude-code")
-fi
+# Check provider CLI (default: claude, unless configured otherwise)
+_check_provider_cli() {
+  local provider="${1:-claude}"
+  case "$provider" in
+    claude)
+      if ! command -v claude &>/dev/null && ! command -v claude-code &>/dev/null; then
+        MISSING_DEPS+=("claude (Claude CLI) - npm install -g @anthropic-ai/claude-code")
+      fi
+      ;;
+    gemini)
+      if ! command -v gemini &>/dev/null; then
+        MISSING_DEPS+=("gemini (Gemini CLI) - pip install google-genai")
+      fi
+      ;;
+  esac
+}
+_check_provider_cli "${RITE_DEV_PROVIDER:-claude}"
+[ "${RITE_REVIEW_PROVIDER:-claude}" != "${RITE_DEV_PROVIDER:-claude}" ] && _check_provider_cli "${RITE_REVIEW_PROVIDER:-claude}"
+[ "${RITE_UTILITY_PROVIDER:-claude}" != "${RITE_DEV_PROVIDER:-claude}" ] && _check_provider_cli "${RITE_UTILITY_PROVIDER:-claude}"
 
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
   print_warning "Missing dependencies:"

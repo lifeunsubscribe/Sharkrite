@@ -81,12 +81,21 @@ RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
-# AWS/Notifications (optional - empty means disabled)
+# Notifications (opt-in per project — global env vars like SLACK_WEBHOOK are ignored
+# unless RITE_NOTIFICATIONS is explicitly set to "true")
+RITE_NOTIFICATIONS="${RITE_NOTIFICATIONS:-false}"
 RITE_AWS_PROFILE="${RITE_AWS_PROFILE:-default}"
 RITE_SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
 RITE_EMAIL_FROM="${RITE_EMAIL_FROM:-}"
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
 EMAIL_NOTIFICATION_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
+
+# If notifications are not enabled, clear all notification channels so nothing fires
+if [ "$RITE_NOTIFICATIONS" != "true" ]; then
+  SLACK_WEBHOOK=""
+  EMAIL_NOTIFICATION_ADDRESS=""
+  RITE_SNS_TOPIC_ARN=""
+fi
 
 # Internal docs directory
 RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/docs}"
@@ -106,6 +115,16 @@ RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}"
 # Model for reviews and assessments — opus for quality (must match for consistency)
 RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5}"
 
+# Provider selection (per-phase, all default to claude for backward compat)
+# Available providers: claude, gemini
+RITE_DEV_PROVIDER="${RITE_DEV_PROVIDER:-claude}"         # Agentic dev/fix sessions
+RITE_REVIEW_PROVIDER="${RITE_REVIEW_PROVIDER:-claude}"    # Reviews, assessments, planning
+RITE_UTILITY_PROVIDER="${RITE_UTILITY_PROVIDER:-claude}"  # Classify, normalize, health
+
+# Gemini models (only used when a RITE_*_PROVIDER is set to "gemini")
+RITE_GEMINI_DEV_MODEL="${RITE_GEMINI_DEV_MODEL:-gemini-2.5-pro}"
+RITE_GEMINI_REVIEW_MODEL="${RITE_GEMINI_REVIEW_MODEL:-gemini-2.5-pro}"
+
 # Plan command: default architectural doc(s) to reference (space-separated, project-relative)
 RITE_PLAN_DOCS="${RITE_PLAN_DOCS:-}"
 RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
@@ -113,8 +132,7 @@ RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 
-# Skip AWS checks (for non-AWS projects)
-SKIP_AWS_CHECK="${SKIP_AWS_CHECK:-true}"
+# AWS credential checks are auto-detected via detect_aws_project() in blocker-rules.sh
 
 # Test gate: run tests before commit in auto mode (set to "true" to skip for slow suites)
 RITE_SKIP_TESTS="${RITE_SKIP_TESTS:-false}"
@@ -152,7 +170,7 @@ BLOCKER_MIGRATION_PATHS="${BLOCKER_MIGRATION_PATHS:-prisma/migrations/|migration
 BLOCKER_AUTH_PATHS="${BLOCKER_AUTH_PATHS:-auth/|Auth|authentication|authorization|cognito|oauth}"
 BLOCKER_DOC_PATHS="${BLOCKER_DOC_PATHS:-Technical-Specs|Architecture|CLAUDE.md|ARCHITECTURE.md}"
 BLOCKER_PROTECTED_SCRIPTS="${BLOCKER_PROTECTED_SCRIPTS:-workflow-runner.sh|claude-workflow.sh|merge-pr.sh|create-pr.sh|batch-process-issues.sh}"
-BLOCKER_EXPENSIVE_SERVICES="${BLOCKER_EXPENSIVE_SERVICES:-rds|aurora|nat|ec2|fargate|sagemaker|redshift}"
+BLOCKER_EXPENSIVE_SERVICES="${BLOCKER_EXPENSIVE_SERVICES:-\brds\b|\baurora\b|\bnatgateway\b|\bnat_gateway\b|\bec2\b|\bfargate\b|\bsagemaker\b|\bredshift\b}"
 
 # =============================================================================
 # STEP 6: Export Everything
@@ -171,6 +189,7 @@ export RITE_MAX_RETRIES
 export RITE_ASSESSMENT_TIMEOUT
 export RITE_STALE_BRANCH_THRESHOLD
 export WORKFLOW_MODE
+export RITE_NOTIFICATIONS
 export RITE_AWS_PROFILE
 export RITE_SNS_TOPIC_ARN
 export RITE_EMAIL_FROM
@@ -182,10 +201,14 @@ export SESSION_STATE_FILE
 export RITE_CLAUDE_TIMEOUT
 export RITE_CLAUDE_MODEL
 export RITE_REVIEW_MODEL
+export RITE_DEV_PROVIDER
+export RITE_REVIEW_PROVIDER
+export RITE_UTILITY_PROVIDER
+export RITE_GEMINI_DEV_MODEL
+export RITE_GEMINI_REVIEW_MODEL
 export RITE_PLAN_DOCS
 export RITE_PLAN_MAX_ESTIMATE
 export RITE_DRY_RUN
-export SKIP_AWS_CHECK
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
 export BLOCKER_INFRASTRUCTURE_PATHS

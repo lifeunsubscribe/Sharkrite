@@ -22,6 +22,10 @@ if [ -f "$RITE_LIB_DIR/utils/scratchpad-manager.sh" ]; then
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 fi
 
+# Source provider abstraction
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_REVIEW_PROVIDER:-claude}"
+
 # Parse arguments
 AUTO_MODE=false
 PR_NUMBER=""
@@ -172,10 +176,9 @@ update_security_guide_from_pr() {
   print_warning "Security findings detected in PR #$pr_number"
   print_status "Analyzing findings against existing security guide..."
 
-  # Use Sharkrite to analyze and update guide
-  CLAUDE_CMD="claude"
-  if ! command -v "$CLAUDE_CMD" &> /dev/null; then
-    print_warning "Sharkrite CLI not found, skipping auto-update"
+  # Use provider to analyze and update guide
+  if ! provider_detect_cli 2>/dev/null; then
+    print_warning "Provider CLI not found, skipping auto-update"
     return 0
   fi
 
@@ -225,7 +228,7 @@ ANALYSIS_EOF
   # Call Claude Code for analysis
   CLAUDE_ERROR=$(mktemp)
   TEMP_FILES+=("$CLAUDE_ERROR")
-  SECURITY_ANALYSIS=$("$CLAUDE_CMD" --no-cache < "$ANALYSIS_TEMP" 2>"$CLAUDE_ERROR" || echo "")
+  SECURITY_ANALYSIS=$(provider_run_uncached "$(cat "$ANALYSIS_TEMP")" "$CLAUDE_ERROR" || echo "")
 
   if [ -s "$CLAUDE_ERROR" ]; then
     print_warning "Claude CLI error: $(cat "$CLAUDE_ERROR" | head -1)"
@@ -274,7 +277,7 @@ UPDATE_EOF
 
   CLAUDE_ERROR2=$(mktemp)
   TEMP_FILES+=("$CLAUDE_ERROR2")
-  UPDATED_GUIDE=$("$CLAUDE_CMD" --no-cache < "$UPDATE_TEMP" 2>"$CLAUDE_ERROR2" || echo "")
+  UPDATED_GUIDE=$(provider_run_uncached "$(cat "$UPDATE_TEMP")" "$CLAUDE_ERROR2" || echo "")
 
   if [ -s "$CLAUDE_ERROR2" ]; then
     print_warning "Claude CLI error: $(cat "$CLAUDE_ERROR2" | head -1)"

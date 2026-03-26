@@ -26,6 +26,10 @@ fi
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
+# Source provider abstraction
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_DEV_PROVIDER:-claude}"
+
 # Source timeout wrapper (config.sh sources it, but is skipped when RITE_LIB_DIR is pre-set)
 if [ -f "$RITE_LIB_DIR/utils/timeout.sh" ] && ! declare -f run_with_timeout >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/timeout.sh"
@@ -301,6 +305,22 @@ run_test_gate() {
     return 0
   fi
 
+  # Optimize pytest: parallelize, suppress noise, offer xdist install
+  if echo "$_test_cmd" | grep -q "pytest"; then
+    local _python_bin
+    _python_bin=$(echo "$_test_cmd" | sed 's/ -m pytest.*//')
+
+    # Parallel execution via xdist (use if already installed, never auto-install)
+    if ! echo "$_test_cmd" | grep -qE "\-n "; then
+      if $_python_bin -c "import xdist" 2>/dev/null; then
+        _test_cmd="$_test_cmd -n auto"
+      fi
+    fi
+
+    # Short tracebacks, suppress deprecation warnings, quiet output
+    _test_cmd="$_test_cmd --tb=short -W ignore::DeprecationWarning -q"
+  fi
+
   # Source .env.test or .env if present so tests have required env vars
   # (e.g. JWT_SECRET_KEY, DATABASE_URL). Run in subshell to avoid polluting
   # the outer environment.
@@ -308,8 +328,11 @@ run_test_gate() {
   [ -f ".env.test" ] && _env_file=".env.test"
   [ -z "$_env_file" ] && [ -f ".env" ] && _env_file=".env"
 
+  _timer_start "test_gate"
   print_status "Running tests ($_test_cmd)..."
   local _test_exit=0
+  local _test_output_file
+  _test_output_file=$(mktemp)
   _run_test_cmd() {
     if [ -n "$_env_file" ]; then
       set -a
@@ -320,19 +343,80 @@ run_test_gate() {
     eval "$_test_cmd"
   }
   if [ -n "$_test_subdir" ]; then
-    (cd "$_test_subdir" && _run_test_cmd) || _test_exit=$?
+    (cd "$_test_subdir" && _run_test_cmd) 2>&1 | tee "$_test_output_file" || _test_exit=${PIPESTATUS[0]:-$?}
   else
-    (_run_test_cmd) || _test_exit=$?
+    (_run_test_cmd) 2>&1 | tee "$_test_output_file" || _test_exit=${PIPESTATUS[0]:-$?}
   fi
+
+  _timer_end "test_gate"
 
   if [ "$_test_exit" -eq 0 ]; then
     print_success "All tests passed"
+    rm -f "$_test_output_file"
   else
     print_warning "Tests failed (exit $_test_exit)"
     if [ "$AUTO_MODE" = true ]; then
+      # Auto-fix: run a quick Claude session to fix test failures
+      if [ "${_test_fix_attempted:-false}" != "true" ]; then
+        _test_fix_attempted=true
+        print_status "Running auto-fix session for test failures..."
+
+        # Extract the FAILURES section (pytest prints this between ===== FAILURES =====
+        # and ===== short test summary =====). Falls back to grep if section not found.
+        local _fail_summary
+        _fail_summary=$(sed -n '/=* FAILURES =*/,/=* short test summary/p' "$_test_output_file" | tail -80)
+        if [ -z "$_fail_summary" ]; then
+          _fail_summary=$(grep -E "FAILED|ERROR|AssertionError|assert|Error:" "$_test_output_file" | tail -30)
+        fi
+        # Also grab the summary line (e.g., "2 failed, 864 passed")
+        local _fail_counts
+        _fail_counts=$(grep -E "failed.*passed|error.*passed" "$_test_output_file" | tail -1)
+
+        local _fix_prompt="Tests are failing after your implementation. Fix ALL failing tests — not just the first one.
+
+**Test command:** $_test_cmd
+**Test summary:** ${_fail_counts:-see output below}
+**Full failure output:**
+$_fail_summary
+
+**Instructions:**
+- Read the failing test files and the source code they test
+- Identify the ROOT CAUSE, then scan the entire test file for every instance of the same pattern — not just the lines that failed. If one test has a timezone mismatch, check ALL tests in that file for the same issue.
+- Fix the root cause (could be in source code OR test expectations)
+- Do NOT run the full test suite — just fix the code. The workflow will re-run tests after.
+- Do NOT run git commit, git push, or any git/gh commands."
+
+        _timer_start "test_fix_session"
+        local _fix_exit=0
+        provider_run_agentic_session "$_fix_prompt" "${RITE_FIX_TIMEOUT:-1800}" true /dev/null || _fix_exit=$?
+        _timer_end "test_fix_session"
+
+        if [ $_fix_exit -eq 0 ]; then
+          # Re-run tests after fix
+          print_status "Re-running tests after fix..."
+          rm -f "$_test_output_file"
+          _test_exit=0
+          _timer_start "test_gate_rerun"
+          if [ -n "$_test_subdir" ]; then
+            (cd "$_test_subdir" && _run_test_cmd) 2>&1 | tee "$_test_output_file" || _test_exit=${PIPESTATUS[0]:-$?}
+          else
+            (_run_test_cmd) 2>&1 | tee "$_test_output_file" || _test_exit=${PIPESTATUS[0]:-$?}
+          fi
+          _timer_end "test_gate_rerun"
+
+          if [ "$_test_exit" -eq 0 ]; then
+            print_success "All tests passed after fix"
+            rm -f "$_test_output_file"
+            return 0
+          fi
+          print_warning "Tests still failing after auto-fix"
+        fi
+      fi
+
       print_error "Cannot commit — test suite must pass in auto mode"
       print_info "Fix failures and resume: rite ${ISSUE_NUMBER:-}"
       print_info "To skip the test gate: export RITE_SKIP_TESTS=true"
+      rm -f "$_test_output_file"
       exit 3
     else
       echo ""
@@ -340,9 +424,11 @@ run_test_gate() {
       echo
       if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         print_info "Fix tests and run again"
+        rm -f "$_test_output_file"
         exit 1
       fi
     fi
+    rm -f "$_test_output_file"
   fi
 }
 
@@ -352,16 +438,8 @@ run_test_gate() {
 # ===================================================================
 if [ "$FIX_REVIEW_MODE" = true ]; then
   # Jump directly to fix-review logic (defined later in file)
-  # We need to source the CLAUDE_CMD variable first
-  if command -v claude &> /dev/null; then
-    CLAUDE_CMD="claude"
-  elif [ -f "$HOME/.claude/claude" ]; then
-    CLAUDE_CMD="$HOME/.claude/claude"
-  else
-    print_error "Claude CLI not found"
-    print_info "Please install Claude CLI: https://github.com/anthropics/claude-cli"
-    exit 1
-  fi
+  # Provider already loaded at top of file
+  provider_detect_cli || exit 1
 
   # Now run the fix-review logic inline
   print_header "🔧 Review Fix Mode"
@@ -446,43 +524,27 @@ $EXIT_INSTRUCTION"
   print_status "Invoking Sharkrite to fix review issues..."
   echo ""
 
-  # Run Claude Code with the fix prompt
-  # Pass prompt as argument (not stdin) to preserve TTY for interactive mode
-  # Add timeout for fix-review mode (default 30 minutes)
+  # Run provider with the fix prompt
   FIX_TIMEOUT=${RITE_FIX_TIMEOUT:-1800}
 
-  # CODE-BASED TOOL RESTRICTIONS (not prompt-based)
-  # Block git commit/push (post-workflow handles them), gh, and network commands.
-  # This is enforced by the CLI, not by instructions that Claude can ignore.
-  DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *)'
-
-  # Write prompt to temp file (more reliable than passing as argument)
-  FIX_PROMPT_FILE=$(mktemp)
-  echo "$FIX_PROMPT" > "$FIX_PROMPT_FILE"
-
   if [ "$AUTO_MODE" = true ]; then
-    print_status "Auto mode: Claude will exit automatically when fixes complete (timeout: ${FIX_TIMEOUT}s)"
-    set +e  # Temporarily disable exit-on-error to capture timeout
+    # Safety gate: provider must support tool restrictions for unsupervised mode
+    if ! provider_supports_tool_restrictions; then
+      print_error "Provider '$(provider_name)' does not support tool restrictions"
+      print_error "Unsupervised fix sessions require tool restriction support"
+      print_info "Use --supervised mode, or set RITE_DEV_PROVIDER=claude"
+      exit 1
+    fi
 
-    # Use stream-json for real-time tool visibility (same as dev phase).
-    # --verbose is required with --print --output-format stream-json (CLI validation).
-    # Prompt passed as argument (not stdin) so jq pipe can use stdin.
+    _timer_start "claude_fix_session"
+    print_status "Auto mode: $(provider_name) will exit automatically when fixes complete (timeout: ${FIX_TIMEOUT}s)"
+    set +e
     FIX_STDERR_FILE=$(mktemp)
 
-    run_with_timeout "$FIX_TIMEOUT" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
-      --disallowedTools "$DISALLOWED_TOOLS" --output-format stream-json \
-      "$FIX_PROMPT" 2>"$FIX_STDERR_FILE" | \
-      jq --unbuffered -rj '
-        if .type == "assistant" then
-          (.message.content[]? |
-            if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
-            elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
-            else empty end)
-        else empty end
-      ' 2>/dev/null || true
-    FIX_EXIT_CODE=${PIPESTATUS[0]}
+    provider_run_agentic_session "$FIX_PROMPT" "$FIX_TIMEOUT" true "$FIX_STDERR_FILE"
+    FIX_EXIT_CODE=$?
 
-    rm -f "$FIX_PROMPT_FILE" "$FIX_STDERR_FILE"
+    rm -f "$FIX_STDERR_FILE"
     set -e
 
     if [ $FIX_EXIT_CODE -eq 124 ]; then
@@ -495,27 +557,17 @@ $EXIT_INSTRUCTION"
         exit 1
       fi
     elif [ $FIX_EXIT_CODE -ne 0 ]; then
-      print_warning "Claude exited with code $FIX_EXIT_CODE - checking for changes..."
+      print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
     fi
   else
-    # Supervised mode: interactive session — user approves tool calls and exits manually.
-    # Pass prompt as command-line argument (not stdin) to preserve TTY for interactivity.
     SUPERVISED_TIMEOUT=${RITE_SUPERVISED_TIMEOUT:-3600}  # Default 1 hour
     print_info "Supervised mode: Interactive fix session (timeout: ${SUPERVISED_TIMEOUT}s)"
     print_status "Tool restrictions active: gh, curl, wget blocked"
     print_status "Exit the session when fixes are complete."
 
-    rm -f "$FIX_PROMPT_FILE"
-
     set +e
-    local _fix_prompt_file
-    _fix_prompt_file=$(mktemp)
-    printf '%s' "$FIX_PROMPT" > "$_fix_prompt_file"
-    run_with_timeout "$SUPERVISED_TIMEOUT" $CLAUDE_CMD --print --dangerously-skip-permissions \
-      --disallowedTools "$DISALLOWED_TOOLS" \
-      < "$_fix_prompt_file"
+    provider_run_agentic_session "$FIX_PROMPT" "$SUPERVISED_TIMEOUT" false /dev/null
     FIX_EXIT_CODE=$?
-    rm -f "$_fix_prompt_file"
     set -e
 
     if [ "${FIX_EXIT_CODE:-0}" -eq 124 ]; then
@@ -523,6 +575,7 @@ $EXIT_INSTRUCTION"
     fi
   fi
 
+  _timer_end "claude_fix_session"
   print_success "Review fix session complete"
 
   # Run test gate before committing fixes (same gate as dev phase).
@@ -655,21 +708,8 @@ if ! command -v gh &> /dev/null; then
   exit 1
 fi
 
-# Detect Claude CLI (claude is the current name, claude-code was the old name)
-if command -v claude &> /dev/null; then
-  CLAUDE_CMD="claude"
-elif command -v claude-code &> /dev/null; then
-  CLAUDE_CMD="claude-code"
-elif [ -f "$HOME/.claude/claude" ]; then
-  CLAUDE_CMD="$HOME/.claude/claude"
-else
-  print_error "Claude CLI not found"
-  print_info "Install: npm install -g @anthropic-ai/claude-code"
-  exit 1
-fi
-
-# Apply configured model
-CLAUDE_CMD="$CLAUDE_CMD --model $RITE_CLAUDE_MODEL"
+# Detect provider CLI (provider loaded at top of file)
+provider_detect_cli || exit 1
 
 CURRENT_BRANCH=$(git branch --show-current)
 
@@ -759,7 +799,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
 
     if [ "$FILE_CHANGES" -gt 0 ]; then
       # PR has real work - jump directly to PR workflow
-      print_info "PR #$PR_NUMBER has $FILE_CHANGES file(s) changed - proceeding to review workflow"
+      print_info "Issue #$ISSUE_NUMBER has $FILE_CHANGES file(s) changed — proceeding to review workflow"
       echo ""
 
       # Jump directly to PR workflow script - skip development phase
@@ -775,7 +815,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
       fi
     else
       # PR exists but only has placeholder commit - need to run development
-      print_info "PR #$PR_NUMBER exists but has no implementation yet"
+      print_info "Issue #$ISSUE_NUMBER has a PR but no implementation yet"
       print_status "Running development phase..."
       echo ""
     fi
@@ -856,7 +896,7 @@ Are these changes relevant to the issue? Answer with just 'RELEVANT' or 'UNRELAT
 If the changes are implementing or fixing something described in the issue, answer RELEVANT.
 If the changes are unrelated work, answer UNRELATED."
 
-      RELEVANCE=$(echo "$ANALYSIS_PROMPT" | claude --quiet 2>/dev/null | grep -oE "(RELEVANT|UNRELATED)" | head -1 || echo "UNKNOWN")
+      RELEVANCE=$(provider_run_classify "$ANALYSIS_PROMPT" | grep -oE "(RELEVANT|UNRELATED)" | head -1 || echo "UNKNOWN")
 
       if [ "$RELEVANCE" = "RELEVANT" ]; then
         # Changes are relevant - commit them
@@ -1501,35 +1541,17 @@ fi
 # Set auto mode instructions
 if [ "$AUTO_MODE" = true ]; then
   AUTO_MODE_INSTRUCTION="Proceed directly to implementation (auto mode - no approval needed)"
-  AUTO_MODE_FINAL_NOTE="**Auto Mode**: Complete all phases automatically. After Phase 5:
-1. Provide a brief summary of what you implemented
-2. Exit immediately — the rite workflow will automatically handle commit, push, and PR creation"
 else
   AUTO_MODE_INSTRUCTION="Proceed directly to implementation (supervised mode - approval prompts are handled by the rite workflow, not by pausing here)"
-  AUTO_MODE_FINAL_NOTE="**When all phases are complete**: Provide a brief summary of what you implemented, then immediately exit the session with \`/exit\`. The rite workflow will automatically handle commit, push, and PR creation — do NOT commit, push, or create PRs yourself."
 fi
 
-CLAUDE_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) automated workflow session.
-The workflow tool is called **rite** — not \"forge\" or any other name.
-When this session ends, the rite workflow automatically handles commit, push, and PR creation.
-Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
+# Build prompt: provider-specific preamble + generic workflow instructions
+_PROVIDER_PREAMBLE=$(provider_dev_session_preamble "$AUTO_MODE" "${WORK_DESCRIPTION:-$ISSUE_DESC}")
+_PROVIDER_EXIT_NOTE=$(provider_exit_instructions "$AUTO_MODE")
 
-Task: ${WORK_DESCRIPTION:-$ISSUE_DESC}
+CLAUDE_PROMPT="${_PROVIDER_PREAMBLE}
 ${SECURITY_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
 ## Workflow Instructions
-
-**IMPORTANT: Use the TodoWrite tool to track progress throughout this workflow.**
-
-Before starting, create a todo list with these items:
-1. Phase 0: Requirements Clarification - Ask questions if task is ambiguous
-2. Phase 1: Analysis - Understanding the codebase and requirements
-3. Phase 2: Planning - Designing the implementation approach
-4. Phase 3: Implementation - Writing the code
-5. Phase 4: Testing & Validation - Running tests and verifying correctness
-6. Phase 5: Code Comments - Adding inline comments for complex logic
-
-Mark each phase as 'in_progress' when you start it, and 'completed' when finished.
-For complex phases, break them into sub-tasks.
 
 Please follow this structured workflow:
 
@@ -1537,8 +1559,12 @@ Please follow this structured workflow:
 ${PHASE_0_INSTRUCTIONS}
 
 ### Phase 1: Analysis
-1. **FIRST: Check if work is already complete** - Search codebase to verify if acceptance criteria are already met
-2. If work is complete:
+1. **FIRST: Check if work is already complete** — but be precise:
+   - Verify acceptance criteria against the **specific domain/feature** the issue targets, not similar patterns elsewhere
+   - If the issue references a parent PR (e.g., \"From PR #N\"), check what domain/files that PR touched — your verification must cover that same domain
+   - Finding similar tests or code in **other** domains does NOT mean this issue is done — each domain needs its own coverage
+   - Only conclude \"already complete\" if every acceptance criterion is met for the exact scope described
+2. If work is genuinely complete:
    - Report your findings with evidence (file paths, test results, etc.)
    - Check if a PR exists for this issue (use: gh pr list --search \"<issue-title>\" --state all)
    - **If PR exists on different branch:**
@@ -1576,10 +1602,9 @@ ${PHASE_0_INSTRUCTIONS}
 5. Ensure multi-tenant isolation if applicable
 
 ### Phase 4: Testing & Validation
-1. Write or update unit tests
-2. Run existing tests: npm test
-3. Verify code builds: npm run build
-4. Check for linting issues
+1. Write or update unit tests for the code you changed
+2. Verify your new code imports/compiles without errors (quick syntax check)
+3. Do NOT run the full test suite — the rite workflow runs it automatically after this session with parallel execution. Running it here wastes time.
 
 ### Phase 5: Code Comments
 1. Add inline comments and JSDoc/TSDoc for complex logic only
@@ -1587,7 +1612,7 @@ ${PHASE_0_INSTRUCTIONS}
 
 **Remember**: Update your todo list as you complete each phase. Mark the current phase as 'in_progress' and completed phases as 'completed'.
 
-${AUTO_MODE_FINAL_NOTE}
+${_PROVIDER_EXIT_NOTE}
 
 Begin with Phase 0: Requirements Clarification."
 
@@ -1613,67 +1638,25 @@ elif [ "$ALREADY_IN_CLAUDE" = true ]; then
 else
   # Set timeout for Claude Code (configurable via RITE_CLAUDE_TIMEOUT, default 2 hours)
   CLAUDE_TIMEOUT=${RITE_CLAUDE_TIMEOUT:-7200}
+  _timer_start "claude_dev_session"
   print_status "Launching Sharkrite (timeout: ${CLAUDE_TIMEOUT}s)..."
 
   # Both modes run in FOREGROUND for streaming output
-  # Auto mode: uses --permission-mode bypassPermissions (no approval prompts)
-  # Supervised mode: full interactive experience
   CLAUDE_EXIT_CODE=0
 
-  # Block git commit/push and gh — post-workflow handles all git operations and PR creation.
-  # Without this, Claude commits inside the session, then post-workflow tries to commit again.
-  # --disallowedTools is enforced by the CLI even with --dangerously-skip-permissions.
-  DEV_DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *)'
+  # Safety gate: provider must support tool restrictions for unsupervised mode
+  if [ "$AUTO_MODE" = true ] && ! provider_supports_tool_restrictions; then
+    print_error "Provider '$(provider_name)' does not support tool restrictions"
+    print_error "Unsupervised dev sessions require tool restriction support"
+    print_info "Use --supervised mode, or set RITE_DEV_PROVIDER=claude"
+    exit 1
+  fi
 
-  # Capture Claude stderr for diagnostics (was 2>/dev/null — hid all errors)
+  # Capture provider stderr for diagnostics
   CLAUDE_STDERR_FILE=$(mktemp)
 
-  if [ "$AUTO_MODE" = true ]; then
-    # Auto mode: --print for auto-exit, stream-json for real-time tool visibility.
-    # --print with default text format only shows assistant text — tool calls (edits,
-    # bash commands) are invisible. stream-json streams ALL events; jq formats them.
-    # NOTE: --disallowedTools must be quoted separately because its value contains spaces
-    # (e.g., "Bash(gh *)"). Cannot embed in CLAUDE_STREAM_ARGS which is expanded unquoted.
-    # --verbose is required with --print --output-format stream-json (CLI validation)
-    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
-      --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
-      "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" | \
-      jq --unbuffered -rj '
-        if .type == "assistant" then
-          (.message.content[]? |
-            if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
-            elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
-            else empty end)
-        else empty end
-      ' 2>/dev/null || true
-    CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
-  else
-    # Supervised mode: --print is required by CLI when --disallowedTools is present (CLI 2.1.37+).
-    # --print is non-interactive, so --dangerously-skip-permissions is needed (permission prompts
-    # can't be answered in non-interactive mode). --disallowedTools provides the safety boundary.
-    # User watches real-time output and can abort with Ctrl-C; rite's own blocker prompts still
-    # pause for approval on sensitive changes.
-    #
-    # IMPORTANT: --disallowedTools is variadic (<tools...>) and eats positional args — the prompt
-    # MUST be passed via stdin (not as a positional arg) or it disappears into the tools list.
-    # Use stream-json for real-time tool visibility (same as auto mode); --verbose is required.
-    # PIPESTATUS[0] captures Claude's exit code through the jq pipe.
-    _DEV_PROMPT_FILE=$(mktemp)
-    printf '%s' "$CLAUDE_PROMPT" > "$_DEV_PROMPT_FILE"
-    run_with_timeout "${CLAUDE_TIMEOUT}" $CLAUDE_CMD --print --verbose --dangerously-skip-permissions \
-      --disallowedTools "$DEV_DISALLOWED_TOOLS" --output-format stream-json \
-      < "$_DEV_PROMPT_FILE" 2>"$CLAUDE_STDERR_FILE" | \
-      jq --unbuffered -rj '
-        if .type == "assistant" then
-          (.message.content[]? |
-            if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
-            elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
-            else empty end)
-        else empty end
-      ' 2>/dev/null || true
-    CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
-    rm -f "$_DEV_PROMPT_FILE"
-  fi
+  provider_run_agentic_session "$CLAUDE_PROMPT" "$CLAUDE_TIMEOUT" "$AUTO_MODE" "$CLAUDE_STDERR_FILE"
+  CLAUDE_EXIT_CODE=$?
 
   # Handle exit codes
   if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
@@ -1692,12 +1675,12 @@ else
     # Command not found - this is a setup error, not recoverable
     print_error "Command not found (exit code 127)"
     print_error "This usually means a required tool is missing."
-    print_info "Check that 'claude' CLI is installed: npm install -g @anthropic-ai/claude-code"
+    print_info "Check that the '$(provider_name)' CLI is installed"
     exit 127
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
     if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
-      echo "Claude stderr:"
+      echo "Provider stderr:"
       cat "$CLAUDE_STDERR_FILE"
     fi
     print_status "Checking for uncommitted work..."
@@ -1710,20 +1693,25 @@ else
     fi
   fi
 
+  _timer_end "claude_dev_session"
+
   # Diagnostic output (visible in log, helps debug "no work" situations)
   if [ -n "${RITE_LOG_FILE:-}" ]; then
     echo ""
-    echo "[DIAG] Claude session exit code: $CLAUDE_EXIT_CODE"
+    _session_mode="dev"
+    [ "${FIX_REVIEW_MODE:-false}" = true ] && _session_mode="fix-review"
+    _diag "SESSION issue=${ISSUE_NUMBER:-?} mode=${_session_mode} provider=$(provider_name) exit=${CLAUDE_EXIT_CODE}"
+    echo "[DIAG] Provider session exit code: $CLAUDE_EXIT_CODE"
     echo "[DIAG] Working directory: $(pwd)"
     echo "[DIAG] Git status (porcelain):"
     git status --porcelain 2>/dev/null | head -20 || echo "  (none)"
     echo "[DIAG] File changes vs origin/main:"
     git diff --stat origin/main...HEAD 2>/dev/null || echo "  (none)"
     if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
-      echo "[DIAG] Claude stderr (last 30 lines):"
+      echo "[DIAG] Provider stderr (last 30 lines):"
       tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /'
     else
-      echo "[DIAG] Claude stderr: (empty)"
+      echo "[DIAG] Provider stderr: (empty)"
     fi
     echo ""
   fi
@@ -1770,14 +1758,19 @@ if [ $CHANGES_COUNT -eq 0 ]; then
     # No work was done in the dev phase - exit early
     print_warning "No work was done in the development phase"
     echo ""
-    print_info "The workflow will exit without creating a PR."
     print_info "This can happen if:"
     echo "  • The task was already complete"
-    echo "  • Sharkrite determined no changes were needed"
+    echo "  • Claude determined no changes were needed"
     echo "  • The session timed out before making changes"
     echo ""
 
-    # Clean up the empty branch if we created it
+    if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
+      # In orchestrated mode, let the orchestrator handle cleanup and retry.
+      # Do NOT close the draft PR — workflow-runner owns the PR lifecycle.
+      exit 4  # Distinct code: "session completed but no work produced"
+    fi
+
+    # Standalone mode: clean up the empty branch
     CURRENT_BRANCH=$(git branch --show-current)
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ]; then
       # Check if this is an empty branch we just created
