@@ -115,10 +115,17 @@ cleanup_on_interrupt() {
     fi
   fi
 
+  # Terminate entire process group to ensure all child processes (tee, perl, etc.) are killed.
+  # Use SIGTERM first for graceful shutdown, then SIGKILL after brief delay if needed.
+  # The negative PID (-$$) sends signal to all processes in the current process group.
+  kill -TERM -- -$$ 2>/dev/null || true
+  sleep 0.5
+  kill -KILL -- -$$ 2>/dev/null || true
+
   exit ${exit_code}
 }
 
-trap cleanup_on_interrupt INT TERM
+trap cleanup_on_interrupt INT TERM HUP
 
 # Parse arguments - Two-pass to detect flags before processing issue number
 AUTO_MODE=false
