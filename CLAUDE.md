@@ -236,6 +236,49 @@ Follow-up issues (tech-debt, review follow-ups) follow the structure in `templat
 
 **Note:** The template is a reference document. `assess-and-resolve.sh` and `assess-review-issues.sh` hardcode the issue body structure inline rather than loading the template file. `rite --init` copies it to `.rite/issue-template.md` but nothing reads it back. Customizing the local copy has no effect yet.
 
+## Linting
+
+Sharkrite uses shellcheck + custom lint rules to catch bash anti-patterns.
+
+```bash
+make check              # Run all linters (shellcheck + custom rules)
+make shellcheck         # Run shellcheck only
+make lint               # Run custom rules only
+bats tests/             # Run test suite (requires bats)
+```
+
+**Custom lint rules** (in `tools/sharkrite-lint.sh`) catch patterns shellcheck misses:
+- `grep -c ... || echo "0"` — produces double zero (use `|| true`)
+- `git push` without refspec — dangerous in automation
+- `eval` with GitHub API data — security risk
+- Unquoted heredoc in command substitution — use `<<'EOF'`
+- BSD `sed -i ''` without GNU fallback
+- `PIPESTATUS[0]` after `|| true` — value is lost
+- `local` outside function — only works inside functions
+
+**Suppressing false positives:**
+
+Some lint rules support inline suppression comments. Place the comment on the line immediately before the flagged code:
+
+```bash
+# sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded
+PR_BODY=$(cat <<EOF
+Summary: ${ISSUE_TITLE}
+EOF
+)
+```
+
+Supported suppression rules:
+- `UNQUOTED_HEREDOC` — for intentional variable expansion in heredocs
+
+**Pre-push hook** (optional):
+```bash
+cp tools/git-hooks/pre-push .git/hooks/pre-push
+chmod +x .git/hooks/pre-push
+```
+
+**CI gate**: `.github/workflows/lint.yml` runs `make check` on every PR.
+
 ## Testing
 
 ```bash

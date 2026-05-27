@@ -497,7 +497,14 @@ CLASSIFY_EOF
             _docs_value="${_selected_docs[*]}"
             # Update config: uncomment and populate RITE_PLAN_DOCS
             if grep -q '# RITE_PLAN_DOCS=' "$_config_file" 2>/dev/null; then
-              sed -i '' "s|# RITE_PLAN_DOCS=.*|RITE_PLAN_DOCS=\"$_docs_value\"|" "$_config_file"
+              # Platform-specific sed -i syntax
+              if sed --version >/dev/null 2>&1; then
+                # GNU sed
+                sed -i "s|# RITE_PLAN_DOCS=.*|RITE_PLAN_DOCS=\"$_docs_value\"|" "$_config_file"
+              else
+                # BSD sed (macOS)
+                sed -i '' "s|# RITE_PLAN_DOCS=.*|RITE_PLAN_DOCS=\"$_docs_value\"|" "$_config_file"
+              fi
             else
               echo "" >> "$_config_file"
               echo "RITE_PLAN_DOCS=\"$_docs_value\"" >> "$_config_file"

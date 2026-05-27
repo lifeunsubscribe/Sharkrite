@@ -19,3 +19,6 @@ tmp/
 # Local development state (no trailing slash — matches both dirs and symlinks in worktrees)
 .rite
 .claude
+backend/node_modules
+.venv
+backend/.venv

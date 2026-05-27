@@ -1,0 +1,33 @@
+name: Lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck + Custom Lint Rules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run make check
+        run: make check
+
+      - name: Install bats
+        if: success() || failure()
+        run: |
+          sudo apt-get install -y bats
+
+      - name: Run lint tests
+        if: success() || failure()
+        run: bats tests/lint/custom-rules.bats

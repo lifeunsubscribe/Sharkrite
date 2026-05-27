@@ -162,6 +162,7 @@ create_single_issue() {
   fi
 
   # Build issue body
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   local ISSUE_BODY=$(cat <<EOF
 ## From PR Review
 PR #${PR_NUMBER} - ${PR_TITLE}

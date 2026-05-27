@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Sharkrite pre-push hook (optional)
+#
+# Installation:
+#   cp tools/git-hooks/pre-push .git/hooks/pre-push
+#   chmod +x .git/hooks/pre-push
+#
+# This hook runs shellcheck and custom lint rules before every push.
+# To bypass (e.g., for urgent hotfixes):
+#   git push --no-verify
+
+set -e
+
+echo "Running pre-push checks..."
+
+# Run shellcheck and custom lint
+if ! make check; then
+  echo ""
+  echo "❌ Lint checks failed. Fix issues or use --no-verify to bypass."
+  exit 1
+fi
+
+echo "✅ All pre-push checks passed!"
+exit 0
