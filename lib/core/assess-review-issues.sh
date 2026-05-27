@@ -548,6 +548,15 @@ fi
 _timer_start "claude_assessment"
 print_status "Running Claude assessment (this may take 30-60 seconds)..."
 
+# Run Claude assessment with retry on empty output (transient API failures).
+# Provider CLI occasionally returns empty stdout with exit 0 (API blip, network issue).
+# Retry up to 2 times before failing loud.
+MAX_ASSESSMENT_ATTEMPTS=2
+ASSESSMENT_ATTEMPT=0
+ASSESSMENT_OUTPUT=""
+CLAUDE_ERROR=""
+CLAUDE_ERROR_TYPE=""
+
 # Run Claude assessment - mode depends on supervised vs unsupervised
 if [ "$AUTO_MODE" = true ]; then
   # UNSUPERVISED MODE: Use --print and --dangerously-skip-permissions for automation
@@ -555,149 +564,160 @@ if [ "$AUTO_MODE" = true ]; then
   # SECURITY NOTE: Permission bypass is used intentionally for automation.
   # Input is strictly controlled: only PR review text from GitHub API.
   # Assessment task is read-only: classify review items (no code execution).
-  # Falls back gracefully on failure.
   ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-120}"
 
-  # Capture stderr to debug issues while keeping stdout clean for piping
-  CLAUDE_STDERR=$(mktemp)
+  while [ $ASSESSMENT_ATTEMPT -lt $MAX_ASSESSMENT_ATTEMPTS ] && [ -z "$ASSESSMENT_OUTPUT" ]; do
+    ASSESSMENT_ATTEMPT=$((ASSESSMENT_ATTEMPT + 1))
 
-  # Run provider assessment with timeout.
-  # Use tee to display output while also capturing it.
-  # Capture exit code via a temp file — PIPESTATUS doesn't survive $() subshells.
-  _exit_file=$(mktemp)
-  ASSESSMENT_OUTPUT=$({ provider_run_prompt_with_timeout "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" true "$ASSESSMENT_TIMEOUT" 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
-  ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
-  rm -f "$_exit_file"
+    # Capture stderr to debug issues while keeping stdout clean for piping
+    CLAUDE_STDERR=$(mktemp)
 
-  CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
-  rm -f "$CLAUDE_STDERR"
+    # Run provider assessment with timeout.
+    # Use tee to display output while also capturing it.
+    # Capture exit code via a temp file — PIPESTATUS doesn't survive $() subshells.
+    _exit_file=$(mktemp)
+    ASSESSMENT_OUTPUT=$({ provider_run_prompt_with_timeout "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" true "$ASSESSMENT_TIMEOUT" 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
+    ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
+    rm -f "$_exit_file"
 
-  # Check for timeout (exit code 124)
-  if [ $ASSESSMENT_EXIT_CODE -eq 124 ]; then
-    print_warning "Assessment timed out after ${ASSESSMENT_TIMEOUT}s"
-    print_info "Try increasing timeout: export RITE_ASSESSMENT_TIMEOUT=300"
-    print_info "Falling back to creating issue with all items"
-    echo "ALL_ITEMS"
-    exit 0
-  elif [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
-    # Detect specific error type
-    CLAUDE_ERROR_TYPE=$(provider_detect_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
-    export CLAUDE_ERROR_TYPE
+    CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
+    rm -f "$CLAUDE_STDERR"
 
-    print_error "Provider exited with code $ASSESSMENT_EXIT_CODE"
-    echo "" >&2
-    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
-    echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
-    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    # Check for timeout (exit code 124) - fail immediately, don't retry
+    if [ $ASSESSMENT_EXIT_CODE -eq 124 ]; then
+      print_warning "Assessment timed out after ${ASSESSMENT_TIMEOUT}s"
+      print_info "Try increasing timeout: export RITE_ASSESSMENT_TIMEOUT=300"
+      print_info "Falling back to creating issue with all items"
+      echo "ALL_ITEMS"
+      exit 0
+    elif [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
+      # Non-zero exit: detect error type and fail immediately (don't retry)
+      CLAUDE_ERROR_TYPE=$(provider_detect_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
+      export CLAUDE_ERROR_TYPE
 
-    case "$CLAUDE_ERROR_TYPE" in
-      PROVIDER_BUG)
-        echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
-        echo "This is a known SDK issue affecting PR review operations." >&2
-        echo "Workaround: Retry or use fallback assessment." >&2
-        ;;
-      RATE_LIMITED)
-        echo -e "${YELLOW}Rate limited by API${NC}" >&2
-        echo "Wait a few minutes before retrying." >&2
-        ;;
-      AUTH_EXPIRED)
-        echo -e "${YELLOW}Authentication expired${NC}" >&2
-        echo "Run: claude /login" >&2
-        ;;
-      NETWORK_ERROR)
-        echo -e "${YELLOW}Network connectivity issue${NC}" >&2
-        echo "Check your internet connection." >&2
-        ;;
-      *)
-        echo -e "${YELLOW}Unknown error${NC}" >&2
-        ;;
-    esac
-
-    if [ -n "$CLAUDE_ERROR" ]; then
+      print_error "Provider exited with code $ASSESSMENT_EXIT_CODE"
       echo "" >&2
-      echo "Full error output:" >&2
-      echo "$CLAUDE_ERROR" >&2
-    fi
-    echo "" >&2
+      echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+      echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
+      echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 
-    ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE, type: $CLAUDE_ERROR_TYPE)"
-  fi
+      case "$CLAUDE_ERROR_TYPE" in
+        PROVIDER_BUG)
+          echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
+          echo "This is a known SDK issue affecting PR review operations." >&2
+          echo "Workaround: Retry or use fallback assessment." >&2
+          ;;
+        RATE_LIMITED)
+          echo -e "${YELLOW}Rate limited by API${NC}" >&2
+          echo "Wait a few minutes before retrying." >&2
+          ;;
+        AUTH_EXPIRED)
+          echo -e "${YELLOW}Authentication expired${NC}" >&2
+          echo "Run: claude /login" >&2
+          ;;
+        NETWORK_ERROR)
+          echo -e "${YELLOW}Network connectivity issue${NC}" >&2
+          echo "Check your internet connection." >&2
+          ;;
+        *)
+          echo -e "${YELLOW}Unknown error${NC}" >&2
+          ;;
+      esac
+
+      if [ -n "$CLAUDE_ERROR" ]; then
+        echo "" >&2
+        echo "Full error output:" >&2
+        echo "$CLAUDE_ERROR" >&2
+      fi
+      echo "" >&2
+
+      # Exit immediately on non-zero exit codes (don't fall through to retry logic)
+      exit 1
+    fi
+
+    # Empty output with exit 0: retry if attempts remain
+    if [ -z "$ASSESSMENT_OUTPUT" ] && [ $ASSESSMENT_ATTEMPT -lt $MAX_ASSESSMENT_ATTEMPTS ]; then
+      print_warning "Provider returned empty assessment (attempt $ASSESSMENT_ATTEMPT/$MAX_ASSESSMENT_ATTEMPTS) — retrying in 3s..." >&2
+      sleep 3
+    fi
+  done
 else
   # SUPERVISED MODE: Interactive Claude session with permission prompts
   print_status "Starting interactive Claude session..."
   print_status "You can review and approve Claude's assessment decisions"
   echo ""
 
-  CLAUDE_STDERR=$(mktemp)
-  ASSESSMENT_OUTPUT=$(provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR" | tee /dev/stderr)
-  ASSESSMENT_EXIT_CODE=${PIPESTATUS[0]}
-  CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
-  rm -f "$CLAUDE_STDERR"
+  while [ $ASSESSMENT_ATTEMPT -lt $MAX_ASSESSMENT_ATTEMPTS ] && [ -z "$ASSESSMENT_OUTPUT" ]; do
+    ASSESSMENT_ATTEMPT=$((ASSESSMENT_ATTEMPT + 1))
 
-  if [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
-    # Detect specific error type
-    CLAUDE_ERROR_TYPE=$(provider_detect_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
-    export CLAUDE_ERROR_TYPE
+    CLAUDE_STDERR=$(mktemp)
+    ASSESSMENT_OUTPUT=$(provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR" | tee /dev/stderr)
+    ASSESSMENT_EXIT_CODE=${PIPESTATUS[0]}
+    CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
+    rm -f "$CLAUDE_STDERR"
 
-    print_error "Provider exited with code $ASSESSMENT_EXIT_CODE"
-    echo "" >&2
-    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
-    echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
-    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    if [ $ASSESSMENT_EXIT_CODE -ne 0 ]; then
+      # Non-zero exit: detect error type and fail immediately (don't retry)
+      CLAUDE_ERROR_TYPE=$(provider_detect_error "$CLAUDE_ERROR" "$ASSESSMENT_EXIT_CODE")
+      export CLAUDE_ERROR_TYPE
 
-    case "$CLAUDE_ERROR_TYPE" in
-      PROVIDER_BUG)
-        echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
-        echo "This is a known SDK issue affecting PR review operations." >&2
-        echo "Workaround: Retry or use fallback assessment." >&2
-        ;;
-      RATE_LIMITED)
-        echo -e "${YELLOW}Rate limited by API${NC}" >&2
-        echo "Wait a few minutes before retrying." >&2
-        ;;
-      AUTH_EXPIRED)
-        echo -e "${YELLOW}Authentication expired${NC}" >&2
-        echo "Run: claude /login" >&2
-        ;;
-      NETWORK_ERROR)
-        echo -e "${YELLOW}Network connectivity issue${NC}" >&2
-        echo "Check your internet connection." >&2
-        ;;
-      *)
-        echo -e "${YELLOW}Unknown error${NC}" >&2
-        ;;
-    esac
-
-    if [ -n "$CLAUDE_ERROR" ]; then
+      print_error "Provider exited with code $ASSESSMENT_EXIT_CODE"
       echo "" >&2
-      echo "Full error output:" >&2
-      echo "$CLAUDE_ERROR" >&2
-    fi
-    echo "" >&2
+      echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+      echo -e "${RED}DETECTED ERROR: $CLAUDE_ERROR_TYPE${NC}" >&2
+      echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 
-    ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE, type: $CLAUDE_ERROR_TYPE)"
-  fi
+      case "$CLAUDE_ERROR_TYPE" in
+        PROVIDER_BUG)
+          echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
+          echo "This is a known SDK issue affecting PR review operations." >&2
+          echo "Workaround: Retry or use fallback assessment." >&2
+          ;;
+        RATE_LIMITED)
+          echo -e "${YELLOW}Rate limited by API${NC}" >&2
+          echo "Wait a few minutes before retrying." >&2
+          ;;
+        AUTH_EXPIRED)
+          echo -e "${YELLOW}Authentication expired${NC}" >&2
+          echo "Run: claude /login" >&2
+          ;;
+        NETWORK_ERROR)
+          echo -e "${YELLOW}Network connectivity issue${NC}" >&2
+          echo "Check your internet connection." >&2
+          ;;
+        *)
+          echo -e "${YELLOW}Unknown error${NC}" >&2
+          ;;
+      esac
+
+      if [ -n "$CLAUDE_ERROR" ]; then
+        echo "" >&2
+        echo "Full error output:" >&2
+        echo "$CLAUDE_ERROR" >&2
+      fi
+      echo "" >&2
+
+      # Exit immediately on non-zero exit codes (don't fall through to retry logic)
+      exit 1
+    fi
+
+    # Empty output with exit 0: retry if attempts remain
+    if [ -z "$ASSESSMENT_OUTPUT" ] && [ $ASSESSMENT_ATTEMPT -lt $MAX_ASSESSMENT_ATTEMPTS ]; then
+      print_warning "Provider returned empty assessment (attempt $ASSESSMENT_ATTEMPT/$MAX_ASSESSMENT_ATTEMPTS) — retrying in 3s..." >&2
+      sleep 3
+    fi
+  done
 fi
 
-if [[ "$ASSESSMENT_OUTPUT" == "ERROR:"* ]] || [ -z "$ASSESSMENT_OUTPUT" ]; then
-  if [ -n "$CLAUDE_ERROR_TYPE" ] && [ "$CLAUDE_ERROR_TYPE" != "UNKNOWN" ]; then
-    print_warning "Claude assessment failed ($CLAUDE_ERROR_TYPE), falling back to heuristic filter" >&2
-  else
-    print_warning "Claude assessment unavailable, falling back to heuristic filter" >&2
-  fi
-  print_info "Using middle-ground fallback: CRITICAL + HIGH only (excluding MEDIUM/LOW)" >&2
-
-  # Heuristic fallback: Only CRITICAL and HIGH issues
-  HEURISTIC_FILTERED=$(echo "$REVIEW_CONTENT" | grep -E "^(CRITICAL|HIGH):" || echo "")
-
-  if [ -z "$HEURISTIC_FILTERED" ]; then
-    print_info "No CRITICAL or HIGH issues found in heuristic filter" >&2
-    echo "NO_ACTIONABLE_ITEMS"
-  else
-    print_info "Heuristic filter found $(echo "$HEURISTIC_FILTERED" | wc -l | tr -d ' ') CRITICAL/HIGH items" >&2
-    echo "$HEURISTIC_FILTERED"
-  fi
-  exit 0
+# After all retry attempts: if still empty, fail loud (do NOT fall back to heuristic)
+if [ -z "$ASSESSMENT_OUTPUT" ]; then
+  print_error "Assessment Claude call returned empty output after $MAX_ASSESSMENT_ATTEMPTS retries"
+  echo "" >&2
+  echo "This indicates a transient API failure, not an actual empty assessment." >&2
+  echo "Refusing to fall through to heuristic filter (which silently merges without proper assessment)." >&2
+  echo "" >&2
+  echo "Re-run assessment manually: rite ${ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix" >&2
+  exit 1
 fi
 
 _timer_end "claude_assessment"
