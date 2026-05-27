@@ -8,6 +8,8 @@
 # Called after merge/rebase succeeds but BEFORE push.
 # If verification fails, the caller should abort (revert the merge, don't push).
 
+set -o pipefail  # Ensure pipeline failures propagate correctly
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,6 +143,7 @@ verify_post_merge() {
   # Run inside a subshell: source env file, then run the test command.
   # timeout wraps the test command directly (an external binary) rather than
   # a shell function, which external commands cannot exec.
+  # PIPESTATUS[0] captures the test command's exit, not sed's (which is always 0).
   (
     cd "$run_dir"
     if [ -n "$env_file" ]; then
@@ -154,7 +157,7 @@ verify_post_merge() {
     else
       eval "$test_cmd"
     fi
-  ) 2>&1 | sed 's/^/  /' >&2 || test_exit=$?
+  ) 2>&1 | sed 's/^/  /' >&2 || test_exit=${PIPESTATUS[0]:-$?}
 
   if [ "$test_exit" -eq 124 ]; then
     echo "⚠️  Post-merge verification timed out after ${verify_timeout}s — skipping" >&2
@@ -188,7 +191,7 @@ verify_post_merge() {
         else
           eval "$test_cmd"
         fi
-      ) >/dev/null 2>&1 || _main_exit=$?
+      ) >/dev/null 2>&1 || _main_exit=${PIPESTATUS[0]:-$?}
 
       git -C "$worktree_path" worktree remove --force "$_main_test_dir" 2>/dev/null || rm -rf "$_main_test_dir"
 
