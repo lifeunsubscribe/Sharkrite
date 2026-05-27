@@ -215,3 +215,55 @@ EOF
   [ "$URL_WITH_QUERY" = "https://example.com/api?key=value&foo=bar" ]
   [ "$MULTIPLE_EQUALS" = "a=b=c=d" ]
 }
+
+@test "parse_rite_config handles malformed quotes - empty string" {
+  load_parser
+
+  cat > "$TEST_TEMP_DIR/malformed.conf" << 'EOF'
+EMPTY_QUOTED=""
+EOF
+
+  parse_rite_config "$TEST_TEMP_DIR/malformed.conf"
+
+  # Empty string should be preserved correctly
+  [ "$EMPTY_QUOTED" = "" ]
+}
+
+@test "parse_rite_config handles malformed quotes - single quote" {
+  load_parser
+
+  cat > "$TEST_TEMP_DIR/malformed.conf" << 'EOF'
+SINGLE_QUOTE="
+EOF
+
+  parse_rite_config "$TEST_TEMP_DIR/malformed.conf"
+
+  # Single quote should be kept as-is (not matched by regex)
+  [ "$SINGLE_QUOTE" = '"' ]
+}
+
+@test "parse_rite_config handles malformed quotes - triple quotes" {
+  load_parser
+
+  cat > "$TEST_TEMP_DIR/malformed.conf" << 'EOF'
+TRIPLE_QUOTED="""
+EOF
+
+  parse_rite_config "$TEST_TEMP_DIR/malformed.conf"
+
+  # Triple quotes: outer pair stripped, middle one preserved
+  [ "$TRIPLE_QUOTED" = '"' ]
+}
+
+@test "parse_rite_config handles malformed quotes - mismatched quotes" {
+  load_parser
+
+  cat > "$TEST_TEMP_DIR/malformed.conf" << 'EOF'
+MISMATCHED="value'
+EOF
+
+  parse_rite_config "$TEST_TEMP_DIR/malformed.conf"
+
+  # Mismatched quotes: regex won't match, kept as-is
+  [ "$MISMATCHED" = '"value'"'"'' ]
+}

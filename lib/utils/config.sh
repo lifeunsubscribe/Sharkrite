@@ -45,10 +45,13 @@ parse_rite_config() {
 
       # Strip outer quotes from value (single or double)
       # Preserves quotes/special chars inside the outer quotes
-      if [[ "$value" =~ ^\"(.*)\"$ ]]; then
-        value="${BASH_REMATCH[1]}"
-      elif [[ "$value" =~ ^\'(.*)\'$ ]]; then
-        value="${BASH_REMATCH[1]}"
+      # Only strip if value has at least 2 chars (opening and closing quote)
+      if [[ ${#value} -ge 2 ]]; then
+        if [[ "$value" =~ ^\"(.*)\"$ ]]; then
+          value="${BASH_REMATCH[1]}"
+        elif [[ "$value" =~ ^\'(.*)\'$ ]]; then
+          value="${BASH_REMATCH[1]}"
+        fi
       fi
 
       # Export the variable (no eval - literal string assignment)
