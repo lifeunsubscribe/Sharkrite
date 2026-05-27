@@ -38,9 +38,10 @@ parse_rite_config() {
     # Only process lines matching valid KEY=VALUE pattern
     # Must start with uppercase letter or underscore
     if [[ "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
-      # Extract key and value using IFS='=' (splits on first = only)
-      # The <<< here-string avoids subshell, -r prevents backslash interpretation
-      IFS='=' read -r key value <<< "$line"
+      # Extract key (everything before first =)
+      key="${line%%=*}"
+      # Extract value (everything after first =)
+      value="${line#*=}"
 
       # Strip outer quotes from value (single or double)
       # Preserves quotes/special chars inside the outer quotes

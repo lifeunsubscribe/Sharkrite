@@ -199,3 +199,19 @@ EOF
   result=$(bash -c 'echo "$EXPORT_TEST"')
   [ "$result" = "exported_value" ]
 }
+
+@test "parse_rite_config handles values with equals signs" {
+  load_parser
+
+  cat > "$TEST_TEMP_DIR/equals.conf" << 'EOF'
+BASE64_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=
+URL_WITH_QUERY="https://example.com/api?key=value&foo=bar"
+MULTIPLE_EQUALS=a=b=c=d
+EOF
+
+  parse_rite_config "$TEST_TEMP_DIR/equals.conf"
+
+  [ "$BASE64_TOKEN" = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=" ]
+  [ "$URL_WITH_QUERY" = "https://example.com/api?key=value&foo=bar" ]
+  [ "$MULTIPLE_EQUALS" = "a=b=c=d" ]
+}
