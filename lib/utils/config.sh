@@ -14,6 +14,55 @@ set -euo pipefail
 # HELPER: Safe config file sourcing with validation
 # =============================================================================
 
+# parse_rite_config - Strict KEY=VALUE parser for config files
+# Reads config files WITHOUT executing them as shell scripts
+# Only accepts lines matching: ^[A-Z_][A-Z0-9_]*=...
+# Strips outer quotes from values, exports variables
+# Security: No eval, no command substitution, no code execution
+#
+# Accepted:  KEY=value, KEY="value with spaces", KEY='value'
+# Rejected:  lowercase keys, shell commands, $(subst), `backticks`, semicolons
+parse_rite_config() {
+  local config_file="$1"
+
+  # Skip if file doesn't exist
+  [ -f "$config_file" ] || return 0
+
+  local line key value
+
+  # Read line by line (preserving empty lines for || condition)
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip empty lines and comments
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+    # Only process lines matching valid KEY=VALUE pattern
+    # Must start with uppercase letter or underscore
+    if [[ "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
+      # Extract key (everything before first =)
+      key="${line%%=*}"
+      # Extract value (everything after first =)
+      value="${line#*=}"
+
+      # Strip outer quotes from value (single or double)
+      # Preserves quotes/special chars inside the outer quotes
+      # Only strip if value has at least 2 chars (opening and closing quote)
+      if [[ ${#value} -ge 2 ]]; then
+        if [[ "$value" =~ ^\"(.*)\"$ ]]; then
+          value="${BASH_REMATCH[1]}"
+        elif [[ "$value" =~ ^\'(.*)\'$ ]]; then
+          value="${BASH_REMATCH[1]}"
+        fi
+      fi
+
+      # Export the variable (no eval - literal string assignment)
+      export "$key=$value"
+    fi
+    # Silently ignore invalid lines (defense in depth)
+  done < "$config_file"
+}
+
+# safe_source - Still used for trusted library files (lib/utils/*.sh, lib/core/*.sh)
+# DO NOT use for config files (.rite/config, .riterc, blockers.conf)
 safe_source() {
   local config_file="$1"
   if [ -f "$config_file" ]; then
@@ -148,24 +197,24 @@ RITE_TEST_CMD="${RITE_TEST_CMD:-}"
 # =============================================================================
 
 RITE_GLOBAL_CONFIG="${RITE_GLOBAL_CONFIG:-$HOME/.config/rite/config}"
-safe_source "$RITE_GLOBAL_CONFIG"
+parse_rite_config "$RITE_GLOBAL_CONFIG"
 
 # Also check ~/.riterc for convenience
-safe_source "$HOME/.riterc"
+parse_rite_config "$HOME/.riterc"
 
 # =============================================================================
 # STEP 4: Load Project Config ($REPO/.rite/config)
 # =============================================================================
 
 RITE_PROJECT_CONFIG="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
-safe_source "$RITE_PROJECT_CONFIG"
+parse_rite_config "$RITE_PROJECT_CONFIG"
 
 # =============================================================================
 # STEP 5: Load Blocker Rules (project-specific or defaults)
 # =============================================================================
 
 RITE_BLOCKERS_CONFIG="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/blockers.conf"
-safe_source "$RITE_BLOCKERS_CONFIG"
+parse_rite_config "$RITE_BLOCKERS_CONFIG"
 
 # Blocker pattern defaults (if not set by project config)
 BLOCKER_INFRASTRUCTURE_PATHS="${BLOCKER_INFRASTRUCTURE_PATHS:-infrastructure/|cdk/|terraform/|cloudformation/|\.github/workflows/|\.claude/}"
