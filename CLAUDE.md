@@ -256,6 +256,21 @@ bats tests/             # Run test suite (requires bats)
 - `PIPESTATUS[0]` after `|| true` — value is lost
 - `local` outside function — only works inside functions
 
+**Suppressing false positives:**
+
+Some lint rules support inline suppression comments. Place the comment on the line immediately before the flagged code:
+
+```bash
+# sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded
+PR_BODY=$(cat <<EOF
+Summary: ${ISSUE_TITLE}
+EOF
+)
+```
+
+Supported suppression rules:
+- `UNQUOTED_HEREDOC` — for intentional variable expansion in heredocs
+
 **Pre-push hook** (optional):
 ```bash
 cp tools/git-hooks/pre-push .git/hooks/pre-push
