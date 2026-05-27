@@ -412,8 +412,11 @@ PROMPT_EOF
 fi
 
 # =====================================================================
-# ADR (suggestions only during bootstrap)
+# ADR BACKFILL (generate from historical commits during bootstrap)
 # =====================================================================
+
+# Source the ADR generation function from assess-documentation.sh
+source "$RITE_LIB_DIR/core/assess-documentation.sh"
 
 echo ""
 ADR_SUGGESTIONS=$(git log --oneline -50 2>/dev/null | grep -iE "(refactor|feat|breaking|migrate|replace|switch|adopt|drop)" | head -5 || echo "")
@@ -424,7 +427,52 @@ if [ -n "$ADR_SUGGESTIONS" ]; then
     [ -z "$line" ] && continue
     echo "   - \"$line\"" >&2
   done <<< "$ADR_SUGGESTIONS"
-  echo "   ADRs will be auto-created per-PR at: .rite/docs/adr/" >&2
+
+  # Check if backfill is enabled
+  BACKFILL_COUNT="${RITE_BACKFILL_ADR_COUNT:-5}"
+  NO_BACKFILL="${RITE_NO_BACKFILL_ADRS:-false}"
+
+  if [ "$NO_BACKFILL" = "true" ]; then
+    echo "   Backfill skipped. Run \`rite --init\` without --no-backfill-adrs to generate ADRs." >&2
+  else
+    echo "" >&2
+    echo "📝 Generating up to $BACKFILL_COUNT ADRs from history (uses provider tokens)..." >&2
+
+    # Create ADR directory
+    mkdir -p "$RITE_INTERNAL_DOCS_DIR/adr"
+
+    # Process each suggestion (up to BACKFILL_COUNT)
+    _backfill_count=0
+    while IFS= read -r commit_line; do
+      [ -z "$commit_line" ] && continue
+      [ "$_backfill_count" -ge "$BACKFILL_COUNT" ] && break
+
+      # Extract SHA and message
+      commit_sha=$(echo "$commit_line" | awk '{print $1}')
+      commit_msg=$(echo "$commit_line" | cut -d' ' -f2-)
+
+      # Get commit details
+      commit_body=$(git log -1 "$commit_sha" --format="%B" 2>/dev/null || echo "")
+      commit_diff=$(git show "$commit_sha" --format="" 2>/dev/null | head -500 || echo "")
+      changed_files=$(git diff-tree --no-commit-id --name-only -r "$commit_sha" 2>/dev/null || echo "")
+
+      # Call generate_adr_for_ref
+      adr_file=$(generate_adr_for_ref "commit" "$commit_sha" "$commit_msg" "$commit_body" "$commit_diff" "$changed_files" 2>/dev/null)
+
+      if [ -n "$adr_file" ]; then
+        echo "   ✓ $(basename "$adr_file")" >&2
+        _backfill_count=$((_backfill_count + 1))
+      else
+        echo "   - Skipped $commit_sha — Claude judged not ADR-worthy" >&2
+      fi
+    done <<< "$ADR_SUGGESTIONS"
+
+    if [ "$_backfill_count" -gt 0 ]; then
+      echo "   Generated $_backfill_count ADR(s) at: .rite/docs/adr/" >&2
+    else
+      echo "   No ADRs generated (all commits deemed non-architectural)" >&2
+    fi
+  fi
 fi
 
 # =====================================================================

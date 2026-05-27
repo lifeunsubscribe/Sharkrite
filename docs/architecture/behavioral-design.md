@@ -208,3 +208,54 @@ Considered appending deferrals to the source ADR on plan approval. Rejected beca
 ### Rejected: Keyword Matching for Deferral Detection
 
 Tried extracting significant words from feature names and matching against the deferrals log in bash. Failed because natural language phrasing varies ("view" vs "endpoint" vs "query"). Replaced by passing deferrals to the phantom Claude call for semantic matching.
+
+---
+
+## ADR Backfill (bootstrap-docs.sh)
+
+### Backfill Behavior
+
+When `rite --init` runs, bootstrap searches git history for architectural commits (refactor, feat, breaking, migrate, etc.) and generates ADRs for them. This ensures new repos start with decision records for major historical changes, not just future PRs.
+
+**Default:** Backfill up to 5 ADRs from the last 50 commits matching the pattern.
+
+**CLI Flags:**
+- `--no-backfill-adrs` — Skip backfill entirely (prints skip message)
+- `--backfill-count N` — Generate up to N ADRs (default: 5)
+
+**Environment Variables:**
+- `RITE_NO_BACKFILL_ADRS=true` — Skip backfill
+- `RITE_BACKFILL_ADR_COUNT=N` — Set backfill limit
+
+### Metadata Format
+
+ADRs generated from commits use `**Commit:** <sha>` metadata instead of `**PR:** #N`.
+
+**Example:**
+```markdown
+# ADR-001: Provider Abstraction
+
+**Date:** 2026-05-26
+**Commit:** bd61485
+**Files:** lib/providers/provider-interface.sh, lib/providers/claude.sh
+**Context:** ...
+**Decision:** ...
+**Tradeoffs:** ...
+```
+
+### Deduplication
+
+The `generate_adr_for_ref()` function checks for existing ADRs by searching for:
+- `PR: #<number>` (for PR-based ADRs)
+- `Commit: <sha>` (for commit-based ADRs)
+
+Re-running bootstrap is idempotent — existing ADRs are preserved, only commits without an ADR get one.
+
+### Empty Responses
+
+When Claude judges a commit NOT architecturally significant, it returns empty output. Bootstrap prints:
+```
+- Skipped <sha> — Claude judged not ADR-worthy
+```
+
+No file is created for that commit. This prevents cluttering `.rite/docs/adr/` with trivial decisions.
