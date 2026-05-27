@@ -25,8 +25,11 @@ create_test_script() {
 @test "detects grep -c with || echo '0'" {
   create_test_script "bad-grep.sh" 'COUNT=$(grep -c "pattern" file.txt || echo "0")'
 
-  # Should fail
-  cd "$TEST_DIR/.." && ! "$LINT_SCRIPT" 2>&1 | grep -q "GREP_C_ECHO_ZERO"
+  # Should fail (lint script exits non-zero and output contains error)
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
 @test "accepts grep -c with || true" {
@@ -39,8 +42,11 @@ create_test_script() {
 @test "detects git push without refspec" {
   create_test_script "bad-push.sh" 'git push'
 
-  # Should fail
-  cd "$TEST_DIR/.." && ! "$LINT_SCRIPT" 2>&1 | grep -q "GIT_PUSH_NO_REFSPEC"
+  # Should fail (lint script exits non-zero and output contains error)
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
 }
 
 @test "accepts git push with origin and branch" {
@@ -63,8 +69,11 @@ some content
 EOF
 )'
 
-  # Should fail
-  cd "$TEST_DIR/.." && ! "$LINT_SCRIPT" 2>&1 | grep -q "UNQUOTED_HEREDOC_CMDSUB"
+  # Should fail (lint script exits non-zero and output contains error)
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "UNQUOTED_HEREDOC_CMDSUB" ]]
 }
 
 @test "accepts quoted heredoc in command substitution" {
@@ -80,8 +89,11 @@ EOF
 @test "detects BSD sed without GNU fallback" {
   create_test_script "bad-sed.sh" "sed -i '' 's/foo/bar/' file.txt"
 
-  # Should fail
-  cd "$TEST_DIR/.." && ! "$LINT_SCRIPT" 2>&1 | grep -q "BSD_SED_NO_FALLBACK"
+  # Should fail (lint script exits non-zero and output contains error)
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "BSD_SED_NO_FALLBACK" ]]
 }
 
 @test "accepts BSD sed with GNU fallback check" {
@@ -99,8 +111,11 @@ fi'
   create_test_script "bad-pipestatus.sh" 'cmd1 | cmd2 || true
 EXIT_CODE=${PIPESTATUS[0]}'
 
-  # Should fail
-  cd "$TEST_DIR/.." && ! "$LINT_SCRIPT" 2>&1 | grep -q "PIPESTATUS_AFTER_OR_TRUE"
+  # Should fail (lint script exits non-zero and output contains error)
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PIPESTATUS_AFTER_OR_TRUE" ]]
 }
 
 @test "accepts PIPESTATUS with fallback" {
@@ -114,8 +129,11 @@ EXIT_CODE=${PIPESTATUS[0]}'
   create_test_script "bad-local.sh" 'local foo="bar"
 echo "$foo"'
 
-  # Should fail
-  cd "$TEST_DIR/.." && ! "$LINT_SCRIPT" 2>&1 | grep -q "LOCAL_OUTSIDE_FUNCTION"
+  # Should fail (lint script exits non-zero and output contains error)
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
 
 @test "accepts local inside function" {

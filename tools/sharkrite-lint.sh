@@ -143,9 +143,6 @@ done
 # Rule 6: PIPESTATUS after || true or non-pipeline
 echo "Checking for PIPESTATUS misuse..."
 for file in $SHELL_FILES; do
-  # Read file content to check context
-  file_content=$(cat "$file")
-
   # Find all PIPESTATUS usages
   while IFS=: read -r line_num line_content; do
     # Get previous line for context
@@ -178,9 +175,10 @@ for file in $SHELL_FILES; do
 
   in_function=0
   brace_depth=0
+  line_num=0
 
   while IFS= read -r line; do
-    line_num=$((${line_num:-0} + 1))
+    line_num=$((line_num + 1))
 
     # Track function definitions
     if echo "$line" | grep -qE '^\s*(function\s+\w+|^\s*\w+\s*\(\))'; then

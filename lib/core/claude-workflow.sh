@@ -1197,8 +1197,14 @@ If the changes are unrelated work, answer UNRELATED."
         fi
         # Has the old trailing-slash form that doesn't match symlinks — upgrade it
         if [ -f "$gitignore" ] && grep -qxF "${pattern}/" "$gitignore" 2>/dev/null; then
-          # TODO(tech-debt): Add GNU sed fallback for cross-platform support
-          sed -i '' "s|^${pattern}/$|${pattern}|" "$gitignore"
+          # Platform-specific sed -i syntax
+          if sed --version >/dev/null 2>&1; then
+            # GNU sed
+            sed -i "s|^${pattern}/$|${pattern}|" "$gitignore"
+          else
+            # BSD sed (macOS)
+            sed -i '' "s|^${pattern}/$|${pattern}|" "$gitignore"
+          fi
           ((updated++)) || true
           continue
         fi
@@ -1281,7 +1287,12 @@ for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
   fi
   # Has the old trailing-slash form — upgrade it
   if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
-    sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
+    # Platform-specific sed -i syntax
+    if sed --version >/dev/null 2>&1; then
+      sed -i "s|^${_pattern}/$|${_pattern}|" .gitignore
+    else
+      sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
+    fi
     continue
   fi
   # Pattern missing entirely — add it
@@ -1462,13 +1473,26 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
   if grep -q "## Current Work" "$SCRATCHPAD_FILE"; then
     # Update existing section
     sed "/## Current Work/,/^## /{//!d;}" "$SCRATCHPAD_FILE" > "$TEMP_SCRATCH"
-    sed -i '' "/## Current Work/a\\
+    # Platform-specific sed -i syntax
+    if sed --version >/dev/null 2>&1; then
+      # GNU sed
+      sed -i "/## Current Work/a\\
 \\
 **Issue:** #${ISSUE_NUMBER:-unknown}\\
 **Description:** ${ISSUE_DESC}\\
 **Branch:** ${BRANCH_NAME:-$CURRENT_BRANCH}\\
 **Started:** $(date '+%Y-%m-%d %H:%M:%S')\\
 " "$TEMP_SCRATCH"
+    else
+      # BSD sed (macOS)
+      sed -i '' "/## Current Work/a\\
+\\
+**Issue:** #${ISSUE_NUMBER:-unknown}\\
+**Description:** ${ISSUE_DESC}\\
+**Branch:** ${BRANCH_NAME:-$CURRENT_BRANCH}\\
+**Started:** $(date '+%Y-%m-%d %H:%M:%S')\\
+" "$TEMP_SCRATCH"
+    fi
     mv "$TEMP_SCRATCH" "$SCRATCHPAD_FILE"
   else
     # Add section if missing
@@ -1731,7 +1755,12 @@ else
       continue
     fi
     if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
-      sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
+      # Platform-specific sed -i syntax
+      if sed --version >/dev/null 2>&1; then
+        sed -i "s|^${_pattern}/$|${_pattern}|" .gitignore
+      else
+        sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
+      fi
       continue
     fi
     echo "$_pattern" >> .gitignore
