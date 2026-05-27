@@ -8,6 +8,8 @@
 # Called after merge/rebase succeeds but BEFORE push.
 # If verification fails, the caller should abort (revert the merge, don't push).
 
+set -o pipefail  # Ensure pipeline failures propagate correctly
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,6 +143,7 @@ verify_post_merge() {
   # Run inside a subshell: source env file, then run the test command.
   # timeout wraps the test command directly (an external binary) rather than
   # a shell function, which external commands cannot exec.
+  # With pipefail, $? captures the test command's exit, not sed's (which is always 0).
   (
     cd "$run_dir"
     if [ -n "$env_file" ]; then
