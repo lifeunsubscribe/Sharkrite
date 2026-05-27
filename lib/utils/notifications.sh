@@ -27,6 +27,7 @@ send_slack() {
   local icon=":robot_face:"
   [ "$urgency" = "urgent" ] && icon=":rotating_light:"
 
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   local payload=$(cat <<EOF
 {
   "text": "${icon} ${RITE_PROJECT_NAME:-Sharkrite} Workflow",
