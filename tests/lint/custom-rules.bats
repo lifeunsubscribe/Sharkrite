@@ -36,7 +36,10 @@ create_test_script() {
   create_test_script "good-grep.sh" 'COUNT=$(grep -c "pattern" file.txt || true)'
 
   # Should pass (no GREP_C_ECHO_ZERO error)
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -qv "GREP_C_ECHO_ZERO" || true
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
 @test "detects git push without refspec" {
@@ -53,7 +56,10 @@ create_test_script() {
   create_test_script "good-push.sh" 'git push origin main'
 
   # Should pass
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -qv "GIT_PUSH_NO_REFSPEC" || true
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
 }
 
 @test "warns on eval with GitHub data" {
@@ -83,7 +89,10 @@ EOF
 )"
 
   # Should pass
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -qv "UNQUOTED_HEREDOC_CMDSUB" || true
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "UNQUOTED_HEREDOC_CMDSUB" ]]
 }
 
 @test "detects BSD sed without GNU fallback" {
@@ -104,7 +113,10 @@ else
 fi'
 
   # Should pass
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -qv "BSD_SED_NO_FALLBACK" || true
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "BSD_SED_NO_FALLBACK" ]]
 }
 
 @test "detects PIPESTATUS after || true" {
@@ -122,7 +134,10 @@ EXIT_CODE=${PIPESTATUS[0]}'
   create_test_script "good-pipestatus.sh" 'cmd1 | cmd2 || _exit=${PIPESTATUS[0]:-$?}'
 
   # Should pass (the pattern checks for the fallback)
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -qv "PIPESTATUS_AFTER_OR_TRUE" || true
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "PIPESTATUS_AFTER_OR_TRUE" ]]
 }
 
 @test "detects local outside function" {
@@ -143,5 +158,8 @@ echo "$foo"'
 }'
 
   # Should pass
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -qv "LOCAL_OUTSIDE_FUNCTION" || true
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
