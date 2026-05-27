@@ -1394,13 +1394,13 @@ EOF
         fi
       fi
 
-      # Release file lock
+      # Release file lock (defensive: LOCKFILE may be unset if no scratchpad work occurred)
         if command -v flock >/dev/null 2>&1; then
           flock -u 200 2>/dev/null || true
           exec 200>&-
         else
-          rm -f "$LOCKFILE/pid" 2>/dev/null || true
-          rmdir "$LOCKFILE" 2>/dev/null || true
+          rm -f "${LOCKFILE:-}/pid" 2>/dev/null || true
+          rmdir "${LOCKFILE:-}" 2>/dev/null || true
         fi
 
         # Clean up old backups (keep last 5)
