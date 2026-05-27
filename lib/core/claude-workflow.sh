@@ -808,6 +808,9 @@ if [ -z "$ISSUE_NUMBER" ]; then
   fi
 
   # Acquire lock if issue number is known and not already locked
+  # Note: This is called a second time (first call at line 251 after arg parsing) because
+  # in continue/navigation mode, ISSUE_NUMBER may not be known from arguments but is instead
+  # derived from CONTINUE_ISSUE_NUM environment variable set by the navigator
   setup_issue_lock_if_needed
 
   BRANCH_NAME="$CURRENT_BRANCH"
