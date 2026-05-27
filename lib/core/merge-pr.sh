@@ -793,6 +793,7 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
 ${ISSUES_LIST}
 🔗 *PR Link*: <${PR_URL}|View PR #${PR_NUMBER}>"
 
+      # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
       SLACK_PAYLOAD=$(cat <<EOF
 {
   "text": "PR #${PR_NUMBER} Merged",
@@ -1003,6 +1004,7 @@ EOF
         # Insert before "## Completed Work Archive" or at end
         if grep -q "^## Completed Work Archive" "$TEMP_SCRATCH"; then
           # Insert entry at top of archive section
+          # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
           ARCHIVE_ENTRY=$(cat << EOF
 
 ### $(date +%Y-%m-%d): PR #$PR_NUMBER Merged
@@ -1334,6 +1336,7 @@ ${ACTIVE_WORKTREES_LIST}
 📊 Total PRs merged: #$PR_NUMBER"
 
             # Send to Slack
+            # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
             SLACK_PAYLOAD=$(cat <<EOF
 {
   "text": "Periodic Deep Clean Summary",

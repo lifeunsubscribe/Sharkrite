@@ -1,0 +1,17 @@
+# Sharkrite shellcheck configuration
+# https://www.shellcheck.net/wiki/
+
+# Fail on warnings (not just errors)
+severity=warning
+
+# Shell dialect (bash)
+shell=bash
+
+# Exclusions for intentional patterns or false positives
+# SC1090: Can't follow non-constant source
+disable=SC1090
+# SC1091: Not following sourced files (handled by config.sh)
+disable=SC1091
+
+# Enable all optional checks
+enable=all

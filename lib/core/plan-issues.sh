@@ -297,6 +297,7 @@ generate_issues() {
   print_status "Generating issue definitions with Claude..." >&2
 
   local prompt
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   prompt=$(cat <<PROMPT_EOF
 You are generating GitHub issues for a software project, following the Sharkrite issue runbook.
 
@@ -787,6 +788,7 @@ _validate_coverage() {
   coverage_section=$(sed '/^---ISSUE---$/q' "$issues_file" | grep -v "^---ISSUE---$" || true)
 
   local phantom_prompt
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   phantom_prompt=$(cat <<PHANTOM_EOF
 The coverage checklist references issue(s) that were not emitted. For each one below, decide:
 1. **GENERATE** — the default. Generate unless a SKIP condition is met.
@@ -1124,7 +1126,7 @@ display_issues() {
 
   # Count issues first
   local total_issues
-  total_issues=$(grep -c "^---ISSUE---$" "$issues_file" || echo "0")
+  total_issues=$(grep -c "^---ISSUE---$" "$issues_file" || true)
 
   # Parse and display
   while IFS= read -r line; do

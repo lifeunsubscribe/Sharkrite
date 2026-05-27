@@ -265,6 +265,7 @@ if [ "$PR_EXISTS" = false ]; then
   CHANGES_SUMMARY=$(build_changes_summary "$BASE_BRANCH")
 
   # Build PR body
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   PR_BODY=$(cat <<EOF
 ## Summary
 

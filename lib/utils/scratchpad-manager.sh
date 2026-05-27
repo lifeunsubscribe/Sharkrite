@@ -377,6 +377,7 @@ create_tech_debt_issues() {
     issue_title=$(echo "$issue_title" | head -c 256)
 
     local issue_body
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
     issue_body=$(cat <<EOF
 ## Description
 ${description}

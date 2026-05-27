@@ -1026,6 +1026,7 @@ Related: #$PR_NUMBER"
 
       # Send Slack notification
       if [ -n "${SLACK_WEBHOOK:-}" ]; then
+        # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
         SLACK_MESSAGE=$(cat <<EOF
 {
   "text": "📚 *Documentation Auto-Updated*",
