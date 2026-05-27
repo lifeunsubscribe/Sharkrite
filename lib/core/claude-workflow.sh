@@ -798,8 +798,9 @@ if [ -z "$ISSUE_NUMBER" ]; then
     ISSUE_DESC="Continue work on $CURRENT_BRANCH"
   fi
 
-  # Acquire lock if issue number is known and not already locked (direct --continue invocation)
-  if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ]; then
+  # Acquire lock if issue number is known and not already locked
+  # Skip if: fix-review mode OR continue via exec (CONTINUE_ISSUE_NUM set means lock already held)
+  if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
     if ! acquire_issue_lock "$ISSUE_NUMBER"; then
       exit 1
     fi
