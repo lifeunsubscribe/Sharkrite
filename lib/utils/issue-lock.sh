@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-# Source config if not already loaded (RITE_LOCK_DIR defined there)
-if [ -z "${RITE_LIB_DIR:-}" ]; then
+# Source config if RITE_LOCK_DIR not already set (defined in config.sh)
+if [ -z "${RITE_LOCK_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRIPT_DIR/config.sh"
 fi
