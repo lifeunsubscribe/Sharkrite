@@ -135,6 +135,23 @@ cleanup_on_interrupt() {
 
 trap cleanup_on_interrupt INT TERM HUP
 
+# Helper function to acquire per-issue lock and set up EXIT trap
+# Usage: setup_issue_lock_if_needed
+# Returns: 0 on success, 1 on failure (exits script)
+# Conditions: Only acquires lock if:
+#   - ISSUE_NUMBER is set
+#   - NOT in fix-review mode (already locked by main dev session)
+#   - NOT in continue mode via exec (lock already held by first invocation)
+setup_issue_lock_if_needed() {
+  if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
+    if ! acquire_issue_lock "$ISSUE_NUMBER"; then
+      exit 1
+    fi
+    # Add EXIT trap to release lock on normal completion (cleanup_on_interrupt also releases it)
+    trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
+  fi
+}
+
 # Parse arguments - Two-pass to detect flags before processing issue number
 AUTO_MODE=false
 FIX_REVIEW_MODE=false
@@ -231,15 +248,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Acquire per-issue lock if issue number is known (prevent concurrent rite invocations on same issue)
-# Skip in fix-review mode (already locked by main dev session)
-# In continue mode (CONTINUE_ISSUE_NUM set from exec), lock was acquired by first invocation and PID is unchanged
-if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
-  if ! acquire_issue_lock "$ISSUE_NUMBER"; then
-    exit 1
-  fi
-  # Add EXIT trap to release lock on normal completion (cleanup_on_interrupt also releases it)
-  trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
-fi
+setup_issue_lock_if_needed
 
 # Colors for output
 RED='\033[0;31m'
@@ -799,13 +808,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
   fi
 
   # Acquire lock if issue number is known and not already locked
-  # Skip if: fix-review mode OR continue via exec (CONTINUE_ISSUE_NUM set means lock already held)
-  if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
-    if ! acquire_issue_lock "$ISSUE_NUMBER"; then
-      exit 1
-    fi
-    trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
-  fi
+  setup_issue_lock_if_needed
 
   BRANCH_NAME="$CURRENT_BRANCH"
 
