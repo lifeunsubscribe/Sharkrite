@@ -133,6 +133,18 @@ while [[ $# -gt 0 ]]; do
       MODE="init"
       shift
       ;;
+    --no-backfill-adrs)
+      export RITE_NO_BACKFILL_ADRS=true
+      shift
+      ;;
+    --backfill-count)
+      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        print_error "--backfill-count requires a number"
+        exit 1
+      fi
+      export RITE_BACKFILL_ADR_COUNT="$2"
+      shift 2
+      ;;
     plan)
       MODE="plan"
       shift
@@ -164,6 +176,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite plan --preview [doc]     Preview issues without creating them"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
       echo "  rite --init                   Initialize .rite/ in current project"
+      echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
+      echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""

@@ -343,12 +343,115 @@ API_EOF
   fi
 }
 
+# generate_adr_for_ref - Generate ADR for either a PR or a commit
+# Args:
+#   $1: ref_type - "pr" or "commit"
+#   $2: ref_id - PR number (e.g., "123") or commit SHA (e.g., "a1b2c3d")
+#   $3: title - PR title or commit message subject
+#   $4: body - PR body or full commit message
+#   $5: diff - PR diff or commit diff
+#   $6: changed_files - newline-separated list of changed files
+# Returns: path to created ADR file (stdout), or empty if skipped
+generate_adr_for_ref() {
+  local ref_type="$1"
+  local ref_id="$2"
+  local title="$3"
+  local body="$4"
+  local diff="$5"
+  local changed_files="$6"
+  local adr_dir="${RITE_INTERNAL_DOCS_DIR}/adr"
+
+  mkdir -p "$adr_dir"
+
+  # Scan existing ADRs for highest number
+  local highest=0
+  for adr_file in "$adr_dir"/*.md; do
+    if [ -f "$adr_file" ]; then
+      local num=$(basename "$adr_file" | grep -oE "^[0-9]+" || echo "0")
+      # Strip leading zeros to prevent bash octal interpretation (008 is invalid octal)
+      num=$((10#$num))
+      if [ "$num" -gt "$highest" ]; then
+        highest="$num"
+      fi
+    fi
+  done
+  local next_num=$((highest + 1))
+  local next_num_padded=$(printf "%03d" "$next_num")
+
+  # Deduplication: check if ADR already exists for this PR or commit
+  if [ "$ref_type" = "pr" ]; then
+    if grep -rl "PR: #${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
+      return 0
+    fi
+  elif [ "$ref_type" = "commit" ]; then
+    if grep -rl "Commit: ${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
+      return 0
+    fi
+  fi
+
+  # Build compact file list for the Files: metadata line
+  local changed_files_list=$(echo "$changed_files" | head -10 | tr '\n' ', ' | sed 's/,$//')
+
+  # Build metadata line based on ref_type
+  local ref_metadata
+  if [ "$ref_type" = "pr" ]; then
+    ref_metadata="**PR:** #${ref_id}"
+  else
+    ref_metadata="**Commit:** ${ref_id}"
+  fi
+
+  # Generate ADR via Claude
+  local prompt_file=$(mktemp)
+  cat > "$prompt_file" <<ADR_EOF
+Output ONLY a single ADR document in this exact format. No extra text before or after.
+
+# ADR-${next_num_padded}: <Brief Title>
+
+**Date:** $(date +%Y-%m-%d)
+${ref_metadata}
+**Files:** ${changed_files_list}
+**Context:** <1-2 lines from the description and diff explaining why this change was needed>
+**Decision:** <1-2 lines describing what was changed>
+**Tradeoffs:** <1-2 lines on what was gained vs lost>
+
+If this change does NOT represent a significant architectural decision (pattern change, approach substitution, tradeoff decision), output nothing.
+
+Title: ${title}
+Description:
+${body}
+
+Diff (truncated):
+${diff}
+ADR_EOF
+
+  verbose_info "  Checking for ADR-worthy decisions..."
+  local adr_output
+  adr_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  rm -f "$prompt_file"
+
+  if [ -n "$adr_output" ]; then
+    # Extract brief title for filename
+    local brief_title=$(echo "$adr_output" | head -1 | sed 's/^# ADR-[0-9]*: //' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40)
+    if [ -z "$brief_title" ]; then
+      if [ "$ref_type" = "pr" ]; then
+        brief_title="pr-${ref_id}"
+      else
+        brief_title="commit-${ref_id:0:7}"
+      fi
+    fi
+
+    local adr_file="${adr_dir}/${next_num_padded}-${brief_title}.md"
+    echo "$adr_output" > "$adr_file"
+    _mark_updated "ADR-${next_num_padded}"
+    echo "$adr_file"
+  fi
+}
+
 assess_internal_adr() {
   local pr_number="$1"
   local pr_diff="$2"
   local pr_body="$3"
   local pr_title="$4"
-  local adr_dir="${RITE_INTERNAL_DOCS_DIR}/adr"
 
   # Check if diff introduces a pattern change (new category, rule type, phase, approach substitution)
   local has_pattern_change=false
@@ -372,67 +475,8 @@ assess_internal_adr() {
     return 0
   fi
 
-  # Scan existing ADRs for highest number
-  local highest=0
-  for adr_file in "$adr_dir"/*.md; do
-    if [ -f "$adr_file" ]; then
-      local num=$(basename "$adr_file" | grep -oE "^[0-9]+" || echo "0")
-      # Strip leading zeros to prevent bash octal interpretation (008 is invalid octal)
-      num=$((10#$num))
-      if [ "$num" -gt "$highest" ]; then
-        highest="$num"
-      fi
-    fi
-  done
-  local next_num=$((highest + 1))
-  local next_num_padded=$(printf "%03d" "$next_num")
-
-  # Deduplication: check if ADR already exists for this PR
-  if grep -rl "PR: #${pr_number}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
-    return 0
-  fi
-
-  # Build compact file list for the Files: metadata line
-  local changed_files_list=$(echo "$CHANGED_FILES" | head -10 | tr '\n' ', ' | sed 's/,$//')
-
-  # Generate ADR via Claude
-  local prompt_file=$(mktemp)
-  cat > "$prompt_file" <<ADR_EOF
-Output ONLY a single ADR document in this exact format. No extra text before or after.
-
-# ADR-${next_num_padded}: <Brief Title>
-
-**Date:** $(date +%Y-%m-%d)
-**PR:** #${pr_number}
-**Files:** ${changed_files_list}
-**Context:** <1-2 lines from PR body and diff explaining why this change was needed>
-**Decision:** <1-2 lines describing what was changed>
-**Tradeoffs:** <1-2 lines on what was gained vs lost>
-
-PR Title: ${pr_title}
-PR Body:
-${pr_body}
-
-Diff (truncated):
-${pr_diff}
-ADR_EOF
-
-  verbose_info "  Checking for ADR-worthy decisions..."
-  local adr_output
-  adr_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -n "$adr_output" ]; then
-    # Extract brief title for filename
-    local brief_title=$(echo "$adr_output" | head -1 | sed 's/^# ADR-[0-9]*: //' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40)
-    if [ -z "$brief_title" ]; then
-      brief_title="pr-${pr_number}"
-    fi
-
-    local adr_file="${adr_dir}/${next_num_padded}-${brief_title}.md"
-    echo "$adr_output" > "$adr_file"
-    _mark_updated "ADR-${next_num_padded}"
-  fi
+  # Call the refactored function
+  generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "${CHANGED_FILES:-}" >/dev/null
 }
 
 # --- Run internal doc assessments ---
