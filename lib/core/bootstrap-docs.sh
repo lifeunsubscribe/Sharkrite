@@ -415,6 +415,9 @@ fi
 # ADR BACKFILL (generate from historical commits during bootstrap)
 # =====================================================================
 
+# Stub for _mark_updated since assess-documentation.sh expects it
+_mark_updated() { :; }
+
 # Source the ADR generation function from assess-documentation.sh
 source "$RITE_LIB_DIR/core/assess-documentation.sh"
 

@@ -476,7 +476,7 @@ assess_internal_adr() {
   fi
 
   # Call the refactored function
-  generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "$CHANGED_FILES" >/dev/null
+  generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "${CHANGED_FILES:-}" >/dev/null
 }
 
 # --- Run internal doc assessments ---
