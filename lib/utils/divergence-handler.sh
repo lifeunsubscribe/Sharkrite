@@ -448,7 +448,9 @@ _do_rebase_and_push() {
     esac
   fi
 
-  # Verify rebase didn't introduce silent semantic conflicts (tests pass)
+  # Verify rebase didn't introduce silent semantic conflicts (tests pass).
+  # Returns 0 for: tests pass, dev-session bugs, or main broken.
+  # Returns 1 only for genuine semantic conflicts.
   if ! verify_post_merge "."; then
     _div_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
     # Undo the rebase
@@ -508,6 +510,12 @@ _do_rebase() {
 
   local _rebase_output
   _rebase_output=$(git rebase "origin/$branch_name" 2>&1) || {
+    # NOTE: Claude-assisted rebase conflict resolution is deferred.
+    # Rebase resolves conflicts per-commit (not all-at-once like merge),
+    # requiring git rebase --continue between commits. This is fragile
+    # for agentic resolution. The merge paths in stale-branch.sh and
+    # claude-workflow.sh handle the common case; rebase conflicts here
+    # are rare (only during push divergence recovery).
     _div_error "Rebase failed — conflicts detected" >&2
     echo "" >&2
 

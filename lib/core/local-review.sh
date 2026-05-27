@@ -165,6 +165,18 @@ $(head -200 "$RITE_PROJECT_ROOT/CLAUDE.md")"
   print_status "Loaded project context from CLAUDE.md"
 fi
 
+# Inject deployment/audience context for severity calibration
+if [ -n "${RITE_PROJECT_CONTEXT:-}" ]; then
+  PROJECT_CONTEXT="${PROJECT_CONTEXT}
+
+## Deployment Context
+
+${RITE_PROJECT_CONTEXT}
+
+Use this context to calibrate severity. Findings must represent real problems for this project's actual deployment context — not hypothetical concerns for a different kind of project. For example, missing rate limiting is CRITICAL for a public API but LOW for a single-user localhost app. Missing accessibility labels are HIGH for a public-facing web app but LOW for a single-developer desktop tool."
+  print_status "Injected project deployment context into review"
+fi
+
 # NOTE: No iteration context is injected here. The review must always be a fresh,
 # unbiased analysis of the current code state. The assessment step
 # (assess-review-issues.sh) handles comparing findings against issue scope and
@@ -278,6 +290,14 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     if [ -n "$CLAUDE_ERROR" ]; then
       echo "Error output:"
       echo "$CLAUDE_ERROR"
+
+      # Usage cap is fatal — propagate so batch can abort
+      local _err_type
+      _err_type=$(provider_detect_error "$CLAUDE_ERROR" "${REVIEW_EXIT:-1}") || true
+      if [ "$_err_type" = "USAGE_CAP" ]; then
+        print_error "Provider usage cap reached — aborting"
+        exit 5
+      fi
     fi
     exit 1
   fi

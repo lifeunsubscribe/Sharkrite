@@ -1077,20 +1077,34 @@ $TIME_ESTIMATE" || echo "")
 _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
   # Determine issue title and search term based on type
-  # Title format follows templates/issue-template.md convention: [type] Brief description
-  # Include PR title for domain context (e.g., "[tech-debt] Grocery filtering: review feedback from PR #132")
-  _pr_context=""
-  if [ -n "${PR_TITLE:-}" ]; then
-    # Truncate long PR titles to keep issue title under ~80 chars
-    _pr_context=$(echo "$PR_TITLE" | cut -c1-50 | sed 's/[[:space:]]*$//')
-    [ ${#PR_TITLE} -gt 50 ] && _pr_context="${_pr_context}..."
-    _pr_context="${_pr_context}: "
+  # Title format: [type] Primary finding description (from PR #N)
+  # Extract the first acceptance item's title for a descriptive issue name.
+  # ACCEPTANCE_ITEMS lines look like: "- [ ] [HIGH] Rate limiting applies only at stage level"
+  _finding_desc=""
+  if [ -n "${ACCEPTANCE_ITEMS:-}" ]; then
+    # Strip checkbox + severity prefix, take first item, truncate to 60 chars
+    _finding_desc=$(echo "$ACCEPTANCE_ITEMS" | head -1 | sed 's/^- \[ \] \[[A-Z]*\] //' | cut -c1-60 | sed 's/[[:space:]]*$//')
+    # Don't use fallback acceptance items as finding descriptions
+    if echo "$_finding_desc" | grep -q "^Address all CRITICAL"; then _finding_desc=""; fi
   fi
+
+  _issue_label="review-follow-up"
   if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    ISSUE_TITLE="[tech-debt] ${_pr_context}review feedback from PR #$PR_NUMBER"
-    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
+    _issue_label="tech-debt"
+  fi
+
+  if [ -n "$_finding_desc" ]; then
+    ISSUE_TITLE="[$_issue_label] $_finding_desc (from PR #$PR_NUMBER)"
+    ISSUE_SEARCH="$_finding_desc"
   else
-    ISSUE_TITLE="[review-follow-up] ${_pr_context}review feedback from PR #$PR_NUMBER"
+    # Fallback: use PR title for context
+    _pr_context=""
+    if [ -n "${PR_TITLE:-}" ]; then
+      _pr_context=$(echo "$PR_TITLE" | cut -c1-50 | sed 's/[[:space:]]*$//')
+      [ ${#PR_TITLE} -gt 50 ] && _pr_context="${_pr_context}..."
+      _pr_context="${_pr_context}: "
+    fi
+    ISSUE_TITLE="[$_issue_label] ${_pr_context}review feedback from PR #$PR_NUMBER"
     ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
   fi
 

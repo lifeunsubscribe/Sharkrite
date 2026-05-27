@@ -65,7 +65,7 @@ set -euo pipefail
 #
 # provider_detect_error(error_output, exit_code)
 #   Classify provider-specific stderr into error types.
-#   Stdout: RATE_LIMITED | AUTH_EXPIRED | NETWORK_ERROR | PROVIDER_BUG | UNKNOWN
+#   Stdout: USAGE_CAP | RATE_LIMITED | AUTH_EXPIRED | NETWORK_ERROR | PROVIDER_BUG | UNKNOWN
 #   Returns 0 if classified to a known type, 1 for UNKNOWN.
 #
 # --- Safety ---

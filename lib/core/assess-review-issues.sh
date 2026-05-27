@@ -320,6 +320,15 @@ fi
 # Build project context section for the prompt
 PROJECT_CONTEXT_SECTION="$ASSESSMENT_CONTEXT"
 
+# Inject deployment/audience context for severity calibration
+if [ -n "${RITE_PROJECT_CONTEXT:-}" ]; then
+  PROJECT_CONTEXT_SECTION="${PROJECT_CONTEXT_SECTION}
+
+DEPLOYMENT CONTEXT (use this to calibrate follow-up issue worthiness):
+${RITE_PROJECT_CONTEXT}"
+  print_status "Injected project deployment context into assessment"
+fi
+
 # Check for project-specific security guide
 if [ -f "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
   PROJECT_CONTEXT_SECTION="${PROJECT_CONTEXT_SECTION}
@@ -442,6 +451,20 @@ ACTIONABLE_LATER - Valid concern, create follow-up issue:
   a follow-up issue. If it's a real, verifiable problem (not opinion), it
   belongs in ACTIONABLE_LATER even if the fix is small.
 
+  CALIBRATION: If DEPLOYMENT CONTEXT is provided above, use it to judge whether
+  a finding justifies tracked follow-up work. A finding must represent a real
+  problem *for this project's actual context* — not a hypothetical concern for
+  a different kind of project. Examples:
+    - \"No rate limiting\" on a public API with thousands of users → ACTIONABLE_LATER
+    - \"No rate limiting\" on a single-user localhost app → DISMISSED
+    - \"Missing input validation\" on an external-facing endpoint → ACTIONABLE_LATER
+    - \"Missing input validation\" on an internal tool with one trusted user → DISMISSED
+    - \"Duplicated logic\" in a large team codebase → ACTIONABLE_LATER
+    - \"Duplicated logic\" in a solo-dev app with 2 occurrences → DISMISSED
+  When deployment context makes a finding irrelevant, classify as DISMISSED
+  with reasoning that references the specific context (e.g., \"single-user
+  localhost app — rate limiting adds no value\").
+
 DISMISSED - Not worth tracking:
   - Pure style/formatting preferences (no functional impact)
   - \"Could also do X instead of Y\" where both approaches are valid
@@ -449,6 +472,8 @@ DISMISSED - Not worth tracking:
   - Speculative edge cases with no evidence of real impact
   - Already documented as accepted patterns or intentional decisions
   - Items already covered by ACTIONABLE_NOW (avoid duplicates)
+  - Findings that are irrelevant given the project's DEPLOYMENT CONTEXT
+    (e.g., production-grade hardening for a single-user local app)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT:
@@ -527,6 +552,9 @@ DISMISSED (not worth tracking) IF:
     or infrastructure that does not currently exist (e.g., indexes for queries
     that aren't written, pagination for datasets that aren't large, retention
     policies for logs that aren't accumulating)
+  - MEDIUM findings that address concerns irrelevant to the project's actual
+    deployment context (e.g., rate limiting, request size limits, or
+    accessibility polish for a single-user localhost app)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -596,6 +624,10 @@ if [ "$AUTO_MODE" = true ]; then
         echo "This is a known SDK issue affecting PR review operations." >&2
         echo "Workaround: Retry or use fallback assessment." >&2
         ;;
+      USAGE_CAP)
+        echo -e "${YELLOW}Provider usage cap reached${NC}" >&2
+        echo "Account/plan limit hit — batch will be stopped." >&2
+        ;;
       RATE_LIMITED)
         echo -e "${YELLOW}Rate limited by API${NC}" >&2
         echo "Wait a few minutes before retrying." >&2
@@ -619,6 +651,11 @@ if [ "$AUTO_MODE" = true ]; then
       echo "$CLAUDE_ERROR" >&2
     fi
     echo "" >&2
+
+    # Usage cap is fatal — propagate immediately so batch can abort
+    if [ "$CLAUDE_ERROR_TYPE" = "USAGE_CAP" ]; then
+      exit 5
+    fi
 
     ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE, type: $CLAUDE_ERROR_TYPE)"
   fi
@@ -646,6 +683,10 @@ else
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 
     case "$CLAUDE_ERROR_TYPE" in
+      USAGE_CAP)
+        echo -e "${YELLOW}Provider usage cap reached${NC}" >&2
+        echo "Account/plan limit hit — batch will be stopped." >&2
+        ;;
       PROVIDER_BUG)
         echo -e "${YELLOW}Known Issue: GitHub MCP OAuth/AJV schema validation bug${NC}" >&2
         echo "This is a known SDK issue affecting PR review operations." >&2
@@ -674,6 +715,11 @@ else
       echo "$CLAUDE_ERROR" >&2
     fi
     echo "" >&2
+
+    # Usage cap is fatal — propagate immediately so batch can abort
+    if [ "$CLAUDE_ERROR_TYPE" = "USAGE_CAP" ]; then
+      exit 5
+    fi
 
     ASSESSMENT_OUTPUT="ERROR: Claude assessment failed (exit code: $ASSESSMENT_EXIT_CODE, type: $CLAUDE_ERROR_TYPE)"
   fi

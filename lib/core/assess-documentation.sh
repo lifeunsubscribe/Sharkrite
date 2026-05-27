@@ -1015,7 +1015,7 @@ Auto-updated by doc assessment:
 Related: #$PR_NUMBER"
 
       if git commit -m "$COMMIT_MSG" 2>/dev/null; then
-        if git push 2>/dev/null; then
+        if git push origin "$(git branch --show-current)" 2>/dev/null; then
           echo -e "${GREEN}    Project docs: updated ${#UPDATED_FILES[@]} file(s) and pushed${NC}"
         else
           echo "    Project docs: updated ${#UPDATED_FILES[@]} file(s) (push failed — local only)"

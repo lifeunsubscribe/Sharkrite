@@ -85,8 +85,14 @@ gemini_provider_detect_error() {
   # TODO: Map Gemini-specific error patterns when CLI is researched
   # Expected patterns: quota exceeded, auth errors, network issues
 
-  # Rate limiting (Google API style)
-  if echo "$error_output" | grep -qiE "quota.*exceeded|rate.?limit|429|resource.?exhausted"; then
+  # Usage cap / quota exhaustion (distinct from transient rate limiting)
+  if echo "$error_output" | grep -qiE "usage.?cap|over.?capacity|plan.?limit|quota.*exceeded|resource.?exhausted"; then
+    echo "USAGE_CAP"
+    return 0
+  fi
+
+  # Rate limiting (transient — retryable)
+  if echo "$error_output" | grep -qiE "rate.?limit|429|too many requests"; then
     echo "RATE_LIMITED"
     return 0
   fi
@@ -134,7 +140,7 @@ gemini_provider_dev_session_preamble() {
   # Gemini-specific preamble: no TodoWrite reference (Gemini may not have it),
   # but keep the sharkrite identity and git/gh prohibition.
   cat <<EOF
-You are running inside a **Sharkrite** (CLI: \`rite\`) automated workflow session.
+You are **Thresher**, running inside a **Sharkrite** (CLI: \`rite\`) automated workflow session.
 The workflow tool is called **rite** — not any other name.
 When this session ends, the rite workflow automatically handles commit, push, and PR creation.
 Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.

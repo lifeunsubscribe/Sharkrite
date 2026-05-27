@@ -188,7 +188,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
     PUSHED_NEW_COMMITS=true
     print_success "Pushed new commits"
   else
-    print_success "Issue #${ISSUE_NUMBER:-$PR_NUMBER} branch is up to date — all commits already pushed"
+    print_success "PR #$PR_NUMBER branch is up to date — all commits already pushed"
   fi
 
   # Update PR body with changes summary if stale or missing.

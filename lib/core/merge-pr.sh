@@ -26,6 +26,44 @@ fi
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
+# Source conflict resolver (lazy callers may need it for auto-resolution
+# during pre-merge update or during gh "not mergeable" retries).
+source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+
+# _try_resolve_main_merge_conflicts BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER]
+#
+# Precondition: a `git merge origin/main --no-edit` just failed with conflicts
+# (working tree is in conflict state). Tries Claude-assisted resolution; on
+# success, commits the merge and pushes. On failure, leaves the working tree
+# clean (resolver aborts on its own failure path).
+#
+# Returns 0 if resolved + pushed, 1 otherwise.
+_try_resolve_main_merge_conflicts() {
+  local _branch="$1"
+  local _issue="${2:-}"
+  local _pr="${3:-}"
+
+  # Verify we're actually in conflict state — otherwise the resolver bails.
+  if [ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]; then
+    return 1
+  fi
+
+  print_info "Attempting Claude-assisted conflict resolution..."
+  local _args=(--merge-target origin/main --branch-name "$_branch")
+  [ -n "$_issue" ] && _args+=(--issue-number "$_issue")
+  [ -n "$_pr" ] && _args+=(--pr-number "$_pr")
+
+  if attempt_claude_merge_resolution "${_args[@]}"; then
+    if git commit --no-edit 2>/dev/null && git push origin "$_branch" 2>/dev/null; then
+      print_success "Resolved conflicts and pushed"
+      return 0
+    fi
+    # Commit or push failed — try to leave the tree clean for caller's fallback
+    git reset --hard HEAD 2>/dev/null || true
+  fi
+  return 1
+}
+
 # Parse arguments
 AUTO_MODE=false
 PR_NUMBER=""
@@ -89,6 +127,24 @@ print_status() {
 
 # Verbose-aware output (requires RITE_VERBOSE=true or --supervised)
 source "$RITE_LIB_DIR/utils/logging.sh"
+
+# Helper: Poll GitHub for mergeable state with retries.
+# GitHub computes mergeability lazily — UNKNOWN means not computed yet.
+# Returns: sets PR_MERGEABLE in caller's scope.
+# Args: $1 = PR number, $2 = max retries (default 5)
+poll_mergeable_state() {
+  local pr="$1"
+  local max_retries="${2:-5}"
+  local _retry
+  PR_MERGEABLE=$(gh pr view "$pr" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+  if [ "$PR_MERGEABLE" != "UNKNOWN" ]; then return; fi
+  print_status "Waiting for GitHub to compute mergeability..."
+  for _retry in $(seq 1 "$max_retries"); do
+    sleep $(( _retry * 2 ))
+    PR_MERGEABLE=$(gh pr view "$pr" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+    [ "$PR_MERGEABLE" != "UNKNOWN" ] && return
+  done
+}
 
 # Helper: Add or update "Last Updated" timestamp in documentation
 update_doc_timestamp() {
@@ -396,14 +452,8 @@ if [ "$PR_IS_DRAFT" = "true" ]; then
 fi
 
 # Check 3: PR must be mergeable
-# GitHub computes mergeability lazily — UNKNOWN means not computed yet. Retry a few times.
 if [ "$PR_MERGEABLE" = "UNKNOWN" ]; then
-  print_status "Waiting for GitHub to compute mergeability..."
-  for _i in 1 2 3; do
-    sleep 3
-    PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
-    [ "$PR_MERGEABLE" != "UNKNOWN" ] && break
-  done
+  poll_mergeable_state "$PR_NUMBER"
 fi
 
 if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
@@ -413,27 +463,33 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
     print_info "Attempting to merge main into feature branch to resolve conflicts..."
     git fetch origin main 2>/dev/null || true
 
+    _merge_pushed=false
     if git merge origin/main --no-edit 2>/dev/null; then
       if git push origin "$PR_HEAD" 2>/dev/null; then
-        print_success "Merged main into branch and pushed — re-checking mergeable state"
-        # Give GitHub a moment to update mergeable state
-        sleep 3
-        PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
-        if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
-          print_success "PR is now mergeable"
-        else
-          print_error "PR still not mergeable after merging main (state: $PR_MERGEABLE)"
-          VALIDATION_FAILED=true
-        fi
+        _merge_pushed=true
       else
         print_error "Push failed after merging main"
         git reset --hard HEAD~1 2>/dev/null || true
         VALIDATION_FAILED=true
       fi
+    elif _try_resolve_main_merge_conflicts "$PR_HEAD" "${ISSUE_NUMBER:-}" "$PR_NUMBER"; then
+      # Resolver committed and pushed.
+      _merge_pushed=true
     else
       git merge --abort 2>/dev/null || true
       print_error "PR has merge conflicts that could not be auto-resolved"
       VALIDATION_FAILED=true
+    fi
+
+    if [ "$_merge_pushed" = true ]; then
+      print_success "Merged main into branch and pushed — re-checking mergeable state"
+      poll_mergeable_state "$PR_NUMBER"
+      if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
+        print_success "PR is now mergeable"
+      else
+        print_error "PR still not mergeable after merging main (state: $PR_MERGEABLE)"
+        VALIDATION_FAILED=true
+      fi
     fi
   else
     print_info "Mergeable state is uncertain, will attempt merge anyway"
@@ -667,7 +723,13 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable|405"; then
     print_warning "PR is not mergeable — attempting branch update against main"
     git fetch origin main 2>/dev/null || true
+    _retry_ready=false
     if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+      _retry_ready=true
+    elif _try_resolve_main_merge_conflicts "$PR_HEAD" "${ISSUE_NUMBER:-}" "$PR_NUMBER"; then
+      _retry_ready=true
+    fi
+    if [ "$_retry_ready" = true ]; then
       print_status "Branch updated — retrying merge..."
       sleep 3
       EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
@@ -689,7 +751,13 @@ else
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
     print_warning "PR is not mergeable — attempting branch update against main"
     git fetch origin main 2>/dev/null || true
+    _retry_ready=false
     if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+      _retry_ready=true
+    elif _try_resolve_main_merge_conflicts "$PR_HEAD" "${ISSUE_NUMBER:-}" "$PR_NUMBER"; then
+      _retry_ready=true
+    fi
+    if [ "$_retry_ready" = true ]; then
       print_status "Branch updated — retrying merge..."
       sleep 3
       _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
@@ -898,6 +966,31 @@ EOF
     fi
   fi
 
+  # Fast-forward local main to origin/main so the user's primary clone reflects
+  # the merge. Without this, ls in the project root shows stale state and the
+  # user (reasonably) concludes the work never landed.
+  #
+  # Two cases:
+  #   1. main is checked out in some worktree (typical) — git pull --ff-only there
+  #   2. main not checked out anywhere — git fetch origin main:main updates the ref directly
+  MAIN_CHECKOUT_PATH=$(git worktree list --porcelain 2>/dev/null | awk '
+    /^worktree / { p = substr($0, 10) }
+    /^branch refs\/heads\/main$/ { print p; exit }
+  ')
+  if [ -n "$MAIN_CHECKOUT_PATH" ]; then
+    if (cd "$MAIN_CHECKOUT_PATH" && git pull --ff-only origin main >/dev/null 2>&1); then
+      print_success "Local main fast-forwarded to origin/main"
+    else
+      print_warning "Could not fast-forward local main in $MAIN_CHECKOUT_PATH — run 'git pull --ff-only' there manually"
+    fi
+  else
+    if git fetch origin main:main >/dev/null 2>&1; then
+      print_success "Local main fast-forwarded to origin/main"
+    else
+      print_warning "Could not update local main — run 'git pull --ff-only origin main' manually"
+    fi
+  fi
+
   # Pop stash if there are stashed changes (from claude-workflow.sh)
   if git stash list | grep -q "Auto-stash before claude-workflow.sh"; then
     print_status "Restoring stashed changes..."
@@ -1044,7 +1137,26 @@ EOF
 
         # Check if deep clean is needed (shared sections)
         SCRATCHPAD_SIZE=$(wc -c < "$SCRATCHPAD_FILE" 2>/dev/null || echo "0")
-        LAST_DEEP_CLEAN=$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\+\).*/\1/p' "$SCRATCHPAD_FILE" 2>/dev/null | head -1 || echo "1970-01-01")
+        # Two compounding bugs produced the "last deep clean was 20600 days ago"
+        # (i.e. days-since-epoch) message on every merge:
+        #   1. `\+` is GNU-sed only — BSD sed (macOS) treats it literally and
+        #      the substitution never matches. Use `[0-9-][0-9-]*` for portability.
+        #   2. `sed | head` returns 0 even on no match, so the previous
+        #      `|| echo "1970-01-01"` fallback never fired — LAST_DEEP_CLEAN
+        #      was empty, date parsing failed, and the calc fell through to
+        #      epoch. Replaced with an explicit missing-marker branch below.
+        LAST_DEEP_CLEAN=$(sed -n 's/.*<!-- last_deep_clean=\([0-9-][0-9-]*\).*/\1/p' "$SCRATCHPAD_FILE" 2>/dev/null | head -1 || true)
+
+        if [ -z "${LAST_DEEP_CLEAN:-}" ]; then
+          # No marker yet — fresh project or pre-marker scratchpad. Seed it
+          # silently so the 14-day timer starts from now, and treat the
+          # scratchpad as just-cleaned this round (skip the trigger).
+          TODAY=$(date +%Y-%m-%d)
+          { echo "<!-- last_deep_clean=$TODAY -->"; echo ""; cat "$SCRATCHPAD_FILE"; } > "$SCRATCHPAD_FILE.seed" \
+            && mv "$SCRATCHPAD_FILE.seed" "$SCRATCHPAD_FILE"
+          LAST_DEEP_CLEAN="$TODAY"
+        fi
+
         DAYS_SINCE_CLEAN=$(( ( $(date +%s) - $(date -d "$LAST_DEEP_CLEAN" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_DEEP_CLEAN" +%s 2>/dev/null || echo 0) ) / 86400 ))
 
         SHOULD_DEEP_CLEAN=false
@@ -1216,11 +1328,11 @@ EOF
               BRANCH_EXISTS=$(git show-ref --verify --quiet refs/heads/"$WT_BRANCH" && echo "yes" || echo "no")
 
               # Check last modification (any source file, not just .ts/.js)
-              LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/vendor/*" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
+              LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/vendor/*" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}' || true)
 
               # Fallback: check ANY file modification if no source files found
               if [ -z "$LAST_MODIFIED" ]; then
-                LAST_MODIFIED=$(find "$wt_path" -type f -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
+                LAST_MODIFIED=$(find "$wt_path" -type f -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}' || true)
               fi
 
               if [ -n "$LAST_MODIFIED" ]; then

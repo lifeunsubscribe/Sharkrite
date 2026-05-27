@@ -26,7 +26,7 @@ detect_pr_for_issue() {
   # Method 1: Search by issue link in PR body (Closes #N, Fixes #N, etc.)
   PR_NUMBER=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
     jq --arg issue "$issue_number" -r \
-    '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+    '.[] | select(.body != null) | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
     head -1)
 
   # Method 2: Search by title fallback — match "#N" in PR title only.
@@ -90,7 +90,7 @@ detect_worktree_for_pr() {
     return 1
   fi
 
-  WORKTREE_PATH=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
+  WORKTREE_PATH=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
 
   if [ -z "$WORKTREE_PATH" ] || [ ! -d "$WORKTREE_PATH" ]; then
     WORKTREE_PATH=""

@@ -46,28 +46,44 @@ claude_provider_validate_cli() {
 
 # Colored stream filter for dev/fix sessions — shows text + tool-use indicators
 # with ANSI color codes for terminal readability.
+# Stream filters accept two optional file parameters:
+#   $1 — error file: API error events (type=="error") AND Write/Edit/MultiEdit
+#        tool-use records ("EDIT\t<file_path>" per call) are sent to jq's
+#        stderr and redirected here. This lets callers (a) detect usage caps
+#        and (b) verify whether reported edits actually reached the worktree
+#        even when final `git status` looks clean.
 _claude_stream_filter_colored() {
+  local _err_file="${1:-/dev/null}"
   jq --unbuffered -rj '
     if .type == "assistant" then
       (.message.content[]? |
         if .type == "text" then "\u001b[38;5;216m" + .text + "\u001b[0m"
-        elif .type == "tool_use" then "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
+        elif .type == "tool_use" then
+          (if (.name == "Write" or .name == "Edit" or .name == "MultiEdit") then
+             ("EDIT\t" + (.input.file_path // .input.path // "?") + "\n" | stderr | empty)
+           else empty end),
+          "\n\u001b[0;33m⚡ " + .name + "\u001b[0m\n"
         else empty end)
+    elif .type == "error" then
+      ((.error.type // "unknown_error") + ": " + (.error.message // "unknown error") | stderr | empty)
     else empty end
-  ' 2>/dev/null
+  ' 2>"$_err_file"
 }
 
 # Plain stream filter for plan-issues and other non-interactive streaming.
 # Extracts text content and result fields, no colors or tool indicators.
 _claude_stream_filter_plain() {
+  local _err_file="${1:-/dev/null}"
   jq --unbuffered -rj '
     if .type == "assistant" then
       (.message.content[]? |
         if .type == "text" then .text
         else empty end)
     elif .type == "result" then .result // empty
+    elif .type == "error" then
+      ((.error.type // "unknown_error") + ": " + (.error.message // "unknown error") | stderr | empty)
     else empty end
-  ' 2>/dev/null
+  ' 2>"$_err_file"
 }
 
 # =============================================================================
@@ -88,6 +104,13 @@ claude_provider_run_agentic_session() {
 
   local _exit_code=0
 
+  # Stream error file: captures error events from the JSON stream (stdout)
+  # that would otherwise be invisible to stderr-based error detection.
+  # With --output-format stream-json, API errors (usage caps, rate limits)
+  # arrive as {"type":"error",...} on stdout, not on the CLI's stderr.
+  local _stream_err_file
+  _stream_err_file=$(mktemp)
+
   if [ "$auto_mode" = true ]; then
     # Auto mode: prompt as positional arg, permissions bypassed.
     # --disallowedTools is variadic but positional arg works when it's last.
@@ -95,7 +118,7 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       "$prompt" 2>"$stderr_file" | \
-      _claude_stream_filter_colored || true
+      _claude_stream_filter_colored "$_stream_err_file" || true
     _exit_code=${PIPESTATUS[0]}
   else
     # Supervised mode: prompt via stdin because --disallowedTools is variadic
@@ -107,10 +130,17 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       < "$_prompt_file" 2>"$stderr_file" | \
-      _claude_stream_filter_colored || true
+      _claude_stream_filter_colored "$_stream_err_file" || true
     _exit_code=${PIPESTATUS[0]}
     rm -f "$_prompt_file"
   fi
+
+  # Merge stream errors into the stderr file so provider_detect_error() can
+  # classify them. Without this, usage caps hitting mid-session go undetected.
+  if [ -s "$_stream_err_file" ]; then
+    cat "$_stream_err_file" >> "$stderr_file"
+  fi
+  rm -f "$_stream_err_file"
 
   return "$_exit_code"
 }
@@ -227,7 +257,10 @@ claude_provider_run_uncached() {
 # Error Detection
 # =============================================================================
 # Moved from assess-review-issues.sh:360-391.
-# Classifies Claude CLI stderr output into known error types.
+# Classifies Claude CLI stderr output AND stream-json error events into
+# known error types. Stream errors arrive as "error_type: message" strings
+# (e.g., "overloaded_error: Overloaded") appended to the stderr file by the
+# stream filter merge in run_agentic_session.
 
 claude_provider_detect_error() {
   local error_output="$1"
@@ -239,14 +272,24 @@ claude_provider_detect_error() {
     return 0
   fi
 
-  # Rate limiting
-  if echo "$error_output" | grep -qiE "rate.?limit|too many requests|429"; then
+  # Usage cap / quota exhaustion (distinct from transient rate limiting)
+  # CLI stderr: "usage cap", "over capacity", etc.
+  # Stream-json errors: "billing_error:", "overloaded_error:", "529"
+  if echo "$error_output" | grep -qiE "usage.?cap|over.?capacity|quota.*exceeded|plan.?limit|billing_error|529|overloaded"; then
+    echo "USAGE_CAP"
+    return 0
+  fi
+
+  # Rate limiting (transient — retryable)
+  # Stream-json: "rate_limit_error:"
+  if echo "$error_output" | grep -qiE "rate.?limit|too many requests|rate_limit_error|429"; then
     echo "RATE_LIMITED"
     return 0
   fi
 
   # Authentication expired
-  if echo "$error_output" | grep -qiE "unauthorized|401|auth.*expired|login required"; then
+  # Stream-json: "authentication_error:", "permission_error:"
+  if echo "$error_output" | grep -qiE "unauthorized|401|auth.*expired|login required|authentication_error|permission_error"; then
     echo "AUTH_EXPIRED"
     return 0
   fi
@@ -274,9 +317,10 @@ claude_provider_supports_tool_restrictions() {
 }
 
 claude_provider_build_tool_restrictions() {
-  # Block git commit/push (post-workflow handles them), gh, and network commands.
+  # Block git commit/push (post-workflow handles them), gh, network commands,
+  # and TodoWrite (causes performative "phase" busywork instead of real work).
   # Bash(pattern) syntax is Claude CLI specific.
-  echo 'Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *)'
+  echo 'Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *),TodoWrite'
 }
 
 # =============================================================================

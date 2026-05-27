@@ -26,6 +26,9 @@ fi
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
+# Source issue assessor (pre-launch state + mid-session close detection)
+source "$RITE_LIB_DIR/utils/issue-assessor.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -246,6 +249,92 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 # Supervised mode: prompt the user.
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
 # ===================================================================
+# _derive_fast_test_paths
+#
+# Maps changed source files (vs origin/main) to candidate test paths for
+# pytest. Used in batch mode to skip running ~1500 unrelated tests when only
+# a handful of files changed. Returns space-separated paths on stdout, or
+# empty if derivation can't produce a useful subset.
+#
+# Heuristic:
+#   1. Any tests/ paths the diff itself touched (added or modified) are kept.
+#   2. For each non-test src file changed, derive matching test paths:
+#        src/foo/bar.py        → tests/foo/test_bar.py and tests/foo/
+#        backend/src/foo/bar.py → backend/tests/foo/test_bar.py and backend/tests/foo/
+#   3. Existing paths only (skip anything that isn't on disk).
+#
+# Conservative: returns empty if no test paths could be derived. The caller
+# falls back to the full suite, so wrong derivation degrades to "slower than
+# necessary" rather than "missed coverage".
+_derive_fast_test_paths() {
+  local _changed
+  _changed=$(git diff --name-only origin/main...HEAD 2>/dev/null) || return 1
+  [ -z "$_changed" ] && return 1
+
+  local _candidates=""
+  while IFS= read -r _f; do
+    [ -z "$_f" ] && continue
+
+    # Direct test file change.
+    case "$_f" in
+      tests/*|*/tests/*|test/*|*/test/*)
+        [ -f "$_f" ] && _candidates+=" $_f"
+        continue
+        ;;
+    esac
+
+    # Map src file → matching test paths.
+    case "$_f" in
+      *.py)
+        # src/foo/bar.py → tests/foo/test_bar.py
+        local _base="${_f##*/}"
+        local _dir="${_f%/*}"
+        local _test_base="test_${_base}"
+        # Strip leading "src/" or "backend/src/" to get the relative module path.
+        local _rel="$_dir"
+        case "$_dir" in
+          src/*) _rel="${_dir#src/}" ;;
+          src) _rel="" ;;
+          backend/src/*) _rel="backend/${_dir#backend/src/}" ;;
+          backend/src) _rel="backend" ;;
+        esac
+        # Determine test root prefix (backend/tests/ or tests/).
+        local _troot="tests"
+        case "$_dir" in
+          backend/*) _troot="backend/tests" ;;
+        esac
+        # Strip the leading project root from _rel for test path
+        local _test_rel="${_rel#tests/}"
+        _test_rel="${_test_rel#backend/}"
+        local _candidate_file="${_troot}/${_test_rel}/${_test_base}"
+        local _candidate_dir="${_troot}/${_test_rel}"
+        _candidate_file="${_candidate_file//\/\//\/}"
+        _candidate_dir="${_candidate_dir//\/\//\/}"
+        [ -f "$_candidate_file" ] && _candidates+=" $_candidate_file"
+        [ -d "$_candidate_dir" ] && _candidates+=" $_candidate_dir"
+        ;;
+      *.js|*.jsx|*.ts|*.tsx)
+        # Front-end mapping handled by jest --findRelatedTests; for now,
+        # only direct test-file diffs feed the candidate list.
+        :
+        ;;
+    esac
+  done <<< "$_changed"
+
+  # Always include integration/e2e directories if they exist (cross-cutting tests
+  # that the file-name heuristic doesn't catch). Configurable via env.
+  local _always="${RITE_BATCH_FAST_TESTS_ALWAYS_INCLUDE:-tests/integration tests/e2e backend/tests/integration backend/tests/e2e}"
+  for _p in $_always; do
+    [ -d "$_p" ] && _candidates+=" $_p"
+  done
+
+  # Dedupe and trim.
+  _candidates=$(echo "$_candidates" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+  _candidates="${_candidates% }"
+
+  echo "$_candidates"
+}
+
 run_test_gate() {
   local _should_run=false
   if [ "$AUTO_MODE" = true ]; then
@@ -264,38 +353,103 @@ run_test_gate() {
     return 0
   fi
 
+  # Defensive: re-ensure the venv symlinks exist. The session-start unconditional
+  # block creates them, but a fix session may have run `git rm backend/.venv` to
+  # address review feedback (the previous review kept flagging the symlink as
+  # "committed to repo"). When that happens, the symlink in the working tree
+  # gets deleted along with the index entry, and the test gate falls back to
+  # system python — which usually has no pytest. Recreate symlinks here so the
+  # gate always runs against the shared venv.
+  local _gate_main_wt
+  _gate_main_wt=$(git worktree list 2>/dev/null | head -1 | awk '{print $1}' || echo "")
+  if [ -n "$_gate_main_wt" ] && [ "$(pwd)" != "$_gate_main_wt" ]; then
+    for _gate_rel in ".venv" "backend/.venv"; do
+      local _gate_main="$_gate_main_wt/$_gate_rel"
+      [ -d "$_gate_main" ] || continue
+      [ -d "$(dirname "$_gate_rel")" ] || continue
+      # Skip if already a working symlink to the desired target.
+      if [ -L "$_gate_rel" ] && [ "$(readlink "$_gate_rel" 2>/dev/null)" = "$_gate_main" ]; then
+        continue
+      fi
+      [ -e "$_gate_rel" ] || [ -L "$_gate_rel" ] && rm -rf "$_gate_rel" 2>/dev/null
+      ln -s "$_gate_main" "$_gate_rel" 2>/dev/null || true
+    done
+  fi
+  unset _gate_main_wt _gate_rel _gate_main
+
   # Detect test command: RITE_TEST_CMD override → auto-detect from project structure
   local _test_cmd="${RITE_TEST_CMD:-}"
   local _test_subdir=""
 
   if [ -z "$_test_cmd" ]; then
-    if [ -f "package.json" ]; then
-      _test_cmd="npm test"
-    elif [ -f "backend/package.json" ]; then
-      _test_cmd="npm test"
+    # npm test: only if package.json has a real test script (not missing, not placeholder).
+    # Detect vitest/jest and force non-watch mode. The `-- --run` (vitest) and `-- --ci`
+    # (jest) flags pass through npm to the underlying runner.
+    local _npm_test_dir=""
+    if [ -f "package.json" ] && node -e "const p=require('./package.json'); if(p.scripts?.test && !/^echo /i.test(p.scripts.test)) process.exit(0); else process.exit(1)" 2>/dev/null; then
+      _npm_test_dir="."
+    elif [ -f "backend/package.json" ] && (cd backend && node -e "const p=require('./package.json'); if(p.scripts?.test && !/^echo /i.test(p.scripts.test)) process.exit(0); else process.exit(1)" 2>/dev/null); then
+      _npm_test_dir="backend"
       _test_subdir="backend"
-    elif [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] || [ -f "setup.cfg" ] || [ -f "setup.py" ] || [ -d "tests" ]; then
-      # If no venv exists yet but requirements.txt does, create one so the gate
-      # doesn't fail with "No module named pytest" on the system python.
-      if [ ! -f ".venv/bin/python" ] && [ ! -f "venv/bin/python" ] && [ ! -f "env/bin/python" ] && [ -f "requirements.txt" ]; then
-        print_status "No venv found — creating .venv and installing requirements..."
-        python3 -m venv .venv 2>/dev/null && .venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
-      fi
-      # Prefer venv python (already has dependencies installed) over system python
-      if [ -f ".venv/bin/python" ]; then
-        _test_cmd=".venv/bin/python -m pytest"
-      elif [ -f "venv/bin/python" ]; then
-        _test_cmd="venv/bin/python -m pytest"
-      elif [ -f "env/bin/python" ]; then
-        _test_cmd="env/bin/python -m pytest"
-      elif [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "$RITE_PROJECT_ROOT/.venv/bin/python" ]; then
-        _test_cmd="$RITE_PROJECT_ROOT/.venv/bin/python -m pytest"
-      elif command -v python3 >/dev/null 2>&1; then
-        _test_cmd="python3 -m pytest"
+    fi
+    if [ -n "$_npm_test_dir" ]; then
+      # Inspect the test script to pick the right non-watch flag
+      local _test_script
+      _test_script=$(node -e "console.log(require('./$_npm_test_dir/package.json').scripts?.test || '')" 2>/dev/null)
+      if echo "$_test_script" | grep -qE "(^|[^a-z])vitest([^a-z]|$)" && ! echo "$_test_script" | grep -qE "(--run|\brun\b)"; then
+        _test_cmd="npm test -- --run"
+      elif echo "$_test_script" | grep -qE "(^|[^a-z])jest([^a-z]|$)" && ! echo "$_test_script" | grep -qE "(--ci|--watchAll=false)"; then
+        _test_cmd="npm test -- --ci --watchAll=false"
       else
-        _test_cmd="python -m pytest"
+        _test_cmd="npm test"
       fi
-    elif [ -f "Makefile" ] && grep -q "^test:" "Makefile" 2>/dev/null; then
+    fi
+
+    # Python tests: detect via any pytest/test markers at root OR backend/.
+    if [ -z "$_test_cmd" ]; then
+      local _has_python_tests=false
+      if [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] || [ -f "setup.cfg" ] || [ -f "setup.py" ] \
+         || [ -d "tests" ] || [ -d "backend/tests" ] \
+         || [ -f "backend/pytest.ini" ] || [ -f "backend/pyproject.toml" ]; then
+        _has_python_tests=true
+      fi
+
+      if [ "$_has_python_tests" = true ]; then
+        # Locate the venv independently of where pytest config lives. Layouts
+        # vary (e.g. invoi has `pytest.ini` at root with `testpaths=backend/tests`
+        # but the venv is at `backend/.venv`) and tying venv lookup to config
+        # location produced false-fallbacks to system python. Walk candidates
+        # in priority order; the first matching venv wins, and `_test_subdir`
+        # is set to wherever that venv lives so pytest runs with the right CWD.
+        # Worktrees inherit the main repo's venv via symlink at session start —
+        # never auto-create here (silent half-installed venvs poison every run).
+        local _venv_pairs=(
+          ".:.venv" ".:venv" ".:env"
+          "backend:.venv" "backend:venv" "backend:env"
+        )
+        for _pair in "${_venv_pairs[@]}"; do
+          local _candidate_dir="${_pair%%:*}"
+          local _candidate_venv="${_pair#*:}"
+          if [ -f "$_candidate_dir/$_candidate_venv/bin/python" ]; then
+            _test_cmd="$_candidate_venv/bin/python -m pytest"
+            [ "$_candidate_dir" = "." ] || _test_subdir="$_candidate_dir"
+            break
+          fi
+        done
+        if [ -z "$_test_cmd" ] && [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "$RITE_PROJECT_ROOT/.venv/bin/python" ]; then
+          _test_cmd="$RITE_PROJECT_ROOT/.venv/bin/python -m pytest"
+        fi
+        if [ -z "$_test_cmd" ]; then
+          if command -v python3 >/dev/null 2>&1; then
+            _test_cmd="python3 -m pytest"
+          else
+            _test_cmd="python -m pytest"
+          fi
+        fi
+      fi
+    fi
+
+    if [ -z "$_test_cmd" ] && [ -f "Makefile" ] && grep -q "^test:" "Makefile" 2>/dev/null; then
       _test_cmd="make test"
     fi
   fi
@@ -310,6 +464,24 @@ run_test_gate() {
     local _python_bin
     _python_bin=$(echo "$_test_cmd" | sed 's/ -m pytest.*//')
 
+    # Verify pytest is actually importable. A broken venv (empty bin/, missing
+    # pytest, partial pip install) silently fails the gate with "No module named
+    # pytest" on every run. Catch it once with a clear remediation path.
+    local _pytest_check_dir="${_test_subdir:-.}"
+    if ! (cd "$_pytest_check_dir" && $_python_bin -c "import pytest" 2>/dev/null); then
+      print_error "pytest not importable in $_pytest_check_dir/$_python_bin"
+      print_info "The venv exists but is missing pytest (or other deps)."
+      print_info "Fix in the main repo so all worktrees inherit it via symlink:"
+      if [ -n "${RITE_PROJECT_ROOT:-}" ]; then
+        print_info "  cd $RITE_PROJECT_ROOT/$_pytest_check_dir"
+      else
+        print_info "  cd <main-repo>/$_pytest_check_dir"
+      fi
+      print_info "  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+      print_info "Or skip the gate for one run: export RITE_SKIP_TESTS=true"
+      exit 3
+    fi
+
     # Parallel execution via xdist (use if already installed, never auto-install)
     if ! echo "$_test_cmd" | grep -qE "\-n "; then
       if $_python_bin -c "import xdist" 2>/dev/null; then
@@ -319,6 +491,21 @@ run_test_gate() {
 
     # Short tracebacks, suppress deprecation warnings, quiet output
     _test_cmd="$_test_cmd --tb=short -W ignore::DeprecationWarning -q"
+
+    # Batch fast-test mode: when running inside a batch and the user hasn't
+    # opted out, restrict pytest to test paths derived from the diff.
+    # The end-of-batch verification phase runs the full suite once before
+    # cutting any final fix loop, so missed coverage here is caught later.
+    if [ "${BATCH_MODE:-false}" = true ] \
+       && [ "${RITE_BATCH_FAST_TESTS:-true}" != "false" ] \
+       && [ -z "${RITE_TEST_CMD:-}" ]; then
+      local _fast_paths
+      _fast_paths=$(_derive_fast_test_paths 2>/dev/null || echo "")
+      if [ -n "$_fast_paths" ]; then
+        print_info "Batch fast-test mode: $(echo "$_fast_paths" | wc -w | tr -d ' ') target path(s)"
+        _test_cmd="$_test_cmd $_fast_paths"
+      fi
+    fi
   fi
 
   # Source .env.test or .env if present so tests have required env vars
@@ -334,6 +521,9 @@ run_test_gate() {
   local _test_output_file
   _test_output_file=$(mktemp)
   _run_test_cmd() {
+    # CI=true disables watch mode in vitest, jest, react-scripts, etc.
+    # Exported inside the subshell so child processes inherit it reliably.
+    export CI=true
     if [ -n "$_env_file" ]; then
       set -a
       # shellcheck disable=SC1090
@@ -361,16 +551,20 @@ run_test_gate() {
         _test_fix_attempted=true
         print_status "Running auto-fix session for test failures..."
 
-        # Extract the FAILURES section (pytest prints this between ===== FAILURES =====
-        # and ===== short test summary =====). Falls back to grep if section not found.
+        # Extract failure details from test output. Supports pytest (=== FAILURES ===)
+        # and vitest/jest (⎯ Failed Tests ⎯) section markers.
         local _fail_summary
         _fail_summary=$(sed -n '/=* FAILURES =*/,/=* short test summary/p' "$_test_output_file" | tail -80)
         if [ -z "$_fail_summary" ]; then
-          _fail_summary=$(grep -E "FAILED|ERROR|AssertionError|assert|Error:" "$_test_output_file" | tail -30)
+          # vitest/jest: grab the Failed Tests section through the end-of-section marker
+          _fail_summary=$(sed -n '/Failed Tests/,/⎯⎯⎯⎯.*\[/p' "$_test_output_file" | tail -80)
         fi
-        # Also grab the summary line (e.g., "2 failed, 864 passed")
+        if [ -z "$_fail_summary" ]; then
+          _fail_summary=$(grep -E "FAIL|ERROR|AssertionError|assert|Error:" "$_test_output_file" | tail -30 || true)
+        fi
+        # Also grab the summary line (e.g., "2 failed, 864 passed" or "Tests  1 failed | 38 passed")
         local _fail_counts
-        _fail_counts=$(grep -E "failed.*passed|error.*passed" "$_test_output_file" | tail -1)
+        _fail_counts=$(grep -E "failed.*passed|error.*passed" "$_test_output_file" | tail -1 || true)
 
         local _fix_prompt="Tests are failing after your implementation. Fix ALL failing tests — not just the first one.
 
@@ -388,8 +582,15 @@ $_fail_summary
 
         _timer_start "test_fix_session"
         local _fix_exit=0
-        provider_run_agentic_session "$_fix_prompt" "${RITE_FIX_TIMEOUT:-1800}" true /dev/null || _fix_exit=$?
+        local _fix_stderr
+        _fix_stderr=$(mktemp)
+        provider_run_agentic_session "$_fix_prompt" "${RITE_FIX_TIMEOUT:-1800}" true "$_fix_stderr" || _fix_exit=$?
         _timer_end "test_fix_session"
+        if [ -s "$_fix_stderr" ]; then
+          print_warning "Test fix session stderr:"
+          cat "$_fix_stderr" >&2
+        fi
+        rm -f "$_fix_stderr"
 
         if [ $_fix_exit -eq 0 ]; then
           # Re-run tests after fix
@@ -431,6 +632,164 @@ $_fail_summary
     rm -f "$_test_output_file"
   fi
 }
+
+# ===================================================================
+# UNCONDITIONAL VENV BOOTSTRAP + WORKTREE REPAIR
+# Runs on every code path (dev, fix-review, anything else). Both modes
+# end up calling run_test_gate(), and both need the venv to be healthy
+# (and worktree symlinks to point at the right place) before that.
+# Previously this only ran in the dev path, so fix-review mode hit a
+# broken venv with no chance to repair.
+# ===================================================================
+_actual_main_wt=$(git worktree list 2>/dev/null | head -1 | awk '{print $1}' || echo "")
+if [ -n "$_actual_main_wt" ]; then
+  _ensure_main_venv() {
+    local _d="$1"
+    [ -d "$_d" ] || return 0
+    [ -f "$_d/requirements.txt" ] || return 0
+    [ "${RITE_AUTO_BOOTSTRAP_VENV:-true}" = "false" ] && return 0
+    if [ -f "$_d/.venv/bin/python" ] && \
+       (cd "$_d" && .venv/bin/python -c "import pytest" 2>/dev/null); then
+      return 0
+    fi
+    if [ -d "$_d/.venv" ]; then
+      print_warning "Existing venv at $_d/.venv is missing pytest — recreating"
+      rm -rf "$_d/.venv"
+    fi
+    print_status "Bootstrapping Python venv at $_d/.venv (one-time setup)..."
+    if ! (cd "$_d" && python3 -m venv .venv); then
+      print_error "Failed to create venv at $_d/.venv"
+      return 1
+    fi
+    print_status "Installing requirements (this may take a minute)..."
+
+    # Locate brew up-front. Apple Silicon's /opt/homebrew/bin isn't always on
+    # the PATH inherited via launchd, sudo, IDE wrappers, etc., so a bare
+    # `command -v brew` lookup can return false even when brew is installed —
+    # silently disabling the system-dep auto-installer below.
+    local _brew=""
+    if command -v brew >/dev/null 2>&1; then
+      _brew="brew"
+    elif [ -x /opt/homebrew/bin/brew ]; then
+      _brew=/opt/homebrew/bin/brew
+    elif [ -x /usr/local/bin/brew ]; then
+      _brew=/usr/local/bin/brew
+    fi
+
+    # Run pip and reliably capture its exit code. The previous form
+    # `if ! pipeline; then : ; fi; _exit=${PIPESTATUS[0]}` had a fatal bug:
+    # the `:` no-op runs on failure (because `!` inverts, putting us in the
+    # `then` branch) and itself updates PIPESTATUS to (0), wiping pip's exit
+    # code. Use the `|| _var=${PIPESTATUS[0]}` idiom — `||` only fires the
+    # parameter assignment, no extra command runs that could clobber state.
+    local _pip_log
+    _pip_log=$(mktemp)
+    local _pip_exit=0
+    (cd "$_d" && .venv/bin/pip install -q -r requirements.txt) 2>&1 | tee "$_pip_log" \
+      || _pip_exit=${PIPESTATUS[0]}
+
+    if [ "$_pip_exit" -ne 0 ]; then
+      # Detect missing system libs from pip output and brew install them, then
+      # retry pip once. Common case: pycairo, lxml, psycopg2, Pillow on a fresh
+      # macOS box without their underlying brew libs.
+      local _brew_pkgs=""
+      if [ -n "$_brew" ]; then
+        # pkg-config / cmake / meson tooling
+        grep -qE "Did not find pkg-config|[Pp]kg-config.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs pkg-config"
+        grep -qE "Did not find CMake|CMake.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs cmake"
+        # Library deps surfaced by meson's "Run-time dependency X found: NO"
+        # and similar messages. Map a small known set of common ones.
+        grep -qE "dependency cairo found: NO|cairo.*not found|cairo/cairo\.h.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs cairo"
+        grep -qE "dependency libxml-?2.* found: NO|libxml/parser\.h.*not found|xmlversion\.h.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs libxml2"
+        grep -qE "dependency libxslt.* found: NO|libxslt/.*\.h.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs libxslt"
+        grep -qE "pg_config.*not (found|on the path)|pg_config executable not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs postgresql"
+        grep -qE "openssl/.*\.h.*not found|libssl.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs openssl"
+        grep -qE "ffi\.h.*not found|libffi.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs libffi"
+        grep -qE "jpeglib\.h.*not found|libjpeg.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs jpeg"
+        grep -qE "freetype/.*\.h.*not found|freetype.*not found" "$_pip_log" && _brew_pkgs="$_brew_pkgs freetype"
+        _brew_pkgs="${_brew_pkgs# }"
+      fi
+
+      if [ -n "$_brew_pkgs" ]; then
+        print_warning "Pip install failed due to missing system libraries: $_brew_pkgs"
+        print_status "Installing via brew (one-time per machine)..."
+        local _brew_exit=0
+        # shellcheck disable=SC2086
+        "$_brew" install $_brew_pkgs || _brew_exit=$?
+        if [ "$_brew_exit" -eq 0 ]; then
+          print_status "Retrying pip install with system deps installed..."
+          : > "$_pip_log"
+          _pip_exit=0
+          (cd "$_d" && .venv/bin/pip install -q -r requirements.txt) 2>&1 | tee "$_pip_log" \
+            || _pip_exit=${PIPESTATUS[0]}
+        else
+          print_error "brew install failed (exit $_brew_exit) for: $_brew_pkgs"
+        fi
+      elif [ -z "$_brew" ]; then
+        print_warning "pip install failed and brew not found at /opt/homebrew/bin or /usr/local/bin"
+        print_info "Install Homebrew or install system deps manually, then retry"
+      fi
+
+      if [ "$_pip_exit" -ne 0 ]; then
+        print_error "Failed to install requirements at $_d/.venv"
+        print_info "Inspect: cd $_d && .venv/bin/pip install -r requirements.txt"
+        rm -f "$_pip_log"
+        return 1
+      fi
+    fi
+    rm -f "$_pip_log"
+    if [ -f "$_d/requirements-dev.txt" ]; then
+      print_status "Installing dev requirements..."
+      (cd "$_d" && .venv/bin/pip install -q -r requirements-dev.txt) || \
+        print_warning "Dev requirements install failed (continuing)"
+    fi
+    if (cd "$_d" && .venv/bin/python -c "import pytest" 2>/dev/null); then
+      print_success "Venv ready at $_d/.venv"
+    else
+      print_warning "Bootstrap completed but pytest still not importable in $_d/.venv"
+      print_info "Add pytest to requirements.txt or requirements-dev.txt"
+    fi
+  }
+  _ensure_main_venv "$_actual_main_wt" || true
+  _ensure_main_venv "$_actual_main_wt/backend" || true
+
+  # If we're in a worktree (cwd != main), ensure local .venv is a working
+  # symlink to main's. Replaces broken symlinks, broken directories, or
+  # missing entries. Also untracks the symlink from git if a previous run
+  # accidentally committed it — otherwise the next review flags it as "symlink
+  # committed to repo" and the fix session does `git rm backend/.venv`, which
+  # destroys the very thing the test gate needs.
+  _link_venv_into_worktree() {
+    local _rel="$1"
+    local _main_path="$_actual_main_wt/$_rel"
+    local _local_path="./$_rel"
+    [ -d "$_main_path" ] || return 0
+    # Untrack a previously-committed (or staged-deleted) .venv symlink so
+    # reviewers don't keep flagging it. Both `--cached` (file present) and
+    # `git reset HEAD --` (file absent, deletion staged) handle the cases.
+    if git ls-files --error-unmatch "$_local_path" >/dev/null 2>&1; then
+      git rm --cached -q "$_local_path" 2>/dev/null || true
+    elif git diff --cached --name-only 2>/dev/null | grep -qxF "${_local_path#./}"; then
+      git reset -q HEAD -- "$_local_path" 2>/dev/null || true
+    fi
+    # Already a working symlink to the desired target — leave it alone.
+    if [ -L "$_local_path" ] && [ "$(readlink "$_local_path" 2>/dev/null)" = "$_main_path" ]; then
+      return 0
+    fi
+    if [ -e "$_local_path" ] || [ -L "$_local_path" ]; then
+      rm -rf "$_local_path" 2>/dev/null || return 0
+    fi
+    local _parent
+    _parent=$(dirname "$_local_path")
+    [ -d "$_parent" ] || return 0
+    ln -s "$_main_path" "$_local_path" 2>/dev/null || true
+  }
+  if [ "$(pwd)" != "$_actual_main_wt" ]; then
+    _link_venv_into_worktree ".venv"
+    _link_venv_into_worktree "backend/.venv"
+  fi
+fi
+unset _actual_main_wt
 
 # ===================================================================
 # EARLY EXIT FOR FIX-REVIEW MODE
@@ -982,15 +1341,11 @@ If the changes are unrelated work, answer UNRELATED."
     SAFE_BRANCH_NAME=$(echo "${SAFE_BRANCH_NAME:0:35}" | sed 's/-[^-]*$//')
   fi
 
-  # In batch mode, append batch context to worktree name for identification
-  if [ "${BATCH_MODE:-false}" = true ] && [ -n "${BATCH_ISSUE_LIST:-}" ]; then
-    BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')"
-    # Keep total path reasonable: truncate suffix if too long
-    if [ ${#BATCH_SUFFIX} -gt 20 ]; then
-      BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-' | cut -c1-19)"
-    fi
-    SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME}${BATCH_SUFFIX}"
-  fi
+  # Worktree directory is per-issue only. Batch context (sibling issues) is
+  # recorded in a sidecar file so it's available to tooling but not visible to
+  # the worker's filesystem chrome — the directory name should not advertise
+  # other issues, since that has been observed to encourage the LLM to bundle
+  # work across issues into a single worktree.
 
   WORKTREE_PATH="$RITE_WORKTREE_DIR/$SAFE_BRANCH_NAME"
 
@@ -1048,6 +1403,7 @@ If the changes are unrelated work, answer UNRELATED."
 
           OLDEST_WORKTREE=""
           OLDEST_AGE=0
+          PROTECTED_COUNT=0
 
           while IFS= read -r wt_path; do
             [ -z "$wt_path" ] && continue
@@ -1055,9 +1411,34 @@ If the changes are unrelated work, answer UNRELATED."
             WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "")
             [ -z "$WT_BRANCH" ] && continue
 
-            # Check if has uncommitted changes
+            # Hard guard 1: skip if has uncommitted changes
             UNCOMMITTED=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-            [ "$UNCOMMITTED" -gt 0 ] && continue  # Skip if dirty
+            if [ "$UNCOMMITTED" -gt 0 ]; then
+              PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
+              continue
+            fi
+
+            # Hard guard 2: skip if branch has an OPEN PR — work is in flight even if working tree is clean.
+            # A worktree with 2 commits ahead + 0 uncommitted + open PR is NOT eligible for cleanup;
+            # deleting it strands the user's review work mid-flow.
+            OPEN_PR_COUNT=$(gh pr list --head "$WT_BRANCH" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+            if [ "$OPEN_PR_COUNT" -gt 0 ]; then
+              PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
+              continue
+            fi
+
+            # Hard guard 3: skip if local commits are ahead of remote (unpushed work).
+            # The remote ref may not exist yet if push hasn't happened; in that case
+            # any local commit beyond main is unpushed and protected.
+            if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
+              UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
+            else
+              UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+            fi
+            if [ "$UNPUSHED" -gt 0 ]; then
+              PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
+              continue
+            fi
 
             # Get last modification time
             LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) 2>/dev/null | xargs stat -f "%m" 2>/dev/null | sort -rn | head -1 || echo "0")
@@ -1072,27 +1453,46 @@ If the changes are unrelated work, answer UNRELATED."
 
           if [ -n "$OLDEST_WORKTREE" ] && [ "$OLDEST_AGE" -gt 86400 ]; then  # > 1 day old
             DAYS_OLD=$((OLDEST_AGE / 86400))
-            print_status "Removing stale worktree: $OLDEST_BRANCH (${DAYS_OLD} days old, no uncommitted changes)"
+            print_status "Removing stale worktree: $OLDEST_BRANCH (${DAYS_OLD} days old, no PR, no uncommitted or unpushed work)"
             git worktree remove "$OLDEST_WORKTREE" 2>/dev/null || true
             git branch -d "$OLDEST_BRANCH" 2>/dev/null || true
             print_success "Removed stale worktree - will create new one for issue #$ISSUE_NUMBER"
           elif [ -n "$OLDEST_WORKTREE" ]; then
-            # Has worktrees but all are recent (< 1 day) - still remove oldest if no uncommitted changes
+            # Has worktrees but all are recent (< 1 day) - still remove oldest if eligible
             HOURS_OLD=$((OLDEST_AGE / 3600))
             print_warning "All worktrees are recent (oldest: ${HOURS_OLD}h)"
-            print_status "Removing oldest clean worktree: $OLDEST_BRANCH"
+            print_status "Removing oldest eligible worktree: $OLDEST_BRANCH (no PR, no unpushed work)"
             git worktree remove "$OLDEST_WORKTREE" 2>/dev/null || true
             git branch -d "$OLDEST_BRANCH" 2>/dev/null || true
             print_success "Removed worktree - will create new one for issue #$ISSUE_NUMBER"
           else
-            # All worktrees have uncommitted changes - allow exceeding limit with warning
-            print_warning "All worktrees have uncommitted changes"
-            print_warning "Creating 4th worktree (exceeding limit of $MAX_WORKTREES)"
+            # All worktrees are protected (open PR, unpushed commits, or uncommitted changes).
+            # Refuse to silently delete in-flight work — exceed the limit with a clear warning
+            # and surface the protected list so the user can act intentionally.
+            print_warning "All $WORKTREE_COUNT worktree(s) are protected from cleanup ($PROTECTED_COUNT protected: open PR, unpushed commits, or uncommitted changes)"
+            print_warning "Exceeding limit of $MAX_WORKTREES — creating worktree #$((WORKTREE_COUNT + 1))"
             echo ""
-            print_info "Current worktrees (all have uncommitted work):"
-            git worktree list | grep -v "main" | head -3
+            print_info "Protected worktrees (cannot be auto-cleaned):"
+            while IFS= read -r wt_path; do
+              [ -z "$wt_path" ] && continue
+              WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "?")
+              REASONS=""
+              UNCOM=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+              [ "$UNCOM" -gt 0 ] && REASONS="${REASONS}uncommitted, "
+              PR_N=$(gh pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' 2>/dev/null || echo "")
+              [ -n "$PR_N" ] && REASONS="${REASONS}PR #$PR_N, "
+              if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
+                UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
+              else
+                UNP=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+              fi
+              [ "$UNP" -gt 0 ] && REASONS="${REASONS}${UNP} unpushed commit(s), "
+              REASONS="${REASONS%, }"
+              [ -z "$REASONS" ] && REASONS="(unknown — please report)"
+              echo "   • $WT_BRANCH — $REASONS"
+            done <<< "$EXISTING_WORKTREES"
             echo ""
-            print_info "Tip: Clean up later with: rite cleanup-worktrees"
+            print_info "Tip: 'rite N' on a protected issue to resume + merge it, freeing the slot."
           fi
         fi
       fi
@@ -1181,13 +1581,23 @@ If the changes are unrelated work, answer UNRELATED."
 
     print_success "Worktree ready"
 
+    # Record batch context (if any) in a sidecar file inside the worktree's git
+    # metadata, NOT in the worktree directory name. The directory name should
+    # only identify this issue — surfacing sibling issue numbers in the path
+    # has been observed to encourage the LLM to bundle work across issues.
+    if [ "${BATCH_MODE:-false}" = true ] && [ -n "${BATCH_ISSUE_LIST:-}" ]; then
+      _batch_sidecar_dir="${RITE_PROJECT_ROOT:-$MAIN_WORKTREE}/$RITE_DATA_DIR/batch-context"
+      mkdir -p "$_batch_sidecar_dir" 2>/dev/null || true
+      printf '%s\n' "$BATCH_ISSUE_LIST" > "$_batch_sidecar_dir/${ISSUE_NUMBER:-${SAFE_BRANCH_NAME}}.txt" 2>/dev/null || true
+    fi
+
     # Add symlink patterns to .gitignore BEFORE creating symlinks
     # This prevents them from ever appearing as untracked files in git status
     ensure_symlinks_gitignored() {
       local gitignore="$WORKTREE_PATH/.gitignore"
       # No trailing slashes — "foo/" only matches directories, but symlinks are
       # files (mode 120000) so "foo/" won't match them. "foo" matches both.
-      local patterns=(".rite" ".claude" "node_modules" "backend/node_modules")
+      local patterns=(".rite" ".claude" "node_modules" "backend/node_modules" ".venv" "backend/.venv")
       local updated=0
 
       for pattern in "${patterns[@]}"; do
@@ -1211,32 +1621,50 @@ If the changes are unrelated work, answer UNRELATED."
     }
     ensure_symlinks_gitignored
 
-    # Symlink node_modules to save disk space (if project has them)
-    if [ -d "$MAIN_WORKTREE/node_modules" ]; then
-      cd "$WORKTREE_PATH"
-      rm -rf node_modules 2>/dev/null || true
-      ln -s "$MAIN_WORKTREE/node_modules" node_modules
-      cd "$WORKTREE_PATH"
-    elif [ -d "$MAIN_WORKTREE/backend/node_modules" ]; then
-      cd "$WORKTREE_PATH/backend" 2>/dev/null || true
-      rm -rf node_modules 2>/dev/null || true
-      ln -s "$MAIN_WORKTREE/backend/node_modules" node_modules 2>/dev/null || true
-      cd "$WORKTREE_PATH"
-    fi
+    # Symlink shared directories — but only when running in an actual worktree.
+    # If WORKTREE_PATH == MAIN_WORKTREE (e.g., rite ran from the main repo on a
+    # feature branch instead of from a worktree), symlinking would delete the real
+    # directory and create a circular self-referential symlink.
+    if [ "$WORKTREE_PATH" != "$MAIN_WORKTREE" ]; then
+      # Symlink node_modules to save disk space (if project has them)
+      if [ -d "$MAIN_WORKTREE/node_modules" ]; then
+        cd "$WORKTREE_PATH"
+        rm -rf node_modules 2>/dev/null || true
+        ln -s "$MAIN_WORKTREE/node_modules" node_modules
+        cd "$WORKTREE_PATH"
+      elif [ -d "$MAIN_WORKTREE/backend/node_modules" ]; then
+        cd "$WORKTREE_PATH/backend" 2>/dev/null || true
+        rm -rf node_modules 2>/dev/null || true
+        ln -s "$MAIN_WORKTREE/backend/node_modules" node_modules 2>/dev/null || true
+        cd "$WORKTREE_PATH"
+      fi
 
-    # Symlink rite data dir to share scratchpad and context across worktrees
-    RITE_DATA_PATH="$MAIN_WORKTREE/$RITE_DATA_DIR"
-    if [ -d "$RITE_DATA_PATH" ]; then
-      print_status "Symlinking $RITE_DATA_DIR directory for shared scratchpad..."
-      rm -rf "$WORKTREE_PATH/$RITE_DATA_DIR" 2>/dev/null || true
-      ln -s "$RITE_DATA_PATH" "$WORKTREE_PATH/$RITE_DATA_DIR"
-      print_success "Shared scratchpad linked"
-    fi
+      # Symlink Python venvs from main into the new worktree. Bootstrap (if
+      # main has no venv) already ran near the top of this file, so by the
+      # time we get here main is either healthy or we already failed loudly.
+      if [ -d "$MAIN_WORKTREE/.venv" ]; then
+        rm -rf "$WORKTREE_PATH/.venv" 2>/dev/null || true
+        ln -s "$MAIN_WORKTREE/.venv" "$WORKTREE_PATH/.venv" 2>/dev/null || true
+      fi
+      if [ -d "$MAIN_WORKTREE/backend/.venv" ] && [ -d "$WORKTREE_PATH/backend" ]; then
+        rm -rf "$WORKTREE_PATH/backend/.venv" 2>/dev/null || true
+        ln -s "$MAIN_WORKTREE/backend/.venv" "$WORKTREE_PATH/backend/.venv" 2>/dev/null || true
+      fi
 
-    # Also symlink .claude/ if it exists (backward compat)
-    if [ -d "$MAIN_WORKTREE/.claude" ]; then
-      rm -rf "$WORKTREE_PATH/.claude" 2>/dev/null || true
-      ln -s "$MAIN_WORKTREE/.claude" "$WORKTREE_PATH/.claude"
+      # Symlink rite data dir to share scratchpad and context across worktrees
+      RITE_DATA_PATH="$MAIN_WORKTREE/$RITE_DATA_DIR"
+      if [ -d "$RITE_DATA_PATH" ]; then
+        print_status "Symlinking $RITE_DATA_DIR directory for shared scratchpad..."
+        rm -rf "$WORKTREE_PATH/$RITE_DATA_DIR" 2>/dev/null || true
+        ln -s "$RITE_DATA_PATH" "$WORKTREE_PATH/$RITE_DATA_DIR"
+        print_success "Shared scratchpad linked"
+      fi
+
+      # Also symlink .claude/ if it exists (backward compat)
+      if [ -d "$MAIN_WORKTREE/.claude" ]; then
+        rm -rf "$WORKTREE_PATH/.claude" 2>/dev/null || true
+        ln -s "$MAIN_WORKTREE/.claude" "$WORKTREE_PATH/.claude"
+      fi
     fi
 
     # Switch to worktree directory
@@ -1273,7 +1701,7 @@ fi
 #   - Worktrees created from older commits missing patterns
 #   - Patterns accidentally removed during Claude's development session
 #   - Old trailing-slash forms that don't match symlinks
-for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
+for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules" ".venv" "backend/.venv"; do
   # Already has the correct (no-slash) entry — nothing to do
   if [ -f .gitignore ] && grep -qxF "$_pattern" .gitignore 2>/dev/null; then
     continue
@@ -1287,6 +1715,10 @@ for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
   echo "$_pattern" >> .gitignore
 done
 
+# (Venv bootstrap + worktree symlink repair runs unconditionally near the
+# top of this file, before the FIX_REVIEW_MODE early exit, so all code
+# paths benefit. See the "UNCONDITIONAL VENV BOOTSTRAP" block above.)
+
 # Defensive merge: ensure branch is up-to-date with origin/main before starting work
 # Prevents merge conflicts at PR time, especially in batch mode where earlier issues
 # merge to main while later issues are still working on stale branches.
@@ -1296,7 +1728,37 @@ if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
   BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
   if [ "$BEHIND_COUNT" -gt 0 ]; then
     print_status "Branch is $BEHIND_COUNT commit(s) behind main — merging origin/main..."
+    _defensive_merge_ok=false
     if git merge origin/main --no-edit 2>/dev/null; then
+      _defensive_merge_ok=true
+    else
+      # Merge conflict — try Claude-assisted resolution before giving up.
+      # Resolver expects to be in conflict state (we are) and aborts on its
+      # own failure path, leaving the working tree clean.
+      if [ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]; then
+        print_warning "Merge with main had conflicts ($BEHIND_COUNT commits behind) — attempting Claude-assisted resolution..."
+        source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+        _resolve_args=(--merge-target origin/main --branch-name "$BRANCH_NAME")
+        [ -n "${ISSUE_NUMBER:-}" ] && _resolve_args+=(--issue-number "$ISSUE_NUMBER")
+        if attempt_claude_merge_resolution "${_resolve_args[@]}"; then
+          if git commit --no-edit 2>/dev/null; then
+            _defensive_merge_ok=true
+          else
+            git reset --hard HEAD 2>/dev/null || true
+          fi
+        fi
+      else
+        git merge --abort 2>/dev/null || true
+      fi
+
+      if [ "$_defensive_merge_ok" != true ]; then
+        print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
+        print_info "Resolve manually: git merge origin/main"
+        exit 1
+      fi
+    fi
+
+    if [ "$_defensive_merge_ok" = true ]; then
       # Verify merge didn't introduce silent semantic conflicts
       source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
       if ! verify_post_merge "."; then
@@ -1307,12 +1769,6 @@ if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
         exit 1
       fi
       print_success "Merged origin/main into branch"
-    else
-      # Merge conflict — abort and fail fast rather than auto-resolving
-      git merge --abort 2>/dev/null || true
-      print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
-      print_info "Resolve manually: git merge origin/main"
-      exit 1
     fi
   fi
 fi
@@ -1493,21 +1949,69 @@ ENCOUNTERED_ISSUES_PROMPT="
 
 ## Encountered Issues Protocol
 
-When you discover issues NOT in scope for this issue (test failures, security concerns, code smells, deprecations, missing docs):
+Out-of-scope issues (test failures, security concerns, code smells, deprecations, missing docs): do NOT fix or block on them. Log to scratchpad under \"## Encountered Issues (Needs Triage)\" for triage into tech-debt tickets at merge time.
 
-1. Do NOT fix them (stay focused on current issue)
-2. Do NOT block on them (proceed with your work)
-3. DO log them to the scratchpad under \"## Encountered Issues (Needs Triage)\":
-
-Format:
-- **YYYY-MM-DD** | \`file:line\` | category | Brief description | Affects: [feature/behavior] | Fix: [intended fix] | Done: [acceptance criteria]
-
+Format: \`- **YYYY-MM-DD** | \\\`file:line\\\` | category | Description | Affects: ... | Fix: ... | Done: ...\`
 Categories: test-failure, security, code-smell, missing-docs, deprecation, performance
+"
 
-Example:
-- **2026-02-10** | \`response.test.ts:45\` | test-failure | CORS header assertion expects 'X-Content-Type-Options' | Affects: API security headers compliance | Fix: Add X-Content-Type-Options to CORS_HEADERS constant in response.ts | Done: All response.test.ts CORS tests pass
+# Pre-classified dependency context. The worker would otherwise read the
+# issue body and interpret \"After: #M\" / \"Depends on: #M\" lines as a todo.
+# Surfacing them here, framed as already-merged context, makes the scope wall
+# below operational rather than aspirational.
+DEPENDENCY_CONTEXT_PROMPT=""
+# ISSUE_BODY may not be in scope on every entry path (orchestrated runs export
+# only NORMALIZED_SUBJECT/WORK_DESCRIPTION). Fetch it lazily if missing.
+if [ -z "${ISSUE_BODY:-}" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
+  ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --json body --jq '.body // ""' 2>/dev/null || echo "")
+fi
+if [ -n "${ISSUE_BODY:-}" ]; then
+  _dep_refs=$(echo "$ISSUE_BODY" | grep -oiE '(After:? #|Depends on:? #|Blocked by:? #)[0-9]+' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ' || true)
+  if [ -n "${_dep_refs:-}" ]; then
+    DEPENDENCY_CONTEXT_PROMPT="
 
-This creates visibility without scope creep. Issues will be triaged into tech-debt tickets at merge time.
+## Dependencies (assume merged in main)
+
+This issue references: $(echo "$_dep_refs" | sed 's/ /, #/g; s/^/#/; s/, #$//')
+
+Treat each referenced issue as **already merged in \`main\`**. Their code is
+your starting point, not your todo list. If you read \`main\` and a
+dependency's code is missing, do NOT implement it — see the Scope Wall below.
+"
+  fi
+fi
+
+# Scope wall — explicit per-issue boundary. Without this, when the worker
+# encounters an unsatisfied dependency (\"After: #M\"), it tends to implement
+# #M's work in this issue's worktree rather than logging the gap. Empty
+# parent PRs become populated by sibling workers, work files end up in the
+# wrong worktree, and parent issues silently \"complete\" with no commits.
+SCOPE_WALL_PROMPT="
+
+## Scope Wall (CRITICAL)
+
+This session implements **issue #${ISSUE_NUMBER:-N/A} ONLY**. Every commit must
+serve this issue's acceptance criteria. Do not implement work that belongs to
+another issue, even one this issue depends on.
+
+**Dependency lines** (\`After: #M\`, \`Depends on: #M\`, \`Blocked by: #M\`) are
+context, not a todo list. Treat referenced issues as already-merged in \`main\`.
+If you read \`main\` and discover a dependency's code is missing:
+
+1. Do NOT implement #M here. Even if it looks like a small step, it is not.
+2. Log the gap to the scratchpad's \"## Encountered Issues\" section as
+   \`missing-dependency | #M | <what's missing>\`.
+3. Implement what you can of issue #${ISSUE_NUMBER:-N/A} that doesn't depend on
+   the missing piece. If nothing is implementable without #M, stop and report.
+
+**Files outside scope:** Never edit a file by its absolute path into a
+sibling worktree. Only modify files under your current working directory
+(\`pwd\`). The rite workflow runs each issue in its own worktree — writing to
+another worktree's files is a bug, not a shortcut.
+
+**Self-check before exiting:** Every file you modified must trace back to an
+acceptance criterion of issue #${ISSUE_NUMBER:-N/A}. If you can't justify a
+modification, revert it.
 "
 
 if [ "$AUTO_MODE" = true ]; then
@@ -1550,43 +2054,50 @@ _PROVIDER_PREAMBLE=$(provider_dev_session_preamble "$AUTO_MODE" "${WORK_DESCRIPT
 _PROVIDER_EXIT_NOTE=$(provider_exit_instructions "$AUTO_MODE")
 
 CLAUDE_PROMPT="${_PROVIDER_PREAMBLE}
-${SECURITY_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
-## Workflow Instructions
+${SECURITY_PROMPT}${DEPENDENCY_CONTEXT_PROMPT}${RESUME_CONTEXT_PROMPT:-}${SCOPE_WALL_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
+## Implementation Rigor
 
-Please follow this structured workflow:
+For issues with labels \`tech-debt\` or \`from-review\`: the issue describes a **gap in existing code**. The code the issue was filed against already exists on \`main\`. Your job is to implement what's MISSING, not confirm what's PRESENT. Identify the **delta** between current state and done state before touching any code.
+
+**Acceptance Criteria Mapping** (mandatory before concluding \"already complete\"):
+For EACH acceptance criterion, produce: \`[criterion text] → [file:line] — [why this satisfies it]\`. If you cannot map every criterion, work is NOT complete.
+
+**Anti-patterns to avoid:**
+- **Surface-match trap:** Finding code that LOOKS like what the issue describes and stopping. Read the code — does it actually satisfy the acceptance criteria?
+- **Parent-PR confusion:** If the issue says \"from PR #N\", that PR is already merged. You are here because something about that code is insufficient.
+- **Zero-change exit:** If about to exit with no file changes, STOP. Re-read the issue body and acceptance criteria. Produce the explicit mapping or keep working.
+
+$(if [ "${RITE_NO_CHANGE_RETRY:-false}" = "true" ]; then
+cat <<'RETRY_WARNING'
+## ⚠️ RETRY — Previous Session Produced Zero Changes
+
+The previous development session exited with NO file modifications. It likely concluded the work was "already complete" — **that assessment was WRONG**. The code changes described in the issue DO NOT EXIST yet. Do not repeat the same mistake.
+
+**On this retry you MUST:**
+1. \`grep\` for the specific functions, parameters, or patterns the acceptance criteria describe
+2. If grep finds nothing, the work is NOT done — implement it
+3. Do NOT trust your own reading of files at face value — hallucinated line references caused the previous false positive
+4. Do NOT check for open PRs or conclude work is done based on PR existence — the previous PR was empty
+RETRY_WARNING
+fi)
+## Workflow Instructions
 
 ### Phase 0: Requirements Clarification
 ${PHASE_0_INSTRUCTIONS}
 
 ### Phase 1: Analysis
-1. **FIRST: Check if work is already complete** — but be precise:
+1. **Check if work is already complete** — but be precise:
    - Verify acceptance criteria against the **specific domain/feature** the issue targets, not similar patterns elsewhere
-   - If the issue references a parent PR (e.g., \"From PR #N\"), check what domain/files that PR touched — your verification must cover that same domain
-   - Finding similar tests or code in **other** domains does NOT mean this issue is done — each domain needs its own coverage
-   - Only conclude \"already complete\" if every acceptance criterion is met for the exact scope described
+   - If the issue references a parent PR, check what domain/files that PR touched — your verification must cover that same domain
+   - Only conclude \"already complete\" if every acceptance criterion is met for the exact scope described (produce the mapping above)
+   - **For tech-debt/from-review issues:** existing code in the area is EXPECTED — the issue was filed against it. Related code existing is the starting point, not the finish line.
 2. If work is genuinely complete:
-   - Report your findings with evidence (file paths, test results, etc.)
-   - Check if a PR exists for this issue (use: gh pr list --search \"<issue-title>\" --state all)
-   - **If PR exists on different branch:**
-     - Inform user: Work already merged/in-review on another branch
-     - Close this branch and worktree (duplicate work)
-     - Close the issue if PR is merged
-     - **STOP - cleanup complete**
-   - **If no PR exists:**
-     - Inform user: Work is complete but not in a PR yet
-     - Skip to Phase 4 (Testing) to verify everything works
-     - Then continue to PR creation and full workflow
-     - **DO NOT skip the workflow - this branch has the completed work**
-3. If work is incomplete, continue with analysis:
-   - Read relevant files to understand the codebase
-   - **If a Files to Read entry doesn't exist:**
-     - Check whether a listed dependency (After: #N / Blocked by: #N) accounts for its creation
-     - If yes: note the absence and continue — do NOT create or stub it out
-     - If no dependency covers it: log it to the scratchpad as an encountered issue (category: \`missing-dependency\`, description: what file is missing and why it matters), then continue without creating it
-   - Search for related patterns and existing implementations
-   - Review project documentation (CLAUDE.md, docs/Technical-Specs.md)
-   - **CRITICAL: For security-sensitive code**, consult docs/security/DEVELOPMENT-GUIDE.md
-   - Identify dependencies and integration points
+   - Report findings with evidence (file paths + line numbers)
+   - Check if a PR exists (use: gh pr list --search \"<issue-title>\" --state all). If PR exists on a different branch, close this branch (duplicate). If no PR, skip to Phase 4 (Testing) then continue workflow.
+3. If work is incomplete:
+   - Read relevant files. If a listed file doesn't exist, check if a dependency (After: #N) accounts for its creation. If no dependency covers it, log to scratchpad as \`missing-dependency\`.
+   - Search for related patterns, review project documentation (CLAUDE.md, docs/Technical-Specs.md)
+   - **For security-sensitive code**, consult docs/security/DEVELOPMENT-GUIDE.md
 
 ### Phase 2: Planning
 1. Explain your proposed implementation approach
@@ -1597,18 +2108,14 @@ ${PHASE_0_INSTRUCTIONS}
 ### Phase 3: Implementation
 1. Implement the solution following best practices
 2. Follow existing code patterns and conventions
-3. Add proper error handling
-4. Include comments for complex logic
-5. Ensure multi-tenant isolation if applicable
+3. Add proper error handling and comments for complex logic
+4. Do NOT update docs/, README, or CHANGELOG — handled by a separate review phase
 
 ### Phase 4: Testing & Validation
-1. Write or update unit tests for the code you changed
-2. Verify your new code imports/compiles without errors (quick syntax check)
-3. Do NOT run the full test suite — the rite workflow runs it automatically after this session with parallel execution. Running it here wastes time.
-
-### Phase 5: Code Comments
-1. Add inline comments and JSDoc/TSDoc for complex logic only
-2. Do NOT update files in docs/, README, or CHANGELOG — those are handled by a separate review phase
+1. Before writing tests, read 1-2 existing test files in the same directory and match their setup, teardown, fixtures, and assertion patterns exactly — do not invent new test infrastructure
+2. Write or update unit tests for the code you changed
+3. Verify your new code imports/compiles without errors (quick syntax check)
+4. Do NOT run the full test suite — the rite workflow runs it automatically after this session
 
 **Remember**: Update your todo list as you complete each phase. Mark the current phase as 'in_progress' and completed phases as 'completed'.
 
@@ -1639,6 +2146,8 @@ else
   # Set timeout for Claude Code (configurable via RITE_CLAUDE_TIMEOUT, default 2 hours)
   CLAUDE_TIMEOUT=${RITE_CLAUDE_TIMEOUT:-7200}
   _timer_start "claude_dev_session"
+  # Record session start for the post-session sibling-worktree write guard.
+  SESSION_START_EPOCH=$(date +%s)
   print_status "Launching Sharkrite (timeout: ${CLAUDE_TIMEOUT}s)..."
 
   # Both modes run in FOREGROUND for streaming output
@@ -1708,14 +2217,110 @@ else
     echo "[DIAG] File changes vs origin/main:"
     git diff --stat origin/main...HEAD 2>/dev/null || echo "  (none)"
     if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
-      echo "[DIAG] Provider stderr (last 30 lines):"
-      tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /'
+      # Diagnostic-only. Must not tear down the workflow when the stderr file
+      # contains only EDIT markers (grep -v returns 1 with pipefail -> set -e).
+      _filtered_stderr=$({ grep -v $'^EDIT\t' "$CLAUDE_STDERR_FILE" || true; } | tail -30 | sed 's/^/  /')
+      if [ -n "$_filtered_stderr" ]; then
+        echo "[DIAG] Provider stderr (last 30 lines):"
+        printf '%s\n' "$_filtered_stderr"
+      else
+        echo "[DIAG] Provider stderr: (only EDIT markers, no errors)"
+      fi
     else
       echo "[DIAG] Provider stderr: (empty)"
     fi
     echo ""
   fi
+
+  # Stash Write/Edit/MultiEdit target paths reported by Claude during the
+  # session (emitted via the stream filter in lib/providers/claude.sh).
+  # Used by the "no changes detected" branch below to distinguish "Claude
+  # did nothing" from "Claude reported edits but git can't see them" — the
+  # latter is a worktree mismatch / sandbox / sibling-write bug, not a
+  # benign empty session.
+  RITE_CLAUDE_EDITED_PATHS=""
+  if [ -f "${CLAUDE_STDERR_FILE:-}" ]; then
+    RITE_CLAUDE_EDITED_PATHS=$(grep $'^EDIT\t' "$CLAUDE_STDERR_FILE" 2>/dev/null | cut -f2 | sort -u || true)
+  fi
   rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
+
+  # Mid-session close detection.
+  # If the issue closed during the dev session, the world has changed under
+  # the worker's feet. Three cases:
+  #   - Closed by a merged PR ≠ ours, criteria satisfied on main → cleanup
+  #     our in-flight artifacts and exit success.
+  #   - Closed manually with no closing PR → assume user resolved another way;
+  #     cleanup and exit success.
+  #   - Closed but criteria don't appear satisfied → abort with diagnostic.
+  # See lib/utils/issue-assessor.sh for the full contract.
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    set +e
+    handle_mid_session_close "$ISSUE_NUMBER" "${PR_NUMBER:-}" "${WORKTREE_PATH:-}"
+    _close_check=$?
+    set -e
+    case "$_close_check" in
+      2)
+        print_success "Issue #$ISSUE_NUMBER closed during session — in-flight work pitched (empty/redundant/conflicting)"
+        exit 0
+        ;;
+      4)
+        print_success "Issue #$ISSUE_NUMBER closed during session — in-flight work adopted as additive; PR retitled with [Adopted] for human review"
+        exit 0
+        ;;
+      1)
+        print_error "Issue #$ISSUE_NUMBER closed during session but state is ambiguous"
+        print_info "Leaving in-flight work in ${WORKTREE_PATH:-?} for human review"
+        exit 1
+        ;;
+    esac
+  fi
+
+  # Sibling-worktree write guard.
+  # If the worker bundled this issue's work into a sibling worktree (an
+  # observed failure mode — see behavioral-design.md "Scope Wall"), this
+  # worktree finishes with no source changes while another worktree gains
+  # uncommitted files dated within our session window. Detect that and stop.
+  if [ -n "${RITE_WORKTREE_DIR:-}" ] && [ -d "${RITE_WORKTREE_DIR:-}" ] && [ -n "${WORKTREE_PATH:-}" ]; then
+    _self_changes=$(git status --porcelain 2>/dev/null | { grep -v "^.. \.gitignore$" || true; } | wc -l | tr -d ' ')
+    if [ "${_self_changes:-0}" -eq 0 ]; then
+      _session_start_epoch="${SESSION_START_EPOCH:-0}"
+      [ "$_session_start_epoch" = "0" ] && _session_start_epoch=$(($(date +%s) - CLAUDE_TIMEOUT))
+      _sibling_dirty=""
+      while IFS= read -r _wt; do
+        [ -z "$_wt" ] && continue
+        [ "$_wt" = "$WORKTREE_PATH" ] && continue
+        [ ! -d "$_wt" ] && continue
+        # Only flag if the sibling has uncommitted changes AND at least one
+        # changed file was modified after this session started.
+        _sibling_status=$(git -C "$_wt" status --porcelain 2>/dev/null | grep -v "^.. \.gitignore$" || true)
+        [ -z "$_sibling_status" ] && continue
+        _recent_in_sibling=$(echo "$_sibling_status" | awk '{print $2}' | while IFS= read -r _f; do
+          [ -z "$_f" ] && continue
+          _mt=$(stat -f "%m" "$_wt/$_f" 2>/dev/null || stat -c "%Y" "$_wt/$_f" 2>/dev/null || echo 0)
+          [ "$_mt" -gt "$_session_start_epoch" ] && echo "$_f"
+        done)
+        if [ -n "$_recent_in_sibling" ]; then
+          _sibling_dirty="${_sibling_dirty}${_wt}\n"
+        fi
+      done < <(find "$RITE_WORKTREE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+
+      if [ -n "$_sibling_dirty" ]; then
+        print_error "Cross-worktree write detected — work for issue #${ISSUE_NUMBER:-?} appears to have landed in a sibling worktree."
+        echo ""
+        echo "This worktree has no source changes, but another worktree gained"
+        echo "modified files during this session:"
+        echo ""
+        printf '%b' "$_sibling_dirty" | sed 's|^|  - |'
+        echo ""
+        echo "The dev session likely violated the scope wall and bundled this"
+        echo "issue's implementation into another issue's worktree."
+        echo ""
+        echo "Recovery: inspect the sibling worktree, move the relevant files"
+        echo "back to this branch, then re-run rite for issue #${ISSUE_NUMBER:-?}."
+        exit 1
+      fi
+    fi
+  fi
 fi
 
 # Post-Claude workflow
@@ -1725,7 +2330,7 @@ if [ "${SKIP_TO_PR:-false}" = true ]; then
 else
   # Re-ensure symlink patterns in .gitignore after Claude's session.
   # Claude may have modified .gitignore during development, dropping patterns.
-  for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
+  for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules" ".venv" "backend/.venv"; do
     if [ -f .gitignore ] && grep -qxF "$_pattern" .gitignore 2>/dev/null; then
       continue
     fi
@@ -1758,11 +2363,45 @@ if [ $CHANGES_COUNT -eq 0 ]; then
     # No work was done in the dev phase - exit early
     print_warning "No work was done in the development phase"
     echo ""
-    print_info "This can happen if:"
-    echo "  • The task was already complete"
-    echo "  • Claude determined no changes were needed"
-    echo "  • The session timed out before making changes"
-    echo ""
+
+    # If Claude actually issued Write/Edit calls, this isn't "Claude decided
+    # nothing was needed" — the edits landed somewhere git can't see (wrong
+    # CWD, absolute path outside the worktree, sandbox redirect). Surface
+    # the raw target paths so the next run isn't blind.
+    if [ -n "${RITE_CLAUDE_EDITED_PATHS:-}" ]; then
+      _edit_count=$(printf '%s\n' "$RITE_CLAUDE_EDITED_PATHS" | grep -c . || true)
+      _worktree_root=$(pwd)
+      print_warning "Claude reported $_edit_count file edit(s) during the session, but the worktree shows none."
+      echo ""
+      echo "Reported edit targets:"
+      _outside=0
+      while IFS= read -r _p; do
+        [ -z "$_p" ] && continue
+        case "$_p" in
+          "$_worktree_root"/*|./*|[!/]*)
+            echo "  • $_p (in-worktree but missing — may have been reverted/rolled back)"
+            ;;
+          *)
+            echo "  • $_p (OUTSIDE this worktree)"
+            _outside=$((_outside + 1))
+            ;;
+        esac
+      done <<< "$RITE_CLAUDE_EDITED_PATHS"
+      echo ""
+      if [ $_outside -gt 0 ]; then
+        print_info "$_outside edit(s) targeted absolute paths outside this worktree."
+        print_info "Common cause: Claude resolved paths against a sourced .env from the main repo instead of the worktree CWD."
+      else
+        print_info "All edits targeted in-worktree paths but git sees no changes — likely rolled back during the session."
+      fi
+      echo ""
+    else
+      print_info "This can happen if:"
+      echo "  • The task was already complete"
+      echo "  • Claude determined no changes were needed"
+      echo "  • The session timed out before making changes"
+      echo ""
+    fi
 
     if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
       # In orchestrated mode, let the orchestrator handle cleanup and retry.

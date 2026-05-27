@@ -99,6 +99,11 @@ plan_issues() {
     exit 1
   fi
 
+  # Fail fast if the repo isn't wired up to GitHub. Without this, an entire
+  # LLM generation can be wasted producing issues that `gh issue create`
+  # can never post (e.g. no remote → "no git remotes found" for every one).
+  _preflight_issue_creation || exit 1
+
   # Check provider CLI
   provider_detect_cli || exit 1
 
@@ -234,7 +239,7 @@ $(cat "$doc")
           done
         fi
 
-        if [ -z "$feedback" ]; then
+        if [ -z "${feedback//[[:space:]]/}" ]; then
           print_warning "No feedback provided, showing issues again"
           continue
         fi
@@ -444,6 +449,8 @@ When an issue can run in parallel with others after a shared dependency, say so 
 
 **Narrative dependencies are not code dependencies.** A dependency must mean "this issue literally cannot be implemented without the other issue code existing first." UX flow ordering ("completes the shopping flow") or thematic grouping ("both deal with purchasing") are NOT dependencies. If Issue B only needs the models/endpoints from Issue A to compile and run, it depends on A. If Issue B could be implemented and tested independently with only the base CRUD in place, it does not depend on anything beyond that base CRUD -- even if the user story flows A to B.
 
+**Dependency proof test.** For every non-None dependency, name the specific artifact (file, function, schema, table) the issue needs from the dependency. If you cannot name one, the dependency is wrong — remove it. Example: "Depends on #2 because it needs the \`InventoryItem\` model from \`models/inventory.py\`" passes. "Depends on #5 because it comes after polling in the user flow" fails — that's a narrative dependency.
+
 **D. Read access model explicitly stated.**
 For every entity with a list endpoint (GET /entities), state in the acceptance criteria whether it returns:
 - Only the current user's items (user-scoped reads), OR
@@ -543,10 +550,10 @@ command to verify
 - DO: specific actions in scope
 - DO NOT: specific actions out of scope (with deferral target when known, e.g., "Phase 2 / Issue title")
 
-**Dependencies**: After #N / After #N (can run in parallel with #M, #P) / None
+**Dependencies**: After #N (needs: specific artifact) / After #N (can run in parallel with #M, #P) / None
 ---END---
 
-Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---.
+Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---. Every ---ISSUE--- block MUST have an explicit BODY: line between TIME: and the description — the parser discards blocks without it.
 PROMPT_EOF
 )
 
@@ -637,6 +644,11 @@ PROMPT_EOF
   # an issue title must match an actual ---ISSUE--- block in the output.
   _validate_coverage "$temp_file"
 
+  # Cross-check structured items in the source doc(s) against the checklist
+  # and issue bodies. Catches endpoints/models that Claude silently dropped
+  # from the coverage analysis (the "GET /feed/browse" class of bug).
+  _validate_plan_coverage "$temp_file" "$doc_content"
+
   # Post-generation lint: catch known anti-patterns that Claude keeps generating
   _lint_issues "$temp_file"
 
@@ -651,18 +663,76 @@ _lint_issues() {
   local issues_file="$1"
   local warnings=0
 
-  # Detect if project uses service layer pattern by checking the actual filesystem.
-  # This is authoritative — if service files exist on disk, the project uses services.
-  # Don't rely on prompt context or generated output (circular dependency).
-  _has_services=false
   _project_root="${RITE_PROJECT_ROOT:-.}"
-  for _svc_dir in "$_project_root/src/services" "$_project_root/services" "$_project_root/backend/src/services" "$_project_root/app/services"; do
-    if ls "$_svc_dir"/*_service.py 2>/dev/null | head -1 > /dev/null 2>&1 || \
-       ls "$_svc_dir"/*Service.* 2>/dev/null | head -1 > /dev/null 2>&1; then
+
+  # Detect services dir on disk and remember its relative path. The relative
+  # path is used when injecting service-file references into issues (so the
+  # injection matches the project's actual layout — `app/services/` vs
+  # `src/services/` vs `backend/src/services/` etc.).
+  _has_services=false
+  _services_relpath=""
+  for _candidate in "src/services" "services" "backend/src/services" "app/services"; do
+    _abs="$_project_root/$_candidate"
+    if ls "$_abs"/*_service.py 2>/dev/null | head -1 > /dev/null 2>&1 || \
+       ls "$_abs"/*Service.* 2>/dev/null | head -1 > /dev/null 2>&1; then
       _has_services=true
+      _services_relpath="$_candidate"
       break
     fi
   done
+
+  # Detect tests dir layout. Many Python projects put tests under tests/
+  # (not co-located with src/). When that's true, references like
+  # src/services/test_foo.py are wrong.
+  _tests_relpath=""
+  for _candidate in "tests" "test" "backend/tests" "app/tests" "src/tests"; do
+    if [ -d "$_project_root/$_candidate" ]; then
+      _tests_relpath="$_candidate"
+      break
+    fi
+  done
+
+  # Build a sorted list of paths that exist in the project. We use this to
+  # validate "Files to Read" / "Files to Modify" entries. Limit depth so we
+  # don't scan node_modules / .venv / etc.
+  _existing_paths=$(mktemp)
+  if command -v git >/dev/null 2>&1 && git -C "$_project_root" rev-parse --git-dir >/dev/null 2>&1; then
+    # git ls-files respects .gitignore and only lists tracked files
+    (cd "$_project_root" && git ls-files) > "$_existing_paths" 2>/dev/null || true
+  fi
+  if [ ! -s "$_existing_paths" ]; then
+    # Fallback: find with sensible exclusions
+    find "$_project_root" \
+      \( -path '*/node_modules' -o -path '*/.venv' -o -path '*/venv' \
+         -o -path '*/__pycache__' -o -path '*/.git' -o -path '*/dist' \
+         -o -path '*/build' -o -path '*/.next' \) -prune -o \
+      -type f -print 2>/dev/null | \
+      sed "s|^${_project_root}/||" > "$_existing_paths"
+  fi
+
+  # Collect "files to be created" by any issue in this batch — these are
+  # legitimate forward references even though they don't exist on disk yet.
+  # An issue is considered to create a file if it appears under "Files to
+  # Modify" and is annotated with "(create" or "(new" or doesn't yet exist
+  # on disk for this issue's modify list.
+  _planned_paths=$(mktemp)
+  awk '
+    /^---ISSUE---$/ { in_issue = 1; in_modify = 0; next }
+    /^---END---$/ { in_issue = 0; in_modify = 0; next }
+    !in_issue { next }
+    /^Files to Modify:/ { in_modify = 1; next }
+    /^Files to Read:/  { in_modify = 0; next }
+    /^Related Issues:/ { in_modify = 0; next }
+    /^\*\*/            { in_modify = 0; next }
+    in_modify && /^- / {
+      line = $0
+      sub(/^- /, "", line)
+      sub(/[ \t]*\(.*\)[ \t]*$/, "", line)   # strip parenthetical annotations
+      gsub(/`/, "", line)
+      gsub(/^[ \t]+|[ \t]+$/, "", line)
+      if (length(line) > 0) print line
+    }
+  ' "$issues_file" | sort -u > "$_planned_paths"
 
   if [ "$_has_services" = true ]; then
     # Anti-pattern 1: "DO NOT: Create service layer"
@@ -673,8 +743,6 @@ _lint_issues() {
     fi
 
     # Anti-pattern 2: CRUD issue without service file in Files to Modify.
-    # Detect CRUD issues (title contains CRUD, endpoint, or issue has router in Files to Modify)
-    # and check if they list a corresponding service file.
     _lint_file=$(mktemp)
     _in_issue=false
     _issue_block=""
@@ -700,17 +768,19 @@ _lint_issues() {
         if [[ "$line" == "---END---" ]]; then
           _in_issue=false
           if [ "$_has_router" = true ] && [ "$_has_service" = false ]; then
-            # Extract router name to derive service name
-            # Extract router name from "Files to Modify" section only (not "Files to Read"
-            # which may reference other routers as patterns)
-            # Stop at blank line OR next markdown section (**, ##, Related)
             _router_name=$(echo "$_issue_block" | sed -n '/Files to Modify/,/^\*\*\|^##\|^Related\|^$/p' | \
               grep -oiE 'routers/[a-z_]+\.py' | head -1 | sed 's|routers/||; s|\.py||')
             if [ -n "$_router_name" ]; then
-              _service_file="src/services/${_router_name}_service.py"
+              _service_file="${_services_relpath}/${_router_name}_service.py"
+              # Determine if it exists already → (verify and extend) vs (create)
+              local _annotation
+              if grep -qxF "$_service_file" "$_existing_paths"; then
+                _annotation="(verify and extend — router delegates to service)"
+              else
+                _annotation="(create — router delegates to service)"
+              fi
               print_info "Adding $_service_file to '$_issue_title'" >&2
-              # Insert service file after the router line in Files to Modify
-              _issue_block=$(echo "$_issue_block" | sed "s|routers/${_router_name}.py|routers/${_router_name}.py\n- ${_service_file} (create — router delegates to service)|")
+              _issue_block=$(echo "$_issue_block" | sed "s|routers/${_router_name}.py|routers/${_router_name}.py\n- ${_service_file} ${_annotation}|")
               warnings=$((warnings + 1))
             fi
           fi
@@ -724,9 +794,248 @@ _lint_issues() {
     mv "$_lint_file" "$issues_file"
   fi
 
+  # Anti-pattern 3: Files referenced that don't exist and aren't created by
+  # any issue in this batch. Annotate or strip them so the implementer
+  # doesn't have to guess "create new file?" vs "wrong reference?"
+  _annotated_file=$(mktemp)
+  awk -v existing_paths="$_existing_paths" \
+      -v planned_paths="$_planned_paths" \
+      -v tests_relpath="$_tests_relpath" \
+      -v services_relpath="$_services_relpath" '
+    BEGIN {
+      while ((getline p < existing_paths) > 0) exists[p] = 1
+      close(existing_paths)
+      while ((getline p < planned_paths) > 0) planned[p] = 1
+      close(planned_paths)
+    }
+    /^---ISSUE---$/    { in_issue = 1; section = ""; print; next }
+    /^---END---$/      { in_issue = 0; section = ""; print; next }
+    !in_issue          { print; next }
+    /^Files to Read:/  { section = "read";   print; next }
+    /^Files to Modify:/{ section = "modify"; print; next }
+    /^Related Issues:/ { section = "";       print; next }
+    /^\*\*/            { section = "";       print; next }
+    /^[[:space:]]*$/   { section = "";       print; next }
+    section == "read" && /^- / {
+      line = $0
+      raw = line
+      sub(/^- /, "", line)
+      # Strip parenthetical annotations and backticks for the existence check
+      check = line
+      sub(/[ \t]*\(.*\)[ \t]*$/, "", check)
+      gsub(/`/, "", check)
+      gsub(/^[ \t]+|[ \t]+$/, "", check)
+      # Drop trailing description after first whitespace (only the path token)
+      n = split(check, parts, /[ \t]/)
+      check = parts[1]
+      if (length(check) == 0) { print raw; next }
+      # If raw line already has an annotation, keep it as-is
+      if (raw ~ /\(created by/ || raw ~ /\(create/ || raw ~ /\(new file/ || raw ~ /\(verify/) {
+        print raw; next
+      }
+      if (check in exists) { print raw; next }
+      # Test file path convention check runs BEFORE planned check, because
+      # a sibling planned path may itself be wrong (it gets remapped on
+      # the modify side). The convention warning is more useful.
+      basename = check
+      sub(/.*\//, "", basename)
+      is_test_file = (basename ~ /^test_/ && basename ~ /\.py$/)
+      under_tests_dir = (length(tests_relpath) > 0 && index(check, tests_relpath "/") == 1)
+      if (is_test_file && length(tests_relpath) > 0 && !under_tests_dir) {
+        print raw " (path mismatch — project tests live under " tests_relpath "/)"
+        next
+      }
+      if (check in planned) {
+        # Created by another issue in this batch — annotate with the source
+        print raw " (created by sibling issue in this plan)"
+        next
+      }
+      # Unknown file — flag for human attention; do not silently keep it
+      print raw " (does not exist — verify path)"
+      next
+    }
+    section == "modify" && /^- / {
+      line = $0
+      raw = line
+      sub(/^- /, "", line)
+      check = line
+      sub(/[ \t]*\(.*\)[ \t]*$/, "", check)
+      gsub(/`/, "", check)
+      gsub(/^[ \t]+|[ \t]+$/, "", check)
+      n = split(check, parts, /[ \t]/)
+      check = parts[1]
+      if (length(check) == 0) { print raw; next }
+      if (raw ~ /\(created by/ || raw ~ /\(create/ || raw ~ /\(new file/ || raw ~ /\(verify/) {
+        print raw; next
+      }
+      if (check in exists) { print raw; next }
+      # Test file in wrong directory
+      basename = check
+      sub(/.*\//, "", basename)
+      is_test_file = (basename ~ /^test_/ && basename ~ /\.py$/)
+      under_tests_dir = (length(tests_relpath) > 0 && index(check, tests_relpath "/") == 1)
+      if (is_test_file && length(tests_relpath) > 0 && !under_tests_dir) {
+        # Try to remap services/test_foo.py → tests/services/test_foo.py
+        remapped = check
+        if (length(services_relpath) > 0 && index(check, services_relpath "/") == 1) {
+          sub("^" services_relpath "/", tests_relpath "/services/", remapped)
+        } else {
+          remapped = tests_relpath "/" basename
+        }
+        print "- " remapped " (create — relocated from " check " per project convention)"
+        next
+      }
+      print raw " (create new file)"
+      next
+    }
+    { print }
+  ' "$issues_file" > "$_annotated_file"
+
+  # Count how many lines we annotated (rough signal for the post-lint summary)
+  local annotated_diff
+  annotated_diff=$(diff "$issues_file" "$_annotated_file" 2>/dev/null | grep -c "^>" || true)
+  if [ "$annotated_diff" -gt 0 ]; then
+    warnings=$((warnings + 1))
+    print_info "Annotated $annotated_diff file reference(s) (existence / convention checks)" >&2
+  fi
+  mv "$_annotated_file" "$issues_file"
+
+  rm -f "$_existing_paths" "$_planned_paths"
+
+  # Anti-pattern 4: oversized issues with too many distinct concerns.
+  # Soft warning — does not modify output, just surfaces signal to reviewer.
+  _check_oversized_issues "$issues_file"
+
   if [ "$warnings" -gt 0 ]; then
     print_info "Fixed $warnings issue(s) in post-generation lint" >&2
   fi
+}
+
+# =============================================================================
+# Soft warning for issues likely too large to ship as one PR
+# =============================================================================
+#
+# Heuristic: time > 90min AND >= 3 distinct acceptance-criteria groups.
+# A "group" is defined as a contiguous run of `- [ ]` checkboxes separated
+# from another run by a blank line or by a non-checkbox header. The signal
+# is noisy by design — we log a warning, never auto-split.
+
+_preflight_issue_creation() {
+  # gh auth is required no matter which branch we take below.
+  if ! gh auth status >/dev/null 2>&1; then
+    print_error "gh is not authenticated"
+    echo "  gh auth login" >&2
+    return 1
+  fi
+
+  # No remote → auto-create a private GitHub repo under the authenticated
+  # user. Trading away an LLM planning run because origin wasn't set is
+  # a much worse outcome than silently provisioning a repo the user can
+  # always rename, transfer, or delete after the fact.
+  if ! git remote 2>/dev/null | grep -q .; then
+    local repo_name
+    repo_name=$(basename "$(pwd)")
+
+    print_warning "No git remote — auto-creating private GitHub repo: $repo_name"
+
+    local create_args=(--private --source=. --remote=origin)
+    # --push requires at least one commit; without it gh errors.
+    if git rev-parse --verify HEAD >/dev/null 2>&1; then
+      create_args+=(--push)
+    fi
+
+    local create_err
+    create_err=$(gh repo create "$repo_name" "${create_args[@]}" 2>&1 >/dev/null) \
+      || {
+        print_error "Auto-create failed: $create_err"
+        echo "  Run manually, then retry:" >&2
+        echo "    gh repo create $repo_name --private --source=. --remote=origin" >&2
+        return 1
+      }
+
+    local nwo
+    nwo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "$repo_name")
+    print_success "Created $nwo (private)"
+  fi
+
+  # Remote exists but doesn't resolve. The user actively configured this
+  # remote — don't silently rewrite their config. Surface and bail.
+  if ! gh repo view --json nameWithOwner -q .nameWithOwner >/dev/null 2>&1; then
+    print_error "gh cannot resolve this repo's remote to a GitHub repository"
+    echo "" >&2
+    echo "Configured remotes:" >&2
+    git remote -v | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "Fix the remote URL or recreate the repo manually before planning." >&2
+    return 1
+  fi
+
+  # Soft signal — no commits yet. Issue creation still works fine on an
+  # empty repo, so this is informational only.
+  if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    print_warning "No commits yet — push some once you have changes:"
+    echo "    git commit -m 'initial commit'" >&2
+    echo "    git push -u origin \$(git branch --show-current)" >&2
+  fi
+
+  return 0
+}
+
+_check_oversized_issues() {
+  local issues_file="$1"
+
+  awk '
+    function flush_group() {
+      if (run > 0) groups++
+      run = 0
+    }
+    /^---ISSUE---$/ {
+      in_issue = 1; in_body = 0; title = ""; time_min = 0
+      groups = 0; run = 0
+      next
+    }
+    /^---END---$/ {
+      flush_group()
+      if (in_issue && time_min > 90 && groups >= 3) {
+        printf "OVERSIZED|%d|%d|%s\n", time_min, groups, title
+      }
+      in_issue = 0; in_body = 0
+      next
+    }
+    !in_issue { next }
+    /^TITLE: / { title = substr($0, 8); next }
+    /^TIME: /  {
+      t = substr($0, 7)
+      m = 0
+      # 2hr → 120, 1hr 30min → 90, 1.5hr → 90, 45min → 45
+      # BSD awk lacks gawk 3-arg match — use match() + substr()
+      if (match(t, /[0-9]+\.[0-9]+hr/)) {
+        s = substr(t, RSTART, RLENGTH)
+        sub(/hr$/, "", s)
+        m += int(s * 60)
+      } else if (match(t, /[0-9]+hr/)) {
+        s = substr(t, RSTART, RLENGTH)
+        sub(/hr$/, "", s)
+        m += s * 60
+      }
+      if (match(t, /[0-9]+min/)) {
+        s = substr(t, RSTART, RLENGTH)
+        sub(/min$/, "", s)
+        m += s
+      }
+      time_min = m
+      next
+    }
+    /^BODY:/   { in_body = 1; next }
+    !in_body   { next }
+    /^[[:space:]]*-[[:space:]]*\[[ x]\]/ { run++; next }
+    /^[[:space:]]*$/                     { flush_group(); next }
+    /^\*\*/                              { flush_group(); next }
+    { flush_group() }
+  ' "$issues_file" | while IFS='|' read -r tag time_min groups title; do
+    [ "$tag" = "OVERSIZED" ] || continue
+    print_warning "Consider splitting: '$title' (${time_min}min, ${groups} distinct criteria groups)" >&2
+  done
 }
 
 # =============================================================================
@@ -819,12 +1128,14 @@ fi)
 
 If ALL items should be skipped, output exactly: NO_ISSUES_NEEDED
 
+**CRITICAL: Every generated issue MUST include a BODY: section with full content (acceptance criteria, scope boundaries, Claude Context, done definition). A block without BODY: will be discarded. Do NOT emit title-only stubs.**
+
 ---ISSUE---
 TITLE: [title]
 LABELS: labels
 TIME: Xmin or Xhr
 BODY:
-[issue body]
+[full issue body — acceptance criteria, scope boundaries, Claude Context, done definition]
 ---END---
 PHANTOM_EOF
 )
@@ -883,21 +1194,96 @@ PHANTOM_EOF
       head -20 "$phantom_file" | sed 's/^/  | /' >&2
     fi
 
+    # Validate that every block has a BODY: section — blocks without body content
+    # create GitHub issues with no description (just a title), which are unusable.
+    local body_count
+    body_count=$(grep -c "^BODY:" "$clean_phantom" || true)
+    if [ "$new_count" -gt 0 ] && [ "$body_count" -lt "$new_count" ]; then
+      local missing=$((new_count - body_count))
+      print_warning "Phantom output has $missing issue(s) with no BODY: section — discarding bodyless blocks" >&2
+      # Filter to only blocks that contain a BODY: line
+      local validated_phantom
+      validated_phantom=$(mktemp)
+      awk '
+        /^---ISSUE---$/ { buf = $0 "\n"; in_issue = 1; has_body = 0; past_time = 0; next }
+        in_issue {
+          buf = buf $0 "\n"
+          if ($0 ~ /^BODY:/) has_body = 1
+          if ($0 ~ /^TIME:/) past_time = 1
+          # Accept content after TIME: as implicit body (LLM dropped BODY: marker)
+          if (past_time && !has_body && $0 ~ /^\*\*/) has_body = 1
+          if ($0 ~ /^---END---$/) {
+            if (has_body) printf "%s", buf
+            in_issue = 0; buf = ""
+          }
+        }
+      ' "$clean_phantom" > "$validated_phantom"
+      mv "$validated_phantom" "$clean_phantom"
+      new_count=$(grep -c "^---ISSUE---" "$clean_phantom" || true)
+      end_count=$(grep -c "^---END---" "$clean_phantom" || true)
+    fi
+
     if [ "$new_count" -gt 0 ] && [ "$new_count" -eq "$end_count" ]; then
-      local pre_count
-      pre_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
+      # Pre-filter: drop any phantom block whose title (case-insensitive,
+      # whitespace-trimmed) already exists in the issues file. This prevents
+      # the confusing "emit then dedup" log pattern when the resolver
+      # regenerates an issue that's already present.
+      local existing_titles_lc
+      existing_titles_lc=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' | sort -u)
 
-      echo "" >> "$issues_file"
-      cat "$clean_phantom" >> "$issues_file"
-      _dedup_issues "$issues_file"
+      local pre_filter_count="$new_count"
+      local filtered_phantom
+      filtered_phantom=$(mktemp)
+      awk -v existing="$existing_titles_lc" '
+        BEGIN {
+          n = split(existing, arr, "\n")
+          for (i = 1; i <= n; i++) seen[arr[i]] = 1
+        }
+        /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; is_dup = 0; next }
+        in_issue {
+          buf = buf $0 "\n"
+          if ($0 ~ /^TITLE: /) {
+            title_lc = substr($0, 8)
+            gsub(/^[ \t]+|[ \t]+$/, "", title_lc)
+            title_lc = tolower(title_lc)
+            if (title_lc in seen) is_dup = 1
+            else seen[title_lc] = 1
+          }
+          if ($0 ~ /^---END---$/) {
+            if (!is_dup) printf "%s", buf
+            in_issue = 0; buf = ""
+          }
+          next
+        }
+      ' "$clean_phantom" > "$filtered_phantom"
 
-      local post_count
-      post_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
-      local added=$((post_count - pre_count))
-      if [ "$added" -gt 0 ]; then
-        print_success "Added $added issue(s) from coverage resolution" >&2
+      mv "$filtered_phantom" "$clean_phantom"
+      new_count=$(grep -c "^---ISSUE---" "$clean_phantom" || true)
+      local skipped_dups=$((pre_filter_count - new_count))
+
+      if [ "$skipped_dups" -gt 0 ]; then
+        print_info "Skipped $skipped_dups phantom duplicate(s) (titles already emitted)" >&2
+      fi
+
+      if [ "$new_count" -gt 0 ]; then
+        local pre_count
+        pre_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
+
+        echo "" >> "$issues_file"
+        cat "$clean_phantom" >> "$issues_file"
+        _dedup_issues "$issues_file"
+
+        local post_count
+        post_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
+        local added=$((post_count - pre_count))
+        if [ "$added" -gt 0 ]; then
+          print_success "Added $added issue(s) from coverage resolution" >&2
+        else
+          print_info "Phantom issues were duplicates — no new issues added" >&2
+        fi
       else
-        print_info "Phantom issues were duplicates — no new issues added" >&2
+        print_info "All phantom issues were duplicates of existing — none added" >&2
       fi
     elif [ "$new_count" -gt 0 ]; then
       print_warning "Phantom output malformed ($new_count ISSUE markers, $end_count END markers) — skipping" >&2
@@ -907,6 +1293,324 @@ PHANTOM_EOF
   fi
 
   rm -f "$phantom_file"
+}
+
+# =============================================================================
+# Cross-check structured items from source doc against checklist + issues
+# =============================================================================
+#
+# The existing `_validate_coverage` checks the coverage checklist *forward*:
+# every ✅ entry must point to a real issue (catches phantom titles).
+# This function checks the *reverse* direction: every endpoint in the
+# source doc(s) must be implemented by an issue or explicitly deferred.
+#
+# Two-stage design:
+#   1. Bash extracts every `(GET|POST|PUT|PATCH|DELETE) /path` from the doc.
+#      The regex tolerates markdown table pipes, backticks, asterisks, and
+#      whitespace as separators.
+#   2. The provider receives the FULL endpoint list + the FULL issue set
+#      and judges each endpoint semantically. The provider reads acceptance
+#      criteria — not bash grep — so it correctly distinguishes "endpoint
+#      mentioned in scope-boundary DO NOT" from "endpoint actually
+#      implemented."
+#
+# Per-endpoint verdicts: COVERED (implemented by an existing issue),
+# GENERATE (emit a new issue), or DEFER (add to coverage checklist with
+# target phase). Verdicts are surfaced to the user so the audit is visible.
+
+_validate_plan_coverage() {
+  local issues_file="$1"
+  local doc_content="$2"
+
+  if [ -z "$doc_content" ]; then
+    return 0
+  fi
+
+  local doc_file
+  doc_file=$(mktemp)
+  printf '%s' "$doc_content" > "$doc_file"
+
+  # Extract endpoints from the source doc(s). The separator between method
+  # and path varies wildly: spaces, pipes (markdown tables), backticks,
+  # asterisks. Permit any of those, then normalize to "METHOD PATH".
+  # BSD grep does not support \b, so we rely on the keyword anchors.
+  local endpoints_file
+  endpoints_file=$(mktemp)
+  grep -oE '(GET|POST|PUT|PATCH|DELETE)[[:space:]|`*]+/[a-zA-Z0-9_/{}.:?=&%-]+' "$doc_file" 2>/dev/null | \
+    sed -E 's/[`|*]+/ /g' | \
+    sed -E 's/[[:space:]]+/ /g' | \
+    sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | \
+    sed -E 's/[[:punct:]]+$//' | \
+    sort -u > "$endpoints_file"
+
+  if [ ! -s "$endpoints_file" ]; then
+    rm -f "$doc_file" "$endpoints_file"
+    return 0
+  fi
+
+  # No bash-side coverage filter. Send the FULL endpoint list to the LLM and
+  # let it decide which are actually implemented by the existing issues.
+  # Substring grep produces false negatives (path appears in scope-boundary
+  # "DO NOT" or in a related-issues reference) and false positives (path
+  # mentioned in passing without being implemented). The LLM reads acceptance
+  # criteria and judges semantic coverage.
+
+  local total_endpoints
+  total_endpoints=$(wc -l < "$endpoints_file" | tr -d ' ')
+
+  print_status "Cross-checking $total_endpoints endpoint(s) from doc against issue bodies..." >&2
+
+  if ! provider_detect_cli 2>/dev/null; then
+    print_warning "Cannot semantically validate endpoints — provider CLI not found" >&2
+    print_info "Endpoints extracted from doc:" >&2
+    sed 's/^/  - /' "$endpoints_file" >&2
+    rm -f "$doc_file" "$endpoints_file"
+    return 0
+  fi
+
+  # Build the resolver prompt. The LLM gets the full endpoint list, the
+  # full issue set, the coverage checklist, and the source doc — and decides
+  # per-endpoint whether to GENERATE, SKIP (genuinely covered), or DEFER.
+  local existing_issues_full
+  existing_issues_full=$(sed -n '/^---ISSUE---$/,/^---END---$/p' "$issues_file")
+
+  local coverage_section
+  coverage_section=$(sed '/^---ISSUE---$/q' "$issues_file" | grep -v "^---ISSUE---$" || true)
+
+  local endpoint_list
+  endpoint_list=$(sed 's/^/- /' "$endpoints_file")
+
+  local resolver_prompt
+  resolver_prompt=$(cat <<RESOLVER_EOF
+You are auditing whether a set of generated GitHub issues fully covers the HTTP endpoints described in the source architectural doc. The bash extractor pulled every endpoint mentioned in the doc — your job is to map each one to its implementing issue, OR generate a missing issue, OR confirm it is intentionally deferred.
+
+**For EACH endpoint below, choose ONE of:**
+
+1. **COVERED** — an existing issue's acceptance criteria explicitly implement this endpoint (same method, same path or equivalent route pattern, same behavior). Output a single line:
+   \`COVERED: {METHOD} {PATH} → "{matching issue title}" (criterion: "{quoted snippet from acceptance criteria}")\`
+
+2. **GENERATE** — no existing issue implements this endpoint. Emit a full ---ISSUE--- block for it (with BODY: section, acceptance criteria, scope boundary, dependencies, etc.).
+
+3. **DEFER** — the source doc itself marks this endpoint as belonging to a later phase, and the user instructions for this planning session do not include that phase. Output a single line:
+   \`DEFER: - ⏭️ {METHOD} {PATH} → Deferred to Phase X (reason from doc)\`
+
+**Critical decision rules:**
+
+- Read each issue's **acceptance criteria** carefully. A path mentioned in a "Scope Boundary: DO NOT" line, in "Related Issues:", or in passing prose is NOT coverage. Coverage requires a concrete acceptance criterion that exercises the endpoint.
+- Path equivalence: \`/items/{id}\` and \`/items/{item_id}\` and \`/items/<int:id>\` describe the same route. Treat them as equivalent. \`/items\` and \`/items/{id}\` are NOT equivalent (collection vs. resource).
+- Method matters: a GET issue does not cover a POST to the same path. Different methods are different endpoints.
+- Behavior matters: a generic CRUD issue with "POST /resources creates a resource" does NOT cover \`POST /resources/{id}/consume\` (decrement) or \`POST /resources/{id}/share\` (state transition) — those are domain actions with distinct logic.
+- When in doubt, GENERATE. False-negative coverage (saying "covered" when it isn't) ships a gap to production. A duplicate issue is recoverable; a missing endpoint is not.
+
+**Endpoints extracted from the source doc (every endpoint must get exactly one verdict):**
+$endpoint_list
+
+**Existing coverage checklist (informational — may be incomplete):**
+$coverage_section
+
+**Existing issues (read acceptance criteria carefully):**
+$existing_issues_full
+
+**Source doc context (for phase / deferral reasoning):**
+$(printf '%s' "$doc_content" | head -400)
+
+**Output format (every endpoint gets exactly one of these):**
+
+- For COVERED endpoints, one line each:
+  \`COVERED: {METHOD} {PATH} → "{matching issue title}" (criterion: "{quoted snippet}")\`
+
+- For DEFER endpoints, one line each:
+  \`DEFER: - ⏭️ {METHOD} {PATH} → Deferred to Phase X (reason)\`
+
+- For GENERATE endpoints, full ---ISSUE--- blocks with BODY: section (description, Claude Context, acceptance criteria, scope boundary, dependencies).
+
+If every endpoint is COVERED (no GENERATE, no DEFER), output the COVERED: lines and then the literal sentinel \`ALL_COVERED\` on its own line so downstream tooling can confirm.
+RESOLVER_EOF
+)
+
+  local resolver_out
+  resolver_out=$(mktemp)
+  local resolver_stderr
+  resolver_stderr=$(mktemp)
+
+  print_status "Asking provider to verify coverage of $total_endpoints endpoint(s)..." >&2
+
+  provider_run_streaming_prompt "$resolver_prompt" "" 2>"$resolver_stderr" \
+    > "$resolver_out"
+
+  rm -f "$resolver_stderr"
+
+  if [ ! -s "$resolver_out" ]; then
+    print_warning "Resolver returned empty — endpoints not verified" >&2
+    print_info "Endpoints extracted from doc:" >&2
+    sed 's/^/  - /' "$endpoints_file" >&2
+    rm -f "$doc_file" "$endpoints_file" "$resolver_out"
+    return 0
+  fi
+
+  # Surface the per-endpoint coverage decisions to the user. Every endpoint
+  # the doc mentions should appear in exactly one of these three buckets.
+  local covered_count
+  covered_count=$(grep -c "^COVERED:" "$resolver_out" || true)
+  local defer_count_pre
+  defer_count_pre=$(grep -c "^DEFER:" "$resolver_out" || true)
+  local generate_count_pre
+  generate_count_pre=$(grep -c "^---ISSUE---$" "$resolver_out" || true)
+
+  print_info "Endpoint coverage audit: $covered_count covered, $defer_count_pre deferred, $generate_count_pre to generate" >&2
+
+  # Show the COVERED mapping so user can audit (compact, one line per endpoint)
+  if [ "$covered_count" -gt 0 ]; then
+    grep "^COVERED:" "$resolver_out" | sed 's/^COVERED: /  ✓ /' >&2
+  fi
+
+  # Verify every doc endpoint received a verdict — if the LLM dropped any,
+  # warn so the user knows the audit is incomplete.
+  local verdict_lines=$((covered_count + defer_count_pre + generate_count_pre))
+  if [ "$verdict_lines" -lt "$total_endpoints" ]; then
+    local missing_verdict=$((total_endpoints - verdict_lines))
+    print_warning "Provider returned verdicts for $verdict_lines of $total_endpoints endpoints — $missing_verdict missing" >&2
+  fi
+
+  if grep -qxF "ALL_COVERED" "$resolver_out" && [ "$generate_count_pre" -eq 0 ] && [ "$defer_count_pre" -eq 0 ]; then
+    print_success "All doc endpoints verified as covered by existing issues" >&2
+    rm -f "$doc_file" "$endpoints_file" "$resolver_out"
+    return 0
+  fi
+
+  # Apply DEFER: lines to the coverage checklist (insert before first ---ISSUE---)
+  local deferral_lines
+  deferral_lines=$(grep "^DEFER:" "$resolver_out" | sed 's/^DEFER: *//' || true)
+  if [ -n "$deferral_lines" ]; then
+    local deferral_count
+    deferral_count=$(echo "$deferral_lines" | wc -l | tr -d ' ')
+    print_info "Adding $deferral_count deferral entries to coverage checklist" >&2
+
+    local with_deferrals
+    with_deferrals=$(mktemp)
+    awk -v deferrals="$deferral_lines" '
+      BEGIN { inserted = 0 }
+      /^---ISSUE---$/ && !inserted {
+        print deferrals
+        inserted = 1
+      }
+      { print }
+      END {
+        # If there were no issues, append at end
+        if (!inserted) print deferrals
+      }
+    ' "$issues_file" > "$with_deferrals"
+    mv "$with_deferrals" "$issues_file"
+  fi
+
+  # Normalize markers (provider stream may concatenate them with surrounding text)
+  sed -i '' \
+    -e 's/---ISSUE---/\
+---ISSUE---\
+/g' \
+    -e 's/---END---/\
+---END---\
+/g' \
+    "$resolver_out"
+
+  # Extract well-formed ---ISSUE--- to ---END--- blocks
+  local clean_resolver
+  clean_resolver=$(mktemp)
+  sed -n '/^---ISSUE---$/,/^---END---$/p' "$resolver_out" > "$clean_resolver"
+
+  local new_count
+  new_count=$(grep -c "^---ISSUE---" "$clean_resolver" || true)
+  local end_count
+  end_count=$(grep -c "^---END---" "$clean_resolver" || true)
+
+  if [ "$new_count" -eq 0 ]; then
+    rm -f "$doc_file" "$endpoints_file" "$resolver_out" "$clean_resolver"
+    return 0
+  fi
+
+  if [ "$new_count" -ne "$end_count" ]; then
+    print_warning "Endpoint resolver output malformed ($new_count ISSUE / $end_count END markers) — skipping" >&2
+    rm -f "$doc_file" "$endpoints_file" "$resolver_out" "$clean_resolver"
+    return 0
+  fi
+
+  # Drop bodyless blocks (same defense as phantom resolver)
+  local body_count
+  body_count=$(grep -c "^BODY:" "$clean_resolver" || true)
+  if [ "$body_count" -lt "$new_count" ]; then
+    local validated
+    validated=$(mktemp)
+    awk '
+      /^---ISSUE---$/ { buf = $0 "\n"; in_issue = 1; has_body = 0; past_time = 0; next }
+      in_issue {
+        buf = buf $0 "\n"
+        if ($0 ~ /^BODY:/) has_body = 1
+        if ($0 ~ /^TIME:/) past_time = 1
+        if (past_time && !has_body && $0 ~ /^\*\*/) has_body = 1
+        if ($0 ~ /^---END---$/) {
+          if (has_body) printf "%s", buf
+          in_issue = 0; buf = ""
+        }
+      }
+    ' "$clean_resolver" > "$validated"
+    mv "$validated" "$clean_resolver"
+    new_count=$(grep -c "^---ISSUE---" "$clean_resolver" || true)
+  fi
+
+  # Pre-filter against already-emitted titles (same logic as phantom path)
+  local existing_titles_lc
+  existing_titles_lc=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' | \
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' | sort -u)
+
+  local pre_filter_count="$new_count"
+  local filtered
+  filtered=$(mktemp)
+  awk -v existing="$existing_titles_lc" '
+    BEGIN {
+      n = split(existing, arr, "\n")
+      for (i = 1; i <= n; i++) seen[arr[i]] = 1
+    }
+    /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; is_dup = 0; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 ~ /^TITLE: /) {
+        title_lc = substr($0, 8)
+        gsub(/^[ \t]+|[ \t]+$/, "", title_lc)
+        title_lc = tolower(title_lc)
+        if (title_lc in seen) is_dup = 1
+        else seen[title_lc] = 1
+      }
+      if ($0 ~ /^---END---$/) {
+        if (!is_dup) printf "%s", buf
+        in_issue = 0; buf = ""
+      }
+      next
+    }
+  ' "$clean_resolver" > "$filtered"
+  mv "$filtered" "$clean_resolver"
+  new_count=$(grep -c "^---ISSUE---" "$clean_resolver" || true)
+
+  local skipped=$((pre_filter_count - new_count))
+  if [ "$skipped" -gt 0 ]; then
+    print_info "Skipped $skipped resolver duplicate(s) (titles already emitted)" >&2
+  fi
+
+  if [ "$new_count" -gt 0 ]; then
+    local pre_count
+    pre_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
+    echo "" >> "$issues_file"
+    cat "$clean_resolver" >> "$issues_file"
+    _dedup_issues "$issues_file"
+    local post_count
+    post_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
+    local added=$((post_count - pre_count))
+    if [ "$added" -gt 0 ]; then
+      print_success "Added $added issue(s) for previously-uncovered endpoints" >&2
+      grep "^TITLE:" "$clean_resolver" | sed 's/^TITLE: /  + /' >&2
+    fi
+  fi
+
+  rm -f "$doc_file" "$endpoints_file" "$resolver_out" "$clean_resolver"
 }
 
 # =============================================================================
@@ -1221,6 +1925,14 @@ create_issues() {
       current_time=""
       in_body=false
     elif [[ "$line" == "---END---" ]]; then
+      if [ -n "$current_title" ] && [ -z "$current_body" ]; then
+        print_warning "Skipping '$current_title' — no body content (BODY: section missing or empty)" >&2
+        current_title=""
+        current_labels=""
+        current_body=""
+        current_time=""
+        in_body=false
+      fi
       if [ -n "$current_title" ]; then
         # Replace #PREV with actual previous issue number
         if [ -n "$prev_issue_num" ]; then
@@ -1289,6 +2001,11 @@ create_issues() {
       fi
     elif [ "$in_body" = true ]; then
       current_body+="$line"$'\n'
+    elif [ -n "$current_title" ] && [ -n "$line" ]; then
+      # Implicit body start — LLM omitted the BODY: marker but emitted content
+      # after TITLE/LABELS/TIME. Treat as body.
+      in_body=true
+      current_body="$line"$'\n'
     fi
   done < "$issues_file"
 

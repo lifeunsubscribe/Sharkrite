@@ -393,8 +393,15 @@ echo ""
 print_info "Checking .gitignore for workflow artifacts..."
 
 GITIGNORE_FILE="$RITE_PROJECT_ROOT/.gitignore"
+# Only ignore per-developer/runtime files under .rite/ — config, blockers.conf,
+# and issue-template.md are committed and shared across the team.
 REQUIRED_IGNORES=(
-  ".rite/"
+  ".rite/scratch.md"
+  ".rite/session-state/"
+  ".rite/.resume/"
+  ".rite/*.log"
+  ".rite/logs/"
+  ".rite/docs/"
   ".claude/"
   ".forge/"
 )

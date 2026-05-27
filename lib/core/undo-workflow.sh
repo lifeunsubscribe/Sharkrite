@@ -59,7 +59,7 @@ fi
 if [ -z "$PR_NUMBER" ]; then
   PR_NUMBER=$(gh pr list --state all --json number,body --limit 100 2>/dev/null | \
     jq --arg issue "$ISSUE_NUMBER" -r \
-    '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0].number // empty' \
+    '[.[] | select(.body != null) | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0].number // empty' \
     2>/dev/null || echo "")
   [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 fi

@@ -1,14 +1,15 @@
-# Sharkrite - Per-developer files (do not commit)
-scratch.md
-scratch.md.*
-session-state/
-*.log
-.resume/
-
-# Sharkrite internal docs (machine-optimized, not for version control)
-docs/
-
+# Sharkrite — patterns appended to project root .gitignore by `rite --init`.
+# This file is the source of truth; edit here to change what --init adds.
+#
 # Committed files (team shares these):
-# config
-# blockers.conf
-# assessment-prompt.md
+#   .rite/config
+#   .rite/blockers.conf
+#   .rite/issue-template.md
+
+.rite/scratch.md
+.rite/scratch.md.*
+.rite/session-state/
+.rite/.resume/
+.rite/*.log
+.rite/logs/
+.rite/docs/

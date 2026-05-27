@@ -27,8 +27,316 @@ source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+
+# ===================================================================
+# End-of-batch verification phase
+#
+# Runs ONCE after all per-issue workflows finish, regardless of how many
+# passed/failed/blocked. Validates that the cumulative state of main is
+# healthy after this batch's squash merges. If the full suite fails, opens
+# a fix loop in a dedicated worktree, runs Claude with the failures + the
+# batch's merge SHAs as context, and pushes a hotfix PR.
+#
+# Reliability contract:
+#   - Always runs (no early exit if some issues failed earlier).
+#   - Treats its own failures as recoverable: at most RITE_BATCH_FIX_ATTEMPTS
+#     iterations of fix → test → repeat (default 3).
+#   - On final failure, leaves the fix branch + open PR + fix-main issue for
+#     manual handoff. Never silently swallows a broken main.
+# ===================================================================
+
+# Detects the project's full test command. Returns command on stdout; empty
+# string if nothing detectable. Honors RITE_TEST_CMD as the override.
+_eob_detect_test_cmd() {
+  if [ -n "${RITE_TEST_CMD:-}" ]; then
+    echo "$RITE_TEST_CMD"
+    return 0
+  fi
+  local _root="${RITE_PROJECT_ROOT:-.}"
+  if [ -f "$_root/package.json" ]; then
+    echo "npm test"
+    return 0
+  fi
+  if [ -f "$_root/backend/package.json" ]; then
+    echo "(cd backend && npm test)"
+    return 0
+  fi
+  for _venv in "$_root/.venv" "$_root/venv" "$_root/backend/.venv"; do
+    if [ -f "$_venv/bin/python" ] && "$_venv/bin/python" -c "import pytest" 2>/dev/null; then
+      echo "$_venv/bin/python -m pytest"
+      return 0
+    fi
+  done
+  if [ -f "$_root/Makefile" ] && grep -q "^test:" "$_root/Makefile" 2>/dev/null; then
+    echo "make test"
+    return 0
+  fi
+  echo ""
+}
+
+# Runs the test command in $RITE_PROJECT_ROOT, capturing output to $1.
+# Returns the test exit code.
+_eob_run_full_suite() {
+  local _output_file="$1"
+  local _cmd
+  _cmd=$(_eob_detect_test_cmd)
+  if [ -z "$_cmd" ]; then
+    echo "[end-of-batch] No test command detected — skipping verification" > "$_output_file"
+    return 0
+  fi
+
+  # Normalize pytest flags for output cleanliness.
+  if echo "$_cmd" | grep -q "pytest"; then
+    if ! echo "$_cmd" | grep -qE "\-n "; then
+      local _py
+      _py=$(echo "$_cmd" | sed 's/ -m pytest.*//')
+      if [ -n "$_py" ] && [ -x "$_py" ] && "$_py" -c "import xdist" 2>/dev/null; then
+        _cmd="$_cmd -n auto"
+      fi
+    fi
+    _cmd="$_cmd --tb=short -W ignore::DeprecationWarning -q"
+  fi
+
+  local _exit=0
+  local _root="${RITE_PROJECT_ROOT:-.}"
+  local _env_file=""
+  [ -f "$_root/.env.test" ] && _env_file="$_root/.env.test"
+  [ -z "$_env_file" ] && [ -f "$_root/.env" ] && _env_file="$_root/.env"
+
+  (
+    cd "$_root"
+    if [ -n "$_env_file" ]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "$_env_file" 2>/dev/null || true
+      set +a
+    fi
+    eval "$_cmd"
+  ) 2>&1 | tee "$_output_file" || _exit=${PIPESTATUS[0]:-$?}
+  return "$_exit"
+}
+
+# Runs the end-of-batch verification phase. Sets EOB_RESULT and EOB_FIX_PR
+# globals for the summary section.
+_run_end_of_batch_verification() {
+  EOB_RESULT="skipped"
+  EOB_FIX_PR=""
+
+  # Opt-out: respect RITE_BATCH_FAST_TESTS=false (caller didn't ask for fast
+  # mode, so per-issue gates already ran the full suite — no need again).
+  if [ "${RITE_BATCH_FAST_TESTS:-true}" = "false" ]; then
+    EOB_RESULT="skipped-not-fast-mode"
+    return 0
+  fi
+  # Honor RITE_SKIP_TESTS as a global escape hatch.
+  if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
+    EOB_RESULT="skipped-skip-tests"
+    return 0
+  fi
+
+  print_header "🧪 End-of-Batch Full Test Suite"
+
+  local _root="${RITE_PROJECT_ROOT:-.}"
+
+  # Make sure we're testing the latest main (other workflows may have just merged).
+  (cd "$_root" && git checkout main 2>/dev/null && git pull origin main 2>/dev/null) || true
+
+  local _output
+  _output=$(mktemp)
+  local _exit=0
+  _eob_run_full_suite "$_output" || _exit=$?
+
+  if [ "$_exit" -eq 0 ]; then
+    print_success "End-of-batch verification passed"
+    EOB_RESULT="passed"
+    rm -f "$_output"
+    return 0
+  fi
+
+  print_warning "End-of-batch verification FAILED (exit $_exit) — launching fix loop"
+  echo ""
+
+  # Capture batch context for the fix prompt.
+  local _batch_merges=""
+  local _i_num
+  for _i_num in "${!ISSUE_STATUS[@]}"; do
+    if [ "${ISSUE_STATUS[$_i_num]:-}" = "completed" ]; then
+      local _pr_num="${ISSUE_PR[$_i_num]:-}"
+      [ -n "$_pr_num" ] && _batch_merges+="  - #$_i_num via PR #$_pr_num"$'\n'
+    fi
+  done
+
+  # Run fix loop.
+  local _max_attempts="${RITE_BATCH_FIX_ATTEMPTS:-3}"
+  local _attempt=0
+  local _fix_branch="fix-batch-$(date -u +%Y%m%d-%H%M%S)"
+  local _fix_worktree="${RITE_WORKTREE_DIR:-${_root}/../rite-wt}/eob-fix-${_fix_branch}"
+
+  if [ ! -d "$RITE_WORKTREE_DIR" ] && [ -n "${RITE_WORKTREE_DIR:-}" ]; then
+    mkdir -p "$RITE_WORKTREE_DIR" 2>/dev/null || true
+  fi
+
+  if ! git -C "$_root" worktree add -b "$_fix_branch" "$_fix_worktree" main 2>/dev/null; then
+    print_error "Could not create fix worktree at $_fix_worktree"
+    EOB_RESULT="failed-no-worktree"
+    rm -f "$_output"
+    return 1
+  fi
+
+  # Symlink .venv etc. like normal worktrees do.
+  for _link in ".venv" "backend/.venv" ".env" "backend/.env"; do
+    [ -e "$_root/$_link" ] || continue
+    [ -e "$_fix_worktree/$_link" ] && continue
+    [ -d "$(dirname "$_fix_worktree/$_link")" ] || continue
+    ln -s "$_root/$_link" "$_fix_worktree/$_link" 2>/dev/null || true
+  done
+
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+  load_provider "${RITE_DEV_PROVIDER:-claude}" 2>/dev/null || true
+
+  local _eob_passed=false
+  while [ "$_attempt" -lt "$_max_attempts" ]; do
+    _attempt=$((_attempt + 1))
+    print_status "Fix attempt $_attempt of $_max_attempts..."
+
+    local _failure_excerpt
+    _failure_excerpt=$(tail -200 "$_output")
+
+    local _prompt
+    _prompt=$(cat <<EOF
+You are running inside a Sharkrite (\`rite\`) end-of-batch verification fix session.
+
+A batch of GitHub issues just finished merging into main. The full test suite passed for each individual PR (in fast-test mode), but running the full suite on the cumulative state of main now fails.
+
+Your job: identify the regression and fix it in this branch. DO NOT revert PRs; fix the underlying problem.
+
+## Batch merges (this batch's contribution to main)
+${_batch_merges:-(none completed)}
+
+## Failing test output (tail)
+\`\`\`
+${_failure_excerpt}
+\`\`\`
+
+## Working directory
+$(pwd)
+
+## Rules
+- Do NOT run \`git commit\`, \`git push\`, or any \`gh\` commands. Sharkrite handles those.
+- Do NOT revert any of the batch's merge commits — find and fix the root cause.
+- Read the failing test files, the source they exercise, and the recent merge diffs as needed.
+- When done, exit. Sharkrite will run the suite again and either accept your fix or invoke you for another iteration.
+
+Begin.
+EOF
+)
+
+    (
+      cd "$_fix_worktree"
+      local _stderr_file
+      _stderr_file=$(mktemp)
+      provider_run_agentic_session "$_prompt" "${RITE_FIX_TIMEOUT:-1800}" true "$_stderr_file" || true
+      rm -f "$_stderr_file"
+    )
+
+    # Re-run full suite from the fix worktree.
+    local _retest_exit=0
+    : > "$_output"
+    (
+      cd "$_fix_worktree"
+      local _cmd
+      _cmd=$(_eob_detect_test_cmd)
+      [ -z "$_cmd" ] && exit 0
+      if echo "$_cmd" | grep -q "pytest"; then
+        _cmd="$_cmd --tb=short -W ignore::DeprecationWarning -q"
+      fi
+      eval "$_cmd"
+    ) 2>&1 | tee "$_output" || _retest_exit=${PIPESTATUS[0]:-$?}
+
+    if [ "$_retest_exit" -eq 0 ]; then
+      _eob_passed=true
+      break
+    fi
+    print_warning "Fix attempt $_attempt did not fully resolve test failures"
+  done
+
+  if [ "$_eob_passed" = true ]; then
+    print_success "End-of-batch fix loop resolved test failures"
+    # Commit and push, then open hotfix PR via gh.
+    (
+      cd "$_fix_worktree"
+      git add -A 2>/dev/null
+      if ! git diff --cached --quiet 2>/dev/null; then
+        git commit -m "fix: end-of-batch test regression
+
+Auto-fix from sharkrite end-of-batch verification phase.
+
+Batch merges:
+${_batch_merges:-(none)}" 2>/dev/null || true
+      fi
+      git push origin "$_fix_branch" 2>/dev/null || true
+    )
+    local _eob_pr
+    _eob_pr=$(gh pr create \
+      --title "fix(batch): end-of-batch test regression" \
+      --label "priority-critical" \
+      --body "Auto-generated by sharkrite end-of-batch verification.
+
+The cumulative state of main after the batch's squash merges had test failures. This PR contains the auto-fix.
+
+## Batch merges
+${_batch_merges:-(none completed)}
+
+## Verification
+Tests pass on this branch after the auto-fix." \
+      --head "$_fix_branch" \
+      --base main 2>/dev/null | grep -oE 'pull/[0-9]+' | sed 's|pull/||' | head -1 || true)
+    if [ -n "$_eob_pr" ]; then
+      print_success "Hotfix PR opened: #$_eob_pr"
+      EOB_FIX_PR="$_eob_pr"
+      EOB_RESULT="fixed"
+    else
+      print_warning "Hotfix branch pushed but PR creation failed — branch is at: $_fix_branch"
+      EOB_RESULT="fixed-no-pr"
+    fi
+  else
+    print_error "End-of-batch fix loop exhausted ($_max_attempts attempts) — manual intervention required"
+    # Leave the worktree + branch in place. Surface as fix-main issue.
+    local _existing_fix_main
+    _existing_fix_main=$(gh issue list --label "fix-main" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+    if [ -z "$_existing_fix_main" ] || [ "$_existing_fix_main" = "null" ]; then
+      gh label create "fix-main" --color "B60205" --description "Test suite failures on main branch" 2>/dev/null || true
+      _existing_fix_main=$(gh issue create \
+        --title "[fix-main] End-of-batch test failures (auto-fix exhausted $_max_attempts attempts)" \
+        --label "fix-main" \
+        --body "Sharkrite's end-of-batch verification ran the full suite after this batch and found failures the auto-fix loop could not resolve.
+
+## Batch merges
+${_batch_merges:-(none completed)}
+
+## Failure tail
+\`\`\`
+$(tail -120 "$_output")
+\`\`\`
+
+## Recovery worktree
+A worktree with the partial fix attempts is at: \`$_fix_worktree\`
+Branch: \`$_fix_branch\`
+
+## Acceptance Criteria
+- [ ] Identify the regression
+- [ ] Fix it (do not revert batch merges)
+- [ ] Tests pass on main" \
+        2>/dev/null | grep -oE '/issues/[0-9]+' | sed 's|/issues/||' | head -1 || echo "")
+    fi
+    EOB_RESULT="failed-manual"
+  fi
+
+  rm -f "$_output"
+}
 
 # Record a run to the persistent history file
 record_run() {
@@ -183,6 +491,26 @@ if [ ${#_active_skipped[@]} -gt 0 ]; then
   TOTAL_ISSUES=${#ISSUE_LIST[@]}
 fi
 
+# Prioritize fix-main issues: if main is broken, fix it first before other issues
+# waste cycles hitting the same wall. Prepend any open fix-main issues to the queue.
+_fix_main_issues=$(gh issue list --label "fix-main" --state open --json number --jq '.[].number' 2>/dev/null || true)
+if [ -n "$_fix_main_issues" ]; then
+  _prepend=()
+  while IFS= read -r _fmi; do
+    [ -z "$_fmi" ] && continue
+    _already_queued=false
+    for _existing in "${ISSUE_LIST[@]}"; do
+      [ "$_existing" = "$_fmi" ] && _already_queued=true && break
+    done
+    [ "$_already_queued" = false ] && _prepend+=("$_fmi")
+  done <<< "$_fix_main_issues"
+  if [ ${#_prepend[@]} -gt 0 ]; then
+    ISSUE_LIST=("${_prepend[@]}" "${ISSUE_LIST[@]}")
+    TOTAL_ISSUES=${#ISSUE_LIST[@]}
+    print_info "Prioritized ${#_prepend[@]} fix-main issue(s): ${_prepend[*]}"
+  fi
+fi
+
 # Check session limits upfront
 SESSION_STATE=$(get_session_info)
 ISSUES_COMPLETED=$(echo "$SESSION_STATE" | jq -r '.issues_completed')
@@ -293,13 +621,32 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   print_header "📌 Processing Issue #$ISSUE_NUM ($CURRENT_ISSUE/$TOTAL_ISSUES)"
   record_run "$ISSUE_NUM" "batch"
 
-  # Fetch issue details
-  ISSUE_DETAILS=$(gh issue view "$ISSUE_NUM" --json title,labels,state 2>/dev/null || echo "{}")
+  # Fetch issue details. Use gh_safe to distinguish a real 404 (issue does
+  # not exist) from a transient gh failure (rate limit, network, 5xx). The
+  # previous `gh ... 2>/dev/null || echo "{}"` pattern routed both through
+  # the same "not_found" branch — on 2026-05-26 a rate limit after #4's busy
+  # run silently skipped issues #8/#9/#10 as "not found" when they were OPEN.
+  #
+  # if-guard pattern is required for two reasons:
+  #   1. `var=$(...)` under `set -e` exits the script on non-zero substitution.
+  #   2. `if cmd; then ...; else $?` works; `if ! cmd; then $?` does NOT —
+  #      the `!` negation consumes the original exit code (always becomes 0).
+  if ISSUE_DETAILS=$(gh_safe "fetch issue #$ISSUE_NUM" issue view "$ISSUE_NUM" --json title,labels,state); then
+    _fetch_exit=0
+  else
+    _fetch_exit=$?
+  fi
 
-  if [ "$ISSUE_DETAILS" = "{}" ]; then
-    print_error "Issue #$ISSUE_NUM not found"
+  if [ "$_fetch_exit" -eq 4 ]; then
+    print_error "Issue #$ISSUE_NUM not found (HTTP 404)"
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="not_found"
+    continue
+  elif [ "$_fetch_exit" -ne 0 ]; then
+    print_error "Issue #$ISSUE_NUM — gh call failed (likely transient: rate limit / network)"
+    print_info "Skipping rather than guessing state. Re-run the batch after the rate limit clears."
+    FAILED_ISSUES+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="fetch_failed"
     continue
   fi
 
@@ -310,9 +657,73 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   print_info "State: $ISSUE_STATE"
   echo ""
 
-  # Skip if already closed
-  if [ "$ISSUE_STATE" = "CLOSED" ]; then
-    print_warning "Issue already closed - skipping"
+  # Skip if not open (catches CLOSED, MERGED, and any other non-open state)
+  # But still clean up dangling artifacts (worktrees, branches, session state)
+  # same as single-issue mode in workflow-runner.sh
+  if [ "$ISSUE_STATE" != "OPEN" ]; then
+    print_success "Issue is $ISSUE_STATE - cleaning up artifacts"
+
+    # Find the PR branch for this issue (search closed PRs)
+    _pr_branch=""
+    _issue_data=$(gh issue view "$ISSUE_NUM" --json closedByPullRequestsReferences 2>/dev/null || echo "{}")
+    _pr_number=$(echo "$_issue_data" | jq -r '.closedByPullRequestsReferences[0].number // empty' | head -1)
+
+    if [ -n "${_pr_number:-}" ]; then
+      _pr_branch=$(gh pr view "$_pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+    fi
+
+    # Fallback: search closed PRs for "Closes #N"
+    if [ -z "${_pr_branch:-}" ]; then
+      _closed_pr=$(gh pr list --state closed --json number,body --limit 50 2>/dev/null | \
+        jq --arg issue "$ISSUE_NUM" -r \
+        '.[] | select(.body != null) | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+        head -1 || true)
+      if [ -n "${_closed_pr:-}" ]; then
+        _pr_branch=$(gh pr view "$_closed_pr" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+      fi
+    fi
+
+    _cleaned_anything=false
+
+    if [ -n "${_pr_branch:-}" ]; then
+      # 1. Remove worktree if it exists for this branch
+      _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
+      if [ -n "${_wt_path:-}" ]; then
+        if git worktree remove "$_wt_path" --force 2>/dev/null; then
+          [ "$_cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && _cleaned_anything=true
+          echo -e "${GREEN}  ✓ Removed worktree: $(basename "$_wt_path")${NC}"
+        fi
+      fi
+
+      # 2. Delete local branch if it still exists
+      if git show-ref --verify --quiet "refs/heads/$_pr_branch" 2>/dev/null; then
+        if git branch -D "$_pr_branch" >/dev/null 2>&1; then
+          [ "$_cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && _cleaned_anything=true
+          echo -e "${GREEN}  ✓ Deleted local branch: $_pr_branch${NC}"
+        fi
+      fi
+
+      # 3. Delete remote branch if it still exists
+      if git ls-remote --heads origin "$_pr_branch" 2>/dev/null | grep -q "$_pr_branch"; then
+        if git push origin --delete "$_pr_branch" 2>/dev/null; then
+          [ "$_cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && _cleaned_anything=true
+          echo -e "${GREEN}  ✓ Deleted remote branch: origin/$_pr_branch${NC}"
+        fi
+      fi
+    fi
+
+    # 4. Remove session state file for this issue
+    _state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${ISSUE_NUM}.json"
+    if [ -f "$_state_file" ]; then
+      rm -f "$_state_file"
+      [ "$_cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && _cleaned_anything=true
+      print_success "Removed session state: session-state-${ISSUE_NUM}.json"
+    fi
+
+    if [ "$_cleaned_anything" = false ]; then
+      print_info "No dangling artifacts found"
+    fi
+
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="already_closed"
     echo ""
@@ -371,7 +782,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     DEP_REASON=""
     for dep_num in $DEP_ISSUES; do
       dep_status="${ISSUE_STATUS[$dep_num]:-}"
-      if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
+      if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ] || [ "$dep_status" = "fetch_failed" ]; then
         DEP_FAILED=true
         FAILED_DEP="$dep_num"
         DEP_REASON="$dep_status in this batch"
@@ -384,6 +795,22 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         FAILED_DEP="$dep_num"
         DEP_REASON="issue still open (PR not merged)"
         break
+      fi
+      # Closed-but-empty: dep's PR may have merged with zero file changes
+      # (truncated worker session, or work landed in a sibling worktree).
+      # Treat that as unsatisfied — downstream issues that depend on it would
+      # otherwise inherit the gap and either re-implement the upstream work or
+      # fail confusingly. Inspect the most recent closed PR for this issue.
+      _dep_pr_stats=$(gh pr list --search "Closes #${dep_num} OR closes #${dep_num} in:body" --state closed --json number,additions,deletions,changedFiles --jq 'sort_by(.number) | reverse | .[0]' 2>/dev/null || echo "")
+      if [ -n "$_dep_pr_stats" ] && [ "$_dep_pr_stats" != "null" ]; then
+        _dep_changed=$(echo "$_dep_pr_stats" | jq -r '.changedFiles // 0')
+        _dep_adds=$(echo "$_dep_pr_stats" | jq -r '.additions // 0')
+        if [ "$_dep_changed" -eq 0 ] && [ "$_dep_adds" -eq 0 ]; then
+          DEP_FAILED=true
+          FAILED_DEP="$dep_num"
+          DEP_REASON="dep PR merged empty (zero file changes)"
+          break
+        fi
       fi
     done
     if [ "$DEP_FAILED" = true ]; then
@@ -568,7 +995,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     print_info "Duration: ${ISSUE_DURATION}s"
     echo ""
 
-    if [ $EXIT_CODE -eq 10 ]; then
+    if [ $EXIT_CODE -eq 5 ]; then
+      # Usage cap / batch-blocking blocker — stop entire batch immediately
+      print_error "Batch-blocking failure (exit 5) — stopping batch"
+      FAILED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="failed"
+      break
+
+    elif [ $EXIT_CODE -eq 10 ]; then
       # Blocker detected - defer instead of stopping
       print_warning "⏸️  Blocker detected - deferring issue #$ISSUE_NUM"
       BLOCKED_ISSUES+=("$ISSUE_NUM")
@@ -605,6 +1039,18 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     echo ""
   fi
 done
+
+# End-of-batch verification phase. Always runs, regardless of how many issues
+# passed/failed/blocked (its job is to validate main's state, not per-issue
+# success). Sets EOB_RESULT and EOB_FIX_PR.
+EOB_RESULT="not-run"
+EOB_FIX_PR=""
+if [ "$COMPLETED_ISSUES" -gt 0 ]; then
+  # Only meaningful when at least one issue actually merged something.
+  set +e
+  _run_end_of_batch_verification
+  set -e
+fi
 
 # Calculate final stats
 BATCH_END_TIME=$(date +%s)
@@ -653,6 +1099,16 @@ echo "Failed:           ${#FAILED_ISSUES[@]}"
 echo "Blocked:          ${#BLOCKED_ISSUES[@]}"
 echo "Skipped:          ${#SKIPPED_ISSUES[@]}"
 echo "Total Duration:   ${TOTAL_DURATION}s ($((TOTAL_DURATION / 60))m)"
+case "${EOB_RESULT:-not-run}" in
+  passed)              echo "End-of-batch:     ✅ full suite passed" ;;
+  fixed)               echo "End-of-batch:     🔧 auto-fixed → hotfix PR #${EOB_FIX_PR:-?}" ;;
+  fixed-no-pr)         echo "End-of-batch:    🔧 auto-fixed but PR creation failed" ;;
+  failed-manual)       echo "End-of-batch:     ❌ failed — manual intervention (see fix-main issue)" ;;
+  failed-no-worktree)  echo "End-of-batch:     ❌ could not create fix worktree" ;;
+  skipped*)            echo "End-of-batch:     ⏭️  skipped (${EOB_RESULT#skipped-})" ;;
+  not-run)             echo "End-of-batch:     ⏭️  not run (no issues completed)" ;;
+  *)                   echo "End-of-batch:     ${EOB_RESULT}" ;;
+esac
 echo ""
 
 # Detailed issue breakdown

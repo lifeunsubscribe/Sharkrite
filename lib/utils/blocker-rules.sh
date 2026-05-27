@@ -126,6 +126,58 @@ detect_critical_issues() {
   return 0
 }
 
+detect_empty_pr() {
+  local pr_number=$1
+
+  # Catch PRs that have no real implementation. Two failure modes this guards:
+  #   1. Truncated dev session — worker hit context cap mid-edit; only the
+  #      "chore: initialize work" placeholder commit was created.
+  #   2. Bundled-into-sibling — worker decided to implement this issue's work
+  #      in another worktree, leaving this PR empty.
+  # Both fail silently today: tests "pass" because nothing changed, and the
+  # workflow happily reports `completed`.
+  local stats
+  stats=$(gh pr view "$pr_number" --json additions,deletions,changedFiles,commits 2>/dev/null || echo "")
+  if [ -z "$stats" ]; then
+    return 0
+  fi
+
+  local changed_files additions deletions
+  changed_files=$(echo "$stats" | jq -r '.changedFiles // 0')
+  additions=$(echo "$stats" | jq -r '.additions // 0')
+  deletions=$(echo "$stats" | jq -r '.deletions // 0')
+
+  if [ "$changed_files" -eq 0 ] && [ "$additions" -eq 0 ] && [ "$deletions" -eq 0 ]; then
+    echo "BLOCKER: PR #$pr_number contains no file changes"
+    echo ""
+    echo "The dev session produced no implementation. Likely causes:"
+    echo "  • Worker hit a context cap mid-edit (check for uncommitted files)"
+    echo "  • Worker decided the work was 'already complete' (false positive)"
+    echo "  • Work was implemented in a sibling worktree by mistake"
+    echo ""
+    echo "Investigate before merging — empty PRs must never reach main."
+    return 1
+  fi
+
+  # Also fail if every commit on the branch is a placeholder (chore: initialize)
+  local non_placeholder_count
+  non_placeholder_count=$(echo "$stats" | jq -r '
+    .commits // []
+    | map(.messageHeadline // "")
+    | map(select(test("^chore: initialize work") | not))
+    | length
+  ')
+  if [ "${non_placeholder_count:-0}" -eq 0 ]; then
+    echo "BLOCKER: PR #$pr_number has only placeholder commits"
+    echo ""
+    echo "Every commit on this branch is a 'chore: initialize work' placeholder."
+    echo "No real implementation has been committed."
+    return 1
+  fi
+
+  return 0
+}
+
 detect_test_failures() {
   local exit_code=$1
   local test_output="${2:-/tmp/test-output.log}"
@@ -398,7 +450,10 @@ check_blockers() {
       # migrations, auth, docs, expensive services, protected scripts) are now
       # handled as review sensitivity hints via detect_sensitivity_areas().
       local _det_output
-      local _det_checks=("critical_issues:detect_critical_issues")
+      local _det_checks=(
+        "empty_pr:detect_empty_pr"
+        "critical_issues:detect_critical_issues"
+      )
 
       for _check in "${_det_checks[@]}"; do
         local _type="${_check%%:*}"
@@ -441,7 +496,7 @@ get_blocker_urgency() {
   local blocker_type="$1"
 
   case "$blocker_type" in
-    critical_issues)
+    critical_issues|empty_pr)
       echo "high"
       ;;
     session_limit|credentials_expired)
@@ -458,7 +513,7 @@ is_blocking_batch() {
   local blocker_type="$1"
 
   case "$blocker_type" in
-    credentials_expired|session_limit)
+    credentials_expired|session_limit|usage_cap)
       echo "true"  # These block the entire batch
       ;;
     *)
@@ -474,6 +529,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f detect_auth_changes
   export -f detect_doc_changes
   export -f detect_critical_issues
+  export -f detect_empty_pr
   export -f detect_test_failures
   export -f detect_expensive_services
   export -f detect_session_limit

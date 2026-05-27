@@ -4,6 +4,14 @@ AI-powered GitHub workflow automation CLI. Pure bash, uses Claude Code for devel
 
 **Mako** — the Claude Code assistant for this repo. Named after the fastest shark.
 
+**Thresher** — the Gemini Code Assist senior engineering assistant. 
+
+### Thresher's Behavioral Rules
+- **Advisory Role Only:** Thresher provides senior engineering assessments and recommendations but does not personally modify the codebase outside of applied Sharkrite usage.
+- **Message Board Communication:** All research, proposals, and joint decisions are posted to `~/Dev/CLAUDE-MESSAGE-BOARD.md` for Mako to assess and implement.
+- **Non-Destructive Board Presence:** Thresher must never perform cleanup, deletions, or modifications to any existing messages on the message board, regardless of who posted them.
+- **Context Awareness:** Thresher leverages a large context window to perform codebase-wide audits that supplement Mako's development work.
+
 ## Claude Code Message Board
 
 **Location:** `~/Dev/CLAUDE-MESSAGE-BOARD.md`
@@ -31,6 +39,8 @@ lib/core/plan-issues.sh           # Issue generation from architectural docs
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (primary)
 lib/providers/gemini.sh           # Gemini CLI provider (skeleton)
+lib/utils/conflict-resolver.sh    # Claude-assisted merge conflict resolution (shared)
+lib/utils/post-merge-verify.sh    # Post-merge test verification + failure attribution
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
@@ -144,9 +154,51 @@ _dep_state=""
 
 **Exported env vars survive subprocesses, function definitions don't.** Don't use an env var as a "skip" guard for `source` if the sourced file defines functions that child processes need.
 
+### git push: always use explicit refspec (CRITICAL)
+
+Never use bare `git push`. Always specify `git push origin "$branch_name"`. Bare `git push` relies on upstream tracking, which may point to `origin/main` if the branch was created from a remote ref (`git worktree add -b ... origin/main`).
+
+```bash
+# BAD: pushes to whatever upstream is configured (may be origin/main)
+git push
+
+# GOOD: explicit remote and branch
+git push origin "$BRANCH_NAME"
+git push origin "$(git branch --show-current)"
+```
+
 ### .gitignore and symlinks
 
 Use `.rite` (no trailing slash). `.rite/` only matches directories, but in worktrees `.rite` is a symlink (git mode 120000 = file).
+
+## Provider Agnosticism (CRITICAL)
+
+All review, assessment, and planning prompts are **provider-agnostic plain Markdown**. Provider-specific behavior is isolated in `lib/providers/<name>.sh` behind the 17-function interface in `provider-interface.sh`.
+
+**Rules:**
+- No prompt text may contain provider-specific instructions (Claude's `/exit`, tool_use syntax, `--disallowedTools`)
+- Provider-specific instructions go in preamble functions (`provider_dev_session_preamble()`, `provider_exit_instructions()`)
+- Model names are metadata only — never instructional text
+- Error patterns, tool restrictions, and streaming format are all provider-specific (handled by provider layer)
+- Per-phase provider selection: `RITE_DEV_PROVIDER`, `RITE_REVIEW_PROVIDER`, `RITE_UTILITY_PROVIDER`
+
+**Reference:** `docs/architecture/behavioral-design.md` → Provider Agnosticism section for full rules and new-provider checklist.
+
+## Review Calibration
+
+`RITE_PROJECT_CONTEXT` in `.rite/config` — free-form text describing the project's deployment context (audience, scale, team size). Injected into both review and assessment prompts so the LLM calibrates severity and follow-up worthiness against the project's reality.
+
+```bash
+# .rite/config — example for a desktop app
+RITE_PROJECT_CONTEXT="Single-user desktop app (Electron + Flask). One developer. Localhost only."
+
+# .rite/config — example for a production API
+RITE_PROJECT_CONTEXT="Public-facing SaaS API. 50k DAU. AWS ECS. Team of 8."
+```
+
+**Effect:** The reviewer adjusts severity (rate limiting goes from HIGH → LOW for localhost). The assessor uses deployment context to decide ACTIONABLE_LATER vs DISMISSED (rate limiting follow-up becomes DISMISSED for a single-user app). No blind filtering — the LLM reasons about relevance.
+
+**Reference:** `docs/architecture/behavioral-design.md` → Project Context Calibration for design rationale.
 
 ## Safety System
 
@@ -184,31 +236,36 @@ Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-ski
 
 ## Phase Commands
 
-Individual workflow phases can be run standalone via flags. All default to auto/unsupervised mode.
+Individual workflow phases can be run standalone. Commands work with or without `--` prefix. All default to auto/unsupervised mode.
+
+**Input rules:** Issue identifiers must be numbers. Single bare words are treated as commands (not issue descriptions). Multi-word phrases are treated as natural language descriptions for issue creation.
 
 ```bash
-rite 42                    # Full lifecycle (phases 1-5)
-rite 42 --status           # Read-only: show workflow state overview for issue
-rite --status              # Repo-wide: worktrees, open issues with phases, recently closed
-rite --status --by-label   # Repo-wide status grouped by label
-rite 42 --dev-and-pr       # Phase 1-2: dev + PR only, skip review/merge
-rite 42 --review-latest    # Phase 2 (review only): generate + post review
-rite 42 --assess-and-fix   # Phase 3: assess review + fix loop (up to 3 retries)
-rite 42 --undo             # Cleanup: close PR, delete branch/worktree
-rite plan docs/phases.md   # Generate issues from architectural doc
-rite plan "phases 2-4"     # Natural language doc filtering
-rite plan --preview        # Preview issues without creating
-rite --health-report       # Generate + display operational health report
-rite --health-report --latest  # Show most recent report
+rite 42                      # Full lifecycle (phases 1-5)
+rite 42 status               # Read-only: show workflow state overview for issue
+rite status                  # Repo-wide: worktrees, open issues with phases, recently closed
+rite status --by-label       # Repo-wide status grouped by label
+rite 42 dev-and-pr           # Phase 1-2: dev + PR only, skip review/merge
+rite 42 review               # Phase 2 (review only): generate + post review
+rite 42 assess               # Phase 3: assess review + fix loop (up to 3 retries)
+rite 42 undo                 # Cleanup: close PR, delete branch/worktree
+rite plan docs/phases.md     # Generate issues from architectural doc
+rite plan "phases 2-4"       # Natural language doc filtering
+rite plan --preview          # Preview issues without creating
+rite health-report           # Generate + display operational health report
+rite health-report --latest  # Show most recent report
+rite "fix the login bug"     # Create issue from multi-word description
 ```
 
-**`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
+Command shortcuts: `review` = `review-latest`, `assess` = `assess-and-fix`, `dev` = `dev-and-pr`.
 
-**`--status`** (repo-wide, no issue number) shows all worktrees with staleness, open issues with workflow phase (Not started, Dev/PR, Needs review, Review stale, Needs fixes, Ready to merge), and recently closed issues with close dates. Use `--by-label` to group open issues by label.
+**`status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
 
-**`--review-latest`** checks review staleness: no review → generates; stale → regenerates; current → prints existing review and exits (in supervised mode, prompts to re-review).
+**`status`** (repo-wide, no issue number) shows all worktrees with staleness, open issues with workflow phase (Not started, Dev/PR, Needs review, Review stale, Needs fixes, Ready to merge), and recently closed issues with close dates. Use `--by-label` to group open issues by label.
 
-**`--assess-and-fix`** requires a current review. Handles the full fix loop internally: assess → fix → push → re-review → re-assess. Creates follow-up issues for ACTIONABLE_LATER items.
+**`review-latest`** checks review staleness: no review → generates; stale → regenerates; current → prints existing review and exits (in supervised mode, prompts to re-review).
+
+**`assess-and-fix`** requires a current review. Handles the full fix loop internally: assess → fix → push → re-review → re-assess. Creates follow-up issues for ACTIONABLE_LATER items.
 
 **`rite plan`** generates GitHub issues from architectural docs. Loads the doc + project CLAUDE.md + the issue runbook (`docs/issue-runbook.md`) and generates well-structured issues via Claude. Interactive feedback loop: preview → approve/adjust → create. Supports natural language instructions for filtering (e.g., `rite plan "phases 2-4 except auth"`). Default doc(s) configured via `RITE_PLAN_DOCS` in `.rite/config`. Issues follow the runbook template: title format, labels (phase + category + priority), time estimates (Fibonacci, capped at 2hr), Claude Context, acceptance criteria with verification commands, done definitions, scope boundaries, and dependency chains.
 
@@ -266,6 +323,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 
 1. **Sharkrite identity** — Claude doesn't know what tool invoked it. Without explicit context, it hallucinates names like "forge". The prompt must state: "You are running inside a Sharkrite (`rite`) workflow session."
 2. **Git/GH prohibition** — Claude must NOT run `git commit`, `git push`, `gh pr create`, etc. The post-workflow script handles all of this. Enforce via **both** prompt instructions AND `--disallowedTools`. Prompt-only prohibition is insufficient — Claude ignores it. `--disallowedTools` is enforced by the CLI and cannot be bypassed. Both the main dev session and fix-review session must use it.
+   - `TodoWrite` is also blocked — Claude uses it to create performative "phases" instead of doing actual work. See `docs/architecture/behavioral-design.md` → TodoWrite restriction.
 3. **Explicit exit instructions** — In supervised mode, Claude runs interactively and will sit idle forever after completing work unless told to `/exit`. Auto mode uses `--print` which auto-exits.
    - Supervised: "When all phases are complete, immediately exit with `/exit`"
    - Auto: `--print` handles exit; prompt says "session will end automatically"
@@ -280,9 +338,10 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
-- **Exit codes**: `assess-and-resolve.sh` uses exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2".
+- **Exit codes**: `assess-and-resolve.sh` uses exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2", exit 5 for "provider usage cap" (batch-blocking). Exit 5 is used consistently across all provider-calling scripts (`claude-workflow.sh`, `local-review.sh`, `assess-review-issues.sh`).
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
+- **Boolean function interfaces**: When a function has an established `if ! func` call pattern, keep the return code boolean (0 = proceed, 1 = fail). Don't add exit codes 2, 3, etc. for non-failure cases — callers using `if !` will treat them as failures and take destructive action. Put diagnostic intelligence inside the function.
 
 ## Token Optimization (rtk)
 

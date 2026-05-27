@@ -3,17 +3,19 @@
 # Smart dispatcher that routes to appropriate workflow
 #
 # Usage:
-#   rite <issue>                  Full lifecycle (default)
-#   rite <issue> --dev-and-pr     Dev + PR only, skip review/merge
-#   rite <issue> --review-latest  Generate and post review
-#   rite <issue> --assess-and-fix Assess review + fix loop
-#   rite <issue> --status         Read-only workflow state overview
-#   rite <issue> --undo           Undo: close PR, cleanup
-#   rite --status                 Repo-wide status overview
-#   rite --status --by-label      Repo-wide status grouped by label
-#   rite plan [doc] [instructions] Generate issues from architectural docs
-#   rite --init                   Initialize .rite/ in current project
-#   rite --dry-run <...>          Print execution plan without running
+#   rite <issue>                    Full lifecycle (default)
+#   rite <issue> dev-and-pr         Dev + PR only, skip review/merge
+#   rite <issue> review-latest      Generate and post review
+#   rite <issue> assess-and-fix     Assess review + fix loop
+#   rite <issue> status             Read-only workflow state overview
+#   rite <issue> undo               Undo: close PR, cleanup
+#   rite status                     Repo-wide status overview
+#   rite status --by-label          Repo-wide status grouped by label
+#   rite plan [doc] [instructions]  Generate issues from architectural docs
+#   rite health-report [--latest]   Operational health report
+#   rite init                       Initialize .rite/ in current project
+#   rite --dry-run <...>            Print execution plan without running
+#   rite "multi-word description"   Create issue from description
 
 set -euo pipefail
 
@@ -51,6 +53,7 @@ ARGS=()
 WORKFLOW_FLAGS=()
 LABEL_FILTER=""
 BATCH_FILTER_ARGS=()
+LATEST_FLAG=false
 SUPERVISED=false
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -140,6 +143,39 @@ while [[ $# -gt 0 ]]; do
       PLAN_ARGS=("$@")
       shift $#
       ;;
+    # Bare-word commands (same as --flag versions, without the --)
+    status)
+      MODE="status"
+      shift
+      ;;
+    undo)
+      MODE="undo"
+      shift
+      ;;
+    init)
+      MODE="init"
+      shift
+      ;;
+    health-report)
+      MODE="health-report"
+      shift
+      ;;
+    dev-and-pr|dev)
+      MODE="dev-and-pr"
+      shift
+      ;;
+    review-latest|review)
+      MODE="review-latest"
+      shift
+      ;;
+    assess-and-fix|assess)
+      MODE="assess-and-fix"
+      shift
+      ;;
+    --latest)
+      LATEST_FLAG=true
+      shift
+      ;;
     --version|-v)
       echo "rite version $VERSION"
       exit 0
@@ -149,23 +185,24 @@ while [[ $# -gt 0 ]]; do
       echo "Automate GitHub issues with Claude Code"
       echo ""
       echo "Usage:"
-      echo "  rite <issue>                  Process single issue (unsupervised, default)"
-      echo "  rite <issue> --supervised     Process single issue (supervised mode)"
-      echo "  rite <issue1> <issue2>        Process multiple issues (batch)"
-      echo "  rite --label tech-debt        Process all open issues with label (batch)"
-      echo "  rite <issue> --dev-and-pr     Dev + PR only, skip review/merge"
-      echo "  rite <issue> --review-latest  Generate and post review for latest code"
-      echo "  rite <issue> --assess-and-fix Assess review + fix loop"
-      echo "  rite <issue> --status         Show workflow status for an issue"
-      echo "  rite --status                 Repo-wide status overview"
-      echo "  rite --status --by-label      Repo-wide status grouped by label"
-      echo "  rite <issue> --undo           Undo workflow: close PR, clean up artifacts"
-      echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
-      echo "  rite plan --preview [doc]     Preview issues without creating them"
-      echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
-      echo "  rite --init                   Initialize .rite/ in current project"
-      echo "  rite --dry-run <...>          Print execution plan without running"
-      echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
+      echo "  rite <issue>                    Process single issue (unsupervised, default)"
+      echo "  rite <issue> --supervised       Process single issue (supervised mode)"
+      echo "  rite <issue1> <issue2>          Process multiple issues (batch)"
+      echo "  rite --label tech-debt          Process all open issues with label (batch)"
+      echo "  rite <issue> dev-and-pr         Dev + PR only, skip review/merge"
+      echo "  rite <issue> review-latest      Generate and post review for latest code"
+      echo "  rite <issue> assess-and-fix     Assess review + fix loop"
+      echo "  rite <issue> status             Show workflow status for an issue"
+      echo "  rite status                     Repo-wide status overview"
+      echo "  rite status --by-label          Repo-wide status grouped by label"
+      echo "  rite <issue> undo               Undo workflow: close PR, clean up artifacts"
+      echo "  rite plan [doc] [instructions]  Generate issues from an architectural doc"
+      echo "  rite plan --preview [doc]       Preview issues without creating them"
+      echo "  rite health-report [--latest]   Operational health report"
+      echo "  rite --pr <number>              Run by PR number (creates issue if none linked)"
+      echo "  rite init                       Initialize .rite/ in current project"
+      echo "  rite --dry-run <...>            Print execution plan without running"
+      echo "  rite \"description\"              Create issue from multi-word description"
       echo ""
       echo "Workflow flags:"
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
@@ -175,10 +212,11 @@ while [[ $# -gt 0 ]]; do
       echo "  --log=FILE                 Log to a specific file instead of auto-generated path"
       echo ""
       echo "Phase commands (run individual workflow phases):"
-      echo "  --dev-and-pr               Dev + PR only, skip review/merge"
-      echo "  --review-latest            Generate and post review for latest code"
-      echo "  --assess-and-fix           Assess review findings + fix loop (up to 3 retries)"
-      echo "  --status                   Show workflow status (per-issue or repo-wide)"
+      echo "  dev-and-pr (or dev)        Dev + PR only, skip review/merge"
+      echo "  review-latest (or review)  Generate and post review for latest code"
+      echo "  assess-and-fix (or assess) Assess review findings + fix loop (up to 3 retries)"
+      echo "  status                     Show workflow status (per-issue or repo-wide)"
+      echo "  undo                       Close PR, delete branch/worktree/state"
       echo "  --by-label                 Group repo-wide status by label"
       echo ""
       echo "Project: $RITE_PROJECT_NAME"
@@ -186,22 +224,25 @@ while [[ $# -gt 0 ]]; do
       echo "Config:  $RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
       echo ""
       echo "Examples:"
-      echo "  rite 21                    # Full lifecycle (unsupervised, default)"
-      echo "  rite 21 --supervised       # Supervised: approve hard gates interactively"
-      echo "  rite 21 --bypass-blockers  # Skip hard gates (CRITICAL findings, session limits)"
-      echo "  rite 21 45                 # Batch process issues"
-      echo "  rite 21 --dev-and-pr       # Dev + PR only (skip review/merge)"
-      echo "  rite 21 --review-latest    # Generate and post review"
-      echo "  rite 21 --assess-and-fix   # Assess review + fix loop"
-      echo "  rite 21 --status           # Show workflow status"
-      echo "  rite 21 --undo             # Undo: close PR, clean branches/worktree/state"
-      echo "  rite --pr 72               # Run by PR number (orphan PRs handled automatically)"
-      echo "  rite plan docs/phases.md   # Generate issues from doc"
-      echo "  rite plan \"phases 2-4\"     # Natural language filtering"
-      echo "  rite plan --preview        # Preview without creating"
-      echo "  rite --status              # Repo-wide status overview"
-      echo "  rite --status --by-label   # Status grouped by label"
-      echo "  rite 21 --dry-run          # See what would happen"
+      echo "  rite 21                      # Full lifecycle (unsupervised, default)"
+      echo "  rite 21 --supervised         # Supervised: approve hard gates interactively"
+      echo "  rite 21 --bypass-blockers    # Skip hard gates (CRITICAL findings, session limits)"
+      echo "  rite 21 45                   # Batch process issues"
+      echo "  rite 21 dev-and-pr           # Dev + PR only (skip review/merge)"
+      echo "  rite 21 review               # Generate and post review"
+      echo "  rite 21 assess               # Assess review + fix loop"
+      echo "  rite 21 status               # Show workflow status"
+      echo "  rite 21 undo                 # Undo: close PR, clean branches/worktree/state"
+      echo "  rite --pr 72                 # Run by PR number (orphan PRs handled automatically)"
+      echo "  rite plan docs/phases.md     # Generate issues from doc"
+      echo "  rite plan \"phases 2-4\"       # Natural language filtering"
+      echo "  rite plan --preview          # Preview without creating"
+      echo "  rite status                  # Repo-wide status overview"
+      echo "  rite status --by-label       # Status grouped by label"
+      echo "  rite health-report           # Generate health report"
+      echo "  rite health-report --latest  # Show most recent report"
+      echo "  rite 21 --dry-run            # See what would happen"
+      echo "  rite \"fix the login bug\"     # Create issue from description"
       echo ""
       echo "Sharkrite - Master your workflows."
       exit 0
@@ -225,7 +266,7 @@ fi
 
 # Health report: dispatch immediately (no issue number needed)
 if [ "$MODE" = "health-report" ]; then
-  if [ "${ARGS[0]:-}" = "--latest" ]; then
+  if [ "$LATEST_FLAG" = true ]; then
     exec "$SCRIPT_DIR/rite-health-report" --latest
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
@@ -318,11 +359,13 @@ if [ "$MODE" = "init" ]; then
     print_info ".rite/scratch.md already exists, skipping"
   fi
 
-  if [ ! -f "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/.gitignore" ]; then
-    cp "$RITE_INSTALL_DIR/templates/gitignore" "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/.gitignore"
-    print_success "Created .rite/.gitignore"
+  # Ensure project root .gitignore has sharkrite patterns
+  # (source list: templates/gitignore; helper defined in lib/utils/config.sh)
+  _added=$(rite_ensure_root_gitignore_patterns)
+  if [ "$_added" -gt 0 ]; then
+    print_success "Added $_added sharkrite pattern(s) to .gitignore"
   else
-    print_info ".rite/.gitignore already exists, skipping"
+    print_info ".gitignore already has sharkrite patterns"
   fi
 
   if [ ! -f "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/issue-template.md" ]; then
@@ -624,6 +667,38 @@ if [ "$MODE" = "plan" ]; then
   source "$RITE_LIB_DIR/core/plan-issues.sh"
   plan_issues "${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}"
   exit $?
+fi
+
+# ─── Input validation ─────────────────────────────────────────────
+# Issue input must be: a number, multiple numbers (batch), or a
+# multi-word phrase (description). Single non-numeric words are
+# rejected — they're likely mistyped commands.
+if [ ${#ARGS[@]} -gt 0 ]; then
+  _all_numeric=true
+  for _arg in "${ARGS[@]}"; do
+    if [[ ! "$_arg" =~ ^[0-9]+$ ]]; then
+      _all_numeric=false
+      break
+    fi
+  done
+
+  if [ "$_all_numeric" = false ]; then
+    # Count total words across all args
+    _joined="${ARGS[*]}"
+    _word_count=$(echo "$_joined" | wc -w | tr -d ' ')
+    if [ "$_word_count" -le 1 ]; then
+      print_error "'${ARGS[0]}' is not a known command or issue number"
+      echo ""
+      echo "Commands:  status, plan, undo, init, health-report"
+      echo "Phases:    dev-and-pr, review-latest, assess-and-fix"
+      echo ""
+      echo "For issues:       rite 42"
+      echo "For descriptions: rite \"fix the login bug\""
+      exit 1
+    fi
+    # Multi-word description — join into a single arg for normalize_piped_input
+    ARGS=("$_joined")
+  fi
 fi
 
 # Source normalization utilities

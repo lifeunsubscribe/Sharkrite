@@ -1,0 +1,109 @@
+================================================================================
+SHARKRITE FILE MANIFEST - Line Counts
+================================================================================
+
+BIN/ (1,629 total lines)
+  rite                                    1,355 lines
+  rite-health-report                        274 lines
+
+LIB/CORE/ (14,928 total lines)
+  workflow-runner.sh                      2,263 lines
+  claude-workflow.sh                      2,638 lines
+  merge-pr.sh                             1,573 lines
+  plan-issues.sh                          2,033 lines
+  batch-process-issues.sh                 1,304 lines
+  assess-and-resolve.sh                   1,222 lines
+  assess-documentation.sh                 1,065 lines
+  assess-review-issues.sh                 1,013 lines
+  bootstrap-docs.sh                         551 lines
+  undo-workflow.sh                          459 lines
+  local-review.sh                           418 lines
+  create-pr.sh                              389 lines
+
+LIB/UTILS/ (7,610 total lines)
+  divergence-handler.sh                     629 lines
+  blocker-rules.sh                          542 lines
+  post-merge-verify.sh                      537 lines
+  issue-assessor.sh                         517 lines
+  validate-setup.sh                         470 lines
+  scratchpad-manager.sh                     463 lines
+  stale-branch.sh                           427 lines
+  session-tracker.sh                        421 lines
+  normalize-issue.sh                        408 lines
+  pr-summary.sh                             119 lines
+  create-followup-issues.sh                 219 lines
+  repo-status.sh                            709 lines
+  format-review.sh                          230 lines
+  conflict-resolver.sh                      255 lines
+  notifications.sh                          264 lines
+  logging.sh                                217 lines
+  pr-detection.sh                           232 lines
+  review-helper.sh                          111 lines
+  cleanup-worktrees.sh                      193 lines
+  review-assessment.sh                       67 lines
+  labels.sh                                  33 lines
+  colors.sh                                  37 lines
+  gh-retry.sh                                98 lines
+  timeout.sh                                108 lines
+  config.sh                                 304 lines
+
+LIB/PROVIDERS/ (725 total lines)
+  claude.sh                                 392 lines
+  provider-interface.sh                     138 lines
+  gemini.sh                                 195 lines
+
+CONFIG/ (example files)
+  rite.conf.example
+  project.conf.example
+  blockers.conf.example
+
+TEMPLATES/
+  gitignore                                  16 lines
+  issue-template.md                          48 lines
+  assessment-prompt.md                       ~20 lines
+  scratchpad.md                              ~15 lines
+  github/PULL_REQUEST_TEMPLATE.md            ~30 lines
+  github/claude-code/pr-review-instructions.md
+  github/workflows/pr-merged-notification.yml
+  github/workflows/claude-code-review.yml (deprecated)
+  github/README.md
+
+DOCS/
+  CLAUDE.md                               (project instructions)
+  configuration.md
+  review-system.md
+  troubleshooting.md
+  issue-runbook.md
+  ROADMAP.md
+  architecture/behavioral-design.md
+  architecture/encountered-issues-system.md
+  research/rtk-assessment.md
+
+ROOT FILES
+  README.md
+  CONTRIBUTIONS.md
+  LICENSE
+  install.sh
+  uninstall.sh
+
+================================================================================
+TOTAL CODEBASE
+================================================================================
+
+Production Code (lib + bin):           ~24,000 lines
+  - bin/                               1,629 lines
+  - lib/core/                         14,928 lines
+  - lib/utils/                         7,610 lines
+  - lib/providers/                       725 lines
+
+Documentation:                        ~8,000+ lines
+  - docs/                              architecture, design decisions
+  - CLAUDE.md                          project instructions
+  - templates/                         example templates
+
+Configuration Examples:               ~3 files
+  - config/rite.conf.example
+  - config/project.conf.example
+  - config/blockers.conf.example
+
+================================================================================

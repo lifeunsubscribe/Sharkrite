@@ -1,0 +1,359 @@
+{
+  "project": "sharkrite",
+  "description": "AI-powered GitHub workflow automation CLI. Pure bash, uses Claude Code for development and review.",
+  "root": "/Users/sarahtime/Dev/sharkrite",
+  "totalLines": 24000,
+  "generatedDate": "2026-05-26",
+  
+  "directories": {
+    "bin": {
+      "purpose": "CLI entrypoints",
+      "lines": 1629
+    },
+    "lib/core": {
+      "purpose": "Workflow orchestration and phase execution",
+      "lines": 14928
+    },
+    "lib/utils": {
+      "purpose": "Shared utilities and helpers used across workflow phases",
+      "lines": 7610
+    },
+    "lib/providers": {
+      "purpose": "Provider abstraction layer for multi-LLM support (Claude, Gemini)",
+      "lines": 725
+    },
+    "config": {
+      "purpose": "Example configuration files",
+      "files": ["rite.conf.example", "project.conf.example", "blockers.conf.example"]
+    },
+    "templates": {
+      "purpose": "Template files for issues, PRs, GitHub workflows"
+    },
+    "docs": {
+      "purpose": "Architecture, design decisions, troubleshooting guides",
+      "subdirs": ["architecture", "research"]
+    }
+  },
+
+  "entryPoints": {
+    "bin/rite": {
+      "lines": 1355,
+      "purpose": "Primary CLI dispatcher",
+      "modes": ["full", "dev-and-pr", "review-latest", "assess-and-fix", "status", "undo", "plan", "health-report", "init", "batch"],
+      "flags": ["--supervised", "--bypass-blockers", "--auto", "--verbose", "--no-log", "--log", "--dry-run", "--pr"]
+    },
+    "bin/rite-health-report": {
+      "lines": 274,
+      "purpose": "Operational health report",
+      "flags": ["--display", "--latest"]
+    }
+  },
+
+  "coreModules": {
+    "workflow-runner.sh": {
+      "lines": 2263,
+      "purpose": "Main orchestrator, phases 1-5, retry loop",
+      "sources": ["colors", "logging", "notifications", "blocker-rules", "session-tracker", "pr-summary", "normalize-issue", "pr-detection", "issue-assessor", "gh-retry", "provider-interface"]
+    },
+    "claude-workflow.sh": {
+      "lines": 2638,
+      "purpose": "Claude Code session (dev work + fix mode)",
+      "sources": ["session-tracker", "issue-assessor", "provider-interface", "logging"]
+    },
+    "assess-and-resolve.sh": {
+      "lines": 1222,
+      "purpose": "Review loop driver, three-state assessment (NOW/LATER/DISMISSED)",
+      "sources": ["colors", "logging", "blocker-rules", "provider-interface"]
+    },
+    "batch-process-issues.sh": {
+      "lines": 1304,
+      "purpose": "Batch processing for multiple issues via --label or explicit list"
+    },
+    "create-pr.sh": {
+      "lines": 389,
+      "purpose": "PR creation, push, early sensitivity detection"
+    },
+    "local-review.sh": {
+      "lines": 418,
+      "purpose": "Generate code review via Claude",
+      "sources": ["colors", "logging", "blocker-rules", "provider-interface"]
+    },
+    "merge-pr.sh": {
+      "lines": 1573,
+      "purpose": "PR merge, cleanup worktree, post-merge verification"
+    },
+    "assess-review-issues.sh": {
+      "lines": 1013,
+      "purpose": "Three-state assessment of review findings",
+      "sources": ["colors", "logging"]
+    },
+    "assess-documentation.sh": {
+      "lines": 1065,
+      "purpose": "Assessment of documentation changes and consistency"
+    },
+    "plan-issues.sh": {
+      "lines": 2033,
+      "purpose": "Issue generation from architectural docs"
+    },
+    "undo-workflow.sh": {
+      "lines": 459,
+      "purpose": "Workflow cleanup: close PR, delete branch/worktree"
+    },
+    "bootstrap-docs.sh": {
+      "lines": 551,
+      "purpose": "Documentation setup for new projects"
+    }
+  },
+
+  "utilityModules": {
+    "config.sh": {
+      "lines": 304,
+      "purpose": "Configuration loader with priority: env > project > global > defaults"
+    },
+    "blocker-rules.sh": {
+      "lines": 542,
+      "purpose": "Hard gates + review sensitivity detection"
+    },
+    "pr-detection.sh": {
+      "lines": 232,
+      "purpose": "PR/worktree/review state detection utilities"
+    },
+    "divergence-handler.sh": {
+      "lines": 629,
+      "purpose": "Branch divergence detection, classification, resolution"
+    },
+    "stale-branch.sh": {
+      "lines": 427,
+      "purpose": "Stale branch detection and handling"
+    },
+    "post-merge-verify.sh": {
+      "lines": 537,
+      "purpose": "Post-merge test verification + failure attribution"
+    },
+    "conflict-resolver.sh": {
+      "lines": 255,
+      "purpose": "Claude-assisted merge conflict resolution"
+    },
+    "issue-assessor.sh": {
+      "lines": 517,
+      "purpose": "Issue state classification and metadata extraction"
+    },
+    "normalize-issue.sh": {
+      "lines": 408,
+      "purpose": "Issue input normalization (numeric or text)"
+    },
+    "validate-setup.sh": {
+      "lines": 470,
+      "purpose": "Project setup validation"
+    },
+    "session-tracker.sh": {
+      "lines": 421,
+      "purpose": "Scratchpad lifecycle management"
+    },
+    "scratchpad-manager.sh": {
+      "lines": 463,
+      "purpose": "Scratchpad state management"
+    },
+    "notifications.sh": {
+      "lines": 264,
+      "purpose": "Slack/SNS/email notifications (opt-in per project)"
+    },
+    "logging.sh": {
+      "lines": 217,
+      "purpose": "Structured logging with [phase], [diag] prefixes"
+    },
+    "colors.sh": {
+      "lines": 37,
+      "purpose": "ANSI color constants"
+    },
+    "review-helper.sh": {
+      "lines": 111,
+      "purpose": "Review utility functions"
+    },
+    "pr-summary.sh": {
+      "lines": 119,
+      "purpose": "PR diff/commit summary generation"
+    },
+    "gh-retry.sh": {
+      "lines": 98,
+      "purpose": "GitHub CLI retry wrapper with exponential backoff"
+    },
+    "labels.sh": {
+      "lines": 33,
+      "purpose": "GitHub label management utilities"
+    },
+    "review-assessment.sh": {
+      "lines": 67,
+      "purpose": "Assessment output formatting"
+    },
+    "cleanup-worktrees.sh": {
+      "lines": 193,
+      "purpose": "Worktree cleanup and removal"
+    },
+    "format-review.sh": {
+      "lines": 230,
+      "purpose": "Review output formatting and display"
+    },
+    "timeout.sh": {
+      "lines": 108,
+      "purpose": "Cross-platform timeout command detection"
+    },
+    "create-followup-issues.sh": {
+      "lines": 219,
+      "purpose": "Create GitHub issues from assessment ACTIONABLE_LATER items"
+    }
+  },
+
+  "providerModules": {
+    "provider-interface.sh": {
+      "lines": 138,
+      "purpose": "Provider abstraction dispatcher",
+      "functionCount": 17
+    },
+    "claude.sh": {
+      "lines": 392,
+      "purpose": "Claude Code CLI provider (primary)",
+      "models": ["claude-sonnet-4-5", "claude-opus-4-5"]
+    },
+    "gemini.sh": {
+      "lines": 195,
+      "purpose": "Gemini CLI provider (skeleton)",
+      "models": ["gemini-2.5-pro"]
+    }
+  },
+
+  "configVariables": {
+    "pathsDirectories": {
+      "RITE_PROJECT_ROOT": "$(git rev-parse --show-toplevel)",
+      "RITE_PROJECT_NAME": "$(basename $RITE_PROJECT_ROOT)",
+      "RITE_INSTALL_DIR": "$HOME/.rite",
+      "RITE_LIB_DIR": "$RITE_INSTALL_DIR/lib",
+      "RITE_DATA_DIR": ".rite",
+      "RITE_WORKTREE_BASE": "$HOME/Dev/rite-wt",
+      "RITE_WORKTREE_DIR": "$RITE_WORKTREE_BASE/<abbrev>-wt",
+      "RITE_INTERNAL_DOCS_DIR": "$RITE_PROJECT_ROOT/.rite/docs",
+      "SCRATCHPAD_FILE": "$RITE_PROJECT_ROOT/.rite/scratch.md",
+      "SESSION_STATE_FILE": "/tmp/rite-session-state-<project-name>.json"
+    },
+    "sessionLimits": {
+      "RITE_MAX_ISSUES_PER_SESSION": 8,
+      "RITE_MAX_SESSION_HOURS": 4,
+      "RITE_MAX_RETRIES": 3,
+      "RITE_ASSESSMENT_TIMEOUT": 120,
+      "RITE_STALE_BRANCH_THRESHOLD": 10
+    },
+    "workflowMode": {
+      "WORKFLOW_MODE": "supervised"
+    },
+    "notifications": {
+      "RITE_NOTIFICATIONS": false,
+      "RITE_AWS_PROFILE": "default",
+      "RITE_SNS_TOPIC_ARN": "",
+      "RITE_EMAIL_FROM": "",
+      "SLACK_WEBHOOK": "",
+      "EMAIL_NOTIFICATION_ADDRESS": ""
+    },
+    "models": {
+      "RITE_CLAUDE_TIMEOUT": 7200,
+      "RITE_CLAUDE_MODEL": "claude-sonnet-4-5",
+      "RITE_REVIEW_MODEL": "claude-opus-4-5"
+    },
+    "providers": {
+      "RITE_DEV_PROVIDER": "claude",
+      "RITE_REVIEW_PROVIDER": "claude",
+      "RITE_UTILITY_PROVIDER": "claude",
+      "RITE_GEMINI_DEV_MODEL": "gemini-2.5-pro",
+      "RITE_GEMINI_REVIEW_MODEL": "gemini-2.5-pro"
+    },
+    "planning": {
+      "RITE_PLAN_DOCS": "",
+      "RITE_PLAN_MAX_ESTIMATE": "2hr"
+    },
+    "testing": {
+      "RITE_SKIP_TESTS": false,
+      "RITE_TEST_CMD": "",
+      "RITE_TEST_TIMEOUT": 120
+    },
+    "projectContext": {
+      "RITE_PROJECT_CONTEXT": ""
+    },
+    "dryRun": {
+      "RITE_DRY_RUN": false
+    }
+  },
+
+  "templates": {
+    "gitignore": {
+      "purpose": "Patterns appended to project root .gitignore",
+      "committed": false
+    },
+    "issue-template.md": {
+      "purpose": "Reference template for manually created issues",
+      "committed": true,
+      "sections": ["Title", "Labels", "Time Estimate", "Description", "Claude Context", "Acceptance Criteria", "Verification Commands", "Done Definition", "Scope Boundary", "Dependencies"]
+    },
+    "scratchpad.md": {
+      "purpose": "Per-project scratchpad for security findings",
+      "committed": false
+    },
+    "assessment-prompt.md": {
+      "purpose": "Prompt template for review assessment"
+    },
+    "github/PULL_REQUEST_TEMPLATE.md": {
+      "purpose": "GitHub PR template",
+      "committed": true
+    },
+    "github/claude-code/pr-review-instructions.md": {
+      "purpose": "Instructions for Claude Code during local review",
+      "committed": true
+    },
+    "github/workflows/pr-merged-notification.yml": {
+      "purpose": "GitHub Actions workflow for Slack notifications",
+      "committed": "optional"
+    }
+  },
+
+  "workflowPhases": {
+    "phase1": {
+      "name": "Development",
+      "script": "lib/core/claude-workflow.sh",
+      "provider": "RITE_DEV_PROVIDER",
+      "exitCodes": [0, 1, 5]
+    },
+    "phase2": {
+      "name": "Push/PR",
+      "script": "lib/core/create-pr.sh",
+      "exitCodes": [0, 1, 2]
+    },
+    "phase2b": {
+      "name": "Review Generation",
+      "script": "lib/core/local-review.sh",
+      "provider": "RITE_REVIEW_PROVIDER"
+    },
+    "phase3": {
+      "name": "Assessment Loop",
+      "scripts": ["lib/core/assess-review-issues.sh", "lib/core/assess-and-resolve.sh"],
+      "provider": "RITE_REVIEW_PROVIDER",
+      "maxRetries": 3
+    },
+    "phase4": {
+      "name": "Merge",
+      "script": "lib/core/merge-pr.sh"
+    },
+    "phase5": {
+      "name": "Completion",
+      "description": "Notifications, cleanup, health tracking"
+    }
+  },
+
+  "exitCodes": {
+    "0": "Success, ready to proceed",
+    "1": "Failure, manual intervention needed",
+    "2": "Loop needed (fixes found, re-review required)",
+    "3": "Review stale, route back to Phase 2",
+    "5": "Provider usage cap reached (blocks batch processing)",
+    "10": "Stale branch restart, skip resume state",
+    "124": "Timeout (from gtimeout/timeout)",
+    "127": "Command not found"
+  }
+}

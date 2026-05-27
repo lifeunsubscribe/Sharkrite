@@ -1,0 +1,698 @@
+================================================================================
+SHARKRITE CODEBASE MODULE MAP
+================================================================================
+Generated: 2026-05-26
+Root: /Users/sarahtime/Dev/sharkrite
+Total codebase: ~24,000 lines (lib: ~22,500 lines, bin: ~1,600 lines)
+
+================================================================================
+DIRECTORY STRUCTURE & PURPOSES
+================================================================================
+
+bin/
+  Purpose: CLI entrypoints
+  Files: rite (1355 lines), rite-health-report (274 lines)
+
+lib/core/ (14,928 lines)
+  Purpose: Workflow orchestration and phase execution
+  
+lib/utils/ (7,610 lines)
+  Purpose: Shared utilities and helpers used across workflow phases
+  
+lib/providers/ (725 lines)
+  Purpose: Provider abstraction layer for multi-LLM support (Claude, Gemini)
+
+config/
+  Purpose: Example configuration files
+  Files: rite.conf.example, project.conf.example, blockers.conf.example
+
+templates/
+  Purpose: Template files for issues, PRs, GitHub workflows
+  
+docs/
+  Purpose: Architecture, design decisions, troubleshooting guides
+  Subdirs: architecture/, research/
+
+================================================================================
+CORE MODULES (lib/core/*.sh) - 14,928 lines total
+================================================================================
+
+workflow-runner.sh (2,263 lines)
+  Purpose: Main orchestrator, phases 1-5, retry loop
+  Sources: colors, logging, notifications, blocker-rules, session-tracker,
+           pr-summary, normalize-issue, pr-detection, issue-assessor, gh-retry,
+           provider-interface
+  Entry point for full lifecycle workflows
+
+claude-workflow.sh (2,638 lines)
+  Purpose: Claude Code session (dev work + fix mode)
+  Sources: session-tracker, issue-assessor, provider-interface, logging
+  Implements Phase 1 (development) and fix-review loops
+
+assess-and-resolve.sh (1,222 lines)
+  Purpose: Review loop driver, three-state assessment (NOW/LATER/DISMISSED)
+  Sources: colors, logging, blocker-rules, provider-interface
+  Implements Phase 3 assessment and routing
+
+batch-process-issues.sh (1,304 lines)
+  Purpose: Batch processing for multiple issues via --label or explicit list
+  Runs workflow-runner sequentially for each issue
+
+create-pr.sh (389 lines)
+  Purpose: PR creation, push, early sensitivity detection
+  Implements Phase 2 (Push/PR)
+
+local-review.sh (418 lines)
+  Purpose: Generate code review via Claude
+  Sources: colors, logging, blocker-rules, provider-interface
+  Implements Phase 2 review generation
+
+merge-pr.sh (1,573 lines)
+  Purpose: PR merge, cleanup worktree, post-merge verification
+  Implements Phase 5 (Completion)
+
+assess-review-issues.sh (1,013 lines)
+  Purpose: Three-state assessment of review findings
+  Sources: colors, logging
+  Core assessment logic, outputs to stdout for piping
+
+assess-documentation.sh (1,065 lines)
+  Purpose: Assessment of documentation changes and consistency
+  
+plan-issues.sh (2,033 lines)
+  Purpose: Issue generation from architectural docs
+  Interactive feedback loop: preview → approve/adjust → create
+  Supports natural language filtering
+
+undo-workflow.sh (459 lines)
+  Purpose: Workflow cleanup: close PR, delete branch/worktree
+
+bootstrap-docs.sh (551 lines)
+  Purpose: Documentation setup for new projects
+  
+================================================================================
+UTILITY MODULES (lib/utils/*.sh) - 7,610 lines total
+================================================================================
+
+config.sh (304 lines)
+  Purpose: Configuration loader, priority: env > project > global > defaults
+  Key function: safe_source() with syntax validation
+  Initializes .rite/ directory structure
+
+blocker-rules.sh (542 lines)
+  Purpose: Hard gates + review sensitivity detection
+  Detects: infrastructure paths, migrations, auth, docs, expensive services
+  Two-tier: review hints (non-blocking) + hard merge gates
+
+pr-detection.sh (232 lines)
+  Purpose: PR/worktree/review state detection utilities
+  Functions: detect_pr_for_issue(), detect_worktree_for_pr(), detect_review_state()
+
+divergence-handler.sh (629 lines)
+  Purpose: Branch divergence detection, classification, resolution
+  Handles stale branches: merge vs restart logic
+
+stale-branch.sh (427 lines)
+  Purpose: Stale branch detection and handling
+  Threshold: RITE_STALE_BRANCH_THRESHOLD (default: 10 commits)
+
+post-merge-verify.sh (537 lines)
+  Purpose: Post-merge test verification + failure attribution
+  
+conflict-resolver.sh (255 lines)
+  Purpose: Claude-assisted merge conflict resolution
+
+issue-assessor.sh (517 lines)
+  Purpose: Issue state classification and metadata extraction
+  
+assess-review-issues.sh (removed, functionality in assess-review-issues.sh core)
+
+normalize-issue.sh (408 lines)
+  Purpose: Issue input normalization
+  Functions: normalize_existing_issue(), normalize_piped_input()
+  For numeric input: fetches from GitHub, applies cleanup
+  For text: Claude generates structured issue, prompts approval
+
+validate-setup.sh (470 lines)
+  Purpose: Project setup validation
+  Checks: .rite/ structure, config files, GitHub auth
+
+session-tracker.sh (421 lines)
+  Purpose: Scratchpad lifecycle (security findings, encountered issues)
+  
+scratchpad-manager.sh (463 lines)
+  Purpose: Scratchpad state management
+  
+notifications.sh (264 lines)
+  Purpose: Slack/SNS/email notifications (opt-in per project)
+  
+logging.sh (217 lines)
+  Purpose: Structured logging with [phase], [diag] prefixes for health reports
+  
+colors.sh (37 lines)
+  Purpose: ANSI color constants (RED, GREEN, YELLOW, NC)
+
+review-helper.sh (111 lines)
+  Purpose: Review utility functions (formatting, parsing)
+
+pr-summary.sh (119 lines)
+  Purpose: PR diff/commit summary generation
+
+gh-retry.sh (98 lines)
+  Purpose: GitHub CLI retry wrapper with exponential backoff
+
+labels.sh (33 lines)
+  Purpose: GitHub label management utilities
+
+review-assessment.sh (67 lines)
+  Purpose: Assessment output formatting
+
+cleanup-worktrees.sh (193 lines)
+  Purpose: Worktree cleanup and removal
+
+format-review.sh (230 lines)
+  Purpose: Review output formatting and display
+
+timeout.sh (108 lines)
+  Purpose: Cross-platform timeout command detection (gtimeout vs timeout)
+
+create-followup-issues.sh (219 lines)
+  Purpose: Create GitHub issues from assessment ACTIONABLE_LATER items
+
+================================================================================
+PROVIDER MODULES (lib/providers/*.sh) - 725 lines total
+================================================================================
+
+provider-interface.sh (138 lines)
+  Purpose: Provider abstraction dispatcher
+  Core function: load_provider(name)
+  Contract: 17-function interface all providers must implement
+  Aliases provider-specific functions to generic provider_* namespace
+  
+  Interface functions:
+    - provider_detect_cli()
+    - provider_validate_cli()
+    - provider_run_agentic_session()
+    - provider_run_prompt()
+    - provider_run_prompt_with_timeout()
+    - provider_run_health_check()
+    - provider_check_api_quota()
+    - provider_session_preamble()
+    - provider_exit_instructions()
+    - provider_dev_session_preamble()
+    - provider_dev_exit_instructions()
+    - provider_stream_format()
+    - provider_error_patterns()
+    - provider_disallowed_tools()
+    - provider_allowed_tools()
+    - provider_get_model()
+    - provider_list_models()
+
+claude.sh (392 lines)
+  Purpose: Claude Code CLI provider (primary)
+  Implements all 17 interface functions
+  Models: claude-sonnet-4-5 (dev), claude-opus-4-5 (review)
+  CLI: claude or claude-code
+
+gemini.sh (195 lines)
+  Purpose: Gemini CLI provider (skeleton)
+  Models: gemini-2.5-pro (both dev and review)
+  Partial implementation (interface contract defined, functionality TBD)
+
+================================================================================
+ENTRY POINTS (bin/)
+================================================================================
+
+bin/rite (1,355 lines)
+  Primary CLI dispatcher
+  
+  Modes:
+    - full                Full lifecycle (default)
+    - dev-and-pr          Phase 1-2 only
+    - review-latest       Phase 2 review generation
+    - assess-and-fix      Phase 3 assess+fix loop
+    - status              Read-only workflow state
+    - undo                Cleanup: close PR, delete artifacts
+    - plan                Generate issues from docs
+    - health-report       Operational health report
+    - init                Project initialization
+    - batch (implicit)    Multiple issues via --label or list
+  
+  Flags:
+    --supervised          Interactive mode (approve gates)
+    --bypass-blockers     Skip hard gates (unsupervised only)
+    --auto                Unsupervised mode (default if not supervised)
+    --verbose             Extra detail
+    --no-log              Disable logging
+    --log=FILE            Custom log path
+    --dry-run             Print plan without executing
+    --pr NUMBER           Run by PR number instead of issue
+  
+  Phase commands:
+    rite 42               Full lifecycle
+    rite 42 dev-and-pr    Phase 1-2
+    rite 42 review        Phase 2 (generate review)
+    rite 42 assess        Phase 3 (assess+fix)
+    rite 42 status        Read-only status
+    rite 42 undo          Cleanup
+    rite status           Repo-wide status
+    rite plan docs/x.md   Generate from architectural doc
+    rite init             Initialize .rite/
+  
+  Config parsing order (highest wins):
+    1. Environment variables (RITE_*)
+    2. Project config (.rite/config)
+    3. Global config (~/.config/rite/config, ~/.riterc)
+    4. Defaults (in config.sh)
+
+bin/rite-health-report (274 lines)
+  Generates operational health report
+  Collects: diagnostic logs, rtk stats, recent sharkrite changes
+  Thresholds: fix iterations > 2.0, phase failures > 30%, phase 1 > 20min
+  
+  Flags:
+    --display             Generate and display now
+    --latest              Show most recent without regenerating
+
+================================================================================
+CONFIG VARIABLES (lib/utils/config.sh) - ACTUAL DEFAULTS
+================================================================================
+
+PATHS & DIRECTORIES:
+  RITE_PROJECT_ROOT           = $(git rev-parse --show-toplevel) [required, detected]
+  RITE_PROJECT_NAME           = $(basename $RITE_PROJECT_ROOT) [detected]
+  RITE_INSTALL_DIR            = $HOME/.rite [if not set by bin/rite]
+  RITE_LIB_DIR                = $RITE_INSTALL_DIR/lib
+  RITE_DATA_DIR               = .rite [per-project, inside repo]
+  RITE_WORKTREE_BASE          = $HOME/Dev/rite-wt [global]
+  RITE_WORKTREE_DIR           = $RITE_WORKTREE_BASE/<abbrev>-wt [derived]
+  RITE_INTERNAL_DOCS_DIR      = $RITE_PROJECT_ROOT/.rite/docs
+  SCRATCHPAD_FILE             = $RITE_PROJECT_ROOT/.rite/scratch.md
+  SESSION_STATE_FILE          = /tmp/rite-session-state-<project-name>.json
+
+SESSION LIMITS:
+  RITE_MAX_ISSUES_PER_SESSION = 8
+  RITE_MAX_SESSION_HOURS      = 4
+  RITE_MAX_RETRIES            = 3
+  RITE_ASSESSMENT_TIMEOUT     = 120 (seconds)
+  RITE_STALE_BRANCH_THRESHOLD = 10 (commits behind main triggers restart)
+
+WORKFLOW MODE:
+  WORKFLOW_MODE               = supervised [supervised|auto]
+
+NOTIFICATIONS (opt-in):
+  RITE_NOTIFICATIONS          = false [opt-in per project]
+  RITE_AWS_PROFILE            = default
+  RITE_SNS_TOPIC_ARN          = ""
+  RITE_EMAIL_FROM             = ""
+  SLACK_WEBHOOK               = ""
+  EMAIL_NOTIFICATION_ADDRESS  = ""
+
+CLAUDE MODELS & TIMEOUT:
+  RITE_CLAUDE_TIMEOUT         = 7200 (2 hours, seconds)
+  RITE_CLAUDE_MODEL           = claude-sonnet-4-5 [dev sessions]
+  RITE_REVIEW_MODEL           = claude-opus-4-5 [reviews, assessments]
+
+PROVIDER SELECTION (per-phase):
+  RITE_DEV_PROVIDER           = claude [agentic dev/fix sessions]
+  RITE_REVIEW_PROVIDER        = claude [reviews, assessments, planning]
+  RITE_UTILITY_PROVIDER       = claude [classify, normalize, health]
+
+GEMINI MODELS (only if provider = gemini):
+  RITE_GEMINI_DEV_MODEL       = gemini-2.5-pro
+  RITE_GEMINI_REVIEW_MODEL    = gemini-2.5-pro
+
+PLANNING:
+  RITE_PLAN_DOCS              = "" [space-separated project-relative paths]
+  RITE_PLAN_MAX_ESTIMATE      = 2hr [max time estimate for generated issues]
+
+TESTING:
+  RITE_SKIP_TESTS             = false [skip test gate before commit in auto mode]
+  RITE_TEST_CMD               = "" [auto-detected if unset]
+  RITE_TEST_TIMEOUT           = 120 (seconds)
+
+PROJECT CONTEXT (review calibration):
+  RITE_PROJECT_CONTEXT        = "" [free-form: deployment, audience, scale]
+
+DRY RUN:
+  RITE_DRY_RUN                = false [parsed before config, controls all execution]
+
+BLOCKER PATTERNS (path-based sensitivity detection):
+  BLOCKER_INFRASTRUCTURE_PATHS = infrastructure/|cdk/|terraform/|cloudformation/|\.github/workflows/|\.claude/
+  BLOCKER_MIGRATION_PATHS      = prisma/migrations/|migrations/|db/migrate/|alembic/
+  BLOCKER_AUTH_PATHS           = auth/|Auth|authentication|authorization|cognito|oauth
+  BLOCKER_DOC_PATHS            = Technical-Specs|Architecture|CLAUDE.md|ARCHITECTURE.md
+  BLOCKER_PROTECTED_SCRIPTS    = workflow-runner.sh|claude-workflow.sh|merge-pr.sh|create-pr.sh|batch-process-issues.sh
+  BLOCKER_EXPENSIVE_SERVICES   = \brds\b|\baurora\b|\bnatgateway\b|\bnat_gateway\b|\bec2\b|\bfarage\b|\bsagemaker\b|\bredshift\b
+
+INTERNAL:
+  RITE_GLOBAL_CONFIG          = $HOME/.config/rite/config [sourced, optional]
+  RITE_PROJECT_CONFIG         = $RITE_PROJECT_ROOT/.rite/config [sourced, optional]
+  RITE_BLOCKERS_CONFIG        = $RITE_PROJECT_ROOT/.rite/blockers.conf [sourced, optional]
+  RITE_LOG_FILE               = $RITE_PROJECT_ROOT/.rite/logs/rite-<slug>-<timestamp>.log [auto if not set]
+  RITE_LOG_AUTO               = true [logging on by default]
+  RITE_VERBOSE                = ${RITE_VERBOSE:-} [off by default unless --supervised]
+  RITE_TIMEOUT_CMD            = gtimeout|timeout|"" [detected during config load]
+
+================================================================================
+TEMPLATE FILES (templates/)
+================================================================================
+
+templates/gitignore
+  Purpose: Patterns appended to project root .gitignore by rite --init
+  Contains: .rite patterns (scratch.md, session-state/, logs/, etc.)
+  Committed: NO (appended patterns only)
+  
+templates/issue-template.md
+  Purpose: Reference template for manually created issues
+  Structure: Title, Labels, Time Estimate, Description, Claude Context,
+             Acceptance Criteria, Verification Commands, Done Definition,
+             Scope Boundary, Dependencies
+  Committed: YES (as .rite/issue-template.md)
+  Note: assess-and-resolve.sh hardcodes structure inline, template is reference
+  
+templates/scratchpad.md
+  Purpose: Per-project scratchpad for security findings, encountered issues
+  Committed: NO (generated per-project)
+  
+templates/assessment-prompt.md
+  Purpose: Prompt template for review assessment
+  
+templates/github/PULL_REQUEST_TEMPLATE.md
+  Purpose: GitHub PR template (links to issue, space for description)
+  Committed: YES (as .github/PULL_REQUEST_TEMPLATE.md)
+  
+templates/github/claude-code/pr-review-instructions.md
+  Purpose: Instructions for Claude Code during local review
+  Committed: YES (as .github/claude-code/pr-review-instructions.md)
+  
+templates/github/workflows/pr-merged-notification.yml
+  Purpose: GitHub Actions workflow for Slack merge notifications
+  Committed: OPTIONAL (created by --init if user approves)
+  
+templates/github/workflows/claude-code-review.yml
+  Purpose: DEPRECATED (local reviews now used instead)
+
+================================================================================
+SOURCE DEPENDENCIES (who sources whom)
+================================================================================
+
+bin/rite
+  → config.sh (sources first, loads all defaults)
+  → colors.sh
+  → normalize-issue.sh
+  → pr-detection.sh
+  → repo-status.sh (for status mode)
+  → plan-issues.sh (for plan mode)
+  → provider-interface.sh (for --init doc classification)
+
+lib/core/workflow-runner.sh
+  → notifications.sh
+  → blocker-rules.sh
+  → session-tracker.sh
+  → pr-summary.sh
+  → normalize-issue.sh
+  → pr-detection.sh
+  → issue-assessor.sh
+  → gh-retry.sh
+  → provider-interface.sh
+  → colors.sh
+  → logging.sh
+
+lib/core/claude-workflow.sh
+  → session-tracker.sh
+  → issue-assessor.sh
+  → provider-interface.sh
+  → logging.sh
+
+lib/core/local-review.sh
+  → colors.sh
+  → logging.sh
+  → blocker-rules.sh
+  → provider-interface.sh
+
+lib/core/assess-and-resolve.sh
+  → colors.sh
+  → logging.sh
+  → blocker-rules.sh
+  → provider-interface.sh
+
+lib/core/assess-review-issues.sh
+  → colors.sh
+  → logging.sh
+
+lib/core/create-pr.sh
+  → gh-retry.sh
+
+lib/core/merge-pr.sh
+  → notifications.sh
+  → post-merge-verify.sh
+  → blocker-rules.sh
+  → create-followup-issues.sh
+  → provider-interface.sh
+
+lib/core/plan-issues.sh
+  → colors.sh
+  → logging.sh
+  → labels.sh
+  → normalize-issue.sh
+  → blocker-rules.sh
+  → provider-interface.sh
+
+lib/core/undo-workflow.sh
+  → pr-detection.sh
+  → colors.sh
+  → logging.sh
+
+lib/utils/blocker-rules.sh
+  → colors.sh (for print_warning, print_info)
+  → logging.sh (optional, for complex logging)
+
+lib/utils/normalize-issue.sh
+  → provider-interface.sh
+  → colors.sh
+  → logging.sh
+
+lib/utils/validate-setup.sh
+  → colors.sh
+  → logging.sh
+
+lib/providers/claude.sh
+  → colors.sh (for error output)
+  → logging.sh
+  → timeout.sh
+
+lib/providers/gemini.sh
+  → colors.sh
+  → logging.sh
+  → timeout.sh
+
+================================================================================
+DATA FLOW PATTERNS
+================================================================================
+
+Assessment Output:
+  assess-review-issues.sh outputs assessment to stdout (pipe-friendly)
+  assess-and-resolve.sh captures stdout, decides to loop (exit 2) or merge (exit 0)
+  workflow-runner.sh captures exit codes and stdout to pass review content to fix mode
+  stderr is used for all user-facing output (print_info, print_warning, etc.)
+
+Review Sensitivity:
+  Detected in create-pr.sh early checks (informational)
+  Injected into review prompt by local-review.sh via detect_sensitivity_areas()
+  Patterns configured in .rite/blockers.conf (BLOCKER_* variables)
+
+Exit Codes (semantic):
+  0   = Success, ready to proceed
+  1   = Failure, manual intervention needed
+  2   = Loop needed (e.g., fixes found, re-review required)
+  3   = Review stale, route back to Phase 2
+  5   = Provider usage cap reached (blocks batch processing)
+  10  = Stale branch restart, skip resume state
+  124 = Timeout (from gtimeout/timeout)
+  127 = Command not found
+
+Config Loading Order:
+  1. config.sh sets defaults
+  2. ~/.config/rite/config sourced (global, optional)
+  3. ~/.riterc sourced (convenience, optional)
+  4. $RITE_PROJECT_ROOT/.rite/config sourced (project-specific, optional)
+  5. $RITE_PROJECT_ROOT/.rite/blockers.conf sourced (blocker patterns, optional)
+  6. Environment variables override everything
+
+Logging:
+  Structured [phase] and [diag] lines logged to RITE_LOG_FILE
+  Used by health-report for aggregation and diagnostics
+  Auto-pruned: keeps last 20 logs, deletes older
+
+================================================================================
+WORKFLOW PHASES
+================================================================================
+
+Phase 1: Development
+  Script: lib/core/claude-workflow.sh
+  Provider: RITE_DEV_PROVIDER (default: claude)
+  Input: ISSUE_NUMBER, WORK_DESCRIPTION
+  Output: Code changes in worktree
+  Exit codes: 0=success, 1=fail, 5=quota
+
+Phase 2: Push/PR
+  Script: lib/core/create-pr.sh
+  Input: Worktree with commits
+  Output: PR created/updated on GitHub, early sensitivity detection
+  Exit codes: 0=success, 1=fail, 2=already exists
+
+Phase 2b: Review Generation
+  Script: lib/core/local-review.sh
+  Provider: RITE_REVIEW_PROVIDER (default: claude)
+  Input: PR diff
+  Output: Review comment posted to PR
+  Sensitivity hints injected from blocker detection
+
+Phase 3: Assessment Loop (up to 3 retries)
+  Script: lib/core/assess-review-issues.sh + assess-and-resolve.sh
+  Provider: RITE_REVIEW_PROVIDER
+  Input: Review findings
+  Output: Three states: ACTIONABLE_NOW, ACTIONABLE_LATER, DISMISSED
+  Decisions: Loop (fix), Create follow-up, or Merge
+
+Phase 4: Merge
+  Script: lib/core/merge-pr.sh
+  Input: PR with passing review
+  Output: PR merged, branch deleted, worktree cleaned
+  Post-merge: Run tests, attribute failures
+
+Phase 5: Completion
+  Notifications, cleanup, health tracking
+
+================================================================================
+SAFETY SYSTEM (Two-tier)
+================================================================================
+
+Tier 1: Review Sensitivity Hints (non-blocking)
+  Detected: Infrastructure, migrations, auth, docs, expensive services
+  Purpose: Focus reviewer attention on sensitive areas
+  Effect: Injected into review prompt, not a hard gate
+
+Tier 2: Hard Merge Gates (blocking)
+  CRITICAL review findings → requires fix or approval
+  Test/build failures → non-zero exit blocks merge
+  Session limits exceeded → stops workflow
+  AWS credentials expired → deployment credentials invalid
+  Blocker approvals → remembered per-issue via has_approved_blocker()
+  Supervised mode: interactive read -p prompt
+  Unsupervised mode: stops workflow (unless --bypass-blockers)
+
+Stale Branch Handling:
+  Below threshold: auto merge origin/main into feature branch
+  At/above threshold (auto): close PR with summary, cleanup, restart fresh
+  At/above threshold (supervised): prompt with 4 options
+
+================================================================================
+PROVIDER AGNOSTICISM (Critical Rules)
+================================================================================
+
+All prompts (review, assessment, planning) are provider-agnostic plain Markdown
+Provider-specific behavior isolated in lib/providers/<name>.sh behind 17-function interface
+
+Rules:
+  - No prompt may contain provider-specific instructions (Claude /exit, tool_use, --disallowedTools)
+  - Provider-specific instructions go in preamble functions
+  - Model names are metadata only, never instructional text
+  - Error patterns, tool restrictions, streaming format all provider-specific
+  - Per-phase provider selection: RITE_DEV_PROVIDER, RITE_REVIEW_PROVIDER, RITE_UTILITY_PROVIDER
+
+Prompt Design:
+  1. Sharkrite identity: "You are running inside a Sharkrite workflow session"
+  2. Git/GH prohibition: Enforced via BOTH prompt AND --disallowedTools
+  3. TodoWrite restriction: Blocked, causes performative "phases" instead of work
+  4. Explicit exit: Supervised mode needs /exit, auto mode uses --print
+  5. No open-ended questions: Directives, not "Ready to start?"
+
+================================================================================
+SHELL CONVENTIONS (CRITICAL)
+================================================================================
+
+grep -c pattern behavior:
+  BAD:  COUNT=$(echo "$text" | grep -c "pattern" || echo "0")  # outputs "0\n0"
+  GOOD: COUNT=$(echo "$text" | grep -c "pattern" || true)      # grep already outputs count
+
+grep -o vs grep -c:
+  grep -c always outputs count (even "0"), returns exit 1 on 0
+  grep -o outputs nothing on no match, so || echo "0" is needed there
+
+Structured header matching (CRITICAL):
+  BAD:  grep "ACTIONABLE_NOW"      # matches anywhere, including reasoning text
+  GOOD: grep "^### .* - ACTIONABLE_NOW"  # matches only classification headers
+
+Review severity parsing:
+  BAD:  grep -c "CRITICAL:"         # matches "Findings: [CRITICAL: 0 | ...]"
+  GOOD: grep "CRITICAL: [0-9]+"    # matches only the Findings line
+
+Unbound variables with set -u (CRITICAL):
+  BAD:  if [ -z "$WORKTREE_PATH" ];
+  GOOD: if [ -z "${WORKTREE_PATH:-}" ];
+
+Exported env vars vs function definitions:
+  Exported vars survive subprocesses, function definitions don't
+  Don't use env var as skip guard for source if child processes need the functions
+
+PIPESTATUS survival:
+  BAD:  OUTPUT=$(cmd1 | cmd2); EXIT_CODE=${PIPESTATUS[0]}  # PIPESTATUS from outer shell
+  GOOD: Use temp file inside pipeline to capture exit code
+
+local keyword usage:
+  local only works inside functions
+  Main script body (not in function): use _prefix assignment instead
+  Crashes in main body: "local: can only be used in a function"
+
+git push (CRITICAL):
+  BAD:  git push              # relies on upstream tracking, may push to origin/main
+  GOOD: git push origin "$BRANCH_NAME"  # explicit remote and branch
+
+.gitignore and symlinks:
+  Use `.rite` (no trailing slash) — `.rite/` only matches directories,
+  but in worktrees `.rite` is a symlink (git mode 120000)
+
+================================================================================
+TOKEN OPTIMIZATION: rtk (Trial)
+================================================================================
+
+Status: Trial (installed 2026-03-24)
+Tool: rtk - CLI proxy that compresses terminal output before Claude Code sees it
+
+What rtk affects:
+  - ONLY Claude Code Bash tool calls
+  - Sharkrite's own scripts call git/gh/jq directly — rtk never touches them
+  - Phase 1 (development) is where savings happen: git status, git diff, test runs, grep, cat
+  - Phases 2-5 unaffected: all Sharkrite gh calls use --json which rtk passes unfiltered
+  - stdin piping (fix-review mode) unaffected: hook only rewrites command strings
+
+Configuration:
+  ~/.config/rtk/config.toml           Global config
+  .rtk/filters.toml                   Project-local filter overrides
+  ~/.claude/hooks/rtk-rewrite.sh      PreToolUse hook
+
+Excluded commands: cat, head, tail (strips code comments, causing style mismatches)
+
+Diagnosing rtk issues:
+  RTK_TOML_DEBUG=1 rtk git status     Shows which filter matched
+  rtk stats                            Overall savings
+  rtk stats --detail                   Per-command breakdown
+  rtk init --global --uninstall       Temporarily disable
+  rtk init --global --hook-only       Re-enable
+
+Weekly health report:
+  launchd job (com.sharkrite.health-report) runs Monday 9:07 AM
+  Generates .rite/reports/rite-health-YYYYMMDD.md
+  Uses absolute thresholds (not before/after comparison):
+    - Fix iterations avg > 2.0 → WARNING
+    - Any phase failing > 30% → WARNING
+    - Phase 1 duration avg > 20 min → WATCH
+    - rtk savings < 30% → WATCH
+
+If rtk causes token waste: rtk init --global --uninstall && brew uninstall rtk
+
+================================================================================
+END MODULE MAP
+================================================================================

@@ -53,10 +53,14 @@ The diff alone is not sufficient. For any of the following changes, you MUST tra
 - **Modified globals or module-level state** (singletons, config objects, registries): Identify all modules that import or reference the global at load time. Verify initialization order is preserved.
 - **Changed data formats** (serialization, API response shapes, log formats): Trace consumers — parsers, test assertions, downstream services — and verify they expect the new format.
 - **Moved or restructured files**: Check for hardcoded import paths, dynamic imports, and configuration references to the old path.
+- **New imports without dependency additions**: If the diff adds `import X` or `from X import ...` for a package not in the standard library, verify that `X` is already listed in the project's dependency manifest (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, etc.) OR that this diff adds it. A missing dependency won't fail in the developer's environment (already installed) but will break any fresh install, Docker build, or CI run. Flag as CRITICAL — it's a guaranteed runtime crash on deploy.
+- **Decorators and middleware that introspect function signatures**: Frameworks like slowapi, FastAPI's `Depends()`, Click, Celery, and similar tools inspect function parameter names and types at runtime. If the diff adds a decorator (e.g., `@limiter.limit(...)`) or middleware to a function, verify the function signature includes all parameters the decorator expects (e.g., slowapi requires `request: Request`). A missing parameter won't cause a syntax error — it causes a runtime crash when the decorator tries to find it. Flag as CRITICAL.
 
 If you cannot confirm compatibility from the diff alone, flag it. A finding like "renamed `limiter` to `rate_limiter` but `middleware.py` still imports `limiter`" is HIGH or CRITICAL depending on whether it causes a runtime crash. Do not assume that because the diff is internally consistent, the rest of the codebase is compatible.
 
 ## Severity Classification
+
+**Context-Aware Calibration:** If a "Deployment Context" section is provided above, use it to calibrate severity. A finding's severity depends on the project's actual audience, scale, and deployment model — not on abstract best practices. Rate limiting is CRITICAL for a public API; it's LOW for a localhost single-user app. Accessibility compliance is HIGH for a public web app; it's LOW for a solo-developer desktop tool. Always reason from the project's reality, not from a generic checklist.
 
 ### 🔴 CRITICAL (Must Fix Before Merge)
 

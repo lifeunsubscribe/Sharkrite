@@ -22,6 +22,8 @@ source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/issue-assessor.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
@@ -48,6 +50,43 @@ MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
+
+# ===================================================================
+# PHASE 1 FAILURE CLEANUP
+# ===================================================================
+
+# Clean up empty draft PRs and worktrees when Phase 1 fails without producing
+# real work. Prevents stale branches from poisoning subsequent batch runs
+# (e.g., .gitignore-only init commits that conflict with main after earlier
+# issues merge).
+#
+# Usage: cleanup_empty_pr_on_failure <pr_number_var> <worktree_path_var>
+#   Both args are the variable NAMES (not values) — handles unset vars safely.
+cleanup_empty_pr_on_failure() {
+  local _pr="${1:-}"
+  local _wt="${2:-}"
+
+  # Check if there's a PR to clean up
+  if [ -z "$_pr" ]; then
+    return 0
+  fi
+
+  # Only clean up if the PR has no real work (0 additions)
+  local _additions
+  _additions=$(gh pr view "$_pr" --json additions --jq '.additions' 2>/dev/null || echo "0")
+  if [ "${_additions:-0}" -gt 0 ]; then
+    return 0  # PR has real work — don't clean up
+  fi
+
+  # Close the empty draft PR and delete the branch
+  gh pr close "$_pr" --delete-branch 2>/dev/null || true
+  print_info "Cleaned up empty draft PR #$_pr"
+
+  # Remove the worktree if it exists
+  if [ -n "$_wt" ] && [ -d "$_wt" ]; then
+    git worktree remove "$_wt" --force 2>/dev/null || true
+  fi
+}
 
 # ===================================================================
 # GRACEFUL EXIT HANDLING
@@ -320,7 +359,8 @@ handle_blocker() {
   _send_blocker_notif  # Send notification when stopping
   if [ "$is_batch_mode" = "true" ] && [ "$blocks_batch" = "true" ]; then
     print_warning "Blocker affects entire batch - stopping batch processing"
-    exit 1
+    # Exit 5 so batch-process-issues.sh can distinguish usage cap from generic failure
+    exit 5
   elif [ "$is_batch_mode" = "true" ]; then
     print_warning "Blocker only affects this issue - continuing with next issue"
     increment_failed
@@ -394,7 +434,7 @@ phase_claude_workflow() {
   else
     # Check if PR already exists for this issue
     pr_number=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
-      jq --arg issue "$issue_number" -r '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+      jq --arg issue "$issue_number" -r '.[] | select(.body != null) | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
       head -1)
 
     if [ -n "$pr_number" ]; then
@@ -402,107 +442,15 @@ phase_claude_workflow() {
 
       # Find worktree for this PR's branch
       pr_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName')
-      worktree_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
+      worktree_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
 
       if [ -n "$worktree_path" ]; then
         WORKTREE_PATH="$worktree_path"
         set_current_worktree "$WORKTREE_PATH"
         print_success "Using existing worktree: $WORKTREE_PATH"
 
-        # Check for uncommitted changes in the target worktree (exclude symlinks and untracked)
-        TARGET_UNCOMMITTED=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -vE "^\?\?" | wc -l | tr -d ' ')
-        if [ "$TARGET_UNCOMMITTED" -gt 0 ]; then
-          print_warning "Uncommitted changes detected in worktree"
-
-          # Get issue description for relevance analysis
-          issue_desc=$(gh issue view "$issue_number" --json title,body --jq '.title + "\n\n" + .body' 2>/dev/null || echo "")
-
-          # Get diff of uncommitted changes (exclude untracked files)
-          UNCOMMITTED_DIFF=$(git -C "$WORKTREE_PATH" diff HEAD 2>/dev/null || echo "")
-          UNCOMMITTED_FILES=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -vE "^\?\?" || echo "")
-
-          if [ -z "$UNCOMMITTED_FILES" ]; then
-            echo "   ℹ️  No tracked file changes (only untracked files)"
-          else
-            # Use Claude CLI to analyze if changes are relevant to the issue
-            echo "   ℹ️  Analyzing if changes are relevant to issue #$issue_number..."
-
-            # Create temp file for prompt to avoid heredoc issues
-            PROMPT_FILE=$(mktemp)
-            cat > "$PROMPT_FILE" <<EOF
-You are analyzing uncommitted code changes to determine if they are relevant to a GitHub issue.
-
-**Issue #$issue_number:**
-$issue_desc
-
-**Uncommitted changes:**
-$UNCOMMITTED_FILES
-
-**Diff:**
-$UNCOMMITTED_DIFF
-
-**Task:** Determine if these changes are implementing/fixing the issue described above.
-
-Answer with ONLY ONE WORD:
-- RELEVANT: if changes implement or relate to the issue
-- UNRELATED: if changes are unrelated to the issue
-
-Answer:
-EOF
-
-            load_provider "${RITE_UTILITY_PROVIDER:-claude}"
-            RELEVANCE=$(provider_run_classify "$(cat "$PROMPT_FILE")" | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
-            rm -f "$PROMPT_FILE"
-
-            # If Claude CLI failed or returned nothing, fail hard
-            if [ -z "$RELEVANCE" ]; then
-              echo "   Provider CLI failed to analyze changes"
-              echo "   Cannot proceed without determining relevance"
-              echo ""
-              echo "   Uncommitted changes:"
-              echo "$UNCOMMITTED_FILES" | sed 's/^/   /'
-              echo ""
-              echo "   Please manually commit or stash changes in: $WORKTREE_PATH"
-              exit 1
-            fi
-
-            echo "   ℹ️  Assessment: $RELEVANCE"
-
-            if [ "$RELEVANCE" = "RELEVANT" ]; then
-              # Changes are relevant - commit them
-              echo "   ✅ Changes are relevant to issue #$issue_number - committing..."
-
-              cd "$WORKTREE_PATH" || exit 1
-              git add -u  # Only add tracked files (not symlinks)
-              COMMIT_MSG="wip: auto-commit relevant changes for issue #$issue_number ($(date +%Y-%m-%d))"
-
-              if git commit -m "$COMMIT_MSG" 2>/dev/null; then
-                echo "   ✅ Changes committed: $COMMIT_MSG"
-              else
-                print_error "Failed to commit changes"
-                exit 1
-              fi
-            else
-              # Changes are unrelated - stash them, will be popped after workflow completes
-              echo "   ℹ️  Changes are unrelated to issue #$issue_number - stashing..."
-
-              cd "$WORKTREE_PATH" || exit 1
-              STASH_MSG="Auto-stash unrelated work before issue #$issue_number ($(date +%Y-%m-%d))"
-
-              if git stash push -u -m "$STASH_MSG" 2>/dev/null; then
-                echo "   ✅ Changes stashed: $STASH_MSG"
-                echo "   ℹ️  Will be restored after workflow completes"
-
-                # Set flag to pop stash at end of workflow
-                export STASHED_UNRELATED_WORK=true
-                export STASH_MESSAGE="$STASH_MSG"
-              else
-                print_error "Failed to stash changes"
-                exit 1
-              fi
-            fi
-          fi
-        fi
+        # Uncommitted changes are handled in run_workflow (before phase-skip inspection)
+        # so they're caught regardless of which phase we resume to.
 
         # Check if PR has actual file changes (not just placeholder commit).
         # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
@@ -532,13 +480,13 @@ EOF
               return 1
             fi
           elif [ $WORKFLOW_EXIT -eq 4 ]; then
-            # No work produced — retry once
+            # No work produced — retry once with context about the failed attempt
             print_warning "Development session produced no changes — retrying once"
             echo ""
             if [ "$WORKFLOW_MODE" = "supervised" ]; then
-              RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
+              RITE_ORCHESTRATED=true RITE_NO_CHANGE_RETRY=true "$CLAUDE_WORKFLOW" "$issue_number"
             else
-              RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
+              RITE_ORCHESTRATED=true RITE_NO_CHANGE_RETRY=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
             fi
             WORKFLOW_EXIT=$?
             if [ $WORKFLOW_EXIT -eq 4 ]; then
@@ -560,6 +508,7 @@ EOF
             fi
           elif [ $WORKFLOW_EXIT -ne 0 ]; then
             print_error "Development workflow failed"
+            cleanup_empty_pr_on_failure "${pr_number:-}" "${WORKTREE_PATH:-}"
             return $WORKFLOW_EXIT
           fi
 
@@ -603,18 +552,131 @@ EOF
           set_current_worktree "$WORKTREE_PATH"
         fi
 
-        if [ $workflow_exit -eq 3 ]; then
+        if [ $workflow_exit -eq 5 ]; then
+          print_error "Provider usage cap reached during development"
+          cleanup_empty_pr_on_failure "${pr_number:-}" "${WORKTREE_PATH:-}"
+          BLOCKER_TYPE=usage_cap BLOCKER_DETAILS="Provider usage cap reached — remaining issues will be skipped"
+          if ! handle_blocker "pre-merge" "$issue_number"; then
+            return 1
+          fi
+        elif [ $workflow_exit -eq 3 ]; then
           BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
           if ! handle_blocker "pre-merge" "$issue_number"; then
             return 1
           fi
         elif [ $workflow_exit -ne 0 ]; then
           print_error "Development workflow failed (exit code: $workflow_exit)"
+          cleanup_empty_pr_on_failure "${pr_number:-}" "${WORKTREE_PATH:-}"
           return $workflow_exit
         fi
       fi
     else
       print_info "Starting fresh on issue #${issue_number}"
+
+      # ── Pre-dev verification: check if issue is already resolved on main ──
+      # If the issue has runnable verification commands and they all pass on main,
+      # skip the dev session entirely. This prevents wasted sessions where Claude
+      # determines "no changes needed" and produces empty PRs (exit code 4).
+      if [ -n "${ISSUE_BODY:-}" ]; then
+        local _verify_block=""
+        _verify_block=$(echo "$ISSUE_BODY" | sed -n '/^## Verification Commands/,/^## /p' | sed '1d;/^## /d')
+
+        # Extract commands from fenced code block (```bash ... ```)
+        local _verify_cmds=""
+        if [ -n "$_verify_block" ]; then
+          _verify_cmds=$(echo "$_verify_block" | sed -n '/^```/,/^```/p' | grep -v '^```' | grep -v '^\s*$' || true)
+        fi
+
+        if [ -n "$_verify_cmds" ]; then
+          print_status "Pre-dev check: running verification commands against main..."
+          local _all_passed=true
+          local _cmd_count=0
+          local _pass_count=0
+
+          while IFS= read -r _cmd; do
+            # Skip comments and empty lines
+            [[ "$_cmd" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${_cmd// /}" ]] && continue
+            _cmd_count=$((_cmd_count + 1))
+
+            if eval "$_cmd" >/dev/null 2>&1; then
+              _pass_count=$((_pass_count + 1))
+            else
+              _all_passed=false
+              break
+            fi
+          done <<< "$_verify_cmds"
+
+          if [ "$_all_passed" = true ] && [ "$_cmd_count" -gt 0 ]; then
+            print_success "All $_cmd_count verification command(s) pass on main — issue already resolved"
+            echo ""
+
+            # Close the issue with explanation
+            gh issue close "$issue_number" \
+              --comment "Automatically closed by sharkrite: all verification commands in this issue already pass on main. No development needed.
+
+**Verification results:** $_pass_count/$_cmd_count commands passed.
+
+<!-- sharkrite-auto-resolved -->" 2>/dev/null || true
+
+            ISSUE_ALREADY_RESOLVED=true
+            return 0
+          elif [ "$_cmd_count" -gt 0 ]; then
+            print_info "Pre-dev check: $_pass_count/$_cmd_count verification commands pass — development needed"
+          fi
+        fi
+      fi
+
+      # ── Pre-dev state assessment (broader than verification commands) ──
+      # The verification-commands path above is fast but only fires when the
+      # issue body has a fenced ## Verification Commands block. Most issues
+      # don't. This LLM-backed assessor reads the issue's acceptance criteria,
+      # inspects main, and reports completeness regardless of issue format.
+      #
+      # Outcomes:
+      #   FULLY_DONE     → close issue, skip dev session (same as above path)
+      #   PARTIALLY_DONE → export RESUME_CONTEXT_PROMPT for the dev session so
+      #                    the worker is told what's already on main and what
+      #                    still needs work
+      #   NOT_STARTED    → proceed normally
+      #   UNKNOWN        → proceed normally (no parseable criteria)
+      if [ -n "${ISSUE_BODY:-}" ] && [ "${ISSUE_ALREADY_RESOLVED:-false}" != "true" ]; then
+        print_status "Pre-dev assessment: checking what's already on main..."
+        assess_issue_completion "$issue_number" "$ISSUE_BODY"
+
+        case "${ISSUE_ASSESSMENT_SUMMARY:-UNKNOWN}" in
+          FULLY_DONE)
+            print_success "Assessment: issue's work is fully present on main"
+            [ -n "${ISSUE_ASSESSMENT_EVIDENCE:-}" ] && print_info "Evidence: $ISSUE_ASSESSMENT_EVIDENCE"
+            echo ""
+            gh issue close "$issue_number" \
+              --comment "Automatically closed by sharkrite: pre-dev state assessment found this issue's acceptance criteria are already satisfied on \`main\`.
+
+**Evidence:** ${ISSUE_ASSESSMENT_EVIDENCE:-(see assessor output)}
+
+**Already done:**
+${ISSUE_ASSESSMENT_COMPLETED:-(per assessor)}
+
+<!-- sharkrite-auto-resolved -->" 2>/dev/null || true
+            ISSUE_ALREADY_RESOLVED=true
+            return 0
+            ;;
+          PARTIALLY_DONE)
+            print_info "Assessment: partially done on main — dev session will resume from gap"
+            [ -n "${ISSUE_ASSESSMENT_EVIDENCE:-}" ] && print_info "Evidence: $ISSUE_ASSESSMENT_EVIDENCE"
+            # Export resume context for claude-workflow.sh to inject into prompt.
+            RESUME_CONTEXT_PROMPT=$(render_assessment_for_prompt)
+            export RESUME_CONTEXT_PROMPT
+            echo ""
+            ;;
+          NOT_STARTED)
+            print_info "Assessment: no prior work on main — proceeding fresh"
+            ;;
+          *)
+            # UNKNOWN or empty — proceed without context injection.
+            ;;
+        esac
+      fi
 
       # Call claude-workflow.sh to create worktree and do development
       # claude-workflow.sh handles detecting uncommitted changes internally
@@ -666,15 +728,15 @@ EOF
           return 1
         fi
       elif [ $workflow_exit -eq 4 ]; then
-        # Exit 4 = session completed but no work produced. Retry once.
+        # Exit 4 = session completed but no work produced. Retry once with context.
         print_warning "Development session produced no changes — retrying once"
         echo ""
 
         set +e
         if [ "$WORKFLOW_MODE" = "supervised" ]; then
-          RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number"
+          RITE_ORCHESTRATED=true RITE_NO_CHANGE_RETRY=true "$CLAUDE_WORKFLOW" "$issue_number"
         else
-          RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
+          RITE_ORCHESTRATED=true RITE_NO_CHANGE_RETRY=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
         fi
         workflow_exit=$?
         set -e
@@ -703,6 +765,14 @@ EOF
             fi
           fi
           return 1
+        elif [ $workflow_exit -eq 5 ]; then
+          # Usage cap hit during retry
+          print_error "Provider usage cap reached during development retry"
+          cleanup_empty_pr_on_failure "${PR_NUMBER:-}" "${WORKTREE_PATH:-}"
+          BLOCKER_TYPE=usage_cap BLOCKER_DETAILS="Provider usage cap reached — remaining issues will be skipped"
+          if ! handle_blocker "pre-merge" "$issue_number"; then
+            return 1
+          fi
         elif [ $workflow_exit -eq 3 ]; then
           BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
           if ! handle_blocker "pre-merge" "$issue_number"; then
@@ -710,10 +780,20 @@ EOF
           fi
         elif [ $workflow_exit -ne 0 ]; then
           print_error "Development workflow failed on retry (exit code: $workflow_exit)"
+          cleanup_empty_pr_on_failure "${PR_NUMBER:-}" "${WORKTREE_PATH:-}"
           return $workflow_exit
+        fi
+      elif [ $workflow_exit -eq 5 ]; then
+        # Exit 5 = provider usage cap. Abort immediately — don't burn remaining issues.
+        print_error "Provider usage cap reached during development"
+        cleanup_empty_pr_on_failure "${PR_NUMBER:-}" "${WORKTREE_PATH:-}"
+        BLOCKER_TYPE=usage_cap BLOCKER_DETAILS="Provider usage cap reached — remaining issues will be skipped"
+        if ! handle_blocker "pre-merge" "$issue_number"; then
+          return 1
         fi
       elif [ $workflow_exit -ne 0 ]; then
         print_error "Development workflow failed (exit code: $workflow_exit)"
+        cleanup_empty_pr_on_failure "${PR_NUMBER:-}" "${WORKTREE_PATH:-}"
         return $workflow_exit
       fi
 
@@ -842,7 +922,13 @@ phase_create_pr() {
   set -e  # Re-enable exit-on-error
 
   # Handle exit codes from create-pr.sh
-  if [ $create_pr_exit -eq 2 ]; then
+  if [ $create_pr_exit -eq 5 ]; then
+    # Usage cap — propagate as batch-blocking blocker
+    BLOCKER_TYPE=usage_cap BLOCKER_DETAILS="Provider usage cap reached during review generation — remaining issues will be skipped"
+    if ! handle_blocker "pre-merge" "${issue_number:-}" "${PR_NUMBER:-}"; then
+      return 1
+    fi
+  elif [ $create_pr_exit -eq 2 ]; then
     # Divergence resolved but needs re-review (foreign commits pulled in)
     print_info "Divergence resolved — review cycle will re-run in Phase 3"
     return 0  # Fall through to Phase 3 naturally
@@ -990,7 +1076,15 @@ phase_assess_and_resolve() {
   # Keep stderr for potential error display, cleanup stdout
   rm -f "$assess_stdout"
 
-  if [ $assessment_result -eq 2 ]; then
+  if [ $assessment_result -eq 5 ]; then
+    # Provider usage cap — abort immediately
+    rm -f "$assess_stderr"
+    print_error "Provider usage cap reached during assessment"
+    BLOCKER_TYPE=usage_cap BLOCKER_DETAILS="Provider usage cap reached — remaining issues will be skipped"
+    if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
+      return 1
+    fi
+  elif [ $assessment_result -eq 2 ]; then
     # Critical issues found - need to fix and restart PR cycle
     print_warning "Critical issues found - invoking Sharkrite to fix"
 
@@ -1031,7 +1125,13 @@ phase_assess_and_resolve() {
       fi
       local fix_result=$?
 
-      if [ $fix_result -eq 3 ]; then
+      if [ $fix_result -eq 5 ]; then
+        # Usage cap during fix-review — abort batch
+        BLOCKER_TYPE=usage_cap BLOCKER_DETAILS="Provider usage cap reached — remaining issues will be skipped"
+        if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
+          return 1
+        fi
+      elif [ $fix_result -eq 3 ]; then
         # Test failure during fix-review — route through blocker handler
         BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed after review fixes — see output above"
         if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
@@ -1352,11 +1452,45 @@ run_workflow() {
   echo -e "${GREEN}Session initialized (mode: $WORKFLOW_MODE)${NC}"
   echo ""
 
-  # Check if issue is already closed
-  local issue_data=$(gh issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences 2>/dev/null)
-  local issue_state=$(echo "$issue_data" | jq -r '.state')
+  # Check if issue is already closed/merged (GitHub Projects v2 can return "MERGED" distinct from "CLOSED")
+  # Use gh_safe so a transient gh failure (rate limit, network blip) does NOT
+  # silently route to the "already closed" success path. On 2026-05-26 the
+  # previous `2>/dev/null` + empty-state-check pattern marked issue #7 as
+  # "already complete" after a rate limit returned empty stdout — see
+  # lib/utils/gh-retry.sh.
+  #
+  # if-guard pattern is required for two reasons:
+  #   1. `data=$(...)` under `set -e` exits the script on non-zero substitution.
+  #   2. `if cmd; then ...; else $?` works; `if ! cmd; then $?` does NOT —
+  #      the `!` negation consumes the original exit code (always becomes 0).
+  local issue_data _fetch_exit
+  if issue_data=$(gh_safe "fetch issue #$issue_number" issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences); then
+    _fetch_exit=0
+  else
+    _fetch_exit=$?
+  fi
 
-  if [ "$issue_state" = "CLOSED" ]; then
+  if [ "$_fetch_exit" -eq 4 ]; then
+    print_error "Issue #$issue_number not found (HTTP 404)"
+    exit 1
+  elif [ "$_fetch_exit" -ne 0 ]; then
+    print_error "Issue #$issue_number — gh call failed after retries (likely transient: rate limit / network)"
+    print_info "Refusing to guess issue state. Re-run after the rate limit clears."
+    exit 1
+  fi
+
+  local issue_state
+  issue_state=$(echo "$issue_data" | jq -r '.state')
+
+  # Defense in depth: if jq returned empty/null despite gh_safe succeeding,
+  # bail rather than fall through to the closed-issue success path.
+  if [ -z "$issue_state" ] || [ "$issue_state" = "null" ]; then
+    print_error "Issue #$issue_number — could not parse state from gh response"
+    print_info "Response was: $(echo "$issue_data" | head -c 200)"
+    exit 1
+  fi
+
+  if [ "$issue_state" != "OPEN" ]; then
     local issue_title=$(echo "$issue_data" | jq -r '.title')
     local closed_at=$(echo "$issue_data" | jq -r '.closedAt')
 
@@ -1381,7 +1515,7 @@ run_workflow() {
       local closed_pr_number
       closed_pr_number=$(gh pr list --state closed --json number,body --limit 50 2>/dev/null | \
         jq --arg issue "$issue_number" -r \
-        '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+        '.[] | select(.body != null) | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
         head -1)
       if [ -n "$closed_pr_number" ]; then
         pr_branch=$(gh pr view "$closed_pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
@@ -1417,7 +1551,7 @@ run_workflow() {
     fi
 
     echo ""
-    echo "✅ Issue #${issue_number} is already closed!"
+    echo "✅ Issue #${issue_number} is already $(echo "$issue_state" | tr '[:upper:]' '[:lower:]')!"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "📋 Issue Summary"
@@ -1485,7 +1619,7 @@ run_workflow() {
       # 1. Remove worktree if it exists for this branch
       # Worktrees are isolated — removing one doesn't affect others, so no need
       # to check sibling worktree status. Safe to remove even during batch runs.
-      local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
+      local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
       if [ -n "$wt_path" ]; then
         if git worktree remove "$wt_path" --force 2>/dev/null; then
           [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
@@ -1549,7 +1683,7 @@ run_workflow() {
   if [ -z "${PR_NUMBER:-}" ] || [ "${PR_NUMBER:-}" = "null" ]; then
     # Method 1: Search by issue link in PR body
     local _detected_pr=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
-      jq --arg issue "$issue_number" -r '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
+      jq --arg issue "$issue_number" -r '.[] | select(.body != null) | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
       head -1)
 
     # Method 2: Detect from worktree branch (session state may have worktree but no PR)
@@ -1572,7 +1706,7 @@ run_workflow() {
     if [ -z "${WORKTREE_PATH:-}" ] || [ ! -d "${WORKTREE_PATH:-}" ]; then
       local _pr_branch=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
       if [ -n "$_pr_branch" ]; then
-        local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}')
+        local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
           local _file_changes=$(git -C "$_wt_path" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
           if [ "$_file_changes" -gt 0 ]; then
@@ -1628,6 +1762,171 @@ run_workflow() {
       else
         git -C "$WORKTREE_PATH" merge --abort 2>/dev/null || true
         print_warning "Could not auto-update branch against main — resuming anyway"
+      fi
+    fi
+  fi
+
+  # ── Commit any uncommitted changes before inspecting state ──
+  # This must run BEFORE the phase-skip logic, which uses git diff origin/main...HEAD
+  # to determine if implementation exists. Uncommitted changes are invisible to that
+  # check, causing "No implementation yet" even when work is present in the worktree.
+  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    # Detect stale merge/rebase state from a previous failed run. If a prior
+    # `_stale_merge_main` or rebase hit a conflict and didn't clean up, the
+    # worktree is left with unmerged paths (XX entries in `git status -s`).
+    # In that state `git stash push` fails with "needs merge" and the workflow
+    # blows up before classification can run. Detect and abort the stale op
+    # so classification has a clean tree to work with — the conflict markers
+    # and any partial work get reset, and Claude will pick up the issue fresh.
+    local _git_dir
+    _git_dir=$(git -C "$WORKTREE_PATH" rev-parse --git-dir 2>/dev/null || echo "")
+    local _stale_op=""
+    if [ -n "$_git_dir" ]; then
+      if [ -f "$_git_dir/MERGE_HEAD" ]; then
+        _stale_op="merge"
+      elif [ -d "$_git_dir/rebase-merge" ] || [ -d "$_git_dir/rebase-apply" ]; then
+        _stale_op="rebase"
+      elif [ -f "$_git_dir/CHERRY_PICK_HEAD" ]; then
+        _stale_op="cherry-pick"
+      fi
+    fi
+    # Independent check: unmerged paths (XX status). MERGE_HEAD can be missing
+    # if the previous abort partially cleaned up but left the index in conflict.
+    local _unmerged_count=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -cE "^(UU|AA|DD|AU|UA|DU|UD) " || true)
+
+    if [ -n "$_stale_op" ] || [ "${_unmerged_count:-0}" -gt 0 ]; then
+      print_warning "Worktree has stale ${_stale_op:-merge} state from a previous run (unmerged paths: ${_unmerged_count:-0})"
+      print_status "Aborting stale ${_stale_op:-merge} to restore clean state..."
+      case "$_stale_op" in
+        merge) git -C "$WORKTREE_PATH" merge --abort 2>/dev/null || true ;;
+        rebase) git -C "$WORKTREE_PATH" rebase --abort 2>/dev/null || true ;;
+        cherry-pick) git -C "$WORKTREE_PATH" cherry-pick --abort 2>/dev/null || true ;;
+      esac
+      # Belt-and-suspenders: if abort didn't clear unmerged paths (e.g., no
+      # MERGE_HEAD but index still in conflict from an interrupted operation),
+      # use `git reset --merge HEAD`. Unlike `--hard`, it preserves unrelated
+      # working-tree edits — only the conflicting index entries are reset.
+      if git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -qE "^(UU|AA|DD|AU|UA|DU|UD) "; then
+        print_warning "Unmerged paths still present after abort — resetting index"
+        if ! git -C "$WORKTREE_PATH" reset --merge HEAD 2>/dev/null; then
+          # `--merge` refuses if working-tree has unstaged changes to files
+          # that are also different between index and HEAD. Fall back to a
+          # targeted `checkout --theirs` per unmerged path to clear the index.
+          while IFS= read -r _conflict_path; do
+            [ -n "$_conflict_path" ] || continue
+            git -C "$WORKTREE_PATH" checkout --theirs -- "$_conflict_path" 2>/dev/null || true
+            git -C "$WORKTREE_PATH" add -- "$_conflict_path" 2>/dev/null || true
+          done < <(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -E "^(UU|AA|DD|AU|UA|DU|UD) " | awk '{print $2}')
+        fi
+      fi
+      print_success "Worktree state cleaned"
+    fi
+
+    # Check for uncommitted changes (tracked modifications AND untracked files)
+    local _uncommitted_tracked=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -vE "^\?\?" | wc -l | tr -d ' ')
+    local _uncommitted_untracked=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -E "^\?\?" | grep -vE "(\.rite$|\.rite/|__pycache__|\.pyc$|node_modules|\.DS_Store)" | wc -l | tr -d ' ')
+    local _uncommitted_total=$(( ${_uncommitted_tracked:-0} + ${_uncommitted_untracked:-0} ))
+
+    if [ "$_uncommitted_total" -gt 0 ]; then
+      print_warning "Uncommitted changes detected in worktree ($_uncommitted_tracked modified, $_uncommitted_untracked new)"
+
+      # Get issue description for relevance analysis
+      local _uc_issue_desc=$(gh issue view "$issue_number" --json title,body --jq '.title + "\n\n" + .body' 2>/dev/null || echo "")
+
+      # Get diff + file list (include untracked files in the analysis)
+      local _uc_diff=$(git -C "$WORKTREE_PATH" diff HEAD 2>/dev/null || echo "")
+      local _uc_files=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -vE "(\.rite$|\.rite/|__pycache__|\.pyc$|node_modules|\.DS_Store)" || echo "")
+
+      # For untracked files, also show their content so the classifier can assess relevance
+      local _uc_untracked_content=""
+      if [ "${_uncommitted_untracked:-0}" -gt 0 ]; then
+        _uc_untracked_content=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -E "^\?\?" | grep -vE "(\.rite$|\.rite/|__pycache__|\.pyc$|node_modules|\.DS_Store)" | sed 's/^?? //' | while read -r _uf; do
+          echo "--- New file: $_uf ---"
+          head -50 "$WORKTREE_PATH/$_uf" 2>/dev/null || echo "(unreadable)"
+          echo ""
+        done)
+      fi
+
+      if [ -n "$_uc_files" ]; then
+        print_status "Analyzing if changes are relevant to issue #$issue_number..."
+
+        local _uc_prompt_file=$(mktemp)
+        cat > "$_uc_prompt_file" <<UCEOF
+You are a deterministic classifier. Analyze uncommitted code changes and decide: are they related to the GitHub issue?
+
+**Issue #$issue_number:**
+$_uc_issue_desc
+
+**Uncommitted changes (status):**
+$_uc_files
+
+**Diff of tracked changes:**
+$_uc_diff
+
+**New (untracked) file previews:**
+$_uc_untracked_content
+
+## Classification Rules (apply in order, stop at first match)
+
+1. **File overlap → RELEVANT.** If ANY changed file is mentioned in the issue body, acceptance criteria, or Claude Context section, the changes are RELEVANT. This includes test files for source files mentioned in the issue and vice versa.
+
+2. **Same module/domain → RELEVANT.** If the changed files are in the same package, module, or feature domain as the issue target (e.g., issue is about scraper behavior and changes are in scraper source or scraper tests), the changes are RELEVANT.
+
+3. **Prior fix artifacts → RELEVANT.** If the diff looks like a bug fix or test correction for code that the issue introduced (e.g., fixing assertions, correcting imports, adjusting expected values), the changes are RELEVANT — they are cleanup from a previous failed attempt on this same issue.
+
+4. **Different domain, no connection → UNRELATED.** If the changed files are in a completely different feature area with no connection to the issue (e.g., issue is about auth, changes are in billing), the changes are UNRELATED.
+
+**Default:** When uncertain, answer RELEVANT. Stashing relevant changes destroys work and forces re-implementation. Committing unrelated changes is recoverable (interactive rebase).
+
+Answer with ONLY ONE WORD — RELEVANT or UNRELATED:
+UCEOF
+
+        load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+        local _uc_relevance=$(provider_run_classify "$(cat "$_uc_prompt_file")" | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
+        rm -f "$_uc_prompt_file"
+
+        if [ -z "$_uc_relevance" ]; then
+          echo "   Provider CLI failed to analyze changes" >&2
+          echo "   Cannot proceed without determining relevance" >&2
+          echo "" >&2
+          echo "   Uncommitted changes:" >&2
+          echo "$_uc_files" | sed 's/^/   /' >&2
+          echo "" >&2
+          echo "   Please manually commit or stash changes in: $WORKTREE_PATH" >&2
+          return 1
+        fi
+
+        print_info "Assessment: $_uc_relevance"
+
+        if [ "$_uc_relevance" = "RELEVANT" ]; then
+          print_status "Changes are relevant to issue #$issue_number — committing..."
+
+          # Stage tracked changes AND untracked files (not just -u)
+          git -C "$WORKTREE_PATH" add -A 2>/dev/null || true
+          # Unstage anything that shouldn't be committed
+          git -C "$WORKTREE_PATH" reset HEAD -- '*.pyc' '__pycache__' '.DS_Store' 'node_modules' 2>/dev/null || true
+
+          local _uc_commit_msg="wip: auto-commit relevant changes for issue #$issue_number ($(date +%Y-%m-%d))"
+          if git -C "$WORKTREE_PATH" commit -m "$_uc_commit_msg" 2>/dev/null; then
+            print_success "Changes committed: $_uc_commit_msg"
+          else
+            print_error "Failed to commit changes"
+            return 1
+          fi
+        else
+          print_status "Changes are unrelated to issue #$issue_number — stashing..."
+
+          local _uc_stash_msg="Auto-stash unrelated work before issue #$issue_number ($(date +%Y-%m-%d))"
+          if git -C "$WORKTREE_PATH" stash push -u -m "$_uc_stash_msg" 2>/dev/null; then
+            print_success "Changes stashed: $_uc_stash_msg"
+            print_info "Will be restored after workflow completes"
+            export STASHED_UNRELATED_WORK=true
+            export STASH_MESSAGE="$_uc_stash_msg"
+          else
+            print_error "Failed to stash changes"
+            return 1
+          fi
+        fi
       fi
     fi
   fi
@@ -1731,6 +2030,8 @@ run_workflow() {
     fi
   fi
 
+  local ISSUE_ALREADY_RESOLVED=false
+
   # Phase 0: Pre-start checks (always run unless skipping past it)
   if [ -z "$skip_to_phase" ]; then
     CURRENT_PHASE="pre-start"
@@ -1754,6 +2055,14 @@ run_workflow() {
     fi
     _timer_end "phase1_development"
     _rtk_snapshot "phase1_end"
+
+    # If pre-dev verification found the issue already resolved on main,
+    # skip all remaining phases — issue was closed in phase_claude_workflow.
+    if [ "${ISSUE_ALREADY_RESOLVED:-false}" = "true" ]; then
+      _diag "WORKFLOW_COMPLETE issue=${issue_number} fix_iterations=0 resolution=already_resolved"
+      print_info "Issue #${issue_number} was already resolved — skipping remaining phases"
+      return 0
+    fi
   fi
 
   # Phase 2: Push work and wait for review

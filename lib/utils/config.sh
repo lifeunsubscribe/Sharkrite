@@ -140,6 +140,16 @@ RITE_SKIP_TESTS="${RITE_SKIP_TESTS:-false}"
 # Custom test command (auto-detected from project structure if unset)
 RITE_TEST_CMD="${RITE_TEST_CMD:-}"
 
+# Test gate timeout in seconds (default 120s). Prevents hanging tests from
+# burning the entire session. Set to 0 to disable.
+RITE_TEST_TIMEOUT="${RITE_TEST_TIMEOUT:-120}"
+
+# Project context for review/assessment calibration.
+# Describes the project's deployment context, audience, and scale so the
+# reviewer and assessor can calibrate severity appropriately.
+# Example: "Single-user desktop app (Electron + Flask). One developer. Localhost only."
+RITE_PROJECT_CONTEXT="${RITE_PROJECT_CONTEXT:-}"
+
 # =============================================================================
 # STEP 3: Load Global Config (~/.config/rite/config)
 # =============================================================================
@@ -211,6 +221,7 @@ export RITE_PLAN_MAX_ESTIMATE
 export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
+export RITE_TEST_TIMEOUT
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS
@@ -234,15 +245,57 @@ fi
 # STEP 7: Create Project Data Directory If Needed
 # =============================================================================
 
+# Ensure project root .gitignore has all sharkrite patterns from the template.
+# Echoes the count of patterns added (0 if already complete). Silent — caller
+# decides whether to print user-facing output.
+rite_ensure_root_gitignore_patterns() {
+  local root_gi="$RITE_PROJECT_ROOT/.gitignore"
+  local template="$RITE_INSTALL_DIR/templates/gitignore"
+  if [ ! -f "$template" ]; then
+    echo 0
+    return 0
+  fi
+
+  local missing=()
+  local pattern
+  while IFS= read -r pattern || [ -n "$pattern" ]; do
+    [ -z "$pattern" ] && continue
+    case "$pattern" in \#*) continue ;; esac
+    if [ ! -f "$root_gi" ] || ! grep -qxF "$pattern" "$root_gi" 2>/dev/null; then
+      missing+=("$pattern")
+    fi
+  done < "$template"
+
+  if [ ${#missing[@]} -gt 0 ]; then
+    {
+      if [ -f "$root_gi" ] && [ -s "$root_gi" ]; then
+        printf '\n'
+      fi
+      printf '# Sharkrite — per-developer/runtime files\n'
+      printf '# (Committed: .rite/config, .rite/blockers.conf, .rite/issue-template.md)\n'
+      printf '%s\n' "${missing[@]}"
+    } >> "$root_gi"
+  fi
+  echo "${#missing[@]}"
+}
+
 if [ "$RITE_DRY_RUN" != "true" ]; then
   mkdir -p "$RITE_PROJECT_ROOT/$RITE_DATA_DIR"
   mkdir -p "$RITE_WORKTREE_DIR"
 
-  # Create .rite/.gitignore if it doesn't exist
-  RITE_GITIGNORE="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/.gitignore"
-  if [ ! -f "$RITE_GITIGNORE" ] && [ -f "$RITE_INSTALL_DIR/templates/gitignore" ]; then
-    cp "$RITE_INSTALL_DIR/templates/gitignore" "$RITE_GITIGNORE"
+  # Init mode handles gitignore verbosely; skip the silent safety-net there.
+  # config.sh is sourced before args are parsed, so MODE isn't set yet — scan
+  # the raw args instead.
+  _rite_init_mode=false
+  for _arg in "$@"; do
+    case "$_arg" in
+      --init|init) _rite_init_mode=true; break ;;
+    esac
+  done
+  if [ "$_rite_init_mode" = false ]; then
+    rite_ensure_root_gitignore_patterns >/dev/null
   fi
+  unset _rite_init_mode _arg
 
   # Create backward-compat symlink for .claude/scratch.md if .claude/ exists
   if [ -d "$RITE_PROJECT_ROOT/.claude" ] && [ ! -e "$RITE_PROJECT_ROOT/.claude/scratch.md" ]; then

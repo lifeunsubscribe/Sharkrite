@@ -19,3 +19,13 @@ tmp/
 # Local development state (no trailing slash — matches both dirs and symlinks in worktrees)
 .rite
 .claude
+
+# Sharkrite — per-developer/runtime files
+# (Committed: .rite/config, .rite/blockers.conf, .rite/issue-template.md)
+.rite/scratch.md
+.rite/scratch.md.*
+.rite/session-state/
+.rite/.resume/
+.rite/*.log
+.rite/logs/
+.rite/docs/
