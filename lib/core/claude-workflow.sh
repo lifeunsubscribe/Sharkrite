@@ -1197,6 +1197,7 @@ If the changes are unrelated work, answer UNRELATED."
         fi
         # Has the old trailing-slash form that doesn't match symlinks — upgrade it
         if [ -f "$gitignore" ] && grep -qxF "${pattern}/" "$gitignore" 2>/dev/null; then
+          # TODO(tech-debt): Add GNU sed fallback for cross-platform support
           sed -i '' "s|^${pattern}/$|${pattern}|" "$gitignore"
           ((updated++)) || true
           continue
