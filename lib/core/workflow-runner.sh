@@ -680,6 +680,12 @@ EOF
               local _token="${_tokens[$_i]}"
               # Allow flags: -x or --flag or --key=value
               if [[ "$_token" =~ ^-{1,2}[a-zA-Z0-9_=.-]+$ ]]; then
+                # Reject -c flag for python/python3 (enables arbitrary code execution)
+                if [[ "$_cmd_name" =~ ^python3?$ ]] && [[ "$_token" = "-c" ]]; then
+                  print_warning "Dangerous flag in verification command: -c not allowed with python (in: $_cmd) — skipping"
+                  _tokens_valid=false
+                  break
+                fi
                 continue
               fi
               # Allow paths: ./path, path/to/file, filename

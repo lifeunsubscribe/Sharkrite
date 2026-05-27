@@ -14,6 +14,16 @@ setup() {
   source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
   source "$RITE_LIB_DIR/utils/notifications.sh" 2>/dev/null || true
 
+  # Stub functions that the verification code expects
+  print_status() { echo "[STATUS] $*" >&2; }
+  print_warning() { echo "[WARNING] $*" >&2; }
+  print_success() { echo "[SUCCESS] $*" >&2; }
+  print_info() { echo "[INFO] $*" >&2; }
+  export -f print_status print_warning print_success print_info
+
+  # Mock issue number (used in log output)
+  issue_number="999"
+
   # Create mock commands in PATH
   MOCK_BIN="$TEST_DIR/bin"
   mkdir -p "$MOCK_BIN"
