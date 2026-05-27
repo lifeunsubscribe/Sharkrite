@@ -26,6 +26,9 @@ fi
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
+# Source issue locking utilities (prevents concurrent rite invocations on same issue)
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -113,6 +116,11 @@ cleanup_on_interrupt() {
       echo -e "\033[0;32m✅ Exited worktree: $current_dir\033[0m"
       echo -e "\033[0;34mℹ️  Your work is preserved in the worktree\033[0m"
     fi
+  fi
+
+  # Release per-issue lock on exit
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    release_issue_lock "${ISSUE_NUMBER}"
   fi
 
   # Terminate entire process group to ensure all child processes (tee, perl, etc.) are killed.
@@ -221,6 +229,17 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Acquire per-issue lock if issue number is known (prevent concurrent rite invocations on same issue)
+# Skip in fix-review mode (already locked by main dev session)
+# In continue mode (CONTINUE_ISSUE_NUM set from exec), lock was acquired by first invocation and PID is unchanged
+if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
+  if ! acquire_issue_lock "$ISSUE_NUMBER"; then
+    exit 1
+  fi
+  # Add EXIT trap to release lock on normal completion (cleanup_on_interrupt also releases it)
+  trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -777,6 +796,14 @@ if [ -z "$ISSUE_NUMBER" ]; then
   else
     # Fallback: use branch name as description
     ISSUE_DESC="Continue work on $CURRENT_BRANCH"
+  fi
+
+  # Acquire lock if issue number is known and not already locked (direct --continue invocation)
+  if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ]; then
+    if ! acquire_issue_lock "$ISSUE_NUMBER"; then
+      exit 1
+    fi
+    trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
   fi
 
   BRANCH_NAME="$CURRENT_BRANCH"
