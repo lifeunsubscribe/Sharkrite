@@ -92,7 +92,7 @@ STUB_EOF
   [ "$status" -eq 1 ]
 
   # Should report the actual exit code (not 0)
-  [[ "$output" =~ "Review failed (exit code: 1)" ]]
+  [[ "$output" =~ "[ERROR] Review failed (exit code: 1)" ]]
 }
 
 @test "local-review.sh: provider exit 5 (usage cap) propagates correctly" {
@@ -124,7 +124,7 @@ STUB_EOF
   [ "$status" -eq 1 ]
 
   # Should report exit code 5 (not 0)
-  [[ "$output" =~ "Review failed (exit code: 5)" ]]
+  [[ "$output" =~ "[ERROR] Review failed (exit code: 5)" ]]
 }
 
 # =============================================================================
@@ -159,8 +159,8 @@ TIMEOUT_EOF
   source "$RITE_LIB_DIR/utils/run-with-timeout.sh"
   source "$RITE_LIB_DIR/providers/claude.sh"
 
-  # Run claude_provider_run_session — should detect failure
-  run claude_provider_run_session "test prompt" 300 "test-model" true
+  # Run claude_provider_run_agentic_session — should detect failure
+  run claude_provider_run_agentic_session "test prompt" 300 true /dev/null
 
   # Should fail with exit code 1 (not 0)
   [ "$status" -eq 1 ]
@@ -192,8 +192,8 @@ TIMEOUT_EOF
   source "$RITE_LIB_DIR/utils/run-with-timeout.sh"
   source "$RITE_LIB_DIR/providers/claude.sh"
 
-  # Run claude_provider_run_session — should detect exit 5
-  run claude_provider_run_session "test prompt" 300 "test-model" true
+  # Run claude_provider_run_agentic_session — should detect exit 5
+  run claude_provider_run_agentic_session "test prompt" 300 true /dev/null
 
   # Should fail with exit code 5 (not 0)
   [ "$status" -eq 5 ]
@@ -226,8 +226,8 @@ TIMEOUT_EOF
   source "$RITE_LIB_DIR/utils/run-with-timeout.sh"
   source "$RITE_LIB_DIR/providers/claude.sh"
 
-  # Run claude_provider_run_session — should succeed
-  run claude_provider_run_session "test prompt" 300 "test-model" true
+  # Run claude_provider_run_agentic_session — should succeed
+  run claude_provider_run_agentic_session "test prompt" 300 true /dev/null
 
   # Should succeed
   [ "$status" -eq 0 ]
