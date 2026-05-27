@@ -855,36 +855,39 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   # Extract issues from holistic assessment
   if [ "$USE_FILTERED" = true ] && [ -n "$FILTERED_CONTENT" ]; then
     # Determine which items to include based on issue type
+    # Match structured headers first (^### Title - STATE), then check Severity: metadata
+    # within those blocks (not bare keywords that could appear in reasoning text)
     if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
       print_status "Extracting ACTIONABLE_LATER items for tech-debt issue..."
-      CRITICAL_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_LATER" | grep -B2 -A 20 "CRITICAL" || echo "")
-      HIGH_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_LATER" | grep -B2 -A 20 "HIGH" || echo "")
-      MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_LATER" | grep -B2 -A 20 "MEDIUM" || echo "")
-      LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_LATER" | grep -B2 -A 20 "LOW" || echo "")
+      CRITICAL_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*CRITICAL" || echo "")
+      HIGH_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*HIGH" || echo "")
+      MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*MEDIUM" || echo "")
+      LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*LOW" || echo "")
 
       if [ "$RETRY_COUNT" -ge 3 ]; then
         print_status "Also including unresolved ACTIONABLE_NOW items (retry limit reached)..."
         CRITICAL_ISSUES="$CRITICAL_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "CRITICAL" || echo "")"
+$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*CRITICAL" || echo "")"
         HIGH_ISSUES="$HIGH_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "HIGH" || echo "")"
+$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*HIGH" || echo "")"
         MEDIUM_ISSUES="$MEDIUM_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "MEDIUM" || echo "")"
+$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*MEDIUM" || echo "")"
         LOW_ISSUES="$LOW_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE_NOW" | grep -B2 -A 20 "LOW" || echo "")"
+$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*LOW" || echo "")"
       fi
     else
-      CRITICAL_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE" | grep -B2 -A 20 "CRITICAL" || echo "")
-      HIGH_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE" | grep -B2 -A 20 "HIGH" || echo "")
-      MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE" | grep -B2 -A 20 "MEDIUM" || echo "")
-      LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -B2 -A 20 "ACTIONABLE" | grep -B2 -A 20 "LOW" || echo "")
+      CRITICAL_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*CRITICAL" || echo "")
+      HIGH_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*HIGH" || echo "")
+      MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*MEDIUM" || echo "")
+      LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*LOW" || echo "")
     fi
 
-    # Recount after filtering (grep -c returns exit 1 on no match but still outputs "0")
-    CRITICAL_COUNT=$(echo "$CRITICAL_ISSUES" | grep -c -E "ACTIONABLE_(NOW|LATER)" 2>/dev/null) || true
-    HIGH_COUNT=$(echo "$HIGH_ISSUES" | grep -c -E "ACTIONABLE_(NOW|LATER)" 2>/dev/null) || true
-    MEDIUM_COUNT=$(echo "$MEDIUM_ISSUES" | grep -c -E "ACTIONABLE_(NOW|LATER)" 2>/dev/null) || true
-    LOW_COUNT=$(echo "$LOW_ISSUES" | grep -c -E "ACTIONABLE_(NOW|LATER)" 2>/dev/null) || true
+    # Recount after filtering - count structured headers (^### Title - STATE)
+    # not bare keywords that could match reasoning text
+    CRITICAL_COUNT=$(echo "$CRITICAL_ISSUES" | grep -c "^### .* - ACTIONABLE_\(NOW\|LATER\)" || true)
+    HIGH_COUNT=$(echo "$HIGH_ISSUES" | grep -c "^### .* - ACTIONABLE_\(NOW\|LATER\)" || true)
+    MEDIUM_COUNT=$(echo "$MEDIUM_ISSUES" | grep -c "^### .* - ACTIONABLE_\(NOW\|LATER\)" || true)
+    LOW_COUNT=$(echo "$LOW_ISSUES" | grep -c "^### .* - ACTIONABLE_\(NOW\|LATER\)" || true)
     # Ensure numeric defaults
     CRITICAL_COUNT=${CRITICAL_COUNT:-0}
     HIGH_COUNT=${HIGH_COUNT:-0}

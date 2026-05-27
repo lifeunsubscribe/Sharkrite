@@ -167,9 +167,27 @@ update_security_guide_from_pr() {
     return 0
   fi
 
-  # Check if comments contain security findings (broader pattern matching)
-  if ! echo "$REVIEW_COMMENTS" | grep -qiE "CRITICAL|HIGH|MEDIUM|Security.*Issue|Vulnerability|Command Injection|Secret Exposure"; then
-    print_info "No security findings detected in review"
+  # Check if comments contain security findings by parsing structured Findings line
+  # Review format: "Findings: [CRITICAL: N | HIGH: N | MEDIUM: N | LOW: N]"
+  # Parse the structured summary instead of bare-word matching (avoids false positives
+  # from reasoning text like "no critical issues found")
+  FINDINGS_LINE=$(echo "$REVIEW_COMMENTS" | grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+" | head -1 || true)
+
+  if [ -z "$FINDINGS_LINE" ]; then
+    print_info "No findings summary detected in review"
+    return 0
+  fi
+
+  # Extract severity counts from structured line
+  CRITICAL_NUM=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: [0-9]+" | grep -oE "[0-9]+" || echo "0")
+  HIGH_NUM=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: [0-9]+" | grep -oE "[0-9]+" || echo "0")
+  MEDIUM_NUM=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: [0-9]+" | grep -oE "[0-9]+" || echo "0")
+
+  # Sum severity counts to check if any security findings exist
+  SEVERITY_SUM=$((CRITICAL_NUM + HIGH_NUM + MEDIUM_NUM))
+
+  if [ "$SEVERITY_SUM" -eq 0 ]; then
+    print_info "No security findings detected in review (all severities: 0)"
     return 0
   fi
 
