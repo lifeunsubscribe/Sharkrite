@@ -5,7 +5,7 @@
 setup() {
   # Clean up any canary files from previous runs (unique per test for parallel execution)
   export CANARY_PREFIX="/tmp/sharkrite-heredoc-canary-$$-${BATS_TEST_NUMBER}"
-  rm -f ${CANARY_PREFIX}*
+  rm -f "${CANARY_PREFIX}"*
 
   # Source necessary libraries
   export RITE_PROJECT_ROOT="/tmp/test-project-$$"
@@ -18,7 +18,7 @@ setup() {
 
 teardown() {
   # Clean up canary files
-  rm -f ${CANARY_PREFIX}*
+  rm -f "${CANARY_PREFIX}"*
   rm -rf "/tmp/test-project-$$"
 }
 
