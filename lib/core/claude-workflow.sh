@@ -26,6 +26,9 @@ fi
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
+# Source issue locking utilities (prevents concurrent rite invocations on same issue)
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -115,6 +118,11 @@ cleanup_on_interrupt() {
     fi
   fi
 
+  # Release per-issue lock on exit
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    release_issue_lock "${ISSUE_NUMBER}"
+  fi
+
   # Terminate entire process group to ensure all child processes (tee, perl, etc.) are killed.
   # Use SIGTERM first for graceful shutdown, then SIGKILL after brief delay if needed.
   # The negative PID (-$$) sends signal to all processes in the current process group.
@@ -126,6 +134,23 @@ cleanup_on_interrupt() {
 }
 
 trap cleanup_on_interrupt INT TERM HUP
+
+# Helper function to acquire per-issue lock and set up EXIT trap
+# Usage: setup_issue_lock_if_needed
+# Returns: 0 on success, 1 on failure (exits script)
+# Conditions: Only acquires lock if:
+#   - ISSUE_NUMBER is set
+#   - NOT in fix-review mode (already locked by main dev session)
+#   - NOT in continue mode via exec (lock already held by first invocation)
+setup_issue_lock_if_needed() {
+  if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
+    if ! acquire_issue_lock "$ISSUE_NUMBER"; then
+      exit 1
+    fi
+    # Add EXIT trap to release lock on normal completion (cleanup_on_interrupt also releases it)
+    trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
+  fi
+}
 
 # Parse arguments - Two-pass to detect flags before processing issue number
 AUTO_MODE=false
@@ -221,6 +246,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Acquire per-issue lock if issue number is known (prevent concurrent rite invocations on same issue)
+setup_issue_lock_if_needed
 
 # Colors for output
 RED='\033[0;31m'
@@ -778,6 +806,12 @@ if [ -z "$ISSUE_NUMBER" ]; then
     # Fallback: use branch name as description
     ISSUE_DESC="Continue work on $CURRENT_BRANCH"
   fi
+
+  # Acquire lock if issue number is known and not already locked
+  # Note: This is called a second time (first call at line 251 after arg parsing) because
+  # in continue/navigation mode, ISSUE_NUMBER may not be known from arguments but is instead
+  # derived from CONTINUE_ISSUE_NUM environment variable set by the navigator
+  setup_issue_lock_if_needed
 
   BRANCH_NAME="$CURRENT_BRANCH"
 

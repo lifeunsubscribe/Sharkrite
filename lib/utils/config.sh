@@ -148,6 +148,9 @@ RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_
 # Scratchpad
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
 
+# Lock directory for per-issue locking (prevents concurrent rite invocations on same issue)
+RITE_LOCK_DIR="${RITE_LOCK_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/locks}"
+
 # Session state
 SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT_NAME}.json}"
 
