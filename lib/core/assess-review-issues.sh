@@ -629,8 +629,11 @@ else
   echo ""
 
   CLAUDE_STDERR=$(mktemp)
-  ASSESSMENT_OUTPUT=$(provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR" | tee /dev/stderr)
-  ASSESSMENT_EXIT_CODE=${PIPESTATUS[0]}
+  # Capture exit code via temp file — PIPESTATUS doesn't survive $() subshells
+  _exit_file=$(mktemp)
+  ASSESSMENT_OUTPUT=$({ provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
+  ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
+  rm -f "$_exit_file"
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
 

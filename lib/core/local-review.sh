@@ -267,8 +267,11 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
   CLAUDE_STDERR=$(mktemp)
 
-  REVIEW_OUTPUT=$(provider_run_prompt "$REVIEW_PROMPT" "$EFFECTIVE_MODEL" "$AUTO_MODE" 2>"$CLAUDE_STDERR") || true
-  REVIEW_EXIT=${PIPESTATUS[0]:-$?}
+  # Capture exit code directly (no pipeline, so no PIPESTATUS needed)
+  set +e
+  REVIEW_OUTPUT=$(provider_run_prompt "$REVIEW_PROMPT" "$EFFECTIVE_MODEL" "$AUTO_MODE" 2>"$CLAUDE_STDERR")
+  REVIEW_EXIT=$?
+  set -e
 
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
