@@ -689,8 +689,8 @@ EOF
                 continue
               fi
               # Allow paths: ./path, path/to/file, filename
-              # But reject path traversal sequences (..)
-              if [[ "$_token" =~ ^[./a-zA-Z0-9_=./-]+$ ]] && [[ ! "$_token" =~ \.\. ]]; then
+              # But reject path traversal sequences (.., /./,  /./)
+              if [[ "$_token" =~ ^[./a-zA-Z0-9_=./-]+$ ]] && [[ ! "$_token" =~ \.\. ]] && [[ ! "$_token" =~ /\./ ]]; then
                 continue
               fi
               # Allow specific subcommands (test, run, check, -m)
