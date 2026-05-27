@@ -1,12 +1,14 @@
 #!/usr/bin/env bats
 # Regression test for: Fix tee'd pipeline test_exit in post-merge-verify
 #
-# Bug: post-merge-verify.sh used `$?` after a pipeline (`... | sed`), which
-# captures sed's exit code (always 0), not the test command's exit code.
-# This allowed failing tests to be silently reported as passing at the merge gate.
+# Bug: post-merge-verify.sh used `$?` after a pipeline (`... | sed`) without
+# pipefail enabled, which captured sed's exit code (always 0), not the test
+# command's exit code. This allowed failing tests to be silently reported as
+# passing at the merge gate.
 #
-# Fix: Use `${PIPESTATUS[0]:-$?}` to capture the test command's exit code
-# specifically, not the last command in the pipeline.
+# Fix: Enable `set -o pipefail` at the top of the script so that $? after
+# a pipeline captures the first failing command's exit code, not the last
+# command in the pipeline.
 
 setup() {
   # Create minimal test environment
@@ -84,7 +86,7 @@ teardown() {
 @test "verify_post_merge propagates exit code through tee'd pipeline with sed" {
   # This is the most specific test for the bug: verify that exit codes
   # propagate correctly through the exact pipeline pattern that was broken:
-  # ( ... eval "$test_cmd" ) 2>&1 | sed 's/^/  /' >&2 || test_exit=${PIPESTATUS[0]:-$?}
+  # ( ... eval "$test_cmd" ) 2>&1 | sed 's/^/  /' >&2 || test_exit=$?
 
   # Create a test command that exits with a specific code
   export RITE_TEST_CMD="exit 42"
@@ -107,30 +109,30 @@ teardown() {
   # Should fail (exit 1) - verify_post_merge converts any non-zero to 1
   [ "$status" -eq 1 ]
 
-  # The key assertion: if the old bug existed, sed would have returned 0
-  # and test_exit would be 0, causing verify_post_merge to return 0.
-  # With the fix, test_exit should be 42 (from PIPESTATUS[0]), causing
-  # verify_post_merge to return 1.
+  # The key assertion: if the old bug existed (no pipefail), sed would have
+  # returned 0 and test_exit would be 0, causing verify_post_merge to return 0.
+  # With the fix (pipefail enabled), $? after the pipeline captures exit 42
+  # from the test command, causing verify_post_merge to return 1.
 }
 
-@test "PIPESTATUS pattern handles commands without pipelines correctly" {
-  # Verify that ${PIPESTATUS[0]:-$?} works correctly even when there's
-  # no pipeline (line 192 in post-merge-verify.sh: the _main_exit assignment)
+@test "pipefail ensures \$? captures first failing command in pipeline" {
+  # Verify that with pipefail enabled, $? after a pipeline captures the exit
+  # code of the first failing command, not the last command in the pipeline.
+  # This is the mechanism that makes exit code propagation work correctly.
 
-  # This test verifies the _main_exit capture works correctly
-  # We can't easily test this directly without refactoring verify_post_merge,
-  # but we can verify the pattern works in isolation
+  # Enable pipefail (matching post-merge-verify.sh)
+  set -o pipefail
 
   # Run a command with no pipeline
-  (exit 17) || EXIT_CODE=${PIPESTATUS[0]:-$?}
+  (exit 17) || EXIT_CODE=$?
 
   # Should capture the exit code correctly
   [ "$EXIT_CODE" -eq 17 ]
 
-  # Run a command with a pipeline
-  (exit 23) | cat >/dev/null || EXIT_CODE=${PIPESTATUS[0]:-$?}
+  # Run a command with a pipeline (first command fails, second succeeds)
+  (exit 23) | cat >/dev/null || EXIT_CODE=$?
 
-  # Should capture the first command's exit code, not cat's
+  # With pipefail, should capture the first command's exit code, not cat's
   [ "$EXIT_CODE" -eq 23 ]
 }
 
