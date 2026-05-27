@@ -917,6 +917,31 @@ EOF
     fi
   fi
 
+  # Fast-forward local main to origin/main so the user's primary clone reflects
+  # the merge. Without this, ls in the project root shows stale state and the
+  # user (reasonably) concludes the work never landed.
+  #
+  # Two cases:
+  #   1. main is checked out in some worktree (typical) — git pull --ff-only there
+  #   2. main not checked out anywhere — git fetch origin main:main updates the ref directly
+  MAIN_CHECKOUT_PATH=$(git worktree list --porcelain 2>/dev/null | awk '
+    /^worktree / { p = substr($0, 10) }
+    /^branch refs\/heads\/main$/ { print p; exit }
+  ')
+  if [ -n "$MAIN_CHECKOUT_PATH" ]; then
+    if (cd "$MAIN_CHECKOUT_PATH" && git pull --ff-only origin main >/dev/null 2>&1); then
+      print_success "Local main fast-forwarded to origin/main"
+    else
+      print_warning "Could not fast-forward local main in $MAIN_CHECKOUT_PATH — run 'git pull --ff-only' there manually"
+    fi
+  else
+    if git fetch origin main:main >/dev/null 2>&1; then
+      print_success "Local main fast-forwarded to origin/main"
+    else
+      print_warning "Could not update local main — run 'git pull --ff-only origin main' manually"
+    fi
+  fi
+
   # Pop stash if there are stashed changes (from claude-workflow.sh)
   if git stash list | grep -q "Auto-stash before claude-workflow.sh"; then
     print_status "Restoring stashed changes..."

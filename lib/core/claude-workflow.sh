@@ -1055,6 +1055,7 @@ If the changes are unrelated work, answer UNRELATED."
 
           OLDEST_WORKTREE=""
           OLDEST_AGE=0
+          PROTECTED_COUNT=0
 
           while IFS= read -r wt_path; do
             [ -z "$wt_path" ] && continue
@@ -1062,9 +1063,32 @@ If the changes are unrelated work, answer UNRELATED."
             WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "")
             [ -z "$WT_BRANCH" ] && continue
 
-            # Check if has uncommitted changes
+            # Hard guard 1: skip if has uncommitted changes
             UNCOMMITTED=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-            [ "$UNCOMMITTED" -gt 0 ] && continue  # Skip if dirty
+            if [ "$UNCOMMITTED" -gt 0 ]; then
+              PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
+              continue
+            fi
+
+            # Hard guard 2: skip if branch has an OPEN PR — work is in flight even if working tree is clean.
+            # A worktree with commits ahead + 0 uncommitted + open PR is NOT eligible for cleanup;
+            # deleting it strands the user's review work mid-flow.
+            OPEN_PR_COUNT=$(gh pr list --head "$WT_BRANCH" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+            if [ "$OPEN_PR_COUNT" -gt 0 ]; then
+              PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
+              continue
+            fi
+
+            # Hard guard 3: skip if local commits are ahead of remote (unpushed work).
+            if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
+              UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
+            else
+              UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+            fi
+            if [ "$UNPUSHED" -gt 0 ]; then
+              PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
+              continue
+            fi
 
             # Get last modification time
             LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) 2>/dev/null | xargs stat -f "%m" 2>/dev/null | sort -rn | head -1 || echo "0")
@@ -1079,27 +1103,46 @@ If the changes are unrelated work, answer UNRELATED."
 
           if [ -n "$OLDEST_WORKTREE" ] && [ "$OLDEST_AGE" -gt 86400 ]; then  # > 1 day old
             DAYS_OLD=$((OLDEST_AGE / 86400))
-            print_status "Removing stale worktree: $OLDEST_BRANCH (${DAYS_OLD} days old, no uncommitted changes)"
+            print_status "Removing stale worktree: $OLDEST_BRANCH (${DAYS_OLD} days old, no PR, no unpushed work)"
             git worktree remove "$OLDEST_WORKTREE" 2>/dev/null || true
             git branch -d "$OLDEST_BRANCH" 2>/dev/null || true
             print_success "Removed stale worktree - will create new one for issue #$ISSUE_NUMBER"
           elif [ -n "$OLDEST_WORKTREE" ]; then
-            # Has worktrees but all are recent (< 1 day) - still remove oldest if no uncommitted changes
+            # Has worktrees but all are recent (< 1 day) - still remove oldest if eligible
             HOURS_OLD=$((OLDEST_AGE / 3600))
             print_warning "All worktrees are recent (oldest: ${HOURS_OLD}h)"
-            print_status "Removing oldest clean worktree: $OLDEST_BRANCH"
+            print_status "Removing oldest eligible worktree: $OLDEST_BRANCH (no PR, no unpushed work)"
             git worktree remove "$OLDEST_WORKTREE" 2>/dev/null || true
             git branch -d "$OLDEST_BRANCH" 2>/dev/null || true
             print_success "Removed worktree - will create new one for issue #$ISSUE_NUMBER"
           else
-            # All worktrees have uncommitted changes - allow exceeding limit with warning
-            print_warning "All worktrees have uncommitted changes"
-            print_warning "Creating 4th worktree (exceeding limit of $MAX_WORKTREES)"
+            # All worktrees are protected (open PR, unpushed commits, or uncommitted changes).
+            # Refuse to silently delete in-flight work — exceed the limit with a clear warning
+            # and surface the protected list so the user can act intentionally.
+            print_warning "All $WORKTREE_COUNT worktree(s) are protected from cleanup ($PROTECTED_COUNT protected: open PR, unpushed commits, or uncommitted changes)"
+            print_warning "Exceeding limit of $MAX_WORKTREES — creating worktree #$((WORKTREE_COUNT + 1))"
             echo ""
-            print_info "Current worktrees (all have uncommitted work):"
-            git worktree list | grep -v "main" | head -3
+            print_info "Protected worktrees (cannot be auto-cleaned):"
+            while IFS= read -r wt_path; do
+              [ -z "$wt_path" ] && continue
+              WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "?")
+              REASONS=""
+              UNCOM=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+              [ "$UNCOM" -gt 0 ] && REASONS="${REASONS}uncommitted, "
+              PR_N=$(gh pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' 2>/dev/null || echo "")
+              [ -n "$PR_N" ] && REASONS="${REASONS}PR #$PR_N, "
+              if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
+                UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
+              else
+                UNP=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+              fi
+              [ "$UNP" -gt 0 ] && REASONS="${REASONS}${UNP} unpushed commit(s), "
+              REASONS="${REASONS%, }"
+              [ -z "$REASONS" ] && REASONS="(unknown — please report)"
+              echo "   • $WT_BRANCH — $REASONS"
+            done <<< "$EXISTING_WORKTREES"
             echo ""
-            print_info "Tip: Clean up later with: rite cleanup-worktrees"
+            print_info "Tip: 'rite N' on a protected issue to resume + merge it, freeing the slot."
           fi
         fi
       fi
