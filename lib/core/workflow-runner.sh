@@ -61,6 +61,8 @@ cleanup_on_interrupt() {
   if [ "$INTERRUPT_RECEIVED" = true ]; then
     echo ""
     echo "Force exit requested. Exiting immediately."
+    # Kill entire process group to terminate all child processes (logging pipeline, etc)
+    kill -KILL -- -$$ 2>/dev/null || true
     exit 1
   fi
   INTERRUPT_RECEIVED=true
@@ -118,6 +120,13 @@ cleanup_on_interrupt() {
   # Return to original directory
   cd "$RITE_PROJECT_ROOT" 2>/dev/null || true
 
+  # Terminate entire process group to ensure all child processes (tee, perl, etc.) are killed.
+  # Use SIGTERM first for graceful shutdown, then SIGKILL after brief delay if needed.
+  # The negative PID (-$$) sends signal to all processes in the current process group.
+  kill -TERM -- -$$ 2>/dev/null || true
+  sleep 0.5
+  kill -KILL -- -$$ 2>/dev/null || true
+
   exit "$exit_code"
 }
 
@@ -166,6 +175,7 @@ EOF
 setup_interrupt_handlers() {
   trap 'cleanup_on_interrupt 130' INT   # Ctrl-C
   trap 'cleanup_on_interrupt 143' TERM  # kill
+  trap 'cleanup_on_interrupt 129' HUP   # Terminal closed
 }
 
 # ===================================================================
