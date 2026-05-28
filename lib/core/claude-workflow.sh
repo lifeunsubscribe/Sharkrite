@@ -646,7 +646,8 @@ Changes made via automated workflow (rite --fix-review mode)."
   }
 
   print_status "Pushing fixes to remote..."
-  if ! git push; then
+  _fix_branch=$(git branch --show-current)
+  if ! git push origin "$_fix_branch"; then
     # Push failed — check for remote divergence
     print_warning "Push rejected — checking for divergence"
     source "$RITE_LIB_DIR/utils/divergence-handler.sh"
