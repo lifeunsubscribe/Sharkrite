@@ -43,8 +43,9 @@ teardown() {
   # Should be 0 - the bug is fixed
   [ "$BARE_PUSH_COUNT" -eq 0 ]
 
-  # Verify it uses origin + branch
-  EXPLICIT_PUSH_COUNT=$(grep -c 'git push origin "\$_fix_branch"' "$BATS_TEST_DIRNAME/../../lib/core/claude-workflow.sh" || true)
+  # Verify it uses origin + branch (match semantic pattern, not specific variable name)
+  # Matches: git push origin "$VAR" or git push origin "${VAR}"
+  EXPLICIT_PUSH_COUNT=$(grep -cE 'git push origin "\$(\{[^}]+\}|[a-zA-Z_][a-zA-Z0-9_]*)"' "$BATS_TEST_DIRNAME/../../lib/core/claude-workflow.sh" || true)
 
   # Should be at least 1
   [ "$EXPLICIT_PUSH_COUNT" -ge 1 ]
