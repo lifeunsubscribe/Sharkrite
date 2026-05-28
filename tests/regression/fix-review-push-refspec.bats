@@ -88,17 +88,19 @@ if ! git push; then
 fi
 EOF
 
-  # Create a lib directory structure for the linter
-  mkdir -p "$TEST_DIR/lib"
+  # Create a minimal sharkrite structure for the linter
+  mkdir -p "$TEST_DIR/bin" "$TEST_DIR/lib" "$TEST_DIR/tools"
   cp "$TEST_FILE" "$TEST_DIR/lib/test.sh"
 
-  # Run the lint check (should detect the violation)
-  cd "$BATS_TEST_DIRNAME/../.."
-  LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
+  # Copy the lint script into the test directory structure
+  # This way the script's own PROJECT_ROOT detection will find our test files
+  REAL_LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
+  TEST_LINT_SCRIPT="$TEST_DIR/tools/sharkrite-lint.sh"
+  cp "$REAL_LINT_SCRIPT" "$TEST_LINT_SCRIPT"
 
-  # The linter should find the bare git push
-  # We expect it to fail (exit non-zero) and mention GIT_PUSH_NO_REFSPEC
-  run bash -c "cd '$TEST_DIR/..' && '$LINT_SCRIPT' 2>&1"
+  # Run the linter from within the test directory
+  # PROJECT_ROOT will resolve to $TEST_DIR via the script's own path detection
+  run bash "$TEST_LINT_SCRIPT" 2>&1
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
@@ -117,15 +119,19 @@ if ! git push origin "$_fix_branch"; then
 fi
 EOF
 
-  # Create directory structure for the linter
-  mkdir -p "$TEST_DIR/lib"
+  # Create a minimal sharkrite structure for the linter
+  mkdir -p "$TEST_DIR/bin" "$TEST_DIR/lib" "$TEST_DIR/tools"
   cp "$TEST_FILE" "$TEST_DIR/lib/test.sh"
 
-  # Run the lint check (should pass)
-  cd "$BATS_TEST_DIRNAME/../.."
-  LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
+  # Copy the lint script into the test directory structure
+  # This way the script's own PROJECT_ROOT detection will find our test files
+  REAL_LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
+  TEST_LINT_SCRIPT="$TEST_DIR/tools/sharkrite-lint.sh"
+  cp "$REAL_LINT_SCRIPT" "$TEST_LINT_SCRIPT"
 
-  run bash -c "cd '$TEST_DIR/..' && '$LINT_SCRIPT' 2>&1"
+  # Run the linter from within the test directory
+  # PROJECT_ROOT will resolve to $TEST_DIR via the script's own path detection
+  run bash "$TEST_LINT_SCRIPT" 2>&1
 
   # Should pass (exit 0) and not mention GIT_PUSH_NO_REFSPEC
   [ "$status" -eq 0 ]
