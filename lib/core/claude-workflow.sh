@@ -1361,11 +1361,13 @@ If the changes are unrelated work, answer UNRELATED."
       fi
     else
       # Create new branch in worktree from origin/main (or HEAD if origin/main doesn't exist)
-      local base_ref="origin/main"
+      # NOTE: this is main script body, not a function — `local` would crash here
+      # under set -u (see CLAUDE.md "No `local` outside functions").
+      _base_ref="origin/main"
       if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-        base_ref="HEAD"
+        _base_ref="HEAD"
       fi
-      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$base_ref" >/dev/null 2>&1; then
+      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_base_ref" >/dev/null 2>&1; then
         # Worktree directory exists — verify it's on the expected branch.
         if [ -d "$WORKTREE_PATH" ]; then
           ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
