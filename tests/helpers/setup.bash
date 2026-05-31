@@ -41,8 +41,8 @@ load_helper() {
 load_provider() {
   local provider_name="$1"
 
-  # Ensure provider-interface.sh is sourced
-  if ! declare -f _provider_interface_loaded >/dev/null 2>&1; then
+  # Ensure provider-interface.sh is sourced (check for _LOADED_PROVIDER variable)
+  if [ -z "${_LOADED_PROVIDER+x}" ]; then
     # shellcheck disable=SC1091
     source "${RITE_LIB_DIR}/providers/provider-interface.sh"
   fi

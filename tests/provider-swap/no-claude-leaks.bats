@@ -159,10 +159,10 @@ teardown() {
   # - Comments starting with #
   # - This is tricky because some legit uses exist (e.g., "# Auto-fix: run a quick Claude session")
 
-  # For this smoke test, we check the specific known leak: claude-workflow.sh:658
+  # Check all files in lib/core/ for /exit token leaks (not just claude-workflow.sh)
   local leaks
   # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
-  leaks=$(grep -rn -E "(['\"])?/exit(['\"])?" "$lib_core/claude-workflow.sh" | grep -v '^[[:space:]]*#' || true)
+  leaks=$(grep -rn -E "(['\"])?/exit(['\"])?" "$lib_core" | grep -v '^[[:space:]]*#' || true)
 
   # The leak should be at line 658 (EXIT_INSTRUCTION hardcoded)
   if [ -n "$leaks" ]; then
