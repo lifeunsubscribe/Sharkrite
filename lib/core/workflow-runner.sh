@@ -406,8 +406,8 @@ phase_claude_workflow() {
   else
     # Check if PR already exists for this issue
     pr_number=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
-      jq --arg issue "$issue_number" -r '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-      head -1)
+      jq --arg issue "$issue_number" -r \
+      '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
 
     if [ -n "$pr_number" ]; then
       print_info "Found existing PR #$pr_number for issue #$issue_number"

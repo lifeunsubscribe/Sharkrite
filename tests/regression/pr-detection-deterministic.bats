@@ -139,9 +139,11 @@ write_gh_response() {
      "body": "Closes #999 - Fresh attempt", "title": "Fix issue #999 attempt 2"}
   ]'
 
-  run detect_pr_for_issue 999
+  # Direct call (not `run`) so PR_NUMBER/PR_BRANCH are set in caller's scope
+  detect_pr_for_issue 999
+  local rc=$?
 
-  [ "$status" -eq 0 ]
+  [ "$rc" -eq 0 ]
   # Must have returned the OPEN PR (number 11)
   [ "$PR_NUMBER" = "11" ]
   [ "$PR_BRANCH" = "fix/new-attempt" ]
@@ -187,9 +189,11 @@ write_gh_response() {
      "body": "Closes #999 - Later open", "title": "Fix #999 later"}
   ]'
 
-  run detect_pr_for_issue 999
+  # Direct call (not `run`) so PR_NUMBER/PR_BRANCH are set in caller's scope
+  detect_pr_for_issue 999
+  local rc=$?
 
-  [ "$status" -eq 0 ]
+  [ "$rc" -eq 0 ]
   # Must return the most recently created open PR (highest number)
   [ "$PR_NUMBER" = "20" ]
   [ "$PR_BRANCH" = "fix/later" ]
@@ -205,9 +209,10 @@ write_gh_response() {
      "body": "Closes #888 - Unrelated PR", "title": "Fix #888"}
   ]'
 
-  run detect_pr_for_issue 999
+  # Direct call (not `run`) — capture exit code separately for the failure case
+  detect_pr_for_issue 999 || rc=$?
 
-  [ "$status" -eq 1 ]
+  [ "${rc:-0}" -eq 1 ]
   [ -z "$PR_NUMBER" ]
 }
 
@@ -221,9 +226,11 @@ write_gh_response() {
      "body": "Closes #999 - Only PR for this issue", "title": "Fix #999"}
   ]'
 
-  run detect_pr_for_issue 999
+  # Direct call (not `run`) so PR_NUMBER/PR_BRANCH are set in caller's scope
+  detect_pr_for_issue 999
+  local rc=$?
 
-  [ "$status" -eq 0 ]
+  [ "$rc" -eq 0 ]
   [ "$PR_NUMBER" = "7" ]
   [ "$PR_BRANCH" = "fix/solo" ]
 }
@@ -243,9 +250,11 @@ write_gh_response() {
 
   # Note: when OPEN and CLOSED both exist, OPEN is always preferred regardless
   # of PR number — state takes precedence over recency.
-  run detect_pr_for_issue 999
+  # Direct call (not `run`) so PR_NUMBER/PR_BRANCH are set in caller's scope
+  detect_pr_for_issue 999
+  local rc=$?
 
-  [ "$status" -eq 0 ]
+  [ "$rc" -eq 0 ]
   [ "$PR_NUMBER" = "30" ]
   [ "$PR_BRANCH" = "fix/older-open" ]
 }
