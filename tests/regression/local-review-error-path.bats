@@ -123,6 +123,12 @@ setup() {
   # Verify we actually extracted something (sanity check)
   [ -n "$LOOP_CODE" ]
 
+  # Content-anchor assertion: confirm the extracted code contains the real
+  # provider call, not a mis-extracted stub or surrounding boilerplate.
+  # Without this, a silent awk mis-extraction would cause the test to execute
+  # unrelated code and pass vacuously, defeating the purpose of this test.
+  [[ "$LOOP_CODE" == *"provider_run_prompt"* ]]
+
   run bash -c "
     set -euo pipefail
 

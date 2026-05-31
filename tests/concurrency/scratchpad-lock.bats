@@ -236,7 +236,7 @@ GHEOF
   # creation). init_scratchpad() has a [ ! -f ] guard but without locking multiple
   # processes may pass the guard before any writes complete.
   local header_count
-  header_count=$(grep -c "^# S" "$SCRATCHPAD_FILE" || echo 0)
+  header_count=$(grep -c "^# Sharkrite Scratchpad" "$SCRATCHPAD_FILE" || echo 0)
   [ "$header_count" -eq 1 ] || {
     echo "EXPECTED FAILURE: Multiple headers detected ($header_count) - file creation race"
     return 0
