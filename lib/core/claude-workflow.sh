@@ -32,6 +32,9 @@ source "$RITE_LIB_DIR/utils/issue-lock.sh"
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -1857,7 +1860,8 @@ done
 # merge to main while later issues are still working on stale branches.
 # New branches (just created from origin/main) will show 0 behind — this is a no-op for them.
 if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
-  git fetch origin main 2>/dev/null || true
+  # Fetch with retries — reading origin/main immediately after; stale data = wrong behind-count
+  git_fetch_safe origin main || true
   if git rev-parse --verify origin/main >/dev/null 2>&1; then
     BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
     if [ "$BEHIND_COUNT" -gt 0 ]; then
@@ -1956,7 +1960,8 @@ else
     # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
     # Force push instead of delete+recreate — delete closes any linked PR.
     print_warning "Remote branch diverged — force pushing to sync"
-    git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+    # Fetch with retries to update the lease ref — stale lease = force-with-lease refuses the push
+    git_fetch_safe origin "$BRANCH_NAME" || true
     git push -u --force-with-lease origin "$BRANCH_NAME" >/dev/null 2>&1 || \
       git push -u --force origin "$BRANCH_NAME" >/dev/null 2>&1 || true
   fi
