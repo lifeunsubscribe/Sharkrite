@@ -174,6 +174,10 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
           # Re-enter review loop — exit with code 2 so workflow-runner knows
           print_info "Divergence resolved — re-entering review cycle"
           exit 2
+        elif [ $div_result -eq 5 ]; then
+          # Usage cap reached — propagate so workflow-runner can abort cleanly
+          print_error "Usage cap reached during divergence resolution"
+          exit 5
         elif [ $div_result -ne 0 ]; then
           print_error "Divergence could not be resolved"
           exit 1

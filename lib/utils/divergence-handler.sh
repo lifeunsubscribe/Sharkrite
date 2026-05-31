@@ -9,6 +9,7 @@
 #   0 = resolved (push succeeded, continue workflow)
 #   1 = blocked (stop workflow, manual intervention needed)
 #   2 = resolved but needs re-review (foreign commits pulled, re-enter Phase 2→3)
+#   5 = Claude usage cap reached during conflict resolution (propagated from conflict-resolver; batch should abort)
 
 set -euo pipefail
 
@@ -28,6 +29,14 @@ source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
 
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
+
+# Source conflict resolver if available (provided by issue #21).
+# Guarded: divergence-handler works without it — resolver is an enhancement,
+# not a hard dependency. When present, attempt_claude_merge_resolution()
+# becomes available and is called on rebase conflict bail paths.
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+fi
 
 # ===================================================================
 # OUTPUT HELPERS (stderr only — stdout reserved for pipe data)
@@ -229,6 +238,7 @@ CLASSIFY_EOF
 #   0 = resolved (push succeeded)
 #   1 = blocked (manual intervention needed)
 #   2 = resolved but needs re-review (re-enter Phase 2→3)
+#   5 = Claude usage cap reached during conflict resolution (propagated from conflict-resolver; batch should abort)
 handle_push_divergence() {
   local branch_name="$1"
   local issue_number="${2:-}"
@@ -260,7 +270,7 @@ handle_push_divergence() {
   case "$DIVERGENCE_CLASS" in
     TRIVIAL)
       _div_info "Auto-rebasing (TRIVIAL classification)..." >&2
-      _do_rebase_and_push "$branch_name" "$auto_mode"
+      _do_rebase_and_push "$branch_name" "$auto_mode" "$issue_number" "$pr_number"
       return $?
       ;;
 
@@ -308,7 +318,7 @@ _handle_related() {
 
   if [ "$reviewed" = true ]; then
     _div_info "RELATED + already reviewed — auto-rebasing" >&2
-    _do_rebase_and_push "$branch_name" "$auto_mode"
+    _do_rebase_and_push "$branch_name" "$auto_mode" "$issue_number" "$pr_number"
     return $?
   fi
 
@@ -345,7 +355,7 @@ _handle_related() {
       ;;
     b|B)
       _div_info "Pulling foreign commits without review..." >&2
-      _do_rebase_and_push "$branch_name" "$auto_mode"
+      _do_rebase_and_push "$branch_name" "$auto_mode" "$issue_number" "$pr_number"
       return $?
       ;;
     c|C)
@@ -418,39 +428,63 @@ _handle_unrelated() {
 }
 
 # ── Internal: rebase onto remote and push ──
+# _do_rebase_and_push BRANCH_NAME AUTO_MODE [ISSUE_NUMBER] [PR_NUMBER]
 _do_rebase_and_push() {
   local branch_name="$1"
   local auto_mode="$2"
+  local _issue_number="${3:-}"
+  local _pr_number="${4:-}"
 
   if ! _do_rebase "$branch_name"; then
-    # Rebase failed (conflicts)
-    if [ "$auto_mode" = "true" ]; then
-      _div_error "Rebase failed with conflicts — blocking in auto mode"
-      _send_divergence_notification "${issue_number:-}" "${pr_number:-}" "REBASE_CONFLICT" "Rebase conflicts on $branch_name"
-      return 1
-    fi
-
-    # Supervised: offer recovery
-    echo "" >&2
-    echo "Options:" >&2
-    echo "  c) Force-push local work (discard foreign commits)" >&2
-    echo "  d) Abort" >&2
-    read -p "Choose [c/d]: " -n 1 -r >&2
-    echo >&2
-
-    case "$REPLY" in
-      c|C)
-        if ! git push --force-with-lease origin "$branch_name"; then
-          _div_error "Force-push failed"
-          return 1
-        fi
-        _div_success "Force-push succeeded"
-        return 0
-        ;;
-      *)
+    # Rebase failed (conflicts) — rebase has already been aborted and stash restored by _do_rebase().
+    # In auto mode, attempt Claude-assisted conflict resolution before bailing.
+    # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
+    # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
+    if [ "$auto_mode" = "true" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+      _div_status "Attempting Claude-assisted conflict resolution..."
+      local _resolver_result=0
+      attempt_claude_merge_resolution "$branch_name" "${_issue_number:-}" "${_pr_number:-}" || _resolver_result=$?
+      if [ "$_resolver_result" -eq 0 ]; then
+        _div_success "Conflicts resolved by Claude"
+        # Fall through to verify + push below (rebase state is clean after resolution)
+      elif [ "$_resolver_result" -eq 5 ]; then
+        # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
+        _div_error "Claude usage cap reached during conflict resolution — aborting batch"
+        return 5
+      else
+        # Resolver could not resolve (exit 1) — fall through to auto bail below
+        _div_warning "Claude could not resolve conflicts — manual intervention required"
+        _div_error "Rebase failed with conflicts — blocking in auto mode"
+        _send_divergence_notification "${_issue_number:-}" "${_pr_number:-}" "REBASE_CONFLICT" "Rebase conflicts on $branch_name"
         return 1
-        ;;
-    esac
+      fi
+    elif [ "$auto_mode" = "true" ]; then
+      _div_error "Rebase failed with conflicts — blocking in auto mode"
+      _send_divergence_notification "${_issue_number:-}" "${_pr_number:-}" "REBASE_CONFLICT" "Rebase conflicts on $branch_name"
+      return 1
+    else
+      # Supervised: offer recovery
+      echo "" >&2
+      echo "Options:" >&2
+      echo "  c) Force-push local work (discard foreign commits)" >&2
+      echo "  d) Abort" >&2
+      read -p "Choose [c/d]: " -n 1 -r >&2
+      echo >&2
+
+      case "$REPLY" in
+        c|C)
+          if ! git push --force-with-lease origin "$branch_name"; then
+            _div_error "Force-push failed"
+            return 1
+          fi
+          _div_success "Force-push succeeded"
+          return 0
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    fi
   fi
 
   # Verify rebase didn't introduce silent semantic conflicts (tests pass)
@@ -463,7 +497,7 @@ _do_rebase_and_push() {
 
     if [ "$auto_mode" = "true" ]; then
       _div_error "Post-rebase verification failed — blocking in auto mode"
-      _send_divergence_notification "${issue_number:-}" "${pr_number:-}" "SEMANTIC_CONFLICT" \
+      _send_divergence_notification "${_issue_number:-}" "${_pr_number:-}" "SEMANTIC_CONFLICT" \
         "Rebase succeeded but tests fail — silent semantic conflict"
       return 1
     fi

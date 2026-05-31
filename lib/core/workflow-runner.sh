@@ -982,6 +982,9 @@ phase_create_pr() {
     # Divergence resolved but needs re-review (foreign commits pulled in)
     print_info "Divergence resolved — review cycle will re-run in Phase 3"
     return 0  # Fall through to Phase 3 naturally
+  elif [ $create_pr_exit -eq 5 ]; then
+    # Usage cap reached — propagate exit 5 so batch can abort cleanly
+    return 5
   elif [ $create_pr_exit -ne 0 ]; then
     print_error "create-pr.sh failed with exit code: $create_pr_exit"
     return 1
@@ -1911,12 +1914,17 @@ run_workflow() {
     CURRENT_PHASE="create-pr"
     skip_to_phase=""
     _timer_start "phase2_push_review"
-    if ! phase_create_pr "$issue_number"; then
+    phase_create_pr "$issue_number" || {
+      local _create_pr_rc=$?
       _timer_end "phase2_push_review"
       _diag "PHASE_FAILED issue=${issue_number} phase=create-pr"
+      if [ $_create_pr_rc -eq 5 ]; then
+        print_warning "Usage cap reached during PR phase — aborting batch"
+        return 5
+      fi
       print_error "PR phase failed"
       return 1
-    fi
+    }
     _timer_end "phase2_push_review"
   fi
 
