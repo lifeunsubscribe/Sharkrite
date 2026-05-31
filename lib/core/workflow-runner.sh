@@ -1377,6 +1377,10 @@ phase_merge_pr() {
     # Merge succeeded but cleanup failed — return 6 so batch reporter knows work landed
     print_warning "Merge succeeded but cleanup encountered errors"
     return 6
+  elif [ $merge_result -eq 5 ]; then
+    # Usage cap reached during merge-pr.sh divergence resolution — propagate so batch aborts
+    print_warning "Usage cap reached during merge — aborting batch"
+    return 5
   elif [ $merge_result -ne 0 ]; then
     # Merge actually failed — no work on remote
     print_error "Merge failed"
@@ -1968,6 +1972,12 @@ run_workflow() {
       _diag "CLEANUP_FAILED issue=${issue_number} merge_succeeded=true"
       print_warning "Merge succeeded but cleanup failed"
       return 6
+    elif [ $merge_exit -eq 5 ]; then
+      # Usage cap reached during merge — propagate so batch aborts cleanly
+      _timer_end "phase4_merge"
+      _diag "PHASE_FAILED issue=${issue_number} phase=merge reason=usage_cap"
+      print_warning "Usage cap reached during merge phase — aborting batch"
+      return 5
     elif [ $merge_exit -ne 0 ]; then
       # Merge actually failed
       _timer_end "phase4_merge"

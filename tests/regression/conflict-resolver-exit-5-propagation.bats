@@ -225,7 +225,89 @@ BATCHEOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 6: end-to-end signal chain via real divergence-handler.sh
+# Test 6: phase_merge_pr with real sourced workflow-runner.sh
+#         MERGE_PR stub exits 5 → phase_merge_pr must return 5 (not return 1)
+#
+# This test exercises the actual phase_merge_pr() function from workflow-runner.sh
+# to verify the bug fix at lines 1380-1383: the missing `elif [ $merge_result -eq 5 ]`
+# branch that previously downgraded exit 5 → return 1 (generic failure).
+# ─────────────────────────────────────────────────────────────────────────────
+@test "phase_merge_pr: MERGE_PR returning exit 5 propagates as return 5 (not return 1)" {
+  # Set up a stub RITE_LIB_DIR so workflow-runner.sh source calls hit empty stubs
+  # instead of real modules that require git/gh state.
+  _stub_lib="$RITE_TEST_TMPDIR/stub-lib"
+  for _subdir in utils providers core; do
+    mkdir -p "$_stub_lib/$_subdir"
+  done
+
+  # Create stub files for every module sourced by workflow-runner.sh at top level
+  for _mod in \
+    utils/notifications.sh \
+    utils/blocker-rules.sh \
+    utils/session-tracker.sh \
+    utils/pr-summary.sh \
+    utils/normalize-issue.sh \
+    utils/pr-detection.sh \
+    utils/date-helpers.sh \
+    utils/stash-manager.sh \
+    utils/colors.sh \
+    utils/logging.sh \
+    utils/divergence-handler.sh \
+    providers/provider-interface.sh; do
+    printf '#!/usr/bin/env bash\n# stub\n' > "$_stub_lib/$_mod"
+  done
+
+  # Create a stub MERGE_PR script that exits 5 (usage cap)
+  _merge_pr_stub="$RITE_TEST_TMPDIR/merge-pr-stub.sh"
+  printf '#!/usr/bin/env bash\nexit 5\n' > "$_merge_pr_stub"
+  chmod +x "$_merge_pr_stub"
+
+  _result=0
+  (
+    set +e  # allow non-zero exits to be captured
+
+    # Point workflow-runner.sh to stub lib dir
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export WORKFLOW_MODE="unsupervised"
+
+    # Create a valid worktree path (cd inside phase_merge_pr requires it)
+    export WORKTREE_PATH="$RITE_TEST_TMPDIR"
+    export STASHED_UNRELATED_WORK="false"
+
+    # Source the real workflow-runner.sh (stubs replace sourced modules)
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+    # Override MERGE_PR to use the exit-5 stub
+    MERGE_PR="$_merge_pr_stub"
+
+    # Stub functions called by phase_merge_pr before it reaches $MERGE_PR
+    gh()                     { echo "{}"; }
+    jq()                     { echo ""; }
+    extract_changes_summary() { echo ""; }
+    check_blockers()          { return 0; }
+    handle_blocker()          { return 0; }
+    verify_pr_head()          { return 0; }  # head matches → skip divergence block
+    detect_divergence()       { return 1; }  # no divergence
+
+    # Stub print functions (may already be defined from setup(), but re-export to be safe)
+    print_header()  { true; }
+    print_info()    { true; }
+    print_warning() { true; }
+    print_error()   { true; }
+    print_success() { true; }
+
+    phase_merge_pr "22" "101"
+  ) || _result=$?
+
+  # Must return 5 (usage cap propagated), not 1 (old broken behavior: generic failure)
+  [ "$_result" -eq 5 ]
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 7: end-to-end signal chain via real divergence-handler.sh
 #         attempt_claude_merge_resolution exit 5 → handle_push_divergence exit 5
 #         Tests the full propagation path through the real sourced library.
 # ─────────────────────────────────────────────────────────────────────────────
