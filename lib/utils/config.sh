@@ -155,6 +155,11 @@ SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md
 # Lock directory for per-issue locking (prevents concurrent rite invocations on same issue)
 RITE_LOCK_DIR="${RITE_LOCK_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/locks}"
 
+# State directory for inter-process handoff files (e.g. worktree-handoff-N.txt)
+# Written by claude-workflow.sh after worktree creation; read by workflow-runner.sh
+# to locate the worktree when branch-name patterns don't match the issue number.
+RITE_STATE_DIR="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/state}"
+
 # Session state
 SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT_NAME}.json}"
 
@@ -249,6 +254,8 @@ export SLACK_WEBHOOK
 export EMAIL_NOTIFICATION_ADDRESS
 export RITE_INTERNAL_DOCS_DIR
 export SCRATCHPAD_FILE
+export RITE_LOCK_DIR
+export RITE_STATE_DIR
 export SESSION_STATE_FILE
 export RITE_CLAUDE_TIMEOUT
 export RITE_CLAUDE_MODEL
@@ -289,6 +296,7 @@ fi
 if [ "$RITE_DRY_RUN" != "true" ]; then
   mkdir -p "$RITE_PROJECT_ROOT/$RITE_DATA_DIR"
   mkdir -p "$RITE_WORKTREE_DIR"
+  mkdir -p "$RITE_STATE_DIR"
 
   # Create .rite/.gitignore if it doesn't exist
   RITE_GITIGNORE="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/.gitignore"
