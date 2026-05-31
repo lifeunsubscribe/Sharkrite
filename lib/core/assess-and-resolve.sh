@@ -1075,12 +1075,20 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   # Without this lock, two concurrent assess-and-resolve calls on the same PR can
   # both pass the dedup search (GitHub API eventual consistency means the first
   # created issue is not yet indexed) and create duplicate follow-up issues.
-  # The lock serialises the critical section; lock failure is non-fatal (best-effort).
+  # The lock serialises the critical section.
+  #
+  # Lock timeout (exit 1) means a live process held the lock for 60+ seconds —
+  # this indicates genuine concurrent contention, which is precisely the race we
+  # are preventing.  Proceeding without the lock (fail-open) would defeat the
+  # entire purpose of this PR.  Instead we fail-closed: log and skip creation so
+  # the caller can retry rather than risk a duplicate.
   _followup_lock_held=false
   if acquire_pr_followup_lock "$PR_NUMBER" 2>/dev/null; then
     _followup_lock_held=true
   else
-    print_warning "Could not acquire follow-up lock for PR #$PR_NUMBER — proceeding without lock (best-effort dedup)"
+    print_warning "Could not acquire follow-up lock for PR #$PR_NUMBER after 60s — another process is still in the critical section."
+    print_warning "Skipping follow-up issue creation to prevent duplicates. Re-run assess-and-fix if needed."
+    return 0
   fi
 
   # Check if issue already exists: prefer source-issue scoped body search, fallback to title search.

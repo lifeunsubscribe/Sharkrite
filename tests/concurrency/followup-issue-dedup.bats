@@ -113,27 +113,34 @@ run_locked_dedup_create() {
 }
 
 @test "acquire_pr_followup_lock blocks while lock is held by live process" {
+  # Hold duration in seconds — deterministic window the second acquire must wait inside.
+  local hold_seconds=2
+
   # Acquire lock in background process and hold it
   (
     source "$RITE_LIB_DIR/utils/issue-lock.sh"
     acquire_pr_followup_lock 55
-    # Signal ready, then hold for 3 seconds
+    # Signal ready, then hold for the deterministic window
     touch "$BARRIER_DIR/lock_held.ready"
-    sleep 3
+    sleep "$hold_seconds"
     release_pr_followup_lock 55
   ) &
   local holder_pid=$!
 
-  # Wait until lock is confirmed held
+  # Wait until lock is confirmed held before timing the second acquire
   local waited=0
   while [ ! -f "$BARRIER_DIR/lock_held.ready" ] && [ "$waited" -lt 30 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
 
-  # A second acquire attempt should see the lock as held
-  # (it will eventually succeed after holder exits, but we just verify it waits)
-  # We time it: should take ~1s before holder releases
+  [ -f "$BARRIER_DIR/lock_held.ready" ] || {
+    echo "FAIL: holder never signalled ready"
+    kill "$holder_pid" 2>/dev/null || true
+    false
+  }
+
+  # Time the second acquire — it must block until the holder releases
   local start_ts
   start_ts=$(date +%s)
 
@@ -146,10 +153,15 @@ run_locked_dedup_create() {
   end_ts=$(date +%s)
   local elapsed=$(( end_ts - start_ts ))
 
-  # Should have waited at least 1 second (holder held for ~3s, but may have
-  # released before our attempt starts — just verify status 0 meaning it
-  # eventually acquired successfully after waiting)
+  # Must have succeeded (eventually acquired the lock)
   [ "$status" -eq 0 ]
+
+  # Must have blocked for at least hold_seconds-1 (allow 1s clock granularity).
+  # If locking were a no-op this would be ~0s and the assertion would catch it.
+  [ "$elapsed" -ge $(( hold_seconds - 1 )) ] || {
+    echo "FAIL: second acquire returned in ${elapsed}s — expected at least $(( hold_seconds - 1 ))s of blocking (lock held for ${hold_seconds}s)"
+    false
+  }
 
   wait "$holder_pid" || true
 }
