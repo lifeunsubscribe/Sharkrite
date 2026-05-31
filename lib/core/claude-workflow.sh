@@ -1111,6 +1111,119 @@ If the changes are unrelated work, answer UNRELATED."
       fi
     fi
 
+    # Preflight branch health check before entering worktree
+    source "$RITE_LIB_DIR/utils/branch-preflight.sh"
+
+    set +e
+    classify_branch_health "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH"
+    HEALTH_CODE=$?
+    set -e
+
+    case "$HEALTH_CODE" in
+      0)
+        # HEALTHY - proceed to dev work
+        print_info "Branch health: HEALTHY — proceeding to dev work"
+        ;;
+
+      2)
+        # STALE - route to stale-branch handler
+        print_warning "Branch health: STALE — syncing with main..."
+        source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+        # Need to detect PR for stale-branch handler
+        if [ -z "${PR_NUMBER:-}" ]; then
+          source "$RITE_LIB_DIR/utils/pr-detection.sh"
+          detect_pr_for_issue "$ISSUE_NUMBER" || true
+        fi
+
+        set +e
+        check_stale_branch "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}" "$ISSUE_NUMBER" "${WORKFLOW_MODE:-auto}"
+        local stale_exit=$?
+        set -e
+
+        if [ $stale_exit -eq 10 ]; then
+          # Stale handler restarted fresh — exec to restart workflow
+          print_status "Restarting workflow after stale branch cleanup..."
+          if [ "$AUTO_MODE" = true ]; then
+            exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
+          else
+            exec "$SCRIPT_PATH" "$ISSUE_NUMBER"
+          fi
+        elif [ $stale_exit -ne 0 ]; then
+          # Stale handler failed or user aborted
+          exit $stale_exit
+        fi
+        # else: stale_exit == 0, continue to dev work
+        ;;
+
+      3|4)
+        # EMPTY_INIT or DIVERGENT_NO_WORK - auto-recover
+        if [ "$AUTO_MODE" = true ]; then
+          print_status "Branch health: EMPTY_INIT/DIVERGENT — auto-recovering..."
+
+          # Detect PR if needed for recovery
+          if [ -z "${PR_NUMBER:-}" ]; then
+            source "$RITE_LIB_DIR/utils/pr-detection.sh"
+            detect_pr_for_issue "$ISSUE_NUMBER" || true
+          fi
+
+          preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"
+
+          # Restart workflow fresh (exec replaces current process, starts from Phase 1 with clean state)
+          # This ensures new worktree is created from current main, not the deleted stale branch
+          print_status "Restarting workflow after empty branch cleanup..."
+          exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
+        else
+          # Supervised mode: prompt user
+          echo ""
+          print_warning "Branch has no real work (only init commit)"
+          echo ""
+          echo "Options:"
+          echo "  1) Clean up and restart fresh (recommended)"
+          echo "  2) Continue anyway (not recommended)"
+          echo "  3) Abort"
+          echo ""
+          read -p "Choose [1/2/3]: " -n 1 -r
+          echo
+
+          case "$REPLY" in
+            1)
+              # Clean up and restart
+              if [ -z "${PR_NUMBER:-}" ]; then
+                source "$RITE_LIB_DIR/utils/pr-detection.sh"
+                detect_pr_for_issue "$ISSUE_NUMBER" || true
+              fi
+
+              preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"
+              print_status "Restarting workflow after cleanup..."
+              exec "$SCRIPT_PATH" "$ISSUE_NUMBER"
+              ;;
+            2)
+              # User chose to continue with empty branch — workflow will proceed to dev phase
+              # Claude will start from scratch (branch only has init commit)
+              print_warning "Continuing with empty branch (not recommended)"
+              ;;
+            3|*)
+              print_info "Workflow aborted by user"
+              exit 1
+              ;;
+          esac
+        fi
+        ;;
+
+      5)
+        # UNCOMMITTED_PRESERVED - should already be handled by earlier block
+        # If we get here, it means uncommitted detection logic above missed something
+        print_warning "Uncommitted changes detected by preflight (already handled earlier)"
+        ;;
+
+      *)
+        # Unknown state - fail safe
+        print_error "Unknown branch health state: $HEALTH_CODE"
+        exit 1
+        ;;
+    esac
+
     print_status "Navigating to existing worktree..."
     # Pass issue info via environment to avoid losing it
     # Use cd and export separately to avoid command injection
