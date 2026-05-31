@@ -13,6 +13,12 @@ fi
 
 set -euo pipefail
 
+# Source scratchpad lock utilities (used when --fix writes to the scratchpad)
+_VALIDATE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
+  source "$_VALIDATE_SCRIPT_DIR/scratchpad-lock.sh"
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -236,7 +242,9 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
     print_warning "  Missing 'Recent Security Findings' section"
 
     if [ "$FIX_MODE" = true ]; then
-      # Add section
+      # Acquire lock before writing — validate-setup may run while workflows are active
+      acquire_scratchpad_lock
+      _setup_scratchpad_lock_trap
       cat >> "$SCRATCHPAD_FILE" <<'EOF'
 
 ---
@@ -247,6 +255,7 @@ _Security issues found in recent PR reviews. Check these before implementing new
 
 ---
 EOF
+      release_scratchpad_lock
       print_success "  Added 'Recent Security Findings' section"
     fi
   fi
@@ -257,7 +266,8 @@ EOF
     print_warning "  Missing 'Current Work' section"
 
     if [ "$FIX_MODE" = true ]; then
-      # Add section
+      acquire_scratchpad_lock
+      _setup_scratchpad_lock_trap
       cat >> "$SCRATCHPAD_FILE" <<'EOF'
 
 ## Current Work
@@ -266,6 +276,7 @@ _No active work - start new issue with rite_
 
 ---
 EOF
+      release_scratchpad_lock
       print_success "  Added 'Current Work' section"
     fi
   fi
@@ -274,8 +285,13 @@ else
 
   if [ "$FIX_MODE" = true ]; then
     # Initialize scratchpad with basic structure
+    # Lock before creating so concurrent validate-setup --fix runs don't both write
     mkdir -p "$(dirname "$SCRATCHPAD_FILE")"
-    cat > "$SCRATCHPAD_FILE" <<'EOF'
+    acquire_scratchpad_lock
+    _setup_scratchpad_lock_trap
+    # Re-check after acquiring lock — another process may have created it
+    if [ ! -f "$SCRATCHPAD_FILE" ]; then
+      cat > "$SCRATCHPAD_FILE" <<'EOF'
 # Sharkrite Scratchpad
 
 **Purpose:** Working notes, security findings, and development context for Sharkrite
@@ -311,7 +327,9 @@ _Last 20 PRs - auto-cleaned_
 
 _This file is for Claude's working memory only._
 EOF
-    print_success "Created scratchpad at $SCRATCHPAD_FILE"
+      print_success "Created scratchpad at $SCRATCHPAD_FILE"
+    fi
+    release_scratchpad_lock
   fi
 fi
 echo ""
