@@ -49,8 +49,32 @@ teardown() {
   preamble=$(provider_dev_session_preamble "true" "Test task description")
 
   # Assert no forbidden tokens - check that grep finds nothing
-  if echo "$preamble" | grep -qE '/exit|Claude [(]CLI|session[)]|--print|--dangerously-skip-permissions|tool_use|--disallowedTools'; then
+  # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
+  if echo "$preamble" | grep -qE "(['\"])?/exit(['\"])?|Claude [(]CLI|session[)]|--print|--dangerously-skip-permissions|tool_use|--disallowedTools"; then
     echo "Found Claude-specific tokens in preamble" >&2
+    return 1
+  fi
+}
+
+# Verify the mock provider registration mechanism works
+@test "mock provider logs prompts when invoked" {
+  load_provider "gemini-mock"
+
+  # Clear log file
+  : > "$GEMINI_MOCK_LOG_FILE"
+
+  # Invoke the provider
+  provider_run_prompt "Test prompt" "default" "true"
+
+  # Verify the log file contains content (mock was actually invoked)
+  if [ ! -s "$GEMINI_MOCK_LOG_FILE" ]; then
+    echo "Mock provider was not invoked - log file is empty" >&2
+    return 1
+  fi
+
+  # Verify the prompt was logged
+  if ! grep -q "Test prompt" "$GEMINI_MOCK_LOG_FILE"; then
+    echo "Prompt was not logged to mock log file" >&2
     return 1
   fi
 }
@@ -61,7 +85,8 @@ teardown() {
   instructions=$(provider_exit_instructions "true")
 
   # Assert no forbidden tokens
-  if echo "$instructions" | grep -qE '/exit|Claude [(]CLI|session[)]|--print|--dangerously-skip-permissions|tool_use|--disallowedTools'; then
+  # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
+  if echo "$instructions" | grep -qE "(['\"])?/exit(['\"])?|Claude [(]CLI|session[)]|--print|--dangerously-skip-permissions|tool_use|--disallowedTools"; then
     echo "Found Claude-specific tokens in exit instructions (auto)" >&2
     return 1
   fi
@@ -73,7 +98,8 @@ teardown() {
   instructions=$(provider_exit_instructions "false")
 
   # Assert no forbidden tokens
-  if echo "$instructions" | grep -qE '/exit|Claude [(]CLI|session[)]|--print|--dangerously-skip-permissions|tool_use|--disallowedTools'; then
+  # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
+  if echo "$instructions" | grep -qE "(['\"])?/exit(['\"])?|Claude [(]CLI|session[)]|--print|--dangerously-skip-permissions|tool_use|--disallowedTools"; then
     echo "Found Claude-specific tokens in exit instructions (supervised)" >&2
     return 1
   fi
@@ -94,7 +120,17 @@ teardown() {
 
   # Source the workflow file to get its prompt building functions
   # We need to test the actual prompt construction logic in claude-workflow.sh
-  source "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" 2>/dev/null || true
+  if ! source "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" 2>/dev/null; then
+    echo "Failed to source claude-workflow.sh - cannot test prompt construction" >&2
+    return 1
+  fi
+
+  # Validate that expected functions exist after sourcing
+  if ! declare -f provider_dev_session_preamble >/dev/null 2>&1; then
+    echo "provider_dev_session_preamble function not available after sourcing" >&2
+    return 1
+  fi
+
   set -u
 
   # The EXIT_INSTRUCTION variable in fix-review prompt should use provider abstraction
@@ -104,7 +140,8 @@ teardown() {
   # Full integration test would require running actual workflow (too heavy)
   preamble=$(provider_dev_session_preamble "false" "Fix review issues")
 
-  if echo "$preamble" | grep -qF "/exit"; then
+  # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
+  if echo "$preamble" | grep -qE "(['\"])?/exit(['\"])?"; then
     echo "Found /exit in fix-review preamble" >&2
     return 1
   fi
@@ -124,7 +161,8 @@ teardown() {
 
   # For this smoke test, we check the specific known leak: claude-workflow.sh:658
   local leaks
-  leaks=$(grep -rn '"/exit"' "$lib_core/claude-workflow.sh" | grep -v '^[[:space:]]*#' || true)
+  # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
+  leaks=$(grep -rn -E "(['\"])?/exit(['\"])?" "$lib_core/claude-workflow.sh" | grep -v '^[[:space:]]*#' || true)
 
   # The leak should be at line 658 (EXIT_INSTRUCTION hardcoded)
   if [ -n "$leaks" ]; then
