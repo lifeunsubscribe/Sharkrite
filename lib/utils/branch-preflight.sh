@@ -163,7 +163,7 @@ preflight_auto_recover_empty() {
   # Close PR if it exists and is a draft with no real work
   if [ -n "$pr_number" ]; then
     local pr_state
-    pr_state=$(gh pr view "$pr_number" --json isDraft,state --jq '.isDraft,.state' 2>/dev/null | paste -sd ',' - || echo "")
+    pr_state=$(gh_safe pr view "$pr_number" --json isDraft,state --jq '.isDraft,.state' | paste -sd ',' - || echo "")
 
     # Validate pr_state before checking (protect against paste/gh failures)
     if [ -z "$pr_state" ] || ! echo "$pr_state" | grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$'; then
@@ -171,13 +171,13 @@ preflight_auto_recover_empty() {
     elif echo "$pr_state" | grep -q "true"; then
       # Draft PR — check if it has zero additions (empty)
       local additions
-      additions=$(gh pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
+      additions=$(gh_safe pr view "$pr_number" --json additions --jq '.additions' || echo "0")
 
       if [ "$additions" -eq 0 ]; then
         print_status "Closing empty draft PR #$pr_number..."
         local close_comment="Auto-closing: Branch has no real work (only init commit). Restarting fresh."
-        echo "$close_comment" | gh pr comment "$pr_number" --body-file - 2>/dev/null || true
-        gh pr close "$pr_number" 2>/dev/null || print_warning "Failed to close PR #$pr_number"
+        echo "$close_comment" | gh_safe pr comment "$pr_number" --body-file - || true
+        gh_safe pr close "$pr_number" || print_warning "Failed to close PR #$pr_number"
       fi
     fi
   fi

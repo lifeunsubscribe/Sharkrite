@@ -22,6 +22,11 @@ if ! declare -f print_info &>/dev/null; then
   fi
 fi
 
+# Source gh retry helper
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Source provider abstraction
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -131,12 +136,12 @@ $(cat "$doc")
 
   # Load existing open issues to avoid duplicates and link dependencies
   local existing_issues=""
-  existing_issues=$(gh issue list --state open --limit 50 --json number,title,labels \
-    --jq '.[] | "#\(.number) \(.title) [\([.labels[].name] | join(", "))]"' 2>/dev/null || echo "")
+  existing_issues=$(gh_safe issue list --state open --limit 50 --json number,title,labels \
+    --jq '.[] | "#\(.number) \(.title) [\([.labels[].name] | join(", "))]"' || echo "")
 
   # Detect repo's existing labels for accurate label suggestions
   local repo_labels=""
-  repo_labels=$(gh label list --limit 100 --json name --jq '.[].name' 2>/dev/null | tr '\n' ', ' || echo "")
+  repo_labels=$(gh_safe label list --limit 100 --json name --jq '.[].name' | tr '\n' ', ' || echo "")
 
   # Load previous deferrals for continuity across planning sessions
   local deferrals_file="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/deferrals.log"
@@ -1245,7 +1250,7 @@ create_issues() {
           IFS=',' read -ra LABEL_ARRAY <<< "$current_labels"
           for label in "${LABEL_ARRAY[@]}"; do
             label=$(echo "$label" | xargs)  # trim whitespace
-            gh label create "$label" --force < /dev/null &>/dev/null || true
+            gh_safe label create "$label" --force < /dev/null &>/dev/null || true
           done
           gh_args+=(--label "$current_labels")
         fi
@@ -1259,7 +1264,7 @@ create_issues() {
         printf '%s' "$current_body" > "$body_file"
 
         local issue_url gh_exit
-        issue_url=$(gh issue create \
+        issue_url=$(gh_safe issue create \
           --title "$current_title" \
           "${gh_args[@]}" \
           --body-file "$body_file" < /dev/null 2>&1) && gh_exit=0 || gh_exit=$?

@@ -10,9 +10,12 @@ set -euo pipefail
 # Use configured scratchpad path (set by config.sh)
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
 
-# Source label utilities if not already loaded
+# Source label utilities and gh retry helper if not already loaded
 if [ -n "${RITE_LIB_DIR:-}" ] && [ -f "$RITE_LIB_DIR/utils/labels.sh" ]; then
   source "$RITE_LIB_DIR/utils/labels.sh"
+fi
+if [ -n "${RITE_LIB_DIR:-}" ] && [ -f "$RITE_LIB_DIR/utils/gh-retry.sh" ]; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
 # Update scratchpad with security findings from PR review
@@ -27,7 +30,7 @@ update_scratchpad_from_pr() {
   echo "Updating scratchpad with PR #$pr_number findings..."
 
   # Get PR review
-  local review_body=$(gh pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1].body' 2>/dev/null || echo "")
+  local review_body=$(gh_safe pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1].body' || echo "")
 
   if [ -z "$review_body" ] || [ "$review_body" = "null" ]; then
     echo "No review found for PR #$pr_number"
@@ -359,7 +362,7 @@ create_tech_debt_issues() {
     local search_term="[tech-debt] ${category}: ${description}"
     # Truncate search to avoid overly specific queries
     local search_query=$(echo "$search_term" | head -c 80)
-    local existing=$(gh issue list -S "\"[tech-debt]\" \"${location}\" in:title" --state all --json number --jq '.[0].number' 2>/dev/null || echo "")
+    local existing=$(gh_safe issue list -S "\"[tech-debt]\" \"${location}\" in:title" --state all --json number --jq '.[0].number' || echo "")
 
     if [ -n "$existing" ] && [ "$existing" != "null" ]; then
       echo "Tech-debt issue already exists for ${location}: #${existing}" >&2
@@ -411,7 +414,7 @@ EOF
     body_file=$(mktemp)
     printf '%s' "$issue_body" > "$body_file"
     ensure_labels_exist "tech-debt,automated"
-    if gh issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated" 2>/dev/null; then
+    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated"; then
       created=$((created + 1))
       echo "Created tech-debt issue: ${issue_title}" >&2
     else

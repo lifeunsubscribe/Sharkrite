@@ -6,6 +6,10 @@
 
 set -euo pipefail
 
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # ensure_labels_exist LABELS_CSV
 #
 # Creates any labels in the comma-separated list that don't already exist
@@ -13,7 +17,7 @@ set -euo pipefail
 ensure_labels_exist() {
   local labels_csv="$1"
   local existing
-  existing=$(gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null || echo "")
+  existing=$(gh_safe label list --limit 200 --json name --jq '.[].name' || echo "")
 
   local label
   IFS=',' read -ra label_arr <<< "$labels_csv"
@@ -22,13 +26,13 @@ ensure_labels_exist() {
     [ -z "$label" ] && continue
     if ! echo "$existing" | grep -qxF "$label"; then
       case "$label" in
-        tech-debt)        gh label create "$label" --color "E4E669" --description "Technical debt to address" 2>/dev/null || true ;;
-        review-follow-up) gh label create "$label" --color "0075ca" --description "Follow-up from code review" 2>/dev/null || true ;;
-        "High Priority")  gh label create "$label" --color "FBCA04" --description "High priority item" 2>/dev/null || true ;;
-        "Medium Priority")gh label create "$label" --color "0E8A16" --description "Medium priority item" 2>/dev/null || true ;;
-        from-review)      gh label create "$label" --color "BFD4F2" --description "Identified during code review" 2>/dev/null || true ;;
-        automated)        gh label create "$label" --color "ededed" --description "Automatically created by Sharkrite" 2>/dev/null || true ;;
-        *)                gh label create "$label" --color "ededed" 2>/dev/null || true ;;
+        tech-debt)        gh_safe label create "$label" --color "E4E669" --description "Technical debt to address" || true ;;
+        review-follow-up) gh_safe label create "$label" --color "0075ca" --description "Follow-up from code review" || true ;;
+        "High Priority")  gh_safe label create "$label" --color "FBCA04" --description "High priority item" || true ;;
+        "Medium Priority")gh_safe label create "$label" --color "0E8A16" --description "Medium priority item" || true ;;
+        from-review)      gh_safe label create "$label" --color "BFD4F2" --description "Identified during code review" || true ;;
+        automated)        gh_safe label create "$label" --color "ededed" --description "Automatically created by Sharkrite" || true ;;
+        *)                gh_safe label create "$label" --color "ededed" || true ;;
       esac
     fi
   done

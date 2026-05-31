@@ -14,6 +14,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 # =============================================================================
@@ -355,7 +356,7 @@ repo_wide_status() {
 
   # Repo URL for terminal hyperlinks (OSC 8)
   local repo_url
-  repo_url=$(gh repo view --json url -q '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url -q '.url' || echo "")
 
   echo ""
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -377,14 +378,14 @@ repo_wide_status() {
   # --- Fetch open issues ---
   echo "  Fetching issues..." >&2
   local open_issues_json
-  open_issues_json=$(gh issue list --state open --json number,title,labels,createdAt --limit 200 2>/dev/null || echo "[]")
+  open_issues_json=$(gh_safe issue list --state open --json number,title,labels,createdAt --limit 200 || echo "[]")
 
   local open_count
   open_count=$(echo "$open_issues_json" | jq 'length' 2>/dev/null || echo "0")
 
   # --- Batch-fetch all open PRs (avoid N+1 API calls) ---
   local open_prs_json
-  open_prs_json=$(gh pr list --state open --json number,body,headRefName --limit 200 2>/dev/null || echo "[]")
+  open_prs_json=$(gh_safe pr list --state open --json number,body,headRefName --limit 200 || echo "[]")
 
   # --- For PRs that exist, batch-fetch comments ---
   # Build a map of issue_number -> PR json
@@ -423,7 +424,7 @@ repo_wide_status() {
       if [ -n "$matched_pr" ] && [ "$matched_pr" != "null" ]; then
         local pr_num
         pr_num=$(echo "$matched_pr" | jq -r '.number')
-        pr_comments=$(gh pr view "$pr_num" --json comments --jq '.comments' 2>/dev/null || echo "[]")
+        pr_comments=$(gh_safe pr view "$pr_num" --json comments --jq '.comments' || echo "[]")
       fi
 
       get_issue_phase "$num" "$matched_pr" "$pr_comments"
@@ -585,14 +586,14 @@ repo_wide_status() {
 
   # --- Recently closed ---
   local closed_issues_json
-  closed_issues_json=$(gh issue list --state closed --json number,title,labels,closedAt --limit 5 2>/dev/null || echo "[]")
+  closed_issues_json=$(gh_safe issue list --state closed --json number,title,labels,closedAt --limit 5 || echo "[]")
 
   local closed_count
   closed_count=$(echo "$closed_issues_json" | jq 'length' 2>/dev/null || echo "0")
 
   # Batch-fetch merged PRs to match against closed issues
   local merged_prs_json
-  merged_prs_json=$(gh pr list --state merged --json number,body --limit 20 2>/dev/null || echo "[]")
+  merged_prs_json=$(gh_safe pr list --state merged --json number,body --limit 20 || echo "[]")
 
   echo -e "  ${CYAN}Recently Closed (${closed_count}):${NC}"
   echo -e "  ${BLUE}─────────────────────────────────────────────────────${NC}"
@@ -668,8 +669,8 @@ repo_wide_status() {
       local wt_pr_num=""
       if [ -z "$wt_issue_num" ]; then
         local _fallback_pr
-        _fallback_pr=$(gh pr list --head "$branch" --state all --json number,body --limit 1 \
-          --jq '.[0] // empty' 2>/dev/null || echo "")
+        _fallback_pr=$(gh_safe pr list --head "$branch" --state all --json number,body --limit 1 \
+          --jq '.[0] // empty' || echo "")
         if [ -n "$_fallback_pr" ]; then
           wt_pr_num=$(echo "$_fallback_pr" | jq -r '.number // ""' 2>/dev/null || true)
           wt_issue_num=$(echo "$_fallback_pr" | jq -r '.body // ""' | \

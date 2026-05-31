@@ -40,6 +40,7 @@ done
 # Source configuration (detects project, loads configs)
 source "$RITE_LIB_DIR/utils/config.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 # Default mode: full lifecycle (workflow-runner)
 MODE="full"
@@ -663,7 +664,7 @@ normalize_and_resolve() {
     # Pre-existing issue — fetch details, then normalize title
     ISSUE_NUMBER="$input"
 
-    ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" --json title,body,state 2>/dev/null || echo "")
+    ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,state || echo "")
     if [ -z "$ISSUE_JSON" ] || [ "$ISSUE_JSON" = "null" ]; then
       print_error "Issue #$ISSUE_NUMBER not found on GitHub"
       exit 1
@@ -731,7 +732,7 @@ fi
 # Resolve --pr to issue number
 if [ -n "${PR_INPUT:-}" ]; then
   print_status "Resolving PR #$PR_INPUT..."
-  PR_JSON=$(gh pr view "$PR_INPUT" --json body,title,headRefName,state 2>/dev/null || echo "")
+  PR_JSON=$(gh_safe pr view "$PR_INPUT" --json body,title,headRefName,state || echo "")
   if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
     print_error "Could not fetch PR #$PR_INPUT"
     exit 1
@@ -765,8 +766,8 @@ if [ -n "${PR_INPUT:-}" ]; then
     # Shared cleanup: close PR and remove branch/worktree artifacts
     _close_orphan_pr() {
       local comment="$1"
-      gh pr comment "$PR_INPUT" --body "$comment" 2>/dev/null || true
-      gh pr close "$PR_INPUT" 2>/dev/null && print_info "Closed PR #$PR_INPUT" || print_warning "Failed to close PR #$PR_INPUT"
+      gh_safe pr comment "$PR_INPUT" --body "$comment" || true
+      gh_safe pr close "$PR_INPUT" && print_info "Closed PR #$PR_INPUT" || print_warning "Failed to close PR #$PR_INPUT"
       if [ -n "$PR_BRANCH" ]; then
         LOCAL_WT=$(git worktree list 2>/dev/null | grep "\[$PR_BRANCH\]" | awk '{print $1}' || echo "")
         if [ -n "$LOCAL_WT" ] && [ -d "$LOCAL_WT" ]; then
@@ -804,7 +805,7 @@ if [ -n "${PR_INPUT:-}" ]; then
       else
         ISSUE_BODY="Tracked from orphan PR #${PR_INPUT}."
       fi
-      ISSUE_URL=$(gh issue create --title "$PR_TITLE" --body "$ISSUE_BODY" 2>/dev/null || echo "")
+      ISSUE_URL=$(gh_safe issue create --title "$PR_TITLE" --body "$ISSUE_BODY" || echo "")
       LINKED_ISSUE=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$' || echo "")
       if [ -z "$LINKED_ISSUE" ]; then
         print_error "Failed to create issue for PR #$PR_INPUT"
@@ -823,7 +824,7 @@ Fresh implementation will be started on issue #${LINKED_ISSUE}."
       else
         ISSUE_BODY="Tracked from orphan PR #${PR_INPUT}."
       fi
-      ISSUE_URL=$(gh issue create --title "$PR_TITLE" --body "$ISSUE_BODY" 2>/dev/null || echo "")
+      ISSUE_URL=$(gh_safe issue create --title "$PR_TITLE" --body "$ISSUE_BODY" || echo "")
       LINKED_ISSUE=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$' || echo "")
       if [ -z "$LINKED_ISSUE" ]; then
         print_error "Failed to create issue for PR #$PR_INPUT"
@@ -831,7 +832,7 @@ Fresh implementation will be started on issue #${LINKED_ISSUE}."
       fi
       print_success "Created issue #$LINKED_ISSUE"
       NEW_BODY="$(printf 'Closes #%s\n\n%s' "$LINKED_ISSUE" "$PR_BODY")"
-      gh pr edit "$PR_INPUT" --body "$NEW_BODY" 2>/dev/null \
+      gh_safe pr edit "$PR_INPUT" --body "$NEW_BODY" \
         && print_success "Linked issue #$LINKED_ISSUE to PR #$PR_INPUT" \
         || print_warning "Could not update PR body (issue still created)"
     fi
@@ -895,7 +896,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
   source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
   # ── Issue info ──
-  ISSUE_JSON=$(gh issue view "$STATUS_ISSUE" --json title,state,createdAt,closedAt,labels,url 2>/dev/null || echo "")
+  ISSUE_JSON=$(gh_safe issue view "$STATUS_ISSUE" --json title,state,createdAt,closedAt,labels,url || echo "")
   if [ -z "$ISSUE_JSON" ] || [ "$ISSUE_JSON" = "null" ]; then
     print_error "Issue #$STATUS_ISSUE not found"
     exit 1
@@ -926,20 +927,20 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
   # detect_pr_for_issue searches open PRs only. For closed/merged issues,
   # fall back to searching merged then closed PRs.
   if ! detect_pr_for_issue "$STATUS_ISSUE"; then
-    PR_NUMBER=$(gh pr list --state merged --json number,body --limit 100 2>/dev/null | \
+    PR_NUMBER=$(gh_safe pr list --state merged --json number,body --limit 100 | \
       jq --arg issue "$STATUS_ISSUE" -r \
       '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-      head -1)
+      head -1 || true)
     if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-      PR_NUMBER=$(gh pr list --state closed --json number,body --limit 100 2>/dev/null | \
+      PR_NUMBER=$(gh_safe pr list --state closed --json number,body --limit 100 | \
         jq --arg issue "$STATUS_ISSUE" -r \
         '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-        head -1)
+        head -1 || true)
     fi
     [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
   fi
   if [ -n "$PR_NUMBER" ]; then
-    PR_JSON=$(gh pr view "$PR_NUMBER" --json state,title,headRefName,additions,deletions,changedFiles,commits,createdAt,mergedAt 2>/dev/null || echo "{}")
+    PR_JSON=$(gh_safe pr view "$PR_NUMBER" --json state,title,headRefName,additions,deletions,changedFiles,commits,createdAt,mergedAt || echo "{}")
     PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
     PR_BRANCH_NAME=$(echo "$PR_JSON" | jq -r '.headRefName // ""')
     PR_ADDITIONS=$(echo "$PR_JSON" | jq -r '.additions // 0')
@@ -1018,10 +1019,10 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
     fi
 
     # ── Assessment state ──
-    ASSESS_BODY=$(gh pr view "$PR_NUMBER" --json comments --jq '
+    ASSESS_BODY=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
       [.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
       sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null || echo "")
+    ' || echo "")
 
     if [ -n "$ASSESS_BODY" ] && [ "$ASSESS_BODY" != "" ]; then
       NOW_CT=$(echo "$ASSESS_BODY" | grep -c "^### .* - ACTIONABLE_NOW" || true)
@@ -1033,9 +1034,9 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
     fi
 
     # ── Follow-up issues ──
-    FOLLOWUP_MARKERS=$(gh pr view "$PR_NUMBER" --json comments --jq '
+    FOLLOWUP_MARKERS=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
       [.comments[].body | capture("sharkrite-followup-issue:(?<num>[0-9]+)") | .num] | join(", ")
-    ' 2>/dev/null || echo "")
+    ' || echo "")
 
     if [ -n "$FOLLOWUP_MARKERS" ]; then
       echo "  Follow-ups: #$FOLLOWUP_MARKERS"
@@ -1116,7 +1117,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
   print_info "Found PR #$PR_NUMBER for issue #$ISSUE_NUMBER"
 
   # Check if PR has any code changes
-  DIFF_LINES=$(gh pr diff "$PR_NUMBER" 2>/dev/null | wc -l | tr -d ' ')
+  DIFF_LINES=$(gh_safe pr diff "$PR_NUMBER" | wc -l | tr -d ' ' || echo "0")
   if [ "${DIFF_LINES:-0}" -eq 0 ]; then
     print_error "No code to review — PR #$PR_NUMBER has no diff from main"
     exit 1

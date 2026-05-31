@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Source gh retry helper if not already loaded
+if [ -n "${RITE_LIB_DIR:-}" ] && [ -f "$RITE_LIB_DIR/utils/gh-retry.sh" ]; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Function: create_followup_issues
 # Parses latest review for "skip" items and creates GitHub issues
 # Returns: 0 on success, number of issues created stored in ISSUES_CREATED global
@@ -20,9 +25,9 @@ create_followup_issues() {
   fi
 
   # Get latest review
-  local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
+  local LATEST_REVIEW=$(gh_safe pr view "$PR_NUMBER" --json comments \
     --jq '[.comments[] | select(.author.login == "github-actions[bot]" or .author.login == "claude" or .author.login == "claude-code")] | .[-1] | .body' \
-    2>/dev/null)
+    || echo "")
 
   if [ -z "$LATEST_REVIEW" ]; then
     echo "⚠️  No review found, skipping issue creation"
@@ -195,14 +200,14 @@ EOF
   local body_file
   body_file=$(mktemp)
   printf '%s' "$ISSUE_BODY" > "$body_file"
-  NEW_ISSUE_NUMBER=$(gh issue create \
+  NEW_ISSUE_NUMBER=$(gh_safe issue create \
     --title "$ISSUE_TITLE" \
     --body-file "$body_file" \
     --label "pr-review" \
     --label "$PRIORITY_LABEL" \
     --label "$TYPE_LABEL" \
     --json number \
-    --jq '.number' 2>/dev/null)
+    --jq '.number' || echo "")
   rm -f "$body_file"
 
   if [ -n "$NEW_ISSUE_NUMBER" ]; then

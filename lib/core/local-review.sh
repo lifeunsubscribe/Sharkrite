@@ -20,6 +20,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -67,7 +68,7 @@ fi
 
 # Resolve issue number: from env (workflow), or from PR body (standalone)
 if [ -z "${ISSUE_NUMBER:-}" ]; then
-  ISSUE_NUMBER=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 fi
 
 print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
@@ -75,7 +76,7 @@ echo ""
 
 # Get PR info
 print_status "Fetching PR information..."
-PR_INFO=$(gh pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url 2>&1) || {
+PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url 2>&1) || {
   print_error "Failed to fetch PR #$PR_NUMBER"
   echo "$PR_INFO"
   exit 1
@@ -91,42 +92,20 @@ echo "  Branch: $PR_HEAD -> $PR_BASE"
 echo "  URL: $PR_URL"
 echo ""
 
-# Get the diff with retry and fallback
+# Get the diff with retry (gh_safe handles transient 5xx/429 errors) and fallback
 print_status "Fetching PR diff..."
 
-# Retry gh pr diff up to 3 times (handles transient 5xx/429 errors)
-MAX_DIFF_ATTEMPTS=3
-DIFF_ATTEMPT=0
 PR_DIFF=""
-GH_DIFF_ERROR=""
 GH_DIFF_SUCCESS=false
 
-while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
-  DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
+if PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" 2>&1); then
+  GH_DIFF_SUCCESS=true
+fi
 
-  GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
-    PR_DIFF="$GH_DIFF_ERROR"
-    GH_DIFF_SUCCESS=true
-    break
-  }
-
-  # Check if error is transient (5xx, 429, network issues)
-  if echo "$GH_DIFF_ERROR" | grep -qiE "500|502|503|504|429|timeout|temporarily unavailable|heavy server load"; then
-    if [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ]; then
-      # Exponential backoff: 2s, 4s
-      BACKOFF=$((2 ** DIFF_ATTEMPT))
-      print_warning "GitHub diff API error (attempt $DIFF_ATTEMPT/$MAX_DIFF_ATTEMPTS) - retrying in ${BACKOFF}s..."
-      sleep "$BACKOFF"
-      continue
-    fi
-  else
-    # Non-transient error - don't retry
-    break
-  fi
-done
-
-# If gh pr diff failed after all retries, fall back to local git diff
+# If gh_safe failed after all retries, fall back to local git diff
 if [ "$GH_DIFF_SUCCESS" != true ]; then
+  GH_DIFF_ERROR="$PR_DIFF"
+  PR_DIFF=""
   print_warning "GitHub diff API unavailable — falling back to local git diff"
 
   # Use git diff with the three-dot syntax (merge-base..HEAD)
@@ -383,30 +362,14 @@ if [ "$POST_REVIEW" = true ]; then
   COMMENT_FILE=$(mktemp)
   printf '%s' "$REVIEW_COMMENT" > "$COMMENT_FILE"
 
-  post_attempt=0
-  post_max=3
   post_success=false
-  while [ $post_attempt -lt $post_max ]; do
-    post_attempt=$((post_attempt + 1))
-    REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1) && {
-      post_success=true
-      break
-    }
-    # Retry on transient GitHub errors (502, 503, network)
-    if echo "$REVIEW_RESULT" | grep -qE "502|503|timeout|connection"; then
-      if [ $post_attempt -lt $post_max ]; then
-        print_warning "GitHub API error (attempt $post_attempt/$post_max), retrying in 5s..."
-        sleep 5
-        continue
-      fi
-    else
-      break  # Non-transient error, don't retry
-    fi
-  done
+  REVIEW_RESULT=$(gh_safe pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1) && {
+    post_success=true
+  }
   rm -f "$COMMENT_FILE"
 
   if [ "$post_success" != true ]; then
-    print_error "Failed to post review after $post_attempt attempt(s)"
+    print_error "Failed to post review after retries"
     echo "$REVIEW_RESULT"
     echo ""
     echo "Review content (not posted):"

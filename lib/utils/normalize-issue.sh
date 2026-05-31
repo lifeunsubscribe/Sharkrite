@@ -25,6 +25,7 @@ fi
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
 # Truncate a string to max_len at a word boundary.
@@ -192,10 +193,10 @@ Rules:
     local body_file
     body_file=$(mktemp)
     printf '%s' "$generated_body" > "$body_file"
-    issue_url=$(gh issue create --title "$generated_title" --body-file "$body_file" 2>&1) || _gh_exit=$?
+    issue_url=$(gh_safe issue create --title "$generated_title" --body-file "$body_file" 2>&1) || _gh_exit=$?
     rm -f "$body_file"
   else
-    issue_url=$(gh issue create --title "$generated_title" --body "Created by rite from CLI description." 2>&1) || _gh_exit=$?
+    issue_url=$(gh_safe issue create --title "$generated_title" --body "Created by rite from CLI description." 2>&1) || _gh_exit=$?
   fi
 
   if [ $_gh_exit -ne 0 ]; then
@@ -270,7 +271,7 @@ ${ISSUE_BODY}"
 
   # Update GitHub title so future runs don't need to condense again
   if [ -n "${ISSUE_NUMBER:-}" ] && [ "$cleaned" != "$original_title" ]; then
-    gh issue edit "$ISSUE_NUMBER" --title "$cleaned" 2>/dev/null || true
+    gh_safe issue edit "$ISSUE_NUMBER" --title "$cleaned" || true
   fi
 
   return 0

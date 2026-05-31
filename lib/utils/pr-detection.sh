@@ -16,6 +16,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 # detect_pr_for_issue ISSUE_NUMBER
 #
@@ -28,20 +29,20 @@ detect_pr_for_issue() {
   PR_BRANCH=""
 
   # Method 1: Search by issue link in PR body (Closes #N, Fixes #N, etc.)
-  PR_NUMBER=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
+  PR_NUMBER=$(gh_safe pr list --state open --json number,body --limit 100 | \
     jq --arg issue "$issue_number" -r \
     '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-    head -1)
+    head -1 || true)
 
   # Method 2: Search by title fallback — match "#N" in PR title only.
   # Previous approach used --search "#N" which is a GitHub full-text search that
   # matches ANY mention of #N in title OR body, causing false positives when
   # unrelated PRs reference the issue (e.g., "Follow-up from #31").
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-    PR_NUMBER=$(gh pr list --state open --json number,title --limit 100 2>/dev/null | \
+    PR_NUMBER=$(gh_safe pr list --state open --json number,title --limit 100 | \
       jq --arg issue "$issue_number" -r \
       '.[] | select(.title | test("#" + $issue + "\\b")) | .number' | \
-      head -1)
+      head -1 || true)
   fi
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
@@ -49,7 +50,7 @@ detect_pr_for_issue() {
   fi
 
   # Get the branch name for this PR
-  PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+  PR_BRANCH=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' || echo "")
 
   return 0
 }
@@ -69,7 +70,7 @@ detect_pr_for_current_branch() {
     return 1
   fi
 
-  PR_NUMBER=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null || echo "")
+  PR_NUMBER=$(gh_safe pr list --head "$branch_name" --json number --jq '.[0].number' || echo "")
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
     return 1
@@ -88,7 +89,7 @@ detect_worktree_for_pr() {
   WORKTREE_PATH=""
 
   local pr_branch
-  pr_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+  pr_branch=$(gh_safe pr view "$pr_number" --json headRefName --jq '.headRefName' || echo "")
 
   if [ -z "$pr_branch" ]; then
     return 1
@@ -135,11 +136,11 @@ get_latest_work_commit_time() {
 
   # Fall back to GitHub API if local git unavailable or returned empty
   if [ -z "$LATEST_COMMIT_TIME" ] && [ -n "$pr_number" ]; then
-    LATEST_COMMIT_TIME=$(gh pr view "$pr_number" --json commits --jq '
+    LATEST_COMMIT_TIME=$(gh_safe pr view "$pr_number" --json commits --jq '
       [.commits[] | select(
         .messageHeadline | test("^Merge (branch .*(main|master|develop).|pull request .* from .*/main)") | not
       )][-1].committedDate // ""
-    ' 2>/dev/null || echo "")
+    ' || echo "")
   fi
 
   return 0
@@ -169,11 +170,11 @@ detect_review_state() {
 
   # Fetch latest review comment (sharkrite-local-review marker only)
   local review_json
-  review_json=$(gh pr view "$pr_number" --json comments --jq '
+  review_json=$(gh_safe pr view "$pr_number" --json comments --jq '
     [.comments[] | select(
       .body | contains("<!-- sharkrite-local-review")
     )] | sort_by(.createdAt) | reverse | .[0] // {}
-  ' 2>/dev/null || echo "{}")
+  ' || echo "{}")
 
   REVIEW_BODY=$(echo "$review_json" | jq -r '.body // ""' 2>/dev/null)
   REVIEW_TIME=$(echo "$review_json" | jq -r '.createdAt // ""' 2>/dev/null)

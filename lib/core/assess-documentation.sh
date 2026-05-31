@@ -16,6 +16,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
@@ -38,10 +39,10 @@ provider_validate_cli || exit 1
 # SHARED DATA (computed once, used by both layers)
 # =====================================================================
 
-PR_DATA=$(gh pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
+PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
 PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
-PR_DIFF=$(gh pr diff "$PR_NUMBER" | head -500)
+PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" | head -500 || true)
 CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
 
 # =====================================================================

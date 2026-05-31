@@ -23,6 +23,9 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
+# Source gh retry helper
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
+
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
@@ -210,7 +213,7 @@ while [[ $# -gt 0 ]]; do
           ISSUE_NUMBER="$1"
           echo "▶  Fetching issue #$ISSUE_NUMBER from GitHub..."
           # Fetch issue details from GitHub
-          ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" --json title,body,state 2>/dev/null || echo "")
+          ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,state || echo "")
           if [ -n "$ISSUE_JSON" ] && [ "$ISSUE_JSON" != "null" ]; then
             ISSUE_DESC=$(echo "$ISSUE_JSON" | jq -r '.title')
             ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
@@ -728,9 +731,9 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   # Fetch latest assessment from PR comment (single source of truth)
   if [ -n "$FIX_PR_NUMBER" ]; then
     print_status "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
-    REVIEW_CONTENT=$(gh pr view "$FIX_PR_NUMBER" --json comments \
+    REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
       --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' \
-      2>/dev/null || echo "")
+      || echo "")
 
     # Strip the assessment header metadata (everything before the --- separator)
     # to give Claude just the assessment items
@@ -929,14 +932,14 @@ find_worktree_for_task() {
   # If task is a number, it's an issue number - search by linked PR
   if [[ "$task" =~ ^[0-9]+$ ]]; then
     # Check if this is a follow-up issue with parent PR
-    local issue_body=$(gh issue view "$task" --json body --jq '.body' 2>/dev/null || echo "")
+    local issue_body=$(gh_safe issue view "$task" --json body --jq '.body' || echo "")
 
     if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
       # Extract parent PR number from body marker
       local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
 
       if [ -n "$parent_pr" ]; then
-        pr_branch=$(gh pr view "$parent_pr" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+        pr_branch=$(gh_safe pr view "$parent_pr" --json headRefName --jq '.headRefName' || echo "")
 
         if [ -n "$pr_branch" ] && [ "$pr_branch" != "null" ]; then
           # Found parent PR's branch - this follow-up should work on same branch
@@ -949,28 +952,28 @@ find_worktree_for_task() {
     # If not a follow-up or couldn't find parent, use normal logic
     if [ -z "$pr_branch" ] || [ "$pr_branch" = "null" ]; then
       # Get issue title for better PR matching
-      local issue_title=$(gh issue view "$task" --json title --jq '.title' 2>/dev/null || echo "")
+      local issue_title=$(gh_safe issue view "$task" --json title --jq '.title' || echo "")
 
       # Try to find PR linked to this issue (searches body for "Closes #XX" pattern)
       # NOTE: GitHub search doesn't support exact pattern matching, so we fetch all PRs and filter
-      pr_branch=$(gh pr list --state all --json headRefName,body --limit 100 2>/dev/null | \
+      pr_branch=$(gh_safe pr list --state all --json headRefName,body --limit 100 | \
         jq --arg issue "$task" -r '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .headRefName' | \
-        head -1)
+        head -1 || true)
 
       # If no PR found by issue link, try title matching
       if [ -z "$pr_branch" ] || [ "$pr_branch" = "null" ]; then
         if [ -n "$issue_title" ] && [ "$issue_title" != "null" ]; then
-          pr_branch=$(gh pr list --json headRefName,title --limit 50 2>/dev/null | \
+          pr_branch=$(gh_safe pr list --json headRefName,title --limit 50 | \
             jq --arg title "$issue_title" -r '.[] | select(.title | ascii_downcase | contains($title | ascii_downcase)) | .headRefName' | \
-            head -1)
+            head -1 || true)
         fi
       fi
     fi
   else
     # Task is a description - search PRs by title similarity
-    pr_branch=$(gh pr list --json headRefName,title --limit 50 2>/dev/null | \
+    pr_branch=$(gh_safe pr list --json headRefName,title --limit 50 | \
       jq --arg title "$task" -r '.[] | select(.title | ascii_downcase | contains($title | ascii_downcase)) | .headRefName' | \
-      head -1)
+      head -1 || true)
   fi
 
   # If we found a PR, find the worktree with that branch
@@ -1069,7 +1072,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
 
   # Check for existing PR (do this for ALL continuation scenarios)
   # Check for both open and merged PRs
-  PR_JSON=$(gh pr list --head "$CURRENT_BRANCH" --state all --json number,title,url,state --jq '.[0]' 2>/dev/null || echo "")
+  PR_JSON=$(gh_safe pr list --head "$CURRENT_BRANCH" --state all --json number,title,url,state --jq '.[0]' || echo "")
   if [ ! -z "$PR_JSON" ] && [ "$PR_JSON" != "null" ]; then
     PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
     PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
@@ -1492,7 +1495,7 @@ If the changes are unrelated work, answer UNRELATED."
             # Hard guard 2: skip if branch has an OPEN PR — work is in flight even if working tree is clean.
             # A worktree with commits ahead + 0 uncommitted + open PR is NOT eligible for cleanup;
             # deleting it strands the user's review work mid-flow.
-            OPEN_PR_COUNT=$(gh pr list --head "$WT_BRANCH" --state open --json number --jq 'length' 2>/dev/null || echo "0")
+            OPEN_PR_COUNT=$(gh_safe pr list --head "$WT_BRANCH" --state open --json number --jq 'length' || echo "0")
             if [ "$OPEN_PR_COUNT" -gt 0 ]; then
               PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
               continue
@@ -1551,7 +1554,7 @@ If the changes are unrelated work, answer UNRELATED."
               REASONS=""
               UNCOM=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
               [ "$UNCOM" -gt 0 ] && REASONS="${REASONS}uncommitted, "
-              PR_N=$(gh pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' 2>/dev/null || echo "")
+              PR_N=$(gh_safe pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' || echo "")
               [ -n "$PR_N" ] && REASONS="${REASONS}PR #$PR_N, "
               if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
@@ -1918,7 +1921,7 @@ fi
 print_header "📋 Creating Draft PR for Tracking"
 
 # Check if PR already exists for this branch
-EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --json number,title,url,isDraft --jq '.[0]' 2>/dev/null || echo "{}")
+EXISTING_PR=$(gh_safe pr list --head "$BRANCH_NAME" --json number,title,url,isDraft --jq '.[0]' || echo "{}")
 
 if [ "$EXISTING_PR" != "{}" ] && [ -n "$EXISTING_PR" ]; then
   PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')
@@ -1977,17 +1980,17 @@ _Draft PR created automatically by rite for tracking purposes._"
   # Use temp file to avoid shell metacharacter issues in body
   DRAFT_BODY_FILE=$(mktemp)
   printf '%s' "$PR_BODY" > "$DRAFT_BODY_FILE"
-  gh pr create \
+  gh_safe pr create \
     --draft \
     --base main \
     --head "$BRANCH_NAME" \
     --title "$PR_TITLE" \
     --body-file "$DRAFT_BODY_FILE" \
-    2>/dev/null || print_warning "PR creation failed (may already exist)"
+    || print_warning "PR creation failed (may already exist)"
   rm -f "$DRAFT_BODY_FILE"
 
   # Get PR number
-  PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null)
+  PR_NUMBER=$(gh_safe pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' || echo "")
 
   if [ -n "$PR_NUMBER" ]; then
     print_success "Draft PR #$PR_NUMBER created"
@@ -2387,9 +2390,9 @@ if [ $CHANGES_COUNT -eq 0 ]; then
         print_status "Cleaning up empty branch..."
 
         # Delete the draft PR if it exists
-        DRAFT_PR=$(gh pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+        DRAFT_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' || echo "")
         if [ -n "$DRAFT_PR" ]; then
-          gh pr close "$DRAFT_PR" --delete-branch 2>/dev/null || true
+          gh_safe pr close "$DRAFT_PR" --delete-branch || true
           print_info "Closed draft PR #$DRAFT_PR"
         fi
       fi
@@ -2603,7 +2606,7 @@ echo "  Changes: $CHANGES_COUNT files"
 echo ""
 
 # Check if PR was created
-PR_JSON=$(gh pr list --head "$BRANCH_NAME" --json number,title,url --jq '.[0]' 2>/dev/null || echo "")
+PR_JSON=$(gh_safe pr list --head "$BRANCH_NAME" --json number,title,url --jq '.[0]' || echo "")
 
 if [ ! -z "$PR_JSON" ] && [ "$PR_JSON" != "null" ]; then
   PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')

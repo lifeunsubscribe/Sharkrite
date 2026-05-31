@@ -301,6 +301,30 @@ for file in $CORE_FILES; do
   done < <(grep -n 'print_' "$file" 2>/dev/null || true)
 done
 
+# Rule 10: Unguarded bare gh calls (should use gh_safe for retry/transient failure handling)
+echo "Checking for unguarded bare 'gh' calls (use gh_safe instead)..."
+for file in $SHELL_FILES; do
+  # Skip gh-retry.sh itself — it defines gh_safe and calls bare gh internally
+  if echo "$file" | grep -qE 'gh-retry\.sh$'; then
+    continue
+  fi
+
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+
+    # Match: bare gh (pr|issue|api|repo|label) ... 2>/dev/null || (echo|true)
+    # This is the old pattern that gh_safe replaces
+    if echo "$line_content" | grep -qE '\bgh\s+(pr|issue|api|repo|label)\b' && \
+       ! echo "$line_content" | grep -qE '\bgh_safe\b'; then
+      print_violation "$file" "$line_num" "GH_UNGUARDED_CALL" \
+        "bare 'gh' call without retry — use gh_safe for transient failure handling"
+    fi
+  done < <(grep -n '\bgh \(pr\|issue\|api\|repo\|label\)' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ $VIOLATIONS -eq 0 ]; then
