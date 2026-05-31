@@ -162,6 +162,13 @@ _stale_rebase_onto_main() {
 
   cd "$worktree_path" || return 1
 
+  # Verify origin/main exists before attempting rebase
+  if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+    print_error "origin/main does not exist — cannot rebase"
+    print_info "Run 'git fetch origin main' or check remote configuration"
+    return 1
+  fi
+
   # Count commits to report progress - how many commits will be replayed
   local commits_ahead
   commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
