@@ -208,6 +208,69 @@ for file in $SHELL_FILES; do
   line_num=0
 done
 
+# Rule 8: Claude-specific tokens in lib/core/ (Provider Agnosticism)
+echo "Checking for Claude-specific tokens in lib/core/ (provider agnosticism)..."
+CORE_FILES=$(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
+
+for file in $CORE_FILES; do
+  # Check for forbidden tokens that indicate provider-specific leakage
+  # These should only appear in lib/providers/claude.sh, not lib/core/
+
+  line_num=0
+  while IFS= read -r line_content; do
+    line_num=$((line_num + 1))
+
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+
+    # Check for /exit (Claude CLI command)
+    if echo "$line_content" | grep -qF '/exit'; then
+      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific token '/exit' found in lib/core/ - use provider_exit_instructions() instead"
+    fi
+
+    # Check for --print flag (Claude CLI)
+    if echo "$line_content" | grep -qE -- '--print\b'; then
+      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific flag '--print' found in lib/core/ - this should be in lib/providers/claude.sh"
+    fi
+
+    # Check for --dangerously-skip-permissions (Claude CLI)
+    if echo "$line_content" | grep -qE -- '--dangerously-skip-permissions'; then
+      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific flag '--dangerously-skip-permissions' found in lib/core/"
+    fi
+
+    # Check for --disallowedTools (Claude CLI)
+    if echo "$line_content" | grep -qE -- '--disallowedTools'; then
+      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific flag '--disallowedTools' found in lib/core/ - use provider_build_tool_restrictions() instead"
+    fi
+
+    # Check for tool_use (Claude-specific terminology)
+    if echo "$line_content" | grep -qE '\btool_use\b'; then
+      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific term 'tool_use' found in lib/core/"
+    fi
+  done < "$file"
+
+  # Also check for hardcoded "Claude CLI" or "Claude session" in user-facing output
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+
+    # Match print_status/print_info/print_error with hardcoded "Claude"
+    if echo "$line_content" | grep -qE 'print_(status|info|error|warning).*["\x27].*Claude (CLI|session)'; then
+      print_violation "$file" "$line_num" "HARDCODED_PROVIDER_NAME" \
+        "Hardcoded 'Claude CLI/session' in user-facing output - use \$(provider_name) instead"
+    fi
+  done < <(grep -n 'print_' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ $VIOLATIONS -eq 0 ]; then
