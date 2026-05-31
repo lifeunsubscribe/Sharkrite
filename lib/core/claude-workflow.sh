@@ -1361,11 +1361,13 @@ If the changes are unrelated work, answer UNRELATED."
       fi
     else
       # Create new branch in worktree from origin/main (or HEAD if origin/main doesn't exist)
-      local base_ref="origin/main"
+      # NOTE: this is main script body, not a function — `local` would crash here
+      # under set -u (see CLAUDE.md "No `local` outside functions").
+      _base_ref="origin/main"
       if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-        base_ref="HEAD"
+        _base_ref="HEAD"
       fi
-      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$base_ref" >/dev/null 2>&1; then
+      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_base_ref" >/dev/null 2>&1; then
         # Worktree directory exists — verify it's on the expected branch.
         if [ -d "$WORKTREE_PATH" ]; then
           ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
@@ -1382,11 +1384,11 @@ If the changes are unrelated work, answer UNRELATED."
                 exit 1
               }
             else
-              local retry_base_ref="origin/main"
+              _retry_base_ref="origin/main"
               if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-                retry_base_ref="HEAD"
+                _retry_base_ref="HEAD"
               fi
-              git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$retry_base_ref" >/dev/null 2>&1 || {
+              git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_retry_base_ref" >/dev/null 2>&1 || {
                 print_error "Failed to recreate worktree (new branch)"
                 exit 1
               }
@@ -1598,11 +1600,11 @@ else
   # Create empty commit for PR (will be amended later with real changes)
   # Check commits AHEAD of main only — a "chore: initialize work" on main itself
   # (from a merged PR) must not suppress creating a new init commit for this branch.
-  local commit_range="HEAD"
+  _commit_range="HEAD"
   if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    commit_range="origin/main..HEAD"
+    _commit_range="origin/main..HEAD"
   fi
-  if ! git log --oneline "$commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
+  if ! git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
     commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1)
     # Format: [branch hash] message — show branch/hash on one line, message indented below
     branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/')
@@ -2046,11 +2048,11 @@ if [ $CHANGES_COUNT -eq 0 ]; then
     CURRENT_BRANCH=$(git branch --show-current)
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ]; then
       # Check if this is an empty branch we just created
-      local commit_range="HEAD"
+      _commit_range="HEAD"
       if git rev-parse --verify origin/main >/dev/null 2>&1; then
-        commit_range="origin/main..HEAD"
+        _commit_range="origin/main..HEAD"
       fi
-      if git log --oneline "$commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
+      if git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
         print_status "Cleaning up empty branch..."
 
         # Delete the draft PR if it exists
