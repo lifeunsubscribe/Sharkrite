@@ -201,13 +201,16 @@ run_diff_fetch() {
 }
 
 @test "gh pr diff succeeds on retry after transient failure" {
-  # Track call count
-  _gh_call_count=0
+  # Track call count using a temp file (survives subshell)
+  _gh_count_file=$(mktemp)
+  echo "0" > "$_gh_count_file"
 
   # Override gh to fail on first call, succeed on second
   gh() {
     if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      _gh_call_count=$(cat "$_gh_count_file")
       _gh_call_count=$((_gh_call_count + 1))
+      echo "$_gh_call_count" > "$_gh_count_file"
 
       if [ $_gh_call_count -eq 1 ]; then
         echo "HTTP 503: Service Temporarily Unavailable" >&2
@@ -226,6 +229,7 @@ run_diff_fetch() {
     command gh "$@"
   }
   export -f gh
+  export _gh_count_file
 
   # Run the diff fetch logic
   run run_diff_fetch 123 main fix/test-feature
@@ -241,22 +245,29 @@ run_diff_fetch() {
 
   # Should NOT have fallen back to local git
   [[ "$output" != *"falling back to local git diff"* ]]
+
+  # Cleanup
+  rm -f "$_gh_count_file"
 }
 
 @test "non-transient gh error (404) does not retry" {
-  # Track call count
-  _gh_call_count=0
+  # Track call count using a temp file (survives subshell)
+  _gh_count_file=$(mktemp)
+  echo "0" > "$_gh_count_file"
 
   # Override gh to return 404 (non-transient)
   gh() {
     if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      _gh_call_count=$(cat "$_gh_count_file")
       _gh_call_count=$((_gh_call_count + 1))
+      echo "$_gh_call_count" > "$_gh_count_file"
       echo "HTTP 404: Not Found - PR does not exist" >&2
       return 1
     fi
     command gh "$@"
   }
   export -f gh
+  export _gh_count_file
 
   # Run the diff fetch logic
   run run_diff_fetch 999 main fix/test-feature
@@ -265,10 +276,14 @@ run_diff_fetch() {
   [ "$status" -eq 0 ]
 
   # Should only call gh once (no retry for 404)
-  [ "$_gh_call_count" -eq 1 ]
+  _final_count=$(cat "$_gh_count_file")
+  [ "$_final_count" -eq 1 ]
 
   # Should fall back to local git diff
   [[ "$output" == *"falling back to local git diff"* ]]
+
+  # Cleanup
+  rm -f "$_gh_count_file"
 }
 
 @test "actual local-review.sh contains retry and fallback logic" {
