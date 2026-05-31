@@ -441,7 +441,10 @@ _stale_merge_main_legacy() {
 # _stale_close_and_cleanup PR_NUMBER ISSUE_NUMBER WORKTREE_PATH BRANCH_NAME COMMITS_BEHIND
 #
 # Inline cleanup (does NOT call undo-workflow.sh).
-# Best-effort: individual failures warn but don't stop.
+# Race condition safety: PR close and branch deletion are ordered deliberately.
+# If PR close fails, remote branch deletion is skipped to avoid the inconsistent
+# state where the branch is gone but the PR still appears open on GitHub.
+# If PR close succeeds (or PR is already closed/merged), remote branch deletion proceeds.
 _stale_close_and_cleanup() {
   local pr_number="$1"
   local issue_number="$2"
@@ -462,32 +465,55 @@ _stale_close_and_cleanup() {
   fi
   rm -f "$comment_file"
 
-  # 2. Close PR
-  if gh pr close "$pr_number" 2>/dev/null; then
+  # 2. Close PR — track success to guard branch deletion below.
+  # PR may already be closed/merged; treat those as success (idempotent).
+  # Use a temp file to capture gh output without the set -e trap triggering on
+  # the command substitution itself (VAR=$(failing_cmd) exits under set -euo pipefail).
+  local _pr_close_ok=false
+  local _pr_close_output
+  local _pr_close_exit_file
+  _pr_close_exit_file=$(mktemp)
+  _pr_close_output=$(gh pr close "$pr_number" 2>&1; echo $? > "$_pr_close_exit_file") || true
+  local _pr_close_exit
+  _pr_close_exit=$(cat "$_pr_close_exit_file" 2>/dev/null || echo "1")
+  rm -f "$_pr_close_exit_file"
+  if [ "${_pr_close_exit:-1}" -eq 0 ]; then
+    _pr_close_ok=true
     print_info "Closed PR #$pr_number"
+  elif echo "$_pr_close_output" | grep -qiE "already closed|already merged|not found|no open pull request"; then
+    # PR is not open — treat as already resolved, safe to proceed with branch delete
+    _pr_close_ok=true
+    print_info "PR #$pr_number is already closed/merged — continuing cleanup"
   else
-    print_warning "Failed to close PR #$pr_number"
+    print_warning "Failed to close PR #$pr_number — skipping remote branch deletion to avoid inconsistent state"
+    print_warning "  gh output: $(echo "$_pr_close_output" | head -1)"
   fi
 
   # 3. Exit worktree before removing it
   cd "$RITE_PROJECT_ROOT" 2>/dev/null || cd "$HOME"
 
-  # 4. Remove worktree
+  # 4. Remove worktree (local filesystem — safe regardless of PR close result)
   if git worktree remove "$worktree_path" --force 2>/dev/null; then
     print_info "Removed worktree: $(basename "$worktree_path")"
   else
     print_warning "Failed to remove worktree: $worktree_path"
   fi
 
-  # 5. Delete local branch
+  # 5. Delete local branch (local — safe regardless of PR close result)
   if git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
     git branch -D "$branch_name" 2>/dev/null || true
     print_info "Deleted local branch: $branch_name"
   fi
 
-  # 6. Delete remote branch
-  if git push origin --delete "$branch_name" 2>/dev/null; then
-    print_info "Deleted remote branch: $branch_name"
+  # 6. Delete remote branch — ONLY if PR was successfully closed (or already was closed).
+  # Skipping when PR close failed prevents the race: closed PR + deleted branch leaves
+  # GitHub in an inconsistent state where the PR page shows the branch as missing.
+  if [ "$_pr_close_ok" = true ]; then
+    if git push origin --delete "$branch_name" 2>/dev/null; then
+      print_info "Deleted remote branch: $branch_name"
+    else
+      print_warning "Failed to delete remote branch: $branch_name (may already be deleted)"
+    fi
   fi
 
   # 7. Remove session state file

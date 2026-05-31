@@ -160,7 +160,11 @@ preflight_auto_recover_empty() {
     fi
   fi
 
-  # Close PR if it exists and is a draft with no real work
+  # Close PR if it exists and is a draft with no real work.
+  # Race condition safety: track whether PR close succeeded before deleting
+  # the remote branch. If PR close fails but branch is deleted, GitHub is left
+  # in an inconsistent state (open PR pointing to a missing branch).
+  local _preflight_pr_close_ok=false
   if [ -n "$pr_number" ]; then
     local pr_state
     pr_state=$(gh pr view "$pr_number" --json isDraft,state --jq '.isDraft,.state' 2>/dev/null | paste -sd ',' - || echo "")
@@ -168,6 +172,10 @@ preflight_auto_recover_empty() {
     # Validate pr_state before checking (protect against paste/gh failures)
     if [ -z "$pr_state" ] || ! echo "$pr_state" | grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$'; then
       print_warning "Failed to detect PR state for #$pr_number — skipping PR cleanup"
+    elif echo "$pr_state" | grep -qE "(CLOSED|MERGED)"; then
+      # PR already closed/merged — safe to proceed with branch deletion
+      _preflight_pr_close_ok=true
+      print_info "PR #$pr_number is already closed/merged"
     elif echo "$pr_state" | grep -q "true"; then
       # Draft PR — check if it has zero additions (empty)
       local additions
@@ -177,29 +185,56 @@ preflight_auto_recover_empty() {
         print_status "Closing empty draft PR #$pr_number..."
         local close_comment="Auto-closing: Branch has no real work (only init commit). Restarting fresh."
         echo "$close_comment" | gh pr comment "$pr_number" --body-file - 2>/dev/null || true
-        gh pr close "$pr_number" 2>/dev/null || print_warning "Failed to close PR #$pr_number"
+        # Capture exit code via temp file — avoids set -e trap on failing $() substitution
+        local _close_exit_file
+        _close_exit_file=$(mktemp)
+        local _close_out
+        _close_out=$(gh pr close "$pr_number" 2>&1; echo $? > "$_close_exit_file") || true
+        local _close_exit
+        _close_exit=$(cat "$_close_exit_file" 2>/dev/null || echo "1")
+        rm -f "$_close_exit_file"
+        if [ "${_close_exit:-1}" -eq 0 ]; then
+          _preflight_pr_close_ok=true
+          print_info "Closed PR #$pr_number"
+        elif echo "$_close_out" | grep -qiE "already closed|already merged|not found|no open pull request"; then
+          _preflight_pr_close_ok=true
+          print_info "PR #$pr_number already resolved — continuing cleanup"
+        else
+          print_warning "Failed to close PR #$pr_number — remote branch deletion skipped to avoid inconsistent state"
+          print_warning "  gh output: $(echo "$_close_out" | head -1)"
+        fi
+      else
+        # Non-empty PR — don't close, but branch deletion is still safe
+        # (branch has work in the PR so it can be restored from PR history)
+        _preflight_pr_close_ok=true
       fi
     fi
+  else
+    # No PR — branch deletion is unconditionally safe
+    _preflight_pr_close_ok=true
   fi
 
   # Exit worktree before removing it
   cd "$RITE_PROJECT_ROOT" 2>/dev/null || cd "$HOME"
 
-  # Remove worktree
+  # Remove worktree (local filesystem — safe regardless of PR close result)
   if git worktree remove "$worktree_path" --force 2>/dev/null; then
     print_info "Removed worktree: $(basename "$worktree_path")"
   else
     print_warning "Failed to remove worktree: $worktree_path"
   fi
 
-  # Delete local branch
+  # Delete local branch (local — safe regardless of PR close result)
   if git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
     git branch -D "$branch_name" 2>/dev/null || true
     print_info "Deleted local branch: $branch_name"
   fi
 
-  # Delete remote branch (best effort)
-  git push origin --delete "$branch_name" 2>/dev/null || true
+  # Delete remote branch — only if PR close succeeded (or PR was already resolved).
+  # This prevents the inconsistent state: open PR + deleted branch.
+  if [ "$_preflight_pr_close_ok" = true ]; then
+    git push origin --delete "$branch_name" 2>/dev/null || true
+  fi
 
   # Remove session state file
   local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR:-.rite}/session-state-${issue_number}.json"
