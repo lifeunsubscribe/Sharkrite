@@ -1347,6 +1347,10 @@ phase_merge_pr() {
         phase_create_pr "$issue_number"
         phase_assess_and_resolve "$issue_number" "$PR_NUMBER" 0
         # Fall through to retry merge after re-assessment
+      elif [ $div_result -eq 5 ]; then
+        # Usage cap reached during conflict resolution — propagate so batch aborts cleanly
+        print_warning "Usage cap reached during merge-time divergence resolution — aborting batch"
+        return 5
       elif [ $div_result -ne 0 ]; then
         print_error "Cannot merge — PR head diverged and could not be resolved"
         return 1

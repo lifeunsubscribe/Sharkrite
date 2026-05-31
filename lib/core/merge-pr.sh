@@ -687,6 +687,10 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
           -X PUT \
           -f merge_method="$MERGE_METHOD" \
           -f sha="$EXPECTED_HEAD"
+      elif [ $DIV_RESULT -eq 5 ]; then
+        # Usage cap reached — propagate so batch can abort cleanly
+        print_error "Claude usage cap reached during merge-time divergence resolution — aborting batch"
+        MERGE_EXIT_CODE=5
       else
         print_error "Could not resolve divergence at merge time"
         MERGE_EXIT_CODE=1
@@ -735,7 +739,10 @@ else
   fi
 fi
 
-if [ $MERGE_EXIT_CODE -eq 0 ]; then
+if [ $MERGE_EXIT_CODE -eq 5 ]; then
+  # Usage cap reached during divergence resolution — propagate exit 5 for batch abort
+  exit 5
+elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   verbose_header "✅ PR Merged Successfully"
 
   print_success "PR #$PR_NUMBER merged into $PR_BASE"
