@@ -4,7 +4,7 @@
 # Tests that concurrent updates to SESSION_STATE_FILE don't corrupt JSON or lose data.
 # These tests verify fixes for issue #8 (session state races).
 
-load '../helpers/setup'
+load '../helpers/setup.bash'
 
 setup() {
   setup_test_tmpdir
@@ -65,7 +65,7 @@ wait_at_barrier() {
   # Spawn N processes that each update a different field
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "session_update_test" "$num_processes"
+      wait_at_barrier "session_update_test" "$num_processes" || exit 1
 
       # Each process updates a different counter
       # Re-source to get the function in this subshell
@@ -117,7 +117,7 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "approval_test" "$num_processes"
+      wait_at_barrier "approval_test" "$num_processes" || exit 1
 
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
@@ -164,11 +164,11 @@ wait_at_barrier() {
   # Process 1: repeatedly update
   (
     source "$RITE_LIB_DIR/utils/session-tracker.sh"
-    wait_at_barrier "init_race_test" "3"
+    wait_at_barrier "init_race_test" "3" || exit 1
 
+    # Start updating immediately
     for i in {1..5}; do
       update_session "issues_completed" "$i"
-      sleep 0.05
     done
 
     echo $? > "$exit_codes_dir/process_1.exit"
@@ -177,9 +177,10 @@ wait_at_barrier() {
   # Process 2: reinitialize in the middle
   (
     source "$RITE_LIB_DIR/utils/session-tracker.sh"
-    wait_at_barrier "init_race_test" "3"
+    wait_at_barrier "init_race_test" "3" || exit 1
 
-    sleep 0.1  # Let process 1 start updating
+    # Wait for process 1 to start (barrier on first update)
+    wait_at_barrier "init_race_update_started" "2" || exit 1
     init_session "supervised"  # This will overwrite the file
 
     echo $? > "$exit_codes_dir/process_2.exit"
@@ -188,9 +189,10 @@ wait_at_barrier() {
   # Process 3: more updates
   (
     source "$RITE_LIB_DIR/utils/session-tracker.sh"
-    wait_at_barrier "init_race_test" "3"
+    wait_at_barrier "init_race_test" "3" || exit 1
 
-    sleep 0.15
+    # Signal that updates have started
+    wait_at_barrier "init_race_update_started" "2" || exit 1
     update_session "issues_failed" "1"
 
     echo $? > "$exit_codes_dir/process_3.exit"
@@ -218,7 +220,7 @@ wait_at_barrier() {
   for proc in $(seq 1 $num_processes); do
     (
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
-      wait_at_barrier "stress_test" "$num_processes"
+      wait_at_barrier "stress_test" "$num_processes" || exit 1
 
       # Each process does rapid updates
       for i in $(seq 1 $updates_per_process); do
@@ -258,7 +260,7 @@ wait_at_barrier() {
   for i in $(seq 1 $num_processes); do
     (
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
-      wait_at_barrier "creation_test" "$num_processes"
+      wait_at_barrier "creation_test" "$num_processes" || exit 1
 
       # All processes try to create/update at once
       if [ ! -f "$SESSION_STATE_FILE" ]; then

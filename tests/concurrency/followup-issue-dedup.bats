@@ -5,9 +5,8 @@
 # Multiple processes creating issues for the same findings should result in ONE issue.
 # These tests verify fixes for issue #25 (duplicate follow-up issues).
 
-load '../helpers/setup'
-load '../helpers/git-fixtures'
-load '../helpers/gh-mock'
+load '../helpers/setup.bash'
+load '../helpers/git-fixtures.bash'
 
 setup() {
   setup_test_tmpdir
@@ -144,7 +143,7 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "followup_dedup_test" "$num_processes"
+      wait_at_barrier "followup_dedup_test" "$num_processes" || exit 1
 
       # All processes create the same issue (should deduplicate)
       issue_num=$(gh issue create \
@@ -193,7 +192,7 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "label_test" "$num_processes"
+      wait_at_barrier "label_test" "$num_processes" || exit 1
 
       # All processes try to create the same label
       gh label create "$label_name" --description "Phase 4a tasks" --color "FF5733" 2>/dev/null
@@ -224,7 +223,7 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "mixed_test" "$num_processes"
+      wait_at_barrier "mixed_test" "$num_processes" || exit 1
 
       # Each process creates a unique issue
       gh issue create \
@@ -263,7 +262,7 @@ wait_at_barrier() {
   # Processes 1-3: same issue
   for i in 1 2 3; do
     (
-      wait_at_barrier "overlap_test" "5"
+      wait_at_barrier "overlap_test" "5" || exit 1
 
       gh issue create \
         --title "Fix XSS in search" \
@@ -277,7 +276,7 @@ wait_at_barrier() {
   # Processes 4-5: different issue
   for i in 4 5; do
     (
-      wait_at_barrier "overlap_test" "5"
+      wait_at_barrier "overlap_test" "5" || exit 1
 
       gh issue create \
         --title "Fix SQL injection in reports" \

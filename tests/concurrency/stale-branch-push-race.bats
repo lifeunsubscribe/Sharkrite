@@ -5,8 +5,8 @@
 # Also tests worktree creation races when multiple processes work on same issue.
 # These tests verify fixes for issue #15 (stale branch push races) and #26 (worktree races).
 
-load '../helpers/setup'
-load '../helpers/git-fixtures'
+load '../helpers/setup.bash'
+load '../helpers/git-fixtures.bash'
 
 setup() {
   setup_test_tmpdir
@@ -81,7 +81,7 @@ wait_at_barrier() {
 
       cd "$worktree_path"
 
-      wait_at_barrier "push_race_test" "$num_processes"
+      wait_at_barrier "push_race_test" "$num_processes" || exit 1
 
       # All processes make changes and try to push
       echo "Change from process $i" >> test.txt
@@ -144,7 +144,7 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "worktree_race_test" "$num_processes"
+      wait_at_barrier "worktree_race_test" "$num_processes" || exit 1
 
       # All processes try to create the same worktree
       local output=$(git worktree add "$worktree_path" -b "$branch_name" main 2>&1)
@@ -193,7 +193,7 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "branch_race_test" "$num_processes"
+      wait_at_barrier "branch_race_test" "$num_processes" || exit 1
 
       # All try to create the same branch
       git checkout -b "$branch_name" main >/dev/null 2>&1
@@ -261,7 +261,7 @@ wait_at_barrier() {
 
       cd "$worktree_path"
 
-      wait_at_barrier "stale_merge_test" "$num_processes"
+      wait_at_barrier "stale_merge_test" "$num_processes" || exit 1
 
       # All try to merge main simultaneously
       git fetch origin >/dev/null 2>&1
@@ -330,7 +330,7 @@ wait_at_barrier() {
 
       cd "$worktree_path"
 
-      wait_at_barrier "force_test" "$num_processes"
+      wait_at_barrier "force_test" "$num_processes" || exit 1
 
       echo "change $i" >> no-force.txt
       git add no-force.txt

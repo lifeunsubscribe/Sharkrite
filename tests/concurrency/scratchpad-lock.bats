@@ -4,8 +4,8 @@
 # Tests that concurrent writes to scratchpad don't lose data or corrupt structure.
 # These tests verify fixes for issue #19 (scratchpad race conditions).
 
-load '../helpers/setup'
-load '../helpers/git-fixtures'
+load '../helpers/setup.bash'
+load '../helpers/git-fixtures.bash'
 
 setup() {
   setup_test_tmpdir
@@ -89,7 +89,7 @@ wait_at_barrier() {
   for i in $(seq 1 $num_processes); do
     (
       # Wait for all processes to be ready
-      wait_at_barrier "scratchpad_test_1" "$num_processes"
+      wait_at_barrier "scratchpad_test_1" "$num_processes" || exit 1
 
       # All processes now execute simultaneously
       # Add encountered issue to scratchpad
@@ -154,7 +154,7 @@ GHEOF
   # Spawn N processes that each update security findings
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "security_test_1" "$num_processes"
+      wait_at_barrier "security_test_1" "$num_processes" || exit 1
 
       # Call update_scratchpad_from_pr (will race without proper locking)
       # This simulates what happens when multiple PRs merge simultaneously
@@ -196,7 +196,7 @@ GHEOF
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "creation_test" "$num_processes"
+      wait_at_barrier "creation_test" "$num_processes" || exit 1
 
       # All try to create scratchpad at once
       if [ ! -f "$SCRATCHPAD_FILE" ]; then
