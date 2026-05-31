@@ -30,6 +30,14 @@ if ! declare -f verify_post_merge >/dev/null 2>&1; then
   exit 1
 fi
 
+# Source conflict resolver if available (provided by issue #21).
+# Guarded: stale-branch works without it — resolver is an enhancement,
+# not a hard dependency. When present, attempt_claude_merge_resolution()
+# becomes available and is called on rebase/merge conflict bail paths.
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+fi
+
 # ===================================================================
 # PUBLIC: Detection
 # ===================================================================
@@ -97,7 +105,7 @@ check_stale_branch() {
     # Below threshold: rebase branch onto main (replays branch commits on top of current main)
     # This avoids false conflicts from merge when main has added new files since branch creation
     print_info "Branch is $behind commit(s) behind main (threshold: $threshold) — rebasing onto main"
-    _stale_rebase_onto_main "$worktree_path" "$branch_name" "$workflow_mode"
+    _stale_rebase_onto_main "$worktree_path" "$branch_name" "$workflow_mode" "$issue_number" "$pr_number"
     return $?
   fi
 
@@ -153,14 +161,18 @@ EOF
 # INTERNAL: Rebase branch onto main
 # ===================================================================
 
-# _stale_rebase_onto_main WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE
+# _stale_rebase_onto_main WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER]
 #
 # Rebases the feature branch onto origin/main. Replays branch commits on top of current main.
 # Requires force-push with --force-with-lease after successful rebase (history is rewritten).
+#
+# ISSUE_NUMBER and PR_NUMBER are optional — used to invoke the conflict resolver on conflict.
 _stale_rebase_onto_main() {
   local worktree_path="$1"
   local branch_name="$2"
   local workflow_mode="$3"
+  local issue_number="${4:-}"
+  local pr_number="${5:-}"
 
   cd "$worktree_path" || return 1
 
@@ -240,6 +252,33 @@ _stale_rebase_onto_main() {
       git stash pop 2>/dev/null || true
     fi
 
+    # In auto mode, attempt Claude-assisted conflict resolution before bailing.
+    # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
+    # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
+    if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+      print_status "Attempting Claude-assisted conflict resolution..."
+      local _resolver_result=0
+      attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      if [ "$_resolver_result" -eq 0 ]; then
+        print_success "Conflicts resolved by Claude"
+        # Resolution committed the result — push with force-with-lease (rebase rewrote history)
+        if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+          print_success "Branch rebased onto origin/main (with conflict resolution)"
+          return 0
+        else
+          print_error "Push failed after conflict resolution (force-with-lease rejected)"
+          return 1
+        fi
+      elif [ "$_resolver_result" -eq 5 ]; then
+        # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
+        print_error "Claude usage cap reached during conflict resolution — aborting batch"
+        return 5
+      else
+        # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
+        print_warning "Claude could not resolve conflicts — supervised mode required"
+      fi
+    fi
+
     if [ "$workflow_mode" = "supervised" ]; then
       echo "" >&2
       echo "Conflicting with main. Options:" >&2
@@ -253,21 +292,25 @@ _stale_rebase_onto_main() {
       esac
     else
       print_error "Rebase onto main failed (conflicts) — cannot proceed in auto mode"
-      print_info "Run 'rite \$issue_number --supervised' to resolve manually"
+      print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
       return 1
     fi
   fi
 }
 
-# _stale_merge_main_legacy WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE
+# _stale_merge_main_legacy WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER]
 #
 # Legacy merge-based update (opt-in via supervised mode).
 # Merges origin/main into the feature branch. Same as GitHub "Update branch".
 # No force-push needed — history isn't rewritten, regular git push works.
+#
+# ISSUE_NUMBER and PR_NUMBER are optional — used to invoke the conflict resolver on conflict.
 _stale_merge_main_legacy() {
   local worktree_path="$1"
   local branch_name="$2"
   local workflow_mode="$3"
+  local issue_number="${4:-}"
+  local pr_number="${5:-}"
 
   cd "$worktree_path" || return 1
 
@@ -329,6 +372,33 @@ _stale_merge_main_legacy() {
       git stash pop 2>/dev/null || true
     fi
 
+    # In auto mode, attempt Claude-assisted conflict resolution before bailing.
+    # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
+    # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
+    if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+      print_status "Attempting Claude-assisted conflict resolution..."
+      local _resolver_result=0
+      attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      if [ "$_resolver_result" -eq 0 ]; then
+        print_success "Conflicts resolved by Claude"
+        # Resolution committed the result — regular push (merge doesn't rewrite history)
+        if git push origin "$branch_name" 2>/dev/null; then
+          print_success "Branch updated with main (conflict resolved)"
+          return 0
+        else
+          print_error "Push failed after conflict resolution"
+          return 1
+        fi
+      elif [ "$_resolver_result" -eq 5 ]; then
+        # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
+        print_error "Claude usage cap reached during conflict resolution — aborting batch"
+        return 5
+      else
+        # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
+        print_warning "Claude could not resolve conflicts — supervised mode required"
+      fi
+    fi
+
     if [ "$workflow_mode" = "supervised" ]; then
       echo "" >&2
       echo "Conflicting with main. Options:" >&2
@@ -342,7 +412,7 @@ _stale_merge_main_legacy() {
       esac
     else
       print_error "Merge with main failed (conflicts) — cannot proceed in auto mode"
-      print_info "Run 'rite $issue_number --supervised' to resolve manually"
+      print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
       return 1
     fi
   fi
@@ -467,12 +537,12 @@ _stale_supervised_prompt() {
       ;;
     2)
       print_status "Rebasing branch onto main..."
-      _stale_rebase_onto_main "$worktree_path" "$branch_name" "supervised"
+      _stale_rebase_onto_main "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number"
       return $?
       ;;
     3)
       print_status "Merging main into branch (legacy mode)..."
-      _stale_merge_main_legacy "$worktree_path" "$branch_name" "supervised"
+      _stale_merge_main_legacy "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number"
       return $?
       ;;
     4)
