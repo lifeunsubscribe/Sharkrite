@@ -192,7 +192,12 @@ SHIM
 
       # Allowlist: fail-loud callers — the || block exits with exit 1
       # These are acceptable: they suppress noisy stderr but surface failure via exit code.
-      if [[ "$line" =~ \|\|[[:space:]]*\{[[:space:]]*$|exit[[:space:]]+1 ]]; then
+      # IMPORTANT: both alternatives must be anchored immediately after || so that "exit 1"
+      # appearing inside a warning message string does not accidentally allowlist the line.
+      # \|\|[[:space:]]* matches the || and optional spaces; then either:
+      #   \{[[:space:]]*$  — a block-open { ending the line (multi-line exit block)
+      #   exit[[:space:]]+1 — a direct exit 1 immediately after ||
+      if [[ "$line" =~ \|\|[[:space:]]*(\{[[:space:]]*$|exit[[:space:]]+1) ]]; then
         continue
       fi
 
@@ -204,6 +209,40 @@ SHIM
 
       fail "Bare 'git fetch ... 2>/dev/null || <non-fatal>' found in executable code: $line"
     done <<< "$output"
+  fi
+}
+
+@test "allowlist regex does NOT skip lines where 'exit 1' appears only in message text" {
+  # Negative test: a line whose || block is a print_warning containing "exit 1" in the
+  # message string must still be FLAGGED — the allowlist must not match it.
+  #
+  # Before the fix, `exit[[:space:]]+1` was a top-level alternation that matched anywhere
+  # on the line, so the line below would have been silently skipped.
+  local bad_line='lib/core/foo.sh:42:  git fetch origin main 2>/dev/null || print_warning "fetch failed, caller will exit 1 later"'
+
+  # Run the same allowlist check logic the regression guard uses
+  local matched=false
+
+  # Skip comment lines check (not a comment)
+  local code_part="${bad_line#*:*:}"
+  local trimmed="${code_part#"${code_part%%[! ]*}"}"
+  if [[ "$trimmed" == \#* ]]; then
+    matched=true  # would be skipped as comment — unexpected for this input
+  fi
+
+  # Allowlist check: exit 1 anchored immediately after || (no wildcard before it)
+  if [[ "$bad_line" =~ \|\|[[:space:]]*(\{[[:space:]]*$|exit[[:space:]]+1) ]]; then
+    matched=true
+  fi
+
+  # fetch origin main:main check (not applicable here)
+  if [[ "$bad_line" =~ "fetch origin main:main" ]]; then
+    matched=true
+  fi
+
+  # The line must NOT be allowlisted — it is a bare non-fatal continuation
+  if [ "$matched" = true ]; then
+    fail "Allowlist incorrectly skipped a line where 'exit 1' appears only inside a message string: $bad_line"
   fi
 }
 

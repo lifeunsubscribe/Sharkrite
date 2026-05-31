@@ -1668,11 +1668,11 @@ If the changes are unrelated work, answer UNRELATED."
           print_info "Remote branch exists — recreating worktree from origin/$BRANCH_NAME"
         fi
 
-        # Fetch the remote branch
-        git fetch origin "$BRANCH_NAME" 2>/dev/null || {
-          print_error "Failed to fetch origin/$BRANCH_NAME"
+        # Fetch the remote branch (git_fetch_safe: 3 retries with backoff, fails loudly)
+        if ! git_fetch_safe origin "$BRANCH_NAME"; then
+          print_error "Failed to fetch origin/$BRANCH_NAME after retries"
           exit 1
-        }
+        fi
 
         # Create worktree from remote branch (no -b flag, branch already exists on remote)
         if ! git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1; then
