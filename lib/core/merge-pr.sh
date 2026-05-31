@@ -1541,13 +1541,18 @@ EOF
     _doc_exit=0
     wait "$_DOC_PID" 2>/dev/null || _doc_exit=$?
 
-    if [ -s "$_DOC_LOG" ]; then
-      # Show the summary output (Documentation header + results)
-      cat "$_DOC_LOG"
-    fi
-
     if [ $_doc_exit -ne 0 ] && [ $_doc_exit -ne 2 ]; then
-      print_warning "Documentation assessment finished with errors (exit $_doc_exit)"
+      # Surface failure visibly: warning + last 20 lines of log to stderr so
+      # the user sees why the assessment failed even in auto/piped mode.
+      print_warning "Documentation assessment failed (exit $_doc_exit)" >&2
+      if [ -s "${_DOC_LOG:-}" ]; then
+        echo "--- doc-assessment log (last 20 lines) ---" >&2
+        tail -20 "$_DOC_LOG" >&2
+        echo "---" >&2
+      fi
+    elif [ -s "${_DOC_LOG:-}" ]; then
+      # Success: show full summary output (Documentation header + results)
+      cat "$_DOC_LOG"
     fi
   fi
   rm -f "${_DOC_LOG:-}"
