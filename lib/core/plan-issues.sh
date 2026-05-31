@@ -593,6 +593,15 @@ PROMPT_EOF
 
     local exit_code=${PIPESTATUS[0]:-$?}
 
+    # Timeout: fail immediately rather than retrying (each retry costs up to 1800s)
+    if [ "$exit_code" -eq 124 ]; then
+      print_warning "Provider stderr:" >&2
+      cat "$claude_stderr" >&2
+      print_error "Provider streaming prompt timed out (exit 124) — aborting plan-issues" >&2
+      rm -f "$claude_stderr" "$temp_file"
+      return 1
+    fi
+
     # Log any Claude CLI errors
     if [ -s "$claude_stderr" ]; then
       print_warning "Provider stderr:" >&2
@@ -843,8 +852,18 @@ PHANTOM_EOF
 
   print_status "Generating $phantom_count missing issue(s)..." >&2
 
+  local phantom_exit_code=0
   provider_run_streaming_prompt "$phantom_prompt" "" 2>"$phantom_stderr" \
-    > "$phantom_file"
+    > "$phantom_file" || phantom_exit_code=$?
+
+  # Timeout: fail immediately rather than continuing with empty/partial output
+  if [ "$phantom_exit_code" -eq 124 ]; then
+    print_warning "Provider stderr:" >&2
+    cat "$phantom_stderr" >&2
+    print_error "Provider streaming prompt timed out (exit 124) — aborting phantom coverage pass" >&2
+    rm -f "$phantom_stderr" "$phantom_file"
+    return 1
+  fi
 
   rm -f "$phantom_stderr"
 

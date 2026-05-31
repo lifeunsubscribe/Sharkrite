@@ -346,6 +346,11 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
 
+  if [ "${REVIEW_EXIT:-0}" -eq 124 ]; then
+    print_warning "Claude call timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — aborting"
+    exit 124
+  fi
+
   if [ "${REVIEW_EXIT:-0}" -ne 0 ]; then
     print_error "Review failed (exit code: $REVIEW_EXIT)"
     if [ -n "$CLAUDE_ERROR" ]; then

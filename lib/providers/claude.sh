@@ -7,6 +7,17 @@
 
 set -euo pipefail
 
+# Ensure run_with_timeout is available. config.sh sources timeout.sh before
+# load_provider() in normal flows, but tests may source this file directly.
+if ! declare -f run_with_timeout >/dev/null 2>&1; then
+  _timeout_sh="${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/../utils}/timeout.sh"
+  if [ -f "$_timeout_sh" ]; then
+    # shellcheck source=/dev/null
+    source "$_timeout_sh"
+    ensure_timeout_cmd
+  fi
+fi
+
 # =============================================================================
 # CLI Detection
 # =============================================================================
@@ -123,6 +134,8 @@ claude_provider_run_prompt() {
   local prompt="$1"
   local model="${2:-}"
   local auto_mode="${3:-true}"
+  # Default: 600s (10 min). Override via RITE_CLAUDE_TIMEOUT_PROMPT env var.
+  local _timeout="${RITE_CLAUDE_TIMEOUT_PROMPT:-600}"
 
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
   local _args="--print"
@@ -139,8 +152,13 @@ claude_provider_run_prompt() {
     _args="$_args --dangerously-skip-permissions"
   fi
 
+  local _exit=0
   # shellcheck disable=SC2086
-  echo "$prompt" | $_cmd $_args
+  echo "$prompt" | run_with_timeout "$_timeout" $_cmd $_args || _exit=$?
+  if [ "$_exit" -eq 124 ]; then
+    echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
+  fi
+  return "$_exit"
 }
 
 # =============================================================================
@@ -188,6 +206,9 @@ claude_provider_run_prompt_with_timeout() {
 claude_provider_run_streaming_prompt() {
   local prompt="$1"
   local model="${2:-}"
+  # Default: 1800s (30 min) for long-form streaming generation.
+  # Override via RITE_CLAUDE_TIMEOUT_AGENTIC env var.
+  local _timeout="${RITE_CLAUDE_TIMEOUT_AGENTIC:-1800}"
 
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
@@ -195,9 +216,23 @@ claude_provider_run_streaming_prompt() {
     model=$(claude_provider_resolve_model "review")
   fi
 
-  echo "$prompt" | "$_cmd" --print --verbose --dangerously-skip-permissions \
-    --model "$model" --output-format stream-json | \
-    _claude_stream_filter_plain
+  # Capture Claude's exit code separately from the filter.
+  # Use a temp file because PIPESTATUS is lost across subshell boundaries.
+  # _claude_stream_filter_plain may exit non-zero on empty JSON — that's normal.
+  local _exit_file
+  _exit_file=$(mktemp)
+  echo "$prompt" | { run_with_timeout "$_timeout" "$_cmd" --print --verbose \
+    --dangerously-skip-permissions \
+    --model "$model" --output-format stream-json; echo $? > "$_exit_file"; } | \
+    _claude_stream_filter_plain || true
+  local _exit
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
+
+  if [ "$_exit" -eq 124 ]; then
+    echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
+  fi
+  return "$_exit"
 }
 
 # =============================================================================
@@ -206,9 +241,17 @@ claude_provider_run_streaming_prompt() {
 
 claude_provider_run_classify() {
   local prompt="$1"
+  # Default: 600s (10 min) — classify calls expect a one-word response quickly.
+  # Override via RITE_CLAUDE_TIMEOUT_PROMPT env var.
+  local _timeout="${RITE_CLAUDE_TIMEOUT_PROMPT:-600}"
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
-  echo "$prompt" | "$_cmd" --print 2>/dev/null
+  local _exit=0
+  echo "$prompt" | run_with_timeout "$_timeout" "$_cmd" --print 2>/dev/null || _exit=$?
+  if [ "$_exit" -eq 124 ]; then
+    echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
+  fi
+  return "$_exit"
 }
 
 # =============================================================================
@@ -218,9 +261,17 @@ claude_provider_run_classify() {
 claude_provider_run_uncached() {
   local prompt="$1"
   local stderr_file="${2:-/dev/null}"
+  # Default: 1800s (30 min) — uncached agentic calls may generate long output.
+  # Override via RITE_CLAUDE_TIMEOUT_AGENTIC env var.
+  local _timeout="${RITE_CLAUDE_TIMEOUT_AGENTIC:-1800}"
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
-  echo "$prompt" | "$_cmd" --no-cache 2>"$stderr_file"
+  local _exit=0
+  echo "$prompt" | run_with_timeout "$_timeout" "$_cmd" --no-cache 2>"$stderr_file" || _exit=$?
+  if [ "$_exit" -eq 124 ]; then
+    echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
+  fi
+  return "$_exit"
 }
 
 # =============================================================================
