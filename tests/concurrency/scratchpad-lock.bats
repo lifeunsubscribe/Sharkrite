@@ -60,7 +60,10 @@ wait_at_barrier() {
   local pid_file="$BARRIER_DIR/${barrier_name}.$$"
 
   # Mark this process as arrived
-  touch "$pid_file"
+  if ! touch "$pid_file"; then
+    echo "ERROR: Failed to create barrier pid file: $pid_file" >&2
+    return 1
+  fi
 
   # Wait until all processes arrive (busy wait with short sleep)
   local count=0
