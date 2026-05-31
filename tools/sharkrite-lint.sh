@@ -188,8 +188,14 @@ for file in $SHELL_FILES; do
   while IFS= read -r line; do
     line_num=$((line_num + 1))
 
-    # Track function definitions
-    if echo "$line" | grep -qE '^\s*(function\s+\w+|^\s*\w+\s*\(\))'; then
+    # Track function definitions — covers all valid bash forms:
+    #   function name {         (ksh-style, no parens)
+    #   function name() {       (combined keyword + parens)
+    #   function name () {      (combined keyword + space + parens)
+    #   name() {                (POSIX, no keyword)
+    #   name () {               (POSIX, space before parens)
+    # Names allow letters, digits, underscores, and hyphens.
+    if echo "$line" | grep -qE '^\s*(function\s+[a-zA-Z_][a-zA-Z0-9_-]*(\s*\(\))?|[a-zA-Z_][a-zA-Z0-9_-]*\s*\(\))'; then
       in_function=1
     fi
 

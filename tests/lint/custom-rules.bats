@@ -163,3 +163,42 @@ echo "$foo"'
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
+
+@test "accepts local inside function keyword style (function name { )" {
+  create_test_script "good-local-kw.sh" 'function my_func {
+  local foo="bar"
+  echo "$foo"
+}'
+
+  # Should pass — ksh-style 'function name {' must be recognised as a function
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
+
+@test "accepts local inside combined keyword+parens style (function name() { )" {
+  create_test_script "good-local-kwparens.sh" 'function my_func() {
+  local foo="bar"
+  echo "$foo"
+}'
+
+  # Should pass — 'function name() {' must be recognised as a function
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
+
+@test "accepts local inside function with hyphenated name" {
+  create_test_script "good-local-hyphen.sh" 'my-func() {
+  local foo="bar"
+  echo "$foo"
+}'
+
+  # Should pass — function names with hyphens are valid bash
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
