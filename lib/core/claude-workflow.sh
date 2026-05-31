@@ -470,9 +470,16 @@ $_fail_summary
 # Guard: ensure Claude dev session produced committed work or fail loud
 # Called after Claude session ends, before PR creation workflow
 check_dev_session_output() {
-  # Count commits ahead of origin/main
+  # Count commits on current branch
+  # If origin/main exists, count commits ahead of it
+  # Otherwise, count all commits on HEAD (handles repos without origin/main)
   local commits_ahead
-  commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+  else
+    # No origin/main - count all commits on this branch
+    commits_ahead=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+  fi
 
   # Determine if Claude produced real work beyond the init placeholder commit.
   # Real work = at least one commit that isn't the "chore: initialize work" placeholder,
@@ -482,7 +489,12 @@ check_dev_session_output() {
     has_real_work=false  # No commits at all
   elif [ "$commits_ahead" -eq 1 ]; then
     # One commit: check if it's the init commit or actual work
-    if git log --oneline origin/main..HEAD 2>/dev/null | grep -q "chore: initialize work"; then
+    # Use different range depending on whether origin/main exists
+    local commit_range="HEAD~1..HEAD"
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      commit_range="origin/main..HEAD"
+    fi
+    if git log --oneline "$commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
       has_real_work=false  # Only the init commit exists
     else
       has_real_work=true   # One real commit (not init)
@@ -938,7 +950,15 @@ if [ -z "$ISSUE_NUMBER" ]; then
 
     # PR exists but is it just a placeholder? Check for actual file changes.
     # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
-    FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+    else
+      # No origin/main - count all files in working tree (alternative: could use git ls-files)
+      FILE_CHANGES=$(git diff --name-only --cached 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$FILE_CHANGES" -eq 0 ]; then
+        FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+      fi
+    fi
 
     if [ "$FILE_CHANGES" -gt 0 ]; then
       # PR has real work - jump directly to PR workflow
@@ -1218,8 +1238,11 @@ If the changes are unrelated work, answer UNRELATED."
             # Hard guard 3: skip if local commits are ahead of remote (unpushed work).
             if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
               UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
-            else
+            elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
               UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+            else
+              # No remote branches exist - count all commits on HEAD
+              UNPUSHED=$(git -C "$wt_path" rev-list --count HEAD 2>/dev/null || echo "0")
             fi
             if [ "$UNPUSHED" -gt 0 ]; then
               PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
@@ -1269,8 +1292,11 @@ If the changes are unrelated work, answer UNRELATED."
               [ -n "$PR_N" ] && REASONS="${REASONS}PR #$PR_N, "
               if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
-              else
+              elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+              else
+                # No remote branches exist - count all commits on HEAD
+                UNP=$(git -C "$wt_path" rev-list --count HEAD 2>/dev/null || echo "0")
               fi
               [ "$UNP" -gt 0 ] && REASONS="${REASONS}${UNP} unpushed commit(s), "
               REASONS="${REASONS%, }"
@@ -1334,8 +1360,12 @@ If the changes are unrelated work, answer UNRELATED."
         fi
       fi
     else
-      # Create new branch in worktree from origin/main - git handles race condition
-      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" origin/main >/dev/null 2>&1; then
+      # Create new branch in worktree from origin/main (or HEAD if origin/main doesn't exist)
+      local base_ref="origin/main"
+      if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+        base_ref="HEAD"
+      fi
+      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$base_ref" >/dev/null 2>&1; then
         # Worktree directory exists — verify it's on the expected branch.
         if [ -d "$WORKTREE_PATH" ]; then
           ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
@@ -1352,7 +1382,11 @@ If the changes are unrelated work, answer UNRELATED."
                 exit 1
               }
             else
-              git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" origin/main >/dev/null 2>&1 || {
+              local retry_base_ref="origin/main"
+              if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+                retry_base_ref="HEAD"
+              fi
+              git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$retry_base_ref" >/dev/null 2>&1 || {
                 print_error "Failed to recreate worktree (new branch)"
                 exit 1
               }
@@ -1491,10 +1525,11 @@ done
 # New branches (just created from origin/main) will show 0 behind — this is a no-op for them.
 if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
   git fetch origin main 2>/dev/null || true
-  BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
-  if [ "$BEHIND_COUNT" -gt 0 ]; then
-    print_status "Branch is $BEHIND_COUNT commit(s) behind main — merging origin/main..."
-    if git merge origin/main --no-edit 2>/dev/null; then
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
+    if [ "$BEHIND_COUNT" -gt 0 ]; then
+      print_status "Branch is $BEHIND_COUNT commit(s) behind main — merging origin/main..."
+      if git merge origin/main --no-edit 2>/dev/null; then
       # Verify merge didn't introduce silent semantic conflicts
       source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
       if ! verify_post_merge "."; then
@@ -1511,6 +1546,7 @@ if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
       print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
       print_info "Resolve manually: git merge origin/main"
       exit 1
+    fi
     fi
   fi
 fi
@@ -1562,7 +1598,11 @@ else
   # Create empty commit for PR (will be amended later with real changes)
   # Check commits AHEAD of main only — a "chore: initialize work" on main itself
   # (from a merged PR) must not suppress creating a new init commit for this branch.
-  if ! git log --oneline origin/main..HEAD 2>/dev/null | grep -q "chore: initialize work"; then
+  local commit_range="HEAD"
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    commit_range="origin/main..HEAD"
+  fi
+  if ! git log --oneline "$commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
     commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1)
     # Format: [branch hash] message — show branch/hash on one line, message indented below
     branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/')
@@ -1917,7 +1957,11 @@ else
     echo "[DIAG] Git status (porcelain):"
     git status --porcelain 2>/dev/null | head -20 || echo "  (none)"
     echo "[DIAG] File changes vs origin/main:"
-    git diff --stat origin/main...HEAD 2>/dev/null || echo "  (none)"
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      git diff --stat origin/main...HEAD 2>/dev/null || echo "  (none)"
+    else
+      echo "  (origin/main not found)"
+    fi
     if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
       echo "[DIAG] Provider stderr (last 30 lines):"
       tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /'
@@ -1975,7 +2019,12 @@ if [ $CHANGES_COUNT -eq 0 ]; then
 
   # Check if there are any actual file changes (more reliable than commit message parsing).
   # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
-  FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+  else
+    # No origin/main - count all tracked files
+    FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+  fi
 
   if [ "$FILE_CHANGES" -eq 0 ]; then
     # No work was done in the dev phase - exit early
@@ -1997,7 +2046,11 @@ if [ $CHANGES_COUNT -eq 0 ]; then
     CURRENT_BRANCH=$(git branch --show-current)
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ]; then
       # Check if this is an empty branch we just created
-      if git log --oneline origin/main..HEAD 2>/dev/null | grep -q "chore: initialize work"; then
+      local commit_range="HEAD"
+      if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        commit_range="origin/main..HEAD"
+      fi
+      if git log --oneline "$commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
         print_status "Cleaning up empty branch..."
 
         # Delete the draft PR if it exists
@@ -2208,7 +2261,11 @@ print_header "🎉 Workflow Complete"
 
 echo "Summary:"
 echo "  Branch: $BRANCH_NAME"
-echo "  Commits: $(git rev-list --count origin/main..HEAD 2>/dev/null || echo "1")"
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  echo "  Commits: $(git rev-list --count origin/main..HEAD 2>/dev/null || echo "1")"
+else
+  echo "  Commits: $(git rev-list --count HEAD 2>/dev/null || echo "1")"
+fi
 echo "  Changes: $CHANGES_COUNT files"
 echo ""
 
