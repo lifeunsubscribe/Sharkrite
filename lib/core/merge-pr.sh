@@ -517,7 +517,7 @@ if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
   CLAUDE_REVIEW_FOUND=true
 
   # Parse CRITICAL count using multiple patterns (case-insensitive, flexible format)
-  CRITICAL_COUNT=$(echo "$LATEST_CLAUDE_REVIEW" | grep -oiE '(CRITICAL|critical)[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1)
+  CRITICAL_COUNT=$(echo "$LATEST_CLAUDE_REVIEW" | grep -oiE '(CRITICAL|critical)[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1 || true)
 
   if [ -z "$CRITICAL_COUNT" ]; then
     # Fallback: check for "### ❌ CRITICAL" sections with actual content

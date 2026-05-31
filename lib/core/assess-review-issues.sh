@@ -257,7 +257,7 @@ REVIEW_CONTENT=$(cat "$REVIEW_FILE")
 
 FINDINGS_LINE=$(echo "$REVIEW_CONTENT" | grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" | head -1 || true)
 if [ -n "$FINDINGS_LINE" ]; then
-  TOTAL_FINDINGS=$(echo "$FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}')
+  TOTAL_FINDINGS=$(echo "$FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
   if [ "${TOTAL_FINDINGS:-0}" -eq 0 ]; then
     print_success "Review has zero findings — nothing to assess" >&2
     echo "NO_ACTIONABLE_ITEMS"

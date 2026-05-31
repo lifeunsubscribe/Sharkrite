@@ -94,7 +94,7 @@ detect_worktree_for_pr() {
     return 1
   fi
 
-  WORKTREE_PATH=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
+  WORKTREE_PATH=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
 
   if [ -z "$WORKTREE_PATH" ] || [ ! -d "$WORKTREE_PATH" ]; then
     WORKTREE_PATH=""

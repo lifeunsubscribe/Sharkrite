@@ -400,7 +400,7 @@ echo ""
 
 extract_review_model() {
   local review_body="$1"
-  local model=$(echo "$review_body" | grep -oE 'sharkrite-local-review model:[a-z0-9-]+' | sed 's/.*model://' | head -1)
+  local model=$(echo "$review_body" | grep -oE 'sharkrite-local-review model:[a-z0-9-]+' | sed 's/.*model://' | head -1 || true)
   if [ -n "$model" ]; then
     echo "$model"
   else
@@ -545,7 +545,7 @@ echo ""
 # Without this, the assessment Claude reads positive prose and invents issues.
 REVIEW_FINDINGS_LINE=$(grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" "$REVIEW_FILE" 2>/dev/null | head -1 || true)
 if [ -n "$REVIEW_FINDINGS_LINE" ]; then
-  REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}')
+  REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
   if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ]; then
     print_header "🦈 Smart Assessment (Sharkrite)"
     print_success "Review has zero findings — skipping assessment, proceeding to merge"
@@ -713,13 +713,13 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     fi
     print_info "Falling back to raw review count for decision"
     # Parse counts from raw review
-    CRITICAL_COUNT=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+    CRITICAL_COUNT=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
     CRITICAL_COUNT=${CRITICAL_COUNT:-0}
-    HIGH_COUNT=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+    HIGH_COUNT=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
     HIGH_COUNT=${HIGH_COUNT:-0}
-    MEDIUM_COUNT=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+    MEDIUM_COUNT=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
     MEDIUM_COUNT=${MEDIUM_COUNT:-0}
-    LOW_COUNT=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+    LOW_COUNT=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
     LOW_COUNT=${LOW_COUNT:-0}
     ACTIONABLE_COUNT=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
   fi
@@ -727,13 +727,13 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
 else
   print_warning "assess-review-issues.sh not found - treating all issues as actionable"
   # Parse counts from raw review
-  CRITICAL_COUNT=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+  CRITICAL_COUNT=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
   CRITICAL_COUNT=${CRITICAL_COUNT:-0}
-  HIGH_COUNT=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+  HIGH_COUNT=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
   HIGH_COUNT=${HIGH_COUNT:-0}
-  MEDIUM_COUNT=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+  MEDIUM_COUNT=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
   MEDIUM_COUNT=${MEDIUM_COUNT:-0}
-  LOW_COUNT=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ')
+  LOW_COUNT=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
   LOW_COUNT=${LOW_COUNT:-0}
   ACTIONABLE_COUNT=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 fi
@@ -941,7 +941,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     while IFS= read -r _ac_line; do
       _ac_title=$(echo "$_ac_line" | sed 's/^### //; s/ - ACTIONABLE_.*//')
       # Look up severity for this item (lines after the header in assessment)
-      _ac_severity=$(echo "$FILTERED_CONTENT" | grep -A 3 -F "$_ac_line" | grep -oE "Severity:.*" | head -1 | sed 's/Severity:[[:space:]]*//' | sed 's/\*//g')
+      _ac_severity=$(echo "$FILTERED_CONTENT" | grep -A 3 -F "$_ac_line" | grep -oE "Severity:.*" | head -1 | sed 's/Severity:[[:space:]]*//' | sed 's/\*//g' || true)
       _ac_severity=${_ac_severity:-MEDIUM}
       # Skip LOW items — excluded from follow-up issues
       if echo "$_ac_severity" | grep -qi "LOW"; then continue; fi

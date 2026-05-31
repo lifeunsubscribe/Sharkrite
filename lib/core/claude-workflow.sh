@@ -930,7 +930,7 @@ find_worktree_for_task() {
 
     if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
       # Extract parent PR number from body marker
-      local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2)
+      local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
 
       if [ -n "$parent_pr" ]; then
         pr_branch=$(gh pr view "$parent_pr" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
