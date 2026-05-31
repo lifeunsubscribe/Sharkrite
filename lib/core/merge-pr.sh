@@ -961,7 +961,7 @@ EOF
   fi
 
   # Pop stash if there are stashed changes (from claude-workflow.sh)
-  if git stash list | grep -q "Auto-stash before claude-workflow.sh"; then
+  if git stash list | grep -q "\[sharkrite-managed-stash\]"; then
     print_status "Restoring stashed changes..."
     if git stash pop; then
       print_success "Stashed changes restored"

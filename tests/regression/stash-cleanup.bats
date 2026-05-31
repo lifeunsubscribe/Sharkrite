@@ -8,7 +8,7 @@ setup() {
   setup_test_tmpdir
 
   # Create a test git repo
-  TEST_REPO="$TEST_TMPDIR/test-repo"
+  TEST_REPO="$RITE_TEST_TMPDIR/test-repo"
   mkdir -p "$TEST_REPO"
   cd "$TEST_REPO" || exit 1
 
@@ -20,6 +20,9 @@ setup() {
   echo "initial" > file.txt
   git add file.txt
   git commit -q -m "Initial commit"
+
+  # Export RITE_LIB_DIR for stash-manager dependencies
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 
   # Source the stash-manager module
   source "${RITE_REPO_ROOT}/lib/utils/stash-manager.sh"
