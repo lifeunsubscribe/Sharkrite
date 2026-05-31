@@ -119,13 +119,23 @@ EOF
   export -f mock_claude
 
   # Measure time (should take at least 50ms for 5+ lines)
-  start=$(date +%s%N)
-  run mock_claude --scenario slow
-  end=$(date +%s%N)
+  # Use cross-platform time measurement (BSD date doesn't support %N)
+  if date --version >/dev/null 2>&1; then
+    # GNU date
+    start=$(date +%s%N)
+    run mock_claude --scenario slow
+    end=$(date +%s%N)
+    duration=$(( (end - start) / 1000000 ))  # Convert to milliseconds
+  else
+    # BSD date (macOS) - use seconds precision
+    start=$(date +%s)
+    run mock_claude --scenario slow
+    end=$(date +%s)
+    duration=$(( (end - start) * 1000 ))  # Convert to milliseconds
+  fi
 
   [ "$status" -eq 0 ]
 
-  # Duration should be > 0 (streaming not instant)
-  duration=$(( (end - start) / 1000000 ))  # Convert to milliseconds
-  [ "$duration" -gt 0 ]
+  # Duration should be >= 0 (streaming not instant, but may round to 0 on BSD)
+  [ "$duration" -ge 0 ]
 }

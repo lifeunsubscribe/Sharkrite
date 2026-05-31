@@ -26,12 +26,11 @@
 mock_claude() {
   # Parse args to determine scenario
   local scenario="default"
-  local print_mode=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --print)
-        print_mode=true
+        # Acknowledged but doesn't affect mock behavior
         shift
         ;;
       --scenario)

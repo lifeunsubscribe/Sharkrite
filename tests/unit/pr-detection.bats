@@ -71,10 +71,11 @@ EOF
   load_lib utils/pr-detection.sh
 
   # Test the function
-  run detect_pr_for_issue 42
+  detect_pr_for_issue 42
+  local exit_code=$?
 
   # Should succeed
-  [ "$status" -eq 0 ]
+  [ "$exit_code" -eq 0 ]
 
   # Should set PR_NUMBER and PR_BRANCH
   [ "$PR_NUMBER" = "123" ]
@@ -129,9 +130,10 @@ EOF
 
   load_lib utils/pr-detection.sh
 
-  run detect_pr_for_issue 88
+  detect_pr_for_issue 88
+  local exit_code=$?
 
-  [ "$status" -eq 0 ]
+  [ "$exit_code" -eq 0 ]
   [ "$PR_NUMBER" = "456" ]
 }
 
@@ -146,7 +148,7 @@ EOF
   export -f gh
   export -f mock_gh
 
-  # First call succeeds
+  # First call returns exit code 1 (no fixture, but no fault injection yet)
   run mock_gh pr list
   [ "$status" -eq 1 ]  # No fixture, but doesn't hit fault injection
 
