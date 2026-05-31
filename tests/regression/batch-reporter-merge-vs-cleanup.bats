@@ -48,10 +48,13 @@ echo "PR merged successfully"
 # Now run cleanup phase - turn off set -e so errors don't immediately exit
 set +e
 CLEANUP_FAILED=false
-trap 'CLEANUP_FAILED=true' ERR
 
-# Trigger an error during cleanup
+# Trigger an error during cleanup and capture exit code
 false
+_cleanup_exit=$?
+if [ $_cleanup_exit -ne 0 ]; then
+  CLEANUP_FAILED=true
+fi
 
 # Check cleanup status and exit accordingly
 if [ "$CLEANUP_FAILED" = true ]; then

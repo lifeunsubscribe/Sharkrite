@@ -752,6 +752,7 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
     if [ $_debt_exit -ne 0 ]; then
       print_warning "Tech-debt issue creation failed (exit $_debt_exit)"
       CLEANUP_FAILED=true
+      DEBT_COUNT=0  # Initialize to prevent empty string in comparison
     elif [ "$DEBT_COUNT" -gt 0 ]; then
       print_success "Created $DEBT_COUNT tech-debt issue(s)"
     fi
