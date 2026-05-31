@@ -6,9 +6,9 @@
 # a new caller of the old name — clean merge, broken code).
 #
 # Called after merge/rebase succeeds but BEFORE push.
+# If verification fails, the caller should abort (revert the merge, don't push).
 
 set -euo pipefail
-# If verification fails, the caller should abort (revert the merge, don't push).
 
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
