@@ -288,7 +288,7 @@ claude_provider_build_tool_restrictions() {
   # Multiple patterns separated by commas (no spaces).
 
   local RITE_CLAUDE_DISALLOWED_TOOLS
-  RITE_CLAUDE_DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *),Bash(rm -rf*),Bash(ssh *),Bash(ssh),Bash(*ssh *),Bash(scp *),Bash(scp),Bash(*scp *),Bash(env),Bash(printenv*),Bash(*authorized_keys*),Bash(* ~/.ssh/*),Bash(* ~/.zsh*),Bash(* ~/.bash*),Bash(* ~/.*rc),Bash(* /etc/*),Bash(* /var/*)'
+  RITE_CLAUDE_DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *),Bash(rm -rf*),Bash(ssh *),Bash(ssh),Bash(*ssh *),Bash(scp *),Bash(scp),Bash(*scp *),Bash(env),Bash(printenv*),Bash(*authorized_keys*),Bash(* ~/.ssh/*),Bash(*~/.ssh/*),Bash(~/.ssh/*),Bash(* ~/.zsh*),Bash(*~/.zsh*),Bash(~/.zsh*),Bash(* ~/.bash*),Bash(*~/.bash*),Bash(~/.bash*),Bash(* ~/.*rc),Bash(*~/.*rc),Bash(~/.*rc),Bash(* /etc/*),Bash(*/etc/*),Bash(/etc/*),Bash(* /var/*),Bash(*/var/*),Bash(/var/*)'
 
   echo "$RITE_CLAUDE_DISALLOWED_TOOLS"
 }
