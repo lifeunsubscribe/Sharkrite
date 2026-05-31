@@ -41,8 +41,8 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # Helper: write a temp script that reproduces the empty-diff validation block
-# from local-review.sh (currently lines 153-191). Writing to a temp file
-# avoids complex nested-quote problems with bash -c '...' heredocs.
+# from local-review.sh. Writing to a temp file avoids complex nested-quote
+# problems with bash -c '...' heredocs.
 # ---------------------------------------------------------------------------
 _write_empty_diff_check_script() {
   local script_file="$1"
