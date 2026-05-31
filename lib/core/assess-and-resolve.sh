@@ -27,6 +27,7 @@ fi
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -1069,21 +1070,77 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
   fi
 
-  # Check if issue already exists: prefer source-issue scoped body search, fallback to title search
-  EXISTING_ISSUE=""
-  if [ -n "${ISSUE_NUMBER:-}" ]; then
-    EXISTING_ISSUE=$(gh issue list \
-      --state open \
-      --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
-      --json number \
-      --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || echo "")
-  fi
-  if [ -z "$EXISTING_ISSUE" ]; then
-    EXISTING_ISSUE=$(gh issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
-      jq -r '.[] | select(.state == "OPEN") | .number' 2>/dev/null || echo "")
+  # Acquire per-PR follow-up lock before the check-then-create sequence.
+  #
+  # Without this lock, two concurrent assess-and-resolve calls on the same PR can
+  # both pass the dedup search (GitHub API eventual consistency means the first
+  # created issue is not yet indexed) and create duplicate follow-up issues.
+  # The lock serialises the critical section; lock failure is non-fatal (best-effort).
+  _followup_lock_held=false
+  if acquire_pr_followup_lock "$PR_NUMBER" 2>/dev/null; then
+    _followup_lock_held=true
+  else
+    print_warning "Could not acquire follow-up lock for PR #$PR_NUMBER — proceeding without lock (best-effort dedup)"
   fi
 
+  # Check if issue already exists: prefer source-issue scoped body search, fallback to title search.
+  #
+  # Retry loop guards against GitHub API eventual consistency: the first process to
+  # create the issue may not have its body marker indexed yet when the second process
+  # (which waited for the lock) runs its search.  If the body-marker search misses AND
+  # a <!-- sharkrite-followup-issue: comment already exists on the PR, we back off and
+  # retry rather than creating a duplicate.
+  EXISTING_ISSUE=""
+  _dedup_retries=0
+  _dedup_max_retries=3
+  _dedup_backoff=5  # seconds between retries
+
+  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
+    EXISTING_ISSUE=""
+
+    # Primary: body-marker search scoped to source issue (most reliable when indexed)
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      EXISTING_ISSUE=$(gh issue list \
+        --state open \
+        --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
+        --json number \
+        --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || true)
+    fi
+
+    # Fallback: title search (catches cases where body marker not yet indexed)
+    if [ -z "$EXISTING_ISSUE" ]; then
+      EXISTING_ISSUE=$(gh issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
+        jq -r '.[] | select(.state == "OPEN") | .number' 2>/dev/null || true)
+    fi
+
+    # If found, no need to retry
+    [ -n "$EXISTING_ISSUE" ] && break
+
+    # Not found — check whether a sharkrite-followup-issue comment already exists on
+    # the PR.  If it does, the issue was created by another process but the search
+    # index hasn't caught up yet (GitHub eventual consistency).  Retry with backoff.
+    if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
+      _recent_followup_comment=$(gh pr view "$PR_NUMBER" \
+        --json comments \
+        --jq '[.comments[].body | select(contains("<!-- sharkrite-followup-issue:"))] | length' \
+        2>/dev/null || echo "0")
+      if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
+        _dedup_retries=$((_dedup_retries + 1))
+        print_info "Follow-up comment found on PR but issue not yet indexed (attempt $_dedup_retries/$_dedup_max_retries) — retrying in ${_dedup_backoff}s..."
+        sleep "$_dedup_backoff"
+        continue
+      fi
+    fi
+
+    # No comment evidence of prior creation — break and proceed to create
+    break
+  done
+
   if [ -n "$EXISTING_ISSUE" ]; then
+    # Release lock before any output — we won't be creating an issue
+    [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+    _followup_lock_held=false
+
     echo ""
     print_success "📋 Follow-up issue already exists: #$EXISTING_ISSUE (skipping duplicate)"
     issue_url=$(gh issue view "$EXISTING_ISSUE" --json url --jq '.url' 2>/dev/null || echo "")
@@ -1125,6 +1182,11 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       2>&1); then
       rm -f "$FOLLOWUP_BODY_FILE"
       FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_ISSUE" | grep -oE '[0-9]+$' || echo "")
+
+      # Release lock now that the issue is created and visible to waiters
+      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+      _followup_lock_held=false
+
       echo ""
       print_success "✅ Follow-up issue created: #$FOLLOWUP_NUMBER"
       echo "  URL: $FOLLOWUP_ISSUE"
@@ -1149,9 +1211,16 @@ This approach allows all fixes to be completed together in a focused PR."
       rm -f "$COMMENT_BODY_FILE"
     else
       rm -f "$FOLLOWUP_BODY_FILE"
+      # Release lock on failure too — don't leave waiters stuck
+      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+      _followup_lock_held=false
       print_warning "Failed to create consolidated follow-up issue"
     fi
   fi
+
+  # Safety net: ensure lock is released even if we exited the if/else via an
+  # unexpected path (set +e is active in this section so errexit won't catch it)
+  [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
 
   # Follow-up issues are independent work — don't process them inline.
   # The exec into batch-process-issues.sh caused state corruption: it would

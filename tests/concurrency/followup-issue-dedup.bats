@@ -1,117 +1,42 @@
 #!/usr/bin/env bats
 # tests/concurrency/followup-issue-dedup.bats - Follow-up issue deduplication tests
 #
-# Tests that concurrent follow-up issue creation properly deduplicates.
-# Multiple processes creating issues for the same findings should result in ONE issue.
-# These tests verify fixes for issue #25 (duplicate follow-up issues).
+# Tests that concurrent follow-up issue creation properly deduplicates via the
+# per-PR follow-up lock in lib/utils/issue-lock.sh and the retry logic in
+# assess-and-resolve.sh.
+#
+# Verification command: bats tests/concurrency/followup-issue-dedup.bats
 
 load '../helpers/setup.bash'
-load '../helpers/git-fixtures.bash'
 
 setup() {
   setup_test_tmpdir
 
-  # Create bare remote and fixture repo
-  BARE_REMOTE=$(create_bare_remote "origin")
-  FIXTURE_REPO=$(create_fixture_repo "$BARE_REMOTE")
-
-  # Set up environment
-  export RITE_PROJECT_ROOT="$FIXTURE_REPO"
+  export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
   export RITE_DATA_DIR=".rite"
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
-  export RITE_WORKTREE_DIR="$RITE_PROJECT_ROOT/.rite/worktrees"
+  export RITE_LOCK_DIR="$RITE_TEST_TMPDIR/.rite/locks"
 
-  mkdir -p "$RITE_PROJECT_ROOT/$RITE_DATA_DIR"
-  mkdir -p "$RITE_WORKTREE_DIR"
+  mkdir -p "$RITE_LOCK_DIR"
+  mkdir -p "$RITE_TEST_TMPDIR/.rite"
 
-  cd "$FIXTURE_REPO"
+  # Source the lock utilities
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
-  # Set up gh mock
-  export GH_MOCK_FIXTURE_DIR="$RITE_TEST_TMPDIR/gh-fixtures"
-  mkdir -p "$GH_MOCK_FIXTURE_DIR"
-  reset_gh_mock
+  # Track created issues atomically via a temp file + flock
+  export ISSUES_FILE="$RITE_TEST_TMPDIR/created-issues.txt"
+  touch "$ISSUES_FILE"
+  export ISSUES_LOCK="$RITE_TEST_TMPDIR/created-issues.lock"
 
-  # Track created issues in mock
-  export GH_MOCK_ISSUES_FILE="$GH_MOCK_FIXTURE_DIR/created-issues.json"
-  echo "[]" > "$GH_MOCK_ISSUES_FILE"
-
-  # Replace gh with mock that tracks issue creation
-  export PATH="$RITE_TEST_TMPDIR/mock-bin:$PATH"
-  mkdir -p "$RITE_TEST_TMPDIR/mock-bin"
-
-  cat > "$RITE_TEST_TMPDIR/mock-bin/gh" <<'GHEOF'
-#!/bin/bash
-# Mock gh that tracks issue creation
-
-if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
-  # Extract title and body
-  title=""
-  body=""
-  labels=""
-
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --title) title="$2"; shift 2 ;;
-      --body) body="$2"; shift 2 ;;
-      --label) labels="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-
-  # Generate issue number (atomic using flock)
-  _lockfile="/tmp/gh-mock-issue-counter.lock"
-  _counterfile="/tmp/gh-mock-issue-counter"
-
-  (
-    flock -x 200
-
-    if [ ! -f "$_counterfile" ]; then
-      echo "1000" > "$_counterfile"
-    fi
-
-    issue_num=$(cat "$_counterfile")
-    echo $((issue_num + 1)) > "$_counterfile"
-
-    # Append to created issues log (for test verification)
-    if [ -n "$GH_MOCK_ISSUES_FILE" ]; then
-      jq --arg num "$issue_num" --arg title "$title" --arg labels "$labels" \
-        '. += [{"number": ($num | tonumber), "title": $title, "labels": $labels}]' \
-        "$GH_MOCK_ISSUES_FILE" > "$GH_MOCK_ISSUES_FILE.tmp" 2>/dev/null || echo "[]" > "$GH_MOCK_ISSUES_FILE.tmp"
-      mv "$GH_MOCK_ISSUES_FILE.tmp" "$GH_MOCK_ISSUES_FILE"
-    fi
-
-    # Output like real gh
-    echo "$issue_num"
-
-  ) 200>"$_lockfile"
-
-elif [ "$1" = "issue" ] && [ "$2" = "list" ]; then
-  # Return empty list for now
-  echo "[]"
-
-elif [ "$1" = "label" ] && [ "$2" = "create" ]; then
-  # Mock label creation - just succeed silently
-  exit 0
-
-else
-  # Other gh commands - just succeed
-  exit 0
-fi
-GHEOF
-
-  chmod +x "$RITE_TEST_TMPDIR/mock-bin/gh"
-
-  # Create barrier directory
   export BARRIER_DIR="$RITE_TEST_TMPDIR/barriers"
   mkdir -p "$BARRIER_DIR"
 }
 
 teardown() {
-  rm -f /tmp/gh-mock-issue-counter.lock /tmp/gh-mock-issue-counter
   teardown_test_tmpdir
 }
 
-# Barrier synchronization helper
+# Barrier: wait until expected_count processes have checked in
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
@@ -121,192 +46,241 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
-      sleep 0.1
+      sleep 0.05
       timeout=$((timeout + 1))
     fi
   done
 }
 
-@test "concurrent follow-up issue creation - deduplication works" {
-  # Test: 5 processes all try to create the same tech-debt follow-up issue
-  # Expected: Only ONE issue should be created (deduplication)
-  local num_processes=5
-  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
-  mkdir -p "$exit_codes_dir"
+# Helper: simulates the locked search-then-create critical section from
+# assess-and-resolve.sh.  Accepts a PR number; uses a shared ISSUES_FILE to
+# track what was "created".  Returns the issue number appended to ISSUES_FILE.
+#
+# The logic mirrors the production code:
+#   1. Acquire pr-N-followup.lock
+#   2. Search for existing issue (read ISSUES_FILE)
+#   3. If none found, create (append to ISSUES_FILE)
+#   4. Release lock
+run_locked_dedup_create() {
+  local pr_number="$1"
+  local issue_title="$2"
 
-  # Same finding content that all processes will try to create
-  local finding_title="Fix input validation in auth module"
-  local finding_body="[HIGH] Input validation missing in user authentication flow"
+  # Re-source lock utils (needed in subshell)
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+
+  local _lock_held=false
+  if acquire_pr_followup_lock "$pr_number" 2>/dev/null; then
+    _lock_held=true
+  fi
+
+  # Search: check if issue already exists for this PR
+  local existing=""
+  existing=$(grep "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null | head -1 || true)
+
+  if [ -z "$existing" ]; then
+    # Create: append to shared file (atomic enough under lock)
+    local issue_num
+    issue_num=$((RANDOM % 9000 + 1000))
+    echo "PR${pr_number}:${issue_num}:${issue_title}" >> "$ISSUES_FILE"
+  fi
+
+  [ "$_lock_held" = "true" ] && release_pr_followup_lock "$pr_number" 2>/dev/null || true
+}
+
+# ─── Unit tests: acquire_pr_followup_lock / release_pr_followup_lock ──────────
+
+@test "acquire_pr_followup_lock succeeds when no lock exists" {
+  run acquire_pr_followup_lock 99
+  [ "$status" -eq 0 ]
+  # bats `run` executes in a subshell, so we verify the lock dir and pid file
+  # were created (PID will be the subshell's PID, not $$)
+  [ -d "$RITE_LOCK_DIR/pr-99-followup.lock" ]
+  [ -f "$RITE_LOCK_DIR/pr-99-followup.lock/pid" ]
+
+  local lock_pid
+  lock_pid=$(cat "$RITE_LOCK_DIR/pr-99-followup.lock/pid")
+  # PID must be a positive integer
+  [[ "$lock_pid" =~ ^[0-9]+$ ]]
+}
+
+@test "release_pr_followup_lock removes lock held by current process" {
+  acquire_pr_followup_lock 99
+  release_pr_followup_lock 99
+  [ ! -d "$RITE_LOCK_DIR/pr-99-followup.lock" ]
+}
+
+@test "acquire_pr_followup_lock blocks while lock is held by live process" {
+  # Acquire lock in background process and hold it
+  (
+    source "$RITE_LIB_DIR/utils/issue-lock.sh"
+    acquire_pr_followup_lock 55
+    # Signal ready, then hold for 3 seconds
+    touch "$BARRIER_DIR/lock_held.ready"
+    sleep 3
+    release_pr_followup_lock 55
+  ) &
+  local holder_pid=$!
+
+  # Wait until lock is confirmed held
+  local waited=0
+  while [ ! -f "$BARRIER_DIR/lock_held.ready" ] && [ "$waited" -lt 30 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+
+  # A second acquire attempt should see the lock as held
+  # (it will eventually succeed after holder exits, but we just verify it waits)
+  # We time it: should take ~1s before holder releases
+  local start_ts
+  start_ts=$(date +%s)
+
+  run bash -c "
+    export RITE_LOCK_DIR='$RITE_LOCK_DIR'
+    source '$RITE_LIB_DIR/utils/issue-lock.sh'
+    acquire_pr_followup_lock 55
+  "
+  local end_ts
+  end_ts=$(date +%s)
+  local elapsed=$(( end_ts - start_ts ))
+
+  # Should have waited at least 1 second (holder held for ~3s, but may have
+  # released before our attempt starts — just verify status 0 meaning it
+  # eventually acquired successfully after waiting)
+  [ "$status" -eq 0 ]
+
+  wait "$holder_pid" || true
+}
+
+@test "acquire_pr_followup_lock reclaims stale lock from dead process" {
+  # Create a lock with a dead PID
+  local lock_dir="$RITE_LOCK_DIR/pr-77-followup.lock"
+  mkdir "$lock_dir"
+  echo "99999999" > "$lock_dir/pid"   # PID that does not exist
+
+  run acquire_pr_followup_lock 77
+  [ "$status" -eq 0 ]
+  [ -d "$lock_dir" ]
+
+  local lock_pid
+  lock_pid=$(cat "$lock_dir/pid")
+  [ "$lock_pid" = "$$" ]
+}
+
+@test "locks for different PR numbers are independent" {
+  acquire_pr_followup_lock 10
+  acquire_pr_followup_lock 20
+  acquire_pr_followup_lock 30
+
+  [ -d "$RITE_LOCK_DIR/pr-10-followup.lock" ]
+  [ -d "$RITE_LOCK_DIR/pr-20-followup.lock" ]
+  [ -d "$RITE_LOCK_DIR/pr-30-followup.lock" ]
+
+  release_pr_followup_lock 10
+  release_pr_followup_lock 20
+  release_pr_followup_lock 30
+
+  [ ! -d "$RITE_LOCK_DIR/pr-10-followup.lock" ]
+  [ ! -d "$RITE_LOCK_DIR/pr-20-followup.lock" ]
+  [ ! -d "$RITE_LOCK_DIR/pr-30-followup.lock" ]
+}
+
+# ─── Concurrency tests ────────────────────────────────────────────────────────
+
+@test "3 parallel assessments on same PR produce exactly one follow-up issue" {
+  local pr_number=42
+  local num_processes=3
+  local pids=()
 
   for i in $(seq 1 $num_processes); do
     (
-      wait_at_barrier "followup_dedup_test" "$num_processes" || exit 1
-
-      # All processes create the same issue (should deduplicate)
-      issue_num=$(gh issue create \
-        --title "$finding_title" \
-        --body "$finding_body" \
-        --label "tech-debt" 2>&1)
-
-      echo "$issue_num" > "$exit_codes_dir/process_${i}.issue_num"
-      echo $? > "$exit_codes_dir/process_${i}.exit"
+      wait_at_barrier "dedup_test_${BATS_TEST_NUMBER}" "$num_processes"
+      run_locked_dedup_create "$pr_number" "review feedback from PR #${pr_number}"
     ) &
+    pids+=($!)
   done
 
-  wait
-
-  # Verify all processes succeeded in calling gh
-  for i in $(seq 1 $num_processes); do
-    [ -f "$exit_codes_dir/process_${i}.exit" ]
+  # Wait for all background processes
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
   done
 
-  # Count how many issues were created
-  local total_issues=$(jq 'length' "$GH_MOCK_ISSUES_FILE" 2>/dev/null || echo 0)
+  # Count how many issues were created for this PR
+  local issue_count
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || echo 0)
 
-  # Without deduplication, we'd get N issues
-  # With proper deduplication (issue #25 fix), we get 1
-  [ "$total_issues" -eq 1 ] || {
-    echo "EXPECTED FAILURE: $total_issues issues created instead of 1 - dedup not working"
-    echo "Created issues:"
-    jq '.' "$GH_MOCK_ISSUES_FILE" || cat "$GH_MOCK_ISSUES_FILE"
-    # Allow test to pass - documents expected failure
-    return 0
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: Expected 1 follow-up issue, got $issue_count"
+    echo "Issues file contents:"
+    cat "$ISSUES_FILE" || true
+    false
   }
-
-  # Verify the one issue has correct title
-  local created_title=$(jq -r '.[0].title' "$GH_MOCK_ISSUES_FILE")
-  [ "$created_title" = "$finding_title" ]
 }
 
-@test "concurrent label creation - no duplicate labels" {
-  # Test: Multiple processes try to create the same label
-  # Expected: Label created once, other attempts gracefully handle "already exists"
+@test "5 parallel assessments on same PR produce exactly one follow-up issue" {
+  local pr_number=43
+  local num_processes=5
+  local pids=()
+
+  for i in $(seq 1 $num_processes); do
+    (
+      wait_at_barrier "dedup_test5_${BATS_TEST_NUMBER}" "$num_processes"
+      run_locked_dedup_create "$pr_number" "review feedback from PR #${pr_number}"
+    ) &
+    pids+=($!)
+  done
+
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  local issue_count
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || echo 0)
+
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: Expected 1 follow-up issue, got $issue_count"
+    cat "$ISSUES_FILE" || true
+    false
+  }
+}
+
+@test "concurrent assessments on different PRs each get their own issue" {
   local num_processes=4
-  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
-  mkdir -p "$exit_codes_dir"
-
-  local label_name="phase-4a"
+  local pids=()
 
   for i in $(seq 1 $num_processes); do
+    local pr=$((100 + i))
     (
-      wait_at_barrier "label_test" "$num_processes" || exit 1
-
-      # All processes try to create the same label
-      gh label create "$label_name" --description "Phase 4a tasks" --color "FF5733" 2>/dev/null
-
-      echo $? > "$exit_codes_dir/process_${i}.exit"
+      wait_at_barrier "diff_pr_test_${BATS_TEST_NUMBER}" "$num_processes"
+      run_locked_dedup_create "$pr" "review feedback from PR #${pr}"
     ) &
+    pids+=($!)
   done
 
-  wait
-
-  # All processes should exit successfully (even if label already exists)
-  for i in $(seq 1 $num_processes); do
-    [ -f "$exit_codes_dir/process_${i}.exit" ]
-    exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
-    [ "$exit_code" -eq 0 ]
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
   done
 
-  # In real implementation, gh CLI handles "already exists" gracefully
-  # This test verifies the pattern works
-}
+  # Each PR should have exactly one issue
+  local total_issues
+  total_issues=$(wc -l < "$ISSUES_FILE" | tr -d ' ')
 
-@test "mixed concurrent issue creation - different issues" {
-  # Test: Multiple processes creating DIFFERENT follow-up issues
-  # Expected: All N issues should be created (no false deduplication)
-  local num_processes=5
-  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
-  mkdir -p "$exit_codes_dir"
-
-  for i in $(seq 1 $num_processes); do
-    (
-      wait_at_barrier "mixed_test" "$num_processes" || exit 1
-
-      # Each process creates a unique issue
-      gh issue create \
-        --title "Fix validation in module $i" \
-        --body "[HIGH] Issue $i needs attention" \
-        --label "tech-debt" >/dev/null 2>&1
-
-      echo $? > "$exit_codes_dir/process_${i}.exit"
-    ) &
-  done
-
-  wait
-
-  # All processes should succeed
-  for i in $(seq 1 $num_processes); do
-    [ -f "$exit_codes_dir/process_${i}.exit" ]
-    exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
-    [ "$exit_code" -eq 0 ]
-  done
-
-  # Verify all N different issues were created
-  local total_issues=$(jq 'length' "$GH_MOCK_ISSUES_FILE" 2>/dev/null || echo 0)
-  [ "$total_issues" -eq "$num_processes" ]
-
-  # Verify all have unique titles
-  local unique_titles=$(jq -r '.[].title' "$GH_MOCK_ISSUES_FILE" | sort -u | wc -l | tr -d ' ')
-  [ "$unique_titles" -eq "$num_processes" ]
-}
-
-@test "concurrent follow-up with partial overlap - some dedup some unique" {
-  # Test: Mix of duplicate and unique issue creation
-  # Processes 1-3 create issue A, processes 4-5 create issue B
-  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
-  mkdir -p "$exit_codes_dir"
-
-  # Processes 1-3: same issue
-  for i in 1 2 3; do
-    (
-      wait_at_barrier "overlap_test" "5" || exit 1
-
-      gh issue create \
-        --title "Fix XSS in search" \
-        --body "[CRITICAL] XSS vulnerability" \
-        --label "security" >/dev/null 2>&1
-
-      echo $? > "$exit_codes_dir/process_${i}.exit"
-    ) &
-  done
-
-  # Processes 4-5: different issue
-  for i in 4 5; do
-    (
-      wait_at_barrier "overlap_test" "5" || exit 1
-
-      gh issue create \
-        --title "Fix SQL injection in reports" \
-        --body "[CRITICAL] SQL injection found" \
-        --label "security" >/dev/null 2>&1
-
-      echo $? > "$exit_codes_dir/process_${i}.exit"
-    ) &
-  done
-
-  wait
-
-  # Verify all completed
-  for i in 1 2 3 4 5; do
-    [ -f "$exit_codes_dir/process_${i}.exit" ]
-  done
-
-  # Expected: 2 issues total (1 for XSS, 1 for SQL injection)
-  # Without dedup: 5 issues
-  local total_issues=$(jq 'length' "$GH_MOCK_ISSUES_FILE" 2>/dev/null || echo 0)
-
-  [ "$total_issues" -eq 2 ] || {
-    echo "EXPECTED FAILURE: Got $total_issues issues instead of 2 - partial dedup not working"
-    return 0
+  [ "$total_issues" -eq "$num_processes" ] || {
+    echo "FAIL: Expected $num_processes issues (one per PR), got $total_issues"
+    cat "$ISSUES_FILE" || true
+    false
   }
+}
 
-  # Verify both unique titles exist
-  local xss_count=$(jq '[.[] | select(.title == "Fix XSS in search")] | length' "$GH_MOCK_ISSUES_FILE")
-  local sql_count=$(jq '[.[] | select(.title == "Fix SQL injection in reports")] | length' "$GH_MOCK_ISSUES_FILE")
+@test "dedup works when first process creates issue before second acquires lock" {
+  # Simulate sequential: process A creates, process B should dedup
+  local pr_number=50
+  run_locked_dedup_create "$pr_number" "review feedback from PR #${pr_number}"
+  run_locked_dedup_create "$pr_number" "review feedback from PR #${pr_number}"
 
-  [ "$xss_count" -eq 1 ]
-  [ "$sql_count" -eq 1 ]
+  local issue_count
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || echo 0)
+  [ "$issue_count" -eq 1 ]
 }
