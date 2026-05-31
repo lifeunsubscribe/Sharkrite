@@ -467,6 +467,107 @@ $_fail_summary
   fi
 }
 
+# Guard: ensure Claude dev session produced committed work or fail loud
+# Called after Claude session ends, before PR creation workflow
+check_dev_session_output() {
+  # Count commits ahead of origin/main
+  local commits_ahead
+  commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+
+  # Determine if Claude produced real work beyond the init placeholder commit.
+  # Real work = at least one commit that isn't the "chore: initialize work" placeholder,
+  # OR multiple commits (even if one is the init, there must be another).
+  local has_real_work=false
+  if [ "$commits_ahead" -eq 0 ]; then
+    has_real_work=false  # No commits at all
+  elif [ "$commits_ahead" -eq 1 ]; then
+    # One commit: check if it's the init commit or actual work
+    if git log --oneline origin/main..HEAD 2>/dev/null | grep -q "chore: initialize work"; then
+      has_real_work=false  # Only the init commit exists
+    else
+      has_real_work=true   # One real commit (not init)
+    fi
+  else
+    # Multiple commits: even if one is init, another must be real work
+    has_real_work=true
+  fi
+
+  # If real work exists, we're good - no action needed
+  if [ "$has_real_work" = true ]; then
+    return 0
+  fi
+
+  # No commits beyond init - check for uncommitted changes
+  local uncommitted_count
+  uncommitted_count=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+
+  if [ "$uncommitted_count" -gt 0 ]; then
+    # Auto-commit path: salvage uncommitted work
+    print_warning "Claude session ended without committing changes"
+    print_status "Auto-committing $uncommitted_count uncommitted file(s)..."
+
+    # Log diagnostic
+    _diag "AUTO_COMMIT issue=${ISSUE_NUMBER:-?} files=$uncommitted_count reason=dev_session_uncommitted"
+
+    # Stage all changes (respecting .gitignore)
+    git add -A
+
+    # Exclude worktree-specific symlinks from staging (same logic as main commit workflow)
+    if git ls-files --stage 2>/dev/null | grep -q '^120000.*\.claude$'; then
+      git reset HEAD .claude 2>/dev/null || true
+    fi
+    if git ls-files --stage 2>/dev/null | grep -q "^120000.*${RITE_DATA_DIR}$"; then
+      git reset HEAD "$RITE_DATA_DIR" 2>/dev/null || true
+    fi
+    if git ls-files --stage 2>/dev/null | grep -q '^120000.*backend/node_modules$'; then
+      git reset HEAD backend/node_modules 2>/dev/null || true
+    fi
+    if git ls-files --stage 2>/dev/null | grep -q '^120000.*node_modules$'; then
+      git reset HEAD node_modules 2>/dev/null || true
+    fi
+    # Exclude .gitignore (modified by sharkrite's symlink pattern repair)
+    git reset HEAD .gitignore 2>/dev/null || true
+
+    # Create auto-commit
+    local auto_commit_msg="chore: auto-commit dev session output for issue #${ISSUE_NUMBER:-unknown}
+
+Files were written but not committed during Claude dev session.
+Auto-salvaged to prevent work loss."
+
+    git commit -m "$auto_commit_msg" >/dev/null 2>&1
+
+    print_success "Auto-committed changes - workflow proceeding normally"
+    echo ""
+    print_info "Review the auto-commit in PR to verify completeness"
+    echo ""
+
+    return 0
+  fi
+
+  # Fail-loud path: no commits and no uncommitted changes - nothing was done
+  print_error "Claude session ended without making any changes for issue #${ISSUE_NUMBER:-unknown}"
+  echo ""
+  print_info "Possible causes:"
+  echo "  • Claude judged the issue not actionable"
+  echo "  • Claude session crashed mid-edit"
+  echo "  • Hard misread (see issue #2/#3 hardening)"
+  echo ""
+  print_info "Remediation:"
+  echo "  1. Run: rite ${ISSUE_NUMBER:-N} --undo    # Clean up branch/PR"
+  echo "  2. Re-run with explicit context or check issue description for clarity"
+  echo ""
+
+  # Log diagnostic
+  _diag "NO_WORK issue=${ISSUE_NUMBER:-?} commits=$commits_ahead uncommitted=$uncommitted_count"
+
+  # Exit with appropriate code (4 in orchestrated mode for retry logic, 1 otherwise)
+  if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
+    exit 4  # "session completed but no work produced" (matches line 1885)
+  else
+    exit 1
+  fi
+}
+
 # ===================================================================
 # EARLY EXIT FOR FIX-REVIEW MODE
 # Must run before any worktree navigation to preserve stdin
@@ -1826,6 +1927,13 @@ else
     echo ""
   fi
   rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
+
+  # Guard: ensure Claude produced committed work before proceeding to PR/review phases
+  # This catches cases where Claude writes files but doesn't commit them, or does nothing at all.
+  # Only run when NOT in FIX_REVIEW_MODE (fix sessions are different - they modify existing commits).
+  if [ "${FIX_REVIEW_MODE:-false}" != "true" ]; then
+    check_dev_session_output
+  fi
 fi
 
 # Post-Claude workflow
