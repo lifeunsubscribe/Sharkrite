@@ -1,0 +1,11 @@
+{
+  "number": 123,
+  "title": "Fix authentication bug",
+  "state": "OPEN",
+  "body": "Closes #42\n\nThis PR fixes the authentication issue.",
+  "headRefName": "fix/auth-bug-#42",
+  "baseRefName": "main",
+  "files": [
+    {"path": "lib/core/auth.sh", "additions": 10, "deletions": 5}
+  ]
+}

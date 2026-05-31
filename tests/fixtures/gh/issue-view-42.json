@@ -1,0 +1,10 @@
+{
+  "number": 42,
+  "title": "Authentication fails on expired tokens",
+  "state": "OPEN",
+  "body": "**Time**: 1hr\n\n**Description**: Fix token expiration handling",
+  "labels": [
+    {"name": "bug"},
+    {"name": "priority-high"}
+  ]
+}
