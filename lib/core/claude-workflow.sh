@@ -1579,6 +1579,32 @@ If the changes are unrelated work, answer UNRELATED."
     print_status "Fetching latest origin/main..."
     git fetch origin main 2>/dev/null || print_warning "Failed to fetch origin/main - using local state"
 
+    # Check if this issue has an existing PR with remote branch
+    # This prevents recreating work when resuming after worktree cleanup
+    _pr_number=""
+    _pr_branch=""
+    _has_remote_branch=false
+
+    # Source pr-detection utilities if not already available
+    if ! command -v detect_pr_for_issue >/dev/null 2>&1; then
+      source "$RITE_LIB_DIR/utils/pr-detection.sh"
+    fi
+
+    # Check for existing PR
+    if detect_pr_for_issue "$ISSUE_NUMBER" 2>/dev/null; then
+      _pr_number="$PR_NUMBER"
+      _pr_branch="$PR_BRANCH"
+      # Verify the PR branch matches our expected branch name
+      if [ "$_pr_branch" = "$BRANCH_NAME" ]; then
+        _has_remote_branch=true
+      fi
+    fi
+
+    # Also check if remote branch exists directly (even without PR)
+    if git ls-remote --heads origin "$BRANCH_NAME" | grep -q "$BRANCH_NAME" 2>/dev/null; then
+      _has_remote_branch=true
+    fi
+
     print_status "Creating worktree at: $WORKTREE_PATH"
 
     # Check if branch already exists
@@ -1620,43 +1646,85 @@ If the changes are unrelated work, answer UNRELATED."
         fi
       fi
     else
-      # Create new branch in worktree from origin/main (or HEAD if origin/main doesn't exist)
+      # No local branch exists — check if remote branch exists
       # NOTE: this is main script body, not a function — `local` would crash here
       # under set -u (see CLAUDE.md "No `local` outside functions").
-      _base_ref="origin/main"
-      if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-        _base_ref="HEAD"
-      fi
-      if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_base_ref" >/dev/null 2>&1; then
-        # Worktree directory exists — verify it's on the expected branch.
-        if [ -d "$WORKTREE_PATH" ]; then
-          ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-          if [ "$ACTUAL_BRANCH" = "$BRANCH_NAME" ]; then
-            print_info "Worktree already exists on correct branch - using it"
-          else
-            print_warning "Worktree exists but on wrong branch ($ACTUAL_BRANCH), expected $BRANCH_NAME"
-            print_status "Removing stale worktree and recreating..."
-            git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || rm -rf "$WORKTREE_PATH"
-            # Branch may already exist from a previous run — use it if so, otherwise create
-            if git show-ref --verify --quiet refs/heads/"$BRANCH_NAME"; then
-              git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1 || {
-                print_error "Failed to recreate worktree (existing branch)"
-                exit 1
-              }
+
+      if [ "$_has_remote_branch" = true ]; then
+        # Resume from existing remote branch (recreate worktree from PR branch)
+        if [ -n "$_pr_number" ]; then
+          print_info "Resuming existing PR #$_pr_number — recreating worktree from origin/$BRANCH_NAME"
+        else
+          print_info "Remote branch exists — recreating worktree from origin/$BRANCH_NAME"
+        fi
+
+        # Fetch the remote branch
+        git fetch origin "$BRANCH_NAME" 2>/dev/null || {
+          print_error "Failed to fetch origin/$BRANCH_NAME"
+          exit 1
+        }
+
+        # Create worktree from remote branch (no -b flag, branch already exists on remote)
+        if ! git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1; then
+          # Worktree directory exists — verify it's on the expected branch
+          if [ -d "$WORKTREE_PATH" ]; then
+            ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+            if [ "$ACTUAL_BRANCH" = "$BRANCH_NAME" ]; then
+              print_info "Worktree already exists on correct branch - using it"
             else
-              _retry_base_ref="origin/main"
-              if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-                _retry_base_ref="HEAD"
-              fi
-              git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_retry_base_ref" >/dev/null 2>&1 || {
-                print_error "Failed to recreate worktree (new branch)"
+              print_warning "Worktree exists but on wrong branch ($ACTUAL_BRANCH), expected $BRANCH_NAME"
+              print_status "Removing stale worktree and recreating..."
+              git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || rm -rf "$WORKTREE_PATH"
+              git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1 || {
+                print_error "Failed to recreate worktree from remote branch"
                 exit 1
               }
             fi
+          else
+            print_error "Failed to create worktree from remote branch"
+            exit 1
           fi
-        else
-          print_error "Failed to create worktree and branch"
-          exit 1
+        fi
+      else
+        # No remote branch — create fresh from origin/main
+        print_info "Starting fresh — creating worktree from origin/main"
+
+        _base_ref="origin/main"
+        if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+          _base_ref="HEAD"
+        fi
+
+        if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_base_ref" >/dev/null 2>&1; then
+          # Worktree directory exists — verify it's on the expected branch
+          if [ -d "$WORKTREE_PATH" ]; then
+            ACTUAL_BRANCH=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+            if [ "$ACTUAL_BRANCH" = "$BRANCH_NAME" ]; then
+              print_info "Worktree already exists on correct branch - using it"
+            else
+              print_warning "Worktree exists but on wrong branch ($ACTUAL_BRANCH), expected $BRANCH_NAME"
+              print_status "Removing stale worktree and recreating..."
+              git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || rm -rf "$WORKTREE_PATH"
+              # Branch may already exist from a previous run — use it if so, otherwise create
+              if git show-ref --verify --quiet refs/heads/"$BRANCH_NAME"; then
+                git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1 || {
+                  print_error "Failed to recreate worktree (existing branch)"
+                  exit 1
+                }
+              else
+                _retry_base_ref="origin/main"
+                if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+                  _retry_base_ref="HEAD"
+                fi
+                git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_retry_base_ref" >/dev/null 2>&1 || {
+                  print_error "Failed to recreate worktree (new branch)"
+                  exit 1
+                }
+              fi
+            fi
+          else
+            print_error "Failed to create worktree and branch"
+            exit 1
+          fi
         fi
       fi
     fi
