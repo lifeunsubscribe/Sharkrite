@@ -9,7 +9,7 @@ set -euo pipefail
 # Convert ISO 8601 UTC timestamp to Unix epoch seconds
 #
 # Input:  2025-10-28T20:42:18Z (ISO 8601 UTC format)
-# Output: 1730148138 (Unix epoch seconds)
+# Output: 1761684138 (Unix epoch seconds)
 #
 # Handles both GNU date (Linux) and BSD date (macOS) automatically.
 # Returns "0" on parse failure for consistent error handling.
@@ -33,14 +33,14 @@ iso_to_epoch() {
 
 # Convert Unix epoch seconds to ISO 8601 UTC timestamp
 #
-# Input:  1730148138 (Unix epoch seconds)
+# Input:  1761684138 (Unix epoch seconds)
 # Output: 2025-10-28T20:42:18Z (ISO 8601 UTC format)
 #
 # Handles both GNU date (Linux) and BSD date (macOS) automatically.
 # Returns empty string on conversion failure.
 #
 # Usage:
-#   iso=$(epoch_to_iso "1730148138")
+#   iso=$(epoch_to_iso "1761684138")
 #
 epoch_to_iso() {
   local epoch_seconds="$1"

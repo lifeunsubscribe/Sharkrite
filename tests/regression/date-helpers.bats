@@ -22,13 +22,13 @@ teardown() {
 
 @test "iso_to_epoch converts valid ISO 8601 timestamp" {
   # Use a known timestamp for verification
-  # 2025-10-28T20:42:18Z = 1761775338 (Unix epoch)
+  # 2025-10-28T20:42:18Z = 1761684138 (Unix epoch)
   result=$(iso_to_epoch "2025-10-28T20:42:18Z")
 
   # Verify it's a number and not "0" (error case)
   [[ "$result" =~ ^[0-9]+$ ]]
   [ "$result" != "0" ]
-  [ "$result" -eq 1761775338 ]
+  [ "$result" -eq 1761684138 ]
 }
 
 @test "iso_to_epoch handles epoch 0 (1970-01-01T00:00:00Z)" {
@@ -66,8 +66,8 @@ teardown() {
 # =============================================================================
 
 @test "epoch_to_iso converts valid epoch to ISO format" {
-  # 1761775338 = 2025-10-28T20:42:18Z
-  result=$(epoch_to_iso "1761775338")
+  # 1761684138 = 2025-10-28T20:42:18Z
+  result=$(epoch_to_iso "1761684138")
 
   [ "$result" = "2025-10-28T20:42:18Z" ]
 }
@@ -107,7 +107,7 @@ teardown() {
 }
 
 @test "round-trip: epoch -> iso -> epoch preserves value" {
-  original="1761775338"
+  original="1761684138"
   iso=$(epoch_to_iso "$original")
   result=$(iso_to_epoch "$iso")
 
@@ -159,7 +159,7 @@ teardown() {
 }
 
 @test "epoch_to_iso is consistent across multiple calls" {
-  epoch="1761775338"
+  epoch="1761684138"
   result1=$(epoch_to_iso "$epoch")
   result2=$(epoch_to_iso "$epoch")
 
