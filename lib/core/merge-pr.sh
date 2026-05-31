@@ -1492,6 +1492,9 @@ EOF
   fi
   rm -f "${_DOC_LOG:-}"
 
+  # Cleanup phase complete — clear the ERR trap so it doesn't affect subsequent logic
+  trap - ERR
+
   echo "PR URL: $PR_URL"
   echo ""
 

@@ -1947,7 +1947,7 @@ run_workflow() {
     if [ $merge_exit -eq 6 ]; then
       # Merge succeeded but cleanup failed — propagate exit 6
       _timer_end "phase4_merge"
-      _diag "PHASE_FAILED issue=${issue_number} phase=merge-cleanup"
+      _diag "CLEANUP_FAILED issue=${issue_number} merge_succeeded=true"
       print_warning "Merge succeeded but cleanup failed"
       return 6
     elif [ $merge_exit -ne 0 ]; then
