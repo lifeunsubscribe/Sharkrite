@@ -86,7 +86,7 @@ claude_provider_run_agentic_session() {
   local _restrictions
   _restrictions=$(claude_provider_build_tool_restrictions)
 
-  local _exit_code
+  local _exit_code=0
 
   if [ "$auto_mode" = true ]; then
     # Auto mode: prompt as positional arg, permissions bypassed.
@@ -95,7 +95,7 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       "$prompt" 2>"$stderr_file" | \
-      _claude_stream_filter_colored
+      _claude_stream_filter_colored || _exit_code=${PIPESTATUS[0]}
     _exit_code=${PIPESTATUS[0]}
   else
     # Supervised mode: prompt via stdin because --disallowedTools is variadic
@@ -107,7 +107,7 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       < "$_prompt_file" 2>"$stderr_file" | \
-      _claude_stream_filter_colored
+      _claude_stream_filter_colored || _exit_code=${PIPESTATUS[0]}
     _exit_code=${PIPESTATUS[0]}
     rm -f "$_prompt_file"
   fi
