@@ -47,6 +47,7 @@ inject_claude_empty_output() {
 inject_claude_timeout() {
   export CLAUDE_MOCK_EXIT_CODE=124
   export CLAUDE_MOCK_SCENARIO="timeout"
+  export CLAUDE_MOCK_FIXTURE_OVERRIDE="${RITE_REPO_ROOT}/tests/fixtures/faults/claude-timeout.jsonl"
 }
 
 # Make gh return rate-limit error response
@@ -73,14 +74,6 @@ inject_command_hang() {
 
   export MOCK_HANG_COMMAND="$command"
   export MOCK_HANG_DURATION="${2:-infinity}"  # seconds, or "infinity"
-}
-
-# Inject pip failure (for venv/dependency issues)
-# Args: exit_code
-inject_pip_failure() {
-  local exit_code="${1:-1}"
-
-  export PIP_MOCK_EXIT_CODE="$exit_code"
 }
 
 # Inject stderr output with exit failure
@@ -127,7 +120,6 @@ reset_fault_injection() {
   # Generic mock state
   unset MOCK_HANG_COMMAND
   unset MOCK_HANG_DURATION
-  unset PIP_MOCK_EXIT_CODE
 
   # Reset call counters (if mocks are already loaded)
   if declare -p _GH_MOCK_CALL_COUNT &>/dev/null; then
