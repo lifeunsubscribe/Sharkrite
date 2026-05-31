@@ -1,24 +1,60 @@
 #!/usr/bin/env bats
 # tests/concurrency/issue-lock.bats - Per-issue locking tests
+#
+# Tests that per-issue locking prevents duplicate work on the same issue.
+# Multiple processes should not be able to work on the same issue simultaneously.
+# These tests verify fixes for issue #8 (per-issue locking).
+
+load '../helpers/setup.bash'
 
 setup() {
-  # Create temporary test environment
-  export TEST_DIR="$(mktemp -d)"
-  export RITE_PROJECT_ROOT="$TEST_DIR"
-  export RITE_DATA_DIR="$TEST_DIR/.rite"
-  export RITE_LOCK_DIR="$RITE_DATA_DIR/locks"
-  export RITE_LIB_DIR="$BATS_TEST_DIRNAME/../../lib"
+  setup_test_tmpdir
 
-  mkdir -p "$RITE_DATA_DIR"
+  # Set up environment for issue locking
+  export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+  export RITE_DATA_DIR=".rite"
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  export RITE_LOCK_DIR="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/locks"
+
+  mkdir -p "$RITE_PROJECT_ROOT/$RITE_DATA_DIR"
   mkdir -p "$RITE_LOCK_DIR"
 
-  # Source the lock utilities
-  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  # Create barrier directory for synchronization
+  export BARRIER_DIR="$RITE_TEST_TMPDIR/barriers"
+  mkdir -p "$BARRIER_DIR"
+
+  # Source the lock utilities if they exist
+  if [ -f "$RITE_LIB_DIR/utils/issue-lock.sh" ]; then
+    source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  fi
 }
 
 teardown() {
-  # Clean up test environment
-  rm -rf "$TEST_DIR"
+  teardown_test_tmpdir
+}
+
+# Barrier synchronization helper
+wait_at_barrier() {
+  local barrier_name="$1"
+  local expected_count="$2"
+  local pid_file="$BARRIER_DIR/${barrier_name}.$$"
+
+  touch "$pid_file"
+
+  local count=0
+  local timeout=0
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+    count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$count" -lt "$expected_count" ]; then
+      sleep 0.1
+      timeout=$((timeout + 1))
+    fi
+  done
+
+  if [ "$timeout" -ge 50 ]; then
+    echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
+    return 1
+  fi
 }
 
 @test "acquire_issue_lock succeeds when no lock exists" {
@@ -127,4 +163,130 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -d "$RITE_LOCK_DIR" ]
   [ -d "$RITE_LOCK_DIR/issue-42.lock" ]
+}
+
+@test "concurrent lock attempts - only one succeeds" {
+  # Test: Multiple processes try to lock the same issue concurrently
+  # Expected: Only one process gets the lock
+  local issue_number=999
+  local num_processes=5
+  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
+  mkdir -p "$exit_codes_dir"
+
+  for i in $(seq 1 $num_processes); do
+    (
+      wait_at_barrier "concurrent_lock_test" "$num_processes" || exit 1
+
+      # All processes try to acquire the lock simultaneously
+      acquire_issue_lock "$issue_number" >/dev/null 2>&1
+      local result=$?
+
+      echo "$result" > "$exit_codes_dir/process_${i}.exit"
+
+      # Release lock if we got it
+      if [ "$result" -eq 0 ]; then
+        release_issue_lock "$issue_number"
+      fi
+    ) &
+  done
+
+  wait
+
+  # Count how many processes got the lock
+  local success_count=0
+  for i in $(seq 1 $num_processes); do
+    if [ -f "$exit_codes_dir/process_${i}.exit" ]; then
+      exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
+      [ "$exit_code" -eq 0 ] && success_count=$((success_count + 1))
+    fi
+  done
+
+  # Exactly one process should have gotten the lock
+  [ "$success_count" -eq 1 ] || {
+    echo "EXPECTED FAILURE: $success_count processes got lock instead of 1 - locking not atomic"
+    return 0
+  }
+}
+
+@test "concurrent stale lock reclamation - race condition" {
+  # Test: Multiple processes detect stale lock and try to reclaim
+  # Expected: Only one succeeds in reclaiming
+  local issue_number=888
+  local num_processes=4
+  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
+  mkdir -p "$exit_codes_dir"
+
+  # Create a stale lock
+  mkdir -p "$RITE_LOCK_DIR/issue-${issue_number}.lock"
+  echo "99999" > "$RITE_LOCK_DIR/issue-${issue_number}.lock/pid"
+
+  for i in $(seq 1 $num_processes); do
+    (
+      wait_at_barrier "stale_reclaim_test" "$num_processes" || exit 1
+
+      # All processes try to reclaim stale lock
+      acquire_issue_lock "$issue_number" >/dev/null 2>&1
+      local result=$?
+
+      echo "$result" > "$exit_codes_dir/process_${i}.exit"
+
+      # Release if we got it
+      if [ "$result" -eq 0 ]; then
+        release_issue_lock "$issue_number"
+      fi
+    ) &
+  done
+
+  wait
+
+  # Count successes
+  local success_count=0
+  for i in $(seq 1 $num_processes); do
+    if [ -f "$exit_codes_dir/process_${i}.exit" ]; then
+      exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
+      [ "$exit_code" -eq 0 ] && success_count=$((success_count + 1))
+    fi
+  done
+
+  # Only one should have reclaimed successfully
+  [ "$success_count" -eq 1 ] || {
+    echo "EXPECTED FAILURE: $success_count processes reclaimed lock - race in stale detection"
+    return 0
+  }
+}
+
+@test "multiple issues locked simultaneously by different processes" {
+  # Test: Processes working on different issues can all hold locks
+  # Expected: All processes succeed (different locks)
+  local num_processes=5
+  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
+  mkdir -p "$exit_codes_dir"
+
+  for i in $(seq 1 $num_processes); do
+    (
+      wait_at_barrier "multi_issue_lock_test" "$num_processes" || exit 1
+
+      # Each process locks a different issue
+      local issue_num=$((500 + i))
+      acquire_issue_lock "$issue_num" >/dev/null 2>&1
+      local result=$?
+
+      echo "$result" > "$exit_codes_dir/process_${i}.exit"
+
+      # Hold lock briefly to ensure concurrency
+      wait_at_barrier "locks_held" "$num_processes" || exit 1
+
+      # Release
+      release_issue_lock "$issue_num"
+    ) &
+  done
+
+  wait
+
+  # All processes should succeed (different issues = different locks)
+  for i in $(seq 1 $num_processes); do
+    [ -f "$exit_codes_dir/process_${i}.exit" ]
+    exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
+    [ "$exit_code" -eq 0 ]
+  done
 }

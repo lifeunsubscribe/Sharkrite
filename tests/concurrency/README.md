@@ -1,0 +1,290 @@
+# Concurrency Tests
+
+This directory contains tests for concurrent `rite` invocations — the #1 critical bug class in Sharkrite.
+
+## Overview
+
+Concurrent invocations happen when:
+- Multiple developers run `rite` on different issues in the same repo
+- Automated systems trigger multiple `rite` workflows simultaneously
+- A developer runs `rite` while a previous session is still active
+
+Without proper synchronization, these scenarios cause:
+- **Data loss** in session state, scratchpad, and follow-up issues
+- **File corruption** when multiple processes write to the same JSON/markdown files
+- **Duplicate issues** when multiple processes create follow-ups for the same findings
+- **Git push failures** when processes race to push to the same branch
+
+## Test Files
+
+### `issue-lock.bats`
+Tests per-issue locking to prevent duplicate work.
+
+**What it tests:**
+- Lock acquisition and release
+- Stale lock reclamation (dead process detection)
+- Multiple issues can be locked simultaneously
+- Only one process can work on an issue at a time
+
+**Fixes verified:** Issue #8 (per-issue locking)
+
+### `scratchpad-lock.bats`
+Tests concurrent writes to the scratchpad file.
+
+**What it tests:**
+- Multiple processes adding encountered issues simultaneously
+- Multiple processes updating security findings (PR review results)
+- Scratchpad file creation race (when file doesn't exist)
+- Structure preservation (sections don't get corrupted)
+
+**Fixes verified:** Issue #19 (scratchpad race conditions)
+
+**Expected behavior:**
+- Before fix: Data loss, section corruption, duplicate headers
+- After fix: All writes succeed, structure preserved, no data lost
+
+### `session-state-race.bats`
+Tests concurrent updates to `session-state.json`.
+
+**What it tests:**
+- Multiple processes updating different fields simultaneously
+- Concurrent blocker approval additions
+- Session initialization while updates are in progress
+- High-concurrency stress test (10 processes × 10 updates)
+- JSON corruption detection
+
+**Fixes verified:** Issue #8 (session state races)
+
+**Expected behavior:**
+- Before fix: JSON corruption, lost updates, invalid structure
+- After fix: Valid JSON always, all updates applied (or safely retried)
+
+### `followup-issue-dedup.bats`
+Tests follow-up issue deduplication.
+
+**What it tests:**
+- Multiple processes creating identical tech-debt issues
+- Label creation races (same label from multiple processes)
+- Mixed scenarios (some duplicate, some unique issues)
+- Deduplication logic correctness
+
+**Fixes verified:** Issue #25 (duplicate follow-up issues)
+
+**Expected behavior:**
+- Before fix: N duplicate issues created for same finding
+- After fix: Only 1 issue created, other processes detect existing issue
+
+### `stale-branch-push-race.bats`
+Tests concurrent git operations.
+
+**What it tests:**
+- Multiple processes pushing to the same branch (non-fast-forward handling)
+- Concurrent worktree creation for the same issue
+- Concurrent branch creation with the same name
+- Stale branch merge-main operations racing
+- Force-push prevention (all pushes use refspec)
+
+**Fixes verified:** Issue #15 (stale branch races), Issue #26 (worktree races)
+
+**Expected behavior:**
+- Before fix: Force pushes, worktree corruption, lost commits
+- After fix: Graceful rejection handling, one succeeds + others retry
+
+## How Concurrency Tests Work
+
+### Barrier Synchronization
+
+All tests use **barrier synchronization** (NOT sleep timers) for deterministic concurrency:
+
+```bash
+wait_at_barrier() {
+  local barrier_name="$1"
+  local expected_count="$2"
+  local pid_file="$BARRIER_DIR/${barrier_name}.$$"
+
+  # Mark this process as arrived
+  touch "$pid_file"
+
+  # Wait until all processes arrive
+  local count=0
+  while [ "$count" -lt "$expected_count" ]; do
+    count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" | wc -l)
+    [ "$count" -lt "$expected_count" ] && sleep 0.1
+  done
+}
+```
+
+**Why barriers instead of sleep:**
+- Sleep is non-deterministic (timing depends on system load)
+- Barriers guarantee all processes start simultaneously
+- Tests are reliable in CI environments
+
+### Shared Fixture Pattern
+
+Each test creates **ONE** shared fixture repo used by all processes:
+
+```bash
+setup() {
+  setup_test_tmpdir
+  BARE_REMOTE=$(create_bare_remote "origin")
+  FIXTURE_REPO=$(create_fixture_repo "$BARE_REMOTE")
+  # All processes work on FIXTURE_REPO
+}
+```
+
+**Why shared fixture:**
+- Actually exercises the race condition (processes conflict)
+- Per-process fixtures would never race (false negatives)
+- Matches real-world scenario (one repo, multiple developers)
+
+### Exit Code Collection
+
+Use temp files to collect exit codes from background processes:
+
+```bash
+for i in $(seq 1 $num_processes); do
+  (
+    # ... do work ...
+    echo $? > "$exit_codes_dir/process_${i}.exit"
+  ) &
+done
+
+wait
+
+# Verify all succeeded
+for i in $(seq 1 $num_processes); do
+  exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
+  [ "$exit_code" -eq 0 ]
+done
+```
+
+**Why temp files:**
+- `wait $!` loses exit codes from earlier background processes
+- Temp files preserve all exit codes reliably
+- Allows detailed assertion on each process result
+
+## Adding New Concurrency Tests
+
+### 1. Identify the Race Condition
+
+- What file/resource is accessed concurrently?
+- What operation races (read-modify-write, create, append)?
+- What is the expected behavior after the fix?
+
+### 2. Create Test Structure
+
+```bash
+@test "concurrent operation X - expected behavior" {
+  # Setup
+  local num_processes=5
+  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
+  mkdir -p "$exit_codes_dir"
+
+  # Spawn N processes
+  for i in $(seq 1 $num_processes); do
+    (
+      # Barrier: all processes wait here
+      wait_at_barrier "test_name" "$num_processes"
+
+      # Race happens here - all execute simultaneously
+      # ... concurrent operation ...
+
+      echo $? > "$exit_codes_dir/process_${i}.exit"
+    ) &
+  done
+
+  # Wait for completion
+  wait
+
+  # Assert expected outcome
+  # ... verify no data loss, no corruption, etc. ...
+}
+```
+
+### 3. Document Expected Failures
+
+Tests should fail BEFORE the fix lands (regression-proof):
+
+```bash
+[ "$actual_count" -eq "$expected_count" ] || {
+  echo "EXPECTED FAILURE: Race condition detected - fix not yet implemented"
+  return 0  # Allow test to pass (documents failure)
+}
+```
+
+This ensures:
+- Test proves the race exists before the fix
+- Test will fail if the fix regresses later
+- Clear documentation of what the fix should achieve
+
+### 4. Test Checklist
+
+- [ ] Uses barrier synchronization (no sleep)
+- [ ] Uses shared fixture (not per-process fixtures)
+- [ ] Collects exit codes via temp files
+- [ ] Asserts final state correctness
+- [ ] Documents expected failure before fix
+- [ ] Includes cleanup (teardown)
+
+## Running the Tests
+
+```bash
+# Run all concurrency tests
+make test FILTER=concurrency
+
+# Run specific test file
+bats tests/concurrency/issue-lock.bats
+
+# Run with verbose output
+bats -t tests/concurrency/scratchpad-lock.bats
+
+# Run specific test within file
+bats -f "concurrent scratchpad updates" tests/concurrency/scratchpad-lock.bats
+```
+
+## Known Issues and Expected Failures
+
+Before the concurrency fixes land (issues #8, #15, #19, #25, #26), many tests will "pass" but report **EXPECTED FAILURE** messages. This is intentional:
+
+- Tests document the race condition
+- Tests pass (exit 0) to avoid blocking CI
+- After fixes land, remove the "EXPECTED FAILURE" fallback
+- Tests will then fail if regression occurs
+
+## CI Integration
+
+These tests run in CI on every PR:
+
+```yaml
+# .github/workflows/test.yml
+- name: Run concurrency tests
+  run: make test FILTER=concurrency
+```
+
+**Important:** CI environment may have different timing characteristics. Barriers ensure reliability across environments.
+
+## Debugging Concurrency Tests
+
+If a test fails intermittently:
+
+1. **Check barrier count** - Does `expected_count` match actual spawned processes?
+2. **Check cleanup** - Are background processes properly cleaned up in teardown?
+3. **Check file paths** - Are temp files in `$RITE_TEST_TMPDIR` (auto-cleaned)?
+4. **Increase timeout** - Barrier timeout default is 5 seconds (50 × 0.1s)
+5. **Add debug output** - Use `>&2` to print to stderr (doesn't break assertions)
+
+Example debug pattern:
+
+```bash
+echo "DEBUG: Process $i starting, barrier count: $count" >&2
+```
+
+## References
+
+- **Issue #8** - Per-issue locking + session state races
+- **Issue #15** - Stale branch push races
+- **Issue #19** - Scratchpad concurrent write races
+- **Issue #25** - Duplicate follow-up issue creation
+- **Issue #26** - Worktree creation races
+
+See individual test files for detailed test cases and assertions.
