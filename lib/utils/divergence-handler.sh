@@ -9,6 +9,7 @@
 #   0 = resolved (push succeeded, continue workflow)
 #   1 = blocked (stop workflow, manual intervention needed)
 #   2 = resolved but needs re-review (foreign commits pulled, re-enter Phase 2→3)
+#   5 = Claude usage cap reached during conflict resolution (propagated from conflict-resolver; batch should abort)
 
 set -euo pipefail
 
@@ -237,6 +238,7 @@ CLASSIFY_EOF
 #   0 = resolved (push succeeded)
 #   1 = blocked (manual intervention needed)
 #   2 = resolved but needs re-review (re-enter Phase 2→3)
+#   5 = Claude usage cap reached during conflict resolution (propagated from conflict-resolver; batch should abort)
 handle_push_divergence() {
   local branch_name="$1"
   local issue_number="${2:-}"
