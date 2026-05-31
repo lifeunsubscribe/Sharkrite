@@ -361,9 +361,9 @@ create_tech_debt_issues() {
     # and produced duplicate issues on every run (bug: dedup search field mismatch).
     #
     # Fix: embed a unique marker in the issue body instead and search `in:body`.
-    # The marker is <!-- sharkrite-tech-debt:HASH --> where HASH is derived from
-    # location + category (the stable identity of the issue, independent of how
-    # the description is worded across runs).
+    # The marker is <!-- sharkritetechdebtHASH --> (no punctuation — a single
+    # token) derived from location + category (the stable identity of the issue,
+    # independent of how the description is worded across runs).
     local _dedup_key="${location}:${category}"
     # Compute a short hex hash from the dedup key, portable across macOS/Linux.
     # Use command -v to detect available tools before invoking (avoids "not found"
@@ -379,12 +379,18 @@ create_tech_debt_issues() {
       # POSIX fallback (cksum always available): convert decimal to 12-char hex
       _dedup_hash=$(printf '%s' "$_dedup_key" | cksum | awk '{printf "%012x", $1}')
     fi
-    local _dedup_marker="sharkrite-tech-debt:${_dedup_hash}"
+    # Marker must be a single punctuation-free token so GitHub's token-based
+    # `in:body` search matches it reliably.  Colons and hyphens are token
+    # separators in GitHub search, so "sharkrite-tech-debt:HASH" would be split
+    # into multiple tokens and the quoted-phrase search would fail silently.
+    local _dedup_marker="sharkritetechdebt${_dedup_hash}"
 
     # Search for any existing issue (open or closed) that contains this marker in
     # its body.  `in:body` is reliable because the body is never truncated by GitHub.
+    # The marker is a single alphanumeric token — no quoting needed, and GitHub
+    # will match it as a whole word against body text.
     local existing
-    existing=$(gh issue list -S "\"${_dedup_marker}\" in:body" --state all --json number --jq '.[0].number' 2>/dev/null || echo "")
+    existing=$(gh issue list -S "${_dedup_marker} in:body" --state all --json number --jq '.[0].number' 2>/dev/null || echo "")
 
     if [ -n "$existing" ] && [ "$existing" != "null" ]; then
       echo "Tech-debt issue already exists for ${location}: #${existing}" >&2

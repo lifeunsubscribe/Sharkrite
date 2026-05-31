@@ -8,7 +8,7 @@
 # is never in the title.  Result: the dedup check never matched, and every run
 # of create_tech_debt_issues created a new duplicate issue.
 #
-# Fix: embed a unique <!-- sharkrite-tech-debt:HASH --> marker in the issue body
+# Fix: embed a unique <!-- sharkritetechdebtHASH --> marker in the issue body
 # and search `in:body` instead, so dedup is reliable regardless of title wording.
 #
 # Tests in this file:
@@ -72,9 +72,8 @@ if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   done
 
   # Extract the marker from the search query.
-  # Query format: "sharkrite-tech-debt:HASH" in:body
-  # Strip surrounding quotes to get the bare marker.
-  _marker=$(echo "$_search" | grep -oE 'sharkrite-tech-debt:[a-f0-9]+' || true)
+  # Query format: sharkritetechdebtHASH in:body  (no quotes, no punctuation)
+  _marker=$(echo "$_search" | grep -oE 'sharkritetechdebt[a-f0-9]+' || true)
 
   if [ -z "$_marker" ]; then
     echo "[]"
@@ -90,7 +89,9 @@ if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
     # Return JSON array with matching issue number (matches real gh output)
     echo "$_match"
   else
-    echo ""
+    # Real gh --jq '.[0].number' on an empty array emits literal "null", not "".
+    # Return "null" here so the guard `[ "$existing" != "null" ]` is exercised.
+    echo "null"
   fi
 
 elif [ "$1" = "issue" ] && [ "$2" = "create" ]; then
@@ -221,7 +222,7 @@ SCRATCHEOF
 # Test 3: Dedup marker is present in the created issue body
 # ---------------------------------------------------------------------------
 
-@test "dedup: created issue body contains sharkrite-tech-debt marker" {
+@test "dedup: created issue body contains sharkritetechdebt marker" {
   local entry="- **2026-05-31** | \`lib/baz.sh:7\` | test-failure | Missing bats assertion | Affects: CI reliability | Fix: Add assert | Done: Tests pass"
   write_scratchpad "$entry"
 
@@ -229,10 +230,10 @@ SCRATCHEOF
   [ "$status" -eq 0 ]
   [ "$output" = "1" ]
 
-  # Verify the body contains the marker
+  # Verify the body contains the marker (punctuation-free token format)
   local body
   body=$(jq -r '.[0].body' "$GH_MOCK_ISSUES_FILE")
-  [[ "$body" == *"<!-- sharkrite-tech-debt:"* ]]
+  [[ "$body" == *"<!-- sharkritetechdebt"* ]]
   [[ "$body" == *"-->"* ]]
 }
 
@@ -251,8 +252,8 @@ SCRATCHEOF
   local title
   title=$(jq -r '.[0].title' "$GH_MOCK_ISSUES_FILE")
 
-  # Title must NOT contain the marker
-  [[ "$title" != *"sharkrite-tech-debt"* ]]
+  # Title must NOT contain the marker (neither old nor new format)
+  [[ "$title" != *"sharkritetechdebt"* ]]
   # Title must be in the expected format
   [[ "$title" == "[tech-debt] deprecation: "* ]]
 }
