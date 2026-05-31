@@ -5,7 +5,7 @@
 
 setup() {
   # Clean up any canary files from previous runs
-  export CANARY_PREFIX="/tmp/sharkrite-injection-canary-$$-${BATS_TEST_NUMBER}"
+  export CANARY_PREFIX="$(mktemp -u /tmp/sharkrite-injection-canary.XXXXXX)-${BATS_TEST_NUMBER}"
   rm -f "${CANARY_PREFIX}"* 2>/dev/null || true
 
   # Source necessary libraries
@@ -13,13 +13,12 @@ setup() {
   source "$RITE_LIB_DIR/utils/colors.sh"
 
   # Create test worktree directory
-  export TEST_WORKTREE="/tmp/test-worktree-$$"
-  mkdir -p "$TEST_WORKTREE"
+  export TEST_WORKTREE="$(mktemp -d /tmp/test-worktree.XXXXXX)"
   export RITE_WORKTREE_DIR="$TEST_WORKTREE"
 
   # Mock Claude CLI binary location
-  export MOCK_CLAUDE_BIN="/tmp/mock-claude-$$"
-  export MOCK_CLAUDE_LOG="/tmp/mock-claude-calls-$$"
+  export MOCK_CLAUDE_BIN="$(mktemp /tmp/mock-claude.XXXXXX)"
+  export MOCK_CLAUDE_LOG="$(mktemp /tmp/mock-claude-calls.XXXXXX)"
   rm -f "$MOCK_CLAUDE_LOG"
 
   # Create mock Claude binary that records tool calls
