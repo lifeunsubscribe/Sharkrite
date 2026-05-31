@@ -26,6 +26,9 @@ fi
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
+# Source portable command wrappers (sed -i, stat mtime — BSD/GNU compat)
+source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+
 # Source issue locking utilities (prevents concurrent rite invocations on same issue)
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
@@ -1512,9 +1515,11 @@ If the changes are unrelated work, answer UNRELATED."
               continue
             fi
 
-            # Get last modification time
-            LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) 2>/dev/null | xargs stat -f "%m" 2>/dev/null | sort -rn | head -1 || echo "0")
-            AGE=$(( $(date +%s) - LAST_MODIFIED ))
+            # Get last modification time (portable: BSD stat -f "%m" vs GNU stat -c "%Y")
+            LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) -print0 2>/dev/null \
+              | portable_find_max_mtime || true)
+            [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
+            AGE=$(( $(date +%s) - ${LAST_MODIFIED:-$(date +%s)} ))
 
             if [ "$AGE" -gt "$OLDEST_AGE" ]; then
               OLDEST_AGE=$AGE
@@ -1750,14 +1755,7 @@ If the changes are unrelated work, answer UNRELATED."
         fi
         # Has the old trailing-slash form that doesn't match symlinks — upgrade it
         if [ -f "$gitignore" ] && grep -qxF "${pattern}/" "$gitignore" 2>/dev/null; then
-          # Platform-specific sed -i syntax
-          if sed --version >/dev/null 2>&1; then
-            # GNU sed
-            sed -i "s|^${pattern}/$|${pattern}|" "$gitignore"
-          else
-            # BSD sed (macOS)
-            sed -i '' "s|^${pattern}/$|${pattern}|" "$gitignore"
-          fi
+          portable_sed_i "s|^${pattern}/$|${pattern}|" "$gitignore"
           ((updated++)) || true
           continue
         fi
@@ -1840,12 +1838,7 @@ for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
   fi
   # Has the old trailing-slash form — upgrade it
   if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
-    # Platform-specific sed -i syntax
-    if sed --version >/dev/null 2>&1; then
-      sed -i "s|^${_pattern}/$|${_pattern}|" .gitignore
-    else
-      sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
-    fi
+    portable_sed_i "s|^${_pattern}/$|${_pattern}|" .gitignore
     continue
   fi
   # Pattern missing entirely — add it
@@ -2032,26 +2025,13 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
   if grep -q "## Current Work" "$SCRATCHPAD_FILE"; then
     # Update existing section
     sed "/## Current Work/,/^## /{//!d;}" "$SCRATCHPAD_FILE" > "$TEMP_SCRATCH"
-    # Platform-specific sed -i syntax
-    if sed --version >/dev/null 2>&1; then
-      # GNU sed
-      sed -i "/## Current Work/a\\
+    portable_sed_i "/## Current Work/a\\
 \\
 **Issue:** #${ISSUE_NUMBER:-unknown}\\
 **Description:** ${ISSUE_DESC}\\
 **Branch:** ${BRANCH_NAME:-$CURRENT_BRANCH}\\
 **Started:** $(date '+%Y-%m-%d %H:%M:%S')\\
 " "$TEMP_SCRATCH"
-    else
-      # BSD sed (macOS)
-      sed -i '' "/## Current Work/a\\
-\\
-**Issue:** #${ISSUE_NUMBER:-unknown}\\
-**Description:** ${ISSUE_DESC}\\
-**Branch:** ${BRANCH_NAME:-$CURRENT_BRANCH}\\
-**Started:** $(date '+%Y-%m-%d %H:%M:%S')\\
-" "$TEMP_SCRATCH"
-    fi
     mv "$TEMP_SCRATCH" "$SCRATCHPAD_FILE"
   else
     # Add section if missing
@@ -2325,12 +2305,7 @@ else
       continue
     fi
     if [ -f .gitignore ] && grep -qxF "${_pattern}/" .gitignore 2>/dev/null; then
-      # Platform-specific sed -i syntax
-      if sed --version >/dev/null 2>&1; then
-        sed -i "s|^${_pattern}/$|${_pattern}|" .gitignore
-      else
-        sed -i '' "s|^${_pattern}/$|${_pattern}|" .gitignore
-      fi
+      portable_sed_i "s|^${_pattern}/$|${_pattern}|" .gitignore
       continue
     fi
     echo "$_pattern" >> .gitignore
