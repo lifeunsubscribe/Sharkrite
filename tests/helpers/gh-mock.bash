@@ -29,8 +29,30 @@ mock_gh() {
 
   # Fault injection: fail on Nth call
   if [ -n "${GH_MOCK_FAIL_NTH:-}" ] && [ "$_GH_MOCK_CALL_COUNT" -eq "$GH_MOCK_FAIL_NTH" ]; then
-    echo "gh: mock failure (call #${_GH_MOCK_CALL_COUNT})" >&2
+    if [ -n "${GH_MOCK_STDERR:-}" ]; then
+      echo "$GH_MOCK_STDERR" >&2
+    else
+      echo "gh: mock failure (call #${_GH_MOCK_CALL_COUNT})" >&2
+    fi
     return "${GH_MOCK_EXIT_CODE:-1}"
+  fi
+
+  # Fault injection: rate limit or usage cap (fixture override)
+  if [ -n "${GH_MOCK_FIXTURE_OVERRIDE:-}" ]; then
+    if [ -f "$GH_MOCK_FIXTURE_OVERRIDE" ]; then
+      cat "$GH_MOCK_FIXTURE_OVERRIDE"
+      return "${GH_MOCK_EXIT_CODE:-0}"
+    fi
+  fi
+
+  # Fault injection: hang
+  if [ -n "${MOCK_HANG_COMMAND:-}" ] && [ "$MOCK_HANG_COMMAND" = "gh" ]; then
+    if [ "${MOCK_HANG_DURATION:-infinity}" = "infinity" ]; then
+      sleep infinity
+    else
+      sleep "${MOCK_HANG_DURATION}"
+    fi
+    return 1
   fi
 
   # Determine fixture file based on command
@@ -80,6 +102,9 @@ reset_gh_mock() {
   _GH_MOCK_CALL_COUNT=0
   unset GH_MOCK_FAIL_NTH
   unset GH_MOCK_EXIT_CODE
+  unset GH_MOCK_FIXTURE_OVERRIDE
+  unset GH_MOCK_STDERR
+  unset GH_MOCK_RATE_LIMIT
 }
 
 # Create a gh mock fixture file

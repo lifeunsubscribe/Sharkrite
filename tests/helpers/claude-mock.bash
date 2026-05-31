@@ -20,12 +20,41 @@
 # Fault injection:
 #   CLAUDE_MOCK_EXIT_CODE=1    # Exit code to return
 #   CLAUDE_MOCK_DELAY=0.1      # Delay between lines (simulate streaming)
+#   CLAUDE_MOCK_FAIL_NTH=2     # Fail on the Nth call
+#   CLAUDE_MOCK_FIXTURE_OVERRIDE=/path/to/fixture.jsonl  # Override fixture file
+#   CLAUDE_MOCK_STDERR="error message"  # Custom stderr output
+
+# Track call count for fault injection
+_CLAUDE_MOCK_CALL_COUNT=0
 
 # Mock claude CLI command
 # Reads JSONL fixtures and streams them line by line
 mock_claude() {
+  # Increment call counter
+  _CLAUDE_MOCK_CALL_COUNT=$((_CLAUDE_MOCK_CALL_COUNT + 1))
+
+  # Fault injection: fail on Nth call
+  if [ -n "${CLAUDE_MOCK_FAIL_NTH:-}" ] && [ "$_CLAUDE_MOCK_CALL_COUNT" -eq "$CLAUDE_MOCK_FAIL_NTH" ]; then
+    if [ -n "${CLAUDE_MOCK_STDERR:-}" ]; then
+      echo "$CLAUDE_MOCK_STDERR" >&2
+    else
+      echo "claude: mock failure (call #${_CLAUDE_MOCK_CALL_COUNT})" >&2
+    fi
+    return "${CLAUDE_MOCK_EXIT_CODE:-1}"
+  fi
+
+  # Fault injection: hang
+  if [ -n "${MOCK_HANG_COMMAND:-}" ] && [ "$MOCK_HANG_COMMAND" = "claude" ]; then
+    if [ "${MOCK_HANG_DURATION:-infinity}" = "infinity" ]; then
+      sleep infinity
+    else
+      sleep "${MOCK_HANG_DURATION}"
+    fi
+    return 1
+  fi
+
   # Parse args to determine scenario
-  local scenario="default"
+  local scenario="${CLAUDE_MOCK_SCENARIO:-default}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,11 +73,18 @@ mock_claude() {
   done
 
   # Determine fixture file
-  local fixture_dir="${CLAUDE_MOCK_FIXTURE_DIR:-${RITE_REPO_ROOT}/tests/fixtures/claude}"
-  local fixture_file="${fixture_dir}/${scenario}.jsonl"
+  local fixture_file
 
-  if [ ! -f "$fixture_file" ]; then
-    fixture_file="${fixture_dir}/default.jsonl"
+  # Check for fixture override first (fault injection)
+  if [ -n "${CLAUDE_MOCK_FIXTURE_OVERRIDE:-}" ]; then
+    fixture_file="$CLAUDE_MOCK_FIXTURE_OVERRIDE"
+  else
+    local fixture_dir="${CLAUDE_MOCK_FIXTURE_DIR:-${RITE_REPO_ROOT}/tests/fixtures/claude}"
+    fixture_file="${fixture_dir}/${scenario}.jsonl"
+
+    if [ ! -f "$fixture_file" ]; then
+      fixture_file="${fixture_dir}/default.jsonl"
+    fi
   fi
 
   if [ ! -f "$fixture_file" ]; then
@@ -108,6 +144,11 @@ create_claude_fixture() {
 
 # Reset mock state
 reset_claude_mock() {
+  _CLAUDE_MOCK_CALL_COUNT=0
   unset CLAUDE_MOCK_EXIT_CODE
   unset CLAUDE_MOCK_DELAY
+  unset CLAUDE_MOCK_FAIL_NTH
+  unset CLAUDE_MOCK_SCENARIO
+  unset CLAUDE_MOCK_FIXTURE_OVERRIDE
+  unset CLAUDE_MOCK_STDERR
 }
