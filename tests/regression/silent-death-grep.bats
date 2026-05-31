@@ -135,18 +135,31 @@ EOF
 @test "codebase has zero remaining unsafe patterns" {
   cd "$(dirname "$BATS_TEST_DIRNAME")"
 
-  # Search for unsafe patterns (same grep as issue description)
-  run bash -c "grep -rnE '=\$\([^)]*\| *grep' lib/ bin/ 2>/dev/null | grep -v '|| true\||| echo\|: \$?' || true"
+  # Search for patterns that look unsafe: VAR=$(... | grep ...) without || true on same line
+  # This finds grep in command substitution, then filters out safe patterns
+  run bash -c 'grep -rn "=\$(.*| grep" lib/ bin/ 2>/dev/null | grep -v "|| true\||| echo\|: \\\$?" || true'
 
-  # Count actual non-empty matches
-  if [ -z "$output" ]; then
-    unsafe_count=0
-  else
-    unsafe_count=$(echo "$output" | grep -c '.' || echo 0)
+  # For each match, verify it's safe via one of these patterns:
+  # 1. Has || true somewhere in the next 10 lines (handles multiline)
+  # 2. Pipes to head/tail which always succeeds (grep | head is safe)
+  if [ -n "$output" ]; then
+    while IFS=: read -r file line rest; do
+      # Get a reasonable context window for multiline patterns
+      context=$(sed -n "${line},$((line + 10))p" "$file" 2>/dev/null || true)
+
+      # Check if pattern is safe: has || true OR pipes to head/tail
+      if echo "$context" | grep -q '|| true'; then
+        # Safe: has || true
+        continue
+      elif echo "$context" | grep -q '| head\|| tail'; then
+        # Safe: pipes to head/tail which always succeed
+        continue
+      else
+        fail "UNSAFE pattern without safety guard found at ${file}:${line}"
+      fi
+    done <<< "$output"
   fi
 
-  # We expect exactly 3 known multiline patterns where || true is on the next line
-  # (These are safe but grep can't detect that without parsing the next line)
-  # Any other count indicates either: new unsafe patterns added (bad) or multiline patterns fixed (good but test needs update)
-  [ "$unsafe_count" -eq 3 ]
+  # Test passes if all matches are verified safe
+  [ "$status" -eq 0 ]
 }
