@@ -9,6 +9,8 @@
 #   cleanup-worktrees.sh           # Interactive mode - review each worktree
 #   cleanup-worktrees.sh --auto    # Auto mode - remove all stale worktrees
 
+set -euo pipefail
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

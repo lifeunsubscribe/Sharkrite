@@ -8,6 +8,8 @@
 #   trigger_local_review <pr_number> [--auto]
 #   handle_stale_review <pr_number> [--auto]
 
+set -euo pipefail
+
 # Ensure config is loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   echo "ERROR: review-helper.sh must be sourced after config.sh" >&2

@@ -8,6 +8,8 @@
 # Exit codes from handle_push_divergence():
 #   0 = resolved (push succeeded, continue workflow)
 #   1 = blocked (stop workflow, manual intervention needed)
+
+set -euo pipefail
 #   2 = resolved but needs re-review (foreign commits pulled, re-enter Phase 2→3)
 
 # Source config if not already loaded

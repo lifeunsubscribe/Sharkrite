@@ -5,6 +5,8 @@
 # All functions are prefixed with claude_provider_ and aliased to provider_*
 # by the load_provider() dispatcher.
 
+set -euo pipefail
+
 # =============================================================================
 # CLI Detection
 # =============================================================================

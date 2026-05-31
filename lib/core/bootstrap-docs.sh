@@ -4,6 +4,8 @@
 # Called by workflow-runner.sh when internal docs are missing or sparse.
 # All output is machine-formatted reference data.
 
+set -euo pipefail
+
 # Source configuration if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

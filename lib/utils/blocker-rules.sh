@@ -10,6 +10,8 @@
 #
 # Usage: source this file, call check_blockers() for gates or
 #        detect_sensitivity_areas() for review hints
+
+set -euo pipefail
 #
 # Requires: config.sh sourced first (for $BLOCKER_* pattern variables)
 

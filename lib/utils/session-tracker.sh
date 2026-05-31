@@ -6,6 +6,8 @@
 # Expects config.sh to be already loaded (provides SESSION_STATE_FILE,
 # RITE_PROJECT_NAME, RITE_WORKTREE_DIR, RITE_DATA_DIR)
 
+set -euo pipefail
+
 # Initialize session tracking
 init_session() {
   local mode="${1:-supervised}"  # supervised or unsupervised

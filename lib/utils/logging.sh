@@ -10,6 +10,8 @@
 #   verbose_header "Section Title"
 #   verbose_echo "detail line"
 #   if is_verbose; then
+
+set -euo pipefail
 #     echo "multi-line block"
 #   fi
 

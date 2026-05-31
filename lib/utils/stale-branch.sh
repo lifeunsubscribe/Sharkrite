@@ -8,6 +8,8 @@
 # Threshold controlled by RITE_STALE_BRANCH_THRESHOLD (default: 10 commits).
 # Rebase avoids false conflicts from merge when main has added files since branch creation.
 
+set -euo pipefail
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

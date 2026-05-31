@@ -5,6 +5,8 @@
 #
 # Usage: source this file, then call repo_wide_status [--by-label]
 
+set -euo pipefail
+
 # Source config and dependencies if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -8,6 +8,8 @@
 #
 # RITE_TIMEOUT_CMD is set to one of:
 #   "gtimeout"  — macOS with coreutils installed
+
+set -euo pipefail
 #   "timeout"   — Linux or macOS with coreutils in PATH as timeout
 #   ""          — user declined install; callers run without timeout
 #

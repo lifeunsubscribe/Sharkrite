@@ -5,6 +5,8 @@
 #
 # Expects config.sh to be already loaded
 
+set -euo pipefail
+
 # Function: assess_pr_review
 # Extracts latest review and saves it for Claude assessment
 # Usage: assess_pr_review <pr-number>

@@ -6,6 +6,8 @@
 #   WORK_DESCRIPTION    — Full context for Claude dev prompt and PR body
 #
 # Two paths:
+
+set -euo pipefail
 #   normalize_piped_input "$text"  — Generate structured issue from freeform text via Claude
 #   normalize_existing_issue       — Bash-only cleanup of existing issue title
 #

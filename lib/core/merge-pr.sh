@@ -9,7 +9,7 @@
 #   SLACK_WEBHOOK - Slack webhook URL for deep clean notifications
 #                   Export in your shell: export SLACK_WEBHOOK="https://hooks.slack.com/..."
 
-set -e
+set -euo pipefail
 
 # Source configuration
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

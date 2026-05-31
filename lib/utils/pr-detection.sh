@@ -7,6 +7,8 @@
 # All functions set variables in the caller's scope (no subshell).
 # Return 0 on success, 1 on failure.
 
+set -euo pipefail
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

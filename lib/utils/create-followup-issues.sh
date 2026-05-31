@@ -5,6 +5,8 @@
 #
 # Expects config.sh to be already loaded
 
+set -euo pipefail
+
 # Function: create_followup_issues
 # Parses latest review for "skip" items and creates GitHub issues
 # Returns: 0 on success, number of issues created stored in ISSUES_CREATED global

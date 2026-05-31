@@ -5,6 +5,8 @@
 #
 # Requires: config.sh sourced (for SCRATCHPAD_FILE, RITE_INSTALL_DIR)
 
+set -euo pipefail
+
 # Use configured scratchpad path (set by config.sh)
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
 
