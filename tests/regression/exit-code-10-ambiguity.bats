@@ -50,10 +50,6 @@ teardown() {
 @test "stale-branch auto-restart: check_stale_branch returns 11 (not 10)" {
   _result=0
   (
-    # Stub internal helpers that touch git/gh so we can test the return code in isolation
-    _stale_close_and_cleanup() { return 0; }
-    export -f _stale_close_and_cleanup
-
     # Stub git to make the worktree checks succeed:
     #   - rev-parse --abbrev-ref HEAD → returns a feature branch name
     #   - fetch origin main           → succeeds (returns 0)
@@ -70,6 +66,10 @@ teardown() {
     export -f git
 
     source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+    # Stub internal helpers after source so the real definitions don't overwrite our stubs
+    _stale_close_and_cleanup() { return 0; }
+    export -f _stale_close_and_cleanup
 
     # Override get_commits_behind_main to report 15 commits behind (above threshold)
     get_commits_behind_main() { COMMITS_BEHIND_MAIN=15; }
@@ -93,14 +93,14 @@ teardown() {
 @test "stale-branch supervised restart: _stale_supervised_prompt returns 11 on option 1" {
   _result=0
   (
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+    # Stub after source so the real implementation doesn't overwrite our stub
     _stale_close_and_cleanup() { return 0; }
     export -f _stale_close_and_cleanup
 
-    source "$RITE_LIB_DIR/utils/stale-branch.sh"
-
-    # Simulate user pressing "1" (close and restart)
-    REPLY=1
-    _stale_supervised_prompt "/fake/worktree" "101" "42" "fix/test-issue-42" "15"
+    # Simulate user pressing "1" (close and restart) by feeding it on stdin
+    printf '1' | _stale_supervised_prompt "/fake/worktree" "101" "42" "fix/test-issue-42" "15"
   ) || _result=$?
 
   [ "$_result" -eq 11 ]
