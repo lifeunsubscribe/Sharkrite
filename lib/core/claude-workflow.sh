@@ -299,6 +299,66 @@ run_test_gate() {
     return 0
   fi
 
+  # Helper: Install system dependencies when pip fails with missing system packages
+  # Parses pip error logs for known patterns and installs via brew
+  # Args: $1 = pip error log file path
+  # Returns: 0 if brew install attempted (even if some packages fail), 1 if no brew or no patterns matched
+  _install_system_deps() {
+    local _error_log="${1:-}"
+    [ -z "$_error_log" ] && return 1
+    [ ! -f "$_error_log" ] && return 1
+
+    # Detect brew (check common paths since PATH may be stripped in some environments)
+    local _brew_cmd=""
+    if command -v brew >/dev/null 2>&1; then
+      _brew_cmd="brew"
+    elif [ -x "/opt/homebrew/bin/brew" ]; then
+      _brew_cmd="/opt/homebrew/bin/brew"
+    elif [ -x "/usr/local/bin/brew" ]; then
+      _brew_cmd="/usr/local/bin/brew"
+    else
+      return 1  # No brew available
+    fi
+
+    # Parse error log for known system dependency patterns
+    local _packages_to_install=()
+
+    if grep -qE "Did not find pkg-config|dependency cairo found: NO" "$_error_log"; then
+      _packages_to_install+=("pkg-config" "cairo")
+    fi
+    if grep -q "pg_config not found" "$_error_log"; then
+      _packages_to_install+=("postgresql")
+    fi
+    if grep -q "ffi.h.*No such file" "$_error_log"; then
+      _packages_to_install+=("libffi")
+    fi
+    if grep -qE "jpeglib.h.*No such file|jpeg.*not found" "$_error_log"; then
+      _packages_to_install+=("jpeg")
+    fi
+    if grep -q "freetype.*not found" "$_error_log"; then
+      _packages_to_install+=("freetype")
+    fi
+    if grep -qE "libxml.*not found|xmlversion.h.*No such file" "$_error_log"; then
+      _packages_to_install+=("libxml2")
+    fi
+    if grep -q "libxslt.*not found" "$_error_log"; then
+      _packages_to_install+=("libxslt")
+    fi
+    if grep -q "openssl.*not found" "$_error_log"; then
+      _packages_to_install+=("openssl")
+    fi
+
+    if [ ${#_packages_to_install[@]} -eq 0 ]; then
+      return 1  # No known patterns matched
+    fi
+
+    # Install packages
+    print_status "Installing system dependencies: ${_packages_to_install[*]}"
+    # Suppress brew's verbose output, just show errors
+    $_brew_cmd install "${_packages_to_install[@]}" >/dev/null 2>&1 || true
+    return 0
+  }
+
   # Detect test command: RITE_TEST_CMD override → auto-detect from project structure
   local _test_cmd="${RITE_TEST_CMD:-}"
   local _test_subdir=""
@@ -310,11 +370,81 @@ run_test_gate() {
       _test_cmd="npm test"
       _test_subdir="backend"
     elif [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] || [ -f "setup.cfg" ] || [ -f "setup.py" ] || [ -d "tests" ]; then
-      # If no venv exists yet but requirements.txt does, create one so the gate
-      # doesn't fail with "No module named pytest" on the system python.
+      # Bootstrap venv if needed (requirements.txt + optional requirements-dev.txt)
+      # Track install success to gate the "Venv ready" message on actual success
       if [ ! -f ".venv/bin/python" ] && [ ! -f "venv/bin/python" ] && [ ! -f "env/bin/python" ] && [ -f "requirements.txt" ]; then
         print_status "No venv found — creating .venv and installing requirements..."
-        python3 -m venv .venv 2>/dev/null && .venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
+
+        # Create venv
+        if ! python3 -m venv .venv 2>/dev/null; then
+          print_error "Failed to create .venv"
+          return 1
+        fi
+
+        # Install base requirements with error tracking
+        local _base_install_ok=true
+        local _pip_error_log
+        _pip_error_log=$(mktemp)
+
+        if ! .venv/bin/pip install -q -r requirements.txt >"$_pip_error_log" 2>&1; then
+          _base_install_ok=false
+          print_warning "Base requirements install failed — attempting system dependency fix"
+
+          # Try to install missing system deps and retry
+          if _install_system_deps "$_pip_error_log"; then
+            print_status "Retrying pip install after system dependency install..."
+            if .venv/bin/pip install -q -r requirements.txt >"$_pip_error_log" 2>&1; then
+              _base_install_ok=true
+            fi
+          fi
+        fi
+
+        # Install dev requirements if present
+        local _dev_install_ok=true
+        if [ -f "requirements-dev.txt" ]; then
+          if ! .venv/bin/pip install -q -r requirements-dev.txt >"$_pip_error_log" 2>&1; then
+            _dev_install_ok=false
+            print_warning "Dev requirements install failed — attempting system dependency fix"
+
+            # Try system-dep fix and retry
+            if _install_system_deps "$_pip_error_log"; then
+              print_status "Retrying dev requirements install..."
+              if .venv/bin/pip install -q -r requirements-dev.txt >"$_pip_error_log" 2>&1; then
+                _dev_install_ok=true
+              fi
+            fi
+          fi
+        fi
+
+        # Verify pytest is importable
+        local _pytest_ok=true
+        if ! .venv/bin/python -c "import pytest" 2>/dev/null; then
+          _pytest_ok=false
+        fi
+
+        # Print status based on what actually succeeded
+        if [ "$_base_install_ok" = true ] && [ "$_dev_install_ok" = true ] && [ "$_pytest_ok" = true ]; then
+          print_success "Venv ready ✅"
+        else
+          # Actionable error message with specific failures
+          print_error "Venv bootstrap incomplete:"
+          [ "$_base_install_ok" != true ] && echo "  ❌ Base requirements (requirements.txt) failed to install"
+          [ "$_dev_install_ok" != true ] && echo "  ❌ Dev requirements (requirements-dev.txt) failed to install"
+          [ "$_pytest_ok" != true ] && echo "  ❌ pytest is not importable"
+          echo ""
+          echo "To fix manually, run:"
+          echo "  cd $(pwd)"
+          [ "$_base_install_ok" != true ] && echo "  .venv/bin/pip install -r requirements.txt"
+          [ "$_dev_install_ok" != true ] && echo "  .venv/bin/pip install -r requirements-dev.txt"
+          echo ""
+          echo "Error log: $_pip_error_log"
+          # Don't return 1 — let test gate try anyway, it will fail loudly with better context
+          # (e.g., "ModuleNotFoundError: No module named 'pytest'" is more actionable than
+          # "venv bootstrap failed"). This also prevents blocking on transient pip issues
+          # when the user can still run tests with system python or an existing venv.
+        fi
+
+        rm -f "$_pip_error_log"
       fi
       # Prefer venv python (already has dependencies installed) over system python
       if [ -f ".venv/bin/python" ]; then
