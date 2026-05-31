@@ -28,6 +28,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
+source "$RITE_LIB_DIR/utils/date-helpers.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -64,13 +65,8 @@ check_assessment_freshness() {
 
   # Compare timestamps (epoch comparison, portable GNU/BSD)
   local assess_epoch commit_epoch
-  if date --version >/dev/null 2>&1; then
-    assess_epoch=$(date -d "$assessment_timestamp" "+%s" 2>/dev/null || echo "0")
-    commit_epoch=$(date -d "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
-  else
-    assess_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$assessment_timestamp" "+%s" 2>/dev/null || echo "0")
-    commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
-  fi
+  assess_epoch=$(iso_to_epoch "$assessment_timestamp")
+  commit_epoch=$(iso_to_epoch "$latest_commit_time")
 
   if [ "$commit_epoch" -gt "$assess_epoch" ]; then
     return 1  # Commits after assessment = stale

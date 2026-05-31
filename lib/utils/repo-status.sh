@@ -13,6 +13,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/config.sh"
 fi
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 # =============================================================================
@@ -245,13 +246,8 @@ get_issue_phase() {
   local review_is_current="false"
   if [ -n "$review_time" ] && [ "$review_time" != "null" ] && [ -n "$latest_commit_time" ]; then
     local commit_epoch review_epoch
-    if date --version >/dev/null 2>&1; then
-      commit_epoch=$(date -d "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
-      review_epoch=$(date -d "$review_time" "+%s" 2>/dev/null || echo "0")
-    else
-      commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
-      review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$review_time" "+%s" 2>/dev/null || echo "0")
-    fi
+    commit_epoch=$(iso_to_epoch "$latest_commit_time")
+    review_epoch=$(iso_to_epoch "$review_time")
     if [ "$review_epoch" -gt "$commit_epoch" ]; then
       review_is_current="true"
     fi
