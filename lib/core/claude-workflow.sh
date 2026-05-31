@@ -1583,7 +1583,11 @@ If the changes are unrelated work, answer UNRELATED."
     # Fetch latest main so new branches start from current remote state
     # Critical for batch mode: after issue N merges, issue N+1 must branch from updated main
     print_status "Fetching latest origin/main..."
-    git fetch origin main 2>/dev/null || print_warning "Failed to fetch origin/main - using local state"
+    if ! git_fetch_safe origin main; then
+      print_error "Cannot fetch origin/main — new worktree would branch from stale data"
+      print_info "Check network connectivity and retry"
+      exit 1
+    fi
 
     # Check if this issue has an existing PR with remote branch
     # This prevents recreating work when resuming after worktree cleanup

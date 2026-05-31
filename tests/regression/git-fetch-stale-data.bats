@@ -161,24 +161,48 @@ SHIM
   [[ "$output" =~ "attempt" ]] || [[ "$output" =~ "retr" ]]
 }
 
-@test "codebase has no bare 'git fetch ... 2>/dev/null || true' patterns" {
-  # This is the core regression guard — ensures no one re-introduces the bug
+@test "codebase has no bare 'git fetch ... 2>/dev/null || <non-fatal>' patterns" {
+  # Regression guard — ensures no one re-introduces the silent-fetch bug in any spelling.
+  #
+  # Caught variants:
+  #   git fetch origin main 2>/dev/null || true
+  #   git fetch origin main 2>/dev/null || print_warning "..."
+  #   git fetch origin main 2>/dev/null || print_info "..."
+  #   git fetch origin main 2>/dev/null || :
+  #   git fetch origin main 2>/dev/null || echo "..."
+  #
+  # Allowlisted (must NOT be flagged):
+  #   Lines whose || block contains "exit 1" — these are fail-loud callers
+  #   fetch origin main:main — best-effort local-main fast-forward, not used for branching
+  #   Comment lines (line content starts with #)
   PROJECT_ROOT="$(cd "${RITE_REPO_ROOT}" && pwd)"
 
-  run bash -c "grep -rnE 'git fetch [^\|]* 2>/dev/null \|\| true' \"$PROJECT_ROOT/lib/\" | grep -v '\.sh:#' || true"
+  # Match: git fetch ... 2>/dev/null || <anything that isn't an exit-1 block>
+  # We capture all `git fetch` lines that suppress stderr and continue non-fatally.
+  run bash -c "grep -rnE 'git fetch [^|]* 2>/dev/null \|\|' \"$PROJECT_ROOT/lib/\" || true"
 
-  # The only acceptable match is a comment (not executable code)
   if [ -n "$output" ]; then
-    # Filter out comment lines (lines where the matched code is inside a comment)
     while IFS= read -r line; do
-      # Strip the filename:lineno: prefix and check if the rest starts with #
+      # Skip comment lines (code part starts with #)
       code_part="${line#*:*:}"
       trimmed="${code_part#"${code_part%%[! ]*}"}"  # ltrim
       if [[ "$trimmed" == \#* ]]; then
-        # It's a comment — acceptable
         continue
       fi
-      fail "Bare 'git fetch ... 2>/dev/null || true' found in executable code: $line"
+
+      # Allowlist: fail-loud callers — the || block exits with exit 1
+      # These are acceptable: they suppress noisy stderr but surface failure via exit code.
+      if [[ "$line" =~ \|\|[[:space:]]*\{[[:space:]]*$|exit[[:space:]]+1 ]]; then
+        continue
+      fi
+
+      # Allowlist: fetch origin main:main — best-effort local-main fast-forward
+      # This uses a different redirect style (>/dev/null 2>&1) but allowlist defensively.
+      if [[ "$line" =~ "fetch origin main:main" ]]; then
+        continue
+      fi
+
+      fail "Bare 'git fetch ... 2>/dev/null || <non-fatal>' found in executable code: $line"
     done <<< "$output"
   fi
 }
