@@ -118,24 +118,20 @@ EOF
   export -f claude
   export -f mock_claude
 
-  # Measure time (should take at least 50ms for 5+ lines)
-  # Use cross-platform time measurement (BSD date doesn't support %N)
-  if date --version >/dev/null 2>&1; then
-    # GNU date
-    start=$(date +%s%N)
-    run mock_claude --scenario slow
-    end=$(date +%s%N)
-    duration=$(( (end - start) / 1000000 ))  # Convert to milliseconds
-  else
-    # BSD date (macOS) - use seconds precision
-    start=$(date +%s)
-    run mock_claude --scenario slow
-    end=$(date +%s)
-    duration=$(( (end - start) * 1000 ))  # Convert to milliseconds
+  # BSD date (macOS) lacks nanosecond precision - skip timing assertion
+  if ! date --version >/dev/null 2>&1; then
+    skip "Streaming delay timing requires GNU date (nanosecond precision)"
   fi
+
+  # GNU date - measure streaming delay
+  start=$(date +%s%N)
+  run mock_claude --scenario slow
+  end=$(date +%s%N)
+  duration=$(( (end - start) / 1000000 ))  # Convert to milliseconds
 
   [ "$status" -eq 0 ]
 
-  # Duration should be >= 0 (streaming not instant, but may round to 0 on BSD)
-  [ "$duration" -ge 0 ]
+  # With 0.01s delay and 5+ lines, duration should be at least 40ms
+  # (allowing for some jitter in timing)
+  [ "$duration" -ge 40 ]
 }
