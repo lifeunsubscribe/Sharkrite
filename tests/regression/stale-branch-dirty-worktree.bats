@@ -182,6 +182,15 @@ teardown() {
   #         2. Detect the conflict, abort the rebase cleanly
   #         3. Pop the stash — leaving the worktree dirty again as it was before
   #       If the stash is NOT restored, the uncommitted change is permanently lost.
+  #
+  # Stub attempt_claude_merge_resolution to return 1 so this test deterministically
+  # exercises the plain auto-bail path (print_error + return 1) rather than
+  # potentially flowing through the Claude-assisted conflict resolver.  Without the
+  # stub, if conflict-resolver.sh is sourced and attempt_claude_merge_resolution is
+  # defined in the environment, the test could attempt a provider call or resolve
+  # the conflict and return 0 — changing the expected exit code and making the test
+  # environment-dependent / flaky.
+  attempt_claude_merge_resolution() { return 1; }
 
   local branch_name="fix/dirty-conflict-test"
   git checkout -b "$branch_name" main >/dev/null 2>&1
@@ -302,6 +311,10 @@ teardown() {
   local worktree_path="$RITE_WORKTREE_DIR/issue-force-lease-reject"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
+  # Record the pre-rebase HEAD so we can confirm the rebase actually ran.
+  local pre_rebase_head
+  pre_rebase_head=$(git -C "$worktree_path" rev-parse HEAD)
+
   # Drive the rebase+push through the actual function under test.
   # _stale_rebase_onto_main will:
   #   1. Rebase the feature branch onto origin/main (rewrites history)
@@ -310,6 +323,17 @@ teardown() {
   #      remote tip = concurrent_remote_sha → git rejects the push
   #   4. Function returns 1 (stale-branch.sh:246 rejection branch)
   run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
+
+  # Confirm the rebase step actually ran before the push attempt:
+  #   - HEAD must have changed (rebase rewrote history onto origin/main)
+  #   - main-lease.txt must be present (main's divergence commit was applied)
+  # Without these assertions, a failure in an earlier phase (e.g. rebase itself
+  # returning non-zero) would produce the same non-zero exit and mask the real
+  # failure cause, making the test pass for the wrong reason.
+  local post_rebase_head
+  post_rebase_head=$(git -C "$worktree_path" rev-parse HEAD)
+  [ "$pre_rebase_head" != "$post_rebase_head" ]  # rebase rewrote HEAD
+  [ -f "$worktree_path/main-lease.txt" ]           # main's commit was applied
 
   # Must return non-zero — the force-with-lease rejection path was hit
   [ "$status" -ne 0 ]
