@@ -1859,8 +1859,30 @@ run_workflow() {
     fi
   fi
 
-  # Phase 0: Pre-start checks (always run unless skipping past it)
-  if [ -z "$skip_to_phase" ]; then
+  # Phase 0: Pre-start checks.
+  # Always run when not skipping at all.
+  # Also force-run when resuming from a saved blocker that requires re-validation:
+  # skip_to_phase reflects PR/review state, NOT whether the original blocker has
+  # been resolved, so we must re-check before proceeding.
+  # Reasons that trigger a pre-start re-entry (subset of persisted blocker reasons):
+  #   credentials_expired — AWS creds invalid at pre-merge; blocker-rules.sh re-validates on
+  #                         pre-start context (the only reason that performs real re-validation)
+  #   test_failures       — test suite failed; pre-start re-entry is intentionally a no-op at
+  #                         this context (test re-execution happens in the dev/fix phase itself)
+  #   session_limit       — token/time limit reached; pre-start re-entry is intentionally a
+  #                         no-op at this context (no environment check is performed here)
+  # Excluded reasons (no pre-start re-entry needed):
+  #   critical_issues     — the pre-merge gate in merge-pr.sh already re-validates review
+  #                         findings before merging; a pre-start re-entry would be redundant
+  # (interrupted is set by the INT/TERM trap and does NOT require a pre-start re-entry)
+  local _force_prestart=false
+  case "${RESUME_BLOCKER_REASON:-}" in
+    credentials_expired|test_failures|session_limit)
+      _force_prestart=true
+      ;;
+  esac
+
+  if [ -z "$skip_to_phase" ] || [ "$_force_prestart" = true ]; then
     CURRENT_PHASE="pre-start"
     if ! phase_pre_start_checks "$issue_number"; then
       return 1
@@ -2024,8 +2046,9 @@ main() {
   local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
   local RESUME_PHASE=""
   local RESUME_RETRY=0
+  local saved_reason=""  # Populated from state file; exported as RESUME_BLOCKER_REASON
   if [ -f "$state_file" ]; then
-    local saved_reason=$(jq -r '.reason // "unknown"' "$state_file" 2>/dev/null)
+    saved_reason=$(jq -r '.reason // "unknown"' "$state_file" 2>/dev/null)
     local saved_worktree=$(jq -r '.worktree_path // ""' "$state_file" 2>/dev/null)
     local saved_phase=$(jq -r '.phase // ""' "$state_file" 2>/dev/null)
     local saved_pr=$(jq -r '.pr_number // ""' "$state_file" 2>/dev/null)
@@ -2059,12 +2082,16 @@ main() {
       [ "$RESUME_RETRY" -gt 0 ] && print_status "Retry: $RESUME_RETRY/3"
     else
       print_warning "Saved worktree no longer exists - starting fresh"
+      saved_reason=""
     fi
   fi
 
-  # Export resume phase and retry for run_workflow
+  # Export resume phase, retry, and blocker reason for run_workflow
   export RESUME_PHASE
   export RESUME_RETRY
+  # RESUME_BLOCKER_REASON carries the saved blocker type so run_workflow can
+  # force pre-start checks even when skip_to_phase would normally bypass them.
+  export RESUME_BLOCKER_REASON="${saved_reason:-}"
 
   # Initialize session — but not when called from batch mode (batch owns the session)
   if [ "${BATCH_MODE:-false}" != "true" ]; then

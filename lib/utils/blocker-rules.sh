@@ -381,8 +381,16 @@ check_blockers() {
 
   case "$context" in
     pre-start)
-      # AWS credentials are checked as a warning, not a blocker.
-      # If creds are actually needed, tests will fail (hard gate).
+      # Re-validate AWS credentials when resuming from a credentials_expired blocker.
+      # Only runs for AWS projects (detect_aws_project is cached after the first call).
+      # For all other resume reasons this context remains a no-op.
+      if [ "${RESUME_BLOCKER_REASON:-}" = "credentials_expired" ] && detect_aws_project; then
+        if ! detect_credentials_expired; then
+          blocker_type="credentials_expired"
+          blocker_details="AWS credentials are still expired. Refresh credentials and re-run."
+          blocker_detected=true
+        fi
+      fi
       ;;
 
     pre-commit)
@@ -479,6 +487,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f detect_test_failures
   export -f detect_expensive_services
   export -f detect_session_limit
+  export -f detect_aws_project
   export -f detect_credentials_expired
   export -f detect_protected_scripts
   export -f detect_sensitivity_areas
