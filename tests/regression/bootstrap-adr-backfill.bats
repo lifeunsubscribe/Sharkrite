@@ -113,9 +113,13 @@ ADRDOC
   [ -n "$output" ]
   [ -f "$output" ]
 
-  # Verify the ADR file contains the expected metadata
+  # Verify the ADR file contains the expected metadata.
+  # Must match the exact bold-markdown format (**Commit:** <sha>) because the
+  # deduplication logic in generate_adr_for_ref greps for "**Commit:** ${ref_id}".
+  # A loose fallback (|| grep -q "abc1234") would pass even if the format is wrong,
+  # failing to guard the dedup check that depends on this exact pattern.
   grep -q "ADR-001" "$output"
-  grep -q "Commit: abc1234" "$output" || grep -q "abc1234" "$output"
+  grep -q "\*\*Commit:\*\* abc1234" "$output"
 }
 
 # ---------------------------------------------------------------------------

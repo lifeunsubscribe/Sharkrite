@@ -153,28 +153,21 @@ setup() {
     REVIEW_EXIT=0
     CLAUDE_STDERR=\$(mktemp)
 
-    # Execute the extracted real retry loop
-    set +e
+    # Execute the extracted real retry loop.
+    # The loop exits 1 on provider failure (expected non-crash path).
+    # Under the bug, bash would crash with 'local: can only be used in a function'
+    # before the exit 1 — the crash message appears on stderr (captured by run).
+    # We do NOT add a post-loop check here: if the loop calls 'exit 1' internally
+    # (the non-crash path), the subprocess ends immediately and any code after the
+    # loop body is unreachable dead code.  All crash detection is done in the
+    # outer bats assertions below.
     $LOOP_CODE
-    loop_exit=\$?
-    set -e
-
-    # The loop should reach the provider call, see exit 1, and exit the script.
-    # Under the bug, bash would crash with 'local: can only be used in a function'.
-    # With the fix (plain assignment), the loop calls exit 1 cleanly.
-    if echo \"\$CLAUDE_ERROR\" | grep -q 'local: can only be used in a function'; then
-      echo 'FAIL: bash crashed with local keyword error'
-      exit 2
-    fi
-
-    echo 'PASS: retry loop handled provider failure cleanly'
-    # Exit 1 is expected (provider failed, script exits non-zero)
-    exit 1
   "
 
-  # Script exits 1 (provider failure handled) or 2 (bash crash — regression)
-  # We accept exit 1 as the correct behavior (provider failed cleanly)
-  # We reject exit 2 (bash crash) as a regression
+  # Loop exits 1 (provider failed cleanly) or non-zero from bash crash.
+  # Under the bug, bash would emit 'local: can only be used in a function' to
+  # stderr before the first exit 1, detectable in $output (bats merges stderr).
+  # We accept exit 0 or 1 (normal operation), and reject the crash message.
   [[ "$status" -eq 1 || "$status" -eq 0 ]]
   [[ "$output" != *"local: can only be used in a function"* ]]
   [[ "$output" != *"FAIL:"* ]]

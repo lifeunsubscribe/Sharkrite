@@ -98,6 +98,15 @@ wait_at_barrier() {
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
   mkdir -p "$exit_codes_dir"
 
+  # Hard precondition: scratchpad must exist before spawning processes.
+  # log_encountered_issue() silently returns 0 on a missing scratchpad, so
+  # without this guard all N subprocesses succeed vacuously with zero writes,
+  # and the count assertion below would pass on mismatch.
+  [ -f "$SCRATCHPAD_FILE" ] || {
+    echo "FAIL: scratchpad not initialized before spawning concurrent processes" >&2
+    return 1
+  }
+
   # Spawn N processes that each call the real log_encountered_issue()
   for i in $(seq 1 $num_processes); do
     (
@@ -131,17 +140,15 @@ wait_at_barrier() {
   done
 
   # Verify scratchpad contains all N entries.
-  # NOTE: This assertion documents the expected behavior after issue #19's fix lands.
-  # Without proper locking some writes will be lost due to race conditions, so we
-  # allow the test to pass with a warning rather than hard-failing before the fix.
+  # grep -c always outputs a count (even "0") but returns exit 1 when count is 0.
+  # Use || true to suppress the non-zero exit; the count is already in the variable.
   local actual_count
-  actual_count=$(grep -c "Process [0-9] encountered issue" "$SCRATCHPAD_FILE" || echo 0)
+  actual_count=$(grep -c "Process [0-9] encountered issue" "$SCRATCHPAD_FILE" || true)
 
-  [ "$actual_count" -eq "$num_processes" ] || {
-    echo "EXPECTED FAILURE: Only $actual_count/$num_processes entries found - scratchpad locking not yet implemented"
-    # Return success — this test documents expected behavior once the fix lands
-    return 0
-  }
+  # Hard assertion: all N writes must be present.
+  # A soft check here (|| return 0) would pass even when log_encountered_issue()
+  # no-ops silently due to a missing scratchpad or unexercised lock path.
+  [ "$actual_count" -eq "$num_processes" ]
 }
 
 @test "concurrent security findings updates - structure preserved" {
