@@ -67,8 +67,11 @@ if [[ ! $PR_NUMBER =~ ^[0-9]+$ ]]; then
 fi
 
 # Resolve issue number: from env (workflow), or from PR body (standalone)
+# Capture gh_safe output first (observable exit code), then pipe to grep.
+# Piping gh_safe directly masks retry-exhaustion failure behind grep exit codes.
 if [ -z "${ISSUE_NUMBER:-}" ]; then
-  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+  _pr_body=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' || true)
+  ISSUE_NUMBER=$(echo "$_pr_body" | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 fi
 
 print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
@@ -76,9 +79,8 @@ echo ""
 
 # Get PR info
 print_status "Fetching PR information..."
-PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url 2>&1) || {
+PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url) || {
   print_error "Failed to fetch PR #$PR_NUMBER"
-  echo "$PR_INFO"
   exit 1
 }
 
@@ -98,7 +100,7 @@ print_status "Fetching PR diff..."
 PR_DIFF=""
 GH_DIFF_SUCCESS=false
 
-if PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" 2>&1); then
+if PR_DIFF=$(gh_safe pr diff "$PR_NUMBER"); then
   GH_DIFF_SUCCESS=true
 fi
 

@@ -193,10 +193,10 @@ Rules:
     local body_file
     body_file=$(mktemp)
     printf '%s' "$generated_body" > "$body_file"
-    issue_url=$(gh_safe issue create --title "$generated_title" --body-file "$body_file" 2>&1) || _gh_exit=$?
+    issue_url=$(gh_safe issue create --title "$generated_title" --body-file "$body_file") || _gh_exit=$?
     rm -f "$body_file"
   else
-    issue_url=$(gh_safe issue create --title "$generated_title" --body "Created by rite from CLI description." 2>&1) || _gh_exit=$?
+    issue_url=$(gh_safe issue create --title "$generated_title" --body "Created by rite from CLI description.") || _gh_exit=$?
   fi
 
   if [ $_gh_exit -ne 0 ]; then

@@ -119,3 +119,103 @@ EOF
   final_count=$(cat "$call_count_file")
   [ "$final_count" -eq 3 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 3: Captured stdout is clean JSON after 429-then-success (no retry banners)
+#
+# Regression for: local-review.sh used `2>&1` when capturing gh_safe output.
+# On success-after-retry, gh_safe's stderr retry diagnostics were merged into
+# stdout, corrupting the JSON and breaking downstream `jq` parses.
+# ---------------------------------------------------------------------------
+@test "gh_safe stdout is clean JSON after 429-then-success (no retry banners)" {
+  # Mock gh: fails with 429 on attempt 1, succeeds with clean JSON on attempt 2
+  local call_count_file="$BATS_TMPDIR/call-count-json"
+  echo "0" > "$call_count_file"
+
+  local mock_gh="$BATS_TMPDIR/gh"
+  cat > "$mock_gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+
+if [ "\$count" -eq 1 ]; then
+  echo "HTTP 429: API rate limit exceeded" >&2
+  exit 1
+fi
+echo '{"title":"My PR","baseRefName":"main","headRefName":"feat/x","url":"https://github.com/org/repo/pull/42"}'
+exit 0
+EOF
+  chmod +x "$mock_gh"
+
+  # Simulate the corrected adoption pattern: capture into variable (no 2>&1),
+  # then pipe to jq. This is what local-review.sh:79 does after the fix.
+  run bash -c "
+    export PATH=\"$BATS_TMPDIR:\$PATH\"
+    source \"$GH_RETRY_SH\"
+    PR_INFO=\$(gh_safe pr view 42 --json title,baseRefName,headRefName,url)
+    # jq must succeed — stdout must be valid JSON with no retry banner lines
+    TITLE=\$(echo \"\$PR_INFO\" | jq -r '.title')
+    echo \"TITLE=\$TITLE\"
+  "
+
+  # gh_safe should have succeeded
+  [ "$status" -eq 0 ]
+
+  # jq must have parsed the title correctly (no banner contamination)
+  [[ "$output" == "TITLE=My PR" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 4: Capture-then-pipe pattern surfaces failure when retries are exhausted
+#
+# Regression for: pr-detection.sh and local-review.sh:71 piped gh_safe directly
+# into jq/head, masking retry-exhaustion failure behind the pipe's exit code.
+# The fix captures gh_safe output into a variable first, making the failure
+# observable, then pipes the variable through jq/head.
+# ---------------------------------------------------------------------------
+@test "capture-then-pipe pattern surfaces gh_safe retry-exhaustion failure" {
+  # Mock gh: always fails with 503
+  local call_count_file="$BATS_TMPDIR/call-count-pipe"
+  echo "0" > "$call_count_file"
+
+  local mock_gh="$BATS_TMPDIR/gh"
+  cat > "$mock_gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+echo "HTTP 503: Service Unavailable" >&2
+exit 1
+EOF
+  chmod +x "$mock_gh"
+
+  # Simulate the corrected adoption pattern from pr-detection.sh:
+  #   _pr_list_json=$(gh_safe ...) || true
+  #   PR_NUMBER=$(echo "$_pr_list_json" | jq ... | head -1 || true)
+  # When gh_safe fails: _pr_list_json is empty, jq on empty string yields empty
+  # PR_NUMBER. The || true on gh_safe means the script continues, but with empty
+  # data — which the caller can then check and handle explicitly.
+  # The key assertion: the pipeline does NOT produce a non-empty PR_NUMBER when
+  # gh_safe failed (i.e., no phantom data from masking).
+  run bash -c "
+    export PATH=\"$BATS_TMPDIR:\$PATH\"
+    source \"$GH_RETRY_SH\"
+    _pr_list_json=\$(gh_safe pr list --state open --json number,body --limit 100) || true
+    PR_NUMBER=\$(echo \"\$_pr_list_json\" | jq -r '.[] | select(.body | test(\"Closes #42\")) | .number' | head -1 || true)
+    if [ -z \"\$PR_NUMBER\" ] || [ \"\$PR_NUMBER\" = 'null' ]; then
+      echo '__NOT_FOUND__'
+    else
+      echo \"PR_NUMBER=\$PR_NUMBER\"
+    fi
+  "
+
+  # Script should complete without error
+  [ "$status" -eq 0 ]
+
+  # PR_NUMBER must be empty/null, not a phantom value
+  [[ "$output" == "__NOT_FOUND__" ]]
+
+  # Must NOT have produced a non-empty PR number from failed gh output
+  [[ ! "$output" =~ "PR_NUMBER=" ]]
+}

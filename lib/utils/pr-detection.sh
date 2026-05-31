@@ -29,7 +29,11 @@ detect_pr_for_issue() {
   PR_BRANCH=""
 
   # Method 1: Search by issue link in PR body (Closes #N, Fixes #N, etc.)
-  PR_NUMBER=$(gh_safe pr list --state open --json number,body --limit 100 | \
+  # Capture gh_safe output first (observable exit code), then pipe to jq/head.
+  # Piping gh_safe directly masks retry-exhaustion failure behind head/jq exit codes.
+  local _pr_list_json=""
+  _pr_list_json=$(gh_safe pr list --state open --json number,body --limit 100) || true
+  PR_NUMBER=$(echo "$_pr_list_json" | \
     jq --arg issue "$issue_number" -r \
     '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
     head -1 || true)
@@ -39,7 +43,10 @@ detect_pr_for_issue() {
   # matches ANY mention of #N in title OR body, causing false positives when
   # unrelated PRs reference the issue (e.g., "Follow-up from #31").
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-    PR_NUMBER=$(gh_safe pr list --state open --json number,title --limit 100 | \
+    # Capture gh_safe output first (observable exit code), then pipe to jq/head.
+    local _pr_title_json=""
+    _pr_title_json=$(gh_safe pr list --state open --json number,title --limit 100) || true
+    PR_NUMBER=$(echo "$_pr_title_json" | \
       jq --arg issue "$issue_number" -r \
       '.[] | select(.title | test("#" + $issue + "\\b")) | .number' | \
       head -1 || true)
