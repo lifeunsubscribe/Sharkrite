@@ -75,8 +75,9 @@ portable_find_max_mtime() {
   local max_mtime=0
   local mtime
 
-  # Read NUL-delimited paths from stdin (produced by find -print0)
-  # xargs -0 is safe for filenames with spaces, newlines, and special chars
+  # Read NUL-delimited paths from stdin (produced by find -print0).
+  # Using read -r -d '' (NUL delimiter) handles filenames with spaces,
+  # newlines, and special characters without invoking xargs.
   while IFS= read -r -d '' filepath; do
     mtime=$(portable_stat_mtime "$filepath")
     if [ "$mtime" -gt "$max_mtime" ] 2>/dev/null; then
