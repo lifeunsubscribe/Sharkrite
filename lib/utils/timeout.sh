@@ -8,12 +8,12 @@
 #
 # RITE_TIMEOUT_CMD is set to one of:
 #   "gtimeout"  — macOS with coreutils installed
-
-set -euo pipefail
 #   "timeout"   — Linux or macOS with coreutils in PATH as timeout
 #   ""          — user declined install; callers run without timeout
 #
 # The install prompt runs at most once per session (guarded by _RITE_TIMEOUT_CHECKED).
+
+set -euo pipefail
 
 # Skip if already resolved this session AND functions are defined.
 # The env var survives across subprocesses but function definitions don't,

@@ -6,13 +6,13 @@
 #   WORK_DESCRIPTION    — Full context for Claude dev prompt and PR body
 #
 # Two paths:
-
-set -euo pipefail
 #   normalize_piped_input "$text"  — Generate structured issue from freeform text via Claude
 #   normalize_existing_issue       — Bash-only cleanup of existing issue title
 #
 # Path A prompts for approval before creating the GitHub issue.
 # Path B auto-applies deterministic cleanup (no prompt).
+
+set -euo pipefail
 
 # Source colors if not already loaded
 if ! declare -f print_info &>/dev/null; then

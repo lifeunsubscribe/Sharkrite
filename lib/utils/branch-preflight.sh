@@ -8,10 +8,10 @@
 #   1  = ERROR (worktree missing or internal failure)
 #   2  = STALE (has real work but behind main — route to stale-branch handler)
 #   3  = EMPTY_INIT (only init commit, clean tree — auto-recover by restart)
-
-set -euo pipefail
 #   4  = DIVERGENT_NO_WORK (behind main + only init commit — auto-recover)
 #   5  = UNCOMMITTED_PRESERVED (uncommitted changes — route to auto-commit handler)
+
+set -euo pipefail
 
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then

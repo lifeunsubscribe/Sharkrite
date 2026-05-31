@@ -10,10 +10,10 @@
 #   verbose_header "Section Title"
 #   verbose_echo "detail line"
 #   if is_verbose; then
-
-set -euo pipefail
 #     echo "multi-line block"
 #   fi
+
+set -euo pipefail
 
 # Ensure colors.sh is loaded (idempotent — already sourced by most callers)
 if ! declare -f print_header &>/dev/null; then
