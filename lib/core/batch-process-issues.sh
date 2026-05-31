@@ -140,9 +140,10 @@ init_session "batch-${ISSUE_LIST[0]}-$(date +%s)"
 BATCH_START_TIME=$(date +%s)
 TOTAL_ISSUES=${#ISSUE_LIST[@]}
 COMPLETED_ISSUES=0
-FAILED_ISSUES=()
-BLOCKED_ISSUES=()
-SKIPPED_ISSUES=()
+MERGED_CLEANUP_FAILED=()  # Exit 6: merged but cleanup crashed
+FAILED_ISSUES=()          # Exit 1: genuine failure (dev or merge)
+BLOCKED_ISSUES=()         # Exit 2: blocker
+SKIPPED_ISSUES=()         # Various skip reasons
 
 # Per-issue tracking (associative arrays, requires bash 4+)
 declare -A ISSUE_STATUS
@@ -564,12 +565,26 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
-    print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
-    print_info "Duration: ${ISSUE_DURATION}s"
-    echo ""
+    # Classify failure type based on exit code
+    if [ $EXIT_CODE -eq 6 ]; then
+      # Merge succeeded but cleanup failed — work IS on remote
+      print_warning "Issue #$ISSUE_NUM: merge succeeded but cleanup failed (exit code: 6)"
+      print_info "Duration: ${ISSUE_DURATION}s"
+      echo ""
+      MERGED_CLEANUP_FAILED+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="merged_cleanup_failed"
 
-    if [ $EXIT_CODE -eq 10 ]; then
+      # Get PR number so we can show the URL in the summary
+      PR_NUMBER=$(gh pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number' 2>/dev/null || echo "")
+      if [ -n "$PR_NUMBER" ]; then
+        ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"
+      fi
+
+    elif [ $EXIT_CODE -eq 10 ]; then
       # Blocker detected - defer instead of stopping
+      print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
+      print_info "Duration: ${ISSUE_DURATION}s"
+      echo ""
       print_warning "⏸️  Blocker detected - deferring issue #$ISSUE_NUM"
       BLOCKED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="blocked"
@@ -582,7 +597,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       # Continue with next issue instead of breaking
 
     else
-      # Other failure
+      # Other failure (dev or merge actually failed)
+      print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
+      print_info "Duration: ${ISSUE_DURATION}s"
+      echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
     fi
@@ -609,7 +627,7 @@ done
 # Calculate final stats
 BATCH_END_TIME=$(date +%s)
 TOTAL_DURATION=$((BATCH_END_TIME - BATCH_START_TIME))
-TOTAL_PROCESSED=$((COMPLETED_ISSUES + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]}))
+TOTAL_PROCESSED=$((COMPLETED_ISSUES + ${#MERGED_CLEANUP_FAILED[@]} + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]}))
 
 # Generate summary report
 # Retry blocked issues (they may have follow-up issues created now)
@@ -643,12 +661,19 @@ fi
 
 print_header "📊 Batch Processing Summary"
 
+# Calculate cleanup warning count
+CLEANUP_WARNING_COUNT=${#MERGED_CLEANUP_FAILED[@]}
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Overall Statistics"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Total Issues:     $TOTAL_ISSUES"
 echo "Processed:        $TOTAL_PROCESSED"
-echo "Completed:        $COMPLETED_ISSUES"
+if [ $CLEANUP_WARNING_COUNT -gt 0 ]; then
+  echo "Completed:        $COMPLETED_ISSUES (${CLEANUP_WARNING_COUNT} with cleanup warnings)"
+else
+  echo "Completed:        $COMPLETED_ISSUES"
+fi
 echo "Failed:           ${#FAILED_ISSUES[@]}"
 echo "Blocked:          ${#BLOCKED_ISSUES[@]}"
 echo "Skipped:          ${#SKIPPED_ISSUES[@]}"
@@ -667,6 +692,26 @@ if [ $COMPLETED_ISSUES -gt 0 ]; then
       echo "  ✅ Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s)"
     fi
   done | sort -t'#' -k2 -n
+  echo ""
+fi
+
+if [ ${#MERGED_CLEANUP_FAILED[@]} -gt 0 ]; then
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "Merged (with cleanup warnings)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  for ISSUE_NUM in "${MERGED_CLEANUP_FAILED[@]}"; do
+    DURATION=${ISSUE_TIME[$ISSUE_NUM]:-0}
+    PR_NUM=${ISSUE_PR[$ISSUE_NUM]:-"N/A"}
+    REPO_URL=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+    if [ -n "$REPO_URL" ] && [ "$PR_NUM" != "N/A" ]; then
+      echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s) - ${REPO_URL}/pull/${PR_NUM}"
+    else
+      echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s)"
+    fi
+  done | sort -t'#' -k2 -n
+  echo ""
+  print_info "These PRs merged successfully but post-merge cleanup encountered errors"
+  print_info "Work IS on remote — no need to re-run"
   echo ""
 fi
 

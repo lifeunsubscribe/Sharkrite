@@ -723,6 +723,16 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
 
   print_success "PR #$PR_NUMBER merged into $PR_BASE"
 
+  # Merge succeeded — now run cleanup phase. If cleanup crashes, exit with code 6
+  # (not code 1) so batch reporter can distinguish "merge failed" from "merge succeeded
+  # but cleanup failed". Turn off set -e so cleanup errors don't immediately exit.
+  set +e
+  CLEANUP_FAILED=false
+
+  # Note: We don't use a broad ERR trap because many cleanup operations intentionally
+  # handle errors (e.g., "git branch -D foo 2>/dev/null || true"). Instead, we check
+  # exit codes at critical points where a failure genuinely indicates cleanup broke.
+
   # Start doc assessment in the background (runs concurrently with tech-debt, cleanup)
   _DOC_PID=""
   _DOC_LOG=$(mktemp)
@@ -737,13 +747,18 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
 
   # Create tech-debt issues from encountered issues BEFORE clearing scratchpad
   if type create_tech_debt_issues &>/dev/null; then
-    DEBT_COUNT=$(create_tech_debt_issues "$PR_NUMBER")
-    if [ "$DEBT_COUNT" -gt 0 ]; then
+    _debt_exit=0
+    DEBT_COUNT=$(create_tech_debt_issues "$PR_NUMBER") || _debt_exit=$?
+    if [ $_debt_exit -ne 0 ]; then
+      print_warning "Tech-debt issue creation failed (exit $_debt_exit)"
+      CLEANUP_FAILED=true
+      DEBT_COUNT=0  # Initialize to prevent empty string in comparison
+    elif [ "$DEBT_COUNT" -gt 0 ]; then
       print_success "Created $DEBT_COUNT tech-debt issue(s)"
     fi
     # Clear encountered issues after processing
     if type clear_encountered_issues &>/dev/null; then
-      clear_encountered_issues
+      clear_encountered_issues || true  # Best-effort, not critical
     fi
   fi
 
@@ -1485,6 +1500,14 @@ EOF
 
   echo "PR URL: $PR_URL"
   echo ""
+
+  # Check if cleanup failed — if so, exit with code 6 (not 0) so the batch reporter
+  # can distinguish "merge succeeded but cleanup crashed" from "everything succeeded"
+  if [ "$CLEANUP_FAILED" = true ]; then
+    print_warning "PR merged successfully, but post-merge cleanup encountered errors"
+    print_info "Work is on remote (PR #$PR_NUMBER merged to $PR_BASE)"
+    exit 6
+  fi
 
   exit 0
 else
