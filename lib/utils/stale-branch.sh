@@ -155,6 +155,10 @@ _stale_rebase_onto_main() {
   local commits_ahead
   commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
 
+  # Save current HEAD before rebase in case we need to roll back after test failures
+  local pre_rebase_head
+  pre_rebase_head=$(git rev-parse HEAD)
+
   # Stash dirty worktree if needed
   local _stashed=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
@@ -177,7 +181,7 @@ _stale_rebase_onto_main() {
     # Verify rebase didn't introduce silent semantic conflicts (tests pass)
     if ! verify_post_merge "$worktree_path"; then
       print_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
-      git rebase --abort 2>/dev/null || true
+      git reset --hard "$pre_rebase_head" 2>/dev/null || true
       if [ "$workflow_mode" = "supervised" ]; then
         echo "" >&2
         echo "The rebase onto main introduced test failures." >&2
