@@ -14,7 +14,10 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
-source "$RITE_LIB_DIR/utils/colors.sh"
+if ! source "$RITE_LIB_DIR/utils/colors.sh"; then
+  echo "ERROR: Failed to load colors.sh" >&2
+  exit 1
+fi
 
 # Marker tag for sharkrite-created stashes
 readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
@@ -44,11 +47,23 @@ create_sharkrite_stash() {
   # Add marker to message
   local marked_message="${SHARKRITE_STASH_MARKER} ${message}"
 
+  # Get current stash count before attempting to create a new one
+  local stash_count_before
+  stash_count_before=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+
   # Create stash
-  if $stash_cmd -m "$marked_message" 2>/dev/null; then
-    return 0
-  else
+  if ! $stash_cmd -m "$marked_message" 2>/dev/null; then
     return 1
+  fi
+
+  # Verify a stash was actually created
+  local stash_count_after
+  stash_count_after=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+
+  if [ "$stash_count_after" -gt "$stash_count_before" ]; then
+    return 0  # Stash was successfully created
+  else
+    return 1  # No stash was created (nothing to stash)
   fi
 }
 
