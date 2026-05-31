@@ -62,7 +62,7 @@ classify_branch_health() {
 
   # Check if branch is behind main (uses get_commits_behind_main from stale-branch.sh)
   get_commits_behind_main "$worktree_path"
-  local behind="$COMMITS_BEHIND_MAIN"
+  local behind="${COMMITS_BEHIND_MAIN:-0}"
 
   # Classification logic (decision tree):
   # 1. Only init commit + behind main → DIVERGENT_NO_WORK (4)
