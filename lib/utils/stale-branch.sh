@@ -17,6 +17,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
 # Source post-merge verification utilities
 if ! source "$RITE_LIB_DIR/utils/post-merge-verify.sh"; then
@@ -183,8 +184,9 @@ _stale_rebase_onto_main() {
   local _stashed=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     print_status "Stashing uncommitted changes before rebase..."
-    git stash push -m "stale-branch: auto-stash before rebase main" 2>/dev/null || true
-    _stashed=true
+    if create_sharkrite_stash "stale-branch: auto-stash before rebase main"; then
+      _stashed=true
+    fi
   fi
 
   print_status "Rebasing branch onto origin/main ($commits_ahead commits ahead, replaying onto fresh main)..."
@@ -275,8 +277,9 @@ _stale_merge_main_legacy() {
   local _stashed=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     print_status "Stashing uncommitted changes before merge..."
-    git stash push -m "stale-branch: auto-stash before merge main" 2>/dev/null || true
-    _stashed=true
+    if create_sharkrite_stash "stale-branch: auto-stash before merge main"; then
+      _stashed=true
+    fi
   fi
 
   local merge_output

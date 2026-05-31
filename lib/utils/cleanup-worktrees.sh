@@ -17,6 +17,8 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
+source "$RITE_LIB_DIR/utils/stash-manager.sh"
+
 set -e
 
 # Colors
@@ -166,8 +168,11 @@ for entry in "${STALE_WORKTREES[@]}"; do
 
     if [ -n "$UNCOMMITTED" ]; then
       print_warning "Found uncommitted changes in $wt_branch"
-      git -C "$wt_path" stash push -m "Auto-stash before worktree cleanup: $wt_branch - $(date +%Y-%m-%d)"
-      print_info "Changes stashed - recover with: git stash list"
+      cd "$wt_path" || continue
+      if create_sharkrite_stash "Auto-stash before worktree cleanup: $wt_branch - $(date +%Y-%m-%d)"; then
+        print_info "Changes stashed - recover with: git stash list"
+      fi
+      cd - > /dev/null || true
     fi
 
     # Remove worktree

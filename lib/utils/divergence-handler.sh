@@ -26,6 +26,9 @@ fi
 # Source post-merge verification
 source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
 
+# Source stash manager
+source "$RITE_LIB_DIR/utils/stash-manager.sh"
+
 # ===================================================================
 # OUTPUT HELPERS (stderr only — stdout reserved for pipe data)
 # ===================================================================
@@ -504,8 +507,9 @@ _do_rebase() {
   # Check for dirty worktree first — git rebase refuses to run with uncommitted changes
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     _div_info "Stashing uncommitted changes before rebase..." >&2
-    git stash push -m "divergence-handler: auto-stash before rebase" 2>/dev/null || true
-    local _stashed=true
+    if create_sharkrite_stash "divergence-handler: auto-stash before rebase"; then
+      local _stashed=true
+    fi
   fi
 
   local _rebase_output

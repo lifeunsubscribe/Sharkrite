@@ -22,6 +22,9 @@ if [ -f "$RITE_LIB_DIR/utils/scratchpad-manager.sh" ]; then
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 fi
 
+# Source stash manager
+source "$RITE_LIB_DIR/utils/stash-manager.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -958,7 +961,7 @@ EOF
   fi
 
   # Pop stash if there are stashed changes (from claude-workflow.sh)
-  if git stash list | grep -q "Auto-stash before claude-workflow.sh"; then
+  if git stash list | grep -q "\[sharkrite-managed-stash\]"; then
     print_status "Restoring stashed changes..."
     if git stash pop; then
       print_success "Stashed changes restored"
@@ -1231,6 +1234,10 @@ EOF
           else
             print_success "Deep clean complete (nothing to prune, kept last 20 archived PRs, ${FINAL_SIZE_KB}KB)"
           fi
+
+          # Cleanup old sharkrite-managed stashes
+          print_status "Cleaning up old sharkrite-managed stashes..."
+          cleanup_sharkrite_stashes "$MAIN_WORKTREE"
 
           # Check HIGH PRIORITY completion status
           print_status "Checking HIGH PRIORITY items completion status..."

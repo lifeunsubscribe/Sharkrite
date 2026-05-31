@@ -29,6 +29,9 @@ source "$RITE_LIB_DIR/utils/session-tracker.sh"
 # Source issue locking utilities (prevents concurrent rite invocations on same issue)
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
+# Source stash manager
+source "$RITE_LIB_DIR/utils/stash-manager.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -1220,7 +1223,7 @@ If the changes are unrelated work, answer UNRELATED."
         cd "$EXISTING_WT_FOR_BRANCH" || exit 1
         STASH_MSG="Auto-stash unrelated changes before issue #$ISSUE_NUMBER ($(date +%Y-%m-%d))"
 
-        if git stash push -m "$STASH_MSG" 2>/dev/null; then
+        if create_sharkrite_stash "$STASH_MSG"; then
           print_success "Changes stashed: $STASH_MSG"
           print_status "Recover later with: git stash list"
           cd - > /dev/null || exit 1
