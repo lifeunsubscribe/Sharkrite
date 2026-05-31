@@ -73,6 +73,13 @@ cleanup_sharkrite_stashes() {
 
   # Get age threshold (default: 7 days)
   local age_days="${RITE_STASH_CLEANUP_AGE_DAYS:-7}"
+
+  # Validate age_days is a positive integer
+  if ! [[ "$age_days" =~ ^[0-9]+$ ]] || [ "$age_days" -le 0 ]; then
+    print_warning "Invalid RITE_STASH_CLEANUP_AGE_DAYS='$age_days', using default 7"
+    age_days=7
+  fi
+
   local age_seconds=$((age_days * 86400))
   local current_epoch
   current_epoch=$(date +%s)
@@ -89,7 +96,9 @@ cleanup_sharkrite_stashes() {
   local cleaned_count=0
   local kept_count=0
 
-  # Process each marked stash
+  # Process each marked stash in REVERSE order to avoid index shifting
+  # When git stash drop removes an entry, all higher indices shift down.
+  # Processing from highest to lowest index ensures refs remain valid.
   while IFS= read -r stash_line; do
     # Extract stash ref (e.g., "stash@{0}")
     local stash_ref
@@ -113,7 +122,7 @@ cleanup_sharkrite_stashes() {
       # Fresh stash — keep it
       kept_count=$((kept_count + 1))
     fi
-  done <<< "$stash_list"
+  done <<< "$(echo "$stash_list" | tac)"
 
   # Report cleanup if verbose or if we cleaned anything
   if [ "$cleaned_count" -gt 0 ]; then
