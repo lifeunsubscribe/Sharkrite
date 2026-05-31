@@ -26,7 +26,9 @@
 #   - Retries: up to RITE_GH_RETRY_MAX (default: 3)
 #   - Backoff: 2^attempt seconds (2s, 4s, 8s)
 #   - Triggers: exit code 1 with stderr containing "429", "rate limit",
-#               "502", "503", "504", or "timeout"
+#               "secondary rate limit", "502", "503", "504", "bad gateway",
+#               "gateway timeout", "service unavailable", "timeout", "EOF",
+#               "i/o timeout", "TLS handshake", "connection reset", "network"
 #   - No-retry: exit 0 (success), or any error WITHOUT those patterns
 #               (e.g., 404 "not found" propagates immediately)
 #
@@ -43,7 +45,15 @@ _GH_RETRY_SOURCED=1
 
 # Maximum retry attempts for transient gh failures.
 # Can be overridden via environment: RITE_GH_RETRY_MAX=5 rite ...
-RITE_GH_RETRY_MAX="${RITE_GH_RETRY_MAX:-3}"
+# Must be a non-negative integer; negative or non-numeric values are clamped to default (3).
+_rite_gh_retry_raw="${RITE_GH_RETRY_MAX:-3}"
+if ! echo "$_rite_gh_retry_raw" | grep -qE '^[0-9]+$'; then
+  echo "gh-retry.sh: RITE_GH_RETRY_MAX='${_rite_gh_retry_raw}' is not a non-negative integer; using default 3" >&2
+  RITE_GH_RETRY_MAX=3
+else
+  RITE_GH_RETRY_MAX="$_rite_gh_retry_raw"
+fi
+unset _rite_gh_retry_raw
 
 # ===========================================================================
 # gh_safe — retry-aware wrapper for the gh CLI
@@ -79,8 +89,9 @@ gh_safe() {
     # Emit stderr so the caller sees what went wrong (or suppresses via 2>/dev/null)
     echo "$_stderr_content" >&2
 
-    # Detect transient patterns: rate limit (429), server errors (5xx), timeouts
-    if echo "$_stderr_content" | grep -qiE '429|rate.?limit|502|503|504|timed? ?out|connection.?reset|network'; then
+    # Detect transient patterns: rate limit (429), server errors (5xx), timeouts,
+    # EOF/i/o errors, TLS failures, and gateway/service errors gh actually emits
+    if echo "$_stderr_content" | grep -qiE '429|rate.?limit|secondary.?rate.?limit|502|503|504|bad.?gateway|gateway.?timeout|service.?unavailable|timed? ?out|i\/o.?timeout|connection.?reset|network|EOF|TLS.?handshake'; then
       _attempt=$((_attempt + 1))
       if [ "$_attempt" -le "$RITE_GH_RETRY_MAX" ]; then
         local _backoff=$(( 2 ** _attempt ))

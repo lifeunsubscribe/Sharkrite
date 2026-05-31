@@ -406,7 +406,12 @@ for file in "${SHELL_FILES[@]}"; do
     # This excludes string literals in prompt text (e.g. "use: gh pr list") since those
     # don't have the $() or leading-whitespace-then-gh invocation structure.
     if echo "$line_content" | grep -qE '(\$\(|`|\|\s*|^\s*)gh (pr|issue|api|repo) '; then
-      if ! echo "$line_content" | grep -qE '\bgh_safe\b'; then
+      # Strip gh_safe occurrences before testing for a remaining bare gh invocation.
+      # This prevents a line with both "gh_safe pr edit" and "gh pr view" from
+      # escaping detection — the gh_safe match would previously satisfy the guard
+      # even though a bare gh call was also present on the same line.
+      _line_stripped=$(echo "$line_content" | sed 's/gh_safe/GH_SAFE_REPLACED/g' || true)
+      if echo "$_line_stripped" | grep -qE '(\$\(|`|\|\s*|^\s*)gh (pr|issue|api|repo) '; then
         print_violation "$file" "$line_num" "GH_CALL_BYPASSES_GH_SAFE" \
           "Bare 'gh (pr|issue|api|repo)' call without gh_safe wrapper — use gh_safe to handle transient API failures"
       fi
