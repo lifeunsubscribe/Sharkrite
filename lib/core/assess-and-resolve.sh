@@ -46,6 +46,12 @@ cleanup() {
   # Note: REVIEW_FILE is kept minimal (only for initial gh pr view)
   # All assessment data flows through variables/pipes (no temp files)
   rm -f /tmp/pr_review_*.txt 2>/dev/null || true
+  # Release follow-up lock on signal (SIGINT/SIGTERM) to avoid leaving it
+  # held for the full 60s acquire-loop timeout on the next run.
+  if [ "${_followup_lock_held:-false}" = "true" ] && [ -n "${PR_NUMBER:-}" ]; then
+    release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+    _followup_lock_held=false
+  fi
   exit $exit_code
 }
 trap cleanup EXIT INT TERM
@@ -1088,8 +1094,10 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   else
     print_warning "Could not acquire follow-up lock for PR #$PR_NUMBER after 60s — another process is still in the critical section."
     print_warning "Skipping follow-up issue creation to prevent duplicates. Re-run assess-and-fix if needed."
-    return 0
+    _skip_followup_creation=true
   fi
+
+  if [ "${_skip_followup_creation:-false}" != "true" ]; then
 
   # Check if issue already exists: prefer source-issue scoped body search, fallback to title search.
   #
@@ -1242,6 +1250,8 @@ This approach allows all fixes to be completed together in a focused PR."
   if [ -n "${FOLLOWUP_NUMBER:-}" ]; then
     print_info "Follow-up issue #$FOLLOWUP_NUMBER created — run \`rite $FOLLOWUP_NUMBER\` separately to address it"
   fi
+
+  fi  # end _skip_followup_creation guard
 fi
 set -e  # Re-enable errexit after follow-up issue creation
 
