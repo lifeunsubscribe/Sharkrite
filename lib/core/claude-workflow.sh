@@ -1170,12 +1170,16 @@ If the changes are unrelated work, answer UNRELATED."
             detect_pr_for_issue "$ISSUE_NUMBER" || true
           fi
 
-          preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"
-
-          # Restart workflow fresh (exec replaces current process, starts from Phase 1 with clean state)
-          # This ensures new worktree is created from current main, not the deleted stale branch
-          print_status "Restarting workflow after empty branch cleanup..."
-          exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
+          if preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"; then
+            # Restart workflow fresh (exec replaces current process, starts from Phase 1 with clean state)
+            # This ensures new worktree is created from current main, not the deleted stale branch
+            print_status "Restarting workflow after empty branch cleanup..."
+            exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
+          else
+            print_error "Auto-recovery cleanup failed — manual intervention required"
+            print_info "Run: rite $ISSUE_NUMBER --undo"
+            exit 1
+          fi
         else
           # Supervised mode: prompt user
           echo ""
@@ -1197,9 +1201,14 @@ If the changes are unrelated work, answer UNRELATED."
                 detect_pr_for_issue "$ISSUE_NUMBER" || true
               fi
 
-              preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"
-              print_status "Restarting workflow after cleanup..."
-              exec "$SCRIPT_PATH" "$ISSUE_NUMBER"
+              if preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"; then
+                print_status "Restarting workflow after cleanup..."
+                exec "$SCRIPT_PATH" "$ISSUE_NUMBER"
+              else
+                print_error "Cleanup failed — manual intervention required"
+                print_info "Run: rite $ISSUE_NUMBER --undo"
+                exit 1
+              fi
               ;;
             2)
               # User chose to continue with empty branch — workflow will proceed to dev phase

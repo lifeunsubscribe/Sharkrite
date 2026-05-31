@@ -5,6 +5,7 @@
 #
 # Exit codes from classify_branch_health:
 #   0  = HEALTHY (proceed to dev work)
+#   1  = ERROR (worktree missing or internal failure)
 #   2  = STALE (has real work but behind main — route to stale-branch handler)
 #   3  = EMPTY_INIT (only init commit, clean tree — auto-recover by restart)
 #   4  = DIVERGENT_NO_WORK (behind main + only init commit — auto-recover)
@@ -162,7 +163,10 @@ preflight_auto_recover_empty() {
     local pr_state
     pr_state=$(gh pr view "$pr_number" --json isDraft,state --jq '.isDraft,.state' 2>/dev/null | paste -sd ',' - || echo "")
 
-    if echo "$pr_state" | grep -q "true"; then
+    # Validate pr_state before checking (protect against paste/gh failures)
+    if [ -z "$pr_state" ] || ! echo "$pr_state" | grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$'; then
+      print_warning "Failed to detect PR state for #$pr_number — skipping PR cleanup"
+    elif echo "$pr_state" | grep -q "true"; then
       # Draft PR — check if it has zero additions (empty)
       local additions
       additions=$(gh pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
