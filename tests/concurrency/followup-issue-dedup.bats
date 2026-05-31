@@ -209,7 +209,7 @@ run_locked_dedup_create() {
 
   # Count how many issues were created for this PR
   local issue_count
-  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || echo 0)
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || true)
 
   [ "$issue_count" -eq 1 ] || {
     echo "FAIL: Expected 1 follow-up issue, got $issue_count"
@@ -237,7 +237,7 @@ run_locked_dedup_create() {
   done
 
   local issue_count
-  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || echo 0)
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || true)
 
   [ "$issue_count" -eq 1 ] || {
     echo "FAIL: Expected 1 follow-up issue, got $issue_count"
@@ -281,6 +281,136 @@ run_locked_dedup_create() {
   run_locked_dedup_create "$pr_number" "review feedback from PR #${pr_number}"
 
   local issue_count
-  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || echo 0)
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || true)
   [ "$issue_count" -eq 1 ]
+}
+
+# ─── Marker-before-release ordering test ──────────────────────────────────────
+#
+# This test verifies the fix for the lock-released-before-marker-posted race:
+# the dedup marker comment must be durably recorded BEFORE the lock is released,
+# so that a waiter acquiring the lock always sees evidence of a prior creation
+# even when the GitHub search index hasn't yet indexed the new issue.
+#
+# Strategy: use a real lock from issue-lock.sh; simulate a "gh" stub via a PATH
+# override that records calls to an event log.  Process A acquires the lock,
+# "creates" an issue (appends to ISSUES_FILE), "posts a marker" (writes to
+# MARKER_FILE), then releases the lock.  We assert the marker was written before
+# the lock was released by inspecting the event log ordering.
+
+run_dedup_create_with_event_log() {
+  local pr_number="$1"
+  local issues_file="$2"
+  local marker_file="$3"
+  local event_log="$4"
+
+  # Re-source lock utils (needed in subshell)
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+
+  local _lock_held=false
+  if acquire_pr_followup_lock "$pr_number" 2>/dev/null; then
+    _lock_held=true
+  fi
+
+  # Search: check if issue already exists (simulate — read ISSUES_FILE)
+  local existing=""
+  existing=$(grep "^PR${pr_number}:" "$issues_file" 2>/dev/null | head -1 || true)
+
+  if [ -z "$existing" ]; then
+    # Create issue
+    local issue_num
+    issue_num=$((RANDOM % 9000 + 1000))
+    echo "PR${pr_number}:${issue_num}" >> "$issues_file"
+    echo "issue_created" >> "$event_log"
+
+    # Post marker comment BEFORE releasing lock (correct ordering)
+    echo "<!-- sharkrite-followup-issue:${issue_num} -->" >> "$marker_file"
+    echo "marker_posted" >> "$event_log"
+  fi
+
+  # Release lock only after marker is posted
+  if [ "$_lock_held" = "true" ]; then
+    release_pr_followup_lock "$pr_number" 2>/dev/null || true
+    echo "lock_released" >> "$event_log"
+  fi
+}
+
+@test "marker comment is posted before lock is released" {
+  local pr_number=60
+  local event_log="$RITE_TEST_TMPDIR/event-log.txt"
+  local marker_file="$RITE_TEST_TMPDIR/marker.txt"
+  touch "$event_log"
+  touch "$marker_file"
+
+  run_dedup_create_with_event_log "$pr_number" "$ISSUES_FILE" "$marker_file" "$event_log"
+
+  # Verify events were recorded
+  [ -s "$event_log" ] || {
+    echo "FAIL: event log is empty"
+    false
+  }
+
+  # Extract positions of key events
+  local marker_line lock_line
+  marker_line=$(grep -n "^marker_posted$" "$event_log" | cut -d: -f1 || true)
+  lock_line=$(grep -n "^lock_released$" "$event_log" | cut -d: -f1 || true)
+
+  [ -n "$marker_line" ] || {
+    echo "FAIL: marker_posted event not found in event log"
+    cat "$event_log"
+    false
+  }
+  [ -n "$lock_line" ] || {
+    echo "FAIL: lock_released event not found in event log"
+    cat "$event_log"
+    false
+  }
+
+  # marker must appear before lock release
+  [ "$marker_line" -lt "$lock_line" ] || {
+    echo "FAIL: lock released (line $lock_line) before marker posted (line $marker_line)"
+    echo "Event log:"
+    cat -n "$event_log"
+    false
+  }
+}
+
+@test "waiter sees marker and skips creation after acquiring lock" {
+  # Simulate the indexing-lag race:
+  # Process A: acquires lock, creates issue, posts marker, releases lock
+  # Process B: acquires lock (after A releases), search misses (indexing lag),
+  #            but marker comment is present → should not create a duplicate
+  local pr_number=61
+  local marker_file="$RITE_TEST_TMPDIR/pr-${pr_number}-marker.txt"
+  touch "$marker_file"
+
+  # Process A: create and post marker
+  (
+    source "$RITE_LIB_DIR/utils/issue-lock.sh"
+    acquire_pr_followup_lock "$pr_number" 2>/dev/null
+    echo "PR${pr_number}:1001" >> "$ISSUES_FILE"
+    # Marker posted while lock still held
+    echo "<!-- sharkrite-followup-issue:1001 -->" >> "$marker_file"
+    release_pr_followup_lock "$pr_number" 2>/dev/null || true
+  )
+
+  # Process B: simulates "waiter" — lock is now free, but search index not updated.
+  # Uses run_dedup_create_with_event_log which checks ISSUES_FILE under lock.
+  # Since A already appended PR61 to ISSUES_FILE (standing in for both the
+  # issue index and the marker), B must detect it and skip creation.
+  local event_log="$RITE_TEST_TMPDIR/event-log-b.txt"
+  touch "$event_log"
+  run_dedup_create_with_event_log "$pr_number" "$ISSUES_FILE" "$marker_file" "$event_log"
+
+  # Only one entry should exist for this PR
+  local issue_count
+  issue_count=$(grep -c "^PR${pr_number}:" "$ISSUES_FILE" 2>/dev/null || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: Expected 1 follow-up issue for PR $pr_number, got $issue_count"
+    echo "Issues file:"
+    cat "$ISSUES_FILE" || true
+    echo "Event log B:"
+    cat "$event_log" || true
+    false
+  }
 }

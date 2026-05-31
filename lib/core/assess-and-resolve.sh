@@ -1183,18 +1183,11 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       rm -f "$FOLLOWUP_BODY_FILE"
       FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_ISSUE" | grep -oE '[0-9]+$' || echo "")
 
-      # Release lock now that the issue is created and visible to waiters
-      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
-      _followup_lock_held=false
-
-      echo ""
-      print_success "✅ Follow-up issue created: #$FOLLOWUP_NUMBER"
-      echo "  URL: $FOLLOWUP_ISSUE"
-      echo "  Type: ${CREATE_SECURITY_DEBT:+Tech Debt}${CREATE_SECURITY_DEBT:-Review Follow-up}"
-      echo "  Items: NOW=${ACTIONABLE_NOW_COUNT:-0}, LATER=${ACTIONABLE_LATER_COUNT:-0} (total in issue)"
-      echo ""
-
-      # Comment on PR with link to follow-up (includes machine-readable marker for workflow detection)
+      # Post the machine-readable marker comment BEFORE releasing the lock.
+      # Waiters use this comment as durable evidence that an issue was created
+      # (to handle GitHub search-index lag).  Releasing the lock first creates a
+      # window where a waiter sees neither the unindexed issue nor the marker,
+      # bypasses the retry guard, and creates a duplicate.
       COMMENT_BODY="<!-- sharkrite-followup-issue:$FOLLOWUP_NUMBER -->
 📋 **Consolidated follow-up issue created:** #$FOLLOWUP_NUMBER
 
@@ -1209,6 +1202,17 @@ This approach allows all fixes to be completed together in a focused PR."
       printf '%s' "$COMMENT_BODY" > "$COMMENT_BODY_FILE"
       gh pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null || true
       rm -f "$COMMENT_BODY_FILE"
+
+      # Release lock only after the marker comment is durably posted
+      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+      _followup_lock_held=false
+
+      echo ""
+      print_success "✅ Follow-up issue created: #$FOLLOWUP_NUMBER"
+      echo "  URL: $FOLLOWUP_ISSUE"
+      echo "  Type: ${CREATE_SECURITY_DEBT:+Tech Debt}${CREATE_SECURITY_DEBT:-Review Follow-up}"
+      echo "  Items: NOW=${ACTIONABLE_NOW_COUNT:-0}, LATER=${ACTIONABLE_LATER_COUNT:-0} (total in issue)"
+      echo ""
     else
       rm -f "$FOLLOWUP_BODY_FILE"
       # Release lock on failure too — don't leave waiters stuck
