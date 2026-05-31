@@ -1459,8 +1459,7 @@ EOF
         fi
 
         # Clean up old backups (keep last 5).
-        # Use find -print0 + xargs -0 to handle any filename safely.
-        # Sort by name (backup suffix is epoch seconds, so lexicographic sort == chronological).
+        # Use ls -t (mtime sort, newest first) so the 6th+ entries are the oldest backups.
         SCRATCHPAD_DIR=$(dirname "$SCRATCHPAD_FILE")
         SCRATCHPAD_BASENAME=$(basename "$SCRATCHPAD_FILE")
         # shellcheck disable=SC2012
