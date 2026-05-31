@@ -35,6 +35,9 @@ source "$RITE_LIB_DIR/utils/issue-lock.sh"
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -1585,7 +1588,11 @@ If the changes are unrelated work, answer UNRELATED."
     # Fetch latest main so new branches start from current remote state
     # Critical for batch mode: after issue N merges, issue N+1 must branch from updated main
     print_status "Fetching latest origin/main..."
-    git fetch origin main 2>/dev/null || print_warning "Failed to fetch origin/main - using local state"
+    if ! git_fetch_safe origin main; then
+      print_error "Cannot fetch origin/main — new worktree would branch from stale data"
+      print_info "Check network connectivity and retry"
+      exit 1
+    fi
 
     # Check if this issue has an existing PR with remote branch
     # This prevents recreating work when resuming after worktree cleanup
@@ -1666,11 +1673,11 @@ If the changes are unrelated work, answer UNRELATED."
           print_info "Remote branch exists — recreating worktree from origin/$BRANCH_NAME"
         fi
 
-        # Fetch the remote branch
-        git fetch origin "$BRANCH_NAME" 2>/dev/null || {
-          print_error "Failed to fetch origin/$BRANCH_NAME"
+        # Fetch the remote branch (git_fetch_safe: 3 retries with backoff, fails loudly)
+        if ! git_fetch_safe origin "$BRANCH_NAME"; then
+          print_error "Failed to fetch origin/$BRANCH_NAME after retries"
           exit 1
-        }
+        fi
 
         # Create worktree from remote branch (no -b flag, branch already exists on remote)
         if ! git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1; then
@@ -1850,7 +1857,8 @@ done
 # merge to main while later issues are still working on stale branches.
 # New branches (just created from origin/main) will show 0 behind — this is a no-op for them.
 if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
-  git fetch origin main 2>/dev/null || true
+  # Fetch with retries — reading origin/main immediately after; stale data = wrong behind-count
+  git_fetch_safe origin main || true
   if git rev-parse --verify origin/main >/dev/null 2>&1; then
     BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
     if [ "$BEHIND_COUNT" -gt 0 ]; then
@@ -1949,7 +1957,8 @@ else
     # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
     # Force push instead of delete+recreate — delete closes any linked PR.
     print_warning "Remote branch diverged — force pushing to sync"
-    git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+    # Fetch with retries to update the lease ref — stale lease = force-with-lease refuses the push
+    git_fetch_safe origin "$BRANCH_NAME" || true
     git push -u --force-with-lease origin "$BRANCH_NAME" >/dev/null 2>&1 || \
       git push -u --force origin "$BRANCH_NAME" >/dev/null 2>&1 || true
   fi

@@ -18,6 +18,9 @@ fi
 
 source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 
+# Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
+
 # =============================================================================
 # PARSE ARGUMENTS
 # =============================================================================
@@ -262,12 +265,17 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
   # IMPORTANT: Use origin/main (not local main) — local main may be behind after
   # batch merges that updated remote but never fast-forwarded the local ref.
   if [ -n "$BRANCH_NAME" ]; then
-    git fetch origin main 2>/dev/null || true
-    if git push origin "origin/main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
+    # Fetch with retries — pushing origin/main:refs/heads/$BRANCH_NAME uses the fetched ref;
+    # stale data = resetting to wrong SHA (branch not actually cleaned up)
+    if ! git_fetch_safe origin main; then
+      print_warning "Failed to fetch origin/main — cannot reset remote branch"
+      UNDO_ERRORS=$((UNDO_ERRORS + 1))
+    elif git push origin "origin/main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
       print_success "Reset remote branch to origin/main (clean slate)"
       # Update local tracking ref so next run sees the reset (avoids stale origin/branch
       # causing non-fast-forward push → branch deletion → PR closure → new PR)
-      git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+      # Best-effort: if this fetch fails, the tracking ref stays stale but undo still succeeded
+      git_fetch_safe origin "$BRANCH_NAME" || true
     else
       print_warning "Failed to reset remote branch"
       UNDO_ERRORS=$((UNDO_ERRORS + 1))

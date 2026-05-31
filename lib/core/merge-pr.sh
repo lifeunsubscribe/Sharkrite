@@ -28,6 +28,9 @@ fi
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -437,9 +440,11 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
   if [ "$PR_MERGEABLE" = "CONFLICTING" ]; then
     # Always attempt to auto-resolve by merging main into the feature branch
     print_info "Attempting to merge main into feature branch to resolve conflicts..."
-    git fetch origin main 2>/dev/null || true
-
-    if git merge origin/main --no-edit 2>/dev/null; then
+    # Fetch with retries — reading origin/main immediately after; stale data = wrong conflict state
+    if ! git_fetch_safe origin main; then
+      print_error "Cannot resolve conflicts: failed to fetch fresh main ref"
+      VALIDATION_FAILED=true
+    elif git merge origin/main --no-edit 2>/dev/null; then
       if git push origin "$PR_HEAD" 2>/dev/null; then
         print_success "Merged main into branch and pushed — re-checking mergeable state"
         # Give GitHub a moment to update mergeable state
@@ -692,8 +697,10 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
   # Handle "not mergeable" — branch may be behind main; try updating and retry once
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable|405"; then
     print_warning "PR is not mergeable — attempting branch update against main"
-    git fetch origin main 2>/dev/null || true
-    if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+    # Fetch with retries — reading origin/main immediately after; stale data = wrong merge base
+    if ! git_fetch_safe origin main; then
+      print_error "Cannot update branch: failed to fetch fresh main ref"
+    elif git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
       print_status "Branch updated — retrying merge..."
       sleep 3
       EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
@@ -714,8 +721,10 @@ else
   # Handle "not mergeable" in fallback path — branch may be behind main
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
     print_warning "PR is not mergeable — attempting branch update against main"
-    git fetch origin main 2>/dev/null || true
-    if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+    # Fetch with retries — reading origin/main immediately after; stale data = wrong merge base
+    if ! git_fetch_safe origin main; then
+      print_error "Cannot update branch: failed to fetch fresh main ref"
+    elif git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
       print_status "Branch updated — retrying merge..."
       sleep 3
       _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
