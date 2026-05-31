@@ -911,10 +911,16 @@ Changes made via automated workflow (rite --fix-review mode)."
 
     _div_branch=$(git branch --show-current)
     if detect_divergence "$_div_branch"; then
-      handle_push_divergence "$_div_branch" "${ISSUE_NUMBER:-}" "${FIX_PR_NUMBER:-}" "$AUTO_MODE" || {
+      _div_result=0
+      handle_push_divergence "$_div_branch" "${ISSUE_NUMBER:-}" "${FIX_PR_NUMBER:-}" "$AUTO_MODE" || _div_result=$?
+      if [ "$_div_result" -eq 5 ]; then
+        # Usage cap reached — propagate so batch can abort cleanly
+        print_error "Claude usage cap reached during fix-review push divergence — aborting batch"
+        exit 5
+      elif [ "$_div_result" -ne 0 ]; then
         print_error "Could not resolve divergence during fix-review push"
         exit 1
-      }
+      fi
     else
       print_error "Push failed (not a divergence issue)"
       exit 1
@@ -2539,10 +2545,16 @@ if ! git push -u origin "$BRANCH_NAME" >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/divergence-handler.sh"
 
   if detect_divergence "$BRANCH_NAME"; then
-    handle_push_divergence "$BRANCH_NAME" "${ISSUE_NUMBER:-}" "" "$AUTO_MODE" || {
+    _postdev_div_result=0
+    handle_push_divergence "$BRANCH_NAME" "${ISSUE_NUMBER:-}" "" "$AUTO_MODE" || _postdev_div_result=$?
+    if [ "$_postdev_div_result" -eq 5 ]; then
+      # Usage cap reached — propagate so batch can abort cleanly
+      print_error "Claude usage cap reached during post-dev push divergence — aborting batch"
+      exit 5
+    elif [ "$_postdev_div_result" -ne 0 ]; then
       print_error "Could not resolve divergence during post-dev push"
       exit 1
-    }
+    fi
   else
     print_error "Push failed (not a divergence issue)"
     exit 1
