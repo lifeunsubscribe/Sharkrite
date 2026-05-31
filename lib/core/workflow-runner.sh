@@ -1861,12 +1861,17 @@ run_workflow() {
 
   # Phase 0: Pre-start checks.
   # Always run when not skipping at all.
-  # Also force-run when resuming from a saved blocker that requires re-validation
-  # (e.g. credentials_expired): skip_to_phase reflects PR/review state, NOT whether
-  # the original blocker has been resolved, so we must re-check before proceeding.
+  # Also force-run when resuming from a saved blocker that requires re-validation:
+  # skip_to_phase reflects PR/review state, NOT whether the original blocker has
+  # been resolved, so we must re-check before proceeding.
+  # Reasons that actually get persisted by save_session_state_with_phase:
+  #   credentials_expired — AWS creds invalid at pre-merge
+  #   test_failures       — test suite failed during dev or fix phase
+  #   session_limit       — token/time limit reached
+  # (interrupted is set by the INT/TERM trap and does NOT require a pre-start re-check)
   local _force_prestart=false
   case "${RESUME_BLOCKER_REASON:-}" in
-    credentials_expired|test_env|missing_tool)
+    credentials_expired|test_failures|session_limit)
       _force_prestart=true
       ;;
   esac
