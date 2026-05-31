@@ -1030,49 +1030,10 @@ EOF
         SCRATCHPAD_BACKUP="${SCRATCHPAD_FILE}.backup-$(date +%s)"
         cp "$SCRATCHPAD_FILE" "$SCRATCHPAD_BACKUP"
 
-        # Use file locking to prevent concurrent modification (portable: flock on Linux, mkdir on macOS)
+        # Acquire scratchpad lock via shared module (atomic PID write, hard timeout)
+        # acquire_scratchpad_lock exits 1 on timeout — never proceeds without lock
+        acquire_scratchpad_lock
         LOCKFILE="${SCRATCHPAD_FILE}.lock"
-        if command -v flock >/dev/null 2>&1; then
-          exec 200>"$LOCKFILE"
-          if ! flock -n 200; then
-            print_warning "Scratchpad locked by another process, waiting..."
-            flock 200  # Wait for lock
-          fi
-        else
-          # Clean up leftover flock-style lock file (regular file, not directory).
-          # flock creates a regular file; mkdir lock uses a directory. If flock was
-          # previously available but isn't now, the stale file blocks mkdir forever.
-          if [ -f "$LOCKFILE" ]; then
-            rm -f "$LOCKFILE"
-          fi
-          lock_attempts=0
-          while ! mkdir "$LOCKFILE" 2>/dev/null; do
-            # Check if the holding process is still alive
-            if [ -f "$LOCKFILE/pid" ]; then
-              lock_pid=$(cat "$LOCKFILE/pid" 2>/dev/null || echo "")
-              if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-                # Holding process is dead — reclaim stale lock
-                rm -rf "$LOCKFILE" 2>/dev/null
-                continue
-              fi
-            else
-              # Lock dir exists but no PID file — crashed between mkdir and PID write
-              rm -rf "$LOCKFILE" 2>/dev/null
-              continue
-            fi
-            if [ $lock_attempts -eq 0 ]; then
-              print_warning "Scratchpad locked by another process, waiting..."
-            fi
-            lock_attempts=$((lock_attempts + 1))
-            if [ $lock_attempts -ge 30 ]; then
-              print_warning "Lock timeout, proceeding anyway"
-              break
-            fi
-            sleep 1
-          done
-          # Write our PID so other processes can check liveness
-          echo $$ > "$LOCKFILE/pid" 2>/dev/null || true
-        fi
 
         # Create temp file for cleaned scratchpad
         TEMP_SCRATCH=$(mktemp)
@@ -1485,14 +1446,8 @@ EOF
         fi
       fi
 
-      # Release file lock (defensive: LOCKFILE may be unset if no scratchpad work occurred)
-        if command -v flock >/dev/null 2>&1; then
-          flock -u 200 2>/dev/null || true
-          exec 200>&-
-        else
-          rm -f "${LOCKFILE:-}/pid" 2>/dev/null || true
-          rmdir "${LOCKFILE:-}" 2>/dev/null || true
-        fi
+      # Release scratchpad lock via shared module (safe to call even if no scratchpad work occurred)
+        release_scratchpad_lock
 
         # Clean up old backups (keep last 5).
         # Use ls -t (mtime sort, newest first) so the 6th+ entries are the oldest backups.

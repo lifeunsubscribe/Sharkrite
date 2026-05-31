@@ -32,6 +32,9 @@ source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 # Source issue locking utilities (prevents concurrent rite invocations on same issue)
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
+# Source scratchpad lock utilities (serialises concurrent scratchpad writes)
+source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
@@ -2035,14 +2038,16 @@ SECURITY_CONTEXT=""
 if [ -f "$SCRATCHPAD_FILE" ]; then
   print_status "Loading recent security findings from scratchpad..."
 
-  # Extract "Recent Security Findings" section
+  # Read-only access — no lock needed for reading
   SECURITY_CONTEXT=$(sed -n '/## Recent Security Findings/,/## /p' "$SCRATCHPAD_FILE" | sed '1d;$d' || echo "")
 
   if [ -n "$SECURITY_CONTEXT" ]; then
     print_success "Loaded security context from last 5 PRs"
   fi
 
-  # Update "Current Work" section
+  # Update "Current Work" section — acquire lock for write
+  acquire_scratchpad_lock
+  _setup_scratchpad_lock_trap
   TEMP_SCRATCH=$(mktemp)
   if grep -q "## Current Work" "$SCRATCHPAD_FILE"; then
     # Update existing section
@@ -2056,9 +2061,11 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
 " "$TEMP_SCRATCH"
     mv "$TEMP_SCRATCH" "$SCRATCHPAD_FILE"
   else
+    rm -f "$TEMP_SCRATCH"
     # Add section if missing
     echo -e "\n## Current Work\n\n**Issue:** #${ISSUE_NUMBER:-unknown}\n**Description:** ${ISSUE_DESC}\n**Branch:** ${BRANCH_NAME:-$CURRENT_BRANCH}\n**Started:** $(date '+%Y-%m-%d %H:%M:%S')\n" >> "$SCRATCHPAD_FILE"
   fi
+  release_scratchpad_lock
 fi
 
 SECURITY_PROMPT=""

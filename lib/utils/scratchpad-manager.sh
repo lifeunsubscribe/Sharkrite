@@ -15,6 +15,15 @@ if [ -n "${RITE_LIB_DIR:-}" ] && [ -f "$RITE_LIB_DIR/utils/labels.sh" ]; then
   source "$RITE_LIB_DIR/utils/labels.sh"
 fi
 
+# Source scratchpad lock utilities if not already loaded
+# All writer functions below acquire the lock before modifying SCRATCHPAD_FILE.
+# trap 'release_scratchpad_lock' RETURN fires when the function returns (normal,
+# error, or early return), ensuring the lock is always released.
+_SCRATCHPAD_MANAGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
+  source "$_SCRATCHPAD_MANAGER_DIR/scratchpad-lock.sh"
+fi
+
 # Update scratchpad with security findings from PR review
 update_scratchpad_from_pr() {
   local pr_number="$1"
@@ -23,6 +32,9 @@ update_scratchpad_from_pr() {
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
     return 0
   fi
+
+  acquire_scratchpad_lock
+  trap 'release_scratchpad_lock' RETURN
 
   echo "Updating scratchpad with PR #$pr_number findings..."
 
@@ -121,6 +133,9 @@ clear_current_work() {
     return 0
   fi
 
+  acquire_scratchpad_lock
+  trap 'release_scratchpad_lock' RETURN
+
   echo "Clearing Current Work section..."
 
   local temp_file=$(mktemp)
@@ -208,6 +223,9 @@ log_encountered_issue() {
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
     return 0
   fi
+
+  acquire_scratchpad_lock
+  trap 'release_scratchpad_lock' RETURN
 
   # Validate category
   case "$category" in
@@ -467,6 +485,9 @@ clear_encountered_issues() {
   if ! grep -q "## Encountered Issues" "$SCRATCHPAD_FILE"; then
     return 0
   fi
+
+  acquire_scratchpad_lock
+  trap 'release_scratchpad_lock' RETURN
 
   echo "Clearing Encountered Issues section..."
 
