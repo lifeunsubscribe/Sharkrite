@@ -1453,7 +1453,7 @@ If the changes are unrelated work, answer UNRELATED."
           [ "$UNCOMMITTED" -gt 0 ] && continue
 
           # Check if branch is merged (not on remote anymore)
-          if ! git ls-remote --heads origin "$WT_BRANCH" | grep -q "$WT_BRANCH" 2>/dev/null; then
+          if ! git ls-remote --heads origin "$WT_BRANCH" 2>/dev/null | grep -q "$WT_BRANCH"; then
             print_status "Cleaning merged worktree: $WT_BRANCH"
             git worktree remove "$wt_path" 2>/dev/null || true
             git branch -d "$WT_BRANCH" 2>/dev/null || true
@@ -1601,7 +1601,7 @@ If the changes are unrelated work, answer UNRELATED."
     fi
 
     # Also check if remote branch exists directly (even without PR)
-    if git ls-remote --heads origin "$BRANCH_NAME" | grep -q "$BRANCH_NAME" 2>/dev/null; then
+    if git ls-remote --heads origin "$BRANCH_NAME" 2>/dev/null | grep -q "$BRANCH_NAME"; then
       _has_remote_branch=true
     fi
 
