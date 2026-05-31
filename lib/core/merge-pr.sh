@@ -255,7 +255,14 @@ ANALYSIS_EOF
   # Call Claude Code for analysis
   CLAUDE_ERROR=$(mktemp)
   TEMP_FILES+=("$CLAUDE_ERROR")
-  SECURITY_ANALYSIS=$(provider_run_uncached "$(cat "$ANALYSIS_TEMP")" "$CLAUDE_ERROR" || echo "")
+  _uncached_exit=0
+  SECURITY_ANALYSIS=$(provider_run_uncached "$(cat "$ANALYSIS_TEMP")" "$CLAUDE_ERROR") || _uncached_exit=$?
+
+  if [ "${_uncached_exit}" -eq 124 ]; then
+    print_warning "Claude call timed out after ${RITE_CLAUDE_TIMEOUT_AGENTIC:-1800}s — retrying or aborting"
+    print_warning "Claude analysis timed out, skipping auto-update"
+    return 0
+  fi
 
   if [ -s "$CLAUDE_ERROR" ]; then
     print_warning "Claude CLI error: $(cat "$CLAUDE_ERROR" | head -1)"
@@ -304,7 +311,16 @@ UPDATE_EOF
 
   CLAUDE_ERROR2=$(mktemp)
   TEMP_FILES+=("$CLAUDE_ERROR2")
-  UPDATED_GUIDE=$(provider_run_uncached "$(cat "$UPDATE_TEMP")" "$CLAUDE_ERROR2" || echo "")
+  _uncached_exit2=0
+  UPDATED_GUIDE=$(provider_run_uncached "$(cat "$UPDATE_TEMP")" "$CLAUDE_ERROR2") || _uncached_exit2=$?
+
+  if [ "${_uncached_exit2}" -eq 124 ]; then
+    print_warning "Claude call timed out after ${RITE_CLAUDE_TIMEOUT_AGENTIC:-1800}s — retrying or aborting"
+    print_warning "Auto-update timed out, saving analysis for manual review"
+    echo "$SECURITY_ANALYSIS" > /tmp/security-guide-updates-pr${pr_number}.txt
+    print_info "Analysis saved to: /tmp/security-guide-updates-pr${pr_number}.txt"
+    return 0
+  fi
 
   if [ -s "$CLAUDE_ERROR2" ]; then
     print_warning "Claude CLI error: $(cat "$CLAUDE_ERROR2" | head -1)"

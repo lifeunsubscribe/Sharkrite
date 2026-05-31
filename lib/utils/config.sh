@@ -166,6 +166,12 @@ SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT
 # Sharkrite timeout (seconds, default 2 hours)
 RITE_CLAUDE_TIMEOUT="${RITE_CLAUDE_TIMEOUT:-7200}"
 
+# Per-call provider timeouts (seconds)
+# Prompt/classify calls: short, single-turn responses
+RITE_CLAUDE_TIMEOUT_PROMPT="${RITE_CLAUDE_TIMEOUT_PROMPT:-600}"
+# Streaming/uncached agentic calls: long-form generation
+RITE_CLAUDE_TIMEOUT_AGENTIC="${RITE_CLAUDE_TIMEOUT_AGENTIC:-1800}"
+
 # Claude model for development sessions (alias without date = always latest snapshot)
 RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}"
 
@@ -258,6 +264,8 @@ export RITE_LOCK_DIR
 export RITE_STATE_DIR
 export SESSION_STATE_FILE
 export RITE_CLAUDE_TIMEOUT
+export RITE_CLAUDE_TIMEOUT_PROMPT
+export RITE_CLAUDE_TIMEOUT_AGENTIC
 export RITE_CLAUDE_MODEL
 export RITE_REVIEW_MODEL
 export RITE_DEV_PROVIDER
