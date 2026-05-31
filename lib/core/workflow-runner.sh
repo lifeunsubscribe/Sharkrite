@@ -1738,8 +1738,10 @@ run_workflow() {
     stale_result=$?
     set -e
 
-    if [ $stale_result -eq 10 ]; then
-      # Restarted fresh — clear all resume state so workflow falls through
+    if [ $stale_result -eq 11 ]; then
+      # Exit 11: stale-branch restarted fresh — clear all resume state so the
+      # workflow falls through to phase 1 with a clean slate.
+      # (Distinct from exit 10 = batch-level blocker-detected. See docs/architecture/exit-codes.md)
       PR_NUMBER=""
       CURRENT_PR=""
       WORKTREE_PATH=""
