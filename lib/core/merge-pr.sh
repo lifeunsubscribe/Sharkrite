@@ -723,6 +723,15 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
 
   print_success "PR #$PR_NUMBER merged into $PR_BASE"
 
+  # Merge succeeded — now run cleanup phase. If cleanup crashes, exit with code 6
+  # (not code 1) so batch reporter can distinguish "merge failed" from "merge succeeded
+  # but cleanup failed". Turn off set -e so cleanup errors don't immediately exit.
+  set +e
+  CLEANUP_FAILED=false
+
+  # Trap errors during cleanup phase to set CLEANUP_FAILED flag
+  trap 'CLEANUP_FAILED=true' ERR
+
   # Start doc assessment in the background (runs concurrently with tech-debt, cleanup)
   _DOC_PID=""
   _DOC_LOG=$(mktemp)
@@ -1485,6 +1494,14 @@ EOF
 
   echo "PR URL: $PR_URL"
   echo ""
+
+  # Check if cleanup failed — if so, exit with code 6 (not 0) so the batch reporter
+  # can distinguish "merge succeeded but cleanup crashed" from "everything succeeded"
+  if [ "$CLEANUP_FAILED" = true ]; then
+    print_warning "PR merged successfully, but post-merge cleanup encountered errors"
+    print_info "Work is on remote (PR #$PR_NUMBER merged to $PR_BASE)"
+    exit 6
+  fi
 
   exit 0
 else

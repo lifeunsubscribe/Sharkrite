@@ -1374,7 +1374,12 @@ phase_merge_pr() {
 
   local merge_result=$?
 
-  if [ $merge_result -ne 0 ]; then
+  if [ $merge_result -eq 6 ]; then
+    # Merge succeeded but cleanup failed — return 6 so batch reporter knows work landed
+    print_warning "Merge succeeded but cleanup encountered errors"
+    return 6
+  elif [ $merge_result -ne 0 ]; then
+    # Merge actually failed — no work on remote
     print_error "Merge failed"
     return 1
   fi
@@ -1937,7 +1942,16 @@ run_workflow() {
     CURRENT_PHASE="merge"
     skip_to_phase=""
     _timer_start "phase4_merge"
-    if ! phase_merge_pr "$issue_number" "$PR_NUMBER"; then
+    phase_merge_pr "$issue_number" "$PR_NUMBER"
+    merge_exit=$?
+    if [ $merge_exit -eq 6 ]; then
+      # Merge succeeded but cleanup failed — propagate exit 6
+      _timer_end "phase4_merge"
+      _diag "PHASE_FAILED issue=${issue_number} phase=merge-cleanup"
+      print_warning "Merge succeeded but cleanup failed"
+      return 6
+    elif [ $merge_exit -ne 0 ]; then
+      # Merge actually failed
       _timer_end "phase4_merge"
       _diag "PHASE_FAILED issue=${issue_number} phase=merge"
       print_error "Merge phase failed"
@@ -2079,8 +2093,14 @@ main() {
   fi
 
   # Run the workflow
-  if run_workflow "$issue_number"; then
+  run_workflow "$issue_number"
+  workflow_exit=$?
+
+  if [ $workflow_exit -eq 0 ]; then
     exit 0
+  elif [ $workflow_exit -eq 6 ]; then
+    # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
+    exit 6
   else
     print_error "Workflow failed"
     exit 1
