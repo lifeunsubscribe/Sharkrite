@@ -24,11 +24,6 @@ setup() {
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
   export RITE_WORKTREE_DIR="$RITE_PROJECT_ROOT/.rite/worktrees"
 
-  # Skip post-merge test suite — fixture repos have no test runner.
-  # verify_post_merge returns 0 (no runner found) without this, but setting
-  # explicitly guards against future changes to the detection logic.
-  export RITE_SKIP_TESTS=true
-
   mkdir -p "$RITE_WORKTREE_DIR"
 
   cd "$FIXTURE_REPO"
@@ -245,18 +240,25 @@ teardown() {
 # =============================================================================
 
 @test "force-with-lease rejected when remote is updated concurrently" {
-  # Test: The safety property of --force-with-lease.
-  #       After a local rebase rewrites history, we simulate a concurrent push to
-  #       the same remote branch (e.g., by another process or CI bot). When
-  #       _stale_rebase_onto_main tries to force-push, --force-with-lease must
-  #       REJECT it because the remote's HEAD no longer matches the pre-rebase SHA.
+  # Test: The safety property of --force-with-lease, exercised through
+  #       _stale_rebase_onto_main (the actual function under test).
+  #
+  # Scenario:
+  #   1. Feature branch is pushed to origin.
+  #   2. A concurrent client pushes a new commit to the same remote branch,
+  #      advancing the remote tip.
+  #   3. The worktree's tracking ref is NOT updated (no fetch) — it still
+  #      points to the original SHA our branch was pushed at.
+  #   4. main diverges, so _stale_rebase_onto_main will attempt a rebase+push.
+  #   5. _stale_rebase_onto_main calls `git push --force-with-lease`.
+  #      The lease check compares the local tracking ref (original SHA) against
+  #      the actual remote tip (concurrent SHA) — they differ → push rejected.
+  #   6. Function must return non-zero (exit 1 from the rejection branch at
+  #      stale-branch.sh:246).
   #
   # Without --force-with-lease (plain --force), the concurrent push would be
-  # silently overwritten. This test verifies the rejection behavior.
-  #
-  # Implementation: We intercept the push by adding a concurrent commit to the
-  # remote branch AFTER local rebase has completed but BEFORE the push. We do
-  # this by wrapping git in PATH to inject the extra commit at push time.
+  # silently overwritten. Catching a regression to --force is the entire point
+  # of this test.
 
   local branch_name="fix/force-lease-reject-test"
   git checkout -b "$branch_name" main >/dev/null 2>&1
@@ -265,31 +267,14 @@ teardown() {
   git commit -m "Feature work" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Record the SHA that was pushed (what --force-with-lease expects as remote tip)
+  # Record the original remote SHA — this is what the worktree's tracking ref
+  # will point to after the concurrent push (because we never fetch).
   local original_remote_sha
   original_remote_sha=$(git rev-parse "origin/$branch_name")
 
-  # Diverge main so rebase is needed
-  git checkout main >/dev/null 2>&1
-  echo "main work" > main-lease.txt
-  git add main-lease.txt
-  git commit -m "Main divergence" >/dev/null 2>&1
-  git push origin main >/dev/null 2>&1
-
-  # Create worktree for the feature branch
-  local worktree_path="$RITE_WORKTREE_DIR/issue-force-lease-reject"
-  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
-
-  # Perform the rebase manually to get a rebased state (mirrors what
-  # _stale_rebase_onto_main does internally before push)
-  git -C "$worktree_path" rebase origin/main >/dev/null 2>&1
-
-  # Simulate a concurrent push: advance the remote branch tip BEFORE the
-  # force-push from _stale_rebase_onto_main. A second client pushes a new
-  # commit, making the remote tip differ from what our local rebase expects.
-  #
-  # We do this directly against the bare remote (BARE_REMOTE) since we have
-  # filesystem access in tests — equivalent to another process running `git push`.
+  # Simulate a concurrent push NOW — before main diverges and before the worktree
+  # is created. The worktree will be created from the local branch which still has
+  # the old tracking ref, so --force-with-lease will see the mismatch.
   local concurrent_work_dir="$RITE_TEST_TMPDIR/concurrent-client"
   git clone "$BARE_REMOTE" "$concurrent_work_dir" >/dev/null 2>&1
   git -C "$concurrent_work_dir" config user.email "concurrent@example.com" >/dev/null 2>&1
@@ -300,23 +285,39 @@ teardown() {
   git -C "$concurrent_work_dir" commit -m "Concurrent commit (simulates racing push)" >/dev/null 2>&1
   git -C "$concurrent_work_dir" push origin "$branch_name" >/dev/null 2>&1
 
-  # The remote tip has now advanced past what our rebased branch expects.
-  # A plain `git push --force` would overwrite it; --force-with-lease must reject.
-  local new_remote_sha
-  new_remote_sha=$(git -C "$worktree_path" ls-remote origin "refs/heads/$branch_name" | awk '{print $1}')
-  [ "$original_remote_sha" != "$new_remote_sha" ]  # Confirm concurrent push landed
+  # Verify concurrent push landed (sanity check before proceeding)
+  local concurrent_remote_sha
+  concurrent_remote_sha=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
+  [ "$original_remote_sha" != "$concurrent_remote_sha" ]
 
-  # Attempt the force-with-lease push directly — this is the exact command
-  # _stale_rebase_onto_main runs at stale-branch.sh:241
-  run git -C "$worktree_path" push --force-with-lease origin "$branch_name"
+  # Diverge main so _stale_rebase_onto_main has work to do
+  git checkout main >/dev/null 2>&1
+  echo "main work" > main-lease.txt
+  git add main-lease.txt
+  git commit -m "Main divergence" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
 
-  # Must be rejected (non-zero exit) because remote tip advanced concurrently
+  # Create worktree from the local feature branch (tracking ref still points to
+  # original_remote_sha — the worktree inherits the main repo's stale ref)
+  local worktree_path="$RITE_WORKTREE_DIR/issue-force-lease-reject"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Drive the rebase+push through the actual function under test.
+  # _stale_rebase_onto_main will:
+  #   1. Rebase the feature branch onto origin/main (rewrites history)
+  #   2. Attempt git push --force-with-lease origin <branch>
+  #   3. Lease fails: local tracking ref = original_remote_sha,
+  #      remote tip = concurrent_remote_sha → git rejects the push
+  #   4. Function returns 1 (stale-branch.sh:246 rejection branch)
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
+
+  # Must return non-zero — the force-with-lease rejection path was hit
   [ "$status" -ne 0 ]
 
   # The concurrent commit must still exist on remote (not overwritten)
   local remote_tip_after
-  remote_tip_after=$(git -C "$worktree_path" ls-remote origin "refs/heads/$branch_name" | awk '{print $1}')
-  [ "$new_remote_sha" = "$remote_tip_after" ]
+  remote_tip_after=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
+  [ "$concurrent_remote_sha" = "$remote_tip_after" ]
 
   # Clean up
   cd "$FIXTURE_REPO"
