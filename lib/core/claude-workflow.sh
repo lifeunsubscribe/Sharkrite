@@ -965,24 +965,31 @@ find_worktree_for_task() {
 
       # Try to find PR linked to this issue (searches body for "Closes #XX" pattern)
       # NOTE: GitHub search doesn't support exact pattern matching, so we fetch all PRs and filter
-      pr_branch=$(gh pr list --state all --json headRefName,body --limit 100 2>/dev/null | \
-        jq --arg issue "$task" -r '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .headRefName' | \
-        head -1)
+      # sort_by: OPEN state preferred (1 > 0), then highest number wins among ties.
+      # This is deterministic when both a closed and an open PR reference the same issue.
+      pr_branch=$(gh pr list --state all --json headRefName,body,number,state --limit 100 2>/dev/null | \
+        jq --arg issue "$task" -r \
+        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] |
+        sort_by([if .state == "OPEN" then 1 else 0 end, .number]) | last | .headRefName // empty')
 
       # If no PR found by issue link, try title matching
       if [ -z "$pr_branch" ] || [ "$pr_branch" = "null" ]; then
         if [ -n "$issue_title" ] && [ "$issue_title" != "null" ]; then
-          pr_branch=$(gh pr list --json headRefName,title --limit 50 2>/dev/null | \
-            jq --arg title "$issue_title" -r '.[] | select(.title | ascii_downcase | contains($title | ascii_downcase)) | .headRefName' | \
-            head -1)
+          # Prefer OPEN, then highest number for determinism across duplicates
+          pr_branch=$(gh pr list --json headRefName,title,number,state --limit 50 2>/dev/null | \
+            jq --arg title "$issue_title" -r \
+            '[.[] | select(.title | ascii_downcase | contains($title | ascii_downcase))] |
+            sort_by([if .state == "OPEN" then 1 else 0 end, .number]) | last | .headRefName // empty')
         fi
       fi
     fi
   else
     # Task is a description - search PRs by title similarity
-    pr_branch=$(gh pr list --json headRefName,title --limit 50 2>/dev/null | \
-      jq --arg title "$task" -r '.[] | select(.title | ascii_downcase | contains($title | ascii_downcase)) | .headRefName' | \
-      head -1)
+    # Prefer OPEN, then highest number for determinism across duplicates
+    pr_branch=$(gh pr list --json headRefName,title,number,state --limit 50 2>/dev/null | \
+      jq --arg title "$task" -r \
+      '[.[] | select(.title | ascii_downcase | contains($title | ascii_downcase))] |
+      sort_by([if .state == "OPEN" then 1 else 0 end, .number]) | last | .headRefName // empty')
   fi
 
   # If we found a PR, find the worktree with that branch
