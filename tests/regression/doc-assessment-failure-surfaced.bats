@@ -158,8 +158,10 @@ _wait_and_report_inline='
   # goes to stdout only (invisible in auto/piped mode).
   # The failure branch must use >&2 for both the warning and the log tail.
 
-  # Find the wait-and-report block in the actual source
-  _wait_block=$(grep -A 15 "Wait for background doc assessment" "$MERGE_PR_SCRIPT" || true)
+  # Find the wait-and-report block in the actual source.
+  # Anchor on the stable code token `wait "$_DOC_PID"` rather than a comment
+  # string so the check survives comment rewording without false failures.
+  _wait_block=$(grep -A 15 'wait "\$_DOC_PID"' "$MERGE_PR_SCRIPT" || true)
 
   [ -n "$_wait_block" ]
 
@@ -181,11 +183,14 @@ _wait_and_report_inline='
   # (the old pattern was: wait "$_pid" 2>/dev/null || true)
   # The new pattern captures the exit code and reports it.
 
-  # Extract the assess_pids section
+  # Extract the assess_pids section.
+  # End-anchor matches the actual `unset _assess_pids _assess_names` line
+  # (regex uses `unset _assess_pids` as a stable prefix so it isn't coupled
+  # to the exact variable list that follows on the same line).
   _assess_section=$(awk '
     /Claude-calling assessments run in parallel/ { in_block=1 }
     in_block { print }
-    in_block && /^unset _assess_pids/ { in_block=0 }
+    in_block && /unset _assess_pids/ { in_block=0 }
   ' "$_assess_doc")
 
   [ -n "$_assess_section" ]
@@ -207,11 +212,14 @@ _wait_and_report_inline='
 @test "assess-documentation.sh: parallel reconcile wait loop reports individual failures" {
   _assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
 
-  # Extract the reconcile_pids section
+  # Extract the reconcile_pids section.
+  # End-anchor matches the actual `unset _reconcile_pids _reconcile_names` line
+  # (regex uses `unset _reconcile_pids` as a stable prefix so it isn't coupled
+  # to the exact variable list that follows on the same line).
   _reconcile_section=$(awk '
     /Run reconciliation in parallel/ { in_block=1 }
     in_block { print }
-    in_block && /^unset _reconcile_pids/ { in_block=0 }
+    in_block && /unset _reconcile_pids/ { in_block=0 }
   ' "$_assess_doc")
 
   [ -n "$_reconcile_section" ]
