@@ -138,10 +138,15 @@ EOF
   # Search for unsafe patterns (same grep as issue description)
   run bash -c "grep -rnE '=\$\([^)]*\| *grep' lib/ bin/ 2>/dev/null | grep -v '|| true\||| echo\|: \$?' || true"
 
-  # Count should be zero (all patterns on continuation lines have || true)
-  # The three remaining matches are multiline patterns where || true is on the next line
-  unsafe_count=$(echo "$output" | grep -c '^' || echo 0)
+  # Count actual non-empty matches
+  if [ -z "$output" ]; then
+    unsafe_count=0
+  else
+    unsafe_count=$(echo "$output" | grep -c '.' || echo 0)
+  fi
 
-  # We expect exactly 3 (the multiline patterns where grep sees line 1 but || true is on line 2)
-  [ "$unsafe_count" -eq 3 ] || [ "$unsafe_count" -eq 0 ]
+  # We expect exactly 3 known multiline patterns where || true is on the next line
+  # (These are safe but grep can't detect that without parsing the next line)
+  # Any other count indicates either: new unsafe patterns added (bad) or multiline patterns fixed (good but test needs update)
+  [ "$unsafe_count" -eq 3 ]
 }

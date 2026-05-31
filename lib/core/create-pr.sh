@@ -91,13 +91,13 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" ]]; then
     print_status "On $CURRENT_BRANCH branch - looking for worktree for issue #$ISSUE_NUMBER..."
 
     # Find worktree with this issue number
-    TARGET_WORKTREE=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' || true | while read -r wt_path; do
+    TARGET_WORKTREE=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' | while read -r wt_path; do
       wt_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "")
       if echo "$wt_branch" | grep -qE "issue-?$ISSUE_NUMBER"; then
         echo "$wt_path"
         break
       fi
-    done)
+    done || true)
 
     if [ -n "$TARGET_WORKTREE" ]; then
       print_success "Found worktree for issue #$ISSUE_NUMBER"
