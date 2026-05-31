@@ -4,9 +4,9 @@
 # Verifies that local-review.sh retries gh pr diff on transient errors (5xx, 429)
 # and falls back to local git diff when GitHub API is unavailable.
 
-load '../helpers/setup'
-load '../helpers/gh-mock'
-load '../helpers/fault-injection'
+load '../helpers/setup.bash'
+load '../helpers/gh-mock.bash'
+load '../helpers/fault-injection.bash'
 
 setup() {
   # Create isolated test environment
