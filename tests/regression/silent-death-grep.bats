@@ -13,17 +13,24 @@
 # 3. The script does NOT silently die with no output
 
 setup() {
+  # Create temp dir for runtime test scripts
   export RITE_TEST_ROOT="${BATS_TEST_TMPDIR}/rite-test"
   mkdir -p "$RITE_TEST_ROOT"
+
+  # Create temp dir for lint test scripts (inside project lib/)
+  PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")" && pwd)"
+  export RITE_LINT_TEST_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  mkdir -p "$RITE_LINT_TEST_DIR"
 }
 
 teardown() {
   rm -rf "$RITE_TEST_ROOT"
+  rm -rf "$RITE_LINT_TEST_DIR"
 }
 
 @test "lint rule detects unsafe VAR=\$(... | grep) pattern" {
-  # Create a test script with unsafe pattern
-  cat > "$RITE_TEST_ROOT/unsafe.sh" <<'EOF'
+  # Create a test script with unsafe pattern in a location the linter scans
+  cat > "$RITE_LINT_TEST_DIR/unsafe.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 # This is unsafe - no || true
@@ -99,8 +106,8 @@ EOF
 }
 
 @test "lint rule detects multiline unsafe pattern" {
-  # Create a test script with multiline unsafe pattern
-  cat > "$RITE_TEST_ROOT/multiline-unsafe.sh" <<'EOF'
+  # Create a test script with multiline unsafe pattern in a location the linter scans
+  cat > "$RITE_LINT_TEST_DIR/multiline-unsafe.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 RESULT=$(git worktree list | \
