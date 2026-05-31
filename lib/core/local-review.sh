@@ -91,13 +91,59 @@ echo "  Branch: $PR_HEAD -> $PR_BASE"
 echo "  URL: $PR_URL"
 echo ""
 
-# Get the diff
+# Get the diff with retry and fallback
 print_status "Fetching PR diff..."
-PR_DIFF=$(gh pr diff "$PR_NUMBER" 2>&1) || {
-  print_error "Failed to fetch diff for PR #$PR_NUMBER"
-  echo "$PR_DIFF"
-  exit 1
-}
+
+# Retry gh pr diff up to 3 times (handles transient 5xx/429 errors)
+MAX_DIFF_ATTEMPTS=3
+DIFF_ATTEMPT=0
+PR_DIFF=""
+GH_DIFF_ERROR=""
+GH_DIFF_SUCCESS=false
+
+while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
+  DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
+
+  GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
+    PR_DIFF="$GH_DIFF_ERROR"
+    GH_DIFF_SUCCESS=true
+    break
+  }
+
+  # Check if error is transient (5xx, 429, network issues)
+  if echo "$GH_DIFF_ERROR" | grep -qiE "500|502|503|504|429|timeout|temporarily unavailable|heavy server load"; then
+    if [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ]; then
+      # Exponential backoff: 2s, 4s
+      BACKOFF=$((2 ** DIFF_ATTEMPT))
+      print_warning "GitHub diff API error (attempt $DIFF_ATTEMPT/$MAX_DIFF_ATTEMPTS) - retrying in ${BACKOFF}s..."
+      sleep "$BACKOFF"
+      continue
+    fi
+  else
+    # Non-transient error - don't retry
+    break
+  fi
+done
+
+# If gh pr diff failed after all retries, fall back to local git diff
+if [ "$GH_DIFF_SUCCESS" != true ]; then
+  print_warning "GitHub diff API unavailable — falling back to local git diff"
+
+  # Use git diff with the three-dot syntax (merge-base..HEAD)
+  # This matches what gh pr diff returns: changes in HEAD since diverging from base
+  PR_DIFF=$(git diff "origin/$PR_BASE...origin/$PR_HEAD" 2>&1) || {
+    print_error "Failed to fetch diff via both GitHub API and local git"
+    echo ""
+    echo "GitHub API error:"
+    echo "$GH_DIFF_ERROR"
+    echo ""
+    echo "Git diff error:"
+    echo "$PR_DIFF"
+    exit 1
+  }
+
+  print_status "Using local git diff as fallback"
+fi
 
 DIFF_LINES=$(echo "$PR_DIFF" | wc -l | tr -d ' ')
 DIFF_FILES=$(echo "$PR_DIFF" | grep -c "^diff --git" || true)
