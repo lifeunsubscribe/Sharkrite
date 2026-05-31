@@ -28,7 +28,7 @@ print_violation() {
   local message=$4
 
   echo -e "${RED}✗${NC} $file:$line - $rule: $message"
-  ((VIOLATIONS++))
+  VIOLATIONS=$((VIOLATIONS + 1))
 }
 
 # Print warning (informational, doesn't fail build)
@@ -45,8 +45,9 @@ echo "Running Sharkrite custom lint rules..."
 echo ""
 
 # Find all shell scripts (bin/, lib/, and tools/ including git-hooks without .sh extension)
+# Exclude sharkrite-lint.sh itself to prevent false positives from its own pattern-definition lines
 mapfile -t SHELL_FILES < <(find "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-  -type f \( -name "*.sh" -o -path "*/bin/rite*" -o -path "*/tools/git-hooks/*" \) 2>/dev/null)
+  -type f ! -name 'sharkrite-lint.sh' \( -name "*.sh" -o -path "*/bin/rite*" -o -path "*/tools/git-hooks/*" \) 2>/dev/null)
 
 # Rule 1: grep -c with || echo "0" (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
