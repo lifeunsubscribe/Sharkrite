@@ -1035,7 +1035,9 @@ EOF
         acquire_scratchpad_lock
         # Ensure the lock is released if the script exits unexpectedly between here
         # and the explicit release_scratchpad_lock call below (~line 1450).
-        trap 'release_scratchpad_lock' EXIT
+        # Combine with cleanup_temp_files so we don't clobber the trap set at line 219,
+        # and add INT/TERM so signals during the critical section also release the lock.
+        trap 'release_scratchpad_lock; cleanup_temp_files' EXIT INT TERM
 
         # Create temp file for cleaned scratchpad
         TEMP_SCRATCH=$(mktemp)
@@ -1450,6 +1452,8 @@ EOF
 
       # Release scratchpad lock via shared module (safe to call even if no scratchpad work occurred)
         release_scratchpad_lock
+        # Restore original trap now that the lock is released — only temp-file cleanup remains.
+        trap cleanup_temp_files EXIT ERR INT TERM
 
         # Clean up old backups (keep last 5).
         # Use ls -t (mtime sort, newest first) so the 6th+ entries are the oldest backups.
