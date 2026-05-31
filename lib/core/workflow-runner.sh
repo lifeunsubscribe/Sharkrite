@@ -1859,8 +1859,19 @@ run_workflow() {
     fi
   fi
 
-  # Phase 0: Pre-start checks (always run unless skipping past it)
-  if [ -z "$skip_to_phase" ]; then
+  # Phase 0: Pre-start checks.
+  # Always run when not skipping at all.
+  # Also force-run when resuming from a saved blocker that requires re-validation
+  # (e.g. credentials_expired): skip_to_phase reflects PR/review state, NOT whether
+  # the original blocker has been resolved, so we must re-check before proceeding.
+  local _force_prestart=false
+  case "${RESUME_BLOCKER_REASON:-}" in
+    credentials_expired|test_env|missing_tool)
+      _force_prestart=true
+      ;;
+  esac
+
+  if [ -z "$skip_to_phase" ] || [ "$_force_prestart" = true ]; then
     CURRENT_PHASE="pre-start"
     if ! phase_pre_start_checks "$issue_number"; then
       return 1
@@ -2024,8 +2035,9 @@ main() {
   local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
   local RESUME_PHASE=""
   local RESUME_RETRY=0
+  local saved_reason=""  # Populated from state file; exported as RESUME_BLOCKER_REASON
   if [ -f "$state_file" ]; then
-    local saved_reason=$(jq -r '.reason // "unknown"' "$state_file" 2>/dev/null)
+    saved_reason=$(jq -r '.reason // "unknown"' "$state_file" 2>/dev/null)
     local saved_worktree=$(jq -r '.worktree_path // ""' "$state_file" 2>/dev/null)
     local saved_phase=$(jq -r '.phase // ""' "$state_file" 2>/dev/null)
     local saved_pr=$(jq -r '.pr_number // ""' "$state_file" 2>/dev/null)
@@ -2062,9 +2074,12 @@ main() {
     fi
   fi
 
-  # Export resume phase and retry for run_workflow
+  # Export resume phase, retry, and blocker reason for run_workflow
   export RESUME_PHASE
   export RESUME_RETRY
+  # RESUME_BLOCKER_REASON carries the saved blocker type so run_workflow can
+  # force pre-start checks even when skip_to_phase would normally bypass them.
+  export RESUME_BLOCKER_REASON="${saved_reason:-}"
 
   # Initialize session — but not when called from batch mode (batch owns the session)
   if [ "${BATCH_MODE:-false}" != "true" ]; then
