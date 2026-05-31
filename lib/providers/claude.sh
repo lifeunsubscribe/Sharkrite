@@ -95,8 +95,7 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       "$prompt" 2>"$stderr_file" | \
-      _claude_stream_filter_colored || true
-    _exit_code=${PIPESTATUS[0]}
+      _claude_stream_filter_colored || _exit_code=${PIPESTATUS[0]}
   else
     # Supervised mode: prompt via stdin because --disallowedTools is variadic
     # and eats positional args after it.
@@ -107,8 +106,7 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       < "$_prompt_file" 2>"$stderr_file" | \
-      _claude_stream_filter_colored || true
-    _exit_code=${PIPESTATUS[0]}
+      _claude_stream_filter_colored || _exit_code=${PIPESTATUS[0]}
     rm -f "$_prompt_file"
   fi
 
