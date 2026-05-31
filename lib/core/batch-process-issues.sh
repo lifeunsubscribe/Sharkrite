@@ -324,9 +324,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body' 2>/dev/null || echo "")
   PARENT_PR=""
 
-  if echo "$ISSUE_BODY" | grep -q "sharkrite-parent-pr:"; then
+  # Require digits in the outer guard too — otherwise issue bodies that DOCUMENT
+  # the marker format (e.g. "sharkrite-parent-pr:N" as an example) trigger the
+  # inner extraction, which returns empty, which under set -e + pipefail kills
+  # the script silently. Live bug: issue #34's body listed the marker as an
+  # example and the entire batch died mid-stream with no error output.
+  if echo "$ISSUE_BODY" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
     # Extract parent PR number from body marker
-    PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2)
+    PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
 
     if [ -n "$PARENT_PR" ]; then
       # Check if parent PR is still open
