@@ -1112,7 +1112,10 @@ If the changes are unrelated work, answer UNRELATED."
     fi
 
     # Preflight branch health check before entering worktree
-    source "$RITE_LIB_DIR/utils/branch-preflight.sh"
+    if ! source "$RITE_LIB_DIR/utils/branch-preflight.sh"; then
+      print_error "Failed to load branch-preflight.sh"
+      exit 1
+    fi
 
     set +e
     classify_branch_health "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH"
@@ -1138,10 +1141,10 @@ If the changes are unrelated work, answer UNRELATED."
 
         set +e
         check_stale_branch "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}" "$ISSUE_NUMBER" "${WORKFLOW_MODE:-auto}"
-        local stale_exit=$?
+        _stale_exit=$?
         set -e
 
-        if [ $stale_exit -eq 10 ]; then
+        if [ $_stale_exit -eq 10 ]; then
           # Stale handler restarted fresh — exec to restart workflow
           print_status "Restarting workflow after stale branch cleanup..."
           if [ "$AUTO_MODE" = true ]; then
@@ -1149,11 +1152,11 @@ If the changes are unrelated work, answer UNRELATED."
           else
             exec "$SCRIPT_PATH" "$ISSUE_NUMBER"
           fi
-        elif [ $stale_exit -ne 0 ]; then
+        elif [ $_stale_exit -ne 0 ]; then
           # Stale handler failed or user aborted
-          exit $stale_exit
+          exit $_stale_exit
         fi
-        # else: stale_exit == 0, continue to dev work
+        # else: _stale_exit == 0, continue to dev work
         ;;
 
       3|4)
