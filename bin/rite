@@ -40,6 +40,8 @@ done
 # Source configuration (detects project, loads configs)
 source "$RITE_LIB_DIR/utils/config.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
+# Source portable command wrappers (sed -i — BSD/GNU compat)
+source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 
 # Default mode: full lifecycle (workflow-runner)
 MODE="full"
@@ -511,14 +513,7 @@ CLASSIFY_EOF
             _docs_value="${_selected_docs[*]}"
             # Update config: uncomment and populate RITE_PLAN_DOCS
             if grep -q '# RITE_PLAN_DOCS=' "$_config_file" 2>/dev/null; then
-              # Platform-specific sed -i syntax
-              if sed --version >/dev/null 2>&1; then
-                # GNU sed
-                sed -i "s|# RITE_PLAN_DOCS=.*|RITE_PLAN_DOCS=\"$_docs_value\"|" "$_config_file"
-              else
-                # BSD sed (macOS)
-                sed -i '' "s|# RITE_PLAN_DOCS=.*|RITE_PLAN_DOCS=\"$_docs_value\"|" "$_config_file"
-              fi
+              portable_sed_i "s|# RITE_PLAN_DOCS=.*|RITE_PLAN_DOCS=\"$_docs_value\"|" "$_config_file"
             else
               echo "" >> "$_config_file"
               echo "RITE_PLAN_DOCS=\"$_docs_value\"" >> "$_config_file"

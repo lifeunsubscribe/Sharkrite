@@ -18,6 +18,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
+source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 
 set -e
 
@@ -72,8 +73,10 @@ while IFS= read -r wt_path; do
   # Check if branch has been merged/deleted
   BRANCH_EXISTS=$(git show-ref --verify --quiet refs/heads/"$WT_BRANCH" && echo "yes" || echo "no")
 
-  # Check last modification
-  LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" \) 2>/dev/null | xargs stat -f "%m %N" 2>/dev/null | sort -rn | head -1 | awk '{print $1}')
+  # Check last modification (portable: BSD stat -f "%m" vs GNU stat -c "%Y")
+  LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" \) -print0 2>/dev/null \
+    | portable_find_max_mtime || echo "0")
+  [ "$LAST_MODIFIED" = "0" ] && LAST_MODIFIED=""
 
   if [ -n "$LAST_MODIFIED" ]; then
     DAYS_OLD=$(( ( $(date +%s) - LAST_MODIFIED ) / 86400 ))

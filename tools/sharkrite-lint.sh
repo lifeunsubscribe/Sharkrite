@@ -301,6 +301,67 @@ for file in $CORE_FILES; do
   done < <(grep -n 'print_' "$file" 2>/dev/null || true)
 done
 
+# Rule 10: BSD-only sed -i '' without portable wrapper (except portable-cmds.sh itself)
+echo "Checking for bare 'sed -i \"\"' without portable wrapper..."
+for file in $SHELL_FILES; do
+  # portable-cmds.sh is the canonical implementation — skip it
+  if [[ "$file" == */portable-cmds.sh ]]; then
+    continue
+  fi
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    # Match: sed -i '' (BSD form)
+    if echo "$line_content" | grep -qE "sed\s+-i\s+''"; then
+      print_violation "$file" "$line_num" "BARE_BSD_SED_I" \
+        "Use portable_sed_i() from lib/utils/portable-cmds.sh instead of bare 'sed -i '''"
+    fi
+  done < <(grep -n "sed -i" "$file" 2>/dev/null || true)
+done
+
+# Rule 11: BSD-only stat -f (mtime) without portable wrapper (except portable-cmds.sh itself)
+echo "Checking for bare 'stat -f' (BSD-only)..."
+for file in $SHELL_FILES; do
+  # portable-cmds.sh is the canonical implementation — skip it
+  if [[ "$file" == */portable-cmds.sh ]]; then
+    continue
+  fi
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    if echo "$line_content" | grep -qE 'stat\s+-f'; then
+      print_violation "$file" "$line_num" "BARE_BSD_STAT_F" \
+        "Use portable_stat_mtime() or portable_find_max_mtime() from lib/utils/portable-cmds.sh instead of bare 'stat -f'"
+    fi
+  done < <(grep -n 'stat -f' "$file" 2>/dev/null || true)
+done
+
+# Rule 12: find piped to xargs without -0/-print0 pairing
+echo "Checking for 'find ... | xargs' without -0 / -print0..."
+for file in $SHELL_FILES; do
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    # Match: xargs without -0 flag (lone xargs or xargs with flags but no -0)
+    if echo "$line_content" | grep -qE '\bxargs\b' && \
+       ! echo "$line_content" | grep -qE 'xargs\s+(-[a-zA-Z]*0|-0)'; then
+      # Only flag if this is in a find pipeline context (same line has 'find' or
+      # this looks like a continuation of a find pipe)
+      if echo "$line_content" | grep -qE '\bfind\b.*\|.*\bxargs\b' || \
+         echo "$line_content" | grep -qE '^\s*\|.*\bxargs\b'; then
+        print_violation "$file" "$line_num" "XARGS_WITHOUT_NULL" \
+          "Use 'find ... -print0 | xargs -0' to handle filenames with spaces"
+      fi
+    fi
+  done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ $VIOLATIONS -eq 0 ]; then

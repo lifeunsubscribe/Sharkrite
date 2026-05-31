@@ -22,6 +22,11 @@ if ! declare -f print_info &>/dev/null; then
   fi
 fi
 
+# Source portable command wrappers (sed -i — BSD/GNU compat)
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+fi
+
 # Source provider abstraction
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -669,7 +674,7 @@ _lint_issues() {
     # Anti-pattern 1: "DO NOT: Create service layer"
     if grep -qi "DO NOT.*service layer\|DO NOT.*create.*service" "$issues_file"; then
       print_warning "Removing 'DO NOT create service layer' scope boundaries" >&2
-      sed -i '' '/DO NOT.*[Cc]reate.*service layer/d; /DO NOT.*service.layer/d' "$issues_file"
+      portable_sed_i '/DO NOT.*[Cc]reate.*service layer/d; /DO NOT.*service.layer/d' "$issues_file"
       warnings=$((warnings + 1))
     fi
 
@@ -853,7 +858,7 @@ PHANTOM_EOF
 
     # The jq streaming may concatenate ---ISSUE--- and ---END--- with surrounding
     # text on the same line. Fix by ensuring markers are always on their own line.
-    sed -i '' \
+    portable_sed_i \
       -e 's/---ISSUE---/\
 ---ISSUE---\
 /g' \
