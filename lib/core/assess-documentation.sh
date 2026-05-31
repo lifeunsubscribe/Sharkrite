@@ -39,7 +39,13 @@ provider_validate_cli || exit 1
 # SHARED DATA (computed once, used by both layers)
 # =====================================================================
 
-PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
+PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments || echo "")
+
+if [ -z "$PR_DATA" ]; then
+  print_error "Could not fetch PR #$PR_NUMBER data — aborting documentation assessment"
+  exit 1
+fi
+
 PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
 PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" | head -500 || true)

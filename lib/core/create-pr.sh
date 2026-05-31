@@ -158,10 +158,12 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
 
   # Push new commits if needed
   CURRENT_HEAD=$(git rev-parse HEAD)
-  PR_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+  PR_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' || echo "")
   PUSHED_NEW_COMMITS=false
 
-  if [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then
+  if [ -z "$PR_HEAD" ]; then
+    print_warning "Could not fetch PR head ref for #$PR_NUMBER — skipping push check"
+  elif [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then
     print_status "Pushing new commits to PR..."
     if ! git push origin "$CURRENT_BRANCH"; then
       # Push failed — likely remote ahead of local (foreign commits)
@@ -333,8 +335,7 @@ EOF
   fi
 
   # Create the PR
-  PR_URL=$(gh_safe pr create "${PR_ARGS[@]}")
-  GH_PR_EXIT=$?
+  PR_URL=$(gh_safe pr create "${PR_ARGS[@]}") && GH_PR_EXIT=0 || GH_PR_EXIT=$?
   rm -f "$PR_BODY_FILE"
 
   if [ $GH_PR_EXIT -eq 0 ]; then
