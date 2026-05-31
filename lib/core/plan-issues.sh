@@ -1267,7 +1267,7 @@ create_issues() {
 
         if [ $gh_exit -eq 0 ]; then
           local issue_num
-          issue_num=$(echo "$issue_url" | grep -oE '[0-9]+$')
+          issue_num=$(echo "$issue_url" | grep -oE '[0-9]+$' || true)
           created_numbers+=("$issue_num")
           prev_issue_num="$issue_num"
           print_success "Created #$issue_num"

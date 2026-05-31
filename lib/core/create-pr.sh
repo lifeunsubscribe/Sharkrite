@@ -97,7 +97,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" ]]; then
         echo "$wt_path"
         break
       fi
-    done)
+    done || true)
 
     if [ -n "$TARGET_WORKTREE" ]; then
       print_success "Found worktree for issue #$ISSUE_NUMBER"
@@ -336,7 +336,7 @@ EOF
 
   if [ $GH_PR_EXIT -eq 0 ]; then
     # Extract PR number from URL
-    PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+    PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$' || true)
 
     print_success "Pull Request Created"
     echo "  PR #$PR_NUMBER"
@@ -365,7 +365,7 @@ set -e
 
 if [ -n "$sensitivity_hints" ]; then
   # Extract category names from "### Sensitivity: ..." headers
-  sensitivity_areas=$(echo "$sensitivity_hints" | grep "^### Sensitivity:" | sed 's/^### Sensitivity: //' | paste -sd ', ' -)
+  sensitivity_areas=$(echo "$sensitivity_hints" | grep "^### Sensitivity:" | sed 's/^### Sensitivity: //' | paste -sd ', ' - || true)
   print_info "Review focus areas: $sensitivity_areas"
 else
   print_success "No special sensitivity areas detected"

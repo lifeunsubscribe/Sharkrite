@@ -304,8 +304,8 @@ EOF
     # Simpler approach: extract section, keep first 50 entries, reconstruct
     local before_section=$(sed -n '1,/^## Encountered Issues/p' "$SCRATCHPAD_FILE" | head -n -1)
     local section_header=$(grep "^## Encountered Issues" "$SCRATCHPAD_FILE")
-    local section_desc=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /,$d' | grep "^_" | head -1)
-    local entries=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /,$d' | grep "^- \*\*[0-9]" | head -50)
+    local section_desc=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /,$d' | grep "^_" | head -1 || true)
+    local entries=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /,$d' | grep "^- \*\*[0-9]" | head -50 || true)
     # Keep the first 50 matching entries
     awk '
       /^## Encountered Issues/ { in_sec=1; count=0 }

@@ -96,6 +96,32 @@ COUNT=$(echo "$output" | grep -ciE "CRITICAL:" || true)
 FINDINGS=$(echo "$output" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+" | head -1)
 ```
 
+### Silent death: pipelines inside `$()` (CRITICAL)
+
+Under `set -euo pipefail`, a pipeline inside `$(...)` that exits non-zero kills the script **silently**. When `grep`, `awk`, `sed`, `head`, or `tail` find no match (exit 1), the command substitution returns 1, the assignment "succeeds" syntactically, but the script dies with no error output.
+
+**Live bug:** Issue #34 batch run died mid-stream when `PARENT_PR=$(echo "$BODY" | grep -oE 'pattern' | cut -d: -f2)` found no match.
+
+```bash
+# BAD: silently kills script if grep finds no match
+VAR=$(echo "$text" | grep "pattern")
+VAR=$(git worktree list | grep "branch" | awk '{print $1}')
+VAR=$(echo "$data" | sed -n '/start/,/end/p' | head -1)
+
+# GOOD: empty-match is expected, continue gracefully
+VAR=$(echo "$text" | grep "pattern" || true)
+VAR=$(git worktree list | grep "branch" | awk '{print $1}' || true)
+VAR=$(echo "$data" | sed -n '/start/,/end/p' | head -1 || true)
+
+# GOOD: empty-match is an ERROR, fail with clear message
+VAR=$(echo "$text" | grep "required-field" || {
+  echo "ERROR: required field not found" >&2
+  exit 1
+})
+```
+
+**Enforcement:** The custom lint rule `UNSAFE_PIPE_IN_CMDSUB` in `tools/sharkrite-lint.sh` detects this pattern (invoked by `make check` CI gate). Regression test in `tests/regression/silent-death-grep.bats` verifies both the lint rule and the graceful-fail behavior.
+
 ### Unbound variables with `set -u` (CRITICAL)
 
 All scripts use `set -euo pipefail`. Unset variables crash the script before any error handling can run. Three recurring patterns:

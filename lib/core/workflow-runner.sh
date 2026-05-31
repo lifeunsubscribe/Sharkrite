@@ -414,7 +414,7 @@ phase_claude_workflow() {
 
       # Find worktree for this PR's branch
       pr_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName')
-      worktree_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
+      worktree_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
 
       if [ -n "$worktree_path" ]; then
         WORKTREE_PATH="$worktree_path"
@@ -422,7 +422,7 @@ phase_claude_workflow() {
         print_success "Using existing worktree: $WORKTREE_PATH"
 
         # Check for uncommitted changes in the target worktree (exclude symlinks and untracked)
-        TARGET_UNCOMMITTED=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -vE "^\?\?" | wc -l | tr -d ' ')
+        TARGET_UNCOMMITTED=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null | grep -vE "^\?\?" | wc -l | tr -d ' ' || true)
         if [ "$TARGET_UNCOMMITTED" -gt 0 ]; then
           print_warning "Uncommitted changes detected in worktree"
 
@@ -609,7 +609,7 @@ EOF
         fi
         if [ -z "${WORKTREE_PATH:-}" ]; then
           local _main_wt=$(git rev-parse --show-toplevel)
-          WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1)
+          WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1 || true)
         fi
         if [ -n "${WORKTREE_PATH:-}" ]; then
           set_current_worktree "$WORKTREE_PATH"
@@ -634,7 +634,7 @@ EOF
       # determines "no changes needed" and produces empty PRs (exit code 4).
       if [ -n "${ISSUE_BODY:-}" ]; then
         local _verify_block=""
-        _verify_block=$(echo "$ISSUE_BODY" | sed -n '/^## Verification Commands/,/^## /p' | sed '1d;/^## /d')
+        _verify_block=$(echo "$ISSUE_BODY" | sed -n '/^## Verification Commands/,/^## /p' | sed '1d;/^## /d' || true)
 
         # Extract commands from fenced code block (```bash ... ```)
         local _verify_cmds=""
@@ -785,7 +785,7 @@ EOF
       if [ -z "${WORKTREE_PATH:-}" ]; then
         MAIN_WORKTREE=$(git rev-parse --show-toplevel)
         WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
-          grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1)
+          grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1 || true)
       fi
 
       # Last resort: read handoff file written by claude-workflow.sh
@@ -827,7 +827,7 @@ EOF
         if [ -z "${WORKTREE_PATH:-}" ]; then
           MAIN_WORKTREE=$(git rev-parse --show-toplevel)
           WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
-            grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1)
+            grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1 || true)
         fi
 
         if [ $workflow_exit -eq 4 ]; then
@@ -1497,7 +1497,7 @@ run_workflow() {
     local closed_at=$(echo "$issue_data" | jq -r '.closedAt')
 
     # Find the PR that closed this issue
-    local pr_number=$(echo "$issue_data" | jq -r '.closedByPullRequestsReferences[0].number // empty' | head -1)
+    local pr_number=$(echo "$issue_data" | jq -r '.closedByPullRequestsReferences[0].number // empty' | head -1 || true)
     local pr_state=""
     local pr_merged=""
     local pr_summary=""
@@ -1507,7 +1507,7 @@ run_workflow() {
       local pr_data=$(gh pr view "$pr_number" --json state,mergedAt,body,headRefName 2>/dev/null)
       pr_state=$(echo "$pr_data" | jq -r '.state')
       pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
-      pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5)
+      pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5 || true)
       pr_branch=$(echo "$pr_data" | jq -r '.headRefName')
     fi
 
@@ -1615,7 +1615,7 @@ run_workflow() {
       # 1. Remove worktree if it exists for this branch
       # Worktrees are isolated — removing one doesn't affect others, so no need
       # to check sibling worktree status. Safe to remove even during batch runs.
-      local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}')
+      local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
       if [ -n "$wt_path" ]; then
         if git worktree remove "$wt_path" --force 2>/dev/null; then
           [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
@@ -1702,7 +1702,7 @@ run_workflow() {
     if [ -z "${WORKTREE_PATH:-}" ] || [ ! -d "${WORKTREE_PATH:-}" ]; then
       local _pr_branch=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
       if [ -n "$_pr_branch" ]; then
-        local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}')
+        local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
           local _file_changes=$(git -C "$_wt_path" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
           if [ "$_file_changes" -gt 0 ]; then

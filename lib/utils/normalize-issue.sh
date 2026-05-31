@@ -204,7 +204,7 @@ Rules:
   fi
 
   local issue_number
-  issue_number=$(echo "$issue_url" | grep -oE '[0-9]+$')
+  issue_number=$(echo "$issue_url" | grep -oE '[0-9]+$' || true)
   if [ -z "$issue_number" ]; then
     print_error "Could not extract issue number from: $issue_url" >&2
     return 1

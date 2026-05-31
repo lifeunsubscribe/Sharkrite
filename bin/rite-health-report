@@ -87,7 +87,7 @@ WEEK_AGO_EPOCH=$(epoch_days_ago 7)
 RECENT_LOGS=()
 if [ -d "$LOGS_DIR" ]; then
   while IFS= read -r logfile; do
-    _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}-[0-9]{6}' | tail -1 | cut -d- -f1)
+    _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}-[0-9]{6}' | tail -1 | cut -d- -f1 || true)
     if [ -n "$_log_date" ]; then
       _log_epoch=$(date_from_compact "$_log_date")
       if [ "${_log_epoch:-0}" -ge "$WEEK_AGO_EPOCH" ] 2>/dev/null; then
@@ -264,7 +264,7 @@ fi
 # --- Auto-prune reports older than 90 days ---
 PRUNE_EPOCH=$(epoch_days_ago 90)
 find "$REPORTS_DIR" -name "rite-health-*.md" -type f 2>/dev/null | while read -r old_report; do
-  _old_date=$(echo "$old_report" | grep -oE '[0-9]{8}' | tail -1)
+  _old_date=$(echo "$old_report" | grep -oE '[0-9]{8}' | tail -1 || true)
   if [ -n "$_old_date" ]; then
     _old_epoch=$(date_from_compact "$_old_date")
     if [ "${_old_epoch:-999999999999}" -lt "$PRUNE_EPOCH" ] 2>/dev/null; then

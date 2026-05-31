@@ -932,8 +932,8 @@ rm -f "$ASSESS_PROMPT_FILE"
 # --- Apply or report ---
 
 if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
-  DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //')
-  REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //')
+  DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //' || true)
+  REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || true)
 
   echo "    Project docs: $DOCS_TO_UPDATE"
   echo "    Reason: $REASON"

@@ -115,7 +115,7 @@ detect_critical_issues() {
   fi
 
   # Parse CRITICAL count
-  local critical_count=$(echo "$review" | grep -oiE 'CRITICAL[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1)
+  local critical_count=$(echo "$review" | grep -oiE 'CRITICAL[[:space:]:]+\(?[0-9]+\)?' | grep -oE '[0-9]+' | head -1 || true)
   critical_count=${critical_count:-0}
 
   if [ "$critical_count" -gt 0 ]; then

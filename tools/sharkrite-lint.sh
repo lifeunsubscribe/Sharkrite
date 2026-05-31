@@ -208,7 +208,37 @@ for file in $SHELL_FILES; do
   line_num=0
 done
 
-# Rule 8: Claude-specific tokens in lib/core/ (Provider Agnosticism)
+# Rule 8: Unsafe pipe inside command substitution (silent death under set -euo pipefail)
+echo "Checking for unsafe VAR=\$(... | grep/awk/sed/head/tail) patterns..."
+for file in $SHELL_FILES; do
+  # Match: VAR=$(... | grep ...) or similar commands that can exit 1
+  # Safe patterns: || true, || echo "...", or : $?
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+
+    # Check if line has unsafe pattern: assignment with command substitution containing pipe to grep/awk/sed/head/tail
+    # Must NOT end with || true, || echo, or : $?
+    if echo "$line_content" | grep -qE '=\$\([^)]*\|.*(grep|awk|sed|head|tail)'; then
+      # Check if the NEXT line (for multiline commands) or current line has safe termination
+      next_line_num=$((line_num + 1))
+      next_line=$(sed -n "${next_line_num}p" "$file" 2>/dev/null || echo "")
+
+      # Safe if current or next line ends with || true, || echo, or has : $?
+      if ! echo "$line_content" | grep -qE '\|\|\s*(true|echo)' && \
+         ! echo "$line_content" | grep -qE ':\s*\$\?' && \
+         ! echo "$next_line" | grep -qE '\|\|\s*(true|echo)\s*\)' && \
+         ! echo "$next_line" | grep -qE ':\s*\$\?\s*\)'; then
+        print_violation "$file" "$line_num" "UNSAFE_PIPE_IN_CMDSUB" \
+          "VAR=\$(... | grep/awk/sed/head/tail) without || true can silently kill script under set -euo pipefail"
+      fi
+    fi
+  done < <(grep -n '=\$(' "$file" 2>/dev/null || true)
+done
+
+# Rule 9: Claude-specific tokens in lib/core/ (Provider Agnosticism)
 echo "Checking for Claude-specific tokens in lib/core/ (provider agnosticism)..."
 CORE_FILES=$(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
 
