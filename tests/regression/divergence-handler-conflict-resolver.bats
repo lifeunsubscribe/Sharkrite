@@ -54,21 +54,21 @@ teardown() {
 _setup_diverging_branch() {
   BRANCH_NAME="fix/diverge-test-$$"
 
-  # Feature branch modifies README.md
+  # Feature branch modifies README.md — overwrite line 1 with branch-specific content
   git checkout -b "$BRANCH_NAME" main >/dev/null 2>&1
-  echo "Feature line" >> README.md
+  echo "# Feature: branch-specific content" > README.md
   git add README.md
   git commit -m "Feature changes README" >/dev/null 2>&1
   git push -u origin "$BRANCH_NAME" >/dev/null 2>&1
 
-  # Remote branch also modifies README.md differently (produces rebase conflict)
-  # Simulate another agent pushing a conflicting change to the remote branch
+  # Remote branch also modifies README.md line 1 differently — produces a real rebase conflict
+  # because both sides replace the same line (not a simple append-to-EOF that git auto-merges).
   local tmp_clone="${RITE_TEST_TMPDIR}/tmp-clone-$$"
   git clone "$BARE_REMOTE" "$tmp_clone" >/dev/null 2>&1
   git -C "$tmp_clone" config user.name "Test User"
   git -C "$tmp_clone" config user.email "test@example.com"
   git -C "$tmp_clone" checkout "$BRANCH_NAME" >/dev/null 2>&1
-  echo "Remote conflicting line" >> "$tmp_clone/README.md"
+  echo "# Feature: remote-specific content" > "$tmp_clone/README.md"
   git -C "$tmp_clone" add README.md
   git -C "$tmp_clone" commit -m "Remote conflicting change" >/dev/null 2>&1
   git -C "$tmp_clone" push origin "$BRANCH_NAME" >/dev/null 2>&1
@@ -78,6 +78,17 @@ _setup_diverging_branch() {
   git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1
 
   cd "$WORKTREE_PATH"
+
+  # Verify the conflict setup is correct: rebase onto origin must actually conflict.
+  # Fetch remote state so git knows about origin/$BRANCH_NAME divergence.
+  git fetch origin "$BRANCH_NAME" >/dev/null 2>&1
+  # Sentinel assertion: a plain rebase must fail (the fixture produces a real conflict).
+  if git rebase "origin/$BRANCH_NAME" >/dev/null 2>&1; then
+    git rebase --abort 2>/dev/null || true
+    echo "ERROR: _setup_diverging_branch: rebase succeeded — fixture does not produce a conflict. Check that both sides modify the same line." >&2
+    return 1
+  fi
+  git rebase --abort >/dev/null 2>&1 || true
 }
 
 # ───────────────────────────────────────────────────────────────────
@@ -90,8 +101,7 @@ _setup_diverging_branch() {
   attempt_claude_merge_resolution() {
     local branch="$1"
     cd "$WORKTREE_PATH" || return 1
-    echo "Feature line" > README.md
-    echo "Remote conflicting line" >> README.md
+    echo "# Feature: merged content" > README.md
     git add README.md
     git commit -m "chore: resolve rebase conflict (stub)" >/dev/null 2>&1
     return 0
