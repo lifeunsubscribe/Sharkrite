@@ -135,9 +135,11 @@ STUB_EOF
   # Test the actual claude provider code path
 
   # Create a stub claude command that exits 1
+  # Must produce valid JSON for _claude_stream_filter_colored to parse
   export RITE_TEST_CLAUDE_CMD="${RITE_TEST_ROOT}/stub-claude-fail"
   cat > "$RITE_TEST_CLAUDE_CMD" <<'STUB_EOF'
 #!/bin/bash
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"stub"}]}}'
 exit 1
 STUB_EOF
   chmod +x "$RITE_TEST_CLAUDE_CMD"
@@ -168,9 +170,11 @@ TIMEOUT_EOF
 
 @test "claude.sh: pipeline failure exit 5 (usage cap) propagates correctly" {
   # Create a stub claude command that exits 5
+  # Must produce valid JSON for _claude_stream_filter_colored to parse
   export RITE_TEST_CLAUDE_CMD="${RITE_TEST_ROOT}/stub-claude-cap"
   cat > "$RITE_TEST_CLAUDE_CMD" <<'STUB_EOF'
 #!/bin/bash
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"stub"}]}}'
 exit 5
 STUB_EOF
   chmod +x "$RITE_TEST_CLAUDE_CMD"
@@ -201,10 +205,11 @@ TIMEOUT_EOF
 
 @test "claude.sh: pipeline success (exit 0) works correctly" {
   # Create a stub claude command that succeeds
+  # Must produce valid JSON for _claude_stream_filter_colored to parse
   export RITE_TEST_CLAUDE_CMD="${RITE_TEST_ROOT}/stub-claude-ok"
   cat > "$RITE_TEST_CLAUDE_CMD" <<'STUB_EOF'
 #!/bin/bash
-echo "Success output"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Success output"}]}}'
 exit 0
 STUB_EOF
   chmod +x "$RITE_TEST_CLAUDE_CMD"
