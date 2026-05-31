@@ -487,16 +487,28 @@ assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"
 
 # Claude-calling assessments run in parallel (each writes to its own file)
 _assess_pids=()
+_assess_names=()
 assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" "$PR_TITLE" &
 _assess_pids+=($!)
+_assess_names+=("security")
 assess_internal_architecture "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" &
 _assess_pids+=($!)
+_assess_names+=("architecture")
 assess_internal_api "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" &
 _assess_pids+=($!)
+_assess_names+=("api")
 assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY" "$PR_TITLE" &
 _assess_pids+=($!)
-for _pid in "${_assess_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
-unset _assess_pids
+_assess_names+=("adr")
+# Wait individually so we can report which assessments failed
+for _i in "${!_assess_pids[@]}"; do
+  _pid_exit=0
+  wait "${_assess_pids[$_i]}" 2>/dev/null || _pid_exit=$?
+  if [ "$_pid_exit" -ne 0 ]; then
+    print_warning "Internal doc assessment failed: ${_assess_names[$_i]} (exit $_pid_exit)" >&2
+  fi
+done
+unset _assess_pids _assess_names
 
 # Collect marker files into INTERNAL_UPDATED array
 for _marker in "$_MARKER_DIR"/*; do
@@ -583,14 +595,25 @@ RECONCILE_EOF
 
 # Run reconciliation in parallel — each call writes to its own file, no shared state
 _reconcile_pids=()
+_reconcile_names=()
 reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/security.md" "security" &
 _reconcile_pids+=($!)
+_reconcile_names+=("security")
 reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/architecture.md" "architecture" &
 _reconcile_pids+=($!)
+_reconcile_names+=("architecture")
 reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/api.md" "api" &
 _reconcile_pids+=($!)
-for _pid in "${_reconcile_pids[@]}"; do wait "$_pid" 2>/dev/null || true; done
-unset _reconcile_pids
+_reconcile_names+=("api")
+# Wait individually so we can report which reconciliations failed
+for _i in "${!_reconcile_pids[@]}"; do
+  _pid_exit=0
+  wait "${_reconcile_pids[$_i]}" 2>/dev/null || _pid_exit=$?
+  if [ "$_pid_exit" -ne 0 ]; then
+    print_warning "Doc reconciliation failed: ${_reconcile_names[$_i]} (exit $_pid_exit)" >&2
+  fi
+done
+unset _reconcile_pids _reconcile_names
 
 # Re-collect markers after reconciliation
 for _marker in "$_MARKER_DIR"/*; do
