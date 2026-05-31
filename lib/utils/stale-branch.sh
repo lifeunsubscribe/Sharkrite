@@ -15,7 +15,18 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
-source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+
+# Source post-merge verification utilities
+if ! source "$RITE_LIB_DIR/utils/post-merge-verify.sh"; then
+  echo "ERROR: Failed to source post-merge-verify.sh" >&2
+  exit 1
+fi
+
+# Verify verify_post_merge function is available
+if ! declare -f verify_post_merge >/dev/null 2>&1; then
+  echo "ERROR: verify_post_merge function not available after sourcing post-merge-verify.sh" >&2
+  exit 1
+fi
 
 # ===================================================================
 # PUBLIC: Detection
