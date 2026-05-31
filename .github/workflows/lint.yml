@@ -28,6 +28,6 @@ jobs:
         run: |
           sudo apt-get install -y bats
 
-      - name: Run lint tests
+      - name: Run all tests
         if: success() || failure()
-        run: bats tests/lint/custom-rules.bats
+        run: make test

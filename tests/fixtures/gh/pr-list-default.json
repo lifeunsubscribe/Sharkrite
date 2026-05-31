@@ -1,0 +1,14 @@
+[
+  {
+    "number": 123,
+    "title": "Fix authentication bug",
+    "state": "OPEN",
+    "headRefName": "fix/auth-bug-#42"
+  },
+  {
+    "number": 122,
+    "title": "Add new feature",
+    "state": "OPEN",
+    "headRefName": "feat/new-feature-#41"
+  }
+]
