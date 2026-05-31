@@ -207,9 +207,12 @@ preflight_auto_recover_empty() {
           print_warning "  gh output: $(echo "$_close_out" | head -1)"
         fi
       else
-        # Non-empty PR — don't close, but branch deletion is still safe
-        # (branch has work in the PR so it can be restored from PR history)
-        _preflight_pr_close_ok=true
+        # Non-empty open draft PR — do NOT delete the remote branch.
+        # Deleting the branch while the PR is still open would leave GitHub in an
+        # inconsistent state (open PR pointing at a missing branch) — exactly the
+        # race condition this entire PR was created to prevent.
+        _preflight_pr_close_ok=false
+        print_warning "PR #$pr_number is an open draft with real work — remote branch deletion skipped to avoid inconsistent state"
       fi
     fi
   else
