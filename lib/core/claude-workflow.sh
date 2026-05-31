@@ -42,6 +42,14 @@ if [ -f "$RITE_LIB_DIR/utils/timeout.sh" ] && ! declare -f run_with_timeout >/de
   ensure_timeout_cmd
 fi
 
+# Source conflict resolver if available (provided by issue #21).
+# Guarded: claude-workflow works without it — resolver is an enhancement.
+# When present, attempt_claude_merge_resolution() is called at the defensive
+# pre-work merge site so usage-cap (exit 5) propagates to batch abort.
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+fi
+
 # Store the absolute path to THIS script for re-execution
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
@@ -1874,11 +1882,35 @@ if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
       fi
       print_success "Merged origin/main into branch"
     else
-      # Merge conflict — abort and fail fast rather than auto-resolving
+      # Merge conflict — abort, then attempt Claude-assisted resolution in auto mode.
+      # Exit codes: 0=resolved, 1=could not resolve, 5=usage-cap (must propagate — batch-blocking).
       git merge --abort 2>/dev/null || true
-      print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
-      print_info "Resolve manually: git merge origin/main"
-      exit 1
+      _cw_merge_r=0
+      if [ "${AUTO_MODE:-false}" = true ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+        print_status "Attempting Claude-assisted conflict resolution..."
+        attempt_claude_merge_resolution "${BRANCH_NAME:-}" "${ISSUE_NUMBER:-}" "" || _cw_merge_r=$?
+      else
+        _cw_merge_r=1
+      fi
+      if [ "$_cw_merge_r" -eq 5 ]; then
+        # Usage cap — propagate so batch aborts cleanly
+        print_error "Claude usage cap reached during conflict resolution — aborting batch"
+        exit 5
+      elif [ "$_cw_merge_r" -eq 0 ]; then
+        # Resolver committed a clean merge — verify no semantic conflicts
+        source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+        if ! verify_post_merge "."; then
+          print_warning "Conflict resolution succeeded at git level but tests fail"
+          print_error "Silent semantic conflict after resolution ($BEHIND_COUNT commits behind)"
+          print_info "Resolve manually: git merge origin/main, then fix failing tests"
+          exit 1
+        fi
+        print_success "Conflicts resolved by Claude — continuing"
+      else
+        print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
+        print_info "Resolve manually: git merge origin/main"
+        exit 1
+      fi
     fi
     fi
   fi

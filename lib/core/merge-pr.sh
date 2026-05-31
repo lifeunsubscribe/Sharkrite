@@ -25,6 +25,13 @@ fi
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source conflict resolver if available (provided by issue #21).
+# Guarded: merge-pr works without it — resolver is an enhancement.
+# When present, attempt_claude_merge_resolution() is called at git conflict sites.
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+fi
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -453,8 +460,37 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
       fi
     else
       git merge --abort 2>/dev/null || true
-      print_error "PR has merge conflicts that could not be auto-resolved"
-      VALIDATION_FAILED=true
+      # Git-level merge failed (conflicts). In auto mode, attempt Claude-assisted resolution.
+      # Exit codes: 0=resolved, 1=could not resolve, 5=usage-cap (must propagate — batch-blocking).
+      _merge_r=0
+      if [ "$AUTO_MODE" = true ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+        print_status "Attempting Claude-assisted conflict resolution..."
+        attempt_claude_merge_resolution "$PR_HEAD" "${ISSUE_NUMBER:-}" "$PR_NUMBER" || _merge_r=$?
+      else
+        _merge_r=1
+      fi
+      if [ "$_merge_r" -eq 5 ]; then
+        print_error "Claude usage cap reached during conflict resolution — aborting batch"
+        exit 5
+      elif [ "$_merge_r" -eq 0 ]; then
+        if git push origin "$PR_HEAD" 2>/dev/null; then
+          print_success "Conflicts resolved by Claude — re-checking mergeable state"
+          sleep 3
+          PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+          if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
+            print_success "PR is now mergeable"
+          else
+            print_error "PR still not mergeable after conflict resolution (state: $PR_MERGEABLE)"
+            VALIDATION_FAILED=true
+          fi
+        else
+          print_error "Push failed after conflict resolution"
+          VALIDATION_FAILED=true
+        fi
+      else
+        print_error "PR has merge conflicts that could not be auto-resolved"
+        VALIDATION_FAILED=true
+      fi
     fi
   else
     print_info "Mergeable state is uncertain, will attempt merge anyway"
@@ -688,17 +724,47 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable|405"; then
     print_warning "PR is not mergeable — attempting branch update against main"
     git fetch origin main 2>/dev/null || true
-    if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
-      print_status "Branch updated — retrying merge..."
-      sleep 3
-      EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-      _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
-        -X PUT \
-        -f merge_method="$MERGE_METHOD" \
-        -f sha="$EXPECTED_HEAD"
+    if git merge origin/main --no-edit 2>/dev/null; then
+      if git push origin "$PR_HEAD" 2>/dev/null; then
+        print_status "Branch updated — retrying merge..."
+        sleep 3
+        EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+        _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+          -X PUT \
+          -f merge_method="$MERGE_METHOD" \
+          -f sha="$EXPECTED_HEAD"
+      else
+        print_error "Push failed after updating branch against main"
+      fi
     else
       git merge --abort 2>/dev/null || true
-      print_error "Could not update branch against main"
+      # Git-level merge failed (conflicts). In auto mode, attempt Claude-assisted resolution.
+      # Exit codes: 0=resolved, 1=could not resolve, 5=usage-cap (must propagate — batch-blocking).
+      _merge_r2=0
+      if [ "$AUTO_MODE" = true ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+        print_status "Attempting Claude-assisted conflict resolution..."
+        attempt_claude_merge_resolution "$PR_HEAD" "${ISSUE_NUMBER:-}" "$PR_NUMBER" || _merge_r2=$?
+      else
+        _merge_r2=1
+      fi
+      if [ "$_merge_r2" -eq 5 ]; then
+        print_error "Claude usage cap reached during conflict resolution — aborting batch"
+        exit 5
+      elif [ "$_merge_r2" -eq 0 ]; then
+        if git push origin "$PR_HEAD" 2>/dev/null; then
+          print_status "Conflicts resolved — retrying merge..."
+          sleep 3
+          EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+          _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+            -X PUT \
+            -f merge_method="$MERGE_METHOD" \
+            -f sha="$EXPECTED_HEAD"
+        else
+          print_error "Push failed after conflict resolution"
+        fi
+      else
+        print_error "Could not update branch against main"
+      fi
     fi
   fi
 else
@@ -710,13 +776,39 @@ else
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
     print_warning "PR is not mergeable — attempting branch update against main"
     git fetch origin main 2>/dev/null || true
-    if git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
-      print_status "Branch updated — retrying merge..."
-      sleep 3
-      _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+    if git merge origin/main --no-edit 2>/dev/null; then
+      if git push origin "$PR_HEAD" 2>/dev/null; then
+        print_status "Branch updated — retrying merge..."
+        sleep 3
+        _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+      else
+        print_error "Push failed after updating branch against main"
+      fi
     else
       git merge --abort 2>/dev/null || true
-      print_error "Could not update branch against main"
+      # Git-level merge failed (conflicts). In auto mode, attempt Claude-assisted resolution.
+      # Exit codes: 0=resolved, 1=could not resolve, 5=usage-cap (must propagate — batch-blocking).
+      _merge_r3=0
+      if [ "$AUTO_MODE" = true ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+        print_status "Attempting Claude-assisted conflict resolution..."
+        attempt_claude_merge_resolution "$PR_HEAD" "${ISSUE_NUMBER:-}" "$PR_NUMBER" || _merge_r3=$?
+      else
+        _merge_r3=1
+      fi
+      if [ "$_merge_r3" -eq 5 ]; then
+        print_error "Claude usage cap reached during conflict resolution — aborting batch"
+        exit 5
+      elif [ "$_merge_r3" -eq 0 ]; then
+        if git push origin "$PR_HEAD" 2>/dev/null; then
+          print_status "Conflicts resolved — retrying merge..."
+          sleep 3
+          _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+        else
+          print_error "Push failed after conflict resolution"
+        fi
+      else
+        print_error "Could not update branch against main"
+      fi
     fi
   fi
 fi
