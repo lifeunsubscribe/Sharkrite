@@ -49,33 +49,20 @@ teardown() {
 }
 
 @test "venv bootstrap: base requirements install failure does NOT print 'Venv ready'" {
-  # Create a pip shim that always fails
-  cat > "$SHIM_DIR/pip" <<'EOF'
+  # First create a real venv so we can mock its pip
+  python3 -m venv .venv
+
+  # Replace the venv's pip with a failing shim
+  cat > ".venv/bin/pip" <<'EOF'
 #!/bin/bash
 echo "ERROR: Simulated pip install failure" >&2
 exit 1
 EOF
-  chmod +x "$SHIM_DIR/pip"
-
-  # Create python3 shim that uses real python but our fake pip for venv creation
-  # The -m venv part should succeed, but pip install will fail
-  cat > "$SHIM_DIR/python3" <<EOF
-#!/bin/bash
-# For venv creation, use real python3
-if [[ "\$*" == *"venv"* ]]; then
-  exec $(which python3) "\$@"
-fi
-# Otherwise use real python3
-exec $(which python3) "\$@"
-EOF
-  chmod +x "$SHIM_DIR/python3"
-
-  # Prepend our shim directory to PATH
-  export PATH="$SHIM_DIR:$PATH"
+  chmod +x ".venv/bin/pip"
 
   # Run the test gate function (which triggers venv bootstrap)
-  # Redirect stderr to capture output since print_* functions use stderr
-  run bash -c "run_test_gate 2>&1"
+  # The venv already exists, so bootstrap will skip creation and go straight to pip install
+  run run_test_gate
 
   # Should NOT contain "Venv ready ✅"
   ! [[ "$output" =~ "Venv ready" ]]
@@ -85,31 +72,27 @@ EOF
 }
 
 @test "venv bootstrap: dev requirements install failure does NOT print 'Venv ready'" {
-  # Create python3 shim that succeeds (uses real python)
-  cat > "$SHIM_DIR/python3" <<EOF
-#!/bin/bash
-exec $(which python3) "\$@"
-EOF
-  chmod +x "$SHIM_DIR/python3"
+  # First create a real venv
+  python3 -m venv .venv
 
-  # Create pip shim that fails ONLY for requirements-dev.txt
-  cat > "$SHIM_DIR/pip" <<'EOF'
+  # Get the real pip path for delegation
+  REAL_PIP=$(which pip3 || which pip)
+
+  # Replace the venv's pip with a shim that fails ONLY for requirements-dev.txt
+  cat > ".venv/bin/pip" <<EOF
 #!/bin/bash
 # Fail for dev requirements, succeed for base requirements
-if [[ "$*" == *"requirements-dev.txt"* ]]; then
+if [[ "\$*" == *"requirements-dev.txt"* ]]; then
   echo "ERROR: Simulated dev requirements install failure" >&2
   exit 1
 fi
-# For base requirements, use real pip
-exec $(which pip) "$@"
+# For base requirements, delegate to real pip
+exec "$REAL_PIP" "\$@"
 EOF
-  chmod +x "$SHIM_DIR/pip"
-
-  # Prepend our shim directory to PATH
-  export PATH="$SHIM_DIR:$PATH"
+  chmod +x ".venv/bin/pip"
 
   # Run the test gate (triggers bootstrap)
-  run bash -c "run_test_gate 2>&1"
+  run run_test_gate
 
   # Should NOT contain "Venv ready ✅"
   ! [[ "$output" =~ "Venv ready" ]]
@@ -124,7 +107,7 @@ EOF
 
   # Use real python3 and pip (no shims)
   # Just run the bootstrap
-  run bash -c "run_test_gate 2>&1"
+  run run_test_gate
 
   # Should print success if installs worked
   # Note: This might fail if pytest isn't actually available, but that's okay —
@@ -142,35 +125,32 @@ EOF
   # Create a scenario where pip succeeds but pytest isn't actually importable
   # This simulates a broken install state
 
-  # Create python3 shim
-  cat > "$SHIM_DIR/python3" <<EOF
-#!/bin/bash
-# For venv creation, use real python
-if [[ "\$*" == *"venv"* ]]; then
-  exec $(which python3) "\$@"
-fi
+  # First create a real venv
+  python3 -m venv .venv
 
+  # Replace the venv's pip with a shim that succeeds but doesn't actually install anything
+  cat > ".venv/bin/pip" <<'EOF'
+#!/bin/bash
+# Pretend to succeed without doing anything
+exit 0
+EOF
+  chmod +x ".venv/bin/pip"
+
+  # Replace the venv's python with a shim that fails pytest imports
+  REAL_PYTHON=$(which python3)
+  cat > ".venv/bin/python" <<EOF
+#!/bin/bash
 # For pytest import check, fail
 if [[ "\$*" == *"import pytest"* ]]; then
   exit 1
 fi
 
 # Otherwise use real python
-exec $(which python3) "\$@"
+exec "$REAL_PYTHON" "\$@"
 EOF
-  chmod +x "$SHIM_DIR/python3"
+  chmod +x ".venv/bin/python"
 
-  # Create pip shim that succeeds but doesn't actually install anything
-  cat > "$SHIM_DIR/pip" <<'EOF'
-#!/bin/bash
-# Pretend to succeed without doing anything
-exit 0
-EOF
-  chmod +x "$SHIM_DIR/pip"
-
-  export PATH="$SHIM_DIR:$PATH"
-
-  run bash -c "run_test_gate 2>&1"
+  run run_test_gate
 
   # Should NOT print "Venv ready"
   ! [[ "$output" =~ "Venv ready" ]]
