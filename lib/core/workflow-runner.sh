@@ -23,6 +23,7 @@ source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
@@ -500,7 +501,7 @@ EOF
               cd "$WORKTREE_PATH" || exit 1
               STASH_MSG="Auto-stash unrelated work before issue #$issue_number ($(date +%Y-%m-%d))"
 
-              if git stash push -u -m "$STASH_MSG" 2>/dev/null; then
+              if create_sharkrite_stash "$STASH_MSG" true; then
                 echo "   ✅ Changes stashed: $STASH_MSG"
                 echo "   ℹ️  Will be restored after workflow completes"
 
