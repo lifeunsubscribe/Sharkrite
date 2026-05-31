@@ -100,6 +100,9 @@ _setup_conflicting_branch() {
   local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null)
   [ "$remote_sha" = "$local_sha" ]
 
+  # Verify origin/main is actually an ancestor of HEAD — confirms rebase outcome, not just push
+  git -C "$WORKTREE_PATH" merge-base --is-ancestor origin/main HEAD
+
   # Clean up
   cd "$FIXTURE_REPO"
   git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true

@@ -1734,6 +1734,9 @@ run_workflow() {
       unset PR_NUMBER 2>/dev/null || true
       export -n PR_NUMBER 2>/dev/null || true
       print_info "Workflow will start fresh on issue #$issue_number"
+    elif [ $stale_result -eq 5 ]; then
+      # Usage cap hit during conflict resolution — propagate so batch can abort cleanly
+      return 5
     elif [ $stale_result -eq 1 ]; then
       return 1
     fi

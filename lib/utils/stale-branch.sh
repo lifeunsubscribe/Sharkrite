@@ -261,6 +261,12 @@ _stale_rebase_onto_main() {
       attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
       if [ "$_resolver_result" -eq 0 ]; then
         print_success "Conflicts resolved by Claude"
+        # Verify resolution didn't introduce silent semantic conflicts (tests pass)
+        if ! verify_post_merge "$worktree_path"; then
+          print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
+          print_error "Post-resolution verification failed — cannot proceed in auto mode"
+          return 1
+        fi
         # Resolution committed the result — push with force-with-lease (rebase rewrote history)
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
           print_success "Branch rebased onto origin/main (with conflict resolution)"
@@ -381,6 +387,12 @@ _stale_merge_main_legacy() {
       attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
       if [ "$_resolver_result" -eq 0 ]; then
         print_success "Conflicts resolved by Claude"
+        # Verify resolution didn't introduce silent semantic conflicts (tests pass)
+        if ! verify_post_merge "$worktree_path"; then
+          print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
+          print_error "Post-resolution verification failed — cannot proceed in auto mode"
+          return 1
+        fi
         # Resolution committed the result — regular push (merge doesn't rewrite history)
         if git push origin "$branch_name" 2>/dev/null; then
           print_success "Branch updated with main (conflict resolved)"
