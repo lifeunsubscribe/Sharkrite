@@ -178,3 +178,35 @@ _setup_conflicting_branch() {
   git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
   git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
 }
+
+# ───────────────────────────────────────────────────────────────────
+# Test 4: Exit-5 propagates through check_stale_branch public entry point
+# ───────────────────────────────────────────────────────────────────
+@test "check_stale_branch: exit 5 propagates from resolver through public entry point" {
+  _setup_conflicting_branch
+
+  # Stub: resolver hits usage cap
+  attempt_claude_merge_resolution() {
+    return 5
+  }
+
+  # Set threshold high enough that branch (1 commit behind) takes the rebase path
+  export RITE_STALE_BRANCH_THRESHOLD=10
+
+  # Capture output and exit code from the PUBLIC entry point
+  local output
+  output=$(check_stale_branch "$WORKTREE_PATH" "101" "75" "unsupervised" 2>&1) || true
+  local exit_code=$?
+
+  # Must propagate exit 5 exactly through the public entry point
+  [ "$exit_code" -eq 5 ]
+
+  # Output should mention usage cap
+  echo "$output" | grep -qi "usage cap\|usage-cap"
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
+}

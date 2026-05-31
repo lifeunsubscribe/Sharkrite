@@ -585,6 +585,15 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"
       fi
 
+    elif [ $EXIT_CODE -eq 5 ]; then
+      # Usage cap reached — abort the entire batch to avoid hammering the API
+      print_error "Issue #$ISSUE_NUM hit usage cap (exit code: 5) — aborting batch"
+      print_info "Duration: ${ISSUE_DURATION}s"
+      echo ""
+      FAILED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
+      break
+
     elif [ $EXIT_CODE -eq 10 ]; then
       # Blocker detected - defer instead of stopping
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"

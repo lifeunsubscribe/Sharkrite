@@ -1270,7 +1270,7 @@ If the changes are unrelated work, answer UNRELATED."
         fi
 
         set +e
-        check_stale_branch "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}" "$ISSUE_NUMBER" "${WORKFLOW_MODE:-auto}"
+        check_stale_branch "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}" "$ISSUE_NUMBER" "${WORKFLOW_MODE:-unsupervised}"
         _stale_exit=$?
         set -e
 

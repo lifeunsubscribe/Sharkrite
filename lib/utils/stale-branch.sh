@@ -70,6 +70,7 @@ get_commits_behind_main() {
 # Exit codes:
 #   0  = continue workflow (branch is current, or was merged with main)
 #   1  = abort (user chose abort, or unrecoverable error)
+#   5  = usage cap reached during conflict resolution (caller must abort batch)
 #   10 = restarted fresh (PR closed, artifacts cleaned — caller must reset variables)
 check_stale_branch() {
   local worktree_path="$1"

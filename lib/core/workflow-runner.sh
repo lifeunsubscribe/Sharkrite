@@ -2084,6 +2084,9 @@ main() {
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6
+  elif [ $workflow_exit -eq 5 ]; then
+    # Usage cap reached — propagate exit 5 so batch can abort cleanly
+    exit 5
   else
     print_error "Workflow failed"
     exit 1
