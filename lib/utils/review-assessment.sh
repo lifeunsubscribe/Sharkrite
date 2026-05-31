@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Source gh_safe retry wrapper (guards against double-source via _GH_RETRY_SOURCED)
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Function: assess_pr_review
 # Extracts latest review and saves it for Claude assessment
 # Usage: assess_pr_review <pr-number>
@@ -37,7 +42,7 @@ assess_pr_review() {
 
   # Get the LATEST review only (match by body marker, not author — avoids picking up
   # assessment or other bot comments). Sorted by createdAt to ensure newest first.
-  local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
+  local LATEST_REVIEW=$(gh_safe pr view "$PR_NUMBER" --json comments \
     --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0].body' \
     2>/dev/null)
 

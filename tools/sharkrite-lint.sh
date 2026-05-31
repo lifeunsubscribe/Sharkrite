@@ -372,6 +372,31 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
+# Rule 13: Bare gh pr/issue/api calls with 2>/dev/null || echo/true (bypasses gh_safe retry)
+# These patterns swallow transient failures (429, 5xx) silently — use gh_safe instead.
+# gh-retry.sh itself is excluded since it's the authoritative wrapper implementation.
+echo "Checking for bare 'gh pr/issue/api ... 2>/dev/null || echo/true' (bypasses gh_safe)..."
+for file in "${SHELL_FILES[@]}"; do
+  # Skip gh-retry.sh itself — it's the implementation of the wrapper
+  if [[ "$file" == */gh-retry.sh ]]; then
+    continue
+  fi
+  while IFS=: read -r line_num line_content; do
+    # Skip comment lines
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    # Match: gh (pr|issue|api) ... 2>/dev/null || echo or || true
+    # Only fire when the line does NOT already use gh_safe
+    if echo "$line_content" | grep -qE '\bgh (pr|issue|api) [^|]+2>/dev/null \|\| (echo|true)'; then
+      if ! echo "$line_content" | grep -qE '\bgh_safe\b'; then
+        print_violation "$file" "$line_num" "GH_CALL_BYPASSES_GH_SAFE" \
+          "Bare 'gh (pr|issue|api) ... 2>/dev/null || (echo|true)' swallows transient failures — use gh_safe instead"
+      fi
+    fi
+  done < <(grep -n '\bgh \(pr\|issue\|api\)' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

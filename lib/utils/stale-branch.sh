@@ -18,6 +18,7 @@ fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 # Source post-merge verification utilities
 if ! source "$RITE_LIB_DIR/utils/post-merge-verify.sh"; then
@@ -460,7 +461,7 @@ _stale_close_and_cleanup() {
   local comment_file
   comment_file=$(mktemp)
   printf '%s' "$comment_body" > "$comment_file"
-  if ! gh pr comment "$pr_number" --body-file "$comment_file" 2>/dev/null; then
+  if ! gh_safe pr comment "$pr_number" --body-file "$comment_file" 2>/dev/null; then
     print_warning "Failed to post close comment on PR #$pr_number"
   fi
   rm -f "$comment_file"
@@ -473,7 +474,7 @@ _stale_close_and_cleanup() {
   local _pr_close_output
   local _pr_close_exit_file
   _pr_close_exit_file=$(mktemp)
-  _pr_close_output=$(gh pr close "$pr_number" 2>&1; echo $? > "$_pr_close_exit_file") || true
+  _pr_close_output=$(gh_safe pr close "$pr_number" 2>&1; echo $? > "$_pr_close_exit_file") || true
   local _pr_close_exit
   _pr_close_exit=$(cat "$_pr_close_exit_file" 2>/dev/null || echo "1")
   rm -f "$_pr_close_exit_file"

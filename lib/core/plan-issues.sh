@@ -31,6 +31,7 @@ fi
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_REVIEW_PROVIDER:-claude}"
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
 # =============================================================================
@@ -136,7 +137,7 @@ $(cat "$doc")
 
   # Load existing open issues to avoid duplicates and link dependencies
   local existing_issues=""
-  existing_issues=$(gh issue list --state open --limit 50 --json number,title,labels \
+  existing_issues=$(gh_safe issue list --state open --limit 50 --json number,title,labels \
     --jq '.[] | "#\(.number) \(.title) [\([.labels[].name] | join(", "))]"' 2>/dev/null || echo "")
 
   # Detect repo's existing labels for accurate label suggestions
@@ -1264,7 +1265,7 @@ create_issues() {
         printf '%s' "$current_body" > "$body_file"
 
         local issue_url gh_exit
-        issue_url=$(gh issue create \
+        issue_url=$(gh_safe issue create \
           --title "$current_title" \
           "${gh_args[@]}" \
           --body-file "$body_file" < /dev/null 2>&1) && gh_exit=0 || gh_exit=$?

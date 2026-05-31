@@ -15,6 +15,11 @@ if [ -n "${RITE_LIB_DIR:-}" ] && [ -f "$RITE_LIB_DIR/utils/labels.sh" ]; then
   source "$RITE_LIB_DIR/utils/labels.sh"
 fi
 
+# Source gh_safe retry wrapper
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Update scratchpad with security findings from PR review
 update_scratchpad_from_pr() {
   local pr_number="$1"
@@ -27,7 +32,7 @@ update_scratchpad_from_pr() {
   echo "Updating scratchpad with PR #$pr_number findings..."
 
   # Get PR review
-  local review_body=$(gh pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1].body' 2>/dev/null || echo "")
+  local review_body=$(gh_safe pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1].body' 2>/dev/null || echo "")
 
   if [ -z "$review_body" ] || [ "$review_body" = "null" ]; then
     echo "No review found for PR #$pr_number"
@@ -390,7 +395,7 @@ create_tech_debt_issues() {
     # The marker is a single alphanumeric token — no quoting needed, and GitHub
     # will match it as a whole word against body text.
     local existing
-    existing=$(gh issue list -S "${_dedup_marker} in:body" --state all --json number --jq '.[0].number' 2>/dev/null || echo "")
+    existing=$(gh_safe issue list -S "${_dedup_marker} in:body" --state all --json number --jq '.[0].number' 2>/dev/null || echo "")
 
     if [ -n "$existing" ] && [ "$existing" != "null" ]; then
       echo "Tech-debt issue already exists for ${location}: #${existing}" >&2
@@ -444,7 +449,7 @@ EOF
     body_file=$(mktemp)
     printf '%s' "$issue_body" > "$body_file"
     ensure_labels_exist "tech-debt,automated"
-    if gh issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated" 2>/dev/null; then
+    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated" 2>/dev/null; then
       created=$((created + 1))
       echo "Created tech-debt issue: ${issue_title}" >&2
     else

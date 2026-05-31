@@ -21,6 +21,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
@@ -67,7 +68,7 @@ fi
 
 # Resolve issue number: from env (workflow), or from PR body (standalone)
 if [ -z "${ISSUE_NUMBER:-}" ]; then
-  ISSUE_NUMBER=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 fi
 
 print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
@@ -75,7 +76,7 @@ echo ""
 
 # Get PR info
 print_status "Fetching PR information..."
-PR_INFO=$(gh pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url 2>&1) || {
+PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url 2>&1) || {
   print_error "Failed to fetch PR #$PR_NUMBER"
   echo "$PR_INFO"
   exit 1
@@ -104,7 +105,7 @@ GH_DIFF_SUCCESS=false
 while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
   DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
 
-  GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
+  GH_DIFF_ERROR=$(gh_safe pr diff "$PR_NUMBER" 2>&1) && {
     PR_DIFF="$GH_DIFF_ERROR"
     GH_DIFF_SUCCESS=true
     break
@@ -157,7 +158,7 @@ if [ "$DIFF_FILES" -eq 0 ] || [ -z "$PR_DIFF" ] || [ "$PR_DIFF" = "" ]; then
   # A mismatch (GitHub says N > 0 but diff is empty) indicates a silent fetch
   # failure (e.g., GitHub returned 200 OK with an empty body, or git diff ran
   # against stale refs). A match at 0 means the PR genuinely has no changes.
-  GH_CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' 2>/dev/null || echo "0")
+  GH_CHANGED_FILES=$(gh_safe pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' 2>/dev/null || echo "0")
   # Sanitize: strip whitespace and ensure it's numeric; default to 0 on error.
   GH_CHANGED_FILES=$(echo "$GH_CHANGED_FILES" | tr -d '[:space:]')
   if ! echo "$GH_CHANGED_FILES" | grep -qE '^[0-9]+$'; then
@@ -412,7 +413,7 @@ if [ "$POST_REVIEW" = true ]; then
   post_success=false
   while [ $post_attempt -lt $post_max ]; do
     post_attempt=$((post_attempt + 1))
-    REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1) && {
+    REVIEW_RESULT=$(gh_safe pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1) && {
       post_success=true
       break
     }

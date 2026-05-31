@@ -32,6 +32,7 @@ source "$RITE_LIB_DIR/utils/date-helpers.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -48,7 +49,7 @@ check_assessment_freshness() {
 
   # Find the most recent assessment comment timestamp
   local assessment_timestamp
-  assessment_timestamp=$(gh pr view "$pr_number" --json comments \
+  assessment_timestamp=$(gh_safe pr view "$pr_number" --json comments \
     --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt' 2>/dev/null || echo "")
 
   if [ -z "$assessment_timestamp" ] || [ "$assessment_timestamp" = "null" ]; then
@@ -74,7 +75,7 @@ check_assessment_freshness() {
 
   # Assessment is fresh — return the assessment content (after the --- separator)
   local assessment_body
-  assessment_body=$(gh pr view "$pr_number" --json comments \
+  assessment_body=$(gh_safe pr view "$pr_number" --json comments \
     --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' 2>/dev/null || echo "")
 
   echo "$assessment_body" | sed -n '/^---$/,$p' | tail -n +2
@@ -129,7 +130,7 @@ build_prior_decisions_ledger() {
   # Fetch all sharkrite assessment comments, newest first
   # (newest-first + skip-if-seen = latest classification wins, no declare -A needed)
   local assessments_json
-  assessments_json=$(gh pr view "$pr_number" --json comments \
+  assessments_json=$(gh_safe pr view "$pr_number" --json comments \
     --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse' \
     2>/dev/null || echo "[]")
 
@@ -266,9 +267,9 @@ if [ -n "$FINDINGS_LINE" ]; then
 fi
 
 # Get original issue context for scope assessment
-ISSUE_CONTEXT=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE 'Closes #[0-9]+|Fixes #[0-9]+|Resolves #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+ISSUE_CONTEXT=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE 'Closes #[0-9]+|Fixes #[0-9]+|Resolves #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -n "$ISSUE_CONTEXT" ]; then
-  ISSUE_DETAILS=$(gh issue view "$ISSUE_CONTEXT" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n\n" + .body' 2>/dev/null || echo "Issue context unavailable")
+  ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_CONTEXT" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n\n" + .body' 2>/dev/null || echo "Issue context unavailable")
 else
   ISSUE_DETAILS="Issue context unavailable (PR not linked to an issue)"
 fi
@@ -767,7 +768,7 @@ ${ASSESSMENT_OUTPUT}"
 print_status "Posting assessment to PR #$PR_NUMBER..."
 ASSESSMENT_BODY_FILE=$(mktemp)
 printf '%s' "$ASSESSMENT_COMMENT" > "$ASSESSMENT_BODY_FILE"
-if gh pr comment "$PR_NUMBER" --body-file "$ASSESSMENT_BODY_FILE" >/dev/null 2>&1; then
+if gh_safe pr comment "$PR_NUMBER" --body-file "$ASSESSMENT_BODY_FILE" >/dev/null 2>&1; then
   print_success "Assessment posted to PR"
 else
   print_warning "Failed to post assessment comment (continuing anyway)"
@@ -782,12 +783,12 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   print_status "Processing $ACTIONABLE_LATER_COUNT ACTIONABLE_LATER items..."
 
   # Get existing open tech-debt and review-follow-up issues to check for duplicates
-  EXISTING_TECH_DEBT=$(gh issue list --state open --label "tech-debt" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
-  EXISTING_FOLLOWUPS=$(gh issue list --state open --label "review-follow-up" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
+  EXISTING_TECH_DEBT=$(gh_safe issue list --state open --label "tech-debt" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
+  EXISTING_FOLLOWUPS=$(gh_safe issue list --state open --label "review-follow-up" --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || echo "")
   EXISTING_ISSUES=$(printf '%s\n%s' "$EXISTING_TECH_DEBT" "$EXISTING_FOLLOWUPS" | grep -v '^$' || echo "")
 
   # Also check for issues already linked to this PR
-  PR_LINKED_ISSUES=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE "Follow-up.*#[0-9]+" | grep -oE "#[0-9]+" || echo "")
+  PR_LINKED_ISSUES=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE "Follow-up.*#[0-9]+" | grep -oE "#[0-9]+" || echo "")
 
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
@@ -854,7 +855,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
             [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
               SEARCH_QUALIFIER="sharkrite-source-issue:${RITE_ISSUE_NUMBER} $REASONING_KEYWORDS in:body"
-            DUPLICATE_ISSUE=$(gh issue list \
+            DUPLICATE_ISSUE=$(gh_safe issue list \
               --state open \
               --search "$SEARCH_QUALIFIER" \
               --json number \
@@ -864,7 +865,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
 
         if [ -n "$DUPLICATE_ISSUE" ]; then
           # Only update if the existing body is missing content we have
-          EXISTING_BODY=$(gh issue view "$DUPLICATE_ISSUE" --json body --jq '.body' 2>/dev/null || echo "")
+          EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body' 2>/dev/null || echo "")
           REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60)
           if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
             print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
@@ -885,7 +886,7 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
 
             EDIT_BODY_FILE=$(mktemp)
             printf '%s' "$UPDATED_BODY" > "$EDIT_BODY_FILE"
-            gh issue edit "$DUPLICATE_ISSUE" --body-file "$EDIT_BODY_FILE" >/dev/null 2>&1 && \
+            gh_safe issue edit "$DUPLICATE_ISSUE" --body-file "$EDIT_BODY_FILE" >/dev/null 2>&1 && \
               UPDATED_ISSUES="${UPDATED_ISSUES}#${DUPLICATE_ISSUE} "
             rm -f "$EDIT_BODY_FILE"
           fi
@@ -915,7 +916,7 @@ _Parent PR: #${PR_NUMBER}_"
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
           ensure_labels_exist "tech-debt,from-review"
-          ISSUE_URL=$(gh issue create \
+          ISSUE_URL=$(gh_safe issue create \
             --title "$ITEM_TITLE" \
             --body-file "$CREATE_BODY_FILE" \
             --label "tech-debt" \
@@ -954,7 +955,7 @@ _Parent PR: #${PR_NUMBER}_"
   if [ -n "$CREATED_ISSUES" ] || [ -n "$UPDATED_ISSUES" ]; then
     print_status "Updating PR body with follow-up issue links..."
 
-    CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null)
+    CURRENT_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null)
 
     # Check if follow-up section already exists
     if echo "$CURRENT_BODY" | grep -q "## Follow-up Issues"; then
@@ -980,7 +981,7 @@ ${NEW_ISSUES_LINE}")
 
     PR_EDIT_BODY_FILE=$(mktemp)
     printf '%s' "$UPDATED_BODY" > "$PR_EDIT_BODY_FILE"
-    gh pr edit "$PR_NUMBER" --body-file "$PR_EDIT_BODY_FILE" >/dev/null 2>&1 && \
+    gh_safe pr edit "$PR_NUMBER" --body-file "$PR_EDIT_BODY_FILE" >/dev/null 2>&1 && \
       print_success "PR body updated with follow-up links" || \
       print_warning "Failed to update PR body"
     rm -f "$PR_EDIT_BODY_FILE"

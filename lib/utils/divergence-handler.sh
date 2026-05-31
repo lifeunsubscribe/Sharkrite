@@ -29,6 +29,7 @@ source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
 
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 # Source conflict resolver if available (provided by issue #21).
 # Guarded: divergence-handler works without it — resolver is an enhancement,
@@ -174,7 +175,7 @@ classify_foreign_commits() {
 
   local issue_context=""
   if [ -n "$issue_number" ]; then
-    issue_context=$(gh issue view "$issue_number" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n" + .body' 2>/dev/null || echo "Issue #$issue_number")
+    issue_context=$(gh_safe issue view "$issue_number" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n" + .body' 2>/dev/null || echo "Issue #$issue_number")
   fi
 
   local diff_stat
@@ -302,7 +303,7 @@ _handle_related() {
   local reviewed=false
   if [ -n "$pr_number" ]; then
     local assess_time
-    assess_time=$(gh pr view "$pr_number" --json comments \
+    assess_time=$(gh_safe pr view "$pr_number" --json comments \
       --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt // ""' \
       2>/dev/null || echo "")
 
@@ -599,7 +600,7 @@ verify_pr_head() {
   local expected_sha="$2"
 
   export PR_CURRENT_HEAD
-  PR_CURRENT_HEAD=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+  PR_CURRENT_HEAD=$(gh_safe pr view "$pr_number" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
 
   if [ -z "$PR_CURRENT_HEAD" ]; then
     _div_warning "Could not fetch PR head SHA — skipping verification" >&2

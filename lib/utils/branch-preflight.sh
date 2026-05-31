@@ -20,6 +20,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
 # Source stale-branch utilities for commits-behind detection
 if ! source "$RITE_LIB_DIR/utils/stale-branch.sh" 2>/dev/null; then
@@ -167,7 +168,7 @@ preflight_auto_recover_empty() {
   local _preflight_pr_close_ok=false
   if [ -n "$pr_number" ]; then
     local pr_state
-    pr_state=$(gh pr view "$pr_number" --json isDraft,state --jq '.isDraft,.state' 2>/dev/null | paste -sd ',' - || echo "")
+    pr_state=$(gh_safe pr view "$pr_number" --json isDraft,state --jq '.isDraft,.state' 2>/dev/null | paste -sd ',' - || echo "")
 
     # Validate pr_state before checking (protect against paste/gh failures)
     if [ -z "$pr_state" ] || ! echo "$pr_state" | grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$'; then
@@ -179,7 +180,7 @@ preflight_auto_recover_empty() {
     elif echo "$pr_state" | grep -q "true"; then
       # Draft PR — check if it has zero additions (empty)
       local additions
-      additions=$(gh pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
+      additions=$(gh_safe pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
       # Normalize: gh can return empty or "null" on API errors; coerce to integer
       if ! [[ "$additions" =~ ^[0-9]+$ ]]; then
         additions=0
@@ -188,12 +189,12 @@ preflight_auto_recover_empty() {
       if [ "$additions" -eq 0 ]; then
         print_status "Closing empty draft PR #$pr_number..."
         local close_comment="Auto-closing: Branch has no real work (only init commit). Restarting fresh."
-        echo "$close_comment" | gh pr comment "$pr_number" --body-file - 2>/dev/null || true
+        echo "$close_comment" | gh_safe pr comment "$pr_number" --body-file - 2>/dev/null || true
         # Capture exit code via temp file — avoids set -e trap on failing $() substitution
         local _close_exit_file
         _close_exit_file=$(mktemp)
         local _close_out
-        _close_out=$(gh pr close "$pr_number" 2>&1; echo $? > "$_close_exit_file") || true
+        _close_out=$(gh_safe pr close "$pr_number" 2>&1; echo $? > "$_close_exit_file") || true
         local _close_exit
         _close_exit=$(cat "$_close_exit_file" 2>/dev/null || echo "1")
         rm -f "$_close_exit_file"
