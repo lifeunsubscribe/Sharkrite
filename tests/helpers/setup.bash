@@ -15,8 +15,7 @@ export RITE_REPO_ROOT
 # Create unique temp directory for this test
 # Will be cleaned up automatically by bats after test completes
 setup_test_tmpdir() {
-  export RITE_TEST_TMPDIR="${BATS_TEST_TMPDIR}/rite-test-$$-${RANDOM}"
-  mkdir -p "$RITE_TEST_TMPDIR"
+  export RITE_TEST_TMPDIR="$(mktemp -d "${BATS_TEST_TMPDIR}/rite-test.XXXXXX")"
   cd "$RITE_TEST_TMPDIR"
 }
 
