@@ -487,6 +487,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f detect_test_failures
   export -f detect_expensive_services
   export -f detect_session_limit
+  export -f detect_aws_project
   export -f detect_credentials_expired
   export -f detect_protected_scripts
   export -f detect_sensitivity_areas

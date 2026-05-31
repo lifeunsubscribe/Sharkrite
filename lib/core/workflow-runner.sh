@@ -1864,10 +1864,13 @@ run_workflow() {
   # Also force-run when resuming from a saved blocker that requires re-validation:
   # skip_to_phase reflects PR/review state, NOT whether the original blocker has
   # been resolved, so we must re-check before proceeding.
-  # Reasons that actually get persisted by save_session_state_with_phase:
-  #   credentials_expired — AWS creds invalid at pre-merge
-  #   test_failures       — test suite failed during dev or fix phase
-  #   session_limit       — token/time limit reached
+  # Reasons that require a pre-start re-check (subset of persisted blocker reasons):
+  #   credentials_expired — AWS creds invalid at pre-merge; must re-validate before resuming
+  #   test_failures       — test suite failed during dev or fix phase; must re-run before resuming
+  #   session_limit       — token/time limit reached; environment may have changed
+  # Excluded reasons (no pre-start re-check needed):
+  #   critical_issues     — the pre-merge gate in merge-pr.sh already re-validates review
+  #                         findings before merging; a pre-start re-check would be redundant
   # (interrupted is set by the INT/TERM trap and does NOT require a pre-start re-check)
   local _force_prestart=false
   case "${RESUME_BLOCKER_REASON:-}" in
