@@ -729,8 +729,9 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
   set +e
   CLEANUP_FAILED=false
 
-  # Trap errors during cleanup phase to set CLEANUP_FAILED flag
-  trap 'CLEANUP_FAILED=true' ERR
+  # Note: We don't use a broad ERR trap because many cleanup operations intentionally
+  # handle errors (e.g., "git branch -D foo 2>/dev/null || true"). Instead, we check
+  # exit codes at critical points where a failure genuinely indicates cleanup broke.
 
   # Start doc assessment in the background (runs concurrently with tech-debt, cleanup)
   _DOC_PID=""
@@ -746,13 +747,17 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
 
   # Create tech-debt issues from encountered issues BEFORE clearing scratchpad
   if type create_tech_debt_issues &>/dev/null; then
-    DEBT_COUNT=$(create_tech_debt_issues "$PR_NUMBER")
-    if [ "$DEBT_COUNT" -gt 0 ]; then
+    _debt_exit=0
+    DEBT_COUNT=$(create_tech_debt_issues "$PR_NUMBER") || _debt_exit=$?
+    if [ $_debt_exit -ne 0 ]; then
+      print_warning "Tech-debt issue creation failed (exit $_debt_exit)"
+      CLEANUP_FAILED=true
+    elif [ "$DEBT_COUNT" -gt 0 ]; then
       print_success "Created $DEBT_COUNT tech-debt issue(s)"
     fi
     # Clear encountered issues after processing
     if type clear_encountered_issues &>/dev/null; then
-      clear_encountered_issues
+      clear_encountered_issues || true  # Best-effort, not critical
     fi
   fi
 
@@ -1491,9 +1496,6 @@ EOF
     fi
   fi
   rm -f "${_DOC_LOG:-}"
-
-  # Cleanup phase complete — clear the ERR trap so it doesn't affect subsequent logic
-  trap - ERR
 
   echo "PR URL: $PR_URL"
   echo ""

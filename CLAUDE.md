@@ -323,7 +323,10 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
-- **Exit codes**: `assess-and-resolve.sh` uses exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2".
+- **Exit codes**:
+  - `assess-and-resolve.sh`: exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2"
+  - `merge-pr.sh`: exit 0 for "merge and cleanup succeeded", exit 1 for "merge failed", exit 6 for "merge succeeded but cleanup failed"
+  - `workflow-runner.sh`: exit 10 for "stale branch restarted fresh" (signals to caller to reset resume state)
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
 

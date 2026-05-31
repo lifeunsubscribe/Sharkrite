@@ -66,7 +66,7 @@ TESTEOF
   run "$RITE_CORE_DIR/test-cleanup-exit.sh"
 
   # Should exit with code 6
-  test "$status" -eq 6
+  [ "$status" -eq 6 ]
 }
 
 @test "batch reporter classifies exit 6 as merged-cleanup-failed not failed" {
