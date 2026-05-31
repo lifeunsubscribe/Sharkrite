@@ -776,7 +776,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
 
   # Build fix prompt - tool restrictions are enforced by --disallowedTools flag
   FIX_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) fix-review session.
-Do NOT run git commit, git push, gh_safe pr create, or any git/gh commands yourself.
+Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
 
 ## Review Issues to Fix ($ACTIONABLE_NOW_COUNT items)
 
@@ -2140,7 +2140,7 @@ ${PHASE_0_INSTRUCTIONS}
    - Only conclude \"already complete\" if every acceptance criterion is met for the exact scope described
 2. If work is genuinely complete:
    - Report your findings with evidence (file paths, test results, etc.)
-   - Check if a PR exists for this issue (use: gh_safe pr list --search \"<issue-title>\" --state all)
+   - Check if a PR exists for this issue (use: gh pr list --search \"<issue-title>\" --state all)
    - **If PR exists on different branch:**
      - Inform user: Work already merged/in-review on another branch
      - Close this branch and worktree (duplicate work)
@@ -2570,7 +2570,7 @@ else
     fi
   else
     print_warning "create-pr.sh not found, skipping PR workflow"
-    print_info "Manually create PR with: gh_safe pr create"
+    print_info "Manually create PR with: gh pr create"
   fi
 fi
 

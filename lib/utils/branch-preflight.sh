@@ -189,7 +189,11 @@ preflight_auto_recover_empty() {
       if [ "$additions" -eq 0 ]; then
         print_status "Closing empty draft PR #$pr_number..."
         local close_comment="Auto-closing: Branch has no real work (only init commit). Restarting fresh."
-        echo "$close_comment" | gh_safe pr comment "$pr_number" --body-file - 2>/dev/null || true
+        local _comment_body_file
+        _comment_body_file=$(mktemp)
+        echo "$close_comment" > "$_comment_body_file"
+        gh_safe pr comment "$pr_number" --body-file "$_comment_body_file" 2>/dev/null || true
+        rm -f "$_comment_body_file"
         # Capture exit code via temp file — avoids set -e trap on failing $() substitution
         local _close_exit_file
         _close_exit_file=$(mktemp)

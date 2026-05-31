@@ -356,7 +356,7 @@ repo_wide_status() {
 
   # Repo URL for terminal hyperlinks (OSC 8)
   local repo_url
-  repo_url=$(gh repo view --json url -q '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url -q '.url' 2>/dev/null || echo "")
 
   echo ""
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

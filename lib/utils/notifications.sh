@@ -175,7 +175,7 @@ send_blocker_notification() {
 
   # Get repo URL for clickable links
   local repo_url
-  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url --jq '.url' 2>/dev/null || echo "")
 
   # Check if this blocker type is bypassable in supervised mode
   local bypass_hint=""
@@ -216,7 +216,7 @@ send_completion_notification() {
 
   # Get repo URL for clickable links
   local repo_url
-  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url --jq '.url' 2>/dev/null || echo "")
 
   local message="✅ *Issue $([ -n "$repo_url" ] && echo "<${repo_url}/issues/${issue_number}|#${issue_number}>" || echo "#${issue_number}") Complete*
 

@@ -372,10 +372,12 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
-# Rule 13: Bare gh pr/issue/api calls with 2>/dev/null || echo/true (bypasses gh_safe retry)
-# These patterns swallow transient failures (429, 5xx) silently — use gh_safe instead.
+# Rule 13: Bare gh pr/issue/api/repo calls not using gh_safe (bypasses retry wrapper)
+# Any gh API subcommand call that doesn't go through gh_safe is a potential silent-failure
+# on transient errors (429, 5xx). The rule flags bare calls regardless of fallback pattern.
 # gh-retry.sh itself is excluded since it's the authoritative wrapper implementation.
-echo "Checking for bare 'gh pr/issue/api ... 2>/dev/null || echo/true' (bypasses gh_safe)..."
+# Instruction/prompt strings containing "gh pr" for documentation purposes are also excluded.
+echo "Checking for bare 'gh pr/issue/api/repo' calls not using gh_safe..."
 for file in "${SHELL_FILES[@]}"; do
   # Skip gh-retry.sh itself — it's the implementation of the wrapper
   if [[ "$file" == */gh-retry.sh ]]; then
@@ -386,15 +388,30 @@ for file in "${SHELL_FILES[@]}"; do
     if echo "$line_content" | grep -qE '^\s*#'; then
       continue
     fi
-    # Match: gh (pr|issue|api) ... 2>/dev/null || echo or || true
-    # Only fire when the line does NOT already use gh_safe
-    if echo "$line_content" | grep -qE '\bgh (pr|issue|api) [^|]+2>/dev/null \|\| (echo|true)'; then
+    # Skip lines inside echo/print strings that are documentation/instructions (not actual calls)
+    # These are user-facing strings like: echo "  gh pr create" or print_info "use: gh pr list"
+    if echo "$line_content" | grep -qE '^\s*(echo|print_info|print_warning|print_status|print_header)\s'; then
+      continue
+    fi
+    # Skip prose/documentation lines inside heredocs or string literals:
+    # "Do NOT run git commit, git push, gh pr create..." is an instruction string, not an invocation.
+    if echo "$line_content" | grep -qE '^\s*Do NOT '; then
+      continue
+    fi
+    # Only flag lines where gh is actually being invoked as a command:
+    # - gh inside $() command substitution
+    # - gh inside backtick substitution
+    # - gh at start of line (direct call or pipeline)
+    # - gh after a pipe character
+    # This excludes string literals in prompt text (e.g. "use: gh pr list") since those
+    # don't have the $() or leading-whitespace-then-gh invocation structure.
+    if echo "$line_content" | grep -qE '(\$\(|`|\|\s*|^\s*)gh (pr|issue|api|repo) '; then
       if ! echo "$line_content" | grep -qE '\bgh_safe\b'; then
         print_violation "$file" "$line_num" "GH_CALL_BYPASSES_GH_SAFE" \
-          "Bare 'gh (pr|issue|api) ... 2>/dev/null || (echo|true)' swallows transient failures — use gh_safe instead"
+          "Bare 'gh (pr|issue|api|repo)' call without gh_safe wrapper — use gh_safe to handle transient API failures"
       fi
     fi
-  done < <(grep -n '\bgh \(pr\|issue\|api\)' "$file" 2>/dev/null || true)
+  done < <(grep -n '\bgh \(pr\|issue\|api\|repo\)' "$file" 2>/dev/null || true)
 done
 
 echo ""

@@ -304,7 +304,7 @@ if [ -n "$PR_NUMBER" ]; then
   echo "🧹 Review Cleanup"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+  REPO=$(gh_safe repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
 
   if [ -n "$REPO" ]; then
     # Delete sharkrite PR comments (reviews + assessments are all posted as comments)

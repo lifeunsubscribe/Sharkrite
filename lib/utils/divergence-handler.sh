@@ -635,7 +635,7 @@ _send_divergence_notification() {
   fi
 
   local repo_url
-  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url --jq '.url' 2>/dev/null || echo "")
 
   local issue_link="#${issue_number}"
   local pr_link="#${pr_number}"

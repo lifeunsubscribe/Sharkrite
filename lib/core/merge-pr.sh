@@ -589,7 +589,7 @@ if [ "$VALIDATION_FAILED" = true ]; then
   echo "Please address the errors above and try again."
   echo ""
   echo "To view PR details:"
-  echo "  gh_safe pr view $PR_NUMBER --web"
+  echo "  gh pr view $PR_NUMBER --web"
   exit 1
 fi
 
@@ -653,7 +653,7 @@ verbose_header "🚀 Merging PR #$PR_NUMBER"
 # sha parameter to reject the merge if the PR head changed since we last checked.
 # This prevents foreign commits from being silently merged between assessment and merge.
 EXPECTED_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-REPO_NAME=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+REPO_NAME=$(gh_safe repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
 
 _do_merge() {
   # Attempt merge and capture output + exit code, immune to set -e.
@@ -832,7 +832,7 @@ if [ $MERGE_EXIT_CODE -eq 0 ]; then
       ISSUES_LIST=""
       for issue_num in $ASSESSMENT_ISSUES; do
         ISSUE_TITLE=$(gh_safe issue view "$issue_num" --json title --jq '.title' 2>/dev/null || echo "Issue #$issue_num")
-        REPO_URL=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+        REPO_URL=$(gh_safe repo view --json url --jq '.url' 2>/dev/null || echo "")
         ISSUES_LIST="${ISSUES_LIST}• <${REPO_URL}/issues/${issue_num}|#${issue_num}>: ${ISSUE_TITLE}\n"
       done
 
@@ -1555,8 +1555,8 @@ else
   echo "  - Merge conflicts detected"
   echo ""
   echo "To debug:"
-  echo "  gh_safe pr view $PR_NUMBER --web"
-  echo "  gh_safe pr checks $PR_NUMBER"
+  echo "  gh pr view $PR_NUMBER --web"
+  echo "  gh pr checks $PR_NUMBER"
   echo ""
   exit 1
 fi

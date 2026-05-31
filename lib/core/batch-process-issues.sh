@@ -717,7 +717,7 @@ if [ ${#MERGED_CLEANUP_FAILED[@]} -gt 0 ]; then
   for ISSUE_NUM in "${MERGED_CLEANUP_FAILED[@]}"; do
     DURATION=${ISSUE_TIME[$ISSUE_NUM]:-0}
     PR_NUM=${ISSUE_PR[$ISSUE_NUM]:-"N/A"}
-    REPO_URL=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+    REPO_URL=$(gh_safe repo view --json url --jq '.url' 2>/dev/null || echo "")
     if [ -n "$REPO_URL" ] && [ "$PR_NUM" != "N/A" ]; then
       echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s) - ${REPO_URL}/pull/${PR_NUM}"
     else
