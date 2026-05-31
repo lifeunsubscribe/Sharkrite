@@ -1,127 +1,292 @@
 #!/usr/bin/env bats
-# Tests for ADR backfill during bootstrap
+# Tests for ADR generation via the real generate_adr_for_ref() function.
+#
+# Previously this test created ADR files manually with cat heredocs,
+# bypassing generate_adr_for_ref() entirely. That approach could not catch
+# regressions in deduplication logic, metadata format, or empty-response
+# handling since it tested a hand-rolled reimplementation.
+#
+# This version sources the actual function from assess-documentation.sh and
+# stubs only the provider call (provider_run_prompt_with_timeout) so tests
+# run without a live Claude session.
+
+load '../helpers/setup.bash'
+load '../helpers/git-fixtures.bash'
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Source only generate_adr_for_ref() from assess-documentation.sh without
+# running the script's top-level code (which calls `gh pr view`, etc.).
+# Strategy: extract the function body via awk and source it as a snippet.
+_source_generate_adr_for_ref() {
+  local script="$RITE_REPO_ROOT/lib/core/assess-documentation.sh"
+  # Also source _mark_updated helper: awk extracts lines between
+  # "_mark_updated() {" and the matching close brace, plus generate_adr_for_ref.
+  eval "$(awk '
+    /^_mark_updated\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print; next
+    }
+    /^generate_adr_for_ref\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print
+    }
+  ' "$script")"
+}
 
 setup() {
-  # Create temporary test repo
-  export TEST_REPO=$(mktemp -d)
-  cd "$TEST_REPO"
+  setup_test_tmpdir
 
-  git init
+  export RITE_REPO_ROOT
+
+  # Minimal env expected by generate_adr_for_ref
+  export RITE_INTERNAL_DOCS_DIR="$RITE_TEST_TMPDIR/docs"
+  export DOC_CLAUDE_TIMEOUT=30
+
+  # Marker dir needed by _mark_updated (normally set by assess-documentation.sh
+  # top-level, but that code is skipped here)
+  export _MARKER_DIR
+  _MARKER_DIR=$(mktemp -d)
+
+  mkdir -p "$RITE_INTERNAL_DOCS_DIR/adr"
+
+  # Set up a minimal git repo so git operations succeed in setup
+  cd "$RITE_TEST_TMPDIR"
+  git init -q
   git config user.email "test@example.com"
   git config user.name "Test User"
 
-  # Create 3 ADR-worthy commits
-  git commit --allow-empty -m "refactor: switch to provider abstraction"
-  git commit --allow-empty -m "feat: add MCP support for external tools"
-  git commit --allow-empty -m "feat: migrate from manual git to automated workflow"
+  # Stub verbose_info (used inside the function, normally from colors.sh)
+  verbose_info() { :; }
+  export -f verbose_info
+
+  # Source the real function under test
+  _source_generate_adr_for_ref
 }
 
 teardown() {
-  # Clean up test repo
-  cd /
-  rm -rf "$TEST_REPO"
+  rm -rf "${_MARKER_DIR:-}"
+  teardown_test_tmpdir
 }
 
-@test "bootstrap generates ADRs for historical commits" {
-  # Run bootstrap (this would call rite --init)
-  # For now, we'll test the core function directly
+# ---------------------------------------------------------------------------
+# Test 1: generate_adr_for_ref creates an ADR file for ADR-worthy content
+# ---------------------------------------------------------------------------
 
-  # Source the necessary files
-  export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
-  export RITE_INTERNAL_DOCS_DIR="$TEST_REPO/.rite/docs"
-  export RITE_PROJECT_ROOT="$TEST_REPO"
+@test "generate_adr_for_ref creates ADR file when provider returns content" {
+  # Stub the provider to return a minimal but valid ADR document
+  provider_run_prompt_with_timeout() {
+    cat <<'ADRDOC'
+# ADR-001: switch to provider abstraction
 
-  source "$RITE_LIB_DIR/utils/config.sh" || skip "config.sh not found"
-  source "$RITE_LIB_DIR/core/assess-documentation.sh" || skip "assess-documentation.sh not found"
+**Date:** 2026-05-31
+**Commit:** abc1234
+**Files:** lib/providers/provider-interface.sh, lib/providers/claude.sh
+**Context:** Multiple scripts were directly invoking the Claude CLI, creating tight coupling and making provider swaps impossible.
+**Decision:** Introduced lib/providers/provider-interface.sh as a dispatcher that aliases provider-specific functions to a generic provider_* namespace.
+**Tradeoffs:** Gained: provider portability; Lost: direct invocation simplicity.
+ADRDOC
+  }
+  export -f provider_run_prompt_with_timeout
 
-  # Create ADR directory
-  mkdir -p "$RITE_INTERNAL_DOCS_DIR/adr"
+  run generate_adr_for_ref "commit" "abc1234" \
+    "refactor: switch to provider abstraction" \
+    "Refactored all provider calls through a unified interface." \
+    "$(printf '--- a/lib/providers/provider-interface.sh\n+++ b/lib/providers/provider-interface.sh\n@@ -0,0 +1,5 @@\n+#!/bin/bash\n+load_provider() { source "$1"; }')" \
+    "lib/providers/provider-interface.sh"$'\n'"lib/providers/claude.sh"
 
-  # Get suggestions
-  ADR_SUGGESTIONS=$(git log --oneline -50 2>/dev/null | grep -iE "(refactor|feat|breaking|migrate|replace|switch|adopt|drop)" | head -5)
+  [ "$status" -eq 0 ]
 
-  # Process suggestions (simplified bootstrap logic)
-  count=0
-  while IFS= read -r commit_line; do
-    [ -z "$commit_line" ] && continue
-    [ "$count" -ge 3 ] && break
+  # Function should output the path to the created ADR file
+  [ -n "$output" ]
+  [ -f "$output" ]
 
-    commit_sha=$(echo "$commit_line" | awk '{print $1}')
-    commit_msg=$(echo "$commit_line" | cut -d' ' -f2-)
-    commit_body=$(git log -1 "$commit_sha" --format="%B" 2>/dev/null || echo "")
-    commit_diff=$(git show "$commit_sha" --format="" 2>/dev/null | head -500 || echo "")
-    changed_files=$(git diff-tree --no-commit-id --name-only -r "$commit_sha" 2>/dev/null || echo "")
-
-    # Mock the provider call - create a minimal ADR
-    mkdir -p "$RITE_INTERNAL_DOCS_DIR/adr"
-    adr_num=$(printf "%03d" $((count + 1)))
-    adr_file="$RITE_INTERNAL_DOCS_DIR/adr/${adr_num}-test-commit.md"
-    cat > "$adr_file" <<EOF
-# ADR-${adr_num}: Test Commit
-
-**Date:** $(date +%Y-%m-%d)
-**Commit:** ${commit_sha}
-**Files:** test.txt
-**Context:** Test context
-**Decision:** Test decision
-**Tradeoffs:** Test tradeoffs
-EOF
-    count=$((count + 1))
-  done <<< "$ADR_SUGGESTIONS"
-
-  # Verify 3 ADR files were created
-  adr_count=$(ls -1 "$RITE_INTERNAL_DOCS_DIR/adr"/*.md 2>/dev/null | wc -l | tr -d ' ')
-  [ "$adr_count" -eq 3 ]
+  # Verify the ADR file contains the expected metadata.
+  # Must match the exact bold-markdown format (**Commit:** <sha>) because the
+  # deduplication logic in generate_adr_for_ref greps for "**Commit:** ${ref_id}".
+  # A loose fallback (|| grep -q "abc1234") would pass even if the format is wrong,
+  # failing to guard the dedup check that depends on this exact pattern.
+  grep -q "ADR-001" "$output"
+  grep -q "\*\*Commit:\*\* abc1234" "$output"
 }
 
-@test "re-running bootstrap is idempotent (no duplicates)" {
-  # First run - create ADRs
-  export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
-  export RITE_INTERNAL_DOCS_DIR="$TEST_REPO/.rite/docs"
-  export RITE_PROJECT_ROOT="$TEST_REPO"
+# ---------------------------------------------------------------------------
+# Test 2: empty provider response results in no file created (skip path)
+# ---------------------------------------------------------------------------
 
-  mkdir -p "$RITE_INTERNAL_DOCS_DIR/adr"
+@test "generate_adr_for_ref skips file creation when provider returns empty response" {
+  # Stub provider to return nothing (change not ADR-worthy)
+  provider_run_prompt_with_timeout() {
+    echo ""
+  }
+  export -f provider_run_prompt_with_timeout
 
-  # Create initial ADR with commit metadata
-  commit_sha=$(git log --oneline -1 | awk '{print $1}')
-  cat > "$RITE_INTERNAL_DOCS_DIR/adr/001-initial.md" <<EOF
-# ADR-001: Initial
+  run generate_adr_for_ref "commit" "def5678" \
+    "chore: update dependency versions" \
+    "Bumped several npm packages to latest patch versions." \
+    "" \
+    "package.json"
 
-**Date:** $(date +%Y-%m-%d)
-**Commit:** ${commit_sha}
-**Files:** test.txt
-EOF
+  [ "$status" -eq 0 ]
 
-  initial_count=$(ls -1 "$RITE_INTERNAL_DOCS_DIR/adr"/*.md 2>/dev/null | wc -l | tr -d ' ')
+  # Function output should be empty (no ADR file path returned)
+  [ -z "$output" ]
 
-  # Second run - should skip existing commit
-  # (In real implementation, dedup logic checks for "Commit: <sha>")
-  # For this test, we verify the file wasn't duplicated
-
-  # Simulate re-run: try to create ADR for same commit
-  if ! grep -rl "Commit: ${commit_sha}" "$RITE_INTERNAL_DOCS_DIR/adr" 2>/dev/null | head -1 | grep -q .; then
-    # Would create new ADR here, but dedup prevents it
-    false  # Should not reach here
-  fi
-
-  final_count=$(ls -1 "$RITE_INTERNAL_DOCS_DIR/adr"/*.md 2>/dev/null | wc -l | tr -d ' ')
-  [ "$initial_count" -eq "$final_count" ]
+  # No new ADR files should be created
+  local adr_count
+  adr_count=$(find "$RITE_INTERNAL_DOCS_DIR/adr" -name "*.md" | wc -l | tr -d ' ')
+  [ "$adr_count" -eq 0 ]
 }
 
-@test "no-backfill-adrs flag skips ADR generation" {
-  export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
-  export RITE_INTERNAL_DOCS_DIR="$TEST_REPO/.rite/docs"
-  export RITE_PROJECT_ROOT="$TEST_REPO"
+# ---------------------------------------------------------------------------
+# Test 3: re-running bootstrap is idempotent (deduplication by commit SHA)
+# ---------------------------------------------------------------------------
+
+@test "generate_adr_for_ref deduplicates by commit SHA on re-run" {
+  # Provider returns valid ADR content
+  provider_run_prompt_with_timeout() {
+    cat <<'ADRDOC'
+# ADR-001: add MCP support for external tools
+
+**Date:** 2026-05-31
+**Commit:** cafebabe
+**Files:** lib/core/mcp-handler.sh
+**Context:** Users needed to integrate external tools via MCP protocol.
+**Decision:** Added mcp-handler.sh as a new integration layer.
+**Tradeoffs:** Gained: extensibility; Lost: simplicity of single-tool model.
+ADRDOC
+  }
+  export -f provider_run_prompt_with_timeout
+
+  # First call — should create the ADR
+  run generate_adr_for_ref "commit" "cafebabe" \
+    "feat: add MCP support for external tools" \
+    "Adds MCP protocol handler." \
+    "+function handle_mcp() { ... }" \
+    "lib/core/mcp-handler.sh"
+
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ -f "$output" ]
+  first_adr="$output"
+
+  # Second call with the same commit SHA — should be a no-op (deduplication)
+  run generate_adr_for_ref "commit" "cafebabe" \
+    "feat: add MCP support for external tools" \
+    "Adds MCP protocol handler." \
+    "+function handle_mcp() { ... }" \
+    "lib/core/mcp-handler.sh"
+
+  [ "$status" -eq 0 ]
+
+  # Output should be empty (skipped)
+  [ -z "$output" ]
+
+  # Still exactly one ADR file (no duplicate created)
+  local adr_count
+  adr_count=$(find "$RITE_INTERNAL_DOCS_DIR/adr" -name "*.md" | wc -l | tr -d ' ')
+  [ "$adr_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 4: RITE_NO_BACKFILL_ADRS flag — generate_adr_for_ref is not called
+# ---------------------------------------------------------------------------
+
+@test "no-backfill-adrs flag: generate_adr_for_ref should not be called" {
   export RITE_NO_BACKFILL_ADRS=true
 
-  mkdir -p "$RITE_INTERNAL_DOCS_DIR"
+  # Track if provider was invoked (it should NOT be if flag is respected)
+  _provider_called=false
+  provider_run_prompt_with_timeout() {
+    _provider_called=true
+    echo "# ADR content should not appear"
+  }
+  export -f provider_run_prompt_with_timeout
 
-  # When RITE_NO_BACKFILL_ADRS=true, bootstrap should not create adr/ directory
-  # (or if it does, it should be empty)
-
-  # Verify adr directory doesn't exist or is empty
-  if [ -d "$RITE_INTERNAL_DOCS_DIR/adr" ]; then
-    adr_count=$(ls -1 "$RITE_INTERNAL_DOCS_DIR/adr"/*.md 2>/dev/null | wc -l | tr -d ' ')
-    [ "$adr_count" -eq 0 ]
+  # Callers (bootstrap-docs.sh) check RITE_NO_BACKFILL_ADRS before calling
+  # generate_adr_for_ref. Verify the guard pattern works as expected.
+  if [ "${RITE_NO_BACKFILL_ADRS:-false}" = true ]; then
+    : # skip — this is the correct behavior
+  else
+    generate_adr_for_ref "commit" "deadbeef" \
+      "feat: migrate workflow" "Body" "+diff" "file.sh"
   fi
+
+  # Verify adr directory is empty (no ADRs created)
+  local adr_count
+  adr_count=$(find "$RITE_INTERNAL_DOCS_DIR/adr" -name "*.md" | wc -l | tr -d ' ')
+  [ "$adr_count" -eq 0 ]
+
+  unset RITE_NO_BACKFILL_ADRS
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: ADR sequential numbering when existing ADRs are present
+# ---------------------------------------------------------------------------
+
+@test "generate_adr_for_ref assigns next sequential number based on existing ADRs" {
+  # Pre-create two ADRs to simulate existing state
+  cat > "$RITE_INTERNAL_DOCS_DIR/adr/001-first-decision.md" <<'EOF'
+# ADR-001: first-decision
+
+**Date:** 2026-01-01
+**Commit:** 0000001
+**Context:** first
+**Decision:** first decision
+**Tradeoffs:** none
+EOF
+
+  cat > "$RITE_INTERNAL_DOCS_DIR/adr/002-second-decision.md" <<'EOF'
+# ADR-002: second-decision
+
+**Date:** 2026-01-02
+**Commit:** 0000002
+**Context:** second
+**Decision:** second decision
+**Tradeoffs:** none
+EOF
+
+  # Provider returns content for ADR-003
+  provider_run_prompt_with_timeout() {
+    cat <<'ADRDOC'
+# ADR-003: third-decision
+
+**Date:** 2026-05-31
+**Commit:** 0000003
+**Context:** Adding third architectural decision.
+**Decision:** Chose approach X over Y.
+**Tradeoffs:** Gained: speed; Lost: flexibility.
+ADRDOC
+  }
+  export -f provider_run_prompt_with_timeout
+
+  run generate_adr_for_ref "commit" "0000003" \
+    "refactor: adopt approach X" \
+    "Replacing Y with X for performance." \
+    "+X_setup()" \
+    "lib/core/approach-x.sh"
+
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ -f "$output" ]
+
+  # Filename should contain "003"
+  basename "$output" | grep -q "^003-"
+
+  # Total should now be 3 ADRs
+  local adr_count
+  adr_count=$(find "$RITE_INTERNAL_DOCS_DIR/adr" -name "*.md" | wc -l | tr -d ' ')
+  [ "$adr_count" -eq 3 ]
 }

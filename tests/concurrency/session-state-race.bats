@@ -3,6 +3,13 @@
 #
 # Tests that concurrent updates to SESSION_STATE_FILE don't corrupt JSON or lose data.
 # These tests verify fixes for issue #8 (session state races).
+#
+# Previously the "concurrent blocker approval additions" test bypassed the real
+# add_approved_blocker() function and used inline jq read-modify-write, which
+# tested hand-rolled code rather than the actual implementation. When
+# session-tracker.sh gets proper locking, the old test would not verify it.
+#
+# This version calls add_approved_blocker() and has_approved_blocker() directly.
 
 load '../helpers/setup.bash'
 
@@ -108,9 +115,14 @@ wait_at_barrier() {
   jq -e '.last_update' "$SESSION_STATE_FILE" >/dev/null
 }
 
-@test "concurrent blocker approval additions - no lost approvals" {
-  # Test that concurrent blocker approvals don't lose data
-  # Multiple processes approve different blockers
+@test "concurrent blocker approval additions via add_approved_blocker - no lost approvals" {
+  # Test that concurrent blocker approvals via add_approved_blocker() don't lose data.
+  # Previously this test used inline jq read-modify-write, which tested hand-rolled
+  # code rather than the actual add_approved_blocker() implementation. When
+  # session-tracker.sh gets proper locking, the old test would not verify it.
+  #
+  # This version calls add_approved_blocker() directly and verifies has_approved_blocker()
+  # returns true for all approvals afterwards.
   local num_processes=4
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
   mkdir -p "$exit_codes_dir"
@@ -121,17 +133,8 @@ wait_at_barrier() {
 
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
-      # Each process adds a blocker approval
-      # Read current approvals
-      local current=$(jq -c '.approved_blockers // []' "$SESSION_STATE_FILE" 2>/dev/null || echo "[]")
-
-      # Add new approval (this races with other processes)
-      local new=$(echo "$current" | jq -c ". + [\"blocker-${i}\"]")
-
-      # Write back (race condition here)
-      local temp=$(mktemp)
-      jq ".approved_blockers = ${new} | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
-      mv "$temp" "$SESSION_STATE_FILE"
+      # Each process calls the real add_approved_blocker() (races without locking)
+      add_approved_blocker "issue-${i}" "blocker-${i}"
 
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
@@ -139,18 +142,31 @@ wait_at_barrier() {
 
   wait
 
-  # Verify JSON is valid
+  # Verify all processes exited successfully
+  for i in $(seq 1 $num_processes); do
+    [ -f "$exit_codes_dir/process_${i}.exit" ]
+    exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
+    [ "$exit_code" -eq 0 ]
+  done
+
+  # Verify JSON is still valid
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
     echo "EXPECTED FAILURE: JSON corruption in blocker approvals"
     return 0
   }
 
-  # Verify approvals exist
-  local approval_count=$(jq '.approved_blockers | length' "$SESSION_STATE_FILE" 2>/dev/null || echo 0)
+  # Verify approvals are present using has_approved_blocker() (the real read-back path)
+  local found_count=0
+  for i in $(seq 1 $num_processes); do
+    if has_approved_blocker "issue-${i}" "blocker-${i}"; then
+      found_count=$((found_count + 1))
+    fi
+  done
 
-  # Without proper locking, we expect data loss
-  [ "$approval_count" -eq "$num_processes" ] || {
-    echo "EXPECTED FAILURE: Only $approval_count/$num_processes approvals saved - race condition"
+  # Without proper locking, we may lose approvals due to concurrent read-modify-write.
+  # This assertion documents the expected behavior after issue #8's fix lands.
+  [ "$found_count" -eq "$num_processes" ] || {
+    echo "EXPECTED FAILURE: Only $found_count/$num_processes approvals saved - race condition"
     return 0
   }
 }

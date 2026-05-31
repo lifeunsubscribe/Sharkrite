@@ -10,6 +10,13 @@
 # 1. The error path in the provider retry loop does not crash with "local:"
 # 2. No `local` declarations exist in the top-level scope of local-review.sh
 # 3. Provider failure (non-zero exit) is handled cleanly without crashing
+#
+# Test 2 was previously a fabricated inline reconstruction that tested a
+# rate_limit/auth/unknown classification branch that does NOT exist in the real
+# local-review.sh. A fabricated test cannot regress when the actual code changes.
+#
+# Test 2 (revised) exercises the real provider retry loop extracted directly from
+# local-review.sh so it will catch regressions in the actual production path.
 
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
@@ -76,61 +83,94 @@ setup() {
 }
 
 # -----------------------------------------------------------------------
-# Test 2: Inline simulation — provider failure does not trigger "local:"
+# Test 2: Provider failure in the real retry loop does not crash
 #
-# Mimics the retry loop logic that existed at the time of the bug.
-# The original code had:
+# This test extracts the actual provider retry loop from local-review.sh
+# using awk (same approach as local-review-diff-fallback.bats uses for the
+# diff fetch logic) and exercises it with a stubbed provider that returns
+# exit 1. This guards the real production code rather than a fabricated
+# reconstruction.
 #
-#   while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; do
-#     ...
-#     if [ "${REVIEW_EXIT:-0}" -ne 0 ]; then
-#       local _err_type=""   # <-- BUG: crashes here under set -euo pipefail
-#       ...
-#     fi
-#   done
-#
-# The fix replaces `local _err_type=""` with `_err_type=""`.
-# This test verifies the fixed pattern does not crash when provider returns exit 1.
+# The old Test 2 exercised a rate_limit/auth/unknown classification branch
+# that does not exist in local-review.sh, making it a tautology that could
+# not regress when the actual code changes.
 # -----------------------------------------------------------------------
 
-@test "provider failure in retry loop: plain assignment does not crash under set -euo pipefail" {
-  run bash -c '
+@test "provider failure in real retry loop: exits cleanly without bash crash" {
+  # Extract the provider retry loop from the actual local-review.sh script.
+  # The loop starts at "while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]"
+  # and ends at "done" (first top-level done after the MAX_REVIEW_ATTEMPTS while).
+  # We run it at the top level of a bash -c subprocess under set -euo pipefail
+  # with a stubbed provider so we can capture the exit code cleanly.
+  # Note: BSD awk lacks \b word boundaries, so /\bdo\b/ matches "done" too
+  # (since "done" contains "do"). Use position-aware patterns instead:
+  # - "do" at end of line (bash while/for syntax: "; do")
+  # - "done" at line start or with leading whitespace (loop terminator)
+  LOOP_CODE=$(awk '
+    /while \[ \$REVIEW_ATTEMPT -lt \$MAX_REVIEW_ATTEMPTS \]/ { in_loop=1; depth=0 }
+    in_loop {
+      print
+      # "do" at end of while/for/until lines (e.g. "]; do", "in ...; do")
+      if (/; do$/ || /; do[[:space:]]*$/ || /^[[:space:]]*do$/ || /^[[:space:]]*do[[:space:]]/) depth++
+      # "done" as standalone loop terminator (first word on line, optional indent)
+      if (/^done$/ || /^done[[:space:]]/ || /^[[:space:]]*done$/ || /^[[:space:]]*done[[:space:]]/) {
+        depth--
+        if (depth <= 0) { in_loop=0 }
+      }
+    }
+  ' "$SCRIPT")
+
+  # Verify we actually extracted something (sanity check)
+  [ -n "$LOOP_CODE" ]
+
+  # Content-anchor assertion: confirm the extracted code contains the real
+  # provider call, not a mis-extracted stub or surrounding boilerplate.
+  # Without this, a silent awk mis-extraction would cause the test to execute
+  # unrelated code and pass vacuously, defeating the purpose of this test.
+  [[ "$LOOP_CODE" == *"provider_run_prompt"* ]]
+
+  run bash -c "
     set -euo pipefail
 
+    # Stub the print helpers used by the loop
+    print_error()   { echo \"[ERROR] \$*\" >&2; }
+    print_warning() { echo \"[WARNING] \$*\" >&2; }
+    export -f print_error print_warning
+
+    # Stub provider_run_prompt to simulate a provider failure (non-zero exit)
+    # This is the failure path that the original bug only triggered on.
+    provider_run_prompt() {
+      echo 'rate limit exceeded' >&2
+      return 1
+    }
+    export -f provider_run_prompt
+
+    # Set up the variables the loop reads
     MAX_REVIEW_ATTEMPTS=2
     REVIEW_ATTEMPT=0
-    REVIEW_OUTPUT=""
+    REVIEW_OUTPUT=''
+    CLAUDE_ERROR=''
     REVIEW_EXIT=0
+    CLAUDE_STDERR=\$(mktemp)
 
-    while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; do
-      REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
+    # Execute the extracted real retry loop.
+    # The loop exits 1 on provider failure (expected non-crash path).
+    # Under the bug, bash would crash with 'local: can only be used in a function'
+    # before the exit 1 — the crash message appears on stderr (captured by run).
+    # We do NOT add a post-loop check here: if the loop calls 'exit 1' internally
+    # (the non-crash path), the subprocess ends immediately and any code after the
+    # loop body is unreachable dead code.  All crash detection is done in the
+    # outer bats assertions below.
+    $LOOP_CODE
+  "
 
-      # Simulate provider returning exit 1 with error content on stderr
-      REVIEW_EXIT=1
-
-      if [ "${REVIEW_EXIT:-0}" -ne 0 ]; then
-        # FIXED: plain assignment (was: local _err_type="")
-        _err_type=""
-        if echo "rate limit exceeded" | grep -qi "rate.limit\|quota\|429"; then
-          _err_type="rate_limit"
-        elif echo "rate limit exceeded" | grep -qi "auth\|unauthorized\|403\|401"; then
-          _err_type="auth"
-        else
-          _err_type="unknown"
-        fi
-        echo "classified: $_err_type"
-        break
-      fi
-    done
-
-    echo "loop completed without crash"
-  '
-
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"classified:"* ]]
-  [[ "$output" == *"loop completed without crash"* ]]
-  # Must NOT contain the bash crash message
+  # Loop exits 1 (provider failed cleanly) or non-zero from bash crash.
+  # Under the bug, bash would emit 'local: can only be used in a function' to
+  # stderr before the first exit 1, detectable in $output (bats merges stderr).
+  # We accept exit 0 or 1 (normal operation), and reject the crash message.
+  [[ "$status" -eq 1 || "$status" -eq 0 ]]
   [[ "$output" != *"local: can only be used in a function"* ]]
+  [[ "$output" != *"FAIL:"* ]]
 }
 
 @test "provider failure in retry loop: crashes with 'local' keyword (demonstrates original bug)" {

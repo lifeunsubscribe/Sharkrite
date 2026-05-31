@@ -379,12 +379,13 @@ generate_adr_for_ref() {
   local next_num_padded=$(printf "%03d" "$next_num")
 
   # Deduplication: check if ADR already exists for this PR or commit
+  # Note: metadata is written in bold markdown format (**PR:** and **Commit:**)
   if [ "$ref_type" = "pr" ]; then
-    if grep -rl "PR: #${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
+    if grep -rl "\*\*PR:\*\* #${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
       return 0
     fi
   elif [ "$ref_type" = "commit" ]; then
-    if grep -rl "Commit: ${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
+    if grep -rl "\*\*Commit:\*\* ${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
       return 0
     fi
   fi
