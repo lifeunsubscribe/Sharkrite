@@ -19,11 +19,16 @@ These codes cross script boundaries and must be kept unambiguous.
 
 > **Why 10 and 11 are separate:**
 > `batch-process-issues.sh` uses exit 10 for its own final exit when blocked
-> issues exist, *and* it watches for exit 10 from `workflow-runner.sh` as a
-> "blocker-detected — defer" signal (lines ~597, ~852).  If `stale-branch.sh`
-> also used 10, a healthy stale-branch restart could be mistaken for a blocker
-> abort.  Exit 11 is reserved exclusively for the stale-restart signal so the
-> two meanings can never collide.
+> issues exist (line ~852).  Inside the batch loop it also watches for exit 10
+> from `workflow-runner.sh` (i.e. the blocker-detected path in
+> `workflow-runner.sh` exits 10 back to batch, lines ~597) as a
+> "blocker-detected — defer" signal.  `workflow-runner.sh`'s own `run_workflow`
+> return table lists only 0/1/5/6 — the exit-10 path is the batch loop's own
+> interpretation of the blocker condition, not a separate code emitted by
+> `run_workflow` itself.  If `stale-branch.sh` also used 10, a healthy
+> stale-branch restart could be mistaken for a blocker abort.  Exit 11 is
+> reserved exclusively for the stale-restart signal so the two meanings can
+> never collide.
 
 ---
 

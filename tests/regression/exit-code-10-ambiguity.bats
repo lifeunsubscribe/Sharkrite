@@ -113,38 +113,6 @@ teardown() {
 # Replicate the stale-branch check block from workflow-runner.sh.
 # ─────────────────────────────────────────────────────────────────────────────
 @test "workflow-runner stale handler: exit 11 resets resume state" {
-  _pr_after=""
-  _worktree_after=""
-  _resume_after=""
-
-  (
-    print_info() { true; }
-
-    # Replicate the fixed stale-branch check block
-    stale_result=11
-    PR_NUMBER="101"
-    WORKTREE_PATH="/fake/path"
-    RESUME_MODE=true
-    skip_to_phase="assess-resolve"
-
-    if [ $stale_result -eq 11 ]; then
-      # Fixed handler: reset state on stale-restart signal
-      PR_NUMBER=""
-      CURRENT_PR=""
-      WORKTREE_PATH=""
-      RESUME_MODE=false
-      skip_to_phase=""
-    elif [ $stale_result -eq 5 ]; then
-      return 5
-    elif [ $stale_result -eq 1 ]; then
-      return 1
-    fi
-
-    echo "pr:${PR_NUMBER:-EMPTY}"
-    echo "worktree:${WORKTREE_PATH:-EMPTY}"
-    echo "resume:${RESUME_MODE:-EMPTY}"
-    echo "skip:${skip_to_phase:-EMPTY}"
-  )
   _out=$( (
     print_info() { true; }
     stale_result=11

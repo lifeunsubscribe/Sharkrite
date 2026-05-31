@@ -208,7 +208,7 @@ When resuming an issue with an existing PR, the branch is checked against `origi
 - **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
 - **At/above threshold (supervised)**: Prompt with 4 options (restart recommended, merge, continue, abort).
 
-Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 10 to signal "restarted fresh" — caller resets all resume state variables.
+Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 11 to signal "restarted fresh" — caller resets all resume state variables.
 
 ## Phase Commands
 
