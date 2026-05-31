@@ -335,8 +335,12 @@ EOF
   fi
 
   # Create the PR
+  # set +e so a non-zero return from gh_safe doesn't trigger set -e at the assignment line,
+  # which would make the else branch and PR_BODY_FILE cleanup unreachable on failure.
+  set +e
   PR_URL=$(gh_safe pr create "${PR_ARGS[@]}")
   GH_PR_EXIT=$?
+  set -e
   rm -f "$PR_BODY_FILE"
 
   if [ $GH_PR_EXIT -eq 0 ]; then
