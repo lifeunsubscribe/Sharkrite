@@ -142,6 +142,8 @@ local dep_state=""
 _dep_state=""
 ```
 
+**Enforcement:** The custom lint rule `LOCAL_OUTSIDE_FUNCTION` in `tools/sharkrite-lint.sh` detects this pattern (invoked by `make check` CI gate). Regression test in `tests/regression/no-local-outside-function.bats` runs the check against the entire codebase.
+
 **Exported env vars survive subprocesses, function definitions don't.** Don't use an env var as a "skip" guard for `source` if the sourced file defines functions that child processes need.
 
 ### .gitignore and symlinks
