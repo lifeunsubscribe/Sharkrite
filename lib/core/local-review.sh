@@ -150,14 +150,38 @@ DIFF_FILES=$(echo "$PR_DIFF" | grep -c "^diff --git" || true)
 print_status "Diff size: $DIFF_FILES files, $DIFF_LINES lines"
 echo ""
 
-# Handle empty diff
+# Handle empty diff — cross-check against GitHub's file count to distinguish
+# "fetch returned empty body (silent failure)" from "PR genuinely has no changes".
 if [ "$DIFF_FILES" -eq 0 ] || [ -z "$PR_DIFF" ] || [ "$PR_DIFF" = "" ]; then
-  print_warning "No code changes to review"
-  print_info "This PR has no diff against the base branch."
-  print_info "Possible reasons:"
-  echo "  • PR only has placeholder commit (no implementation yet)"
-  echo "  • All changes were reverted"
-  echo "  • Branch is identical to base"
+  # Query GitHub for the PR's known file-change count.
+  # A mismatch (GitHub says N > 0 but diff is empty) indicates a silent fetch
+  # failure (e.g., GitHub returned 200 OK with an empty body, or git diff ran
+  # against stale refs). A match at 0 means the PR genuinely has no changes.
+  GH_CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' 2>/dev/null || echo "0")
+  # Sanitize: strip whitespace and ensure it's numeric; default to 0 on error.
+  GH_CHANGED_FILES=$(echo "$GH_CHANGED_FILES" | tr -d '[:space:]')
+  if ! echo "$GH_CHANGED_FILES" | grep -qE '^[0-9]+$'; then
+    GH_CHANGED_FILES=0
+  fi
+
+  if [ "$GH_CHANGED_FILES" -gt 0 ]; then
+    # GitHub reports changes but we got no diff — likely a silent fetch failure.
+    print_warning "Empty diff after fetch — but GitHub reports $GH_CHANGED_FILES changed file(s)"
+    print_info "This indicates the diff fetch returned empty content despite real changes existing."
+    print_info "Possible causes:"
+    echo "  • GitHub API returned 200 OK with empty body (transient)"
+    echo "  • Local git refs are stale (run: git fetch origin)"
+    echo "  • Rate limit silently truncated the response"
+    echo ""
+    print_info "Remediation: retry this command, or run 'git fetch origin' and retry."
+  else
+    print_warning "No code changes to review"
+    print_info "This PR has no diff against the base branch."
+    print_info "Possible reasons:"
+    echo "  • PR only has placeholder commit (no implementation yet)"
+    echo "  • All changes were reverted"
+    echo "  • Branch is identical to base"
+  fi
   echo ""
   # Exit non-zero so callers know no review was generated.
   # Previously exited 0, which caused silent failures in the fix loop:
