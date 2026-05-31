@@ -28,10 +28,12 @@ detect_pr_for_issue() {
   PR_BRANCH=""
 
   # Method 1: Search by issue link in PR body (Closes #N, Fixes #N, etc.)
+  # Use sort_by(.number) | last instead of head -1 so the result is deterministic
+  # when multiple open PRs reference the same issue (e.g., after rite undo + retry).
+  # Highest PR number = most recently created; all results are already --state open.
   PR_NUMBER=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
     jq --arg issue "$issue_number" -r \
-    '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-    head -1)
+    '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
 
   # Method 2: Search by title fallback — match "#N" in PR title only.
   # Previous approach used --search "#N" which is a GitHub full-text search that
@@ -40,8 +42,7 @@ detect_pr_for_issue() {
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
     PR_NUMBER=$(gh pr list --state open --json number,title --limit 100 2>/dev/null | \
       jq --arg issue "$issue_number" -r \
-      '.[] | select(.title | test("#" + $issue + "\\b")) | .number' | \
-      head -1)
+      '[.[] | select(.title | test("#" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
   fi
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then

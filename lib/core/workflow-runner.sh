@@ -1518,10 +1518,11 @@ run_workflow() {
     # Search closed PRs for "Closes #N" to find the branch for artifact cleanup.
     if [ -z "$pr_branch" ]; then
       local closed_pr_number
+      # sort_by(.number) | last picks the most recently created closed PR
+      # deterministically when multiple closed PRs reference the same issue.
       closed_pr_number=$(gh pr list --state closed --json number,body --limit 50 2>/dev/null | \
         jq --arg issue "$issue_number" -r \
-        '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-        head -1)
+        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
       if [ -n "$closed_pr_number" ]; then
         pr_branch=$(gh pr view "$closed_pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
         [ -z "$pr_number" ] && pr_number="$closed_pr_number"
@@ -1681,9 +1682,10 @@ run_workflow() {
   # ── Detect existing PR for this issue (if not already known from session state) ──
   if [ -z "${PR_NUMBER:-}" ] || [ "${PR_NUMBER:-}" = "null" ]; then
     # Method 1: Search by issue link in PR body
+    # sort_by(.number) | last picks the highest-numbered (most recent) open PR
+    # deterministically when multiple PRs reference the same issue.
     local _detected_pr=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
-      jq --arg issue "$issue_number" -r '.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b")) | .number' | \
-      head -1)
+      jq --arg issue "$issue_number" -r '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
 
     # Method 2: Detect from worktree branch (session state may have worktree but no PR)
     if { [ -z "$_detected_pr" ] || [ "$_detected_pr" = "null" ]; } && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
