@@ -26,6 +26,7 @@ fi
 # Source review helper for consistent review method handling
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
+source "$RITE_LIB_DIR/utils/date-helpers.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -316,23 +317,7 @@ print_assessment_details() {
 # Output: Oct 28, 2025 - 2:42 PM MT
 format_review_timestamp() {
   local iso_timestamp="$1"
-
-  # Detect GNU vs BSD date
-  if date --version >/dev/null 2>&1; then
-    # GNU date (Linux)
-    date -d "$iso_timestamp" "+%b %d, %Y - %-I:%M %p %Z" 2>/dev/null || echo "$iso_timestamp"
-  else
-    # BSD date (macOS)
-    # Extract components manually since BSD date is picky about ISO format
-    local year month day time
-    year=$(echo "$iso_timestamp" | cut -d'T' -f1 | cut -d'-' -f1)
-    month=$(echo "$iso_timestamp" | cut -d'T' -f1 | cut -d'-' -f2)
-    day=$(echo "$iso_timestamp" | cut -d'T' -f1 | cut -d'-' -f3)
-    time=$(echo "$iso_timestamp" | cut -d'T' -f2 | cut -d'Z' -f1)
-
-    # Parse into BSD date format
-    date -j -f "%Y-%m-%d %H:%M:%S" "$year-$month-$day $time" "+%b %d, %Y - %-I:%M %p %Z" 2>/dev/null || echo "$iso_timestamp"
-  fi
+  iso_to_local_display "$iso_timestamp"
 }
 
 # Check dependencies
@@ -486,16 +471,8 @@ get_latest_work_commit_time "." "$PR_NUMBER"
 # Check if there are commits after the review
 if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
   # Convert ISO timestamps to seconds since epoch for reliable comparison
-  # Portable date parsing: detect GNU vs BSD date
-  if date --version >/dev/null 2>&1; then
-    # GNU date (Linux)
-    COMMIT_EPOCH=$(date -d "$LATEST_COMMIT_TIME" "+%s" 2>/dev/null || echo "0")
-    REVIEW_EPOCH=$(date -d "$REVIEW_TIME" "+%s" 2>/dev/null || echo "0")
-  else
-    # BSD date (macOS)
-    COMMIT_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$LATEST_COMMIT_TIME" "+%s" 2>/dev/null || echo "0")
-    REVIEW_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$REVIEW_TIME" "+%s" 2>/dev/null || echo "0")
-  fi
+  COMMIT_EPOCH=$(iso_to_epoch "$LATEST_COMMIT_TIME")
+  REVIEW_EPOCH=$(iso_to_epoch "$REVIEW_TIME")
 
   if [ "$COMMIT_EPOCH" -gt "$REVIEW_EPOCH" ]; then
     print_warning "Review is stale — commits pushed after review"
@@ -513,12 +490,7 @@ if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
       # Check the newest review's createdAt against commit epoch
       _newest_review_time=$(echo "$ALL_REVIEWS" | jq -r '.[0].createdAt // ""' 2>/dev/null)
       if [ -n "$_newest_review_time" ]; then
-        _newest_epoch=0
-        if date --version >/dev/null 2>&1; then
-          _newest_epoch=$(date -d "$_newest_review_time" "+%s" 2>/dev/null || echo "0")
-        else
-          _newest_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$_newest_review_time" "+%s" 2>/dev/null || echo "0")
-        fi
+        _newest_epoch=$(iso_to_epoch "$_newest_review_time")
         if [ "$_newest_epoch" -gt "$COMMIT_EPOCH" ]; then
           NEWER_REVIEW_COUNT=1
         fi

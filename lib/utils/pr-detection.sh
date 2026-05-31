@@ -15,6 +15,8 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
+source "$RITE_LIB_DIR/utils/date-helpers.sh"
+
 # detect_pr_for_issue ISSUE_NUMBER
 #
 # Finds the open PR linked to a GitHub issue.
@@ -213,15 +215,8 @@ detect_review_state() {
   # Compare timestamps using epoch seconds (handles mixed timezone formats)
   if [ -n "$REVIEW_TIME" ] && [ -n "$latest_commit_time" ]; then
     local commit_epoch review_epoch
-    if date --version >/dev/null 2>&1; then
-      # GNU date (Linux)
-      commit_epoch=$(date -d "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
-      review_epoch=$(date -d "$REVIEW_TIME" "+%s" 2>/dev/null || echo "0")
-    else
-      # BSD date (macOS) — timestamps are UTC format (ending in Z)
-      commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_commit_time" "+%s" 2>/dev/null || echo "0")
-      review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$REVIEW_TIME" "+%s" 2>/dev/null || echo "0")
-    fi
+    commit_epoch=$(iso_to_epoch "$latest_commit_time")
+    review_epoch=$(iso_to_epoch "$REVIEW_TIME")
     if [ "$review_epoch" -gt "$commit_epoch" ]; then
       REVIEW_IS_CURRENT="true"
     fi

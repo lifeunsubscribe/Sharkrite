@@ -22,6 +22,7 @@ source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
@@ -950,15 +951,10 @@ phase_create_pr() {
 
     if [ -n "$latest_review_time" ] && [ -n "$latest_local_commit_time" ]; then
       # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison.
-      # Matches the epoch comparison in assess-and-resolve.sh (line ~500).
+      # Matches the epoch comparison in assess-and-resolve.sh.
       local review_epoch commit_epoch
-      if date --version >/dev/null 2>&1; then
-        review_epoch=$(date -d "$latest_review_time" "+%s" 2>/dev/null || echo "0")
-        commit_epoch=$(date -d "$latest_local_commit_time" "+%s" 2>/dev/null || echo "0")
-      else
-        review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_review_time" "+%s" 2>/dev/null || echo "0")
-        commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_local_commit_time" "+%s" 2>/dev/null || echo "0")
-      fi
+      review_epoch=$(iso_to_epoch "$latest_review_time")
+      commit_epoch=$(iso_to_epoch "$latest_local_commit_time")
       if [ "$review_epoch" -gt 0 ] && [ "$commit_epoch" -gt 0 ] && [ "$review_epoch" -gt "$commit_epoch" ]; then
         print_info "Issue #$issue_number already has a current review — skipping push/review phase"
         return 0
@@ -1245,13 +1241,8 @@ phase_assess_and_resolve() {
 
     if [ -n "$_post_reroute_review_time" ] && [ -n "${LATEST_COMMIT_TIME:-}" ]; then
       local _rr_review_epoch _rr_commit_epoch
-      if date --version >/dev/null 2>&1; then
-        _rr_review_epoch=$(date -d "$_post_reroute_review_time" "+%s" 2>/dev/null || echo "0")
-        _rr_commit_epoch=$(date -d "$LATEST_COMMIT_TIME" "+%s" 2>/dev/null || echo "0")
-      else
-        _rr_review_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$_post_reroute_review_time" "+%s" 2>/dev/null || echo "0")
-        _rr_commit_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$LATEST_COMMIT_TIME" "+%s" 2>/dev/null || echo "0")
-      fi
+      _rr_review_epoch=$(iso_to_epoch "$_post_reroute_review_time")
+      _rr_commit_epoch=$(iso_to_epoch "$LATEST_COMMIT_TIME")
       if [ "$_rr_review_epoch" -gt 0 ] && [ "$_rr_commit_epoch" -gt 0 ] && \
          [ "$_rr_review_epoch" -le "$_rr_commit_epoch" ]; then
         print_error "Review regeneration did not produce a fresh review (review still older than latest commit)"
@@ -1535,13 +1526,7 @@ run_workflow() {
 
     # Calculate time since closed (portable date parsing)
     local closed_timestamp
-    if date --version >/dev/null 2>&1; then
-      # GNU date
-      closed_timestamp=$(date -d "$closed_at" "+%s" 2>/dev/null || echo "0")
-    else
-      # BSD date (macOS)
-      closed_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$closed_at" "+%s" 2>/dev/null || echo "0")
-    fi
+    closed_timestamp=$(iso_to_epoch "$closed_at")
 
     local current_timestamp=$(date +%s)
     local time_diff=$((current_timestamp - closed_timestamp))
@@ -1815,13 +1800,8 @@ run_workflow() {
     elif [ -n "$pr_latest_review" ] && [ -n "$pr_latest_commit" ]; then
       # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison
       local _rev_epoch _com_epoch
-      if date --version >/dev/null 2>&1; then
-        _rev_epoch=$(date -d "$pr_latest_review" "+%s" 2>/dev/null || echo "0")
-        _com_epoch=$(date -d "$pr_latest_commit" "+%s" 2>/dev/null || echo "0")
-      else
-        _rev_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$pr_latest_review" "+%s" 2>/dev/null || echo "0")
-        _com_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$pr_latest_commit" "+%s" 2>/dev/null || echo "0")
-      fi
+      _rev_epoch=$(iso_to_epoch "$pr_latest_review")
+      _com_epoch=$(iso_to_epoch "$pr_latest_commit")
       if [ "$_rev_epoch" -gt 0 ] && [ "$_com_epoch" -gt 0 ] && [ "$_rev_epoch" -gt "$_com_epoch" ]; then
         review_is_current=true
       fi
