@@ -21,7 +21,7 @@ setup() {
 
   # Scan all .sh files in lib/ and bin/
   # AWK pattern: track function depth via braces, flag 'local' at depth 0
-  run bash -c 'awk '"'"'/^[a-z_][a-zA-Z_0-9]*\(\) *\{/{depth++} /^\}/{depth--} /^[[:space:]]*local /{ if(depth==0) print FILENAME":"NR":"$0 }'"'"' lib/**/*.sh bin/* 2>/dev/null'
+  run bash -c '{ find lib -name "*.sh" -type f -print0; find bin -type f -print0; } | xargs -0 awk '"'"'/^[a-z_][a-zA-Z_0-9]*\(\) *\{/{depth++} /^\}/{depth--} /^[[:space:]]*local /{ if(depth==0) print FILENAME":"NR":"$0 }'"'"' 2>/dev/null'
 
   # Should produce no output (no matches)
   [ "$status" -eq 0 ]
