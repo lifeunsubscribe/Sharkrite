@@ -165,11 +165,14 @@ release_scratchpad_lock() {
   local lockfile="${_SCRATCHPAD_LOCKFILE:-${SCRATCHPAD_FILE:-}.lock}"
 
   if command -v flock >/dev/null 2>&1; then
-    # Release flock by closing the file descriptor
+    # Release flock by closing the file descriptor.
+    # Do NOT rm the lockfile here: flock keys on the inode behind the open fd.
+    # Removing the file lets a new acquirer open a fresh inode and take the lock
+    # concurrently while a previously-blocked waiter still holds the old unlinked
+    # inode, breaking mutual exclusion.  The kernel releases the lock automatically
+    # when the fd is closed.
     flock -u "$_SCRATCHPAD_LOCK_FD" 2>/dev/null || true
     eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
-    # Remove the lock file (best effort — flock releases automatically on fd close)
-    rm -f "$lockfile" 2>/dev/null || true
   else
     # mkdir-style lock: verify PID before removing
     if [ -d "$lockfile" ] && [ -f "$lockfile/pid" ]; then

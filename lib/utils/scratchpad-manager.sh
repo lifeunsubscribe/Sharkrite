@@ -163,6 +163,15 @@ clear_current_work() {
 # Initialize scratchpad structure if missing
 # Uses template from $RITE_INSTALL_DIR/templates/scratchpad.md
 init_scratchpad() {
+  # Fast path: no lock needed if file already exists (read-only check)
+  if [ -f "$SCRATCHPAD_FILE" ]; then
+    return 0
+  fi
+
+  # Acquire lock before creating — concurrent callers must not both write
+  acquire_scratchpad_lock
+  # Re-check after acquiring lock: another process may have created the file
+  # while we were waiting.
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
     # Copy from template if available, otherwise create minimal structure
     if [ -f "$RITE_INSTALL_DIR/templates/scratchpad.md" ]; then
@@ -206,6 +215,7 @@ EOF
 
     echo "Scratchpad initialized: $SCRATCHPAD_FILE"
   fi
+  release_scratchpad_lock
 }
 
 # Log an out-of-scope issue discovered during development

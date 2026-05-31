@@ -391,5 +391,8 @@ GHEOF
 
   # Verify scratchpad exists and is valid
   [ -f "$SCRATCHPAD_FILE" ]
-  grep -q "## Encountered Issues" "$SCRATCHPAD_FILE"
+  # The header must appear exactly once — two concurrent writes would produce duplicates
+  local header_count
+  header_count=$(grep -c "^## Encountered Issues" "$SCRATCHPAD_FILE" || true)
+  [ "$header_count" -eq 1 ]
 }

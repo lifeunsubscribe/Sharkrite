@@ -1033,7 +1033,9 @@ EOF
         # Acquire scratchpad lock via shared module (atomic PID write, hard timeout)
         # acquire_scratchpad_lock exits 1 on timeout — never proceeds without lock
         acquire_scratchpad_lock
-        LOCKFILE="${SCRATCHPAD_FILE}.lock"
+        # Ensure the lock is released if the script exits unexpectedly between here
+        # and the explicit release_scratchpad_lock call below (~line 1450).
+        trap 'release_scratchpad_lock' EXIT
 
         # Create temp file for cleaned scratchpad
         TEMP_SCRATCH=$(mktemp)

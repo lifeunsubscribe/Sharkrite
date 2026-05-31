@@ -2046,8 +2046,11 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
   fi
 
   # Update "Current Work" section — acquire lock for write
+  # Do NOT call _setup_scratchpad_lock_trap here — it would clobber the
+  # release_issue_lock EXIT trap (line 163) and cleanup_on_interrupt INT/TERM/HUP
+  # trap (line 148).  The explicit release_scratchpad_lock at the end of this
+  # block is sufficient for this short critical section.
   acquire_scratchpad_lock
-  _setup_scratchpad_lock_trap
   TEMP_SCRATCH=$(mktemp)
   if grep -q "## Current Work" "$SCRATCHPAD_FILE"; then
     # Update existing section
