@@ -68,7 +68,11 @@ portable_stat_mtime() {
 #
 # Usage (pair find's -print0 with this function):
 #   LAST_MODIFIED=$(find "$dir" -type f -print0 2>/dev/null \
-#     | portable_find_max_mtime || echo "0")
+#     | portable_find_max_mtime || true)
+#   [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
+#
+# Use || true (not || echo "0") — the function already returns "0" on empty
+# input; || echo "0" would produce a double "0" via grep -c style confusion.
 #
 # Returns "0" when no files are found or all stat calls fail.
 portable_find_max_mtime() {

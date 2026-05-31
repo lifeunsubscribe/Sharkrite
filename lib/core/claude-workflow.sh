@@ -1517,8 +1517,9 @@ If the changes are unrelated work, answer UNRELATED."
 
             # Get last modification time (portable: BSD stat -f "%m" vs GNU stat -c "%Y")
             LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) -print0 2>/dev/null \
-              | portable_find_max_mtime || echo "0")
-            AGE=$(( $(date +%s) - LAST_MODIFIED ))
+              | portable_find_max_mtime || true)
+            [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
+            AGE=$(( $(date +%s) - ${LAST_MODIFIED:-$(date +%s)} ))
 
             if [ "$AGE" -gt "$OLDEST_AGE" ]; then
               OLDEST_AGE=$AGE

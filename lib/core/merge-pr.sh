@@ -320,7 +320,9 @@ UPDATE_EOF
 
   # Cleanup old backups (keep last 5)
   BACKUP_DIR=$(dirname "$security_guide")
-  ls -t "$BACKUP_DIR"/DEVELOPMENT-GUIDE.md.backup-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+  # shellcheck disable=SC2012
+  ls -t "$BACKUP_DIR"/DEVELOPMENT-GUIDE.md.backup-* 2>/dev/null \
+    | tail -n +6 | while IFS= read -r _old_backup; do rm -f "$_old_backup"; done || true
 
   # Store original size for validation
   ORIGINAL_SIZE=$(wc -l < "$security_guide")
@@ -1287,15 +1289,17 @@ EOF
 
               # Check last modification (any source file, not just .ts/.js)
               # portable_find_max_mtime reads NUL-delimited paths from find -print0
+              # and already returns "0" when no files are found; || true avoids silent
+              # script death under set -euo pipefail without producing a double "0".
               LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/vendor/*" -print0 2>/dev/null \
-                | portable_find_max_mtime || echo "0")
-              [ "$LAST_MODIFIED" = "0" ] && LAST_MODIFIED=""
+                | portable_find_max_mtime || true)
+              [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
 
               # Fallback: check ANY file modification if no source files found
               if [ -z "$LAST_MODIFIED" ]; then
                 LAST_MODIFIED=$(find "$wt_path" -type f -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 2>/dev/null \
-                  | portable_find_max_mtime || echo "0")
-                [ "$LAST_MODIFIED" = "0" ] && LAST_MODIFIED=""
+                  | portable_find_max_mtime || true)
+                [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
               fi
 
               if [ -n "$LAST_MODIFIED" ]; then

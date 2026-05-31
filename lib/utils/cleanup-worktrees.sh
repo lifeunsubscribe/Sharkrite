@@ -74,9 +74,11 @@ while IFS= read -r wt_path; do
   BRANCH_EXISTS=$(git show-ref --verify --quiet refs/heads/"$WT_BRANCH" && echo "yes" || echo "no")
 
   # Check last modification (portable: BSD stat -f "%m" vs GNU stat -c "%Y")
+  # portable_find_max_mtime already returns "0" when no files are found; || true avoids
+  # silent script death under set -euo pipefail without producing a double "0".
   LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" \) -print0 2>/dev/null \
-    | portable_find_max_mtime || echo "0")
-  [ "$LAST_MODIFIED" = "0" ] && LAST_MODIFIED=""
+    | portable_find_max_mtime || true)
+  [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
 
   if [ -n "$LAST_MODIFIED" ]; then
     DAYS_OLD=$(( ( $(date +%s) - LAST_MODIFIED ) / 86400 ))
