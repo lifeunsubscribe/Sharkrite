@@ -347,7 +347,7 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   rm -f "$CLAUDE_STDERR"
 
   if [ "${REVIEW_EXIT:-0}" -eq 124 ]; then
-    print_warning "Claude call timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — retrying or aborting"
+    print_warning "Claude call timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — aborting"
     exit 124
   fi
 
