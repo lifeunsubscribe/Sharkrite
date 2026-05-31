@@ -13,6 +13,8 @@
 #
 # Requires: config.sh sourced first (for $BLOCKER_* pattern variables)
 
+set -euo pipefail
+
 # Source notifications library
 source "$RITE_LIB_DIR/utils/notifications.sh"
 

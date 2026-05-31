@@ -1,6 +1,8 @@
 #!/bin/bash
 # lib/utils/colors.sh - Terminal color definitions and print helpers
 
+set -euo pipefail
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

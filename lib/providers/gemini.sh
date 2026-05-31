@@ -10,6 +10,8 @@
 # 3. Map Gemini's streaming event format for jq parsing
 # 4. Test text-in/text-out prompts first (simplest to verify)
 
+set -euo pipefail
+
 # =============================================================================
 # CLI Detection
 # =============================================================================

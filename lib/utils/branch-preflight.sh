@@ -11,6 +11,8 @@
 #   4  = DIVERGENT_NO_WORK (behind main + only init commit — auto-recover)
 #   5  = UNCOMMITTED_PRESERVED (uncommitted changes — route to auto-commit handler)
 
+set -euo pipefail
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

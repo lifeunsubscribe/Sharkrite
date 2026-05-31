@@ -13,6 +13,8 @@
 #     echo "multi-line block"
 #   fi
 
+set -euo pipefail
+
 # Ensure colors.sh is loaded (idempotent — already sourced by most callers)
 if ! declare -f print_header &>/dev/null; then
   source "${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/..}/utils/colors.sh"

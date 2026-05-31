@@ -10,6 +10,8 @@
 #   1 = blocked (stop workflow, manual intervention needed)
 #   2 = resolved but needs re-review (foreign commits pulled, re-enter Phase 2→3)
 
+set -euo pipefail
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

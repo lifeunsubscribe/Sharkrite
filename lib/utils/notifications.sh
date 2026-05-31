@@ -7,6 +7,8 @@
 # RITE_AWS_PROFILE, RITE_EMAIL_FROM, RITE_PROJECT_NAME, SLACK_WEBHOOK,
 # EMAIL_NOTIFICATION_ADDRESS)
 
+set -euo pipefail
+
 # Configuration from environment (with config.sh defaults)
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
 EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"

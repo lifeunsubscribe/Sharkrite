@@ -12,6 +12,8 @@
 # Path A prompts for approval before creating the GitHub issue.
 # Path B auto-applies deterministic cleanup (no prompt).
 
+set -euo pipefail
+
 # Source colors if not already loaded
 if ! declare -f print_info &>/dev/null; then
   if [ -n "${RITE_LIB_DIR:-}" ]; then

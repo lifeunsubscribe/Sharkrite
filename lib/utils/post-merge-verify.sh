@@ -8,7 +8,7 @@
 # Called after merge/rebase succeeds but BEFORE push.
 # If verification fails, the caller should abort (revert the merge, don't push).
 
-set -o pipefail  # Ensure pipeline failures propagate correctly
+set -euo pipefail
 
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then

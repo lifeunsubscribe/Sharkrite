@@ -4,6 +4,8 @@
 #
 # Requires: gh CLI authenticated
 
+set -euo pipefail
+
 # ensure_labels_exist LABELS_CSV
 #
 # Creates any labels in the comma-separated list that don't already exist

@@ -4,6 +4,8 @@
 # The section lives between <!-- sharkrite-changes-summary --> markers
 # and is visible on GitHub (only the marker lines are hidden).
 
+set -euo pipefail
+
 SUMMARY_START="<!-- sharkrite-changes-summary -->"
 SUMMARY_END="<!-- /sharkrite-changes-summary -->"
 
