@@ -345,3 +345,22 @@ BATCHEOF
   _runner_check=$(grep -c "stale_result -eq 11" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_runner_check" -ge 1 ]
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 7: claude-workflow.sh stale handler reacts to exit 11 (not 10)
+#
+# claude-workflow.sh is the second consumer of check_stale_branch.  It must
+# branch on exit 11 for the stale-restart exec, not exit 10.  This test
+# mirrors Test 6's grep-guard approach but targets claude-workflow.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+@test "claude-workflow.sh stale handler: checks exit 11 (not 10) for restart" {
+  _claude_wf="$RITE_REPO_ROOT/lib/core/claude-workflow.sh"
+
+  # Must contain the corrected guard: _stale_exit -eq 11
+  _correct=$(grep -c "_stale_exit -eq 11" "$_claude_wf" || true)
+  [ "$_correct" -ge 1 ]
+
+  # Must NOT contain the old guard: _stale_exit -eq 10
+  _old=$(grep -c "_stale_exit -eq 10" "$_claude_wf" || true)
+  [ "$_old" -eq 0 ]
+}

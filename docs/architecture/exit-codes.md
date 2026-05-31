@@ -15,7 +15,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `5`  | `claude-workflow.sh`, `create-pr.sh`, `merge-pr.sh`, `stale-branch.sh`, `divergence-handler.sh`, `branch-preflight.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Usage/token cap reached — abort batch cleanly |
 | `6`  | `merge-pr.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Merge succeeded but worktree/branch cleanup failed — work IS on remote |
 | `10` | `batch-process-issues.sh` (exit) | Caller of `rite` batch | Batch completed with at least one blocker-deferred issue |
-| `11` | `stale-branch.sh` (`check_stale_branch`) | `workflow-runner.sh` stale-branch handler | Stale branch: PR closed, branch/worktree cleaned up, restart fresh — caller must reset all resume state variables |
+| `11` | `stale-branch.sh` (`check_stale_branch`) | `workflow-runner.sh` stale-branch handler, `claude-workflow.sh` stale-branch health path | Stale branch: PR closed, branch/worktree cleaned up, restart fresh — caller must reset all resume state variables |
 
 > **Why 10 and 11 are separate:**
 > `batch-process-issues.sh` uses exit 10 for its own final exit when blocked

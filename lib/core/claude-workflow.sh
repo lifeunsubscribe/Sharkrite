@@ -1296,7 +1296,9 @@ If the changes are unrelated work, answer UNRELATED."
         _stale_exit=$?
         set -e
 
-        if [ $_stale_exit -eq 10 ]; then
+        if [ $_stale_exit -eq 11 ]; then
+          # Exit 11 = stale-restart signal (see docs/architecture/exit-codes.md).
+          # NOT exit 10 — that is reserved for batch "blocker detected" (batch-process-issues.sh).
           # Stale handler restarted fresh — exec to restart workflow
           print_status "Restarting workflow after stale branch cleanup..."
           if [ "$AUTO_MODE" = true ]; then
