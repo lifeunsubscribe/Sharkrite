@@ -205,7 +205,7 @@ GHEOF
 
 ## Encountered Issues (Needs Triage)
 
-EOF
+INITEOF
       fi
 
       echo $? > "$exit_codes_dir/process_${i}.exit"

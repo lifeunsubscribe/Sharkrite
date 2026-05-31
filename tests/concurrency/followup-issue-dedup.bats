@@ -60,18 +60,18 @@ if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
   done
 
   # Generate issue number (atomic using flock)
-  local lockfile="/tmp/gh-mock-issue-counter.lock"
-  local counterfile="/tmp/gh-mock-issue-counter"
+  _lockfile="/tmp/gh-mock-issue-counter.lock"
+  _counterfile="/tmp/gh-mock-issue-counter"
 
   (
     flock -x 200
 
-    if [ ! -f "$counterfile" ]; then
-      echo "1000" > "$counterfile"
+    if [ ! -f "$_counterfile" ]; then
+      echo "1000" > "$_counterfile"
     fi
 
-    issue_num=$(cat "$counterfile")
-    echo $((issue_num + 1)) > "$counterfile"
+    issue_num=$(cat "$_counterfile")
+    echo $((issue_num + 1)) > "$_counterfile"
 
     # Append to created issues log (for test verification)
     if [ -n "$GH_MOCK_ISSUES_FILE" ]; then
@@ -84,7 +84,7 @@ if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
     # Output like real gh
     echo "$issue_num"
 
-  ) 200>"$lockfile"
+  ) 200>"$_lockfile"
 
 elif [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   # Return empty list for now
