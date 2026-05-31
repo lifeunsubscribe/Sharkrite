@@ -180,6 +180,10 @@ preflight_auto_recover_empty() {
       # Draft PR — check if it has zero additions (empty)
       local additions
       additions=$(gh pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
+      # Normalize: gh can return empty or "null" on API errors; coerce to integer
+      if ! [[ "$additions" =~ ^[0-9]+$ ]]; then
+        additions=0
+      fi
 
       if [ "$additions" -eq 0 ]; then
         print_status "Closing empty draft PR #$pr_number..."
