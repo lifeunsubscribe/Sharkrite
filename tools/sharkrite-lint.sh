@@ -44,12 +44,13 @@ print_warning() {
 echo "Running Sharkrite custom lint rules..."
 echo ""
 
-# Find all shell scripts
-SHELL_FILES=$(find "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" -type f \( -name "*.sh" -o -path "*/bin/rite*" \) 2>/dev/null)
+# Find all shell scripts (bin/, lib/, and tools/ including git-hooks without .sh extension)
+mapfile -t SHELL_FILES < <(find "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
+  -type f \( -name "*.sh" -o -path "*/bin/rite*" -o -path "*/tools/git-hooks/*" \) 2>/dev/null)
 
 # Rule 1: grep -c with || echo "0" (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # Match: grep -c <pattern> || echo "0"
   # This is wrong because grep -c always outputs a count
   while IFS=: read -r line_num line_content; do
@@ -62,7 +63,7 @@ done
 
 # Rule 2: git push without explicit refspec (dangerous in automation)
 echo "Checking for 'git push' without explicit refspec..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip if it's a comment
     if echo "$line_content" | grep -qE '^\s*#'; then
@@ -83,7 +84,7 @@ done
 
 # Rule 3: eval with GitHub API data (security risk)
 echo "Checking for 'eval' with potentially untrusted data..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip comments
     if echo "$line_content" | grep -qE '^\s*#'; then
@@ -102,7 +103,7 @@ done
 
 # Rule 4: Unquoted heredoc in command substitution
 echo "Checking for unquoted heredoc in command substitution..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # Match: $(cat <<EOF or $(... <<EOF without quotes
   # Safe: $(cat <<'EOF' or $(cat << 'EOF' with space before quote
   while IFS=: read -r line_num line_content; do
@@ -126,7 +127,7 @@ done
 # For all other files, Rule 10 (BARE_BSD_SED_I) fires first and is more actionable.
 # Rule 5 only fires on portable-cmds.sh itself, to ensure the --version guard is present there.
 echo "Checking for BSD-only 'sed -i' without GNU fallback..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # Rule 10 supersedes Rule 5 for every file except portable-cmds.sh.
   # Avoid double-reporting the same sed -i '' line.
   if [[ "$file" != */portable-cmds.sh ]]; then
@@ -150,7 +151,7 @@ done
 
 # Rule 6: PIPESTATUS after || true or non-pipeline
 echo "Checking for PIPESTATUS misuse..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # Find all PIPESTATUS usages
   while IFS=: read -r line_num line_content; do
     # Get previous line for context
@@ -177,7 +178,7 @@ done
 
 # Rule 7: local keyword outside function (SC2168 - but catch our own)
 echo "Checking for 'local' outside function scope..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # Parse the file to check if 'local' is inside a function
   # Simple heuristic: if there's no 'function' or '() {' before 'local', it's wrong
 
@@ -193,17 +194,17 @@ for file in $SHELL_FILES; do
       in_function=1
     fi
 
-    # Track braces (functions end with })
-    open_braces=$(echo "$line" | grep -o '{' | wc -l || echo 0)
-    close_braces=$(echo "$line" | grep -o '}' | wc -l || echo 0)
+    # Track braces (functions end with }); grep -o exits 1 on no match, suppress via || true
+    open_braces=$(echo "$line" | grep -o '{' | wc -l || true)
+    close_braces=$(echo "$line" | grep -o '}' | wc -l || true)
     brace_depth=$((brace_depth + open_braces - close_braces))
 
-    if [ $brace_depth -eq 0 ]; then
+    if [ "$brace_depth" -eq 0 ]; then
       in_function=0
     fi
 
     # Check for 'local' outside function
-    if echo "$line" | grep -qE '^\s*local\s+\w+' && [ $in_function -eq 0 ]; then
+    if echo "$line" | grep -qE '^\s*local\s+\w+' && [ "$in_function" -eq 0 ]; then
       # Skip if it's in a comment or example
       if ! echo "$line" | grep -qE '^\s*#'; then
         print_violation "$file" "$line_num" "LOCAL_OUTSIDE_FUNCTION" \
@@ -218,7 +219,7 @@ done
 
 # Rule 8: Unsafe pipe inside command substitution (silent death under set -euo pipefail)
 echo "Checking for unsafe VAR=\$(... | grep/awk/sed/head/tail) patterns..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # Match: VAR=$(... | grep ...) or similar commands that can exit 1
   # Safe patterns: || true, || echo "...", or : $?
   while IFS=: read -r line_num line_content; do
@@ -248,9 +249,9 @@ done
 
 # Rule 9: Claude-specific tokens in lib/core/ (Provider Agnosticism)
 echo "Checking for Claude-specific tokens in lib/core/ (provider agnosticism)..."
-CORE_FILES=$(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
+mapfile -t CORE_FILES < <(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
 
-for file in $CORE_FILES; do
+for file in "${CORE_FILES[@]}"; do
   # Check for forbidden tokens that indicate provider-specific leakage
   # These should only appear in lib/providers/claude.sh, not lib/core/
 
@@ -311,7 +312,7 @@ done
 
 # Rule 10: BSD-only sed -i '' without portable wrapper (except portable-cmds.sh itself)
 echo "Checking for bare 'sed -i \"\"' without portable wrapper..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # portable-cmds.sh is the canonical implementation — skip it
   if [[ "$file" == */portable-cmds.sh ]]; then
     continue
@@ -331,7 +332,7 @@ done
 
 # Rule 11: BSD-only stat -f (mtime) without portable wrapper (except portable-cmds.sh itself)
 echo "Checking for bare 'stat -f' (BSD-only)..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   # portable-cmds.sh is the canonical implementation — skip it
   if [[ "$file" == */portable-cmds.sh ]]; then
     continue
@@ -350,7 +351,7 @@ done
 
 # Rule 12: find piped to xargs without -0/-print0 pairing
 echo "Checking for 'find ... | xargs' without -0 / -print0..."
-for file in $SHELL_FILES; do
+for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip comments
     if echo "$line_content" | grep -qE '^\s*#'; then
@@ -372,7 +373,7 @@ done
 
 echo ""
 echo "----------------------------------------"
-if [ $VIOLATIONS -eq 0 ]; then
+if [ "$VIOLATIONS" -eq 0 ]; then
   echo -e "${GREEN}✓${NC} All custom lint checks passed!"
   exit 0
 else
