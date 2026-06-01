@@ -125,13 +125,13 @@ if [ -n "$FILTER_TYPE" ]; then
 
   case "$FILTER_TYPE" in
     label)
-      FETCHED_ISSUES=$(gh issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' 2>/dev/null | sort -n | tr '\n' ' ' || true)
       ;;
     milestone)
-      FETCHED_ISSUES=$(gh issue list --milestone "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh issue list --milestone "$FILTER_VALUE" --state open --json number --jq '.[].number' 2>/dev/null | sort -n | tr '\n' ' ' || true)
       ;;
     state)
-      FETCHED_ISSUES=$(gh issue list --state "$FILTER_VALUE" --json number --jq '.[].number' | sort -n | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh issue list --state "$FILTER_VALUE" --json number --jq '.[].number' 2>/dev/null | sort -n | tr '\n' ' ' || true)
       ;;
   esac
 

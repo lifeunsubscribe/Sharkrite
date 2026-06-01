@@ -39,7 +39,7 @@ assess_pr_review() {
   # assessment or other bot comments). Sorted by createdAt to ensure newest first.
   local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
     --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0].body' \
-    2>/dev/null)
+    2>/dev/null || echo "")
 
   # Validate gh CLI returned valid data
   if [ -z "$LATEST_REVIEW" ] || [ "$LATEST_REVIEW" = "null" ]; then

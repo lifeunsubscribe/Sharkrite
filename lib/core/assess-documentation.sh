@@ -38,10 +38,10 @@ provider_validate_cli || exit 1
 # SHARED DATA (computed once, used by both layers)
 # =====================================================================
 
-PR_DATA=$(gh pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
+PR_DATA=$(gh pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments 2>/dev/null || echo "")
 PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
-PR_DIFF=$(gh pr diff "$PR_NUMBER" | head -500)
+PR_DIFF=$(gh pr diff "$PR_NUMBER" 2>/dev/null | head -500 || true)
 CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
 
 # =====================================================================

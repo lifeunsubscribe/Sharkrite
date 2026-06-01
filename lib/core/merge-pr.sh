@@ -533,13 +533,13 @@ CLAUDE_REVIEW_FOUND=false
 # First check formal reviews for Sharkrite marker
 LATEST_CLAUDE_REVIEW=$(gh pr view $PR_NUMBER --json reviews \
   --jq '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body' \
-  2>/dev/null)
+  2>/dev/null || echo "")
 
 # If not in formal reviews, check PR comments for Sharkrite marker
 if [ -z "$LATEST_CLAUDE_REVIEW" ] || [ "$LATEST_CLAUDE_REVIEW" = "null" ]; then
   LATEST_CLAUDE_REVIEW=$(gh pr view $PR_NUMBER --json comments \
     --jq '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body' \
-    2>/dev/null)
+    2>/dev/null || echo "")
 fi
 
 if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then

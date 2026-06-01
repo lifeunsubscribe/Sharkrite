@@ -2013,7 +2013,7 @@ _Draft PR created automatically by rite for tracking purposes._"
   rm -f "$DRAFT_BODY_FILE"
 
   # Get PR number
-  PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null)
+  PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null || echo "")
 
   if [ -n "$PR_NUMBER" ]; then
     print_success "Draft PR #$PR_NUMBER created"

@@ -202,3 +202,81 @@ echo "$foo"'
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
+
+@test "detects unguarded gh output capture (no fallback)" {
+  create_test_script "bad-gh.sh" 'PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq ".headRefOid")'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "detects unguarded gh capture with 2>/dev/null but no || fallback" {
+  create_test_script "bad-gh-redirect.sh" 'ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq "." 2>/dev/null)'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "accepts gh capture with || echo fallback" {
+  create_test_script "good-gh-echo.sh" 'PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq ".headRefName" 2>/dev/null || echo "")'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "accepts gh capture with || true fallback" {
+  create_test_script "good-gh-true.sh" 'REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq "." 2>/dev/null || true)'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "accepts gh capture used in if conditional (caller owns exit code)" {
+  create_test_script "good-gh-if.sh" 'if PR_INFO=$(gh pr view "$PR_NUMBER" --json title 2>&1); then
+  echo "$PR_INFO"
+fi'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "accepts gh capture with 2>&1 error handler pattern" {
+  create_test_script "good-gh-handler.sh" 'REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq "." 2>"$GH_STDERR") || {
+  cat "$GH_STDERR"
+  exit 1
+}'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "detects unguarded gh label list capture" {
+  # gh label is now in the network-verb list (coverage gap from PR #135 assessment)
+  create_test_script "bad-gh-label.sh" 'existing=$(gh label list --limit 200 --json name --jq ".[].name" 2>/dev/null)'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GH_UNGUARDED_CALL" ]]
+}
+
+@test "accepts gh label list capture with || echo fallback" {
+  create_test_script "good-gh-label.sh" 'existing=$(gh label list --limit 200 --json name --jq ".[].name" 2>/dev/null || echo "")'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GH_UNGUARDED_CALL" ]]
+}

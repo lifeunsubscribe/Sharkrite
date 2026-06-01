@@ -22,7 +22,7 @@ create_followup_issues() {
   # Get latest review
   local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
     --jq '[.comments[] | select(.author.login == "github-actions[bot]" or .author.login == "claude" or .author.login == "claude-code")] | .[-1] | .body' \
-    2>/dev/null)
+    2>/dev/null || echo "")
 
   if [ -z "$LATEST_REVIEW" ]; then
     echo "⚠️  No review found, skipping issue creation"
@@ -202,7 +202,7 @@ EOF
     --label "$PRIORITY_LABEL" \
     --label "$TYPE_LABEL" \
     --json number \
-    --jq '.number' 2>/dev/null)
+    --jq '.number' 2>/dev/null || echo "")
   rm -f "$body_file"
 
   if [ -n "$NEW_ISSUE_NUMBER" ]; then

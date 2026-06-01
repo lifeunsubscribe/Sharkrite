@@ -155,7 +155,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
 
   # Push new commits if needed
   CURRENT_HEAD=$(git rev-parse HEAD)
-  PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+  PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
   PUSHED_NEW_COMMITS=false
 
   if [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then

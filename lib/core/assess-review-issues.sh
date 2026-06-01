@@ -954,7 +954,7 @@ _Parent PR: #${PR_NUMBER}_"
   if [ -n "$CREATED_ISSUES" ] || [ -n "$UPDATED_ISSUES" ]; then
     print_status "Updating PR body with follow-up issue links..."
 
-    CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null)
+    CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null || echo "")
 
     # Check if follow-up section already exists
     if echo "$CURRENT_BODY" | grep -q "## Follow-up Issues"; then

@@ -378,6 +378,86 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
+# Rule 13: gh output captured without error fallback (GH_UNGUARDED_CALL)
+# Catches: VAR=$(gh <network-verb> ...) without a fallback guard.
+# A failing gh command inside $() will silently kill the script under set -euo pipefail.
+# The caller must provide one of these guards:
+#   (a) inline fallback:  VAR=$(gh ... 2>/dev/null || echo "")
+#   (b) inline suppress:  VAR=$(gh ... 2>/dev/null || true)
+#   (c) error handler:    VAR=$(gh ... 2>&1) || { handle; exit 1; }
+#   (d) explicit check:   VAR=$(gh ... 2>/dev/null)  [followed by if-check on empty]
+#
+# Network-calling subcommands: pr, issue, api, repo, label, release, run,
+# workflow, secret, variable, gist, auth, org, search, ssh-key, extension, env
+# Includes 'label' to close the coverage gap identified in PR #135 assessment.
+#
+# Safe patterns NOT flagged:
+#   - if RESULT=$(gh ...      — caller directly tests exit code
+#   - VAR=$(gh ... || echo "")  — inline fallback
+#   - VAR=$(gh ... || true)     — explicit ignore
+#   - multiline VAR=$(gh ...\n  ...) || echo ""  — fallback on closing line
+GH_NETWORK_VERBS='(pr|issue|api|repo|label|release|run|workflow|secret|variable|gist|auth|org|search|ssh-key|extension|env)'
+echo "Checking for unguarded 'VAR=\$(gh ...)' output capture..."
+for file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r line_num line_content; do
+    # Skip pure comments
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
+      continue
+    fi
+
+    # Skip lines inside echo/printf strings — false positives on doc/example lines
+    if echo "$line_content" | grep -qE '^[[:space:]]*(echo|printf)[[:space:]]'; then
+      continue
+    fi
+
+    # Skip if/elif/if! conditionals — the caller directly tests the exit code
+    # e.g.:  if RESULT=$(gh pr view ...); then
+    #         if ! RESULT=$(gh pr view ...); then
+    if echo "$line_content" | grep -qE '^[[:space:]]*(if[[:space:]]|elif[[:space:]]|if[[:space:]]*!).*=\$\(gh[[:space:]]'; then
+      continue
+    fi
+
+    # Collect up to 10 lines starting at line_num to cover multiline substitutions.
+    # A multiline $(gh ... \n ...) pattern has the closing ) and fallback on a later line.
+    context=$(sed -n "${line_num},$((line_num + 10))p" "$file" 2>/dev/null || true)
+
+    # Safe: any || echo, || true, || false, || <var>=, || { somewhere in the context window.
+    # Also safe: explicit exit-code capture (echo $? >).
+    if echo "$context" | grep -qE '\|\|[[:space:]]*(echo|true|false|[a-zA-Z_][a-zA-Z0-9_]*)'; then
+      continue
+    fi
+    if echo "$context" | grep -qE 'echo[[:space:]]+\$\?[[:space:]]*>'; then
+      continue
+    fi
+    # Safe: ) followed by || { (error handler block) — covers multiline case
+    if echo "$context" | grep -qE '\)[[:space:]]*\|\|[[:space:]]*\{'; then
+      continue
+    fi
+    # Safe: VAR=$(gh ...) && { ... } — explicit success-test guard (retry patterns)
+    # e.g.: GH_OUT=$(gh pr diff "$PR" 2>&1) && { use "$GH_OUT"; break; }
+    if echo "$context" | grep -qE '\)[[:space:]]*&&[[:space:]]*\{'; then
+      continue
+    fi
+    # Safe: gh output piped within the substitution to a command whose exit code
+    # replaces gh's exit code (jq, head, tail, sort, awk, wc, tr, grep, cut, sed).
+    # e.g.: VAR=$(gh pr list ... 2>/dev/null | jq ...)
+    # Handles both inline pipes (| jq) and backslash-continuation (| \\n  jq ...).
+    # NOTE: only safe if the pipe-tail also handles no-output gracefully (jq does via
+    # output filters; head/tail always exit 0; sort/tr/wc exit 0 on empty input).
+    if echo "$context" | grep -qE '\|[[:space:]]*(\\[[:space:]]*$|jq|head|tail|sort|awk|wc|tr|grep|cut|sed)[[:space:]]'; then
+      continue
+    fi
+    # Also safe: pipe continuation starts the next line with jq/head/tail/sort/awk
+    if echo "$context" | grep -qE '^[[:space:]]*(jq|head|tail|sort|awk|wc|tr|grep|cut|sed)[[:space:]]'; then
+      continue
+    fi
+
+    # Violation: VAR=$(gh <network-verb> ...) with no guard found in context window
+    print_violation "$file" "$line_num" "GH_UNGUARDED_CALL" \
+      "gh output captured without error fallback — add '|| echo \"\"' or '|| true' to prevent silent script death"
+  done < <(grep -nE '=\$\(gh[[:space:]]+'"${GH_NETWORK_VERBS}" "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

@@ -413,7 +413,7 @@ phase_claude_workflow() {
       print_info "Found existing PR #$pr_number for issue #$issue_number"
 
       # Find worktree for this PR's branch
-      pr_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName')
+      pr_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
       worktree_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
 
       if [ -n "$worktree_path" ]; then
@@ -1500,7 +1500,7 @@ run_workflow() {
   echo ""
 
   # Check if issue is already closed
-  local issue_data=$(gh issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences 2>/dev/null)
+  local issue_data=$(gh issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences 2>/dev/null || echo "")
   local issue_state=$(echo "$issue_data" | jq -r '.state')
 
   if [ "$issue_state" = "CLOSED" ]; then
@@ -1515,7 +1515,7 @@ run_workflow() {
     local pr_branch=""
 
     if [ -n "$pr_number" ]; then
-      local pr_data=$(gh pr view "$pr_number" --json state,mergedAt,body,headRefName 2>/dev/null)
+      local pr_data=$(gh pr view "$pr_number" --json state,mergedAt,body,headRefName 2>/dev/null || echo "")
       pr_state=$(echo "$pr_data" | jq -r '.state')
       pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
       pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5 || true)
