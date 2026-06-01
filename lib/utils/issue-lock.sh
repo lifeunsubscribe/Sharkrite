@@ -133,6 +133,44 @@ release_issue_lock() {
 # Uses the same mkdir-style atomic locking as acquire_issue_lock, with a shorter
 # stale timeout (60s) since the critical section completes in seconds.
 #
+# TIMING BUDGET — waiter timeout vs holder critical-section duration
+# -----------------------------------------------------------------
+# The waiter polls every second and times out after ~60s (60 × 1s sleeps plus
+# per-iteration overhead — actual wall-clock slightly exceeds 60s).
+# The holder's critical section in assess-and-resolve.sh can take significantly
+# longer than the ~5-10s typical case under slow-GitHub conditions:
+#
+#   Holder worst-case timing:
+#     • evidence validation:  1 gh_safe call (up to 20s backoff-sleep only; gh
+#                             round-trip latency is additional and not included here)
+#     • dedup search loop:    up to 4 gh_safe calls per iteration (up to 20s backoff-
+#                             sleep each, plus gh round-trip latency per call):
+#         - Source 2a: gh issue list  (body-marker search)
+#         - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
+#         - Source 3:  gh issue list  (title search; only if still no match)
+#         - Source 4:  gh pr view     (PR comment check; only if no match and not last retry)
+#     • dedup index backoff:  _dedup_max_retries × _dedup_backoff (default: 3×5s = 15s)
+#     ─────────────────────────────────────────────────────────────────────────────
+#     Plausible worst case:  20s + 80s + 15s = 115s backoff-sleep (exceeds the ~60s
+#                            waiter budget); actual wall-clock is higher once gh
+#                            request latency is included for each call
+#     Theoretical worst case: more calls per iteration if loop retries multiple times;
+#                             per-call cost is bounded at 20s (5s+15s backoff, no trailing
+#                             sleep) — growth comes from call count, not per-call duration
+#
+#   What happens on waiter timeout:
+#     The waiter returns 1 to the caller (acquire_pr_followup_lock only returns 1).
+#     The caller (assess-and-resolve.sh) sets _skip_followup_creation=true in the
+#     else branch.  This prevents creation of a follow-up issue rather than creating
+#     a duplicate.  However, it means the follow-up may not be created at all,
+#     requiring a manual re-run of --assess-and-fix.
+#
+#   Tuning:
+#     - Reduce RITE_DEDUP_BACKOFF (default: 5s) to shorten holder dedup wait time.
+#     - Reduce RITE_GH_MAX_RETRIES (default: 3) to shorten gh backoff windows.
+#     - Increase this lock's max_attempts if operating in a high-rate-limit environment.
+#     - See RITE_DEDUP_BACKOFF in config.sh for the configurable knob.
+#
 # Lock key scoping:
 #   - When source_issue is provided: keyed by PR + source issue
 #       pr-${pr_number}-src-${source_issue}-followup.lock

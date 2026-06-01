@@ -127,6 +127,14 @@ RITE_MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
 RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-300}"
 RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
 
+# Follow-up issue dedup backoff (seconds between dedup retry iterations in assess-and-resolve.sh)
+#
+# Under slow-GitHub conditions the holder of acquire_pr_followup_lock can consume
+# up to (_dedup_max_retries × RITE_DEDUP_BACKOFF) seconds in the dedup loop, on top
+# of gh_safe call time.  Lower this value to reduce worst-case lock hold time and give
+# the waiter (60s budget) more margin.  See timing budget in lib/utils/issue-lock.sh.
+RITE_DEDUP_BACKOFF="${RITE_DEDUP_BACKOFF:-5}"
+
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
@@ -284,6 +292,7 @@ export RITE_PLAN_MAX_ESTIMATE
 export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
+export RITE_DEDUP_BACKOFF
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS

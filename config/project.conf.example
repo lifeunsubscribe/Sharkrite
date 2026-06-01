@@ -63,6 +63,13 @@
 # Default is 300s. Raise to 600 if assessments time out during heavy provider load.
 # RITE_ASSESSMENT_TIMEOUT=300
 
+# Follow-up issue dedup backoff (seconds between retry iterations; default: 5s)
+# Under slow-GitHub conditions the lock holder can spend up to
+# (RITE_GH_MAX_RETRIES * gh backoff) + (_dedup_max_retries * RITE_DEDUP_BACKOFF)
+# seconds inside the lock.  The waiter times out after 60s.  Lowering this value
+# reduces worst-case holder time.  See timing budget in lib/utils/issue-lock.sh.
+# RITE_DEDUP_BACKOFF=5
+
 # =============================================================================
 # Plan Command (rite plan)
 # =============================================================================
