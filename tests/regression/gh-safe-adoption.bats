@@ -284,6 +284,175 @@ EOF
 }
 
 # ===========================================================================
+# gh_safe label subcommand coverage
+# ===========================================================================
+# These tests verify that gh_safe handles the 'label' subcommand correctly:
+# - label list (READ) — should return empty/exit-0 on 429-exhausted transient failure
+# - label create (WRITE) — should retry on 429 and eventually succeed
+
+@test "gh_safe label list retries on 429 and succeeds" {
+  # Derive correct path to gh-retry.sh: tests/regression/ -> ../../lib/utils/
+  local _gh_retry_sh
+  _gh_retry_sh="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)/lib/utils/gh-retry.sh"
+
+  local attempt_file="$TEST_TMPDIR/label-attempts"
+  echo "0" > "$attempt_file"
+
+  # Stub gh: fail with 429 on attempt 1, succeed on attempt 2.
+  # The stub outputs plain text (fake gh doesn't parse --json/--jq flags).
+  # gh_safe passes flags through; the result is the raw text from the stub.
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo "rate limit exceeded (429)" >&2
+  exit 1
+fi
+echo 'bug'
+echo 'enhancement'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$_gh_retry_sh'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe label list --limit 100 --json name --jq '.[].name' || true)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "bug" ]]
+  [[ "$output" =~ "enhancement" ]]
+}
+
+@test "gh_safe label list returns empty on exhausted 429 retries (graceful degradation)" {
+  # Simulate persistent 429 — gh_safe exhausts retries and returns non-zero.
+  # Callers use '|| true' so the assignment gets empty string rather than crashing.
+  # Derive correct path to gh-retry.sh: tests/regression/ -> ../../lib/utils/
+  local _gh_retry_sh
+  _gh_retry_sh="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)/lib/utils/gh-retry.sh"
+
+  cat > "$STUB_BIN/gh" <<'EOF'
+#!/bin/bash
+echo "rate limit exceeded (429)" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=2
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$_gh_retry_sh'
+    sleep() { :; }
+    export -f sleep
+    # Mirrors the pattern in labels.sh and plan-issues.sh:
+    #   existing=\$(gh_safe label list ... || true)
+    result=\$(gh_safe label list --limit 200 --json name --jq '.[].name' || true)
+    result=\"\${result:-}\"
+    echo \"exit:0\"
+    echo \"result:'\${result}'\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "exit:0" ]]
+  # Caller continues with empty list — no crash
+  [[ "$output" =~ "result:''" ]]
+}
+
+@test "gh_safe label create retries on 429 and succeeds" {
+  # Derive correct path to gh-retry.sh: tests/regression/ -> ../../lib/utils/
+  local _gh_retry_sh
+  _gh_retry_sh="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)/lib/utils/gh-retry.sh"
+
+  local attempt_file="$TEST_TMPDIR/create-attempts"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo "rate limit exceeded (429)" >&2
+  exit 1
+fi
+echo 'https://github.com/owner/repo/labels/tech-debt'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$_gh_retry_sh'
+    sleep() { :; }
+    export -f sleep
+    gh_safe label create 'tech-debt' --color 'E4E669' --description 'Technical debt'
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "tech-debt" ]]
+}
+
+@test "ensure_labels_exist proceeds gracefully when label list returns empty (transient failure)" {
+  # When gh_safe label list fails (e.g. 429-exhausted), existing becomes empty.
+  # ensure_labels_exist should then attempt to create all labels (idempotent).
+  # This test verifies the function doesn't crash on empty label list.
+  # Derive correct paths: tests/regression/ -> ../../lib/utils/
+  local _lib_dir
+  _lib_dir="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)/lib"
+
+  local created_file="$TEST_TMPDIR/created-labels"
+  : > "$created_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+if [ "\$1" = "label" ] && [ "\$2" = "list" ]; then
+  # Simulate exhausted retries — return empty with non-zero exit
+  echo "Service Unavailable (503)" >&2
+  exit 1
+elif [ "\$1" = "label" ] && [ "\$2" = "create" ]; then
+  # Record label name and succeed
+  echo "\$3" >> "$created_file"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=1  # No retries — immediate failure on list
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$_lib_dir/utils/gh-retry.sh'
+    source '$_lib_dir/utils/labels.sh'
+    ensure_labels_exist 'tech-debt,automated'
+    echo 'done'
+  "
+
+  # Function must not crash — label list failure is recoverable
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "done" ]]
+}
+
+# ===========================================================================
 # Codebase-wide adoption check
 # ===========================================================================
 
