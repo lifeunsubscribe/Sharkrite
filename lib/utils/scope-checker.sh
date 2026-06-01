@@ -69,13 +69,41 @@ parse_scope_boundary() {
 }
 
 # ---------------------------------------------------------------------------
+# _is_path_shaped PATTERN
+#
+# Returns 0 if PATTERN looks like a file/directory path or glob, 1 otherwise.
+# A pattern is path-shaped when it:
+#   - contains a forward slash (e.g. lib/core/foo.sh, lib/core/)
+#   - ends with a recognised file extension (e.g. foo.sh, bar.bats)
+#   - contains a glob metacharacter (* ? [)
+# Plain prose phrases like "touch unrelated tests" are NOT path-shaped.
+# ---------------------------------------------------------------------------
+_is_path_shaped() {
+  local pattern="$1"
+  # Contains a slash → directory or full path
+  if [[ "$pattern" == */* ]]; then return 0; fi
+  # Ends with a common file extension
+  if [[ "$pattern" =~ \.[a-zA-Z0-9]{1,6}$ ]]; then return 0; fi
+  # Contains a glob metacharacter
+  if [[ "$pattern" == *'*'* ]] || [[ "$pattern" == *'?'* ]] || [[ "$pattern" == *'['* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # _file_matches_pattern FILE PATTERN
 #
 # Returns 0 if FILE (lowercased) starts with or equals PATTERN (lowercased).
 # PATTERN may be:
 #   - an exact file path   (lib/core/foo.sh)
 #   - a directory prefix   (lib/core/ or lib/core)
-#   - a wildcard glob      (lib/core/*.sh)  — matched via bash glob
+#   - a wildcard glob      (lib/core/*.sh)  — matched via bash glob, only
+#     when the pattern is path-shaped (guards against glob injection from
+#     arbitrary prose in issue text)
+#
+# Non-path-shaped patterns (prose phrases) are never matched here; callers
+# that want prose substring matching must handle that separately.
 # ---------------------------------------------------------------------------
 _file_matches_pattern() {
   local file="$1"
@@ -83,6 +111,9 @@ _file_matches_pattern() {
 
   file=$(echo "$file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||')
   pattern=$(echo "$pattern" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||')
+
+  # Skip non-path-shaped patterns — they have no meaning as path matchers
+  if ! _is_path_shaped "$pattern"; then return 1; fi
 
   # Strip trailing slash from pattern for prefix comparison
   local pattern_no_slash="${pattern%/}"
@@ -95,7 +126,8 @@ _file_matches_pattern() {
     return 0
   fi
 
-  # Glob match via bash
+  # Glob match via bash — only reached for path-shaped patterns (guards against
+  # glob injection from arbitrary issue prose)
   # shellcheck disable=SC2254
   if [[ "$file" == $pattern ]]; then return 0; fi
 
@@ -191,12 +223,43 @@ check_scope_boundary() {
     # Check DO NOT patterns first (explicit exclusion wins).
     # _donot_patterns is always declared with local _donot_patterns=() so the
     # array expansion is safe even when empty (bash 4+ empty array behaviour).
+    #
+    # Two matching strategies:
+    #   - Path-shaped patterns  → use _file_matches_pattern (prefix/glob)
+    #   - Prose patterns        → substring match: the file path contains a
+    #     word from the prose phrase (e.g. "touch unrelated tests" matches
+    #     any file whose path contains "unrelated" or "tests")
     local _donot_match=false
     for _pat in "${_donot_patterns[@]}"; do
       [ -z "${_pat:-}" ] && continue
-      if _file_matches_pattern "$_file_norm" "$_pat"; then
-        _donot_match=true
-        break
+      if _is_path_shaped "$_pat"; then
+        # Path-shaped: use standard prefix/glob matching
+        if _file_matches_pattern "$_file_norm" "$_pat"; then
+          _donot_match=true
+          break
+        fi
+      else
+        # Prose phrase: check whether any significant word in the phrase
+        # appears as a substring of the file path (case-insensitive, already
+        # lowercased).  Skip stop-words (do, not, the, a, an, touch, any).
+        local _prose_pat_lower
+        _prose_pat_lower=$(echo "$_pat" | tr '[:upper:]' '[:lower:]')
+        local _word
+        for _word in $_prose_pat_lower; do
+          # Skip common stop-words that would over-match.
+          # "tests" is excluded because it matches every file under tests/
+          # when the intent is to exclude a specific class of tests (e.g.
+          # "unrelated tests").  More specific words like "unrelated" still
+          # fire as intended.
+          case "$_word" in
+            do|not|the|a|an|touch|any|to|in|of|and|or|with|for|all|tests|test|files|file|changes|code) continue ;;
+          esac
+          if [[ "$_file_norm" == *"$_word"* ]]; then
+            _donot_match=true
+            break
+          fi
+        done
+        [ "$_donot_match" = true ] && break
       fi
     done
 
@@ -205,14 +268,31 @@ check_scope_boundary() {
       continue
     fi
 
-    # If DO patterns exist, the file must match at least one
+    # If DO patterns exist, the file must match at least one.
+    # A DO bullet may contain prose mixed with paths (e.g. "tweak the regex
+    # in lib/core/foo.sh").  When the full bullet text contains spaces, split
+    # it on whitespace and test only the path-shaped tokens — this prevents
+    # prose words from being used as path prefixes (which would never match)
+    # and ensures real path mentions inside prose DO bullets are honoured.
     if [ "${#_do_patterns[@]}" -gt 0 ]; then
       local _do_match=false
       for _pat in "${_do_patterns[@]}"; do
         [ -z "$_pat" ] && continue
-        if _file_matches_pattern "$_file_norm" "$_pat"; then
-          _do_match=true
-          break
+        if [[ "$_pat" == *" "* ]]; then
+          # Prose bullet: try each whitespace-separated token that is path-shaped
+          local _token
+          for _token in $_pat; do
+            if _is_path_shaped "$_token" && _file_matches_pattern "$_file_norm" "$_token"; then
+              _do_match=true
+              break
+            fi
+          done
+          [ "$_do_match" = true ] && break
+        else
+          if _file_matches_pattern "$_file_norm" "$_pat"; then
+            _do_match=true
+            break
+          fi
         fi
       done
       if [ "$_do_match" = false ]; then
@@ -254,6 +334,7 @@ format_scope_warning() {
 
 ---
 
+<!-- sharkrite-scope-warning -->
 ## ⚠️ Scope Boundary Warning
 
 This PR modifies **${_count}** file(s) that may be outside the issue's declared scope:

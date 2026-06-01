@@ -273,3 +273,67 @@ EOF
   [[ "$output" == *"VIOLATION:"* ]]
   [[ "$output" == *"empty-diff-after-fetch.bats"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Test 9: format_scope_warning output shape
+#   Verifies the count, per-file backtick bullet formatting, and the HTML
+#   marker that the dedup guard in claude-workflow.sh searches for.
+# ---------------------------------------------------------------------------
+@test "format_scope_warning: count and bullet formatting are correct" {
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    VIOLATIONS=\"VIOLATION: lib/core/foo.sh
+VIOLATION: tests/regression/bar.bats\"
+    format_scope_warning \"\$VIOLATIONS\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Count should be 2
+  [[ "$output" == *"**2**"* ]]
+  # Each file should appear as a backtick bullet (awk produces: - `path`)
+  [[ "$output" == *"lib/core/foo.sh"* ]]
+  [[ "$output" == *"bar.bats"* ]]
+  # Dedup marker must be present so claude-workflow.sh can avoid re-appending
+  [[ "$output" == *"<!-- sharkrite-scope-warning -->"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: Literal-path DO NOT exclusion fires correctly
+#   A file inside a DO'd directory but also matching a literal-path DO NOT
+#   bullet must still be flagged as a violation (DO NOT overrides DO).
+#
+# Matching constraints documented here:
+#   - Path-shaped patterns (contain '/' or have a file extension):
+#       matched via prefix/exact/glob (_file_matches_pattern)
+#   - Prose patterns (no slash, no extension):
+#       matched via word-substring against the file path (_is_path_shaped=false)
+# ---------------------------------------------------------------------------
+@test "literal-path DO NOT: file inside DO directory but in DO NOT list is flagged" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+  git checkout -q -b feature/donot-path
+  mkdir -p lib/core
+  printf "# secret file\n" > lib/core/secret.sh
+  git add -A
+  git commit -q -m "add secret.sh"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body10.txt"
+  # DO covers all of lib/core/, but DO NOT explicitly excludes lib/core/secret.sh
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/
+- DO NOT: lib/core/secret.sh
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # DO NOT must override DO — secret.sh is a violation
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"VIOLATION:"* ]]
+  [[ "$output" == *"secret.sh"* ]]
+}

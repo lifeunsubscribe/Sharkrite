@@ -2388,16 +2388,21 @@ else
           fi
 
           if [ -n "$_pr_for_scope" ] && [ "$_pr_for_scope" != "null" ]; then
-            # Append scope warning to PR body
-            _scope_warn_text=$(format_scope_warning "$_scope_violations")
+            # Append scope warning to PR body — but only if not already present
+            # (guards against duplicate blocks on retry/resume runs)
             _current_pr_body=$(gh pr view "$_pr_for_scope" --json body --jq '.body' 2>/dev/null || true)
-            _updated_body="${_current_pr_body}${_scope_warn_text}"
-            _scope_body_file=$(mktemp)
-            printf '%s' "$_updated_body" > "$_scope_body_file"
-            gh pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
-              print_warning "Could not append scope warning to PR #${_pr_for_scope}"
-            rm -f "$_scope_body_file"
-            print_info "Scope violation warning appended to PR #${_pr_for_scope}"
+            if echo "$_current_pr_body" | grep -q '<!-- sharkrite-' 2>/dev/null; then
+              print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
+            else
+              _scope_warn_text=$(format_scope_warning "$_scope_violations")
+              _updated_body="${_current_pr_body}${_scope_warn_text}"
+              _scope_body_file=$(mktemp)
+              printf '%s' "$_updated_body" > "$_scope_body_file"
+              gh pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
+                print_warning "Could not append scope warning to PR #${_pr_for_scope}"
+              rm -f "$_scope_body_file"
+              print_info "Scope violation warning appended to PR #${_pr_for_scope}"
+            fi
           else
             print_info "No PR found yet — scope warning will appear in workflow log only"
           fi
