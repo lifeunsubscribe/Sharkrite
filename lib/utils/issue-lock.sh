@@ -51,8 +51,11 @@
 # by walking git worktree list and resolving the issue number from the branch's open PR body.
 #
 # Note: the pid file is written by the active process and removed by release_issue_lock.
-# The worktree file persists until the lock dir is released. Backfill lock dirs have
-# a worktree file but no pid file — they are metadata-only (no active lock holder).
+# For active lock dirs (those with a pid file), the worktree file persists until the
+# lock dir is released (release_issue_lock removes the whole dir). Backfill lock dirs
+# have a worktree file but no pid file — they are metadata-only (no active lock holder)
+# and are NOT removed by release_issue_lock, --undo, or merge. See backfill_worktree_locks
+# docstring for lifecycle details and manual cleanup instructions.
 
 set -euo pipefail
 
@@ -231,8 +234,14 @@ release_pr_followup_lock() {
 # which have no lock file and therefore show no issue association in rite --status.
 #
 # A backfill lock dir contains only a `worktree` metadata file (no `pid` file),
-# since no active rite process holds the lock. It persists until the worktree is
-# cleaned up via `rite N --undo`.
+# since no active rite process holds the lock. It persists indefinitely —
+# neither `rite N --undo` nor `merge-pr.sh` removes it. `release_issue_lock`
+# also does not remove it (it only removes dirs whose `pid` matches the calling
+# process, and backfill dirs have no `pid` file). To clean up stale backfill
+# dirs, remove them manually:
+#   rm -rf "${RITE_LOCK_DIR}/issue-N.lock"
+# Running `rite --backfill-locks` after cleanup will recreate any that still
+# have an active open PR / live worktree.
 #
 # Args: none
 # Returns: 0 always (errors are non-fatal; missing worktrees are skipped)

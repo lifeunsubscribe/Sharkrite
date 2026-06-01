@@ -371,6 +371,8 @@ Lock directory structure:
 
 **`rite --backfill-locks`** — run this once to fix any worktrees that show no issue ID in `rite --status`. It is also called automatically at the start of `rite --status` (repo-wide).
 
+**Backfill lock dir lifecycle** — Backfill lock dirs contain only a `worktree` file (no `pid` file). They are **not** removed automatically by `rite N --undo`, `merge-pr.sh`, or `release_issue_lock` (which only removes dirs whose `pid` matches the calling process). Stale backfill dirs must be cleaned up manually: `rm -rf "${RITE_LOCK_DIR}/issue-N.lock"`. Re-running `rite --backfill-locks` afterwards will recreate any that still have a live worktree and open PR.
+
 ## Common Pitfalls
 
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
