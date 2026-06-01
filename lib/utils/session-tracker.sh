@@ -574,6 +574,7 @@ has_sent_notification() {
 # Clean up session state
 cleanup_session() {
   rm -f "$SESSION_STATE_FILE"
+  rm -rf "${SESSION_STATE_FILE}.lock"
   echo "✅ Session cleaned up"
 }
 

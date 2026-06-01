@@ -363,8 +363,8 @@ wait_at_barrier() {
   local final_count
   final_count=$(jq -r '.issues_completed' "$SESSION_STATE_FILE")
 
-  [ "$final_count" -ge "$num_processes" ] || {
-    echo "FAIL: issues_completed=${final_count}, expected >=${num_processes}" >&2
+  [ "$final_count" -eq "$num_processes" ] || {
+    echo "FAIL: issues_completed=${final_count}, expected ==${num_processes}" >&2
     echo "      init_session is still clobbering increments from parallel processes" >&2
     return 1
   }
