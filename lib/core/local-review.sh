@@ -10,8 +10,164 @@
 #   --auto    Use --dangerously-skip-permissions for automation
 #
 # Runs a local Sharkrite review using Claude and posts findings as a PR comment.
+#
+# Sourceable functions (available when sourced as a library):
+#   fetch_pr_diff PR_NUMBER PR_BASE PR_HEAD
+#     — Fetches the PR diff with retry and local git fallback. Outputs diff to
+#       stdout. Returns 0 on success, 1 on total failure.
+#   validate_diff_not_empty PR_NUMBER PR_DIFF DIFF_FILES
+#     — Validates that the diff is non-empty, cross-checking GitHub's changedFiles
+#       count to distinguish a silent fetch failure from a legitimately empty PR.
+#       Returns 0 if diff is valid, exits 1 if empty (always non-return on empty).
+#
+# Tests source this file with RITE_SOURCE_FUNCTIONS_ONLY=1 to load only the
+# function definitions without executing the script body.
 
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# fetch_pr_diff: fetch PR diff with retry and local git fallback
+#
+# Usage: fetch_pr_diff PR_NUMBER PR_BASE PR_HEAD
+#   PR_NUMBER — GitHub PR number
+#   PR_BASE   — base branch name (e.g. main)
+#   PR_HEAD   — head branch name (e.g. fix/my-feature)
+#
+# Outputs the diff to stdout. Returns 0 on success, 1 if both GitHub API and
+# local git diff fail.
+#
+# Environment:
+#   RITE_DIFF_RETRY_BACKOFF — if set, overrides the exponential backoff sleep
+#     duration (seconds). Set to 0 in tests to skip sleep.
+# ---------------------------------------------------------------------------
+fetch_pr_diff() {
+  local PR_NUMBER="$1"
+  local PR_BASE="$2"
+  local PR_HEAD="$3"
+
+  # Retry gh pr diff up to 3 times (handles transient 5xx/429 errors)
+  local MAX_DIFF_ATTEMPTS=3
+  local DIFF_ATTEMPT=0
+  local PR_DIFF=""
+  local GH_DIFF_ERROR=""
+  local GH_DIFF_SUCCESS=false
+
+  while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
+    DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
+
+    GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
+      PR_DIFF="$GH_DIFF_ERROR"
+      GH_DIFF_SUCCESS=true
+      break
+    }
+
+    # Check if error is transient (5xx, 429, network issues)
+    if echo "$GH_DIFF_ERROR" | grep -qiE "500|502|503|504|429|timeout|temporarily unavailable|heavy server load"; then
+      if [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ]; then
+        # Exponential backoff: 2s, 4s. Override via RITE_DIFF_RETRY_BACKOFF (e.g. 0 in tests).
+        local BACKOFF="${RITE_DIFF_RETRY_BACKOFF:-$((2 ** DIFF_ATTEMPT))}"
+        print_warning "GitHub diff API error (attempt $DIFF_ATTEMPT/$MAX_DIFF_ATTEMPTS) - retrying in ${BACKOFF}s..."
+        sleep "$BACKOFF"
+        continue
+      fi
+    else
+      # Non-transient error - don't retry
+      break
+    fi
+  done
+
+  # If gh pr diff failed after all retries, fall back to local git diff
+  if [ "$GH_DIFF_SUCCESS" != true ]; then
+    print_warning "GitHub diff API unavailable — falling back to local git diff"
+
+    # Use git diff with the three-dot syntax (merge-base..HEAD)
+    # This matches what gh pr diff returns: changes in HEAD since diverging from base
+    PR_DIFF=$(git diff "origin/$PR_BASE...origin/$PR_HEAD" 2>&1) || {
+      print_error "Failed to fetch diff via both GitHub API and local git"
+      echo ""
+      echo "GitHub API error:"
+      echo "$GH_DIFF_ERROR"
+      echo ""
+      echo "Git diff error:"
+      echo "$PR_DIFF"
+      return 1
+    }
+
+    print_status "Using local git diff as fallback"
+  fi
+
+  echo "$PR_DIFF"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# validate_diff_not_empty: check diff is non-empty; cross-check GitHub file count
+#
+# Usage: validate_diff_not_empty PR_NUMBER PR_DIFF DIFF_FILES
+#   PR_NUMBER  — GitHub PR number (used for the changedFiles API cross-check)
+#   PR_DIFF    — the raw diff string
+#   DIFF_FILES — count of "diff --git" headers already computed by the caller
+#
+# Returns 0 if the diff is non-empty (valid for review).
+# Exits 1 (does not return) if the diff is empty, after printing an appropriate
+# warning: "Empty diff after fetch" when GitHub reports changed files (silent
+# fetch failure), or "No code changes to review" for a legitimately empty PR.
+# ---------------------------------------------------------------------------
+validate_diff_not_empty() {
+  local PR_NUMBER="$1"
+  local PR_DIFF="$2"
+  local DIFF_FILES="$3"
+
+  if [ "$DIFF_FILES" -eq 0 ] || [ -z "$PR_DIFF" ] || [ "$PR_DIFF" = "" ]; then
+    # Query GitHub for the PR's known file-change count.
+    # A mismatch (GitHub says N > 0 but diff is empty) indicates a silent fetch
+    # failure (e.g., GitHub returned 200 OK with an empty body, or git diff ran
+    # against stale refs). A match at 0 means the PR genuinely has no changes.
+    local GH_CHANGED_FILES
+    GH_CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' 2>/dev/null || echo "0")
+    # Sanitize: strip whitespace and ensure it's numeric; default to 0 on error.
+    GH_CHANGED_FILES=$(echo "$GH_CHANGED_FILES" | tr -d '[:space:]')
+    if ! echo "$GH_CHANGED_FILES" | grep -qE '^[0-9]+$'; then
+      GH_CHANGED_FILES=0
+    fi
+
+    if [ "$GH_CHANGED_FILES" -gt 0 ]; then
+      # GitHub reports changes but we got no diff — likely a silent fetch failure.
+      print_warning "Empty diff after fetch — but GitHub reports $GH_CHANGED_FILES changed file(s)"
+      print_info "This indicates the diff fetch returned empty content despite real changes existing."
+      print_info "Possible causes:"
+      echo "  • GitHub API returned 200 OK with empty body (transient)"
+      echo "  • Local git refs are stale (run: git fetch origin)"
+      echo "  • Rate limit silently truncated the response"
+      echo ""
+      print_info "Remediation: retry this command, or run 'git fetch origin' and retry."
+    else
+      print_warning "No code changes to review"
+      print_info "This PR has no diff against the base branch."
+      print_info "Possible reasons:"
+      echo "  • PR only has placeholder commit (no implementation yet)"
+      echo "  • All changes were reverted"
+      echo "  • Branch is identical to base"
+    fi
+    echo ""
+    # Exit non-zero so callers know no review was generated.
+    # Previously exited 0, which caused silent failures in the fix loop:
+    # create-pr.sh thought the review succeeded, but nothing was posted,
+    # leading to infinite stale-review reroutes in workflow-runner.sh.
+    exit 1
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
+# can load only the function definitions above without executing the script body
+# (which sources config, parses args, calls gh/claude, etc.).
+# ---------------------------------------------------------------------------
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
 
 # Source config if not already loaded
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,56 +250,7 @@ echo ""
 # Get the diff with retry and fallback
 print_status "Fetching PR diff..."
 
-# Retry gh pr diff up to 3 times (handles transient 5xx/429 errors)
-MAX_DIFF_ATTEMPTS=3
-DIFF_ATTEMPT=0
-PR_DIFF=""
-GH_DIFF_ERROR=""
-GH_DIFF_SUCCESS=false
-
-while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
-  DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
-
-  GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
-    PR_DIFF="$GH_DIFF_ERROR"
-    GH_DIFF_SUCCESS=true
-    break
-  }
-
-  # Check if error is transient (5xx, 429, network issues)
-  if echo "$GH_DIFF_ERROR" | grep -qiE "500|502|503|504|429|timeout|temporarily unavailable|heavy server load"; then
-    if [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ]; then
-      # Exponential backoff: 2s, 4s
-      BACKOFF=$((2 ** DIFF_ATTEMPT))
-      print_warning "GitHub diff API error (attempt $DIFF_ATTEMPT/$MAX_DIFF_ATTEMPTS) - retrying in ${BACKOFF}s..."
-      sleep "$BACKOFF"
-      continue
-    fi
-  else
-    # Non-transient error - don't retry
-    break
-  fi
-done
-
-# If gh pr diff failed after all retries, fall back to local git diff
-if [ "$GH_DIFF_SUCCESS" != true ]; then
-  print_warning "GitHub diff API unavailable — falling back to local git diff"
-
-  # Use git diff with the three-dot syntax (merge-base..HEAD)
-  # This matches what gh pr diff returns: changes in HEAD since diverging from base
-  PR_DIFF=$(git diff "origin/$PR_BASE...origin/$PR_HEAD" 2>&1) || {
-    print_error "Failed to fetch diff via both GitHub API and local git"
-    echo ""
-    echo "GitHub API error:"
-    echo "$GH_DIFF_ERROR"
-    echo ""
-    echo "Git diff error:"
-    echo "$PR_DIFF"
-    exit 1
-  }
-
-  print_status "Using local git diff as fallback"
-fi
+PR_DIFF=$(fetch_pr_diff "$PR_NUMBER" "$PR_BASE" "$PR_HEAD") || exit 1
 
 # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
 # when the diff output has no trailing newline (wc -l counts newline characters,
@@ -155,43 +262,7 @@ echo ""
 
 # Handle empty diff — cross-check against GitHub's file count to distinguish
 # "fetch returned empty body (silent failure)" from "PR genuinely has no changes".
-if [ "$DIFF_FILES" -eq 0 ] || [ -z "$PR_DIFF" ] || [ "$PR_DIFF" = "" ]; then
-  # Query GitHub for the PR's known file-change count.
-  # A mismatch (GitHub says N > 0 but diff is empty) indicates a silent fetch
-  # failure (e.g., GitHub returned 200 OK with an empty body, or git diff ran
-  # against stale refs). A match at 0 means the PR genuinely has no changes.
-  GH_CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' 2>/dev/null || echo "0")
-  # Sanitize: strip whitespace and ensure it's numeric; default to 0 on error.
-  GH_CHANGED_FILES=$(echo "$GH_CHANGED_FILES" | tr -d '[:space:]')
-  if ! echo "$GH_CHANGED_FILES" | grep -qE '^[0-9]+$'; then
-    GH_CHANGED_FILES=0
-  fi
-
-  if [ "$GH_CHANGED_FILES" -gt 0 ]; then
-    # GitHub reports changes but we got no diff — likely a silent fetch failure.
-    print_warning "Empty diff after fetch — but GitHub reports $GH_CHANGED_FILES changed file(s)"
-    print_info "This indicates the diff fetch returned empty content despite real changes existing."
-    print_info "Possible causes:"
-    echo "  • GitHub API returned 200 OK with empty body (transient)"
-    echo "  • Local git refs are stale (run: git fetch origin)"
-    echo "  • Rate limit silently truncated the response"
-    echo ""
-    print_info "Remediation: retry this command, or run 'git fetch origin' and retry."
-  else
-    print_warning "No code changes to review"
-    print_info "This PR has no diff against the base branch."
-    print_info "Possible reasons:"
-    echo "  • PR only has placeholder commit (no implementation yet)"
-    echo "  • All changes were reverted"
-    echo "  • Branch is identical to base"
-  fi
-  echo ""
-  # Exit non-zero so callers know no review was generated.
-  # Previously exited 0, which caused silent failures in the fix loop:
-  # create-pr.sh thought the review succeeded, but nothing was posted,
-  # leading to infinite stale-review reroutes in workflow-runner.sh.
-  exit 1
-fi
+validate_diff_not_empty "$PR_NUMBER" "$PR_DIFF" "$DIFF_FILES"
 
 # Load review instructions template
 # Priority: 1. Repo-specific (.github/claude-code/), 2. Sharkrite default, 3. Embedded fallback
