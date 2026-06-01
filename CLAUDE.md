@@ -84,6 +84,31 @@ COUNT=$(echo "$output" | grep -c "ACTIONABLE_NOW" || true)
 COUNT=$(echo "$output" | grep -c "^### .* - ACTIONABLE_NOW" || true)
 ```
 
+### Unanchored marker grep (bare-prefix guard, CRITICAL)
+
+When greping for a sharkrite marker in issue body text, the outer guard **must** require a format anchor. Without one, any issue body that *documents* the marker format (e.g. `sharkrite-parent-pr:N` as a placeholder) will match, the inner extraction will return empty, and under `set -e + pipefail` the script dies silently.
+
+**Live bug (2026-05-31):** Three `rite --label testing` batch runs died silently at Processing Issue #34. Root cause: `grep -q "sharkrite-parent-pr:"` matched #34's body, which listed the marker as a documentation example. Inner extraction with `[0-9]+` returned nothing, `pipefail` propagated exit-1 up, `set -e` killed the batch silently. Emergency fix: commit `206f2be`. Codebase sweep + regression test added in issue #90.
+
+```bash
+# BAD: outer guard without format anchor — matches documentation placeholders
+if echo "$ISSUE_BODY" | grep -q "sharkrite-parent-pr:"; then
+  PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+  # If ISSUE_BODY contains "sharkrite-parent-pr:N" (a docs example), inner grep
+  # returns empty, pipefail kills the script silently
+fi
+
+# GOOD: outer guard requires digits — rejects all placeholder text
+if echo "$ISSUE_BODY" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
+  PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+  # Only enters branch when body has a real numeric marker value
+fi
+```
+
+**Rule:** Any `grep -q` or `grep -qE` against `"sharkrite-[marker-name]:"` must include `[0-9]+` (or equivalent format anchor) in the same pattern. Never use bare-prefix guards for structured markers.
+
+**Enforcement:** Custom lint rule `BARE_MARKER_GREP` in `tools/sharkrite-lint.sh` (invoked by `make check` CI gate). Regression test in `tests/regression/bare-prefix-grep-silent-death.bats`.
+
 ### Review severity parsing
 
 The review outputs a `Findings: [CRITICAL: N | HIGH: N | ...]` summary line. Parse that instead of broad keyword matching.
