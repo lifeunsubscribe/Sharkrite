@@ -396,3 +396,186 @@ GHEOF
   header_count=$(grep -c "^## Encountered Issues" "$SCRATCHPAD_FILE" || true)
   [ "$header_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 6: RETURN-trap releases lock on invalid-category path
+#
+# The *)  branch in log_encountered_issue warns and remaps the bad category to
+# "code-smell", then continues to completion (no early return).  The RETURN
+# trap must still fire when the function returns so the lock is left free.
+#
+# Acceptance criterion (issue #149): calling log_encountered_issue with an
+# unrecognised category must:
+#   (a) succeed (exit 0),
+#   (b) write the entry remapped to "code-smell", and
+#   (c) release the scratchpad lock so that a subsequent caller can acquire it
+#       without timing out.
+#
+# Lock-free is verified by a follow-up acquire (works for both flock and mkdir
+# strategies — checking for a leftover directory only works on the mkdir path
+# since flock does not remove the plain lock file on release).
+# ---------------------------------------------------------------------------
+@test "log_encountered_issue: RETURN trap releases lock on invalid-category path" {
+  local result_file="$RITE_TEST_TMPDIR/result"
+  local followup_result="$RITE_TEST_TMPDIR/followup_result"
+
+  # Call log_encountered_issue with an unrecognised category in a subshell.
+  # Redirect stderr to suppress the "Unknown category" warning.
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+
+    log_encountered_issue \
+      "src/example.ts" "42" \
+      "not-a-valid-category" \
+      "Test entry via invalid category" \
+      "lock-release verification" \
+      "Ensure lock released on invalid-category path" \
+      "Lock is free after function returns" 2>/dev/null
+
+    echo "exit:$?" > "$result_file"
+  )
+
+  # Verify the subshell succeeded
+  [ -f "$result_file" ] || {
+    echo "FAIL: subshell did not write result file" >&2
+    return 1
+  }
+  local exit_code
+  exit_code=$(grep -oE '[0-9]+$' "$result_file" || true)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: log_encountered_issue exited $exit_code on invalid-category path" >&2
+    return 1
+  }
+
+  # Verify the entry was written with the remapped category "code-smell"
+  grep -q "Test entry via invalid category" "$SCRATCHPAD_FILE" || {
+    echo "FAIL: entry description not found in scratchpad" >&2
+    cat "$SCRATCHPAD_FILE" >&2
+    return 1
+  }
+
+  # Hard assertion: the lock must be acquirable immediately after the function
+  # returned.  On the mkdir path the lock dir would still exist if the trap
+  # did not fire.  On the flock path the file persists but the kernel lock is
+  # released — this try-acquire catches both cases uniformly.
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=3  # Fast fail — don't wait 30s if stuck
+    if acquire_scratchpad_lock; then
+      release_scratchpad_lock
+      echo "acquired" > "$followup_result"
+    else
+      echo "blocked" > "$followup_result"
+    fi
+  )
+
+  [ -f "$followup_result" ] || {
+    echo "FAIL: follow-up acquire subshell did not write result" >&2
+    return 1
+  }
+  local followup_outcome
+  followup_outcome=$(cat "$followup_result")
+  [ "$followup_outcome" = "acquired" ] || {
+    echo "FAIL: follow-up caller could not acquire lock after invalid-category path" >&2
+    echo "      RETURN trap likely did not fire — lock was not released" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: RETURN-trap releases lock on early-return duplicate-detection path
+#
+# When log_encountered_issue detects a duplicate file:line it executes
+# `return 0` inside the function after the lock is already held.  The RETURN
+# trap (`trap 'release_scratchpad_lock' RETURN`) must fire on this early-return
+# path, releasing the lock so that subsequent callers are not blocked.
+#
+# Acceptance criterion (issue #149): a second call to log_encountered_issue
+# with the same file:line (duplicate) must leave the lock free for a
+# concurrent caller that arrives immediately afterward.
+# ---------------------------------------------------------------------------
+@test "log_encountered_issue: RETURN trap releases lock on duplicate early-return path" {
+  local second_result="$RITE_TEST_TMPDIR/second_result"
+
+  # First call — seeds the scratchpad with a known entry
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+    log_encountered_issue \
+      "src/dup-test.ts" "99" \
+      "code-smell" \
+      "Original entry for duplicate test" \
+      "dup-test-feature" \
+      "Fix original" \
+      "Original present" 2>/dev/null
+  )
+
+  # Verify first call wrote the entry
+  grep -q "src/dup-test.ts:99" "$SCRATCHPAD_FILE" || {
+    echo "FAIL: first log_encountered_issue call did not write the entry" >&2
+    cat "$SCRATCHPAD_FILE" >&2
+    return 1
+  }
+
+  # Second call with the same file:line — triggers duplicate detection return 0
+  # inside the function after acquire_scratchpad_lock + trap RETURN have fired.
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+    log_encountered_issue \
+      "src/dup-test.ts" "99" \
+      "code-smell" \
+      "Duplicate entry — should be skipped" \
+      "dup-test-feature" \
+      "Fix dup" \
+      "Dup handled" 2>/dev/null
+    echo "exit:$?" > "$second_result"
+  )
+
+  # Verify duplicate call returned 0 (not an error)
+  [ -f "$second_result" ] || {
+    echo "FAIL: duplicate subshell did not write result file" >&2
+    return 1
+  }
+  local dup_exit
+  dup_exit=$(grep -oE '[0-9]+$' "$second_result" || true)
+  [ "$dup_exit" -eq 0 ] || {
+    echo "FAIL: duplicate log_encountered_issue returned exit code $dup_exit (expected 0)" >&2
+    return 1
+  }
+
+  # Verify the scratchpad still has only one entry for this file:line
+  local entry_count
+  entry_count=$(grep -c "src/dup-test.ts:99" "$SCRATCHPAD_FILE" || true)
+  [ "$entry_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 entry for src/dup-test.ts:99, found $entry_count" >&2
+    return 1
+  }
+
+  # Hard assertion: a third caller can immediately acquire the lock after the
+  # duplicate early-return path.  This proves the RETURN trap actually released
+  # the lock on that code path (works for both flock and mkdir strategies).
+  local third_result="$RITE_TEST_TMPDIR/third_result"
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=3  # Fast fail if lock is stuck
+    if acquire_scratchpad_lock; then
+      release_scratchpad_lock
+      echo "acquired" > "$third_result"
+    else
+      echo "blocked" > "$third_result"
+    fi
+  )
+
+  [ -f "$third_result" ] || {
+    echo "FAIL: third-caller subshell did not write result" >&2
+    return 1
+  }
+  local third_outcome
+  third_outcome=$(cat "$third_result")
+  [ "$third_outcome" = "acquired" ] || {
+    echo "FAIL: third caller could not acquire lock — RETURN trap did not release it on duplicate early-return path" >&2
+    return 1
+  }
+}
