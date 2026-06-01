@@ -46,8 +46,13 @@ echo ""
 
 # Find all shell scripts (bin/, lib/, and tools/ including git-hooks without .sh extension)
 # Exclude sharkrite-lint.sh itself to prevent false positives from its own pattern-definition lines
+#
+# Path patterns use "$PROJECT_ROOT/..." anchors (not "*/..." wildcards) to mirror the Makefile's
+# relative anchors: `find bin lib tools -path "bin/rite*" -path "tools/git-hooks/*"`.
+# When find is given absolute search roots, the -path predicate must include the full absolute
+# prefix — bare wildcards like "*/bin/rite*" would also match deeper nested paths accidentally.
 mapfile -t SHELL_FILES < <(find "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-  -type f ! -name 'sharkrite-lint.sh' \( -name "*.sh" -o -path "*/bin/rite*" -o -path "*/tools/git-hooks/*" \) 2>/dev/null)
+  -type f ! -name 'sharkrite-lint.sh' \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
 
 # Rule 1: grep -c with || echo "0" (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
