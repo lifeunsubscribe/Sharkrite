@@ -103,16 +103,14 @@ setup() {
 
   PR="$PROJECT_ROOT"
 
-  # Create a temp nested path to test against (we don't need the file to exist for this test —
-  # we just verify find's -path matching semantics using an actual temp file under lib/)
-  NESTED_DIR="$PR/lib/test-fixtures-nested-bin-temp/subdir/bin"
+  # Create a temp nested path outside the project tree to avoid polluting
+  # the lint file-discovery scope and git status if the test is interrupted.
+  NESTED_DIR="$BATS_TEST_TMPDIR/subdir/bin"
   mkdir -p "$NESTED_DIR"
   touch "$NESTED_DIR/rite-fake"
 
   # find with anchored -path "$PR/bin/rite*" must NOT match the nested file
-  MATCHES=$(find "$PR/lib/test-fixtures-nested-bin-temp" -type f -path "$PR/bin/rite*" 2>/dev/null || true)
-
-  rm -rf "$PR/lib/test-fixtures-nested-bin-temp"
+  MATCHES=$(find "$BATS_TEST_TMPDIR" -type f -path "$PR/bin/rite*" 2>/dev/null || true)
 
   # Should be empty: the nested path doesn't match the anchored bin/ pattern
   [ -z "$MATCHES" ]
