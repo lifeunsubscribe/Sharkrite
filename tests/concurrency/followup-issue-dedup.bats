@@ -426,3 +426,142 @@ run_dedup_create_with_event_log() {
     false
   }
 }
+
+# ─── Source-issue-keyed lock and title-search tests ───────────────────────────
+#
+# These tests cover the fix for the 1-PR→multiple-source-issues correctness bug:
+# when one PR has multiple distinct source issues (e.g., closes both #10 and #11),
+# the lock and title-search fallback must be keyed by PR + source issue, not PR
+# alone.  Otherwise process B (for source issue #11) would find process A's
+# follow-up (for source issue #10) via the title-search fallback and incorrectly
+# skip creating a legitimately distinct follow-up for #11.
+
+# Helper: mirrors the production assess-and-resolve.sh critical section with a
+# source_issue argument, matching the updated code that passes ISSUE_NUMBER to
+# acquire/release_pr_followup_lock and uses a "for issue #N" title suffix.
+#
+# The ISSUES_FILE line format here is PR${pr}:src${src}:${issue_num} so tests can
+# count entries per (PR, source-issue) pair independently.
+run_locked_dedup_create_sourced() {
+  local pr_number="$1"
+  local source_issue="$2"
+  local issue_title="review feedback from PR #${pr_number} for issue #${source_issue}"
+
+  # Re-source lock utils (needed in subshell)
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+
+  local _lock_held=false
+  if acquire_pr_followup_lock "$pr_number" "$source_issue" 2>/dev/null; then
+    _lock_held=true
+  fi
+
+  # Search: check if an issue already exists for this exact (PR, source issue) pair
+  local existing=""
+  existing=$(grep "^PR${pr_number}:src${source_issue}:" "$ISSUES_FILE" 2>/dev/null | head -1 || true)
+
+  if [ -z "$existing" ]; then
+    local issue_num
+    issue_num=$((RANDOM % 9000 + 1000))
+    echo "PR${pr_number}:src${source_issue}:${issue_num}:${issue_title}" >> "$ISSUES_FILE"
+  fi
+
+  [ "$_lock_held" = "true" ] && release_pr_followup_lock "$pr_number" "$source_issue" 2>/dev/null || true
+}
+
+@test "source-issue lock uses compound key pr-N-src-M-followup.lock" {
+  acquire_pr_followup_lock 200 10
+  [ -d "$RITE_LOCK_DIR/pr-200-src-10-followup.lock" ]
+  [ -f "$RITE_LOCK_DIR/pr-200-src-10-followup.lock/pid" ]
+  release_pr_followup_lock 200 10
+  [ ! -d "$RITE_LOCK_DIR/pr-200-src-10-followup.lock" ]
+}
+
+@test "source-issue lock and PR-only lock for same PR are independent" {
+  # Acquiring a PR-only lock must not block a source-issue-keyed lock on the same PR
+  acquire_pr_followup_lock 201
+  acquire_pr_followup_lock 201 42
+
+  [ -d "$RITE_LOCK_DIR/pr-201-followup.lock" ]
+  [ -d "$RITE_LOCK_DIR/pr-201-src-42-followup.lock" ]
+
+  release_pr_followup_lock 201
+  release_pr_followup_lock 201 42
+
+  [ ! -d "$RITE_LOCK_DIR/pr-201-followup.lock" ]
+  [ ! -d "$RITE_LOCK_DIR/pr-201-src-42-followup.lock" ]
+}
+
+@test "locks for different source issues on same PR are independent" {
+  # Source issue #10 and #11 on PR #202 must get separate lock dirs
+  acquire_pr_followup_lock 202 10
+  acquire_pr_followup_lock 202 11
+
+  [ -d "$RITE_LOCK_DIR/pr-202-src-10-followup.lock" ]
+  [ -d "$RITE_LOCK_DIR/pr-202-src-11-followup.lock" ]
+
+  release_pr_followup_lock 202 10
+  release_pr_followup_lock 202 11
+
+  [ ! -d "$RITE_LOCK_DIR/pr-202-src-10-followup.lock" ]
+  [ ! -d "$RITE_LOCK_DIR/pr-202-src-11-followup.lock" ]
+}
+
+@test "different source issues on same PR each produce their own follow-up issue" {
+  # This is the core correctness test: PR #203 has two source issues (#20 and #21).
+  # Each source issue runs a concurrent assessment.  Both should create their own
+  # follow-up issue — the title-search for source #21 must NOT find source #20's
+  # follow-up and incorrectly skip creation.
+  local pr_number=203
+  local pids=()
+
+  (
+    wait_at_barrier "multi_src_${BATS_TEST_NUMBER}" 2
+    run_locked_dedup_create_sourced "$pr_number" 20
+  ) &
+  pids+=($!)
+
+  (
+    wait_at_barrier "multi_src_${BATS_TEST_NUMBER}" 2
+    run_locked_dedup_create_sourced "$pr_number" 21
+  ) &
+  pids+=($!)
+
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  # Source issue #20 must have its own entry
+  local count_src20
+  count_src20=$(grep -c "^PR${pr_number}:src20:" "$ISSUES_FILE" 2>/dev/null || true)
+  [ "$count_src20" -eq 1 ] || {
+    echo "FAIL: Expected 1 follow-up for src issue #20, got $count_src20"
+    cat "$ISSUES_FILE" || true
+    false
+  }
+
+  # Source issue #21 must have its own entry (the bug: this was 0 before the fix)
+  local count_src21
+  count_src21=$(grep -c "^PR${pr_number}:src21:" "$ISSUES_FILE" 2>/dev/null || true)
+  [ "$count_src21" -eq 1 ] || {
+    echo "FAIL: Expected 1 follow-up for src issue #21, got $count_src21"
+    cat "$ISSUES_FILE" || true
+    false
+  }
+}
+
+@test "same source issue on same PR deduplicates correctly with sourced lock" {
+  # Dedup still works within the same (PR, source issue) scope
+  local pr_number=204
+  local source_issue=30
+
+  run_locked_dedup_create_sourced "$pr_number" "$source_issue"
+  run_locked_dedup_create_sourced "$pr_number" "$source_issue"
+
+  local issue_count
+  issue_count=$(grep -c "^PR${pr_number}:src${source_issue}:" "$ISSUES_FILE" 2>/dev/null || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: Expected exactly 1 follow-up for (PR $pr_number, source #$source_issue), got $issue_count"
+    cat "$ISSUES_FILE" || true
+    false
+  }
+}

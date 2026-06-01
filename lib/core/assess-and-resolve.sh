@@ -48,8 +48,9 @@ cleanup() {
   rm -f /tmp/pr_review_*.txt 2>/dev/null || true
   # Release follow-up lock on signal (SIGINT/SIGTERM) to avoid leaving it
   # held for the full 60s acquire-loop timeout on the next run.
+  # Pass ISSUE_NUMBER (if set) to release the correct compound lock key.
   if [ "${_followup_lock_held:-false}" = "true" ] && [ -n "${PR_NUMBER:-}" ]; then
-    release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+    release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
     _followup_lock_held=false
   fi
   exit $exit_code
@@ -1068,12 +1069,20 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     [ ${#PR_TITLE} -gt 50 ] && _pr_context="${_pr_context}..."
     _pr_context="${_pr_context}: "
   fi
+  # When a source issue number is known, include it in both the title and the search
+  # key so that two distinct source-issue follow-ups for the same PR get unique titles
+  # and independent dedup scopes.  Without this, a title-search fallback for PR #N
+  # would find the first source-issue's follow-up and incorrectly skip creating the
+  # second source-issue's follow-up (1-PR→multiple-source-issues scenario).
+  _src_issue_suffix=""
+  [ -n "${ISSUE_NUMBER:-}" ] && _src_issue_suffix=" for issue #${ISSUE_NUMBER}"
+
   if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    ISSUE_TITLE="[tech-debt] ${_pr_context}review feedback from PR #$PR_NUMBER"
-    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
+    ISSUE_TITLE="[tech-debt] ${_pr_context}review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
+    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
   else
-    ISSUE_TITLE="[review-follow-up] ${_pr_context}review feedback from PR #$PR_NUMBER"
-    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER"
+    ISSUE_TITLE="[review-follow-up] ${_pr_context}review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
+    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
   fi
 
   # Acquire per-PR follow-up lock before the check-then-create sequence.
@@ -1088,11 +1097,16 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   # are preventing.  Proceeding without the lock (fail-open) would defeat the
   # entire purpose of this PR.  Instead we fail-closed: log and skip creation so
   # the caller can retry rather than risk a duplicate.
+  # Pass ISSUE_NUMBER as the second arg so the lock is keyed by PR + source issue.
+  # This ensures that two concurrent invocations for DIFFERENT source issues on the
+  # same PR operate on independent locks (no false blocking) and independent dedup
+  # search scopes (no false "already exists" detection).
   _followup_lock_held=false
-  if acquire_pr_followup_lock "$PR_NUMBER" 2>/dev/null; then
+  if acquire_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
     _followup_lock_held=true
   else
-    print_warning "Could not acquire follow-up lock for PR #$PR_NUMBER after 60s — another process is still in the critical section."
+    _lock_scope="PR #$PR_NUMBER${ISSUE_NUMBER:+ / issue #$ISSUE_NUMBER}"
+    print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — another process is still in the critical section."
     print_warning "Skipping follow-up issue creation to prevent duplicates. Re-run assess-and-fix if needed."
     _skip_followup_creation=true
   fi
@@ -1154,7 +1168,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
   if [ -n "$EXISTING_ISSUE" ]; then
     # Release lock before any output — we won't be creating an issue
-    [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+    [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
     _followup_lock_held=false
 
     echo ""
@@ -1220,7 +1234,7 @@ This approach allows all fixes to be completed together in a focused PR."
       rm -f "$COMMENT_BODY_FILE"
 
       # Release lock only after the marker comment is durably posted
-      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
 
       echo ""
@@ -1232,7 +1246,7 @@ This approach allows all fixes to be completed together in a focused PR."
     else
       rm -f "$FOLLOWUP_BODY_FILE"
       # Release lock on failure too — don't leave waiters stuck
-      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
       print_warning "Failed to create consolidated follow-up issue"
     fi
@@ -1240,7 +1254,7 @@ This approach allows all fixes to be completed together in a focused PR."
 
   # Safety net: ensure lock is released even if we exited the if/else via an
   # unexpected path (set +e is active in this section so errexit won't catch it)
-  [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" 2>/dev/null || true
+  [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
 
   # Follow-up issues are independent work — don't process them inline.
   # The exec into batch-process-issues.sh caused state corruption: it would
