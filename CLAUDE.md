@@ -208,7 +208,7 @@ When resuming an issue with an existing PR, the branch is checked against `origi
 - **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
 - **At/above threshold (supervised)**: Prompt with 4 options (restart recommended, merge, continue, abort).
 
-Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 10 to signal "restarted fresh" — caller resets all resume state variables.
+Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 11 to signal "restarted fresh" — caller resets all resume state variables.
 
 ## Phase Commands
 
@@ -351,10 +351,10 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
-- **Exit codes**:
+- **Exit codes**: Canonical table lives in `docs/architecture/exit-codes.md`. Key codes:
   - `assess-and-resolve.sh`: exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2"
   - `merge-pr.sh`: exit 0 for "merge and cleanup succeeded", exit 1 for "merge failed", exit 6 for "merge succeeded but cleanup failed"
-  - `workflow-runner.sh`: exit 10 for "stale branch restarted fresh" (signals to caller to reset resume state)
+  - `stale-branch.sh` → `workflow-runner.sh`: exit 11 for "stale branch restarted fresh" (caller resets resume state). **Not 10** — exit 10 is reserved for `batch-process-issues.sh` "blocker detected — defer issue"
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
 

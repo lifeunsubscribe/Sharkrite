@@ -68,11 +68,12 @@ get_commits_behind_main() {
 
 # check_stale_branch WORKTREE_PATH PR_NUMBER ISSUE_NUMBER WORKFLOW_MODE
 #
-# Exit codes:
+# Exit codes (see docs/architecture/exit-codes.md for the canonical table):
 #   0  = continue workflow (branch is current, or was merged with main)
 #   1  = abort (user chose abort, or unrecoverable error)
 #   5  = usage cap reached during conflict resolution (caller must abort batch)
-#   10 = restarted fresh (PR closed, artifacts cleaned — caller must reset variables)
+#   11 = restarted fresh (PR closed, artifacts cleaned — caller must reset variables)
+#        NOTE: 11, not 10. Exit 10 is reserved for batch-level "blocker detected".
 check_stale_branch() {
   local worktree_path="$1"
   local pr_number="$2"
@@ -121,7 +122,10 @@ check_stale_branch() {
     # Auto mode: close and restart
     print_status "Closing stale PR and restarting fresh..."
     _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind"
-    return 10
+    # Exit code 11: stale-branch restarted fresh — caller must reset all resume state
+    # and fall through to phase 1 (distinct from exit 10 = blocker-detected in batch).
+    # See docs/architecture/exit-codes.md for the canonical exit-code table.
+    return 11
   fi
 }
 
@@ -578,7 +582,9 @@ _stale_supervised_prompt() {
     1)
       print_status "Closing PR and cleaning up for fresh start..."
       _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind"
-      return 10
+      # Exit code 11: stale-branch restarted fresh (supervised path).
+      # See docs/architecture/exit-codes.md for the canonical exit-code table.
+      return 11
       ;;
     2)
       print_status "Rebasing branch onto main..."
