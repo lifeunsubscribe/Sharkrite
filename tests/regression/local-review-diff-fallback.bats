@@ -3,6 +3,10 @@
 #
 # Verifies that local-review.sh retries gh pr diff on transient errors (5xx, 429)
 # and falls back to local git diff when GitHub API is unavailable.
+#
+# These tests source fetch_pr_diff() directly from local-review.sh
+# (via RITE_SOURCE_FUNCTIONS_ONLY=1) so they exercise the real production code
+# rather than a copy of it.
 
 load '../helpers/setup.bash'
 load '../helpers/gh-mock.bash'
@@ -13,6 +17,7 @@ setup() {
   TEST_DIR=$(mktemp -d)
   export TEST_DIR
   export RITE_PROJECT_ROOT="$TEST_DIR"
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 
   # Create minimal .rite structure
   mkdir -p "$TEST_DIR/.rite"
@@ -52,11 +57,9 @@ setup() {
   reset_fault_injection
   reset_gh_mock
 
-  # Export required functions/variables for the script under test
-  export -f print_status print_error print_warning print_success print_header
-  export -f _timer_start _timer_end _diag
-
-  # Stub logging functions to avoid missing dependencies
+  # Provide logging shims required by fetch_pr_diff().
+  # These all write to stderr; the diff itself goes to stdout.
+  # Set RITE_DIFF_RETRY_BACKOFF=0 to skip exponential sleep in tests.
   print_status() { echo "[STATUS] $*" >&2; }
   print_error() { echo "[ERROR] $*" >&2; }
   print_warning() { echo "[WARNING] $*" >&2; }
@@ -65,73 +68,18 @@ setup() {
   _timer_start() { :; }
   _timer_end() { :; }
   _diag() { :; }
+  export -f print_status print_error print_warning print_success print_header
+  export -f _timer_start _timer_end _diag
+  export RITE_DIFF_RETRY_BACKOFF=0
+
+  # Source local-review.sh in functions-only mode to load fetch_pr_diff()
+  # without executing the script body (which needs config, providers, etc.).
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_REPO_ROOT}/lib/core/local-review.sh"
 }
 
 teardown() {
   cd /
   rm -rf "$TEST_DIR"
-}
-
-# Helper: Extract diff fetch logic into a testable function
-# This simulates the exact logic from local-review.sh lines 94-146
-run_diff_fetch() {
-  local PR_NUMBER="${1:-123}"
-  local PR_BASE="${2:-main}"
-  local PR_HEAD="${3:-fix/test-feature}"
-
-  # Retry gh pr diff up to 3 times (handles transient 5xx/429 errors)
-  MAX_DIFF_ATTEMPTS=3
-  DIFF_ATTEMPT=0
-  PR_DIFF=""
-  GH_DIFF_ERROR=""
-  GH_DIFF_SUCCESS=false
-
-  while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
-    DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
-
-    GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
-      PR_DIFF="$GH_DIFF_ERROR"
-      GH_DIFF_SUCCESS=true
-      break
-    }
-
-    # Check if error is transient (5xx, 429, network issues)
-    if echo "$GH_DIFF_ERROR" | grep -qiE "500|502|503|504|429|timeout|temporarily unavailable|heavy server load"; then
-      if [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ]; then
-        # Exponential backoff: 2s, 4s (use 0s in tests for speed)
-        BACKOFF=0
-        print_warning "GitHub diff API error (attempt $DIFF_ATTEMPT/$MAX_DIFF_ATTEMPTS) - retrying in ${BACKOFF}s..."
-        sleep "$BACKOFF"
-        continue
-      fi
-    else
-      # Non-transient error - don't retry
-      break
-    fi
-  done
-
-  # If gh pr diff failed after all retries, fall back to local git diff
-  if [ "$GH_DIFF_SUCCESS" != true ]; then
-    print_warning "GitHub diff API unavailable — falling back to local git diff"
-
-    # Use git diff with the three-dot syntax (merge-base..HEAD)
-    PR_DIFF=$(git diff "origin/$PR_BASE...origin/$PR_HEAD" 2>&1) || {
-      print_error "Failed to fetch diff via both GitHub API and local git"
-      echo ""
-      echo "GitHub API error:"
-      echo "$GH_DIFF_ERROR"
-      echo ""
-      echo "Git diff error:"
-      echo "$PR_DIFF"
-      return 1
-    }
-
-    print_status "Using local git diff as fallback"
-  fi
-
-  # Output the diff
-  echo "$PR_DIFF"
-  return 0
 }
 
 @test "gh pr diff 500 error falls back to local git diff" {
@@ -149,8 +97,8 @@ run_diff_fetch() {
   }
   export -f gh
 
-  # Run the diff fetch logic
-  run run_diff_fetch 123 main fix/test-feature
+  # Run the real fetch_pr_diff function
+  run fetch_pr_diff 123 main fix/test-feature
 
   # Should succeed (exit 0) using local git diff
   [ "$status" -eq 0 ]
@@ -188,8 +136,8 @@ run_diff_fetch() {
   }
   export -f git
 
-  # Run the diff fetch logic
-  run run_diff_fetch 123 main fix/test-feature
+  # Run the real fetch_pr_diff function
+  run fetch_pr_diff 123 main fix/test-feature
 
   # Should fail (exit 1)
   [ "$status" -eq 1 ]
@@ -231,8 +179,8 @@ run_diff_fetch() {
   export -f gh
   export _gh_count_file
 
-  # Run the diff fetch logic
-  run run_diff_fetch 123 main fix/test-feature
+  # Run the real fetch_pr_diff function
+  run fetch_pr_diff 123 main fix/test-feature
 
   # Should succeed (exit 0)
   [ "$status" -eq 0 ]
@@ -269,8 +217,8 @@ run_diff_fetch() {
   export -f gh
   export _gh_count_file
 
-  # Run the diff fetch logic
-  run run_diff_fetch 999 main fix/test-feature
+  # Run the real fetch_pr_diff function
+  run fetch_pr_diff 999 main fix/test-feature
 
   # Should use fallback immediately (exit 0 with local git diff)
   [ "$status" -eq 0 ]
@@ -289,7 +237,7 @@ run_diff_fetch() {
 @test "actual local-review.sh contains retry and fallback logic" {
   SCRIPT_PATH="$BATS_TEST_DIRNAME/../../lib/core/local-review.sh"
 
-  # Verify retry loop exists
+  # Verify retry loop exists (inside fetch_pr_diff function)
   RETRY_LOOP=$(grep -c "while \[ \$DIFF_ATTEMPT -lt \$MAX_DIFF_ATTEMPTS \]" "$SCRIPT_PATH" || true)
   [ "$RETRY_LOOP" -ge 1 ]
 

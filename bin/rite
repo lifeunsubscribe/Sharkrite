@@ -1111,9 +1111,12 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
   fi
   print_info "Found PR #$PR_NUMBER for issue #$ISSUE_NUMBER"
 
-  # Check if PR has any code changes
-  DIFF_LINES=$(gh pr diff "$PR_NUMBER" 2>/dev/null | wc -l | tr -d ' ')
-  if [ "${DIFF_LINES:-0}" -eq 0 ]; then
+  # Check if PR has any code changes.
+  # wc -c (byte count) instead of wc -l avoids a false-zero when the diff output
+  # contains exactly one line with no trailing newline — wc -l would return 0 in
+  # that case even though real content exists (wc -l counts newline characters).
+  DIFF_BYTES=$(gh pr diff "$PR_NUMBER" 2>/dev/null | wc -c | tr -d ' ')
+  if [ "${DIFF_BYTES:-0}" -eq 0 ]; then
     print_error "No code to review — PR #$PR_NUMBER has no diff from main"
     exit 1
   fi

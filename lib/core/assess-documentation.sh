@@ -271,8 +271,10 @@ ARCH_EOF
   rm -f "$prompt_file"
 
   if [ -n "$arch_output" ]; then
-    # Truncation safety: architecture is append-only but verify output isn't garbage
-    local output_lines=$(echo "$arch_output" | wc -l | tr -d ' ')
+    # Truncation safety: architecture is append-only but verify output isn't garbage.
+    # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
+    # when the output has no trailing newline (wc -l counts newline characters).
+    local output_lines=$(printf '%s\n' "$arch_output" | wc -l | tr -d ' ')
     if [ "$output_lines" -gt 1 ]; then
       echo "" >> "$doc_file"
       echo "$arch_output" >> "$doc_file"
@@ -344,7 +346,9 @@ API_EOF
   rm -f "$prompt_file"
 
   if [ -n "$api_output" ]; then
-    local output_lines=$(echo "$api_output" | wc -l | tr -d ' ')
+    # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
+    # when the output has no trailing newline (wc -l counts newline characters).
+    local output_lines=$(printf '%s\n' "$api_output" | wc -l | tr -d ' ')
     if [ "$output_lines" -gt 1 ]; then
       echo "" >> "$doc_file"
       echo "$api_output" >> "$doc_file"
@@ -548,7 +552,9 @@ reconcile_internal_doc() {
   local current_content
   current_content=$(cat "$doc_file")
   local current_lines
-  current_lines=$(echo "$current_content" | wc -l | tr -d ' ')
+  # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
+  # when the file content has no trailing newline (wc -l counts newline characters).
+  current_lines=$(printf '%s\n' "$current_content" | wc -l | tr -d ' ')
 
   local prompt_file
   prompt_file=$(mktemp)
@@ -582,9 +588,11 @@ RECONCILE_EOF
     return 0
   fi
 
-  # Truncation safety: reconciled doc should be at least 60% of original
+  # Truncation safety: reconciled doc should be at least 60% of original.
+  # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
+  # when the output has no trailing newline (wc -l counts newline characters).
   local new_lines
-  new_lines=$(echo "$reconciled_output" | wc -l | tr -d ' ')
+  new_lines=$(printf '%s\n' "$reconciled_output" | wc -l | tr -d ' ')
   local min_lines=$((current_lines * 60 / 100))
 
   if [ "$new_lines" -lt "$min_lines" ]; then
@@ -723,8 +731,10 @@ FIX_EOF
     rm -f "$fix_prompt_file"
 
     if [ -n "$fixed_output" ]; then
-      local orig_lines=$(echo "$current_content" | wc -l | tr -d ' ')
-      local fixed_lines=$(echo "$fixed_output" | wc -l | tr -d ' ')
+      # printf '%s\n' ensures a trailing newline so wc -l counts the last line
+      # even when output has no trailing newline (wc -l counts newline characters).
+      local orig_lines=$(printf '%s\n' "$current_content" | wc -l | tr -d ' ')
+      local fixed_lines=$(printf '%s\n' "$fixed_output" | wc -l | tr -d ' ')
       local min_lines=$((orig_lines * 80 / 100))
       if [ "$fixed_lines" -ge "$min_lines" ]; then
         echo "$fixed_output" > "$target_file"
@@ -1060,9 +1070,11 @@ UPDATE_PROMPT_EOF
       rm -f "$UPDATE_PROMPT_FILE"
 
       if [ $CLAUDE_EXIT -eq 0 ] && [ -n "$UPDATED_CONTENT" ]; then
-        # Verify update looks reasonable (not truncated)
-        ORIGINAL_SIZE=$(echo "$CURRENT_CONTENT" | wc -l)
-        NEW_SIZE=$(echo "$UPDATED_CONTENT" | wc -l)
+        # Verify update looks reasonable (not truncated).
+        # printf '%s\n' ensures a trailing newline so wc -l counts the last line
+        # even when content has no trailing newline (wc -l counts newline characters).
+        ORIGINAL_SIZE=$(printf '%s\n' "$CURRENT_CONTENT" | wc -l)
+        NEW_SIZE=$(printf '%s\n' "$UPDATED_CONTENT" | wc -l)
         MIN_SIZE=$((ORIGINAL_SIZE * 80 / 100))
 
         if [ "$NEW_SIZE" -lt "$MIN_SIZE" ]; then
