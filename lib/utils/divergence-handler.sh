@@ -506,7 +506,7 @@ _do_rebase_and_push() {
     if [ -n "$_rollback_target" ]; then
       git reset --hard "$_rollback_target" 2>/dev/null || true
     else
-      _div_warning "No rollback target available — working tree left in post-rebase state" >&2
+      _div_warning "No rollback target available — working tree left in post-rebase state"
     fi
 
     if [ "$auto_mode" = "true" ]; then

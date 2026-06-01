@@ -165,30 +165,40 @@ _cleanup_branch() {
   # Override _do_rebase to simulate a conflict (returns 1)
   _do_rebase() { return 1; }
 
-  # Resolver stub: adds a new commit on top of current HEAD
+  # Resolver stub: adds a new commit on top of current HEAD and records the new SHA.
+  # This advances HEAD beyond _pre_rebase_head so the two SHAs are distinct.
+  # Without this recording, the test cannot distinguish "rolled back to pre-rebase HEAD"
+  # from "happened to stay at post-resolver HEAD by accident".
+  _post_resolver_sha=""
   attempt_claude_merge_resolution() {
-    local branch="$1"
     cd "$WORKTREE_PATH" || return 1
     echo "resolver output" > resolver-output.txt
     git add resolver-output.txt
     git commit -m "chore: resolver adds commit (stub)" >/dev/null 2>&1
+    _post_resolver_sha=$(git rev-parse HEAD 2>/dev/null || true)
     return 0
   }
 
   # Stub verify_post_merge to fail — triggers rollback after resolver succeeds
   verify_post_merge() { return 1; }
 
-  # Capture the HEAD after the resolver would commit (the post-resolver SHA)
-  # We can't know it ahead of time, but after the run we verify we're back
-  # at _local_sha_before_rebase, not at some intermediate state.
-
   _do_rebase_and_push "$BRANCH_NAME" "true" "133" "999" 2>/dev/null || true
 
   local current_head
   current_head=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || echo "")
 
-  # Must be back at the pre-rebase SHA, not at any resolver-created SHA
+  # Confirm the resolver actually ran and created a distinct SHA.
+  # If _post_resolver_sha is empty, the resolver never ran — test setup is broken.
+  [ -n "$_post_resolver_sha" ] || { echo "resolver stub never ran" >&2; return 1; }
+
+  # The pre-rebase SHA and post-resolver SHA must differ — otherwise the test
+  # proves nothing about which target the rollback chose.
+  [ "$_local_sha_before_rebase" != "$_post_resolver_sha" ] \
+    || { echo "post-resolver SHA equals pre-rebase SHA — resolver commit did not advance HEAD" >&2; return 1; }
+
+  # Must be back at the pre-rebase SHA, not at the resolver-created SHA
   [ "$current_head" = "$_local_sha_before_rebase" ]
+  [ "$current_head" != "$_post_resolver_sha" ]
 
   _cleanup_branch
 }
@@ -224,15 +234,16 @@ _cleanup_branch() {
   # verify_post_merge fails — triggers rollback block
   verify_post_merge() { return 1; }
 
-  local output
-  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "133" "999" 2>&1) || true
+  # Single invocation: capture both stderr (warning) and exit code.
+  # Two separate calls would share residual worktree state from the first run
+  # and cannot be treated as independent observations.
+  local output exit_code=0
+  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "133" "999" 2>&1) || exit_code=$?
 
   # Should emit the "no rollback target" warning, not crash with unbound variable
   echo "$output" | grep -qi "no rollback target"
 
   # Function should return non-zero (auto mode blocks on verify failure)
-  local exit_code=0
-  _do_rebase_and_push "$BRANCH_NAME" "true" "133" "999" 2>/dev/null || exit_code=$?
   [ "$exit_code" -ne 0 ]
 
   unset -f git 2>/dev/null || true
