@@ -141,11 +141,17 @@ release_issue_lock() {
 #
 #   Holder worst-case timing:
 #     • evidence validation:  1 gh_safe call (up to 20s if rate-limited: 5s+15s backoff)
-#     • dedup body-marker search: 2 gh_safe calls (up to 20s each if rate-limited)
+#     • dedup search loop:    up to 4 gh_safe calls per iteration (up to 20s each):
+#         - Source 2a: gh issue list  (body-marker search)
+#         - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
+#         - Source 3:  gh issue list  (title search; only if still no match)
+#         - Source 4:  gh pr view     (PR comment check; only if no match and not last retry)
 #     • dedup index backoff:  _dedup_max_retries × _dedup_backoff (default: 3×5s = 15s)
 #     ─────────────────────────────────────────────────────────────────────────────
-#     Plausible worst case:  20s + 20s + 15s = 55s  (just under the 60s budget)
-#     Theoretical worst case: more if all gh calls hit rate limits back-to-back
+#     Plausible worst case:  20s + 80s + 15s = 115s  (exceeds the 60s waiter budget)
+#     Theoretical worst case: more calls per iteration if loop retries multiple times;
+#                             per-call cost is bounded at 20s (5s+15s backoff, no trailing
+#                             sleep) — growth comes from call count, not per-call duration
 #
 #   What happens on waiter timeout:
 #     The waiter proceeds lock-less (returns 1, sets _skip_followup_creation=true).

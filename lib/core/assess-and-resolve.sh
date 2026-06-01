@@ -1130,10 +1130,14 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   # issue-lock.sh).  Under slow-GitHub conditions the holder can consume:
   #
   #   evidence validation gh call  : up to 20s (gh_safe 3×: 5s+15s backoff)
-  #   dedup body-marker search (2 gh calls): up to 40s (20s each)
+  #   dedup search loop (up to 4 gh calls per iteration): up to 80s (20s each)
+  #     - Source 2a: gh issue list  (body-marker search)
+  #     - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
+  #     - Source 3:  gh issue list  (title search; only if still no match)
+  #     - Source 4:  gh pr view     (PR comment check; only if still no match and not last retry)
   #   this backoff loop (3 retries × _dedup_backoff): _dedup_max_retries × _dedup_backoff
   #
-  # With defaults (3 retries, 5s backoff): 20 + 40 + 15 = 75s worst-case, which
+  # With defaults (3 retries, 5s backoff): 20 + 80 + 15 = 115s worst-case, which
   # exceeds the 60s waiter budget.  In practice the evidence validation short-circuits
   # the loop, keeping typical holder time under 10s.  But under concurrent slow-GitHub
   # conditions the waiter may time out and proceed lock-less.

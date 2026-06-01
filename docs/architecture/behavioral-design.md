@@ -225,10 +225,10 @@ The `acquire_pr_followup_lock` waiter times out after **60 seconds**. Under slow
 | Step | Time (slow-GitHub) |
 |---|---|
 | Evidence validation (`gh issue view`) | up to 20s (gh_safe 3×: initial + 5s + 15s) |
-| Dedup body-marker search (`gh issue list` + `gh issue view`) | up to 40s (20s × 2 calls) |
+| Dedup search loop — up to 4 `gh_safe` calls per iteration:<br>• `gh issue list` (body-marker search)<br>• `gh issue view` (marker verification; only if list found a candidate)<br>• `gh issue list` (title search; only if still no match)<br>• `gh pr view` (PR comment check; only if no match and not last retry) | up to 80s (20s × 4 calls) |
 | Dedup index backoff loop (`_dedup_max_retries × RITE_DEDUP_BACKOFF`) | 3 × 5s = 15s (default) |
-| **Plausible worst case** | **~55s** (just under the 60s budget) |
-| **Theoretical worst case** | more, if all gh calls hit their rate-limit backoffs simultaneously |
+| **Plausible worst case** | **~115s** (exceeds the 60s waiter budget) |
+| **Theoretical worst case** | more calls if loop retries multiple times; per-call cost is bounded at 20s (5s+15s backoff, no trailing sleep) — growth comes from call count, not per-call duration |
 
 **What happens on waiter timeout:**
 The waiter sets `_skip_followup_creation=true` and proceeds without the lock. This prevents creation of a duplicate follow-up issue but also prevents creation of *any* follow-up issue for this run. A `[diag] FOLLOWUP_LOCK_TIMEOUT` line is written to `RITE_LOG_FILE`. Recovery: re-run `rite N --assess-and-fix`.
