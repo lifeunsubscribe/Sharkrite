@@ -83,7 +83,10 @@ acquire_issue_lock() {
         echo "   Refusing to start. Wait for it to finish, or run 'rite ${issue_number} --undo' if it crashed." >&2
       fi
     else
-      # Lock dir exists but no PID file — crashed between mkdir and PID write
+      # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
+      # this window is effectively eliminated for holders using this module, but
+      # a crashed holder or a very old holder using the pre-atomic code path
+      # could still leave this state.  Reclaim immediately.
       echo "⚠️  Reclaiming stale lock (no PID file)" >&2
       rm -rf "$lock_dir" 2>/dev/null
       continue
@@ -98,8 +101,13 @@ acquire_issue_lock() {
     sleep 1
   done
 
-  # Write our PID so other processes can check liveness
-  echo $$ > "$lock_dir/pid" 2>/dev/null || true
+  # Write our PID atomically via temp+rename so a concurrent waiter never sees
+  # the lock dir exist with no PID file (the TOCTOU window the old direct echo
+  # could create between mkdir and PID write).
+  local _pid_tmp
+  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
+  echo $$ > "$_pid_tmp"
+  mv "$_pid_tmp" "${lock_dir}/pid"
 
   return 0
 }
@@ -179,7 +187,10 @@ acquire_pr_followup_lock() {
         continue
       fi
     else
-      # Lock dir exists but no PID file — crashed between mkdir and PID write
+      # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
+      # this window is effectively eliminated for holders using this module, but
+      # a crashed holder or a very old holder using the pre-atomic code path
+      # could still leave this state.  Reclaim immediately.
       echo "⚠️  Reclaiming stale followup lock (no PID file)" >&2
       rm -rf "$lock_dir" 2>/dev/null
       continue
@@ -194,8 +205,13 @@ acquire_pr_followup_lock() {
     sleep 1
   done
 
-  # Write our PID so other processes can check liveness
-  echo $$ > "$lock_dir/pid" 2>/dev/null || true
+  # Write our PID atomically via temp+rename so a concurrent waiter never sees
+  # the lock dir exist with no PID file (the TOCTOU window the old direct echo
+  # could create between mkdir and PID write).
+  local _pid_tmp
+  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
+  echo $$ > "$_pid_tmp"
+  mv "$_pid_tmp" "${lock_dir}/pid"
 
   return 0
 }

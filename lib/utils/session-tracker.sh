@@ -22,6 +22,11 @@ set -euo pipefail
 _SESSION_LOCK_FD=201          # File descriptor used for flock fast-path
 _SESSION_LOCK_HELD=false      # True once lock is successfully acquired
 _SESSION_LOCKFILE=""          # Set to actual lock path on acquire
+# Strategy used at acquire time: "flock" or "mkdir".
+# Persisted so that release always uses the same path type as acquire, regardless
+# of whether PATH changes between the two calls or whether another process on a
+# shared filesystem chose a different strategy for the same lock path.
+_SESSION_LOCK_STRATEGY=""     # "flock" or "mkdir" — set by acquire, read by release
 
 # _acquire_session_lock
 #
@@ -41,6 +46,17 @@ _acquire_session_lock() {
 
   # Fast path: flock is available
   if command -v flock >/dev/null 2>&1; then
+    # Clean up any leftover mkdir-style lock directory from a previous run where
+    # flock was not available.  The directory would block flock from creating its
+    # plain-file lock at the same path (open(2) fails if a directory is in the way).
+    if [ -d "$lockfile" ]; then
+      local _stale_pid
+      _stale_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
+        echo "session-lock: removing leftover mkdir-style lock dir before flock acquire" >&2
+        rm -rf "$lockfile" 2>/dev/null || true
+      fi
+    fi
     # shellcheck disable=SC1083
     eval "exec ${_SESSION_LOCK_FD}>\"$lockfile\""
     if ! flock -w "$max_attempts" "$_SESSION_LOCK_FD" 2>/dev/null; then
@@ -49,6 +65,7 @@ _acquire_session_lock() {
       exit 1
     fi
     _SESSION_LOCK_HELD=true
+    _SESSION_LOCK_STRATEGY="flock"
     return 0
   fi
 
@@ -99,6 +116,7 @@ _acquire_session_lock() {
   mv "$pid_tmp" "${lockfile}/pid"
 
   _SESSION_LOCK_HELD=true
+  _SESSION_LOCK_STRATEGY="mkdir"
   return 0
 }
 
@@ -112,7 +130,11 @@ _release_session_lock() {
 
   local lockfile="${_SESSION_LOCKFILE:-${SESSION_STATE_FILE:-}.lock}"
 
-  if command -v flock >/dev/null 2>&1; then
+  # Use the strategy recorded at acquire time, not a fresh command -v check.
+  # Re-checking command -v flock here would cause a mismatch if PATH changed
+  # between acquire and release, or if two processes on a shared filesystem
+  # chose different strategies for the same lock path.
+  if [ "${_SESSION_LOCK_STRATEGY:-}" = "flock" ]; then
     # Release flock by closing the fd (do NOT rm — see scratchpad-lock.sh comment)
     flock -u "$_SESSION_LOCK_FD" 2>/dev/null || true
     eval "exec ${_SESSION_LOCK_FD}>&-" 2>/dev/null || true
@@ -128,6 +150,7 @@ _release_session_lock() {
   fi
 
   _SESSION_LOCK_HELD=false
+  _SESSION_LOCK_STRATEGY=""
 }
 
 # Initialize session tracking

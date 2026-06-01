@@ -33,6 +33,11 @@ set -euo pipefail
 _SCRATCHPAD_LOCK_FD=200          # File descriptor used for flock fast-path
 _SCRATCHPAD_LOCK_HELD=false      # True once lock is successfully acquired
 _SCRATCHPAD_LOCKFILE=""          # Set to actual lockfile path on acquire
+# Strategy used at acquire time: "flock" or "mkdir".
+# Persisted so that release always uses the same path type as acquire, regardless
+# of whether PATH changes between the two calls or whether another process on a
+# shared filesystem chose a different strategy for the same lock path.
+_SCRATCHPAD_LOCK_STRATEGY=""     # "flock" or "mkdir" — set by acquire, read by release
 
 # ---------------------------------------------------------------------------
 # acquire_scratchpad_lock
@@ -60,6 +65,18 @@ acquire_scratchpad_lock() {
   # flock on a regular file is simpler, atomic, and kernel-maintained.
   # ------------------------------------------------------------------
   if command -v flock >/dev/null 2>&1; then
+    # Clean up any leftover mkdir-style lock directory from a previous run where
+    # flock was not available.  The directory would block flock from creating its
+    # plain-file lock at the same path (open(2) fails if a directory is in the way).
+    if [ -d "$lockfile" ]; then
+      # Only reclaim if the directory has no live holder PID.
+      local _stale_pid
+      _stale_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
+        echo "scratchpad-lock: removing leftover mkdir-style lock dir before flock acquire" >&2
+        rm -rf "$lockfile" 2>/dev/null || true
+      fi
+    fi
     # Open (or create) the lock file on our chosen fd
     # shellcheck disable=SC1083
     eval "exec ${_SCRATCHPAD_LOCK_FD}>\"$lockfile\""
@@ -70,6 +87,7 @@ acquire_scratchpad_lock() {
       exit 1
     fi
     _SCRATCHPAD_LOCK_HELD=true
+    _SCRATCHPAD_LOCK_STRATEGY="flock"
     return 0
   fi
 
@@ -151,6 +169,7 @@ acquire_scratchpad_lock() {
   mv "$pid_tmp" "${lockfile}/pid"
 
   _SCRATCHPAD_LOCK_HELD=true
+  _SCRATCHPAD_LOCK_STRATEGY="mkdir"
   return 0
 }
 
@@ -168,7 +187,11 @@ release_scratchpad_lock() {
 
   local lockfile="${_SCRATCHPAD_LOCKFILE:-${SCRATCHPAD_FILE:-}.lock}"
 
-  if command -v flock >/dev/null 2>&1; then
+  # Use the strategy recorded at acquire time, not a fresh command -v check.
+  # Re-checking command -v flock here would cause a mismatch if PATH changed
+  # between acquire and release (e.g., a subprocess altered PATH), or if two
+  # processes on a shared filesystem chose different strategies for the same path.
+  if [ "${_SCRATCHPAD_LOCK_STRATEGY:-}" = "flock" ]; then
     # Release flock by closing the file descriptor.
     # Do NOT rm the lockfile here: flock keys on the inode behind the open fd.
     # Removing the file lets a new acquirer open a fresh inode and take the lock
@@ -189,6 +212,7 @@ release_scratchpad_lock() {
   fi
 
   _SCRATCHPAD_LOCK_HELD=false
+  _SCRATCHPAD_LOCK_STRATEGY=""
 }
 
 # ---------------------------------------------------------------------------
