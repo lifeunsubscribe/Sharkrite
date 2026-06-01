@@ -2394,14 +2394,14 @@ else
           _pr_for_scope="${PR_NUMBER:-}"
           if [ -z "$_pr_for_scope" ] || [ "$_pr_for_scope" = "null" ]; then
             # Try to detect PR for this issue
-            _pr_for_scope=$(gh pr list --head "$(git branch --show-current 2>/dev/null || true)" \
-              --json number --jq '.[0].number' 2>/dev/null || true)
+            _pr_for_scope=$(gh_safe pr list --head "$(git branch --show-current 2>/dev/null || true)" \
+              --json number --jq '.[0].number' || true)
           fi
 
           if [ -n "$_pr_for_scope" ] && [ "$_pr_for_scope" != "null" ]; then
             # Append scope warning to PR body — but only if not already present
             # (guards against duplicate blocks on retry/resume runs)
-            _current_pr_body=$(gh pr view "$_pr_for_scope" --json body --jq '.body' 2>/dev/null || true)
+            _current_pr_body=$(gh_safe pr view "$_pr_for_scope" --json body --jq '.body' || true)
             if echo "$_current_pr_body" | grep -q '<!-- sharkrite-scope-warning -->' 2>/dev/null; then
               print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
             else
@@ -2409,7 +2409,7 @@ else
               _updated_body="${_current_pr_body}${_scope_warn_text}"
               _scope_body_file=$(mktemp)
               printf '%s' "$_updated_body" > "$_scope_body_file"
-              gh pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
+              gh_safe pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
                 print_warning "Could not append scope warning to PR #${_pr_for_scope}"
               rm -f "$_scope_body_file"
               print_info "Scope violation warning appended to PR #${_pr_for_scope}"

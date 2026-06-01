@@ -1139,7 +1139,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     #   - "" (empty/error)   → transient API failure; do NOT clear — preserve the
     #                          dedup guarantee under the same flakiness conditions
     #                          this PR is designed to handle
-    _evidence_issue_state=$(gh issue view "$_evidence_candidate" --json state --jq '.state' 2>/dev/null || true)
+    _evidence_issue_state=$(gh_safe issue view "$_evidence_candidate" --json state --jq '.state' || true)
     if [ "${_evidence_issue_state}" = "OPEN" ]; then
       # Confirmed open — trust local evidence immediately; no need to enter loop
       EXISTING_ISSUE="$_evidence_candidate"
