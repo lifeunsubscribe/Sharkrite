@@ -201,21 +201,24 @@ done
 }
 ```
 
-### 3. Document Expected Failures
+### 3. Use Hard Failure Assertions
 
-Tests should fail BEFORE the fix lands (regression-proof):
+All concurrency assertions must be hard failures.  The old "EXPECTED FAILURE"
+`return 0` escape hatch made tests self-defeating — they passed even when the race
+was detected, so they couldn't catch regressions.
 
 ```bash
 [ "$actual_count" -eq "$expected_count" ] || {
-  echo "EXPECTED FAILURE: Race condition detected - fix not yet implemented"
-  return 0  # Allow test to pass (documents failure)
+  echo "REGRESSION: <what broke> — <which fix> regressed?"
+  return 1  # Hard failure: test fails if fix regresses
 }
 ```
 
-This ensures:
-- Test proves the race exists before the fix
-- Test will fail if the fix regresses later
-- Clear documentation of what the fix should achieve
+**Never use `return 0` as an escape hatch in an assertion block.** If a fix
+hasn't landed yet and the test would be a guaranteed failure in CI, use
+`skip "Pending: waiting for issue #N to land"` instead — at least that's
+honest about the state, and it's automatically un-skipped when the test
+is run on a branch where the fix exists.
 
 ### 4. Test Checklist
 
@@ -223,7 +226,7 @@ This ensures:
 - [ ] Uses shared fixture (not per-process fixtures)
 - [ ] Collects exit codes via temp files
 - [ ] Asserts final state correctness
-- [ ] Documents expected failure before fix
+- [ ] Uses hard failure assertions (no `return 0` escape hatches)
 - [ ] Includes cleanup (teardown)
 
 ## Running the Tests
@@ -242,14 +245,15 @@ bats -t tests/concurrency/scratchpad-lock.bats
 bats -f "concurrent scratchpad updates" tests/concurrency/scratchpad-lock.bats
 ```
 
-## Known Issues and Expected Failures
+## Regression Assertions
 
-Before the concurrency fixes land (issues #8, #15, #19, #25, #26), many tests will "pass" but report **EXPECTED FAILURE** messages. This is intentional:
+All concurrency fixes have now landed (issues #8, #9, #15, #19, #25, #26).
+All tests use hard-failure assertions — if a fix regresses, the test will
+fail.  The old "EXPECTED FAILURE" `return 0` escape hatch pattern has been
+removed from all test files.
 
-- Tests document the race condition
-- Tests pass (exit 0) to avoid blocking CI
-- After fixes land, remove the "EXPECTED FAILURE" fallback
-- Tests will then fail if regression occurs
+If a new concurrency fix is in-progress and not yet landed, use
+`skip "Pending: waiting for issue #N"` rather than a `return 0` escape hatch.
 
 ## CI Integration
 
