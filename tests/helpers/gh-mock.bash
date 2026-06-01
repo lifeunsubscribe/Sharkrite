@@ -244,19 +244,33 @@ _gh_mock_stateful_issue_list() {
     fi
   fi
 
-  # Build jq filter to select matching issues
+  # Build jq filter to select matching issues.
+  # Use test() with a token-boundary suffix instead of contains() to prevent
+  # false-positive dedup matches: "sharkrite-source-issue:5" must not match an
+  # issue body containing "sharkrite-source-issue:55".
+  #
+  # The suffix ([^[:alnum:]_-]|$) requires the match to be followed by a
+  # non-token character or end-of-string. We avoid negative lookahead (?!...)
+  # because bash history expansion mangles the `!` inside double-quoted strings.
   local _jq_select
   if echo "$_search" | grep -q 'in:body'; then
     # Extract the marker/term before " in:body"
     local _term
     _term=$(echo "$_search" | sed 's/ in:body.*//' | sed 's/^ *//' | sed 's/ *$//')
-    # Select issues whose body contains the search term AND whose state matches
-    _jq_select="[.[] | select((.body | ascii_downcase | contains(\"$(echo "$_term" | tr '[:upper:]' '[:lower:]')\")) and (.state == \"$_state\"))]"
+    local _term_lower
+    _term_lower=$(echo "$_term" | tr '[:upper:]' '[:lower:]')
+    local _escaped_term
+    _escaped_term=$(printf '%s' "$_term_lower" | sed 's/[.[\*^$()+?{}|\\]/\\&/g')
+    _jq_select="[.[] | select((.body | ascii_downcase | test(\"${_escaped_term}([^[:alnum:]_-]|\$)\")) and (.state == \"$_state\"))]"
   elif echo "$_search" | grep -q 'in:title'; then
     # Extract the term after "in:title "
     local _term
     _term=$(echo "$_search" | sed 's/.*in:title *//' | sed 's/ *$//')
-    _jq_select="[.[] | select((.title | ascii_downcase | contains(\"$(echo "$_term" | tr '[:upper:]' '[:lower:]')\")) and (.state == \"$_state\"))]"
+    local _term_lower
+    _term_lower=$(echo "$_term" | tr '[:upper:]' '[:lower:]')
+    local _escaped_term
+    _escaped_term=$(printf '%s' "$_term_lower" | sed 's/[.[\*^$()+?{}|\\]/\\&/g')
+    _jq_select="[.[] | select((.title | ascii_downcase | test(\"${_escaped_term}([^[:alnum:]_-]|\$)\")) and (.state == \"$_state\"))]"
   else
     # No in: qualifier — return all open issues
     _jq_select="[.[] | select(.state == \"$_state\")]"

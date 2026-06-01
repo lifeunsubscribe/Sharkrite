@@ -167,6 +167,45 @@ teardown() {
   [ "$match10" != "$match11" ]
 }
 
+@test "stateful: in:body search does not false-positive match numeric prefix (e.g. :5 must not match :55)" {
+  # Regression: naive contains() matching caused sharkrite-source-issue:5 to
+  # match an issue body containing sharkrite-source-issue:55, producing a
+  # false-positive dedup hit that would suppress follow-up issue creation.
+  local body_five="$RITE_TEST_TMPDIR/body_five.md"
+  local body_fiftyfive="$RITE_TEST_TMPDIR/body_fiftyfive.md"
+  printf '<!-- sharkrite-source-issue:55 -->' > "$body_fiftyfive"
+  printf '<!-- sharkrite-source-issue:5 -->'  > "$body_five"
+
+  mock_gh issue create --title "Follow-up for src #55" --body-file "$body_fiftyfive" > /dev/null
+  mock_gh issue create --title "Follow-up for src #5"  --body-file "$body_five"      > /dev/null
+
+  local match5 match55
+  match5=$(mock_gh issue list --state open \
+    --search "sharkrite-source-issue:5 in:body" \
+    --json number --jq '.[0].number')
+  match55=$(mock_gh issue list --state open \
+    --search "sharkrite-source-issue:55 in:body" \
+    --json number --jq '.[0].number')
+
+  # Each search must return exactly one issue and they must be distinct
+  [[ "$match5"  =~ ^[0-9]+$ ]]
+  [[ "$match55" =~ ^[0-9]+$ ]]
+  [ "$match5" != "$match55" ]
+
+  # Critically: searching for :5 must NOT return the :55 issue.
+  # We verify by checking the body of the found issue via gh issue view.
+  local url5
+  url5=$(mock_gh issue list --state open \
+    --search "sharkrite-source-issue:5 in:body" \
+    --json url --jq '.[0].url')
+  # The URL must contain the issue number for issue #5 (the lower-numbered one)
+  # and must NOT be the :55 issue.
+  [[ "$url5" =~ /issues/[0-9]+$ ]]
+  local num5="${url5##*/issues/}"
+  [ "$num5" = "$match5" ]
+  [ "$num5" != "$match55" ]
+}
+
 # ---------------------------------------------------------------------------
 # 3. gh issue list --search "in:title ..."
 # ---------------------------------------------------------------------------
