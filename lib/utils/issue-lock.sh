@@ -37,13 +37,18 @@
 # Lock directory structure:
 #   ${RITE_LOCK_DIR}/issue-N.lock/
 #     pid       — PID of the holding process (transient, written by acquire_issue_lock)
-#     worktree  — absolute path to the worktree (persistent, written by acquire + backfill)
+#     worktree  — absolute path to the worktree (persistent, written by backfill_worktree_locks)
 #
 # The lock directory is the source of truth for worktree → issue mapping.
-# acquire_issue_lock writes both pid and worktree on lock creation.
+# acquire_issue_lock can write the worktree file when called with an explicit path
+# argument, but the primary production caller (setup_issue_lock_if_needed in
+# claude-workflow.sh) acquires the lock before WORKTREE_PATH is known — so it omits
+# the path argument and the worktree file is NOT written during routine lock acquisition.
+# In practice the worktree file is populated by backfill_worktree_locks (called at
+# the start of `rite --status`).
 # backfill_worktree_locks creates lock dirs for worktrees that predate the lock
-# infrastructure (PR #67) by walking git worktree list and resolving the issue
-# number from the branch's open PR body.
+# infrastructure (PR #67), or where the worktree path was not supplied at acquire time,
+# by walking git worktree list and resolving the issue number from the branch's open PR body.
 #
 # Note: the pid file is written by the active process and removed by release_issue_lock.
 # The worktree file persists until the lock dir is released. Backfill lock dirs have
@@ -240,17 +245,25 @@ backfill_worktree_locks() {
 
   local current_path=""
   local current_branch=""
+  local main_worktree=""
 
   # Process porcelain output block by block (blank line terminates each block)
   while IFS= read -r line; do
     if [[ "$line" =~ ^worktree\ (.+) ]]; then
       current_path="${BASH_REMATCH[1]}"
       current_branch=""
+      # The first worktree block is always the main repo — capture it so we can
+      # pass it down to _backfill_one_worktree without relying on RITE_PROJECT_ROOT,
+      # which is git-rev-parse-relative and resolves to the current worktree when
+      # run from inside a feature worktree.
+      if [ -z "$main_worktree" ]; then
+        main_worktree="$current_path"
+      fi
     elif [[ "$line" =~ ^branch\ refs/heads/(.+) ]]; then
       current_branch="${BASH_REMATCH[1]}"
     elif [ -z "$line" ] && [ -n "$current_path" ]; then
       # End of a worktree block — process it
-      _backfill_one_worktree "$current_path" "$current_branch"
+      _backfill_one_worktree "$current_path" "$current_branch" "$main_worktree"
       current_path=""
       current_branch=""
     fi
@@ -258,7 +271,7 @@ backfill_worktree_locks() {
 
   # Handle last block if file does not end with a blank line
   if [ -n "$current_path" ]; then
-    _backfill_one_worktree "$current_path" "$current_branch"
+    _backfill_one_worktree "$current_path" "$current_branch" "$main_worktree"
   fi
 }
 
@@ -266,13 +279,22 @@ backfill_worktree_locks() {
 # Skips the main repo, detached HEADs, already-locked worktrees, and worktrees
 # with no resolvable PR.
 #
-# Args: worktree_path branch_name
+# Args: worktree_path branch_name main_worktree_path
+# main_worktree_path is the path from the first porcelain block (always the main
+# repo). It is passed explicitly because RITE_PROJECT_ROOT is derived via
+# git rev-parse and resolves to the current worktree when run from inside a
+# feature worktree — comparing against it would wrongly skip the standing worktree.
 _backfill_one_worktree() {
   local wt_path="$1"
   local branch="${2:-}"
+  local main_worktree="${3:-}"
 
-  # Skip the main project root (not a feature worktree)
-  if [ "$wt_path" = "${RITE_PROJECT_ROOT:-}" ]; then
+  # Skip the main project root (not a feature worktree).
+  # Use the explicit main_worktree arg (from porcelain block 1); fall back to
+  # RITE_PROJECT_ROOT only when main_worktree is empty (standalone/test invocation).
+  local _main_root
+  _main_root="${main_worktree:-${RITE_PROJECT_ROOT:-}}"
+  if [ -n "$_main_root" ] && [ "$wt_path" = "$_main_root" ]; then
     return 0
   fi
 
@@ -286,31 +308,19 @@ _backfill_one_worktree() {
     return 0
   fi
 
-  # Fast path: check if the branch name encodes an issue number directly
-  # (e.g. fix/add-auth-issue-42, feat/something_42, or any pattern with a number
-  # matching an existing lock entry)
   local issue_num=""
 
   # Check if any existing lock dir's worktree file already maps to this path
   # (covers the case where acquire_issue_lock already ran for this worktree)
-  if ls "${RITE_LOCK_DIR}"/issue-*.lock/worktree 2>/dev/null | head -1 | grep -q .; then
-    local existing_lock
-    while IFS= read -r existing_lock; do
-      local locked_wt
-      locked_wt=$(cat "$existing_lock" 2>/dev/null || echo "")
-      if [ "$locked_wt" = "$wt_path" ]; then
-        # Already have a lock with worktree metadata — nothing to do
-        return 0
-      fi
-    done < <(ls "${RITE_LOCK_DIR}"/issue-*.lock/worktree 2>/dev/null || true)
-  fi
-
-  # Check if a lock dir exists for this worktree already (pid-only, no worktree file)
-  # by looking at all lock dirs and checking if any has a matching worktree path
-  # (already handled above) OR simply has an active pid for the same branch.
-  # We only need to skip if the lock dir has a live PID — don't backfill over active locks.
-  # We detect this by looking for issue-N.lock dirs whose name we can derive from the branch.
-  # Since we don't know the issue number yet, we check after resolving it below.
+  local existing_lock
+  while IFS= read -r existing_lock; do
+    local locked_wt
+    locked_wt=$(cat "$existing_lock" 2>/dev/null || echo "")
+    if [ "$locked_wt" = "$wt_path" ]; then
+      # Already have a lock with worktree metadata — nothing to do
+      return 0
+    fi
+  done < <(ls "${RITE_LOCK_DIR}"/issue-*.lock/worktree 2>/dev/null || true)
 
   # Resolve issue number from open PR body
   issue_num=$(_resolve_issue_from_branch "$branch")

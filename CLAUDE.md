@@ -361,11 +361,13 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 
 The lock file is the source of truth for mapping worktrees to issue numbers.
 
-`acquire_issue_lock <issue_number> <worktree_path>` writes two files:
-- `${RITE_LOCK_DIR}/issue-N.lock/pid` — PID of the holding process (transient)
-- `${RITE_LOCK_DIR}/issue-N.lock/worktree` — absolute path to the worktree (persistent)
+Lock directory structure:
+- `${RITE_LOCK_DIR}/issue-N.lock/pid` — PID of the holding process (transient, written by `acquire_issue_lock`)
+- `${RITE_LOCK_DIR}/issue-N.lock/worktree` — absolute path to the worktree (persistent, written by `backfill_worktree_locks`)
 
-`repo-status.sh` reads the `worktree` files to show issue IDs in the worktree-details panel. The `backfill_worktree_locks()` function in `issue-lock.sh` creates these lock dirs for worktrees created before the lock infrastructure landed (PR #67), by resolving the issue number from the branch's open PR body.
+`acquire_issue_lock` accepts an optional `worktree_path` argument and will write the `worktree` file when provided. However, the primary production caller — `setup_issue_lock_if_needed` in `claude-workflow.sh` — acquires the lock before `WORKTREE_PATH` is known, so it omits the path. The `worktree` file is therefore **not** written during normal workflow runs; it is populated by `backfill_worktree_locks` instead.
+
+`repo-status.sh` reads the `worktree` files to show issue IDs in the worktree-details panel. The `backfill_worktree_locks()` function in `issue-lock.sh` creates these lock dirs for worktrees created before the lock infrastructure landed (PR #67), or where the path was not supplied at acquire time, by resolving the issue number from the branch's open PR body.
 
 **`rite --backfill-locks`** — run this once to fix any worktrees that show no issue ID in `rite --status`. It is also called automatically at the start of `rite --status` (repo-wide).
 
