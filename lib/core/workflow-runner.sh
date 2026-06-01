@@ -1750,6 +1750,13 @@ run_workflow() {
       unset PR_NUMBER 2>/dev/null || true
       export -n PR_NUMBER 2>/dev/null || true
       print_info "Workflow will start fresh on issue #$issue_number"
+    elif [ $stale_result -eq 2 ]; then
+      # Exit 2: foreign commits detected after push rejection during stale-branch merge.
+      # The branch was rebased + pushed, but a concurrent push landed foreign commits.
+      # Those commits were classified as non-trivial and need a code review before merging.
+      # Re-enter Phase 2→3 so the review cycle covers the combined change set.
+      print_info "Foreign commits require re-review — re-entering Phase 2→3"
+      skip_to_phase="create-pr"
     elif [ $stale_result -eq 5 ]; then
       # Usage cap hit during conflict resolution — propagate so batch can abort cleanly
       return 5
