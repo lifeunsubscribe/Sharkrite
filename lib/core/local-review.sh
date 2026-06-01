@@ -39,6 +39,12 @@ set -euo pipefail
 # Environment:
 #   RITE_DIFF_RETRY_BACKOFF — if set, overrides the exponential backoff sleep
 #     duration (seconds). Set to 0 in tests to skip sleep.
+#
+# Dependencies: requires print_warning, print_error, print_status (from
+#   lib/utils/logging.sh) to be available in the calling environment.
+#   When sourcing with RITE_SOURCE_FUNCTIONS_ONLY=1 (test use), the caller
+#   must provide stub implementations of these helpers before invoking this
+#   function.
 # ---------------------------------------------------------------------------
 fetch_pr_diff() {
   local PR_NUMBER="$1"
@@ -112,6 +118,12 @@ fetch_pr_diff() {
 # Exits 1 (does not return) if the diff is empty, after printing an appropriate
 # warning: "Empty diff after fetch" when GitHub reports changed files (silent
 # fetch failure), or "No code changes to review" for a legitimately empty PR.
+#
+# Dependencies: requires print_warning, print_info (from lib/utils/logging.sh)
+#   to be available in the calling environment.
+#   When sourcing with RITE_SOURCE_FUNCTIONS_ONLY=1 (test use), the caller
+#   must provide stub implementations of these helpers before invoking this
+#   function.
 # ---------------------------------------------------------------------------
 validate_diff_not_empty() {
   local PR_NUMBER="$1"
