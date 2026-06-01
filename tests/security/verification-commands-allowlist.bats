@@ -64,6 +64,15 @@ EOF
     echo '}'
     echo '_run_verify_check'
   } > "$TEST_DIR/verify-parser.sh"
+
+  # Guard: verify the extraction produced a non-empty file containing the
+  # expected sentinel string from the production source.  If the comment
+  # markers in workflow-runner.sh ever change, this assertion fails loudly
+  # here in setup() rather than producing confusing downstream test failures.
+  grep -q 'Verification Commands' "$TEST_DIR/verify-parser.sh" || {
+    echo "setup() error: verify-parser.sh extraction failed or is empty — comment markers in workflow-runner.sh may have changed" >&2
+    return 1
+  }
 }
 
 teardown() {
