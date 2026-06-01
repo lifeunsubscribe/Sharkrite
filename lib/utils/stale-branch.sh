@@ -169,12 +169,14 @@ EOF
 # INTERNAL: Classify foreign commits after push rejection
 # ===================================================================
 
-# _stale_classify_after_push_rejection BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER] [WORKFLOW_MODE]
+# _stale_classify_after_push_rejection WORKTREE_PATH BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER] [WORKFLOW_MODE]
 #
 # Called when git push --force-with-lease is rejected after a successful rebase.
 # A rejection means another client pushed to the remote branch between our rebase
 # and our push attempt. We re-fetch and classify those commits before deciding
 # whether to silently absorb them (TRIVIAL) or trigger a re-review (FOREIGN).
+#
+# WORKTREE_PATH is required for verify_post_merge (test verification after TRIVIAL absorb).
 #
 # Exit codes:
 #   0 = no foreign commits after re-fetch (remote was fast-forwarded to ours by another process)
@@ -182,10 +184,11 @@ EOF
 #   2 = foreign commits detected — caller must re-enter Phase 2→3 review cycle
 #       (consistent with divergence-handler.sh exit 2 = "needs re-review")
 _stale_classify_after_push_rejection() {
-  local branch_name="$1"
-  local issue_number="${2:-}"
-  local pr_number="${3:-}"
-  local workflow_mode="${4:-auto}"
+  local worktree_path="$1"
+  local branch_name="$2"
+  local issue_number="${3:-}"
+  local pr_number="${4:-}"
+  local workflow_mode="${5:-auto}"
 
   # Re-fetch to get the current remote state
   if ! git fetch origin "$branch_name" 2>/dev/null; then
@@ -249,9 +252,18 @@ _stale_classify_after_push_rejection() {
     case "$classification" in
       TRIVIAL)
         # Mainline sync or doc-only changes: safe to absorb without review.
-        # Pull the foreign commits and retry the push once.
-        print_info "Foreign commits classified as TRIVIAL — absorbing and retrying push"
-        if git rebase "origin/$branch_name" 2>/dev/null; then
+        # Rebase onto origin/main (not origin/$branch_name) to ensure the branch
+        # remains up-to-date with main, not just with the foreign remote tip.
+        # Rebasing onto the remote branch tip would regress the branch to a stale
+        # state if those foreign commits are themselves behind main.
+        print_info "Foreign commits classified as TRIVIAL — absorbing onto origin/main and retrying push"
+        if git rebase origin/main 2>/dev/null; then
+          # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
+          if ! verify_post_merge "$worktree_path"; then
+            git rebase --abort 2>/dev/null || true
+            print_error "Post-rebase verification failed after absorbing TRIVIAL commits — cannot proceed"
+            return 1
+          fi
           if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
             print_success "Branch rebased onto origin/main (after absorbing trivial foreign commits)"
             return 0
@@ -379,7 +391,7 @@ _stale_rebase_onto_main() {
       # deciding what to do — silently absorbing unreviewed foreign commits
       # would bypass the review cycle.
       print_warning "Push rejected after rebase (force-with-lease) — re-fetching to classify foreign commits"
-      _stale_classify_after_push_rejection "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode"
+      _stale_classify_after_push_rejection "$worktree_path" "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode"
       return $?
     fi
   else

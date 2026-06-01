@@ -12,6 +12,7 @@ These codes cross script boundaries and must be kept unambiguous.
 
 | Code | Producer | Consumer | Meaning |
 |------|----------|----------|---------|
+| `2`  | `stale-branch.sh` (`check_stale_branch`) | `workflow-runner.sh` stale-branch handler | Foreign commits detected after push rejection — re-enter Phase 2→3 review cycle |
 | `5`  | `claude-workflow.sh`, `create-pr.sh`, `merge-pr.sh`, `stale-branch.sh`, `divergence-handler.sh`, `branch-preflight.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Usage/token cap reached — abort batch cleanly |
 | `6`  | `merge-pr.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Merge succeeded but worktree/branch cleanup failed — work IS on remote |
 | `10` | `batch-process-issues.sh` (exit) | Caller of `rite` batch | Batch completed with at least one blocker-deferred issue |
@@ -86,6 +87,7 @@ These codes cross script boundaries and must be kept unambiguous.
 |------|---------|
 | `0`  | Branch current or successfully updated (rebase/merge) — continue |
 | `1`  | Stale check failed (user aborted or error) |
+| `2`  | Foreign commits detected after push rejection — caller must re-enter Phase 2→3 review cycle |
 | `5`  | Usage cap during conflict resolution |
 | `11` | PR closed and worktree cleaned up — restart fresh (caller resets resume state) |
 
