@@ -20,6 +20,19 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
+# Ensure a valid cwd before any git-aware tool (e.g. claude --print) runs.
+#
+# This script is launched as a background subprocess (&) from merge-pr.sh while
+# the parent shell is still cd'd into the feature-branch worktree.  The worktree
+# is removed shortly after the fork.  When the claude CLI starts it probes the
+# cwd for git context; if the directory is already gone it emits:
+#   "failed to run git: fatal: Unable to read current working directory"
+# and exits 1, making the whole doc assessment appear to fail.
+#
+# RITE_PROJECT_ROOT is exported by config.sh and always points to the main
+# worktree (the permanent git root), so it is always safe to cd there.
+cd "${RITE_PROJECT_ROOT}"
+
 # Timeout per provider call in doc assessment (seconds)
 DOC_CLAUDE_TIMEOUT="${RITE_DOC_CLAUDE_TIMEOUT:-120}"
 
