@@ -279,3 +279,65 @@ EOF
   # npm from the first (stale) block must NOT have been called
   [ ! -f "$TEST_DIR/.npm-called" ]
 }
+
+# ── Edge case: code fence extraction robustness (issue #53) ─────────────────
+
+@test "extracts commands when closing code fence is missing (unclosed backtick block)" {
+  # Regression test for issue #53:
+  # The inner sed range /^```/,/^```/p extracts the fenced code block.  When
+  # the closing ``` line is absent (malformed issue), sed's open range runs to
+  # EOF and still captures the command lines.  Verify the command runs rather
+  # than being silently dropped.
+  rm -f "$TEST_DIR/.pytest-called"
+
+  # Verification section whose ```bash block has no closing fence
+  ISSUE_BODY=$(cat <<'EOF'
+## Description
+Test issue
+
+## Verification Commands
+```bash
+pytest tests/
+EOF
+)
+
+  export ISSUE_BODY
+  export ISSUE_ALREADY_RESOLVED=false
+  export TEST_DIR
+
+  cd "$TEST_DIR"
+  bash "$TEST_DIR/verify-parser.sh"
+
+  # pytest must still run even though the closing ``` is absent
+  [ -f "$TEST_DIR/.pytest-called" ]
+}
+
+@test "skips verification silently when section has no code block" {
+  # Regression test for issue #53:
+  # A Verification Commands section with only prose (no fenced block) should
+  # produce zero commands and not attempt execution.  The workflow continues
+  # normally — no crash, no false positive.
+  rm -f "$TEST_DIR/.pytest-called"
+
+  ISSUE_BODY=$(cat <<'EOF'
+## Description
+Test issue
+
+## Verification Commands
+Run pytest manually to confirm the fix is correct.
+
+## Acceptance Criteria
+- [ ] Tests pass
+EOF
+)
+
+  export ISSUE_BODY
+  export ISSUE_ALREADY_RESOLVED=false
+  export TEST_DIR
+
+  cd "$TEST_DIR"
+  bash "$TEST_DIR/verify-parser.sh"
+
+  # No command should have run — no code block means no executable commands
+  [ ! -f "$TEST_DIR/.pytest-called" ]
+}
