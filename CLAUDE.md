@@ -356,6 +356,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
   - `merge-pr.sh`: exit 0 for "merge and cleanup succeeded", exit 1 for "merge failed", exit 6 for "merge succeeded but cleanup failed"
   - `stale-branch.sh` → `workflow-runner.sh`: exit 11 for "stale branch restarted fresh" (caller resets resume state). **Not 10** — exit 10 is reserved for `batch-process-issues.sh` "blocker detected — defer issue"
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
+- **Lock file is source of truth for worktree → issue mapping**: `${RITE_LOCK_DIR}/issue-N.lock/` is created by `acquire_issue_lock` when `rite N` starts. Worktrees created before lock infrastructure (PR #67) or outside `acquire_issue_lock` have no lock dir → `rite --status` can't show the issue association. Run `rite --backfill-locks` to write hints for existing worktrees. `repo-status.sh` calls `backfill_worktree_locks --quiet` automatically on each `rite --status` run. Backfill lock dirs have no `pid` file so `acquire_issue_lock` reclaims them gracefully.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
 
 ## Token Optimization (rtk)

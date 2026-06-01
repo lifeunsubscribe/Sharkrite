@@ -15,6 +15,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 # =============================================================================
 # Worktree scanning
@@ -357,6 +358,11 @@ repo_wide_status() {
   local repo_url
   repo_url=$(gh repo view --json url -q '.url' 2>/dev/null || echo "")
 
+  # Backfill worktree→issue lock hints silently before scanning.
+  # This ensures worktrees created before the lock infrastructure (PR #67)
+  # show up with issue associations in the worktree-details panel.
+  backfill_worktree_locks --quiet 2>/dev/null || true
+
   echo ""
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${BLUE} Sharkrite Status: ${repo_name}${NC}"
@@ -651,13 +657,21 @@ repo_wide_status() {
     for i in "${!WT_BRANCHES[@]}"; do
       local branch="${WT_BRANCHES[$i]}"
 
-      # Extract issue number: try branch name, worktree path, open PR body, then gh lookup
+      # Extract issue number: try branch name, worktree path, lock-dir hint,
+      # open PR body, then gh API lookup (last resort — avoids unnecessary API calls)
       local wt_issue_num=""
       if [[ "$branch" =~ issue-?([0-9]+) ]]; then
         wt_issue_num="${BASH_REMATCH[1]}"
       fi
       if [ -z "$wt_issue_num" ] && [[ "${WT_PATHS[$i]}" =~ issue-?([0-9]+) ]]; then
         wt_issue_num="${BASH_REMATCH[1]}"
+      fi
+      # Check backfill lock-dir: worktree→issue mapping written by backfill_worktree_locks
+      # This is a fast local filesystem lookup — no gh API call needed
+      if [ -z "$wt_issue_num" ]; then
+        if lookup_issue_for_worktree "${WT_PATHS[$i]}"; then
+          wt_issue_num="${BACKFILL_ISSUE_NUMBER}"
+        fi
       fi
       if [ -z "$wt_issue_num" ] && [ -n "${open_prs_json:-}" ]; then
         local _pr_body

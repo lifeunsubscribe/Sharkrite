@@ -13,6 +13,7 @@
 #   rite --status --by-label      Repo-wide status grouped by label
 #   rite plan [doc] [instructions] Generate issues from architectural docs
 #   rite --init                   Initialize .rite/ in current project
+#   rite --backfill-locks         Backfill worktree→issue lock files
 #   rite --dry-run <...>          Print execution plan without running
 
 set -euo pipefail
@@ -78,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --health-report|--rtk-report)
       MODE="health-report"
+      shift
+      ;;
+    --backfill-locks)
+      MODE="backfill-locks"
       shift
       ;;
     --supervised)
@@ -180,6 +185,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
+      echo "  rite --backfill-locks         Backfill worktree→issue lock files (one-time cleanup)"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
@@ -235,7 +241,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "backfill-locks" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -245,6 +251,15 @@ if [ "$MODE" = "health-report" ]; then
     exec "$SCRIPT_DIR/rite-health-report" --latest
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
+fi
+
+# Backfill locks: write worktree→issue lock hints for pre-lock-infrastructure worktrees
+if [ "$MODE" = "backfill-locks" ]; then
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  print_header "Backfilling worktree → issue lock files"
+  backfill_worktree_locks
+  print_success "Backfill complete — run 'rite --status' to verify issue associations"
+  exit 0
 fi
 if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   LOG_TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
