@@ -86,10 +86,11 @@ setup() {
 # Test 2: Provider failure in the real retry loop does not crash
 #
 # This test extracts the actual provider retry loop from local-review.sh
-# using awk (same approach as local-review-diff-fallback.bats uses for the
-# diff fetch logic) and exercises it with a stubbed provider that returns
-# exit 1. This guards the real production code rather than a fabricated
-# reconstruction.
+# using sed range markers (sharkrite-extract comments) placed in the source.
+# This approach is stable across loop header rewrites and do/done reformatting,
+# unlike awk depth-counting which could silently mis-extract after a refactor.
+# The extracted loop is exercised with a stubbed provider that returns exit 1.
+# This guards the real production code rather than a fabricated reconstruction.
 #
 # The old Test 2 exercised a rate_limit/auth/unknown classification branch
 # that does not exist in local-review.sh, making it a tautology that could
@@ -98,35 +99,20 @@ setup() {
 
 @test "provider failure in real retry loop: exits cleanly without bash crash" {
   # Extract the provider retry loop from the actual local-review.sh script.
-  # The loop starts at "while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]"
-  # and ends at "done" (first top-level done after the MAX_REVIEW_ATTEMPTS while).
-  # We run it at the top level of a bash -c subprocess under set -euo pipefail
-  # with a stubbed provider so we can capture the exit code cleanly.
-  # Note: BSD awk lacks \b word boundaries, so /\bdo\b/ matches "done" too
-  # (since "done" contains "do"). Use position-aware patterns instead:
-  # - "do" at end of line (bash while/for syntax: "; do")
-  # - "done" at line start or with leading whitespace (loop terminator)
-  LOOP_CODE=$(awk '
-    /while \[ \$REVIEW_ATTEMPT -lt \$MAX_REVIEW_ATTEMPTS \]/ { in_loop=1; depth=0 }
-    in_loop {
-      print
-      # "do" at end of while/for/until lines (e.g. "]; do", "in ...; do")
-      if (/; do$/ || /; do[[:space:]]*$/ || /^[[:space:]]*do$/ || /^[[:space:]]*do[[:space:]]/) depth++
-      # "done" as standalone loop terminator (first word on line, optional indent)
-      if (/^done$/ || /^done[[:space:]]/ || /^[[:space:]]*done$/ || /^[[:space:]]*done[[:space:]]/) {
-        depth--
-        if (depth <= 0) { in_loop=0 }
-      }
-    }
-  ' "$SCRIPT")
+  # The loop is delimited by sharkrite-extract marker comments in the source so
+  # that sed range extraction (not awk depth-counting) can be used. This makes
+  # the extraction stable across loop header rewrites, do/done reformatting, and
+  # indentation changes. We run it at the top level of a bash -c subprocess
+  # under set -euo pipefail with a stubbed provider to capture the exit code.
+  LOOP_CODE=$(sed -n '/# sharkrite-extract: provider-retry-loop-start/,/# sharkrite-extract: provider-retry-loop-end/p' "$SCRIPT")
 
   # Verify we actually extracted something (sanity check)
   [ -n "$LOOP_CODE" ]
 
   # Content-anchor assertion: confirm the extracted code contains the real
   # provider call, not a mis-extracted stub or surrounding boilerplate.
-  # Without this, a silent awk mis-extraction would cause the test to execute
-  # unrelated code and pass vacuously, defeating the purpose of this test.
+  # Without this, marker removal or misplacement would cause the test to
+  # execute unrelated code and pass vacuously, defeating its purpose.
   [[ "$LOOP_CODE" == *"provider_run_prompt"* ]]
 
   run bash -c "
