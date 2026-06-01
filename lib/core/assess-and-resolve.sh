@@ -1249,6 +1249,25 @@ This approach allows all fixes to be completed together in a focused PR."
       [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
       print_warning "Failed to create consolidated follow-up issue"
+
+      # Write orphaned items to a fallback file so they are not silently lost.
+      # MERGE_EXIT_CODE was decided before this block (intentional — a gh API
+      # failure should not flip a clean assessment into a blocker), but we DO
+      # track this failure separately so the final summary can exit non-zero
+      # and give the user a recovery path.
+      _followup_creation_failed=true
+      _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+      mkdir -p "$(dirname "$_orphaned_file")" 2>/dev/null || true
+      {
+        printf '# Orphaned Follow-up Items\n\n'
+        printf '<!-- Written by assess-and-resolve.sh on follow-up creation failure -->\n'
+        printf '<!-- Re-run: rite %s --assess-and-fix   (after resolving the gh API issue) -->\n\n' "${ISSUE_NUMBER:-$PR_NUMBER}"
+        printf '**PR:** #%s\n' "$PR_NUMBER"
+        [ -n "${ISSUE_NUMBER:-}" ] && printf '**Source Issue:** #%s\n' "$ISSUE_NUMBER"
+        printf '**Date:** %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')"
+        printf '## Items Not Tracked\n\n'
+        printf '%s\n' "${FILTERED_CONTENT:-${FOLLOWUP_BODY:-*(assessment content unavailable)*}}"
+      } > "$_orphaned_file" 2>/dev/null || true
     fi
   fi
 
@@ -1270,6 +1289,8 @@ fi
 set -e  # Re-enable errexit after follow-up issue creation
 
 # Final summary — use MERGE_EXIT_CODE (decided before follow-up creation)
+# but override to non-zero when follow-up issue creation failed: the items
+# are NOT tracked, so "ready to proceed" would be a lie.
 print_header "✅ Assessment Complete"
 
 echo "Summary of actions taken:"
@@ -1278,6 +1299,25 @@ echo "Summary of actions taken:"
 [ "${CREATE_LOW_BATCH:-false}" = true ] && [ "${LOW_COUNT:-0}" -gt 0 ] && echo "  ✅ Batched LOW priority items into single issue"
 
 echo ""
+
+# Follow-up creation failure: items were NOT tracked — do not allow merge.
+# MERGE_EXIT_CODE alone is insufficient here: it was intentionally set before
+# follow-up creation so that a transient gh API failure doesn't flip a clean
+# assessment (no CRITICAL items) into a hard blocker.  But we still must not
+# print "All issues resolved or tracked" when items were silently dropped.
+if [ "${_followup_creation_failed:-false}" = "true" ]; then
+  _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+  print_error "Follow-up creation failed. Items NOT tracked."
+  echo ""
+  echo "  The deferred ACTIONABLE_LATER item(s) were not filed as a GitHub issue."
+  echo "  They have been saved to: ${_orphaned_file}"
+  echo ""
+  echo "  To recover:"
+  echo "    1. Check the orphaned items file — confirm what was not tracked"
+  echo "    2. Resolve the underlying gh API issue (auth, rate limit, network)"
+  echo "    3. Re-run: rite ${ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix"
+  exit 1
+fi
 
 if [ "$MERGE_EXIT_CODE" -eq 0 ]; then
   print_success "All issues resolved or tracked - ready to proceed"
