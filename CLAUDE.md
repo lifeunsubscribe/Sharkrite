@@ -282,7 +282,8 @@ Sharkrite uses shellcheck + custom lint rules to catch bash anti-patterns.
 make check              # Run all linters (shellcheck + custom rules)
 make shellcheck         # Run shellcheck only
 make lint               # Run custom rules only
-bats tests/             # Run test suite (requires bats)
+make test               # Run test suite (requires bats)
+bats tests/             # Run test suite directly (bypasses make wrapper)
 ```
 
 **Custom lint rules** (in `tools/sharkrite-lint.sh`) catch patterns shellcheck misses:
