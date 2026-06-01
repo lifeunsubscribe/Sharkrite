@@ -848,18 +848,36 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         fi
 
         # Stage 2: description match via GitHub search (catches same finding re-flagged across different PRs)
+        #
+        # The source-issue marker is quoted ("sharkrite-source-issue:N") to force GitHub's
+        # full-text search to treat it as a literal phrase rather than a structured qualifier.
+        # Without quotes, GitHub may tokenize around the colon and fail to match the marker
+        # embedded inside an HTML comment.
         if [ -z "$DUPLICATE_ISSUE" ] && [ -n "$ITEM_REASONING" ]; then
           REASONING_KEYWORDS=$(echo "$ITEM_REASONING" | tr '[:upper:]' '[:lower:]' | \
             tr -cs 'a-z0-9' ' ' | tr ' ' '\n' | awk 'length>4' | head -5 | tr '\n' ' ')
           if [ -n "${REASONING_KEYWORDS// /}" ]; then
             SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
             [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
-              SEARCH_QUALIFIER="sharkrite-source-issue:${RITE_ISSUE_NUMBER} $REASONING_KEYWORDS in:body"
-            DUPLICATE_ISSUE=$(gh_safe issue list \
+              SEARCH_QUALIFIER="\"sharkrite-source-issue:${RITE_ISSUE_NUMBER}\" $REASONING_KEYWORDS in:body"
+            _dup_candidate=$(gh_safe issue list \
               --state open \
               --search "$SEARCH_QUALIFIER" \
               --json number \
               --jq '.[0].number' | grep -E '^[0-9]+$' || true)
+            _dup_candidate="${_dup_candidate:-}"
+            # Verify the marker is actually in the body — GitHub search can return
+            # approximate matches; direct body inspection is the ground truth.
+            # Only applies when the source-issue marker was included in the search qualifier.
+            if [ -n "$_dup_candidate" ] && [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
+              _dup_body=$(gh_safe issue view "$_dup_candidate" --json body --jq '.body' || true)
+              _dup_body="${_dup_body:-}"
+              if echo "$_dup_body" | grep -qE "sharkrite-source-issue:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+                DUPLICATE_ISSUE="$_dup_candidate"
+              fi
+            elif [ -n "$_dup_candidate" ]; then
+              DUPLICATE_ISSUE="$_dup_candidate"
+            fi
           fi
         fi
 

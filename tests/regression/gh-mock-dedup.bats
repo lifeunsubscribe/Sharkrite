@@ -111,6 +111,85 @@ teardown() {
   [[ "$output" =~ ^[0-9]+$ ]]
 }
 
+@test "stateful: quoted in:body search finds issue (assess-and-resolve.sh primary path)" {
+  # Verifies that the quoted search format used by assess-and-resolve.sh works:
+  #   --search '"sharkrite-source-issue:42" in:body'
+  # The mock must strip the surrounding quotes before matching — the body contains
+  # the literal marker without quotes.
+  local body_file="$RITE_TEST_TMPDIR/body.md"
+  printf '<!-- sharkrite-source-issue:42 -->\nSome review feedback.' > "$body_file"
+  mock_gh issue create --title "[review-follow-up] feedback for PR #99" \
+    --body-file "$body_file" > /dev/null
+
+  run mock_gh issue list \
+    --state open \
+    --search '"sharkrite-source-issue:42" in:body' \
+    --json number \
+    --jq '.[0].number'
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^[0-9]+$ ]]
+}
+
+@test "stateful: quoted in:body search returns null when no match" {
+  # Quoted variant of the no-match case.
+  run mock_gh issue list \
+    --state open \
+    --search '"sharkrite-source-issue:99" in:body' \
+    --json number \
+    --jq '.[0].number'
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "null" ]
+}
+
+@test "stateful: quoted in:body search scopes to source issue (no cross-contamination)" {
+  # Quoted variant of the cross-contamination guard.
+  local body_a="$RITE_TEST_TMPDIR/body_a.md"
+  local body_b="$RITE_TEST_TMPDIR/body_b.md"
+  printf '<!-- sharkrite-source-issue:20 -->' > "$body_a"
+  printf '<!-- sharkrite-source-issue:21 -->' > "$body_b"
+
+  mock_gh issue create --title "Follow-up for src #20" --body-file "$body_a" > /dev/null
+  mock_gh issue create --title "Follow-up for src #21" --body-file "$body_b" > /dev/null
+
+  local match20 match21
+  match20=$(mock_gh issue list --state open \
+    --search '"sharkrite-source-issue:20" in:body' \
+    --json number --jq '.[0].number')
+  match21=$(mock_gh issue list --state open \
+    --search '"sharkrite-source-issue:21" in:body' \
+    --json number --jq '.[0].number')
+
+  [[ "$match20" =~ ^[0-9]+$ ]]
+  [[ "$match21" =~ ^[0-9]+$ ]]
+  [ "$match20" != "$match21" ]
+}
+
+@test "stateful: quoted in:body search does not false-positive match numeric prefix" {
+  # Quoted variant: searching for '"sharkrite-source-issue:5"' must not return
+  # an issue body containing sharkrite-source-issue:55.
+  local body_five="$RITE_TEST_TMPDIR/body_five.md"
+  local body_fiftyfive="$RITE_TEST_TMPDIR/body_fiftyfive.md"
+  printf '<!-- sharkrite-source-issue:55 -->' > "$body_fiftyfive"
+  printf '<!-- sharkrite-source-issue:5 -->'  > "$body_five"
+
+  mock_gh issue create --title "Follow-up for src #55" --body-file "$body_fiftyfive" > /dev/null
+  mock_gh issue create --title "Follow-up for src #5"  --body-file "$body_five"      > /dev/null
+
+  local match5 match55
+  match5=$(mock_gh issue list --state open \
+    --search '"sharkrite-source-issue:5" in:body' \
+    --json number --jq '.[0].number')
+  match55=$(mock_gh issue list --state open \
+    --search '"sharkrite-source-issue:55" in:body' \
+    --json number --jq '.[0].number')
+
+  [[ "$match5"  =~ ^[0-9]+$ ]]
+  [[ "$match55" =~ ^[0-9]+$ ]]
+  [ "$match5" != "$match55" ]
+}
+
 @test "stateful: in:body search returns null when no match" {
   # Empty state — no issues created
   run mock_gh issue list \
@@ -380,6 +459,22 @@ teardown() {
   run mock_gh issue view "$issue_num" --json url --jq '.url'
   [ "$status" -eq 0 ]
   [ "$output" = "$created_url" ]
+}
+
+@test "stateful: gh issue view returns body for tracked issue" {
+  # Verifies that the body-verification step added to assess-and-resolve.sh works:
+  # after a search match, the caller fetches the body with
+  #   gh issue view N --json body --jq '.body'
+  # and confirms the marker is present before trusting the search result.
+  local body_file="$RITE_TEST_TMPDIR/body.md"
+  printf '<!-- sharkrite-source-issue:73 -->\nFeedback content.' > "$body_file"
+  local created_url
+  created_url=$(mock_gh issue create --title "Body-verifiable issue" --body-file "$body_file")
+  local issue_num="${created_url##*/}"
+
+  run mock_gh issue view "$issue_num" --json body --jq '.body'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sharkrite-source-issue:73"* ]]
 }
 
 @test "stateful: gh issue view fails for unknown issue number" {
