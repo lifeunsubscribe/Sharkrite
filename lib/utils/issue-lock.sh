@@ -261,7 +261,7 @@ write_followup_evidence() {
   # Write atomically: write to tmp then mv so readers never see a partial file
   local tmp_file
   tmp_file=$(mktemp "${RITE_LOCK_DIR}/.evidence-XXXXXX")
-  printf '%s\n' "$issue_number" > "$tmp_file" && mv "$tmp_file" "$evidence_file" 2>/dev/null || {
+  printf '%s\n' "$issue_number" > "$tmp_file" && mv "$tmp_file" "$evidence_file" || {
     rm -f "$tmp_file" 2>/dev/null || true
     return 1
   }

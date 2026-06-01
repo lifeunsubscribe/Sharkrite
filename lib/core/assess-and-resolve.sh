@@ -1137,6 +1137,17 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     # Source 1: local evidence file — no API call, survives comment-write failures
     EXISTING_ISSUE=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
 
+    # Validate that the locally-evidenced issue is still open.  The evidence file
+    # persists indefinitely; if the referenced issue was closed or deleted since it
+    # was written, trusting it would permanently suppress recreation of the follow-up.
+    if [ -n "$EXISTING_ISSUE" ]; then
+      _evidence_issue_state=$(gh issue view "$EXISTING_ISSUE" --json state --jq '.state' 2>/dev/null || true)
+      if [ "${_evidence_issue_state}" != "OPEN" ]; then
+        print_info "Local evidence points to issue #$EXISTING_ISSUE (state: ${_evidence_issue_state:-unknown}) — clearing stale evidence and continuing dedup check"
+        EXISTING_ISSUE=""
+      fi
+    fi
+
     # Source 2: body-marker search scoped to source issue (most reliable when indexed)
     if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
       EXISTING_ISSUE=$(gh issue list \
@@ -1228,8 +1239,8 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       # so waiters that acquire the lock later can detect the prior creation even
       # when the GitHub search index and comment API both lag or fail.
       # Must be called while the lock is held (serialised write).
-      if ! write_followup_evidence "$PR_NUMBER" "$FOLLOWUP_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
-        print_warning "⚠️  Could not write local evidence file for follow-up #$FOLLOWUP_NUMBER — dedup relies solely on GitHub API"
+      if ! write_followup_evidence "$PR_NUMBER" "$FOLLOWUP_NUMBER" "${ISSUE_NUMBER:-}"; then
+        print_warning "⚠️  Could not write local evidence file for follow-up #$FOLLOWUP_NUMBER (see error above) — dedup relies solely on GitHub API"
       fi
 
       # Post the machine-readable marker comment BEFORE releasing the lock.
