@@ -1688,7 +1688,7 @@ run_workflow() {
       ISSUE_DESC=$(echo "$_issue_json" | jq -r '.title // ""')
       ISSUE_BODY=$(echo "$_issue_json" | jq -r '.body // ""')
       normalize_existing_issue
-      export NORMALIZED_SUBJECT WORK_DESCRIPTION
+      export NORMALIZED_SUBJECT WORK_DESCRIPTION ISSUE_BODY
     fi
   fi
 

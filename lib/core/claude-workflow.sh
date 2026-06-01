@@ -41,6 +41,9 @@ source "$RITE_LIB_DIR/utils/stash-manager.sh"
 # Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
 source "$RITE_LIB_DIR/utils/git-helpers.sh"
 
+# Source scope checker (check_scope_boundary — validates changed files vs issue Scope Boundary)
+source "$RITE_LIB_DIR/utils/scope-checker.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -2214,6 +2217,23 @@ ${PHASE_0_INSTRUCTIONS}
 1. Add inline comments and JSDoc/TSDoc for complex logic only
 2. Do NOT update files in docs/, README, or CHANGELOG — those are handled by a separate review phase
 
+### Phase 6: VERIFY SCOPE BOUNDARY (REQUIRED — do not skip)
+
+**Every issue has a \"Scope Boundary\" section listing DO and DO NOT bullets.**
+Before finishing, you MUST verify that your changes respect it.
+
+1. **Find the Scope Boundary section** in the task description above (look for \"Scope Boundary:\" or \"**Scope Boundary**\").
+2. **List every file you changed** — run: \`git diff --name-only origin/main...HEAD 2>/dev/null || git status --porcelain | grep -v '^\?\?' | sed 's/^...//' \`
+3. **Check each changed file** against the DO and DO NOT bullets:
+   - A file matching a **DO NOT** bullet is a scope violation.
+   - A file NOT covered by any **DO** bullet is a potential scope violation.
+   - Exception: test files that directly test the code you were asked to write are implicitly in-scope, even if not listed.
+4. **If you find a violation:**
+   - In supervised mode: STOP and ask the user: \"I modified [file] which appears to be outside the Scope Boundary. Should I revert it? (Y/n)\"
+   - In auto mode: Revert the out-of-scope change if trivial (e.g., accidental deletion), OR proceed with a note in your session summary explaining the scope expansion and why it was necessary.
+   - **Never silently delete files** that are not explicitly listed in the DO bullets. If you think a file is obsolete, note it but do NOT delete it.
+5. If no Scope Boundary section exists, skip this phase.
+
 **Remember**: Update your todo list as you complete each phase. Mark the current phase as 'in_progress' and completed phases as 'completed'.
 
 ${_PROVIDER_EXIT_NOTE}
@@ -2330,6 +2350,68 @@ else
   # Only run when NOT in FIX_REVIEW_MODE (fix sessions are different - they modify existing commits).
   if [ "${FIX_REVIEW_MODE:-false}" != "true" ]; then
     check_dev_session_output
+
+    # Scope boundary check — validate changed files against issue DO/DO NOT bullets.
+    # Runs after the dev session commits (or auto-commit salvage) so the diff is final.
+    # Only meaningful when we have an issue body with a Scope Boundary section.
+    if [ -n "${ISSUE_BODY:-}" ] && [ "$ISSUE_BODY" != "null" ]; then
+      _scope_violations=""
+      _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" 2>/dev/null || true)
+
+      if [ -n "$_scope_violations" ]; then
+        echo ""
+        print_warning "⚠️  Scope boundary violation detected"
+        echo ""
+        echo "The following file(s) appear to be outside the issue's Scope Boundary:"
+        echo "$_scope_violations" | grep "^VIOLATION:" | sed 's/^VIOLATION: /  • /'
+        echo ""
+
+        if [ "$AUTO_MODE" = false ]; then
+          # Supervised mode: prompt user to decide
+          read -p "Accept this scope expansion? (Y/n) " -n 1 -r
+          echo
+          if [[ $REPLY =~ ^[Nn]$ ]]; then
+            print_error "Scope expansion rejected. Aborting workflow."
+            print_info "Revert the out-of-scope changes and re-run, or update the issue's Scope Boundary."
+            exit 1
+          fi
+          print_info "Scope expansion accepted by user."
+        else
+          # Auto mode: warn but do not block; append warning to PR body if PR exists
+          print_warning "Auto mode: proceeding despite scope violation (warning will appear on PR)"
+
+          _pr_for_scope="${PR_NUMBER:-}"
+          if [ -z "$_pr_for_scope" ] || [ "$_pr_for_scope" = "null" ]; then
+            # Try to detect PR for this issue
+            _pr_for_scope=$(gh pr list --head "$(git branch --show-current 2>/dev/null || true)" \
+              --json number --jq '.[0].number' 2>/dev/null || true)
+          fi
+
+          if [ -n "$_pr_for_scope" ] && [ "$_pr_for_scope" != "null" ]; then
+            # Append scope warning to PR body — but only if not already present
+            # (guards against duplicate blocks on retry/resume runs)
+            _current_pr_body=$(gh pr view "$_pr_for_scope" --json body --jq '.body' 2>/dev/null || true)
+            if echo "$_current_pr_body" | grep -q '<!-- sharkrite-scope-warning -->' 2>/dev/null; then
+              print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
+            else
+              _scope_warn_text=$(format_scope_warning "$_scope_violations")
+              _updated_body="${_current_pr_body}${_scope_warn_text}"
+              _scope_body_file=$(mktemp)
+              printf '%s' "$_updated_body" > "$_scope_body_file"
+              gh pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
+                print_warning "Could not append scope warning to PR #${_pr_for_scope}"
+              rm -f "$_scope_body_file"
+              print_info "Scope violation warning appended to PR #${_pr_for_scope}"
+            fi
+          else
+            print_info "No PR found yet — scope warning will appear in workflow log only"
+          fi
+        fi
+        echo ""
+      fi
+    else
+      print_info "[diag] scope-check skipped: ISSUE_BODY not set or null — no scope enforcement this run"
+    fi
   fi
 fi
 
