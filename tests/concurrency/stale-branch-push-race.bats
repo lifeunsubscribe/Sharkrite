@@ -6,6 +6,11 @@
 # These tests verify fixes for issue #15 (stale branch push races) and #26 (worktree races).
 # Also verifies issue #27: foreign commits after stale-branch push rejection are
 # classified rather than silently absorbed (re-review exit code 2 is returned).
+#
+# NOTE: The "EXPECTED FAILURE" escape hatches (return 0) that existed before
+# issues #15/#26 landed have been removed.  These are now hard-failure assertions
+# — if git/worktree race handling regresses, these tests WILL fail (which is
+# the point).  See issue-lock.bats for the same pattern.
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -120,16 +125,17 @@ wait_at_barrier() {
     fi
   done
 
-  # Exactly one should succeed (first to push)
-  # Others should be rejected (non-fast-forward)
-  [ "$success_count" -ge 1 ] || {
-    echo "EXPECTED FAILURE: No successful pushes - race condition issue"
-    return 0
+  # Exactly one should succeed (first to push).
+  # This is a fundamental git property — the first non-fast-forward push wins.
+  [ "$success_count" -eq 1 ] || {
+    echo "REGRESSION: $success_count pushes succeeded instead of 1 — git push race handling broken?"
+    return 1
   }
 
-  # Verify rejections happened (at least one)
+  # Verify rejections happened (num_processes - 1 must be rejected in a true race).
   [ "$rejection_count" -ge 1 ] || {
-    echo "WARNING: Expected at least one rejection, got $rejection_count"
+    echo "REGRESSION: Expected at least one rejection, got $rejection_count — concurrent push rejection not working?"
+    return 1
   }
 }
 
@@ -170,10 +176,12 @@ wait_at_barrier() {
     fi
   done
 
-  # Only one should succeed
+  # Only one should succeed — git worktree add is atomic (directory creation is the lock).
+  # Issues #15/#26 must ensure rite handles this correctly; but git's own atomicity is
+  # the underlying guarantee.
   [ "$success_count" -eq 1 ] || {
-    echo "EXPECTED FAILURE: $success_count worktrees created instead of 1"
-    return 0
+    echo "REGRESSION: $success_count worktrees created instead of 1 — worktree creation race (issues #15/#26) regressed?"
+    return 1
   }
 
   # Verify worktree exists
@@ -219,10 +227,11 @@ wait_at_barrier() {
     fi
   done
 
-  # Only one should succeed
+  # Only one should succeed — git checkout -b fails if the branch already exists.
+  # This is a fundamental git property, not a rite-specific fix.
   [ "$success_count" -eq 1 ] || {
-    echo "EXPECTED FAILURE: $success_count branches created instead of 1"
-    return 0
+    echo "REGRESSION: $success_count branches created instead of 1 — concurrent branch creation not atomic?"
+    return 1
   }
 
   # Clean up branch
@@ -298,9 +307,12 @@ wait_at_barrier() {
     fi
   done
 
+  # At least one process must successfully merge main and push.
+  # Issue #15's stale-branch handling ensures concurrent merge-main attempts
+  # don't all fail — at minimum one succeeds, others handle the race gracefully.
   [ "$success_count" -ge 1 ] || {
-    echo "EXPECTED FAILURE: No successful merge+push - race handling issue"
-    return 0
+    echo "REGRESSION: No successful merge+push — stale-branch race handling (issue #15) regressed?"
+    return 1
   }
 
   # Clean up

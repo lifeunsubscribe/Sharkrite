@@ -10,6 +10,11 @@
 # session-tracker.sh gets proper locking, the old test would not verify it.
 #
 # This version calls add_approved_blocker() and has_approved_blocker() directly.
+#
+# NOTE: The "EXPECTED FAILURE" escape hatches (return 0) that existed before
+# issue #8's locking landed have been removed.  These are now hard-failure
+# assertions — if session-state locking regresses, these tests WILL fail
+# (which is the point).  See issue-lock.bats for the same pattern.
 
 load '../helpers/setup.bash'
 
@@ -101,12 +106,12 @@ wait_at_barrier() {
   done
 
   # Verify JSON is still valid (not corrupted)
+  # Issue #8's session-state locking must prevent concurrent write corruption.
   run jq empty "$SESSION_STATE_FILE"
   [ "$status" -eq 0 ] || {
-    echo "EXPECTED FAILURE: JSON corrupted by concurrent writes"
+    echo "REGRESSION: JSON corrupted by concurrent writes — session-state locking (issue #8) regressed?"
     cat "$SESSION_STATE_FILE"
-    # Allow test to pass - documents expected failure before fix
-    return 0
+    return 1
   }
 
   # Verify structure is intact
@@ -150,9 +155,11 @@ wait_at_barrier() {
   done
 
   # Verify JSON is still valid
+  # Issue #8's locking must prevent JSON corruption during concurrent approval additions.
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "EXPECTED FAILURE: JSON corruption in blocker approvals"
-    return 0
+    echo "REGRESSION: JSON corruption in blocker approvals — session-state locking (issue #8) regressed?"
+    cat "$SESSION_STATE_FILE" >&2
+    return 1
   }
 
   # Verify approvals are present using has_approved_blocker() (the real read-back path)
@@ -163,11 +170,10 @@ wait_at_barrier() {
     fi
   done
 
-  # Without proper locking, we may lose approvals due to concurrent read-modify-write.
-  # This assertion documents the expected behavior after issue #8's fix lands.
+  # Issue #8's locked read-modify-write must prevent lost approvals.
   [ "$found_count" -eq "$num_processes" ] || {
-    echo "EXPECTED FAILURE: Only $found_count/$num_processes approvals saved - race condition"
-    return 0
+    echo "REGRESSION: Only $found_count/$num_processes approvals saved — concurrent read-modify-write race (issue #8) regressed?"
+    return 1
   }
 }
 
@@ -216,10 +222,13 @@ wait_at_barrier() {
 
   wait
 
-  # Verify JSON is still valid at the end
+  # Verify JSON is still valid at the end.
+  # Issue #8's locking makes init_session an upsert (no-op if file already exists),
+  # preventing concurrent init from clobbering in-progress updates.
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "EXPECTED FAILURE: JSON corrupted by init/update race"
-    return 0
+    echo "REGRESSION: JSON corrupted by init/update race — session-state locking (issue #8) regressed?"
+    cat "$SESSION_STATE_FILE" >&2
+    return 1
   }
 
   # Verify basic structure exists
@@ -249,13 +258,14 @@ wait_at_barrier() {
 
   wait
 
-  # Primary check: JSON must not be corrupted
+  # Primary check: JSON must not be corrupted.
+  # Issue #8's session-state locking must hold even under high concurrency (10×10).
   run jq empty "$SESSION_STATE_FILE"
   [ "$status" -eq 0 ] || {
-    echo "EXPECTED FAILURE: JSON corrupted under high concurrency"
+    echo "REGRESSION: JSON corrupted under high concurrency — session-state locking (issue #8) regressed?"
     echo "File contents:"
     cat "$SESSION_STATE_FILE" || echo "(file unreadable)"
-    return 0
+    return 1
   }
 
   # Secondary check: verify file has expected structure
@@ -294,8 +304,9 @@ wait_at_barrier() {
   [ -f "$SESSION_STATE_FILE" ]
 
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "EXPECTED FAILURE: JSON corrupted during concurrent creation"
-    return 0
+    echo "REGRESSION: JSON corrupted during concurrent creation — session-state locking (issue #8) regressed?"
+    cat "$SESSION_STATE_FILE" >&2
+    return 1
   }
 }
 
