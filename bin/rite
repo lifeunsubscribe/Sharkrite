@@ -688,7 +688,7 @@ normalize_and_resolve() {
     # WORK_DESCRIPTION, GENERATED_ISSUE_BODY
   fi
 
-  export ISSUE_NUMBER ISSUE_DESC NORMALIZED_SUBJECT WORK_DESCRIPTION
+  export ISSUE_NUMBER ISSUE_DESC NORMALIZED_SUBJECT WORK_DESCRIPTION ISSUE_BODY
 }
 
 # Pre-flight: check Claude CLI is available (not needed for --undo)
