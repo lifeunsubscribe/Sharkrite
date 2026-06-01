@@ -1159,12 +1159,27 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
 
     # Source 2: body-marker search scoped to source issue (most reliable when indexed)
+    #
+    # The search term is quoted ("sharkrite-source-issue:N") to force GitHub's
+    # full-text search to treat it as a literal phrase rather than a structured
+    # qualifier.  Without quotes, GitHub may tokenize around the colon and fail
+    # to match the marker embedded inside an HTML comment.
     if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
-      EXISTING_ISSUE=$(gh_safe issue list \
+      _search_candidate=$(gh_safe issue list \
         --state open \
-        --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
+        --search "\"sharkrite-source-issue:${ISSUE_NUMBER}\" in:body" \
         --json number \
         --jq '.[0].number' | grep -E '^[0-9]+$' || true)
+      _search_candidate="${_search_candidate:-}"
+      # Verify the marker is actually in the body — GitHub search can return
+      # approximate matches; direct body inspection is the ground truth.
+      if [ -n "$_search_candidate" ]; then
+        _candidate_body=$(gh_safe issue view "$_search_candidate" --json body --jq '.body' || true)
+        _candidate_body="${_candidate_body:-}"
+        if echo "$_candidate_body" | grep -qE "sharkrite-source-issue:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+          EXISTING_ISSUE="$_search_candidate"
+        fi
+      fi
       EXISTING_ISSUE="${EXISTING_ISSUE:-}"
     fi
 

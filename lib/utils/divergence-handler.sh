@@ -462,6 +462,13 @@ _do_rebase_and_push() {
   local _pre_rebase_head
   _pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
 
+  # Track whether the final push must be a force push.
+  # Set to true when the conflict resolver runs — the resolver may commit on
+  # top of un-rebased HEAD rather than producing a fast-forward history, so
+  # a plain push would be rejected. --force-with-lease is safe here: we still
+  # verify that no third party has pushed since we last fetched.
+  local _resolver_rewrote_history=false
+
   if ! _do_rebase "$branch_name"; then
     # Rebase failed (conflicts) — rebase has already been aborted and stash restored by _do_rebase().
     # In auto mode, attempt Claude-assisted conflict resolution before bailing.
@@ -473,6 +480,9 @@ _do_rebase_and_push() {
       attempt_claude_merge_resolution "$branch_name" "${_issue_number:-}" "${_pr_number:-}" || _resolver_result=$?
       if [ "$_resolver_result" -eq 0 ]; then
         _div_success "Conflicts resolved by Claude"
+        # The resolver commits on top of un-rebased HEAD (not a fast-forward from origin).
+        # Mark that the final push must use --force-with-lease to avoid rejection.
+        _resolver_rewrote_history=true
         # Fall through to verify + push below (rebase state is clean after resolution)
       elif [ "$_resolver_result" -eq 5 ]; then
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
@@ -521,9 +531,12 @@ _do_rebase_and_push() {
     # Prefer _pre_rebase_head (always fresh, set from git rev-parse at entry) over
     # DIVERGENCE_LOCAL_HEAD (may be unset on direct-call path, or stale after resolver commits).
     local _rollback_target="${_pre_rebase_head:-${DIVERGENCE_LOCAL_HEAD:-}}"
+    local _rollback_succeeded=false
     if [ -n "$_rollback_target" ]; then
-      if ! git reset --hard "$_rollback_target"; then
-        _div_warning "git reset --hard to $_rollback_target failed — working tree may be in post-rebase state"
+      if git reset --hard "$_rollback_target"; then
+        _rollback_succeeded=true
+      else
+        _div_warning "git reset --hard to $_rollback_target failed — working tree is still in post-rebase state"
       fi
     else
       _div_warning "No rollback target available — working tree left in post-rebase state"
@@ -536,10 +549,30 @@ _do_rebase_and_push() {
       return 1
     fi
 
+    # Supervised path.
+    # If rollback failed, the working tree is still in post-rebase state (with test failures).
+    # Offering "force-push local work" in that state would push the broken post-rebase result —
+    # the opposite of what the user expects. Abort with a diagnostic instead of presenting
+    # misleading options.
+    if [ "$_rollback_succeeded" = "false" ]; then
+      echo "" >&2
+      echo "❌  Cannot recover automatically:" >&2
+      echo "    Rebase introduced test failures AND rolling back to pre-rebase state failed." >&2
+      echo "    Working tree is still in post-rebase state." >&2
+      echo "" >&2
+      echo "Manual recovery:" >&2
+      echo "  1. Inspect:  git log --oneline -10" >&2
+      echo "  2. Hard-reset to your original commit:" >&2
+      echo "     git reset --hard ${_rollback_target:-<pre-rebase-sha>}" >&2
+      echo "  3. Then: rite ${_issue_number:-<issue>} --dev-and-pr to retry" >&2
+      return 1
+    fi
+
     echo "" >&2
     echo "The rebase introduced test failures (silent semantic conflict)." >&2
+    echo "Rolled back to pre-rebase state." >&2
     echo "Options:" >&2
-    echo "  c) Force-push local work (discard foreign commits)" >&2
+    echo "  c) Force-push local (pre-rebase) work — discards the foreign commits that caused conflicts" >&2
     echo "  d) Abort" >&2
     read -p "Choose [c/d]: " -n 1 -r >&2
     echo >&2
@@ -558,10 +591,22 @@ _do_rebase_and_push() {
     esac
   fi
 
-  # Rebase succeeded and verified — push
-  if ! git push origin "$branch_name"; then
-    _div_error "Push failed after rebase"
-    return 1
+  # Push the resolved branch.
+  # Normal rebase path: plain push is safe (rebase onto origin always produces fast-forward).
+  # Resolver path: the resolver commits on top of un-rebased HEAD, producing a diverged
+  # history. --force-with-lease is required to overwrite the remote, but safe: it verifies
+  # that no third party has pushed since we fetched (won't clobber unrelated commits).
+  if [ "$_resolver_rewrote_history" = "true" ]; then
+    _div_info "Resolver path: using --force-with-lease push (resolver may have diverged from origin)"
+    if ! git push --force-with-lease origin "$branch_name"; then
+      _div_error "Force-push failed after resolver — possible concurrent push; retry with: rite $branch_name"
+      return 1
+    fi
+  else
+    if ! git push origin "$branch_name"; then
+      _div_error "Push failed after rebase"
+      return 1
+    fi
   fi
 
   _div_success "Rebased and pushed successfully"
