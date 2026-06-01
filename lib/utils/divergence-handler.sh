@@ -435,6 +435,15 @@ _do_rebase_and_push() {
   local _issue_number="${3:-}"
   local _pr_number="${4:-}"
 
+  # Snapshot HEAD before any rebase or resolver commits are applied.
+  # This is the authoritative rollback target for verify_post_merge failures.
+  # We can't rely on DIVERGENCE_LOCAL_HEAD here because:
+  #   1. On the direct-call path (not via handle_push_divergence), it may be unset.
+  #   2. After a resolver succeeds, it may point to a pre-resolver commit that no
+  #      longer reflects the true "last known good" state if the resolver rewrote history.
+  local _pre_rebase_head
+  _pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
+
   if ! _do_rebase "$branch_name"; then
     # Rebase failed (conflicts) — rebase has already been aborted and stash restored by _do_rebase().
     # In auto mode, attempt Claude-assisted conflict resolution before bailing.
@@ -490,9 +499,16 @@ _do_rebase_and_push() {
   # Verify rebase didn't introduce silent semantic conflicts (tests pass)
   if ! verify_post_merge "."; then
     _div_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
-    # Undo the rebase
-    if [ -n "${DIVERGENCE_LOCAL_HEAD:-}" ]; then
-      git reset --hard "$DIVERGENCE_LOCAL_HEAD" 2>/dev/null || true
+    # Roll back to the pre-rebase HEAD snapshot captured at function entry.
+    # Prefer _pre_rebase_head (always fresh, set from git rev-parse at entry) over
+    # DIVERGENCE_LOCAL_HEAD (may be unset on direct-call path, or stale after resolver commits).
+    local _rollback_target="${_pre_rebase_head:-${DIVERGENCE_LOCAL_HEAD:-}}"
+    if [ -n "$_rollback_target" ]; then
+      if ! git reset --hard "$_rollback_target"; then
+        _div_warning "git reset --hard to $_rollback_target failed — working tree may be in post-rebase state"
+      fi
+    else
+      _div_warning "No rollback target available — working tree left in post-rebase state"
     fi
 
     if [ "$auto_mode" = "true" ]; then
