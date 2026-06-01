@@ -460,17 +460,24 @@ run_assess_and_resolve() {
   local _body_file="$RITE_TEST_TMPDIR/title-only-body.md"
   printf 'Review feedback without body marker.' > "$_body_file"
 
-  # Insert directly into state (bypasses gh binary to avoid marker path)
-  jq --argjson num 9999 \
+  # Issue number 9999 is intentionally out-of-band with respect to the mock gh
+  # issue-create generator, which assigns numbers as (_seq + 1000) starting at
+  # 1000. A typical test run creates at most a handful of issues, so the
+  # generator stays in the low-1000s range — 9999 cannot collide with any
+  # generated number unless the test suite creates ~9000 issues.  If the
+  # generator base ever changes (see gh-mock-binary.sh line ~189), this seed
+  # must be updated to remain safely above it.
+  local _seed_num=9999
+  jq --argjson num "$_seed_num" \
      --arg title "$_title" \
      --rawfile body "$_body_file" \
      --arg label "tech-debt" \
      --arg state "OPEN" \
-     '. += [{"number": $num, "title": $title, "body": $body, "label": $label, "state": $state, "url": "https://github.com/mock/repo/issues/9999"}]' \
+     ". += [{\"number\": \$num, \"title\": \$title, \"body\": \$body, \"label\": \$label, \"state\": \$state, \"url\": \"https://github.com/mock/repo/issues/${_seed_num}\"}]" \
      "$GH_MOCK_STATE_DIR/issues.json" > "$GH_MOCK_STATE_DIR/issues.json.tmp" \
   && mv "$GH_MOCK_STATE_DIR/issues.json.tmp" "$GH_MOCK_STATE_DIR/issues.json"
 
-  # Run: Source 2 (body search) misses (no marker), Source 3 (title search) finds 9999
+  # Run: Source 2 (body search) misses (no marker), Source 3 (title search) finds $_seed_num
   run_assess_and_resolve "$_pr" "$_issue"
 
   [ "$status" -eq 0 ] || {
@@ -485,6 +492,25 @@ run_assess_and_resolve() {
   [ "$_total" -eq 1 ] || {
     echo "FAIL: expected 1 issue (title-search dedup), got $_total"
     jq '.[].title' "$GH_MOCK_STATE_DIR/issues.json"
+    false
+  }
+
+  # Identity assertion: the surviving issue must be the seeded one (number and
+  # title), not a newly-created duplicate that pushed total back to 1 via
+  # collision or replacement.  A count-only assertion cannot catch a false pass
+  # where the seeded issue was missed and a new issue with the same count was
+  # created instead.
+  local _surviving_num _surviving_title
+  _surviving_num=$(jq '.[0].number' "$GH_MOCK_STATE_DIR/issues.json")
+  _surviving_title=$(jq -r '.[0].title' "$GH_MOCK_STATE_DIR/issues.json")
+  [ "$_surviving_num" -eq "$_seed_num" ] || {
+    echo "FAIL: surviving issue number is $_surviving_num, expected $_seed_num (seeded issue)"
+    false
+  }
+  [ "$_surviving_title" = "$_title" ] || {
+    echo "FAIL: surviving issue title does not match seeded title"
+    echo "  expected: $_title"
+    echo "  got:      $_surviving_title"
     false
   }
 }
