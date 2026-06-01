@@ -185,3 +185,80 @@ EOF
   # Our mock npm should have been called
   [ -f "$TEST_DIR/.npm-called" ]
 }
+
+# ── Edge case: Verification Commands is the last section (issue #52/53) ────────
+
+@test "extracts commands when Verification Commands is the last section (no trailing ##)" {
+  # Regression test for issue #52/#53:
+  # The original sed range /^## Verification Commands/,/^## /p requires a
+  # closing ## header to terminate the range.  The replacement awk-based
+  # extractor accumulates lines until EOF, so the last section works too.
+  rm -f "$TEST_DIR/.pytest-called"
+
+  # Issue body where ## Verification Commands is the LAST section — no ## after it
+  ISSUE_BODY=$(cat <<'EOF'
+## Description
+Test issue
+
+## Acceptance Criteria
+- [ ] Test passes
+
+## Verification Commands
+```bash
+pytest tests/
+```
+EOF
+)
+
+  export ISSUE_BODY
+  export ISSUE_ALREADY_RESOLVED=false
+  export TEST_DIR
+
+  cd "$TEST_DIR"
+  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+
+  # pytest should have been called even though there is no trailing ## header
+  [ -f "$TEST_DIR/.pytest-called" ]
+}
+
+@test "extracts LAST verification block when multiple sections exist" {
+  # Regression test for issue #52/#53:
+  # Issues generated from assessment sometimes embed parent-issue context that
+  # also contains a ## Verification Commands section.  The awk extractor resets
+  # on each header match, so only the LAST block's commands are run.
+  rm -f "$TEST_DIR/.pytest-called"
+  rm -f "$TEST_DIR/.npm-called"
+
+  # Issue body with TWO ## Verification Commands sections.
+  # The first has "npm test" (old/inherited), the second has "pytest tests/" (current).
+  # Only "pytest" from the last block should run; "npm" should NOT.
+  ISSUE_BODY=$(cat <<'EOF'
+## Context From Parent Issue
+
+## Verification Commands
+```bash
+npm test
+```
+
+## New Description
+Updated scope
+
+## Verification Commands
+```bash
+pytest tests/
+```
+EOF
+)
+
+  export ISSUE_BODY
+  export ISSUE_ALREADY_RESOLVED=false
+  export TEST_DIR
+
+  cd "$TEST_DIR"
+  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+
+  # Only the LAST block's command (pytest) should have run
+  [ -f "$TEST_DIR/.pytest-called" ]
+  # npm from the first (stale) block must NOT have been called
+  [ ! -f "$TEST_DIR/.npm-called" ]
+}

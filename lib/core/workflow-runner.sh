@@ -634,7 +634,18 @@ EOF
       # determines "no changes needed" and produces empty PRs (exit code 4).
       if [ -n "${ISSUE_BODY:-}" ]; then
         local _verify_block=""
-        _verify_block=$(echo "$ISSUE_BODY" | sed -n '/^## Verification Commands/,/^## /p' | sed '1d;/^## /d' || true)
+        # Extract the LAST ## Verification Commands section using awk.
+        # awk resets 'block' each time a new ## Verification Commands header is
+        # found, so when multiple sections exist (e.g. issue body embeds parent
+        # context that also had one) only the final block is kept.  The range
+        # also works correctly when the section is the last in the document with
+        # no subsequent ## header — awk accumulates until END and prints then.
+        _verify_block=$(echo "$ISSUE_BODY" | awk '
+          /^## Verification Commands/ { block=""; in_block=1; next }
+          in_block && /^## /          { in_block=0 }
+          in_block                    { block = block $0 "\n" }
+          END                         { printf "%s", block }
+        ' || true)
 
         # Extract commands from fenced code block (```bash ... ```)
         local _verify_cmds=""
