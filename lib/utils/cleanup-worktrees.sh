@@ -81,7 +81,7 @@ while IFS= read -r wt_path; do
   #   makes portable_find_max_mtime return 0 → DAYS_OLD=999 → false stale verdict).
   # -not -path exclusions: avoid traversing into .venv/.rite (symlinks in worktrees
   #   pointing back to main) and node_modules (large dep trees with stale timestamps).
-  LAST_MODIFIED=$(find "$wt_path" -not -type l \( -name "*.ts" -o -name "*.js" \) \
+  LAST_MODIFIED=$(find "$wt_path" -type f -not -type l \( -name "*.ts" -o -name "*.js" \) \
     -not -path "*/.venv/*" -not -path "*/node_modules/*" -not -path "*/.rite/*" \
     -print0 2>/dev/null \
     | portable_find_max_mtime || true)

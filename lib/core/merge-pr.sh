@@ -1294,13 +1294,13 @@ EOF
               #   → false stale verdict that destroys uncommitted source files.
               # -not -path exclusions: don't traverse .venv/.rite (symlinks in worktrees
               #   pointing back to main) or node_modules/vendor (stale dep timestamps).
-              LAST_MODIFIED=$(find "$wt_path" -not -type l \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.rite/*" -not -path "*/vendor/*" -print0 2>/dev/null \
+              LAST_MODIFIED=$(find "$wt_path" -type f -not -type l \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.rite/*" -not -path "*/vendor/*" -print0 2>/dev/null \
                 | portable_find_max_mtime || true)
               [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
 
               # Fallback: check ANY file modification if no source files found
               if [ -z "$LAST_MODIFIED" ]; then
-                LAST_MODIFIED=$(find "$wt_path" -not -type l -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.rite/*" -print0 2>/dev/null \
+                LAST_MODIFIED=$(find "$wt_path" -type f -not -type l -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.rite/*" -print0 2>/dev/null \
                   | portable_find_max_mtime || true)
                 [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
               fi
