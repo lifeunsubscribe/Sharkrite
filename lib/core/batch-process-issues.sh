@@ -125,13 +125,13 @@ if [ -n "$FILTER_TYPE" ]; then
 
   case "$FILTER_TYPE" in
     label)
-      FETCHED_ISSUES=$(gh issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh_safe issue list --label "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ' || true)
       ;;
     milestone)
-      FETCHED_ISSUES=$(gh issue list --milestone "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh_safe issue list --milestone "$FILTER_VALUE" --state open --json number --jq '.[].number' | sort -n | tr '\n' ' ' || true)
       ;;
     state)
-      FETCHED_ISSUES=$(gh issue list --state "$FILTER_VALUE" --json number --jq '.[].number' | sort -n | tr '\n' ' ')
+      FETCHED_ISSUES=$(gh_safe issue list --state "$FILTER_VALUE" --json number --jq '.[].number' | sort -n | tr '\n' ' ' || true)
       ;;
   esac
 
@@ -326,7 +326,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   record_run "$ISSUE_NUM" "batch"
 
   # Fetch issue details
-  ISSUE_DETAILS=$(gh issue view "$ISSUE_NUM" --json title,labels,state 2>/dev/null || echo "{}")
+  ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_NUM" --json title,labels,state)
+  ISSUE_DETAILS="${ISSUE_DETAILS:-{}}"
 
   if [ "$ISSUE_DETAILS" = "{}" ]; then
     print_error "Issue #$ISSUE_NUM not found"
@@ -352,7 +353,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   fi
 
   # Check if this is a follow-up issue with parent PR dependency
-  ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body' 2>/dev/null || echo "")
+  ISSUE_BODY=$(gh_safe issue view "$ISSUE_NUM" --json body --jq '.body')
+  ISSUE_BODY="${ISSUE_BODY:-}"
   PARENT_PR=""
 
   # Require digits in the outer guard too — otherwise issue bodies that DOCUMENT
@@ -366,11 +368,13 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
     if [ -n "$PARENT_PR" ]; then
       # Check if parent PR is still open
-      PARENT_PR_STATE=$(gh pr view "$PARENT_PR" --json state --jq '.state' 2>/dev/null || echo "")
+      PARENT_PR_STATE=$(gh_safe pr view "$PARENT_PR" --json state --jq '.state')
+      PARENT_PR_STATE="${PARENT_PR_STATE:-}"
 
       if [ "$PARENT_PR_STATE" = "OPEN" ]; then
         # Check if parent issue is also in this batch (deliberate pairing)
-        PARENT_ISSUE=$(gh pr view "$PARENT_PR" --json body --jq '.body' 2>/dev/null | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+        PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        PARENT_ISSUE="${PARENT_ISSUE:-}"
 
         # Check if parent issue is in our queue
         PARENT_IN_QUEUE=false
@@ -415,7 +419,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         break
       fi
       # Also check if dep issue is still open with an unmerged PR
-      dep_issue_state=$(gh issue view "$dep_num" --json state --jq '.state' 2>/dev/null || echo "")
+      dep_issue_state=$(gh_safe issue view "$dep_num" --json state --jq '.state')
+      dep_issue_state="${dep_issue_state:-}"
       if [ "$dep_issue_state" = "OPEN" ]; then
         DEP_FAILED=true
         FAILED_DEP="$dep_num"
@@ -461,8 +466,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   # Check if issue already has open PR (must have "Closes #XX" in body)
   EXISTING_PR=""
-  for pr_num in $(gh pr list --state open --json number --jq '.[].number' 2>/dev/null); do
-    if gh pr view "$pr_num" --json body --jq '.body' 2>/dev/null | grep -q "Closes #${ISSUE_NUM}\$\|Closes #${ISSUE_NUM}[^0-9]"; then
+  for pr_num in $(gh_safe pr list --state open --json number --jq '.[].number' || true); do
+    if gh_safe pr view "$pr_num" --json body --jq '.body' | grep -q "Closes #${ISSUE_NUM}\$\|Closes #${ISSUE_NUM}[^0-9]" 2>/dev/null; then
       EXISTING_PR="$pr_num"
       break
     fi
@@ -474,7 +479,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       # Check if this issue's PR was just updated by a previous issue in batch
       get_latest_work_commit_time "" "$EXISTING_PR"
       PR_UPDATED="$LATEST_COMMIT_TIME"
-      REVIEW_TIME=$(gh pr view "$EXISTING_PR" --json comments --jq '.comments | map(select(.author.login == "claude")) | .[-1].createdAt' 2>/dev/null || echo "")
+      REVIEW_TIME=$(gh_safe pr view "$EXISTING_PR" --json comments --jq '.comments | map(select(.author.login == "claude")) | .[-1].createdAt')
+      REVIEW_TIME="${REVIEW_TIME:-}"
 
       if [ -n "$PR_UPDATED" ] && [ -n "$REVIEW_TIME" ] && [[ "$PR_UPDATED" > "$REVIEW_TIME" ]]; then
         print_info "⏰ Smart Wait: issue #$ISSUE_NUM updated after review"
@@ -489,7 +495,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           sleep $POLL_INTERVAL
 
           # Check for newer review
-          NEW_REVIEW_TIME=$(gh pr view "$EXISTING_PR" --json comments --jq '.comments | map(select(.author.login == "claude")) | .[-1].createdAt' 2>/dev/null || echo "")
+          NEW_REVIEW_TIME=$(gh_safe pr view "$EXISTING_PR" --json comments --jq '.comments | map(select(.author.login == "claude")) | .[-1].createdAt')
+          NEW_REVIEW_TIME="${NEW_REVIEW_TIME:-}"
 
           if [ -n "$NEW_REVIEW_TIME" ] && [[ "$NEW_REVIEW_TIME" > "$PR_UPDATED" ]]; then
             print_success "✅ New review detected! Continuing with merge workflow..."
@@ -521,7 +528,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
     # Check if we're already in this PR's branch (avoid conflicts)
     CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-    PR_BRANCH=$(gh pr view "$EXISTING_PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+    PR_BRANCH=$(gh_safe pr view "$EXISTING_PR" --json headRefName --jq '.headRefName')
+    PR_BRANCH="${PR_BRANCH:-}"
 
     if [ -n "$CURRENT_BRANCH" ] && [ -n "$PR_BRANCH" ] && [ "$CURRENT_BRANCH" = "$PR_BRANCH" ]; then
       print_warning "Already in this issue's branch ($PR_BRANCH) - skipping to avoid conflicts"
@@ -553,7 +561,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     # Get PR number for this issue (search by body text, most recent first)
-    PR_NUMBER=$(gh pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number' 2>/dev/null || echo "")
+    PR_NUMBER=$(gh_safe pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number')
+    PR_NUMBER="${PR_NUMBER:-}"
 
     print_success "Issue #$ISSUE_NUM completed successfully"
     if [ -n "$PR_NUMBER" ]; then
@@ -561,25 +570,28 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"
 
       # Capture branch name and changes summary
-      BRANCH_NAME=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+      BRANCH_NAME=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+      BRANCH_NAME="${BRANCH_NAME:-}"
       if [ -n "$BRANCH_NAME" ]; then
         ISSUE_BRANCH["$ISSUE_NUM"]="$BRANCH_NAME"
       fi
 
       # Capture changes summary (files changed + lines)
-      PR_STATS=$(gh pr view "$PR_NUMBER" --json additions,deletions,changedFiles --jq '"\(.changedFiles) files, +\(.additions)/-\(.deletions) lines"' 2>/dev/null || echo "")
+      PR_STATS=$(gh_safe pr view "$PR_NUMBER" --json additions,deletions,changedFiles --jq '"\(.changedFiles) files, +\(.additions)/-\(.deletions) lines"')
+      PR_STATS="${PR_STATS:-}"
       if [ -n "$PR_STATS" ]; then
         PR_CHANGES["$PR_NUMBER"]="$PR_STATS"
       fi
 
       # Check for security doc updates
-      SECURITY_DOC_UPDATED=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path' 2>/dev/null | grep -c "docs/security/DEVELOPMENT-GUIDE.md" || true)
+      SECURITY_DOC_UPDATED=$(gh_safe pr view "$PR_NUMBER" --json files --jq '.files[].path' | grep -c "docs/security/DEVELOPMENT-GUIDE.md" || true)
       if [ "$SECURITY_DOC_UPDATED" -gt 0 ]; then
         SECURITY_UPDATES+=("PR #$PR_NUMBER: Updated DEVELOPMENT-GUIDE.md with findings from #$ISSUE_NUM")
       fi
 
       # Check for new tech-debt issues created
-      NEW_DEBT_ISSUE=$(gh issue list --label "tech-debt" --state open --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
+      NEW_DEBT_ISSUE=$(gh_safe issue list --label "tech-debt" --state open --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[0].number')
+      NEW_DEBT_ISSUE="${NEW_DEBT_ISSUE:-}"
       if [ -n "$NEW_DEBT_ISSUE" ]; then
         NEW_ISSUES_CREATED+=("Issue #$NEW_DEBT_ISSUE (from PR #$PR_NUMBER)")
       fi
@@ -611,7 +623,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       ISSUE_STATUS["$ISSUE_NUM"]="merged_cleanup_failed"
 
       # Get PR number so we can show the URL in the summary
-      PR_NUMBER=$(gh pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number' 2>/dev/null || echo "")
+      PR_NUMBER=$(gh_safe pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number')
+      PR_NUMBER="${PR_NUMBER:-}"
       if [ -n "$PR_NUMBER" ]; then
         ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"
       fi
@@ -690,7 +703,8 @@ if [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
 
   for ISSUE_NUM in "${BLOCKED_ISSUES[@]}"; do
     # Check if follow-up issue was created for this blocker
-    FOLLOWUP_ISSUE=$(gh issue list --search "parent-pr in:body in:title" --label "review-follow-up" --state open --json number,body --jq ".[] | select(.body | contains(\"#$ISSUE_NUM\")) | .number" 2>/dev/null | head -1 || echo "")
+    FOLLOWUP_ISSUE=$(gh_safe issue list --search "parent-pr in:body in:title" --label "review-follow-up" --state open --json number,body --jq ".[] | select(.body | contains(\"#$ISSUE_NUM\")) | .number" | head -1 || true)
+    FOLLOWUP_ISSUE="${FOLLOWUP_ISSUE:-}"
 
     if [ -n "$FOLLOWUP_ISSUE" ]; then
       print_info "Issue #$ISSUE_NUM blocked → Follow-up #$FOLLOWUP_ISSUE created"
@@ -736,7 +750,8 @@ if [ ${#MERGED_CLEANUP_FAILED[@]} -gt 0 ]; then
   for ISSUE_NUM in "${MERGED_CLEANUP_FAILED[@]}"; do
     DURATION=${ISSUE_TIME[$ISSUE_NUM]:-0}
     PR_NUM=${ISSUE_PR[$ISSUE_NUM]:-"N/A"}
-    REPO_URL=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+    REPO_URL=$(gh_safe repo view --json url --jq '.url' || true)
+    REPO_URL="${REPO_URL:-}"
     if [ -n "$REPO_URL" ] && [ "$PR_NUM" != "N/A" ]; then
       echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s) - ${REPO_URL}/pull/${PR_NUM}"
     else

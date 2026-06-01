@@ -235,7 +235,8 @@ fi
 
 # Resolve issue number: from env (workflow), or from PR body (standalone)
 if [ -z "${ISSUE_NUMBER:-}" ]; then
-  ISSUE_NUMBER=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE '(Closes|Fixes|Resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+  ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 fi
 
 print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
@@ -243,11 +244,15 @@ echo ""
 
 # Get PR info
 print_status "Fetching PR information..."
-PR_INFO=$(gh pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url 2>&1) || {
+PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url) || {
   print_error "Failed to fetch PR #$PR_NUMBER"
-  echo "$PR_INFO"
   exit 1
 }
+PR_INFO="${PR_INFO:-}"
+if [ -z "$PR_INFO" ]; then
+  print_error "PR #$PR_NUMBER not found or inaccessible"
+  exit 1
+fi
 
 PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
 PR_BASE=$(echo "$PR_INFO" | jq -r '.baseRefName')
@@ -259,7 +264,8 @@ echo "  Branch: $PR_HEAD -> $PR_BASE"
 echo "  URL: $PR_URL"
 echo ""
 
-# Get the diff with retry and fallback
+# Get the diff with fallback to local git diff
+# gh_safe handles transient 5xx/429 retries internally (3 attempts, exponential backoff)
 print_status "Fetching PR diff..."
 
 PR_DIFF=$(fetch_pr_diff "$PR_NUMBER" "$PR_BASE" "$PR_HEAD") || exit 1
@@ -500,30 +506,15 @@ if [ "$POST_REVIEW" = true ]; then
   COMMENT_FILE=$(mktemp)
   printf '%s' "$REVIEW_COMMENT" > "$COMMENT_FILE"
 
-  post_attempt=0
-  post_max=3
-  post_success=false
-  while [ $post_attempt -lt $post_max ]; do
-    post_attempt=$((post_attempt + 1))
-    REVIEW_RESULT=$(gh pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1) && {
-      post_success=true
-      break
-    }
-    # Retry on transient GitHub errors (502, 503, network)
-    if echo "$REVIEW_RESULT" | grep -qE "502|503|timeout|connection"; then
-      if [ $post_attempt -lt $post_max ]; then
-        print_warning "GitHub API error (attempt $post_attempt/$post_max), retrying in 5s..."
-        sleep 5
-        continue
-      fi
-    else
-      break  # Non-transient error, don't retry
-    fi
-  done
+  # gh_safe handles transient 5xx/429 retries internally
+  set +e
+  REVIEW_RESULT=$(gh_safe pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE" 2>&1)
+  POST_RC=$?
+  set -e
   rm -f "$COMMENT_FILE"
 
-  if [ "$post_success" != true ]; then
-    print_error "Failed to post review after $post_attempt attempt(s)"
+  if [ $POST_RC -ne 0 ]; then
+    print_error "Failed to post review to PR #$PR_NUMBER"
     echo "$REVIEW_RESULT"
     echo ""
     echo "Review content (not posted):"

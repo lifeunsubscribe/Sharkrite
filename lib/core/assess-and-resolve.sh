@@ -341,22 +341,10 @@ fi
 
 # Fetch PR review (local sharkrite review comment)
 # (header already printed by workflow-runner.sh with PR + issue context)
-GH_STDERR=$(mktemp)
-REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0]' 2>"$GH_STDERR") || {
-  GH_ERROR=$(cat "$GH_STDERR")
-  rm -f "$GH_STDERR"
+REVIEW_JSON=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0]') || {
   print_error "Failed to fetch PR #$PR_NUMBER"
-  if [ -n "$GH_ERROR" ]; then
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "GitHub CLI Error:"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "$GH_ERROR"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  fi
   exit 1
 }
-rm -f "$GH_STDERR"
 
 if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "null" ]; then
   # No review found - auto-generate one
@@ -372,7 +360,7 @@ if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "nul
 
       # Re-fetch the review we just posted
       sleep 2  # Give GitHub a moment to index
-      REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | .[-1]' 2>/dev/null) || true
+      REVIEW_JSON=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | .[-1]') || true
 
       if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "null" ]; then
         print_error "Failed to fetch newly posted review"
@@ -489,7 +477,8 @@ if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
     echo ""
 
     # Check if there's a newer review we missed (match only actual review comments)
-    ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse' 2>/dev/null)
+    ALL_REVIEWS=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse')
+    ALL_REVIEWS="${ALL_REVIEWS:-[]}"
 
     # Compare using epoch seconds (not jq string comparison) for reliable cross-format matching
     NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | .createdAt] | map(sub("Z$";"") | split("T") | .[0] + "T" + .[1]) | map(. > "'"$LATEST_COMMIT_TIME"'" | if . then 1 else 0 end) | add // 0' 2>/dev/null || echo "0")
@@ -935,7 +924,8 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   # --- Gather data for template sections ---
 
   # Claude Context: extract changed file paths from the PR
-  CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path' 2>/dev/null || echo "")
+  CHANGED_FILES=$(gh_safe pr view "$PR_NUMBER" --json files --jq '.files[].path')
+  CHANGED_FILES="${CHANGED_FILES:-}"
   CLAUDE_CONTEXT=""
   if [ -n "$CHANGED_FILES" ]; then
     CLAUDE_CONTEXT=$(echo "$CHANGED_FILES" | sed 's/^/- `/' | sed 's/$/`/')
@@ -993,8 +983,10 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   fi
 
   # PR metadata
-  PR_BRANCH_NAME=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "unknown")
-  PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title' 2>/dev/null || echo "")
+  PR_BRANCH_NAME=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+  PR_BRANCH_NAME="${PR_BRANCH_NAME:-unknown}"
+  PR_TITLE=$(gh_safe pr view "$PR_NUMBER" --json title --jq '.title')
+  PR_TITLE="${PR_TITLE:-}"
 
   # --- Build issue body ---
 
@@ -1167,17 +1159,19 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
     # Source 2: body-marker search scoped to source issue (most reliable when indexed)
     if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
-      EXISTING_ISSUE=$(gh issue list \
+      EXISTING_ISSUE=$(gh_safe issue list \
         --state open \
         --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
         --json number \
-        --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || true)
+        --jq '.[0].number' | grep -E '^[0-9]+$' || true)
+      EXISTING_ISSUE="${EXISTING_ISSUE:-}"
     fi
 
     # Source 3: title search (catches cases where body marker not yet indexed)
     if [ -z "$EXISTING_ISSUE" ]; then
-      EXISTING_ISSUE=$(gh issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
-        jq -r '.[] | select(.state == "OPEN") | .number' 2>/dev/null || true)
+      EXISTING_ISSUE=$(gh_safe issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
+        jq -r '.[] | select(.state == "OPEN") | .number' || true)
+      EXISTING_ISSUE="${EXISTING_ISSUE:-}"
     fi
 
     # If found by any source, no need to retry
@@ -1187,10 +1181,10 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     # but neither local evidence nor the search index has caught up yet,
     # back off and retry rather than creating a duplicate.
     if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
-      _recent_followup_comment=$(gh pr view "$PR_NUMBER" \
+      _recent_followup_comment=$(gh_safe pr view "$PR_NUMBER" \
         --json comments \
-        --jq '[.comments[].body | select(contains("<!-- sharkrite-followup-issue:"))] | length' \
-        2>/dev/null || echo "0")
+        --jq '[.comments[].body | select(contains("<!-- sharkrite-followup-issue:"))] | length')
+      _recent_followup_comment="${_recent_followup_comment:-0}"
       if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
         _dedup_retries=$((_dedup_retries + 1))
         print_info "Follow-up comment found on PR but issue not yet indexed (attempt $_dedup_retries/$_dedup_max_retries) — retrying in ${_dedup_backoff}s..."
@@ -1210,7 +1204,8 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
     echo ""
     print_success "📋 Follow-up issue already exists: #$EXISTING_ISSUE (skipping duplicate)"
-    issue_url=$(gh issue view "$EXISTING_ISSUE" --json url --jq '.url' 2>/dev/null || echo "")
+    issue_url=$(gh_safe issue view "$EXISTING_ISSUE" --json url --jq '.url')
+    issue_url="${issue_url:-}"
     echo "  URL: $issue_url"
     echo ""
 
@@ -1242,11 +1237,10 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     FOLLOWUP_BODY_FILE=$(mktemp)
     printf '%s' "$FOLLOWUP_BODY" > "$FOLLOWUP_BODY_FILE"
     FOLLOWUP_ISSUE=""
-    if FOLLOWUP_ISSUE=$(gh issue create \
+    if FOLLOWUP_ISSUE=$(gh_safe issue create \
       --title "$ISSUE_TITLE" \
       --body-file "$FOLLOWUP_BODY_FILE" \
-      --label "$ISSUE_LABELS" \
-      2>&1); then
+      --label "$ISSUE_LABELS"); then
       rm -f "$FOLLOWUP_BODY_FILE"
       FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_ISSUE" | grep -oE '[0-9]+$' || echo "")
 
@@ -1278,7 +1272,7 @@ This approach allows all fixes to be completed together in a focused PR."
       printf '%s' "$COMMENT_BODY" > "$COMMENT_BODY_FILE"
       # Note: comment failure is non-fatal — local evidence (above) covers the
       # dedup gap.  We still warn so the failure is visible in logs.
-      if ! gh pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null; then
+      if ! gh_safe pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null; then
         print_warning "⚠️  PR comment write failed for follow-up #$FOLLOWUP_NUMBER — local evidence file will cover dedup"
       fi
       rm -f "$COMMENT_BODY_FILE"

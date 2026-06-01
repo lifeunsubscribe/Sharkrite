@@ -378,6 +378,48 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
+# Rule 13: Raw gh CLI calls not wrapped in gh_safe
+# Catches: gh pr ..., gh issue ..., gh api ..., gh repo ..., gh label ...
+# Skips:   gh_safe calls, comment lines, gh-retry.sh itself (defines gh_safe)
+echo "Checking for raw 'gh' CLI calls not wrapped in gh_safe..."
+for file in "${SHELL_FILES[@]}"; do
+  # gh-retry.sh defines gh_safe and intentionally calls raw gh — skip it
+  if [[ "$file" == */gh-retry.sh ]]; then
+    continue
+  fi
+  while IFS=: read -r line_num line_content; do
+    # Skip full-line comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    # Skip lines where gh appears only inside quoted strings (echo/print_info/print_status etc.)
+    # i.e. skip: echo "...gh pr...", print_info "...gh pr...", heredoc body lines
+    if echo "$line_content" | grep -qE '^\s*(echo|printf|print_info|print_status|print_warning|print_error|cat\b).*"[^"]*\bgh\b'; then
+      continue
+    fi
+    # Skip lines where gh is in a single-quoted string
+    if echo "$line_content" | grep -qE "^\s*(echo|printf).*'[^']*\bgh\b"; then
+      continue
+    fi
+    # Skip lines inside heredoc/string content (heuristic: line starts with non-shell text)
+    # These patterns indicate the line is instructional text, not a shell command:
+    #   "Do NOT run ..." "Run: gh pr ..." "use: gh pr list" "-  Check if..."
+    if echo "$line_content" | grep -qiE '^\s*(Do NOT|Run:|use:|Check if|Example:|example:|-\s+Check)'; then
+      continue
+    fi
+    # Match: gh call that looks like an actual command invocation
+    # Require: gh is at start of command (after whitespace/pipe/$(/) or assignment target)
+    # AND not inside a double-quoted echo/print context (handled above)
+    if echo "$line_content" | grep -qE '(^|[[:space:];|(=])\bgh\b[[:space:]]+(pr|issue|api|repo|label|diff)\b'; then
+      # Exclude gh_safe itself (false positive guard)
+      if ! echo "$line_content" | grep -qE '\bgh_safe\b'; then
+        print_violation "$file" "$line_num" "GH_UNSAFE_CALL" \
+          "Raw 'gh' call — wrap with gh_safe to get retry/resilience (lib/utils/gh-retry.sh)"
+      fi
+    fi
+  done < <(grep -n '\bgh\b' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

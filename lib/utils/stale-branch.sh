@@ -19,6 +19,11 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source gh retry wrapper if not already loaded (stash-manager.sh does not chain to it)
+if ! declare -f gh_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Source post-merge verification utilities
 if ! source "$RITE_LIB_DIR/utils/post-merge-verify.sh"; then
   echo "ERROR: Failed to source post-merge-verify.sh" >&2
@@ -634,23 +639,17 @@ _stale_close_and_cleanup() {
   local comment_file
   comment_file=$(mktemp)
   printf '%s' "$comment_body" > "$comment_file"
-  if ! gh pr comment "$pr_number" --body-file "$comment_file" 2>/dev/null; then
+  if ! gh_safe pr comment "$pr_number" --body-file "$comment_file"; then
     print_warning "Failed to post close comment on PR #$pr_number"
   fi
   rm -f "$comment_file"
 
   # 2. Close PR — track success to guard branch deletion below.
   # PR may already be closed/merged; treat those as success (idempotent).
-  # Use a temp file to capture gh output without the set -e trap triggering on
-  # the command substitution itself (VAR=$(failing_cmd) exits under set -euo pipefail).
   local _pr_close_ok=false
   local _pr_close_output
-  local _pr_close_exit_file
-  _pr_close_exit_file=$(mktemp)
-  _pr_close_output=$(gh pr close "$pr_number" 2>&1; echo $? > "$_pr_close_exit_file") || true
-  local _pr_close_exit
-  _pr_close_exit=$(cat "$_pr_close_exit_file" 2>/dev/null || echo "1")
-  rm -f "$_pr_close_exit_file"
+  local _pr_close_exit=0
+  _pr_close_output=$(gh_safe pr close "$pr_number" 2>&1) || _pr_close_exit=$?
   if [ "${_pr_close_exit:-1}" -eq 0 ]; then
     _pr_close_ok=true
     print_info "Closed PR #$pr_number"

@@ -123,7 +123,7 @@ fi
 verbose_header "🔍 Checking for Existing PR"
 
 # Check if PR already exists for this branch
-EXISTING_PR=$(gh pr list --head "$CURRENT_BRANCH" --json number,title,url,state,isDraft --jq '.[0]' 2>/dev/null || echo "")
+EXISTING_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number,title,url,state,isDraft --jq '.[0]')
 
 PR_EXISTS=false
 if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
@@ -150,12 +150,12 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   # If PR is draft, mark it as ready for review (work is complete)
   if [ "$IS_DRAFT" = "true" ]; then
     print_status "PR is draft - marking as ready for review..."
-    gh pr ready "$PR_NUMBER" 2>/dev/null || print_warning "Could not mark PR as ready"
+    gh_safe pr ready "$PR_NUMBER" 2>/dev/null || print_warning "Could not mark PR as ready"
   fi
 
   # Push new commits if needed
   CURRENT_HEAD=$(git rev-parse HEAD)
-  PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+  PR_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
   PUSHED_NEW_COMMITS=false
 
   if [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then
@@ -199,7 +199,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   # This is separate from the push check because claude-workflow.sh pushes
   # commits before create-pr.sh runs, so the body can be stale even when
   # CURRENT_HEAD == PR_HEAD.
-  EXISTING_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null || echo "")
+  EXISTING_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body')
 
   MISSING_CLOSE_REF=false
   if [ -n "${ISSUE_NUMBER:-}" ] && ! echo "$EXISTING_BODY" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+'; then
@@ -229,7 +229,7 @@ ${UPDATED_BODY}"
     # Use temp file to avoid shell metacharacter issues in body
     PR_BODY_FILE=$(mktemp)
     printf '%s' "$UPDATED_BODY" > "$PR_BODY_FILE"
-    gh pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE" 2>/dev/null || print_warning "Could not update PR description"
+    gh_safe pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE" 2>/dev/null || print_warning "Could not update PR description"
     rm -f "$PR_BODY_FILE"
     print_success "PR description updated"
   fi
@@ -244,7 +244,7 @@ if [ "$PR_EXISTS" = false ]; then
   if [ ! -z "$ISSUE_NUMBER" ]; then
     print_status "Fetching issue #$ISSUE_NUMBER details..."
 
-    ISSUE_JSON=$(gh issue view $ISSUE_NUMBER --json title,body,labels 2>/dev/null || echo "")
+    ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,labels)
 
     if [ ! -z "$ISSUE_JSON" ]; then
       ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
@@ -334,7 +334,7 @@ EOF
   fi
 
   # Create the PR
-  PR_URL=$(gh pr create "${PR_ARGS[@]}")
+  PR_URL=$(gh_safe pr create "${PR_ARGS[@]}")
   GH_PR_EXIT=$?
   rm -f "$PR_BODY_FILE"
 
@@ -349,7 +349,7 @@ EOF
 
     # Add comment to issue if applicable
     if [ ! -z "$ISSUE_NUMBER" ]; then
-      gh issue comment "$ISSUE_NUMBER" --body "🔗 Pull Request created: $PR_URL
+      gh_safe issue comment "$ISSUE_NUMBER" --body "🔗 Pull Request created: $PR_URL
 
 Automated review in progress..." 2>/dev/null || true
     fi
