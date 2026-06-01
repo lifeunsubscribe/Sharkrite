@@ -778,6 +778,8 @@ fi
 # "no ACTIONABLE_NOW items, ready to merge" — a failed `gh issue create` shouldn't
 # turn that into "assessment failed, block merge."
 MERGE_EXIT_CODE=0
+# Tracks whether gh issue create failed inside set +e block; checked at final summary.
+_followup_creation_failed=false
 if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
   # CRITICAL items at retry limit — genuinely cannot merge
   MERGE_EXIT_CODE=1
@@ -1329,11 +1331,33 @@ This approach allows all fixes to be completed together in a focused PR."
       echo "  Items: NOW=${ACTIONABLE_NOW_COUNT:-0}, LATER=${ACTIONABLE_LATER_COUNT:-0} (total in issue)"
       echo ""
     else
+      # gh issue create failed — items are NOT tracked anywhere.
+      # Save the full issue body as a recovery artifact before discarding it,
+      # so the user can manually re-file after resolving the API failure.
+      _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+      mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+      {
+        echo "# Orphaned Follow-up Items"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# PR: #${PR_NUMBER}"
+        echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+        echo "# Intended title: ${ISSUE_TITLE:-}"
+        echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
+        echo ""
+        cat "$FOLLOWUP_BODY_FILE" 2>/dev/null || echo "(body file unavailable)"
+      } > "$_orphaned_file" || true
+
       rm -f "$FOLLOWUP_BODY_FILE"
       # Release lock on failure too — don't leave waiters stuck
       [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
+
       print_warning "Failed to create consolidated follow-up issue"
+      print_error "Items NOT tracked. Saved to: $_orphaned_file"
+      print_error "Re-run: rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
+
+      # Signal to the final summary that follow-up creation failed
+      _followup_creation_failed=true
     fi
   fi
 
@@ -1355,16 +1379,25 @@ fi
 set -e  # Re-enable errexit after follow-up issue creation
 
 # Final summary — use MERGE_EXIT_CODE (decided before follow-up creation)
+# Also check _followup_creation_failed: a failed gh issue create means the
+# deferred items are NOT tracked — we must NOT claim success in that case.
 print_header "✅ Assessment Complete"
 
 echo "Summary of actions taken:"
 [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -n "${FOLLOWUP_NUMBER:-}" ] && echo "  ✅ Follow-up issue #$FOLLOWUP_NUMBER created for HIGH/MEDIUM items"
-[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -z "${FOLLOWUP_NUMBER:-}" ] && echo "  ⚠️  Follow-up issue creation failed (items not tracked)"
+[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ "${_followup_creation_failed:-false}" = true ] && echo "  ⚠️  Follow-up issue creation failed (items NOT tracked — see orphaned-followup-items.md)"
 [ "${CREATE_LOW_BATCH:-false}" = true ] && [ "${LOW_COUNT:-0}" -gt 0 ] && echo "  ✅ Batched LOW priority items into single issue"
 
 echo ""
 
-if [ "$MERGE_EXIT_CODE" -eq 0 ]; then
+if [ "${_followup_creation_failed:-false}" = true ]; then
+  # Follow-up creation failed — items are silently lost if we exit 0 here.
+  # Exit non-zero so the workflow does NOT proceed to merge as if everything
+  # was handled.  The orphaned-followup-items.md file gives the user a recovery
+  # path; the remediation message was already printed above.
+  print_error "Follow-up issue creation failed — workflow halted to prevent silent data loss"
+  exit 1
+elif [ "$MERGE_EXIT_CODE" -eq 0 ]; then
   print_success "All issues resolved or tracked - ready to proceed"
   exit 0
 else
