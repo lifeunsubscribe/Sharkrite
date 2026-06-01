@@ -848,13 +848,18 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         fi
 
         # Stage 2: description match via GitHub search (catches same finding re-flagged across different PRs)
+        #
+        # The source-issue marker is quoted ("sharkrite-source-issue:N") to force GitHub's
+        # full-text search to treat it as a literal phrase rather than a structured qualifier.
+        # Without quotes, GitHub may tokenize around the colon and fail to match the marker
+        # embedded inside an HTML comment.
         if [ -z "$DUPLICATE_ISSUE" ] && [ -n "$ITEM_REASONING" ]; then
           REASONING_KEYWORDS=$(echo "$ITEM_REASONING" | tr '[:upper:]' '[:lower:]' | \
             tr -cs 'a-z0-9' ' ' | tr ' ' '\n' | awk 'length>4' | head -5 | tr '\n' ' ')
           if [ -n "${REASONING_KEYWORDS// /}" ]; then
             SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
             [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
-              SEARCH_QUALIFIER="sharkrite-source-issue:${RITE_ISSUE_NUMBER} $REASONING_KEYWORDS in:body"
+              SEARCH_QUALIFIER="\"sharkrite-source-issue:${RITE_ISSUE_NUMBER}\" $REASONING_KEYWORDS in:body"
             DUPLICATE_ISSUE=$(gh_safe issue list \
               --state open \
               --search "$SEARCH_QUALIFIER" \

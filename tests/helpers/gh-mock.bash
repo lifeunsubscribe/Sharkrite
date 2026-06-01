@@ -252,20 +252,29 @@ _gh_mock_stateful_issue_list() {
   # The suffix ([^[:alnum:]_-]|$) requires the match to be followed by a
   # non-token character or end-of-string. We avoid negative lookahead (?!...)
   # because bash history expansion mangles the `!` inside double-quoted strings.
+  #
+  # Quoted search terms: GitHub search supports quoting to force literal phrase
+  # matching (e.g., "sharkrite-source-issue:42" in:body).  The mock strips the
+  # outer quotes from each quoted token before matching — the body never contains
+  # the literal quote characters.
   local _jq_select
   if echo "$_search" | grep -q 'in:body'; then
-    # Extract the marker/term before " in:body"
+    # Extract the marker/term before " in:body", then strip outer double-quotes
+    # from any quoted tokens (e.g., "sharkrite-source-issue:42" → sharkrite-source-issue:42).
     local _term
     _term=$(echo "$_search" | sed 's/ in:body.*//' | sed 's/^ *//' | sed 's/ *$//')
+    _term=$(echo "$_term" | sed 's/"//g')
     local _term_lower
     _term_lower=$(echo "$_term" | tr '[:upper:]' '[:lower:]')
     local _escaped_term
     _escaped_term=$(printf '%s' "$_term_lower" | sed 's/[.[\*^$()+?{}|\\]/\\&/g')
     _jq_select="[.[] | select((.body | ascii_downcase | test(\"${_escaped_term}([^[:alnum:]_-]|\$)\")) and (.state == \"$_state\"))]"
   elif echo "$_search" | grep -q 'in:title'; then
-    # Extract the term after "in:title "
+    # Extract the term after "in:title ", then strip outer double-quotes
+    # from any quoted tokens.
     local _term
     _term=$(echo "$_search" | sed 's/.*in:title *//' | sed 's/ *$//')
+    _term=$(echo "$_term" | sed 's/"//g')
     local _term_lower
     _term_lower=$(echo "$_term" | tr '[:upper:]' '[:lower:]')
     local _escaped_term
