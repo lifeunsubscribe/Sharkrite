@@ -88,25 +88,57 @@ assess_internal_changelog() {
   # Build file list (compact)
   local file_list=$(echo "$changed_files" | head -5 | tr '\n' ', ' | sed 's/,$//')
 
-  # Append entry (merge under existing date header if present)
+  # Prepend entry — newest date always at top, newest entry first within a day
   local today=$(date +%Y-%m-%d)
   local entry="- ${change_type}: ${pr_title} (#${pr_number}) [${file_list}]"
 
+  # Always rebuild as: "# Changelog" header + today's section (with new entry first) + older sections.
+  # This ensures newest date is always at the top regardless of where it was before.
+  local tmp_file=$(mktemp)
+  local today_entries_file=$(mktemp)
+  local rest_file=$(mktemp)
+
   if grep -q "^## $today" "$doc_file" 2>/dev/null; then
-    # Insert entry after existing date header (BSD sed compatible)
-    local tmp_file=$(mktemp)
-    awk -v date="## $today" -v entry="$entry" '
-      $0 == date { print; print entry; inserted=1; next }
-      { print }
-    ' "$doc_file" > "$tmp_file"
-    mv "$tmp_file" "$doc_file"
+    # Extract existing entries for today (lines between the date header and the next ## or EOF).
+    # New entry goes first (newest-first within a day), then existing entries follow.
+    awk -v date="## $today" '
+      BEGIN { in_today=0 }
+      $0 == date    { in_today=1; next }          # skip the header itself; we re-emit it below
+      in_today && /^## / { in_today=0 }           # next date section ends today block
+      in_today      { print; next }               # collect today'\''s existing entries
+    ' "$doc_file" > "$today_entries_file"
+
+    # Collect everything that is NOT the "# Changelog" header and NOT today's section.
+    awk -v date="## $today" '
+      BEGIN { in_today=0 }
+      /^# Changelog/ { next }                     # drop the top-level header (re-emit below)
+      $0 == date    { in_today=1; next }          # start skipping today'\''s section
+      in_today && /^## / { in_today=0 }           # next section ends skip
+      in_today      { next }                      # skip today'\''s existing entries
+      { print }                                   # keep all other lines (older sections)
+    ' "$doc_file" > "$rest_file"
   else
-    {
-      echo "## $today"
-      echo "$entry"
-      echo ""
-    } >> "$doc_file"
+    # Today's section doesn't exist yet — today_entries_file stays empty.
+    # rest_file = everything except the "# Changelog" header.
+    awk '/^# Changelog/ { next } { print }' "$doc_file" > "$rest_file"
   fi
+
+  # Assemble: header → blank → today's header → new entry → existing today entries → blank → rest
+  {
+    echo "# Changelog"
+    echo ""
+    echo "## $today"
+    echo "$entry"
+    # Existing today entries (may be empty for a new day)
+    local today_existing
+    today_existing=$(cat "$today_entries_file")
+    [ -n "$today_existing" ] && echo "$today_existing"
+    echo ""
+    cat "$rest_file"
+  } > "$tmp_file"
+
+  rm -f "$today_entries_file" "$rest_file"
+  mv "$tmp_file" "$doc_file"
 
   _mark_updated "changelog"
 }
