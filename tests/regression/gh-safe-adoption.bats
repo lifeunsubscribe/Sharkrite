@@ -155,7 +155,7 @@ EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" =~ "exit:0" ]]
-  [[ "$output" =~ "result:''" ]] || [[ "$output" =~ "result:'empty'" ]]
+  [[ "$output" =~ "result:''" ]]
 }
 
 @test "gh_safe propagates non-transient errors (e.g. auth failure)" {

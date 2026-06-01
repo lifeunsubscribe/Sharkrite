@@ -123,7 +123,7 @@ fi
 verbose_header "🔍 Checking for Existing PR"
 
 # Check if PR already exists for this branch
-EXISTING_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number,title,url,state,isDraft --jq '.[0]')
+EXISTING_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number,title,url,state,isDraft --jq '.[0]' || true)
 
 PR_EXISTS=false
 if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
@@ -155,7 +155,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
 
   # Push new commits if needed
   CURRENT_HEAD=$(git rev-parse HEAD)
-  PR_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+  PR_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' || true)
   PUSHED_NEW_COMMITS=false
 
   if [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then
@@ -199,7 +199,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   # This is separate from the push check because claude-workflow.sh pushes
   # commits before create-pr.sh runs, so the body can be stale even when
   # CURRENT_HEAD == PR_HEAD.
-  EXISTING_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body')
+  EXISTING_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' || true)
 
   MISSING_CLOSE_REF=false
   if [ -n "${ISSUE_NUMBER:-}" ] && ! echo "$EXISTING_BODY" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+'; then
@@ -244,7 +244,7 @@ if [ "$PR_EXISTS" = false ]; then
   if [ ! -z "$ISSUE_NUMBER" ]; then
     print_status "Fetching issue #$ISSUE_NUMBER details..."
 
-    ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,labels)
+    ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,labels || true)
 
     if [ ! -z "$ISSUE_JSON" ]; then
       ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
@@ -334,8 +334,7 @@ EOF
   fi
 
   # Create the PR
-  PR_URL=$(gh_safe pr create "${PR_ARGS[@]}")
-  GH_PR_EXIT=$?
+  PR_URL=$(gh_safe pr create "${PR_ARGS[@]}") && GH_PR_EXIT=0 || GH_PR_EXIT=$?
   rm -f "$PR_BODY_FILE"
 
   if [ $GH_PR_EXIT -eq 0 ]; then

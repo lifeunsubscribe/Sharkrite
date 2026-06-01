@@ -49,7 +49,7 @@ check_assessment_freshness() {
   # Find the most recent assessment comment timestamp
   local assessment_timestamp
   assessment_timestamp=$(gh_safe pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt')
+    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt' || true)
 
   if [ -z "$assessment_timestamp" ] || [ "$assessment_timestamp" = "null" ]; then
     return 1  # No assessment exists
@@ -75,7 +75,7 @@ check_assessment_freshness() {
   # Assessment is fresh — return the assessment content (after the --- separator)
   local assessment_body
   assessment_body=$(gh_safe pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body')
+    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' || true)
 
   echo "$assessment_body" | sed -n '/^---$/,$p' | tail -n +2
   return 0
@@ -130,7 +130,7 @@ build_prior_decisions_ledger() {
   # (newest-first + skip-if-seen = latest classification wins, no declare -A needed)
   local assessments_json
   assessments_json=$(gh_safe pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse')
+    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse' || true)
   assessments_json="${assessments_json:-[]}"
 
   local count
@@ -268,7 +268,7 @@ fi
 # Get original issue context for scope assessment
 ISSUE_CONTEXT=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE 'Closes #[0-9]+|Fixes #[0-9]+|Resolves #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
 if [ -n "$ISSUE_CONTEXT" ]; then
-  ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_CONTEXT" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n\n" + .body')
+  ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_CONTEXT" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n\n" + .body' || true)
   ISSUE_DETAILS="${ISSUE_DETAILS:-Issue context unavailable}"
 else
   ISSUE_DETAILS="Issue context unavailable (PR not linked to an issue)"
@@ -865,7 +865,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
 
         if [ -n "$DUPLICATE_ISSUE" ]; then
           # Only update if the existing body is missing content we have
-          EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body')
+          EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body' || true)
           EXISTING_BODY="${EXISTING_BODY:-}"
           REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60)
           if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
@@ -957,7 +957,7 @@ _Parent PR: #${PR_NUMBER}_"
   if [ -n "$CREATED_ISSUES" ] || [ -n "$UPDATED_ISSUES" ]; then
     print_status "Updating PR body with follow-up issue links..."
 
-    CURRENT_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body')
+    CURRENT_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' || true)
     CURRENT_BODY="${CURRENT_BODY:-}"
 
     # Check if follow-up section already exists
