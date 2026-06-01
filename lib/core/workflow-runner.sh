@@ -860,10 +860,18 @@ EOF
           if ! handle_blocker "pre-merge" "$issue_number"; then
             return 1
           fi
+        elif [ $workflow_exit -eq 2 ]; then
+          # Divergence resolved by pulling foreign commits — push succeeded inside handler.
+          # Treat as dev-phase success; Phase 2 will detect the stale review and regenerate.
+          print_info "Divergence resolved during post-dev push (retry) — continuing to Phase 2"
         elif [ $workflow_exit -ne 0 ]; then
           print_error "Development workflow failed on retry (exit code: $workflow_exit)"
           return $workflow_exit
         fi
+      elif [ $workflow_exit -eq 2 ]; then
+        # Divergence resolved by pulling foreign commits — push succeeded inside handler.
+        # Treat as dev-phase success; Phase 2 will detect the stale review and regenerate.
+        print_info "Divergence resolved during post-dev push — continuing to Phase 2"
       elif [ $workflow_exit -ne 0 ]; then
         print_error "Development workflow failed (exit code: $workflow_exit)"
         return $workflow_exit
@@ -1187,6 +1195,15 @@ phase_assess_and_resolve() {
         if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
           return 1
         fi
+      elif [ $fix_result -eq 5 ]; then
+        # Usage cap reached during fix-review push — propagate so batch aborts cleanly
+        print_warning "Usage cap reached during fix-review — aborting batch"
+        return 5
+      elif [ $fix_result -eq 2 ]; then
+        # Divergence was resolved by pulling foreign commits (handle_push_divergence exit 2).
+        # The push succeeded inside the handler; the HEAD now includes foreign commits.
+        # Fall through to phase_create_pr below so a fresh review covers the combined state.
+        print_info "Divergence resolved during fix-review — re-entering review cycle"
       elif [ $fix_result -ne 0 ]; then
         print_error "Claude workflow fix mode failed (exit code: $fix_result)"
         echo ""
