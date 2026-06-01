@@ -51,53 +51,41 @@ fetch_pr_diff() {
   local PR_BASE="$2"
   local PR_HEAD="$3"
 
-  # Retry gh pr diff up to 3 times (handles transient 5xx/429 errors)
-  local MAX_DIFF_ATTEMPTS=3
-  local DIFF_ATTEMPT=0
+  # gh_safe handles transient 5xx/429 retries internally (3 attempts, exponential backoff)
   local PR_DIFF=""
   local GH_DIFF_ERROR=""
-  local GH_DIFF_SUCCESS=false
 
-  while [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ] && [ "$GH_DIFF_SUCCESS" != true ]; do
-    DIFF_ATTEMPT=$((DIFF_ATTEMPT + 1))
+  set +e
+  PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" 2>/tmp/gh_diff_err_$$)
+  local GH_DIFF_RC=$?
+  GH_DIFF_ERROR=$(cat /tmp/gh_diff_err_$$ 2>/dev/null || true)
+  rm -f /tmp/gh_diff_err_$$
+  set -e
 
-    GH_DIFF_ERROR=$(gh pr diff "$PR_NUMBER" 2>&1) && {
-      PR_DIFF="$GH_DIFF_ERROR"
-      GH_DIFF_SUCCESS=true
-      break
-    }
-
-    # Check if error is transient (5xx, 429, network issues)
-    if echo "$GH_DIFF_ERROR" | grep -qiE "500|502|503|504|429|timeout|temporarily unavailable|heavy server load"; then
-      if [ $DIFF_ATTEMPT -lt $MAX_DIFF_ATTEMPTS ]; then
-        # Exponential backoff: 2s, 4s. Override via RITE_DIFF_RETRY_BACKOFF (e.g. 0 in tests).
-        local BACKOFF="${RITE_DIFF_RETRY_BACKOFF:-$((2 ** DIFF_ATTEMPT))}"
-        print_warning "GitHub diff API error (attempt $DIFF_ATTEMPT/$MAX_DIFF_ATTEMPTS) - retrying in ${BACKOFF}s..."
-        sleep "$BACKOFF"
-        continue
-      fi
-    else
-      # Non-transient error - don't retry
-      break
-    fi
-  done
-
-  # If gh pr diff failed after all retries, fall back to local git diff
-  if [ "$GH_DIFF_SUCCESS" != true ]; then
+  # If gh_safe failed or returned empty, fall back to local git diff
+  if [ $GH_DIFF_RC -ne 0 ] || [ -z "$PR_DIFF" ]; then
     print_warning "GitHub diff API unavailable — falling back to local git diff"
 
     # Use git diff with the three-dot syntax (merge-base..HEAD)
     # This matches what gh pr diff returns: changes in HEAD since diverging from base
-    PR_DIFF=$(git diff "origin/$PR_BASE...origin/$PR_HEAD" 2>&1) || {
+    local GIT_DIFF_ERROR=""
+    set +e
+    PR_DIFF=$(git diff "origin/$PR_BASE...origin/$PR_HEAD" 2>/tmp/git_diff_err_$$)
+    local GIT_DIFF_RC=$?
+    GIT_DIFF_ERROR=$(cat /tmp/git_diff_err_$$ 2>/dev/null || true)
+    rm -f /tmp/git_diff_err_$$
+    set -e
+
+    if [ $GIT_DIFF_RC -ne 0 ]; then
       print_error "Failed to fetch diff via both GitHub API and local git"
       echo ""
       echo "GitHub API error:"
       echo "$GH_DIFF_ERROR"
       echo ""
       echo "Git diff error:"
-      echo "$PR_DIFF"
+      echo "$GIT_DIFF_ERROR"
       return 1
-    }
+    fi
 
     print_status "Using local git diff as fallback"
   fi
@@ -136,7 +124,8 @@ validate_diff_not_empty() {
     # failure (e.g., GitHub returned 200 OK with an empty body, or git diff ran
     # against stale refs). A match at 0 means the PR genuinely has no changes.
     local GH_CHANGED_FILES
-    GH_CHANGED_FILES=$(gh pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' 2>/dev/null || echo "0")
+    GH_CHANGED_FILES=$(gh_safe pr view "$PR_NUMBER" --json changedFiles --jq '.changedFiles' || true)
+    GH_CHANGED_FILES="${GH_CHANGED_FILES:-0}"
     # Sanitize: strip whitespace and ensure it's numeric; default to 0 on error.
     GH_CHANGED_FILES=$(echo "$GH_CHANGED_FILES" | tr -d '[:space:]')
     if ! echo "$GH_CHANGED_FILES" | grep -qE '^[0-9]+$'; then
@@ -188,6 +177,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
