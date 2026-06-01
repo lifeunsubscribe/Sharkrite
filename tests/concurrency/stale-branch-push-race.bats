@@ -127,14 +127,15 @@ wait_at_barrier() {
 
   # Exactly one should succeed (first to push).
   # This is a fundamental git property — the first non-fast-forward push wins.
-  [ "$success_count" -ge 1 ] || {
-    echo "FAIL: No successful pushes — git push race handling broken?"
+  [ "$success_count" -eq 1 ] || {
+    echo "REGRESSION: $success_count pushes succeeded instead of 1 — git push race handling broken?"
     return 1
   }
 
-  # Verify rejections happened (at least one, since multiple processes raced)
+  # Verify rejections happened (num_processes - 1 must be rejected in a true race).
   [ "$rejection_count" -ge 1 ] || {
-    echo "WARNING: Expected at least one rejection, got $rejection_count (possible fluke if timing allowed serial pushes)"
+    echo "REGRESSION: Expected at least one rejection, got $rejection_count — concurrent push rejection not working?"
+    return 1
   }
 }
 
