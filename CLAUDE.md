@@ -363,7 +363,7 @@ The lock file is the source of truth for mapping worktrees to issue numbers.
 
 Lock directory structure:
 - `${RITE_LOCK_DIR}/issue-N.lock/pid` — PID of the holding process (transient, written by `acquire_issue_lock`)
-- `${RITE_LOCK_DIR}/issue-N.lock/worktree` — absolute path to the worktree (persistent, written by `backfill_worktree_locks`)
+- `${RITE_LOCK_DIR}/issue-N.lock/worktree` — absolute path to the worktree (written by `backfill_worktree_locks`; removed if the lock dir is reclaimed or released)
 
 `acquire_issue_lock` accepts an optional `worktree_path` argument and will write the `worktree` file when provided. However, the primary production caller — `setup_issue_lock_if_needed` in `claude-workflow.sh` — acquires the lock before `WORKTREE_PATH` is known, so it omits the path. The `worktree` file is therefore **not** written during normal workflow runs; it is populated by `backfill_worktree_locks` instead.
 

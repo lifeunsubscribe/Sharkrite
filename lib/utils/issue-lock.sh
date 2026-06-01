@@ -37,7 +37,7 @@
 # Lock directory structure:
 #   ${RITE_LOCK_DIR}/issue-N.lock/
 #     pid       — PID of the holding process (transient, written by acquire_issue_lock)
-#     worktree  — absolute path to the worktree (persistent, written by backfill_worktree_locks)
+#     worktree  — absolute path to the worktree (written by backfill_worktree_locks; removed if the lock dir is reclaimed)
 #
 # The lock directory is the source of truth for worktree → issue mapping.
 # acquire_issue_lock can write the worktree file when called with an explicit path
@@ -51,11 +51,12 @@
 # by walking git worktree list and resolving the issue number from the branch's open PR body.
 #
 # Note: the pid file is written by the active process and removed by release_issue_lock.
-# For active lock dirs (those with a pid file), the worktree file persists until the
-# lock dir is released (release_issue_lock removes the whole dir). Backfill lock dirs
-# have a worktree file but no pid file — they are metadata-only (no active lock holder)
-# and are NOT removed by release_issue_lock, --undo, or merge. See backfill_worktree_locks
-# docstring for lifecycle details and manual cleanup instructions.
+# For active lock dirs (those with a pid file), both the pid and worktree files exist
+# until the lock dir is released or reclaimed — release_issue_lock and stale-lock
+# reclamation both rm -rf the whole dir, removing the worktree file along with it.
+# Backfill lock dirs have a worktree file but no pid file — they are metadata-only
+# (no active lock holder) and are NOT removed by release_issue_lock, --undo, or merge.
+# See backfill_worktree_locks docstring for lifecycle details and manual cleanup instructions.
 
 set -euo pipefail
 
