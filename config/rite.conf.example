@@ -25,7 +25,8 @@
 # RITE_MAX_RETRIES=3
 
 # Claude CLI timeout for assessment (seconds)
-# RITE_ASSESSMENT_TIMEOUT=120
+# Default is 300s. Raise to 600 if assessments time out during heavy provider load.
+# RITE_ASSESSMENT_TIMEOUT=300
 
 # =============================================================================
 # Notifications (optional)

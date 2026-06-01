@@ -60,7 +60,8 @@
 # WORKFLOW_MODE="supervised"
 
 # Assessment timeout for this project (complex projects may need longer)
-# RITE_ASSESSMENT_TIMEOUT=120
+# Default is 300s. Raise to 600 if assessments time out during heavy provider load.
+# RITE_ASSESSMENT_TIMEOUT=300
 
 # =============================================================================
 # Plan Command (rite plan)

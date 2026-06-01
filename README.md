@@ -146,7 +146,7 @@ Layered config system — global defaults, project overrides, environment variab
 | `RITE_MAX_ISSUES_PER_SESSION` | 8 | Session issue limit |
 | `RITE_MAX_SESSION_HOURS` | 4 | Session time limit |
 | `RITE_MAX_RETRIES` | 3 | Fix loop attempts |
-| `RITE_ASSESSMENT_TIMEOUT` | 120s | Claude assessment timeout |
+| `RITE_ASSESSMENT_TIMEOUT` | 300s | Claude assessment timeout |
 | `WORKFLOW_MODE` | unsupervised | `supervised` or `unsupervised` |
 
 See [config/project.conf.example](config/project.conf.example) for all options, or [docs/configuration.md](docs/configuration.md) for the full reference.

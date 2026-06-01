@@ -210,6 +210,16 @@ When resuming an issue with an existing PR, the branch is checked against `origi
 
 Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 11 to signal "restarted fresh" — caller resets all resume state variables.
 
+### Assessment Timeout
+
+Phase 3 (assess-and-resolve) calls Claude to classify each review finding. Controlled by `RITE_ASSESSMENT_TIMEOUT` (default: 300s). Exit code 124 on timeout → falls back to creating a follow-up issue with all items.
+
+If you see `⚠️ Assessment timed out after 300s`, bump to 600s:
+```bash
+export RITE_ASSESSMENT_TIMEOUT=600
+```
+Or set it per-project in `.rite/config`. See `config/project.conf.example` for the commented option.
+
 ## Phase Commands
 
 Individual workflow phases can be run standalone via flags. All default to auto/unsupervised mode.
