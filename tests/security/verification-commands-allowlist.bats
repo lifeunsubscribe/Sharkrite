@@ -53,9 +53,26 @@ EOF
   chmod +x "$MOCK_BIN/gh"
 
   # Extract and source the verification command parser function
-  # We'll test it in isolation by sourcing just that section
-  sed -n '/# ── Pre-dev verification/,/# Call claude-workflow/p' \
-    "$BATS_TEST_DIRNAME/../../lib/core/workflow-runner.sh" > "$TEST_DIR/verify-parser.sh"
+  # We'll test it in isolation by sourcing just that section.
+  # The extracted body lives inside a function in workflow-runner.sh and therefore
+  # uses 'local' declarations.  Wrap it in a function definition so 'local' is
+  # valid when run at the top level via 'bash verify-parser.sh'.
+  {
+    echo '_run_verify_check() {'
+    sed -n '/# ── Pre-dev verification/,/# Call claude-workflow/p' \
+      "$BATS_TEST_DIRNAME/../../lib/core/workflow-runner.sh"
+    echo '}'
+    echo '_run_verify_check'
+  } > "$TEST_DIR/verify-parser.sh"
+
+  # Guard: verify the extraction produced a non-empty file containing the
+  # expected sentinel string from the production source.  If the comment
+  # markers in workflow-runner.sh ever change, this assertion fails loudly
+  # here in setup() rather than producing confusing downstream test failures.
+  grep -q 'Verification Commands' "$TEST_DIR/verify-parser.sh" || {
+    echo "setup() error: verify-parser.sh extraction failed or is empty — comment markers in workflow-runner.sh may have changed" >&2
+    return 1
+  }
 }
 
 teardown() {
@@ -96,7 +113,7 @@ EOF
 
   # Run the verification check (should skip touch command)
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Canary file should NOT exist
   [ ! -f "$CANARY_FILE" ]
@@ -112,7 +129,7 @@ EOF
   export ISSUE_ALREADY_RESOLVED=false
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Canary should NOT exist (semicolon rejected)
   [ ! -f "$CANARY_FILE" ]
@@ -129,7 +146,7 @@ EOF
   export ISSUE_ALREADY_RESOLVED=false
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Directory should still exist (rm not executed)
   [ -d "$CANARY_DIR" ]
@@ -146,7 +163,7 @@ EOF
   export ISSUE_ALREADY_RESOLVED=false
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Canary should NOT exist (parentheses rejected)
   [ ! -f "$CANARY_FILE" ]
@@ -163,7 +180,7 @@ EOF
   export TEST_DIR
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Our mock pytest should have been called
   [ -f "$TEST_DIR/.pytest-called" ]
@@ -180,8 +197,85 @@ EOF
   export TEST_DIR
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Our mock npm should have been called
   [ -f "$TEST_DIR/.npm-called" ]
+}
+
+# ── Edge case: Verification Commands is the last section (issue #52/53) ────────
+
+@test "extracts commands when Verification Commands is the last section (no trailing ##)" {
+  # Regression test for issue #52/#53:
+  # The original sed range /^## Verification Commands/,/^## /p requires a
+  # closing ## header to terminate the range.  The replacement awk-based
+  # extractor accumulates lines until EOF, so the last section works too.
+  rm -f "$TEST_DIR/.pytest-called"
+
+  # Issue body where ## Verification Commands is the LAST section — no ## after it
+  ISSUE_BODY=$(cat <<'EOF'
+## Description
+Test issue
+
+## Acceptance Criteria
+- [ ] Test passes
+
+## Verification Commands
+```bash
+pytest tests/
+```
+EOF
+)
+
+  export ISSUE_BODY
+  export ISSUE_ALREADY_RESOLVED=false
+  export TEST_DIR
+
+  cd "$TEST_DIR"
+  bash "$TEST_DIR/verify-parser.sh"
+
+  # pytest should have been called even though there is no trailing ## header
+  [ -f "$TEST_DIR/.pytest-called" ]
+}
+
+@test "extracts LAST verification block when multiple sections exist" {
+  # Regression test for issue #52/#53:
+  # Issues generated from assessment sometimes embed parent-issue context that
+  # also contains a ## Verification Commands section.  The awk extractor resets
+  # on each header match, so only the LAST block's commands are run.
+  rm -f "$TEST_DIR/.pytest-called"
+  rm -f "$TEST_DIR/.npm-called"
+
+  # Issue body with TWO ## Verification Commands sections.
+  # The first has "npm test" (old/inherited), the second has "pytest tests/" (current).
+  # Only "pytest" from the last block should run; "npm" should NOT.
+  ISSUE_BODY=$(cat <<'EOF'
+## Context From Parent Issue
+
+## Verification Commands
+```bash
+npm test
+```
+
+## New Description
+Updated scope
+
+## Verification Commands
+```bash
+pytest tests/
+```
+EOF
+)
+
+  export ISSUE_BODY
+  export ISSUE_ALREADY_RESOLVED=false
+  export TEST_DIR
+
+  cd "$TEST_DIR"
+  bash "$TEST_DIR/verify-parser.sh"
+
+  # Only the LAST block's command (pytest) should have run
+  [ -f "$TEST_DIR/.pytest-called" ]
+  # npm from the first (stale) block must NOT have been called
+  [ ! -f "$TEST_DIR/.npm-called" ]
 }

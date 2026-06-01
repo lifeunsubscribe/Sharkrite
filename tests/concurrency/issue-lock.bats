@@ -3,7 +3,11 @@
 #
 # Tests that per-issue locking prevents duplicate work on the same issue.
 # Multiple processes should not be able to work on the same issue simultaneously.
-# These tests verify fixes for issue #8 (per-issue locking).
+# These tests verify fixes for issue #9 (per-issue locking).
+#
+# NOTE: The "EXPECTED FAILURE" escape hatches that were here before issue #9 landed
+# have been removed.  These are now hard-failure assertions — if locking regresses,
+# these tests WILL fail (which is the point).
 
 load '../helpers/setup.bash'
 
@@ -201,10 +205,11 @@ wait_at_barrier() {
     fi
   done
 
-  # Exactly one process should have gotten the lock
+  # Exactly one process should have gotten the lock.
+  # Issue #9 (per-issue locking) landed — this is now a hard assertion.
   [ "$success_count" -eq 1 ] || {
-    echo "EXPECTED FAILURE: $success_count processes got lock instead of 1 - locking not atomic"
-    return 0
+    echo "REGRESSION: $success_count processes got lock instead of 1 - locking not atomic (issue #9 regressed?)"
+    false
   }
 }
 
@@ -248,10 +253,11 @@ wait_at_barrier() {
     fi
   done
 
-  # Only one should have reclaimed successfully
+  # Only one should have reclaimed successfully.
+  # Issue #9 (per-issue locking) landed — this is now a hard assertion.
   [ "$success_count" -eq 1 ] || {
-    echo "EXPECTED FAILURE: $success_count processes reclaimed lock - race in stale detection"
-    return 0
+    echo "REGRESSION: $success_count processes reclaimed lock - race in stale detection (issue #9 regressed?)"
+    false
   }
 }
 
