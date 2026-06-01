@@ -1108,6 +1108,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     _lock_scope="PR #$PR_NUMBER${ISSUE_NUMBER:+ / issue #$ISSUE_NUMBER}"
     print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — another process is still in the critical section."
     print_warning "Skipping follow-up issue creation to prevent duplicates. Re-run assess-and-fix if needed."
+    _diag "FOLLOWUP_LOCK_TIMEOUT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER}"
     _skip_followup_creation=true
   fi
 
