@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (parse_rite_config is the canonical indicator)
+if declare -f parse_rite_config >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # =============================================================================
 # HELPER: Safe config file sourcing with validation
 # =============================================================================

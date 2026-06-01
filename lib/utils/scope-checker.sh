@@ -13,9 +13,14 @@
 #     pattern is flagged even if it also matches a DO bullet.
 #   - When no Scope Boundary section exists the function returns 0 (no
 #     violations) so repos that don't use the section are unaffected.
-#   - The check is advisory: callers decide whether to block, warn, or prompt.
 
 set -euo pipefail
+
+# Re-source guard: skip if already loaded (parse_scope_boundary is the canonical indicator)
+if declare -f parse_scope_boundary >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+#   - The check is advisory: callers decide whether to block, warn, or prompt.
 
 # ---------------------------------------------------------------------------
 # parse_scope_boundary ISSUE_BODY

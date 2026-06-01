@@ -17,35 +17,58 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (_RITE_CLAUDE_WORKFLOW_LOADED is the sentinel)
+if [ "${_RITE_CLAUDE_WORKFLOW_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_CLAUDE_WORKFLOW_LOADED=1
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRIPT_DIR/../utils/config.sh"
+  unset _SCRIPT_DIR
 fi
 
 # Source session tracker for interrupt state saving
-source "$RITE_LIB_DIR/utils/session-tracker.sh"
+if ! declare -f _acquire_session_lock >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/session-tracker.sh"
+fi
 
 # Source portable command wrappers (sed -i, stat mtime — BSD/GNU compat)
-source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+if ! declare -f portable_sed_i >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+fi
 
 # Source issue locking utilities (prevents concurrent rite invocations on same issue)
-source "$RITE_LIB_DIR/utils/issue-lock.sh"
+if ! declare -f acquire_issue_lock >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+fi
 
 # Source scratchpad lock utilities (serialises concurrent scratchpad writes)
-source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+if ! declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+fi
 
 # Source stash manager
-source "$RITE_LIB_DIR/utils/stash-manager.sh"
+if ! declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/stash-manager.sh"
+fi
 
 # Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
-source "$RITE_LIB_DIR/utils/git-helpers.sh"
+if ! declare -f git_fetch_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/git-helpers.sh"
+fi
 
 # Source scope checker (check_scope_boundary — validates changed files vs issue Scope Boundary)
-source "$RITE_LIB_DIR/utils/scope-checker.sh"
+if ! declare -f parse_scope_boundary >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/scope-checker.sh"
+fi
 
 # Source provider abstraction
-source "$RITE_LIB_DIR/providers/provider-interface.sh"
+if ! declare -f load_provider >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+fi
 load_provider "${RITE_DEV_PROVIDER:-claude}"
 
 # Source timeout wrapper (config.sh sources it, but is skipped when RITE_LIB_DIR is pre-set)

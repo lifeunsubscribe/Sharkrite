@@ -25,6 +25,13 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (_RITE_LOCAL_REVIEW_LOADED is the sentinel)
+# Sentinel set before dep loading and main body so second source returns immediately.
+if [ "${_RITE_LOCAL_REVIEW_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_LOCAL_REVIEW_LOADED=1
+
 # ---------------------------------------------------------------------------
 # fetch_pr_diff: fetch PR diff with retry and local git fallback
 #

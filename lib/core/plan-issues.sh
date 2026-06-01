@@ -15,23 +15,35 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (plan_issues is the canonical indicator)
+if declare -f plan_issues >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_plan_issues_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source colors if not already loaded
-if ! declare -f print_info &>/dev/null; then
+if ! declare -f print_info >/dev/null 2>&1; then
   if [ -n "${RITE_LIB_DIR:-}" ]; then
     source "$RITE_LIB_DIR/utils/colors.sh"
+  elif [ -f "$_plan_issues_self_dir/../utils/colors.sh" ]; then
+    source "$_plan_issues_self_dir/../utils/colors.sh"
   fi
 fi
 
 # Source portable command wrappers (sed -i — BSD/GNU compat)
-if [ -n "${RITE_LIB_DIR:-}" ]; then
+if ! declare -f portable_sed_i >/dev/null 2>&1 && [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 fi
 
 # Source provider abstraction
-if [ -n "${RITE_LIB_DIR:-}" ]; then
+if ! declare -f load_provider >/dev/null 2>&1 && [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 fi
+
+unset _plan_issues_self_dir
 
 # =============================================================================
 # MAIN: plan_issues

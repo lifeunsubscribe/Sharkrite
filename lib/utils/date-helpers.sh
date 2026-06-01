@@ -6,6 +6,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (iso_to_epoch is the canonical indicator)
+if declare -f iso_to_epoch >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Convert ISO 8601 UTC timestamp to Unix epoch seconds
 #
 # Input:  2025-10-28T20:42:18Z (ISO 8601 UTC format)

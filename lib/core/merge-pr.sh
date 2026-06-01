@@ -11,28 +11,46 @@
 
 set -euo pipefail
 
-# Source configuration
+# Re-source guard: skip if already loaded (_RITE_MERGE_PR_LOADED is the sentinel)
+# Sentinel set before dep loading and main body so second source returns immediately.
+if [ "${_RITE_MERGE_PR_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_MERGE_PR_LOADED=1
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source configuration
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
-# Source portable command wrappers (stat mtime — BSD/GNU compat)
-source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+# Load dependencies (idempotent — each guarded by its own re-source guard)
+if ! declare -f portable_sed_i >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+fi
 
 # Source scratchpad manager
-if [ -f "$RITE_LIB_DIR/utils/scratchpad-manager.sh" ]; then
+if [ -f "$RITE_LIB_DIR/utils/scratchpad-manager.sh" ] && \
+   ! declare -f update_scratchpad_from_pr >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 fi
 
 # Source stash manager
-source "$RITE_LIB_DIR/utils/stash-manager.sh"
+if ! declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/stash-manager.sh"
+fi
 
 # Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
-source "$RITE_LIB_DIR/utils/git-helpers.sh"
+if ! declare -f git_fetch_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/git-helpers.sh"
+fi
 
 # Source provider abstraction
-source "$RITE_LIB_DIR/providers/provider-interface.sh"
+if ! declare -f load_provider >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+fi
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
 # Parse arguments

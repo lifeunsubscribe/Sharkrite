@@ -378,6 +378,38 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
+# Rule 13: Unguarded readonly declaration (crashes on re-source)
+# A bare `readonly VAR=value` will error with "VAR: readonly variable" if the file
+# is sourced a second time under set -euo pipefail.  The safe pattern is:
+#   if [ -z "${VAR:-}" ]; then readonly VAR=value; fi
+# or the more explicit:
+#   if [ "${VAR+set}" != "set" ]; then readonly VAR=value; fi
+echo "Checking for unguarded 'readonly' declarations..."
+for file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+
+    # Check if the readonly is on a line that already has a guard inline
+    # (e.g. "[ -z ... ] && readonly VAR=..." or "if [ ... ]; then readonly VAR=...")
+    if echo "$line_content" | grep -qE '(if\s*\[|\[\s*-[znZ]|\[\s*"\$\{).*readonly|readonly.*\|\|'; then
+      continue
+    fi
+
+    # Check if the previous line contains a guard condition
+    prev_line_num=$((line_num - 1))
+    prev_line=$(sed -n "${prev_line_num}p" "$file" 2>/dev/null || echo "")
+    if echo "$prev_line" | grep -qE '(if\s*\[|\[\s*-[znZ]|\[\s*"\$\{|declare -f|_LOADED)'; then
+      continue
+    fi
+
+    print_violation "$file" "$line_num" "UNGUARDED_READONLY" \
+      "'readonly VAR=...' without guard — crashes on re-source under set -euo pipefail; wrap with: if [ -z \"\${VAR:-}\" ]; then readonly VAR=...; fi"
+  done < <(grep -n '^\s*readonly\s' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

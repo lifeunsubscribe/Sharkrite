@@ -9,22 +9,47 @@ set -euo pipefail
 # CONFIGURATION
 # ===================================================================
 
+# Re-source guard: skip if already loaded (_RITE_WORKFLOW_RUNNER_LOADED is the sentinel)
+if [ "${_RITE_WORKFLOW_RUNNER_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_WORKFLOW_RUNNER_LOADED=1
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$SCRIPT_DIR/../utils/config.sh"
+  unset SCRIPT_DIR
 fi
 
-# Source all library modules
-source "$RITE_LIB_DIR/utils/notifications.sh"
-source "$RITE_LIB_DIR/utils/blocker-rules.sh"
-source "$RITE_LIB_DIR/utils/session-tracker.sh"
-source "$RITE_LIB_DIR/utils/pr-summary.sh"
-source "$RITE_LIB_DIR/utils/normalize-issue.sh"
-source "$RITE_LIB_DIR/utils/pr-detection.sh"
-source "$RITE_LIB_DIR/utils/date-helpers.sh"
-source "$RITE_LIB_DIR/utils/stash-manager.sh"
-source "$RITE_LIB_DIR/providers/provider-interface.sh"
+# Source all library modules (idempotent: check before sourcing)
+if ! declare -f send_slack >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/notifications.sh"
+fi
+if ! declare -f check_blockers >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+fi
+if ! declare -f _acquire_session_lock >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/session-tracker.sh"
+fi
+if ! declare -f build_changes_summary >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/pr-summary.sh"
+fi
+if ! declare -f normalize_piped_input >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/normalize-issue.sh"
+fi
+if ! declare -f detect_pr_for_issue >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+fi
+if ! declare -f iso_to_epoch >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/date-helpers.sh"
+fi
+if ! declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/stash-manager.sh"
+fi
+if ! declare -f load_provider >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+fi
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -48,8 +73,12 @@ MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 # UTILITY FUNCTIONS
 # ===================================================================
 
-source "$RITE_LIB_DIR/utils/colors.sh"
-source "$RITE_LIB_DIR/utils/logging.sh"
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/colors.sh"
+fi
+if ! declare -f is_verbose >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/logging.sh"
+fi
 
 # ===================================================================
 # GRACEFUL EXIT HANDLING

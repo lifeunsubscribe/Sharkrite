@@ -8,6 +8,14 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (_acquire_session_lock is the canonical indicator)
+# IMPORTANT: This guard prevents re-initialization of _SESSION_LOCK_* state
+# variables that would silently reset lock state if the file were sourced again
+# while a lock is held.
+if declare -f _acquire_session_lock >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # Session-state lock
 #

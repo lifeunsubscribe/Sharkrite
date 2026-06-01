@@ -15,10 +15,20 @@
 
 set -euo pipefail
 
-# Ensure colors.sh is loaded (idempotent — already sourced by most callers)
-if ! declare -f print_header &>/dev/null; then
-  source "${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/..}/utils/colors.sh"
+# Re-source guard: skip if already loaded (is_verbose is the canonical indicator)
+if declare -f is_verbose >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
 fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_logging_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Ensure colors.sh is loaded
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$_logging_self_dir/colors.sh"
+fi
+
+unset _logging_self_dir
 
 # Check if verbose output is enabled
 is_verbose() {

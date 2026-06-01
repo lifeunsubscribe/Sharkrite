@@ -14,18 +14,26 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (normalize_piped_input is the canonical indicator)
+if declare -f normalize_piped_input >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_normalize_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source colors if not already loaded
-if ! declare -f print_info &>/dev/null; then
-  if [ -n "${RITE_LIB_DIR:-}" ]; then
-    source "$RITE_LIB_DIR/utils/colors.sh"
-  fi
+if ! declare -f print_info >/dev/null 2>&1; then
+  source "$_normalize_self_dir/colors.sh"
 fi
 
 # Source provider abstraction
-if [ -n "${RITE_LIB_DIR:-}" ]; then
+if ! declare -f load_provider >/dev/null 2>&1 && [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_UTILITY_PROVIDER:-claude}"
 fi
+
+unset _normalize_self_dir
 
 # Truncate a string to max_len at a word boundary.
 # Usage: _truncate_at_word_boundary "$string" max_len

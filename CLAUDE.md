@@ -176,6 +176,71 @@ _dep_state=""
 
 Use `.rite` (no trailing slash). `.rite/` only matches directories, but in worktrees `.rite` is a symlink (git mode 120000 = file).
 
+### Re-source safety (CRITICAL)
+
+Every `lib/**/*.sh` file must be safe to `source` twice in the same shell under `set -euo pipefail`. Double-sourcing happens in practice when orchestrators and individual phases both source the same utility.
+
+**Canonical guard for function libraries** (use canonical first function in file as indicator):
+
+```bash
+# Re-source guard: skip if already loaded (<fn_name> is the canonical indicator)
+if declare -f <fn_name> >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+```
+
+**Canonical guard for main-body scripts** (no unique canonical function; use sentinel variable):
+
+```bash
+# Re-source guard: skip if already loaded (_RITE_<SCRIPT>_LOADED is the sentinel)
+if [ "${_RITE_<SCRIPT>_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_<SCRIPT>_LOADED=1
+```
+
+**`return 0 2>/dev/null || true`** — works in both sourced context (`return` exits the source) and executed context (`return` outside a function emits an error to stderr, suppressed by `2>/dev/null`, then `|| true` swallows the non-zero exit from the attempted `return`).
+
+**Dependency loading must be idempotent.** Wrap every `source` call in a `! declare -f` guard:
+
+```bash
+# BAD: re-sources colors.sh even when print_header is already defined
+source "$RITE_LIB_DIR/utils/colors.sh"
+
+# GOOD: skip if already loaded
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/colors.sh"
+fi
+```
+
+**Use BASH_SOURCE-relative paths for dependency loading.** `RITE_LIB_DIR` may not be set when a script is sourced by an external caller or in a fresh subprocess:
+
+```bash
+# BAD: crashes if RITE_LIB_DIR is not set
+source "$RITE_LIB_DIR/utils/colors.sh"
+
+# GOOD: resolve relative to the script's own location
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$_self_dir/colors.sh"
+fi
+unset _self_dir
+```
+
+**`readonly` declarations must be guarded.** A bare `readonly VAR=value` crashes on second source:
+
+```bash
+# BAD: readonly variable error on second source
+readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
+
+# GOOD: guard with empty check
+if [ -z "${SHARKRITE_STASH_MARKER:-}" ]; then
+  readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
+fi
+```
+
+**Enforcement:** The `UNGUARDED_READONLY` lint rule in `tools/sharkrite-lint.sh` detects bare `readonly` declarations. Regression test in `tests/regression/lib-resource-safety.bats` sources every `lib/**/*.sh` file twice and asserts both sources exit 0.
+
 ## Safety System
 
 Two-tier approach: review sensitivity hints + hard merge gates.

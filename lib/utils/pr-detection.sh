@@ -9,13 +9,25 @@
 
 set -euo pipefail
 
-# Source config if not already loaded
-if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+# Re-source guard: skip if already loaded (detect_pr_for_issue is the canonical indicator)
+if declare -f detect_pr_for_issue >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
 fi
 
-source "$RITE_LIB_DIR/utils/date-helpers.sh"
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_pr_detection_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source config if not already loaded
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  source "$_pr_detection_self_dir/config.sh"
+fi
+
+# Load date-helpers (idempotent — guarded by its own re-source guard)
+if ! declare -f iso_to_epoch >/dev/null 2>&1; then
+  source "$_pr_detection_self_dir/date-helpers.sh"
+fi
+
+unset _pr_detection_self_dir
 
 # detect_pr_for_issue ISSUE_NUMBER
 #

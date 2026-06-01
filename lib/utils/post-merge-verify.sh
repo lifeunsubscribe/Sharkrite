@@ -10,11 +10,20 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (verify_post_merge is the canonical indicator)
+if declare -f verify_post_merge >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_post_merge_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+  source "$_post_merge_self_dir/config.sh"
 fi
+
+unset _post_merge_self_dir
 
 # ===================================================================
 # PUBLIC: verify_post_merge [worktree_path]

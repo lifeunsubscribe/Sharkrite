@@ -2,19 +2,31 @@
 # lib/utils/format-review.sh
 # Formats PR review markdown into compact, readable format
 # Usage: format-review.sh <review_file>
-
-# Source config if not already loaded
-if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
-fi
+#
+# NOTE: This is a standalone script, not a sourced library. It defines helper
+# functions and then runs main-body code that processes $1. Re-source safety
+# is achieved by guarding the main-body execution so sourcing it twice (e.g.,
+# in tests) only defines the functions without re-running the processing loop.
 
 set -euo pipefail
 
-REVIEW_FILE="$1"
+# Source config if not already loaded
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  _format_review_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_format_review_self_dir/config.sh"
+  unset _format_review_self_dir
+fi
 
-if [ ! -f "$REVIEW_FILE" ]; then
-  echo "Error: Review file not found: $REVIEW_FILE" >&2
+# Re-source guard for the main body: skip execution if already loaded as a library.
+# extract_key_phrase is the canonical indicator that functions are already defined.
+if declare -f extract_key_phrase >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+REVIEW_FILE="${1:-}"
+
+if [ -z "$REVIEW_FILE" ] || [ ! -f "$REVIEW_FILE" ]; then
+  echo "Error: Review file not found: ${REVIEW_FILE:-<none>}" >&2
   exit 1
 fi
 

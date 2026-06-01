@@ -12,6 +12,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (gemini_provider_detect_cli is the canonical indicator)
+if declare -f gemini_provider_detect_cli >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # =============================================================================
 # CLI Detection
 # =============================================================================

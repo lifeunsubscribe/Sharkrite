@@ -6,14 +6,28 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (_RITE_BOOTSTRAP_DOCS_LOADED is the sentinel)
+# Sentinel set before dep loading and main body so second source returns immediately.
+if [ "${_RITE_BOOTSTRAP_DOCS_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_BOOTSTRAP_DOCS_LOADED=1
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source configuration if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
-source "$RITE_LIB_DIR/utils/colors.sh"
-source "$RITE_LIB_DIR/providers/provider-interface.sh"
+# Load dependencies (idempotent — each guarded by its own re-source guard)
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/colors.sh"
+fi
+if ! declare -f load_provider >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+fi
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
 RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-${RITE_PROJECT_ROOT}/.rite/docs}"

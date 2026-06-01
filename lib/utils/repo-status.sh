@@ -7,14 +7,31 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (repo_wide_status is the canonical indicator)
+if declare -f repo_wide_status >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_repo_status_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config and dependencies if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$_SCRIPT_DIR/config.sh"
+  source "$_repo_status_self_dir/config.sh"
 fi
-source "$RITE_LIB_DIR/utils/colors.sh"
-source "$RITE_LIB_DIR/utils/date-helpers.sh"
-source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
+# Load dependencies (idempotent — each guarded by its own re-source guard)
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$_repo_status_self_dir/colors.sh"
+fi
+if ! declare -f iso_to_epoch >/dev/null 2>&1; then
+  source "$_repo_status_self_dir/date-helpers.sh"
+fi
+if ! declare -f detect_pr_for_issue >/dev/null 2>&1; then
+  source "$_repo_status_self_dir/pr-detection.sh"
+fi
+
+unset _repo_status_self_dir
 
 # =============================================================================
 # Worktree scanning

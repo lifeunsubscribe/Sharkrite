@@ -8,6 +8,13 @@
 #
 # No external commands, no sourced dependencies — pure bash arithmetic + echo.
 
+set -euo pipefail
+
+# Re-source guard: skip if already loaded (_batch_compute_totals is the canonical indicator)
+if declare -f _batch_compute_totals >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # _batch_compute_totals
 # Compute TOTAL_PROCESSED from the batch state arrays.

@@ -10,20 +10,36 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (get_commits_behind_main is the canonical indicator)
+if declare -f get_commits_behind_main >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_stale_branch_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+  source "$_stale_branch_self_dir/config.sh"
 fi
 
-source "$RITE_LIB_DIR/utils/colors.sh"
-source "$RITE_LIB_DIR/utils/stash-manager.sh"
+# Load dependencies (idempotent — each guarded by its own re-source guard)
+if ! declare -f print_header >/dev/null 2>&1; then
+  source "$_stale_branch_self_dir/colors.sh"
+fi
+if ! declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  source "$_stale_branch_self_dir/stash-manager.sh"
+fi
 
 # Source post-merge verification utilities
-if ! source "$RITE_LIB_DIR/utils/post-merge-verify.sh"; then
-  echo "ERROR: Failed to source post-merge-verify.sh" >&2
-  exit 1
+if ! declare -f verify_post_merge >/dev/null 2>&1; then
+  if ! source "$_stale_branch_self_dir/post-merge-verify.sh"; then
+    echo "ERROR: Failed to source post-merge-verify.sh" >&2
+    exit 1
+  fi
 fi
+
+unset _stale_branch_self_dir
 
 # Verify verify_post_merge function is available
 if ! declare -f verify_post_merge >/dev/null 2>&1; then

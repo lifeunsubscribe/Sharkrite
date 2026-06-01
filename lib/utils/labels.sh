@@ -6,6 +6,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (ensure_labels_exist is the canonical indicator)
+if declare -f ensure_labels_exist >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ensure_labels_exist LABELS_CSV
 #
 # Creates any labels in the comma-separated list that don't already exist

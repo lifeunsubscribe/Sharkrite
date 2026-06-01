@@ -10,16 +10,27 @@
 
 set -euo pipefail
 
-# Source configuration
+# Re-source guard: skip if already loaded (_RITE_UNDO_WORKFLOW_LOADED is the sentinel)
+if [ "${_RITE_UNDO_WORKFLOW_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_UNDO_WORKFLOW_LOADED=1
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source configuration
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
-source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
-
-# Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
-source "$RITE_LIB_DIR/utils/git-helpers.sh"
+# Load dependencies (idempotent — each guarded by its own re-source guard)
+if ! declare -f update_scratchpad_from_pr >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+fi
+if ! declare -f git_fetch_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/git-helpers.sh"
+fi
 
 # =============================================================================
 # PARSE ARGUMENTS

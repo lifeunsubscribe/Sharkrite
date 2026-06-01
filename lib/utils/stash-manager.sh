@@ -8,16 +8,28 @@
 
 set -euo pipefail
 
-# Source config if not already loaded
-if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+# Re-source guard: skip if already loaded (create_sharkrite_stash is the canonical indicator)
+if declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
 fi
 
-if ! source "$RITE_LIB_DIR/utils/colors.sh"; then
-  echo "ERROR: Failed to load colors.sh" >&2
-  exit 1
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_stash_mgr_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source config if not already loaded
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  source "$_stash_mgr_self_dir/config.sh"
 fi
+
+# Load colors (idempotent — guarded by its own re-source guard)
+if ! declare -f print_header >/dev/null 2>&1; then
+  if ! source "$_stash_mgr_self_dir/colors.sh"; then
+    echo "ERROR: Failed to load colors.sh" >&2
+    exit 1
+  fi
+fi
+
+unset _stash_mgr_self_dir
 
 # Marker tag for sharkrite-created stashes.
 # Guard the readonly declaration: when this file is sourced multiple times in

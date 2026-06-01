@@ -13,19 +13,28 @@
 
 set -euo pipefail
 
-# Source config if not already loaded
-if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+# Re-source guard: skip if already loaded (classify_branch_health is the canonical indicator)
+if declare -f classify_branch_health >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
 fi
 
-source "$RITE_LIB_DIR/utils/colors.sh"
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_branch_preflight_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source config if not already loaded
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  source "$_branch_preflight_self_dir/config.sh"
+fi
+
+source "$_branch_preflight_self_dir/colors.sh"
 
 # Source stale-branch utilities for commits-behind detection
-if ! source "$RITE_LIB_DIR/utils/stale-branch.sh" 2>/dev/null; then
+if ! source "$_branch_preflight_self_dir/stale-branch.sh" 2>/dev/null; then
   echo "ERROR: Failed to source stale-branch.sh" >&2
   exit 1
 fi
+
+unset _branch_preflight_self_dir
 
 # ===================================================================
 # PUBLIC: Main entry point

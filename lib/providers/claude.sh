@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (claude_provider_detect_cli is the canonical indicator)
+if declare -f claude_provider_detect_cli >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Ensure run_with_timeout is available. config.sh sources timeout.sh before
 # load_provider() in normal flows, but tests may source this file directly.
 # Previously this had a path-construction bug: when RITE_LIB_DIR was set,

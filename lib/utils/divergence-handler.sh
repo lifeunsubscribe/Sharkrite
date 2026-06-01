@@ -13,28 +13,42 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (detect_divergence is the canonical indicator)
+if declare -f detect_divergence >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_divergence_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+  source "$_divergence_self_dir/config.sh"
 fi
 
 # Source notifications for Slack/email alerts
-if [ -f "$RITE_LIB_DIR/utils/notifications.sh" ]; then
-  source "$RITE_LIB_DIR/utils/notifications.sh"
+if ! declare -f send_slack >/dev/null 2>&1; then
+  source "$_divergence_self_dir/notifications.sh"
 fi
 
 # Source post-merge verification
-source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+if ! declare -f verify_post_merge >/dev/null 2>&1; then
+  source "$_divergence_self_dir/post-merge-verify.sh"
+fi
 
-# Source stash manager
-source "$RITE_LIB_DIR/utils/stash-manager.sh"
+unset _divergence_self_dir
+
+# Source stash manager (idempotent — guarded by stash-manager.sh's own re-source guard)
+if ! declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/stash-manager.sh"
+fi
 
 # Source conflict resolver if available (provided by issue #21).
 # Guarded: divergence-handler works without it — resolver is an enhancement,
 # not a hard dependency. When present, attempt_claude_merge_resolution()
 # becomes available and is called on rebase conflict bail paths.
-if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ] && \
+   ! declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
 fi
 

@@ -5,19 +5,29 @@
 #   validate-setup.sh           # Check all prerequisites
 #   validate-setup.sh --fix     # Auto-fix issues where possible
 
-# Source config if not already loaded
-if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
-fi
-
 set -euo pipefail
 
-# Source scratchpad lock utilities (used when --fix writes to the scratchpad)
-_VALIDATE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
-  source "$_VALIDATE_SCRIPT_DIR/scratchpad-lock.sh"
+# Re-source guard: skip if already loaded (_RITE_VALIDATE_SETUP_LOADED is the sentinel)
+# Sentinel set before main body so second source returns immediately.
+if [ "${_RITE_VALIDATE_SETUP_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
 fi
+_RITE_VALIDATE_SETUP_LOADED=1
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_validate_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source config if not already loaded
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  source "$_validate_self_dir/config.sh"
+fi
+
+# Source scratchpad lock utilities (used when --fix writes to the scratchpad)
+if ! declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
+  source "$_validate_self_dir/scratchpad-lock.sh"
+fi
+
+unset _validate_self_dir
 
 # Colors
 RED='\033[0;31m'

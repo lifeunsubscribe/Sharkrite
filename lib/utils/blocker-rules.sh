@@ -15,8 +15,17 @@
 
 set -euo pipefail
 
-# Source notifications library
-source "$RITE_LIB_DIR/utils/notifications.sh"
+# Re-source guard: skip if already loaded (check_blockers is the canonical indicator)
+if declare -f check_blockers >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# Load notifications (idempotent — guarded by its own re-source guard)
+if ! declare -f send_slack >/dev/null 2>&1; then
+  _blocker_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_blocker_self_dir/notifications.sh"
+  unset _blocker_self_dir
+fi
 
 # Blocker detection functions
 

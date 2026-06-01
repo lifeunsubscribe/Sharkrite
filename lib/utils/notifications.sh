@@ -9,6 +9,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (send_slack is the canonical indicator)
+if declare -f send_slack >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Configuration from environment (with config.sh defaults)
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
 EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"

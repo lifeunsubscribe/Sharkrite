@@ -11,14 +11,29 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (_RITE_CLEANUP_WORKTREES_LOADED is the sentinel)
+if [ "${_RITE_CLEANUP_WORKTREES_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_CLEANUP_WORKTREES_LOADED=1
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_cleanup_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/config.sh"
+  source "$_cleanup_self_dir/config.sh"
 fi
 
-source "$RITE_LIB_DIR/utils/stash-manager.sh"
-source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+# Source dependencies (idempotent — guarded by each lib's own re-source guard)
+if ! declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  source "$_cleanup_self_dir/stash-manager.sh"
+fi
+if ! declare -f portable_sed_i >/dev/null 2>&1; then
+  source "$_cleanup_self_dir/portable-cmds.sh"
+fi
+
+unset _cleanup_self_dir
 
 set -e
 

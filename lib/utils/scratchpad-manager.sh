@@ -7,22 +7,32 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (update_scratchpad_from_pr is the canonical indicator)
+if declare -f update_scratchpad_from_pr >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Use configured scratchpad path (set by config.sh)
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
 
+_SCRATCHPAD_MANAGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source label utilities if not already loaded
-if [ -n "${RITE_LIB_DIR:-}" ] && [ -f "$RITE_LIB_DIR/utils/labels.sh" ]; then
-  source "$RITE_LIB_DIR/utils/labels.sh"
+if ! declare -f ensure_labels_exist >/dev/null 2>&1; then
+  if [ -f "$_SCRATCHPAD_MANAGER_DIR/labels.sh" ]; then
+    source "$_SCRATCHPAD_MANAGER_DIR/labels.sh"
+  fi
 fi
 
 # Source scratchpad lock utilities if not already loaded
 # All writer functions below acquire the lock before modifying SCRATCHPAD_FILE.
 # trap 'release_scratchpad_lock' RETURN fires when the function returns (normal,
 # error, or early return), ensuring the lock is always released.
-_SCRATCHPAD_MANAGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
   source "$_SCRATCHPAD_MANAGER_DIR/scratchpad-lock.sh"
 fi
+
+unset _SCRATCHPAD_MANAGER_DIR
 
 # Update scratchpad with security findings from PR review
 update_scratchpad_from_pr() {

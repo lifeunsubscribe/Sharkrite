@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (create_followup_issues is the canonical indicator)
+if declare -f create_followup_issues >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Function: create_followup_issues
 # Parses latest review for "skip" items and creates GitHub issues
 # Returns: 0 on success, number of issues created stored in ISSUES_CREATED global

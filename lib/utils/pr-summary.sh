@@ -6,6 +6,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (build_changes_summary is the canonical indicator)
+if declare -f build_changes_summary >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 SUMMARY_START="<!-- sharkrite-changes-summary -->"
 SUMMARY_END="<!-- /sharkrite-changes-summary -->"
 

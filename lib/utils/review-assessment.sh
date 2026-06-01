@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (assess_pr_review is the canonical indicator)
+if declare -f assess_pr_review >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Function: assess_pr_review
 # Extracts latest review and saves it for Claude assessment
 # Usage: assess_pr_review <pr-number>

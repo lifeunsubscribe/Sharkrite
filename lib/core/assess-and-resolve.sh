@@ -17,20 +17,38 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (_RITE_ASSESS_RESOLVE_LOADED is the sentinel)
+if [ "${_RITE_ASSESS_RESOLVE_LOADED:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_ASSESS_RESOLVE_LOADED=1
+
+# Load deps using BASH_SOURCE-relative path (works regardless of RITE_LIB_DIR state)
+_assess_resolve_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  source "$SCRIPT_DIR/../utils/config.sh"
+  source "$_assess_resolve_self_dir/../utils/config.sh"
 fi
 
-# Source review helper for consistent review method handling
-source "$RITE_LIB_DIR/utils/review-helper.sh"
-source "$RITE_LIB_DIR/utils/labels.sh"
-source "$RITE_LIB_DIR/utils/date-helpers.sh"
-source "$RITE_LIB_DIR/utils/issue-lock.sh"
+unset _assess_resolve_self_dir
 
-# Source PR detection for shared commit timestamp utility
-source "$RITE_LIB_DIR/utils/pr-detection.sh"
+# Load dependencies (idempotent — each guarded by its own re-source guard)
+if ! declare -f trigger_local_review >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/review-helper.sh"
+fi
+if ! declare -f ensure_labels_exist >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/labels.sh"
+fi
+if ! declare -f iso_to_epoch >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/date-helpers.sh"
+fi
+if ! declare -f acquire_issue_lock >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+fi
+if ! declare -f detect_pr_for_issue >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+fi
 
 # Redirect all display output to stderr (stdout reserved for filtered content on exit 2)
 exec 3>&1  # Save original stdout for filtered content output
@@ -58,7 +76,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Parse arguments
-PR_NUMBER="$1"
+PR_NUMBER="${1:-}"
 ISSUE_NUMBER="${2:-}"
 RETRY_COUNT="${3:-0}"  # Default to 0 if not provided
 AUTO_MODE=false
