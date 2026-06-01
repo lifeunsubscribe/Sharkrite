@@ -231,7 +231,7 @@ The `acquire_pr_followup_lock` waiter times out after **60 seconds**. Under slow
 | **Theoretical worst case** | more calls if loop retries multiple times; per-call cost is bounded at 20s (5s+15s backoff, no trailing sleep) — growth comes from call count, not per-call duration |
 
 **What happens on waiter timeout:**
-The waiter sets `_skip_followup_creation=true` and proceeds without the lock. This prevents creation of a duplicate follow-up issue but also prevents creation of *any* follow-up issue for this run. A `[diag] FOLLOWUP_LOCK_TIMEOUT` line is written to `RITE_LOG_FILE`. Recovery: re-run `rite N --assess-and-fix`.
+`acquire_pr_followup_lock` returns 1. The caller (`assess-and-resolve.sh`) sets `_skip_followup_creation=true` in its `else` branch and proceeds without the lock. This prevents creation of a duplicate follow-up issue but also prevents creation of *any* follow-up issue for this run. A `[diag] FOLLOWUP_LOCK_TIMEOUT` line is written to `RITE_LOG_FILE`. Recovery: re-run `rite N --assess-and-fix`.
 
 **Why this doesn't cause data corruption:**
 The skip-on-timeout is conservative — the follow-up may already have been created by the holder. The dedup guarantee is preserved (no duplicate created); the only loss is a missed creation in a concurrent slow-GitHub scenario.

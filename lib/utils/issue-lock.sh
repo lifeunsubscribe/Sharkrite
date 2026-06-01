@@ -154,10 +154,11 @@ release_issue_lock() {
 #                             sleep) — growth comes from call count, not per-call duration
 #
 #   What happens on waiter timeout:
-#     The waiter proceeds lock-less (returns 1, sets _skip_followup_creation=true).
-#     This is safe in the sense that it prevents creation of a follow-up issue
-#     rather than creating a duplicate.  However, it means the follow-up may not
-#     be created at all, requiring a manual re-run of --assess-and-fix.
+#     The waiter returns 1 to the caller (acquire_pr_followup_lock only returns 1).
+#     The caller (assess-and-resolve.sh) sets _skip_followup_creation=true in the
+#     else branch.  This prevents creation of a follow-up issue rather than creating
+#     a duplicate.  However, it means the follow-up may not be created at all,
+#     requiring a manual re-run of --assess-and-fix.
 #
 #   Tuning:
 #     - Reduce RITE_DEDUP_BACKOFF (default: 5s) to shorten holder dedup wait time.
