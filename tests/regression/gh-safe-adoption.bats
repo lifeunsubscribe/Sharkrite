@@ -1,10 +1,12 @@
 #!/usr/bin/env bats
 # Regression test: gh_safe adoption across the codebase
 #
-# Verifies two things:
+# Verifies three things:
 # 1. The GH_UNSAFE_CALL lint rule fires on raw gh calls and passes on gh_safe calls
-# 2. gh_safe itself handles transient 429/5xx errors with retry and returns empty
-#    on 404/not-found (fault-injection tests via a fake gh stub)
+# 2. gh_safe returns empty/exit-0 on 404 for READ operations (pr view, issue list, etc.)
+# 3. gh_safe propagates the real exit code on 404 for WRITE operations
+#    (api -X PUT/POST/DELETE/PATCH, pr merge, pr close, pr comment, etc.)
+#    — prevents the safety-critical merge path from silently believing a 404 merge succeeded
 #
 # Fault-injection tests replace the real `gh` with a stub that returns specific
 # error responses to simulate GitHub API failures in a deterministic way.
@@ -156,6 +158,85 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" =~ "exit:0" ]]
   [[ "$output" =~ "result:''" ]]
+}
+
+@test "gh_safe propagates 404 (non-zero exit) for write ops — api -X PUT (merge path)" {
+  # Stub: returns 404 on the merge endpoint (resource exists check fails)
+  cat > "$STUB_BIN/gh" <<'EOF'
+#!/bin/bash
+echo "Not Found (HTTP 404)" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  run bash -c "
+    export PATH='$STUB_BIN:\$PATH'
+    source '$GH_RETRY_SH'
+    gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123
+  "
+
+  # Must propagate non-zero — a 404 on the merge endpoint is a real error,
+  # not a benign "resource doesn't exist yet" condition
+  [ "$status" -ne 0 ]
+}
+
+@test "gh_safe propagates 404 (non-zero exit) for write ops — pr close" {
+  cat > "$STUB_BIN/gh" <<'EOF'
+#!/bin/bash
+echo "Could not resolve to a PullRequest with the number 9999. (HTTP 404)" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  run bash -c "
+    export PATH='$STUB_BIN:\$PATH'
+    source '$GH_RETRY_SH'
+    gh_safe pr close 9999
+  "
+
+  [ "$status" -ne 0 ]
+}
+
+@test "gh_safe returns empty/exit-0 on 404 for read ops — pr view (unchanged behavior)" {
+  # Stub: always returns not-found error
+  cat > "$STUB_BIN/gh" <<'EOF'
+#!/bin/bash
+echo "Could not resolve to a PullRequest with the number 9999. (HTTP 404)" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  run bash -c "
+    export PATH='$STUB_BIN:\$PATH'
+    source '$GH_RETRY_SH'
+    result=\$(gh_safe pr view 9999 --json title)
+    echo \"exit:\$?\"
+    echo \"result:'\${result:-empty}'\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "exit:0" ]]
+  [[ "$output" =~ "result:''" ]]
+}
+
+@test "gh_safe returns empty/exit-0 on 404 for read ops — api GET (no -X flag)" {
+  cat > "$STUB_BIN/gh" <<'EOF'
+#!/bin/bash
+echo "Not Found (HTTP 404)" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  run bash -c "
+    export PATH='$STUB_BIN:\$PATH'
+    source '$GH_RETRY_SH'
+    result=\$(gh_safe api 'repos/owner/repo/pulls/9999')
+    echo \"exit:\$?\"
+    echo \"result:'\${result:-empty}'\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "exit:0" ]]
 }
 
 @test "gh_safe propagates non-transient errors (e.g. auth failure)" {

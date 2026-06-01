@@ -7,7 +7,10 @@
 #
 # Behavior:
 #   - Retries on 429 (rate-limited) and 5xx server errors with exponential backoff
-#   - Returns empty output (exit 0) on 404 / "not found" (PR/issue doesn't exist)
+#   - Returns empty output (exit 0) on 404 / "not found" for READ operations only
+#     (view, list, diff, status, checks — resource may not exist yet, that's ok)
+#   - Propagates real exit code on 404 for WRITE operations
+#     (merge, close, edit, comment, create, api PUT/POST/DELETE/PATCH — 404 is a real error)
 #   - Surfaces (propagates) non-transient errors so callers fail loudly
 #   - On exhausted retries, propagates the final non-zero exit code
 #
@@ -40,6 +43,53 @@ set -euo pipefail
 : "${RITE_GH_RETRY_MAX_SLEEP:=30}"
 
 # ---------------------------------------------------------------------------
+# _gh_is_read_op — returns 0 (true) if the gh subcommand is a read-only op
+#
+# Read operations: pr view/list/diff/checks/status, issue view/list/status,
+#   repo view/list, release view/list, run view/list, workflow view/list,
+#   api GET (or bare api with no -X flag)
+#
+# Write/mutating operations return 1 (false): merge, close, edit, comment,
+#   create, reopen, delete, approve, request-reviews, lock, unlock, pin,
+#   unpin, transfer, archive, rename, set-default, enable, disable,
+#   api with -X PUT/POST/DELETE/PATCH
+# ---------------------------------------------------------------------------
+_gh_is_read_op() {
+  # Inspect args to determine if this is a read-only gh call.
+  # $@ is the full argument list passed to gh_safe (e.g., pr view 123 --json ...)
+  local -a args=("$@")
+  local subcommand="${args[0]:-}"
+  local verb="${args[1]:-}"
+
+  # api subcommand: read only if no explicit -X flag, or -X GET
+  if [ "$subcommand" = "api" ]; then
+    local i
+    for (( i=0; i<${#args[@]}; i++ )); do
+      if [ "${args[$i]}" = "-X" ] || [ "${args[$i]}" = "--method" ]; then
+        local method="${args[$((i+1))]:-GET}"
+        # Only GET is a read; PUT/POST/DELETE/PATCH are writes
+        [ "${method^^}" = "GET" ] && return 0 || return 1
+      fi
+    done
+    # No -X flag → defaults to GET → read
+    return 0
+  fi
+
+  # For all other subcommands, check the verb (second token)
+  case "$verb" in
+    view|list|diff|checks|status|browse)
+      return 0
+      ;;
+    *)
+      # Everything else (merge, close, edit, comment, create, reopen,
+      # delete, approve, request-reviews, lock, unlock, pin, unpin,
+      # transfer, archive, rename, set-default, enable, disable, etc.)
+      return 1
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # gh_safe — safe gh wrapper with retry and not-found handling
 # ---------------------------------------------------------------------------
 gh_safe() {
@@ -66,12 +116,21 @@ gh_safe() {
     # Classify the failure
     # -----------------------------------------------------------------------
 
-    # Not-found: PR/issue/resource doesn't exist — expected, return empty
+    # Not-found: PR/issue/resource doesn't exist
+    # For READ operations: expected (resource may not exist yet) → return empty, exit 0
+    # For WRITE operations: a real error (can't merge/close a non-existent PR) → propagate
     if echo "$stderr_content" | grep -qiE \
         "not found|no pull requests|could not resolve|HTTP 404|404 Not Found|does not exist"; then
-      rm -f "$stderr_file"
-      echo ""
-      return 0
+      if _gh_is_read_op "$@"; then
+        rm -f "$stderr_file"
+        echo ""
+        return 0
+      else
+        # Write op got a 404 — fall through to propagate the real exit code
+        rm -f "$stderr_file"
+        echo "$stderr_content" >&2
+        return "$exit_code"
+      fi
     fi
 
     # Rate-limited (429) or GitHub server errors (5xx) — retry with backoff
@@ -105,5 +164,6 @@ gh_safe() {
   return 1
 }
 
-# Make gh_safe available to sourcing scripts
+# Make functions available to sourcing scripts and subshells
+export -f _gh_is_read_op
 export -f gh_safe
