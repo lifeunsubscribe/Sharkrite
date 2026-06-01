@@ -176,7 +176,7 @@ detect_review_state() {
       .body | contains("<!-- sharkrite-local-review")
     )] | sort_by(.createdAt) | reverse | .[0] // {}
   ')
-  review_json="${review_json:-{}}"
+  review_json="${review_json:-"{}"}"
 
   REVIEW_BODY=$(echo "$review_json" | jq -r '.body // ""' 2>/dev/null)
   REVIEW_TIME=$(echo "$review_json" | jq -r '.createdAt // ""' 2>/dev/null)

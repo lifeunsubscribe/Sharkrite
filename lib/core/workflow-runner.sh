@@ -1042,7 +1042,7 @@ phase_assess_and_resolve() {
         sort_by(.createdAt) | reverse | .[0].body // ""),
       has_followup: ([.comments[] | select(.body | contains("sharkrite-followup-issue:"))] | length > 0)
     }')
-    pr_assess_state="${pr_assess_state:-{}}"
+    pr_assess_state="${pr_assess_state:-"{}"}"
 
     local existing_assessment=$(echo "$pr_assess_state" | jq -r '.assessment // ""' 2>/dev/null)
     local has_followup=$(echo "$pr_assess_state" | jq -r '.has_followup // false' 2>/dev/null)
@@ -1321,7 +1321,7 @@ phase_merge_pr() {
   # Show a brief changes summary so the user knows what's about to be merged
   local _pr_info
   _pr_info=$(gh_safe pr view "$pr_number" --json title,body)
-  _pr_info="${_pr_info:-{}}"
+  _pr_info="${_pr_info:-"{}"}"
   local _pr_title=$(echo "$_pr_info" | jq -r '.title // ""')
   local _pr_body=$(echo "$_pr_info" | jq -r '.body // ""')
 
@@ -1861,7 +1861,7 @@ run_workflow() {
         .body | contains("sharkrite-followup-issue:")
       )] | length > 0)
     }')
-    pr_state_json="${pr_state_json:-{}}"
+    pr_state_json="${pr_state_json:-"{}"}"
     local pr_latest_review=$(echo "$pr_state_json" | jq -r '.latest_review // ""' 2>/dev/null)
     local pr_latest_assessment=$(echo "$pr_state_json" | jq -r '.latest_assessment // ""' 2>/dev/null)
     local pr_has_followup=$(echo "$pr_state_json" | jq -r '.has_followup // false' 2>/dev/null)
