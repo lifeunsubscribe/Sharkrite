@@ -213,6 +213,12 @@ _gh_mock_stateful_issue_list() {
     esac
   done
 
+  # Normalize state to uppercase so it matches the stored "OPEN"/"CLOSED" values.
+  # assess-and-resolve.sh passes --state open (lowercase); the real API and our
+  # stored state use uppercase ("OPEN") to match select(.state == "OPEN") at
+  # assess-and-resolve.sh:1143.
+  _state=$(echo "$_state" | tr '[:lower:]' '[:upper:]')
+
   local _issues_file
   _issues_file=$(_gh_mock_issues_file)
 
@@ -223,6 +229,9 @@ _gh_mock_stateful_issue_list() {
     _lag_file=$(_gh_mock_lag_file)
     local _lag
     _lag=$(cat "$_lag_file" 2>/dev/null || echo "0")
+    # Guard against empty or non-numeric content (e.g. truncated write) to
+    # prevent "integer expression expected" under bats' set -e.
+    [[ "$_lag" =~ ^[0-9]+$ ]] || _lag=0
     if [ "$_lag" -gt 0 ]; then
       echo $((_lag - 1)) > "$_lag_file"
       # Return empty array; let caller's --jq handle it
@@ -301,6 +310,8 @@ _gh_mock_stateful_issue_create() {
   _num_file=$(_gh_mock_next_num_file)
   local _seq
   _seq=$(cat "$_num_file" 2>/dev/null || echo "0")
+  # Guard against empty or non-numeric content to prevent arithmetic errors.
+  [[ "$_seq" =~ ^[0-9]+$ ]] || _seq=0
   local _issue_num=$(( _seq + 1000 ))
   echo $(( _seq + 1 )) > "$_num_file"
 
@@ -312,21 +323,26 @@ _gh_mock_stateful_issue_create() {
      --arg title "$_title" \
      --rawfile body "$_body_source" \
      --arg label "$_label" \
-     --arg state "open" \
+     --arg state "OPEN" \
      '. += [{"number": $num, "title": $title, "body": $body, "label": $label, "state": $state, "url": ("https://github.com/mock/repo/issues/" + ($num | tostring))}]' \
      "$_issues_file" > "${_issues_file}.tmp" && mv "${_issues_file}.tmp" "$_issues_file"
 
   [ -n "$_tmp_body_file" ] && rm -f "$_tmp_body_file" || true
 
-  # Reset index lag counter for newly created issue
-  echo "${GH_MOCK_ISSUE_INDEX_LAG:-0}" > "$(_gh_mock_lag_file)"
+  # NOTE: The lag counter is intentionally NOT reset here.  Resetting it on
+  # every create would make it impossible to model the multi-issue concurrent-
+  # index-lag scenario that assess-and-resolve.sh's retry loop (lines 1128-1167)
+  # guards against.  The counter is a global budget shared across all creates
+  # in a test; it is seeded once in _gh_mock_init_state and decremented by each
+  # content search until exhausted.
 
   echo "https://github.com/mock/repo/issues/${_issue_num}"
 }
 
 # gh issue view N --json url --jq .url
 #
-# Returns the URL for a tracked issue.  Falls through to fixture if not found.
+# Returns the URL for a tracked issue.  Returns failure (exit 1) if the issue
+# is not in the stateful store — there is no fixture fallback for this command.
 _gh_mock_stateful_issue_view() {
   local _issue_num="${1:-}"
   shift || true
@@ -350,8 +366,10 @@ _gh_mock_stateful_issue_view() {
     "$_issues_file" 2>/dev/null || true)
 
   if [ -z "$_issue" ]; then
-    # Not in state — fall through to fixture by returning a not-found signal.
-    # Return empty with failure so the caller's || true handles it gracefully.
+    # Not in state — return failure immediately.  The caller in mock_gh does
+    # `return $?` so this exits before any fixture lookup; there is no fixture
+    # fallback for stateful issue view.  Callers should use `|| true` to handle
+    # the not-found case gracefully.
     echo "gh mock: issue ${_issue_num} not in stateful store" >&2
     return 1
   fi

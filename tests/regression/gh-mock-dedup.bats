@@ -120,7 +120,11 @@ teardown() {
     --jq '.[0].number'
 
   [ "$status" -eq 0 ]
-  # jq '.[0].number' on empty array emits "null"
+  # jq '.[0].number' on empty array emits "null".
+  # NOTE: the real caller in assess-and-resolve.sh:1137 pipes this output
+  # through `grep -E '^[0-9]+$'` which converts "null" → empty string before
+  # the dedup decision.  The mock faithfully returns the raw jq output ("null");
+  # the grep post-processing is the caller's responsibility, not the mock's.
   [ "$output" = "null" ]
 }
 
