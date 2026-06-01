@@ -872,7 +872,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             if [ -n "$_dup_candidate" ] && [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
               _dup_body=$(gh_safe issue view "$_dup_candidate" --json body --jq '.body' || true)
               _dup_body="${_dup_body:-}"
-              if echo "$_dup_body" | grep -qF "sharkrite-source-issue:${RITE_ISSUE_NUMBER}"; then
+              if echo "$_dup_body" | grep -qE "sharkrite-source-issue:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
                 DUPLICATE_ISSUE="$_dup_candidate"
               fi
             elif [ -n "$_dup_candidate" ]; then

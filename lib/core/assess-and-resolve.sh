@@ -1176,7 +1176,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       if [ -n "$_search_candidate" ]; then
         _candidate_body=$(gh_safe issue view "$_search_candidate" --json body --jq '.body' || true)
         _candidate_body="${_candidate_body:-}"
-        if echo "$_candidate_body" | grep -qF "sharkrite-source-issue:${ISSUE_NUMBER}"; then
+        if echo "$_candidate_body" | grep -qE "sharkrite-source-issue:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
           EXISTING_ISSUE="$_search_candidate"
         fi
       fi
