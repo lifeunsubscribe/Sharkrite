@@ -205,12 +205,20 @@ _setup_mock_lib_tree() {
   mkdir -p "$MOCK_LIB_DIR/core"
   mkdir -p "$MOCK_LIB_DIR/utils"
 
-  # Symlink the real lib/utils — all pure bash, no network calls.
+  # Symlink ALL of lib/utils — all pure bash, no network calls.
+  # Intentionally broad: assess-and-resolve.sh sources several utils directly
+  # (blocker-rules.sh, scratchpad-manager.sh, divergence-handler.sh, etc.) and
+  # future sourcing dependencies could be added without notice.  Narrowing to a
+  # known subset would break non-obvious transitive sources silently.
   for _f in "$RITE_REPO_ROOT/lib/utils/"*.sh; do
     ln -sf "$_f" "$MOCK_LIB_DIR/utils/$(basename "$_f")"
   done
 
-  # Symlink the real lib/core scripts (most are sourced but not called here).
+  # Symlink ALL of lib/core — intentionally broad for the same reason: the set
+  # of files sourced by assess-and-resolve.sh (or its transitive dependencies)
+  # can grow without this test needing to be updated.  Individual scripts that
+  # must NOT run (assess-review-issues.sh, format-review.sh) are overridden
+  # with stubs immediately below.
   for _f in "$RITE_REPO_ROOT/lib/core/"*.sh; do
     ln -sf "$_f" "$MOCK_LIB_DIR/core/$(basename "$_f")"
   done
@@ -384,8 +392,9 @@ run_assess_and_resolve() {
     false
   }
 
-  # Output must mention skipping the duplicate
-  echo "$output" | grep -qi "already exist\|skipping\|skip" || {
+  # Output must mention skipping the duplicate (match specific phrases emitted by
+  # the dedup path, not the bare token 'skip' which could match unrelated output)
+  echo "$output" | grep -qi "already exists\|skipping assessment\|skipping follow-up\|follow-up already" || {
     echo "FAIL: second run output does not mention skipping duplicate"
     echo "Output snippet: ${output:0:500}"
     false
@@ -594,8 +603,11 @@ run_assess_and_resolve() {
     false
   }
 
-  # Output mentions zero findings or skipping assessment
-  echo "$output" | grep -qi "zero finding\|skipping assessment\|skip" || {
+  # Output must mention zero findings or skipping assessment (match specific
+  # phrases emitted by the early-exit path, not the bare token 'skip' which
+  # could match unrelated output — script emits "skipping assessment" or
+  # "zero findings")
+  echo "$output" | grep -qi "zero findings\|skipping assessment" || {
     echo "FAIL: output doesn't mention skipping due to zero findings"
     echo "Output: ${output:0:500}"
     false

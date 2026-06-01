@@ -87,7 +87,11 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then
   done
 
   _tmp_body=$(mktemp)
-  [ -n "$_body_file" ] && [ -f "$_body_file" ] && cp "$_body_file" "$_tmp_body" || : > "$_tmp_body"
+  if [ -n "$_body_file" ] && [ -f "$_body_file" ]; then
+    cp "$_body_file" "$_tmp_body"
+  else
+    : > "$_tmp_body"
+  fi
 
   jq --arg pr "$_pr_num" \
      --rawfile body "$_tmp_body" \
@@ -187,7 +191,11 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
 
   # Use rawfile so HTML comment characters are not escaped
   _tmp_body=$(mktemp)
-  [ -n "$_body_file" ] && [ -f "$_body_file" ] && cp "$_body_file" "$_tmp_body" || : > "$_tmp_body"
+  if [ -n "$_body_file" ] && [ -f "$_body_file" ]; then
+    cp "$_body_file" "$_tmp_body"
+  else
+    : > "$_tmp_body"
+  fi
 
   jq --argjson num "$_issue_num" \
      --arg title "$_title" \
