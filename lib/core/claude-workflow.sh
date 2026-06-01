@@ -2391,7 +2391,7 @@ else
             # Append scope warning to PR body — but only if not already present
             # (guards against duplicate blocks on retry/resume runs)
             _current_pr_body=$(gh pr view "$_pr_for_scope" --json body --jq '.body' 2>/dev/null || true)
-            if echo "$_current_pr_body" | grep -q '<!-- sharkrite-' 2>/dev/null; then
+            if echo "$_current_pr_body" | grep -q '<!-- sharkrite-scope-warning -->' 2>/dev/null; then
               print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
             else
               _scope_warn_text=$(format_scope_warning "$_scope_violations")
@@ -2409,6 +2409,8 @@ else
         fi
         echo ""
       fi
+    else
+      print_info "[diag] scope-check skipped: ISSUE_BODY not set or null — no scope enforcement this run"
     fi
   fi
 fi

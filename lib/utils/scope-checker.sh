@@ -37,11 +37,12 @@ set -euo pipefail
 parse_scope_boundary() {
   local issue_body="$1"
 
-  # Find the Scope Boundary section — supports both markdown bold and plain text.
+  # Find the Scope Boundary section — supports markdown headings (## Scope Boundary,
+  # ## Scope Boundary:), bold (**Scope Boundary**, **Scope Boundary**:), and plain text.
   # Section ends at the next top-level heading or end of document.
   local scope_section
   scope_section=$(echo "$issue_body" | \
-    awk '/^\*\*Scope Boundary\*\*|^Scope Boundary:/{found=1; next}
+    awk '/^#+[[:space:]]*Scope Boundary[[:space:]]*:?[[:space:]]*$|^\*\*Scope Boundary\*\*[[:space:]]*:?[[:space:]]*$|^Scope Boundary:[[:space:]]*$/{found=1; next}
          found && /^(##|---|\*\*[A-Z])/{found=0}
          found{print}' || true)
 
@@ -326,10 +327,13 @@ format_scope_warning() {
   local _count
   _count=$(echo "$violations_text" | grep -c "^VIOLATION:" || true)
 
-  # Extract file list (strip "VIOLATION: " prefix)
-  local _files
+  # Extract file list (strip "VIOLATION: " prefix) and format as backtick bullets.
+  # Pre-build the list before the heredoc to avoid awk expansion inside heredoc body.
+  local _files _bullet_list
   _files=$(echo "$violations_text" | grep "^VIOLATION:" | sed 's/^VIOLATION: //' || true)
+  _bullet_list=$(echo "$_files" | awk '{print "- `" $0 "`"}' || true)
 
+  # sharkrite-lint disable UNQUOTED_HEREDOC - variables must expand inside warning body
   cat <<EOF
 
 ---
@@ -339,7 +343,7 @@ format_scope_warning() {
 
 This PR modifies **${_count}** file(s) that may be outside the issue's declared scope:
 
-$(echo "$_files" | awk '{print "- `" $0 "`"}')
+${_bullet_list}
 
 The issue's **Scope Boundary** section lists allowed changes. These files were either
 explicitly listed under **DO NOT** or not covered by any **DO** bullet.
