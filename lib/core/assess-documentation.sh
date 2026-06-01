@@ -54,7 +54,7 @@ provider_validate_cli || exit 1
 # =====================================================================
 
 PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
-PR_DATA="${PR_DATA:-{}}"
+PR_DATA="${PR_DATA:-"{}"}"
 PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
 PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" | head -500 || true)

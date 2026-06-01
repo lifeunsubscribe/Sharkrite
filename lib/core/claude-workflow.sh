@@ -1957,7 +1957,7 @@ print_header "📋 Creating Draft PR for Tracking"
 
 # Check if PR already exists for this branch
 EXISTING_PR=$(gh_safe pr list --head "$BRANCH_NAME" --json number,title,url,isDraft --jq '.[0]' || true)
-EXISTING_PR="${EXISTING_PR:-{}}"
+EXISTING_PR="${EXISTING_PR:-"{}"}"
 
 if [ "$EXISTING_PR" != "{}" ] && [ -n "$EXISTING_PR" ]; then
   PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')

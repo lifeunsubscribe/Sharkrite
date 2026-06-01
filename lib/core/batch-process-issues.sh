@@ -327,7 +327,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   # Fetch issue details
   ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_NUM" --json title,labels,state)
-  ISSUE_DETAILS="${ISSUE_DETAILS:-{}}"
+  ISSUE_DETAILS="${ISSUE_DETAILS:-"{}"}"
 
   if [ "$ISSUE_DETAILS" = "{}" ]; then
     print_error "Issue #$ISSUE_NUM not found"
