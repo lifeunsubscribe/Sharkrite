@@ -773,10 +773,10 @@ if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "false" ] && [ "${CREATE_SECURITY_DE
 fi
 
 # Determine the merge decision NOW, before follow-up issue creation.
-# Follow-up creation is best-effort — if it crashes (gh API error, network issue),
-# it must NOT override the merge decision. The CREATE_SECURITY_DEBT path means
-# "no ACTIONABLE_NOW items, ready to merge" — a failed `gh issue create` shouldn't
-# turn that into "assessment failed, block merge."
+# The merge decision is based solely on assessment results (CRITICAL items at retry
+# limit = block merge; otherwise = allow merge). A subsequent gh API failure during
+# follow-up issue creation will set _followup_creation_failed=true and cause a
+# non-zero exit, so callers know items were not tracked. Merge decision is separate.
 MERGE_EXIT_CODE=0
 # Tracks whether gh issue create failed inside set +e block; checked at final summary.
 _followup_creation_failed=false
@@ -1337,6 +1337,7 @@ This approach allows all fixes to be completed together in a focused PR."
       _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
       mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
       {
+        echo "---"
         echo "# Orphaned Follow-up Items"
         echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "# PR: #${PR_NUMBER}"
@@ -1345,7 +1346,7 @@ This approach allows all fixes to be completed together in a focused PR."
         echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
         echo ""
         cat "$FOLLOWUP_BODY_FILE" 2>/dev/null || echo "(body file unavailable)"
-      } > "$_orphaned_file" || true
+      } >> "$_orphaned_file" || true
 
       rm -f "$FOLLOWUP_BODY_FILE"
       # Release lock on failure too — don't leave waiters stuck
