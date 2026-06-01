@@ -957,7 +957,11 @@ find_worktree_for_task() {
     local issue_body
     issue_body=$(gh_safe issue view "$task" --json body --jq '.body' || true)
 
-    if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
+    # Require digits in the outer guard — otherwise issue bodies that DOCUMENT
+    # the marker format (e.g. "sharkrite-parent-pr:N" as an example) trigger the
+    # inner extraction, which returns empty, which under set -e + pipefail kills
+    # the script silently. Same bug fixed in batch-process-issues.sh (commit 206f2be).
+    if echo "$issue_body" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
       # Extract parent PR number from body marker
       local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
 
