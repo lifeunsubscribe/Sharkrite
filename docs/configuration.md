@@ -72,6 +72,7 @@ Control how Claude assesses PR review issues:
 | `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `300` |
 | `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
 | `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |
+| `RITE_LOCK_DIR` | Directory for per-issue lock files. **Must be local storage** — stale lock reclamation uses `kill -0` which is only valid within a single host/PID namespace. Do not point this at NFS/shared storage. | `$RITE_PROJECT_ROOT/.rite/locks` |
 | `WORKFLOW_MODE` | Default workflow mode | `unsupervised` |
 | `SKIP_AWS_CHECK` | Skip AWS credential checks | `false` |
 | `SLACK_WEBHOOK` | Slack webhook for notifications | — |
