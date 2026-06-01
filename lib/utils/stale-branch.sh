@@ -71,6 +71,8 @@ get_commits_behind_main() {
 # Exit codes (see docs/architecture/exit-codes.md for the canonical table):
 #   0  = continue workflow (branch is current, or was merged with main)
 #   1  = abort (user chose abort, or unrecoverable error)
+#   2  = foreign commits detected after push rejection — caller must re-enter Phase 2→3
+#        (consistent with divergence-handler.sh exit 2 = "needs re-review")
 #   5  = usage cap reached during conflict resolution (caller must abort batch)
 #   11 = restarted fresh (PR closed, artifacts cleaned — caller must reset variables)
 #        NOTE: 11, not 10. Exit 10 is reserved for batch-level "blocker detected".
@@ -164,6 +166,169 @@ EOF
 }
 
 # ===================================================================
+# INTERNAL: Classify foreign commits after push rejection
+# ===================================================================
+
+# _stale_classify_after_push_rejection WORKTREE_PATH BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER] [WORKFLOW_MODE]
+#
+# Called when git push --force-with-lease is rejected after a successful rebase.
+# A rejection means another client pushed to the remote branch between our rebase
+# and our push attempt. We re-fetch and classify those commits before deciding
+# whether to discard them (TRIVIAL) or trigger a re-review (FOREIGN).
+#
+# WORKTREE_PATH is required for verify_post_merge (test verification after TRIVIAL discard).
+#
+# Exit codes:
+#   0 = no foreign commits after re-fetch (remote was fast-forwarded to ours by another process)
+#   1 = blocked (classification failed, rebase conflict, or second-race push rejection)
+#   2 = foreign commits integrated and pushed — caller must re-enter Phase 2→3 review cycle
+#       (consistent with divergence-handler.sh exit 2 = "needs re-review")
+_stale_classify_after_push_rejection() {
+  local worktree_path="$1"
+  local branch_name="$2"
+  local issue_number="${3:-}"
+  local pr_number="${4:-}"
+  local workflow_mode="${5:-auto}"
+
+  # Re-fetch to get the current remote state
+  if ! git fetch origin "$branch_name" 2>/dev/null; then
+    print_error "Could not fetch origin/$branch_name after push rejection"
+    return 1
+  fi
+
+  local local_head
+  local_head=$(git rev-parse HEAD 2>/dev/null || echo "")
+  local remote_head
+  remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || echo "")
+
+  if [ -z "$local_head" ] || [ -z "$remote_head" ]; then
+    print_error "Cannot determine HEAD state after push rejection"
+    return 1
+  fi
+
+  # Check if local is now ahead-of or equal to remote (e.g., another process already
+  # resolved the same race and the remote is now pointing at our commit or a descendant).
+  if [ "$local_head" = "$remote_head" ]; then
+    print_success "Remote is now at our commit — no foreign commits to classify"
+    return 0
+  fi
+
+  # Count commits on remote that local doesn't have
+  local foreign_commits
+  foreign_commits=$(git log --oneline "${local_head}..${remote_head}" 2>/dev/null || true)
+
+  if [ -z "$foreign_commits" ]; then
+    # Local is ahead of remote (no foreign commits) — safe to retry push
+    print_info "No foreign commits found after re-fetch — remote may be behind ours"
+    return 0
+  fi
+
+  local foreign_count
+  foreign_count=$(echo "$foreign_commits" | grep -c '.' || true)
+  print_warning "Found $foreign_count foreign commit(s) on remote after push rejection:"
+  echo "$foreign_commits" | sed 's/^/  /' >&2
+
+  # Use divergence-handler classification if available.
+  # Guards against it being absent (e.g., in unit tests or stripped installs).
+  if [ -f "$RITE_LIB_DIR/utils/divergence-handler.sh" ]; then
+    # Source only if classify_foreign_commits is not already loaded
+    if ! declare -f classify_foreign_commits >/dev/null 2>&1; then
+      # shellcheck source=lib/utils/divergence-handler.sh
+      source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+    fi
+  fi
+
+  if declare -f classify_foreign_commits >/dev/null 2>&1; then
+    # Set fallback class: UNRELATED in auto mode (blocks), RELATED in supervised (user decides)
+    if [ "$workflow_mode" = "supervised" ]; then
+      _DIV_FALLBACK_CLASS="RELATED"
+    else
+      _DIV_FALLBACK_CLASS="UNRELATED"
+    fi
+
+    classify_foreign_commits "$branch_name" "$local_head" "$remote_head" "${issue_number:-}"
+    local classification="${DIVERGENCE_CLASS:-UNRELATED}"
+
+    case "$classification" in
+      TRIVIAL)
+        # Mainline sync or doc-only changes: safe to discard without re-review.
+        # Rebase onto origin/main (not origin/$branch_name) to ensure the branch
+        # remains up-to-date with main. Because the rebase base is origin/main —
+        # not origin/$branch_name — the foreign commits on origin/$branch_name are
+        # NOT replayed; they are discarded. The branch history is rewritten on top
+        # of main, so the final force-push drops the foreign commits from the remote.
+        print_info "Foreign commits classified as TRIVIAL — discarding and rebasing onto origin/main"
+        if git rebase origin/main 2>/dev/null; then
+          # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
+          if ! verify_post_merge "$worktree_path"; then
+            git rebase --abort 2>/dev/null || true
+            print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
+            return 1
+          fi
+          if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+            print_success "Branch rebased onto origin/main (TRIVIAL foreign commits discarded)"
+            return 0
+          else
+            print_error "Push still rejected after discarding TRIVIAL commits — another race occurred"
+            return 1
+          fi
+        else
+          git rebase --abort 2>/dev/null || true
+          print_error "Rebase failed when discarding TRIVIAL foreign commits — cannot proceed"
+          return 1
+        fi
+        ;;
+
+      RELATED|UNRELATED)
+        # FOREIGN commits: these need to go through the review cycle.
+        # Before returning exit 2 we MUST integrate the foreign commits into local
+        # HEAD so that the Phase 2 push (create-pr.sh:161-163) can succeed.
+        # Without this, local HEAD remains behind origin/$branch_name, Phase 2
+        # re-pushes, gets rejected again, and handle_push_divergence returns 1
+        # (block) in auto mode — the re-review never happens.
+        #
+        # Strategy: rebase local onto origin/$branch_name to absorb the foreign
+        # commits, then force-push so remote matches the combined history.
+        # After that return 2 so the caller re-enters Phase 2→3 for review.
+        print_warning "Foreign commits classified as $classification — integrating and requesting re-review"
+
+        local _rebase_onto_remote_output
+        if _rebase_onto_remote_output=$(git rebase "origin/$branch_name" 2>&1); then
+          # Rebase succeeded — push the integrated history
+          if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+            print_success "Integrated $classification foreign commits and pushed — re-entering Phase 2→3 for review"
+            return 2
+          else
+            # Another race: a third push happened while we were rebasing.
+            # Bail — caller will see exit 1 and stop workflow.
+            git rebase --abort 2>/dev/null || true
+            print_error "Push still rejected after integrating $classification commits (another race?) — blocking"
+            return 1
+          fi
+        else
+          git rebase --abort 2>/dev/null || true
+          print_error "Rebase onto origin/$branch_name failed when integrating $classification foreign commits"
+          print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
+          return 1
+        fi
+        ;;
+
+      *)
+        print_error "Unknown classification '$classification' — blocking to be safe"
+        return 1
+        ;;
+    esac
+  else
+    # divergence-handler not available: can't classify safely.
+    # Block in both modes — better to require manual intervention than to silently
+    # absorb unreviewed commits.
+    print_error "divergence-handler.sh not available — cannot classify foreign commits after push rejection"
+    print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
+    return 1
+  fi
+}
+
+# ===================================================================
 # INTERNAL: Rebase branch onto main
 # ===================================================================
 
@@ -246,8 +411,13 @@ _stale_rebase_onto_main() {
       print_success "Branch rebased onto origin/main"
       return 0
     else
-      print_error "Push failed after rebase (force-with-lease rejected)"
-      return 1
+      # Push rejected: another client pushed to the remote branch between our
+      # rebase and this push. Re-fetch and classify the new commits before
+      # deciding what to do — silently absorbing unreviewed foreign commits
+      # would bypass the review cycle.
+      print_warning "Push rejected after rebase (force-with-lease) — re-fetching to classify foreign commits"
+      _stale_classify_after_push_rejection "$worktree_path" "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode"
+      return $?
     fi
   else
     # Rebase had conflicts — abort it

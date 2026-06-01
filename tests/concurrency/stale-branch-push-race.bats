@@ -4,6 +4,8 @@
 # Tests that concurrent pushes to the same branch are handled correctly.
 # Also tests worktree creation races when multiple processes work on same issue.
 # These tests verify fixes for issue #15 (stale branch push races) and #26 (worktree races).
+# Also verifies issue #27: foreign commits after stale-branch push rejection are
+# classified rather than silently absorbed (re-review exit code 2 is returned).
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -360,6 +362,171 @@ wait_at_barrier() {
   [ "$success_count" -ge 1 ]
 
   # Clean up
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
+# =============================================================================
+# Issue #27: Foreign commit classification after stale-branch push rejection
+# =============================================================================
+
+@test "stale-branch push-race: foreign UNRELATED commit triggers exit 2 (re-review), not silent absorb" {
+  # Regression test for issue #27.
+  #
+  # Scenario: A stale feature branch is rebased onto main.  Between the rebase
+  # completing and the push attempt, a second rite run pushes a commit from a
+  # different scope to the same branch.  The force-with-lease push is rejected.
+  #
+  # Expected (fixed behaviour):
+  #   _stale_rebase_onto_main calls _stale_classify_after_push_rejection, which
+  #   re-fetches, classifies the foreign commit as UNRELATED (or RELATED), and
+  #   returns exit 2 — signalling the caller that a re-review is needed.
+  #
+  # The critical assertion is: exit code MUST be 2, NOT 0 (silent absorb).
+  # A return of 0 would mean the workflow continued as if nothing happened,
+  # skipping review of the foreign commit entirely.
+
+  cd "$FIXTURE_REPO"
+
+  # Source stale-branch (pulls in stash-manager, post-merge-verify)
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+  # Stub classify_foreign_commits to return UNRELATED without a Claude call.
+  # This isolates the test from network/API availability while exercising the
+  # full code path through _stale_classify_after_push_rejection.
+  classify_foreign_commits() {
+    export DIVERGENCE_CLASS="UNRELATED"
+    return 0
+  }
+
+  # Stub verify_post_merge so it always passes (not under test here)
+  verify_post_merge() { return 0; }
+
+  # Create feature branch with one commit, pushed to origin
+  local branch_name="fix/race-classify-test-27"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-27.txt
+  git add feature-27.txt
+  git commit -m "Feature work for issue #27 test" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Diverge main so the stale-branch check has actual rebase work to do
+  git checkout main >/dev/null 2>&1
+  echo "main divergence" > main-27.txt
+  git add main-27.txt
+  git commit -m "Main divergence for issue #27 test" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+  git checkout "$branch_name" >/dev/null 2>&1
+
+  # Create a worktree on the feature branch
+  local worktree_path="$RITE_WORKTREE_DIR/issue-race-27"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Simulate the concurrent push: while our worktree is about to rebase+push,
+  # another client pushes an unrelated commit to the same remote branch.
+  local concurrent_dir="$RITE_TEST_TMPDIR/concurrent-27"
+  git clone "$BARE_REMOTE" "$concurrent_dir" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.email "concurrent@example.com" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.name "Concurrent Client" >/dev/null 2>&1
+  git -C "$concurrent_dir" checkout "$branch_name" >/dev/null 2>&1
+  echo "foreign unrelated change" > "$concurrent_dir/foreign-27.txt"
+  git -C "$concurrent_dir" add foreign-27.txt >/dev/null 2>&1
+  git -C "$concurrent_dir" commit -m "fix: unrelated change from another issue" >/dev/null 2>&1
+  git -C "$concurrent_dir" push origin "$branch_name" >/dev/null 2>&1
+
+  # Confirm the concurrent commit is on remote (sanity check)
+  local remote_tip_before
+  remote_tip_before=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
+  [ -n "$remote_tip_before" ]
+
+  # Drive _stale_rebase_onto_main — this is the function under test.
+  # It will:
+  #   1. Rebase the feature branch onto origin/main (succeeds — no conflict)
+  #   2. Attempt git push --force-with-lease origin <branch>
+  #   3. Push is rejected because the concurrent push advanced the remote tip
+  #   4. Call _stale_classify_after_push_rejection → classify_foreign_commits (stubbed → UNRELATED)
+  #   5. Return exit 2: foreign commits require re-review
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
+
+  # CRITICAL: must return exit 2, not 0 (silent absorb) or 1 (generic failure)
+  [ "$status" -eq 2 ]
+
+  # The concurrent commit must still be on remote — it was NOT overwritten
+  local remote_tip_after
+  remote_tip_after=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
+  [ "$remote_tip_before" = "$remote_tip_after" ]
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
+@test "stale-branch push-race: TRIVIAL foreign commit is absorbed silently (exit 0)" {
+  # Companion to the test above: when the foreign commits are classified as TRIVIAL
+  # (mainline sync, docs, formatting — no logic changes), they are absorbed and the
+  # push retried. No re-review is needed.
+  #
+  # Expected: _stale_rebase_onto_main returns exit 0 after absorbing TRIVIAL commits.
+
+  cd "$FIXTURE_REPO"
+
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+  # Stub classify_foreign_commits to return TRIVIAL
+  classify_foreign_commits() {
+    export DIVERGENCE_CLASS="TRIVIAL"
+    return 0
+  }
+
+  # Stub verify_post_merge so it always passes
+  verify_post_merge() { return 0; }
+
+  local branch_name="fix/race-trivial-test-27"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-trivial.txt
+  git add feature-trivial.txt
+  git commit -m "Feature work (trivial test)" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Diverge main
+  git checkout main >/dev/null 2>&1
+  echo "main divergence" > main-trivial.txt
+  git add main-trivial.txt
+  git commit -m "Main divergence (trivial test)" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+  git checkout "$branch_name" >/dev/null 2>&1
+
+  local worktree_path="$RITE_WORKTREE_DIR/issue-trivial-27"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Concurrent TRIVIAL push (a doc-only change)
+  local concurrent_dir="$RITE_TEST_TMPDIR/concurrent-trivial"
+  git clone "$BARE_REMOTE" "$concurrent_dir" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.email "concurrent@example.com" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.name "Concurrent Client" >/dev/null 2>&1
+  git -C "$concurrent_dir" checkout "$branch_name" >/dev/null 2>&1
+  echo "# trivial doc update" >> "$concurrent_dir/feature-trivial.txt"
+  git -C "$concurrent_dir" add feature-trivial.txt >/dev/null 2>&1
+  git -C "$concurrent_dir" commit -m "docs: minor doc update (trivial)" >/dev/null 2>&1
+  git -C "$concurrent_dir" push origin "$branch_name" >/dev/null 2>&1
+
+  # Drive the function
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
+
+  # TRIVIAL foreign commits must be discarded: exit 0 (no re-review needed)
+  [ "$status" -eq 0 ]
+
+  # The trivial foreign commit must have been DISCARDED (not absorbed):
+  # the concurrent client appended "# trivial doc update" to feature-trivial.txt,
+  # but after rebase onto origin/main the worktree must NOT contain that line.
+  run grep -q "trivial doc update" "$worktree_path/feature-trivial.txt"
+  [ "$status" -ne 0 ]
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
   git branch -D "$branch_name" >/dev/null 2>&1 || true
   git push origin --delete "$branch_name" >/dev/null 2>&1 || true
 }
