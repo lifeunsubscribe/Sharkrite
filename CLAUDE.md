@@ -84,6 +84,27 @@ COUNT=$(echo "$output" | grep -c "ACTIONABLE_NOW" || true)
 COUNT=$(echo "$output" | grep -c "^### .* - ACTIONABLE_NOW" || true)
 ```
 
+### Sharkrite marker grep: always anchor the format (CRITICAL)
+
+`grep -q "sharkrite-foo:"` without a format anchor after the colon is a silent-death trap. Issue bodies that **document** a marker format (e.g. `"sharkrite-parent-pr:N"` as an example or placeholder) match the unanchored outer guard. The inner extraction (which requires digits) then returns empty (exit 1), `pipefail` bubbles the error up, and `set -e` kills the script with no output.
+
+**Live incident 2026-05-31:** Three batch runs died silently mid-stream when `rite --label testing` hit issue #34, whose body documented the `sharkrite-parent-pr:` marker format. Fixed in `batch-process-issues.sh` (commit 206f2be) and `claude-workflow.sh`.
+
+```bash
+# BAD: matches "sharkrite-parent-pr:" anywhere, including documentation examples
+if echo "$ISSUE_BODY" | grep -q "sharkrite-parent-pr:"; then
+  PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2)
+  # ^^ returns empty if body only documents the marker → set -e kills silently
+fi
+
+# GOOD: [0-9]+ anchor ensures only live markers (with an actual number) match
+if echo "$ISSUE_BODY" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
+  PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+fi
+```
+
+**Enforcement:** The custom lint rule `UNANCHORED_MARKER_GREP` in `tools/sharkrite-lint.sh` flags any `grep` on `"sharkrite-<marker>:"` without a format anchor after the colon. Regression test in `tests/regression/bare-prefix-grep-silent-death.bats` reproduces the silent-death scenario and verifies the lint rule.
+
 ### Review severity parsing
 
 The review outputs a `Findings: [CRITICAL: N | HIGH: N | ...]` summary line. Parse that instead of broad keyword matching.

@@ -378,6 +378,29 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
+# Rule 13: Unanchored marker-prefix grep (bare-prefix silent-death)
+# grep -q "sharkrite-foo:" without a format anchor after the colon is dangerous:
+# issue bodies that DOCUMENT a marker (e.g. "sharkrite-parent-pr:N" as an example)
+# trip the outer guard, the inner extraction returns empty, and under set -euo pipefail
+# the script dies silently. Live incident: batch died mid-stream on 2026-05-31 when
+# issue #34's body documented the marker format. Fix: require [0-9]+ or similar after :
+echo "Checking for unanchored 'sharkrite-<marker>:' grep patterns (UNANCHORED_MARKER_GREP)..."
+for file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r line_num line_content; do
+    # Skip comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+
+    # Match: grep (with any flags) on a sharkrite-<marker>: pattern
+    # Anchored patterns (safe) must have one of: [0-9], [a-z], [a-zA-Z], \d, or \w after the colon
+    if echo "$line_content" | grep -qE "grep\s+(-[a-zA-Z]+\s+)*['\"]sharkrite-[a-z-]+:['\"]"; then
+      print_violation "$file" "$line_num" "UNANCHORED_MARKER_GREP" \
+        "grep on 'sharkrite-<marker>:' without format anchor after colon — issue bodies that document the marker format will match, causing silent death under set -euo pipefail. Add [0-9]+ or equivalent: grep -qE 'sharkrite-foo:[0-9]+'"
+    fi
+  done < <(grep -n "sharkrite-[a-z-]*:" "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

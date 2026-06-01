@@ -946,7 +946,12 @@ find_worktree_for_task() {
     # Check if this is a follow-up issue with parent PR
     local issue_body=$(gh issue view "$task" --json body --jq '.body' 2>/dev/null || echo "")
 
-    if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
+    # Require digits in the outer guard — unanchored "sharkrite-parent-pr:" matches
+    # issue bodies that DOCUMENT the marker format (e.g. "sharkrite-parent-pr:N" as
+    # an example), causing the inner extraction to return empty and the script to
+    # die silently under set -e + pipefail. Fixed in batch-process-issues.sh via
+    # commit 206f2be; same fix applied here. See: bare-prefix-grep-silent-death.bats
+    if echo "$issue_body" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
       # Extract parent PR number from body marker
       local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
 
