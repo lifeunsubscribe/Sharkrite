@@ -209,6 +209,60 @@ Considered appending deferrals to the source ADR on plan approval. Rejected beca
 
 Tried extracting significant words from feature names and matching against the deferrals log in bash. Failed because natural language phrasing varies ("view" vs "endpoint" vs "query"). Replaced by passing deferrals to the phantom Claude call for semantic matching.
 
+### Rule: No Keyword Matching for Detection — Anywhere in Sharkrite
+
+Generalizes the deferral-detection lesson into a project-wide rule. **Sharkrite must never use keyword/substring matching to decide whether a piece of text qualifies for some downstream behavior.** This pattern has bitten us repeatedly:
+
+- **Deferral detection** (above) — words vary, semantic match needed
+- **ADR auto-creation** (`assess-documentation.sh:470-471`) — matched on `"decision\|tradeoff\|alternative"`. Captures issue bodies that mention these words conversationally and misses architectural decisions that don't use the vocabulary
+- **Parent-PR marker detection** (`batch-process-issues.sh:327`, fixed in `206f2be`) — matched on `"sharkrite-parent-pr:"` without anchoring on digits. Issue #34's body documented the marker format as an example and tripped the guard, killing the batch silently
+- **ADR backfill** (`bootstrap-docs.sh`) — matches commit messages on `"refactor\|feat\|breaking\|migrate"` to decide ADR-worthiness. Same class of false positives and false negatives
+- **Severity grep** in review/assessment (`merge-pr.sh:227`, fixed in milestone #28) — matched on bare `"CRITICAL\|HIGH\|MEDIUM"` and got triggered by phrases like "no critical issues found"
+
+**Why keyword matching fails for this tool specifically:**
+
+1. Issue/PR bodies routinely document marker formats, severity vocabulary, and decision keywords as examples. Any naive grep matches the documentation, not the data.
+2. Natural language phrasing varies; users describe the same architectural decision in many ways.
+3. LLM output is conversational, so even structured greps need careful anchoring (e.g. `^### .* - ACTIONABLE_NOW`, not bare `ACTIONABLE_NOW`).
+4. False positives kill workflows silently under `set -euo pipefail`. False negatives drop work into the void.
+
+**Use instead:**
+
+- **Explicit markers with structural format** — `<!-- sharkrite-followup-issue:42 -->` (digits-anchored), `<!-- sharkrite-convention -->` (HTML-comment delimited, opt-in)
+- **Structured headers** — `### Title - STATE` always parsed via `^### .* - STATE` (anchor on the whole pattern, not the keyword)
+- **Diff-pattern detection** — to detect "this PR introduces a new lint rule", check `git diff --name-only` for `tools/sharkrite-lint.sh` changes, not the PR body text
+- **LLM classification** — when the signal genuinely requires semantic understanding, route it through a Claude call with a structured-output prompt (e.g. "Reply ADR_WORTHY or NOT_ADR_WORTHY") rather than a grep
+
+**Enforcement:** Tracked in milestone via `tools/sharkrite-lint.sh` rules that flag bare-prefix grep patterns (see issue #90).
+
+---
+
+## Decision: How Sharkrite Maintains Its Own Docs
+
+Sharkrite maintains three docs in `docs/architecture/`, each with a single purpose and a single update mechanism:
+
+| Doc | Purpose | Updated when | Update mechanism |
+|---|---|---|---|
+| `behavioral-design.md` (this file) | Narrative source of truth for major design decisions, rejected approaches, behavioral contracts | A major pattern is established or rejected; a subsystem's contract changes | **Manual edit** (or supervised-mode Claude). Rare. Read by every dev session. |
+| `conventions.md` (planned) | Append-only catalog of conventions and anti-patterns. Each entry: rule, why, code example, originating PR | A merged PR introduces a new convention or anti-pattern | **Marker-driven auto-append** at merge time. PR body must contain `<!-- sharkrite-convention -->` block with structured fields. NO keyword matching. |
+| `encountered-issues.md` (planned) | Catalog of bug classes that recurred during dogfooding (e.g. "local outside function: 4 instances; root cause: defensive sourcing"). For diagnosing similar bugs faster. | Weekly batch refresh, or on demand via `rite --refresh-encountered-issues` | **Label-driven aggregation** from closed issues with `recurring-pattern` label. Renderer scans GitHub for closed issues with the label and emits markdown. |
+
+Existing automation continues unchanged:
+
+- `.rite/docs/changelog.md` — per-PR one-line entries on every merge
+- `.rite/docs/architecture.md` — auto-summarized internal architecture overview (different from this file; meant for in-issue context not narrative)
+- `.rite/docs/adr/` — ADRs created when a PR opts in via `<!-- sharkrite-adr -->` marker (replaces the current keyword-matching auto-creation)
+- `docs/architecture/exit-codes.md` — auto-maintained from script comments
+
+**Loading order at workflow start:** every Claude dev session loads in this order: `CLAUDE.md` → `behavioral-design.md` → `conventions.md` → `encountered-issues.md` → issue-specific context. The first three together constitute "what every Claude session must know about this codebase."
+
+**Rationale:**
+
+1. **Three docs, three triggers, zero ambiguity** about which one to update.
+2. **No keyword matching** — markers and labels are content-addressable, deterministic.
+3. **Append-only growth** for `conventions.md` keeps merge conflicts trivial; `behavioral-design.md` curated narrative resists drift.
+4. **Future agents inherit lessons** — every Claude session loads the conventions catalog automatically. The "rediscover the same lesson every session" failure mode is prevented at the source.
+
 ---
 
 ## ADR Backfill (bootstrap-docs.sh)
