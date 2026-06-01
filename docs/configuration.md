@@ -19,7 +19,7 @@ RITE_MAX_ISSUES_PER_SESSION=8
 RITE_MAX_SESSION_HOURS=4
 
 # Claude assessment timeout (seconds)
-RITE_ASSESSMENT_TIMEOUT=120
+RITE_ASSESSMENT_TIMEOUT=300
 ```
 
 See [config/project.conf.example](../config/project.conf.example) for all options.
@@ -69,7 +69,7 @@ Control how Claude assesses PR review issues:
 | `RITE_MAX_ISSUES_PER_SESSION` | Max issues per session | `8` |
 | `RITE_MAX_SESSION_HOURS` | Max session duration (hours) | `4` |
 | `RITE_MAX_RETRIES` | Fix loop attempts | `3` |
-| `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `120` |
+| `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `300` |
 | `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
 | `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |
 | `WORKFLOW_MODE` | Default workflow mode | `unsupervised` |

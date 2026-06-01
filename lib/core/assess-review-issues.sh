@@ -560,7 +560,7 @@ if [ "$AUTO_MODE" = true ]; then
   # SECURITY NOTE: Permission bypass is used intentionally for automation.
   # Input is strictly controlled: only PR review text from GitHub API.
   # Assessment task is read-only: classify review items (no code execution).
-  ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-120}"
+  ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-300}"
 
   while [ $ASSESSMENT_ATTEMPT -lt $MAX_ASSESSMENT_ATTEMPTS ] && [ -z "$ASSESSMENT_OUTPUT" ]; do
     ASSESSMENT_ATTEMPT=$((ASSESSMENT_ATTEMPT + 1))
@@ -582,7 +582,7 @@ if [ "$AUTO_MODE" = true ]; then
     # Check for timeout (exit code 124) - fail immediately, don't retry
     if [ $ASSESSMENT_EXIT_CODE -eq 124 ]; then
       print_warning "Assessment timed out after ${ASSESSMENT_TIMEOUT}s"
-      print_info "Try increasing timeout: export RITE_ASSESSMENT_TIMEOUT=300"
+      print_info "Try increasing timeout: export RITE_ASSESSMENT_TIMEOUT=600"
       print_info "Falling back to creating issue with all items"
       echo "ALL_ITEMS"
       exit 0
