@@ -174,9 +174,9 @@ EOF
 # Called when git push --force-with-lease is rejected after a successful rebase.
 # A rejection means another client pushed to the remote branch between our rebase
 # and our push attempt. We re-fetch and classify those commits before deciding
-# whether to silently absorb them (TRIVIAL) or trigger a re-review (FOREIGN).
+# whether to discard them (TRIVIAL) or trigger a re-review (FOREIGN).
 #
-# WORKTREE_PATH is required for verify_post_merge (test verification after TRIVIAL absorb).
+# WORKTREE_PATH is required for verify_post_merge (test verification after TRIVIAL discard).
 #
 # Exit codes:
 #   0 = no foreign commits after re-fetch (remote was fast-forwarded to ours by another process)
@@ -251,29 +251,30 @@ _stale_classify_after_push_rejection() {
 
     case "$classification" in
       TRIVIAL)
-        # Mainline sync or doc-only changes: safe to absorb without review.
+        # Mainline sync or doc-only changes: safe to discard without re-review.
         # Rebase onto origin/main (not origin/$branch_name) to ensure the branch
-        # remains up-to-date with main, not just with the foreign remote tip.
-        # Rebasing onto the remote branch tip would regress the branch to a stale
-        # state if those foreign commits are themselves behind main.
-        print_info "Foreign commits classified as TRIVIAL — absorbing onto origin/main and retrying push"
+        # remains up-to-date with main. Because the rebase base is origin/main —
+        # not origin/$branch_name — the foreign commits on origin/$branch_name are
+        # NOT replayed; they are discarded. The branch history is rewritten on top
+        # of main, so the final force-push drops the foreign commits from the remote.
+        print_info "Foreign commits classified as TRIVIAL — discarding and rebasing onto origin/main"
         if git rebase origin/main 2>/dev/null; then
           # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
           if ! verify_post_merge "$worktree_path"; then
             git rebase --abort 2>/dev/null || true
-            print_error "Post-rebase verification failed after absorbing TRIVIAL commits — cannot proceed"
+            print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
             return 1
           fi
           if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-            print_success "Branch rebased onto origin/main (after absorbing trivial foreign commits)"
+            print_success "Branch rebased onto origin/main (TRIVIAL foreign commits discarded)"
             return 0
           else
-            print_error "Push still rejected after absorbing TRIVIAL commits — another race occurred"
+            print_error "Push still rejected after discarding TRIVIAL commits — another race occurred"
             return 1
           fi
         else
           git rebase --abort 2>/dev/null || true
-          print_error "Rebase failed when absorbing TRIVIAL foreign commits — cannot proceed"
+          print_error "Rebase failed when discarding TRIVIAL foreign commits — cannot proceed"
           return 1
         fi
         ;;

@@ -515,14 +515,14 @@ wait_at_barrier() {
   # Drive the function
   run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
 
-  # TRIVIAL foreign commits must be absorbed: exit 0 (no re-review needed)
+  # TRIVIAL foreign commits must be discarded: exit 0 (no re-review needed)
   [ "$status" -eq 0 ]
 
-  # The trivial foreign commit must now be present locally (it was absorbed)
-  local local_head_content
-  local_head_content=$(git -C "$worktree_path" log --oneline origin/"$branch_name"..HEAD 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-  # After absorbing and re-pushing, local and remote should be in sync (0 commits ahead)
-  [ "$local_head_content" -eq 0 ]
+  # The trivial foreign commit must have been DISCARDED (not absorbed):
+  # the concurrent client appended "# trivial doc update" to feature-trivial.txt,
+  # but after rebase onto origin/main the worktree must NOT contain that line.
+  run grep -q "trivial doc update" "$worktree_path/feature-trivial.txt"
+  [ "$status" -ne 0 ]
 
   # Clean up
   cd "$FIXTURE_REPO"

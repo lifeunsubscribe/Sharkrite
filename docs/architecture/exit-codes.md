@@ -106,6 +106,7 @@ These codes cross script boundaries and must be kept unambiguous.
 |------|---------|
 | `0`  | No divergence or divergence resolved |
 | `1`  | Divergence detected (unresolved) |
+| `2`  | Foreign commits require re-review (RELATED/UNRELATED classification) |
 | `5`  | Usage cap during resolution |
 
 ### `review-assessment.sh`
