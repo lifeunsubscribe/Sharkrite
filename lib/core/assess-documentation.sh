@@ -110,9 +110,10 @@ assess_internal_changelog() {
     # re-emitted by the new block itself), then continue with the rest of the file.
     local tmp_file=$(mktemp)
     awk -v date="## $today" -v entry="$entry" '
-      /^# Changelog/ { print; print ""; print date; print entry; print ""; inserted=1; next }
-      inserted && /^$/ { inserted=0; next }
+      $0 == "# Changelog" && !done { print; print ""; print date; print entry; print ""; done=1; skip_blank=1; next }
+      skip_blank && /^$/ { skip_blank=0; next }
       { print }
+      END { if (!done) { print ""; print date; print entry } }
     ' "$doc_file" > "$tmp_file"
     mv "$tmp_file" "$doc_file"
   fi

@@ -221,3 +221,53 @@ EOF
   entry_line=$(grep -n "feat: initial entry" "$doc_file" | cut -d: -f1)
   [ "$date_line" -lt "$entry_line" ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 6: Non-standard title — entry must NOT be silently dropped
+# ---------------------------------------------------------------------------
+
+@test "robustness: non-standard title does not silently drop the new entry" {
+  local doc_file="${RITE_INTERNAL_DOCS_DIR}/changelog.md"
+  # Use a title that does not match "# Changelog" exactly
+  cat > "$doc_file" <<'EOF'
+# CHANGELOG
+
+## 2026-05-24
+- change: Old entry (#10) [lib/a.sh]
+EOF
+
+  FAKE_TODAY="2026-05-27" assess_internal_changelog "99" "feat: must not be lost" "lib/new.sh"
+
+  # The new entry must appear in the file regardless of the non-standard title
+  grep -q "feat: must not be lost" "$doc_file"
+
+  # The old entry must still be present (nothing lost)
+  grep -q "Old entry" "$doc_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: Duplicate-prefixed title — entry appears exactly once
+# ---------------------------------------------------------------------------
+
+@test "robustness: second '# Changelog'-prefixed line does not produce duplicate date sections" {
+  local doc_file="${RITE_INTERNAL_DOCS_DIR}/changelog.md"
+  # File contains two lines that start with "# Changelog" (e.g. a section comment)
+  cat > "$doc_file" <<'EOF'
+# Changelog
+
+# Changelog (archived entries below)
+
+## 2026-05-24
+- change: Old entry (#10) [lib/a.sh]
+EOF
+
+  FAKE_TODAY="2026-05-27" assess_internal_changelog "99" "feat: new feature" "lib/new.sh"
+
+  # The new date section must appear exactly once
+  local date_count
+  date_count=$(grep -c "^## 2026-05-27" "$doc_file" || true)
+  [ "$date_count" -eq 1 ]
+
+  # The new entry must be present
+  grep -q "feat: new feature" "$doc_file"
+}
