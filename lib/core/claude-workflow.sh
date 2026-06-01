@@ -2028,8 +2028,8 @@ fi
 print_header "🦈 Starting Sharkrite Session"
 
 # Show model info — derive friendly name from model ID
-# claude-sonnet-4-5-20250929 → Claude Sonnet 4.5
-# claude-opus-4-6 → Claude Opus 4.6
+# claude-sonnet-4-6-20260315 → Claude Sonnet 4.6
+# claude-opus-4-8 → Claude Opus 4.8
 _model_base="${RITE_CLAUDE_MODEL#claude-}"
 _model_base="${_model_base%-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]}"
 _model_name="${_model_base%%-[0-9]*}"

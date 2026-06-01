@@ -403,9 +403,9 @@ EOF
 claude_provider_resolve_model() {
   local role="$1"
   case "$role" in
-    dev)    echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}" ;;
-    review) echo "${RITE_REVIEW_MODEL:-claude-opus-4-5}" ;;
-    *)      echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}" ;;
+    dev)    echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
+    review) echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    *)      echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
 }
 

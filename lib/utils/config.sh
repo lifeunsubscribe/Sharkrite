@@ -178,10 +178,10 @@ RITE_CLAUDE_TIMEOUT_PROMPT="${RITE_CLAUDE_TIMEOUT_PROMPT:-600}"
 RITE_CLAUDE_TIMEOUT_AGENTIC="${RITE_CLAUDE_TIMEOUT_AGENTIC:-1800}"
 
 # Claude model for development sessions (alias without date = always latest snapshot)
-RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-5}"
+RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}"
 
 # Model for reviews and assessments — opus for quality (must match for consistency)
-RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-5}"
+RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-8}"
 
 # Provider selection (per-phase, all default to claude for backward compat)
 # Available providers: claude, gemini
