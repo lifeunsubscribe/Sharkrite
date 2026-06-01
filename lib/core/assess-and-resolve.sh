@@ -1122,7 +1122,25 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   EXISTING_ISSUE=""
   _dedup_retries=0
   _dedup_max_retries=3
-  _dedup_backoff=5  # seconds between retries
+  # _dedup_backoff: seconds to wait between dedup retry iterations.
+  #
+  # TIMING BUDGET NOTE — this directly affects how long the lock is held.
+  # The holder (this process) holds acquire_pr_followup_lock while running the
+  # dedup search loop.  The waiter times out after 60s (max_attempts in
+  # issue-lock.sh).  Under slow-GitHub conditions the holder can consume:
+  #
+  #   evidence validation gh call  : up to 20s (gh_safe 3×: 5s+15s backoff)
+  #   dedup body-marker search (2 gh calls): up to 40s (20s each)
+  #   this backoff loop (3 retries × _dedup_backoff): _dedup_max_retries × _dedup_backoff
+  #
+  # With defaults (3 retries, 5s backoff): 20 + 40 + 15 = 75s worst-case, which
+  # exceeds the 60s waiter budget.  In practice the evidence validation short-circuits
+  # the loop, keeping typical holder time under 10s.  But under concurrent slow-GitHub
+  # conditions the waiter may time out and proceed lock-less.
+  #
+  # To reduce worst-case holder time, lower RITE_DEDUP_BACKOFF or RITE_GH_MAX_RETRIES.
+  # See acquire_pr_followup_lock comment in lib/utils/issue-lock.sh for the full analysis.
+  _dedup_backoff="${RITE_DEDUP_BACKOFF:-5}"  # configurable via env; default 5s
 
   # Source 1: local evidence file — no API call, survives comment-write failures.
   # Read and validate once, before the retry loop.  The evidence file is FS-backed

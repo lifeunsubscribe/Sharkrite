@@ -133,6 +133,32 @@ release_issue_lock() {
 # Uses the same mkdir-style atomic locking as acquire_issue_lock, with a shorter
 # stale timeout (60s) since the critical section completes in seconds.
 #
+# TIMING BUDGET — waiter timeout vs holder critical-section duration
+# -----------------------------------------------------------------
+# The waiter polls every second and times out after max_attempts=60 seconds.
+# The holder's critical section in assess-and-resolve.sh can take significantly
+# longer than the ~5-10s typical case under slow-GitHub conditions:
+#
+#   Holder worst-case timing:
+#     • evidence validation:  1 gh_safe call (up to 20s if rate-limited: 5s+15s backoff)
+#     • dedup body-marker search: 2 gh_safe calls (up to 20s each if rate-limited)
+#     • dedup index backoff:  _dedup_max_retries × _dedup_backoff (default: 3×5s = 15s)
+#     ─────────────────────────────────────────────────────────────────────────────
+#     Plausible worst case:  20s + 20s + 15s = 55s  (just under the 60s budget)
+#     Theoretical worst case: more if all gh calls hit rate limits back-to-back
+#
+#   What happens on waiter timeout:
+#     The waiter proceeds lock-less (returns 1, sets _skip_followup_creation=true).
+#     This is safe in the sense that it prevents creation of a follow-up issue
+#     rather than creating a duplicate.  However, it means the follow-up may not
+#     be created at all, requiring a manual re-run of --assess-and-fix.
+#
+#   Tuning:
+#     - Reduce RITE_DEDUP_BACKOFF (default: 5s) to shorten holder dedup wait time.
+#     - Reduce RITE_GH_MAX_RETRIES (default: 3) to shorten gh backoff windows.
+#     - Increase this lock's max_attempts if operating in a high-rate-limit environment.
+#     - See RITE_DEDUP_BACKOFF in config.sh for the configurable knob.
+#
 # Lock key scoping:
 #   - When source_issue is provided: keyed by PR + source issue
 #       pr-${pr_number}-src-${source_issue}-followup.lock
