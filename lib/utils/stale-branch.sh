@@ -180,8 +180,8 @@ EOF
 #
 # Exit codes:
 #   0 = no foreign commits after re-fetch (remote was fast-forwarded to ours by another process)
-#   1 = blocked (classification failed, or UNRELATED/RELATED in auto mode)
-#   2 = foreign commits detected — caller must re-enter Phase 2→3 review cycle
+#   1 = blocked (classification failed, rebase conflict, or second-race push rejection)
+#   2 = foreign commits integrated and pushed — caller must re-enter Phase 2→3 review cycle
 #       (consistent with divergence-handler.sh exit 2 = "needs re-review")
 _stale_classify_after_push_rejection() {
   local worktree_path="$1"
@@ -280,12 +280,36 @@ _stale_classify_after_push_rejection() {
 
       RELATED|UNRELATED)
         # FOREIGN commits: these need to go through the review cycle.
-        # Return exit 2 to signal "needs re-review" — consistent with
-        # divergence-handler.sh exit 2 semantics. The caller (check_stale_branch →
-        # workflow-runner.sh) will re-enter Phase 2→3.
-        print_warning "Foreign commits classified as $classification — re-review required"
-        print_info "Workflow will re-enter Phase 2→3 to review foreign commits"
-        return 2
+        # Before returning exit 2 we MUST integrate the foreign commits into local
+        # HEAD so that the Phase 2 push (create-pr.sh:161-163) can succeed.
+        # Without this, local HEAD remains behind origin/$branch_name, Phase 2
+        # re-pushes, gets rejected again, and handle_push_divergence returns 1
+        # (block) in auto mode — the re-review never happens.
+        #
+        # Strategy: rebase local onto origin/$branch_name to absorb the foreign
+        # commits, then force-push so remote matches the combined history.
+        # After that return 2 so the caller re-enters Phase 2→3 for review.
+        print_warning "Foreign commits classified as $classification — integrating and requesting re-review"
+
+        local _rebase_onto_remote_output
+        if _rebase_onto_remote_output=$(git rebase "origin/$branch_name" 2>&1); then
+          # Rebase succeeded — push the integrated history
+          if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+            print_success "Integrated $classification foreign commits and pushed — re-entering Phase 2→3 for review"
+            return 2
+          else
+            # Another race: a third push happened while we were rebasing.
+            # Bail — caller will see exit 1 and stop workflow.
+            git rebase --abort 2>/dev/null || true
+            print_error "Push still rejected after integrating $classification commits (another race?) — blocking"
+            return 1
+          fi
+        else
+          git rebase --abort 2>/dev/null || true
+          print_error "Rebase onto origin/$branch_name failed when integrating $classification foreign commits"
+          print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
+          return 1
+        fi
         ;;
 
       *)
