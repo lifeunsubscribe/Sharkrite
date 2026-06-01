@@ -51,12 +51,14 @@ teardown() {
 }
 
 @test "printf '%s\n' wrapping does not double-count trailing newline content" {
-  # Multi-line content with its own trailing newline should not get an extra line
+  # Multi-line content with its own trailing newline should not get an extra line.
+  # NOTE: $() strips trailing newlines from command substitution, so 'content'
+  # holds "line one\nline two" (no trailing newline) regardless of printf's \n.
+  # printf '%s\n' then adds exactly one \n → "line one\nline two\n" = 2 newlines.
+  # wc -l must return exactly 2, not 3 (double-count would be a regression).
   content="$(printf 'line one\nline two\n')"
   result=$(printf '%s\n' "$content" | wc -l | tr -d ' ')
-  # "line one\nline two\n" has 2 newlines; printf '%s\n' adds one more → 3 lines
-  # The empty string after the trailing newline means printf adds \n to empty → 3
-  [ "$result" -ge 2 ]
+  [ "$result" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
