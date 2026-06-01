@@ -1143,7 +1143,8 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     if [ -n "$EXISTING_ISSUE" ]; then
       _evidence_issue_state=$(gh issue view "$EXISTING_ISSUE" --json state --jq '.state' 2>/dev/null || true)
       if [ "${_evidence_issue_state}" != "OPEN" ]; then
-        print_info "Local evidence points to issue #$EXISTING_ISSUE (state: ${_evidence_issue_state:-unknown}) — clearing stale evidence and continuing dedup check"
+        print_info "Local evidence points to issue #$EXISTING_ISSUE (state: ${_evidence_issue_state:-unknown}) — removing stale evidence file and continuing dedup check"
+        clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
         EXISTING_ISSUE=""
       fi
     fi

@@ -34,6 +34,7 @@
 #   release_pr_followup_lock <pr_number> [source_issue]      # Cleanup followup lock directory
 #   write_followup_evidence <pr_number> <issue_number> [source_issue]  # Persist durable local evidence
 #   read_followup_evidence <pr_number> [source_issue]                  # Read back evidence (returns issue number or empty)
+#   clear_followup_evidence <pr_number> [source_issue]                 # Remove stale evidence file
 #
 # The optional source_issue argument to the pr_followup_lock functions keys the lock by
 # PR + source issue rather than PR alone.  Use it whenever ISSUE_NUMBER is known so that
@@ -249,6 +250,13 @@ write_followup_evidence() {
   local issue_number="$2"
   local source_issue="${3:-}"
 
+  # Guard: an empty or non-numeric issue_number would write a poison file that
+  # read_followup_evidence silently ignores (grep -E '^[0-9]+$' finds nothing),
+  # but the file's presence would still defeat the evidence-existence check.
+  if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
   local evidence_key
   if [ -n "$source_issue" ]; then
     evidence_key="pr-${pr_number}-src-${source_issue}-followup-created.txt"
@@ -293,4 +301,26 @@ read_followup_evidence() {
     issue_num=$(grep -m1 -E '^[0-9]+$' "$evidence_file" 2>/dev/null || true)
     printf '%s' "$issue_num"
   fi
+}
+
+# Remove durable local evidence for a follow-up issue creation.
+#
+# Called when the locally-evidenced issue is found to be stale (closed/deleted),
+# so subsequent runs don't re-read and re-validate a file that will never match.
+#
+# Args: pr_number [source_issue]
+# Returns: 0 always (best-effort removal)
+clear_followup_evidence() {
+  local pr_number="$1"
+  local source_issue="${2:-}"
+
+  local evidence_key
+  if [ -n "$source_issue" ]; then
+    evidence_key="pr-${pr_number}-src-${source_issue}-followup-created.txt"
+  else
+    evidence_key="pr-${pr_number}-followup-created.txt"
+  fi
+  local evidence_file="${RITE_LOCK_DIR}/${evidence_key}"
+
+  rm -f "$evidence_file" 2>/dev/null || true
 }
