@@ -135,6 +135,10 @@ while [[ $# -gt 0 ]]; do
       MODE="init"
       shift
       ;;
+    --backfill-locks)
+      MODE="backfill-locks"
+      shift
+      ;;
     --no-backfill-adrs)
       export RITE_NO_BACKFILL_ADRS=true
       shift
@@ -180,6 +184,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
+      echo "  rite --backfill-locks         Backfill lock files for pre-existing worktrees"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
@@ -235,7 +240,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "backfill-locks" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -845,6 +850,15 @@ record_run() {
   mkdir -p "$(dirname "$history_file")"
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
 }
+
+# Backfill locks: one-time cleanup for worktrees created before lock infrastructure
+if [ "$MODE" = "backfill-locks" ]; then
+  print_header "Backfilling worktree lock files"
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  backfill_worktree_locks
+  print_success "Backfill complete — run 'rite --status' to verify"
+  exit 0
+fi
 
 # Smart routing
 # Repo-wide status (--status with no issue number)

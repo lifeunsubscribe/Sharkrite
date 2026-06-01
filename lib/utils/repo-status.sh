@@ -15,6 +15,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 # =============================================================================
 # Worktree scanning
@@ -366,6 +367,12 @@ repo_wide_status() {
   # --- Worktrees ---
   scan_worktrees
 
+  # Backfill lock files for worktrees created before the lock infrastructure landed
+  # (PR #67). This is a fast, non-destructive operation: it only creates lock dirs
+  # for worktrees that don't already have one and have a resolvable open PR.
+  # Errors are non-fatal; progress is sent to stderr and surfaces in the output.
+  backfill_worktree_locks 2>&1 || true
+
   local wt_summary="${WORKTREE_COUNT} worktree"
   [ "$WORKTREE_COUNT" -ne 1 ] && wt_summary="${wt_summary}s"
   if [ "$STALE_WORKTREE_COUNT" -gt 0 ]; then
@@ -651,9 +658,24 @@ repo_wide_status() {
     for i in "${!WT_BRANCHES[@]}"; do
       local branch="${WT_BRANCHES[$i]}"
 
-      # Extract issue number: try branch name, worktree path, open PR body, then gh lookup
+      # Extract issue number: try lock file first (fastest, no API call), then
+      # branch name, worktree path, open PR body, and finally a gh API fallback.
       local wt_issue_num=""
-      if [[ "$branch" =~ issue-?([0-9]+) ]]; then
+
+      # 1. Lock file lookup — check ${RITE_LOCK_DIR}/issue-*.lock/worktree for this path
+      #    This is the authoritative source after backfill_worktree_locks runs above.
+      local _lf
+      while IFS= read -r _lf; do
+        local _lf_wt
+        _lf_wt=$(cat "$_lf" 2>/dev/null || echo "")
+        if [ "$_lf_wt" = "${WT_PATHS[$i]}" ]; then
+          # Extract issue number from the lock dir name (issue-N.lock)
+          wt_issue_num=$(basename "$(dirname "$_lf")" | grep -oE '[0-9]+' || true)
+          break
+        fi
+      done < <(ls "${RITE_LOCK_DIR:-}"/issue-*.lock/worktree 2>/dev/null || true)
+
+      if [[ "$branch" =~ issue-?([0-9]+) ]] && [ -z "$wt_issue_num" ]; then
         wt_issue_num="${BASH_REMATCH[1]}"
       fi
       if [ -z "$wt_issue_num" ] && [[ "${WT_PATHS[$i]}" =~ issue-?([0-9]+) ]]; then

@@ -38,6 +38,7 @@ lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart
+lib/utils/issue-lock.sh          # Per-issue locking + worktree→issue mapping (backfill)
 ```
 
 ### Workflow Phases
@@ -355,6 +356,18 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 ## Git Commits
 
 - **No co-author lines.** Do not add `Co-Authored-By` to commit messages.
+
+## Worktree → Issue Mapping
+
+The lock file is the source of truth for mapping worktrees to issue numbers.
+
+`acquire_issue_lock <issue_number> <worktree_path>` writes two files:
+- `${RITE_LOCK_DIR}/issue-N.lock/pid` — PID of the holding process (transient)
+- `${RITE_LOCK_DIR}/issue-N.lock/worktree` — absolute path to the worktree (persistent)
+
+`repo-status.sh` reads the `worktree` files to show issue IDs in the worktree-details panel. The `backfill_worktree_locks()` function in `issue-lock.sh` creates these lock dirs for worktrees created before the lock infrastructure landed (PR #67), by resolving the issue number from the branch's open PR body.
+
+**`rite --backfill-locks`** — run this once to fix any worktrees that show no issue ID in `rite --status`. It is also called automatically at the start of `rite --status` (repo-wide).
 
 ## Common Pitfalls
 
