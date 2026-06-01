@@ -88,12 +88,14 @@ assess_internal_changelog() {
   # Build file list (compact)
   local file_list=$(echo "$changed_files" | head -5 | tr '\n' ', ' | sed 's/,$//')
 
-  # Append entry (merge under existing date header if present)
+  # Prepend entry: newest date section at the top (Keep a Changelog convention)
   local today=$(date +%Y-%m-%d)
   local entry="- ${change_type}: ${pr_title} (#${pr_number}) [${file_list}]"
 
   if grep -q "^## $today" "$doc_file" 2>/dev/null; then
-    # Insert entry after existing date header (BSD sed compatible)
+    # Date section exists — prepend the new entry directly after the date header.
+    # The section is already at the top (inserted there on first entry today),
+    # so we just need to inject the entry line after the header.
     local tmp_file=$(mktemp)
     awk -v date="## $today" -v entry="$entry" '
       $0 == date { print; print entry; inserted=1; next }
@@ -101,11 +103,18 @@ assess_internal_changelog() {
     ' "$doc_file" > "$tmp_file"
     mv "$tmp_file" "$doc_file"
   else
-    {
-      echo "## $today"
-      echo "$entry"
-      echo ""
-    } >> "$doc_file"
+    # Date section does not exist yet — prepend a new section immediately after
+    # the "# Changelog" header line so newest dates appear at the top of the file.
+    # Strategy: emit the new date+entry block right after the title line, then
+    # suppress the one blank separator line that follows the title (it will be
+    # re-emitted by the new block itself), then continue with the rest of the file.
+    local tmp_file=$(mktemp)
+    awk -v date="## $today" -v entry="$entry" '
+      /^# Changelog/ { print; print ""; print date; print entry; print ""; inserted=1; next }
+      inserted && /^$/ { inserted=0; next }
+      { print }
+    ' "$doc_file" > "$tmp_file"
+    mv "$tmp_file" "$doc_file"
   fi
 
   _mark_updated "changelog"
