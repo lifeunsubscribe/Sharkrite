@@ -19,8 +19,14 @@ if ! source "$RITE_LIB_DIR/utils/colors.sh"; then
   exit 1
 fi
 
-# Marker tag for sharkrite-created stashes
-readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
+# Marker tag for sharkrite-created stashes.
+# Guard the readonly declaration: when this file is sourced multiple times in
+# the same shell (which happens when several lib files independently include
+# it), bash raises "readonly variable" on the second source. Only declare if
+# not already set.
+if [ -z "${SHARKRITE_STASH_MARKER:-}" ]; then
+  readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
+fi
 
 # ===================================================================
 # PUBLIC: Create a marked stash
