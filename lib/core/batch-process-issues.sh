@@ -18,9 +18,11 @@ set -euo pipefail
 
 # Generate a unique batch ID for this invocation so that parallel batches in
 # the same project each get their own SESSION_STATE_FILE.
-# Use millisecond timestamp for uniqueness without requiring uuidgen.
+# Use epoch-seconds + PID + RANDOM for portability: date +%s works on both
+# macOS (BSD) and Linux, and the PID+RANDOM suffix prevents collisions when
+# two batches start within the same second.
 if [ -z "${RITE_BATCH_ID:-}" ]; then
-  RITE_BATCH_ID="$(date +%s%3N)"
+  RITE_BATCH_ID="$(date +%s)-$$-${RANDOM}"
   export RITE_BATCH_ID
 fi
 
@@ -30,13 +32,14 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
-# Override SESSION_STATE_FILE to be batch-scoped.
+# Re-derive SESSION_STATE_FILE via config.sh now that RITE_BATCH_ID is set.
 # When bin/rite invokes this script via exec, config.sh was already sourced by
 # the parent (with no RITE_BATCH_ID set yet), so SESSION_STATE_FILE is stale.
-# We re-derive the path here with the fresh RITE_BATCH_ID included.
-# This ensures parallel batches in the same project each own their state file.
-SESSION_STATE_FILE="/tmp/rite-session-state-${RITE_PROJECT_NAME}-${RITE_BATCH_ID}.json"
-export SESSION_STATE_FILE
+# Re-sourcing config.sh with RITE_BATCH_ID exported lets its canonical path
+# formula (_batch_id_suffix logic) produce the correct per-batch path,
+# keeping path derivation in one place so any future rename stays in sync.
+unset SESSION_STATE_FILE
+source "$_SCRIPT_DIR/../utils/config.sh"
 
 # Source libraries
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
@@ -148,6 +151,15 @@ if [ ${#ISSUE_LIST[@]} -eq 0 ]; then
   echo ""
   exit 1
 fi
+
+# Register a cleanup trap so the per-batch state file is removed on any exit
+# (normal, error, kill).  Without this, abnormal exits (break/exit 1/5/10 or
+# SIGTERM) leave orphaned /tmp files that grow unbounded across batch runs.
+# The trap fires after the summary report exits, so cleanup always runs.
+_cleanup_batch_session() {
+  rm -f "${SESSION_STATE_FILE:-}"
+}
+trap '_cleanup_batch_session' EXIT
 
 # Initialize session tracking
 init_session "batch-${ISSUE_LIST[0]}-$(date +%s)"
