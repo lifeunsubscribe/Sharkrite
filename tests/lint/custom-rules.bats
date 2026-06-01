@@ -163,3 +163,42 @@ echo "$foo"'
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
+
+@test "accepts local inside function keyword style (function name() {})" {
+  # Edge case: 'function name() {' syntax was not matched by the original regex
+  create_test_script "good-local-fnkw-parens.sh" 'function my_function() {
+  local foo="bar"
+  echo "$foo"
+}'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
+
+@test "accepts local inside function keyword style without parens (function name {})" {
+  # Edge case: 'function name {' syntax (no parens)
+  create_test_script "good-local-fnkw-noparens.sh" 'function my_function {
+  local foo="bar"
+  echo "$foo"
+}'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
+
+@test "accepts local inside function with hyphenated name" {
+  # Edge case: function names with hyphens (bash allows these, \w+ misses them)
+  create_test_script "good-local-hyphen.sh" 'my-function() {
+  local foo="bar"
+  echo "$foo"
+}'
+
+  cd "$TEST_DIR/.."
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
