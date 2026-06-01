@@ -145,7 +145,10 @@ if [ "$GH_DIFF_SUCCESS" != true ]; then
   print_status "Using local git diff as fallback"
 fi
 
-DIFF_LINES=$(echo "$PR_DIFF" | wc -l | tr -d ' ')
+# printf '%s\n' ensures a trailing newline so wc -l counts the last line even
+# when the diff output has no trailing newline (wc -l counts newline characters,
+# so a single line with no trailing newline would return 0 without this).
+DIFF_LINES=$(printf '%s\n' "$PR_DIFF" | wc -l | tr -d ' ')
 DIFF_FILES=$(echo "$PR_DIFF" | grep -c "^diff --git" || true)
 print_status "Diff size: $DIFF_FILES files, $DIFF_LINES lines"
 echo ""

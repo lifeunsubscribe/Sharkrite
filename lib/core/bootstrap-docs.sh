@@ -586,8 +586,8 @@ FIX_EOF
     rm -f "$fix_prompt_file"
 
     if [ -n "$fixed_output" ]; then
-      local orig_lines=$(echo "$current_content" | wc -l | tr -d ' ')
-      local fixed_lines=$(echo "$fixed_output" | wc -l | tr -d ' ')
+      local orig_lines=$(printf '%s\n' "$current_content" | wc -l | tr -d ' ')
+      local fixed_lines=$(printf '%s\n' "$fixed_output" | wc -l | tr -d ' ')
       local min_lines=$((orig_lines * 80 / 100))
 
       if [ "$fixed_lines" -ge "$min_lines" ]; then
