@@ -76,7 +76,14 @@ while IFS= read -r wt_path; do
   # Check last modification (portable: BSD stat -f "%m" vs GNU stat -c "%Y")
   # portable_find_max_mtime already returns "0" when no files are found; || true avoids
   # silent script death under set -euo pipefail without producing a double "0".
-  LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" \) -print0 2>/dev/null \
+  #
+  # -not -type l: skip symlinks (broken symlinks return mtime=0 from stat, which
+  #   makes portable_find_max_mtime return 0 → DAYS_OLD=999 → false stale verdict).
+  # -not -path exclusions: avoid traversing into .venv/.rite (symlinks in worktrees
+  #   pointing back to main) and node_modules (large dep trees with stale timestamps).
+  LAST_MODIFIED=$(find "$wt_path" -not -type l \( -name "*.ts" -o -name "*.js" \) \
+    -not -path "*/.venv/*" -not -path "*/node_modules/*" -not -path "*/.rite/*" \
+    -print0 2>/dev/null \
     | portable_find_max_mtime || true)
   [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
 
