@@ -860,11 +860,24 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
             [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
               SEARCH_QUALIFIER="\"sharkrite-source-issue:${RITE_ISSUE_NUMBER}\" $REASONING_KEYWORDS in:body"
-            DUPLICATE_ISSUE=$(gh_safe issue list \
+            _dup_candidate=$(gh_safe issue list \
               --state open \
               --search "$SEARCH_QUALIFIER" \
               --json number \
               --jq '.[0].number' | grep -E '^[0-9]+$' || true)
+            _dup_candidate="${_dup_candidate:-}"
+            # Verify the marker is actually in the body — GitHub search can return
+            # approximate matches; direct body inspection is the ground truth.
+            # Only applies when the source-issue marker was included in the search qualifier.
+            if [ -n "$_dup_candidate" ] && [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
+              _dup_body=$(gh_safe issue view "$_dup_candidate" --json body --jq '.body' || true)
+              _dup_body="${_dup_body:-}"
+              if echo "$_dup_body" | grep -qF "sharkrite-source-issue:${RITE_ISSUE_NUMBER}"; then
+                DUPLICATE_ISSUE="$_dup_candidate"
+              fi
+            elif [ -n "$_dup_candidate" ]; then
+              DUPLICATE_ISSUE="$_dup_candidate"
+            fi
           fi
         fi
 

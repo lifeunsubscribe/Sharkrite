@@ -261,6 +261,15 @@ _gh_mock_stateful_issue_list() {
   if echo "$_search" | grep -q 'in:body'; then
     # Extract the marker/term before " in:body", then strip outer double-quotes
     # from any quoted tokens (e.g., "sharkrite-source-issue:42" → sharkrite-source-issue:42).
+    #
+    # COVERAGE GAP: Multi-token search (e.g., assess-review-issues.sh:862 builds
+    # "sharkrite-source-issue:N keyword1 keyword2 in:body") is not faithfully simulated
+    # here.  The mock concatenates all tokens into a single regex term, so it tests as a
+    # substring match rather than the independent-token AND matching GitHub's real search
+    # engine performs.  Tests for the multi-token path (dedup search in assess-review-
+    # issues.sh) exercise the mock's approximation, not real GitHub behavior.  The
+    # body-verification guard added in assess-review-issues.sh:867-876 is the reliable
+    # correctness guarantee; this mock path is a best-effort smoke test only.
     local _term
     _term=$(echo "$_search" | sed 's/ in:body.*//' | sed 's/^ *//' | sed 's/ *$//')
     _term=$(echo "$_term" | sed 's/"//g')
