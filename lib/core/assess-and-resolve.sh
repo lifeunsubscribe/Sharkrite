@@ -1109,6 +1109,21 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — another process is still in the critical section."
     print_warning "Skipping follow-up issue creation to prevent duplicates. Re-run assess-and-fix if needed."
     _skip_followup_creation=true
+    # Items will not be filed — treat this the same as a gh-create failure so
+    # the final summary exits non-zero and writes the orphaned-items recovery file.
+    _followup_creation_failed=true
+    _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+    mkdir -p "$(dirname "$_orphaned_file")" 2>/dev/null || true
+    {
+      printf '# Orphaned Follow-up Items\n\n'
+      printf '<!-- Written by assess-and-resolve.sh — lock acquisition failed -->\n'
+      printf '<!-- Re-run: rite %s --assess-and-fix   (once the concurrent process finishes) -->\n\n' "${ISSUE_NUMBER:-$PR_NUMBER}"
+      printf '**PR:** #%s\n' "$PR_NUMBER"
+      [ -n "${ISSUE_NUMBER:-}" ] && printf '**Source Issue:** #%s\n' "$ISSUE_NUMBER"
+      printf '**Date:** %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')"
+      printf '## Items Not Tracked\n\n'
+      printf '%s\n' "${FILTERED_CONTENT:-${FOLLOWUP_BODY:-*(assessment content unavailable)*}}"
+    } > "$_orphaned_file" 2>/dev/null && _orphaned_file_written=true || _orphaned_file_written=false
   fi
 
   if [ "${_skip_followup_creation:-false}" != "true" ]; then
@@ -1258,7 +1273,7 @@ This approach allows all fixes to be completed together in a focused PR."
       _followup_creation_failed=true
       _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
       mkdir -p "$(dirname "$_orphaned_file")" 2>/dev/null || true
-      {
+      if {
         printf '# Orphaned Follow-up Items\n\n'
         printf '<!-- Written by assess-and-resolve.sh on follow-up creation failure -->\n'
         printf '<!-- Re-run: rite %s --assess-and-fix   (after resolving the gh API issue) -->\n\n' "${ISSUE_NUMBER:-$PR_NUMBER}"
@@ -1267,7 +1282,13 @@ This approach allows all fixes to be completed together in a focused PR."
         printf '**Date:** %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')"
         printf '## Items Not Tracked\n\n'
         printf '%s\n' "${FILTERED_CONTENT:-${FOLLOWUP_BODY:-*(assessment content unavailable)*}}"
-      } > "$_orphaned_file" 2>/dev/null || true
+      } > "$_orphaned_file" 2>/dev/null; then
+        _orphaned_file_written=true
+      else
+        _orphaned_file_written=false
+        print_warning "Could not write orphaned items file — items shown below instead:"
+        printf '%s\n' "${FILTERED_CONTENT:-${FOLLOWUP_BODY:-*(assessment content unavailable)*}}" >&2
+      fi
     fi
   fi
 
@@ -1310,12 +1331,22 @@ if [ "${_followup_creation_failed:-false}" = "true" ]; then
   print_error "Follow-up creation failed. Items NOT tracked."
   echo ""
   echo "  The deferred ACTIONABLE_LATER item(s) were not filed as a GitHub issue."
-  echo "  They have been saved to: ${_orphaned_file}"
-  echo ""
-  echo "  To recover:"
-  echo "    1. Check the orphaned items file — confirm what was not tracked"
-  echo "    2. Resolve the underlying gh API issue (auth, rate limit, network)"
-  echo "    3. Re-run: rite ${ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix"
+  if [ "${_orphaned_file_written:-false}" = "true" ]; then
+    echo "  They have been saved to: ${_orphaned_file}"
+    echo ""
+    echo "  To recover:"
+    echo "    1. Check the orphaned items file — confirm what was not tracked"
+    echo "    2. Resolve the underlying gh API issue (auth, rate limit, network)"
+    echo "    3. Re-run: rite ${ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix"
+  else
+    echo "  WARNING: The orphaned items file could not be written (filesystem error)."
+    echo "  The item content was printed to stderr above."
+    echo ""
+    echo "  To recover:"
+    echo "    1. Scroll up and copy the item content printed to stderr"
+    echo "    2. Resolve the underlying gh API issue (auth, rate limit, network)"
+    echo "    3. Re-run: rite ${ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix"
+  fi
   exit 1
 fi
 
