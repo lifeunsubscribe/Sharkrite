@@ -161,7 +161,12 @@ RITE_LOCK_DIR="${RITE_LOCK_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/locks}"
 RITE_STATE_DIR="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/state}"
 
 # Session state
-SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT_NAME}.json}"
+# When running inside a batch (RITE_BATCH_ID is set by batch-process-issues.sh),
+# include the batch ID in the path so parallel batches don't share state.
+# Solo `rite N` calls have no RITE_BATCH_ID, so they get the plain project-scoped path.
+_batch_id_suffix="${RITE_BATCH_ID:+"-${RITE_BATCH_ID}"}"
+SESSION_STATE_FILE="${SESSION_STATE_FILE:-/tmp/rite-session-state-${RITE_PROJECT_NAME}${_batch_id_suffix}.json}"
+unset _batch_id_suffix
 
 # Sharkrite timeout (seconds, default 2 hours)
 RITE_CLAUDE_TIMEOUT="${RITE_CLAUDE_TIMEOUT:-7200}"
@@ -263,6 +268,7 @@ export SCRATCHPAD_FILE
 export RITE_LOCK_DIR
 export RITE_STATE_DIR
 export SESSION_STATE_FILE
+export RITE_BATCH_ID
 export RITE_CLAUDE_TIMEOUT
 export RITE_CLAUDE_TIMEOUT_PROMPT
 export RITE_CLAUDE_TIMEOUT_AGENTIC
