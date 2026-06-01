@@ -684,12 +684,12 @@ EOF
 # workflow-runner.sh main dispatcher must explicitly handle exit 5 and exit 6
 # ─────────────────────────────────────────────────────────────────────────────
 @test "structural: workflow-runner.sh main dispatcher explicitly propagates exit 5" {
-  _count=$(grep -c "exit 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
+  _count=$(grep -cE "\bexit 5\b" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
 }
 
 @test "structural: workflow-runner.sh main dispatcher explicitly propagates exit 6" {
-  _count=$(grep -c "exit 6" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
+  _count=$(grep -cE "\bexit 6\b" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
 }
 
@@ -733,7 +733,7 @@ EOF
 # claude-workflow.sh must exit 4 (not 0) when no work is produced
 # ─────────────────────────────────────────────────────────────────────────────
 @test "structural: claude-workflow.sh contains exit 4 (no-work-produced signal)" {
-  _count=$(grep -c "exit 4" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+  _count=$(grep -cE "\bexit 4\b" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
   [ "$_count" -ge 1 ]
 }
 
@@ -741,6 +741,6 @@ EOF
 # claude-workflow.sh must exit 5 (not 1) for usage/token cap
 # ─────────────────────────────────────────────────────────────────────────────
 @test "structural: claude-workflow.sh contains exit 5 (usage-cap signal)" {
-  _count=$(grep -c "exit 5" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+  _count=$(grep -cE "\bexit 5\b" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
   [ "$_count" -ge 1 ]
 }
