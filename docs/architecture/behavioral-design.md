@@ -195,6 +195,29 @@ LOW findings only become ACTIONABLE_LATER if they represent a real functional or
 
 ---
 
+## Locking System (issue-lock.sh, scratchpad-lock.sh, session-tracker.sh)
+
+### PID-Based Stale Reclamation: Same-Host Assumption
+
+All three lock implementations use `kill -0 $PID` to decide whether a lock-holding process is still alive before reclaiming its stale lock. This is an intentional design constraint, not a bug.
+
+**What it means:** `kill -0` sends no signal but checks whether the process exists in the caller's process table. It is only valid within a single host and PID namespace. Two failure modes arise when this assumption is violated:
+
+- **PID recycling across hosts:** If `RITE_LOCK_DIR` or `SCRATCHPAD_FILE`'s lockfile is on shared/network storage (NFS, SMB, EFS, etc.) and two hosts can both access the same lock path, a stale lock from host A will have a PID that refers to an unrelated process on host B. `kill -0` returns 0 (process exists), so the lock is never reclaimed → deadlock.
+
+- **Isolated PID namespaces:** A container or VM with its own PID namespace can have a PID that is valid inside the namespace but refers to something completely different (or nothing) on the host. Same false-positive risk.
+
+**Why this is acceptable:** Sharkrite is designed for single-developer use on a single machine. All lock paths default to project-local directories inside `$RITE_PROJECT_ROOT/.rite/`, which are never on shared storage.
+
+**What to do if you need cross-host locking:** Replace the `kill -0` reclamation with a time-based TTL (e.g., reclaim any lock older than N seconds). TTL-based reclamation requires no process-table access and is safe across hosts at the cost of a minimum stale-lock hold time.
+
+**Affected files and lines:**
+- `lib/utils/issue-lock.sh` — `acquire_issue_lock` and `acquire_pr_followup_lock`
+- `lib/utils/scratchpad-lock.sh` — portable mkdir path only (the `flock` fast-path on Linux does not use `kill -0`)
+- `lib/utils/session-tracker.sh` — `_acquire_session_lock` portable path
+
+---
+
 ## Decisions Log
 
 ### Removed: Plan Directives System

@@ -102,6 +102,10 @@ acquire_scratchpad_lock() {
     if [ -f "$lockfile/pid" ]; then
       local lock_pid
       lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      # kill -0: same-host assumption — only valid within a single PID namespace.
+      # Do not point SCRATCHPAD_FILE (and thus its lockfile) at shared/network
+      # storage; kill -0 checks the local process table only and will give false
+      # "process is dead" results for PIDs held by processes on other hosts.
       if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
         # Holding process is dead — reclaim the stale lock
         echo "scratchpad-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2

@@ -5,6 +5,28 @@
 # which would corrupt in-flight work. Uses mkdir-style atomic locking with PID file
 # for liveness checking and stale lock reclamation.
 #
+# SAME-HOST ASSUMPTION
+# --------------------
+# Stale lock reclamation uses `kill -0 $PID` to test whether the holding process is
+# still alive. This signal-based liveness check is only valid within a single host
+# and PID namespace. It will NOT work correctly if:
+#
+#   - RITE_LOCK_DIR is on shared/network storage (NFS, SMB, EFS, etc.) and multiple
+#     hosts can acquire locks for the same project — kill -0 checks the PID against
+#     the local process table only; a PID that is valid on host A may be recycled
+#     (reused by an unrelated process) on host B, causing premature reclamation.
+#
+#   - RITE_LOCK_DIR is inside a container with a PID namespace isolated from the host
+#     that may also run rite — same PID recycling hazard across namespace boundaries.
+#
+# This is an intentional design constraint, not a bug. Sharkrite is designed for
+# single-developer use on a single machine. The default RITE_LOCK_DIR
+# ($RITE_PROJECT_ROOT/.rite/locks) is project-local, so the same-host assumption
+# holds by default.
+#
+# DO NOT point RITE_LOCK_DIR at shared storage. If you need cross-host locking,
+# replace the kill-0 reclamation with a time-based TTL instead.
+#
 # Usage:
 #   acquire_issue_lock <issue_number>          # Returns 0 on success, 1 if locked by live process
 #   release_issue_lock <issue_number>          # Cleanup lock directory
@@ -38,6 +60,8 @@ acquire_issue_lock() {
       local lock_pid
       lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
 
+      # kill -0: same-host assumption — only valid within a single PID namespace.
+      # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
       if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
         # Holding process is dead — reclaim stale lock
         echo "⚠️  Reclaiming stale lock from dead process (PID $lock_pid)" >&2
@@ -121,6 +145,8 @@ acquire_pr_followup_lock() {
       local lock_pid
       lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
 
+      # kill -0: same-host assumption — only valid within a single PID namespace.
+      # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
       if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
         # Holding process is dead — reclaim stale lock
         echo "⚠️  Reclaiming stale followup lock from dead process (PID $lock_pid)" >&2

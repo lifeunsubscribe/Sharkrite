@@ -65,6 +65,10 @@ _acquire_session_lock() {
     if [ -f "$lockfile/pid" ]; then
       local lock_pid
       lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      # kill -0: same-host assumption — only valid within a single PID namespace.
+      # SESSION_STATE_FILE (and its lockfile) must not be on shared/network storage;
+      # kill -0 checks the local process table only and will give false "dead process"
+      # results for PIDs held by processes on other hosts or in isolated PID namespaces.
       if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
         echo "session-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
         rm -rf "$lockfile" 2>/dev/null || true
