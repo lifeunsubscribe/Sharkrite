@@ -135,20 +135,25 @@ release_issue_lock() {
 #
 # TIMING BUDGET — waiter timeout vs holder critical-section duration
 # -----------------------------------------------------------------
-# The waiter polls every second and times out after max_attempts=60 seconds.
+# The waiter polls every second and times out after ~60s (60 × 1s sleeps plus
+# per-iteration overhead — actual wall-clock slightly exceeds 60s).
 # The holder's critical section in assess-and-resolve.sh can take significantly
 # longer than the ~5-10s typical case under slow-GitHub conditions:
 #
 #   Holder worst-case timing:
-#     • evidence validation:  1 gh_safe call (up to 20s if rate-limited: 5s+15s backoff)
-#     • dedup search loop:    up to 4 gh_safe calls per iteration (up to 20s each):
+#     • evidence validation:  1 gh_safe call (up to 20s backoff-sleep only; gh
+#                             round-trip latency is additional and not included here)
+#     • dedup search loop:    up to 4 gh_safe calls per iteration (up to 20s backoff-
+#                             sleep each, plus gh round-trip latency per call):
 #         - Source 2a: gh issue list  (body-marker search)
 #         - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
 #         - Source 3:  gh issue list  (title search; only if still no match)
 #         - Source 4:  gh pr view     (PR comment check; only if no match and not last retry)
 #     • dedup index backoff:  _dedup_max_retries × _dedup_backoff (default: 3×5s = 15s)
 #     ─────────────────────────────────────────────────────────────────────────────
-#     Plausible worst case:  20s + 80s + 15s = 115s  (exceeds the 60s waiter budget)
+#     Plausible worst case:  20s + 80s + 15s = 115s backoff-sleep (exceeds the ~60s
+#                            waiter budget); actual wall-clock is higher once gh
+#                            request latency is included for each call
 #     Theoretical worst case: more calls per iteration if loop retries multiple times;
 #                             per-call cost is bounded at 20s (5s+15s backoff, no trailing
 #                             sleep) — growth comes from call count, not per-call duration

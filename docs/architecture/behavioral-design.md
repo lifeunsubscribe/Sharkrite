@@ -218,17 +218,17 @@ All three lock implementations use `kill -0 $PID` to decide whether a lock-holdi
 
 ### PR Follow-up Lock: Timing Budget
 
-The `acquire_pr_followup_lock` waiter times out after **60 seconds**. Under slow-GitHub conditions the holder can consume significantly more time inside the critical section than the ~5–10s typical case:
+The `acquire_pr_followup_lock` waiter times out after **~60s** (60 × 1s sleeps plus per-iteration overhead — actual wall-clock slightly exceeds 60s). Under slow-GitHub conditions the holder can consume significantly more time inside the critical section than the ~5–10s typical case:
 
 **Holder worst-case timing (assess-and-resolve.sh):**
 
 | Step | Time (slow-GitHub) |
 |---|---|
-| Evidence validation (`gh issue view`) | up to 20s (gh_safe 3×: initial + 5s + 15s) |
-| Dedup search loop — up to 4 `gh_safe` calls per iteration:<br>• `gh issue list` (body-marker search)<br>• `gh issue view` (marker verification; only if list found a candidate)<br>• `gh issue list` (title search; only if still no match)<br>• `gh pr view` (PR comment check; only if no match and not last retry) | up to 80s (20s × 4 calls) |
+| Evidence validation (`gh issue view`) | up to 20s backoff-sleep (gh_safe 3×: 5s + 15s); gh round-trip latency is additional |
+| Dedup search loop — up to 4 `gh_safe` calls per iteration:<br>• `gh issue list` (body-marker search)<br>• `gh issue view` (marker verification; only if list found a candidate)<br>• `gh issue list` (title search; only if still no match)<br>• `gh pr view` (PR comment check; only if no match and not last retry) | up to 80s backoff-sleep (20s × 4 calls); gh round-trip latency adds to each call |
 | Dedup index backoff loop (`_dedup_max_retries × RITE_DEDUP_BACKOFF`) | 3 × 5s = 15s (default) |
-| **Plausible worst case** | **~115s** (exceeds the 60s waiter budget) |
-| **Theoretical worst case** | more calls if loop retries multiple times; per-call cost is bounded at 20s (5s+15s backoff, no trailing sleep) — growth comes from call count, not per-call duration |
+| **Plausible worst case** | **~115s backoff-sleep** (exceeds the ~60s waiter budget); actual wall-clock is higher once gh request latency is included |
+| **Theoretical worst case** | more calls if loop retries multiple times; per-call cost is bounded at 20s backoff-sleep (5s+15s, no trailing sleep) — growth comes from call count, not per-call duration |
 
 **What happens on waiter timeout:**
 `acquire_pr_followup_lock` returns 1. The caller (`assess-and-resolve.sh`) sets `_skip_followup_creation=true` in its `else` branch and proceeds without the lock. This prevents creation of a duplicate follow-up issue but also prevents creation of *any* follow-up issue for this run. A `[diag] FOLLOWUP_LOCK_TIMEOUT` line is written to `RITE_LOG_FILE`. Recovery: re-run `rite N --assess-and-fix`.

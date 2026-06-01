@@ -1126,21 +1126,24 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   #
   # TIMING BUDGET NOTE — this directly affects how long the lock is held.
   # The holder (this process) holds acquire_pr_followup_lock while running the
-  # dedup search loop.  The waiter times out after 60s (max_attempts in
+  # dedup search loop.  The waiter times out after ~60s (max_attempts in
   # issue-lock.sh).  Under slow-GitHub conditions the holder can consume:
   #
-  #   evidence validation gh call  : up to 20s (gh_safe 3×: 5s+15s backoff)
-  #   dedup search loop (up to 4 gh calls per iteration): up to 80s (20s each)
+  #   evidence validation gh call  : up to 20s backoff-sleep (gh_safe 3×: 5s+15s);
+  #                                   gh round-trip latency is additional and not included
+  #   dedup search loop (up to 4 gh calls per iteration): up to 80s backoff-sleep
+  #                                   (20s each); gh round-trip latency adds to each call
   #     - Source 2a: gh issue list  (body-marker search)
   #     - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
   #     - Source 3:  gh issue list  (title search; only if still no match)
   #     - Source 4:  gh pr view     (PR comment check; only if still no match and not last retry)
   #   this backoff loop (3 retries × _dedup_backoff): _dedup_max_retries × _dedup_backoff
   #
-  # With defaults (3 retries, 5s backoff): 20 + 80 + 15 = 115s worst-case, which
-  # exceeds the 60s waiter budget.  In practice the evidence validation short-circuits
-  # the loop, keeping typical holder time under 10s.  But under concurrent slow-GitHub
-  # conditions the waiter may time out and proceed lock-less.
+  # With defaults (3 retries, 5s backoff): 20 + 80 + 15 = 115s backoff-sleep worst-case,
+  # which exceeds the ~60s waiter budget; actual wall-clock is higher once gh request
+  # latency is included.  In practice the evidence validation short-circuits the loop,
+  # keeping typical holder time under 10s.  But under concurrent slow-GitHub conditions
+  # the waiter may time out and proceed lock-less.
   #
   # To reduce worst-case holder time, lower RITE_DEDUP_BACKOFF or RITE_GH_MAX_RETRIES.
   # See acquire_pr_followup_lock comment in lib/utils/issue-lock.sh for the full analysis.
