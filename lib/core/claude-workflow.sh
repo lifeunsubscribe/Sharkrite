@@ -23,6 +23,9 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
+# Source canonical marker constants
+source "$RITE_LIB_DIR/utils/markers.sh"
+
 # Source session tracker for interrupt state saving
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 
@@ -738,7 +741,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   if [ -n "$FIX_PR_NUMBER" ]; then
     print_status "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
     REVIEW_CONTENT=$(gh pr view "$FIX_PR_NUMBER" --json comments \
-      --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' \
+      --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body" \
       2>/dev/null || echo "")
 
     # Strip the assessment header metadata (everything before the --- separator)
@@ -753,7 +756,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
 
   if [ -z "$REVIEW_CONTENT" ] || [ "$REVIEW_CONTENT" = "null" ]; then
     print_error "No assessment found on PR #${FIX_PR_NUMBER:-unknown}"
-    print_info "Expected a comment with <!-- sharkrite-assessment --> marker"
+    print_info "Expected a comment with <!-- ${RITE_MARKER_ASSESSMENT} --> marker"
     exit 1
   fi
 
@@ -946,9 +949,9 @@ find_worktree_for_task() {
     # Check if this is a follow-up issue with parent PR
     local issue_body=$(gh issue view "$task" --json body --jq '.body' 2>/dev/null || echo "")
 
-    if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
+    if echo "$issue_body" | grep -q "${RITE_MARKER_PARENT_PR}:"; then
       # Extract parent PR number from body marker
-      local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+      local parent_pr=$(echo "$issue_body" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)
 
       if [ -n "$parent_pr" ]; then
         pr_branch=$(gh pr view "$parent_pr" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")

@@ -19,6 +19,9 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
+# Source canonical marker constants
+source "$RITE_LIB_DIR/utils/markers.sh"
+
 # Source notifications for Slack/email alerts
 if [ -f "$RITE_LIB_DIR/utils/notifications.sh" ]; then
   source "$RITE_LIB_DIR/utils/notifications.sh"
@@ -303,7 +306,7 @@ _handle_related() {
   if [ -n "$pr_number" ]; then
     local assess_time
     assess_time=$(gh pr view "$pr_number" --json comments \
-      --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt // ""' \
+      --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\"" \
       2>/dev/null || echo "")
 
     local foreign_commit_time

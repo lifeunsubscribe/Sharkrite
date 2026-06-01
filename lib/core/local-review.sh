@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
@@ -380,7 +381,7 @@ print_success "Review generated successfully"
 echo ""
 
 # Add marker with model metadata for assessment consistency
-REVIEW_COMMENT="<!-- sharkrite-local-review model:${EFFECTIVE_MODEL} timestamp:$(date -u +"%Y-%m-%dT%H:%M:%SZ") -->
+REVIEW_COMMENT="<!-- ${RITE_MARKER_REVIEW} model:${EFFECTIVE_MODEL} timestamp:$(date -u +"%Y-%m-%dT%H:%M:%SZ") -->
 
 $REVIEW_OUTPUT"
 

@@ -25,6 +25,9 @@ if [ -f "$RITE_LIB_DIR/utils/scratchpad-manager.sh" ]; then
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 fi
 
+# Source canonical marker constants
+source "$RITE_LIB_DIR/utils/markers.sh"
+
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
@@ -532,13 +535,13 @@ CLAUDE_REVIEW_FOUND=false
 
 # First check formal reviews for Sharkrite marker
 LATEST_CLAUDE_REVIEW=$(gh pr view $PR_NUMBER --json reviews \
-  --jq '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body' \
+  --jq "[.reviews[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\") or contains(\"Claude Code Review\"))] | .[-1] | .body" \
   2>/dev/null)
 
 # If not in formal reviews, check PR comments for Sharkrite marker
 if [ -z "$LATEST_CLAUDE_REVIEW" ] || [ "$LATEST_CLAUDE_REVIEW" = "null" ]; then
   LATEST_CLAUDE_REVIEW=$(gh pr view $PR_NUMBER --json comments \
-    --jq '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body' \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\") or contains(\"Claude Code Review\"))] | .[-1] | .body" \
     2>/dev/null)
 fi
 
@@ -568,10 +571,9 @@ if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
   if [ "$CRITICAL_COUNT" -gt 0 ]; then
     # Check if the assessment already resolved/dismissed all CRITICAL items.
     # The review shows raw findings; the assessment is the authoritative verdict.
-    ASSESSMENT_ACTIONABLE=$(gh pr view "$PR_NUMBER" --json comments --jq '
-      [.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
-      sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null | grep -c "^### .* - ACTIONABLE_NOW" || true)
+    ASSESSMENT_ACTIONABLE=$(gh pr view "$PR_NUMBER" --json comments --jq \
+      "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\"" \
+      2>/dev/null | grep -c "^### .* - ACTIONABLE_NOW" || true)
 
     if [ "${ASSESSMENT_ACTIONABLE:-0}" -eq 0 ]; then
       # Assessment exists and has 0 ACTIONABLE_NOW — CRITICALs were resolved or dismissed
@@ -842,7 +844,7 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   # adds as a PR comment: <!-- sharkrite-followup-issue:N -->
   # This is more reliable than scanning the PR body for #N patterns, which
   # matches the linked issue itself (Closes #N) and random references.
-  ASSESSMENT_ISSUES=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -oE 'sharkrite-followup-issue:([0-9]+)' | grep -oE '[0-9]+' | sort -u || echo "")
+  ASSESSMENT_ISSUES=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -oE "${RITE_MARKER_FOLLOWUP_ISSUE}:([0-9]+)" | grep -oE '[0-9]+' | sort -u || echo "")
 
   if [ -n "$ASSESSMENT_ISSUES" ]; then
     ISSUE_COUNT=$(echo "$ASSESSMENT_ISSUES" | wc -l | tr -d ' ')
@@ -998,7 +1000,7 @@ EOF
   fi
 
   # Pop stash if there are stashed changes (from claude-workflow.sh)
-  if git stash list | grep -q "\[sharkrite-managed-stash\]"; then
+  if git stash list | grep -qF "$RITE_MARKER_STASH_TAG"; then
     print_status "Restoring stashed changes..."
     if git stash pop; then
       print_success "Stashed changes restored"
@@ -1238,7 +1240,7 @@ EOF
           fi
 
           # Cleanup old sharkrite-managed stashes
-          print_status "Cleaning up old sharkrite-managed stashes..."
+          print_status "Cleaning up old ${RITE_MARKER_STASH} stashes..."
           cleanup_sharkrite_stashes "$MAIN_WORKTREE"
 
           # Check HIGH PRIORITY completion status

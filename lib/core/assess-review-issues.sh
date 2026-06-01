@@ -25,6 +25,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
 
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
@@ -49,7 +50,7 @@ check_assessment_freshness() {
   # Find the most recent assessment comment timestamp
   local assessment_timestamp
   assessment_timestamp=$(gh pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt' 2>/dev/null || echo "")
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt" 2>/dev/null || echo "")
 
   if [ -z "$assessment_timestamp" ] || [ "$assessment_timestamp" = "null" ]; then
     return 1  # No assessment exists
@@ -75,7 +76,7 @@ check_assessment_freshness() {
   # Assessment is fresh — return the assessment content (after the --- separator)
   local assessment_body
   assessment_body=$(gh pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' 2>/dev/null || echo "")
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body" 2>/dev/null || echo "")
 
   echo "$assessment_body" | sed -n '/^---$/,$p' | tail -n +2
   return 0
@@ -130,7 +131,7 @@ build_prior_decisions_ledger() {
   # (newest-first + skip-if-seen = latest classification wins, no declare -A needed)
   local assessments_json
   assessments_json=$(gh pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse' \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse" \
     2>/dev/null || echo "[]")
 
   local count
@@ -746,7 +747,7 @@ fi
 
 # Build assessment summary for PR comment
 ASSESSMENT_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-ASSESSMENT_COMMENT="<!-- sharkrite-assessment pr:${PR_NUMBER} iteration:1 timestamp:${ASSESSMENT_TIMESTAMP} -->
+ASSESSMENT_COMMENT="<!-- ${RITE_MARKER_ASSESSMENT} pr:${PR_NUMBER} iteration:1 timestamp:${ASSESSMENT_TIMESTAMP} -->
 
 ## 🔍 Sharkrite Assessment
 
@@ -853,7 +854,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           if [ -n "${REASONING_KEYWORDS// /}" ]; then
             SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
             [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
-              SEARCH_QUALIFIER="sharkrite-source-issue:${RITE_ISSUE_NUMBER} $REASONING_KEYWORDS in:body"
+              SEARCH_QUALIFIER="${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER} $REASONING_KEYWORDS in:body"
             DUPLICATE_ISSUE=$(gh issue list \
               --state open \
               --search "$SEARCH_QUALIFIER" \
@@ -893,7 +894,7 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # Create new issue
           print_info "  Creating issue: $ITEM_TITLE"
           SOURCE_ISSUE_MARKER=""
-          [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- sharkrite-source-issue:${RITE_ISSUE_NUMBER} -->"
+          [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER} -->"
           ISSUE_BODY="${SOURCE_ISSUE_MARKER}## From PR #${PR_NUMBER} Assessment
 
 **Severity:** ${ITEM_SEVERITY}

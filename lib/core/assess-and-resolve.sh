@@ -23,6 +23,9 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/../utils/config.sh"
 fi
 
+# Source canonical marker constants
+source "$RITE_LIB_DIR/utils/markers.sh"
+
 # Source review helper for consistent review method handling
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
@@ -341,7 +344,7 @@ fi
 # Fetch PR review (local sharkrite review comment)
 # (header already printed by workflow-runner.sh with PR + issue context)
 GH_STDERR=$(mktemp)
-REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0]' 2>"$GH_STDERR") || {
+REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0]" 2>"$GH_STDERR") || {
   GH_ERROR=$(cat "$GH_STDERR")
   rm -f "$GH_STDERR"
   print_error "Failed to fetch PR #$PR_NUMBER"
@@ -371,7 +374,7 @@ if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "nul
 
       # Re-fetch the review we just posted
       sleep 2  # Give GitHub a moment to index
-      REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | .[-1]' 2>/dev/null) || true
+      REVIEW_JSON=$(gh pr view "$PR_NUMBER" --json comments --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | .[-1]" 2>/dev/null) || true
 
       if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "null" ]; then
         print_error "Failed to fetch newly posted review"
@@ -407,7 +410,7 @@ echo ""
 
 extract_review_model() {
   local review_body="$1"
-  local model=$(echo "$review_body" | grep -oE 'sharkrite-local-review model:[a-z0-9-]+' | sed 's/.*model://' | head -1 || true)
+  local model=$(echo "$review_body" | grep -oE "${RITE_MARKER_REVIEW} model:[a-z0-9-]+" | sed 's/.*model://' | head -1 || true)
   if [ -n "$model" ]; then
     echo "$model"
   else
@@ -427,7 +430,7 @@ export RITE_ASSESSMENT_MODEL="$REVIEW_MODEL"
 extract_review_json() {
   local review_body="$1"
   # Extract JSON from <!-- sharkrite-review-data ... --> block
-  local json_block=$(echo "$review_body" | sed -n '/<!-- sharkrite-review-data/,/-->/p' | sed '1d;$d')
+  local json_block=$(echo "$review_body" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d')
   if [ -n "$json_block" ] && echo "$json_block" | jq empty 2>/dev/null; then
     echo "$json_block"
   else
@@ -488,7 +491,7 @@ if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
     echo ""
 
     # Check if there's a newer review we missed (match only actual review comments)
-    ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse' 2>/dev/null)
+    ALL_REVIEWS=$(gh pr view "$PR_NUMBER" --json comments --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse" 2>/dev/null)
 
     # Compare using epoch seconds (not jq string comparison) for reliable cross-format matching
     NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | .createdAt] | map(sub("Z$";"") | split("T") | .[0] + "T" + .[1]) | map(. > "'"$LATEST_COMMIT_TIME"'" | if . then 1 else 0 end) | add // 0' 2>/dev/null || echo "0")
@@ -998,8 +1001,8 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   # --- Build issue body ---
 
   SOURCE_ISSUE_MARKER=""
-  [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- sharkrite-source-issue:${ISSUE_NUMBER} -->"
-  FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- sharkrite-parent-pr:${PR_NUMBER} -->
+  [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
+  FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
 ## Description
 
 $FOLLOWUP_DESCRIPTION$ASSESSMENT_NOTE
@@ -1118,7 +1121,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     if [ -n "${ISSUE_NUMBER:-}" ]; then
       EXISTING_ISSUE=$(gh issue list \
         --state open \
-        --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
+        --search "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} in:body" \
         --json number \
         --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || true)
     fi
@@ -1138,7 +1141,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
       _recent_followup_comment=$(gh pr view "$PR_NUMBER" \
         --json comments \
-        --jq '[.comments[].body | select(contains("<!-- sharkrite-followup-issue:"))] | length' \
+        --jq "[.comments[].body | select(contains(\"<!-- ${RITE_MARKER_FOLLOWUP_ISSUE}:\"))] | length" \
         2>/dev/null || echo "0")
       if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
         _dedup_retries=$((_dedup_retries + 1))
@@ -1204,7 +1207,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       # (to handle GitHub search-index lag).  Releasing the lock first creates a
       # window where a waiter sees neither the unindexed issue nor the marker,
       # bypasses the retry guard, and creates a duplicate.
-      COMMENT_BODY="<!-- sharkrite-followup-issue:$FOLLOWUP_NUMBER -->
+      COMMENT_BODY="<!-- ${RITE_MARKER_FOLLOWUP_ISSUE}:$FOLLOWUP_NUMBER -->
 📋 **Consolidated follow-up issue created:** #$FOLLOWUP_NUMBER
 
 All review feedback has been grouped into a single issue for batch processing:

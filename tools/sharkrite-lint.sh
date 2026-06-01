@@ -378,6 +378,36 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -n 'xargs' "$file" 2>/dev/null || true)
 done
 
+# Rule 13: sharkrite-* marker string literals outside markers.sh
+# All sharkrite-[a-z-]+ strings must use RITE_MARKER_* constants from lib/utils/markers.sh.
+# The only file allowed to contain the literals is markers.sh itself.
+echo "Checking for sharkrite-* literal marker strings outside markers.sh..."
+for file in "${SHELL_FILES[@]}"; do
+  # Allow markers.sh (the canonical source of truth)
+  if [[ "$file" == */markers.sh ]]; then
+    continue
+  fi
+
+  while IFS=: read -r line_num line_content; do
+    # Skip pure comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    # Skip sharkrite-lint disable lines (inline suppression)
+    if echo "$line_content" | grep -qE 'sharkrite-lint.*disable'; then
+      continue
+    fi
+    # Detect: a literal sharkrite-[a-z] string NOT inside a variable reference
+    # (e.g. "sharkrite-local-review" or 'sharkrite-assessment' but not ${RITE_MARKER_*})
+    # Match: sharkrite-[a-z] that is NOT immediately preceded by ${ (variable expansion)
+    if echo "$line_content" | grep -qE '"sharkrite-[a-z]|'"'"'sharkrite-[a-z]' && \
+       ! echo "$line_content" | grep -qE '\$\{?RITE_MARKER'; then
+      print_violation "$file" "$line_num" "LITERAL_MARKER_STRING" \
+        "Use RITE_MARKER_* constant from lib/utils/markers.sh instead of sharkrite-* literal"
+    fi
+  done < <(grep -n 'sharkrite-[a-z]' "$file" 2>/dev/null || true)
+done
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

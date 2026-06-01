@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# Source canonical marker constants (config.sh expected to be already loaded by caller)
+source "${RITE_LIB_DIR}/utils/markers.sh"
+
 # Function: assess_pr_review
 # Extracts latest review and saves it for Claude assessment
 # Usage: assess_pr_review <pr-number>
@@ -38,7 +41,7 @@ assess_pr_review() {
   # Get the LATEST review only (match by body marker, not author — avoids picking up
   # assessment or other bot comments). Sorted by createdAt to ensure newest first.
   local LATEST_REVIEW=$(gh pr view "$PR_NUMBER" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0].body' \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body" \
     2>/dev/null)
 
   # Validate gh CLI returned valid data
@@ -49,7 +52,7 @@ assess_pr_review() {
 
   # Validate this is actually a code review (not arbitrary bot comment)
   # Accept: section markers OR sharkrite local review marker
-  if ! echo "$LATEST_REVIEW" | grep -qiE "##? Code Review|##+ Overview|sharkrite-local-review"; then
+  if ! echo "$LATEST_REVIEW" | grep -qiE "##? Code Review|##+ Overview|${RITE_MARKER_REVIEW}"; then
     echo "⚠️  Comment found but doesn't appear to be a code review"
     echo "   (Missing 'Code Review' or 'Overview' section markers)"
     return 3  # Exit code 3: invalid format

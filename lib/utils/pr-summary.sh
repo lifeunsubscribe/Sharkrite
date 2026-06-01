@@ -6,8 +6,15 @@
 
 set -euo pipefail
 
-SUMMARY_START="<!-- sharkrite-changes-summary -->"
-SUMMARY_END="<!-- /sharkrite-changes-summary -->"
+# Source canonical marker constants
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$SCRIPT_DIR/config.sh"
+fi
+source "$RITE_LIB_DIR/utils/markers.sh"
+
+SUMMARY_START="<!-- ${RITE_MARKER_CHANGES_SUMMARY} -->"
+SUMMARY_END="<!-- /${RITE_MARKER_CHANGES_SUMMARY} -->"
 
 # build_changes_summary BASE_BRANCH
 # Generates the full marked section from current git state.

@@ -19,8 +19,14 @@ if ! source "$RITE_LIB_DIR/utils/colors.sh"; then
   exit 1
 fi
 
-# Marker tag for sharkrite-created stashes
-readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
+# Source canonical marker constants (defines RITE_MARKER_STASH and RITE_MARKER_STASH_TAG)
+source "$RITE_LIB_DIR/utils/markers.sh"
+
+# Backward-compat alias: existing code uses SHARKRITE_STASH_MARKER
+# Guard against double-source (readonly re-declaration fails under set -e)
+if [ -z "${SHARKRITE_STASH_MARKER:-}" ]; then
+  readonly SHARKRITE_STASH_MARKER="$RITE_MARKER_STASH_TAG"
+fi
 
 # ===================================================================
 # PUBLIC: Create a marked stash

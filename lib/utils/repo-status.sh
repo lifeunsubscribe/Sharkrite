@@ -12,6 +12,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRIPT_DIR/config.sh"
 fi
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -205,14 +206,12 @@ get_issue_phase() {
   local review_body=""
   local review_time=""
   if [ -n "$pr_comments_json" ]; then
-    review_body=$(echo "$pr_comments_json" | jq -r '
-      [.[] | select(.body | contains("<!-- sharkrite-local-review"))]
-      | sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null || echo "")
-    review_time=$(echo "$pr_comments_json" | jq -r '
-      [.[] | select(.body | contains("<!-- sharkrite-local-review"))]
-      | sort_by(.createdAt) | reverse | .[0].createdAt // ""
-    ' 2>/dev/null || echo "")
+    review_body=$(echo "$pr_comments_json" | jq -r \
+      "[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\"" \
+      2>/dev/null || echo "")
+    review_time=$(echo "$pr_comments_json" | jq -r \
+      "[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\"" \
+      2>/dev/null || echo "")
   fi
 
   if [ -z "$review_body" ] || [ "$review_body" = "null" ]; then
@@ -223,9 +222,9 @@ get_issue_phase() {
   # Count review iterations
   local review_count=1
   if [ -n "$pr_comments_json" ]; then
-    review_count=$(echo "$pr_comments_json" | jq '
-      [.[] | select(.body | contains("<!-- sharkrite-local-review"))] | length
-    ' 2>/dev/null || echo "1")
+    review_count=$(echo "$pr_comments_json" | jq \
+      "[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" \
+      2>/dev/null || echo "1")
     [ -z "$review_count" ] || [ "$review_count" = "0" ] && review_count=1
   fi
 
@@ -263,10 +262,9 @@ get_issue_phase() {
   # Check assessment from comments
   local assess_body=""
   if [ -n "$pr_comments_json" ]; then
-    assess_body=$(echo "$pr_comments_json" | jq -r '
-      [.[] | select(.body | contains("<!-- sharkrite-assessment"))]
-      | sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null || echo "")
+    assess_body=$(echo "$pr_comments_json" | jq -r \
+      "[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\"" \
+      2>/dev/null || echo "")
   fi
 
   if [ -z "$assess_body" ] || [ "$assess_body" = "null" ]; then

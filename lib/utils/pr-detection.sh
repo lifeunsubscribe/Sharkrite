@@ -15,6 +15,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 
 # detect_pr_for_issue ISSUE_NUMBER
@@ -170,11 +171,9 @@ detect_review_state() {
 
   # Fetch latest review comment (sharkrite-local-review marker only)
   local review_json
-  review_json=$(gh pr view "$pr_number" --json comments --jq '
-    [.comments[] | select(
-      .body | contains("<!-- sharkrite-local-review")
-    )] | sort_by(.createdAt) | reverse | .[0] // {}
-  ' 2>/dev/null || echo "{}")
+  review_json=$(gh pr view "$pr_number" --json comments --jq \
+    "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0] // {}" \
+    2>/dev/null || echo "{}")
 
   REVIEW_BODY=$(echo "$review_json" | jq -r '.body // ""' 2>/dev/null)
   REVIEW_TIME=$(echo "$review_json" | jq -r '.createdAt // ""' 2>/dev/null)

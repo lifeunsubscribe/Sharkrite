@@ -16,6 +16,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_SCRIPT_DIR/../utils/config.sh"
 fi
 
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 
 # Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
@@ -102,13 +103,13 @@ if [ -n "$PR_NUMBER" ]; then
   # Method 1: Issues with body marker "sharkrite-parent-pr:{PR}"
   while IFS= read -r num; do
     [ -n "$num" ] && FOLLOWUP_ISSUES+=("$num")
-  done < <(gh issue list --state all --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[].number' 2>/dev/null || echo "")
+  done < <(gh issue list --state all --search "${RITE_MARKER_PARENT_PR}:$PR_NUMBER in:body" --json number --jq '.[].number' 2>/dev/null || echo "")
 
   # Method 2: PR comment markers <!-- sharkrite-followup-issue:N -->
   while IFS= read -r num; do
     [ -n "$num" ] && FOLLOWUP_ISSUES+=("$num")
   done < <(gh pr view "$PR_NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | \
-    grep -oE 'sharkrite-followup-issue:[0-9]+' | cut -d: -f2 || echo "")
+    grep -oE "${RITE_MARKER_FOLLOWUP_ISSUE}:[0-9]+" | cut -d: -f2 || echo "")
 
   # Deduplicate
   if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
@@ -308,7 +309,7 @@ if [ -n "$PR_NUMBER" ]; then
   if [ -n "$REPO" ]; then
     # Delete sharkrite PR comments (reviews + assessments are all posted as comments)
     COMMENT_IDS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
-      '.[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-assessment")) | .id' 2>/dev/null || echo "")
+      ".[] | select(.body | contains(\"${RITE_MARKER_REVIEW}\") or contains(\"${RITE_MARKER_ASSESSMENT}\")) | .id" 2>/dev/null || echo "")
 
     DELETED_COMMENTS=0
     for cid in $COMMENT_IDS; do
