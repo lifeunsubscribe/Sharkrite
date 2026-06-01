@@ -923,6 +923,12 @@ Changes made via automated workflow (rite --fix-review mode)."
         # Usage cap reached — propagate so batch can abort cleanly
         print_error "Claude usage cap reached during fix-review push divergence — aborting batch"
         exit 5
+      elif [ "$_div_result" -eq 2 ]; then
+        # Foreign commits pulled and rebase succeeded — push done inside handler.
+        # Signal caller (workflow-runner phase_assess_and_resolve) to re-enter the
+        # review cycle so the fresh combined HEAD gets a new review.
+        print_info "Divergence resolved with foreign commits — re-entering review cycle"
+        exit 2
       elif [ "$_div_result" -ne 0 ]; then
         print_error "Could not resolve divergence during fix-review push"
         exit 1
@@ -2658,6 +2664,13 @@ if ! git push -u origin "$BRANCH_NAME" >/dev/null 2>&1; then
       # Usage cap reached — propagate so batch can abort cleanly
       print_error "Claude usage cap reached during post-dev push divergence — aborting batch"
       exit 5
+    elif [ "$_postdev_div_result" -eq 2 ]; then
+      # Foreign commits pulled and rebase succeeded — push done inside handler.
+      # Signal caller to re-enter the review cycle so the fresh combined HEAD
+      # gets a new review (Phase 2 → Phase 3 in orchestrated mode, or
+      # create-pr.sh re-review in standalone mode).
+      print_info "Divergence resolved with foreign commits — re-entering review cycle"
+      exit 2
     elif [ "$_postdev_div_result" -ne 0 ]; then
       print_error "Could not resolve divergence during post-dev push"
       exit 1
