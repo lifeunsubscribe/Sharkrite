@@ -1131,23 +1131,39 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   _dedup_max_retries=3
   _dedup_backoff=5  # seconds between retries
 
-  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
-    EXISTING_ISSUE=""
-
-    # Source 1: local evidence file — no API call, survives comment-write failures
-    EXISTING_ISSUE=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
-
+  # Source 1: local evidence file — no API call, survives comment-write failures.
+  # Read and validate once, before the retry loop.  The evidence file is FS-backed
+  # and lock-serialized; it cannot change mid-loop unless this process clears it,
+  # so reading it inside the loop would only give transient gh failures more chances
+  # to wrongly clear it on each backoff iteration.
+  _evidence_candidate=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
+  if [ -n "$_evidence_candidate" ]; then
     # Validate that the locally-evidenced issue is still open.  The evidence file
     # persists indefinitely; if the referenced issue was closed or deleted since it
     # was written, trusting it would permanently suppress recreation of the follow-up.
-    if [ -n "$EXISTING_ISSUE" ]; then
-      _evidence_issue_state=$(gh issue view "$EXISTING_ISSUE" --json state --jq '.state' 2>/dev/null || true)
-      if [ "${_evidence_issue_state}" != "OPEN" ]; then
-        print_info "Local evidence points to issue #$EXISTING_ISSUE (state: ${_evidence_issue_state:-unknown}) — removing stale evidence file and continuing dedup check"
-        clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
-        EXISTING_ISSUE=""
-      fi
+    # IMPORTANT: distinguish three outcomes from `gh issue view`:
+    #   - "OPEN"             → confirmed open; trust the evidence
+    #   - "CLOSED"/"MERGED"  → confirmed closed/deleted; clear stale evidence
+    #   - "" (empty/error)   → transient API failure; do NOT clear — preserve the
+    #                          dedup guarantee under the same flakiness conditions
+    #                          this PR is designed to handle
+    _evidence_issue_state=$(gh issue view "$_evidence_candidate" --json state --jq '.state' 2>/dev/null || true)
+    if [ "${_evidence_issue_state}" = "OPEN" ]; then
+      # Confirmed open — trust local evidence immediately; no need to enter loop
+      EXISTING_ISSUE="$_evidence_candidate"
+    elif [ -n "$_evidence_issue_state" ]; then
+      # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
+      print_info "Local evidence points to issue #$_evidence_candidate (state: ${_evidence_issue_state}) — removing stale evidence file and continuing dedup check"
+      clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
+    else
+      # Empty result — gh call failed (transient API error or network issue).
+      # Do NOT clear the evidence file; preserve the dedup guarantee.
+      print_info "Could not determine state of evidenced issue #$_evidence_candidate (gh API unavailable) — retaining local evidence to preserve dedup guarantee"
+      EXISTING_ISSUE="$_evidence_candidate"
     fi
+  fi
+
+  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
 
     # Source 2: body-marker search scoped to source issue (most reliable when indexed)
     if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
