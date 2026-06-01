@@ -675,7 +675,7 @@ done
 # excluded — they never entered the workflow — and are reported separately via ${#SKIPPED_ISSUES[@]}.
 BATCH_END_TIME=$(date +%s)
 TOTAL_DURATION=$((BATCH_END_TIME - BATCH_START_TIME))
-TOTAL_PROCESSED=$((COMPLETED_ISSUES + ${#MERGED_CLEANUP_FAILED[@]} + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]}))
+_batch_compute_totals
 
 # Generate summary report
 # Retry blocked issues (they may have follow-up issues created now)
