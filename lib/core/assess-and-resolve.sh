@@ -1113,23 +1113,60 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
   if [ "${_skip_followup_creation:-false}" != "true" ]; then
 
-  # Check if issue already exists: prefer source-issue scoped body search, fallback to title search.
+  # Check if issue already exists.  Four evidence sources checked in order of
+  # reliability and cost:
   #
-  # Retry loop guards against GitHub API eventual consistency: the first process to
-  # create the issue may not have its body marker indexed yet when the second process
-  # (which waited for the lock) runs its search.  If the body-marker search misses AND
-  # a <!-- sharkrite-followup-issue: comment already exists on the PR, we back off and
-  # retry rather than creating a duplicate.
+  #   1. Local evidence file (fastest, no network, survives PR comment failures)
+  #   2. Body-marker search scoped to source issue (reliable when indexed)
+  #   3. Title search (catches cases where body marker not yet indexed)
+  #   4. PR marker comment (guards against index lag after another process created)
+  #
+  # Source 1 (local evidence) is the fix for the edge case where the GitHub PR
+  # comment write fails (||true silences it) and both the issue body and title
+  # searches miss due to index lag.  The evidence file is written to disk while
+  # the lock is held, so it is guaranteed to be present if any prior holder of
+  # this lock successfully created an issue — even if the comment write failed.
   EXISTING_ISSUE=""
   _dedup_retries=0
   _dedup_max_retries=3
   _dedup_backoff=5  # seconds between retries
 
-  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
-    EXISTING_ISSUE=""
+  # Source 1: local evidence file — no API call, survives comment-write failures.
+  # Read and validate once, before the retry loop.  The evidence file is FS-backed
+  # and lock-serialized; it cannot change mid-loop unless this process clears it,
+  # so reading it inside the loop would only give transient gh failures more chances
+  # to wrongly clear it on each backoff iteration.
+  _evidence_candidate=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
+  if [ -n "$_evidence_candidate" ]; then
+    # Validate that the locally-evidenced issue is still open.  The evidence file
+    # persists indefinitely; if the referenced issue was closed or deleted since it
+    # was written, trusting it would permanently suppress recreation of the follow-up.
+    # IMPORTANT: distinguish three outcomes from `gh issue view`:
+    #   - "OPEN"             → confirmed open; trust the evidence
+    #   - "CLOSED"/"MERGED"  → confirmed closed/deleted; clear stale evidence
+    #   - "" (empty/error)   → transient API failure; do NOT clear — preserve the
+    #                          dedup guarantee under the same flakiness conditions
+    #                          this PR is designed to handle
+    _evidence_issue_state=$(gh issue view "$_evidence_candidate" --json state --jq '.state' 2>/dev/null || true)
+    if [ "${_evidence_issue_state}" = "OPEN" ]; then
+      # Confirmed open — trust local evidence immediately; no need to enter loop
+      EXISTING_ISSUE="$_evidence_candidate"
+    elif [ -n "$_evidence_issue_state" ]; then
+      # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
+      print_info "Local evidence points to issue #$_evidence_candidate (state: ${_evidence_issue_state}) — removing stale evidence file and continuing dedup check"
+      clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
+    else
+      # Empty result — gh call failed (transient API error or network issue).
+      # Do NOT clear the evidence file; preserve the dedup guarantee.
+      print_info "Could not determine state of evidenced issue #$_evidence_candidate (gh API unavailable) — retaining local evidence to preserve dedup guarantee"
+      EXISTING_ISSUE="$_evidence_candidate"
+    fi
+  fi
 
-    # Primary: body-marker search scoped to source issue (most reliable when indexed)
-    if [ -n "${ISSUE_NUMBER:-}" ]; then
+  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
+
+    # Source 2: body-marker search scoped to source issue (most reliable when indexed)
+    if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
       EXISTING_ISSUE=$(gh issue list \
         --state open \
         --search "sharkrite-source-issue:${ISSUE_NUMBER} in:body" \
@@ -1137,18 +1174,18 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
         --jq '.[0].number' 2>/dev/null | grep -E '^[0-9]+$' || true)
     fi
 
-    # Fallback: title search (catches cases where body marker not yet indexed)
+    # Source 3: title search (catches cases where body marker not yet indexed)
     if [ -z "$EXISTING_ISSUE" ]; then
       EXISTING_ISSUE=$(gh issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
         jq -r '.[] | select(.state == "OPEN") | .number' 2>/dev/null || true)
     fi
 
-    # If found, no need to retry
+    # If found by any source, no need to retry
     [ -n "$EXISTING_ISSUE" ] && break
 
-    # Not found — check whether a sharkrite-followup-issue comment already exists on
-    # the PR.  If it does, the issue was created by another process but the search
-    # index hasn't caught up yet (GitHub eventual consistency).  Retry with backoff.
+    # Source 4: PR marker comment — if the comment was posted by a prior run
+    # but neither local evidence nor the search index has caught up yet,
+    # back off and retry rather than creating a duplicate.
     if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
       _recent_followup_comment=$(gh pr view "$PR_NUMBER" \
         --json comments \
@@ -1162,7 +1199,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       fi
     fi
 
-    # No comment evidence of prior creation — break and proceed to create
+    # No evidence of prior creation — break and proceed to create
     break
   done
 
@@ -1213,11 +1250,20 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       rm -f "$FOLLOWUP_BODY_FILE"
       FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_ISSUE" | grep -oE '[0-9]+$' || echo "")
 
+      # Write durable local evidence FIRST — before any network call.
+      # This is the primary fallback when the PR comment write fails (see below).
+      # The evidence file persists in RITE_LOCK_DIR after the lock is released,
+      # so waiters that acquire the lock later can detect the prior creation even
+      # when the GitHub search index and comment API both lag or fail.
+      # Must be called while the lock is held (serialised write).
+      if ! write_followup_evidence "$PR_NUMBER" "$FOLLOWUP_NUMBER" "${ISSUE_NUMBER:-}"; then
+        print_warning "⚠️  Could not write local evidence file for follow-up #$FOLLOWUP_NUMBER (see error above) — dedup relies solely on GitHub API"
+      fi
+
       # Post the machine-readable marker comment BEFORE releasing the lock.
-      # Waiters use this comment as durable evidence that an issue was created
-      # (to handle GitHub search-index lag).  Releasing the lock first creates a
-      # window where a waiter sees neither the unindexed issue nor the marker,
-      # bypasses the retry guard, and creates a duplicate.
+      # Waiters use this comment as a secondary evidence source for index-lag
+      # races.  The local evidence file (above) is the primary fallback when
+      # this comment write fails.
       COMMENT_BODY="<!-- sharkrite-followup-issue:$FOLLOWUP_NUMBER -->
 📋 **Consolidated follow-up issue created:** #$FOLLOWUP_NUMBER
 
@@ -1230,10 +1276,14 @@ This approach allows all fixes to be completed together in a focused PR."
 
       COMMENT_BODY_FILE=$(mktemp)
       printf '%s' "$COMMENT_BODY" > "$COMMENT_BODY_FILE"
-      gh pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null || true
+      # Note: comment failure is non-fatal — local evidence (above) covers the
+      # dedup gap.  We still warn so the failure is visible in logs.
+      if ! gh pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null; then
+        print_warning "⚠️  PR comment write failed for follow-up #$FOLLOWUP_NUMBER — local evidence file will cover dedup"
+      fi
       rm -f "$COMMENT_BODY_FILE"
 
-      # Release lock only after the marker comment is durably posted
+      # Release lock only after both evidence writes have been attempted
       [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
 

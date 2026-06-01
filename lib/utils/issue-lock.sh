@@ -32,6 +32,9 @@
 #   release_issue_lock <issue_number>                        # Cleanup lock directory
 #   acquire_pr_followup_lock <pr_number> [source_issue]      # Returns 0 on success, 1 on timeout
 #   release_pr_followup_lock <pr_number> [source_issue]      # Cleanup followup lock directory
+#   write_followup_evidence <pr_number> <issue_number> [source_issue]  # Persist durable local evidence
+#   read_followup_evidence <pr_number> [source_issue]                  # Read back evidence (returns issue number or empty)
+#   clear_followup_evidence <pr_number> [source_issue]                 # Remove stale evidence file
 #
 # The optional source_issue argument to the pr_followup_lock functions keys the lock by
 # PR + source issue rather than PR alone.  Use it whenever ISSUE_NUMBER is known so that
@@ -221,4 +224,103 @@ release_pr_followup_lock() {
       fi
     fi
   fi
+}
+
+# Write durable local evidence that a follow-up issue was created for a given PR.
+#
+# This is the fallback dedup mechanism for the case where gh pr comment fails
+# (||true silences it) and the GitHub search index hasn't caught up yet.  The
+# evidence file lives in RITE_LOCK_DIR, independent of the lock directory
+# lifecycle (which is deleted on release), so it persists after the lock is gone.
+#
+# The file contains a single line: the follow-up issue number.  Waiters read it
+# with read_followup_evidence before the dedup search-then-create sequence.
+#
+# MUST be called while the pr_followup_lock is held, so the write is serialised
+# against concurrent processes attempting the same check-then-create.
+#
+# Evidence file naming mirrors the lock key:
+#   With source_issue:  pr-${pr}-src-${src}-followup-created.txt
+#   Without:            pr-${pr}-followup-created.txt
+#
+# Args: pr_number issue_number [source_issue]
+# Returns: 0 on success, 1 if write failed
+write_followup_evidence() {
+  local pr_number="$1"
+  local issue_number="$2"
+  local source_issue="${3:-}"
+
+  # Guard: an empty or non-numeric issue_number would write a poison file that
+  # read_followup_evidence silently ignores (grep -E '^[0-9]+$' finds nothing),
+  # but the file's presence would still defeat the evidence-existence check.
+  if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  local evidence_key
+  if [ -n "$source_issue" ]; then
+    evidence_key="pr-${pr_number}-src-${source_issue}-followup-created.txt"
+  else
+    evidence_key="pr-${pr_number}-followup-created.txt"
+  fi
+  local evidence_file="${RITE_LOCK_DIR}/${evidence_key}"
+
+  mkdir -p "${RITE_LOCK_DIR}"
+  # Write atomically: write to tmp then mv so readers never see a partial file
+  local tmp_file
+  tmp_file=$(mktemp "${RITE_LOCK_DIR}/.evidence-XXXXXX")
+  printf '%s\n' "$issue_number" > "$tmp_file" && mv "$tmp_file" "$evidence_file" || {
+    rm -f "$tmp_file" 2>/dev/null || true
+    return 1
+  }
+  return 0
+}
+
+# Read durable local evidence for a follow-up issue creation.
+#
+# Returns the issue number on stdout if evidence exists, or empty string if not.
+# Called by the dedup check loop as the fastest (local FS) evidence source,
+# before any GitHub API calls.
+#
+# Args: pr_number [source_issue]
+read_followup_evidence() {
+  local pr_number="$1"
+  local source_issue="${2:-}"
+
+  local evidence_key
+  if [ -n "$source_issue" ]; then
+    evidence_key="pr-${pr_number}-src-${source_issue}-followup-created.txt"
+  else
+    evidence_key="pr-${pr_number}-followup-created.txt"
+  fi
+  local evidence_file="${RITE_LOCK_DIR}/${evidence_key}"
+
+  if [ -f "$evidence_file" ]; then
+    # Read first non-empty line; guard against empty/malformed file
+    local issue_num
+    issue_num=$(grep -m1 -E '^[0-9]+$' "$evidence_file" 2>/dev/null || true)
+    printf '%s' "$issue_num"
+  fi
+}
+
+# Remove durable local evidence for a follow-up issue creation.
+#
+# Called when the locally-evidenced issue is found to be stale (closed/deleted),
+# so subsequent runs don't re-read and re-validate a file that will never match.
+#
+# Args: pr_number [source_issue]
+# Returns: 0 always (best-effort removal)
+clear_followup_evidence() {
+  local pr_number="$1"
+  local source_issue="${2:-}"
+
+  local evidence_key
+  if [ -n "$source_issue" ]; then
+    evidence_key="pr-${pr_number}-src-${source_issue}-followup-created.txt"
+  else
+    evidence_key="pr-${pr_number}-followup-created.txt"
+  fi
+  local evidence_file="${RITE_LOCK_DIR}/${evidence_key}"
+
+  rm -f "$evidence_file" 2>/dev/null || true
 }
