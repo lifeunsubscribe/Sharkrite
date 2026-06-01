@@ -504,7 +504,9 @@ _do_rebase_and_push() {
     # DIVERGENCE_LOCAL_HEAD (may be unset on direct-call path, or stale after resolver commits).
     local _rollback_target="${_pre_rebase_head:-${DIVERGENCE_LOCAL_HEAD:-}}"
     if [ -n "$_rollback_target" ]; then
-      git reset --hard "$_rollback_target" 2>/dev/null || true
+      if ! git reset --hard "$_rollback_target"; then
+        _div_warning "git reset --hard to $_rollback_target failed — working tree may be in post-rebase state"
+      fi
     else
       _div_warning "No rollback target available — working tree left in post-rebase state"
     fi
