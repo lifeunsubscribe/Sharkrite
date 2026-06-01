@@ -75,7 +75,20 @@ _setup_conflicting_branch() {
 @test "conflict resolver exit 0: rebase conflict resolved by Claude, push succeeds" {
   _setup_conflicting_branch
 
-  # Stub: resolver "resolves" by creating a valid commit on the branch
+  # Stub: resolver "resolves" by creating a valid commit on the branch.
+  #
+  # Timing note: _stale_rebase_onto_main calls `git rebase --abort` BEFORE invoking
+  # this resolver. The stub therefore runs on the post-abort HEAD (the original
+  # feature branch tip, with no rebase in progress). The stub adds a commit here
+  # to satisfy the production code's expectation that the resolver leaves a
+  # pushable commit — it does NOT represent a commit produced by completing a real
+  # rebase sequence.
+  #
+  # What this stub cannot model: a real resolver (issue #21) would re-run
+  # `git rebase origin/main`, apply conflict resolutions, and produce a commit
+  # whose parent is origin/main. The stub's commit is simply appended to the
+  # pre-rebase branch tip, so git topology is fixture-dependent (origin/main
+  # is always an ancestor because the branch was created from it).
   attempt_claude_merge_resolution() {
     local branch="$1"
     # Simulate Claude resolving: write a clean merged README and commit it
@@ -94,14 +107,20 @@ _setup_conflicting_branch() {
   # Should succeed (exit 0 = continue workflow)
   [ "$exit_code" -eq 0 ]
 
-  # Verify the branch was pushed (remote has the resolved commit)
+  # Verify the branch was pushed (remote matches local HEAD after resolution).
+  # This is the meaningful assertion this stub can make: the push path executed.
   local remote_sha local_sha
   remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null)
   local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null)
   [ "$remote_sha" = "$local_sha" ]
 
-  # Verify origin/main is actually an ancestor of HEAD — confirms rebase outcome, not just push
-  git -C "$WORKTREE_PATH" merge-base --is-ancestor origin/main HEAD
+  # NOTE: We intentionally do NOT assert `git merge-base --is-ancestor origin/main HEAD`
+  # here. Because this stub commits on the post-abort branch tip (not after a real
+  # rebase onto origin/main), that ancestry check passes trivially — origin/main was
+  # always an ancestor of the feature branch (it was branched from main). The assertion
+  # would not confirm that a correct rebase occurred; it would only reflect fixture
+  # setup. A meaningful ancestry assertion requires the real resolver contract from
+  # issue #21, which defines the expected git state after conflict resolution.
 
   # Clean up
   cd "$FIXTURE_REPO"
