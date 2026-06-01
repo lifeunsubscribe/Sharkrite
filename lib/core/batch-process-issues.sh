@@ -49,6 +49,9 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
+# Summary computation + stats-output functions (sourceable by regression tests)
+source "$_SCRIPT_DIR/batch-reporter.sh"
+
 # Record a run to the persistent history file
 record_run() {
   local issue="$1" mode="$2"
@@ -706,24 +709,10 @@ fi
 
 print_header "📊 Batch Processing Summary"
 
-# Calculate cleanup warning count
-CLEANUP_WARNING_COUNT=${#MERGED_CLEANUP_FAILED[@]}
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Overall Statistics"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Total Issues:     $TOTAL_ISSUES"
-echo "Processed:        $TOTAL_PROCESSED"
-if [ $CLEANUP_WARNING_COUNT -gt 0 ]; then
-  echo "Completed:        $COMPLETED_ISSUES (${CLEANUP_WARNING_COUNT} with cleanup warnings)"
-else
-  echo "Completed:        $COMPLETED_ISSUES"
-fi
-echo "Failed:           ${#FAILED_ISSUES[@]}"
-echo "Blocked:          ${#BLOCKED_ISSUES[@]}"
-echo "Skipped:          ${#SKIPPED_ISSUES[@]}"
-echo "Total Duration:   ${TOTAL_DURATION}s ($((TOTAL_DURATION / 60))m)"
-echo ""
+# Emit Overall Statistics + Skipped Issues sections via the extracted function.
+# The function is the single source of truth for this output — regression tests
+# source this file and call it directly so they bind to the real formula.
+_batch_print_stats
 
 # Detailed issue breakdown
 if [ $COMPLETED_ISSUES -gt 0 ]; then
@@ -784,16 +773,7 @@ if [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
   echo ""
 fi
 
-if [ ${#SKIPPED_ISSUES[@]} -gt 0 ]; then
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "Skipped Issues"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  for ISSUE_NUM in "${SKIPPED_ISSUES[@]}"; do
-    REASON=${ISSUE_STATUS[$ISSUE_NUM]:-"unknown"}
-    echo "  ⏭️  Issue #$ISSUE_NUM ($REASON)"
-  done
-  echo ""
-fi
+# (Skipped Issues section is now emitted by _batch_print_stats above)
 
 # Build comprehensive Slack summary
 NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
