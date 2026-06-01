@@ -26,6 +26,11 @@ if ! declare -f gh_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
+# Source git helpers for git_fetch_safe (retry-aware fetch with backoff)
+if ! declare -f git_fetch_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/git-helpers.sh"
+fi
+
 # Source notifications for Slack/email alerts
 if [ -f "$RITE_LIB_DIR/utils/notifications.sh" ]; then
   source "$RITE_LIB_DIR/utils/notifications.sh"
@@ -73,9 +78,13 @@ _div_status()  { echo "$1" >&2; }
 detect_divergence() {
   local branch_name="$1"
 
-  # Fetch latest remote state
-  if ! git fetch origin "$branch_name" 2>/dev/null; then
-    _div_error "Could not fetch origin/$branch_name (network issue?)"
+  # Fetch latest remote state with retry budget.
+  # git_fetch_safe retries 3 times with exponential backoff before returning 1.
+  # A transient fetch failure with bare `git fetch ... || true` would silently
+  # return stale (or absent) remote state; with a hard failure here we avoid
+  # a false "no divergence" determination on transient network errors.
+  if ! git_fetch_safe origin "$branch_name"; then
+    _div_error "Could not fetch origin/$branch_name after retries — cannot determine divergence"
     return 1
   fi
 

@@ -253,7 +253,8 @@ SHIM
   for f in \
     "lib/core/claude-workflow.sh" \
     "lib/core/merge-pr.sh" \
-    "lib/core/undo-workflow.sh"; do
+    "lib/core/undo-workflow.sh" \
+    "lib/utils/divergence-handler.sh"; do
 
     # Should have at least one git_fetch_safe call
     count=$(grep -c "git_fetch_safe" "$PROJECT_ROOT/$f" || true)
