@@ -54,15 +54,15 @@ teardown() {
 _setup_diverging_branch() {
   BRANCH_NAME="fix/diverge-test-$$"
 
-  # Feature branch modifies README.md — overwrite line 1 with branch-specific content
+  # Create feature branch with an initial commit (shared base with remote)
   git checkout -b "$BRANCH_NAME" main >/dev/null 2>&1
-  echo "# Feature: branch-specific content" > README.md
+  echo "# Feature: shared base content" > README.md
   git add README.md
-  git commit -m "Feature changes README" >/dev/null 2>&1
+  git commit -m "Feature: shared base" >/dev/null 2>&1
   git push -u origin "$BRANCH_NAME" >/dev/null 2>&1
 
-  # Remote branch also modifies README.md line 1 differently — produces a real rebase conflict
-  # because both sides replace the same line (not a simple append-to-EOF that git auto-merges).
+  # Remote side: clone the repo and add a commit that modifies README.md line 1
+  # to a different value. This commit will be on origin/$BRANCH_NAME but NOT local.
   local tmp_clone="${RITE_TEST_TMPDIR}/tmp-clone-$$"
   git clone "$BARE_REMOTE" "$tmp_clone" >/dev/null 2>&1
   git -C "$tmp_clone" config user.name "Test User"
@@ -72,6 +72,19 @@ _setup_diverging_branch() {
   git -C "$tmp_clone" add README.md
   git -C "$tmp_clone" commit -m "Remote conflicting change" >/dev/null 2>&1
   git -C "$tmp_clone" push origin "$BRANCH_NAME" >/dev/null 2>&1
+
+  # Local side: add a commit that also modifies README.md line 1, but to a different value.
+  # This commit is NOT pushed to origin — it only exists locally.
+  # Now local and remote both modify the same line from the same shared base
+  # → rebasing local onto origin/$BRANCH_NAME produces a real conflict.
+  echo "# Feature: local-specific content" > README.md
+  git add README.md
+  git commit -m "Local conflicting change (not pushed)" >/dev/null 2>&1
+
+  # Switch main repo back to 'main' so the worktree add can check out $BRANCH_NAME.
+  # git worktree add refuses to check out a branch that is already checked out in another
+  # worktree — this includes the main worktree when we're still on $BRANCH_NAME.
+  git checkout main >/dev/null 2>&1
 
   # Create a worktree on the local (non-updated) branch — diverged from remote
   WORKTREE_PATH="$RITE_WORKTREE_DIR/issue-diverge-$$"
@@ -139,9 +152,10 @@ _setup_diverging_branch() {
   }
 
   # Capture stderr for message assertions
+  # Use || pattern to capture actual exit code (not the exit of || true).
+  local exit_code=0
   local output
-  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || true
-  local exit_code=$?
+  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || exit_code=$?
 
   # Should return non-zero (auto mode bail)
   [ "$exit_code" -ne 0 ]
@@ -172,9 +186,10 @@ _setup_diverging_branch() {
   }
 
   # Capture output and exit code
+  # Use || pattern to capture actual exit code (not the exit of || true).
+  local exit_code=0
   local output
-  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || true
-  local exit_code=$?
+  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || exit_code=$?
 
   # Must propagate exit 5 exactly (batch-blocking)
   [ "$exit_code" -eq 5 ]
@@ -202,9 +217,10 @@ _setup_diverging_branch() {
   # Ensure the resolver function is NOT defined
   unset -f attempt_claude_merge_resolution 2>/dev/null || true
 
+  # Use || pattern to capture actual exit code (not the exit of || true).
+  local exit_code=0
   local output
-  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || true
-  local exit_code=$?
+  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || exit_code=$?
 
   # Should fail (conflicts, no resolver)
   [ "$exit_code" -ne 0 ]
@@ -237,16 +253,26 @@ _setup_diverging_branch() {
     return 5
   }
 
+  # Stub classify_foreign_commits to return TRIVIAL so the routing goes through
+  # _do_rebase_and_push (where the resolver is called) rather than _handle_unrelated.
+  # This test focuses on exit 5 propagation through the public entry point,
+  # not classification logic (that is tested separately).
+  classify_foreign_commits() {
+    export DIVERGENCE_CLASS="TRIVIAL"
+    return 0
+  }
+
   # Must be in worktree for divergence detection to work
   cd "$WORKTREE_PATH"
 
   # Fetch so detect_divergence can compare local vs remote
   git fetch origin "$BRANCH_NAME" >/dev/null 2>&1
 
-  # Capture output and exit code from the PUBLIC entry point
+  # Capture output and exit code from the PUBLIC entry point.
+  # Use || pattern to capture actual exit code (not the exit of || true).
+  local exit_code=0
   local output
-  output=$(handle_push_divergence "$BRANCH_NAME" "104" "103" "true" 2>&1) || true
-  local exit_code=$?
+  output=$(handle_push_divergence "$BRANCH_NAME" "104" "103" "true" 2>&1) || exit_code=$?
 
   # Must propagate exit 5 exactly through the public entry point
   [ "$exit_code" -eq 5 ]
