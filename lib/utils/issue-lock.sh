@@ -28,10 +28,15 @@
 # replace the kill-0 reclamation with a time-based TTL instead.
 #
 # Usage:
-#   acquire_issue_lock <issue_number>          # Returns 0 on success, 1 if locked by live process
-#   release_issue_lock <issue_number>          # Cleanup lock directory
-#   acquire_pr_followup_lock <pr_number>       # Returns 0 on success, 1 on timeout
-#   release_pr_followup_lock <pr_number>       # Cleanup followup lock directory
+#   acquire_issue_lock <issue_number>                        # Returns 0 on success, 1 if locked by live process
+#   release_issue_lock <issue_number>                        # Cleanup lock directory
+#   acquire_pr_followup_lock <pr_number> [source_issue]      # Returns 0 on success, 1 on timeout
+#   release_pr_followup_lock <pr_number> [source_issue]      # Cleanup followup lock directory
+#
+# The optional source_issue argument to the pr_followup_lock functions keys the lock by
+# PR + source issue rather than PR alone.  Use it whenever ISSUE_NUMBER is known so that
+# two concurrent invocations for different source issues on the same PR get independent
+# locks (and independent dedup search scopes).
 
 set -euo pipefail
 
@@ -125,11 +130,28 @@ release_issue_lock() {
 # Uses the same mkdir-style atomic locking as acquire_issue_lock, with a shorter
 # stale timeout (60s) since the critical section completes in seconds.
 #
-# Args: pr_number
+# Lock key scoping:
+#   - When source_issue is provided: keyed by PR + source issue
+#       pr-${pr_number}-src-${source_issue}-followup.lock
+#     This ensures that two concurrent invocations for DIFFERENT source issues on
+#     the same PR do not block each other and do not share a dedup search scope.
+#     A 1-PR→multiple-source-issues scenario (e.g., a PR that closes #10 and #11)
+#     requires independent locks so each source-issue follow-up is created separately.
+#   - When source_issue is omitted: keyed by PR only (backward-compatible path)
+#       pr-${pr_number}-followup.lock
+#
+# Args: pr_number [source_issue]
 # Returns: 0 on success, 1 on timeout (lock held by live process for too long)
 acquire_pr_followup_lock() {
   local pr_number="$1"
-  local lock_dir="${RITE_LOCK_DIR}/pr-${pr_number}-followup.lock"
+  local source_issue="${2:-}"
+  local lock_key
+  if [ -n "$source_issue" ]; then
+    lock_key="pr-${pr_number}-src-${source_issue}-followup.lock"
+  else
+    lock_key="pr-${pr_number}-followup.lock"
+  fi
+  local lock_dir="${RITE_LOCK_DIR}/${lock_key}"
 
   # Ensure lock directory parent exists
   mkdir -p "${RITE_LOCK_DIR}"
@@ -176,10 +198,18 @@ acquire_pr_followup_lock() {
 }
 
 # Release per-PR follow-up issue creation lock
-# Args: pr_number
+# Args: pr_number [source_issue]
+# Must be called with the same arguments used in the matching acquire_pr_followup_lock call.
 release_pr_followup_lock() {
   local pr_number="$1"
-  local lock_dir="${RITE_LOCK_DIR}/pr-${pr_number}-followup.lock"
+  local source_issue="${2:-}"
+  local lock_key
+  if [ -n "$source_issue" ]; then
+    lock_key="pr-${pr_number}-src-${source_issue}-followup.lock"
+  else
+    lock_key="pr-${pr_number}-followup.lock"
+  fi
+  local lock_dir="${RITE_LOCK_DIR}/${lock_key}"
 
   if [ -d "$lock_dir" ]; then
     # Only remove if it's our lock (PID matches)
