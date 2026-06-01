@@ -190,8 +190,14 @@ for file in "${SHELL_FILES[@]}"; do
   while IFS= read -r line; do
     line_num=$((line_num + 1))
 
-    # Track function definitions
-    if echo "$line" | grep -qE '^\s*(function\s+\w+|^\s*\w+\s*\(\))'; then
+    # Track function definitions.
+    # Matches all bash function declaration styles:
+    #   - POSIX:              name() {          (optional hyphens in name)
+    #   - function keyword:   function name {   (no parens required)
+    #   - combined:           function name() { (function keyword + parens)
+    # \w+ replaced with [a-zA-Z_][a-zA-Z0-9_-]* to allow hyphens in names.
+    # The inner redundant ^ anchor from the original alternation is removed.
+    if echo "$line" | grep -qE '^\s*(function\s+[a-zA-Z_][a-zA-Z0-9_-]*(\s*\(\))?|[a-zA-Z_][a-zA-Z0-9_-]*\s*\(\))'; then
       in_function=1
     fi
 
