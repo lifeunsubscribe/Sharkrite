@@ -60,27 +60,31 @@ fi
 
 # Fall back to GitHub search (body text)
 if [ -z "$PR_NUMBER" ]; then
-  PR_NUMBER=$(gh pr list --state all --json number,body --limit 100 2>/dev/null | \
+  PR_NUMBER=$(gh_safe pr list --state all --json number,body --limit 100 | \
     jq --arg issue "$ISSUE_NUMBER" -r \
     '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0].number // empty' \
-    2>/dev/null || echo "")
-  [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
+    || true)
+  [ "${PR_NUMBER:-}" = "null" ] && PR_NUMBER=""
+  PR_NUMBER="${PR_NUMBER:-}"
 fi
 
 # Fall back to title matching (create-pr.sh overwrites the body, dropping the issue reference)
 if [ -z "$PR_NUMBER" ]; then
-  ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq '.title' 2>/dev/null || echo "")
+  ISSUE_TITLE=$(gh_safe issue view "$ISSUE_NUMBER" --json title --jq '.title')
+  ISSUE_TITLE="${ISSUE_TITLE:-}"
   if [ -n "$ISSUE_TITLE" ] && [ "$ISSUE_TITLE" != "null" ]; then
-    PR_NUMBER=$(gh pr list --state all --json number,title --limit 100 2>/dev/null | \
+    PR_NUMBER=$(gh_safe pr list --state all --json number,title --limit 100 | \
       jq --arg title "$ISSUE_TITLE" -r \
       '[.[] | select(.title | ascii_downcase == ($title | ascii_downcase))] | .[0].number // empty' \
-      2>/dev/null || echo "")
-    [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
+      || true)
+    [ "${PR_NUMBER:-}" = "null" ] && PR_NUMBER=""
+    PR_NUMBER="${PR_NUMBER:-}"
   fi
 fi
 
 if [ -n "$PR_NUMBER" ]; then
-  PR_DATA=$(gh pr view "$PR_NUMBER" --json state,headRefName,mergedAt 2>/dev/null || echo "")
+  PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json state,headRefName,mergedAt)
+  PR_DATA="${PR_DATA:-}"
   if [ -n "$PR_DATA" ]; then
     PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
     PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName')
@@ -102,13 +106,13 @@ if [ -n "$PR_NUMBER" ]; then
   # Method 1: Issues with body marker "sharkrite-parent-pr:{PR}"
   while IFS= read -r num; do
     [ -n "$num" ] && FOLLOWUP_ISSUES+=("$num")
-  done < <(gh issue list --state all --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[].number' 2>/dev/null || echo "")
+  done < <(gh_safe issue list --state all --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[].number' || true)
 
   # Method 2: PR comment markers <!-- sharkrite-followup-issue:N -->
   while IFS= read -r num; do
     [ -n "$num" ] && FOLLOWUP_ISSUES+=("$num")
-  done < <(gh pr view "$PR_NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | \
-    grep -oE 'sharkrite-followup-issue:[0-9]+' | cut -d: -f2 || echo "")
+  done < <(gh_safe pr view "$PR_NUMBER" --json comments --jq '.comments[].body' | \
+    grep -oE 'sharkrite-followup-issue:[0-9]+' | cut -d: -f2 || true)
 
   # Deduplicate
   if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
@@ -157,7 +161,8 @@ SESSION_STATE_EXISTS=false
 
 ISSUE_STATE=""
 ISSUE_TITLE=""
-ISSUE_DATA=$(gh issue view "$ISSUE_NUMBER" --json state,title 2>/dev/null || echo "")
+ISSUE_DATA=$(gh_safe issue view "$ISSUE_NUMBER" --json state,title)
+ISSUE_DATA="${ISSUE_DATA:-}"
 if [ -n "$ISSUE_DATA" ]; then
   ISSUE_STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
   ISSUE_TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
@@ -254,7 +259,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
   # Revert to draft instead of closing — avoids PR number stacking on rerun.
   # The next `rite` run finds the existing draft PR and reuses it.
-  if gh pr ready --undo "$PR_NUMBER" 2>/dev/null; then
+  if gh_safe pr ready --undo "$PR_NUMBER" 2>/dev/null; then
     print_success "Reverted PR #$PR_NUMBER to draft"
   else
     print_info "PR #$PR_NUMBER may already be a draft"
@@ -303,16 +308,18 @@ if [ -n "$PR_NUMBER" ]; then
   echo "🧹 Review Cleanup"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+  REPO=$(gh_safe repo view --json nameWithOwner --jq '.nameWithOwner')
+  REPO="${REPO:-}"
 
   if [ -n "$REPO" ]; then
     # Delete sharkrite PR comments (reviews + assessments are all posted as comments)
-    COMMENT_IDS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
-      '.[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-assessment")) | .id' 2>/dev/null || echo "")
+    COMMENT_IDS=$(gh_safe api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
+      '.[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-assessment")) | .id' || true)
+    COMMENT_IDS="${COMMENT_IDS:-}"
 
     DELETED_COMMENTS=0
     for cid in $COMMENT_IDS; do
-      if gh api "repos/$REPO/issues/comments/$cid" -X DELETE 2>/dev/null; then
+      if gh_safe api "repos/$REPO/issues/comments/$cid" -X DELETE 2>/dev/null; then
         DELETED_COMMENTS=$((DELETED_COMMENTS + 1))
       fi
     done
@@ -337,9 +344,10 @@ if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   for issue_num in "${FOLLOWUP_ISSUES[@]}"; do
-    local_state=$(gh issue view "$issue_num" --json state --jq '.state' 2>/dev/null || echo "")
+    local_state=$(gh_safe issue view "$issue_num" --json state --jq '.state')
+    local_state="${local_state:-}"
     if [ "$local_state" = "OPEN" ]; then
-      if gh issue close "$issue_num" --comment "Closed by undo of issue #$ISSUE_NUMBER (PR #${PR_NUMBER:-unknown})" 2>/dev/null; then
+      if gh_safe issue close "$issue_num" --comment "Closed by undo of issue #$ISSUE_NUMBER (PR #${PR_NUMBER:-unknown})" 2>/dev/null; then
         print_success "Closed follow-up issue #$issue_num"
       else
         print_warning "Failed to close follow-up issue #$issue_num"
@@ -434,7 +442,7 @@ if [ "$ISSUE_STATE" = "closed" ] || [ "$ISSUE_STATE" = "CLOSED" ]; then
   echo "🔓 Issue Restore"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  if gh issue reopen "$ISSUE_NUMBER" --comment "Reopened by undo (PR #${PR_NUMBER:-unknown} was closed without merging)" 2>/dev/null; then
+  if gh_safe issue reopen "$ISSUE_NUMBER" --comment "Reopened by undo (PR #${PR_NUMBER:-unknown} was closed without merging)" 2>/dev/null; then
     print_success "Reopened issue #$ISSUE_NUMBER"
   else
     print_warning "Failed to reopen issue #$ISSUE_NUMBER"

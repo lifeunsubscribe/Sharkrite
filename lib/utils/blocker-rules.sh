@@ -18,6 +18,11 @@ set -euo pipefail
 # Source notifications library
 source "$RITE_LIB_DIR/utils/notifications.sh"
 
+# Source gh retry wrapper if not already loaded
+if ! declare -f gh_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Blocker detection functions
 
 detect_infrastructure_changes() {
@@ -25,7 +30,9 @@ detect_infrastructure_changes() {
 
   # Use configurable path pattern from blocker config
   local infra_pattern="$BLOCKER_INFRASTRUCTURE_PATHS"
-  local infra_files=$(gh pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${infra_pattern}\")) | .path" 2>/dev/null || echo "")
+  local infra_files
+  infra_files=$(gh_safe pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${infra_pattern}\")) | .path")
+  infra_files="${infra_files:-}"
 
   if [ -n "$infra_files" ]; then
     echo "BLOCKER: Infrastructure changes detected"
@@ -42,7 +49,9 @@ detect_database_migrations() {
 
   # Use configurable path pattern
   local migration_pattern="$BLOCKER_MIGRATION_PATHS"
-  local migration_files=$(gh pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${migration_pattern}\")) | .path" 2>/dev/null || echo "")
+  local migration_files
+  migration_files=$(gh_safe pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${migration_pattern}\")) | .path")
+  migration_files="${migration_files:-}"
 
   if [ -n "$migration_files" ]; then
     echo "BLOCKER: Database migration detected"
@@ -52,7 +61,7 @@ detect_database_migrations() {
     # Show migration SQL if available
     echo ""
     echo "Migration diff:"
-    gh pr diff "$pr_number" 2>/dev/null | head -50
+    gh_safe pr diff "$pr_number" 2>/dev/null | head -50
 
     return 1
   fi
@@ -65,7 +74,9 @@ detect_auth_changes() {
 
   # Use configurable auth pattern (exclude tests and docs)
   local auth_pattern="$BLOCKER_AUTH_PATHS"
-  local auth_files=$(gh pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${auth_pattern}\")) | select(.path | test(\"tests?/|docs?/\") | not) | .path" 2>/dev/null || echo "")
+  local auth_files
+  auth_files=$(gh_safe pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${auth_pattern}\")) | select(.path | test(\"tests?/|docs?/\") | not) | .path")
+  auth_files="${auth_files:-}"
 
   if [ -n "$auth_files" ]; then
     echo "BLOCKER: Authentication/authorization code changes detected"
@@ -87,7 +98,9 @@ detect_doc_changes() {
 
   # Use configurable doc pattern
   local doc_pattern="$BLOCKER_DOC_PATHS"
-  local doc_files=$(gh pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${doc_pattern}\")) | .path" 2>/dev/null || echo "")
+  local doc_files
+  doc_files=$(gh_safe pr view "$pr_number" --json files --jq ".files[] | select(.path | test(\"${doc_pattern}\")) | .path")
+  doc_files="${doc_files:-}"
 
   if [ -n "$doc_files" ]; then
     echo "BLOCKER: Architectural documentation changes detected"
@@ -108,7 +121,9 @@ detect_critical_issues() {
   local pr_number=$1
 
   # Get latest review from bot users
-  local review=$(gh pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login | test("claude|github-actions"; "i"))] | .[-1] | .body' 2>/dev/null || echo "")
+  local review
+  review=$(gh_safe pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login | test("claude|github-actions"; "i"))] | .[-1] | .body')
+  review="${review:-}"
 
   if [ -z "$review" ]; then
     return 0  # No review yet, not a blocker
@@ -151,7 +166,9 @@ detect_expensive_services() {
   local infra_pattern="$BLOCKER_INFRASTRUCTURE_PATHS"
 
   # Get diff of infrastructure files only
-  local expensive=$(gh pr diff "$pr_number" 2>/dev/null | grep -iE "$expensive_pattern" || echo "")
+  local expensive
+  expensive=$(gh_safe pr diff "$pr_number" | grep -iE "$expensive_pattern" || true)
+  expensive="${expensive:-}"
 
   if [ -n "$expensive" ]; then
     echo "BLOCKER: Expensive cloud service detected"
@@ -241,7 +258,9 @@ detect_protected_scripts() {
   IFS='|' read -ra protected_scripts <<< "$protected_pattern"
 
   for script in "${protected_scripts[@]}"; do
-    local changes=$(gh pr view "$pr_number" --json files --jq ".files[] | select(.path | contains(\"$script\")) | .path" 2>/dev/null || echo "")
+    local changes
+    changes=$(gh_safe pr view "$pr_number" --json files --jq ".files[] | select(.path | contains(\"$script\")) | .path")
+    changes="${changes:-}"
 
     if [ -n "$changes" ]; then
       echo "BLOCKER: Protected script changed: $script"
@@ -252,7 +271,7 @@ detect_protected_scripts() {
       fi
       echo ""
       echo "Diff:"
-      gh pr diff "$pr_number" -- "*/$script" 2>/dev/null | head -100
+      gh_safe pr diff "$pr_number" -- "*/$script" 2>/dev/null | head -100
       return 1
     fi
   done
@@ -269,7 +288,8 @@ detect_sensitivity_areas() {
 
   # Fetch changed file paths once (single API call)
   local changed_files
-  changed_files=$(gh pr view "$pr_number" --json files --jq '.files[].path' 2>/dev/null || echo "")
+  changed_files=$(gh_safe pr view "$pr_number" --json files --jq '.files[].path')
+  changed_files="${changed_files:-}"
 
   if [ -z "$changed_files" ]; then
     return 0
@@ -331,7 +351,8 @@ Guidance: Verify documentation changes accurately reflect the current system sta
 
   # Expensive services (scan diff for service names)
   local expensive_matches
-  expensive_matches=$(gh pr diff "$pr_number" 2>/dev/null | grep -oiE "$BLOCKER_EXPENSIVE_SERVICES" | sort -u || true)
+  expensive_matches=$(gh_safe pr diff "$pr_number" | grep -oiE "$BLOCKER_EXPENSIVE_SERVICES" | sort -u || true)
+  expensive_matches="${expensive_matches:-}"
   if [ -n "$expensive_matches" ]; then
     hints+="### Sensitivity: Expensive Cloud Services
 Services referenced:

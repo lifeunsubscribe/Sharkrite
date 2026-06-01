@@ -31,6 +31,9 @@ source "$RITE_LIB_DIR/utils/stash-manager.sh"
 # Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
 source "$RITE_LIB_DIR/utils/git-helpers.sh"
 
+# Source gh retry helper (provides gh_safe — retries 429/5xx, handles not-found)
+source "$RITE_LIB_DIR/utils/gh-retry.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -170,7 +173,7 @@ update_security_guide_from_pr() {
   print_status "Checking for security findings in PR #$pr_number..."
 
   # Extract Claude review comments (check multiple possible bot names)
-  REVIEW_COMMENTS=$(gh pr view $pr_number --json comments --jq '.comments[] | select(.author.login | test("claude"; "i")) | .body' 2>/dev/null || echo "")
+  REVIEW_COMMENTS=$(gh_safe pr view "$pr_number" --json comments --jq '.comments[] | select(.author.login | test("claude"; "i")) | .body')
 
   if [ -z "$REVIEW_COMMENTS" ]; then
     return 0
@@ -375,7 +378,7 @@ UPDATE_EOF
 if [ -z "$PR_NUMBER" ]; then
   print_info "No PR number provided, searching for PR on branch: $CURRENT_BRANCH"
 
-  PR_JSON=$(gh pr list --head "$CURRENT_BRANCH" --json number,title,url --jq '.[0]' 2>/dev/null || echo "")
+  PR_JSON=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number,title,url --jq '.[0]')
 
   if [ -z "$PR_JSON" ] || [ "$PR_JSON" = "null" ]; then
     print_error "No PR found for branch: $CURRENT_BRANCH"
@@ -394,7 +397,7 @@ verbose_header "🔍 PR Merge Workflow - PR #$PR_NUMBER"
 
 # Fetch PR details
 verbose_status "Fetching PR details..."
-PR_DETAILS=$(gh pr view $PR_NUMBER --json number,title,state,isDraft,mergeable,url,baseRefName,headRefName,statusCheckRollup 2>/dev/null)
+PR_DETAILS=$(gh_safe pr view "$PR_NUMBER" --json number,title,state,isDraft,mergeable,url,baseRefName,headRefName,statusCheckRollup)
 
 if [ -z "$PR_DETAILS" ]; then
   print_error "Could not fetch PR #$PR_NUMBER"
@@ -446,7 +449,8 @@ if [ "$PR_MERGEABLE" = "UNKNOWN" ]; then
   print_status "Waiting for GitHub to compute mergeability..."
   for _i in 1 2 3; do
     sleep 3
-    PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+    PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
+    PR_MERGEABLE="${PR_MERGEABLE:-UNKNOWN}"
     [ "$PR_MERGEABLE" != "UNKNOWN" ] && break
   done
 fi
@@ -465,7 +469,8 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
         print_success "Merged main into branch and pushed — re-checking mergeable state"
         # Give GitHub a moment to update mergeable state
         sleep 3
-        PR_MERGEABLE=$(gh pr view "$PR_NUMBER" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+        PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
+        PR_MERGEABLE="${PR_MERGEABLE:-UNKNOWN}"
         if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
           print_success "PR is now mergeable"
         else
@@ -531,15 +536,13 @@ echo -e "${BLUE}🦈 Sharkrite Review${NC}"
 CLAUDE_REVIEW_FOUND=false
 
 # First check formal reviews for Sharkrite marker
-LATEST_CLAUDE_REVIEW=$(gh pr view $PR_NUMBER --json reviews \
-  --jq '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body' \
-  2>/dev/null)
+LATEST_CLAUDE_REVIEW=$(gh_safe pr view "$PR_NUMBER" --json reviews \
+  --jq '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body')
 
 # If not in formal reviews, check PR comments for Sharkrite marker
 if [ -z "$LATEST_CLAUDE_REVIEW" ] || [ "$LATEST_CLAUDE_REVIEW" = "null" ]; then
-  LATEST_CLAUDE_REVIEW=$(gh pr view $PR_NUMBER --json comments \
-    --jq '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body' \
-    2>/dev/null)
+  LATEST_CLAUDE_REVIEW=$(gh_safe pr view "$PR_NUMBER" --json comments \
+    --jq '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("Claude Code Review"))] | .[-1] | .body')
 fi
 
 if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
@@ -568,10 +571,10 @@ if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
   if [ "$CRITICAL_COUNT" -gt 0 ]; then
     # Check if the assessment already resolved/dismissed all CRITICAL items.
     # The review shows raw findings; the assessment is the authoritative verdict.
-    ASSESSMENT_ACTIONABLE=$(gh pr view "$PR_NUMBER" --json comments --jq '
+    ASSESSMENT_ACTIONABLE=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
       [.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
       sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null | grep -c "^### .* - ACTIONABLE_NOW" || true)
+    ' | grep -c "^### .* - ACTIONABLE_NOW" || true)
 
     if [ "${ASSESSMENT_ACTIONABLE:-0}" -eq 0 ]; then
       # Assessment exists and has 0 ACTIONABLE_NOW — CRITICALs were resolved or dismissed
@@ -667,8 +670,8 @@ verbose_header "🚀 Merging PR #$PR_NUMBER"
 # Atomic merge with SHA verification: use the GitHub API merge endpoint with the
 # sha parameter to reject the merge if the PR head changed since we last checked.
 # This prevents foreign commits from being silently merged between assessment and merge.
-EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-REPO_NAME=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+EXPECTED_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+REPO_NAME=$(gh_safe repo view --json nameWithOwner --jq '.nameWithOwner')
 
 _do_merge() {
   # Attempt merge and capture output + exit code, immune to set -e.
@@ -679,7 +682,7 @@ _do_merge() {
 
 if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
   # Use API merge for atomic head verification
-  _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+  _do_merge gh_safe api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
     -X PUT \
     -f merge_method="$MERGE_METHOD" \
     -f sha="$EXPECTED_HEAD"
@@ -698,8 +701,8 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
 
       if [ $DIV_RESULT -eq 0 ]; then
         # Divergence resolved — retry the merge with updated head
-        EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-        _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+        EXPECTED_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+        _do_merge gh_safe api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
           -X PUT \
           -f merge_method="$MERGE_METHOD" \
           -f sha="$EXPECTED_HEAD"
@@ -723,8 +726,8 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
     elif git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
       print_status "Branch updated — retrying merge..."
       sleep 3
-      EXPECTED_HEAD=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-      _do_merge gh api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
+      EXPECTED_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+      _do_merge gh_safe api "repos/$REPO_NAME/pulls/$PR_NUMBER/merge" \
         -X PUT \
         -f merge_method="$MERGE_METHOD" \
         -f sha="$EXPECTED_HEAD"
@@ -736,7 +739,7 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
 else
   # Fallback: gh pr merge (no SHA verification available)
   print_info "Using fallback merge (no SHA verification)"
-  _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+  _do_merge gh_safe pr merge "$PR_NUMBER" "--$MERGE_METHOD"
 
   # Handle "not mergeable" in fallback path — branch may be behind main
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
@@ -747,7 +750,7 @@ else
     elif git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
       print_status "Branch updated — retrying merge..."
       sleep 3
-      _do_merge gh pr merge "$PR_NUMBER" "--$MERGE_METHOD"
+      _do_merge gh_safe pr merge "$PR_NUMBER" "--$MERGE_METHOD"
     else
       git merge --abort 2>/dev/null || true
       print_error "Could not update branch against main"
@@ -809,12 +812,13 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
 
   # Update scratchpad with security findings (BEFORE clearing context)
   if type update_scratchpad_from_pr &>/dev/null; then
-    PR_TITLE=$(gh pr view $PR_NUMBER --json title --jq '.title' 2>/dev/null || echo "PR #$PR_NUMBER")
+    PR_TITLE=$(gh_safe pr view "$PR_NUMBER" --json title --jq '.title')
+    PR_TITLE="${PR_TITLE:-PR #$PR_NUMBER}"
     update_scratchpad_from_pr "$PR_NUMBER" "$PR_TITLE"
   fi
 
   # Extract issue number from PR if it exists
-  ISSUE_NUMBER=$(gh pr view $PR_NUMBER --json body --jq '.body' | sed -n 's/.*Closes #\([0-9]\+\).*/\1/p' | head -1 || echo "")
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | sed -n 's/.*Closes #\([0-9]\+\).*/\1/p' | head -1 || true)
 
   if [ ! -z "$ISSUE_NUMBER" ]; then
     if [ "$AUTO_MODE" = false ]; then
@@ -823,13 +827,13 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
       read -p "Close linked issue #$ISSUE_NUMBER? (y/n) " -n 1 -r
       echo
       if [[ $REPLY =~ ^[Yy]$ ]]; then
-        gh issue close $ISSUE_NUMBER --comment "Closed by PR #$PR_NUMBER" 2>/dev/null
+        gh_safe issue close "$ISSUE_NUMBER" --comment "Closed by PR #$PR_NUMBER" 2>/dev/null || true
         print_success "Issue #$ISSUE_NUMBER closed"
       fi
     else
       # Auto mode: automatically close linked issue
       print_info "Auto mode: closing linked issue #$ISSUE_NUMBER"
-      gh issue close $ISSUE_NUMBER --comment "Closed by PR #$PR_NUMBER" 2>/dev/null
+      gh_safe issue close "$ISSUE_NUMBER" --comment "Closed by PR #$PR_NUMBER" 2>/dev/null || true
       print_success "Issue #$ISSUE_NUMBER closed"
     fi
   fi
@@ -842,7 +846,7 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   # adds as a PR comment: <!-- sharkrite-followup-issue:N -->
   # This is more reliable than scanning the PR body for #N patterns, which
   # matches the linked issue itself (Closes #N) and random references.
-  ASSESSMENT_ISSUES=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -oE 'sharkrite-followup-issue:([0-9]+)' | grep -oE '[0-9]+' | sort -u || echo "")
+  ASSESSMENT_ISSUES=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '.comments[].body' | grep -oE 'sharkrite-followup-issue:([0-9]+)' | grep -oE '[0-9]+' | sort -u || true)
 
   if [ -n "$ASSESSMENT_ISSUES" ]; then
     ISSUE_COUNT=$(echo "$ASSESSMENT_ISSUES" | wc -l | tr -d ' ')
@@ -853,8 +857,9 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
     if [ -n "${SLACK_WEBHOOK:-}" ]; then
       ISSUES_LIST=""
       for issue_num in $ASSESSMENT_ISSUES; do
-        ISSUE_TITLE=$(gh issue view "$issue_num" --json title --jq '.title' 2>/dev/null || echo "Issue #$issue_num")
-        REPO_URL=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+        ISSUE_TITLE=$(gh_safe issue view "$issue_num" --json title --jq '.title')
+        ISSUE_TITLE="${ISSUE_TITLE:-Issue #$issue_num}"
+        REPO_URL=$(gh_safe repo view --json url --jq '.url')
         ISSUES_LIST="${ISSUES_LIST}• <${REPO_URL}/issues/${issue_num}|#${issue_num}>: ${ISSUE_TITLE}\n"
       done
 

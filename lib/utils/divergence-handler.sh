@@ -19,6 +19,13 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
+# Source gh retry wrapper if not already loaded
+# divergence-handler.sh may be sourced standalone or via stale-branch.sh,
+# neither of which chains through pr-detection.sh.
+if ! declare -f gh_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Source notifications for Slack/email alerts
 if [ -f "$RITE_LIB_DIR/utils/notifications.sh" ]; then
   source "$RITE_LIB_DIR/utils/notifications.sh"
@@ -174,7 +181,8 @@ classify_foreign_commits() {
 
   local issue_context=""
   if [ -n "$issue_number" ]; then
-    issue_context=$(gh issue view "$issue_number" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n" + .body' 2>/dev/null || echo "Issue #$issue_number")
+    issue_context=$(gh_safe issue view "$issue_number" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n" + .body' || true)
+    issue_context="${issue_context:-Issue #$issue_number}"
   fi
 
   local diff_stat
@@ -302,9 +310,10 @@ _handle_related() {
   local reviewed=false
   if [ -n "$pr_number" ]; then
     local assess_time
-    assess_time=$(gh pr view "$pr_number" --json comments \
+    assess_time=$(gh_safe pr view "$pr_number" --json comments \
       --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt // ""' \
-      2>/dev/null || echo "")
+      || true)
+    assess_time="${assess_time:-}"
 
     local foreign_commit_time
     foreign_commit_time=$(git log -1 --format="%aI" "$DIVERGENCE_REMOTE_HEAD" 2>/dev/null || echo "")
@@ -615,7 +624,8 @@ verify_pr_head() {
   local expected_sha="$2"
 
   export PR_CURRENT_HEAD
-  PR_CURRENT_HEAD=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+  PR_CURRENT_HEAD=$(gh_safe pr view "$pr_number" --json headRefOid --jq '.headRefOid' || true)
+  PR_CURRENT_HEAD="${PR_CURRENT_HEAD:-}"
 
   if [ -z "$PR_CURRENT_HEAD" ]; then
     _div_warning "Could not fetch PR head SHA — skipping verification" >&2
@@ -650,7 +660,8 @@ _send_divergence_notification() {
   fi
 
   local repo_url
-  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url --jq '.url' || true)
+  repo_url="${repo_url:-}"
 
   local issue_link="#${issue_number}"
   local pr_link="#${pr_number}"

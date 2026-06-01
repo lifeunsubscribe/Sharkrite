@@ -405,15 +405,15 @@ phase_claude_workflow() {
     print_info "Using existing worktree: $WORKTREE_PATH"
   else
     # Check if PR already exists for this issue
-    pr_number=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
+    pr_number=$(gh_safe pr list --state open --json number,body --limit 100 | \
       jq --arg issue "$issue_number" -r \
-      '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
+      '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
 
     if [ -n "$pr_number" ]; then
       print_info "Found existing PR #$pr_number for issue #$issue_number"
 
       # Find worktree for this PR's branch
-      pr_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName')
+      pr_branch=$(gh_safe pr view "$pr_number" --json headRefName --jq '.headRefName')
       worktree_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
 
       if [ -n "$worktree_path" ]; then
@@ -427,7 +427,7 @@ phase_claude_workflow() {
           print_warning "Uncommitted changes detected in worktree"
 
           # Get issue description for relevance analysis
-          issue_desc=$(gh issue view "$issue_number" --json title,body --jq '.title + "\n\n" + .body' 2>/dev/null || echo "")
+          issue_desc=$(gh_safe issue view "$issue_number" --json title,body --jq '.title + "\n\n" + .body')
 
           # Get diff of uncommitted changes (exclude untracked files)
           UNCOMMITTED_DIFF=$(git -C "$WORKTREE_PATH" diff HEAD 2>/dev/null || echo "")
@@ -559,9 +559,10 @@ EOF
               # Clean up empty draft PR
               if [ -n "${pr_number:-}" ]; then
                 local _pr_adds
-                _pr_adds=$(gh pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
+                _pr_adds=$(gh_safe pr view "$pr_number" --json additions --jq '.additions')
+                _pr_adds="${_pr_adds:-0}"
                 if [ "${_pr_adds:-0}" -eq 0 ]; then
-                  gh pr close "$pr_number" --delete-branch 2>/dev/null || true
+                  gh_safe pr close "$pr_number" --delete-branch 2>/dev/null || true
                   print_info "Closed empty draft PR #$pr_number"
                 fi
               fi
@@ -753,7 +754,7 @@ EOF
             echo ""
 
             # Close the issue with explanation
-            gh issue close "$issue_number" \
+            gh_safe issue close "$issue_number" \
               --comment "Automatically closed by sharkrite: all verification commands in this issue already pass on main. No development needed.
 
 **Verification results:** $_pass_count/$_cmd_count commands passed.
@@ -848,9 +849,10 @@ EOF
           # Clean up empty draft PR so it doesn't cause stale worktree loops on next run
           if [ -n "${PR_NUMBER:-}" ]; then
             local _pr_additions
-            _pr_additions=$(gh pr view "$PR_NUMBER" --json additions --jq '.additions' 2>/dev/null || echo "0")
+            _pr_additions=$(gh_safe pr view "$PR_NUMBER" --json additions --jq '.additions')
+            _pr_additions="${_pr_additions:-0}"
             if [ "${_pr_additions:-0}" -eq 0 ]; then
-              gh pr close "$PR_NUMBER" --delete-branch 2>/dev/null || true
+              gh_safe pr close "$PR_NUMBER" --delete-branch 2>/dev/null || true
               print_info "Closed empty draft PR #$PR_NUMBER"
             fi
           fi
@@ -925,7 +927,7 @@ phase_create_pr() {
   # gh pr view returns closed PRs too, which causes wrong-PR-number bugs
   # when a previous draft was closed during a no-work cleanup)
   local branch_name=$(git rev-parse --abbrev-ref HEAD)
-  PR_NUMBER=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null || echo "")
+  PR_NUMBER=$(gh_safe pr list --head "$branch_name" --json number --jq '.[0].number')
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
     print_error "No open PR found for branch '$branch_name'"
@@ -963,11 +965,11 @@ phase_create_pr() {
     latest_local_commit_time="$LATEST_COMMIT_TIME"
 
     local latest_review_time
-    latest_review_time=$(gh pr view "$PR_NUMBER" --json comments --jq '
+    latest_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
       [.comments[] | select(
         .body | contains("<!-- sharkrite-local-review")
       )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""
-    ' 2>/dev/null || echo "")
+    ')
 
     if [ -n "$latest_review_time" ] && [ -n "$latest_local_commit_time" ]; then
       # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison.
@@ -1034,11 +1036,13 @@ phase_assess_and_resolve() {
   # Only check on first entry (retry_count=0) — retries should always re-assess.
   if [ "$retry_count" -eq 0 ]; then
     # Fetch assessment AND check for existing follow-up issue marker in one call
-    local pr_assess_state=$(gh pr view "$pr_number" --json comments --jq '{
+    local pr_assess_state
+    pr_assess_state=$(gh_safe pr view "$pr_number" --json comments --jq '{
       assessment: ([.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
         sort_by(.createdAt) | reverse | .[0].body // ""),
       has_followup: ([.comments[] | select(.body | contains("sharkrite-followup-issue:"))] | length > 0)
-    }' 2>/dev/null || echo "{}")
+    }')
+    pr_assess_state="${pr_assess_state:-{}}"
 
     local existing_assessment=$(echo "$pr_assess_state" | jq -r '.assessment // ""' 2>/dev/null)
     local has_followup=$(echo "$pr_assess_state" | jq -r '.has_followup // false' 2>/dev/null)
@@ -1068,10 +1072,12 @@ phase_assess_and_resolve() {
 
   # Check if a follow-up issue was created in a previous run and is now resolved
   # This allows the workflow to skip directly to merge if resuming after manual resolution
-  local followup_marker=$(gh pr view "$pr_number" --json comments --jq '.comments[].body' 2>/dev/null | grep -oE 'sharkrite-followup-issue:[0-9]+' | tail -1 || echo "")
+  local followup_marker
+  followup_marker=$(gh_safe pr view "$pr_number" --json comments --jq '.comments[].body' | grep -oE 'sharkrite-followup-issue:[0-9]+' | tail -1 || true)
   if [ -n "$followup_marker" ]; then
     local followup_issue_num=$(echo "$followup_marker" | cut -d: -f2)
-    local followup_state=$(gh issue view "$followup_issue_num" --json state --jq '.state' 2>/dev/null || echo "")
+    local followup_state
+    followup_state=$(gh_safe issue view "$followup_issue_num" --json state --jq '.state')
 
     if [ "$followup_state" = "CLOSED" ]; then
       print_success "✅ Follow-up issue #$followup_issue_num has been resolved"
@@ -1260,11 +1266,11 @@ phase_assess_and_resolve() {
     # Without this, a silent review generation failure causes assess-and-resolve to
     # see the same stale review → exit 3 again → infinite reroute loop.
     local _post_reroute_review_time
-    _post_reroute_review_time=$(gh pr view "$PR_NUMBER" --json comments --jq '
+    _post_reroute_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
       [.comments[] | select(
         .body | contains("<!-- sharkrite-local-review")
       )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""
-    ' 2>/dev/null || echo "")
+    ')
 
     # Ensure commit time is available (phase_create_pr may skip computing it)
     if [ -z "${LATEST_COMMIT_TIME:-}" ]; then
@@ -1313,7 +1319,9 @@ phase_merge_pr() {
   cd "$WORKTREE_PATH"
 
   # Show a brief changes summary so the user knows what's about to be merged
-  local _pr_info=$(gh pr view "$pr_number" --json title,body 2>/dev/null || echo "{}")
+  local _pr_info
+  _pr_info=$(gh_safe pr view "$pr_number" --json title,body)
+  _pr_info="${_pr_info:-{}}"
   local _pr_title=$(echo "$_pr_info" | jq -r '.title // ""')
   local _pr_body=$(echo "$_pr_info" | jq -r '.body // ""')
 
@@ -1329,9 +1337,12 @@ phase_merge_pr() {
       echo "$_summary" | grep -v "^## Changes" | grep -v "^### Commits" | grep -v "^$" | head -15 | sed 's/^/   /'
     else
       # Fallback for PRs created before this change
-      local _changed_files=$(gh pr view "$pr_number" --json files --jq '.files[].path' 2>/dev/null || echo "")
+      local _changed_files
+      _changed_files=$(gh_safe pr view "$pr_number" --json files --jq '.files[].path')
       local _file_count=$(echo "$_changed_files" | grep -c '.' || true)
-      local _commit_count=$(gh pr view "$pr_number" --json commits --jq '.commits | length' 2>/dev/null || echo "?")
+      local _commit_count
+      _commit_count=$(gh_safe pr view "$pr_number" --json commits --jq '.commits | length')
+      _commit_count="${_commit_count:-?}"
       echo "   $_file_count file(s), $_commit_count commit(s)"
       if [ "$_file_count" -le 10 ] && [ -n "$_changed_files" ]; then
         echo "$_changed_files" | sed 's/^/   • /'
@@ -1425,7 +1436,7 @@ phase_merge_pr() {
   git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
 
   local _merged_branch
-  _merged_branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+  _merged_branch=$(gh_safe pr view "$pr_number" --json headRefName --jq '.headRefName')
   if [ -n "$_merged_branch" ] && git -C "$RITE_PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$_merged_branch" 2>/dev/null; then
     git -C "$RITE_PROJECT_ROOT" branch -D "$_merged_branch" 2>/dev/null || true
   fi
@@ -1467,11 +1478,17 @@ phase_completion() {
   print_header "Phase 5: Completion"
 
   # Get PR details for notification
-  local pr_title=$(gh pr view "$pr_number" --json title --jq '.title' 2>/dev/null || echo "Unknown")
-  local files_changed=$(gh pr view "$pr_number" --json files --jq '.files | length' 2>/dev/null || echo "?")
+  local pr_title
+  pr_title=$(gh_safe pr view "$pr_number" --json title --jq '.title')
+  pr_title="${pr_title:-Unknown}"
+  local files_changed
+  files_changed=$(gh_safe pr view "$pr_number" --json files --jq '.files | length')
+  files_changed="${files_changed:-?}"
 
   # Check if follow-up issues were created
-  local followup_issues=$(gh issue list --label "follow-up" --label "parent:#${issue_number}" --json number --jq '. | length' 2>/dev/null || echo "0")
+  local followup_issues
+  followup_issues=$(gh_safe issue list --label "follow-up" --label "parent:#${issue_number}" --json number --jq '. | length')
+  followup_issues="${followup_issues:-0}"
 
   # Send completion notification
   send_completion_notification "$issue_number" "$pr_number" "$pr_title" "$files_changed" "$followup_issues"
@@ -1528,7 +1545,8 @@ run_workflow() {
   echo ""
 
   # Check if issue is already closed
-  local issue_data=$(gh issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences 2>/dev/null)
+  local issue_data
+  issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences)
   local issue_state=$(echo "$issue_data" | jq -r '.state')
 
   if [ "$issue_state" = "CLOSED" ]; then
@@ -1543,7 +1561,8 @@ run_workflow() {
     local pr_branch=""
 
     if [ -n "$pr_number" ]; then
-      local pr_data=$(gh pr view "$pr_number" --json state,mergedAt,body,headRefName 2>/dev/null)
+      local pr_data
+      pr_data=$(gh_safe pr view "$pr_number" --json state,mergedAt,body,headRefName)
       pr_state=$(echo "$pr_data" | jq -r '.state')
       pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
       pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5 || true)
@@ -1556,11 +1575,11 @@ run_workflow() {
       local closed_pr_number
       # sort_by(.number) | last picks the most recently created closed PR
       # deterministically when multiple closed PRs reference the same issue.
-      closed_pr_number=$(gh pr list --state closed --json number,body --limit 50 2>/dev/null | \
+      closed_pr_number=$(gh_safe pr list --state closed --json number,body --limit 50 | \
         jq --arg issue "$issue_number" -r \
-        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
+        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
       if [ -n "$closed_pr_number" ]; then
-        pr_branch=$(gh pr view "$closed_pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+        pr_branch=$(gh_safe pr view "$closed_pr_number" --json headRefName --jq '.headRefName')
         [ -z "$pr_number" ] && pr_number="$closed_pr_number"
       fi
     fi
@@ -1620,9 +1639,12 @@ run_workflow() {
         echo "$_summary" | grep -v "^## Changes" | grep -v "^### Commits" | sed 's/^/  /'
       else
         # Fallback for PRs created before the marked-section change
-        local _changed_files=$(gh pr view "$pr_number" --json files --jq '.files[].path' 2>/dev/null || echo "")
+        local _changed_files
+        _changed_files=$(gh_safe pr view "$pr_number" --json files --jq '.files[].path')
         local _file_count=$(echo "$_changed_files" | grep -c '.' || true)
-        local _commit_count=$(gh pr view "$pr_number" --json commits --jq '.commits | length' 2>/dev/null || echo "?")
+        local _commit_count
+        _commit_count=$(gh_safe pr view "$pr_number" --json commits --jq '.commits | length')
+        _commit_count="${_commit_count:-?}"
 
         echo ""
         echo "Changes: $_file_count file(s), $_commit_count commit(s)"
@@ -1700,7 +1722,7 @@ run_workflow() {
   # or edge cases they may be missing. Fetch and normalize silently (skip approval on resume).
   if [ -z "${NORMALIZED_SUBJECT:-}" ]; then
     local _issue_json
-    _issue_json=$(gh issue view "$issue_number" --json title,body 2>/dev/null || echo "")
+    _issue_json=$(gh_safe issue view "$issue_number" --json title,body)
     if [ -n "$_issue_json" ] && [ "$_issue_json" != "null" ]; then
       ISSUE_DESC=$(echo "$_issue_json" | jq -r '.title // ""')
       ISSUE_BODY=$(echo "$_issue_json" | jq -r '.body // ""')
@@ -1720,14 +1742,15 @@ run_workflow() {
     # Method 1: Search by issue link in PR body
     # sort_by(.number) | last picks the highest-numbered (most recent) open PR
     # deterministically when multiple PRs reference the same issue.
-    local _detected_pr=$(gh pr list --state open --json number,body --limit 100 2>/dev/null | \
-      jq --arg issue "$issue_number" -r '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty')
+    local _detected_pr
+    _detected_pr=$(gh_safe pr list --state open --json number,body --limit 100 | \
+      jq --arg issue "$issue_number" -r '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
 
     # Method 2: Detect from worktree branch (session state may have worktree but no PR)
     if { [ -z "$_detected_pr" ] || [ "$_detected_pr" = "null" ]; } && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
       local _branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       if [ -n "$_branch" ]; then
-        _detected_pr=$(gh pr list --head "$_branch" --json number --jq '.[0].number' 2>/dev/null || echo "")
+        _detected_pr=$(gh_safe pr list --head "$_branch" --json number --jq '.[0].number')
       fi
     fi
 
@@ -1741,7 +1764,8 @@ run_workflow() {
   # ── Detect worktree for this PR's branch (if not already known) ──
   if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
     if [ -z "${WORKTREE_PATH:-}" ] || [ ! -d "${WORKTREE_PATH:-}" ]; then
-      local _pr_branch=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+      local _pr_branch
+      _pr_branch=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
       if [ -n "$_pr_branch" ]; then
         local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
@@ -1825,7 +1849,8 @@ run_workflow() {
     local pr_latest_commit="$LATEST_COMMIT_TIME"
 
     # Get review/assessment/followup state from API (comments are immediately consistent)
-    local pr_state_json=$(gh pr view "$PR_NUMBER" --json comments --jq '{
+    local pr_state_json
+    pr_state_json=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '{
       latest_review: ([.comments[] | select(
         .body | contains("<!-- sharkrite-local-review")
       )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""),
@@ -1835,7 +1860,8 @@ run_workflow() {
       has_followup: ([.comments[] | select(
         .body | contains("sharkrite-followup-issue:")
       )] | length > 0)
-    }' 2>/dev/null || echo "{}")
+    }')
+    pr_state_json="${pr_state_json:-{}}"
     local pr_latest_review=$(echo "$pr_state_json" | jq -r '.latest_review // ""' 2>/dev/null)
     local pr_latest_assessment=$(echo "$pr_state_json" | jq -r '.latest_assessment // ""' 2>/dev/null)
     local pr_has_followup=$(echo "$pr_state_json" | jq -r '.has_followup // false' 2>/dev/null)

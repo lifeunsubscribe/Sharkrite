@@ -9,6 +9,13 @@
 
 set -euo pipefail
 
+# Source gh retry wrapper if not already loaded
+# notifications.sh may be sourced standalone or via divergence-handler.sh,
+# neither of which chains through pr-detection.sh.
+if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f gh_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/gh-retry.sh"
+fi
+
 # Configuration from environment (with config.sh defaults)
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
 EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
@@ -175,7 +182,8 @@ send_blocker_notification() {
 
   # Get repo URL for clickable links
   local repo_url
-  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url --jq '.url' || true)
+  repo_url="${repo_url:-}"
 
   # Check if this blocker type is bypassable in supervised mode
   local bypass_hint=""
@@ -216,7 +224,8 @@ send_completion_notification() {
 
   # Get repo URL for clickable links
   local repo_url
-  repo_url=$(gh repo view --json url --jq '.url' 2>/dev/null || echo "")
+  repo_url=$(gh_safe repo view --json url --jq '.url' || true)
+  repo_url="${repo_url:-}"
 
   local message="✅ *Issue $([ -n "$repo_url" ] && echo "<${repo_url}/issues/${issue_number}|#${issue_number}>" || echo "#${issue_number}") Complete*
 
