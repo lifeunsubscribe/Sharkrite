@@ -53,9 +53,17 @@ EOF
   chmod +x "$MOCK_BIN/gh"
 
   # Extract and source the verification command parser function
-  # We'll test it in isolation by sourcing just that section
-  sed -n '/# ── Pre-dev verification/,/# Call claude-workflow/p' \
-    "$BATS_TEST_DIRNAME/../../lib/core/workflow-runner.sh" > "$TEST_DIR/verify-parser.sh"
+  # We'll test it in isolation by sourcing just that section.
+  # The extracted body lives inside a function in workflow-runner.sh and therefore
+  # uses 'local' declarations.  Wrap it in a function definition so 'local' is
+  # valid when run at the top level via 'bash verify-parser.sh'.
+  {
+    echo '_run_verify_check() {'
+    sed -n '/# ── Pre-dev verification/,/# Call claude-workflow/p' \
+      "$BATS_TEST_DIRNAME/../../lib/core/workflow-runner.sh"
+    echo '}'
+    echo '_run_verify_check'
+  } > "$TEST_DIR/verify-parser.sh"
 }
 
 teardown() {
@@ -96,7 +104,7 @@ EOF
 
   # Run the verification check (should skip touch command)
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Canary file should NOT exist
   [ ! -f "$CANARY_FILE" ]
@@ -112,7 +120,7 @@ EOF
   export ISSUE_ALREADY_RESOLVED=false
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Canary should NOT exist (semicolon rejected)
   [ ! -f "$CANARY_FILE" ]
@@ -129,7 +137,7 @@ EOF
   export ISSUE_ALREADY_RESOLVED=false
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Directory should still exist (rm not executed)
   [ -d "$CANARY_DIR" ]
@@ -146,7 +154,7 @@ EOF
   export ISSUE_ALREADY_RESOLVED=false
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Canary should NOT exist (parentheses rejected)
   [ ! -f "$CANARY_FILE" ]
@@ -163,7 +171,7 @@ EOF
   export TEST_DIR
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Our mock pytest should have been called
   [ -f "$TEST_DIR/.pytest-called" ]
@@ -180,7 +188,7 @@ EOF
   export TEST_DIR
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Our mock npm should have been called
   [ -f "$TEST_DIR/.npm-called" ]
@@ -215,7 +223,7 @@ EOF
   export TEST_DIR
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # pytest should have been called even though there is no trailing ## header
   [ -f "$TEST_DIR/.pytest-called" ]
@@ -255,7 +263,7 @@ EOF
   export TEST_DIR
 
   cd "$TEST_DIR"
-  bash -c "$(cat "$TEST_DIR/verify-parser.sh")" || true
+  bash "$TEST_DIR/verify-parser.sh"
 
   # Only the LAST block's command (pytest) should have run
   [ -f "$TEST_DIR/.pytest-called" ]
