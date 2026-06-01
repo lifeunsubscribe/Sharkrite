@@ -298,3 +298,74 @@ wait_at_barrier() {
     return 0
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test: parallel init_session + increment_completed — no lost increments
+#
+# Acceptance criterion (issue #26): spawn 5 processes each calling init_session
+# then increment_completed; assert final issues_completed >= 5.
+#
+# Before the fix, init_session unconditionally reset issues_completed to 0:
+# process A could init after process B incremented, wiping the count.
+# After the fix, init_session is an upsert (no-op if file already exists)
+# and increment_completed holds the lock across read-modify-write, so no
+# increments are lost.
+# ---------------------------------------------------------------------------
+@test "parallel init_session + increment_completed - no lost increments (issue #26)" {
+  # Remove file so the first process to run creates it fresh
+  rm -f "$SESSION_STATE_FILE"
+
+  local num_processes=5
+  local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
+  mkdir -p "$exit_codes_dir"
+
+  for i in $(seq 1 $num_processes); do
+    (
+      source "$RITE_LIB_DIR/utils/session-tracker.sh"
+
+      # All 5 processes converge at the barrier so they race for real
+      wait_at_barrier "init_increment_race" "$num_processes" || exit 1
+
+      # Each process simulates a parallel `rite N` invocation:
+      # 1. init_session (upsert — only initialises if file absent)
+      # 2. increment_completed (locked read-modify-write)
+      init_session "unsupervised"
+      increment_completed
+
+      echo $? > "$exit_codes_dir/process_${i}.exit"
+    ) &
+  done
+
+  wait
+
+  # All processes must have completed without error
+  for i in $(seq 1 $num_processes); do
+    [ -f "$exit_codes_dir/process_${i}.exit" ] || {
+      echo "FAIL: process $i did not produce an exit code file" >&2
+      return 1
+    }
+    local exit_code
+    exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
+    [ "$exit_code" -eq 0 ] || {
+      echo "FAIL: process $i exited with code $exit_code" >&2
+      return 1
+    }
+  done
+
+  # JSON must be valid
+  jq empty "$SESSION_STATE_FILE" || {
+    echo "FAIL: JSON corrupted after parallel init+increment" >&2
+    cat "$SESSION_STATE_FILE" >&2
+    return 1
+  }
+
+  # The count must be exactly num_processes — no init clobbered any increment
+  local final_count
+  final_count=$(jq -r '.issues_completed' "$SESSION_STATE_FILE")
+
+  [ "$final_count" -ge "$num_processes" ] || {
+    echo "FAIL: issues_completed=${final_count}, expected >=${num_processes}" >&2
+    echo "      init_session is still clobbering increments from parallel processes" >&2
+    return 1
+  }
+}
