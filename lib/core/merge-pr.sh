@@ -1288,13 +1288,19 @@ EOF
               # portable_find_max_mtime reads NUL-delimited paths from find -print0
               # and already returns "0" when no files are found; || true avoids silent
               # script death under set -euo pipefail without producing a double "0".
-              LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/vendor/*" -print0 2>/dev/null \
+              #
+              # -not -type l: skip symlinks — broken symlinks produce mtime=0 from
+              #   stat, which causes portable_find_max_mtime to return 0 → DAYS_OLD=999
+              #   → false stale verdict that destroys uncommitted source files.
+              # -not -path exclusions: don't traverse .venv/.rite (symlinks in worktrees
+              #   pointing back to main) or node_modules/vendor (stale dep timestamps).
+              LAST_MODIFIED=$(find "$wt_path" -type f -not -type l \( -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rb" -o -name "*.rs" -o -name "*.java" -o -name "*.sh" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.vue" -o -name "*.swift" -o -name "*.kt" \) -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.rite/*" -not -path "*/vendor/*" -print0 2>/dev/null \
                 | portable_find_max_mtime || true)
               [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
 
               # Fallback: check ANY file modification if no source files found
               if [ -z "$LAST_MODIFIED" ]; then
-                LAST_MODIFIED=$(find "$wt_path" -type f -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 2>/dev/null \
+                LAST_MODIFIED=$(find "$wt_path" -type f -not -type l -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.rite/*" -print0 2>/dev/null \
                   | portable_find_max_mtime || true)
                 [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
               fi

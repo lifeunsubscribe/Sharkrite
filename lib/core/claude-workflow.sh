@@ -1537,7 +1537,13 @@ If the changes are unrelated work, answer UNRELATED."
             fi
 
             # Get last modification time (portable: BSD stat -f "%m" vs GNU stat -c "%Y")
-            LAST_MODIFIED=$(find "$wt_path" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) -print0 2>/dev/null \
+            # -not -type l: skip symlinks — broken symlinks produce mtime=0 from stat,
+            #   causing portable_find_max_mtime to return 0 → false stale verdict.
+            # -not -path exclusions: don't traverse .venv/.rite (worktree symlinks
+            #   pointing back to main) or node_modules (stale dep timestamps).
+            LAST_MODIFIED=$(find "$wt_path" -type f -not -type l \( -name "*.ts" -o -name "*.js" -o -name "*.sh" \) \
+              -not -path "*/.venv/*" -not -path "*/node_modules/*" -not -path "*/.rite/*" \
+              -print0 2>/dev/null \
               | portable_find_max_mtime || true)
             [ "${LAST_MODIFIED:-0}" = "0" ] && LAST_MODIFIED=""
             AGE=$(( $(date +%s) - ${LAST_MODIFIED:-$(date +%s)} ))
