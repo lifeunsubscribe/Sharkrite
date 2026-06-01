@@ -8,19 +8,147 @@
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Session-state lock
+#
+# All functions that read-modify-write SESSION_STATE_FILE must hold this lock.
+# The lock is derived from SESSION_STATE_FILE (same path + ".lock") and uses
+# the same dual-path strategy as scratchpad-lock.sh:
+#   - Fast path: flock(1) when available (Linux / Homebrew util-linux on macOS)
+#   - Portable path: mkdir-based advisory lock with atomic PID write via mv
+#
+# Internal state (set by _acquire_session_lock, read by _release_session_lock)
+# ---------------------------------------------------------------------------
+_SESSION_LOCK_FD=201          # File descriptor used for flock fast-path
+_SESSION_LOCK_HELD=false      # True once lock is successfully acquired
+_SESSION_LOCKFILE=""          # Set to actual lock path on acquire
+
+# _acquire_session_lock
+#
+# Acquires the session-state lock. On success returns 0. On timeout exits 1.
+# Timeout configurable via RITE_SESSION_LOCK_TIMEOUT (default: 30s).
+_acquire_session_lock() {
+  local state_file="${SESSION_STATE_FILE:-}"
+  if [ -z "$state_file" ]; then
+    echo "ERROR: _acquire_session_lock: SESSION_STATE_FILE is not set" >&2
+    exit 1
+  fi
+
+  local lockfile="${state_file}.lock"
+  _SESSION_LOCKFILE="$lockfile"
+
+  local max_attempts="${RITE_SESSION_LOCK_TIMEOUT:-30}"
+
+  # Fast path: flock is available
+  if command -v flock >/dev/null 2>&1; then
+    # shellcheck disable=SC1083
+    eval "exec ${_SESSION_LOCK_FD}>\"$lockfile\""
+    if ! flock -w "$max_attempts" "$_SESSION_LOCK_FD" 2>/dev/null; then
+      echo "ERROR: Could not acquire session-state lock within ${max_attempts}s." >&2
+      echo "       If a previous run crashed, remove: rm -f \"$lockfile\"" >&2
+      exit 1
+    fi
+    _SESSION_LOCK_HELD=true
+    return 0
+  fi
+
+  # Portable path: mkdir-based lock with atomic PID write
+  # Clean up any leftover plain-file lock from a previous flock run
+  if [ -f "$lockfile" ] && [ ! -d "$lockfile" ]; then
+    rm -f "$lockfile"
+  fi
+
+  local lock_attempts=0
+  local pid_tmp
+
+  while ! mkdir "$lockfile" 2>/dev/null; do
+    if [ -f "$lockfile/pid" ]; then
+      local lock_pid
+      lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        echo "session-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
+        rm -rf "$lockfile" 2>/dev/null || true
+        continue
+      fi
+    else
+      # Lock dir exists but no PID file — give it a grace period before reclaiming
+      sleep 1
+      if [ ! -f "$lockfile/pid" ]; then
+        echo "session-lock: reclaiming lock dir with no PID after grace period" >&2
+        rm -rf "$lockfile" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    lock_attempts=$((lock_attempts + 1))
+    if [ "$lock_attempts" -ge "$max_attempts" ]; then
+      echo "ERROR: Session-state lock timeout after ${max_attempts}s." >&2
+      echo "       To recover, remove: rm -rf \"$lockfile\"" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+
+  # Write PID atomically via temp+rename so waiters never see an empty lock dir
+  pid_tmp=$(mktemp "${lockfile}/pid.XXXXXX")
+  echo $$ > "$pid_tmp"
+  mv "$pid_tmp" "${lockfile}/pid"
+
+  _SESSION_LOCK_HELD=true
+  return 0
+}
+
+# _release_session_lock
+#
+# Releases the session-state lock. Idempotent — safe to call multiple times.
+_release_session_lock() {
+  if [ "$_SESSION_LOCK_HELD" != "true" ]; then
+    return 0
+  fi
+
+  local lockfile="${_SESSION_LOCKFILE:-${SESSION_STATE_FILE:-}.lock}"
+
+  if command -v flock >/dev/null 2>&1; then
+    # Release flock by closing the fd (do NOT rm — see scratchpad-lock.sh comment)
+    flock -u "$_SESSION_LOCK_FD" 2>/dev/null || true
+    eval "exec ${_SESSION_LOCK_FD}>&-" 2>/dev/null || true
+  else
+    # mkdir-style: verify PID before removing
+    if [ -d "$lockfile" ] && [ -f "$lockfile/pid" ]; then
+      local lock_pid
+      lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      if [ "$lock_pid" = "$$" ]; then
+        rm -rf "$lockfile" 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  _SESSION_LOCK_HELD=false
+}
+
 # Initialize session tracking
+#
+# UPSERT SEMANTICS: acquires lock, then only writes initial state if the file
+# does not already exist. If another process has already initialized the file,
+# this call is a no-op (it does NOT reset issues_completed to 0).
+#
+# This prevents the race where two parallel `rite` invocations both call
+# init_session: without the guard, whichever calls last wins and resets the
+# counter, losing increments from the other process.
 init_session() {
   local mode="${1:-supervised}"  # supervised or unsupervised
 
-  # Preserve cross-run state (blocker approvals, notification dedup).
-  # Session counters reset, but approvals and dedup are per-issue and must survive.
-  local existing_approvals="[]"
-  local existing_notifications="[]"
+  _acquire_session_lock
+
+  # If the state file already exists, another process beat us to init —
+  # leave it untouched to preserve its counters and cross-run state.
   if [ -f "$SESSION_STATE_FILE" ]; then
-    existing_approvals=$(jq -c '.approved_blockers // []' "$SESSION_STATE_FILE" 2>/dev/null || echo "[]")
-    existing_notifications=$(jq -c '.sent_notifications // []' "$SESSION_STATE_FILE" 2>/dev/null || echo "[]")
+    _release_session_lock
+    export SESSION_START_TIME=$(date +%s)
+    return 0
   fi
 
+  # Write initial state only if the file is absent (true init, not re-init)
   cat > "$SESSION_STATE_FILE" <<EOF
 {
   "start_time": $(date +%s),
@@ -29,12 +157,13 @@ init_session() {
   "issues_failed": 0,
   "current_issue": null,
   "worktree_path": null,
-  "approved_blockers": $existing_approvals,
-  "sent_notifications": $existing_notifications,
+  "approved_blockers": [],
+  "sent_notifications": [],
   "last_update": $(date +%s)
 }
 EOF
 
+  _release_session_lock
   export SESSION_START_TIME=$(date +%s)
 }
 
@@ -47,10 +176,16 @@ update_session() {
     init_session
   fi
 
-  # Update JSON using jq
-  local temp=$(mktemp)
+  # Hold the lock across the entire read-modify-write cycle so concurrent
+  # callers don't clobber each other's updates.
+  _acquire_session_lock
+
+  local temp
+  temp=$(mktemp)
   jq ".${key} = ${value} | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
 }
 
 # Get session info
@@ -95,15 +230,44 @@ format_elapsed_time() {
 }
 
 # Increment completed issues
+#
+# Reads and writes under the same lock so concurrent calls from parallel
+# rite invocations don't lose increments (read-outside-lock TOCTOU).
 increment_completed() {
-  local current=$(jq -r '.issues_completed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
-  update_session "issues_completed" $((current + 1))
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    init_session
+  fi
+
+  _acquire_session_lock
+
+  local current
+  current=$(jq -r '.issues_completed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
+  local temp
+  temp=$(mktemp)
+  jq ".issues_completed = $((current + 1)) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
+  mv "$temp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
 }
 
 # Increment failed issues
+#
+# Reads and writes under the same lock (same TOCTOU fix as increment_completed).
 increment_failed() {
-  local current=$(jq -r '.issues_failed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
-  update_session "issues_failed" $((current + 1))
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    init_session
+  fi
+
+  _acquire_session_lock
+
+  local current
+  current=$(jq -r '.issues_failed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
+  local temp
+  temp=$(mktemp)
+  jq ".issues_failed = $((current + 1)) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
+  mv "$temp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
 }
 
 # Set current issue
@@ -333,11 +497,18 @@ add_approved_blocker() {
     init_session
   fi
 
+  # Hold lock across read-modify-write to prevent concurrent callers from
+  # clobbering each other's approved_blockers entries.
+  _acquire_session_lock
+
   # Add to approved_blockers array (keyed by issue:blocker_type)
   local key="${issue_number}:${blocker_type}"
-  local temp=$(mktemp)
+  local temp
+  temp=$(mktemp)
   jq ".approved_blockers = ((.approved_blockers // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
 }
 
 # Check if a blocker was already approved for this issue
@@ -368,10 +539,17 @@ add_sent_notification() {
     init_session
   fi
 
+  # Hold lock across read-modify-write to prevent concurrent callers from
+  # clobbering each other's sent_notifications entries.
+  _acquire_session_lock
+
   local key="${issue_number}:${notification_type}"
-  local temp=$(mktemp)
+  local temp
+  temp=$(mktemp)
   jq ".sent_notifications = ((.sent_notifications // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
 }
 
 # Check if a notification was already sent for this issue
@@ -396,11 +574,14 @@ has_sent_notification() {
 # Clean up session state
 cleanup_session() {
   rm -f "$SESSION_STATE_FILE"
+  rm -rf "${SESSION_STATE_FILE}.lock"
   echo "✅ Session cleaned up"
 }
 
 # Export functions if sourced
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+  export -f _acquire_session_lock
+  export -f _release_session_lock
   export -f init_session
   export -f update_session
   export -f get_session_info
