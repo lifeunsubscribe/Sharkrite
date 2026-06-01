@@ -201,6 +201,64 @@ ADRDOC
 }
 
 # ---------------------------------------------------------------------------
+# Test 3b: PR number deduplication — symmetric to commit SHA dedup (Test 3)
+# ---------------------------------------------------------------------------
+# The production dedup grep for PRs uses "\*\*PR:\*\* #${ref_id}" which must
+# match the bold-markdown format "**PR:** #N" written by the provider. This
+# test exercises the PR path to guard against the same substring-coincidence
+# regression that was fixed for commit SHAs.
+
+@test "generate_adr_for_ref deduplicates by PR number on re-run" {
+  # Provider returns valid ADR content with PR metadata in bold format
+  provider_run_prompt_with_timeout() {
+    cat <<'ADRDOC'
+# ADR-001: adopt provider abstraction layer
+
+**Date:** 2026-05-31
+**PR:** #42
+**Files:** lib/providers/provider-interface.sh
+**Context:** Multiple scripts directly invoked Claude CLI, creating tight coupling.
+**Decision:** Introduced provider-interface.sh as a dispatcher layer.
+**Tradeoffs:** Gained: provider portability; Lost: direct invocation simplicity.
+ADRDOC
+  }
+  export -f provider_run_prompt_with_timeout
+
+  # First call — should create the ADR
+  run generate_adr_for_ref "pr" "42" \
+    "feat: adopt provider abstraction layer" \
+    "Introduces provider-interface.sh." \
+    "+function dispatch_provider() { ... }" \
+    "lib/providers/provider-interface.sh"
+
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ -f "$output" ]
+
+  # Verify the ADR file contains the PR metadata in exact bold format.
+  # The dedup grep at assess-documentation.sh line 415 searches for
+  # "\*\*PR:\*\* #${ref_id}" — this assertion guards that exact pattern.
+  grep -q "\*\*PR:\*\* #42" "$output"
+
+  # Second call with the same PR number — should be a no-op (deduplication)
+  run generate_adr_for_ref "pr" "42" \
+    "feat: adopt provider abstraction layer" \
+    "Introduces provider-interface.sh." \
+    "+function dispatch_provider() { ... }" \
+    "lib/providers/provider-interface.sh"
+
+  [ "$status" -eq 0 ]
+
+  # Output should be empty (skipped)
+  [ -z "$output" ]
+
+  # Still exactly one ADR file (no duplicate created)
+  local adr_count
+  adr_count=$(find "$RITE_INTERNAL_DOCS_DIR/adr" -name "*.md" | wc -l | tr -d ' ')
+  [ "$adr_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
 # Test 4: RITE_NO_BACKFILL_ADRS flag — generate_adr_for_ref is not called
 # ---------------------------------------------------------------------------
 
