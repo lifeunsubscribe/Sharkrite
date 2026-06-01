@@ -18,7 +18,8 @@ setup() {
   mkdir -p "$RITE_TEST_ROOT"
 
   # Create temp dir for lint test scripts (inside project lib/)
-  PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")" && pwd)"
+  # BATS_TEST_DIRNAME = tests/regression/ — go up two levels to reach project root
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   export RITE_LINT_TEST_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
   mkdir -p "$RITE_LINT_TEST_DIR"
 }
@@ -39,7 +40,7 @@ echo "Result: $RESULT"
 EOF
 
   # Run the lint rule
-  cd "$(dirname "$BATS_TEST_DIRNAME")"  # Project root
+  cd "$BATS_TEST_DIRNAME/../.."  # Project root (tests/regression/ → project root)
   run tools/sharkrite-lint.sh
 
   # Should fail with violation
@@ -116,7 +117,7 @@ echo "Result: $RESULT"
 EOF
 
   # Run the lint rule
-  cd "$(dirname "$BATS_TEST_DIRNAME")"
+  cd "$BATS_TEST_DIRNAME/../.."  # Project root (tests/regression/ → project root)
   run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]

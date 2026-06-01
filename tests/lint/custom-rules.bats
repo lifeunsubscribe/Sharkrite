@@ -202,3 +202,45 @@ echo "$foo"'
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
+
+@test "LOCAL_OUTSIDE_FUNCTION: brace-tracking handles JSON heredoc with unbalanced braces" {
+  # Regression: a heredoc containing JSON (with unbalanced { or }) must not
+  # corrupt the brace depth counter and cause subsequent 'local' inside real
+  # functions to appear as violations.
+  #
+  # The no-local-outside-function.bats codebase sweep uses a heredoc-aware AWK
+  # script. This test verifies that AWK correctly skips heredoc bodies so that
+  # JSON braces inside heredocs don't skew the function-depth counter.
+  local awk_script test_script result
+  awk_script=$(mktemp)
+  test_script=$(mktemp /tmp/test-local-XXXXXX.sh)
+
+  cat > "$awk_script" <<'AWKEOF'
+/<<['"]?[A-Z_][A-Z_0-9]*['"]?[[:space:]]*$/ { in_heredoc=1; next }
+/^[A-Z_][A-Z_0-9]*$/ && in_heredoc               { in_heredoc=0; next }
+in_heredoc { next }
+/^[a-zA-Z_][a-zA-Z_0-9-]*\(\)[[:space:]]*\{/    { depth++; next }
+/^function[[:space:]]/                             { depth++; next }
+/^\}/                                              { depth--; next }
+/^[[:space:]]*local / { if (depth <= 0) print FILENAME ":" NR ":" $0 }
+AWKEOF
+
+  cat > "$test_script" <<'BASH'
+#!/bin/bash
+my_func() {
+  cat <<EOF
+{
+  "key": "value"
+}
+EOF
+  local foo="bar"
+  echo "$foo"
+}
+BASH
+
+  result=$(awk -f "$awk_script" "$test_script" 2>/dev/null)
+  rm -f "$awk_script" "$test_script"
+
+  # Should find no violations — the local is inside the function, not at depth 0
+  [ -z "$result" ]
+}
