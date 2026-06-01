@@ -336,6 +336,7 @@ REVIEW_ATTEMPT=0
 REVIEW_OUTPUT=""
 CLAUDE_ERROR=""
 
+# sharkrite-extract: provider-retry-loop-start
 while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; do
   REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
   CLAUDE_STDERR=$(mktemp)
@@ -368,6 +369,7 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     sleep 3
   fi
 done
+# sharkrite-extract: provider-retry-loop-end
 
 if [ -z "$REVIEW_OUTPUT" ]; then
   print_error "Provider returned empty review after $MAX_REVIEW_ATTEMPTS attempts"
