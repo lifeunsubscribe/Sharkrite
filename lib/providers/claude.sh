@@ -9,8 +9,17 @@ set -euo pipefail
 
 # Ensure run_with_timeout is available. config.sh sources timeout.sh before
 # load_provider() in normal flows, but tests may source this file directly.
+# Previously this had a path-construction bug: when RITE_LIB_DIR was set,
+# `${RITE_LIB_DIR:-DEFAULT}/timeout.sh` resolved to `lib/timeout.sh` instead
+# of `lib/utils/timeout.sh` (the `/utils` was inside the fallback default,
+# missing from the RITE_LIB_DIR branch). Fix: compute the utils dir
+# explicitly per branch.
 if ! declare -f run_with_timeout >/dev/null 2>&1; then
-  _timeout_sh="${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/../utils}/timeout.sh"
+  if [ -n "${RITE_LIB_DIR:-}" ]; then
+    _timeout_sh="${RITE_LIB_DIR}/utils/timeout.sh"
+  else
+    _timeout_sh="$(dirname "${BASH_SOURCE[0]}")/../utils/timeout.sh"
+  fi
   if [ -f "$_timeout_sh" ]; then
     # shellcheck source=/dev/null
     source "$_timeout_sh"
