@@ -1270,13 +1270,18 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       ISSUE_LABELS="tech-debt"
     fi
 
-    # Add priority labels based on highest severity
+    # Add priority labels based on highest severity. Use repo's existing
+    # convention (priority-high/medium/low) — matches what `rite plan` and
+    # 30+ hand-authored issues already use. Prior values "High Priority" /
+    # "Medium Priority" silently failed: ensure_labels_exist's space-stripping
+    # trim created MediumPriority/HighPriority orphans, then gh issue create
+    # looked for the spaced names and 404'd.
     if [ "$HIGH_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="$ISSUE_LABELS,High Priority"
+      ISSUE_LABELS="$ISSUE_LABELS,priority-high"
     elif [ "$MEDIUM_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="$ISSUE_LABELS,Medium Priority"
+      ISSUE_LABELS="$ISSUE_LABELS,priority-medium"
     else
-      ISSUE_LABELS="$ISSUE_LABELS,enhancement"
+      ISSUE_LABELS="$ISSUE_LABELS,priority-low"
     fi
 
     # Ensure all required labels exist (create missing ones rather than failing)
