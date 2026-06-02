@@ -52,6 +52,9 @@ source "$RITE_LIB_DIR/utils/scope-checker.sh"
 # Source gh retry helper (provides gh_safe — retries 429/5xx, handles not-found)
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
+# Source pr-detection for CLOSING_ISSUE_JQ_REGEX / CLOSING_ISSUE_GREP_REGEX constants
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -993,8 +996,8 @@ find_worktree_for_task() {
       # sort_by: OPEN state preferred (1 > 0), then highest number wins among ties.
       # This is deterministic when both a closed and an open PR reference the same issue.
       pr_branch=$(gh_safe pr list --state all --json headRefName,body,number,state --limit 100 | \
-        jq --arg issue "$task" -r \
-        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] |
+        jq --arg issue "$task" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+        '[.[] | select(.body | test($closing_re + $issue + "\\b"))] |
         sort_by([if .state == "OPEN" then 1 else 0 end, .number]) | last | .headRefName // empty' || true)
 
       # If no PR found by issue link, try title matching
