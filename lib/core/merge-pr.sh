@@ -101,6 +101,21 @@ print_info() {
   echo -e "${BLUE}ℹ️  $1${NC}"
 }
 
+# File-scope temp-file cleanup. Two places set EXIT/ERR/INT/TERM traps that
+# reference cleanup_temp_files: line ~228 (inside update_security_guide_from_pr)
+# and line ~1473 (inside the main merge body). The 1473 trap fires even when the
+# 228 path was never taken (typical for a clean merge that doesn't trigger the
+# security-guide update), so if the function were only defined inside
+# update_security_guide_from_pr it would be undefined at trap-fire time, producing
+# 'cleanup_temp_files: command not found' and a cascading false exit-1 right after
+# the merge succeeded. Defining at file scope guarantees both paths can call it.
+TEMP_FILES=()
+cleanup_temp_files() {
+  for f in "${TEMP_FILES[@]}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+
 print_status() {
   echo -e "${BLUE}$1${NC}"
 }
@@ -218,13 +233,8 @@ update_security_guide_from_pr() {
     return 0
   fi
 
-  # Set up temp file cleanup on exit/error
-  TEMP_FILES=()
-  cleanup_temp_files() {
-    for f in "${TEMP_FILES[@]}"; do
-      rm -f "$f" 2>/dev/null || true
-    done
-  }
+  # cleanup_temp_files and TEMP_FILES are defined at file scope (see top of
+  # file) so the EXIT trap in the main body can call them too.
   trap cleanup_temp_files EXIT ERR INT TERM
 
   # Create analysis prompt using temp files (avoid command injection)
