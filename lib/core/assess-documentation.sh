@@ -50,6 +50,17 @@ if [ -z "$PR_NUMBER" ]; then
   exit 1
 fi
 
+# Validate optional second argument — only --auto is accepted.
+# An unrecognized flag silently falls through to supervised mode, which can
+# confuse operators following the re-run instruction in the warning message.
+# Use ${AUTO_MODE:-} (not $AUTO_MODE) so this block is safe under set -u in
+# case AUTO_MODE is not yet set on any execution path (e.g. test sourcing).
+if [ -n "${AUTO_MODE:-}" ] && [ "${AUTO_MODE:-}" != "--auto" ]; then
+  print_error "Unknown argument: ${AUTO_MODE:-}"
+  print_error "Usage: $0 <pr_number> [--auto]"
+  exit 1
+fi
+
 # Check provider CLI availability and authentication
 provider_detect_cli || exit 1
 provider_validate_cli || exit 1
@@ -58,13 +69,54 @@ provider_validate_cli || exit 1
 # SHARED DATA (computed once, used by both layers)
 # =====================================================================
 
-PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
+# Fetch PR metadata. gh_safe retries on 429/5xx with exponential backoff; if it
+# exhausts all retries (persistent GitHub outage), it returns non-zero. We capture
+# the exit code explicitly so we can print a clear "skipped" message and exit 0
+# rather than letting set -e crash the script with a cryptic error.
+#
+# Idiom: `|| _pr_data_exit=$?` (not `if ! gh_safe`) because `pr view` output is
+# captured directly into PR_DATA via $().  For `pr diff` below we use temp file +
+# `if ! gh_safe` because that idiom avoids the PIPESTATUS-in-subshell problem
+# (see CLAUDE.md) when the output is written via redirection rather than $().
+_pr_data_exit=0
+PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments) || _pr_data_exit=$?
+if [ "$_pr_data_exit" -ne 0 ]; then
+  # gh_safe exhausted retries on a persistent 5xx/429 — GitHub API is unavailable.
+  # Exit 0 so the batch reporter doesn't mark the merged issue as failed (see #57).
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
+  exit 0
+fi
 PR_DATA="${PR_DATA:-"{}"}"
-PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
-PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
-PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" | head -500 || true)
+PR_TITLE=$(echo "$PR_DATA" | jq -r '.title' || true)
+PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""' || true)
+
+# Fetch PR diff separately. gh pr diff is the call that triggered the live 5xx
+# ("this diff is temporarily unavailable due to heavy server load"). gh_safe
+# retries on 5xx automatically; on exhausted retries we exit 0 (see #62).
+#
+# Use a temp file for output and the `if !` idiom to capture the exit code.
+# `if` is exempt from set -e, so gh_safe's failure is captured correctly
+# without || true swallowing it. This avoids the PIPESTATUS-in-subshell
+# problem (see CLAUDE.md) without needing a second temp file.
+_diff_raw_file=$(mktemp 2>/dev/null) || {
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp failed (disk full or /tmp unavailable)"
+  exit 0
+}
+_pr_diff_failed=0
+# NOTE: `if !` negates the exit code, so _pr_diff_failed is always 1 on failure
+# (not the true gh_safe exit code). This is intentional — we only need to
+# distinguish success (0) from any failure (non-zero), not the specific code.
+if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
+  _pr_diff_failed=1
+fi
+PR_DIFF=$(head -500 "$_diff_raw_file" || true)
+rm -f "$_diff_raw_file"
+if [ "${_pr_diff_failed}" -ne 0 ]; then
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
+  exit 0
+fi
 PR_DIFF="${PR_DIFF:-}"
-CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
+CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30 || true)
 
 # =====================================================================
 # LAYER 1: INTERNAL DOCS (always runs)
@@ -73,7 +125,12 @@ CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
 # Track results for one-liner summary.
 # Functions run in parallel subshells, so use marker files instead of a shared array.
 INTERNAL_UPDATED=()
-_MARKER_DIR=$(mktemp -d)
+_MARKER_DIR=$(mktemp -d 2>/dev/null) || {
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp -d failed (disk full or /tmp unavailable)"
+  exit 0
+}
+# Cleanup trap: remove _MARKER_DIR on any exit (normal, error, or signal)
+trap 'rm -rf "${_MARKER_DIR:-}"' EXIT
 _mark_updated() { touch "$_MARKER_DIR/$1"; }
 
 mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
@@ -1010,7 +1067,7 @@ if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
 
   # In supervised mode, confirm before applying
   APPLY_UPDATES=true
-  if [ "$AUTO_MODE" != "--auto" ]; then
+  if [ "${AUTO_MODE:-}" != "--auto" ]; then
     echo ""
     read -p "Apply documentation updates? (Y/n): " APPLY_DOCS
     if [[ "$APPLY_DOCS" =~ ^[Nn]$ ]]; then
