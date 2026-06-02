@@ -660,6 +660,9 @@ repo_wide_status() {
   if [ "$WORKTREE_COUNT" -gt 0 ]; then
     echo -e "  ${CYAN}Worktree Details:${NC}"
     echo -e "  ${BLUE}─────────────────────────────────────────────────────${NC}"
+    # Hoist lsof availability check outside the per-worktree loop (O(1) not O(N))
+    local _lsof_available=""
+    command -v lsof >/dev/null 2>&1 && _lsof_available="1" || true
     for i in "${!WT_BRANCHES[@]}"; do
       local branch="${WT_BRANCHES[$i]}"
 
@@ -690,9 +693,6 @@ repo_wide_status() {
         _locked_nums=$(get_locked_issue_numbers 2>/dev/null || true)
         if [ -n "$_locked_nums" ]; then
           local _wt_path="${WT_PATHS[$i]}"
-          # Hoist lsof availability check outside the inner loop (O(1) not O(N))
-          local _lsof_available=""
-          command -v lsof >/dev/null 2>&1 && _lsof_available="1" || true
           local _candidate
           while IFS= read -r _candidate; do
             [ -n "$_candidate" ] || continue
