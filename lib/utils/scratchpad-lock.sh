@@ -63,8 +63,13 @@ acquire_scratchpad_lock() {
   # ------------------------------------------------------------------
   # Fast path: flock(1) is available (Linux, Homebrew util-linux on mac)
   # flock on a regular file is simpler, atomic, and kernel-maintained.
+  #
+  # Override: if RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir is set, skip flock
+  # entirely and use the portable mkdir path.  This is used in tests to
+  # force a strategy that makes lock state observable as a filesystem
+  # directory (so the RETURN-trap tests can assert [ ! -d "$lockfile" ]).
   # ------------------------------------------------------------------
-  if command -v flock >/dev/null 2>&1; then
+  if [ "${RITE_SCRATCHPAD_LOCK_STRATEGY:-}" != "mkdir" ] && command -v flock >/dev/null 2>&1; then
     # Clean up any leftover mkdir-style lock directory from a previous run where
     # flock was not available.  The directory would block flock from creating its
     # plain-file lock at the same path (open(2) fails if a directory is in the way).

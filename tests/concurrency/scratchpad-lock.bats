@@ -396,3 +396,258 @@ GHEOF
   header_count=$(grep -c "^## Encountered Issues" "$SCRATCHPAD_FILE" || true)
   [ "$header_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 6: RETURN-trap releases lock on invalid-category path
+#
+# The *)  branch in log_encountered_issue warns and remaps the bad category to
+# "code-smell", then continues to completion (no early return).  The RETURN
+# trap must still fire when the function returns so the lock is left free.
+#
+# Acceptance criterion (issue #149): calling log_encountered_issue with an
+# unrecognised category must:
+#   (a) succeed (exit 0),
+#   (b) write the entry remapped to "code-smell", and
+#   (c) release the scratchpad lock so that a subsequent caller can acquire it
+#       without timing out.
+#
+# Design: force the mkdir lock strategy (via RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir)
+# so that lock state is visible as a filesystem directory.  log_encountered_issue
+# is called directly in the test shell — not inside a ( subshell ) — so the only
+# thing that can remove the lock directory after the function returns is the
+# RETURN trap calling release_scratchpad_lock.  If the trap did not fire, the
+# directory persists and the follow-up assertions fail.
+#
+# Why this matters: on the flock fast-path the kernel releases the lock when a
+# subshell exits, regardless of whether the RETURN trap fired.  Running
+# log_encountered_issue in a subshell therefore passes trivially even if the
+# trap is broken.  The mkdir + same-shell approach closes that loophole.
+#
+# Why not PATH hiding: prepending an empty directory to PATH does not prevent
+# command -v flock from finding flock in other PATH entries.  The env-var
+# override is the only reliable way to force the mkdir path on systems where
+# flock is installed.
+# ---------------------------------------------------------------------------
+@test "log_encountered_issue: RETURN trap releases lock on invalid-category path" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local followup_result="$RITE_TEST_TMPDIR/followup_result"
+
+  # Force the mkdir lock strategy via environment variable so that lock state
+  # is observable as a filesystem directory: it exists while the lock is held
+  # and is removed by release_scratchpad_lock when the RETURN trap fires.
+  # This is more reliable than PATH manipulation, which does not prevent
+  # command -v flock from finding flock elsewhere in the PATH.
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+
+  # Source the libraries in the current test shell so we can call
+  # log_encountered_issue as a direct function invocation (not a subshell).
+  # Calling it in a subshell would allow subshell-exit to release the lock
+  # independently of the trap, masking a missing RETURN trap.
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+  source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+
+  # Verify the strategy override was honoured: acquire + immediately release,
+  # then confirm the lock path is a directory (mkdir path) not a plain file
+  # (flock path).  Catches misconfiguration before the real test assertion.
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
+    echo "FAIL: expected mkdir strategy, got '${_SCRATCHPAD_LOCK_STRATEGY}'" >&2
+    release_scratchpad_lock
+    return 1
+  }
+  release_scratchpad_lock
+
+  # Call log_encountered_issue with an unrecognised category.
+  # Redirect stderr to suppress the "Unknown category" warning.
+  # This is a direct function call in the current shell — the RETURN trap
+  # fires here, not a subshell-exit side-effect.
+  log_encountered_issue \
+    "src/example.ts" "42" \
+    "not-a-valid-category" \
+    "Test entry via invalid category" \
+    "lock-release verification" \
+    "Ensure lock released on invalid-category path" \
+    "Lock is free after function returns" 2>/dev/null
+
+  # (a) Function must succeed — BATS would have failed on non-zero exit already
+  #     because the test body runs with implicit errexit.
+
+  # (b) Verify the entry was written with the remapped category "code-smell".
+  # Assert both the category field AND the description to confirm remap happened.
+  grep -q '| code-smell | Test entry via invalid category' "$SCRATCHPAD_FILE" || {
+    echo "FAIL: entry with remapped category 'code-smell' not found in scratchpad" >&2
+    cat "$SCRATCHPAD_FILE" >&2
+    return 1
+  }
+
+  # (c) Primary assertion: the lock directory must be absent immediately after
+  # the function returned.  On the mkdir path the directory persists until
+  # release_scratchpad_lock removes it.  If the RETURN trap did not fire, the
+  # directory is still present here and the test fails.
+  [ ! -d "$lockfile" ] || {
+    echo "FAIL: lock directory still exists after log_encountered_issue returned" >&2
+    echo "      RETURN trap did not fire — lock was never released" >&2
+    ls -la "$lockfile" >&2
+    return 1
+  }
+
+  # Belt-and-suspenders: a concurrent process must also be able to acquire the
+  # lock immediately (confirms the lock state is correct from an external PoV).
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=3  # Fast fail — don't wait 30s if stuck
+    if acquire_scratchpad_lock; then
+      release_scratchpad_lock
+      echo "acquired" > "$followup_result"
+    else
+      echo "blocked" > "$followup_result"
+    fi
+  )
+
+  [ -f "$followup_result" ] || {
+    echo "FAIL: follow-up acquire subprocess did not write result" >&2
+    return 1
+  }
+  local followup_outcome
+  followup_outcome=$(cat "$followup_result")
+  [ "$followup_outcome" = "acquired" ] || {
+    echo "FAIL: follow-up caller could not acquire lock after invalid-category path" >&2
+    echo "      RETURN trap likely did not fire — lock was not released" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: RETURN-trap releases lock on early-return duplicate-detection path
+#
+# When log_encountered_issue detects a duplicate file:line it executes
+# `return 0` inside the function after the lock is already held.  The RETURN
+# trap (`trap 'release_scratchpad_lock' RETURN`) must fire on this early-return
+# path, releasing the lock so that subsequent callers are not blocked.
+#
+# Acceptance criterion (issue #149): a second call to log_encountered_issue
+# with the same file:line (duplicate) must leave the lock free for a
+# concurrent caller that arrives immediately afterward.
+#
+# Design: force the mkdir lock strategy (via RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir)
+# so that lock state is visible as a filesystem directory.  The duplicate call
+# is made directly in the test shell — not inside a ( subshell ) — so the only
+# thing that can remove the lock directory after the function returns is the
+# RETURN trap calling release_scratchpad_lock.  If the trap did not fire on the
+# early-return path, the directory persists and the test fails.
+#
+# Why this matters: on the flock fast-path the kernel releases the lock when a
+# subshell exits, regardless of whether the RETURN trap fired.  Running the
+# duplicate call in a subshell therefore passes trivially even if the trap is
+# absent on the early-return path.  The mkdir + same-shell approach closes that
+# loophole.
+#
+# Why not PATH hiding: prepending an empty directory to PATH does not prevent
+# command -v flock from finding flock in other PATH entries.  The env-var
+# override is the only reliable way to force the mkdir path on systems where
+# flock is installed.
+# ---------------------------------------------------------------------------
+@test "log_encountered_issue: RETURN trap releases lock on duplicate early-return path" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local third_result="$RITE_TEST_TMPDIR/third_result"
+
+  # Force the mkdir lock strategy via environment variable so that lock state
+  # is observable as a filesystem directory.  PATH manipulation is insufficient
+  # because command -v flock still finds flock elsewhere in the PATH even when
+  # an empty directory is prepended.
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+
+  # Source the libraries in the current test shell.  Both calls to
+  # log_encountered_issue below will be direct function invocations.
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+  source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+
+  # Verify the strategy override was honoured before proceeding.
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
+    echo "FAIL: expected mkdir strategy, got '${_SCRATCHPAD_LOCK_STRATEGY}'" >&2
+    release_scratchpad_lock
+    return 1
+  }
+  release_scratchpad_lock
+
+  # First call — seeds the scratchpad with a known entry.
+  # Run in a subshell so that its lock state is isolated from the test shell;
+  # we only care about the RETURN trap for the duplicate (second) call below.
+  (
+    log_encountered_issue \
+      "src/dup-test.ts" "99" \
+      "code-smell" \
+      "Original entry for duplicate test" \
+      "dup-test-feature" \
+      "Fix original" \
+      "Original present" 2>/dev/null
+  )
+
+  # Verify first call wrote the entry
+  grep -q "src/dup-test.ts:99" "$SCRATCHPAD_FILE" || {
+    echo "FAIL: first log_encountered_issue call did not write the entry" >&2
+    cat "$SCRATCHPAD_FILE" >&2
+    return 1
+  }
+
+  # Sanity check: no leftover lock directory before the duplicate call.
+  [ ! -d "$lockfile" ] || {
+    echo "FAIL: lock directory unexpectedly present before duplicate call" >&2
+    return 1
+  }
+
+  # Second call with the same file:line — triggers duplicate detection return 0
+  # inside the function after acquire_scratchpad_lock + trap RETURN have fired.
+  # This is a direct function call in the current test shell.  The RETURN trap
+  # is the only mechanism that can remove the lock directory on return.
+  log_encountered_issue \
+    "src/dup-test.ts" "99" \
+    "code-smell" \
+    "Duplicate entry — should be skipped" \
+    "dup-test-feature" \
+    "Fix dup" \
+    "Dup handled" 2>/dev/null
+
+  # Primary assertion: the lock directory must be absent immediately after the
+  # duplicate call returned via the early-return path.  If the RETURN trap did
+  # not fire, the directory is still present and the test fails.
+  [ ! -d "$lockfile" ] || {
+    echo "FAIL: lock directory still exists after duplicate log_encountered_issue returned" >&2
+    echo "      RETURN trap did not fire on the early-return (duplicate) path" >&2
+    ls -la "$lockfile" >&2
+    return 1
+  }
+
+  # Verify the scratchpad still has only one entry for this file:line
+  local entry_count
+  entry_count=$(grep -c "src/dup-test.ts:99" "$SCRATCHPAD_FILE" || true)
+  [ "$entry_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 entry for src/dup-test.ts:99, found $entry_count" >&2
+    return 1
+  }
+
+  # Belt-and-suspenders: a concurrent process must also be able to acquire the
+  # lock immediately (confirms the lock state is correct from an external PoV).
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=3  # Fast fail if lock is stuck
+    if acquire_scratchpad_lock; then
+      release_scratchpad_lock
+      echo "acquired" > "$third_result"
+    else
+      echo "blocked" > "$third_result"
+    fi
+  )
+
+  [ -f "$third_result" ] || {
+    echo "FAIL: third-caller subprocess did not write result" >&2
+    return 1
+  }
+  local third_outcome
+  third_outcome=$(cat "$third_result")
+  [ "$third_outcome" = "acquired" ] || {
+    echo "FAIL: third caller could not acquire lock — RETURN trap did not release it on duplicate early-return path" >&2
+    return 1
+  }
+}
