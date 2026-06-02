@@ -32,17 +32,29 @@ setup() {
   PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   export PROJECT_ROOT
 
-  # Lint test fixtures must be inside lib/ so the linter scans them.
-  # Remove any orphaned fixtures from a previous failed run before creating
-  # fresh ones — prevents spurious lint violations in CI.
-  export RITE_LINT_TEST_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
-  rm -rf "$RITE_LINT_TEST_DIR"
-  mkdir -p "$RITE_LINT_TEST_DIR"
+  # Lint test fixtures live in BATS_SUITE_TMPDIR (auto-managed by bats, cleaned
+  # even on hard interruption). A symlink inside lib/ points there so the linter
+  # (which scans lib/) can follow it with find -L.
+  # Using BATS_SUITE_TMPDIR instead of a path directly inside lib/ means that
+  # even if teardown is skipped on a hard kill, the symlink in lib/ will be a
+  # broken link — find -type f ignores broken symlinks, so no orphaned .sh
+  # fixtures can pollute subsequent make check runs.
+  export RITE_LINT_FIXTURES_DIR="${BATS_SUITE_TMPDIR}/rite-lint-fixtures"
+  export RITE_LINT_LINK="$PROJECT_ROOT/lib/test-fixtures-temp"
+  export RITE_LINT_TEST_DIR="$RITE_LINT_FIXTURES_DIR"
+  # Remove any leftovers from a previous test (or interrupted run), then recreate
+  rm -rf "$RITE_LINT_FIXTURES_DIR"
+  mkdir -p "$RITE_LINT_FIXTURES_DIR"
+  # Remove any stale symlink before creating a fresh one
+  rm -f "$RITE_LINT_LINK"
+  ln -s "$RITE_LINT_FIXTURES_DIR" "$RITE_LINT_LINK"
 }
 
 teardown() {
   rm -rf "$RITE_TEST_ROOT"
-  rm -rf "$RITE_LINT_TEST_DIR"
+  rm -rf "$RITE_LINT_FIXTURES_DIR"
+  # Remove the symlink from lib/ — broken or not
+  rm -f "$RITE_LINT_LINK"
 }
 
 # ---------------------------------------------------------------------------
