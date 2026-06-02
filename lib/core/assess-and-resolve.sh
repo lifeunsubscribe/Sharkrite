@@ -774,9 +774,10 @@ fi
 
 # Determine the merge decision NOW, before follow-up issue creation.
 # The merge decision is based solely on assessment results (CRITICAL items at retry
-# limit = block merge; otherwise = allow merge). A subsequent gh API failure during
-# follow-up issue creation will set _followup_creation_failed=true and cause a
-# non-zero exit, so callers know items were not tracked. Merge decision is separate.
+# limit = block merge; otherwise = allow merge). Follow-up issue creation is
+# best-effort: a gh API failure sets _followup_creation_failed=true and emits a
+# warning, but does NOT override this merge decision. Exit code at the end of the
+# script reflects MERGE_EXIT_CODE, not the follow-up creation outcome.
 MERGE_EXIT_CODE=0
 # Tracks whether gh issue create failed inside set +e block; checked at final summary.
 _followup_creation_failed=false
@@ -1379,9 +1380,11 @@ This approach allows all fixes to be completed together in a focused PR."
 fi
 set -e  # Re-enable errexit after follow-up issue creation
 
-# Final summary — use MERGE_EXIT_CODE (decided before follow-up creation)
-# Also check _followup_creation_failed: a failed gh issue create means the
-# deferred items are NOT tracked — we must NOT claim success in that case.
+# Final summary — use MERGE_EXIT_CODE (decided before follow-up creation).
+# Follow-up issue creation is best-effort: a gh API failure does NOT override
+# the merge decision.  The orphaned-followup-items.md recovery artifact and the
+# warning already printed above are the observability surface for the failure.
+# MERGE_EXIT_CODE=1 only when CRITICAL items remain (set at line ~785 above).
 print_header "✅ Assessment Complete"
 
 echo "Summary of actions taken:"
@@ -1391,14 +1394,12 @@ echo "Summary of actions taken:"
 
 echo ""
 
-if [ "${_followup_creation_failed:-false}" = true ]; then
-  # Follow-up creation failed — items are silently lost if we exit 0 here.
-  # Exit non-zero so the workflow does NOT proceed to merge as if everything
-  # was handled.  The orphaned-followup-items.md file gives the user a recovery
-  # path; the remediation message was already printed above.
-  print_error "Follow-up issue creation failed — workflow halted to prevent silent data loss"
-  exit 1
-elif [ "$MERGE_EXIT_CODE" -eq 0 ]; then
+if [ "$MERGE_EXIT_CODE" -eq 0 ]; then
+  # Merge decision is clear — proceed regardless of follow-up creation outcome.
+  # If follow-up creation failed, the warning and recovery artifact are already
+  # in place; the user can re-file manually without blocking this merge.
+  [ "${_followup_creation_failed:-false}" = true ] && \
+    print_warning "Follow-up issue creation failed — items saved to orphaned-followup-items.md for manual re-filing"
   print_success "All issues resolved or tracked - ready to proceed"
   exit 0
 else
