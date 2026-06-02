@@ -101,6 +101,25 @@ print_info() {
   echo -e "${BLUE}ℹ️  $1${NC}"
 }
 
+# File-scope temp-file cleanup. Two places set EXIT/ERR/INT/TERM traps that
+# reference cleanup_temp_files: line ~228 (inside update_security_guide_from_pr)
+# and line ~1473 (inside the main merge body). The 1473 trap fires even when the
+# 228 path was never taken (typical for a clean merge that doesn't trigger the
+# security-guide update), so if the function were only defined inside
+# update_security_guide_from_pr it would be undefined at trap-fire time, producing
+# 'cleanup_temp_files: command not found' and a cascading false exit-1 right after
+# the merge succeeded. Defining at file scope guarantees both paths can call it.
+TEMP_FILES=()
+cleanup_temp_files() {
+  # macOS /bin/bash is 3.2.57; "${arr[@]}" on an empty array trips set -u
+  # ("TEMP_FILES[@]: unbound variable"). The "${arr[@]+...}" idiom expands
+  # to nothing when the array is empty/unset and to the array contents
+  # otherwise — bash 3.2-safe.
+  for f in "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+
 print_status() {
   echo -e "${BLUE}$1${NC}"
 }
@@ -218,13 +237,8 @@ update_security_guide_from_pr() {
     return 0
   fi
 
-  # Set up temp file cleanup on exit/error
-  TEMP_FILES=()
-  cleanup_temp_files() {
-    for f in "${TEMP_FILES[@]}"; do
-      rm -f "$f" 2>/dev/null || true
-    done
-  }
+  # cleanup_temp_files and TEMP_FILES are defined at file scope (see top of
+  # file) so the EXIT trap in the main body can call them too.
   trap cleanup_temp_files EXIT ERR INT TERM
 
   # Create analysis prompt using temp files (avoid command injection)
@@ -683,6 +697,20 @@ _do_merge() {
   # Attempt merge and capture output + exit code, immune to set -e.
   # Usage: _do_merge <cmd...>
   # Sets MERGE_OUTPUT and MERGE_EXIT_CODE in the caller's scope.
+  #
+  # CONTRACT (gh_safe stderr coupling):
+  # This function uses 2>&1 to merge stderr into MERGE_OUTPUT. The 409 "Head
+  # branch was modified" detection on line ~707 relies on gh_safe echoing
+  # GitHub's error text to its own stderr on the non-transient path
+  # (gh-retry.sh: `echo "$stderr_content" >&2`). The 2>&1 here captures that
+  # stderr into MERGE_OUTPUT, making it grep-able.
+  #
+  # RISK: If gh_safe's non-transient error path is changed to suppress stderr
+  # (e.g., redirect to a file instead of >&2, or gate on a verbosity flag),
+  # the 409 grep below silently stops matching and SHA-mismatch recovery
+  # stops working with no visible error.
+  #
+  # Regression test: tests/regression/merge-pr-sha-mismatch-detection.bats
   MERGE_OUTPUT=$("$@" 2>&1) && MERGE_EXIT_CODE=0 || MERGE_EXIT_CODE=$?
 }
 
