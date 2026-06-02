@@ -127,9 +127,8 @@ EOF
 
   # Must not flag the heredoc lines as GH_UNSAFE_CALL violations
   if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
-    [[ ! "$output" =~ "heredoc-gh.sh" ]] || {
-      fail "GH_UNSAFE_CALL falsely flagged a heredoc body line in heredoc-gh.sh"
-    }
+    [[ ! "$output" =~ "heredoc-gh.sh" ]] \
+      || false  # GH_UNSAFE_CALL falsely flagged a heredoc body line in heredoc-gh.sh
   fi
 }
 
