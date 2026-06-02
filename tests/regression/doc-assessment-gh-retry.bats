@@ -49,7 +49,9 @@ teardown() {
 @test "doc-assessment: gh 500 twice then success — assessment completes (exit 0)" {
   # Stub: pr view and pr diff both return 500 on first 2 calls, succeed on 3rd.
   # We track call count in a shared file so both operations hit the same counter.
-  local attempt_file="$TEST_TMPDIR/attempts"
+  # Named diff-attempts (same convention as Test 4) — counts across ALL gh calls
+  # in this test, not just pr diff calls.
+  local attempt_file="$TEST_TMPDIR/diff-attempts"
   echo "0" > "$attempt_file"
 
   cat > "$STUB_BIN/gh" <<EOF

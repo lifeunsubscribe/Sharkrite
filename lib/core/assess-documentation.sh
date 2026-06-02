@@ -71,6 +71,11 @@ provider_validate_cli || exit 1
 # exhausts all retries (persistent GitHub outage), it returns non-zero. We capture
 # the exit code explicitly so we can print a clear "skipped" message and exit 0
 # rather than letting set -e crash the script with a cryptic error.
+#
+# Idiom: `|| _pr_data_exit=$?` (not `if ! gh_safe`) because `pr view` output is
+# captured directly into PR_DATA via $().  For `pr diff` below we use temp file +
+# `if ! gh_safe` because that idiom avoids the PIPESTATUS-in-subshell problem
+# (see CLAUDE.md) when the output is written via redirection rather than $().
 _pr_data_exit=0
 PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments) || _pr_data_exit=$?
 if [ "$_pr_data_exit" -ne 0 ]; then
