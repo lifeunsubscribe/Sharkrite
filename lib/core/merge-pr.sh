@@ -693,6 +693,20 @@ _do_merge() {
   # Attempt merge and capture output + exit code, immune to set -e.
   # Usage: _do_merge <cmd...>
   # Sets MERGE_OUTPUT and MERGE_EXIT_CODE in the caller's scope.
+  #
+  # CONTRACT (gh_safe stderr coupling):
+  # This function uses 2>&1 to merge stderr into MERGE_OUTPUT. The 409 "Head
+  # branch was modified" detection on line ~707 relies on gh_safe echoing
+  # GitHub's error text to its own stderr on the non-transient path
+  # (gh-retry.sh: `echo "$stderr_content" >&2`). The 2>&1 here captures that
+  # stderr into MERGE_OUTPUT, making it grep-able.
+  #
+  # RISK: If gh_safe's non-transient error path is changed to suppress stderr
+  # (e.g., redirect to a file instead of >&2, or gate on a verbosity flag),
+  # the 409 grep below silently stops matching and SHA-mismatch recovery
+  # stops working with no visible error.
+  #
+  # Regression test: tests/regression/merge-pr-sha-mismatch-detection.bats
   MERGE_OUTPUT=$("$@" 2>&1) && MERGE_EXIT_CODE=0 || MERGE_EXIT_CODE=$?
 }
 
