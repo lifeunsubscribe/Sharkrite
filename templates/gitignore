@@ -2,7 +2,7 @@
 scratch.md
 scratch.md.*
 session-state/
-state/
+.rite/state/
 *.log
 .resume/
 

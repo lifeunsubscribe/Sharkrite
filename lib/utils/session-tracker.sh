@@ -537,7 +537,11 @@ get_session_summary() {
 #
 # Reads check the durable file when the in-memory session file is absent.
 # Writes update both the in-memory session AND the durable file.
-# Both files are protected by the same session lock to avoid deadlocks.
+# The in-memory session file is protected by the per-session lock (_acquire_session_lock).
+# The durable approval-state file is protected by its own dedicated approval lock
+# (_acquire_approval_lock) so that concurrent `rite` invocations on different issues
+# — each with a separate SESSION_STATE_FILE and per-session lock — cannot race on the
+# shared approval-state.json.
 # ---------------------------------------------------------------------------
 
 # Path to the durable cross-run approval state file.
@@ -578,10 +582,79 @@ EOF
   fi
 }
 
+# _acquire_approval_lock
+#
+# Acquires a dedicated mkdir-based lock for the durable approval-state file.
+# This lock is SEPARATE from the per-session lock so that concurrent `rite`
+# invocations operating on different issues (each with their own SESSION_STATE_FILE
+# and per-session lock path) don't race on the shared approval-state.json.
+#
+# Uses mkdir atomic semantics (same portable pattern as the session lock).
+# Timeout controlled by RITE_APPROVAL_LOCK_TIMEOUT (default: 30s).
+_acquire_approval_lock() {
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+  local lockdir="${approval_file}.lock"
+  local max_attempts="${RITE_APPROVAL_LOCK_TIMEOUT:-30}"
+  local attempts=0
+  local pid_tmp
+
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if [ -f "$lockdir/pid" ]; then
+      local lock_pid
+      lock_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        echo "approval-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
+        rm -rf "$lockdir" 2>/dev/null || true
+        continue
+      fi
+    else
+      sleep 1
+      if [ ! -f "$lockdir/pid" ]; then
+        echo "approval-lock: reclaiming lock dir with no PID after grace period" >&2
+        rm -rf "$lockdir" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge "$max_attempts" ]; then
+      echo "ERROR: approval-state lock timeout after ${max_attempts}s." >&2
+      echo "       To recover, remove: rm -rf \"$lockdir\"" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+
+  # Write PID atomically so waiters never see an empty lock dir
+  pid_tmp=$(mktemp "${lockdir}/pid.XXXXXX")
+  echo $$ > "$pid_tmp"
+  mv "$pid_tmp" "${lockdir}/pid"
+}
+
+# _release_approval_lock
+#
+# Releases the dedicated approval-state lock. Idempotent.
+_release_approval_lock() {
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+  local lockdir="${approval_file}.lock"
+
+  if [ -d "$lockdir" ] && [ -f "$lockdir/pid" ]; then
+    local lock_pid
+    lock_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+    if [ "$lock_pid" = "$$" ]; then
+      rm -rf "$lockdir" 2>/dev/null || true
+    fi
+  fi
+}
+
 # _add_to_approval_file KEY FIELD
 #
 # Appends KEY to the named array FIELD in the durable approval state file.
-# Must be called while holding the session lock.
+# Acquires and releases its own dedicated approval-state lock so that concurrent
+# `rite` invocations on different issues (each with a distinct SESSION_STATE_FILE
+# and per-session lock) cannot race on the shared approval-state.json.
 _add_to_approval_file() {
   local key="$1"
   local field="$2"
@@ -590,10 +663,14 @@ _add_to_approval_file() {
   local approval_file
   approval_file="$(_get_approval_state_file)"
 
+  _acquire_approval_lock
+
   local temp
   temp=$(mktemp)
   jq --arg field "$field" --arg key "$key" '.[$field] = ((.[$field] // []) + [$key] | unique)' "$approval_file" > "$temp"
   mv "$temp" "$approval_file"
+
+  _release_approval_lock
 }
 
 # _has_in_approval_file KEY FIELD
@@ -635,7 +712,9 @@ add_approved_blocker() {
   # Write to the in-memory session file (fast, per-session dedup)
   local temp
   temp=$(mktemp)
-  jq ".approved_blockers = ((.approved_blockers // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
+  jq --arg key "$key" --argjson ts "$(date +%s)" \
+    '.approved_blockers = ((.approved_blockers // []) + [$key] | unique) | .last_update = $ts' \
+    "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
 
   # Also write to the durable cross-run state file so approvals survive
@@ -692,7 +771,9 @@ add_sent_notification() {
   # Write to the in-memory session file (fast, per-session dedup)
   local temp
   temp=$(mktemp)
-  jq ".sent_notifications = ((.sent_notifications // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
+  jq --arg key "$key" --argjson ts "$(date +%s)" \
+    '.sent_notifications = ((.sent_notifications // []) + [$key] | unique) | .last_update = $ts' \
+    "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
 
   # Also write to the durable cross-run state file so notifications survive
@@ -742,6 +823,8 @@ cleanup_session() {
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f _acquire_session_lock
   export -f _release_session_lock
+  export -f _acquire_approval_lock
+  export -f _release_approval_lock
   export -f init_session
   export -f update_session
   export -f get_session_info
