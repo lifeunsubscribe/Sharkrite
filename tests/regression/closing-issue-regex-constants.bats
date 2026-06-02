@@ -207,3 +207,111 @@ _source_and_print() {
   [ -n "$jq_re" ]
   [ -n "$grep_re" ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 8: workflow-runner.sh sources pr-detection.sh before using CLOSING_ISSUE_JQ_REGEX
+#
+# Regression for: HIGH finding from PR #257 review — CLOSING_ISSUE_JQ_REGEX was
+# used in workflow-runner.sh before pr-detection.sh was sourced, leaving the
+# variable undefined and silently breaking jq expressions.
+# ---------------------------------------------------------------------------
+@test "workflow-runner.sh sources pr-detection.sh before any use of CLOSING_ISSUE_JQ_REGEX" {
+  local file="$RITE_LIB_DIR/core/workflow-runner.sh"
+
+  # Line number where pr-detection.sh is sourced
+  local source_line
+  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1)
+  [ -n "$source_line" ] || {
+    echo "FAIL: pr-detection.sh is not sourced in $file" >&2
+    false
+  }
+
+  # Line number of the first use of CLOSING_ISSUE_JQ_REGEX
+  local first_use_line
+  first_use_line=$(grep -n 'CLOSING_ISSUE_JQ_REGEX' "$file" | head -1 | cut -d: -f1)
+  [ -n "$first_use_line" ] || {
+    echo "FAIL: CLOSING_ISSUE_JQ_REGEX is not referenced in $file" >&2
+    false
+  }
+
+  # The source must come before the first use
+  [ "$source_line" -lt "$first_use_line" ] || {
+    echo "FAIL: pr-detection.sh sourced at line $source_line, but CLOSING_ISSUE_JQ_REGEX used at line $first_use_line" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: repo-status.sh sources pr-detection.sh before using closing-issue constants
+#
+# Regression for: MEDIUM finding from PR #257 review — repo-status.sh used
+# CLOSING_ISSUE_JQ_REGEX and CLOSING_ISSUE_GREP_REGEX without sourcing
+# pr-detection.sh, leaving the variables undefined.
+# ---------------------------------------------------------------------------
+@test "repo-status.sh sources pr-detection.sh before any use of CLOSING_ISSUE_JQ_REGEX or CLOSING_ISSUE_GREP_REGEX" {
+  local file="$RITE_LIB_DIR/utils/repo-status.sh"
+
+  # Line number where pr-detection.sh is sourced
+  local source_line
+  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1)
+  [ -n "$source_line" ] || {
+    echo "FAIL: pr-detection.sh is not sourced in $file" >&2
+    false
+  }
+
+  # Line number of the first use of either constant
+  local first_jq_line first_grep_line first_use_line
+  first_jq_line=$(grep -n 'CLOSING_ISSUE_JQ_REGEX' "$file" | head -1 | cut -d: -f1)
+  first_grep_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" | head -1 | cut -d: -f1)
+
+  # Pick the earliest of the two (skip empty values)
+  if [ -n "$first_jq_line" ] && [ -n "$first_grep_line" ]; then
+    [ "$first_jq_line" -le "$first_grep_line" ] && first_use_line="$first_jq_line" || first_use_line="$first_grep_line"
+  elif [ -n "$first_jq_line" ]; then
+    first_use_line="$first_jq_line"
+  elif [ -n "$first_grep_line" ]; then
+    first_use_line="$first_grep_line"
+  else
+    echo "FAIL: neither CLOSING_ISSUE_JQ_REGEX nor CLOSING_ISSUE_GREP_REGEX referenced in $file" >&2
+    false
+  fi
+
+  # The source must come before the first use
+  [ "$source_line" -lt "$first_use_line" ] || {
+    echo "FAIL: pr-detection.sh sourced at line $source_line, but closing-issue constant used at line $first_use_line" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: batch-process-issues.sh sources pr-detection.sh before using CLOSING_ISSUE_GREP_REGEX
+#
+# Regression for: MEDIUM finding from PR #257 review — batch-process-issues.sh
+# used CLOSING_ISSUE_GREP_REGEX without sourcing pr-detection.sh, leaving the
+# variable undefined and silently returning empty strings from grep -oE.
+# ---------------------------------------------------------------------------
+@test "batch-process-issues.sh sources pr-detection.sh before any use of CLOSING_ISSUE_GREP_REGEX" {
+  local file="$RITE_LIB_DIR/core/batch-process-issues.sh"
+
+  # Line number where pr-detection.sh is sourced
+  local source_line
+  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1)
+  [ -n "$source_line" ] || {
+    echo "FAIL: pr-detection.sh is not sourced in $file" >&2
+    false
+  }
+
+  # Line number of the first use of CLOSING_ISSUE_GREP_REGEX
+  local first_use_line
+  first_use_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" | head -1 | cut -d: -f1)
+  [ -n "$first_use_line" ] || {
+    echo "FAIL: CLOSING_ISSUE_GREP_REGEX is not referenced in $file" >&2
+    false
+  }
+
+  # The source must come before the first use
+  [ "$source_line" -lt "$first_use_line" ] || {
+    echo "FAIL: pr-detection.sh sourced at line $source_line, but CLOSING_ISSUE_GREP_REGEX used at line $first_use_line" >&2
+    false
+  }
+}
