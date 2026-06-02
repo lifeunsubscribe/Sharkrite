@@ -146,12 +146,13 @@ EOF
     fi
 
     # Simulate the pr diff fetch (persistently fails in this test)
-    # Uses the same if ! gh_safe idiom as assess-documentation.sh lines 95-99:
-    # if is exempt from set -e, so the exit code is captured correctly.
+    # Uses the same if ! gh_safe idiom as assess-documentation.sh:
+    # hardcode 1 on failure (mirrors source — $? after if ! is always 0,
+    # not the underlying exit code).
     _diff_raw_file=\$(mktemp)
     _pr_diff_exit=0
     if ! gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\"; then
-      _pr_diff_exit=\$?
+      _pr_diff_exit=1
     fi
     PR_DIFF=\$(head -500 \"\$_diff_raw_file\" || true)
     rm -f \"\$_diff_raw_file\"
@@ -327,4 +328,24 @@ EOF
   local old_pattern_count
   old_pattern_count=$(grep -c 'gh_safe pr diff.*|| true' "$assess_doc" || true)
   [ "$old_pattern_count" -eq 0 ]
+}
+
+# ===========================================================================
+# Test 8: Static check — pr diff exit variable uses non-inverted naming
+# Issue #254: _pr_diff_failed boolean naming inverts success/failure semantics
+# ===========================================================================
+
+@test "assess-documentation.sh: pr diff uses _pr_diff_exit not _pr_diff_failed" {
+  local assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
+
+  # The variable must NOT use the old inverted name (_pr_diff_failed=0 reads as
+  # "failed is false/zero" which confused reviewers expecting exit-code semantics)
+  local failed_name_count
+  failed_name_count=$(grep -c '_pr_diff_failed' "$assess_doc" || true)
+  [ "$failed_name_count" -eq 0 ]
+
+  # The variable MUST use the exit-code-aligned name that mirrors _pr_data_exit
+  local exit_name_count
+  exit_name_count=$(grep -c '_pr_diff_exit' "$assess_doc" || true)
+  [ "$exit_name_count" -ge 1 ]
 }
