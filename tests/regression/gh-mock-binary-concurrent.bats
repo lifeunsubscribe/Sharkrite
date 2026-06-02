@@ -56,6 +56,11 @@ setup() {
   echo "{}" > "${GH_MOCK_STATE_DIR}/pr-comments.json"
   echo "0"  > "${GH_MOCK_STATE_DIR}/search-lag.txt"
   echo "0"  > "${GH_MOCK_STATE_DIR}/next-issue-num.txt"
+
+  # Load gh-mock.bash here (not inside @test body) so BASH_SOURCE[0] resolves
+  # to this file's directory rather than the bats internal runner path.
+  # gh-mock.bash uses BASH_SOURCE[0] to locate gh-mock-state.bash alongside it.
+  load '../helpers/gh-mock.bash'
 }
 
 teardown() {
@@ -331,8 +336,6 @@ _require_flock() {
 # ---------------------------------------------------------------------------
 
 @test "mock parity: binary and helper agree on issue view not-found (exit 0, empty output)" {
-  load '../helpers/gh-mock.bash'
-
   # Helper mock (mock_gh) — uses gh-mock.bash in-process
   export GH_MOCK_STATE_DIR
   run mock_gh issue view 8888 --json url --jq '.url'

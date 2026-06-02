@@ -49,6 +49,11 @@ set -euo pipefail
 # the path of the currently-executing file regardless of how it was invoked.
 _binary_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/helpers/gh-mock-state.bash
+if [ ! -f "${_binary_dir}/gh-mock-state.bash" ]; then
+  echo "gh-mock-binary: ERROR: gh-mock-state.bash not found in '${_binary_dir}'" >&2
+  echo "gh-mock-binary: When copying this binary to a mock-bin directory, gh-mock-state.bash must be copied alongside it." >&2
+  exit 1
+fi
 source "${_binary_dir}/gh-mock-state.bash"
 unset _binary_dir
 
@@ -196,6 +201,14 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
   done
 
   if echo "$_search_val" | grep -qE 'in:(body|title)'; then
+    # Acquire the state lock around the lag-counter read-decrement-write AND
+    # the subsequent _gh_mock_state_issue_list call.  The shared library
+    # contains its own internal lag check+decrement, which must also be
+    # serialised — not just the binary's pre-check — to prevent two concurrent
+    # invocations from racing on the lag file.  Holding the lock for the entire
+    # in:(body|title) path (lag check → early-return OR library call) makes the
+    # locking contract explicit and prevents future regressions if the lag logic
+    # in the library changes.
     _gh_mock_lock
     trap '_gh_mock_unlock' EXIT
     _lag=$(cat "$_lag_file" 2>/dev/null || echo "0")
@@ -221,11 +234,16 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
       fi
       exit 0
     fi
+    # lag == 0: delegate to shared library while still holding the lock so
+    # the library's internal lag check (a no-op here, but protected) runs
+    # under the same serialisation guarantee.
+    _gh_mock_state_issue_list "${_list_args[@]}"
     _gh_mock_unlock
     trap - EXIT
+    exit 0
   fi
 
-  # Delegate to shared library (no locking needed for the read-only search)
+  # Non-content search (no in:body / in:title): no lag logic, read-only.
   _gh_mock_state_issue_list "${_list_args[@]}"
   exit 0
 fi

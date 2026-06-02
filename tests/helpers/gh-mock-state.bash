@@ -226,6 +226,9 @@ _gh_mock_state_issue_create() {
     _body_source="$_body_file"
   else
     _tmp_body_file=$(mktemp)
+    # Ensure the temp file is removed on any exit path (including jq failure).
+    # shellcheck disable=SC2064
+    trap "rm -f '${_tmp_body_file}'" RETURN
     _body_source="$_tmp_body_file"
     : > "$_body_source"   # empty body
   fi
@@ -369,6 +372,9 @@ _gh_mock_state_pr_comment() {
     _body_source="$_body_file"
   else
     _tmp_body_file=$(mktemp)
+    # Ensure the temp file is removed on any exit path (including jq failure).
+    # shellcheck disable=SC2064
+    trap "rm -f '${_tmp_body_file}'" RETURN
     _body_source="$_tmp_body_file"
     : > "$_body_source"
   fi
