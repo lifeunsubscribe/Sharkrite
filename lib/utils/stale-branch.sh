@@ -328,7 +328,8 @@ _stale_classify_after_push_rejection() {
           echo "" >&2
           local _prompt_opts
           _prompt_opts="[$([ "$classification" = "RELATED" ] && echo "a/b/c/d" || echo "c/d")]"
-          read -p "Choose $_prompt_opts: " -n 1 -r >&2
+          printf "Choose %s: " "$_prompt_opts" >&2
+          read -n 1 -r
           echo >&2
 
           case "$REPLY" in
@@ -338,8 +339,7 @@ _stale_classify_after_push_rejection() {
                 print_error "Invalid choice for UNRELATED commits — aborting"
                 return 1
               fi
-              local _rebase_onto_remote_output_a
-              if _rebase_onto_remote_output_a=$(git rebase "origin/$branch_name" 2>&1); then
+              if git rebase "origin/$branch_name" >/dev/null 2>&1; then
                 if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
                   print_success "Integrated $classification foreign commits and pushed — re-entering Phase 2→3 for review"
                   return 2
@@ -360,8 +360,7 @@ _stale_classify_after_push_rejection() {
                 print_error "Invalid choice for UNRELATED commits — aborting"
                 return 1
               fi
-              local _rebase_onto_remote_output_b
-              if _rebase_onto_remote_output_b=$(git rebase "origin/$branch_name" 2>&1); then
+              if git rebase "origin/$branch_name" >/dev/null 2>&1; then
                 if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
                   print_success "Integrated $classification foreign commits and pushed (no re-review)"
                   return 0

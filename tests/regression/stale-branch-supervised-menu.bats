@@ -124,10 +124,11 @@ _run_rebase_with_input() {
   local classification="$3"
   export STUB_CLASSIFICATION="$classification"
 
-  # Pipe choice as stdin to the subshell so read -p captures it
+  # Pipe choice as stdin to the subshell so read captures it.
+  # Redirect stderr to stdout so bats captures menu output in $output.
   echo "$choice" | bash -s -- \
     "$RITE_LIB_DIR" "$STUB_DIR" "$WORKTREE_PATH" "$BRANCH_NAME" "$workflow_mode" \
-    <<'RUNNER_EOF'
+    <<'RUNNER_EOF' 2>&1
   RITE_LIB_DIR="$1"
   STUB_DIR="$2"
   WORKTREE_PATH="$3"
@@ -135,7 +136,7 @@ _run_rebase_with_input() {
   WORKFLOW_MODE="$5"
 
   # Bring environment variables into scope for stale-branch.sh
-  export RITE_LIB_DIR WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE
+  export RITE_LIB_DIR WORKTREE_PATH BRANCH_NAME
 
   source "$RITE_LIB_DIR/utils/stale-branch.sh"
   source "$STUB_DIR/stubs.sh"
@@ -238,12 +239,12 @@ RUNNER_EOF
   run _run_rebase_with_input "d" "supervised" "UNRELATED"
 
   # Output should mention 'c' and 'd' options
-  echo "$output" | grep -qi "Overwrite remote"
-  echo "$output" | grep -qi "Abort"
+  [[ "$output" =~ [Oo]verwrite\ remote ]] || { echo "Expected 'Overwrite remote' in output"; false; }
+  [[ "$output" =~ [Aa]bort ]] || { echo "Expected 'Abort' in output"; false; }
 
   # Output must NOT offer 'a' or 'b' options (those are RELATED-only)
-  ! echo "$output" | grep -qi "Pull and re-enter review"
-  ! echo "$output" | grep -qi "Pull without review"
+  ! [[ "$output" =~ [Pp]ull\ and\ re-enter\ review ]] || { echo "Did not expect 'Pull and re-enter review' in UNRELATED output"; false; }
+  ! [[ "$output" =~ [Pp]ull\ without\ review ]] || { echo "Did not expect 'Pull without review' in UNRELATED output"; false; }
 
   _cleanup_push_race_scenario
 }
@@ -257,10 +258,10 @@ RUNNER_EOF
   run _run_rebase_with_input "d" "supervised" "RELATED"
 
   # Output should mention all options
-  echo "$output" | grep -qi "Pull and re-enter review"
-  echo "$output" | grep -qi "Pull without review"
-  echo "$output" | grep -qi "Overwrite remote"
-  echo "$output" | grep -qi "Abort"
+  [[ "$output" =~ [Pp]ull\ and\ re-enter\ review ]] || { echo "Expected 'Pull and re-enter review' in output"; false; }
+  [[ "$output" =~ [Pp]ull\ without\ review ]] || { echo "Expected 'Pull without review' in output"; false; }
+  [[ "$output" =~ [Oo]verwrite\ remote ]] || { echo "Expected 'Overwrite remote' in output"; false; }
+  [[ "$output" =~ [Aa]bort ]] || { echo "Expected 'Abort' in output"; false; }
 
   _cleanup_push_race_scenario
 }
