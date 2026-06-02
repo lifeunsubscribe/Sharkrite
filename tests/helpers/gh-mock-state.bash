@@ -394,6 +394,51 @@ _gh_mock_state_pr_comment() {
 }
 
 # ---------------------------------------------------------------------------
+# _gh_mock_state_issue_set_state
+#
+# Mutates the `state` field of a tracked issue in issues.json.
+#
+# Usage: _gh_mock_state_issue_set_state ISSUE_NUMBER NEW_STATE
+#   ISSUE_NUMBER — numeric issue number (e.g. 1000)
+#   NEW_STATE    — "OPEN" or "CLOSED"
+#
+# This allows tests to simulate an issue being closed after it was created,
+# which exercises the CLOSED-evidence clearing branch in assess-and-resolve.sh
+# (lines 1180-1183): when local evidence points to a CLOSED issue, the script
+# clears the stale evidence file and continues the dedup check.
+#
+# LOCKING NOTE: Not lock-protected.  Sequential callers (tests) need no lock.
+# Concurrent callers would need to wrap in flock — not currently needed.
+#
+# Exit: 0 on success, non-zero on jq failure.
+# ---------------------------------------------------------------------------
+_gh_mock_state_issue_set_state() {
+  local _issue_num="${1:-}"
+  local _new_state="${2:-OPEN}"
+
+  local _issues_file
+  _issues_file=$(_gh_mock_state_issues_file)
+
+  # Guard: fail loudly if the issue number is not found in the mock state.
+  # A silent no-op here produces a misleading downstream failure — the test
+  # proceeds as if the state flip succeeded, then fails for an unrelated reason.
+  local _found
+  _found=$(jq --argjson num "${_issue_num:-0}" \
+    '[.[] | select(.number == $num)] | length' \
+    "$_issues_file" 2>/dev/null || echo "0")
+  if [ "${_found:-0}" -eq 0 ]; then
+    echo "_gh_mock_state_issue_set_state: issue #${_issue_num} not found in mock state (${_issues_file})" >&2
+    return 1
+  fi
+
+  jq --argjson num "${_issue_num:-0}" \
+     --arg state "$_new_state" \
+     '[.[] | if .number == $num then .state = $state else . end]' \
+     "$_issues_file" > "${_issues_file}.tmp" \
+  && mv "${_issues_file}.tmp" "$_issues_file"
+}
+
+# ---------------------------------------------------------------------------
 # _gh_mock_state_pr_view
 #
 # Implements: gh pr view N --json comments [--jq FILTER]
