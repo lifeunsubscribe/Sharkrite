@@ -58,13 +58,43 @@ provider_validate_cli || exit 1
 # SHARED DATA (computed once, used by both layers)
 # =====================================================================
 
-PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments)
+# Fetch PR metadata. gh_safe retries on 429/5xx with exponential backoff; if it
+# exhausts all retries (persistent GitHub outage), it returns non-zero. We capture
+# the exit code explicitly so we can print a clear "skipped" message and exit 0
+# rather than letting set -e crash the script with a cryptic error.
+_pr_data_exit=0
+PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments) || _pr_data_exit=$?
+if [ "$_pr_data_exit" -ne 0 ]; then
+  # gh_safe exhausted retries on a persistent 5xx/429 — GitHub API is unavailable.
+  # Exit 0 so the batch reporter doesn't mark the merged issue as failed (see #57).
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later" >&2
+  exit 0
+fi
 PR_DATA="${PR_DATA:-"{}"}"
 PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
-PR_DIFF=$(gh_safe pr diff "$PR_NUMBER" | head -500 || true)
+
+# Fetch PR diff separately. gh pr diff is the call that triggered the live 5xx
+# ("this diff is temporarily unavailable due to heavy server load"). gh_safe
+# retries on 5xx automatically; on exhausted retries we exit 0 (see #62).
+#
+# Use temp files to capture both output and exit code: PIPESTATUS doesn't
+# survive $() subshell boundaries (see CLAUDE.md), so a pipeline inside $()
+# can't reliably capture gh_safe's exit code.
+# _diff_exit_file is only written on failure; empty = success (defaults to 0).
+_diff_raw_file=$(mktemp)
+_diff_exit_file=$(mktemp)
+gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file" || echo $? > "$_diff_exit_file"
+_pr_diff_exit=$(cat "$_diff_exit_file" 2>/dev/null)
+_pr_diff_exit="${_pr_diff_exit:-0}"
+PR_DIFF=$(head -500 "$_diff_raw_file" || true)
+rm -f "$_diff_raw_file" "$_diff_exit_file"
+if [ "${_pr_diff_exit}" -ne 0 ]; then
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later" >&2
+  exit 0
+fi
 PR_DIFF="${PR_DIFF:-}"
-CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30)
+CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30 || true)
 
 # =====================================================================
 # LAYER 1: INTERNAL DOCS (always runs)
