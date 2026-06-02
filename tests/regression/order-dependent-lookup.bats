@@ -157,15 +157,15 @@ teardown() {
   # The new code does: sleep (grace period), then check again.  Since we never
   # write a pid, after the sleep it should reclaim and acquire.
   # Use _RITE_LOCK_GRACE_PERIOD_S=0 to avoid a real 1-second sleep in tests.
-  run bash -c "
+  run --separate-stderr bash -c "
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
     export _RITE_LOCK_GRACE_PERIOD_S=0
     source '${RITE_REPO_ROOT}/lib/utils/issue-lock.sh'
     acquire_issue_lock 77
   "
   [ "$status" -eq 0 ]
-  # Must have emitted the grace-period reclaim message (not the old immediate one)
-  [[ "$output" =~ "grace period" ]]
+  # Must have emitted the grace-period reclaim message to stderr (not the old immediate one)
+  [[ "$stderr" =~ "grace period" ]]
 }
 
 @test "acquire_pr_followup_lock reclaims no-PID lock after grace period (message check)" {
@@ -173,14 +173,14 @@ teardown() {
   # No pid file
 
   # Use _RITE_LOCK_GRACE_PERIOD_S=0 to avoid a real 1-second sleep in tests.
-  run bash -c "
+  run --separate-stderr bash -c "
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
     export _RITE_LOCK_GRACE_PERIOD_S=0
     source '${RITE_REPO_ROOT}/lib/utils/issue-lock.sh'
     acquire_pr_followup_lock 55 7
   "
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "grace period" ]]
+  [[ "$stderr" =~ "grace period" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ teardown() {
   # Write a malformed JSON file
   printf 'this is not valid JSON\n' > "$RITE_STATE_DIR/approval-state.json"
 
-  run bash -c "
+  run --separate-stderr bash -c "
     export SESSION_STATE_FILE='${SESSION_STATE_FILE}'
     export RITE_STATE_DIR='${RITE_STATE_DIR}'
     export RITE_PROJECT_NAME='test-project'

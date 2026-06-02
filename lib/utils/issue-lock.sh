@@ -66,6 +66,7 @@ acquire_issue_lock() {
 
   local lock_attempts=0
   local max_attempts=30
+  local _grace_period_consumed=false
 
   while ! mkdir "$lock_dir" 2>/dev/null; do
     # Check if the holding process is still alive
@@ -94,7 +95,13 @@ acquire_issue_lock() {
       # could still leave this state.  Give it a grace period before reclaiming
       # — consistent with scratchpad-lock.sh and session-tracker.sh.
       # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
-      sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+      # Only consume the grace period once per acquisition attempt: repeated
+      # no-PID encounters within the same retry loop must not each add a full
+      # sleep (that would compound latency beyond the 1-second-per-retry budget).
+      if [ "$_grace_period_consumed" = "false" ]; then
+        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+        _grace_period_consumed=true
+      fi
       if [ ! -f "$lock_dir/pid" ]; then
         echo "⚠️  Reclaiming stale lock (no PID file after grace period)" >&2
         rm -rf "$lock_dir" 2>/dev/null || true
@@ -226,6 +233,7 @@ acquire_pr_followup_lock() {
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
   # takes ~5-10s in practice; 60s gives ample room while still failing safely.
   local max_attempts=60
+  local _grace_period_consumed=false
 
   while ! mkdir "$lock_dir" 2>/dev/null; do
     # Check if the holding process is still alive
@@ -248,7 +256,13 @@ acquire_pr_followup_lock() {
       # could still leave this state.  Give it a grace period before reclaiming
       # — consistent with scratchpad-lock.sh and session-tracker.sh.
       # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
-      sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+      # Only consume the grace period once per acquisition attempt: repeated
+      # no-PID encounters within the same retry loop must not each add a full
+      # sleep (that would compound latency beyond the 1-second-per-retry budget).
+      if [ "$_grace_period_consumed" = "false" ]; then
+        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+        _grace_period_consumed=true
+      fi
       if [ ! -f "$lock_dir/pid" ]; then
         echo "⚠️  Reclaiming stale followup lock (no PID file after grace period)" >&2
         rm -rf "$lock_dir" 2>/dev/null || true
