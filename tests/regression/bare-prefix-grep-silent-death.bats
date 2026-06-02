@@ -182,6 +182,9 @@ EOF
 }
 
 @test "lint rule detects grep -E variant of unanchored marker pattern" {
+  # Note: this test creates bare-marker-grep-e.sh dynamically in RITE_LINT_TEST_DIR.
+  # A static version of this file previously existed in lib/test-fixtures-temp/ but was
+  # deleted — the dynamic creation here provides equivalent (and self-contained) coverage.
   cat > "$RITE_LINT_TEST_DIR/bare-marker-grep-e.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
