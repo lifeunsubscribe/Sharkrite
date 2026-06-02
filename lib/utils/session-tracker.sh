@@ -848,6 +848,177 @@ cleanup_session() {
   echo "✅ Session cleaned up"
 }
 
+# ---------------------------------------------------------------------------
+# Approval reset functions
+#
+# These provide the supported recovery path when an approval was recorded in
+# error. Without these, users resort to undocumented manual file deletion of
+# .rite/state/approval-state.json (issue #255).
+#
+# All three functions clear both the in-memory session file AND the durable
+# approval-state.json so the reset takes effect in the current session as
+# well as future runs.
+# ---------------------------------------------------------------------------
+
+# _remove_from_approval_file KEY FIELD
+#
+# Removes KEY from the named array FIELD in the durable approval state file.
+# Acquires and releases the dedicated approval-state lock (same as
+# _add_to_approval_file) so concurrent `rite` invocations cannot race.
+# No-op if the file does not exist or KEY is not present.
+_remove_from_approval_file() {
+  local key="$1"
+  local field="$2"
+
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+
+  if [ ! -f "$approval_file" ]; then
+    return 0  # Nothing to remove
+  fi
+
+  _acquire_approval_lock
+
+  # Ensure the lock is always released, even if jq or mv fails.
+  trap '_release_approval_lock' EXIT
+
+  local temp
+  temp=$(mktemp)
+  jq --arg field "$field" --arg key "$key" \
+    '.[$field] = ((.[$field] // []) | map(select(. != $key)))' \
+    "$approval_file" > "$temp"
+  mv "$temp" "$approval_file"
+
+  trap - EXIT
+  _release_approval_lock
+}
+
+# _remove_prefix_from_approval_file PREFIX FIELD
+#
+# Removes all entries in FIELD whose key starts with PREFIX from the durable
+# approval state file.  Used to clear all blockers for a given issue number.
+# Acquires the dedicated approval-state lock.
+# No-op if the file does not exist.
+_remove_prefix_from_approval_file() {
+  local prefix="$1"
+  local field="$2"
+
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+
+  if [ ! -f "$approval_file" ]; then
+    return 0  # Nothing to remove
+  fi
+
+  _acquire_approval_lock
+
+  trap '_release_approval_lock' EXIT
+
+  local temp
+  temp=$(mktemp)
+  jq --arg field "$field" --arg prefix "$prefix" \
+    '.[$field] = ((.[$field] // []) | map(select(startswith($prefix) | not)))' \
+    "$approval_file" > "$temp"
+  mv "$temp" "$approval_file"
+
+  trap - EXIT
+  _release_approval_lock
+}
+
+# reset_approved_blocker ISSUE_NUMBER BLOCKER_TYPE
+#
+# Removes a specific blocker approval for an issue from both the in-memory
+# session file and the durable approval-state.json.
+#
+# Use case: a user approved a blocker by mistake and wants to re-prompt next
+# time the workflow encounters it.
+reset_approved_blocker() {
+  local issue_number="$1"
+  local blocker_type="$2"
+
+  local key="${issue_number}:${blocker_type}"
+
+  # Clear from in-memory session file (if present)
+  if [ -f "${SESSION_STATE_FILE:-}" ]; then
+    _acquire_session_lock
+    local temp
+    temp=$(mktemp)
+    jq --arg key "$key" \
+      '.approved_blockers = ((.approved_blockers // []) | map(select(. != $key)))' \
+      "$SESSION_STATE_FILE" > "$temp"
+    mv "$temp" "$SESSION_STATE_FILE"
+    _release_session_lock
+  fi
+
+  # Clear from durable approval-state.json
+  _remove_from_approval_file "$key" "approved_blockers"
+}
+
+# reset_approved_blockers_for_issue ISSUE_NUMBER
+#
+# Removes ALL blocker approvals for a given issue from both stores.
+# Clears entries with keys of the form "${issue_number}:*".
+#
+# Use case: the user wants a completely fresh blocker evaluation when re-running
+# an issue that had blockers approved in a previous run.
+reset_approved_blockers_for_issue() {
+  local issue_number="$1"
+
+  local prefix="${issue_number}:"
+
+  # Clear from in-memory session file (if present)
+  if [ -f "${SESSION_STATE_FILE:-}" ]; then
+    _acquire_session_lock
+    local temp
+    temp=$(mktemp)
+    jq --arg prefix "$prefix" \
+      '.approved_blockers = ((.approved_blockers // []) | map(select(startswith($prefix) | not)))' \
+      "$SESSION_STATE_FILE" > "$temp"
+    mv "$temp" "$SESSION_STATE_FILE"
+    _release_session_lock
+  fi
+
+  # Clear from durable approval-state.json
+  _remove_prefix_from_approval_file "$prefix" "approved_blockers"
+}
+
+# reset_all_approved_blockers
+#
+# Clears the entire approved_blockers array from both the in-memory session
+# file and the durable approval-state.json.
+#
+# Use case: global fresh start — wipe all persisted approvals across all issues.
+reset_all_approved_blockers() {
+  # Clear from in-memory session file (if present)
+  if [ -f "${SESSION_STATE_FILE:-}" ]; then
+    _acquire_session_lock
+    local temp
+    temp=$(mktemp)
+    jq '.approved_blockers = []' "$SESSION_STATE_FILE" > "$temp"
+    mv "$temp" "$SESSION_STATE_FILE"
+    _release_session_lock
+  fi
+
+  # Clear from durable approval-state.json
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+
+  if [ ! -f "$approval_file" ]; then
+    return 0  # Nothing to clear
+  fi
+
+  _acquire_approval_lock
+  trap '_release_approval_lock' EXIT
+
+  local temp
+  temp=$(mktemp)
+  jq '.approved_blockers = []' "$approval_file" > "$temp"
+  mv "$temp" "$approval_file"
+
+  trap - EXIT
+  _release_approval_lock
+}
+
 # Export functions if sourced
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f _acquire_session_lock
@@ -873,4 +1044,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f add_sent_notification
   export -f has_sent_notification
   export -f cleanup_session
+  export -f reset_approved_blocker
+  export -f reset_approved_blockers_for_issue
+  export -f reset_all_approved_blockers
 fi
