@@ -263,6 +263,9 @@ EOF
   cd "$PROJECT_ROOT"
   run tools/sharkrite-lint.sh
 
+  # Confirm Rule 18 actually executed (not silently skipped due to empty file list)
+  [[ "$output" =~ "Checking for unbalanced or duplicated sharkrite-extract marker pairs" ]]
+
   # The codebase may have pre-existing lint violations from other rules, but
   # UNBALANCED_EXTRACT_MARKERS must NOT be flagged (no unbalanced markers exist
   # in the lib/bin/tools source files, and the valid fixture is outside scope).
@@ -295,7 +298,8 @@ EOF
     # test fixtures that intentionally contain multiple marker occurrences.
     files=$(grep -rl "sharkrite-extract:" lib/ bin/ tools/ 2>/dev/null || true)
 
-    for f in $files; do
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
       # Extract unique marker names from this file (strip -start/-end suffix)
       names=$(grep -oE "sharkrite-extract: [a-z0-9_-]+" "$f" 2>/dev/null \
         | sed "s/sharkrite-extract: //" \
@@ -303,15 +307,16 @@ EOF
         | sed "s/-end$//" \
         | sort -u || true)
 
-      for name in $names; do
+      while IFS= read -r name; do
+        [ -z "$name" ] && continue
         start_count=$(grep -c "# sharkrite-extract: ${name}-start" "$f" 2>/dev/null || true)
         end_count=$(grep -c "# sharkrite-extract: ${name}-end" "$f" 2>/dev/null || true)
 
         if [ "$start_count" -ne 1 ] || [ "$end_count" -ne 1 ]; then
           violations="${violations}$f: marker '\''${name}'\'' start=${start_count} end=${end_count} (expected 1 each)\n"
         fi
-      done
-    done
+      done <<< "$names"
+    done <<< "$files"
 
     if [ -n "$violations" ]; then
       printf "FAIL: Unbalanced sharkrite-extract markers found:\n%s" "$violations"

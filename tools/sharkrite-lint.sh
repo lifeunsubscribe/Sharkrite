@@ -692,11 +692,16 @@ mapfile -t ALL_EXTRACT_FILES < <(
     2>/dev/null
 )
 
+if [ "${#ALL_EXTRACT_FILES[@]}" -eq 0 ]; then
+  print_violation "tools/sharkrite-lint.sh" "0" "UNBALANCED_EXTRACT_MARKERS" \
+    "Rule 18 found no source files to scan — check that bin/, lib/, and tools/ exist under PROJECT_ROOT ($PROJECT_ROOT)"
+fi
+
 # Collect all start markers across all files, then verify each has exactly one
 # matching end marker in the same file. Use awk to extract (file, marker_name)
 # pairs efficiently.
-_r18_starts=$(grep -rn '# sharkrite-extract: .*-start' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
-_r18_ends=$(grep -rn '# sharkrite-extract: .*-end' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+_r18_starts=$([ "${#ALL_EXTRACT_FILES[@]}" -gt 0 ] && grep -rn '# sharkrite-extract: .*-start' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+_r18_ends=$([ "${#ALL_EXTRACT_FILES[@]}" -gt 0 ] && grep -rn '# sharkrite-extract: .*-end' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
 
 # Collect unique (file, marker_name) pairs from start markers.
 # For each, verify the count in that file is exactly 1 for both start and end.
