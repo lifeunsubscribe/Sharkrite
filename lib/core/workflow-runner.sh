@@ -412,8 +412,8 @@ phase_claude_workflow() {
   else
     # Check if PR already exists for this issue
     pr_number=$(gh_safe pr list --state open --json number,body --limit 100 | \
-      jq --arg issue "$issue_number" -r \
-      '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
+      jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
 
     if [ -n "$pr_number" ]; then
       print_info "Found existing PR #$pr_number for issue #$issue_number"
@@ -1582,8 +1582,8 @@ run_workflow() {
       # sort_by(.number) | last picks the most recently created closed PR
       # deterministically when multiple closed PRs reference the same issue.
       closed_pr_number=$(gh_safe pr list --state closed --json number,body --limit 50 | \
-        jq --arg issue "$issue_number" -r \
-        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
+        jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+        '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
       if [ -n "$closed_pr_number" ]; then
         pr_branch=$(gh_safe pr view "$closed_pr_number" --json headRefName --jq '.headRefName')
         [ -z "$pr_number" ] && pr_number="$closed_pr_number"
@@ -1750,7 +1750,7 @@ run_workflow() {
     # deterministically when multiple PRs reference the same issue.
     local _detected_pr
     _detected_pr=$(gh_safe pr list --state open --json number,body --limit 100 | \
-      jq --arg issue "$issue_number" -r '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
+      jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
 
     # Method 2: Detect from worktree branch (session state may have worktree but no PR)
     if { [ -z "$_detected_pr" ] || [ "$_detected_pr" = "null" ]; } && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then

@@ -271,7 +271,7 @@ if [ -n "$FINDINGS_LINE" ]; then
 fi
 
 # Get original issue context for scope assessment
-ISSUE_CONTEXT=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE 'Closes #[0-9]+|Fixes #[0-9]+|Resolves #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+ISSUE_CONTEXT=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
 if [ -n "$ISSUE_CONTEXT" ]; then
   ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_CONTEXT" --json title,body --jq '"Issue #" + (.number|tostring) + ": " + .title + "\n\n" + .body' || true)
   ISSUE_DETAILS="${ISSUE_DETAILS:-Issue context unavailable}"
