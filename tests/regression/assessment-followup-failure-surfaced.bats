@@ -36,6 +36,10 @@ setup() {
   mkdir -p "$RITE_TEST_TMPDIR/.rite"
 
   export ASSESS_RESOLVE_SCRIPT="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
+  [ -f "$ASSESS_RESOLVE_SCRIPT" ] || {
+    echo "setup: ASSESS_RESOLVE_SCRIPT not found at $ASSESS_RESOLVE_SCRIPT (RITE_REPO_ROOT=$RITE_REPO_ROOT)" >&2
+    false
+  }
 }
 
 teardown() {
