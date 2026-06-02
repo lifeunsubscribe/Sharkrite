@@ -5,6 +5,8 @@ This directory contains test helpers and mocks for bats tests.
 ## Overview
 
 - **gh-mock.bash** - Mock GitHub CLI (gh) for testing PR/issue operations
+- **gh-mock-state.bash** - Shared stateful mock logic (sourced by gh-mock.bash and gh-mock-binary.sh)
+- **gh-mock-binary.sh** - Standalone mock gh binary for concurrent/subprocess tests (uses flock)
 - **claude-mock.bash** - Mock Claude CLI for testing AI interactions
 - **fault-injection.bash** - Fault injection harness for testing error handling
 - **git-fixtures.bash** - Git repository setup and fixture helpers
