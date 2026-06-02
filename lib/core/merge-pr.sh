@@ -111,7 +111,11 @@ print_info() {
 # the merge succeeded. Defining at file scope guarantees both paths can call it.
 TEMP_FILES=()
 cleanup_temp_files() {
-  for f in "${TEMP_FILES[@]}"; do
+  # macOS /bin/bash is 3.2.57; "${arr[@]}" on an empty array trips set -u
+  # ("TEMP_FILES[@]: unbound variable"). The "${arr[@]+...}" idiom expands
+  # to nothing when the array is empty/unset and to the array contents
+  # otherwise — bash 3.2-safe.
+  for f in "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}"; do
     rm -f "$f" 2>/dev/null || true
   done
 }
