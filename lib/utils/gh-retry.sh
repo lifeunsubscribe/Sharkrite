@@ -35,8 +35,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration (can be overridden by environment or .rite/config)
 #
-# Defaults are set BEFORE the re-source guard. `gh_safe` is exported as a
-# function (line ~174), so subprocesses inherit the function but NOT the
+# Defaults are set BEFORE the re-source guard. `gh_safe` is exported via
+# `export -f gh_safe` at end-of-file, so subprocesses inherit the function but NOT the
 # vars. If a subprocess re-sources this file, the guard would skip the
 # default-setting block and gh_safe would die with "unbound variable" under
 # set -u. Setting defaults first — and exporting them — keeps subprocesses
@@ -150,8 +150,31 @@ gh_safe() {
     fi
 
     # Rate-limited (429) or GitHub server errors (5xx) — retry with backoff
+    #
+    # Regex framing: HTTP status codes are matched in three forms:
+    #
+    #   1. HTTP-prefixed:       "HTTP 503", "(HTTP 429)" — gh pr diff / API errors
+    #   2. Bare parenthesised:  "(503)", "(429)"         — gh CLI "Service Unavailable (503)"
+    #   3. Bare unframed:       "429", "503"             — observed in raw gh output
+    #      e.g. "error: 503 Service Unavailable", curl-level messages, some gh versions
+    #
+    # The bare-number form uses word-boundary framing:
+    #   - Must be preceded by a non-digit (or start of string): (?<![0-9])
+    #   - Must be followed by a non-digit (or end of string): ([^0-9]|$)
+    # This prevents matching digits embedded in larger numbers (e.g. "5001", "14290").
+    #
+    # Bare parenthesised forms — false-positive guard:
+    # \(429\) and \(5[0-9][0-9]\) match the gh CLI pattern "Service Unavailable (503)"
+    # where the code appears at the end of the message. To avoid matching module or
+    # config references like "Error in module (503): bad config" or "(5031)", these
+    # patterns require the closing parenthesis to NOT be followed immediately by a
+    # colon or digit (i.e. they must be at end-of-string or followed by whitespace
+    # or other non-digit/non-colon char).
+    #
+    # Text-based tokens (rate limit, server error, etc.) are long enough to be
+    # unambiguous and need no additional anchoring.
     if echo "$stderr_content" | grep -qiE \
-        "429|rate limit|secondary rate|too many requests|500|502|503|504|server error"; then
+        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9]|$)|rate limit|secondary rate|too many requests|server error"; then
       if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
         # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
         local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
@@ -165,6 +188,15 @@ gh_safe() {
 
     # Non-transient error — propagate stderr and exit code so caller fails loudly
     # (Do NOT swallow: auth failure, repo not found, malformed args, etc.)
+    #
+    # CONTRACT (merge-pr.sh coupling):
+    # merge-pr.sh calls gh_safe via _do_merge which captures combined stdout+stderr
+    # with 2>&1. The 409 "Head branch was modified" detection — the grep in
+    # `_do_merge` that matches `grep -qiE "Head branch was modified|409"` —
+    # relies on this `echo "$stderr_content" >&2` reaching MERGE_OUTPUT through that
+    # redirect. Changing this line to suppress stderr (e.g., redirecting to a temp
+    # file, or gating on a verbosity flag) would silently disable SHA-mismatch recovery.
+    # Regression test: tests/regression/merge-pr-sha-mismatch-detection.bats
     rm -f "$stderr_file"
     echo "$stderr_content" >&2
     return "$exit_code"

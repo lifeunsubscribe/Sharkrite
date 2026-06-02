@@ -32,29 +32,21 @@ setup() {
   PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   export PROJECT_ROOT
 
-  # Lint test fixtures live in BATS_SUITE_TMPDIR (auto-managed by bats, cleaned
-  # even on hard interruption). A symlink inside lib/ points there so the linter
-  # (which scans lib/) can follow it with find -L.
-  # Using BATS_SUITE_TMPDIR instead of a path directly inside lib/ means that
-  # even if teardown is skipped on a hard kill, the symlink in lib/ will be a
-  # broken link — find -type f ignores broken symlinks, so no orphaned .sh
-  # fixtures can pollute subsequent make check runs.
-  export RITE_LINT_FIXTURES_DIR="${BATS_SUITE_TMPDIR}/rite-lint-fixtures"
-  export RITE_LINT_LINK="$PROJECT_ROOT/lib/test-fixtures-temp"
+  # Lint test fixtures live in BATS_TEST_TMPDIR (unique per test, parallel-safe).
+  # They are injected into the linter via RITE_LINT_EXTRA_DIRS instead of a symlink
+  # inside lib/. This prevents the linter from scanning fixture files during
+  # production make check runs (Issue #194: find -L scans symlinked fixture dir),
+  # and eliminates the shared lib/test-fixtures-temp symlink that was unsafe for
+  # parallel bats execution (Issue #191).
+  export RITE_LINT_FIXTURES_DIR="${BATS_TEST_TMPDIR}/rite-lint-fixtures"
   export RITE_LINT_TEST_DIR="$RITE_LINT_FIXTURES_DIR"
-  # Remove any leftovers from a previous test (or interrupted run), then recreate
-  rm -rf "$RITE_LINT_FIXTURES_DIR"
+  export RITE_LINT_EXTRA_DIRS="$RITE_LINT_FIXTURES_DIR"
   mkdir -p "$RITE_LINT_FIXTURES_DIR"
-  # Remove any stale symlink before creating a fresh one
-  rm -f "$RITE_LINT_LINK"
-  ln -s "$RITE_LINT_FIXTURES_DIR" "$RITE_LINT_LINK"
 }
 
 teardown() {
   rm -rf "$RITE_TEST_ROOT"
   rm -rf "$RITE_LINT_FIXTURES_DIR"
-  # Remove the symlink from lib/ — broken or not
-  rm -f "$RITE_LINT_LINK"
 }
 
 # ---------------------------------------------------------------------------
@@ -272,6 +264,74 @@ EOF
   [[ "$output" =~ "orphaned-end-marker.sh" ]]
 }
 
+@test "lint rule reports each duplicate end marker separately when no start exists" {
+  # Regression test for #251: two end markers with no start should produce two
+  # separate violation reports (one per line), not one. The root cause (missing
+  # start) is the same for both, but the count must reflect both occurrences.
+  cat > "$RITE_LINT_TEST_DIR/duplicate-end-no-start.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+do_work() { echo "work"; }
+# sharkrite-extract: worker-loop-end
+extra_function() { echo "extra"; }
+# sharkrite-extract: worker-loop-end
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
+  [[ "$output" =~ "duplicate-end-no-start.sh" ]]
+
+  # Both end marker lines must be reported — count violations for this file.
+  # Each violation line has format: "✗ <file>:<line> - UNBALANCED_EXTRACT_MARKERS: ..."
+  _violation_count=$(echo "$output" | grep -c "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" || true)
+  [ "$_violation_count" -eq 2 ]
+
+  # Each violation must reference a distinct line number — guards against the
+  # degenerate case where the same line is reported twice instead of two
+  # separate orphaned end-markers being reported independently.
+  _line1=$(echo "$output" | grep "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" | head -1 | grep -oE ':[0-9]+' | head -1 | tr -d ':' || true)
+  _line2=$(echo "$output" | grep "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" | tail -1 | grep -oE ':[0-9]+' | head -1 | tr -d ':' || true)
+  [ -n "$_line1" ]
+  [ -n "$_line2" ]
+  [ "$_line1" -ne "$_line2" ]
+}
+
+@test "lint rule deduplicates via _seen_pairs when start exists with two ends" {
+  # Regression test for the start-matched deduplication path: when a start marker
+  # exists alongside two duplicate end markers, the start-marker loop processes
+  # the (file, name) pair once (setting _seen_pairs), reports the end imbalance
+  # exactly once, and the end-marker loop skips both end occurrences because
+  # _seen_pairs already has the key set.  This ensures a future accidental removal
+  # of the _seen_pairs guard in the end-marker loop would be caught immediately.
+  cat > "$RITE_LINT_TEST_DIR/start-with-duplicate-ends.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# sharkrite-extract: worker-loop-start
+do_work() { echo "work"; }
+# sharkrite-extract: worker-loop-end
+extra_function() { echo "extra"; }
+# sharkrite-extract: worker-loop-end
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
+  [[ "$output" =~ "start-with-duplicate-ends.sh" ]]
+
+  # The start-marker loop detects the imbalance (end count != 1) and reports it
+  # exactly once (one (file, name) pair). The end-marker loop must NOT add more
+  # reports for the same pair — _seen_pairs prevents re-entry.
+  _violation_count=$(echo "$output" | grep -c "start-with-duplicate-ends\.sh.*UNBALANCED_EXTRACT_MARKERS" || true)
+  [ "$_violation_count" -eq 1 ]
+}
+
 @test "lint rule detects reversed markers where end appears before start" {
   # Both start and end markers are present (count==1 each), but end precedes
   # start in the file. sed -n '/start/,/end/p' will open the range at the
@@ -374,4 +434,91 @@ EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"PASS"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Regression: find -L must not scan test-fixtures-temp in production lint runs
+# Issue #194: find -L scans symlinked fixture directory in production lint runs
+#
+# When bats tests ran, they created lib/test-fixtures-temp → BATS_SUITE_TMPDIR.
+# If 'make check' was run simultaneously, find -L followed the live symlink and
+# scanned intentionally-invalid fixture files, producing false lint violations.
+# Fix: sharkrite-lint.sh now excludes *test-fixtures-temp* from all find scans
+# and accepts fixture dirs via RITE_LINT_EXTRA_DIRS instead of symlinks.
+# ---------------------------------------------------------------------------
+
+@test "linter excludes test-fixtures-temp symlink even when symlink is live" {
+  # Create a fixture directory with a file that would trigger UNBALANCED_EXTRACT_MARKERS.
+  # Create it under BATS_TEST_TMPDIR — NOT injected via RITE_LINT_EXTRA_DIRS.
+  # Then create a lib/test-fixtures-temp symlink pointing to it.
+  # The linter must NOT scan it (the exclusion guard must work).
+  _fixture_dir="${BATS_TEST_TMPDIR}/production-lint-fixture"
+  _symlink="$PROJECT_ROOT/lib/test-fixtures-temp"
+  mkdir -p "$_fixture_dir"
+  cat > "$_fixture_dir/sneaky-fixture.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+# sharkrite-extract: sneaky-loop-start
+do_work() { echo "work"; }
+# NOTE: no end marker — would trigger UNBALANCED_EXTRACT_MARKERS
+EOF
+  # Create the live symlink in lib/ (simulates interrupted bats teardown)
+  ln -sf "$_fixture_dir" "$_symlink"
+
+  cd "$PROJECT_ROOT"
+  # Run WITHOUT RITE_LINT_EXTRA_DIRS — the fixture should not be injected
+  run env -u RITE_LINT_EXTRA_DIRS bash -c 'cd "$1" && tools/sharkrite-lint.sh' _ "$PROJECT_ROOT"
+
+  # Cleanup before assertions (in case assertions fail, symlink is removed)
+  rm -f "$_symlink"
+  rm -rf "$_fixture_dir"
+
+  # The linter must not report sneaky-fixture.sh — it was excluded by the
+  # test-fixtures-temp path exclusion, not injected via RITE_LINT_EXTRA_DIRS.
+  [[ "$output" != *"sneaky-fixture.sh"* ]]
+  [[ "$output" != *"sneaky-loop"* ]]
+}
+
+@test "linter scans fixture dir when injected via RITE_LINT_EXTRA_DIRS" {
+  # Verify that the RITE_LINT_EXTRA_DIRS mechanism works: a fixture with an
+  # unbalanced marker injected via env var IS detected by the linter.
+  # This confirms that the test infrastructure replacement (RITE_LINT_EXTRA_DIRS
+  # instead of symlink) actually exercises the lint rules.
+  cat > "$RITE_LINT_FIXTURES_DIR/extra-dirs-fixture.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+# sharkrite-extract: extra-dirs-loop-start
+do_work() { echo "work"; }
+# NOTE: no end marker — triggers UNBALANCED_EXTRACT_MARKERS
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
+  [[ "$output" =~ "extra-dirs-fixture.sh" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Regression: parallel bats safety — no shared symlink in lib/
+# Issue #191: Shared lib/test-fixtures-temp symlink not safe for parallel bats
+#
+# The previous implementation used a single fixed path lib/test-fixtures-temp
+# shared across all tests in a suite. Parallel bats invocations would race to
+# create/remove the same symlink. The fix uses BATS_TEST_TMPDIR (unique per
+# test) for fixtures and RITE_LINT_EXTRA_DIRS for injection — no shared path.
+# ---------------------------------------------------------------------------
+
+@test "test infrastructure does not create lib/test-fixtures-temp symlink" {
+  # Verify that setup() no longer creates a symlink in lib/.
+  # If this test passes, the parallel-safety fix is in place.
+  [ ! -L "$PROJECT_ROOT/lib/test-fixtures-temp" ]
+}
+
+@test "fixture dir is unique per test (BATS_TEST_TMPDIR-based)" {
+  # Verify that RITE_LINT_FIXTURES_DIR is under BATS_TEST_TMPDIR, not
+  # BATS_SUITE_TMPDIR. BATS_TEST_TMPDIR is unique per test, making each
+  # test's fixture dir independent for parallel execution safety.
+  [[ "$RITE_LINT_FIXTURES_DIR" == "${BATS_TEST_TMPDIR}"* ]]
 }

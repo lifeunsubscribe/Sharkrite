@@ -690,7 +690,12 @@ _add_to_approval_file() {
 # _has_in_approval_file KEY FIELD
 #
 # Returns 0 (true) if KEY is present in FIELD in the durable approval state file.
-# Returns 1 otherwise (including if the file does not exist).
+# Returns 1 otherwise (including if the file does not exist or is malformed).
+#
+# Malformed file handling: jq parse failures return "false" (safe false-negative)
+# and emit a warning to stderr so operators can investigate.  The lock-free read
+# is an intentional design trade-off — atomic mv makes concurrent writes safe, but
+# a pre-existing malformed file produces silent false negatives without this warning.
 _has_in_approval_file() {
   local key="$1"
   local field="$2"
@@ -703,7 +708,17 @@ _has_in_approval_file() {
   fi
 
   local found
-  found=$(jq -r --arg field "$field" --arg key "$key" '.[$field] // [] | index($key) != null' "$approval_file" 2>/dev/null || echo "false")
+  found=$(jq -r --arg field "$field" --arg key "$key" \
+    '.[$field] // [] | index($key) != null' "$approval_file" 2>/dev/null || true)
+
+  # Warn when jq returns empty (parse failure = malformed file).
+  # A well-formed file always produces "true" or "false" — never empty.
+  if [ -z "$found" ]; then
+    echo "⚠️  approval-state.json may be malformed: jq returned empty for field '$field'" >&2
+    echo "    File: $approval_file" >&2
+    echo "    To recover, remove or repair the file and re-run the workflow." >&2
+    return 1
+  fi
 
   [ "$found" = "true" ]
 }
