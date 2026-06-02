@@ -235,6 +235,7 @@ teardown() {
   for i in $(seq 1 $num_processes); do
     (
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
+      init_session "supervised"
       add_approved_blocker "issue-${i}" "blocker-${i}"
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &

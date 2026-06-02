@@ -592,7 +592,7 @@ _add_to_approval_file() {
 
   local temp
   temp=$(mktemp)
-  jq ".${field} = ((.${field} // []) + [\"${key}\"] | unique)" "$approval_file" > "$temp"
+  jq --arg field "$field" --arg key "$key" '.[$field] = ((.[$field] // []) + [$key] | unique)' "$approval_file" > "$temp"
   mv "$temp" "$approval_file"
 }
 
@@ -612,7 +612,7 @@ _has_in_approval_file() {
   fi
 
   local found
-  found=$(jq -r ".${field} // [] | index(\"${key}\") != null" "$approval_file" 2>/dev/null || echo "false")
+  found=$(jq -r --arg field "$field" --arg key "$key" '.[$field] // [] | index($key) != null' "$approval_file" 2>/dev/null || echo "false")
 
   [ "$found" = "true" ]
 }
@@ -756,10 +756,6 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f save_session_state
   export -f create_resume_script
   export -f get_session_summary
-  export -f _get_approval_state_file
-  export -f _ensure_approval_state_file
-  export -f _add_to_approval_file
-  export -f _has_in_approval_file
   export -f add_approved_blocker
   export -f has_approved_blocker
   export -f add_sent_notification
