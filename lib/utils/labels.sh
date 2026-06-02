@@ -30,7 +30,12 @@ ensure_labels_exist() {
   local label
   IFS=',' read -ra label_arr <<< "$labels_csv"
   for label in "${label_arr[@]}"; do
-    label="${label// /}"  # trim spaces
+    # Trim leading/trailing whitespace only. The previous form
+    # "${label// /}" stripped ALL spaces, so multi-word labels like
+    # "Medium Priority" became "MediumPriority" — creating orphan labels
+    # that didn't match what gh issue create asked for downstream.
+    label="${label#"${label%%[![:space:]]*}"}"
+    label="${label%"${label##*[![:space:]]}"}"
     [ -z "$label" ] && continue
     if ! echo "$existing" | grep -qxF "$label"; then
       # gh_safe handles retry on 429/5xx; || true allows "already exists" failures
@@ -38,8 +43,9 @@ ensure_labels_exist() {
       case "$label" in
         tech-debt)        gh_safe label create "$label" --color "E4E669" --description "Technical debt to address" || true ;;
         review-follow-up) gh_safe label create "$label" --color "0075ca" --description "Follow-up from code review" || true ;;
-        "High Priority")  gh_safe label create "$label" --color "FBCA04" --description "High priority item" || true ;;
-        "Medium Priority")gh_safe label create "$label" --color "0E8A16" --description "Medium priority item" || true ;;
+        priority-high)    gh_safe label create "$label" --color "B60205" --description "Fix soon — blocks dogfooding or amplifies risk" || true ;;
+        priority-medium)  gh_safe label create "$label" --color "FBCA04" --description "Important but not blocking" || true ;;
+        priority-low)     gh_safe label create "$label" --color "CCCCCC" --description "Hygiene / nice-to-have" || true ;;
         from-review)      gh_safe label create "$label" --color "BFD4F2" --description "Identified during code review" || true ;;
         automated)        gh_safe label create "$label" --color "ededed" --description "Automatically created by Sharkrite" || true ;;
         *)                gh_safe label create "$label" --color "ededed" || true ;;

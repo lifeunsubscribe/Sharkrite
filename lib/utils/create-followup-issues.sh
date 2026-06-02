@@ -148,17 +148,19 @@ create_single_issue() {
   local WHY=$7
   local RECOMMENDATION=$8
 
-  # Map priority to labels
+  # Map priority to labels — use repo convention (priority-*) not "X Priority".
+  # See assess-and-resolve.sh history note: the spaced names round-tripped
+  # through labels.sh into orphan MediumPriority/HighPriority labels.
   local PRIORITY_LABEL=""
   case "$PRIORITY" in
     HIGH)
-      PRIORITY_LABEL="High Priority"
+      PRIORITY_LABEL="priority-high"
       ;;
     MEDIUM)
-      PRIORITY_LABEL="Medium Priority"
+      PRIORITY_LABEL="priority-medium"
       ;;
     LOW)
-      PRIORITY_LABEL="Low Priority"
+      PRIORITY_LABEL="priority-low"
       ;;
   esac
 
