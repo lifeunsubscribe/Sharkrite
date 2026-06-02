@@ -33,6 +33,18 @@ load '../helpers/setup.bash'
 GH_MOCK_BIN="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"
 
 setup() {
+  # Guard: verify required environment variables are set before proceeding.
+  # Without these, tests would silently operate on wrong paths and produce
+  # false passes — which is especially harmful for concurrency correctness tests.
+  [[ -n "${RITE_TEST_TMPDIR:-}" ]] || {
+    echo "setup: RITE_TEST_TMPDIR is not set — check tests/helpers/setup.bash" >&2
+    return 1
+  }
+  [[ -n "${RITE_REPO_ROOT:-}" ]] || {
+    echo "setup: RITE_REPO_ROOT is not set — check tests/helpers/setup.bash" >&2
+    return 1
+  }
+
   setup_test_tmpdir
 
   export GH_MOCK_STATE_DIR="${RITE_TEST_TMPDIR}/gh-mock-state"
@@ -136,9 +148,15 @@ _require_flock() {
     pids+=($!)
   done
 
+  local failures=0
   for pid in "${pids[@]}"; do
-    wait "$pid" || true
+    wait "$pid" || failures=$(( failures + 1 ))
   done
+
+  [ "$failures" -eq 0 ] || {
+    echo "FAIL: $failures parallel invocations failed (non-zero exit)"
+    false
+  }
 
   local recorded_count
   recorded_count=$(jq 'length' "${GH_MOCK_STATE_DIR}/issues.json")
@@ -235,9 +253,15 @@ _require_flock() {
     pids+=($!)
   done
 
+  local failures=0
   for pid in "${pids[@]}"; do
-    wait "$pid" || true
+    wait "$pid" || failures=$(( failures + 1 ))
   done
+
+  [ "$failures" -eq 0 ] || {
+    echo "FAIL: $failures parallel invocations failed (non-zero exit)"
+    false
+  }
 
   # All issue creates must have been recorded
   local issue_count

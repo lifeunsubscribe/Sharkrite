@@ -51,30 +51,36 @@ _next_num_file="${GH_MOCK_STATE_DIR}/next-issue-num.txt"
 # functions _gh_mock_lock / _gh_mock_unlock defined below.
 _state_lock_file="${GH_MOCK_STATE_DIR}/state.lock"
 
-# _gh_mock_lock FD
-#   Acquires an exclusive flock on _state_lock_file using file descriptor FD.
+# _GH_MOCK_LOCK_FD holds the file descriptor allocated by bash automatic FD
+# allocation ({var}>) so that _gh_mock_lock and _gh_mock_unlock share it
+# without passing it as a parameter (eliminating the eval injection vector).
+_GH_MOCK_LOCK_FD=""
+
+# _gh_mock_lock
+#   Acquires an exclusive flock on _state_lock_file.  Uses bash automatic FD
+#   allocation ({_GH_MOCK_LOCK_FD}>) so the kernel picks an unused descriptor —
+#   no hard-coded FD number, no eval, no injection risk.
 #   If flock is unavailable, emits a warning and continues without locking
 #   (sequential-only fallback — adequate for all current callers).
 _gh_mock_lock() {
-  local _fd="$1"
   if command -v flock >/dev/null 2>&1; then
-    # Open (or create) the lock file on the specified fd, then acquire exclusive lock.
-    # shellcheck disable=SC1083
-    eval "exec ${_fd}>\"$_state_lock_file\""
-    flock -w 30 "$_fd" 2>/dev/null || {
+    # Bash automatic FD allocation: {_GH_MOCK_LOCK_FD}> opens the lock file on
+    # a kernel-chosen descriptor and stores the number in _GH_MOCK_LOCK_FD.
+    # This avoids both hard-coded FD 9 (inherited-FD conflict) and eval (injection).
+    exec {_GH_MOCK_LOCK_FD}>"$_state_lock_file"
+    flock -w 30 "$_GH_MOCK_LOCK_FD" 2>/dev/null || {
       echo "gh-mock-binary: WARNING: could not acquire state lock within 30s" >&2
     }
   fi
 }
 
-# _gh_mock_unlock FD
-#   Releases the flock held on file descriptor FD and closes it.
+# _gh_mock_unlock
+#   Releases the flock held on _GH_MOCK_LOCK_FD and closes it.
 _gh_mock_unlock() {
-  local _fd="$1"
   if command -v flock >/dev/null 2>&1; then
-    flock -u "$_fd" 2>/dev/null || true
-    # shellcheck disable=SC1083
-    eval "exec ${_fd}>&-" 2>/dev/null || true
+    flock -u "$_GH_MOCK_LOCK_FD" 2>/dev/null || true
+    exec {_GH_MOCK_LOCK_FD}>&- 2>/dev/null || true
+    _GH_MOCK_LOCK_FD=""
   fi
 }
 
@@ -140,7 +146,7 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then
   # Acquire state lock before modifying shared comments file.
   # The read-merge-write of pr-comments.json is non-atomic; concurrent
   # invocations without the lock would silently clobber each other's writes.
-  _gh_mock_lock 9
+  _gh_mock_lock
   jq --arg pr "$_pr_num" \
      --rawfile body "$_tmp_body" \
      'if has($pr) then .[$pr] += [{"body": $body}]
@@ -148,7 +154,7 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then
       end' \
      "$_comments_file" > "${_comments_file}.tmp" \
   && mv "${_comments_file}.tmp" "$_comments_file"
-  _gh_mock_unlock 9
+  _gh_mock_unlock
 
   rm -f "$_tmp_body"
   exit 0
@@ -175,12 +181,12 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
   # value and each decrementing it independently (which would burn two lag
   # slots instead of one, causing premature index visibility).
   if echo "$_search" | grep -qE 'in:(body|title)'; then
-    _gh_mock_lock 9
+    _gh_mock_lock
     _lag=$(cat "$_lag_file" 2>/dev/null || echo "0")
     [[ "$_lag" =~ ^[0-9]+$ ]] || _lag=0
     if [ "$_lag" -gt 0 ]; then
       echo $((_lag - 1)) > "$_lag_file"
-      _gh_mock_unlock 9
+      _gh_mock_unlock
       if [ -n "$_jq_filter" ]; then
         echo "[]" | jq -r "$_jq_filter" 2>/dev/null || true
       else
@@ -188,7 +194,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
       fi
       exit 0
     fi
-    _gh_mock_unlock 9
+    _gh_mock_unlock
   fi
 
   # Build jq select expression based on search type.
@@ -257,7 +263,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
   #   READ  _seq from _next_num_file
   #   WRITE _seq+1 back to _next_num_file
   #   WRITE new issue entry to issues.json (via tmp+mv)
-  _gh_mock_lock 9
+  _gh_mock_lock
   _seq=$(cat "$_next_num_file" 2>/dev/null || echo "0")
   [[ "$_seq" =~ ^[0-9]+$ ]] || _seq=0
   _issue_num=$(( _seq + 1000 ))
@@ -271,7 +277,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
      '. += [{"number": $num, "title": $title, "body": $body, "label": $label, "state": $state, "url": ("https://github.com/mock/repo/issues/" + ($num | tostring))}]' \
      "$_issues_file" > "${_issues_file}.tmp" \
   && mv "${_issues_file}.tmp" "$_issues_file"
-  _gh_mock_unlock 9
+  _gh_mock_unlock
 
   rm -f "$_tmp_body"
   echo "https://github.com/mock/repo/issues/${_issue_num}"
