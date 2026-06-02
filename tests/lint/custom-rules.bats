@@ -9,15 +9,19 @@ setup() {
   # Project root (tests/lint/ is two levels below project root)
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
 
-  # Temp dir inside lib/ for lint fixture files (linter only scans lib/, bin/, tools/)
-  LINT_FIXTURE_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  # Fixture dir for production-linter tests (Rule 7 heredoc/string-stripping tests).
+  # Use BATS_TEST_TMPDIR so fixtures are outside the project tree and don't hit the
+  # test-fixtures-temp exclusion. Inject via RITE_LINT_EXTRA_DIRS so the linter scans them.
+  LINT_FIXTURE_DIR="${BATS_TEST_TMPDIR:-$(mktemp -d)}/custom-rule-fixtures"
   mkdir -p "$LINT_FIXTURE_DIR"
+  export RITE_LINT_EXTRA_DIRS="$LINT_FIXTURE_DIR"
 }
 
 teardown() {
   # Clean up temp files
   rm -rf "$TEST_DIR"
   rm -rf "$LINT_FIXTURE_DIR"
+  unset RITE_LINT_EXTRA_DIRS
 }
 
 # Helper to create a test script
@@ -241,6 +245,110 @@ EOF
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
     [[ ! "$output" =~ heredoc-json-brace-custom\.sh ]] || {
       false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after JSON heredoc
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: brace in single-quoted string does not skew depth" {
+  # Regression: a { inside a single-quoted string must not bump the depth counter.
+  # Without string-stripping, echo 'opening {' inside a function raises depth to 2
+  # so the function body's closing } only brings it to 1, and any subsequent
+  # 'local' at script scope looks like depth 1 (inside a function) — a false negative.
+
+  cat > "$LINT_FIXTURE_DIR/single-quote-brace.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  echo 'Error: missing closing brace {'
+  local foo="bar"
+  echo "$foo"
+}
+# local at script scope — must be flagged
+local bad="oops"
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # Must detect the script-scope local
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+  [[ "$output" =~ single-quote-brace\.sh ]]
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: brace in double-quoted string does not skew depth" {
+  # Regression: a { inside a double-quoted string must not bump the depth counter.
+
+  cat > "$LINT_FIXTURE_DIR/double-quote-brace.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  echo "Error: missing closing brace {"
+  local foo="bar"
+  echo "$foo"
+}
+# local at script scope — must be flagged
+local bad="oops"
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+  [[ "$output" =~ double-quote-brace\.sh ]]
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: closing brace in single-quoted string does not produce false positive" {
+  # Regression: a } inside a single-quoted string must not decrement depth.
+  # Without string-stripping, echo '}' inside a function brings depth to 0
+  # prematurely; a subsequent 'local' inside the same function looks like a violation.
+
+  cat > "$LINT_FIXTURE_DIR/single-quote-close-brace.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  echo 'closing brace: }'
+  local foo="bar"
+  echo "$foo"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ single-quote-close-brace\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after '}' in string
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: dollar-brace param expansion does not skew depth" {
+  # \${VAR} expansions always have balanced braces but should not add depth noise
+  # for more complex forms like \${FOO:-{default}} where the default itself has braces.
+
+  cat > "$LINT_FIXTURE_DIR/dollar-brace-param.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local val="${MY_VAR:-default}"
+  echo "$val"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # No violations expected
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ dollar-brace-param\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local using \${...} expansion
     }
   fi
 }
