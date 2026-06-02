@@ -32,8 +32,11 @@ setup() {
   PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   export PROJECT_ROOT
 
-  # Lint test fixtures must be inside lib/ so the linter scans them
+  # Lint test fixtures must be inside lib/ so the linter scans them.
+  # Remove any orphaned fixtures from a previous failed run before creating
+  # fresh ones — prevents spurious lint violations in CI.
   export RITE_LINT_TEST_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  rm -rf "$RITE_LINT_TEST_DIR"
   mkdir -p "$RITE_LINT_TEST_DIR"
 }
 
@@ -92,8 +95,16 @@ EOF
 
 @test "reversed markers yield empty sed extraction" {
   # Create a source file where end marker appears before start marker.
-  # sed /start/,/end/p opens at start (line 5) but finds no end after it,
-  # so the range extends to EOF — or if there is no start, yields empty.
+  # Layout:
+  #   line 2: # sharkrite-extract: my-loop-end   (end before start)
+  #   line 3: some_function() { ... }             (the "intended" block)
+  #   line 4: # sharkrite-extract: my-loop-start  (start comes last)
+  #
+  # sed -n '/start/,/end/p' opens the range at line 4 (start), then scans
+  # forward for a closing end marker. There is no end marker after line 4,
+  # so the range extends to EOF. The only line printed is line 4 itself
+  # (the start marker comment). some_function on line 3 is BEFORE the start
+  # and is never included. This is consistent across BSD and GNU sed.
   cat > "$RITE_TEST_ROOT/source-reversed.sh" <<'EOF'
 #!/bin/bash
 # sharkrite-extract: my-loop-end
@@ -104,12 +115,14 @@ EOF
   EXTRACTED=$(sed -n '/# sharkrite-extract: my-loop-start/,/# sharkrite-extract: my-loop-end/p' \
     "$RITE_TEST_ROOT/source-reversed.sh" || true)
 
-  # When start appears after end, the range from start to next-end finds nothing
-  # (no end marker follows the start), so extraction goes to EOF or yields the
-  # start marker line only — in either case, content-anchor checks are unreliable.
-  # The exact output depends on sed implementation; what matters is it is NOT
-  # the intended block (which would contain "some_function").
+  # The intended block content must NOT appear — some_function is before the
+  # start marker and is excluded regardless of sed implementation.
   [[ "$EXTRACTED" != *"some_function"* ]]
+
+  # The start marker line itself IS included (sed opened the range there and
+  # ran to EOF). This confirms sed did execute and the assertion above is not
+  # vacuously true due to an empty-extraction edge case.
+  [[ "$EXTRACTED" == *"sharkrite-extract: my-loop-start"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -245,6 +258,28 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
   [[ "$output" =~ "orphaned-end-marker.sh" ]]
+}
+
+@test "lint rule detects reversed markers where end appears before start" {
+  # Both start and end markers are present (count==1 each), but end precedes
+  # start in the file. sed -n '/start/,/end/p' will open the range at the
+  # start marker and never find a closing end after it, yielding wrong output.
+  # Rule 18's line-ordering check must catch this.
+  cat > "$RITE_LINT_TEST_DIR/reversed-markers.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# sharkrite-extract: worker-loop-end
+do_work() { echo "work"; }
+# sharkrite-extract: worker-loop-start
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
+  [[ "$output" =~ "reversed-markers.sh" ]]
 }
 
 @test "lint rule allows valid balanced sharkrite-extract marker pair" {

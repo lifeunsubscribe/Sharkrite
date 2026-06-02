@@ -687,8 +687,8 @@ echo "Checking for unbalanced or duplicated sharkrite-extract marker pairs..."
 
 mapfile -t ALL_EXTRACT_FILES < <(
   find "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-    -type f \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
-    ! -name 'sharkrite-lint.sh' \
+    -type f \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
+    -a ! -name 'sharkrite-lint.sh' \) \
     2>/dev/null
 )
 
