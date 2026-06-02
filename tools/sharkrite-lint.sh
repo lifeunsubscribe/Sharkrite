@@ -61,9 +61,30 @@ echo ""
 # relative anchors: `find bin lib tools -path "bin/rite*" -path "tools/git-hooks/*"`.
 # When find is given absolute search roots, the -path predicate must include the full absolute
 # prefix — bare wildcards like "*/bin/rite*" would also match deeper nested paths accidentally.
-# -L follows symlinks so that test-suite fixture symlinks in lib/ are scanned correctly.
+# -L follows symlinks so that extra fixture dirs (RITE_LINT_EXTRA_DIRS) are scanned correctly.
+# test-fixtures-temp* is excluded: bats tests create a symlink (or similarly-named dir) pointing
+# to a live tmp dir during test runs. Scanning it during production lint runs would produce false
+# positives from intentionally-invalid fixture files. Fixtures are injected via
+# RITE_LINT_EXTRA_DIRS instead.
+# DO NOT REMOVE: without this exclusion, production lint scans pick up bats fixture files and
+# emit spurious lint failures that have nothing to do with the code being checked.
 mapfile -t SHELL_FILES < <(find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-  -type f ! -name 'sharkrite-lint.sh' \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
+  -type f ! -name 'sharkrite-lint.sh' \
+  ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
+  \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
+
+# RITE_LINT_EXTRA_DIRS: optional colon-separated list of additional directories to scan.
+# Used by regression tests to inject fixture directories without creating symlinks in lib/.
+# Each directory is scanned for *.sh files and appended to SHELL_FILES.
+# This keeps test fixture files out of the production lint scope while allowing the tests
+# to exercise lint rules against controlled fixture inputs.
+if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
+  IFS=: read -ra _extra_dirs <<< "$RITE_LINT_EXTRA_DIRS"
+  for _extra_dir in "${_extra_dirs[@]}"; do
+    [ -d "$_extra_dir" ] || continue
+    mapfile -t -O "${#SHELL_FILES[@]}" SHELL_FILES < <(find "$_extra_dir" -type f -name "*.sh" 2>/dev/null)
+  done
+fi
 
 # Rule 1: grep -c with || echo "0" (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
@@ -226,9 +247,20 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   # Count { and } on this line to track nesting depth.
   # gsub returns the replacement count, allowing us to count characters without
   # a per-char loop (fast, BSD AWK compatible, heredoc-safe).
-  # Use _tmp copies so $0 is not modified (gsub modifies its 3rd arg in place).
-  _tmp = $0; _ob = gsub(/{/, "", _tmp)
-  _tmp = $0; _cb = gsub(/}/, "", _tmp)
+  # Strip string literals before counting so braces inside strings, ${param}
+  # expansions, and {a,b} brace-expansions in quoted arguments do not skew depth.
+  # Single-quoted strings have no escape sequences in bash, so the regex is exact.
+  # Double-quoted strings use a heuristic that misses backslash-escaped quotes --
+  # accepted for a lint heuristic; a full parser is out of scope.
+  # ${...} parameter expansions are also stripped: their braces always net to zero
+  # but stripping them avoids false depth drift on complex default expansions.
+  _stripped = $0
+  gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
+  gsub(/"[^"]*"/, "", _stripped)
+  gsub(/\$\{[^}]*\}/, "", _stripped)
+  # Use _stripped copies so $0 is not modified (detection check still uses $0).
+  _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
+  _tmp = _stripped; _cb = gsub(/}/, "", _tmp)
   depth += _ob - _cb
   if (depth < 0) depth = 0
   # Flag: "local" keyword used at depth 0 (outside any function)
@@ -688,10 +720,20 @@ echo "Checking for unbalanced or duplicated sharkrite-extract marker pairs..."
 
 mapfile -t ALL_EXTRACT_FILES < <(
   find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-    -type f \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
+    -type f \
+    ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
+    \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
     -a ! -name 'sharkrite-lint.sh' \) \
     2>/dev/null
 )
+# Append any extra fixture directories (injected by tests via RITE_LINT_EXTRA_DIRS)
+if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
+  IFS=: read -ra _r18_extra_dirs <<< "$RITE_LINT_EXTRA_DIRS"
+  for _r18_extra_dir in "${_r18_extra_dirs[@]}"; do
+    [ -d "$_r18_extra_dir" ] || continue
+    mapfile -t -O "${#ALL_EXTRACT_FILES[@]}" ALL_EXTRACT_FILES < <(find "$_r18_extra_dir" -type f -name "*.sh" 2>/dev/null)
+  done
+fi
 
 if [ "${#ALL_EXTRACT_FILES[@]}" -eq 0 ]; then
   print_warning "tools/sharkrite-lint.sh" "0" "UNBALANCED_EXTRACT_MARKERS" \
@@ -752,7 +794,11 @@ while IFS= read -r _hit; do
 done <<< "$_r18_starts"
 
 # Also flag end markers that have no corresponding start in the same file.
-declare -A _seen_end_pairs
+# No (file, name) deduplication here: each occurrence of an orphaned end marker
+# is its own violation. If two end markers share a name but no start exists, both
+# lines must be reported individually. Pairs already processed by the start-marker
+# loop above (i.e., where a start exists) are still skipped via _seen_pairs to
+# avoid double-reporting the same (file, name) problem.
 while IFS= read -r _hit; do
   [ -z "$_hit" ] && continue
   _hit_file=$(echo "$_hit" | cut -d: -f1)
@@ -761,13 +807,13 @@ while IFS= read -r _hit; do
   [ -z "$_hit_name" ] && continue
 
   _pair_key="${_hit_file}::${_hit_name}"
-  [ "${_seen_end_pairs[$_pair_key]+set}" = "set" ] && continue
-  _seen_end_pairs[$_pair_key]=1
 
-  # If this (file, name) pair was already processed via starts, skip it
+  # If this (file, name) pair was already processed via starts, skip it.
+  # The start-marker loop already reported the imbalance (e.g. end count != 1).
   [ "${_seen_pairs[$_pair_key]+set}" = "set" ] && continue
 
-  # End marker exists but no start marker — orphaned end
+  # End marker exists but no start marker — orphaned end.
+  # Report each occurrence individually: two orphaned ends = two violations.
   _start_count=$(grep -c "# sharkrite-extract: ${_hit_name}-start" "$_hit_file" 2>/dev/null || true)
   if [ "$_start_count" -eq 0 ]; then
     print_violation "$_hit_file" "$_hit_line" "UNBALANCED_EXTRACT_MARKERS" \

@@ -102,16 +102,16 @@ _diff_raw_file=$(mktemp 2>/dev/null) || {
   print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp failed (disk full or /tmp unavailable)"
   exit 0
 }
-_pr_diff_failed=0
-# NOTE: `if !` negates the exit code, so _pr_diff_failed is always 1 on failure
+_pr_diff_exit=0
+# NOTE: `if !` negates the exit code, so _pr_diff_exit is always 1 on failure
 # (not the true gh_safe exit code). This is intentional — we only need to
 # distinguish success (0) from any failure (non-zero), not the specific code.
 if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
-  _pr_diff_failed=1
+  _pr_diff_exit=1
 fi
 PR_DIFF=$(head -500 "$_diff_raw_file" || true)
 rm -f "$_diff_raw_file"
-if [ "${_pr_diff_failed}" -ne 0 ]; then
+if [ "${_pr_diff_exit}" -ne 0 ]; then
   print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
   exit 0
 fi
