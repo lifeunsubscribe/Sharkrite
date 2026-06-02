@@ -76,7 +76,7 @@ PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,c
 if [ "$_pr_data_exit" -ne 0 ]; then
   # gh_safe exhausted retries on a persistent 5xx/429 — GitHub API is unavailable.
   # Exit 0 so the batch reporter doesn't mark the merged issue as failed (see #57).
-  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later" >&2
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
   exit 0
 fi
 PR_DATA="${PR_DATA:-"{}"}"
@@ -87,11 +87,10 @@ PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""' || true)
 # ("this diff is temporarily unavailable due to heavy server load"). gh_safe
 # retries on 5xx automatically; on exhausted retries we exit 0 (see #62).
 #
-# Use temp files to capture both output and exit code: PIPESTATUS doesn't
-# survive $() subshell boundaries (see CLAUDE.md), so a pipeline inside $()
-# can't reliably capture gh_safe's exit code.
-# Always capture the real exit code. `if` is exempt from set -e, so gh_safe's
-# failure is captured correctly without || true swallowing it.
+# Use a temp file for output and the `if !` idiom to capture the exit code.
+# `if` is exempt from set -e, so gh_safe's failure is captured correctly
+# without || true swallowing it. This avoids the PIPESTATUS-in-subshell
+# problem (see CLAUDE.md) without needing a second temp file.
 _diff_raw_file=$(mktemp)
 _pr_diff_exit=0
 if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
@@ -100,7 +99,7 @@ fi
 PR_DIFF=$(head -500 "$_diff_raw_file" || true)
 rm -f "$_diff_raw_file"
 if [ "${_pr_diff_exit}" -ne 0 ]; then
-  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later" >&2
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
   exit 0
 fi
 PR_DIFF="${PR_DIFF:-}"

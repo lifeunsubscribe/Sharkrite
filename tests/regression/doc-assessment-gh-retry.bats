@@ -144,13 +144,15 @@ EOF
     fi
 
     # Simulate the pr diff fetch (persistently fails in this test)
+    # Uses the same if ! gh_safe idiom as assess-documentation.sh lines 95-99:
+    # if is exempt from set -e, so the exit code is captured correctly.
     _diff_raw_file=\$(mktemp)
-    _diff_exit_file=\$(mktemp)
-    gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\" || echo \$? > \"\$_diff_exit_file\"
-    _pr_diff_exit=\$(cat \"\$_diff_exit_file\" 2>/dev/null)
-    _pr_diff_exit=\"\${_pr_diff_exit:-0}\"
+    _pr_diff_exit=0
+    if ! gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\"; then
+      _pr_diff_exit=\$?
+    fi
     PR_DIFF=\$(head -500 \"\$_diff_raw_file\" || true)
-    rm -f \"\$_diff_raw_file\" \"\$_diff_exit_file\"
+    rm -f \"\$_diff_raw_file\"
     if [ \"\${_pr_diff_exit}\" -ne 0 ]; then
       echo \"Doc assessment skipped for PR #\${PR_NUMBER}: GitHub API unavailable after \${RITE_GH_MAX_RETRIES:-3} attempts\"
       exit 0
@@ -245,13 +247,14 @@ EOF
     RITE_GH_MAX_RETRIES=3
     PR_NUMBER=42
 
+    # Uses the same if ! gh_safe idiom as assess-documentation.sh lines 95-99
     _diff_raw_file=\$(mktemp)
-    _diff_exit_file=\$(mktemp)
-    gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\" || echo \$? > \"\$_diff_exit_file\"
-    _pr_diff_exit=\$(cat \"\$_diff_exit_file\" 2>/dev/null)
-    _pr_diff_exit=\"\${_pr_diff_exit:-0}\"
+    _pr_diff_exit=0
+    if ! gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\"; then
+      _pr_diff_exit=\$?
+    fi
     PR_DIFF=\$(head -500 \"\$_diff_raw_file\" || true)
-    rm -f \"\$_diff_raw_file\" \"\$_diff_exit_file\"
+    rm -f \"\$_diff_raw_file\"
 
     echo \"exit:\$_pr_diff_exit\"
     echo \"diff_content:\$PR_DIFF\"
@@ -308,12 +311,14 @@ EOF
 # Test 7: Static check — pr diff fetch uses exit-code capture pattern
 # ===========================================================================
 
-@test "assess-documentation.sh: pr diff uses temp-file exit-code capture pattern" {
+@test "assess-documentation.sh: pr diff uses if ! gh_safe idiom to capture exit code" {
   local assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
 
-  # Must use _diff_exit_file temp-file pattern to capture gh_safe exit code
-  # (direct || _pr_diff_exit=$? doesn't work in a pipeline under pipefail)
-  [[ "$(grep '_diff_exit_file' "$assess_doc" || true)" != "" ]]
+  # Must use the `if ! gh_safe pr diff` idiom: `if` is exempt from set -e, so
+  # the exit code is captured correctly without || true swallowing it.
+  local if_idiom_count
+  if_idiom_count=$(grep -c 'if ! gh_safe pr diff' "$assess_doc" || true)
+  [ "$if_idiom_count" -ge 1 ]
 
   # The gh_safe pr diff call must NOT use the old `|| true` inside $() pattern
   # that masked the exit code
