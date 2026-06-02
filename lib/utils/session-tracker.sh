@@ -520,6 +520,103 @@ get_session_summary() {
   echo "Total Processed: $((completed + failed))"
 }
 
+# ---------------------------------------------------------------------------
+# Cross-run persistence for approved_blockers and sent_notifications
+#
+# The in-process session file (SESSION_STATE_FILE) lives in /tmp and can be
+# cleared between runs (reboot, OS tmp cleanup).  To survive across separate
+# `rite` invocations, approvals and notifications are ALSO written to a durable
+# file in the project's .rite/state/ directory.
+#
+# File: ${RITE_STATE_DIR}/approval-state.json  (gitignored, per-developer)
+# Format:
+#   {
+#     "approved_blockers": ["42:critical_issues", ...],
+#     "sent_notifications": ["42:blocker:credentials_expired", ...]
+#   }
+#
+# Reads check the durable file when the in-memory session file is absent.
+# Writes update both the in-memory session AND the durable file.
+# Both files are protected by the same session lock to avoid deadlocks.
+# ---------------------------------------------------------------------------
+
+# Path to the durable cross-run approval state file.
+# Derived from RITE_STATE_DIR (set by config.sh to .rite/state/).
+# Falls back to /tmp if RITE_STATE_DIR is unset (e.g., in unit tests that
+# don't source config.sh).
+_get_approval_state_file() {
+  local state_dir="${RITE_STATE_DIR:-}"
+  if [ -n "$state_dir" ]; then
+    echo "${state_dir}/approval-state.json"
+  else
+    # Fallback: derive from SESSION_STATE_FILE's directory or /tmp
+    echo "/tmp/rite-approval-state-${RITE_PROJECT_NAME:-unknown}.json"
+  fi
+}
+
+# _ensure_approval_state_file
+#
+# Creates the durable approval state file if it does not yet exist.
+# Must be called while holding the session lock.
+_ensure_approval_state_file() {
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+
+  # Ensure parent directory exists (RITE_STATE_DIR may not be created yet in
+  # tests or when config.sh's mkdir block was skipped).
+  local parent_dir
+  parent_dir="$(dirname "$approval_file")"
+  mkdir -p "$parent_dir" 2>/dev/null || true
+
+  if [ ! -f "$approval_file" ]; then
+    cat > "$approval_file" <<'EOF'
+{
+  "approved_blockers": [],
+  "sent_notifications": []
+}
+EOF
+  fi
+}
+
+# _add_to_approval_file KEY FIELD
+#
+# Appends KEY to the named array FIELD in the durable approval state file.
+# Must be called while holding the session lock.
+_add_to_approval_file() {
+  local key="$1"
+  local field="$2"
+
+  _ensure_approval_state_file
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+
+  local temp
+  temp=$(mktemp)
+  jq ".${field} = ((.${field} // []) + [\"${key}\"] | unique)" "$approval_file" > "$temp"
+  mv "$temp" "$approval_file"
+}
+
+# _has_in_approval_file KEY FIELD
+#
+# Returns 0 (true) if KEY is present in FIELD in the durable approval state file.
+# Returns 1 otherwise (including if the file does not exist).
+_has_in_approval_file() {
+  local key="$1"
+  local field="$2"
+
+  local approval_file
+  approval_file="$(_get_approval_state_file)"
+
+  if [ ! -f "$approval_file" ]; then
+    return 1
+  fi
+
+  local found
+  found=$(jq -r ".${field} // [] | index(\"${key}\") != null" "$approval_file" 2>/dev/null || echo "false")
+
+  [ "$found" = "true" ]
+}
+
 # Track an approved blocker to avoid re-prompting
 add_approved_blocker() {
   local issue_number="$1"
@@ -533,33 +630,48 @@ add_approved_blocker() {
   # clobbering each other's approved_blockers entries.
   _acquire_session_lock
 
-  # Add to approved_blockers array (keyed by issue:blocker_type)
   local key="${issue_number}:${blocker_type}"
+
+  # Write to the in-memory session file (fast, per-session dedup)
   local temp
   temp=$(mktemp)
   jq ".approved_blockers = ((.approved_blockers // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
 
+  # Also write to the durable cross-run state file so approvals survive
+  # /tmp cleanup, reboots, or a cleanup_session → init_session sequence.
+  _add_to_approval_file "$key" "approved_blockers"
+
   _release_session_lock
 }
 
 # Check if a blocker was already approved for this issue
+#
+# Checks both:
+#   1. The in-memory session file (SESSION_STATE_FILE, /tmp — fast path)
+#   2. The durable cross-run file (.rite/state/approval-state.json — survives reboots)
 has_approved_blocker() {
   local issue_number="$1"
   local blocker_type="$2"
 
-  if [ ! -f "$SESSION_STATE_FILE" ]; then
-    return 1  # No session = not approved
-  fi
-
   local key="${issue_number}:${blocker_type}"
-  local found=$(jq -r ".approved_blockers // [] | index(\"$key\") != null" "$SESSION_STATE_FILE" 2>/dev/null)
 
-  if [ "$found" = "true" ]; then
-    return 0  # Already approved
-  else
-    return 1  # Not approved
+  # Fast path: check in-memory session file
+  if [ -f "$SESSION_STATE_FILE" ]; then
+    local found
+    found=$(jq -r ".approved_blockers // [] | index(\"$key\") != null" "$SESSION_STATE_FILE" 2>/dev/null || echo "false")
+    if [ "$found" = "true" ]; then
+      return 0  # Already approved in this session
+    fi
   fi
+
+  # Durable path: check cross-run approval state file
+  # This catches approvals from a previous run that survived after /tmp was cleared.
+  if _has_in_approval_file "$key" "approved_blockers"; then
+    return 0
+  fi
+
+  return 1  # Not approved
 }
 
 # Track a sent notification to avoid duplicates
@@ -576,31 +688,47 @@ add_sent_notification() {
   _acquire_session_lock
 
   local key="${issue_number}:${notification_type}"
+
+  # Write to the in-memory session file (fast, per-session dedup)
   local temp
   temp=$(mktemp)
   jq ".sent_notifications = ((.sent_notifications // []) + [\"$key\"] | unique) | .last_update = $(date +%s)" "$SESSION_STATE_FILE" > "$temp"
   mv "$temp" "$SESSION_STATE_FILE"
 
+  # Also write to the durable cross-run state file so notifications survive
+  # /tmp cleanup, reboots, or a cleanup_session → init_session sequence.
+  _add_to_approval_file "$key" "sent_notifications"
+
   _release_session_lock
 }
 
 # Check if a notification was already sent for this issue
+#
+# Checks both:
+#   1. The in-memory session file (SESSION_STATE_FILE, /tmp — fast path)
+#   2. The durable cross-run file (.rite/state/approval-state.json — survives reboots)
 has_sent_notification() {
   local issue_number="$1"
   local notification_type="$2"
 
-  if [ ! -f "$SESSION_STATE_FILE" ]; then
-    return 1  # No session = not sent
-  fi
-
   local key="${issue_number}:${notification_type}"
-  local found=$(jq -r ".sent_notifications // [] | index(\"$key\") != null" "$SESSION_STATE_FILE" 2>/dev/null)
 
-  if [ "$found" = "true" ]; then
-    return 0  # Already sent
-  else
-    return 1  # Not sent
+  # Fast path: check in-memory session file
+  if [ -f "$SESSION_STATE_FILE" ]; then
+    local found
+    found=$(jq -r ".sent_notifications // [] | index(\"$key\") != null" "$SESSION_STATE_FILE" 2>/dev/null || echo "false")
+    if [ "$found" = "true" ]; then
+      return 0  # Already sent in this session
+    fi
   fi
+
+  # Durable path: check cross-run approval state file
+  # This catches notifications from a previous run that survived after /tmp was cleared.
+  if _has_in_approval_file "$key" "sent_notifications"; then
+    return 0
+  fi
+
+  return 1  # Not sent
 }
 
 # Clean up session state
@@ -628,6 +756,10 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f save_session_state
   export -f create_resume_script
   export -f get_session_summary
+  export -f _get_approval_state_file
+  export -f _ensure_approval_state_file
+  export -f _add_to_approval_file
+  export -f _has_in_approval_file
   export -f add_approved_blocker
   export -f has_approved_blocker
   export -f add_sent_notification
