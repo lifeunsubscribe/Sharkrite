@@ -13,6 +13,9 @@
 #   - Trap-based release: _setup_scratchpad_lock_trap installs EXIT/INT/TERM handlers.
 #   - flock fast-path on Linux: where flock(1) is available, use it (faster + avoids
 #     the directory-based machinery entirely for the common case).
+#   - Re-entrancy guard: nested acquire() calls in the same shell are safe — the
+#     depth counter (_SCRATCHPAD_LOCK_DEPTH) tracks nesting; the OS lock is acquired
+#     once (0→1) and released once (1→0), so inner callers never drop the outer lock.
 #
 # Usage (from scripts that write the scratchpad):
 #
@@ -43,6 +46,13 @@ _SCRATCHPAD_LOCKFILE=""          # Set to actual lockfile path on acquire
 # of whether PATH changes between the two calls or whether another process on a
 # shared filesystem chose a different strategy for the same lock path.
 _SCRATCHPAD_LOCK_STRATEGY=""     # "flock" or "mkdir" — set by acquire, read by release
+# Re-entrancy depth counter: incremented on each nested acquire, decremented on
+# each release. The actual OS-level lock is only acquired when depth goes 0→1
+# and only released when depth goes 1→0. This prevents a nested acquire from
+# re-opening FD 200 (which would break the outer caller's lock association) and
+# prevents an inner release from dropping the lock while the outer caller still
+# needs it.
+_SCRATCHPAD_LOCK_DEPTH=0         # 0 = not held; >0 = held (value = nesting depth)
 
 # ---------------------------------------------------------------------------
 # acquire_scratchpad_lock
@@ -51,6 +61,11 @@ _SCRATCHPAD_LOCK_STRATEGY=""     # "flock" or "mkdir" — set by acquire, read b
 # _SCRATCHPAD_LOCK_HELD=true. On timeout exits the calling process with
 # code 1 and an actionable message — NEVER proceeds without holding the lock.
 #
+# Re-entrant: safe to call while already holding the lock (same shell/process).
+# Nested calls increment _SCRATCHPAD_LOCK_DEPTH and return 0 immediately;
+# the OS-level lock is not re-acquired. Each acquire must be paired with a
+# matching release_scratchpad_lock() call.
+#
 # Timeout: 30 seconds (configurable via RITE_SCRATCHPAD_LOCK_TIMEOUT)
 # ---------------------------------------------------------------------------
 acquire_scratchpad_lock() {
@@ -58,6 +73,18 @@ acquire_scratchpad_lock() {
   if [ -z "$scratchpad_file" ]; then
     echo "ERROR: acquire_scratchpad_lock: SCRATCHPAD_FILE is not set" >&2
     exit 1
+  fi
+
+  # Re-entrancy guard: if the lock is already held by this process (same shell),
+  # increment the depth counter and return immediately.  This prevents the flock
+  # fast-path from re-opening FD 200 (which would discard the outer caller's
+  # open-file-description and break mutual exclusion) and prevents the mkdir path
+  # from incorrectly reclaiming its own lock (same PID → dead-process check fails
+  # in an unexpected direction).  The matching release_scratchpad_lock() call
+  # decrements the counter and only actually releases the OS lock at depth 0→1.
+  if [ "${_SCRATCHPAD_LOCK_HELD:-false}" = "true" ]; then
+    _SCRATCHPAD_LOCK_DEPTH=$(( _SCRATCHPAD_LOCK_DEPTH + 1 ))
+    return 0
   fi
 
   local lockfile="${scratchpad_file}.lock"
@@ -98,6 +125,7 @@ acquire_scratchpad_lock() {
     fi
     _SCRATCHPAD_LOCK_HELD=true
     _SCRATCHPAD_LOCK_STRATEGY="flock"
+    _SCRATCHPAD_LOCK_DEPTH=1
     return 0
   fi
 
@@ -180,6 +208,7 @@ acquire_scratchpad_lock() {
 
   _SCRATCHPAD_LOCK_HELD=true
   _SCRATCHPAD_LOCK_STRATEGY="mkdir"
+  _SCRATCHPAD_LOCK_DEPTH=1
   return 0
 }
 
@@ -191,7 +220,15 @@ acquire_scratchpad_lock() {
 # multiple times (idempotent).
 # ---------------------------------------------------------------------------
 release_scratchpad_lock() {
-  if [ "$_SCRATCHPAD_LOCK_HELD" != "true" ]; then
+  if [ "${_SCRATCHPAD_LOCK_HELD:-false}" != "true" ]; then
+    return 0
+  fi
+
+  # Re-entrancy guard: if there are nested acquires still active, decrement the
+  # depth counter and return without releasing the OS-level lock.  The outermost
+  # caller (depth 1→0) performs the actual release.
+  if [ "${_SCRATCHPAD_LOCK_DEPTH:-1}" -gt 1 ]; then
+    _SCRATCHPAD_LOCK_DEPTH=$(( _SCRATCHPAD_LOCK_DEPTH - 1 ))
     return 0
   fi
 
@@ -223,6 +260,7 @@ release_scratchpad_lock() {
 
   _SCRATCHPAD_LOCK_HELD=false
   _SCRATCHPAD_LOCK_STRATEGY=""
+  _SCRATCHPAD_LOCK_DEPTH=0
 }
 
 # ---------------------------------------------------------------------------

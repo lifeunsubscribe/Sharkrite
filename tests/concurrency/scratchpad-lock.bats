@@ -841,4 +841,156 @@ GHEOF
   # tests (bats provides process-per-test isolation, but explicit teardown is
   # clearer and guards against any future in-process test runner changes).
   unset RITE_SCRATCHPAD_LOCK_STRATEGY
+# Test 9: Re-entrancy guard — nested acquire on mkdir path does not drop lock
+#
+# Verifies that a second call to acquire_scratchpad_lock() while the lock is
+# already held (same shell, same process) increments the depth counter and
+# returns 0 WITHOUT re-entering the mkdir machinery.  A matching inner release
+# decrements the counter but does NOT remove the lock directory.  Only the
+# outermost release (depth 1→0) removes the directory.
+#
+# Acceptance criteria (issue #150):
+#   (a) Second acquire returns 0 (_SCRATCHPAD_LOCK_DEPTH becomes 2)
+#   (b) Lock directory still exists after the inner release
+#   (c) _SCRATCHPAD_LOCK_HELD is still "true" after the inner release
+#   (d) Outer release (depth 1→0) removes the lock directory
+#   (e) A concurrent process can acquire after the outer release
+# ---------------------------------------------------------------------------
+@test "re-entrancy guard: nested acquire/release on mkdir path preserves outer lock" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local followup_result="$RITE_TEST_TMPDIR/followup_result"
+
+  # Force the mkdir lock strategy so that lock state is observable as a directory.
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+
+  # Outer acquire (depth 0→1)
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "true" ] || {
+    echo "FAIL: outer acquire did not set _SCRATCHPAD_LOCK_HELD=true" >&2
+    return 1
+  }
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 1 ] || {
+    echo "FAIL: expected depth=1 after outer acquire, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
+    return 1
+  }
+  [ -d "$lockfile" ] || {
+    echo "FAIL: lock directory missing after outer acquire" >&2
+    return 1
+  }
+
+  # Inner acquire (re-entrant, depth 1→2) — must not re-enter mkdir machinery
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 2 ] || {
+    echo "FAIL: expected depth=2 after inner acquire, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
+    return 1
+  }
+  # (a) lock directory must still be present (mkdir path not re-entered)
+  [ -d "$lockfile" ] || {
+    echo "FAIL: lock directory missing after inner acquire — mkdir machinery re-entered" >&2
+    return 1
+  }
+
+  # Inner release (depth 2→1) — must NOT remove the lock directory
+  release_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 1 ] || {
+    echo "FAIL: expected depth=1 after inner release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
+    return 1
+  }
+  # (b) lock directory must still exist: inner release must not drop the outer lock
+  [ -d "$lockfile" ] || {
+    echo "FAIL: lock directory removed by inner release — outer lock dropped prematurely" >&2
+    return 1
+  }
+  # (c) _SCRATCHPAD_LOCK_HELD must still be true
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "true" ] || {
+    echo "FAIL: _SCRATCHPAD_LOCK_HELD became false after inner release — outer lock state lost" >&2
+    return 1
+  }
+
+  # Outer release (depth 1→0) — must remove the lock directory
+  release_scratchpad_lock
+  # (d) lock directory must be gone now
+  [ ! -d "$lockfile" ] || {
+    echo "FAIL: lock directory still present after outer release" >&2
+    ls -la "$lockfile" >&2
+    return 1
+  }
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "false" ] || {
+    echo "FAIL: _SCRATCHPAD_LOCK_HELD not reset to false after outer release" >&2
+    return 1
+  }
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 0 ] || {
+    echo "FAIL: expected depth=0 after outer release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
+    return 1
+  }
+
+  # (e) A subsequent caller must be able to acquire immediately
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=3
+    if acquire_scratchpad_lock; then
+      release_scratchpad_lock
+      echo "acquired" > "$followup_result"
+    else
+      echo "blocked" > "$followup_result"
+    fi
+  )
+
+  [ -f "$followup_result" ] || {
+    echo "FAIL: follow-up subprocess did not write result" >&2
+    return 1
+  }
+  local followup_outcome
+  followup_outcome=$(cat "$followup_result")
+  [ "$followup_outcome" = "acquired" ] || {
+    echo "FAIL: follow-up caller could not acquire lock after re-entrant acquire/release cycle" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: Re-entrancy guard — depth-3 nesting on mkdir path
+#
+# Exercises three levels of nesting to confirm the depth counter arithmetic
+# is correct at each step: 0→1→2→3 on acquire, 3→2→1→0 on release.
+# The lock directory must be present through all inner releases and absent
+# only after the outermost release.
+# ---------------------------------------------------------------------------
+@test "re-entrancy guard: depth-3 nesting on mkdir path — lock held until outermost release" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+
+  # Depth 0→1
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 1 ] || { echo "FAIL: depth should be 1, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
+
+  # Depth 1→2
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 2 ] || { echo "FAIL: depth should be 2, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
+
+  # Depth 2→3
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 3 ] || { echo "FAIL: depth should be 3, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
+  [ -d "$lockfile" ] || { echo "FAIL: lock dir missing at depth 3" >&2; return 1; }
+
+  # Release depth 3→2
+  release_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 2 ] || { echo "FAIL: depth should be 2 after first release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
+  [ -d "$lockfile" ] || { echo "FAIL: lock dir removed at depth 2 (should still be held)" >&2; return 1; }
+
+  # Release depth 2→1
+  release_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 1 ] || { echo "FAIL: depth should be 1 after second release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
+  [ -d "$lockfile" ] || { echo "FAIL: lock dir removed at depth 1 (should still be held)" >&2; return 1; }
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "true" ] || { echo "FAIL: held should still be true at depth 1" >&2; return 1; }
+
+  # Release depth 1→0 — this is the outermost, must release
+  release_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 0 ] || { echo "FAIL: depth should be 0 after outermost release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
+  [ ! -d "$lockfile" ] || { echo "FAIL: lock dir still present after outermost release" >&2; return 1; }
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "false" ] || { echo "FAIL: held should be false after outermost release" >&2; return 1; }
 }
