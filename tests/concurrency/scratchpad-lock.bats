@@ -4,8 +4,13 @@
 # Tests that:
 # 1. Concurrent writes via log_encountered_issue() don't lose data (locking works)
 # 2. A SIGKILL'd lock holder's lock is reclaimed by the next waiter within 5s
+# 8. SIGKILL'd holder on mkdir path is reclaimed deterministically (issue #151)
+#    — Test 2 only exercises the mkdir stale-reclaim path on systems without flock;
+#      Test 8 forces the mkdir path via RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir so the
+#      kill -0 stale-reclaim code is always covered regardless of flock availability.
 #
 # Issue #19: Harden scratchpad lock — fix TOCTOU, timeout, propagate to all writers.
+# Issue #151: SIGKILL reclaim test does not exercise mkdir stale-reclaim path on CI.
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -650,4 +655,190 @@ GHEOF
     echo "FAIL: third caller could not acquire lock — RETURN trap did not release it on duplicate early-return path" >&2
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: SIGKILL reclaim via mkdir stale-reclaim path (deterministic)
+#
+# Problem with Test 2 ("SIGKILL'd lock holder - next process reclaims lock
+# within 5s"): on CI machines where flock(1) is available, the holder acquires
+# the lock via flock, and when it is SIGKILLed the kernel releases the flock
+# automatically.  The waiter then acquires the lock immediately — without ever
+# entering the mkdir stale-reclaim code (kill -0 check → rm -rf → mkdir retry
+# at lines 128-157 of scratchpad-lock.sh).  Test 2 passes trivially on those
+# machines while leaving the riskiest hand-rolled reclaim code uncovered.
+#
+# This test closes the gap by forcing RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir in
+# both the holder and the waiter.  With the mkdir path:
+#   - The holder creates a lock directory and writes its PID file.
+#   - After SIGKILL, the lock directory persists (no kernel cleanup).
+#   - The waiter sees mkdir fail (EEXIST), reads the PID from the directory,
+#     runs kill -0 and finds the holder dead, removes the directory, and
+#     retries mkdir — this is the stale-reclaim path we need to cover.
+#
+# Acceptance criterion (issue #151):
+#   - Waiter acquires the lock within 5 seconds of the SIGKILL.
+#   - The "reclaiming stale lock" diagnostic message is printed to stderr,
+#     confirming the stale-reclaim code path was exercised (not just a fast
+#     no-contention acquire).
+#
+# Why RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir and not PATH manipulation:
+#   PATH manipulation (prepending an empty directory) does not reliably hide
+#   flock because `command -v flock` still finds flock elsewhere in PATH.
+#   The env-var override is the only reliable mechanism and is already used
+#   in Tests 6 and 7 for the same reason.
+# ---------------------------------------------------------------------------
+@test "SIGKILL'd lock holder - waiter exercises mkdir stale-reclaim path (deterministic)" {
+  local lock_acquired_file="$RITE_TEST_TMPDIR/lock_acquired"
+  local holder_pid_file="$RITE_TEST_TMPDIR/holder_pid"
+  local reclaim_result_file="$RITE_TEST_TMPDIR/reclaim_result"
+  local reclaim_stderr_file="$RITE_TEST_TMPDIR/reclaim_stderr"
+
+  # Force the mkdir lock strategy in both holder and waiter so that the lock
+  # state is a directory that persists after SIGKILL (unlike flock, where the
+  # kernel releases the lock on process death without leaving anything behind).
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+
+  # Spawn a holder that acquires the lock via the mkdir path and holds it.
+  # It writes its PID to a file and signals readiness, then sleeps until killed.
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    acquire_scratchpad_lock
+    # Verify that the mkdir strategy was actually used (precondition check)
+    [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
+      echo "FAIL: holder did not use mkdir strategy (got '${_SCRATCHPAD_LOCK_STRATEGY}')" >&2
+      exit 1
+    }
+    echo $$ > "$holder_pid_file"
+    touch "$lock_acquired_file"
+    sleep 60  # Hold the lock until SIGKILLed
+  ) &
+  local holder_bgpid=$!
+
+  # Wait up to 5s for the holder to acquire the lock and signal readiness
+  local wait_count=0
+  while [ ! -f "$lock_acquired_file" ] && [ "$wait_count" -lt 50 ]; do
+    sleep 0.1
+    wait_count=$((wait_count + 1))
+  done
+
+  [ -f "$lock_acquired_file" ] || {
+    echo "FAIL: holder never acquired the lock (mkdir strategy)" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  local holder_pid
+  holder_pid=$(cat "$holder_pid_file")
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+
+  # Precondition: the lock directory must exist (confirms mkdir path was used)
+  [ -d "$lockfile" ] || {
+    echo "FAIL: lock directory does not exist — holder did not use mkdir path" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  # Precondition: the PID file inside the lock directory must exist
+  [ -f "$lockfile/pid" ] || {
+    echo "FAIL: PID file missing inside lock directory after holder acquired" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  # SIGKILL the holder — the lock directory persists (no kernel cleanup on the
+  # mkdir path, unlike flock where the kernel releases the lock automatically)
+  kill -KILL "$holder_pid" 2>/dev/null || true
+  wait "$holder_bgpid" 2>/dev/null || true
+
+  # Confirm the lock directory is still present after the SIGKILL.
+  # This is the key precondition that ensures the waiter must go through the
+  # stale-reclaim code path rather than acquiring an already-released lock.
+  [ -d "$lockfile" ] || {
+    echo "FAIL: lock directory disappeared after SIGKILL — mkdir path not in use" >&2
+    return 1
+  }
+
+  # Time the waiter acquire attempt
+  local start_time
+  start_time=$(date +%s)
+
+  # Spawn the waiter in a background subshell with the same mkdir strategy forced.
+  # The waiter must: see mkdir fail (EEXIST) → read PID → kill -0 fails →
+  # rm -rf lock dir → retry mkdir → succeed.  Capture stderr to verify
+  # the diagnostic message was printed (confirms reclaim code ran).
+  # Run in background so we can impose a hard timeout — a reclaim regression
+  # would otherwise cause an indefinite CI hang rather than a bounded failure.
+  (
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    if acquire_scratchpad_lock; then
+      echo "success" > "$reclaim_result_file"
+      release_scratchpad_lock
+    else
+      echo "failure" > "$reclaim_result_file"
+    fi
+  ) 2>"$reclaim_stderr_file" &
+  local waiter_bgpid=$!
+
+  # Poll for the result file with a 10-second hard timeout.
+  # 10s is 2× the 5s acceptance criterion — gives ample headroom on slow CI
+  # machines while guaranteeing the test never hangs indefinitely.
+  local poll_count=0
+  while [ ! -f "$reclaim_result_file" ] && [ "$poll_count" -lt 100 ]; do
+    sleep 0.1
+    poll_count=$((poll_count + 1))
+  done
+
+  # If the waiter is still running past the timeout, kill it and fail fast.
+  if [ ! -f "$reclaim_result_file" ]; then
+    kill "$waiter_bgpid" 2>/dev/null || true
+    wait "$waiter_bgpid" 2>/dev/null || true
+    echo "FAIL: waiter did not complete within 10s — possible reclaim loop hang" >&2
+    return 1
+  fi
+
+  wait "$waiter_bgpid" 2>/dev/null || true
+
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+
+  # Assertion 1: waiter must have succeeded
+  [ -f "$reclaim_result_file" ] || {
+    echo "FAIL: waiter did not produce a result file" >&2
+    return 1
+  }
+  local result
+  result=$(cat "$reclaim_result_file")
+  [ "$result" = "success" ] || {
+    echo "FAIL: waiter failed to acquire lock after holder was SIGKILL'd (mkdir path)" >&2
+    return 1
+  }
+
+  # Assertion 2: reclaim must complete within 5 seconds
+  # The kill -0 check on a dead PID returns immediately, so the reclaim should
+  # be near-instant.  5 seconds is generous headroom for slow CI machines.
+  [ "$elapsed" -le 5 ] || {
+    echo "FAIL: mkdir stale-reclaim took ${elapsed}s (expected <= 5s)" >&2
+    return 1
+  }
+
+  # Assertion 3: the diagnostic "reclaiming stale lock" message must appear in
+  # stderr.  This is the definitive proof that the stale-reclaim code path was
+  # exercised (as opposed to a fast acquire on an already-released lock).
+  [ -f "$reclaim_stderr_file" ] || {
+    echo "FAIL: waiter stderr capture file missing" >&2
+    return 1
+  }
+  grep -qi "reclaiming stale lock" "$reclaim_stderr_file" || {
+    echo "FAIL: 'reclaiming stale lock' message not found in waiter stderr" >&2
+    echo "      stderr was: $(cat "$reclaim_stderr_file")" >&2
+    echo "      The mkdir stale-reclaim code path was not exercised." >&2
+    return 1
+  }
+
+  # Clean up the exported strategy override so it doesn't bleed into subsequent
+  # tests (bats provides process-per-test isolation, but explicit teardown is
+  # clearer and guards against any future in-process test runner changes).
+  unset RITE_SCRATCHPAD_LOCK_STRATEGY
 }
