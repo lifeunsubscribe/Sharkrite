@@ -34,19 +34,25 @@ load '../helpers/setup.bash'
 GH_MOCK_BIN="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"
 
 setup() {
-  # Guard: verify required environment variables are set before proceeding.
-  # Without these, tests would silently operate on wrong paths and produce
-  # false passes — which is especially harmful for concurrency correctness tests.
-  [[ -n "${RITE_TEST_TMPDIR:-}" ]] || {
-    echo "setup: RITE_TEST_TMPDIR is not set — check tests/helpers/setup.bash" >&2
-    return 1
-  }
+  # RITE_REPO_ROOT is set at load time by setup.bash; guard before any path
+  # construction that depends on it.
   [[ -n "${RITE_REPO_ROOT:-}" ]] || {
     echo "setup: RITE_REPO_ROOT is not set — check tests/helpers/setup.bash" >&2
     return 1
   }
 
+  # setup_test_tmpdir must be called first: it creates and exports
+  # RITE_TEST_TMPDIR.  Any guard that checks RITE_TEST_TMPDIR must come
+  # after this call, otherwise it fires with a misleading error before
+  # the variable has ever been assigned (especially in clean CI environments).
   setup_test_tmpdir
+
+  # Post-assignment guard: verify RITE_TEST_TMPDIR was actually populated.
+  # This catches failures inside setup_test_tmpdir itself (e.g. mktemp errors).
+  [[ -n "${RITE_TEST_TMPDIR:-}" ]] || {
+    echo "setup: RITE_TEST_TMPDIR is empty after setup_test_tmpdir — check tests/helpers/setup.bash" >&2
+    return 1
+  }
 
   export GH_MOCK_STATE_DIR="${RITE_TEST_TMPDIR}/gh-mock-state"
   mkdir -p "$GH_MOCK_STATE_DIR"
