@@ -308,6 +308,38 @@ EOF
   [ "$_line1" -ne "$_line2" ]
 }
 
+@test "lint rule deduplicates via _seen_pairs when start exists with two ends" {
+  # Regression test for the start-matched deduplication path: when a start marker
+  # exists alongside two duplicate end markers, the start-marker loop processes
+  # the (file, name) pair once (setting _seen_pairs), reports the end imbalance
+  # exactly once, and the end-marker loop skips both end occurrences because
+  # _seen_pairs already has the key set.  This ensures a future accidental removal
+  # of the _seen_pairs guard in the end-marker loop would be caught immediately.
+  cat > "$RITE_LINT_TEST_DIR/start-with-duplicate-ends.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# sharkrite-extract: worker-loop-start
+do_work() { echo "work"; }
+# sharkrite-extract: worker-loop-end
+extra_function() { echo "extra"; }
+# sharkrite-extract: worker-loop-end
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
+  [[ "$output" =~ "start-with-duplicate-ends.sh" ]]
+
+  # The start-marker loop detects the imbalance (end count != 1) and reports it
+  # exactly once (one (file, name) pair). The end-marker loop must NOT add more
+  # reports for the same pair — _seen_pairs prevents re-entry.
+  _violation_count=$(echo "$output" | grep -c "start-with-duplicate-ends\.sh.*UNBALANCED_EXTRACT_MARKERS" || true)
+  [ "$_violation_count" -eq 1 ]
+}
+
 @test "lint rule detects reversed markers where end appears before start" {
   # Both start and end markers are present (count==1 each), but end precedes
   # start in the file. sed -n '/start/,/end/p' will open the range at the
