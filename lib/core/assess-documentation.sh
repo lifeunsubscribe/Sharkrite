@@ -96,7 +96,10 @@ PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""' || true)
 # `if` is exempt from set -e, so gh_safe's failure is captured correctly
 # without || true swallowing it. This avoids the PIPESTATUS-in-subshell
 # problem (see CLAUDE.md) without needing a second temp file.
-_diff_raw_file=$(mktemp)
+_diff_raw_file=$(mktemp 2>/dev/null) || {
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp failed (disk full or /tmp unavailable)"
+  exit 0
+}
 _pr_diff_exit=0
 if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
   _pr_diff_exit=$?
@@ -117,7 +120,10 @@ CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30 || true)
 # Track results for one-liner summary.
 # Functions run in parallel subshells, so use marker files instead of a shared array.
 INTERNAL_UPDATED=()
-_MARKER_DIR=$(mktemp -d)
+_MARKER_DIR=$(mktemp -d 2>/dev/null) || {
+  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp -d failed (disk full or /tmp unavailable)"
+  exit 0
+}
 _mark_updated() { touch "$_MARKER_DIR/$1"; }
 
 mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
