@@ -33,6 +33,15 @@
 #     after an issue is created return empty results, simulating GitHub's search
 #     index lag.  Each search attempt decrements the counter; once it reaches 0
 #     the issue appears in results.
+#
+# Concurrency model — SEQUENTIAL ONLY for stateful writes:
+#   The stateful issue-create function (_gh_mock_stateful_issue_create) uses a
+#   read-compute-write sequence that is NOT lock-protected.  All current bats
+#   tests invoke mock_gh sequentially (single bats process, no parallel
+#   subshells), so the race is latent.  Do NOT call mock_gh issue create from
+#   parallel subshells — use tests/helpers/gh-mock-binary.sh (via PATH override)
+#   for tests that require concurrent gh invocations; it wraps the same sequence
+#   in flock(1) and is safe for concurrent subprocess use.
 
 # Track call count for fault injection
 _GH_MOCK_CALL_COUNT=0
@@ -313,6 +322,23 @@ _gh_mock_stateful_issue_list() {
 #
 # Uses jq --rawfile (not --arg) to read the body so that HTML comment
 # characters (e.g. <!-- -->) are not escaped as <\!-- by macOS jq 1.7.x.
+#
+# SEQUENTIAL-ONLY — NOT safe for parallel invocation from subshells:
+#   The issue number counter (_num_file) and the issues JSON array (_issues_file)
+#   are updated via a read-compute-write sequence that is NOT lock-protected in
+#   this bash-function implementation.  Two callers invoking this function
+#   concurrently from separate subshells would race on both:
+#
+#     1. Counter:   both read the same _seq → same _issue_num → duplicate numbers
+#     2. JSON file: both jq-read the old array → last mv wins → one append lost
+#
+#   All current bats tests call this function sequentially within a single bats
+#   process, so the race is latent.  Do NOT call this from parallel subshells.
+#
+#   Contrast with gh-mock-binary.sh, which is a subprocess-per-invocation
+#   binary: it wraps the same sequence in flock(1) and IS safe for concurrent
+#   use.  Integration tests that need concurrency should use the binary mock
+#   (via PATH override) rather than this function.
 _gh_mock_stateful_issue_create() {
   local _title="" _body_file="" _label=""
 
@@ -337,7 +363,8 @@ _gh_mock_stateful_issue_create() {
     : > "$_body_source"   # empty body
   fi
 
-  # Assign sequential issue number
+  # Assign sequential issue number.
+  # READ → COMPUTE → WRITE: non-atomic — see SEQUENTIAL-ONLY note above.
   local _num_file
   _num_file=$(_gh_mock_next_num_file)
   local _seq
@@ -350,7 +377,9 @@ _gh_mock_stateful_issue_create() {
   local _issues_file
   _issues_file=$(_gh_mock_issues_file)
 
-  # Append the new issue to the tracked list
+  # Append the new issue to the tracked list.
+  # READ → MERGE → WRITE (via tmp+mv): the mv is atomic, but the read-merge
+  # window between two callers is not — see SEQUENTIAL-ONLY note above.
   jq --argjson num "$_issue_num" \
      --arg title "$_title" \
      --rawfile body "$_body_source" \
