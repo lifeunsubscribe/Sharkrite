@@ -158,8 +158,15 @@ gh_safe() {
     # "Processed 500 records", config IDs). Text-based tokens (rate limit,
     # server error, etc.) are long enough to be unambiguous and need no
     # additional anchoring.
+    #
+    # Bare parenthesised forms — false-positive guard:
+    # \(429\) and \(5[0-9][0-9]\) match the gh CLI pattern "Service Unavailable (503)"
+    # where the code appears at the end of the message. To avoid matching module or
+    # config references like "Error in module (503): bad config", these patterns
+    # require the closing parenthesis to NOT be followed immediately by a colon
+    # (i.e. they must be at end-of-string or followed by whitespace/other non-colon char).
     if echo "$stderr_content" | grep -qiE \
-        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)|\(5[0-9][0-9]\)|rate limit|secondary rate|too many requests|server error"; then
+        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^:]|$)|\(5[0-9][0-9]\)([^:]|$)|rate limit|secondary rate|too many requests|server error"; then
       if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
         # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
         local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))

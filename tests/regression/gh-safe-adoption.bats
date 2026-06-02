@@ -568,6 +568,75 @@ EOF
   [[ "$output" =~ "calls:1" ]]
 }
 
+@test "gh_safe does NOT retry when stderr contains '(503):' as a module reference (false-positive guard)" {
+  # Bare parenthesised codes like "(503)" must not match when followed by a colon,
+  # which indicates a module/config reference ("Error in module (503): bad config")
+  # rather than an HTTP status message from gh CLI.
+  local call_count_file="$TEST_TMPDIR/call-count-fp503paren"
+  echo "0" > "$call_count_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+# Stderr contains "(503):" as a module reference, not an HTTP status
+echo "Error in module (503): bad config value" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr view 42 --json title || true
+    echo \"calls:\$(cat '$call_count_file')\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Must have called gh exactly once — "(503):" is a module reference, not a transient HTTP error
+  [[ "$output" =~ "calls:1" ]]
+}
+
+@test "gh_safe does NOT retry when stderr contains '(429):' as a non-HTTP reference (false-positive guard)" {
+  # Bare parenthesised "(429)" must not match when followed by a colon,
+  # which indicates a non-HTTP reference rather than a rate-limit response.
+  local call_count_file="$TEST_TMPDIR/call-count-fp429paren"
+  echo "0" > "$call_count_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+# Stderr contains "(429):" as a process/error code reference, not an HTTP rate-limit
+echo "Process exited with code (429): unexpected termination" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr view 42 --json title || true
+    echo \"calls:\$(cat '$call_count_file')\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Must have called gh exactly once — "(429):" is not a real HTTP rate-limit response
+  [[ "$output" =~ "calls:1" ]]
+}
+
 @test "gh_safe retries on 'HTTP 503 Service Unavailable' (framed status code — transient)" {
   # Verify that the framed regex still correctly matches real transient errors
   # using the "HTTP NNN" format that the gh CLI emits.
