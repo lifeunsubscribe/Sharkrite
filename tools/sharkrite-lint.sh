@@ -203,7 +203,7 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
     sub(/.*<<-?[[:space:]]*/, "", tok)
     gsub(/['"'"'"]/, "", tok)
     split(tok, _p, " ")
-    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) {
+    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
       hd_marker = _p[1]; in_heredoc = 1
     }
   }
@@ -246,7 +246,7 @@ _r8_awk=$(mktemp)
 printf '%s\n' \
   'FNR == 1 {' \
   '  if (pending_line > 0) { print pending_fname ":" pending_line; pending_line = 0 }' \
-  '  in_heredoc = 0; hd_marker = ""; pending_line = 0; pending_fname = ""' \
+  '  in_heredoc = 0; hd_marker = ""; pending_fname = ""' \
   '}' \
   '{' \
   '  if (in_heredoc) {' \
@@ -257,9 +257,9 @@ printf '%s\n' \
   '  if (index($0, "<<") > 0) {' \
   '    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)' \
   '    gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")' \
-  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }' \
+  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }' \
   '  }' \
-  '  if (pending_line > 0) {' \
+  '  if (FNR > 1 && pending_line > 0) {' \
   '    if (index($0, "|| true") > 0 || index($0, "|| echo") > 0 || index($0, ": $?") > 0) {' \
   '      pending_line = 0' \
   '    } else {' \
@@ -306,7 +306,7 @@ FNR == 1 { in_heredoc = 0; hd_marker = "" }
   if (index($0, "<<") > 0) {
     tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
     gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
-    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) {
+    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
       hd_marker = _p[1]; in_heredoc = 1
     }
   }
@@ -440,7 +440,7 @@ printf '%s\n' \
   '    sub(/.*<<-?[[:space:]]*/, "", tok)' \
   '    gsub(/['"'"'"]/, "", tok)' \
   '    split(tok, _p, " ")' \
-  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) {' \
+  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {' \
   '      hd_marker = _p[1]; in_heredoc = 1' \
   '    }' \
   '  }' \
@@ -456,8 +456,11 @@ printf '%s\n' \
   '  # Pattern requires "gh" to be preceded by a command-context character (any whitespace,' \
   '  # (, |, ;, $) or appear at start-of-line after whitespace.  [[:space:]] covers both' \
   '  # spaces and tabs, preventing false negatives for tab-indented gh calls.' \
-  '  if (index($0, "gh_safe") == 0 && $0 ~ /(^|[[:space:](|;$])gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
-  '    print FNAME ":" NR ":" $0' \
+  '  if (index($0, "gh_safe") == 0) {' \
+  '    if ($0 ~ /^[[:space:]]*gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/ ||' \
+  '        $0 ~ /[[:space:](|;$]gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
+  '      print FNAME ":" NR ":" $0' \
+  '    }' \
   '  }' \
   '}' \
   > "$_r13_awk"
