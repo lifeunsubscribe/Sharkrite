@@ -1077,7 +1077,9 @@ GHEOF
   local inner_release_probe="$RITE_TEST_TMPDIR/inner_release_probe"
   (
     source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
-    export RITE_SCRATCHPAD_LOCK_TIMEOUT=2  # Short timeout — lock SHOULD be held
+    # 5s timeout: long enough for a legitimate acquire to succeed on slow CI
+    # (distinguishes "blocked because lock is held" from "timed out on slow system")
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=5
     if acquire_scratchpad_lock 2>/dev/null; then
       release_scratchpad_lock
       echo "acquired" > "$inner_release_probe"

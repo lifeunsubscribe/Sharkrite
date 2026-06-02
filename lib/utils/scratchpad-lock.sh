@@ -121,6 +121,8 @@ acquire_scratchpad_lock() {
       echo "ERROR: Could not acquire scratchpad lock within ${max_attempts}s." >&2
       echo "       If a previous run crashed, remove the lock file:" >&2
       echo "       rm -f \"$lockfile\"" >&2
+      _SCRATCHPAD_LOCK_HELD=false
+      _SCRATCHPAD_LOCK_DEPTH=0
       exit 1
     fi
     _SCRATCHPAD_LOCK_HELD=true
@@ -195,6 +197,8 @@ acquire_scratchpad_lock() {
       echo "       Another process may be stuck, or the lock may be stale." >&2
       echo "       To recover, remove the lock directory:" >&2
       echo "       rm -rf \"$lockfile\"" >&2
+      _SCRATCHPAD_LOCK_HELD=false
+      _SCRATCHPAD_LOCK_DEPTH=0
       exit 1
     fi
     sleep 1
