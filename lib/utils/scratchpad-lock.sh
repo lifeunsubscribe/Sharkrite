@@ -30,13 +30,18 @@
 
 set -euo pipefail
 
-# Re-source guard: skip if already loaded (idempotent sourcing)
+# Re-source guard: skip if already loaded (idempotent sourcing).
+# ORDERING CRITICAL: this guard must appear before ALL variable initializations,
+# including _SCRATCHPAD_LOCK_DEPTH=0 below.  If the guard fires after that line,
+# a re-source mid-lock would reset the re-entrancy counter to 0 and corrupt the
+# nesting invariant this PR introduces.
 if declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
 # Internal state — set by acquire_scratchpad_lock, read by release_scratchpad_lock
+# (All lines below are guarded by the re-source check above.)
 # ---------------------------------------------------------------------------
 _SCRATCHPAD_LOCK_FD=200          # File descriptor used for flock fast-path
 _SCRATCHPAD_LOCK_HELD=false      # True once lock is successfully acquired
