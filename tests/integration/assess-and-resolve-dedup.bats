@@ -51,6 +51,7 @@
 
 load '../helpers/setup'
 load '../helpers/gh-mock'
+load '../helpers/gh-mock-state'
 
 # ---------------------------------------------------------------------------
 # Pre-canned review and assessment content
@@ -873,6 +874,12 @@ run_assess_and_resolve() {
 
   local _pr=61
   local _issue=31
+
+  # Explicit mock data setup for PR 61 / issue 31.
+  # gh-mock-binary.sh serves GH_MOCK_PR_VIEW_FILE for any pr view call — the mock
+  # is PR-number-agnostic, so writing a fresh fixture here (rather than relying on
+  # the setup() default) confirms the review data is present and valid for this test.
+  _write_pr_view_json "$_REVIEW_WITH_FINDINGS"
 
   # First run: creates a follow-up and writes evidence.
   run_assess_and_resolve "$_pr" "$_issue"
