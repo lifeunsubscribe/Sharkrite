@@ -92,8 +92,12 @@ assess_internal_changelog() {
     echo "" >> "$doc_file"
   fi
 
-  # Deduplication: skip if PR already present
-  if grep -q "#${pr_number}" "$doc_file" 2>/dev/null; then
+  # Deduplication: skip if PR already present.
+  # Use an exact numeric match — "#${pr_number}" followed by a non-digit or end-of-line
+  # prevents false positives where a shorter number (e.g. #5) matches inside a longer
+  # one (e.g. #55).  The entry format is "… (#N) [files]" so ")" is the typical
+  # following character, but anchoring to [^0-9]|$ covers all valid positions.
+  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
     return 0
   fi
 
@@ -176,8 +180,8 @@ assess_internal_security() {
     echo "" >> "$doc_file"
   fi
 
-  # Deduplication
-  if grep -q "#${pr_number}" "$doc_file" 2>/dev/null; then
+  # Deduplication: exact numeric match (see changelog dedup comment for rationale)
+  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
     return 0
   fi
 
@@ -256,8 +260,8 @@ assess_internal_architecture() {
     echo "" >> "$doc_file"
   fi
 
-  # Deduplication
-  if grep -q "#${pr_number}" "$doc_file" 2>/dev/null; then
+  # Deduplication: exact numeric match (see changelog dedup comment for rationale)
+  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
     return 0
   fi
 
@@ -332,8 +336,8 @@ assess_internal_api() {
     echo "" >> "$doc_file"
   fi
 
-  # Deduplication
-  if grep -q "#${pr_number}" "$doc_file" 2>/dev/null; then
+  # Deduplication: exact numeric match (see changelog dedup comment for rationale)
+  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
     return 0
   fi
 
