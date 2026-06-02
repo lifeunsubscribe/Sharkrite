@@ -769,13 +769,13 @@ GHEOF
   # the diagnostic message was printed (confirms reclaim code ran).
   (
     source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
-    if acquire_scratchpad_lock 2>"$reclaim_stderr_file"; then
+    if acquire_scratchpad_lock; then
       echo "success" > "$reclaim_result_file"
       release_scratchpad_lock
     else
       echo "failure" > "$reclaim_result_file"
     fi
-  )
+  ) 2>"$reclaim_stderr_file"
 
   local end_time
   end_time=$(date +%s)
@@ -814,4 +814,9 @@ GHEOF
     echo "      The mkdir stale-reclaim code path was not exercised." >&2
     return 1
   }
+
+  # Clean up the exported strategy override so it doesn't bleed into subsequent
+  # tests (bats provides process-per-test isolation, but explicit teardown is
+  # clearer and guards against any future in-process test runner changes).
+  unset RITE_SCRATCHPAD_LOCK_STRATEGY
 }
