@@ -277,12 +277,12 @@ EOF
 
   # Check for gh_safe usage on the pr view line
   local pr_view_line
-  pr_view_line=$(grep "pr view.*--json" "$assess_doc" || true)
+  pr_view_line=$(grep "pr view.*--json" "$assess_doc")
   [[ "$pr_view_line" =~ "gh_safe" ]]
 
   # Check for gh_safe usage on the pr diff line
   local pr_diff_line
-  pr_diff_line=$(grep "pr diff" "$assess_doc" || true)
+  pr_diff_line=$(grep "pr diff" "$assess_doc")
   [[ "$pr_diff_line" =~ "gh_safe" ]]
 
   # Verify no bare `gh pr diff` or `gh pr view` calls (raw gh, not wrapped)
