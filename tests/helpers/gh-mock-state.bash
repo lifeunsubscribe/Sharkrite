@@ -419,6 +419,18 @@ _gh_mock_state_issue_set_state() {
   local _issues_file
   _issues_file=$(_gh_mock_state_issues_file)
 
+  # Guard: fail loudly if the issue number is not found in the mock state.
+  # A silent no-op here produces a misleading downstream failure — the test
+  # proceeds as if the state flip succeeded, then fails for an unrelated reason.
+  local _found
+  _found=$(jq --argjson num "${_issue_num:-0}" \
+    '[.[] | select(.number == $num)] | length' \
+    "$_issues_file" 2>/dev/null || echo "0")
+  if [ "${_found:-0}" -eq 0 ]; then
+    echo "_gh_mock_state_issue_set_state: issue #${_issue_num} not found in mock state (${_issues_file})" >&2
+    return 1
+  fi
+
   jq --argjson num "${_issue_num:-0}" \
      --arg state "$_new_state" \
      '[.[] | if .number == $num then .state = $state else . end]' \

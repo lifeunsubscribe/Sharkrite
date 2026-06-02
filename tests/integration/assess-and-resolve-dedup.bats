@@ -826,17 +826,6 @@ run_assess_and_resolve() {
     false
   }
 
-  # The new follow-up must be OPEN.
-  local _new_issue_state
-  _new_issue_state=$(jq -r \
-    --argjson orig "$_evidenced_issue_num" \
-    '[.[] | select(.number != $orig)] | .[0].state' \
-    "$GH_MOCK_STATE_DIR/issues.json" 2>/dev/null || true)
-  [ "$_new_issue_state" = "OPEN" ] || {
-    echo "FAIL: new follow-up issue state is '$_new_issue_state' (expected OPEN)"
-    false
-  }
-
   # Evidence must now point to the new OPEN issue, NOT the old CLOSED one.
   # The CLOSED branch clears the old evidence; the creation path then writes
   # fresh evidence for the new issue.
@@ -849,6 +838,20 @@ run_assess_and_resolve() {
   }
   [[ "$_new_evidence_num" =~ ^[0-9]+$ ]] || {
     echo "FAIL: new evidence content '$_new_evidence_num' is not a valid issue number"
+    false
+  }
+
+  # The new follow-up must be OPEN.
+  # Use _new_evidence_num (from the evidence file) to look up the specific newly
+  # created issue — .[0] would pick an arbitrary pre-existing issue when
+  # baseline > 0, causing a vacuous pass even if no new issue was created.
+  local _new_issue_state
+  _new_issue_state=$(jq -r \
+    --argjson num "$_new_evidence_num" \
+    '.[] | select(.number == $num) | .state' \
+    "$GH_MOCK_STATE_DIR/issues.json" 2>/dev/null || true)
+  [ "$_new_issue_state" = "OPEN" ] || {
+    echo "FAIL: new follow-up issue #$_new_evidence_num state is '$_new_issue_state' (expected OPEN)"
     false
   }
 }
