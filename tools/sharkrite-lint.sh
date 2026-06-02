@@ -247,9 +247,20 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   # Count { and } on this line to track nesting depth.
   # gsub returns the replacement count, allowing us to count characters without
   # a per-char loop (fast, BSD AWK compatible, heredoc-safe).
-  # Use _tmp copies so $0 is not modified (gsub modifies its 3rd arg in place).
-  _tmp = $0; _ob = gsub(/{/, "", _tmp)
-  _tmp = $0; _cb = gsub(/}/, "", _tmp)
+  # Strip string literals before counting so braces inside strings, ${param}
+  # expansions, and {a,b} brace-expansions in quoted arguments do not skew depth.
+  # Single-quoted strings have no escape sequences in bash, so the regex is exact.
+  # Double-quoted strings use a heuristic that misses backslash-escaped quotes --
+  # accepted for a lint heuristic; a full parser is out of scope.
+  # ${...} parameter expansions are also stripped: their braces always net to zero
+  # but stripping them avoids false depth drift on complex default expansions.
+  _stripped = $0
+  gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
+  gsub(/"[^"]*"/, "", _stripped)
+  gsub(/\$\{[^}]*\}/, "", _stripped)
+  # Use _stripped copies so $0 is not modified (detection check still uses $0).
+  _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
+  _tmp = _stripped; _cb = gsub(/}/, "", _tmp)
   depth += _ob - _cb
   if (depth < 0) depth = 0
   # Flag: "local" keyword used at depth 0 (outside any function)
