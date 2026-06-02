@@ -151,22 +151,30 @@ gh_safe() {
 
     # Rate-limited (429) or GitHub server errors (5xx) — retry with backoff
     #
-    # Regex framing: HTTP status codes are matched only when preceded by the
-    # "HTTP" keyword ("HTTP 503", "(HTTP 429)", "(HTTP 502)") or in
-    # parenthesised form ("(429)", "(503)"). This prevents misclassification
-    # when those digits appear coincidentally in unrelated error text (e.g.
-    # "Processed 500 records", config IDs). Text-based tokens (rate limit,
-    # server error, etc.) are long enough to be unambiguous and need no
-    # additional anchoring.
+    # Regex framing: HTTP status codes are matched in three forms:
+    #
+    #   1. HTTP-prefixed:       "HTTP 503", "(HTTP 429)" — gh pr diff / API errors
+    #   2. Bare parenthesised:  "(503)", "(429)"         — gh CLI "Service Unavailable (503)"
+    #   3. Bare unframed:       "429", "503"             — observed in raw gh output
+    #      e.g. "error: 503 Service Unavailable", curl-level messages, some gh versions
+    #
+    # The bare-number form uses word-boundary framing:
+    #   - Must be preceded by a non-digit (or start of string): (?<![0-9])
+    #   - Must be followed by a non-digit (or end of string): ([^0-9]|$)
+    # This prevents matching digits embedded in larger numbers (e.g. "5001", "14290").
     #
     # Bare parenthesised forms — false-positive guard:
     # \(429\) and \(5[0-9][0-9]\) match the gh CLI pattern "Service Unavailable (503)"
     # where the code appears at the end of the message. To avoid matching module or
-    # config references like "Error in module (503): bad config", these patterns
-    # require the closing parenthesis to NOT be followed immediately by a colon
-    # (i.e. they must be at end-of-string or followed by whitespace/other non-colon char).
+    # config references like "Error in module (503): bad config" or "(5031)", these
+    # patterns require the closing parenthesis to NOT be followed immediately by a
+    # colon or digit (i.e. they must be at end-of-string or followed by whitespace
+    # or other non-digit/non-colon char).
+    #
+    # Text-based tokens (rate limit, server error, etc.) are long enough to be
+    # unambiguous and need no additional anchoring.
     if echo "$stderr_content" | grep -qiE \
-        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^:]|$)|\(5[0-9][0-9]\)([^:]|$)|rate limit|secondary rate|too many requests|server error"; then
+        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9]|$)|rate limit|secondary rate|too many requests|server error"; then
       if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
         # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
         local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
