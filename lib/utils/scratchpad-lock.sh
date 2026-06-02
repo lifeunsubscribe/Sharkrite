@@ -272,8 +272,26 @@ release_scratchpad_lock() {
 #
 # Note: This overwrites any existing EXIT/INT/TERM traps. If the caller already
 # has traps, merge manually:
-#   trap 'release_scratchpad_lock; <existing-cleanup>' EXIT INT TERM
+#   trap '_scratchpad_lock_trap_release; <existing-cleanup>' EXIT INT TERM
+#
+# Re-entrancy depth on abnormal exit: if the lock was acquired at depth > 1
+# (nested callers), the depth counter reflects the nesting level at the point
+# the process dies.  A plain release_scratchpad_lock() call would only
+# decrement the counter by 1, leaving depth > 0 and skipping the OS-level
+# release.  The trap handler must reset the depth to 1 first so that
+# release_scratchpad_lock() performs the actual OS-level release.
 # ---------------------------------------------------------------------------
+_scratchpad_lock_trap_release() {
+  # Force depth to 1 so release_scratchpad_lock performs the actual OS-level
+  # release regardless of how many nested acquires were in flight when the
+  # process exited abnormally.  On a normal (non-nested) exit this is a no-op
+  # since depth is already 1 at that point.
+  if [ "${_SCRATCHPAD_LOCK_HELD:-false}" = "true" ]; then
+    _SCRATCHPAD_LOCK_DEPTH=1
+  fi
+  release_scratchpad_lock
+}
+
 _setup_scratchpad_lock_trap() {
-  trap 'release_scratchpad_lock' EXIT INT TERM
+  trap '_scratchpad_lock_trap_release' EXIT INT TERM
 }
