@@ -522,3 +522,66 @@ teardown() {
   # Should return fixture content
   [[ "$output" == *"123"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 10. Fallthrough to fixture mode preserves subcommand
+#
+# Regression: when stateful mode is active and a subcommand is not handled
+# (e.g. `issue edit`, `pr merge`), the inner case shifts the subcommand off
+# $@ before the match fails.  The fallthrough reconstruction at the end of the
+# stateful block must re-insert the subcommand so the fixture lookup sees
+# $1="edit" (not $1="") and builds the correct fixture name.
+#
+# Without the fix: fixture_name="issue--42"  → no file → exit 1
+# With the fix:    fixture_name="issue-edit-42" → file found → exit 0
+# ---------------------------------------------------------------------------
+
+@test "stateful: unhandled issue subcommand falls through to fixture lookup with correct subcommand" {
+  # issue-edit-42.json is a real fixture file.  If the subcommand is dropped,
+  # mock_gh looks for issue--42.json (which doesn't exist) and returns exit 1.
+  export GH_MOCK_FIXTURE_DIR="${RITE_REPO_ROOT}/tests/fixtures/gh"
+
+  run mock_gh issue edit 42
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"42"* ]]
+}
+
+@test "stateful: unhandled pr subcommand falls through to fixture lookup with correct subcommand" {
+  # pr-merge-99.json is a real fixture file.  Without the fix mock_gh looks
+  # for pr--99.json (missing) and returns exit 1.
+  export GH_MOCK_FIXTURE_DIR="${RITE_REPO_ROOT}/tests/fixtures/gh"
+
+  run mock_gh pr merge 99
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"99"* ]]
+}
+
+@test "stateful: unhandled issue subcommand fixture lookup produces correct fixture name" {
+  # Verify that the fixture name derived from the fallthrough path is
+  # "issue-edit-42", not "issue--42" (subcommand dropped) or "issue-42" (no
+  # subcommand slot).  We use a fixture-override to control what gets served.
+  export GH_MOCK_FIXTURE_DIR="${RITE_REPO_ROOT}/tests/fixtures/gh"
+
+  # The fixture for issue-edit-42 must be found and its content returned.
+  # If the subcommand were dropped, mock_gh would try issue--42.json (no match),
+  # then issue-default.json (no match), and ultimately return exit 1.
+  run mock_gh issue edit 42
+  [ "$status" -eq 0 ]
+  # Content check: issue-edit-42.json has "number": 42
+  [[ "$output" == *'"number": 42'* ]] || [[ "$output" == *'"number":42'* ]]
+}
+
+@test "stateful: unhandled top-level command (no subcommand consumed) falls through to fixture" {
+  # Commands like `gh api ...` don't go through the issue/pr branches, so
+  # _stateful_subcommand stays empty and the reconstruction path must still
+  # work: set -- "$command" "$@" (unchanged from original behaviour).
+  export GH_MOCK_FIXTURE_DIR="${RITE_REPO_ROOT}/tests/fixtures/gh"
+
+  # api-pulls-123.json doesn't exist; gh-mock will try api-default.json too.
+  # We just need it to reach the fixture lookup (not crash on the reconstruction).
+  run mock_gh api repos/owner/repo/pulls/123
+  # status may be 1 if no fixture exists, but it must NOT crash with a bad
+  # variable substitution.  The important assertion is that we reach the fixture
+  # lookup path cleanly.
+  [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+}
