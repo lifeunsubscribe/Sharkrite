@@ -154,10 +154,12 @@ teardown() {
   mkdir -p "$RITE_LOCK_DIR/issue-77.lock"
   # No pid file written
 
-  # The new code does: sleep 1, then check again.  Since we never write a pid,
-  # after the sleep it should reclaim and acquire.
+  # The new code does: sleep (grace period), then check again.  Since we never
+  # write a pid, after the sleep it should reclaim and acquire.
+  # Use _RITE_LOCK_GRACE_PERIOD_S=0 to avoid a real 1-second sleep in tests.
   run bash -c "
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
+    export _RITE_LOCK_GRACE_PERIOD_S=0
     source '${RITE_REPO_ROOT}/lib/utils/issue-lock.sh'
     acquire_issue_lock 77
   "
@@ -170,8 +172,10 @@ teardown() {
   mkdir -p "$RITE_LOCK_DIR/pr-55-src-7-followup.lock"
   # No pid file
 
+  # Use _RITE_LOCK_GRACE_PERIOD_S=0 to avoid a real 1-second sleep in tests.
   run bash -c "
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
+    export _RITE_LOCK_GRACE_PERIOD_S=0
     source '${RITE_REPO_ROOT}/lib/utils/issue-lock.sh'
     acquire_pr_followup_lock 55 7
   "
@@ -203,7 +207,7 @@ teardown() {
   # Must return non-zero (file is malformed, key not found)
   [ "$status" -ne 0 ]
   # Must have warned to stderr about malformed file
-  [[ "$output" =~ "malformed" ]]
+  [[ "$stderr" =~ "malformed" ]]
 }
 
 @test "_has_in_approval_file returns 1 silently when approval-state.json does not exist" {

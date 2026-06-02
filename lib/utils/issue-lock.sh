@@ -91,9 +91,10 @@ acquire_issue_lock() {
       # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
       # this window is effectively eliminated for holders using this module, but
       # a crashed holder or a very old holder using the pre-atomic code path
-      # could still leave this state.  Give it a 1-second grace period before
-      # reclaiming — consistent with scratchpad-lock.sh and session-tracker.sh.
-      sleep 1
+      # could still leave this state.  Give it a grace period before reclaiming
+      # — consistent with scratchpad-lock.sh and session-tracker.sh.
+      # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
+      sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
       if [ ! -f "$lock_dir/pid" ]; then
         echo "⚠️  Reclaiming stale lock (no PID file after grace period)" >&2
         rm -rf "$lock_dir" 2>/dev/null || true
@@ -117,6 +118,13 @@ acquire_issue_lock() {
   _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
   echo $$ > "$_pid_tmp"
   mv "$_pid_tmp" "${lock_dir}/pid"
+
+  # Write cwd file so repo-status.sh can map lock → worktree without lsof/procfs.
+  # Written after the PID file so readers that check cwd existence always have a
+  # valid PID to cross-reference.  Best-effort: failure does not block acquisition.
+  local _cwd_tmp
+  _cwd_tmp=$(mktemp "${lock_dir}/cwd.XXXXXX")
+  pwd > "$_cwd_tmp" 2>/dev/null && mv "$_cwd_tmp" "${lock_dir}/cwd" || rm -f "$_cwd_tmp" 2>/dev/null || true
 
   return 0
 }
@@ -237,9 +245,10 @@ acquire_pr_followup_lock() {
       # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
       # this window is effectively eliminated for holders using this module, but
       # a crashed holder or a very old holder using the pre-atomic code path
-      # could still leave this state.  Give it a 1-second grace period before
-      # reclaiming — consistent with scratchpad-lock.sh and session-tracker.sh.
-      sleep 1
+      # could still leave this state.  Give it a grace period before reclaiming
+      # — consistent with scratchpad-lock.sh and session-tracker.sh.
+      # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
+      sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
       if [ ! -f "$lock_dir/pid" ]; then
         echo "⚠️  Reclaiming stale followup lock (no PID file after grace period)" >&2
         rm -rf "$lock_dir" 2>/dev/null || true
