@@ -224,9 +224,11 @@ fi
 # Check session limits upfront
 SESSION_STATE=$(get_session_info)
 ISSUES_COMPLETED=$(echo "$SESSION_STATE" | jq -r '.issues_completed')
-SESSION_START=$(echo "$SESSION_STATE" | jq -r '.start_time')
-CURRENT_TIME=$(date +%s)
-ELAPSED_HOURS=$(awk "BEGIN {print ($CURRENT_TIME - $SESSION_START) / 3600}")
+# Use cumulative active work (not wall-clock age of the state file) — issue #283.
+# get_cumulative_work_seconds returns the sum of per-issue tracked durations, so a
+# zombie file from a prior batch contributes 0 seconds of active work.
+CUMULATIVE_SECS=$(get_cumulative_work_seconds)
+ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
 
 # Validate batch won't exceed limits
 PROJECTED_TOTAL=$((ISSUES_COMPLETED + TOTAL_ISSUES))
@@ -602,8 +604,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # Export full issue list so nested scripts (e.g., merge cleanup) can protect sibling worktrees
   export BATCH_ISSUE_LIST="${ISSUE_LIST[*]}"
 
+  # Record per-issue start time for cumulative active-work tracking (issue #283).
+  # end_issue_tracking is called in the success and failure branches below so
+  # cumulative_work_seconds is always updated regardless of outcome.
+  start_issue_tracking "$ISSUE_NUM"
+
   # Run workflow with exit code handling
   if "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised; then
+    end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
@@ -657,6 +665,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   else
     EXIT_CODE=$?
+    # Record end of per-issue tracking regardless of failure type (issue #283)
+    end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
@@ -718,6 +728,15 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   if [ "$ISSUES_COMPLETED" -ge "$MAX_ISSUES_LIMIT" ]; then
     print_warning "Session limit reached ($MAX_ISSUES_LIMIT issues)"
+    print_info "Stopping batch processing"
+    break
+  fi
+
+  # Also check cumulative active-work hours limit — issue #283
+  CUMULATIVE_SECS=$(get_cumulative_work_seconds)
+  ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
+  if [ "$ELAPSED_HOURS" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
+    print_warning "Cumulative active-work limit reached (${ELAPSED_HOURS}h)"
     print_info "Stopping batch processing"
     break
   fi
