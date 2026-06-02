@@ -153,9 +153,12 @@ setup() {
   # --- Mock gh binary ---
   # Copy tests/helpers/gh-mock-binary.sh into a temp bin dir.
   # The binary reads GH_MOCK_STATE_DIR and GH_MOCK_PR_VIEW_FILE from the env.
+  # gh-mock-state.bash (the shared library) must be copied alongside the binary
+  # because gh-mock-binary.sh sources it via a relative path from BASH_SOURCE[0].
   export MOCK_BIN_DIR="$RITE_TEST_TMPDIR/mock-bin"
   mkdir -p "$MOCK_BIN_DIR"
   cp "$RITE_REPO_ROOT/tests/helpers/gh-mock-binary.sh" "$MOCK_BIN_DIR/gh"
+  cp "$RITE_REPO_ROOT/tests/helpers/gh-mock-state.bash" "$MOCK_BIN_DIR/gh-mock-state.bash"
   chmod +x "$MOCK_BIN_DIR/gh"
   export PATH="$MOCK_BIN_DIR:$PATH"
 
@@ -465,7 +468,7 @@ run_assess_and_resolve() {
   # 1000. A typical test run creates at most a handful of issues, so the
   # generator stays in the low-1000s range — 9999 cannot collide with any
   # generated number unless the test suite creates ~9000 issues.  If the
-  # generator base ever changes (see gh-mock-binary.sh line ~189), this seed
+  # generator base ever changes (see _gh_mock_state_issue_create in gh-mock-state.bash), this seed
   # must be updated to remain safely above it.
   local _seed_num=9999
   jq --argjson num "$_seed_num" \
