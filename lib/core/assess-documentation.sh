@@ -53,8 +53,10 @@ fi
 # Validate optional second argument — only --auto is accepted.
 # An unrecognized flag silently falls through to supervised mode, which can
 # confuse operators following the re-run instruction in the warning message.
-if [ -n "$AUTO_MODE" ] && [ "$AUTO_MODE" != "--auto" ]; then
-  print_error "Unknown argument: $AUTO_MODE"
+# Use ${AUTO_MODE:-} (not $AUTO_MODE) so this block is safe under set -u in
+# case AUTO_MODE is not yet set on any execution path (e.g. test sourcing).
+if [ -n "${AUTO_MODE:-}" ] && [ "${AUTO_MODE:-}" != "--auto" ]; then
+  print_error "Unknown argument: ${AUTO_MODE:-}"
   print_error "Usage: $0 <pr_number> [--auto]"
   exit 1
 fi
@@ -101,6 +103,9 @@ _diff_raw_file=$(mktemp 2>/dev/null) || {
   exit 0
 }
 _pr_diff_exit=0
+# NOTE: `if !` negates the exit code, so _pr_diff_exit is always 1 on failure
+# (not the true gh_safe exit code). This is intentional — we only need to
+# distinguish success (0) from any failure (non-zero), not the specific code.
 if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
   _pr_diff_exit=$?
 fi
@@ -124,6 +129,8 @@ _MARKER_DIR=$(mktemp -d 2>/dev/null) || {
   print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp -d failed (disk full or /tmp unavailable)"
   exit 0
 }
+# Cleanup trap: remove _MARKER_DIR on any exit (normal, error, or signal)
+trap 'rm -rf "${_MARKER_DIR:-}"' EXIT
 _mark_updated() { touch "$_MARKER_DIR/$1"; }
 
 mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
@@ -1060,7 +1067,7 @@ if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
 
   # In supervised mode, confirm before applying
   APPLY_UPDATES=true
-  if [ "$AUTO_MODE" != "--auto" ]; then
+  if [ "${AUTO_MODE:-}" != "--auto" ]; then
     echo ""
     read -p "Apply documentation updates? (Y/n): " APPLY_DOCS
     if [[ "$APPLY_DOCS" =~ ^[Nn]$ ]]; then
