@@ -61,9 +61,27 @@ echo ""
 # relative anchors: `find bin lib tools -path "bin/rite*" -path "tools/git-hooks/*"`.
 # When find is given absolute search roots, the -path predicate must include the full absolute
 # prefix — bare wildcards like "*/bin/rite*" would also match deeper nested paths accidentally.
-# -L follows symlinks so that test-suite fixture symlinks in lib/ are scanned correctly.
+# -L follows symlinks so that extra fixture dirs (RITE_LINT_EXTRA_DIRS) are scanned correctly.
+# test-fixtures-temp is excluded: it is a symlink created by bats tests pointing to a live tmp
+# dir during test runs. Scanning it during production lint runs would produce false positives from
+# intentionally-invalid fixture files. Fixtures are injected via RITE_LINT_EXTRA_DIRS instead.
 mapfile -t SHELL_FILES < <(find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-  -type f ! -name 'sharkrite-lint.sh' \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
+  -type f ! -name 'sharkrite-lint.sh' \
+  ! -path "*/test-fixtures-temp/*" ! -path "*/test-fixtures-temp" \
+  \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
+
+# RITE_LINT_EXTRA_DIRS: optional colon-separated list of additional directories to scan.
+# Used by regression tests to inject fixture directories without creating symlinks in lib/.
+# Each directory is scanned for *.sh files and appended to SHELL_FILES.
+# This keeps test fixture files out of the production lint scope while allowing the tests
+# to exercise lint rules against controlled fixture inputs.
+if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
+  IFS=: read -ra _extra_dirs <<< "$RITE_LINT_EXTRA_DIRS"
+  for _extra_dir in "${_extra_dirs[@]}"; do
+    [ -d "$_extra_dir" ] || continue
+    mapfile -t -O "${#SHELL_FILES[@]}" SHELL_FILES < <(find "$_extra_dir" -type f -name "*.sh" 2>/dev/null)
+  done
+fi
 
 # Rule 1: grep -c with || echo "0" (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
@@ -688,10 +706,20 @@ echo "Checking for unbalanced or duplicated sharkrite-extract marker pairs..."
 
 mapfile -t ALL_EXTRACT_FILES < <(
   find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-    -type f \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
+    -type f \
+    ! -path "*/test-fixtures-temp/*" ! -path "*/test-fixtures-temp" \
+    \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
     -a ! -name 'sharkrite-lint.sh' \) \
     2>/dev/null
 )
+# Append any extra fixture directories (injected by tests via RITE_LINT_EXTRA_DIRS)
+if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
+  IFS=: read -ra _r18_extra_dirs <<< "$RITE_LINT_EXTRA_DIRS"
+  for _r18_extra_dir in "${_r18_extra_dirs[@]}"; do
+    [ -d "$_r18_extra_dir" ] || continue
+    mapfile -t -O "${#ALL_EXTRACT_FILES[@]}" ALL_EXTRACT_FILES < <(find "$_r18_extra_dir" -type f -name "*.sh" 2>/dev/null)
+  done
+fi
 
 if [ "${#ALL_EXTRACT_FILES[@]}" -eq 0 ]; then
   print_warning "tools/sharkrite-lint.sh" "0" "UNBALANCED_EXTRACT_MARKERS" \
