@@ -1537,6 +1537,200 @@ phase_completion() {
 # MAIN WORKFLOW ORCHESTRATION
 # ===================================================================
 
+# ---------------------------------------------------------------------------
+# handle_closed_issue ISSUE_NUMBER ISSUE_DATA
+#
+# Canonical handler for closed issues. Prints a full closure summary (title,
+# closed date, PR number/state, branch existence) and removes any dangling
+# artifacts left by a previous interrupted run:
+#   1. Orphan worktree for the issue's branch
+#   2. Local branch
+#   3. Remote branch
+#   4. Session state file
+#
+# Called by run_workflow() when the issue state is CLOSED. Extracted as a
+# named helper so batch-process-issues.sh can delegate to it via
+# workflow-runner.sh rather than duplicating or short-circuiting the logic.
+#
+# Parity contract: batch mode and single-issue mode must produce identical
+# per-issue side effects for closed issues. Any caller that short-circuits
+# before reaching this function violates the contract. See:
+#   docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+#   tests/regression/batch-single-issue-parity.bats
+#
+# Returns: 0 (always — closed issue is not an error)
+# ---------------------------------------------------------------------------
+handle_closed_issue() {
+  local issue_number="$1"
+  local issue_data="$2"
+
+  local issue_title=$(echo "$issue_data" | jq -r '.title')
+  local closed_at=$(echo "$issue_data" | jq -r '.closedAt')
+
+  # Find the PR that closed this issue
+  local pr_number=$(echo "$issue_data" | jq -r '.closedByPullRequestsReferences[0].number // empty' | head -1 || true)
+  local pr_state=""
+  local pr_merged=""
+  local pr_summary=""
+  local pr_branch=""
+  local pr_data=""
+
+  if [ -n "$pr_number" ]; then
+    pr_data=$(gh_safe pr view "$pr_number" --json state,mergedAt,body,headRefName)
+    pr_state=$(echo "$pr_data" | jq -r '.state')
+    pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
+    pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5 || true)
+    pr_branch=$(echo "$pr_data" | jq -r '.headRefName')
+  fi
+
+  # Fallback: issue was manually closed (no closedByPullRequestsReferences).
+  # Search closed PRs for "Closes #N" to find the branch for artifact cleanup.
+  if [ -z "$pr_branch" ]; then
+    local closed_pr_number
+    # sort_by(.number) | last picks the most recently created closed PR
+    # deterministically when multiple closed PRs reference the same issue.
+    closed_pr_number=$(gh_safe pr list --state closed --json number,body --limit 50 | \
+      jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
+    if [ -n "$closed_pr_number" ]; then
+      pr_branch=$(gh_safe pr view "$closed_pr_number" --json headRefName --jq '.headRefName')
+      [ -z "$pr_number" ] && pr_number="$closed_pr_number"
+    fi
+  fi
+
+  # Calculate time since closed (portable date parsing)
+  local closed_timestamp
+  closed_timestamp=$(iso_to_epoch "$closed_at")
+
+  local current_timestamp=$(date +%s)
+  local time_diff=$((current_timestamp - closed_timestamp))
+  local time_ago=""
+
+  if [ $time_diff -lt 0 ] || [ $closed_timestamp -eq 0 ]; then
+    time_ago="recently"
+  elif [ $time_diff -lt 3600 ]; then
+    local minutes=$((time_diff / 60))
+    time_ago="${minutes} minutes ago"
+  elif [ $time_diff -lt 86400 ]; then
+    local hours=$((time_diff / 3600))
+    time_ago="${hours} hours ago"
+  else
+    local days=$((time_diff / 86400))
+    time_ago="${days} days ago"
+  fi
+
+  echo ""
+  echo "✅ Issue #${issue_number} is already closed!"
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "📋 Issue Summary"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "Title: $issue_title"
+  echo "Closed: ${closed_at:0:10} ($time_ago)"
+
+  if [ -n "$pr_number" ]; then
+    echo "PR: #${pr_number} (${pr_state})"
+    if [ "$pr_state" = "MERGED" ]; then
+      echo "Merged: ${pr_merged:0:10}"
+    fi
+    if [ -n "$pr_branch" ]; then
+      # Check if branch still exists
+      if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
+        echo "Branch: $pr_branch (still exists)"
+      else
+        echo "Branch: $pr_branch (deleted after merge)"
+      fi
+    fi
+
+    # Show changes summary from PR body (single source of truth)
+    local _pr_body_text=$(echo "$pr_data" | jq -r '.body // ""')
+    local _summary
+    _summary=$(extract_changes_summary "$_pr_body_text" 2>/dev/null) || _summary=""
+
+    if [ -n "$_summary" ]; then
+      echo ""
+      echo "$_summary" | grep -v "^## Changes" | grep -v "^### Commits" | sed 's/^/  /'
+    else
+      # Fallback for PRs created before the marked-section change
+      local _changed_files
+      _changed_files=$(gh_safe pr view "$pr_number" --json files --jq '.files[].path')
+      local _file_count=$(echo "$_changed_files" | grep -c '.' || true)
+      local _commit_count
+      _commit_count=$(gh_safe pr view "$pr_number" --json commits --jq '.commits | length')
+      _commit_count="${_commit_count:-?}"
+
+      echo ""
+      echo "Changes: $_file_count file(s), $_commit_count commit(s)"
+      if [ "$_file_count" -gt 0 ] && [ -n "$_changed_files" ]; then
+        if [ "$_file_count" -le 10 ]; then
+          echo "$_changed_files" | sed 's/^/  • /'
+        else
+          echo "$_changed_files" | head -8 | sed 's/^/  • /'
+          echo "  ... and $((_file_count - 8)) more"
+        fi
+      fi
+    fi
+  fi
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "Nothing to do - issue already complete! 🎉"
+  echo ""
+
+  # =========================================================================
+  # CLEANUP DANGLING ARTIFACTS
+  # =========================================================================
+  # If a previous run crashed mid-merge or was interrupted, artifacts
+  # (worktrees, branches, session state) may still exist. Clean them up.
+
+  if [ -n "$pr_branch" ]; then
+    local cleaned_anything=false
+
+    # 1. Remove worktree if it exists for this branch
+    # Worktrees are isolated — removing one doesn't affect others, so no need
+    # to check sibling worktree status. Safe to remove even during batch runs.
+    local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
+    if [ -n "$wt_path" ]; then
+      if git worktree remove "$wt_path" --force 2>/dev/null; then
+        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
+      fi
+    fi
+
+    # 2. Delete local branch if it still exists
+    if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
+      if git branch -D "$pr_branch" >/dev/null 2>&1; then
+        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        echo -e "${GREEN}  ✓ Deleted local branch: $pr_branch${NC}"
+      fi
+    fi
+
+    # 3. Delete remote branch if it still exists
+    if git ls-remote --heads origin "$pr_branch" 2>/dev/null | grep -q "$pr_branch"; then
+      if git push origin --delete "$pr_branch" 2>/dev/null; then
+        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        echo -e "${GREEN}  ✓ Deleted remote branch: origin/$pr_branch${NC}"
+      fi
+    fi
+
+    # 4. Remove session state file for this issue
+    local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
+    if [ -f "$state_file" ]; then
+      rm -f "$state_file"
+      [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+      print_success "Removed session state: session-state-${issue_number}.json"
+    fi
+
+    if [ "$cleaned_anything" = true ]; then
+      echo ""
+    fi
+  fi
+
+  return 0
+}
+
 run_workflow() {
   local issue_number="$1"
 
@@ -1550,176 +1744,15 @@ run_workflow() {
   echo -e "${GREEN}Session initialized (mode: $WORKFLOW_MODE)${NC}"
   echo ""
 
-  # Check if issue is already closed
+  # Check if issue is already closed — delegate to the shared helper so both
+  # single-issue and batch paths execute identical cleanup side effects.
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
   local issue_data
   issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences)
   local issue_state=$(echo "$issue_data" | jq -r '.state')
 
   if [ "$issue_state" = "CLOSED" ]; then
-    local issue_title=$(echo "$issue_data" | jq -r '.title')
-    local closed_at=$(echo "$issue_data" | jq -r '.closedAt')
-
-    # Find the PR that closed this issue
-    local pr_number=$(echo "$issue_data" | jq -r '.closedByPullRequestsReferences[0].number // empty' | head -1 || true)
-    local pr_state=""
-    local pr_merged=""
-    local pr_summary=""
-    local pr_branch=""
-
-    if [ -n "$pr_number" ]; then
-      local pr_data
-      pr_data=$(gh_safe pr view "$pr_number" --json state,mergedAt,body,headRefName)
-      pr_state=$(echo "$pr_data" | jq -r '.state')
-      pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
-      pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5 || true)
-      pr_branch=$(echo "$pr_data" | jq -r '.headRefName')
-    fi
-
-    # Fallback: issue was manually closed (no closedByPullRequestsReferences).
-    # Search closed PRs for "Closes #N" to find the branch for artifact cleanup.
-    if [ -z "$pr_branch" ]; then
-      local closed_pr_number
-      # sort_by(.number) | last picks the most recently created closed PR
-      # deterministically when multiple closed PRs reference the same issue.
-      closed_pr_number=$(gh_safe pr list --state closed --json number,body --limit 50 | \
-        jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-        '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
-      if [ -n "$closed_pr_number" ]; then
-        pr_branch=$(gh_safe pr view "$closed_pr_number" --json headRefName --jq '.headRefName')
-        [ -z "$pr_number" ] && pr_number="$closed_pr_number"
-      fi
-    fi
-
-    # Calculate time since closed (portable date parsing)
-    local closed_timestamp
-    closed_timestamp=$(iso_to_epoch "$closed_at")
-
-    local current_timestamp=$(date +%s)
-    local time_diff=$((current_timestamp - closed_timestamp))
-    local time_ago=""
-
-    if [ $time_diff -lt 0 ] || [ $closed_timestamp -eq 0 ]; then
-      time_ago="recently"
-    elif [ $time_diff -lt 3600 ]; then
-      local minutes=$((time_diff / 60))
-      time_ago="${minutes} minutes ago"
-    elif [ $time_diff -lt 86400 ]; then
-      local hours=$((time_diff / 3600))
-      time_ago="${hours} hours ago"
-    else
-      local days=$((time_diff / 86400))
-      time_ago="${days} days ago"
-    fi
-
-    echo ""
-    echo "✅ Issue #${issue_number} is already closed!"
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "📋 Issue Summary"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "Title: $issue_title"
-    echo "Closed: ${closed_at:0:10} ($time_ago)"
-
-    if [ -n "$pr_number" ]; then
-      echo "PR: #${pr_number} (${pr_state})"
-      if [ "$pr_state" = "MERGED" ]; then
-        echo "Merged: ${pr_merged:0:10}"
-      fi
-      if [ -n "$pr_branch" ]; then
-        # Check if branch still exists
-        if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
-          echo "Branch: $pr_branch (still exists)"
-        else
-          echo "Branch: $pr_branch (deleted after merge)"
-        fi
-      fi
-
-      # Show changes summary from PR body (single source of truth)
-      local _pr_body_text=$(echo "$pr_data" | jq -r '.body // ""')
-      local _summary
-      _summary=$(extract_changes_summary "$_pr_body_text" 2>/dev/null) || _summary=""
-
-      if [ -n "$_summary" ]; then
-        echo ""
-        echo "$_summary" | grep -v "^## Changes" | grep -v "^### Commits" | sed 's/^/  /'
-      else
-        # Fallback for PRs created before the marked-section change
-        local _changed_files
-        _changed_files=$(gh_safe pr view "$pr_number" --json files --jq '.files[].path')
-        local _file_count=$(echo "$_changed_files" | grep -c '.' || true)
-        local _commit_count
-        _commit_count=$(gh_safe pr view "$pr_number" --json commits --jq '.commits | length')
-        _commit_count="${_commit_count:-?}"
-
-        echo ""
-        echo "Changes: $_file_count file(s), $_commit_count commit(s)"
-        if [ "$_file_count" -gt 0 ] && [ -n "$_changed_files" ]; then
-          if [ "$_file_count" -le 10 ]; then
-            echo "$_changed_files" | sed 's/^/  • /'
-          else
-            echo "$_changed_files" | head -8 | sed 's/^/  • /'
-            echo "  ... and $((_file_count - 8)) more"
-          fi
-        fi
-      fi
-    fi
-
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "Nothing to do - issue already complete! 🎉"
-    echo ""
-
-    # =========================================================================
-    # CLEANUP DANGLING ARTIFACTS
-    # =========================================================================
-    # If a previous run crashed mid-merge or was interrupted, artifacts
-    # (worktrees, branches, session state) may still exist. Clean them up.
-
-    if [ -n "$pr_branch" ]; then
-      local cleaned_anything=false
-
-      # 1. Remove worktree if it exists for this branch
-      # Worktrees are isolated — removing one doesn't affect others, so no need
-      # to check sibling worktree status. Safe to remove even during batch runs.
-      local wt_path=$(git worktree list | grep "\[$pr_branch\]" | awk '{print $1}' || true)
-      if [ -n "$wt_path" ]; then
-        if git worktree remove "$wt_path" --force 2>/dev/null; then
-          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-          echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
-        fi
-      fi
-
-      # 2. Delete local branch if it still exists
-      if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
-        if git branch -D "$pr_branch" >/dev/null 2>&1; then
-          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-          echo -e "${GREEN}  ✓ Deleted local branch: $pr_branch${NC}"
-        fi
-      fi
-
-      # 3. Delete remote branch if it still exists
-      if git ls-remote --heads origin "$pr_branch" 2>/dev/null | grep -q "$pr_branch"; then
-        if git push origin --delete "$pr_branch" 2>/dev/null; then
-          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-          echo -e "${GREEN}  ✓ Deleted remote branch: origin/$pr_branch${NC}"
-        fi
-      fi
-
-      # 4. Remove session state file for this issue
-      local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
-      if [ -f "$state_file" ]; then
-        rm -f "$state_file"
-        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-        print_success "Removed session state: session-state-${issue_number}.json"
-      fi
-
-      if [ "$cleaned_anything" = true ]; then
-        echo ""
-      fi
-    fi
-
+    handle_closed_issue "$issue_number" "$issue_data"
     return 0
   fi
 
