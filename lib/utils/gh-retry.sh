@@ -150,8 +150,15 @@ gh_safe() {
     fi
 
     # Rate-limited (429) or GitHub server errors (5xx) — retry with backoff
+    #
+    # Regex framing: HTTP status codes are matched only when preceded by the
+    # "HTTP" keyword ("HTTP 503", "(HTTP 429)") or in parenthesised form
+    # ("(503)"). This prevents misclassification when those digits appear
+    # coincidentally in unrelated error text (e.g. "Processed 500 records",
+    # config IDs). Text-based tokens (rate limit, server error, etc.) are
+    # long enough to be unambiguous and need no additional anchoring.
     if echo "$stderr_content" | grep -qiE \
-        "429|rate limit|secondary rate|too many requests|500|502|503|504|server error"; then
+        "HTTP (429|5[0-9][0-9])|\(429\)|\(50[02-4]\)|rate limit|secondary rate|too many requests|server error"; then
       if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
         # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
         local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))

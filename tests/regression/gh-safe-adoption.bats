@@ -496,6 +496,184 @@ EOF
 }
 
 # ===========================================================================
+# Transient regex precision: no false positives from coincidental token matches
+# ===========================================================================
+# These tests verify that status-code digits appearing in non-HTTP-status
+# contexts do NOT trigger spurious retries. The framed regex (HTTP 5xx,
+# (503), etc.) must distinguish real transient errors from coincidental text.
+
+@test "gh_safe does NOT retry when stderr contains '500' as a word count (false-positive guard)" {
+  # "Processed 500 records" contains the token 500 but is not a transient error.
+  # gh_safe must propagate the failure immediately (no retry), not waste 3 attempts.
+  local call_count_file="$TEST_TMPDIR/call-count-fp"
+  echo "0" > "$call_count_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+# Stderr contains "500" as a word count, not an HTTP status code
+echo "Validation failed: Processed 500 records, 0 valid" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr view 42 --json title || true
+    echo \"calls:\$(cat '$call_count_file')\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Must have called gh exactly once — no retries on a non-transient failure
+  [[ "$output" =~ "calls:1" ]]
+}
+
+@test "gh_safe does NOT retry when stderr contains '503' as a config identifier (false-positive guard)" {
+  local call_count_file="$TEST_TMPDIR/call-count-fp503"
+  echo "0" > "$call_count_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+# Stderr contains "503" as a config/error code, not an HTTP status
+echo "Error at configuration line 503: invalid option" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr view 42 --json title || true
+    echo \"calls:\$(cat '$call_count_file')\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Must have called gh exactly once — config line 503 is not a transient HTTP error
+  [[ "$output" =~ "calls:1" ]]
+}
+
+@test "gh_safe retries on 'HTTP 503 Service Unavailable' (framed status code — transient)" {
+  # Verify that the framed regex still correctly matches real transient errors
+  # using the "HTTP NNN" format that the gh CLI emits.
+  local attempt_file="$TEST_TMPDIR/attempts-http503"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo "HTTP 503 Service Unavailable" >&2
+  exit 1
+fi
+echo '{"title":"Test PR"}'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe pr view 42 --json title)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Test PR" ]]
+}
+
+@test "gh_safe retries on '(HTTP 429)' parenthesised format (framed status — transient)" {
+  local attempt_file="$TEST_TMPDIR/attempts-http429"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo "API rate limit exceeded for user (HTTP 429)" >&2
+  exit 1
+fi
+echo '{"title":"Recovered PR"}'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe pr view 42 --json title)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Recovered PR" ]]
+}
+
+@test "gh_safe retries on 'Service Unavailable (503)' parenthesised-code format (transient)" {
+  # Some gh CLI versions emit "(503)" in parentheses without the HTTP prefix.
+  local attempt_file="$TEST_TMPDIR/attempts-paren503"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo "Service Unavailable (503)" >&2
+  exit 1
+fi
+echo '{"title":"Back online"}'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe pr view 42 --json title)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Back online" ]]
+}
+
+# ===========================================================================
 # Codebase-wide adoption check
 # ===========================================================================
 
