@@ -297,6 +297,15 @@ EOF
   # Each violation line has format: "✗ <file>:<line> - UNBALANCED_EXTRACT_MARKERS: ..."
   _violation_count=$(echo "$output" | grep -c "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" || true)
   [ "$_violation_count" -eq 2 ]
+
+  # Each violation must reference a distinct line number — guards against the
+  # degenerate case where the same line is reported twice instead of two
+  # separate orphaned end-markers being reported independently.
+  _line1=$(echo "$output" | grep "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" | head -1 | grep -oE ':[0-9]+' | head -1 | tr -d ':' || true)
+  _line2=$(echo "$output" | grep "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" | tail -1 | grep -oE ':[0-9]+' | head -1 | tr -d ':' || true)
+  [ -n "$_line1" ]
+  [ -n "$_line2" ]
+  [ "$_line1" -ne "$_line2" ]
 }
 
 @test "lint rule detects reversed markers where end appears before start" {
