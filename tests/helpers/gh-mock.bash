@@ -222,6 +222,13 @@ _gh_mock_comments_file() { _gh_mock_state_comments_file; }
 _gh_mock_lag_file()      { _gh_mock_state_lag_file; }
 _gh_mock_next_num_file() { _gh_mock_state_next_num_file; }
 
+# Initialization alias (original name → shared library)
+# grep -rn "_gh_mock_init_state" tests/ confirms no test currently calls this
+# directly, but the alias is added for consistency with the alias set above and
+# to ensure forward-compatibility if any test is added that references the
+# pre-deduplication name.
+_gh_mock_init_state() { _gh_mock_state_init "$@"; }
+
 # ------------------------------------------------------------------
 # Public API for stateful deduplication mode
 # ------------------------------------------------------------------

@@ -33,6 +33,12 @@
 #   (issue create, pr comment, lag-counter decrement) are serialised with
 #   flock(1) on GH_MOCK_STATE_DIR/state.lock.  Falls back to no-op if flock
 #   is absent (documents the sequential-only behaviour for such environments).
+#
+# IMPORTANT: When copying this binary to a temp mock-bin directory,
+#   gh-mock-state.bash MUST be copied alongside it.  This binary sources
+#   gh-mock-state.bash at startup (relative to BASH_SOURCE[0]); without the
+#   library present in the same directory the binary will fail at invocation.
+#   See tests/integration/assess-and-resolve-dedup.bats:setup for reference.
 
 set -euo pipefail
 

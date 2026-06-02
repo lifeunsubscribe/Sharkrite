@@ -285,6 +285,11 @@ _gh_mock_state_issue_create() {
 # Callers of mock_gh / the binary that need to distinguish "not found" from
 # "found" must check for empty output, not the exit code.
 #
+# CONTRACT: Callers must NOT rely on exit code for found/not-found distinction.
+#   - Issue found    → non-empty output, exit 0
+#   - Issue not found → empty output,     exit 0
+# Use [ -z "$output" ] to detect not-found, never [ "$status" -ne 0 ].
+#
 # Exit: 0 always (not-found is not an error from the caller's perspective).
 # ---------------------------------------------------------------------------
 _gh_mock_state_issue_view() {
