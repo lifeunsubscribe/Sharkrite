@@ -147,6 +147,7 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then
   # The read-merge-write of pr-comments.json is non-atomic; concurrent
   # invocations without the lock would silently clobber each other's writes.
   _gh_mock_lock
+  trap '_gh_mock_unlock' EXIT
   jq --arg pr "$_pr_num" \
      --rawfile body "$_tmp_body" \
      'if has($pr) then .[$pr] += [{"body": $body}]
@@ -155,6 +156,7 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then
      "$_comments_file" > "${_comments_file}.tmp" \
   && mv "${_comments_file}.tmp" "$_comments_file"
   _gh_mock_unlock
+  trap - EXIT
 
   rm -f "$_tmp_body"
   exit 0
@@ -182,11 +184,13 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
   # slots instead of one, causing premature index visibility).
   if echo "$_search" | grep -qE 'in:(body|title)'; then
     _gh_mock_lock
+    trap '_gh_mock_unlock' EXIT
     _lag=$(cat "$_lag_file" 2>/dev/null || echo "0")
     [[ "$_lag" =~ ^[0-9]+$ ]] || _lag=0
     if [ "$_lag" -gt 0 ]; then
       echo $((_lag - 1)) > "$_lag_file"
       _gh_mock_unlock
+      trap - EXIT
       if [ -n "$_jq_filter" ]; then
         echo "[]" | jq -r "$_jq_filter" 2>/dev/null || true
       else
@@ -195,6 +199,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
       exit 0
     fi
     _gh_mock_unlock
+    trap - EXIT
   fi
 
   # Build jq select expression based on search type.
@@ -264,6 +269,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
   #   WRITE _seq+1 back to _next_num_file
   #   WRITE new issue entry to issues.json (via tmp+mv)
   _gh_mock_lock
+  trap '_gh_mock_unlock' EXIT
   _seq=$(cat "$_next_num_file" 2>/dev/null || echo "0")
   [[ "$_seq" =~ ^[0-9]+$ ]] || _seq=0
   _issue_num=$(( _seq + 1000 ))
@@ -278,6 +284,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
      "$_issues_file" > "${_issues_file}.tmp" \
   && mv "${_issues_file}.tmp" "$_issues_file"
   _gh_mock_unlock
+  trap - EXIT
 
   rm -f "$_tmp_body"
   echo "https://github.com/mock/repo/issues/${_issue_num}"
