@@ -349,14 +349,18 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   print_info "State: $ISSUE_STATE"
   echo ""
 
-  # Skip if already closed
-  if [ "$ISSUE_STATE" = "CLOSED" ]; then
-    print_warning "Issue already closed - skipping"
-    SKIPPED_ISSUES+=("$ISSUE_NUM")
-    ISSUE_STATUS["$ISSUE_NUM"]="already_closed"
-    echo ""
-    continue
-  fi
+  # Closed issues: do NOT short-circuit here. Let workflow-runner.sh handle them
+  # via run_workflow() → handle_closed_issue(). That path prints the full closure
+  # summary, removes dangling artifacts (worktree, local branch, remote branch,
+  # session state file), and returns exit 0 — which the batch records as
+  # "completed" and continues to the next issue.
+  #
+  # Parity contract: batch mode must produce identical per-issue side effects as
+  # single-issue mode. Short-circuiting here would skip all cleanup that
+  # workflow-runner.sh performs for closed issues.
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+  # Bug history: #274 — batch silently bypassed closed-issue cleanup for 8 orphan
+  # worktrees that accumulated from issues processed via batch (#34, #201-#203).
 
   # Check if this is a follow-up issue with parent PR dependency
   ISSUE_BODY=$(gh_safe issue view "$ISSUE_NUM" --json body --jq '.body')
@@ -395,7 +399,17 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           print_success "✅ Parent issue #$PARENT_ISSUE is in queue - this is a follow-up pair"
           print_info "Follow-up work will update parent PR #$PARENT_PR before merging parent issue"
         else
-          # Parent not in queue, defer this issue
+          # Deliberate divergence from single-issue mode: batch skips follow-up
+          # issues whose parent PR is still open AND the parent issue is not in
+          # this batch. This is an orchestrator-level decision that requires
+          # knowledge of the full queue — run_workflow() cannot make this call
+          # because it processes one issue at a time without queue visibility.
+          # The skip is correct: processing a follow-up before the parent merges
+          # causes failures (the follow-up's code changes reference code that
+          # hasn't landed yet). Single-issue mode does not have this guard because
+          # the user invoking `rite N` is presumed to know the ordering constraint.
+          # Regression test: tests/regression/batch-single-issue-parity.bats
+          #   @test "parent-PR-deferred divergence: documented and intentional"
           print_warning "⏸️  Parent PR #$PARENT_PR is still open - deferring issue #$ISSUE_NUM"
           print_info "This follow-up issue will be processed after parent PR merges"
           SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -435,6 +449,16 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       fi
     done
     if [ "$DEP_FAILED" = true ]; then
+      # Deliberate divergence from single-issue mode: batch skips dependent issues
+      # when a dependency failed/was blocked/is still open within the same batch.
+      # This is an orchestrator-level decision that requires the batch's accumulated
+      # ISSUE_STATUS map — run_workflow() processes one issue at a time and cannot
+      # know what happened to sibling issues in this run. Single-issue mode has no
+      # equivalent guard: the user invoking `rite N` is presumed to have resolved
+      # dependencies manually. Processing a dependent issue while its dependency
+      # hasn't landed causes predictable failures (missing schema, missing APIs, etc.).
+      # Regression test: tests/regression/batch-single-issue-parity.bats
+      #   @test "dep-failed divergence: documented and intentional"
       print_warning "Dependency #$FAILED_DEP not ready (${DEP_REASON:-unknown}) — skipping issue #$ISSUE_NUM"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="dep_failed"
@@ -459,6 +483,16 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     _loop_procs=$(ps -eo pid,command 2>/dev/null || true)
     if echo "$_loop_procs" | grep -qE "workflow-runner\.sh ${ISSUE_NUM}( |$)" || \
        echo "$_loop_procs" | grep -qE "claude-workflow\.sh ${ISSUE_NUM}( |$)"; then
+      # Deliberate divergence from single-issue mode: batch skips issues that
+      # are actively running in a concurrent rite/claude process. This is a
+      # safety guard to prevent two sessions from racing on the same issue and
+      # corrupting the branch, worktree, or session state. Single-issue mode
+      # does not have this guard because invoking `rite N` directly while another
+      # `rite N` runs is intentional (e.g., supervised retry) and the user accepts
+      # responsibility. In batch mode, the same issue appearing twice would be a
+      # bug in the queue, not an intentional retry.
+      # Regression test: tests/regression/batch-single-issue-parity.bats
+      #   @test "active-process divergence: documented and intentional"
       print_warning "Issue #$ISSUE_NUM is actively running in another process — skipping"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="active"
@@ -538,6 +572,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     PR_BRANCH="${PR_BRANCH:-}"
 
     if [ -n "$CURRENT_BRANCH" ] && [ -n "$PR_BRANCH" ] && [ "$CURRENT_BRANCH" = "$PR_BRANCH" ]; then
+      # Deliberate divergence from single-issue mode: batch skips an issue if the
+      # current working directory is already on that issue's branch. This prevents
+      # git operations (checkout, worktree add) from conflicting with the active
+      # branch. Single-issue mode allows this because the user explicitly chose the
+      # issue and can resolve the conflict interactively. In batch mode, reusing the
+      # current branch would corrupt its state for the remaining batch issues.
+      # Regression test: tests/regression/batch-single-issue-parity.bats
+      #   @test "in-current-branch divergence: documented and intentional"
       print_warning "Already in this issue's branch ($PR_BRANCH) - skipping to avoid conflicts"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="in_current_branch"

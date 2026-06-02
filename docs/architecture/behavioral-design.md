@@ -73,6 +73,40 @@ As a safety net, when tests fail after merge AND after dependency reinstall, `ve
 
 ## Batch Processing (batch-process-issues.sh)
 
+### Batch ↔ Single-Issue Parity Contract
+
+**Principle:** `rite N1 N2 N3` must produce identical per-issue side effects for each Ni as `rite Ni` invoked separately. If running an issue solo prints a summary, removes a worktree, or removes session state, the batch run must do the same.
+
+**Enforcement mechanism:** The batch is a thin orchestrator that loops over issues and delegates per-issue work to `workflow-runner.sh::run_workflow()`. For any per-issue terminal state (closed, failed, complete), the batch must call `run_workflow()` rather than short-circuiting with a truncated one-liner.
+
+**Shared helper:** Closed-issue handling is extracted into `handle_closed_issue(issue_number, issue_data)` in `workflow-runner.sh` (above `run_workflow()`). Both `run_workflow()` and any future caller share this function — no duplicated cleanup logic.
+
+**Allowed divergences:** An orchestrator-level short-circuit is acceptable when:
+1. The decision requires batch-local state (e.g., the `ISSUE_STATUS` map tracking which sibling issues failed in this run), AND
+2. The divergence is explicitly documented inline with a `# Deliberate divergence from single-issue mode: <reason>` comment, AND
+3. A regression test in `tests/regression/batch-single-issue-parity.bats` pins the documented behavior (so future changes can't silently collapse a documented divergence into an undocumented one).
+
+**Current documented divergences in `batch-process-issues.sh`:**
+
+| Short-circuit | Why it's acceptable |
+|---|---|
+| `parent-PR-deferred` | Requires knowledge of the full batch queue (`ISSUE_LIST`). `run_workflow()` processes one issue at a time. Single-issue mode has no guard because the user is presumed to know ordering constraints. |
+| `dep-failed` | Requires the accumulated `ISSUE_STATUS` map from earlier in the same batch. `run_workflow()` cannot see sibling results. |
+| `active-process` | Safety guard against two batch sessions racing on the same issue. Single-issue direct invocation allows this intentionally. |
+| `in-current-branch` | Prevents git checkout conflicts during batch execution. Single-issue mode allows because the user is interactive. |
+
+**What is NOT an allowed divergence:**
+- Closed-issue cleanup (the bug this section was written to fix). `run_workflow()` already returns exit 0 for closed issues, so removing the batch short-circuit is zero-risk.
+- Any per-issue cleanup that `run_workflow()` performs at exit (session state, worktrees, branches).
+
+**Regression test:** `tests/regression/batch-single-issue-parity.bats` asserts:
+- `handle_closed_issue` is defined in `workflow-runner.sh` (structural)
+- The batch no longer has a bare CLOSED short-circuit (structural)
+- Each documented divergence has an inline comment (structural)
+- The behavioral contract for closed issues: full summary + all 4 artifact removals
+
+**Bug history:** Issue #274 — `batch-process-issues.sh` had a bare `continue` for closed issues that silently bypassed all artifact cleanup. Eight orphan worktrees accumulated (#34, #201-#203 and others) because every batch run hit the short-circuit before `run_workflow()` could clean them up. Fixed by removing the short-circuit and extracting `handle_closed_issue()`.
+
 ### Active Process Filtering
 
 Before processing, the batch checks for already-running rite processes:
