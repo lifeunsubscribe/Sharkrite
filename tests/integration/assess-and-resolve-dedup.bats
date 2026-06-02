@@ -751,8 +751,21 @@ run_assess_and_resolve() {
   #     # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
   #     clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
 
+  # Explicit cleanup at test start: clear any residual state from a prior
+  # partial failure.  setup() creates fresh directories under a unique
+  # RITE_TEST_TMPDIR, so cross-test leakage cannot happen in normal runs;
+  # this guard covers partial-failure scenarios where teardown was skipped.
+  rm -f "$RITE_LOCK_DIR"/* 2>/dev/null || true
+  setup_gh_mock_state
+
   local _pr=60
   local _issue=30
+
+  # Capture baseline issue count before this test creates anything.
+  # Asserting baseline+2 (not a fixed 2) guards against non-clean mock state
+  # from earlier tests leaking issues into this test's state dir.
+  local _baseline_count
+  _baseline_count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
 
   # First run: creates a follow-up issue (number 1000) and writes evidence.
   run_assess_and_resolve "$_pr" "$_issue"
@@ -802,12 +815,13 @@ run_assess_and_resolve() {
     false
   }
 
-  # A new follow-up must have been created — total issues in state is now 2:
-  # the original CLOSED follow-up plus the newly created one.
-  local _total
+  # A new follow-up must have been created — total issues in state is now
+  # baseline+2: the original CLOSED follow-up plus the newly created one.
+  local _total _expected_total
   _total=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_total" -eq 2 ] || {
-    echo "FAIL: expected 2 issues (original CLOSED + new follow-up), got $_total"
+  _expected_total=$(( _baseline_count + 2 ))
+  [ "$_total" -eq "$_expected_total" ] || {
+    echo "FAIL: expected $_expected_total issues (baseline $_baseline_count + original CLOSED + new follow-up), got $_total"
     jq '[.[] | {number, state, title}]' "$GH_MOCK_STATE_DIR/issues.json"
     false
   }
@@ -848,6 +862,11 @@ run_assess_and_resolve() {
   # assess-and-resolve.sh:1182 outputs to stderr:
   #   "Local evidence points to issue #N (state: CLOSED) — removing stale evidence file..."
   # bats $output captures both stdout and stderr (via combined redirection in `run`).
+
+  # Explicit cleanup at test start: same guard as test 10 — covers partial-failure
+  # scenarios where a prior run did not complete teardown.
+  rm -f "$RITE_LOCK_DIR"/* 2>/dev/null || true
+  setup_gh_mock_state
 
   local _pr=61
   local _issue=31
