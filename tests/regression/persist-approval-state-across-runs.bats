@@ -234,6 +234,10 @@ teardown() {
 
   for i in $(seq 1 $num_processes); do
     (
+      # Give each subshell its own SESSION_STATE_FILE so concurrent processes do
+      # not contend on the per-session lock or corrupt each other's session file.
+      # RITE_STATE_DIR is intentionally shared — that is the durable store under test.
+      export SESSION_STATE_FILE="$RITE_TEST_TMPDIR/rite-session-state-${i}.json"
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
       init_session "supervised"
       add_approved_blocker "issue-${i}" "blocker-${i}"

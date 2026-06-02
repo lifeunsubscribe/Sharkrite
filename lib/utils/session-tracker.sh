@@ -609,6 +609,12 @@ _acquire_approval_lock() {
         continue
       fi
     else
+      attempts=$((attempts + 1))
+      if [ "$attempts" -ge "$max_attempts" ]; then
+        echo "ERROR: approval-state lock timeout after ${max_attempts}s." >&2
+        echo "       To recover, remove: rm -rf \"$lockdir\"" >&2
+        exit 1
+      fi
       sleep 1
       if [ ! -f "$lockdir/pid" ]; then
         echo "approval-lock: reclaiming lock dir with no PID after grace period" >&2
@@ -659,17 +665,25 @@ _add_to_approval_file() {
   local key="$1"
   local field="$2"
 
-  _ensure_approval_state_file
   local approval_file
   approval_file="$(_get_approval_state_file)"
 
   _acquire_approval_lock
+
+  # Ensure the lock is always released, even if jq or mv fails.
+  trap '_release_approval_lock' EXIT
+
+  # File creation moved inside the lock to eliminate TOCTOU race: two concurrent
+  # processes could previously both pass the pre-lock existence check and race to
+  # create the file before either acquired the lock.
+  _ensure_approval_state_file
 
   local temp
   temp=$(mktemp)
   jq --arg field "$field" --arg key "$key" '.[$field] = ((.[$field] // []) + [$key] | unique)' "$approval_file" > "$temp"
   mv "$temp" "$approval_file"
 
+  trap - EXIT
   _release_approval_lock
 }
 
