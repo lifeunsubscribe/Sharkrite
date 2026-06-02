@@ -97,6 +97,12 @@ mock_gh() {
     local _stateful_subcommand=""
     case "$command" in
       issue)
+        # CONTRACT: set _stateful_subcommand BEFORE shift so the fallthrough
+        # reconstruction below (set -- "$command" "$_stateful_subcommand" "$@")
+        # can re-insert the subcommand into the positional args.  Any new branch
+        # that calls shift MUST follow this same pattern — omitting it causes the
+        # fixture lookup to receive an empty subcommand slot (e.g. "issue--42"
+        # instead of "issue-edit-42"), silently failing to find the fixture.
         _stateful_subcommand="${1:-}"
         shift || true
         case "$_stateful_subcommand" in
@@ -117,6 +123,8 @@ mock_gh() {
         esac
         ;;
       pr)
+        # CONTRACT: set _stateful_subcommand BEFORE shift — same requirement as
+        # the issue branch above.  See comment there for the full rationale.
         _stateful_subcommand="${1:-}"
         shift || true
         case "$_stateful_subcommand" in

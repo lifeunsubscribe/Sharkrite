@@ -580,8 +580,15 @@ teardown() {
   # api-pulls-123.json doesn't exist; gh-mock will try api-default.json too.
   # We just need it to reach the fixture lookup (not crash on the reconstruction).
   run mock_gh api repos/owner/repo/pulls/123
-  # status may be 1 if no fixture exists, but it must NOT crash with a bad
-  # variable substitution.  The important assertion is that we reach the fixture
-  # lookup path cleanly.
-  [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+  # status must be exactly 1 (no fixture found — the expected graceful failure
+  # path).  Any crash (bad variable substitution, unbound variable, etc.) would
+  # print a bash error to stderr and exit with a non-zero code from the *subshell*
+  # — BATS captures that as a failing run with a distinguishable output.  We
+  # assert status == 1 (fixture-not-found) rather than the vacuous "0 or 1" so
+  # this test can actually distinguish the broken state from the fixed state.
+  [ "$status" -eq 1 ]
+  # No bash error message in the output — confirms the reconstruction path ran
+  # cleanly rather than crashing on a bad variable reference.
+  [[ "$output" != *"unbound variable"* ]]
+  [[ "$output" != *"bad substitution"* ]]
 }
