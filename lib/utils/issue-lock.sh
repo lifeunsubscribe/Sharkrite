@@ -91,10 +91,14 @@ acquire_issue_lock() {
       # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
       # this window is effectively eliminated for holders using this module, but
       # a crashed holder or a very old holder using the pre-atomic code path
-      # could still leave this state.  Reclaim immediately.
-      echo "⚠️  Reclaiming stale lock (no PID file)" >&2
-      rm -rf "$lock_dir" 2>/dev/null
-      continue
+      # could still leave this state.  Give it a 1-second grace period before
+      # reclaiming — consistent with scratchpad-lock.sh and session-tracker.sh.
+      sleep 1
+      if [ ! -f "$lock_dir/pid" ]; then
+        echo "⚠️  Reclaiming stale lock (no PID file after grace period)" >&2
+        rm -rf "$lock_dir" 2>/dev/null || true
+        continue
+      fi
     fi
 
     lock_attempts=$((lock_attempts + 1))
@@ -233,10 +237,14 @@ acquire_pr_followup_lock() {
       # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
       # this window is effectively eliminated for holders using this module, but
       # a crashed holder or a very old holder using the pre-atomic code path
-      # could still leave this state.  Reclaim immediately.
-      echo "⚠️  Reclaiming stale followup lock (no PID file)" >&2
-      rm -rf "$lock_dir" 2>/dev/null
-      continue
+      # could still leave this state.  Give it a 1-second grace period before
+      # reclaiming — consistent with scratchpad-lock.sh and session-tracker.sh.
+      sleep 1
+      if [ ! -f "$lock_dir/pid" ]; then
+        echo "⚠️  Reclaiming stale followup lock (no PID file after grace period)" >&2
+        rm -rf "$lock_dir" 2>/dev/null || true
+        continue
+      fi
     fi
 
     lock_attempts=$((lock_attempts + 1))
@@ -360,6 +368,67 @@ read_followup_evidence() {
     issue_num=$(grep -m1 -E '^[0-9]+$' "$evidence_file" 2>/dev/null || true)
     printf '%s' "$issue_num"
   fi
+}
+
+# List issue numbers that currently hold an active (live-process) issue lock.
+#
+# Returns issue numbers one per line, sorted NUMERICALLY — not lexically.
+# Lexical sort (the default `ls` and glob expansion order) would place
+# issue-10.lock before issue-9.lock, so a stale lock for issue 10 could shadow
+# issue 9 when callers take the first match.  Numeric sort is deterministic and
+# independent of lock-dir filesystem order.
+#
+# Only includes locks whose PID file references a still-running process.
+# Stale locks (dead PID or missing PID file) are silently skipped — callers
+# that need to display "in-progress" markers should not show stale artifacts.
+#
+# Output: one issue number per line (may be empty if no live locks)
+# Returns: 0 always
+get_locked_issue_numbers() {
+  local lock_dir_base="${RITE_LOCK_DIR:-}"
+  if [ -z "$lock_dir_base" ] || [ ! -d "$lock_dir_base" ]; then
+    return 0
+  fi
+
+  # Collect numeric issue numbers from issue-N.lock directory names.
+  # Use a temp array and sort numerically to avoid lexical ordering:
+  #   ls issue-*.lock  → issue-10.lock, issue-9.lock  (lexical, wrong)
+  #   sort -n          → 9, 10                          (numeric, correct)
+  local _nums=()
+  local _lock_entry
+  for _lock_entry in "$lock_dir_base"/issue-*.lock; do
+    # Skip if glob found no matches (bash expands unexpanded glob literally)
+    [ -d "$_lock_entry" ] || continue
+
+    # Extract the numeric issue number from the directory name
+    local _basename
+    _basename="${_lock_entry##*/}"        # issue-N.lock
+    local _num="${_basename#issue-}"      # N.lock
+    _num="${_num%.lock}"                  # N
+
+    # Only digits — reject any entry with unexpected characters
+    [[ "$_num" =~ ^[0-9]+$ ]] || continue
+
+    # Only include if the lock is held by a live process
+    if [ -f "$_lock_entry/pid" ]; then
+      local _pid
+      _pid=$(cat "$_lock_entry/pid" 2>/dev/null || true)
+      if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+        _nums+=("$_num")
+      fi
+      # Dead PID or empty PID file → stale lock, skip silently
+    fi
+    # Missing PID file → lock in grace period or stale, skip silently
+  done
+
+  # Print in numeric order.  Use printf + sort -n so the output order is
+  # independent of filesystem directory entry order and shell glob expansion
+  # order (both of which are lexical on most POSIX filesystems).
+  if [ "${#_nums[@]}" -gt 0 ]; then
+    printf '%s\n' "${_nums[@]}" | sort -n
+  fi
+
+  return 0
 }
 
 # Remove durable local evidence for a follow-up issue creation.

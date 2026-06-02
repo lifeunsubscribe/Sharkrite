@@ -20,6 +20,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 # =============================================================================
 # Worktree scanning
@@ -662,7 +663,8 @@ repo_wide_status() {
     for i in "${!WT_BRANCHES[@]}"; do
       local branch="${WT_BRANCHES[$i]}"
 
-      # Extract issue number: try branch name, worktree path, open PR body, then gh lookup
+      # Extract issue number: try branch name, worktree path, open PR body,
+      # lock-file lookup (numeric order), then gh API fallback.
       local wt_issue_num=""
       if [[ "$branch" =~ issue-?([0-9]+) ]]; then
         wt_issue_num="${BASH_REMATCH[1]}"
@@ -675,6 +677,43 @@ repo_wide_status() {
         _pr_body=$(echo "$open_prs_json" | jq -r --arg b "$branch" \
           '[.[] | select(.headRefName == $b)] | .[0].body // ""' 2>/dev/null || echo "")
         wt_issue_num=$(echo "$_pr_body" | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
+      fi
+      # Lock-file fallback: check which issue lock corresponds to this worktree path.
+      # get_locked_issue_numbers() returns numbers in NUMERIC order (not lexical),
+      # preventing issue-10 from shadowing issue-9 when both lock dirs exist.
+      # We match by checking whether the lock's pid belongs to a process whose
+      # working directory is (or is a parent of) this worktree path.
+      if [ -z "$wt_issue_num" ]; then
+        local _locked_nums
+        _locked_nums=$(get_locked_issue_numbers 2>/dev/null || true)
+        if [ -n "$_locked_nums" ]; then
+          local _wt_path="${WT_PATHS[$i]}"
+          local _candidate
+          while IFS= read -r _candidate; do
+            [ -n "$_candidate" ] || continue
+            local _lock_pid_file="${RITE_LOCK_DIR:-}/issue-${_candidate}.lock/pid"
+            if [ -f "$_lock_pid_file" ]; then
+              local _lock_pid
+              _lock_pid=$(cat "$_lock_pid_file" 2>/dev/null || true)
+              if [ -n "$_lock_pid" ] && kill -0 "$_lock_pid" 2>/dev/null; then
+                # Check if the locked process's cwd matches this worktree
+                local _proc_cwd=""
+                # macOS: lsof -a -p PID -d cwd -Fn | grep '^n'
+                # Linux: /proc/PID/cwd symlink
+                if [ -d "/proc/${_lock_pid}/cwd" ]; then
+                  _proc_cwd=$(readlink -f "/proc/${_lock_pid}/cwd" 2>/dev/null || true)
+                elif command -v lsof >/dev/null 2>&1; then
+                  _proc_cwd=$(lsof -a -p "$_lock_pid" -d cwd -Fn 2>/dev/null \
+                    | grep '^n' | head -1 | cut -c2- || true)
+                fi
+                if [ -n "$_proc_cwd" ] && [[ "$_proc_cwd" == "$_wt_path"* ]]; then
+                  wt_issue_num="$_candidate"
+                  break
+                fi
+              fi
+            fi
+          done <<< "$_locked_nums"
+        fi
       fi
       local wt_pr_num=""
       if [ -z "$wt_issue_num" ]; then
