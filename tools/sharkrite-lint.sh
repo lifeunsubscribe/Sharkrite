@@ -291,6 +291,7 @@ printf '%s\n' \
 
 _r8_hits=$(awk -f "$_r8_awk" "${SHELL_FILES[@]}" 2>/dev/null || true)
 rm -f "$_r8_awk"
+_r8_awk=""
 
 if [ -n "$_r8_hits" ]; then
   while IFS= read -r _hit; do
@@ -499,6 +500,7 @@ for file in "${SHELL_FILES[@]}"; do
   fi
 done
 rm -f "$_r13_awk"
+_r13_awk=""
 
 # Rule 14: ${VAR:-{}} appends a stray '}' to non-empty values
 # Bash parses ${VAR:-{}} as ${VAR:-{} + literal '}', so when VAR is non-empty
