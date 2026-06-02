@@ -329,10 +329,13 @@ _stale_classify_after_push_rejection() {
           local _prompt_opts
           _prompt_opts="[$([ "$classification" = "RELATED" ] && echo "a/b/c/d" || echo "c/d")]"
           printf "Choose %s: " "$_prompt_opts" >&2
-          read -n 1 -r
+          local _choice
+          read -n 1 -r _choice
+          # Drain the trailing newline left in the input buffer by read -n 1
+          read -r -t 0.1 _drain </dev/tty 2>/dev/null || true
           echo >&2
 
-          case "$REPLY" in
+          case "$_choice" in
             a|A)
               # Pull and re-enter review cycle (RELATED only — 'a' is not offered for UNRELATED)
               if [ "$classification" = "UNRELATED" ]; then
@@ -376,8 +379,15 @@ _stale_classify_after_push_rejection() {
               fi
               ;;
             c|C)
-              # Overwrite remote with local work (available for both RELATED and UNRELATED)
+              # Overwrite remote with local work (available for both RELATED and UNRELATED).
+              # Re-fetch before --force-with-lease to refresh the remote-tracking ref;
+              # without this, the lease is stale from the original push rejection and
+              # the push will be rejected again in the exact push-race scenario this
+              # option is designed to handle.
               print_warning "Force-pushing local work (discarding $classification foreign commits)..."
+              if ! git fetch origin "$branch_name" 2>/dev/null; then
+                print_warning "Could not fetch origin/$branch_name before force-push — lease may be stale"
+              fi
               if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
                 print_success "Force-push succeeded — foreign commits discarded"
                 return 0

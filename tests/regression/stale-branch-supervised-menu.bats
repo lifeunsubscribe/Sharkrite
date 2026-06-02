@@ -156,6 +156,9 @@ RUNNER_EOF
   # Must return exit 2: re-enter review cycle
   [ "$status" -eq 2 ]
 
+  # Verify the supervised menu was actually reached (not vacuous pass)
+  [[ "$output" =~ Choose ]] || { echo "Expected 'Choose' prompt in output — supervised menu was not reached"; false; }
+
   _cleanup_push_race_scenario
 }
 
@@ -169,6 +172,9 @@ RUNNER_EOF
 
   # Must return exit 0: continue workflow, no re-review needed
   [ "$status" -eq 0 ]
+
+  # Verify the supervised menu was actually reached (not vacuous pass)
+  [[ "$output" =~ Choose ]] || { echo "Expected 'Choose' prompt in output — supervised menu was not reached"; false; }
 
   _cleanup_push_race_scenario
 }
@@ -184,6 +190,9 @@ RUNNER_EOF
   # Must return exit 0: force-push succeeded
   [ "$status" -eq 0 ]
 
+  # Verify the supervised menu was actually reached (not vacuous pass)
+  [[ "$output" =~ Choose ]] || { echo "Expected 'Choose' prompt in output — supervised menu was not reached"; false; }
+
   _cleanup_push_race_scenario
 }
 
@@ -197,6 +206,9 @@ RUNNER_EOF
 
   # Must return exit 1: user aborted
   [ "$status" -eq 1 ]
+
+  # Verify the supervised menu was actually reached (not vacuous pass)
+  [[ "$output" =~ Choose ]] || { echo "Expected 'Choose' prompt in output — supervised menu was not reached"; false; }
 
   _cleanup_push_race_scenario
 }
@@ -212,6 +224,9 @@ RUNNER_EOF
   # Must return exit 0: force-push succeeded
   [ "$status" -eq 0 ]
 
+  # Verify the supervised menu was actually reached (not vacuous pass)
+  [[ "$output" =~ Choose ]] || { echo "Expected 'Choose' prompt in output — supervised menu was not reached"; false; }
+
   _cleanup_push_race_scenario
 }
 
@@ -225,6 +240,9 @@ RUNNER_EOF
 
   # Must return exit 1: user aborted
   [ "$status" -eq 1 ]
+
+  # Verify the supervised menu was actually reached (not vacuous pass)
+  [[ "$output" =~ Choose ]] || { echo "Expected 'Choose' prompt in output — supervised menu was not reached"; false; }
 
   _cleanup_push_race_scenario
 }
