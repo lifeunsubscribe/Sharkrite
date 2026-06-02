@@ -32,20 +32,31 @@
 
 set -euo pipefail
 
-# Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f gh_safe >/dev/null 2>&1; then
-  return 0 2>/dev/null || true
-fi
-
 # ---------------------------------------------------------------------------
 # Configuration (can be overridden by environment or .rite/config)
+#
+# Defaults are set BEFORE the re-source guard. `gh_safe` is exported as a
+# function (line ~174), so subprocesses inherit the function but NOT the
+# vars. If a subprocess re-sources this file, the guard would skip the
+# default-setting block and gh_safe would die with "unbound variable" under
+# set -u. Setting defaults first — and exporting them — keeps subprocesses
+# safe.
 # ---------------------------------------------------------------------------
 
 # Maximum number of total attempts (1 = no retry)
 : "${RITE_GH_MAX_RETRIES:=3}"
+export RITE_GH_MAX_RETRIES
 
 # Maximum sleep between retries in seconds
 : "${RITE_GH_RETRY_MAX_SLEEP:=30}"
+export RITE_GH_RETRY_MAX_SLEEP
+
+# Re-source guard: skip the function definitions if already loaded
+# (idempotent sourcing). Must come AFTER defaults so subprocess re-sourcing
+# still gets the env vars.
+if declare -f gh_safe >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # _gh_is_read_op — returns 0 (true) if the gh subcommand is a read-only op
