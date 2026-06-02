@@ -27,6 +27,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f acquire_scratchpad_lock >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # Internal state — set by acquire_scratchpad_lock, read by release_scratchpad_lock
 # ---------------------------------------------------------------------------

@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f verbose_header >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Ensure colors.sh is loaded (idempotent — already sourced by most callers)
 if ! declare -f print_header &>/dev/null; then
   source "${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/..}/utils/colors.sh"

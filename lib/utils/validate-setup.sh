@@ -5,6 +5,12 @@
 #   validate-setup.sh           # Check all prerequisites
 #   validate-setup.sh --fix     # Auto-fix issues where possible
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_VALIDATE_SETUP_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_VALIDATE_SETUP_LOADED=true
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

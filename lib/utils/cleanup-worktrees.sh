@@ -11,6 +11,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_CLEANUP_WORKTREES_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_CLEANUP_WORKTREES_LOADED=true
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +25,13 @@ fi
 
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+
+# Function-only mode: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here
+# so tests can load only the helper function definitions without running the
+# interactive worktree cleanup logic (which requires a tty and git context).
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
 
 set -e
 

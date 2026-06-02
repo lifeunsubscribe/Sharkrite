@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f trigger_local_review >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Ensure config is loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   echo "ERROR: review-helper.sh must be sourced after config.sh" >&2

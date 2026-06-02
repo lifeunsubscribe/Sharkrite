@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_ASSESS_AND_RESOLVE_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_ASSESS_AND_RESOLVE_LOADED=true
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

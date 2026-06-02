@@ -17,6 +17,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f parse_scope_boundary >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # parse_scope_boundary ISSUE_BODY
 #

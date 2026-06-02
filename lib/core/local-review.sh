@@ -25,6 +25,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f fetch_pr_diff >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # fetch_pr_diff: fetch PR diff with retry and local git fallback
 #

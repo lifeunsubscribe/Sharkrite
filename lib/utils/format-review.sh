@@ -3,6 +3,12 @@
 # Formats PR review markdown into compact, readable format
 # Usage: format-review.sh <review_file>
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_FORMAT_REVIEW_LOADED=true
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,13 +16,6 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 set -euo pipefail
-
-REVIEW_FILE="$1"
-
-if [ ! -f "$REVIEW_FILE" ]; then
-  echo "Error: Review file not found: $REVIEW_FILE" >&2
-  exit 1
-fi
 
 # State machine variables
 IN_CODE_BLOCK=false
@@ -221,10 +220,19 @@ flush_list() {
   fi
 }
 
-# Read and process file
-while IFS= read -r line || [ -n "$line" ]; do
-  process_line "$line"
-done < "$REVIEW_FILE"
+# Run main logic only when executed directly (not sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  REVIEW_FILE="${1:-}"
+  if [ ! -f "${REVIEW_FILE:-}" ]; then
+    echo "Error: Review file not found: ${REVIEW_FILE:-}" >&2
+    exit 1
+  fi
 
-# Final flush
-flush_list
+  # Read and process file
+  while IFS= read -r line || [ -n "$line" ]; do
+    process_line "$line"
+  done < "$REVIEW_FILE"
+
+  # Final flush
+  flush_list
+fi

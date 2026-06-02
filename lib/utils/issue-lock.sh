@@ -43,6 +43,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f acquire_issue_lock >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source config if RITE_LOCK_DIR not already set (defined in config.sh)
 if [ -z "${RITE_LOCK_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

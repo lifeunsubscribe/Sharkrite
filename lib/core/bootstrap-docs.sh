@@ -6,6 +6,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f _skip_existing >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source configuration if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

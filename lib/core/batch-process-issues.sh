@@ -16,6 +16,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_BATCH_PROCESS_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_BATCH_PROCESS_LOADED=true
+
 # Generate a unique batch ID for this invocation so that parallel batches in
 # the same project each get their own SESSION_STATE_FILE.
 # Use epoch-seconds + PID + RANDOM for portability: date +%s works on both
