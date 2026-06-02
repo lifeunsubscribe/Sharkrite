@@ -194,6 +194,30 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Test 4b: Deduplication — shorter PR number not false-positive-matched by
+#          a longer PR number already in the changelog.
+#          Bug: grep -q "#5" matched "#55", silently dropping PR #5.
+# ---------------------------------------------------------------------------
+
+@test "dedup: PR #5 is not suppressed when #55 is already present" {
+  local doc_file="${RITE_INTERNAL_DOCS_DIR}/changelog.md"
+  echo "# Changelog" > "$doc_file"
+  echo "" >> "$doc_file"
+
+  # Add PR #55 first
+  FAKE_TODAY="2026-05-27" assess_internal_changelog "55" "feat: wider feature" "lib/wide.sh"
+
+  # Now add PR #5 — with a bare grep -q "#5", this was silently dropped
+  FAKE_TODAY="2026-05-27" assess_internal_changelog "5" "fix: narrow fix" "lib/narrow.sh"
+
+  # PR #5 entry must be present
+  grep -q "fix: narrow fix" "$doc_file"
+
+  # PR #55 entry must still be present (not clobbered)
+  grep -q "feat: wider feature" "$doc_file"
+}
+
+# ---------------------------------------------------------------------------
 # Test 5: Fresh initialization — entry is added after the header
 # ---------------------------------------------------------------------------
 
