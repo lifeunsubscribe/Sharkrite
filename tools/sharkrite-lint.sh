@@ -62,12 +62,15 @@ echo ""
 # When find is given absolute search roots, the -path predicate must include the full absolute
 # prefix — bare wildcards like "*/bin/rite*" would also match deeper nested paths accidentally.
 # -L follows symlinks so that extra fixture dirs (RITE_LINT_EXTRA_DIRS) are scanned correctly.
-# test-fixtures-temp is excluded: it is a symlink created by bats tests pointing to a live tmp
-# dir during test runs. Scanning it during production lint runs would produce false positives from
-# intentionally-invalid fixture files. Fixtures are injected via RITE_LINT_EXTRA_DIRS instead.
+# test-fixtures-temp* is excluded: bats tests create a symlink (or similarly-named dir) pointing
+# to a live tmp dir during test runs. Scanning it during production lint runs would produce false
+# positives from intentionally-invalid fixture files. Fixtures are injected via
+# RITE_LINT_EXTRA_DIRS instead.
+# DO NOT REMOVE: without this exclusion, production lint scans pick up bats fixture files and
+# emit spurious lint failures that have nothing to do with the code being checked.
 mapfile -t SHELL_FILES < <(find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
   -type f ! -name 'sharkrite-lint.sh' \
-  ! -path "*/test-fixtures-temp/*" ! -path "*/test-fixtures-temp" \
+  ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
   \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
 
 # RITE_LINT_EXTRA_DIRS: optional colon-separated list of additional directories to scan.
@@ -707,7 +710,7 @@ echo "Checking for unbalanced or duplicated sharkrite-extract marker pairs..."
 mapfile -t ALL_EXTRACT_FILES < <(
   find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
     -type f \
-    ! -path "*/test-fixtures-temp/*" ! -path "*/test-fixtures-temp" \
+    ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
     \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
     -a ! -name 'sharkrite-lint.sh' \) \
     2>/dev/null
