@@ -98,6 +98,22 @@ setup() {
 # -----------------------------------------------------------------------
 
 @test "provider failure in real retry loop: exits cleanly without bash crash" {
+  # Validate that each sharkrite-extract marker appears exactly once before
+  # using sed range extraction. If a marker is removed, sed yields empty output
+  # (silently passing [ -n "$LOOP_CODE" ] would be false, but the content-anchor
+  # check below would also fail vacuously). If a marker is duplicated, sed
+  # captures an over-broad range spanning multiple loops, making the extracted
+  # code incorrect while still passing the non-empty check. Asserting count==1
+  # for both start and end markers catches both failure modes before sed runs.
+  START_COUNT=$(grep -c '# sharkrite-extract: provider-retry-loop-start' "$SCRIPT" || true)
+  END_COUNT=$(grep -c '# sharkrite-extract: provider-retry-loop-end' "$SCRIPT" || true)
+  if [ "$START_COUNT" -ne 1 ] || [ "$END_COUNT" -ne 1 ]; then
+    echo "FAIL: sharkrite-extract markers must appear exactly once each in $SCRIPT" >&2
+    echo "  provider-retry-loop-start: found $START_COUNT (expected 1)" >&2
+    echo "  provider-retry-loop-end:   found $END_COUNT (expected 1)" >&2
+    false
+  fi
+
   # Extract the provider retry loop from the actual local-review.sh script.
   # The loop is delimited by sharkrite-extract marker comments in the source so
   # that sed range extraction (not awk depth-counting) can be used. This makes

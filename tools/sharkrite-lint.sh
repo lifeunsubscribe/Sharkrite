@@ -658,6 +658,111 @@ for file in "${LIB_FILES[@]}"; do
   done < <(grep -n '^readonly ' "$file" 2>/dev/null || true)
 done
 
+# Rule 18: Unbalanced or duplicated sharkrite-extract marker pairs
+#
+# sharkrite-extract markers delimit code blocks for sed range extraction in
+# regression tests (pattern: `# sharkrite-extract: <name>-start` / `<name>-end`).
+# Two failure modes exist that sed's /start/,/end/p silently mishandles:
+#
+#   1. Missing marker: sed finds no range boundaries → empty output. Any
+#      downstream [ -n "$VAR" ] guard or content-anchor check will fail, but
+#      the failure message says nothing about the root cause (marker removal).
+#
+#   2. Duplicate marker: sed opens the range at the first start marker and
+#      closes at the first matching end marker, including everything between
+#      multiple loop copies. The extracted code is over-broad and wrong, but
+#      the non-empty and content-anchor checks still pass — a silent mis-extraction.
+#
+# This rule requires exactly-one-of-each: one start and one end per unique
+# marker name, with start appearing before end. Non-1 counts are violations.
+#
+# Scope: source files only (bin/, lib/, tools/) — test files (tests/) are
+# intentionally excluded because regression tests legitimately reference marker
+# names inside grep patterns and heredoc fixture scripts to validate the
+# extraction behavior. Scanning tests/ would produce false positives on those
+# intentional multi-occurrence strings. The bats codebase-sweep test in
+# tests/regression/marker-sed-extraction-validation.bats independently verifies
+# all real source-file markers are balanced.
+echo "Checking for unbalanced or duplicated sharkrite-extract marker pairs..."
+
+mapfile -t ALL_EXTRACT_FILES < <(
+  find "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
+    -type f \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
+    ! -name 'sharkrite-lint.sh' \
+    2>/dev/null
+)
+
+# Collect all start markers across all files, then verify each has exactly one
+# matching end marker in the same file. Use awk to extract (file, marker_name)
+# pairs efficiently.
+_r18_starts=$(grep -rn '# sharkrite-extract: .*-start' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+_r18_ends=$(grep -rn '# sharkrite-extract: .*-end' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+
+# Collect unique (file, marker_name) pairs from start markers.
+# For each, verify the count in that file is exactly 1 for both start and end.
+declare -A _seen_pairs
+while IFS= read -r _hit; do
+  [ -z "$_hit" ] && continue
+  # Format: file:linenum:  # sharkrite-extract: <name>-start
+  _hit_file=$(echo "$_hit" | cut -d: -f1)
+  _hit_line=$(echo "$_hit" | cut -d: -f2)
+  _hit_name=$(echo "$_hit" | grep -oE 'sharkrite-extract: [a-z0-9_-]+-start' | sed 's/-start$//' | sed 's/sharkrite-extract: //' || true)
+  [ -z "$_hit_name" ] && continue
+
+  _pair_key="${_hit_file}::${_hit_name}"
+  # Only process each (file, name) pair once
+  [ "${_seen_pairs[$_pair_key]+set}" = "set" ] && continue
+  _seen_pairs[$_pair_key]=1
+
+  # Count start occurrences in this file
+  _start_count=$(grep -c "# sharkrite-extract: ${_hit_name}-start" "$_hit_file" 2>/dev/null || true)
+  # Count end occurrences in this file
+  _end_count=$(grep -c "# sharkrite-extract: ${_hit_name}-end" "$_hit_file" 2>/dev/null || true)
+
+  if [ "$_start_count" -ne 1 ]; then
+    print_violation "$_hit_file" "$_hit_line" "UNBALANCED_EXTRACT_MARKERS" \
+      "sharkrite-extract marker '${_hit_name}-start' appears ${_start_count} times (expected 1) — sed range extraction will mis-extract or yield empty output"
+  fi
+  if [ "$_end_count" -ne 1 ]; then
+    print_violation "$_hit_file" "$_hit_line" "UNBALANCED_EXTRACT_MARKERS" \
+      "sharkrite-extract marker '${_hit_name}-end' appears ${_end_count} times (expected 1) — sed range extraction will mis-extract or yield empty output"
+  fi
+
+  # Verify start appears before end (line ordering)
+  if [ "$_start_count" -eq 1 ] && [ "$_end_count" -eq 1 ]; then
+    _start_line=$(grep -n "# sharkrite-extract: ${_hit_name}-start" "$_hit_file" 2>/dev/null | cut -d: -f1 || true)
+    _end_line=$(grep -n "# sharkrite-extract: ${_hit_name}-end" "$_hit_file" 2>/dev/null | cut -d: -f1 || true)
+    if [ -n "$_start_line" ] && [ -n "$_end_line" ] && [ "$_start_line" -ge "$_end_line" ]; then
+      print_violation "$_hit_file" "$_start_line" "UNBALANCED_EXTRACT_MARKERS" \
+        "sharkrite-extract marker '${_hit_name}-start' (line ${_start_line}) does not precede '${_hit_name}-end' (line ${_end_line}) — sed range extraction will yield empty output"
+    fi
+  fi
+done <<< "$_r18_starts"
+
+# Also flag end markers that have no corresponding start in the same file.
+declare -A _seen_end_pairs
+while IFS= read -r _hit; do
+  [ -z "$_hit" ] && continue
+  _hit_file=$(echo "$_hit" | cut -d: -f1)
+  _hit_line=$(echo "$_hit" | cut -d: -f2)
+  _hit_name=$(echo "$_hit" | grep -oE 'sharkrite-extract: [a-z0-9_-]+-end' | sed 's/-end$//' | sed 's/sharkrite-extract: //' || true)
+  [ -z "$_hit_name" ] && continue
+
+  _pair_key="${_hit_file}::${_hit_name}"
+  [ "${_seen_end_pairs[$_pair_key]+set}" = "set" ] && continue
+  _seen_end_pairs[$_pair_key]=1
+
+  # If this (file, name) pair was already processed via starts, skip it
+  [ "${_seen_pairs[$_pair_key]+set}" = "set" ] && continue
+
+  # End marker exists but no start marker — orphaned end
+  _start_count=$(grep -c "# sharkrite-extract: ${_hit_name}-start" "$_hit_file" 2>/dev/null || true)
+  if [ "$_start_count" -eq 0 ]; then
+    print_violation "$_hit_file" "$_hit_line" "UNBALANCED_EXTRACT_MARKERS" \
+      "sharkrite-extract marker '${_hit_name}-end' has no matching '${_hit_name}-start' in the same file — sed range extraction will yield empty output"
+  fi
+done <<< "$_r18_ends"
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then
