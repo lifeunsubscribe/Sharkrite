@@ -238,7 +238,8 @@ _gh_mock_state_issue_create() {
   _seq=$(cat "$_num_file" 2>/dev/null || echo "0")
   # Guard against empty or non-numeric content to prevent arithmetic errors.
   [[ "$_seq" =~ ^[0-9]+$ ]] || _seq=0
-  local _issue_num=$(( _seq + 1000 ))
+  local _issue_num
+  _issue_num=$(( _seq + 1000 ))
   echo $(( _seq + 1 )) > "$_num_file"
 
   local _issues_file

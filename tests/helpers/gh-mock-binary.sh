@@ -39,9 +39,8 @@ set -euo pipefail
 # Source the shared stateful logic library.
 # The binary is typically copied into a temp mock-bin dir; the library
 # lives alongside the original binary in tests/helpers/.  To find it,
-# resolve the *original* script location via a symlink-safe readlink.
-# If readlink -f is unavailable (macOS without GNU coreutils), fall back
-# to BASH_SOURCE[0].
+# resolve the directory of this script using BASH_SOURCE[0], which gives
+# the path of the currently-executing file regardless of how it was invoked.
 _binary_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/helpers/gh-mock-state.bash
 source "${_binary_dir}/gh-mock-state.bash"
