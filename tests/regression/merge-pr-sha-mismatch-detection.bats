@@ -13,7 +13,7 @@
 #   1. gh_safe echoes 409/SHA-mismatch stderr verbatim on the non-transient path
 #   2. _do_merge's 2>&1 captures gh_safe stderr into MERGE_OUTPUT
 #   3. The grep in merge-pr.sh matches "Head branch was modified" from a real 409 body
-#   4. Exhausted-retries path also echoes stderr (covers retry-exhausted 409 scenario)
+#   4. Last-attempt fallthrough path also echoes stderr (transient-pattern error, retries exhausted)
 #   5. Full end-to-end chain: _do_merge + gh_safe + grep detects 409 correctly
 #
 # If any of these break, the 409 recovery in merge-pr.sh stops working silently.
@@ -167,21 +167,20 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: gh_safe exhausted-retries path also echoes stderr
+# Test 4: gh_safe last-attempt fallthrough path also echoes stderr
 #
-# If gh keeps returning a retriable error (429/5xx) until retries are
-# exhausted, the exhausted-retries path at the end of the retry loop also
-# echoes stderr. Verifies stderr is always surfaced regardless of exit path.
+# When gh returns a transient-pattern error (429/5xx) on the LAST attempt,
+# the retry guard (`attempt < MAX_RETRIES`) is false so no sleep/continue
+# occurs. Execution falls through to the non-transient propagation block,
+# which echoes stderr. Verifies stderr is always surfaced on that path.
 # ---------------------------------------------------------------------------
 @test "gh_safe exhausted-retries path echoes final stderr to caller" {
-  # Stub: always fails with a transient-pattern error (5xx server error) so that
-  # gh_safe enters the retry-classification branch rather than the non-transient
-  # path (which would make this a duplicate of Test 1).
-  #
-  # With RITE_GH_MAX_RETRIES=1 the stub runs once: the transient check fires, but
-  # attempt(1) < 1 is false so no sleep/continue occurs. Execution falls through to
-  # the non-transient propagation block — this is the last-attempt exhausted path
-  # and it must echo stderr so merge-pr.sh can detect "Head branch was modified".
+  # Stub: fails with a 5xx-pattern stderr message so gh_safe classifies it as
+  # transient (the grep at the retry-classification block matches "500"/"server
+  # error"). With RITE_GH_MAX_RETRIES=1, attempt(1) < 1 is false — no retry
+  # fires. Execution falls through to the non-transient propagation block, which
+  # echoes stderr. This exercises a different code path than Test 1 (Test 1's
+  # stub does NOT match the transient-pattern grep).
   cat > "$STUB_BIN/gh" <<'EOF'
 #!/bin/bash
 echo "HTTP 500 Server Error: Head branch was modified." >&2

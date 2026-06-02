@@ -35,8 +35,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration (can be overridden by environment or .rite/config)
 #
-# Defaults are set BEFORE the re-source guard. `gh_safe` is exported as a
-# function (line ~174), so subprocesses inherit the function but NOT the
+# Defaults are set BEFORE the re-source guard. `gh_safe` is exported via
+# `export -f gh_safe` at end-of-file, so subprocesses inherit the function but NOT the
 # vars. If a subprocess re-sources this file, the guard would skip the
 # default-setting block and gh_safe would die with "unbound variable" under
 # set -u. Setting defaults first — and exporting them — keeps subprocesses
@@ -168,7 +168,8 @@ gh_safe() {
     #
     # CONTRACT (merge-pr.sh coupling):
     # merge-pr.sh calls gh_safe via _do_merge which captures combined stdout+stderr
-    # with 2>&1. The 409 "Head branch was modified" detection (merge-pr.sh ~line 721)
+    # with 2>&1. The 409 "Head branch was modified" detection — the grep in
+    # `_do_merge` that matches `grep -qiE "Head branch was modified|409"` —
     # relies on this `echo "$stderr_content" >&2` reaching MERGE_OUTPUT through that
     # redirect. Changing this line to suppress stderr (e.g., redirecting to a temp
     # file, or gating on a verbosity flag) would silently disable SHA-mismatch recovery.
