@@ -411,9 +411,9 @@ GHEOF
 #   (c) release the scratchpad lock so that a subsequent caller can acquire it
 #       without timing out.
 #
-# Design: force the mkdir lock strategy (by hiding flock from PATH) so that
-# lock state is visible as a filesystem directory.  log_encountered_issue is
-# called directly in the test shell — not inside a ( subshell ) — so the only
+# Design: force the mkdir lock strategy (via RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir)
+# so that lock state is visible as a filesystem directory.  log_encountered_issue
+# is called directly in the test shell — not inside a ( subshell ) — so the only
 # thing that can remove the lock directory after the function returns is the
 # RETURN trap calling release_scratchpad_lock.  If the trap did not fire, the
 # directory persists and the follow-up assertions fail.
@@ -422,17 +422,22 @@ GHEOF
 # subshell exits, regardless of whether the RETURN trap fired.  Running
 # log_encountered_issue in a subshell therefore passes trivially even if the
 # trap is broken.  The mkdir + same-shell approach closes that loophole.
+#
+# Why not PATH hiding: prepending an empty directory to PATH does not prevent
+# command -v flock from finding flock in other PATH entries.  The env-var
+# override is the only reliable way to force the mkdir path on systems where
+# flock is installed.
 # ---------------------------------------------------------------------------
 @test "log_encountered_issue: RETURN trap releases lock on invalid-category path" {
   local lockfile="${SCRATCHPAD_FILE}.lock"
   local followup_result="$RITE_TEST_TMPDIR/followup_result"
 
-  # Force the mkdir lock strategy by hiding flock from PATH.
-  # This makes lock state observable as a directory: it exists while the lock
-  # is held and is removed by release_scratchpad_lock on the RETURN trap.
-  local no_flock_bin="$RITE_TEST_TMPDIR/no-flock-bin"
-  mkdir -p "$no_flock_bin"
-  export PATH="$no_flock_bin:$PATH"
+  # Force the mkdir lock strategy via environment variable so that lock state
+  # is observable as a filesystem directory: it exists while the lock is held
+  # and is removed by release_scratchpad_lock when the RETURN trap fires.
+  # This is more reliable than PATH manipulation, which does not prevent
+  # command -v flock from finding flock elsewhere in the PATH.
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
 
   # Source the libraries in the current test shell so we can call
   # log_encountered_issue as a direct function invocation (not a subshell).
@@ -440,6 +445,17 @@ GHEOF
   # independently of the trap, masking a missing RETURN trap.
   source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+
+  # Verify the strategy override was honoured: acquire + immediately release,
+  # then confirm the lock path is a directory (mkdir path) not a plain file
+  # (flock path).  Catches misconfiguration before the real test assertion.
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
+    echo "FAIL: expected mkdir strategy, got '${_SCRATCHPAD_LOCK_STRATEGY}'" >&2
+    release_scratchpad_lock
+    return 1
+  }
+  release_scratchpad_lock
 
   # Call log_encountered_issue with an unrecognised category.
   # Redirect stderr to suppress the "Unknown category" warning.
@@ -456,9 +472,10 @@ GHEOF
   # (a) Function must succeed — BATS would have failed on non-zero exit already
   #     because the test body runs with implicit errexit.
 
-  # (b) Verify the entry was written with the remapped category "code-smell"
-  grep -q "Test entry via invalid category" "$SCRATCHPAD_FILE" || {
-    echo "FAIL: entry description not found in scratchpad" >&2
+  # (b) Verify the entry was written with the remapped category "code-smell".
+  # Assert both the category field AND the description to confirm remap happened.
+  grep -q '| code-smell | Test entry via invalid category' "$SCRATCHPAD_FILE" || {
+    echo "FAIL: entry with remapped category 'code-smell' not found in scratchpad" >&2
     cat "$SCRATCHPAD_FILE" >&2
     return 1
   }
@@ -512,11 +529,11 @@ GHEOF
 # with the same file:line (duplicate) must leave the lock free for a
 # concurrent caller that arrives immediately afterward.
 #
-# Design: force the mkdir lock strategy (by hiding flock from PATH) so that
-# lock state is visible as a filesystem directory.  The duplicate call is made
-# directly in the test shell — not inside a ( subshell ) — so the only thing
-# that can remove the lock directory after the function returns is the RETURN
-# trap calling release_scratchpad_lock.  If the trap did not fire on the
+# Design: force the mkdir lock strategy (via RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir)
+# so that lock state is visible as a filesystem directory.  The duplicate call
+# is made directly in the test shell — not inside a ( subshell ) — so the only
+# thing that can remove the lock directory after the function returns is the
+# RETURN trap calling release_scratchpad_lock.  If the trap did not fire on the
 # early-return path, the directory persists and the test fails.
 #
 # Why this matters: on the flock fast-path the kernel releases the lock when a
@@ -524,22 +541,35 @@ GHEOF
 # duplicate call in a subshell therefore passes trivially even if the trap is
 # absent on the early-return path.  The mkdir + same-shell approach closes that
 # loophole.
+#
+# Why not PATH hiding: prepending an empty directory to PATH does not prevent
+# command -v flock from finding flock in other PATH entries.  The env-var
+# override is the only reliable way to force the mkdir path on systems where
+# flock is installed.
 # ---------------------------------------------------------------------------
 @test "log_encountered_issue: RETURN trap releases lock on duplicate early-return path" {
   local lockfile="${SCRATCHPAD_FILE}.lock"
   local third_result="$RITE_TEST_TMPDIR/third_result"
 
-  # Force the mkdir lock strategy by hiding flock from PATH.
-  # This makes lock state observable as a directory that persists only while
-  # the lock is held, and is removed by release_scratchpad_lock.
-  local no_flock_bin="$RITE_TEST_TMPDIR/no-flock-bin"
-  mkdir -p "$no_flock_bin"
-  export PATH="$no_flock_bin:$PATH"
+  # Force the mkdir lock strategy via environment variable so that lock state
+  # is observable as a filesystem directory.  PATH manipulation is insufficient
+  # because command -v flock still finds flock elsewhere in the PATH even when
+  # an empty directory is prepended.
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
 
   # Source the libraries in the current test shell.  Both calls to
   # log_encountered_issue below will be direct function invocations.
   source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
+
+  # Verify the strategy override was honoured before proceeding.
+  acquire_scratchpad_lock
+  [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
+    echo "FAIL: expected mkdir strategy, got '${_SCRATCHPAD_LOCK_STRATEGY}'" >&2
+    release_scratchpad_lock
+    return 1
+  }
+  release_scratchpad_lock
 
   # First call — seeds the scratchpad with a known entry.
   # Run in a subshell so that its lock state is isolated from the test shell;
