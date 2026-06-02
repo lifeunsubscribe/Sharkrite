@@ -763,10 +763,12 @@ GHEOF
   local start_time
   start_time=$(date +%s)
 
-  # Spawn the waiter in a subshell with the same mkdir strategy forced.
+  # Spawn the waiter in a background subshell with the same mkdir strategy forced.
   # The waiter must: see mkdir fail (EEXIST) → read PID → kill -0 fails →
   # rm -rf lock dir → retry mkdir → succeed.  Capture stderr to verify
   # the diagnostic message was printed (confirms reclaim code ran).
+  # Run in background so we can impose a hard timeout — a reclaim regression
+  # would otherwise cause an indefinite CI hang rather than a bounded failure.
   (
     source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
     if acquire_scratchpad_lock; then
@@ -775,7 +777,27 @@ GHEOF
     else
       echo "failure" > "$reclaim_result_file"
     fi
-  ) 2>"$reclaim_stderr_file"
+  ) 2>"$reclaim_stderr_file" &
+  local waiter_bgpid=$!
+
+  # Poll for the result file with a 10-second hard timeout.
+  # 10s is 2× the 5s acceptance criterion — gives ample headroom on slow CI
+  # machines while guaranteeing the test never hangs indefinitely.
+  local poll_count=0
+  while [ ! -f "$reclaim_result_file" ] && [ "$poll_count" -lt 100 ]; do
+    sleep 0.1
+    poll_count=$((poll_count + 1))
+  done
+
+  # If the waiter is still running past the timeout, kill it and fail fast.
+  if [ ! -f "$reclaim_result_file" ]; then
+    kill "$waiter_bgpid" 2>/dev/null || true
+    wait "$waiter_bgpid" 2>/dev/null || true
+    echo "FAIL: waiter did not complete within 10s — possible reclaim loop hang" >&2
+    return 1
+  fi
+
+  wait "$waiter_bgpid" 2>/dev/null || true
 
   local end_time
   end_time=$(date +%s)
