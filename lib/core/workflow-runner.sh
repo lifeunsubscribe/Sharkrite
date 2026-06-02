@@ -376,11 +376,18 @@ phase_pre_start_checks() {
     fi
   fi
 
-  # Check session limits
-  local issues_completed=$(jq -r '.issues_completed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
-  local elapsed_hours=$(get_elapsed_hours)
+  # Check session limits.
+  # Pass cumulative active-work hours (not wall-clock) as the time metric — issue #283.
+  # The 4th param (workflow_mode position in check_blockers) is repurposed to carry
+  # the current issue number so detect_issue_duration_limit can name the issue in its
+  # blocker message. See blocker-rules.sh session-check case for full param mapping.
+  local issues_completed
+  issues_completed=$(jq -r '.issues_completed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
+  local _cumulative_secs
+  _cumulative_secs=$(get_cumulative_work_seconds)
+  local cumulative_work_hours=$(( _cumulative_secs / 3600 ))
 
-  if ! check_blockers "session-check" "$issues_completed" "$elapsed_hours"; then
+  if ! check_blockers "session-check" "$issues_completed" "$cumulative_work_hours" "$issue_number"; then
     if ! handle_blocker "session-check" "$issue_number"; then
       return 1
     fi
@@ -2186,8 +2193,16 @@ main() {
   # force pre-start checks even when skip_to_phase would normally bypass them.
   export RESUME_BLOCKER_REASON="${saved_reason:-}"
 
-  # Initialize session — but not when called from batch mode (batch owns the session)
+  # Initialize session — but not when called from batch mode (batch owns the session).
+  # Set RITE_RESUMING=true when we're picking up from a saved worktree so that
+  # init_session preserves the existing start_time and cumulative_work_seconds
+  # rather than resetting the clock (issue #283 — Option 2 fix).
   if [ "${BATCH_MODE:-false}" != "true" ]; then
+    if [ "$RESUME_MODE" = true ]; then
+      export RITE_RESUMING=true
+    else
+      export RITE_RESUMING=false
+    fi
     init_session "$WORKFLOW_MODE"
   fi
 
@@ -2196,9 +2211,20 @@ main() {
     set_current_worktree "$WORKTREE_PATH"
   fi
 
+  # Start per-issue duration tracking for single-issue path (issue #283 — Option 1).
+  # In batch mode, batch-process-issues.sh handles this around the workflow-runner call.
+  if [ "${BATCH_MODE:-false}" != "true" ]; then
+    start_issue_tracking "$issue_number"
+  fi
+
   # Run the workflow
   run_workflow "$issue_number"
   workflow_exit=$?
+
+  # End per-issue duration tracking before exit (single-issue path)
+  if [ "${BATCH_MODE:-false}" != "true" ]; then
+    end_issue_tracking "$issue_number"
+  fi
 
   if [ $workflow_exit -eq 0 ]; then
     exit 0

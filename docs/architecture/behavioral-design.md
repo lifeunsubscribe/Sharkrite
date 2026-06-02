@@ -179,6 +179,44 @@ LOW findings only become ACTIONABLE_LATER if they represent a real functional or
 
 ---
 
+## Session Limit Design: Why Wall-Clock Age Is the Wrong Metric (issue #283)
+
+### Problem
+
+The original `session_limit` blocker in `blocker-rules.sh` compared `(now - start_time)` against `RITE_MAX_SESSION_HOURS`. `start_time` came from the session state JSON file, which `init_session()` only wrote once and never reset.
+
+**Zombie file scenario:** A batch run (`rite 10 20 30`) crashes at 11 PM. The state file in `/tmp` has `start_time = 11 PM`. The next day at 3 PM, `rite 274` runs, calls `init_session()`, finds the file already exists, skips it — and inherits `start_time = 11 PM` (16h ago). The session-check immediately fires `BLOCKER: Approaching session time limit (16 hours elapsed)`. The only recovery was `rm /tmp/rite-session-state-*.json`.
+
+### Root cause (two compounding bugs)
+
+1. **`init_session()` never reset `start_time`** when the file existed (old UPSERT semantics). The comment said "preserving counters and cross-run state" — true for `issues_completed` and `approved_blockers`, but `start_time` is a per-invocation clock, not cross-run state.
+
+2. **`session_limit` measured file age, not work**. Wall-clock since `start_time` conflates three different things: time since the JSON was written, time the user has been driving rite, and cumulative LLM/token cost. Only the last one is what the blocker is supposed to protect against.
+
+### Fix
+
+**Option 2 — Reset `start_time` on fresh invocations** (`init_session` in `session-tracker.sh`):
+- Fresh call (no `RITE_RESUMING=true`): reset `start_time = now`, clear `current_issue`/`worktree_path`, preserve `approved_blockers`/`sent_notifications`.
+- Resume mode (`RITE_RESUMING=true`): keep file untouched — inherit `start_time` and `cumulative_work_seconds` from the prior run.
+- `workflow-runner.sh` sets `RITE_RESUMING=true` before `init_session` when `RESUME_MODE=true`.
+
+**Option 1 — Track per-issue duration, not file age** (`start_issue_tracking`/`end_issue_tracking` in `session-tracker.sh`):
+- New fields: `current_issue_started_at` (epoch, set by `start_issue_tracking`) and `cumulative_work_seconds` (running total, updated by `end_issue_tracking`).
+- `detect_session_limit` reads `cumulative_work_seconds / 3600`, not `(now - start_time) / 3600`.
+- New `detect_issue_duration_limit` fires if `(now - current_issue_started_at) > RITE_MAX_ISSUE_HOURS * 3600`.
+- Both batch path and single-issue path call `start_issue_tracking` / `end_issue_tracking`.
+
+### What the limits now mean
+
+| Limit | What it measures | Fires when |
+|-------|-----------------|------------|
+| `RITE_MAX_ISSUE_HOURS` (default: 4h) | Time one issue has been actively running | Single issue > 4h — likely stuck |
+| `RITE_MAX_SESSION_HOURS` (default: 12h) | Sum of per-issue durations in this invocation | Cumulative active work > 12h |
+
+A 40-hour-old zombie file with 0 issues run → 0h cumulative → no limit fires.
+
+---
+
 ## Diagnostic Timing
 
 `_timer_start` / `_timer_end` in `logging.sh` track wall-clock time for:

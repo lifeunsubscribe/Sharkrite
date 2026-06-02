@@ -339,7 +339,9 @@ Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
 - **Test/build failures** — non-zero exit from test suite
-- **Session limits** — token/time limits reached
+- **Session limits** — dual-cap model (issue #283):
+  - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
+  - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
 - **AWS credentials expired** — deployment credentials invalid
 - **Supervised mode**: Interactive `read -p` prompt for approval
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)

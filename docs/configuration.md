@@ -16,7 +16,8 @@ RITE_WORKTREE_DIR="$HOME/Dev/worktrees/myproject"
 
 # Session limits
 RITE_MAX_ISSUES_PER_SESSION=8
-RITE_MAX_SESSION_HOURS=4
+RITE_MAX_SESSION_HOURS=12   # Cumulative active work hours (not wall-clock)
+RITE_MAX_ISSUE_HOURS=4      # Per-issue cap — fires if a single issue runs >4h
 
 # Claude assessment timeout (seconds)
 RITE_ASSESSMENT_TIMEOUT=300
@@ -67,7 +68,8 @@ Control how Claude assesses PR review issues:
 |----------|-------------|---------|
 | `RITE_WORKTREE_DIR` | Worktree base directory | `~/Dev/worktrees/$PROJECT` |
 | `RITE_MAX_ISSUES_PER_SESSION` | Max issues per session | `8` |
-| `RITE_MAX_SESSION_HOURS` | Max session duration (hours) | `4` |
+| `RITE_MAX_SESSION_HOURS` | Max **cumulative active work** hours per session (not wall-clock). Fires when the sum of per-issue tracked durations crosses this threshold. A zombie state file from a prior run contributes 0 to this counter. | `12` |
+| `RITE_MAX_ISSUE_HOURS` | Max hours for a **single issue**. Fires when a single `rite N` invocation exceeds this threshold — protects against fix-loop runaway and yak-shaves. | `4` |
 | `RITE_MAX_RETRIES` | Fix loop attempts | `3` |
 | `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `300` |
 | `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
@@ -78,6 +80,22 @@ Control how Claude assesses PR review issues:
 | `SLACK_WEBHOOK` | Slack webhook for notifications | — |
 | `RITE_EMAIL_FROM` | Email sender for notifications | — |
 | `RITE_SNS_TOPIC_ARN` | AWS SNS topic for SMS | — |
+
+### Session limit semantics (issue #283)
+
+Two separate caps protect against runaway LLM usage:
+
+**`RITE_MAX_ISSUE_HOURS`** (per-issue cap, default: 4h)
+Fires when a single issue has been running longer than this threshold. Indicates Claude is likely stuck in a fix loop or yak-shave. Message: `"Issue #N has been running >4h — likely stuck in fix loop or yak-shave."` To continue: `rite N --bypass-blockers`.
+
+**`RITE_MAX_SESSION_HOURS`** (cumulative cap, default: 12h)
+Fires when the sum of per-issue tracked durations in this session crosses this threshold. "Cumulative active work" means the sum of `end_time - start_time` for each issue that ran in this invocation. Wall-clock age of the session state file does NOT count — a 40-hour-old zombie state file from a prior crash contributes 0 to this counter.
+
+Example scenarios:
+- 3 issues × 2h each = 6h cumulative → no cap (< 12h)
+- 1 issue running for 5h → per-issue cap fires (> 4h)
+- 6 issues × 2h each = 12h cumulative → session cap fires on the 7th issue
+- Zombie state file from 2 days ago + fresh invocation → 0h cumulative, no cap fires
 
 ## Per-Project `.rite/` Directory
 

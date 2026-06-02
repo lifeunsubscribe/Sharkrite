@@ -160,43 +160,88 @@ _release_session_lock() {
 
 # Initialize session tracking
 #
-# UPSERT SEMANTICS: acquires lock, then only writes initial state if the file
-# does not already exist. If another process has already initialized the file,
-# this call is a no-op (it does NOT reset issues_completed to 0).
+# INVOCATION SEMANTICS (new — replaces old UPSERT semantics):
 #
-# This prevents the race where two parallel `rite` invocations both call
-# init_session: without the guard, whichever calls last wins and resets the
-# counter, losing increments from the other process.
+#   Fresh invocation (default): reset start_time to now; preserve
+#   approved_blockers and sent_notifications (legitimately durable cross-run
+#   state); clear current_issue, worktree_path (per-invocation fields).
+#   Also resets per-issue timing fields: current_issue_started_at = null,
+#   cumulative_work_seconds = 0.
+#
+#   Resume mode (RITE_RESUMING=true in env): keep the file completely
+#   untouched — inherit start_time, cumulative_work_seconds, and all other
+#   fields from the prior run. Used by crash-recovery resume and supervised
+#   reload paths.
+#
+#   Parallel batch invocations: each batch creates its own SESSION_STATE_FILE
+#   (via RITE_BATCH_ID), so concurrent init_session calls never race on the
+#   same file. Within a single batch, the orchestrator (batch-process-issues.sh)
+#   calls init_session once; per-issue workers call start_issue_tracking /
+#   end_issue_tracking instead.
+#
+# WHY start_time IS RESET (Option 2 fix, issue #283):
+#   The old upsert-never-overwrite logic caused a "zombie file" bug: a stale
+#   state file from a prior invocation (e.g., a batch that crashed 40h ago)
+#   caused get_elapsed_hours() to return 40, which immediately triggered the
+#   session_limit blocker on every fresh single-issue invocation until the
+#   file was manually deleted. start_time measures THIS invocation's clock,
+#   not the age of the JSON file.
 init_session() {
   local mode="${1:-supervised}"  # supervised or unsupervised
 
   _acquire_session_lock
 
-  # If the state file already exists, another process beat us to init —
-  # leave it untouched to preserve its counters and cross-run state.
-  if [ -f "$SESSION_STATE_FILE" ]; then
+  local _now
+  _now=$(date +%s)
+
+  # Resume mode: keep the existing file untouched — caller owns all fields.
+  if [ "${RITE_RESUMING:-false}" = "true" ] && [ -f "$SESSION_STATE_FILE" ]; then
     _release_session_lock
-    export SESSION_START_TIME=$(date +%s)
+    export SESSION_START_TIME=$(jq -r '.start_time' "$SESSION_STATE_FILE" 2>/dev/null || echo "$_now")
     return 0
   fi
 
-  # Write initial state only if the file is absent (true init, not re-init)
+  if [ -f "$SESSION_STATE_FILE" ]; then
+    # Fresh invocation found an existing state file (e.g. zombie from prior run
+    # or a parallel batch's file from a previous batch ID collision).
+    # Reset the clock and per-invocation fields; preserve cross-run state.
+    local _tmp
+    _tmp=$(mktemp)
+    jq \
+      --argjson now "$_now" \
+      '.start_time = $now
+       | .last_update = $now
+       | .current_issue = null
+       | .worktree_path = null
+       | .current_issue_started_at = null
+       | .cumulative_work_seconds = (.cumulative_work_seconds // 0 | 0)
+       | .mode = "'"$mode"'"' \
+      "$SESSION_STATE_FILE" > "$_tmp"
+    mv "$_tmp" "$SESSION_STATE_FILE"
+    _release_session_lock
+    export SESSION_START_TIME="$_now"
+    return 0
+  fi
+
+  # True fresh init (file doesn't exist) — write initial state.
   cat > "$SESSION_STATE_FILE" <<EOF
 {
-  "start_time": $(date +%s),
+  "start_time": ${_now},
   "mode": "$mode",
   "issues_completed": 0,
   "issues_failed": 0,
   "current_issue": null,
   "worktree_path": null,
+  "current_issue_started_at": null,
+  "cumulative_work_seconds": 0,
   "approved_blockers": [],
   "sent_notifications": [],
-  "last_update": $(date +%s)
+  "last_update": ${_now}
 }
 EOF
 
   _release_session_lock
-  export SESSION_START_TIME=$(date +%s)
+  export SESSION_START_TIME="$_now"
 }
 
 # Update session state
@@ -230,18 +275,146 @@ get_session_info() {
   cat "$SESSION_STATE_FILE"
 }
 
-# Get elapsed time
+# start_issue_tracking ISSUE_NUM
+#
+# Records the start time of per-issue work in the session state file.
+# Must be called just before kicking off the per-issue workflow (Phase 1).
+# Paired with end_issue_tracking — call that when the issue finishes (any
+# outcome: completed, failed, blocked).
+#
+# Writes: current_issue_started_at = now (epoch seconds)
+start_issue_tracking() {
+  local issue_number="${1:-}"
+
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    init_session
+  fi
+
+  _acquire_session_lock
+
+  local _now
+  _now=$(date +%s)
+  local _tmp
+  _tmp=$(mktemp)
+  jq \
+    --argjson now "$_now" \
+    --arg issue "${issue_number}" \
+    '.current_issue_started_at = $now
+     | .current_issue = $issue
+     | .last_update = $now' \
+    "$SESSION_STATE_FILE" > "$_tmp"
+  mv "$_tmp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
+}
+
+# end_issue_tracking ISSUE_NUM
+#
+# Records the end of per-issue work: adds the elapsed per-issue seconds to
+# cumulative_work_seconds and clears current_issue_started_at.
+# Must be called after every per-issue workflow exit (success, failure, blocker).
+#
+# Writes: cumulative_work_seconds += (now - current_issue_started_at)
+#         current_issue_started_at = null
+end_issue_tracking() {
+  local issue_number="${1:-}"
+
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    return 0  # Nothing to end — no state file; safe no-op
+  fi
+
+  _acquire_session_lock
+
+  local _now
+  _now=$(date +%s)
+  local _tmp
+  _tmp=$(mktemp)
+
+  # Read current_issue_started_at; if null/missing, treat as 0 elapsed
+  jq \
+    --argjson now "$_now" \
+    '
+    (.current_issue_started_at // null) as $started |
+    (if $started != null then ($now - $started) else 0 end) as $delta |
+    .cumulative_work_seconds = ((.cumulative_work_seconds // 0) + $delta)
+    | .current_issue_started_at = null
+    | .last_update = $now
+    ' \
+    "$SESSION_STATE_FILE" > "$_tmp"
+  mv "$_tmp" "$SESSION_STATE_FILE"
+
+  _release_session_lock
+}
+
+# get_cumulative_work_seconds
+#
+# Returns the total seconds of active per-issue work accumulated in this session.
+# This is what detect_session_limit uses — not wall-clock elapsed since start_time.
+get_cumulative_work_seconds() {
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    echo "0"
+    return
+  fi
+
+  local _cumulative
+  _cumulative=$(jq -r '.cumulative_work_seconds // 0' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
+
+  # If an issue is currently running, add the in-progress time
+  local _started
+  _started=$(jq -r '.current_issue_started_at // empty' "$SESSION_STATE_FILE" 2>/dev/null || true)
+  if [ -n "$_started" ]; then
+    local _now
+    _now=$(date +%s)
+    _cumulative=$(( _cumulative + _now - _started ))
+  fi
+
+  echo "$_cumulative"
+}
+
+# get_current_issue_elapsed_seconds
+#
+# Returns how many seconds the currently-tracked issue has been running.
+# Returns 0 if no issue is currently being tracked.
+get_current_issue_elapsed_seconds() {
+  if [ ! -f "$SESSION_STATE_FILE" ]; then
+    echo "0"
+    return
+  fi
+
+  local _started
+  _started=$(jq -r '.current_issue_started_at // empty' "$SESSION_STATE_FILE" 2>/dev/null || true)
+
+  if [ -z "$_started" ]; then
+    echo "0"
+    return
+  fi
+
+  local _now
+  _now=$(date +%s)
+  echo $(( _now - _started ))
+}
+
+# Get elapsed time (wall-clock since this invocation's start_time)
+#
+# NOTE: This is now informational only — session limit enforcement reads
+# cumulative_work_seconds (via get_cumulative_work_seconds), not this value.
 get_elapsed_time() {
-  local start_time=$(jq -r '.start_time' "$SESSION_STATE_FILE" 2>/dev/null || echo "$(date +%s)")
-  local current_time=$(date +%s)
+  local start_time
+  start_time=$(jq -r '.start_time' "$SESSION_STATE_FILE" 2>/dev/null || echo "$(date +%s)")
+  local current_time
+  current_time=$(date +%s)
   local elapsed=$((current_time - start_time))
 
   echo "$elapsed"
 }
 
-# Get elapsed hours
+# Get elapsed hours (wall-clock since this invocation's start_time)
+#
+# NOTE: This is now informational only — use get_cumulative_work_seconds for
+# session limit enforcement. See issue #283 for why wall-clock is wrong metric.
 get_elapsed_hours() {
-  local elapsed=$(get_elapsed_time)
+  local elapsed
+  elapsed=$(get_elapsed_time)
   echo $((elapsed / 3600))
 }
 
@@ -315,9 +488,16 @@ set_current_worktree() {
 }
 
 # Check if should continue or save state
+#
+# Uses cumulative_work_seconds (not wall-clock elapsed) for the time check.
+# See detect_session_limit in blocker-rules.sh for enforcement details.
 should_save_and_exit() {
-  local issues_completed=$(jq -r '.issues_completed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
-  local elapsed_hours=$(get_elapsed_hours)
+  local issues_completed
+  issues_completed=$(jq -r '.issues_completed' "$SESSION_STATE_FILE" 2>/dev/null || echo "0")
+
+  local cumulative_secs
+  cumulative_secs=$(get_cumulative_work_seconds)
+  local cumulative_hours=$(( cumulative_secs / 3600 ))
 
   # Conservative limits (from blocker-rules.sh)
   if [ "$issues_completed" -ge "${RITE_MAX_ISSUES_PER_SESSION:-8}" ]; then
@@ -325,7 +505,7 @@ should_save_and_exit() {
     return 0
   fi
 
-  if [ "$elapsed_hours" -ge "${RITE_MAX_SESSION_HOURS:-4}" ]; then
+  if [ "$cumulative_hours" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
     echo "time_limit"
     return 0
   fi
@@ -1030,6 +1210,10 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f get_session_info
   export -f get_elapsed_time
   export -f get_elapsed_hours
+  export -f get_cumulative_work_seconds
+  export -f get_current_issue_elapsed_seconds
+  export -f start_issue_tracking
+  export -f end_issue_tracking
   export -f format_elapsed_time
   export -f increment_completed
   export -f increment_failed
