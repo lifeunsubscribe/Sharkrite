@@ -91,11 +91,21 @@ mock_gh() {
   # state.  Any command not matched here falls through to fixture lookup.
   # ------------------------------------------------------------------
   if [ -n "${GH_MOCK_STATE_DIR:-}" ] && [ -d "${GH_MOCK_STATE_DIR}" ]; then
+    # Track whether a subcommand was consumed by shift so the fallthrough
+    # reconstruction can restore it.  Initialise to empty — only the issue
+    # and pr branches set this before shifting.
+    local _stateful_subcommand=""
     case "$command" in
       issue)
-        local subcommand="${1:-}"
+        # CONTRACT: set _stateful_subcommand BEFORE shift so the fallthrough
+        # reconstruction below (set -- "$command" "$_stateful_subcommand" "$@")
+        # can re-insert the subcommand into the positional args.  Any new branch
+        # that calls shift MUST follow this same pattern — omitting it causes the
+        # fixture lookup to receive an empty subcommand slot (e.g. "issue--42"
+        # instead of "issue-edit-42"), silently failing to find the fixture.
+        _stateful_subcommand="${1:-}"
         shift || true
-        case "$subcommand" in
+        case "$_stateful_subcommand" in
           list)
             _gh_mock_stateful_issue_list "$@"
             return $?
@@ -113,9 +123,11 @@ mock_gh() {
         esac
         ;;
       pr)
-        local subcommand="${1:-}"
+        # CONTRACT: set _stateful_subcommand BEFORE shift — same requirement as
+        # the issue branch above.  See comment there for the full rationale.
+        _stateful_subcommand="${1:-}"
         shift || true
-        case "$subcommand" in
+        case "$_stateful_subcommand" in
           comment)
             local pr_num="${1:-}"
             shift || true
@@ -130,9 +142,16 @@ mock_gh() {
         esac
         ;;
     esac
-    # Note: unmatched commands fall through to fixture lookup below
-    # Restore command for fixture path — reconstruct args array
-    set -- "$command" "$@"
+    # Unmatched command/subcommand — fall through to fixture lookup below.
+    # Reconstruct the full positional args: command + subcommand (re-insert if
+    # it was consumed by the shift above) + any remaining args.  Without this,
+    # the fixture lookup receives $1="" instead of $1="<subcommand>", causing
+    # fixture_name to be built as "issue--42" instead of "issue-edit-42".
+    if [ -n "$_stateful_subcommand" ]; then
+      set -- "$command" "$_stateful_subcommand" "$@"
+    else
+      set -- "$command" "$@"
+    fi
     command="$1"
     shift
   fi

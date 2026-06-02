@@ -379,7 +379,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
       if [ "$PARENT_PR_STATE" = "OPEN" ]; then
         # Check if parent issue is also in this batch (deliberate pairing)
-        PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
         PARENT_ISSUE="${PARENT_ISSUE:-}"
 
         # Check if parent issue is in our queue
