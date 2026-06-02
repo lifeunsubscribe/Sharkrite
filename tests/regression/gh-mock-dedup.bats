@@ -477,9 +477,16 @@ teardown() {
   [[ "$output" == *"sharkrite-source-issue:73"* ]]
 }
 
-@test "stateful: gh issue view fails for unknown issue number" {
+@test "stateful: gh issue view returns empty (exit 0) for unknown issue number" {
+  # Unified not-found contract: both gh-mock.bash and gh-mock-binary.sh return
+  # empty string + exit 0 for an issue not in the stateful store.
+  # Rationale: this matches gh_safe's behavior (lib/utils/gh-retry.sh), which
+  # converts 404 "not found" on READ operations to empty output + exit 0.
+  # assess-and-resolve.sh treats empty output as a transient API failure and
+  # preserves the dedup guarantee — it does NOT expect exit 1 from a missing issue.
   run mock_gh issue view 9999 --json url --jq '.url'
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 # ---------------------------------------------------------------------------
