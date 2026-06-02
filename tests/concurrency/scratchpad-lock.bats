@@ -841,6 +841,9 @@ GHEOF
   # tests (bats provides process-per-test isolation, but explicit teardown is
   # clearer and guards against any future in-process test runner changes).
   unset RITE_SCRATCHPAD_LOCK_STRATEGY
+}
+
+# ---------------------------------------------------------------------------
 # Test 9: Re-entrancy guard — nested acquire on mkdir path does not drop lock
 #
 # Verifies that a second call to acquire_scratchpad_lock() while the lock is
