@@ -297,7 +297,7 @@ RUNNER_EOF
   [ "$status" -eq 2 ]
 
   # No interactive menu output
-  ! echo "$output" | grep -qiE "Choose \[a/b/c/d\]"
+  ! [[ "$output" =~ "Choose [a/b/c/d]" ]] || { echo "Did not expect supervised menu in auto mode RELATED output"; false; }
 
   _cleanup_push_race_scenario
 }
@@ -315,7 +315,7 @@ RUNNER_EOF
   [ "$status" -eq 2 ]
 
   # No interactive menu output
-  ! echo "$output" | grep -qiE "Choose \[c/d\]"
+  ! [[ "$output" =~ "Choose [c/d]" ]] || { echo "Did not expect supervised menu in auto mode UNRELATED output"; false; }
 
   _cleanup_push_race_scenario
 }
