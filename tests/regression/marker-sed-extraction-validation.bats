@@ -272,6 +272,33 @@ EOF
   [[ "$output" =~ "orphaned-end-marker.sh" ]]
 }
 
+@test "lint rule reports each duplicate end marker separately when no start exists" {
+  # Regression test for #251: two end markers with no start should produce two
+  # separate violation reports (one per line), not one. The root cause (missing
+  # start) is the same for both, but the count must reflect both occurrences.
+  cat > "$RITE_LINT_TEST_DIR/duplicate-end-no-start.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+do_work() { echo "work"; }
+# sharkrite-extract: worker-loop-end
+extra_function() { echo "extra"; }
+# sharkrite-extract: worker-loop-end
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
+  [[ "$output" =~ "duplicate-end-no-start.sh" ]]
+
+  # Both end marker lines must be reported — count violations for this file.
+  # Each violation line has format: "✗ <file>:<line> - UNBALANCED_EXTRACT_MARKERS: ..."
+  _violation_count=$(echo "$output" | grep -c "duplicate-end-no-start\.sh.*UNBALANCED_EXTRACT_MARKERS" || true)
+  [ "$_violation_count" -eq 2 ]
+}
+
 @test "lint rule detects reversed markers where end appears before start" {
   # Both start and end markers are present (count==1 each), but end precedes
   # start in the file. sed -n '/start/,/end/p' will open the range at the
