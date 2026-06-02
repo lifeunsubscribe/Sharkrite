@@ -2,14 +2,22 @@
 # Tests for Sharkrite custom lint rules
 
 setup() {
-  # Create temp directory for test files
+  # Create temp directory for test files outside the project (linter won't scan it)
   TEST_DIR=$(mktemp -d)
   LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
+
+  # Project root (tests/lint/ is two levels below project root)
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
+
+  # Temp dir inside lib/ for lint fixture files (linter only scans lib/, bin/, tools/)
+  LINT_FIXTURE_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  mkdir -p "$LINT_FIXTURE_DIR"
 }
 
 teardown() {
   # Clean up temp files
   rm -rf "$TEST_DIR"
+  rm -rf "$LINT_FIXTURE_DIR"
 }
 
 # Helper to create a test script
@@ -208,39 +216,31 @@ echo "$foo"'
   # corrupt the brace depth counter and cause subsequent 'local' inside real
   # functions to appear as violations.
   #
-  # The no-local-outside-function.bats codebase sweep uses a heredoc-aware AWK
-  # script. This test verifies that AWK correctly skips heredoc bodies so that
-  # JSON braces inside heredocs don't skew the function-depth counter.
-  local awk_script test_script result
-  awk_script=$(mktemp)
-  test_script=$(mktemp /tmp/test-local-XXXXXX.sh)
+  # Exercises the production Rule 7 AWK in tools/sharkrite-lint.sh directly
+  # (via a fixture file) rather than a parallel inline AWK re-implementation.
 
-  cat > "$awk_script" <<'AWKEOF'
-/<<['"]?[A-Z_][A-Z_0-9]*['"]?[[:space:]]*$/ { in_heredoc=1; next }
-/^[A-Z_][A-Z_0-9]*$/ && in_heredoc               { in_heredoc=0; next }
-in_heredoc { next }
-/^[a-zA-Z_][a-zA-Z_0-9-]*\(\)[[:space:]]*\{/    { depth++; next }
-/^function[[:space:]]/                             { depth++; next }
-/^\}/                                              { depth--; next }
-/^[[:space:]]*local / { if (depth <= 0) print FILENAME ":" NR ":" $0 }
-AWKEOF
-
-  cat > "$test_script" <<'BASH'
+  cat > "$LINT_FIXTURE_DIR/heredoc-json-brace-custom.sh" <<'EOF'
 #!/bin/bash
+set -euo pipefail
 my_func() {
-  cat <<EOF
+  cat <<JSONEOF
 {
   "key": "value"
 }
-EOF
+JSONEOF
   local foo="bar"
   echo "$foo"
 }
-BASH
+my_func
+EOF
 
-  result=$(awk -f "$awk_script" "$test_script" 2>/dev/null)
-  rm -f "$awk_script" "$test_script"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
 
-  # Should find no violations — the local is inside the function, not at depth 0
-  [ -z "$result" ]
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ "heredoc-json-brace-custom.sh" ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after JSON heredoc
+    }
+  fi
 }

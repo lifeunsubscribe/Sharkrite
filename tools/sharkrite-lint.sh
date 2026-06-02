@@ -189,15 +189,18 @@ echo "Checking for 'local' outside function scope..."
 _r7_hits=$(awk '
 FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
 {
-  # Heredoc close: when inside heredoc, skip until terminator line
+  # Heredoc close: when inside heredoc, skip until terminator line.
+  # Strip leading whitespace before comparing to support <<-MARKER (tab-indented terminators).
   if (in_heredoc) {
-    if ($0 == hd_marker) in_heredoc = 0
+    _close = $0; sub(/^[[:space:]]*/, "", _close)
+    if (_close == hd_marker) in_heredoc = 0
     next
   }
-  # Heredoc open: detect <<MARKER on this line
+  # Heredoc open: detect <<MARKER and <<-MARKER on this line.
+  # sub strips everything up to and including <<  and an optional - (for <<-).
   if (index($0, "<<") > 0) {
     tok = $0
-    sub(/.*<<[[:space:]]*/, "", tok)
+    sub(/.*<<-?[[:space:]]*/, "", tok)
     gsub(/['"'"'"]/, "", tok)
     split(tok, _p, " ")
     if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) {
@@ -246,9 +249,13 @@ printf '%s\n' \
   '  in_heredoc = 0; hd_marker = ""; pending_line = 0; pending_fname = ""' \
   '}' \
   '{' \
-  '  if (in_heredoc) { if ($0 == hd_marker) in_heredoc = 0; next }' \
+  '  if (in_heredoc) {' \
+  '    _close = $0; sub(/^[[:space:]]*/, "", _close)' \
+  '    if (_close == hd_marker) in_heredoc = 0' \
+  '    next' \
+  '  }' \
   '  if (index($0, "<<") > 0) {' \
-  '    tok = $0; sub(/.*<<[[:space:]]*/, "", tok)' \
+  '    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)' \
   '    gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")' \
   '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }' \
   '  }' \
@@ -292,11 +299,12 @@ _r9_hits=$(awk '
 FNR == 1 { in_heredoc = 0; hd_marker = "" }
 {
   if (in_heredoc) {
-    if ($0 == hd_marker) in_heredoc = 0
+    _close = $0; sub(/^[[:space:]]*/, "", _close)
+    if (_close == hd_marker) in_heredoc = 0
     next
   }
   if (index($0, "<<") > 0) {
-    tok = $0; sub(/.*<<[[:space:]]*/, "", tok)
+    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
     gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
     if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) {
       hd_marker = _p[1]; in_heredoc = 1
@@ -415,16 +423,21 @@ _r13_awk=$(mktemp)
 #    All logic uses a single { } action block with if/else and index()/match().
 printf '%s\n' \
   '{' \
-  '  # Heredoc close: bare terminator line exits heredoc mode' \
+  '  # Heredoc close: strip leading whitespace before comparing to support' \
+  '  # <<-MARKER (tab-indented terminators) — bare terminator exits heredoc mode.' \
   '  if (in_heredoc) {' \
-  '    if ($0 == hd_marker) in_heredoc = 0' \
+  '    _close = $0; sub(/^[[:space:]]*/, "", _close)' \
+  '    if (_close == hd_marker) in_heredoc = 0' \
   '    next' \
   '  }' \
-  '  # Heredoc open: detect <<MARKER, <<'"'"'MARKER'"'"', <<"MARKER" on this line.' \
+  '  # Heredoc open: detect <<MARKER, <<-MARKER, <<'"'"'MARKER'"'"', <<"MARKER" on this line.' \
+  '  # sub strips everything up to << and an optional - (for <<-) so that <<-MARKER' \
+  '  # leaves only MARKER in tok (without the leading dash that caused the heredoc' \
+  '  # state to be skipped entirely in the old pattern).' \
   '  # Fall through after opening: the line itself is a command, not heredoc body.' \
   '  if (index($0, "<<") > 0) {' \
   '    tok = $0' \
-  '    sub(/.*<<[[:space:]]*/, "", tok)' \
+  '    sub(/.*<<-?[[:space:]]*/, "", tok)' \
   '    gsub(/['"'"'"]/, "", tok)' \
   '    split(tok, _p, " ")' \
   '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Z_][A-Z_0-9]*$/) {' \
@@ -440,10 +453,10 @@ printf '%s\n' \
   '  # Skip lines with inline (use: ...) markup — these are prompt text, not shell commands' \
   '  if (index($0, "(use:") > 0) next' \
   '  # Flag: gh call for known subcommands not wrapped in gh_safe.' \
-  '  # Pattern requires "gh" to be preceded by a command-context character (space, (, |, ;, $)' \
-  '  # or appear at start-of-line after whitespace.  This prevents false positives where "gh"' \
-  '  # appears as a substring of longer words (e.g. "high priority" contains "gh p").' \
-  '  if (index($0, "gh_safe") == 0 && $0 ~ /(^|[ (|;$])gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
+  '  # Pattern requires "gh" to be preceded by a command-context character (any whitespace,' \
+  '  # (, |, ;, $) or appear at start-of-line after whitespace.  [[:space:]] covers both' \
+  '  # spaces and tabs, preventing false negatives for tab-indented gh calls.' \
+  '  if (index($0, "gh_safe") == 0 && $0 ~ /(^|[[:space:](|;$])gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
   '    print FNAME ":" NR ":" $0' \
   '  }' \
   '}' \
