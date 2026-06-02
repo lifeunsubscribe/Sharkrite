@@ -774,10 +774,9 @@ fi
 
 # Determine the merge decision NOW, before follow-up issue creation.
 # The merge decision is based solely on assessment results (CRITICAL items at retry
-# limit = block merge; otherwise = allow merge). Follow-up issue creation is
-# best-effort: a gh API failure sets _followup_creation_failed=true and emits a
-# warning, but does NOT override this merge decision. Exit code at the end of the
-# script reflects MERGE_EXIT_CODE, not the follow-up creation outcome.
+# limit = block merge; otherwise = allow merge). If follow-up issue creation fails,
+# _followup_creation_failed=true is set and the final summary exits 1 — follow-up
+# creation failure is NOT silent.
 MERGE_EXIT_CODE=0
 # Tracks whether gh issue create failed inside set +e block; checked at final summary.
 _followup_creation_failed=false
@@ -809,8 +808,8 @@ if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
 fi
 
 # Create consolidated follow-up issue if needed
-# Disable errexit: follow-up issue creation is best-effort and must not
-# override the merge decision (MERGE_EXIT_CODE) if any gh/grep/jq call fails.
+# Disable errexit: follow-up issue creation uses _followup_creation_failed flag
+# to surface failures instead of letting set -e kill the script mid-creation.
 set +e
 if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   print_header "📝 Creating Consolidated Follow-up Issue"
@@ -1380,10 +1379,9 @@ This approach allows all fixes to be completed together in a focused PR."
 fi
 set -e  # Re-enable errexit after follow-up issue creation
 
-# Final summary — use MERGE_EXIT_CODE (decided before follow-up creation).
-# Follow-up issue creation is best-effort: a gh API failure does NOT override
-# the merge decision.  The orphaned-followup-items.md recovery artifact and the
-# warning already printed above are the observability surface for the failure.
+# Final summary — check _followup_creation_failed first.
+# If follow-up issue creation failed, exit 1 to prevent silent data loss.
+# Only proceed to the merge-decision exit code when follow-up creation succeeded.
 # MERGE_EXIT_CODE=1 only when CRITICAL items remain (set at line ~785 above).
 print_header "✅ Assessment Complete"
 
@@ -1394,12 +1392,10 @@ echo "Summary of actions taken:"
 
 echo ""
 
-if [ "$MERGE_EXIT_CODE" -eq 0 ]; then
-  # Merge decision is clear — proceed regardless of follow-up creation outcome.
-  # If follow-up creation failed, the warning and recovery artifact are already
-  # in place; the user can re-file manually without blocking this merge.
-  [ "${_followup_creation_failed:-false}" = true ] && \
-    print_warning "Follow-up issue creation failed — items saved to orphaned-followup-items.md for manual re-filing"
+if [ "${_followup_creation_failed:-false}" = true ]; then
+  print_error "Follow-up issue creation failed — workflow halted to prevent silent data loss"
+  exit 1
+elif [ "$MERGE_EXIT_CODE" -eq 0 ]; then
   print_success "All issues resolved or tracked - ready to proceed"
   exit 0
 else

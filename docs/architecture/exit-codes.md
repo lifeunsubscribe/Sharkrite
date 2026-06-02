@@ -39,15 +39,15 @@ These codes cross script boundaries and must be kept unambiguous.
 
 | Code | Meaning |
 |------|---------|
-| `0`  | Assessment complete — ready to merge (follow-up creation failure does NOT change this; see note below) |
-| `1`  | Manual intervention needed (CRITICAL findings, unresolvable issues) |
+| `0`  | Assessment complete — ready to merge |
+| `1`  | Manual intervention needed (CRITICAL findings, unresolvable issues, or follow-up creation failure) |
 | `2`  | Loop to fix — ACTIONABLE_NOW items remain, retry |
 | `3`  | Review stale — route back to Phase 2 (re-review) |
 
-> **Follow-up creation is best-effort.** If `gh issue create` fails during follow-up creation, the script saves
-> items to `.rite/orphaned-followup-items.md` and emits a warning, but still exits with the merge-decision code
-> (`0` or `1`) that was determined before follow-up creation ran.  A gh API failure does NOT upgrade a "ready
-> to merge" (exit 0) result to "manual intervention needed" (exit 1).
+> **Follow-up creation failure halts the merge.** If `gh issue create` fails during follow-up creation, the script
+> saves items to `.rite/orphaned-followup-items.md`, emits an error, and exits `1` — even when no CRITICAL
+> review findings exist.  Silently proceeding to merge when tracked items were lost would be a data-loss bug.
+> Re-run `rite <issue> --assess-and-fix` after resolving the gh API issue to retry.
 
 ### `merge-pr.sh`
 
