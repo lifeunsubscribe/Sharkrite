@@ -239,7 +239,7 @@ EOF
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
-    [[ ! "$output" =~ "heredoc-json-brace-custom.sh" ]] || {
+    [[ ! "$output" =~ heredoc-json-brace-custom\.sh ]] || {
       false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after JSON heredoc
     }
   fi

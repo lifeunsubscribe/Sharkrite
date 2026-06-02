@@ -17,6 +17,16 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Cleanup trap: remove any mktemp AWK program files on exit or interruption
+# (prevents leaks if the script is killed before reaching the inline rm -f calls)
+_r8_awk=""
+_r13_awk=""
+_cleanup_awk_tmpfiles() {
+  [ -n "$_r8_awk"  ] && rm -f "$_r8_awk"
+  [ -n "$_r13_awk" ] && rm -f "$_r13_awk"
+}
+trap '_cleanup_awk_tmpfiles' EXIT INT TERM
+
 # Track violations
 VIOLATIONS=0
 
@@ -198,6 +208,9 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   }
   # Heredoc open: detect <<MARKER and <<-MARKER on this line.
   # sub strips everything up to and including <<  and an optional - (for <<-).
+  # Intentional fall-through after setting in_heredoc=1: the opener line itself
+  # is a shell command (e.g. "cat <<EOF"), not heredoc body, so it must still
+  # be checked for local usage and brace depth.
   if (index($0, "<<") > 0) {
     tok = $0
     sub(/.*<<-?[[:space:]]*/, "", tok)
@@ -303,6 +316,9 @@ FNR == 1 { in_heredoc = 0; hd_marker = "" }
     if (_close == hd_marker) in_heredoc = 0
     next
   }
+  # Intentional fall-through after setting in_heredoc=1: the opener line itself
+  # is a shell command (e.g. "cmd <<EOF"), not heredoc body, so it must still
+  # be checked for provider-specific tokens.
   if (index($0, "<<") > 0) {
     tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
     gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
@@ -459,7 +475,7 @@ printf '%s\n' \
   '  if (index($0, "gh_safe") == 0) {' \
   '    if ($0 ~ /^[[:space:]]*gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/ ||' \
   '        $0 ~ /[[:space:](|;$]gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
-  '      print FNAME ":" NR ":" $0' \
+  '      print FILENAME ":" NR ":" $0' \
   '    }' \
   '  }' \
   '}' \
@@ -471,7 +487,7 @@ for file in "${SHELL_FILES[@]}"; do
     continue
   fi
 
-  _r13_hits=$(awk -v FNAME="$file" -f "$_r13_awk" "$file" 2>/dev/null || true)
+  _r13_hits=$(awk -f "$_r13_awk" "$file" 2>/dev/null || true)
 
   if [ -n "$_r13_hits" ]; then
     while IFS= read -r _hit; do

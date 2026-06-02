@@ -70,7 +70,7 @@ EOF
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
-  [[ "$output" =~ "bad-local-outside.sh" ]]
+  [[ "$output" =~ bad-local-outside\.sh ]]
 }
 
 @test "LOCAL_OUTSIDE_FUNCTION: lint rule passes on local inside function" {
@@ -91,7 +91,7 @@ EOF
 
   # If it fires LOCAL_OUTSIDE_FUNCTION, ensure it's not on our safe file
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
-    [[ ! "$output" =~ "good-local-inside.sh" ]] || {
+    [[ ! "$output" =~ good-local-inside\.sh ]] || {
       false  # LOCAL_OUTSIDE_FUNCTION falsely flagged a local-inside-function
     }
   fi
@@ -123,7 +123,7 @@ EOF
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
-    [[ ! "$output" =~ "heredoc-json-brace.sh" ]] || {
+    [[ ! "$output" =~ heredoc-json-brace\.sh ]] || {
       false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after JSON heredoc
     }
   fi
