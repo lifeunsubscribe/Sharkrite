@@ -2,14 +2,22 @@
 # Tests for Sharkrite custom lint rules
 
 setup() {
-  # Create temp directory for test files
+  # Create temp directory for test files outside the project (linter won't scan it)
   TEST_DIR=$(mktemp -d)
   LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
+
+  # Project root (tests/lint/ is two levels below project root)
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
+
+  # Temp dir inside lib/ for lint fixture files (linter only scans lib/, bin/, tools/)
+  LINT_FIXTURE_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  mkdir -p "$LINT_FIXTURE_DIR"
 }
 
 teardown() {
   # Clean up temp files
   rm -rf "$TEST_DIR"
+  rm -rf "$LINT_FIXTURE_DIR"
 }
 
 # Helper to create a test script
@@ -201,4 +209,38 @@ echo "$foo"'
   run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: brace-tracking handles JSON heredoc with unbalanced braces" {
+  # Regression: a heredoc containing JSON (with unbalanced { or }) must not
+  # corrupt the brace depth counter and cause subsequent 'local' inside real
+  # functions to appear as violations.
+  #
+  # Exercises the production Rule 7 AWK in tools/sharkrite-lint.sh directly
+  # (via a fixture file) rather than a parallel inline AWK re-implementation.
+
+  cat > "$LINT_FIXTURE_DIR/heredoc-json-brace-custom.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  cat <<JSONEOF
+{
+  "key": "value"
+}
+JSONEOF
+  local foo="bar"
+  echo "$foo"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ heredoc-json-brace-custom\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after JSON heredoc
+    }
+  fi
 }

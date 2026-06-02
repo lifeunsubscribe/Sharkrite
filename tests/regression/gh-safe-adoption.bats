@@ -12,7 +12,8 @@
 # error responses to simulate GitHub API failures in a deterministic way.
 
 setup() {
-  PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")" && pwd)"
+  # BATS_TEST_DIRNAME is tests/regression/ — navigate two levels up to project root
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   export PROJECT_ROOT
 
   # Temp dir for runtime scripts and stubs
@@ -91,9 +92,43 @@ EOF
 
   # gh-retry.sh contains raw gh calls by design — should NOT be flagged
   if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
-    [[ ! "$output" =~ "gh-retry.sh" ]] || {
-      fail "GH_UNSAFE_CALL falsely flagged gh-retry.sh"
-    }
+    # Use standard BATS assertion — fail "msg" requires bats-support which is not loaded here
+    [[ ! "$output" =~ "gh-retry.sh" ]] \
+      || false  # GH_UNSAFE_CALL falsely flagged gh-retry.sh
+  fi
+}
+
+@test "GH_UNSAFE_CALL: lint rule does not flag 'gh' inside a heredoc body" {
+  # Heredoc bodies are documentation/prompt text, not executable commands.
+  # A line like "gh pr create ..." inside <<'EOF' must NOT produce a false positive.
+  # Rule 13 uses a heredoc state machine that tracks open/close markers and skips
+  # all lines between them.
+  cat > "$LINT_FIXTURE_DIR/heredoc-gh.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# Safely wrapped — should never be flagged
+RESULT=$(gh_safe pr view 42 --json title || true)
+
+# gh references inside heredocs are documentation text, not shell commands.
+# The lint rule must skip these lines to prevent false positives.
+PROMPT=$(cat <<'HEREDOC'
+You are a CI helper. Do NOT run: gh pr create
+If you need to check PRs, use: gh pr list --search "foo"
+HEREDOC
+)
+
+echo "$RESULT"
+echo "$PROMPT"
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # Must not flag the heredoc lines as GH_UNSAFE_CALL violations
+  if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
+    [[ ! "$output" =~ "heredoc-gh.sh" ]] \
+      || false  # GH_UNSAFE_CALL falsely flagged a heredoc body line in heredoc-gh.sh
   fi
 }
 
@@ -124,8 +159,9 @@ EOF
   export RITE_GH_MAX_RETRIES=3
   export RITE_GH_RETRY_MAX_SLEEP=0
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     # Override sleep to a no-op for fast testing
     sleep() { :; }
@@ -147,12 +183,13 @@ exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     result=\$(gh_safe pr view 9999 --json title)
     echo \"exit:\$?\"
-    echo \"result:'\${result:-empty}'\"
+    echo \"result:'\${result}'\"
   "
 
   [ "$status" -eq 0 ]
@@ -169,8 +206,9 @@ exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123
   "
@@ -188,8 +226,9 @@ exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     gh_safe pr close 9999
   "
@@ -206,12 +245,13 @@ exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     result=\$(gh_safe pr view 9999 --json title)
     echo \"exit:\$?\"
-    echo \"result:'\${result:-empty}'\"
+    echo \"result:'\${result}'\"
   "
 
   [ "$status" -eq 0 ]
@@ -227,12 +267,13 @@ exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     result=\$(gh_safe api 'repos/owner/repo/pulls/9999')
     echo \"exit:\$?\"
-    echo \"result:'\${result:-empty}'\"
+    echo \"result:'\${result}'\"
   "
 
   [ "$status" -eq 0 ]
@@ -248,8 +289,9 @@ exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     gh_safe pr view 42 --json title
   "
@@ -271,8 +313,9 @@ EOF
   export RITE_GH_MAX_RETRIES=3
   export RITE_GH_RETRY_MAX_SLEEP=0
 
+  # Preserve system PATH alongside stub so mktemp/etc are available inside gh_safe
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     sleep() { :; }
     export -f sleep
@@ -457,25 +500,19 @@ EOF
 # ===========================================================================
 
 @test "codebase has zero remaining raw gh calls outside gh-retry.sh" {
+  # Uses the GH_UNSAFE_CALL lint rule (Rule 13 in tools/sharkrite-lint.sh) as the
+  # authoritative check rather than a raw grep. The lint rule is heredoc-aware, skips
+  # comments, echo/print_* quoted-string references, and instructional-text patterns —
+  # avoiding the false positives a naive grep produces on comment and echo lines.
   cd "$PROJECT_ROOT"
   rm -f "$LINT_FIXTURE_DIR"/*.sh 2>/dev/null || true
 
-  # Use grep to find raw gh calls (not preceded by gh_safe) in lib/ and bin/
-  # Pattern: (space/pipe/$(/)  gh  (pr|issue|api|repo|label|diff)
-  # Exclude: comments, gh_safe itself, gh-retry.sh
-  run bash -c "
-    grep -rn '\bgh\b[[:space:]]\+\(pr\|issue\|api\|repo\|label\|diff\)\b' lib/ bin/ 2>/dev/null \
-      | grep -v '^\s*#' \
-      | grep -v 'gh_safe' \
-      | grep -v 'gh-retry\.sh' \
-      | grep -v '\.bats:' \
-    || true
-  "
+  run tools/sharkrite-lint.sh
 
-  # Any non-empty output means remaining raw calls exist — fail with context
-  if [ -n "$output" ]; then
-    echo "Remaining raw gh calls found:"
-    echo "$output"
+  # If any GH_UNSAFE_CALL violations exist, the lint will report them and exit non-zero
+  if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
+    echo "Remaining raw gh calls found (GH_UNSAFE_CALL lint violations):"
+    echo "$output" | grep "GH_UNSAFE_CALL"
     false
   fi
   true

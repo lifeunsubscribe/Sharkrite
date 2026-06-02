@@ -17,6 +17,16 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Cleanup trap: remove any mktemp AWK program files on exit or interruption
+# (prevents leaks if the script is killed before reaching the inline rm -f calls)
+_r8_awk=""
+_r13_awk=""
+_cleanup_awk_tmpfiles() {
+  [ -n "$_r8_awk"  ] && rm -f "$_r8_awk"
+  [ -n "$_r13_awk" ] && rm -f "$_r13_awk"
+}
+trap '_cleanup_awk_tmpfiles' EXIT INT TERM
+
 # Track violations
 VIOLATIONS=0
 
@@ -183,144 +193,171 @@ for file in "${SHELL_FILES[@]}"; do
 done
 
 # Rule 7: local keyword outside function (SC2168 - but catch our own)
+# Uses AWK for performance — the bash while+grep approach spawned thousands
+# of subprocesses per file (one grep per line × 3-5 checks × N lines).
 echo "Checking for 'local' outside function scope..."
-for file in "${SHELL_FILES[@]}"; do
-  # Parse the file to check if 'local' is inside a function
-  # Simple heuristic: if there's no 'function' or '() {' before 'local', it's wrong
+_r7_hits=$(awk '
+FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
+{
+  # Heredoc close: when inside heredoc, skip until terminator line.
+  # Strip leading whitespace before comparing to support <<-MARKER (tab-indented terminators).
+  if (in_heredoc) {
+    _close = $0; sub(/^[[:space:]]*/, "", _close)
+    if (_close == hd_marker) in_heredoc = 0
+    next
+  }
+  # Heredoc open: detect <<MARKER and <<-MARKER on this line.
+  # sub strips everything up to and including <<  and an optional - (for <<-).
+  # Intentional fall-through after setting in_heredoc=1: the opener line itself
+  # is a shell command (e.g. "cat <<EOF"), not heredoc body, so it must still
+  # be checked for local usage and brace depth.
+  if (index($0, "<<") > 0) {
+    tok = $0
+    sub(/.*<<-?[[:space:]]*/, "", tok)
+    gsub(/['"'"'"]/, "", tok)
+    split(tok, _p, " ")
+    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
+      hd_marker = _p[1]; in_heredoc = 1
+    }
+  }
+  # Skip comments
+  if ($0 ~ /^[[:space:]]*#/) next
+  # Count { and } on this line to track nesting depth.
+  # gsub returns the replacement count, allowing us to count characters without
+  # a per-char loop (fast, BSD AWK compatible, heredoc-safe).
+  # Use _tmp copies so $0 is not modified (gsub modifies its 3rd arg in place).
+  _tmp = $0; _ob = gsub(/{/, "", _tmp)
+  _tmp = $0; _cb = gsub(/}/, "", _tmp)
+  depth += _ob - _cb
+  if (depth < 0) depth = 0
+  # Flag: "local" keyword used at depth 0 (outside any function)
+  if (depth == 0 && $0 ~ /^[[:space:]]*local[[:space:]]/) {
+    print FILENAME ":" FNR ":" $0
+  }
+}' "${SHELL_FILES[@]}" 2>/dev/null || true)
 
-  in_function=0
-  brace_depth=0
-  line_num=0
-
-  while IFS= read -r line; do
-    line_num=$((line_num + 1))
-
-    # Track function definitions.
-    # Matches all bash function declaration styles:
-    #   - POSIX:              name() {          (optional hyphens in name)
-    #   - function keyword:   function name {   (no parens required)
-    #   - combined:           function name() { (function keyword + parens)
-    # \w+ replaced with [a-zA-Z_][a-zA-Z0-9_-]* to allow hyphens in names.
-    # The inner redundant ^ anchor from the original alternation is removed.
-    if echo "$line" | grep -qE '^\s*(function\s+[a-zA-Z_][a-zA-Z0-9_-]*(\s*\(\))?|[a-zA-Z_][a-zA-Z0-9_-]*\s*\(\))'; then
-      in_function=1
-    fi
-
-    # Track braces (functions end with }); grep -o exits 1 on no match, suppress via || true
-    open_braces=$(echo "$line" | grep -o '{' | wc -l || true)
-    close_braces=$(echo "$line" | grep -o '}' | wc -l || true)
-    brace_depth=$((brace_depth + open_braces - close_braces))
-
-    if [ "$brace_depth" -eq 0 ]; then
-      in_function=0
-    fi
-
-    # Check for 'local' outside function
-    if echo "$line" | grep -qE '^\s*local\s+\w+' && [ "$in_function" -eq 0 ]; then
-      # Skip if it's in a comment or example
-      if ! echo "$line" | grep -qE '^\s*#'; then
-        print_violation "$file" "$line_num" "LOCAL_OUTSIDE_FUNCTION" \
-          "'local' keyword used outside function (only works inside functions)"
-      fi
-    fi
-  done < "$file"
-
-  # Reset for next file
-  line_num=0
-done
+if [ -n "$_r7_hits" ]; then
+  while IFS= read -r _hit; do
+    _hit_file=$(echo "$_hit" | cut -d: -f1)
+    _hit_line=$(echo "$_hit" | cut -d: -f2)
+    print_violation "$_hit_file" "$_hit_line" "LOCAL_OUTSIDE_FUNCTION" \
+      "'local' keyword used outside function (only works inside functions)"
+  done <<< "$_r7_hits"
+fi
 
 # Rule 8: Unsafe pipe inside command substitution (silent death under set -euo pipefail)
+# Uses AWK for performance — the bash while+grep approach spawned thousands of
+# subprocesses per file: grep -n '=\$(' found 1346 matches across 52 files,
+# and each match triggered 3–4 more greps + 1 sed (for next-line lookahead),
+# totalling ~6000–7000 subprocess calls and 9+ seconds per lint run.
+#
+# AWK strategy: buffer each triggering line, resolve on the NEXT line whether a
+# multiline-safe guard (|| true / || echo / : $?) follows.  BSD AWK compatible:
+# no \s, no + quantifier, no !~ or compound patterns — uses index() and [[:space:]]*.
 echo "Checking for unsafe VAR=\$(... | grep/awk/sed/head/tail) patterns..."
-for file in "${SHELL_FILES[@]}"; do
-  # Match: VAR=$(... | grep ...) or similar commands that can exit 1
-  # Safe patterns: || true, || echo "...", or : $?
-  while IFS=: read -r line_num line_content; do
-    # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
-      continue
-    fi
+_r8_awk=$(mktemp)
+printf '%s\n' \
+  'FNR == 1 {' \
+  '  if (pending_line > 0) { print pending_fname ":" pending_line; pending_line = 0 }' \
+  '  in_heredoc = 0; hd_marker = ""; pending_fname = ""' \
+  '}' \
+  '{' \
+  '  if (in_heredoc) {' \
+  '    _close = $0; sub(/^[[:space:]]*/, "", _close)' \
+  '    if (_close == hd_marker) in_heredoc = 0' \
+  '    next' \
+  '  }' \
+  '  if (index($0, "<<") > 0) {' \
+  '    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)' \
+  '    gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")' \
+  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }' \
+  '  }' \
+  '  if (FNR > 1 && pending_line > 0) {' \
+  '    if (index($0, "|| true") > 0 || index($0, "|| echo") > 0 || index($0, ": $?") > 0) {' \
+  '      pending_line = 0' \
+  '    } else {' \
+  '      print pending_fname ":" pending_line' \
+  '      pending_line = 0' \
+  '    }' \
+  '  }' \
+  '  if ($0 ~ /^[[:space:]]*#/) next' \
+  '  if (index($0, "=$(") > 0 && $0 ~ /\|[^|]*(grep|awk|sed|head|tail)/) {' \
+  '    if (index($0, "|| true") > 0 || index($0, "|| echo") > 0 || index($0, ": $?") > 0) next' \
+  '    pending_line = FNR; pending_fname = FILENAME' \
+  '  }' \
+  '}' \
+  'END { if (pending_line > 0) print pending_fname ":" pending_line }' \
+  > "$_r8_awk"
 
-    # Check if line has unsafe pattern: assignment with command substitution containing pipe to grep/awk/sed/head/tail
-    # Must NOT end with || true, || echo, or : $?
-    if echo "$line_content" | grep -qE '=\$\([^)]*\|.*(grep|awk|sed|head|tail)'; then
-      # Check if the NEXT line (for multiline commands) or current line has safe termination
-      next_line_num=$((line_num + 1))
-      next_line=$(sed -n "${next_line_num}p" "$file" 2>/dev/null || echo "")
+_r8_hits=$(awk -f "$_r8_awk" "${SHELL_FILES[@]}" 2>/dev/null || true)
+rm -f "$_r8_awk"
+_r8_awk=""
 
-      # Safe if current or next line ends with || true, || echo, or has : $?
-      if ! echo "$line_content" | grep -qE '\|\|\s*(true|echo)' && \
-         ! echo "$line_content" | grep -qE ':\s*\$\?' && \
-         ! echo "$next_line" | grep -qE '\|\|\s*(true|echo)\s*\)' && \
-         ! echo "$next_line" | grep -qE ':\s*\$\?\s*\)'; then
-        print_violation "$file" "$line_num" "UNSAFE_PIPE_IN_CMDSUB" \
-          "VAR=\$(... | grep/awk/sed/head/tail) without || true can silently kill script under set -euo pipefail"
-      fi
-    fi
-  done < <(grep -n '=\$(' "$file" 2>/dev/null || true)
-done
+if [ -n "$_r8_hits" ]; then
+  while IFS= read -r _hit; do
+    _hit_file=$(echo "$_hit" | cut -d: -f1)
+    _hit_line=$(echo "$_hit" | cut -d: -f2)
+    print_violation "$_hit_file" "$_hit_line" "UNSAFE_PIPE_IN_CMDSUB" \
+      "VAR=\$(... | grep/awk/sed/head/tail) without || true can silently kill script under set -euo pipefail"
+  done <<< "$_r8_hits"
+fi
 
 # Rule 9: Claude-specific tokens in lib/core/ (Provider Agnosticism)
 echo "Checking for Claude-specific tokens in lib/core/ (provider agnosticism)..."
 mapfile -t CORE_FILES < <(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
 
-for file in "${CORE_FILES[@]}"; do
-  # Check for forbidden tokens that indicate provider-specific leakage
-  # These should only appear in lib/providers/claude.sh, not lib/core/
+# Convert per-file bash while+grep loops to a single AWK pass over all core files.
+# AWK processes all files in one invocation, reporting violations as FILE:LINE:MSG.
+# MSG is a short tag; the outer bash loop maps tags to human messages.
+_r9_hits=$(awk '
+FNR == 1 { in_heredoc = 0; hd_marker = "" }
+{
+  if (in_heredoc) {
+    _close = $0; sub(/^[[:space:]]*/, "", _close)
+    if (_close == hd_marker) in_heredoc = 0
+    next
+  }
+  # Intentional fall-through after setting in_heredoc=1: the opener line itself
+  # is a shell command (e.g. "cmd <<EOF"), not heredoc body, so it must still
+  # be checked for provider-specific tokens.
+  if (index($0, "<<") > 0) {
+    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
+    gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
+    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
+      hd_marker = _p[1]; in_heredoc = 1
+    }
+  }
+  if ($0 ~ /^[[:space:]]*#/) next
+  if (index($0, "/exit") > 0) print FILENAME ":" FNR ":SLASH_EXIT"
+  if (index($0, "--print") > 0) print FILENAME ":" FNR ":PRINT_FLAG"
+  if (index($0, "--dangerously-skip-permissions") > 0) print FILENAME ":" FNR ":DANG_SKIP"
+  if (index($0, "--disallowedTools") > 0) print FILENAME ":" FNR ":DISALLOWED"
+  if (index($0, "tool_use") > 0) print FILENAME ":" FNR ":TOOL_USE"
+  if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude CLI") > 0) print FILENAME ":" FNR ":HCPROVIDER"
+  if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude session") > 0) print FILENAME ":" FNR ":HCPROVIDER"
+}' "${CORE_FILES[@]}" 2>/dev/null || true)
 
-  line_num=0
-  while IFS= read -r line_content; do
-    line_num=$((line_num + 1))
-
-    # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
-      continue
-    fi
-
-    # Check for /exit (Claude CLI command)
-    if echo "$line_content" | grep -qF '/exit'; then
-      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
-        "Provider-specific token '/exit' found in lib/core/ - use provider_exit_instructions() instead"
-    fi
-
-    # Check for --print flag (Claude CLI)
-    if echo "$line_content" | grep -qE -- '--print\b'; then
-      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
-        "Provider-specific flag '--print' found in lib/core/ - this should be in lib/providers/claude.sh"
-    fi
-
-    # Check for --dangerously-skip-permissions (Claude CLI)
-    if echo "$line_content" | grep -qE -- '--dangerously-skip-permissions'; then
-      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
-        "Provider-specific flag '--dangerously-skip-permissions' found in lib/core/"
-    fi
-
-    # Check for --disallowedTools (Claude CLI)
-    if echo "$line_content" | grep -qE -- '--disallowedTools'; then
-      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
-        "Provider-specific flag '--disallowedTools' found in lib/core/ - use provider_build_tool_restrictions() instead"
-    fi
-
-    # Check for tool_use (Claude-specific terminology)
-    if echo "$line_content" | grep -qE '\btool_use\b'; then
-      print_violation "$file" "$line_num" "CLAUDE_SPECIFIC_TOKEN" \
-        "Provider-specific term 'tool_use' found in lib/core/"
-    fi
-  done < "$file"
-
-  # Also check for hardcoded "Claude CLI" or "Claude session" in user-facing output
-  while IFS=: read -r line_num line_content; do
-    # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
-      continue
-    fi
-
-    # Match print_status/print_info/print_error with hardcoded "Claude"
-    if echo "$line_content" | grep -qE 'print_(status|info|error|warning).*["\x27].*Claude (CLI|session)'; then
-      print_violation "$file" "$line_num" "HARDCODED_PROVIDER_NAME" \
-        "Hardcoded 'Claude CLI/session' in user-facing output - use \$(provider_name) instead"
-    fi
-  done < <(grep -n 'print_' "$file" 2>/dev/null || true)
-done
+if [ -n "$_r9_hits" ]; then
+  while IFS= read -r _hit; do
+    _hit_file=$(echo "$_hit" | cut -d: -f1)
+    _hit_line=$(echo "$_hit" | cut -d: -f2)
+    _hit_tag=$(echo "$_hit" | cut -d: -f3)
+    case "$_hit_tag" in
+      SLASH_EXIT)  print_violation "$_hit_file" "$_hit_line" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific token '/exit' found in lib/core/ - use provider_exit_instructions() instead" ;;
+      PRINT_FLAG)  print_violation "$_hit_file" "$_hit_line" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific flag '--print' found in lib/core/ - this should be in lib/providers/claude.sh" ;;
+      DANG_SKIP)   print_violation "$_hit_file" "$_hit_line" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific flag '--dangerously-skip-permissions' found in lib/core/" ;;
+      DISALLOWED)  print_violation "$_hit_file" "$_hit_line" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific flag '--disallowedTools' found in lib/core/ - use provider_build_tool_restrictions() instead" ;;
+      TOOL_USE)    print_violation "$_hit_file" "$_hit_line" "CLAUDE_SPECIFIC_TOKEN" \
+        "Provider-specific term 'tool_use' found in lib/core/" ;;
+      HCPROVIDER)  print_violation "$_hit_file" "$_hit_line" "HARDCODED_PROVIDER_NAME" \
+        "Hardcoded 'Claude CLI/session' in user-facing output - use \$(provider_name) instead" ;;
+    esac
+  done <<< "$_r9_hits"
+fi
 
 # Rule 10: BSD-only sed -i '' without portable wrapper (except portable-cmds.sh itself)
 echo "Checking for bare 'sed -i \"\"' without portable wrapper..."
@@ -384,46 +421,86 @@ for file in "${SHELL_FILES[@]}"; do
 done
 
 # Rule 13: Raw gh CLI calls not wrapped in gh_safe
-# Catches: gh pr ..., gh issue ..., gh api ..., gh repo ..., gh label ...
-# Skips:   gh_safe calls, comment lines, gh-retry.sh itself (defines gh_safe)
+# Catches: gh pr ..., gh issue ..., gh api ..., gh repo ..., gh label ..., gh diff ...
+# Skips:   gh_safe calls, comment lines, heredoc body lines, gh-retry.sh itself
+#
+# Heredoc-aware: uses a single-pass AWK program per file to track heredoc open/close
+# markers and skip all body lines inside them.  Lines inside a heredoc are not shell
+# commands (they may be example scripts, instructional text, or prompt strings passed
+# to AI tools) and must not be flagged.
+# AWK is used instead of a bash while+grep loop for performance: spawning one grep
+# subprocess per line is prohibitively slow on large files (e.g. claude-workflow.sh
+# at ~2800 lines would launch ~8000 subprocesses).
 echo "Checking for raw 'gh' CLI calls not wrapped in gh_safe..."
+_r13_awk=$(mktemp)
+# The AWK program is written to a temp file to:
+# 1. Avoid shell quoting issues (single-quote literals in AWK regex)
+# 2. Ensure BSD AWK (macOS) compatibility: no \< \> word boundaries, no + quantifier,
+#    no PATTERN && PATTERN { } compound rules, no !~ operator.
+#    All logic uses a single { } action block with if/else and index()/match().
+printf '%s\n' \
+  '{' \
+  '  # Heredoc close: strip leading whitespace before comparing to support' \
+  '  # <<-MARKER (tab-indented terminators) — bare terminator exits heredoc mode.' \
+  '  if (in_heredoc) {' \
+  '    _close = $0; sub(/^[[:space:]]*/, "", _close)' \
+  '    if (_close == hd_marker) in_heredoc = 0' \
+  '    next' \
+  '  }' \
+  '  # Heredoc open: detect <<MARKER, <<-MARKER, <<'"'"'MARKER'"'"', <<"MARKER" on this line.' \
+  '  # sub strips everything up to << and an optional - (for <<-) so that <<-MARKER' \
+  '  # leaves only MARKER in tok (without the leading dash that caused the heredoc' \
+  '  # state to be skipped entirely in the old pattern).' \
+  '  # Fall through after opening: the line itself is a command, not heredoc body.' \
+  '  if (index($0, "<<") > 0) {' \
+  '    tok = $0' \
+  '    sub(/.*<<-?[[:space:]]*/, "", tok)' \
+  '    gsub(/['"'"'"]/, "", tok)' \
+  '    split(tok, _p, " ")' \
+  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {' \
+  '      hd_marker = _p[1]; in_heredoc = 1' \
+  '    }' \
+  '  }' \
+  '  # Skip full-line comments' \
+  '  if ($0 ~ /^[[:space:]]*#/) next' \
+  '  # Skip output/print lines (gh in echo/printf is always quoted text, not a call)' \
+  '  if ($0 ~ /^[[:space:]]*(echo|printf|print_info|print_status|print_warning|print_error|cat)[[:space:]]/) next' \
+  '  # Skip instructional/prose text lines (multi-line prompt bodies, etc.)' \
+  '  if ($0 ~ /^[[:space:]]*(Do NOT|Run:|use:|Check if|Example:|example:)/) next' \
+  '  # Skip lines with inline (use: ...) markup — these are prompt text, not shell commands' \
+  '  if (index($0, "(use:") > 0) next' \
+  '  # Flag: gh call for known subcommands not wrapped in gh_safe.' \
+  '  # Pattern requires "gh" to be preceded by a command-context character (any whitespace,' \
+  '  # (, |, ;, $) or appear at start-of-line after whitespace.  [[:space:]] covers both' \
+  '  # spaces and tabs, preventing false negatives for tab-indented gh calls.' \
+  '  if (index($0, "gh_safe") == 0) {' \
+  '    if ($0 ~ /^[[:space:]]*gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/ ||' \
+  '        $0 ~ /[[:space:](|;$]gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
+  '      print FILENAME ":" NR ":" $0' \
+  '    }' \
+  '  }' \
+  '}' \
+  > "$_r13_awk"
+
 for file in "${SHELL_FILES[@]}"; do
   # gh-retry.sh defines gh_safe and intentionally calls raw gh — skip it
   if [[ "$file" == */gh-retry.sh ]]; then
     continue
   fi
-  while IFS=: read -r line_num line_content; do
-    # Skip full-line comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
-      continue
-    fi
-    # Skip lines where gh appears only inside quoted strings (echo/print_info/print_status etc.)
-    # i.e. skip: echo "...gh pr...", print_info "...gh pr...", heredoc body lines
-    if echo "$line_content" | grep -qE '^\s*(echo|printf|print_info|print_status|print_warning|print_error|cat\b).*"[^"]*\bgh\b'; then
-      continue
-    fi
-    # Skip lines where gh is in a single-quoted string
-    if echo "$line_content" | grep -qE "^\s*(echo|printf).*'[^']*\bgh\b"; then
-      continue
-    fi
-    # Skip lines inside heredoc/string content (heuristic: line starts with non-shell text)
-    # These patterns indicate the line is instructional text, not a shell command:
-    #   "Do NOT run ..." "Run: gh pr ..." "use: gh pr list" "-  Check if..."
-    if echo "$line_content" | grep -qiE '^\s*(Do NOT|Run:|use:|Check if|Example:|example:|-\s+Check)'; then
-      continue
-    fi
-    # Match: gh call that looks like an actual command invocation
-    # Require: gh is at start of command (after whitespace/pipe/$(/) or assignment target)
-    # AND not inside a double-quoted echo/print context (handled above)
-    if echo "$line_content" | grep -qE '(^|[[:space:];|(=])\bgh\b[[:space:]]+(pr|issue|api|repo|label|diff)\b'; then
-      # Exclude gh_safe itself (false positive guard)
-      if ! echo "$line_content" | grep -qE '\bgh_safe\b'; then
-        print_violation "$file" "$line_num" "GH_UNSAFE_CALL" \
-          "Raw 'gh' call — wrap with gh_safe to get retry/resilience (lib/utils/gh-retry.sh)"
-      fi
-    fi
-  done < <(grep -n '\bgh\b' "$file" 2>/dev/null || true)
+
+  _r13_hits=$(awk -f "$_r13_awk" "$file" 2>/dev/null || true)
+
+  if [ -n "$_r13_hits" ]; then
+    while IFS= read -r _hit; do
+      _hit_file=$(echo "$_hit" | cut -d: -f1)
+      _hit_line=$(echo "$_hit" | cut -d: -f2)
+      print_violation "$_hit_file" "$_hit_line" "GH_UNSAFE_CALL" \
+        "Raw 'gh' call — wrap with gh_safe to get retry/resilience (lib/utils/gh-retry.sh)"
+    done <<< "$_r13_hits"
+  fi
 done
+rm -f "$_r13_awk"
+_r13_awk=""
 
 # Rule 14: ${VAR:-{}} appends a stray '}' to non-empty values
 # Bash parses ${VAR:-{}} as ${VAR:-{} + literal '}', so when VAR is non-empty
