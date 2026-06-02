@@ -57,10 +57,9 @@ EOF
     export PATH='$STUB_BIN:$PATH'
     source '$GH_RETRY_SH'
     # Capture stderr to a temp file since run captures stdout
-    err_file=\$(mktemp)
+    err_file=\$(mktemp '$TEST_TMPDIR/err.XXXXXX')
     gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123 2>'\$err_file' || true
     echo \"stderr_content:\$(cat '\$err_file')\"
-    rm -f '\$err_file'
   "
 
   # The 409 message must appear in stderr output
@@ -175,11 +174,17 @@ EOF
 # echoes stderr. Verifies stderr is always surfaced regardless of exit path.
 # ---------------------------------------------------------------------------
 @test "gh_safe exhausted-retries path echoes final stderr to caller" {
-  # Stub: always fails with an error that doesn't match transient patterns
-  # Single attempt (RITE_GH_MAX_RETRIES=1) → loop exits, hits exhausted-retries path
+  # Stub: always fails with a transient-pattern error (5xx server error) so that
+  # gh_safe enters the retry-classification branch rather than the non-transient
+  # path (which would make this a duplicate of Test 1).
+  #
+  # With RITE_GH_MAX_RETRIES=1 the stub runs once: the transient check fires, but
+  # attempt(1) < 1 is false so no sleep/continue occurs. Execution falls through to
+  # the non-transient propagation block — this is the last-attempt exhausted path
+  # and it must echo stderr so merge-pr.sh can detect "Head branch was modified".
   cat > "$STUB_BIN/gh" <<'EOF'
 #!/bin/bash
-echo "HEAD_MODIFIED: Head branch was modified." >&2
+echo "HTTP 500 Server Error: Head branch was modified." >&2
 exit 1
 EOF
   chmod +x "$STUB_BIN/gh"
@@ -191,10 +196,9 @@ EOF
     export PATH='$STUB_BIN:$PATH'
     export RITE_GH_MAX_RETRIES=1
     source '$GH_RETRY_SH'
-    err_file=\$(mktemp)
+    err_file=\$(mktemp '$TEST_TMPDIR/err.XXXXXX')
     gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123 2>'\$err_file' || true
     echo \"stderr:\$(cat '\$err_file')\"
-    rm -f '\$err_file'
   "
 
   # The error text must have reached the caller's stderr
