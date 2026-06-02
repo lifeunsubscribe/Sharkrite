@@ -422,8 +422,8 @@ repo_wide_status() {
 
       # Find matching PR (body contains "Closes #N" or "Fixes #N")
       local matched_pr
-      matched_pr=$(echo "$open_prs_json" | jq --arg issue "$num" '
-        [.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0] // empty
+      matched_pr=$(echo "$open_prs_json" | jq --arg issue "$num" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" '
+        [.[] | select(.body | test($closing_re + $issue + "\\b"))] | .[0] // empty
       ' 2>/dev/null || echo "")
 
       # Fetch comments for this PR if it exists
@@ -627,8 +627,8 @@ repo_wide_status() {
       # Find matching merged PR
       local closed_pr_num=""
       local matched_closed_pr
-      matched_closed_pr=$(echo "$merged_prs_json" | jq -r --arg issue "$num" '
-        [.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0].number // ""
+      matched_closed_pr=$(echo "$merged_prs_json" | jq -r --arg issue "$num" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" '
+        [.[] | select(.body | test($closing_re + $issue + "\\b"))] | .[0].number // ""
       ' 2>/dev/null || echo "")
       if [ -n "$matched_closed_pr" ] && [ "$matched_closed_pr" != "null" ]; then
         closed_pr_num="$matched_closed_pr"
@@ -674,7 +674,7 @@ repo_wide_status() {
         local _pr_body
         _pr_body=$(echo "$open_prs_json" | jq -r --arg b "$branch" \
           '[.[] | select(.headRefName == $b)] | .[0].body // ""' 2>/dev/null || echo "")
-        wt_issue_num=$(echo "$_pr_body" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        wt_issue_num=$(echo "$_pr_body" | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
       fi
       local wt_pr_num=""
       if [ -z "$wt_issue_num" ]; then
