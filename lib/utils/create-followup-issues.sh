@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f create_followup_issues >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source gh retry wrapper if not already loaded
 _CREATE_FOLLOWUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -f gh_safe >/dev/null 2>&1; then

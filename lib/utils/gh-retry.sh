@@ -32,6 +32,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f gh_safe >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # Configuration (can be overridden by environment or .rite/config)
 # ---------------------------------------------------------------------------

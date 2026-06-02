@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f plan_issues >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source colors if not already loaded
 if ! declare -f print_info &>/dev/null; then
   if [ -n "${RITE_LIB_DIR:-}" ]; then

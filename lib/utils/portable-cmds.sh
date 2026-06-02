@@ -13,6 +13,11 @@
 # Detection strategy: mirrors the existing date-helpers.sh pattern —
 # `sed --version` exits 0 on GNU, nonzero on BSD.
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f portable_sed_i >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # portable_sed_i — in-place sed edit, portable across BSD and GNU
 #
 # Args:

@@ -5,6 +5,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_WORKFLOW_RUNNER_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_WORKFLOW_RUNNER_LOADED=true
+
 # ===================================================================
 # CONFIGURATION
 # ===================================================================
