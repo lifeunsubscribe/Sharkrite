@@ -78,6 +78,10 @@ while [[ $# -gt 0 ]]; do
       MODE="undo"
       shift
       ;;
+    --reset-approval)
+      MODE="reset-approval"
+      shift
+      ;;
     --health-report|--rtk-report)
       MODE="health-report"
       shift
@@ -176,6 +180,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --status                 Repo-wide status overview"
       echo "  rite --status --by-label      Repo-wide status grouped by label"
       echo "  rite <issue> --undo           Undo workflow: close PR, clean up artifacts"
+      echo "  rite <issue> --reset-approval Clear saved blocker approvals for an issue"
+      echo "  rite --reset-approval         Clear ALL saved blocker approvals (global reset)"
       echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
       echo "  rite plan --preview [doc]     Preview issues without creating them"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
@@ -213,6 +219,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite 21 --assess-and-fix   # Assess review + fix loop"
       echo "  rite 21 --status           # Show workflow status"
       echo "  rite 21 --undo             # Undo: close PR, clean branches/worktree/state"
+      echo "  rite 21 --reset-approval   # Clear saved blocker approvals for issue 21"
+      echo "  rite --reset-approval      # Clear ALL saved blocker approvals"
       echo "  rite --pr 72               # Run by PR number (orphan PRs handled automatically)"
       echo "  rite plan docs/phases.md   # Generate issues from doc"
       echo "  rite plan \"phases 2-4\"     # Natural language filtering"
@@ -237,7 +245,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -248,6 +256,85 @@ if [ "$MODE" = "health-report" ]; then
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
 fi
+
+# Reset approval state: dispatch immediately (no workflow setup needed)
+if [ "$MODE" = "reset-approval" ]; then
+  source "$RITE_LIB_DIR/utils/session-tracker.sh"
+
+  ISSUE_ARG="${ARGS[0]:-}"
+
+  if [ -n "$ISSUE_ARG" ]; then
+    # Issue-scoped reset: clear all approvals for the given issue number
+    if [[ ! "$ISSUE_ARG" =~ ^[0-9]+$ ]]; then
+      print_error "--reset-approval: issue number must be numeric (got: $ISSUE_ARG)"
+      exit 1
+    fi
+
+    APPROVAL_FILE="$(_get_approval_state_file)"
+    if [ ! -f "$APPROVAL_FILE" ]; then
+      print_info "No approval state file found — nothing to reset for issue #$ISSUE_ARG"
+      exit 0
+    fi
+
+    # Show what will be removed before clearing
+    ENTRIES=$(jq -r --arg prefix "${ISSUE_ARG}:" \
+      '.approved_blockers // [] | map(select(startswith($prefix))) | join(", ")' \
+      "$APPROVAL_FILE" 2>/dev/null || true)
+    ENTRIES="${ENTRIES:-}"
+
+    if [ -z "$ENTRIES" ]; then
+      print_info "No saved approvals for issue #$ISSUE_ARG"
+      exit 0
+    fi
+
+    if [ "$SUPERVISED" = true ]; then
+      echo ""
+      echo "Approvals to remove for issue #$ISSUE_ARG: $ENTRIES"
+      echo ""
+      read -p "Clear these approvals? (y/n) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Reset cancelled"
+        exit 0
+      fi
+    fi
+
+    reset_approved_blockers_for_issue "$ISSUE_ARG"
+    print_success "Cleared blocker approvals for issue #$ISSUE_ARG ($ENTRIES)"
+  else
+    # Global reset: clear ALL approvals across all issues
+    APPROVAL_FILE="$(_get_approval_state_file)"
+    if [ ! -f "$APPROVAL_FILE" ]; then
+      print_info "No approval state file found — nothing to reset"
+      exit 0
+    fi
+
+    TOTAL=$(jq '.approved_blockers // [] | length' "$APPROVAL_FILE" 2>/dev/null || echo "0")
+    TOTAL="${TOTAL:-0}"
+
+    if [ "$TOTAL" -eq 0 ]; then
+      print_info "No saved approvals found — nothing to reset"
+      exit 0
+    fi
+
+    if [ "$SUPERVISED" = true ]; then
+      echo ""
+      echo "This will clear ALL $TOTAL saved blocker approvals across all issues."
+      echo ""
+      read -p "Clear all approvals? (y/n) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Reset cancelled"
+        exit 0
+      fi
+    fi
+
+    reset_all_approved_blockers
+    print_success "Cleared all saved blocker approvals ($TOTAL entries removed)"
+  fi
+  exit 0
+fi
+
 if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   LOG_TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
 
