@@ -752,7 +752,11 @@ while IFS= read -r _hit; do
 done <<< "$_r18_starts"
 
 # Also flag end markers that have no corresponding start in the same file.
-declare -A _seen_end_pairs
+# No (file, name) deduplication here: each occurrence of an orphaned end marker
+# is its own violation. If two end markers share a name but no start exists, both
+# lines must be reported individually. Pairs already processed by the start-marker
+# loop above (i.e., where a start exists) are still skipped via _seen_pairs to
+# avoid double-reporting the same (file, name) problem.
 while IFS= read -r _hit; do
   [ -z "$_hit" ] && continue
   _hit_file=$(echo "$_hit" | cut -d: -f1)
@@ -761,13 +765,13 @@ while IFS= read -r _hit; do
   [ -z "$_hit_name" ] && continue
 
   _pair_key="${_hit_file}::${_hit_name}"
-  [ "${_seen_end_pairs[$_pair_key]+set}" = "set" ] && continue
-  _seen_end_pairs[$_pair_key]=1
 
-  # If this (file, name) pair was already processed via starts, skip it
+  # If this (file, name) pair was already processed via starts, skip it.
+  # The start-marker loop already reported the imbalance (e.g. end count != 1).
   [ "${_seen_pairs[$_pair_key]+set}" = "set" ] && continue
 
-  # End marker exists but no start marker — orphaned end
+  # End marker exists but no start marker — orphaned end.
+  # Report each occurrence individually: two orphaned ends = two violations.
   _start_count=$(grep -c "# sharkrite-extract: ${_hit_name}-start" "$_hit_file" 2>/dev/null || true)
   if [ "$_start_count" -eq 0 ]; then
     print_violation "$_hit_file" "$_hit_line" "UNBALANCED_EXTRACT_MARKERS" \
