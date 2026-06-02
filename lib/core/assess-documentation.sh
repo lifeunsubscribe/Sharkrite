@@ -50,6 +50,15 @@ if [ -z "$PR_NUMBER" ]; then
   exit 1
 fi
 
+# Validate optional second argument — only --auto is accepted.
+# An unrecognized flag silently falls through to supervised mode, which can
+# confuse operators following the re-run instruction in the warning message.
+if [ -n "$AUTO_MODE" ] && [ "$AUTO_MODE" != "--auto" ]; then
+  print_error "Unknown argument: $AUTO_MODE"
+  print_error "Usage: $0 <pr_number> [--auto]"
+  exit 1
+fi
+
 # Check provider CLI availability and authentication
 provider_detect_cli || exit 1
 provider_validate_cli || exit 1
@@ -71,8 +80,8 @@ if [ "$_pr_data_exit" -ne 0 ]; then
   exit 0
 fi
 PR_DATA="${PR_DATA:-"{}"}"
-PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
-PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+PR_TITLE=$(echo "$PR_DATA" | jq -r '.title' || true)
+PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""' || true)
 
 # Fetch PR diff separately. gh pr diff is the call that triggered the live 5xx
 # ("this diff is temporarily unavailable due to heavy server load"). gh_safe
@@ -81,14 +90,15 @@ PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
 # Use temp files to capture both output and exit code: PIPESTATUS doesn't
 # survive $() subshell boundaries (see CLAUDE.md), so a pipeline inside $()
 # can't reliably capture gh_safe's exit code.
-# _diff_exit_file is only written on failure; empty = success (defaults to 0).
+# Always capture the real exit code. `if` is exempt from set -e, so gh_safe's
+# failure is captured correctly without || true swallowing it.
 _diff_raw_file=$(mktemp)
-_diff_exit_file=$(mktemp)
-gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file" || echo $? > "$_diff_exit_file"
-_pr_diff_exit=$(cat "$_diff_exit_file" 2>/dev/null)
-_pr_diff_exit="${_pr_diff_exit:-0}"
+_pr_diff_exit=0
+if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
+  _pr_diff_exit=$?
+fi
 PR_DIFF=$(head -500 "$_diff_raw_file" || true)
-rm -f "$_diff_raw_file" "$_diff_exit_file"
+rm -f "$_diff_raw_file"
 if [ "${_pr_diff_exit}" -ne 0 ]; then
   print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later" >&2
   exit 0
