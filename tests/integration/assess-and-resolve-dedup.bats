@@ -40,6 +40,11 @@
 #   8. Dedup retry loop uses PR comment guard (Source 4) then finds issue.
 #   9. All-DISMISSED assessment: exit 0, no follow-up issue.
 #  10. Follow-up issue body contains sharkrite-parent-pr marker.
+#  11. CLOSED-state evidence clearing: evidence pointing to CLOSED issue is
+#      removed and a new follow-up is created (covers assess-and-resolve.sh
+#      CLOSED branch at lines 1180-1183).
+#  12. CLOSED-evidence log message: script emits informational message when
+#      clearing stale evidence for a CLOSED issue.
 #
 # Verification command:
 #   bats tests/integration/assess-and-resolve-dedup.bats
@@ -725,6 +730,155 @@ run_assess_and_resolve() {
   echo "$_body" | grep -q "sharkrite-parent-pr:54" || {
     echo "FAIL: issue body missing sharkrite-parent-pr:54 marker"
     echo "Body: ${_body:0:300}"
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 10. CLOSED-state evidence clearing: stale evidence pointing to a CLOSED
+#     issue is removed and a new follow-up is created
+# ---------------------------------------------------------------------------
+
+@test "integration: CLOSED evidenced issue clears stale evidence and creates new follow-up" {
+  # Sequence:
+  #   First run: creates follow-up issue #1000 and writes local evidence.
+  #   Then: close the evidenced issue (flip state to CLOSED in mock state).
+  #   Second run: Source 1 reads evidence → gh issue view returns CLOSED
+  #     → script clears stale evidence → dedup check creates a new follow-up.
+  #
+  # This exercises the branch in assess-and-resolve.sh:1180-1183:
+  #   elif [ -n "$_evidence_issue_state" ]; then
+  #     # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
+  #     clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
+
+  local _pr=60
+  local _issue=30
+
+  # First run: creates a follow-up issue (number 1000) and writes evidence.
+  run_assess_and_resolve "$_pr" "$_issue"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: first run exited $status (expected 0)"
+    echo "$output"
+    false
+  }
+
+  # Evidence file must exist after the first run.
+  local _evidence_file="$RITE_LOCK_DIR/pr-${_pr}-src-${_issue}-followup-created.txt"
+  [ -f "$_evidence_file" ] || {
+    echo "FAIL: local evidence file not found at $_evidence_file after first run"
+    ls "$RITE_LOCK_DIR/" || true
+    false
+  }
+
+  # Retrieve the evidenced issue number.
+  local _evidenced_issue_num
+  _evidenced_issue_num=$(cat "$_evidence_file")
+  [[ "$_evidenced_issue_num" =~ ^[0-9]+$ ]] || {
+    echo "FAIL: evidence content '$_evidenced_issue_num' is not a number"
+    false
+  }
+
+  # Close the evidenced issue in the mock state.
+  # This simulates the follow-up being closed/resolved independently before
+  # the next assess-and-resolve run (e.g. someone fixed and closed it manually).
+  _gh_mock_state_issue_set_state "$_evidenced_issue_num" "CLOSED"
+
+  # Verify the state flip took effect before the second run.
+  local _state_after_close
+  _state_after_close=$(jq --argjson num "$_evidenced_issue_num" \
+    '.[] | select(.number == $num) | .state' \
+    "$GH_MOCK_STATE_DIR/issues.json" 2>/dev/null | tr -d '"' || true)
+  [ "$_state_after_close" = "CLOSED" ] || {
+    echo "FAIL: expected state CLOSED after _gh_mock_state_issue_set_state, got '$_state_after_close'"
+    false
+  }
+
+  # Second run: Source 1 sees evidence → gh issue view returns CLOSED
+  # → clears stale evidence → continues to Sources 2/3 → creates new follow-up.
+  run_assess_and_resolve "$_pr" "$_issue"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: second run exited $status (expected 0)"
+    echo "$output"
+    false
+  }
+
+  # A new follow-up must have been created — total issues in state is now 2:
+  # the original CLOSED follow-up plus the newly created one.
+  local _total
+  _total=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
+  [ "$_total" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (original CLOSED + new follow-up), got $_total"
+    jq '[.[] | {number, state, title}]' "$GH_MOCK_STATE_DIR/issues.json"
+    false
+  }
+
+  # The new follow-up must be OPEN.
+  local _new_issue_state
+  _new_issue_state=$(jq -r \
+    --argjson orig "$_evidenced_issue_num" \
+    '[.[] | select(.number != $orig)] | .[0].state' \
+    "$GH_MOCK_STATE_DIR/issues.json" 2>/dev/null || true)
+  [ "$_new_issue_state" = "OPEN" ] || {
+    echo "FAIL: new follow-up issue state is '$_new_issue_state' (expected OPEN)"
+    false
+  }
+
+  # Evidence must now point to the new OPEN issue, NOT the old CLOSED one.
+  # The CLOSED branch clears the old evidence; the creation path then writes
+  # fresh evidence for the new issue.
+  local _new_evidence_num
+  _new_evidence_num=$(cat "$_evidence_file" 2>/dev/null || echo "")
+  [ "$_new_evidence_num" != "$_evidenced_issue_num" ] || {
+    echo "FAIL: evidence still points to original CLOSED issue #$_evidenced_issue_num"
+    echo "Expected: a different (new) issue number"
+    false
+  }
+  [[ "$_new_evidence_num" =~ ^[0-9]+$ ]] || {
+    echo "FAIL: new evidence content '$_new_evidence_num' is not a valid issue number"
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 11. CLOSED-evidence output: script logs the stale-evidence message
+# ---------------------------------------------------------------------------
+
+@test "integration: CLOSED evidenced issue produces stale-evidence log message" {
+  # Verify the informational message emitted by the CLOSED-evidence branch.
+  # assess-and-resolve.sh:1182 outputs to stderr:
+  #   "Local evidence points to issue #N (state: CLOSED) — removing stale evidence file..."
+  # bats $output captures both stdout and stderr (via combined redirection in `run`).
+
+  local _pr=61
+  local _issue=31
+
+  # First run: creates a follow-up and writes evidence.
+  run_assess_and_resolve "$_pr" "$_issue"
+  [ "$status" -eq 0 ]
+
+  local _evidence_file="$RITE_LOCK_DIR/pr-${_pr}-src-${_issue}-followup-created.txt"
+  local _evidenced_num
+  _evidenced_num=$(cat "$_evidence_file" 2>/dev/null || echo "")
+  [[ "$_evidenced_num" =~ ^[0-9]+$ ]] || {
+    echo "FAIL: could not read evidenced issue number from $_evidence_file"
+    false
+  }
+
+  # Close the evidenced issue.
+  _gh_mock_state_issue_set_state "$_evidenced_num" "CLOSED"
+
+  # Second run: should emit the stale-evidence message.
+  run_assess_and_resolve "$_pr" "$_issue"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: second run exited $status (expected 0)"
+    echo "$output"
+    false
+  }
+
+  # Output must mention stale evidence removal.
+  echo "$output" | grep -qi "stale evidence\|removing stale\|stale evidence file" || {
+    echo "FAIL: output does not mention stale evidence clearing"
+    echo "Output: ${output:0:800}"
     false
   }
 }
