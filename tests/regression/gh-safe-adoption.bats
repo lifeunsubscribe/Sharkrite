@@ -20,9 +20,17 @@ setup() {
   export TEST_TMPDIR="${BATS_TEST_TMPDIR}/gh-safe-test"
   mkdir -p "$TEST_TMPDIR"
 
-  # Temp dir inside lib/ for lint fixture files (linter only scans lib/, bin/, tools/)
-  export LINT_FIXTURE_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  # Fixture dir for lint tests: use BATS_TEST_TMPDIR so files are outside the project
+  # tree and never scanned by production lint runs (even if teardown is skipped due to
+  # a crash or SIGINT). Inject via RITE_LINT_EXTRA_DIRS so the linter scans them when
+  # tests need the lint rule to fire on controlled fixture input.
+  #
+  # Previously this pointed to $PROJECT_ROOT/lib/test-fixtures-temp, which the linter
+  # explicitly excludes via the test-fixtures-temp* path filter — causing the lint-rule
+  # tests that write fixtures and expect the linter to flag them to fail silently.
+  export LINT_FIXTURE_DIR="${BATS_TEST_TMPDIR}/gh-safe-fixtures"
   mkdir -p "$LINT_FIXTURE_DIR"
+  export RITE_LINT_EXTRA_DIRS="$LINT_FIXTURE_DIR"
 
   # Stub bin dir — prepend to PATH so fake gh overrides the real one
   export STUB_BIN="$TEST_TMPDIR/stub-bin"
@@ -35,6 +43,7 @@ setup() {
 teardown() {
   rm -rf "$TEST_TMPDIR"
   rm -rf "$LINT_FIXTURE_DIR"
+  unset RITE_LINT_EXTRA_DIRS
 }
 
 # ===========================================================================
