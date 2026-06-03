@@ -126,8 +126,14 @@ _project_abbrev=$(echo "$RITE_PROJECT_NAME" | sed 's/\([a-z]\)[a-z]*/\1/g; s/-//
 RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-wt}"
 
 # Session limits
+# RITE_MAX_SESSION_HOURS: cumulative active work hours (sum of per-issue durations),
+#   NOT wall-clock age of the session state file. Default raised from 4→12 (issue #283):
+#   4h of active work was correct intuition but the old implementation measured file age,
+#   not work. 12h of actual rite automation is a conservative daily budget.
+# RITE_MAX_ISSUE_HOURS: per-issue cap — protects against fix-loop runaway on a single issue.
 RITE_MAX_ISSUES_PER_SESSION="${RITE_MAX_ISSUES_PER_SESSION:-8}"
-RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-4}"
+RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-12}"
+RITE_MAX_ISSUE_HOURS="${RITE_MAX_ISSUE_HOURS:-4}"
 RITE_MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
 RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-300}"
 RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
@@ -266,6 +272,7 @@ export RITE_WORKTREE_BASE
 export RITE_WORKTREE_DIR
 export RITE_MAX_ISSUES_PER_SESSION
 export RITE_MAX_SESSION_HOURS
+export RITE_MAX_ISSUE_HOURS
 export RITE_MAX_RETRIES
 export RITE_ASSESSMENT_TIMEOUT
 export RITE_STALE_BRANCH_THRESHOLD

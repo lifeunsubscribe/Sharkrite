@@ -48,6 +48,12 @@ lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-a
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
 
+### Batch ↔ Single-Issue Parity Contract
+
+`rite N1 N2 N3` must produce identical per-issue side effects as `rite Ni` for each issue. The batch is a thin orchestrator — per-issue work is delegated to `workflow-runner.sh::run_workflow()`. Closed-issue handling uses the shared `handle_closed_issue()` helper (defined in `workflow-runner.sh` above `run_workflow()`).
+
+Any short-circuit that bypasses `run_workflow()` must be documented with `# Deliberate divergence from single-issue mode: <reason>` and covered by `tests/regression/batch-single-issue-parity.bats`. See full contract: `docs/architecture/behavioral-design.md` → "Batch ↔ Single-Issue Parity Contract".
+
 ### Data Flow
 
 - `assess-review-issues.sh` outputs assessment to **stdout** (pipe-friendly)
@@ -339,7 +345,9 @@ Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
 - **Test/build failures** — non-zero exit from test suite
-- **Session limits** — token/time limits reached
+- **Session limits** — dual-cap model (issue #283):
+  - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
+  - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
 - **AWS credentials expired** — deployment credentials invalid
 - **Supervised mode**: Interactive `read -p` prompt for approval
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
