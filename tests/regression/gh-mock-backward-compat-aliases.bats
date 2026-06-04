@@ -101,6 +101,13 @@ teardown() {
 # ---------------------------------------------------------------------------
 # 2. Path-helper aliases
 #    Verify each old name exists and returns the same path as its new name.
+#
+# Note: the existence tests in section 1 (declare -f) and the behavioral
+# assertions in section 2 are complementary.  Both must pass to confirm that
+# an alias is non-trivial.  A no-op stub ({ :; }) passes section 1 because
+# the function is declared, but fails section 2 because it returns an empty
+# path — the [ -n "$old_path" ] guard below makes that failure explicit and
+# descriptive rather than leaving it as an opaque assertion mismatch.
 # ---------------------------------------------------------------------------
 
 @test "backward-compat: _gh_mock_issues_file returns same path as _gh_mock_state_issues_file" {
@@ -109,6 +116,7 @@ teardown() {
   local old_path new_path
   old_path=$(_gh_mock_issues_file)
   new_path=$(_gh_mock_state_issues_file)
+  [ -n "$old_path" ] || { echo "FAIL: _gh_mock_issues_file alias returned empty path (no-op stub?)"; return 1; }
   [ "$old_path" = "$new_path" ]
 }
 
@@ -118,6 +126,7 @@ teardown() {
   local old_path new_path
   old_path=$(_gh_mock_comments_file)
   new_path=$(_gh_mock_state_comments_file)
+  [ -n "$old_path" ] || { echo "FAIL: _gh_mock_comments_file alias returned empty path (no-op stub?)"; return 1; }
   [ "$old_path" = "$new_path" ]
 }
 
@@ -127,6 +136,7 @@ teardown() {
   local old_path new_path
   old_path=$(_gh_mock_lag_file)
   new_path=$(_gh_mock_state_lag_file)
+  [ -n "$old_path" ] || { echo "FAIL: _gh_mock_lag_file alias returned empty path (no-op stub?)"; return 1; }
   [ "$old_path" = "$new_path" ]
 }
 
@@ -136,6 +146,7 @@ teardown() {
   local old_path new_path
   old_path=$(_gh_mock_next_num_file)
   new_path=$(_gh_mock_state_next_num_file)
+  [ -n "$old_path" ] || { echo "FAIL: _gh_mock_next_num_file alias returned empty path (no-op stub?)"; return 1; }
   [ "$old_path" = "$new_path" ]
 }
 
