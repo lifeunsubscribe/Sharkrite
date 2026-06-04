@@ -100,6 +100,22 @@
 # RITE_PLAN_DOC_BYTE_CAP=50000
 
 # =============================================================================
+# Unverified External Integration Detection (rite plan post-generation pass)
+# =============================================================================
+
+# Glob pattern for fixture root directories.  Any hostname or package name that
+# appears as a subdirectory under these paths is considered "grounded" and will
+# not trigger a spike-issue prerequisite.
+# Default: "{fixtures,tests/fixtures}/**"
+# RITE_PLAN_FIXTURE_GLOB="{fixtures,tests/fixtures}/**"
+
+# Set to "1" to skip the _detect_unverified_integrations pass entirely.
+# Useful when the project has intentionally ungrounded integrations or the
+# check is producing false positives for a specific planning run.
+# Default: "0" (pass is active)
+# RITE_PLAN_SKIP_INTEGRATION_CHECK=0
+
+# =============================================================================
 # Documentation
 # =============================================================================
 

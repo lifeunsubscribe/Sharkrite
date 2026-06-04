@@ -857,6 +857,12 @@ PROMPT_EOF
   # Post-generation lint: catch known anti-patterns that Claude keeps generating
   _lint_issues "$temp_file"
 
+  # Detect unverified external integrations (deterministic — no LLM calls).
+  # Emits WARNING lines to stderr and prepends spike-issue prerequisites for
+  # any host or package referenced in issue bodies that is not grounded in the
+  # repo's fixture directories or dependency manifests.
+  _detect_unverified_integrations "$temp_file"
+
   echo "$temp_file"
 }
 
@@ -1151,6 +1157,416 @@ _save_deferrals() {
 }
 
 # =============================================================================
+# Detect unverified external integrations (deterministic — zero LLM calls)
+#
+# For each ---ISSUE--- block, extract:
+#   - Hostnames from URLs (https?://hostname)
+#   - Package/SDK names from import statements (Python and Node supported)
+#
+# Build the "grounded" set from the project:
+#   - Hostnames: subdirectory names under RITE_PLAN_FIXTURE_GLOB paths
+#   - Packages: names from requirements.txt, pyproject.toml, package.json,
+#     go.mod, Cargo.toml
+#
+# For each ungrounded candidate:
+#   - Emit WARNING to stderr
+#   - Prepend a spike-issue block to the file
+#   - Rewrite every downstream issue body to add "Blocked by: #SPIKE-<name>"
+#     in its Dependencies section (placeholder filled by create_issues)
+#
+# Controlled by:
+#   RITE_PLAN_SKIP_INTEGRATION_CHECK=1  — bypass this pass entirely
+#   RITE_PLAN_FIXTURE_GLOB              — glob for fixture root paths
+# =============================================================================
+
+# _extract_packages_for_language: pluggable per-language import extractor.
+# Prints one package name per line to stdout.
+# Usage: echo "$issue_body" | _extract_packages_for_language <lang>
+# Supported languages: python, node
+_extract_packages_for_language() {
+  local lang="$1"
+  case "$lang" in
+    python)
+      # Match: import foo, from foo import bar, from foo.bar import baz
+      # Capture the top-level module name only (before the first '.')
+      grep -oE '^\s*(import|from)\s+[a-zA-Z_][a-zA-Z0-9_]*' | \
+        sed 's/^[[:space:]]*//' | \
+        sed 's/^import[[:space:]]\+//; s/^from[[:space:]]\+//' | \
+        grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*' || true
+      ;;
+    node)
+      # Match: require('foo'), require("foo"), from 'foo', from "foo"
+      # Capture bare package names only (no relative paths starting with . or /)
+      grep -oE "(require\(['\"][^'\"./][^'\"]*['\"]|from[[:space:]]+['\"][^'\"./][^'\"]*['\"])" | \
+        grep -oE "['\"][^'\"./][^'\"]*['\"]" | \
+        sed "s/['\"]//g" || true
+      ;;
+    *)
+      # Unknown language — no extraction (returns nothing)
+      ;;
+  esac
+}
+
+# _detect_project_language: infer primary language from project manifests.
+# Prints "python", "node", or "" (unknown) to stdout.
+_detect_project_language() {
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+  # Check manifest files first (authoritative).
+  # Avoid "ls *.py" glob checks — head always exits 0 so it looks like a match
+  # even on an empty directory under set -euo pipefail.
+  if [ -f "$project_root/requirements.txt" ] || [ -f "$project_root/pyproject.toml" ]; then
+    echo "python"
+  elif [ -f "$project_root/package.json" ]; then
+    echo "node"
+  else
+    echo ""
+  fi
+}
+
+# _build_grounded_packages: collect packages from dependency manifests.
+# Prints one package name per line (lowercased) to stdout.
+_build_grounded_packages() {
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Python: requirements.txt — lines like "requests==2.28.0" or "requests>=2" or "requests"
+  if [ -f "$project_root/requirements.txt" ]; then
+    grep -oE '^[a-zA-Z_][a-zA-Z0-9_.-]*' "$project_root/requirements.txt" | \
+      tr '[:upper:]' '[:lower:]' || true
+  fi
+
+  # Python: pyproject.toml — [project].dependencies or [tool.poetry.dependencies]
+  if [ -f "$project_root/pyproject.toml" ]; then
+    # Match quoted package names (e.g. "requests>=2", 'flask')
+    grep -oE '"[a-zA-Z_][a-zA-Z0-9_.-]*[^"]*"' "$project_root/pyproject.toml" | \
+      grep -oE '^"[a-zA-Z_][a-zA-Z0-9_.-]*' | \
+      sed 's/^"//' | tr '[:upper:]' '[:lower:]' || true
+  fi
+
+  # Node: package.json — dependencies and devDependencies
+  if [ -f "$project_root/package.json" ]; then
+    # Extract package names from "dependencies" and "devDependencies" blocks.
+    # Use awk to parse line-by-line: start at "dependencies", stop at a
+    # closing brace at indentation level 1 (the end of the deps block).
+    # Avoids literal '}' in grep patterns (which confuse brace-depth extractors).
+    awk '
+      /"dependencies"[[:space:]]*:/ { in_deps=1; next }
+      /"devDependencies"[[:space:]]*:/ { in_deps=1; next }
+      in_deps && /^[[:space:]]*[^ \t].*:/ && !/^[[:space:]]*"/ { in_deps=0; next }
+      in_deps && /^[[:space:]]*"[a-zA-Z@]/ {
+        gsub(/^[[:space:]]*"/, ""); gsub(/".*/, "")
+        if (length($0) > 0) print tolower($0)
+      }
+    ' "$project_root/package.json" || true
+  fi
+
+  # Go: go.mod — "require" block entries like: github.com/foo/bar v1.2.3
+  if [ -f "$project_root/go.mod" ]; then
+    grep -oE '^\s+[a-zA-Z][a-zA-Z0-9./_-]+ v' "$project_root/go.mod" | \
+      sed 's/[[:space:]]//g; s/v$//' | tr '[:upper:]' '[:lower:]' || true
+  fi
+
+  # Rust: Cargo.toml — [dependencies] section
+  if [ -f "$project_root/Cargo.toml" ]; then
+    # Use awk to extract dep names from [dependencies] block.
+    # Avoids literal '}' / '[' in grep patterns.
+    awk '
+      /^\[dependencies\]/ { in_deps=1; next }
+      in_deps && /^\[/ { in_deps=0; next }
+      in_deps && /^[a-zA-Z_]/ { gsub(/[[:space:]]*=.*/, ""); print tolower($0) }
+    ' "$project_root/Cargo.toml" || true
+  fi
+}
+
+# _build_grounded_hosts: collect hostnames from fixture directory names.
+# Prints one hostname per line (lowercased) to stdout.
+_build_grounded_hosts() {
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+  local fixture_glob="${RITE_PLAN_FIXTURE_GLOB:-{fixtures,tests/fixtures}/**}"
+
+  # Expand the glob pattern relative to project root and collect immediate
+  # subdirectory names (these are the "grounded" host markers).
+  # Use a loop with globbing — bash 3.2 compatible.
+  local _fixture_dirs="fixtures tests/fixtures"
+  local _dir _name
+  for _dir in $( (
+    for _base in fixtures tests/fixtures; do
+      [ -d "$project_root/$_base" ] && echo "$project_root/$_base" || true
+    done
+    # Also honour RITE_PLAN_FIXTURE_GLOB if it was overridden to a custom path.
+    # Walk one level: strip trailing /** and use the base directory.
+    _custom_base=$(echo "$fixture_glob" | sed 's|/\*\*$||; s|/\*$||' || true)
+    if [ -n "$_custom_base" ] && [ "$_custom_base" != "fixtures" ] && [ "$_custom_base" != "tests/fixtures" ]; then
+      [ -d "$project_root/$_custom_base" ] && echo "$project_root/$_custom_base" || true
+    fi
+  ) | sort -u ); do
+    if [ -d "$_dir" ]; then
+      for _entry in "$_dir"/*/; do
+        [ -d "$_entry" ] || continue
+        _name=$(basename "$_entry")
+        echo "$_name" | tr '[:upper:]' '[:lower:]'
+      done
+      # Also capture top-level fixture files like sample.json → parent dir is already listed
+      # Check for json/yaml files directly under fixtures/ (e.g. fixtures/api.example.com.json)
+      for _entry in "$_dir"/*.json "$_dir"/*.yaml "$_dir"/*.yml; do
+        [ -f "$_entry" ] || continue
+        _name=$(basename "$_entry")
+        _name="${_name%.*}"  # strip extension
+        # Only treat it as a hostname if it looks like a domain (contains a dot)
+        echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
+      done
+    fi
+  done
+}
+
+# _sanitize_spike_key: convert a host/package name to a safe placeholder key.
+# Replaces dots and slashes with hyphens, strips non-alphanumeric (except hyphen).
+# Used both when emitting the spike and when rewriting downstream issue bodies.
+_sanitize_spike_key() {
+  echo "$1" | tr '.' '-' | tr '/' '-' | sed 's/[^a-zA-Z0-9-]//g' | tr '[:upper:]' '[:lower:]' || true
+}
+
+_detect_unverified_integrations() {
+  local issues_file="$1"
+
+  # Escape hatch: skip pass entirely
+  if [ "${RITE_PLAN_SKIP_INTEGRATION_CHECK:-0}" = "1" ]; then
+    return 0
+  fi
+
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+  # TAB_CHAR used as field separator in candidates temp file (tab is safe in filenames
+  # we store; cut -f splits on it portably on both BSD and GNU).
+  local TAB_CHAR
+  TAB_CHAR=$(printf '\t')
+
+  # Detect project language for package extraction
+  local lang
+  lang=$(_detect_project_language)
+
+  # Build grounded sets (newline-separated, lowercased)
+  local grounded_packages grounded_hosts
+  grounded_packages=$(_build_grounded_packages | sort -u || true)
+  grounded_hosts=$(_build_grounded_hosts | sort -u || true)
+
+  # Collect all issue bodies concatenated (for extraction pass)
+  # We parse block-by-block so we can track which issues reference which candidates.
+  # Two-pass approach:
+  #   Pass 1: collect all ungrounded candidates across all issues
+  #   Pass 2: prepend spike issues + rewrite dependent issue Dependencies sections
+
+  # Pass 1: extract candidates per issue block
+  # We store results in a temp file: "candidate<TAB>issue_body_contains_it"
+  local candidates_file
+  candidates_file=$(mktemp)
+
+  local _in_issue=false
+  local _issue_body=""
+
+  while IFS= read -r line; do
+    if [[ "$line" == "---ISSUE---" ]]; then
+      _in_issue=true
+      _issue_body=""
+      continue
+    fi
+    if [[ "$line" == "---END---" ]]; then
+      _in_issue=false
+      if [ -n "$_issue_body" ]; then
+        # Extract hostnames from URLs in this issue body.
+        # grep captures the full scheme+host (no path chars in char class).
+        # Strip scheme with two sed passes (https:// and http://) — avoids
+        # \? which is GNU sed only and silently fails on BSD sed (macOS).
+        local _hosts
+        _hosts=$(echo "$_issue_body" | grep -oE 'https?://[a-zA-Z0-9.-]+' | \
+          sed 's|https://||; s|http://||' | tr '[:upper:]' '[:lower:]' | sort -u || true)
+        # Extract packages from import statements
+        local _pkgs=""
+        if [ -n "$lang" ]; then
+          _pkgs=$(echo "$_issue_body" | _extract_packages_for_language "$lang" | \
+            tr '[:upper:]' '[:lower:]' | sort -u || true)
+        fi
+        # Check each host against grounded set
+        if [ -n "$_hosts" ]; then
+          while IFS= read -r _host; do
+            [ -z "$_host" ] && continue
+            if ! echo "$grounded_hosts" | grep -qxF "$_host" 2>/dev/null; then
+              echo "host${TAB_CHAR}$_host" >> "$candidates_file"
+            fi
+          done <<< "$_hosts"
+        fi
+        # Check each package against grounded set
+        if [ -n "$_pkgs" ]; then
+          while IFS= read -r _pkg; do
+            [ -z "$_pkg" ] && continue
+            # Normalise hyphens vs underscores (Python convention: requests-toolbelt vs requests_toolbelt)
+            local _pkg_norm
+            _pkg_norm=$(echo "$_pkg" | tr '_' '-')
+            local _grounded_norm
+            _grounded_norm=$(echo "$grounded_packages" | tr '_' '-')
+            if ! echo "$_grounded_norm" | grep -qxF "$_pkg_norm" 2>/dev/null; then
+              echo "pkg${TAB_CHAR}$_pkg" >> "$candidates_file"
+            fi
+          done <<< "$_pkgs"
+        fi
+      fi
+      continue
+    fi
+    if [ "$_in_issue" = true ]; then
+      _issue_body+="$line"$'\n'
+    fi
+  done < "$issues_file"
+
+  # De-duplicate the candidates file (same host/pkg may appear in multiple issues)
+  local unique_candidates
+  unique_candidates=$(sort -u "$candidates_file" || true)
+  rm -f "$candidates_file"
+
+  # If no unverified candidates, nothing to do
+  if [ -z "$unique_candidates" ]; then
+    return 0
+  fi
+
+  # Pass 2: for each ungrounded candidate, emit a WARNING and build a spike block.
+  # Spike blocks are collected then prepended to the file in a single rewrite.
+  local spikes_block=""
+
+  while IFS= read -r _candidate_line; do
+    [ -z "$_candidate_line" ] && continue
+    local _kind _name
+    _kind=$(echo "$_candidate_line" | cut -f1)
+    _name=$(echo "$_candidate_line" | cut -f2)
+    local _key
+    _key=$(_sanitize_spike_key "$_name")
+
+    print_warning "unverified external integration: $_name" >&2
+
+    # Build spike issue block
+    spikes_block+="---ISSUE---
+TITLE: spike: capture $_name sample for grounding
+LABELS: spike, tech-debt
+TIME: 30min
+BODY:
+## Background
+
+An emitted issue references \`$_name\` but no real API sample exists in the
+repo's fixture directories. The downstream implementation would be built
+against a hallucinated contract.
+
+## Task
+
+Make one real call to \`$_name\`. Capture a secret-scrubbed sample to
+\`fixtures/$_name/\`. Document per-field provenance (what each returned field
+means, whether it is stable across calls, any fields that contain secrets
+that must be scrubbed before committing).
+
+## Acceptance Criteria
+
+- [ ] Sample exists at \`fixtures/$_name/\`
+- [ ] Each field in the sample has a one-line provenance comment in the
+  adjacent \`README.md\` (or inline in the JSON as a \`_comment\` key)
+- [ ] No secrets (tokens, credentials, PII) are present in the committed sample
+
+## Scope Boundary
+
+**DO**: Capture one representative real response. Scrub secrets. Document fields.
+**DO NOT**: Implement client code, write tests, or validate the sample against
+a schema — those are the downstream issue's responsibility.
+---END---
+"
+  done <<< "$unique_candidates"
+
+  if [ -z "$spikes_block" ]; then
+    return 0
+  fi
+
+  # Prepend spike blocks to the issues file (before any existing ---ISSUE--- blocks
+  # but after the preamble/coverage-checklist section).
+  local rewritten
+  rewritten=$(mktemp)
+
+  local _preamble_done=false
+  local _preamble_written=false
+
+  while IFS= read -r line; do
+    if [ "$_preamble_done" = false ] && [[ "$line" == "---ISSUE---" ]]; then
+      # First issue block encountered — write spike blocks first, then this line
+      _preamble_done=true
+      printf '%s\n' "$spikes_block" >> "$rewritten"
+      printf '%s\n' "$line" >> "$rewritten"
+      continue
+    fi
+    printf '%s\n' "$line" >> "$rewritten"
+  done < "$issues_file"
+
+  # If file had no ---ISSUE--- blocks, append spikes at end
+  if [ "$_preamble_done" = false ]; then
+    printf '%s\n' "$spikes_block" >> "$rewritten"
+  fi
+
+  mv "$rewritten" "$issues_file"
+
+  # Pass 3: rewrite downstream issue Dependencies sections to reference spike placeholders.
+  # For each spike key, replace/add "Blocked by: #SPIKE-<key>" in issues that contain
+  # the original name (host or package).
+  local _spike_rewritten
+  _spike_rewritten=$(mktemp)
+  local _in_issue=false
+  local _current_block=""
+  local _in_preamble=true
+
+  while IFS= read -r line; do
+    if [[ "$line" == "---ISSUE---" ]]; then
+      _in_preamble=false
+      _in_issue=true
+      _current_block="$line"$'\n'
+      continue
+    fi
+    if [ "$_in_issue" = true ]; then
+      _current_block+="$line"$'\n'
+      if [[ "$line" == "---END---" ]]; then
+        _in_issue=false
+        # Check if this is a spike issue itself (don't self-reference)
+        local _is_spike=false
+        echo "$_current_block" | grep -q "^TITLE: spike: " && _is_spike=true
+
+        if [ "$_is_spike" = false ]; then
+          # For each ungrounded candidate, check if this issue body references it.
+          # If so, inject "Blocked by: #SPIKE-<key>" into the **Dependencies** line.
+          while IFS= read -r _candidate_line; do
+            [ -z "$_candidate_line" ] && continue
+            local _kind _name _key
+            _kind=$(echo "$_candidate_line" | cut -f1)
+            _name=$(echo "$_candidate_line" | cut -f2)
+            _key=$(_sanitize_spike_key "$_name")
+            local _placeholder="#SPIKE-$_key"
+
+            # Check if block references the candidate (case-insensitive)
+            if echo "$_current_block" | grep -qi "$_name"; then
+              # Check if block already has a Dependencies line
+              if echo "$_current_block" | grep -q "^\*\*Dependencies\*\*:"; then
+                # Append to existing Dependencies line
+                _current_block=$(echo "$_current_block" | \
+                  sed "s|^\(\*\*Dependencies\*\*:.*\)|\1, Blocked by: ${_placeholder}|" || true)
+              else
+                # Insert a Dependencies line before ---END---
+                _current_block=$(echo "$_current_block" | \
+                  sed "s|^---END---$|**Dependencies**: Blocked by: ${_placeholder}\n---END---|" || true)
+              fi
+            fi
+          done <<< "$unique_candidates"
+        fi
+        printf '%s' "$_current_block" >> "$_spike_rewritten"
+        _current_block=""
+      fi
+    else
+      # Preamble line
+      printf '%s\n' "$line" >> "$_spike_rewritten"
+    fi
+  done < "$issues_file"
+
+  mv "$_spike_rewritten" "$issues_file"
+}
+
+# =============================================================================
 # Deduplicate ---ISSUE--- blocks by title, in-place
 # =============================================================================
 
@@ -1322,6 +1738,11 @@ create_issues() {
   local current_time=""
   local in_body=false
   local prev_issue_num=""
+  # spike_map_file: stores "#SPIKE-<key>=<real-issue-number>" lines.
+  # Used to rewrite #SPIKE-<key> placeholders in downstream issue bodies after
+  # the spike issue is created.  Bash 3.2 compatible (no associative arrays).
+  local spike_map_file
+  spike_map_file=$(mktemp)
 
   print_header "Creating Issues"
 
@@ -1340,6 +1761,15 @@ create_issues() {
         else
           current_body="${current_body//After #PREV/None}"
           current_body="${current_body//Blocked by: #PREV/None}"
+        fi
+
+        # Replace #SPIKE-<key> placeholders with actual issue numbers from the map.
+        # Iterate through each recorded spike mapping and apply the substitution.
+        if [ -s "$spike_map_file" ]; then
+          while IFS='=' read -r _placeholder _spike_num; do
+            [ -z "$_placeholder" ] && continue
+            current_body="${current_body//${_placeholder}/#${_spike_num}}"
+          done < "$spike_map_file"
         fi
 
         # Prepend time estimate to body
@@ -1381,6 +1811,16 @@ create_issues() {
           created_numbers+=("$issue_num")
           prev_issue_num="$issue_num"
           print_success "Created #$issue_num"
+
+          # If this is a spike issue, record its placeholder → real number mapping
+          # so downstream issues get the correct "Blocked by: #<N>" reference.
+          # Title format: "spike: capture <name> sample for grounding"
+          if [[ "$current_title" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]; then
+            local _spike_name="${BASH_REMATCH[1]}"
+            local _spike_key
+            _spike_key=$(_sanitize_spike_key "$_spike_name")
+            echo "#SPIKE-${_spike_key}=${issue_num}" >> "$spike_map_file"
+          fi
         else
           print_error "Failed: $issue_url"
         fi
@@ -1425,4 +1865,7 @@ create_issues() {
   fi
   echo "  rite --status --by-label              # View by label/phase"
   echo ""
+
+  # Cleanup spike map temp file
+  rm -f "$spike_map_file"
 }
