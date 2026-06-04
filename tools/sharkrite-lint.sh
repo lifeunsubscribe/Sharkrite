@@ -264,15 +264,18 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   depth += _ob - _cb
   if (depth < 0) depth = 0
   # Flag: "local" keyword used at depth 0 (outside any function)
+  # Use tab as field separator so paths containing colons (e.g. CI matrix job
+  # paths like /home/runner/work/my:project/file.sh) parse correctly.
   if (depth == 0 && $0 ~ /^[[:space:]]*local[[:space:]]/) {
-    print FILENAME ":" FNR ":" $0
+    print FILENAME "\t" FNR
   }
 }' "${SHELL_FILES[@]}" 2>/dev/null || true)
 
 if [ -n "$_r7_hits" ]; then
   while IFS= read -r _hit; do
-    _hit_file=$(echo "$_hit" | cut -d: -f1)
-    _hit_line=$(echo "$_hit" | cut -d: -f2)
+    # Tab-separated: file<TAB>linenum — safe for paths containing colons
+    _hit_file=$(echo "$_hit" | cut -f1)
+    _hit_line=$(echo "$_hit" | cut -f2)
     print_violation "$_hit_file" "$_hit_line" "LOCAL_OUTSIDE_FUNCTION" \
       "'local' keyword used outside function (only works inside functions)"
   done <<< "$_r7_hits"
@@ -289,9 +292,12 @@ fi
 # no \s, no + quantifier, no !~ or compound patterns — uses index() and [[:space:]]*.
 echo "Checking for unsafe VAR=\$(... | grep/awk/sed/head/tail) patterns..."
 _r8_awk=$(mktemp)
+# Output uses tab as field separator (file\tlinenum) so paths containing
+# colons (e.g. CI matrix job paths like /home/runner/work/my:project/file.sh)
+# parse correctly — colon-based splitting breaks on such paths.
 printf '%s\n' \
   'FNR == 1 {' \
-  '  if (pending_line > 0) { print pending_fname ":" pending_line; pending_line = 0 }' \
+  '  if (pending_line > 0) { print pending_fname "\t" pending_line; pending_line = 0 }' \
   '  in_heredoc = 0; hd_marker = ""; pending_fname = ""' \
   '}' \
   '{' \
@@ -309,7 +315,7 @@ printf '%s\n' \
   '    if (index($0, "|| true") > 0 || index($0, "|| echo") > 0 || index($0, ": $?") > 0) {' \
   '      pending_line = 0' \
   '    } else {' \
-  '      print pending_fname ":" pending_line' \
+  '      print pending_fname "\t" pending_line' \
   '      pending_line = 0' \
   '    }' \
   '  }' \
@@ -319,7 +325,7 @@ printf '%s\n' \
   '    pending_line = FNR; pending_fname = FILENAME' \
   '  }' \
   '}' \
-  'END { if (pending_line > 0) print pending_fname ":" pending_line }' \
+  'END { if (pending_line > 0) print pending_fname "\t" pending_line }' \
   > "$_r8_awk"
 
 _r8_hits=$(awk -f "$_r8_awk" "${SHELL_FILES[@]}" 2>/dev/null || true)
@@ -328,8 +334,9 @@ _r8_awk=""
 
 if [ -n "$_r8_hits" ]; then
   while IFS= read -r _hit; do
-    _hit_file=$(echo "$_hit" | cut -d: -f1)
-    _hit_line=$(echo "$_hit" | cut -d: -f2)
+    # Tab-separated: file<TAB>linenum — safe for paths containing colons
+    _hit_file=$(echo "$_hit" | cut -f1)
+    _hit_line=$(echo "$_hit" | cut -f2)
     print_violation "$_hit_file" "$_hit_line" "UNSAFE_PIPE_IN_CMDSUB" \
       "VAR=\$(... | grep/awk/sed/head/tail) without || true can silently kill script under set -euo pipefail"
   done <<< "$_r8_hits"
@@ -340,8 +347,10 @@ echo "Checking for Claude-specific tokens in lib/core/ (provider agnosticism)...
 mapfile -t CORE_FILES < <(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
 
 # Convert per-file bash while+grep loops to a single AWK pass over all core files.
-# AWK processes all files in one invocation, reporting violations as FILE:LINE:MSG.
+# AWK processes all files in one invocation, reporting violations as FILE\tLINE\tMSG.
 # MSG is a short tag; the outer bash loop maps tags to human messages.
+# Tab separator keeps file/line/tag extraction safe for paths containing colons
+# (e.g. CI matrix job paths like /home/runner/work/my:project/file.sh).
 _r9_hits=$(awk '
 FNR == 1 { in_heredoc = 0; hd_marker = "" }
 {
@@ -361,20 +370,21 @@ FNR == 1 { in_heredoc = 0; hd_marker = "" }
     }
   }
   if ($0 ~ /^[[:space:]]*#/) next
-  if (index($0, "/exit") > 0) print FILENAME ":" FNR ":SLASH_EXIT"
-  if (index($0, "--print") > 0) print FILENAME ":" FNR ":PRINT_FLAG"
-  if (index($0, "--dangerously-skip-permissions") > 0) print FILENAME ":" FNR ":DANG_SKIP"
-  if (index($0, "--disallowedTools") > 0) print FILENAME ":" FNR ":DISALLOWED"
-  if (index($0, "tool_use") > 0) print FILENAME ":" FNR ":TOOL_USE"
-  if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude CLI") > 0) print FILENAME ":" FNR ":HCPROVIDER"
-  if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude session") > 0) print FILENAME ":" FNR ":HCPROVIDER"
+  if (index($0, "/exit") > 0) print FILENAME "\t" FNR "\tSLASH_EXIT"
+  if (index($0, "--print") > 0) print FILENAME "\t" FNR "\tPRINT_FLAG"
+  if (index($0, "--dangerously-skip-permissions") > 0) print FILENAME "\t" FNR "\tDANG_SKIP"
+  if (index($0, "--disallowedTools") > 0) print FILENAME "\t" FNR "\tDISALLOWED"
+  if (index($0, "tool_use") > 0) print FILENAME "\t" FNR "\tTOOL_USE"
+  if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude CLI") > 0) print FILENAME "\t" FNR "\tHCPROVIDER"
+  if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude session") > 0) print FILENAME "\t" FNR "\tHCPROVIDER"
 }' "${CORE_FILES[@]}" 2>/dev/null || true)
 
 if [ -n "$_r9_hits" ]; then
   while IFS= read -r _hit; do
-    _hit_file=$(echo "$_hit" | cut -d: -f1)
-    _hit_line=$(echo "$_hit" | cut -d: -f2)
-    _hit_tag=$(echo "$_hit" | cut -d: -f3)
+    # Tab-separated: file<TAB>linenum<TAB>tag — safe for paths containing colons
+    _hit_file=$(echo "$_hit" | cut -f1)
+    _hit_line=$(echo "$_hit" | cut -f2)
+    _hit_tag=$(echo "$_hit" | cut -f3)
     case "$_hit_tag" in
       SLASH_EXIT)  print_violation "$_hit_file" "$_hit_line" "CLAUDE_SPECIFIC_TOKEN" \
         "Provider-specific token '/exit' found in lib/core/ - use provider_exit_instructions() instead" ;;
@@ -506,10 +516,12 @@ printf '%s\n' \
   '  # Pattern requires "gh" to be preceded by a command-context character (any whitespace,' \
   '  # (, |, ;, $) or appear at start-of-line after whitespace.  [[:space:]] covers both' \
   '  # spaces and tabs, preventing false negatives for tab-indented gh calls.' \
+  '  # Output uses tab as field separator (file\tlinenum) so paths containing colons' \
+  '  # (e.g. CI matrix job paths like /home/runner/work/my:project/file.sh) parse correctly.' \
   '  if (index($0, "gh_safe") == 0) {' \
   '    if ($0 ~ /^[[:space:]]*gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/ ||' \
   '        $0 ~ /[[:space:](|;$]gh[[:space:]][[:space:]]*(pr|issue|api|repo|label|diff)/) {' \
-  '      print FILENAME ":" NR ":" $0' \
+  '      print FILENAME "\t" NR' \
   '    }' \
   '  }' \
   '}' \
@@ -525,8 +537,9 @@ for file in "${SHELL_FILES[@]}"; do
 
   if [ -n "$_r13_hits" ]; then
     while IFS= read -r _hit; do
-      _hit_file=$(echo "$_hit" | cut -d: -f1)
-      _hit_line=$(echo "$_hit" | cut -d: -f2)
+      # Tab-separated: file<TAB>linenum — safe for paths containing colons
+      _hit_file=$(echo "$_hit" | cut -f1)
+      _hit_line=$(echo "$_hit" | cut -f2)
       print_violation "$_hit_file" "$_hit_line" "GH_UNSAFE_CALL" \
         "Raw 'gh' call — wrap with gh_safe to get retry/resilience (lib/utils/gh-retry.sh)"
     done <<< "$_r13_hits"
@@ -745,11 +758,16 @@ fi
 # pairs efficiently.
 # Guard against empty array explicitly: grep with an empty argument list reads
 # from stdin, which would block indefinitely under automation.
+# AWK outputs tab-separated "file\tlinenum\tcontent" so that paths containing
+# colons (e.g. CI matrix job paths like /home/runner/work/my:project/file.sh)
+# parse correctly — colon-based field splitting breaks on such paths.
 _r18_starts=""
 _r18_ends=""
 if [ "${#ALL_EXTRACT_FILES[@]}" -gt 0 ]; then
-  _r18_starts=$(grep -rn '# sharkrite-extract: .*-start' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
-  _r18_ends=$(grep -rn '# sharkrite-extract: .*-end' "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+  _r18_starts=$(awk '/# sharkrite-extract: .*-start/ { print FILENAME "\t" FNR "\t" $0 }' \
+    "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+  _r18_ends=$(awk '/# sharkrite-extract: .*-end/ { print FILENAME "\t" FNR "\t" $0 }' \
+    "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
 fi
 
 # Collect unique (file, marker_name) pairs from start markers.
@@ -757,9 +775,10 @@ fi
 declare -A _seen_pairs
 while IFS= read -r _hit; do
   [ -z "$_hit" ] && continue
-  # Format: file:linenum:  # sharkrite-extract: <name>-start
-  _hit_file=$(echo "$_hit" | cut -d: -f1)
-  _hit_line=$(echo "$_hit" | cut -d: -f2)
+  # Format: file<TAB>linenum<TAB>  # sharkrite-extract: <name>-start
+  # Tab-separated: safe for paths containing colons
+  _hit_file=$(echo "$_hit" | cut -f1)
+  _hit_line=$(echo "$_hit" | cut -f2)
   _hit_name=$(echo "$_hit" | grep -oE 'sharkrite-extract: [a-z0-9_-]+-start' | sed 's/-start$//' | sed 's/sharkrite-extract: //' || true)
   [ -z "$_hit_name" ] && continue
 
@@ -801,8 +820,9 @@ done <<< "$_r18_starts"
 # avoid double-reporting the same (file, name) problem.
 while IFS= read -r _hit; do
   [ -z "$_hit" ] && continue
-  _hit_file=$(echo "$_hit" | cut -d: -f1)
-  _hit_line=$(echo "$_hit" | cut -d: -f2)
+  # Tab-separated: file<TAB>linenum<TAB>content — safe for paths containing colons
+  _hit_file=$(echo "$_hit" | cut -f1)
+  _hit_line=$(echo "$_hit" | cut -f2)
   _hit_name=$(echo "$_hit" | grep -oE 'sharkrite-extract: [a-z0-9_-]+-end' | sed 's/-end$//' | sed 's/sharkrite-extract: //' || true)
   [ -z "$_hit_name" ] && continue
 
