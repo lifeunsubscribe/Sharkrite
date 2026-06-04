@@ -227,6 +227,36 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
 
+### Test stubs MUST NOT live in production paths (CRITICAL)
+
+`lib/core/assess-review-issues.sh` is the real, 1,000+ line, Claude-driven assessment runner. `lib/utils/format-review.sh` is the real, 200+ line review formatter. **Neither file may be replaced with the simpler test-stub form used by integration tests.** Integration tests inject their own stubs into a temp `MOCK_LIB_DIR` and override `RITE_LIB_DIR` for the duration of the test; the production files at `lib/core/` and `lib/utils/` stay untouched.
+
+**Live incident — 2026-06-02:** The integration test `tests/integration/assess-and-resolve-dedup.bats` had a fatal bug in its setup. The test:
+
+1. Symlinks every file under `lib/utils/` and `lib/core/` from production into a temp directory: `ln -sf "$RITE_REPO_ROOT/lib/core/X.sh" "$MOCK_LIB_DIR/core/X.sh"`
+2. Then writes the test stub directly to the symlink path: `cat > "$MOCK_LIB_DIR/core/assess-review-issues.sh" << 'STUB' …`
+
+Bash output redirection on a symlink **follows the symlink** and writes to the target. So the `cat > ...` overwrote the *real* `lib/core/assess-review-issues.sh` at `$RITE_REPO_ROOT/lib/core/`, replacing 1,018 lines of production code with the 9-line test stub. Same for `lib/utils/format-review.sh` (238 lines → 3 lines).
+
+PR #260 was the first PR after this test was authored, so it was the first to commit the damaged tree to main. PR #260's diff "intent" was a separate small fix; the test self-corruption rode along invisibly. Any contributor running `bats tests/integration/assess-and-resolve-dedup.bats` locally would have observed the same damage in their working tree.
+
+**Impact, undetected for 2+ days:** Every production batch run from 2026-06-02 to 2026-06-04 emitted `STUB ERROR: MOCK_ASSESSMENT_FILE not set or missing`, then fell back to "raw review count for decision." The intelligent assessment phase (ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED classification) was silently disabled. Follow-up issues for LATER items were not created. Today's batch of issues #182, #287, #200, #203 was the first one diagnosed.
+
+**Why existing checks didn't catch it:**
+- Shellcheck has no concept of "this file should be 1,000+ lines"
+- The integration test itself passed (it relies on the stubs being where it just wrote them — even if "there" turned out to be production)
+- PR #260 was processed via `rite --fix-review` (auto-generated commits); the auto-review didn't flag the -1,015-line collateral diff
+- No CI smoke test exercises the real `assess-review-issues.sh` end-to-end (deliberately — it costs LLM tokens per run)
+- Branch protection on `main` was disabled, so the failing CI Lint run didn't block the merge
+
+**Prevention layer 1 — the test itself (`tests/integration/assess-and-resolve-dedup.bats`):** Before each override `cat >`, do `rm -f` to break the symlink. The override now lands as a regular file in `$MOCK_LIB_DIR/`, not a write-through to production. Explicit `# CRITICAL` comment in the test marks the contract.
+
+**Prevention layer 2 — sharkrite-lint Rule 20 (`TEST_STUB_IN_LIB`):** Any file under `lib/core/`, `lib/utils/`, or `lib/providers/` is rejected if it (a) begins with `# Stub ` in the first 5 lines, (b) references a `MOCK_*_FILE` env var, or (c) contains the literal `STUB ERROR`. Catches the same pattern from any future source, not just this one test.
+
+**Prevention layer 3 — review guidance (open):** Any PR that removes more than ~30% of an existing production file in `lib/` should require explicit human confirmation that the deletion is intentional, even when `--fix-review` is processing review feedback. Not yet encoded as an automated PR check; tracked in follow-up.
+
+**If you see this fail in CI:** `git log -S "Stub <filename>" -- lib/<path>` finds when the stub was introduced. Restore with `git checkout <commit-before>~1 -- lib/<path>`. Also audit the most recently changed integration test for a `cat > "$LIB_DIR/X.sh"` pattern over a symlink.
+
 ### Follow-up Issue Context
 
 Follow-up issues from ACTIONABLE_LATER findings include:

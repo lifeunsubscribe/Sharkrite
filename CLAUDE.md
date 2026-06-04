@@ -487,6 +487,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - BSD `sed -i ''` without GNU fallback
 - `PIPESTATUS[0]` after `|| true` — value is lost
 - `local` outside function — only works inside functions
+- Test stub committed to production path (`TEST_STUB_IN_LIB`) — files in `lib/core/`, `lib/utils/`, `lib/providers/` must never start with `# Stub `, reference `MOCK_*_FILE` env vars, or contain the literal `STUB ERROR`. These are integration-test fixtures and indicate an accidental wholesale overwrite of real code.
 
 **Suppressing false positives:**
 
