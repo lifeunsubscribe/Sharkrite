@@ -708,3 +708,25 @@ When Claude judges a commit NOT architecturally significant, it returns empty ou
 ```
 
 No file is created for that commit. This prevents cluttering `.rite/docs/adr/` with trivial decisions.
+
+---
+
+## Deterministic over Model-Policing-Model
+
+**Principle:** When a workflow step is a deterministic check expressible as a comparison or lookup, implement it deterministically. Do not use an LLM to "police" another LLM's output.
+
+**Why:** LLMs policing LLMs introduce non-determinism where none is needed:
+- The policing model can regenerate what the original model already produced (phantom-dupe scenario)
+- Non-determinism makes reconciliation results unpredictable across runs
+- Failures are silent or ambiguous — a network timeout silently skips the step
+- Token cost and latency for a pass that a simple string comparison handles equally well
+
+**First application — coverage reconciliation (issue #348, 2026-06-04):**
+
+`_validate_coverage` in `lib/core/plan-issues.sh` originally called the provider to resolve "phantom" checklist entries (✅ lines referencing titles not present in any emitted `---ISSUE---` block). The LLM was asked to GENERATE or SKIP each phantom.
+
+In two finance-glance planning runs, the phantom resolver regenerated issues already emitted under slightly different titles (e.g., `"implement budget tracking"` in the checklist vs `"Implement Budget Tracking"` in the block). `_dedup_issues` caught the case-folded duplicate, but only after an unnecessary round-trip and occasionally after the duplicate was counted in a user-visible "Added N issues" message that later corrected to N-1.
+
+**The fix:** `_validate_coverage` now builds a canonical-title index from emitted issues (lowercase + whitespace-trimmed, matching `_dedup_issues` normalization) and does a deterministic lookup. Matched titles pass through unchanged. Unmatched titles emit a `WARNING:` line to stderr and the orphaned checklist entry is stripped. No LLM call. `_dedup_issues` remains the single source of truth for deduplication after reconciliation.
+
+**Rule of thumb:** If the question is "does X appear in set Y?" — use a set lookup. Only reach for a model when the question genuinely requires language understanding (e.g., "does this PR description accurately reflect the diff?").

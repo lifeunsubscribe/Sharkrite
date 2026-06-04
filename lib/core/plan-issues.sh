@@ -771,179 +771,54 @@ _validate_coverage() {
     return 0
   fi
 
-  # Extract actual issue titles from ---ISSUE--- blocks
-  local actual_titles
-  actual_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
-
-  # Find phantom titles (✅ in checklist but no matching issue)
-  local phantoms=""
-  while IFS= read -r ref_title; do
-    if ! echo "$actual_titles" | grep -qF "$ref_title"; then
-      if [ -n "$phantoms" ]; then
-        phantoms="${phantoms}|${ref_title}"
-      else
-        phantoms="$ref_title"
-      fi
+  # Extract actual issue titles from ---ISSUE--- blocks and build a canonical
+  # index (lowercase + whitespace-trimmed) — same normalization as _dedup_issues.
+  # Each canonical title is stored on its own line in _canon_index.
+  local _canon_index=""
+  while IFS= read -r _raw_title; do
+    local _canon
+    _canon=$(echo "$_raw_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    if [ -n "$_canon" ]; then
+      _canon_index="${_canon_index}${_canon}"$'\n'
     fi
+  done < <(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
+
+  # For each checklist title, canonicalize and look up in the index.
+  # Unmatched titles are orphans — strip them from the checklist and emit a WARNING.
+  local _orphan_count=0
+  local _filtered_file
+  _filtered_file=$(mktemp)
+
+  # Copy full file to filtered; we'll strip orphan checklist lines in-place.
+  cp "$issues_file" "$_filtered_file"
+
+  while IFS= read -r ref_title; do
+    [ -z "$ref_title" ] && continue
+    local _ref_canon
+    _ref_canon=$(echo "$ref_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+
+    # Check whether the canonical title appears in the index (exact-line match)
+    if echo "$_canon_index" | grep -qF "$_ref_canon"; then
+      continue  # Matched — leave the checklist line as-is
+    fi
+
+    # Unmatched: emit WARNING and strip the orphaned ✅ checklist line.
+    print_warning "coverage checklist references \"$ref_title\" — no matching issue emitted; stripping orphan" >&2
+    _orphan_count=$((_orphan_count + 1))
+
+    # Remove the checklist line that references this title from the output file.
+    # Use a fixed-string sed delete to avoid regex metacharacter issues.
+    portable_sed_i "/→ Issue \"$ref_title\"/d" "$_filtered_file"
   done <<< "$checklist_titles"
 
-  if [ -z "$phantoms" ]; then
-    return 0
+  if [ "$_orphan_count" -gt 0 ]; then
+    mv "$_filtered_file" "$issues_file"
+  else
+    rm -f "$_filtered_file"
   fi
 
-  local phantom_count
-  phantom_count=$(echo "$phantoms" | tr '|' '\n' | wc -l | tr -d ' ')
-
-  print_warning "Coverage checklist references $phantom_count issue(s) not emitted — resolving:" >&2
-  echo "$phantoms" | tr '|' '\n' | sed 's/^/  - /' >&2
-  echo "" >&2
-
-  if ! provider_detect_cli 2>/dev/null; then
-    print_warning "Cannot resolve phantoms — provider CLI not found" >&2
-    return 0
-  fi
-
-  # Build context for Claude: existing issues, deferrals, and feedback.
-  # Claude decides whether each phantom should be generated, skipped (already
-  # covered by existing issues), or suppressed (matches a deferral/feedback).
-  local existing_issues_full
-  existing_issues_full=$(sed -n '/^---ISSUE---$/,/^---END---$/p' "$issues_file")
-
-  local coverage_section
-  coverage_section=$(sed '/^---ISSUE---$/q' "$issues_file" | grep -v "^---ISSUE---$" || true)
-
-  local phantom_prompt
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
-  phantom_prompt=$(cat <<PHANTOM_EOF
-The coverage checklist references issue(s) that were not emitted. For each one below, decide:
-1. **GENERATE** — the default. Generate unless a SKIP condition is met.
-2. **SKIP** — ONLY if one of these specific conditions is true:
-   a. The item matches a deferred/excluded item in the deferrals list below, OR
-   b. An existing issue's **acceptance criteria** explicitly contains the action verbs and endpoints from this item (e.g., "POST /resource/{id}/consume" with decrement logic in the criteria)
-
-**CRITICAL: Scope overlap is NOT enough to skip.** A CRUD issue that creates endpoints does NOT cover domain actions like consume, transfer, or mark-purchased — those have different HTTP methods, different business logic (decrement, state transitions), and different permission models. Only skip if the EXACT functionality (verb + endpoint + behavior) appears in an existing issue's acceptance criteria.
-
-**Missing issue titles from checklist:**
-$(echo "$phantoms" | tr '|' '\n' | sed 's/^/- /')
-
-**Existing issues (check acceptance criteria for EXACT coverage before skipping):**
-$existing_issues_full
-
-$(if [ -n "${previous_deferrals:-}" ]; then
-echo "**Deferred items from previous planning sessions (SKIP any missing item that matches these semantically):**"
-echo "$previous_deferrals"
-echo ""
-fi)
-
-$(if [ -n "${accumulated_feedback:-}" ]; then
-echo "**User feedback from this session (respect any defer/drop/remove/exclude instructions):**"
-echo "$accumulated_feedback"
-echo ""
-fi)
-
-**For items you GENERATE**, output them as ---ISSUE--- blocks matching the style of existing issues.
-**For items you SKIP**, output nothing (do not explain, do not comment).
-
-If ALL items should be skipped, output exactly: NO_ISSUES_NEEDED
-
----ISSUE---
-TITLE: [title]
-LABELS: labels
-TIME: Xmin or Xhr
-BODY:
-[issue body]
----END---
-PHANTOM_EOF
-)
-
-  local phantom_file
-  phantom_file=$(mktemp)
-  local phantom_stderr
-  phantom_stderr=$(mktemp)
-
-  print_status "Generating $phantom_count missing issue(s)..." >&2
-
-  local phantom_exit_code=0
-  provider_run_streaming_prompt "$phantom_prompt" "" 2>"$phantom_stderr" \
-    > "$phantom_file" || phantom_exit_code=$?
-
-  # Timeout: fail immediately rather than continuing with empty/partial output
-  if [ "$phantom_exit_code" -eq 124 ]; then
-    print_warning "Provider stderr:" >&2
-    cat "$phantom_stderr" >&2
-    print_error "Provider streaming prompt timed out (exit 124) — aborting phantom coverage pass" >&2
-    rm -f "$phantom_stderr" "$phantom_file"
-    return 1
-  fi
-
-  rm -f "$phantom_stderr"
-
-  if [ -s "$phantom_file" ]; then
-    # Check if Claude decided all phantoms should be skipped
-    if grep -qF "NO_ISSUES_NEEDED" "$phantom_file"; then
-      print_info "All phantom items resolved (covered by existing issues or deferrals)" >&2
-      rm -f "$phantom_file"
-      return 0
-    fi
-
-    # The jq streaming may concatenate ---ISSUE--- and ---END--- with surrounding
-    # text on the same line. Fix by ensuring markers are always on their own line.
-    portable_sed_i \
-      -e 's/---ISSUE---/\
----ISSUE---\
-/g' \
-      -e 's/---END---/\
----END---\
-/g' \
-      "$phantom_file"
-
-    # Extract only well-formed ---ISSUE--- to ---END--- blocks, discard everything else.
-    # This handles Claude commentary before/after/between blocks.
-    local clean_phantom
-    clean_phantom=$(mktemp)
-    sed -n '/^---ISSUE---$/,/^---END---$/p' "$phantom_file" > "$clean_phantom"
-
-    local new_count
-    new_count=$(grep -c "^---ISSUE---" "$clean_phantom" || true)
-    local end_count
-    end_count=$(grep -c "^---END---" "$clean_phantom" || true)
-
-    # Log phantom structure for debugging
-    local phantom_titles
-    phantom_titles=$(grep "^TITLE:" "$clean_phantom" || true)
-    if [ -n "$phantom_titles" ]; then
-      print_info "Phantom issues resolved:" >&2
-      echo "$phantom_titles" | sed 's/^TITLE: /  + /' >&2
-    else
-      print_warning "Phantom output has $new_count ISSUE blocks but no TITLE lines" >&2
-      print_info "Raw phantom output (first 20 lines):" >&2
-      head -20 "$phantom_file" | sed 's/^/  | /' >&2
-    fi
-
-    if [ "$new_count" -gt 0 ] && [ "$new_count" -eq "$end_count" ]; then
-      local pre_count
-      pre_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
-
-      echo "" >> "$issues_file"
-      cat "$clean_phantom" >> "$issues_file"
-      _dedup_issues "$issues_file"
-
-      local post_count
-      post_count=$(grep -c "^---ISSUE---" "$issues_file" || true)
-      local added=$((post_count - pre_count))
-      if [ "$added" -gt 0 ]; then
-        print_success "Added $added issue(s) from coverage resolution" >&2
-      else
-        print_info "Phantom issues were duplicates — no new issues added" >&2
-      fi
-    elif [ "$new_count" -gt 0 ]; then
-      print_warning "Phantom output malformed ($new_count ISSUE markers, $end_count END markers) — skipping" >&2
-    fi
-
-    rm -f "$clean_phantom"
-  fi
-
-  rm -f "$phantom_file"
+  # _dedup_issues is the single source of truth for deduplication after reconciliation.
+  _dedup_issues "$issues_file"
 }
 
 # =============================================================================
