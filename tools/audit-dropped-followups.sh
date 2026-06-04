@@ -41,6 +41,15 @@ if (( BASH_VERSINFO[0] < 4 )); then
   exit 1
 fi
 
+# Source the gh retry wrapper (gh_safe) and marker constants from the sharkrite
+# lib. Done at script load so all gh calls below use the retry-aware wrapper and
+# marker comparisons use canonical constants.
+_audit_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$_audit_self_dir/../lib/utils/gh-retry.sh"
+# shellcheck source=/dev/null
+source "$_audit_self_dir/../lib/utils/markers.sh"
+
 # --- Defaults ---
 WINDOW_START="${WINDOW_START:-2026-06-02T18:49:00Z}"
 WINDOW_END="${WINDOW_END:-2026-06-04T20:26:00Z}"
@@ -64,7 +73,7 @@ done
 
 # --- Detect repo ---
 if [ -z "$REPO" ]; then
-  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+  REPO=$(gh_safe repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
   if [ -z "$REPO" ]; then
     echo "ERROR: Could not detect repo. Pass --repo OWNER/REPO" >&2
     exit 1
@@ -83,7 +92,7 @@ else
   # Find PRs merged in the window
   echo "Fetching PRs merged between $WINDOW_START and $WINDOW_END ..."
   mapfile -t prs < <(
-    gh pr list \
+    gh_safe pr list \
       --repo "$REPO" \
       --state merged \
       --limit 200 \
@@ -113,19 +122,21 @@ for pr in "${prs[@]}"; do
   # comments) is the correct field — `reviews` is intentionally omitted.
   # Verified against real reviewed PRs: sharkrite-local-review and sharkrite-followup-issue
   # markers both appear in .comments[].body, not in .reviews[].body.
-  pr_data=$(gh pr view "$pr" --repo "$REPO" --json title,comments 2>/dev/null || true)
+  pr_data=$(gh_safe pr view "$pr" --repo "$REPO" --json title,comments 2>/dev/null || true)
   if [ -z "$pr_data" ]; then
     echo "| #$pr | (could not fetch) | - | - | - | - | - | SKIP |"
     (( skip_count++ )) || true
     continue
   fi
 
-  title=$(echo "$pr_data" | jq -r '.title' | sed 's/|/\\|/g')
+  title=$(echo "$pr_data" | jq -r '.title' | sed 's/|/\\|/g' || true)
 
-  # Find the sharkrite-local-review comment(s), use the most recent
-  review_body=$(echo "$pr_data" | jq -r '
-    [.comments[] | select(.body | contains("sharkrite-local-review"))] | last | .body // ""
-  ')
+  # Find the sharkrite-local-review comment(s), use the most recent.
+  # The jq filter is built as a bash variable so ${RITE_MARKER_REVIEW} expands
+  # before jq sees the string — keeps the marker comparison anchored to the
+  # canonical constant from markers.sh.
+  _jq_review_body="[.comments[] | select(.body | contains(\"${RITE_MARKER_REVIEW}\"))] | last | .body // \"\""
+  review_body=$(echo "$pr_data" | jq -r "$_jq_review_body")
 
   if [ -z "$review_body" ]; then
     echo "| #$pr | $title | - | - | - | - | - | NO_REVIEW |"
@@ -147,7 +158,7 @@ for pr in "${prs[@]}"; do
 
   # Count distinct sharkrite-followup-issue:N markers in PR comments
   all_comments=$(echo "$pr_data" | jq -r '.comments[].body' || true)
-  followup_count=$(echo "$all_comments" | grep -oE 'sharkrite-followup-issue:[0-9]+' | sort -u | wc -l | tr -d ' ' || true)
+  followup_count=$(echo "$all_comments" | grep -oE "${RITE_MARKER_FOLLOWUP}:[0-9]+" | sort -u | wc -l | tr -d ' ' || true)
   followup_count="${followup_count:-0}"
 
   # Determine status
