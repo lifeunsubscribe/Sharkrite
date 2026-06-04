@@ -79,13 +79,19 @@ _gh_is_read_op() {
 
   # api subcommand: read only if no explicit -X flag, or -X GET
   if [ "$subcommand" = "api" ]; then
-    local i
-    for (( i=0; i<${#args[@]}; i++ )); do
-      if [ "${args[$i]}" = "-X" ] || [ "${args[$i]}" = "--method" ]; then
-        local method="${args[$((i+1))]:-GET}"
-        # Only GET is a read; PUT/POST/DELETE/PATCH are writes
-        [ "${method^^}" = "GET" ] && return 0 || return 1
-      fi
+    # Use case/shift-style walk on a local array copy to avoid the fragile
+    # index-arithmetic pattern (args[$((i+1))]) that misparsed if args were
+    # inserted between --method and its value.
+    local -a _walk=("${args[@]}")
+    while [ ${#_walk[@]} -gt 0 ]; do
+      case "${_walk[0]}" in
+        -X|--method)
+          local method="${_walk[1]:-GET}"
+          # Only GET is a read; PUT/POST/DELETE/PATCH are writes
+          [ "${method^^}" = "GET" ] && return 0 || return 1
+          ;;
+      esac
+      _walk=("${_walk[@]:1}")  # shift: drop first element
     done
     # No -X flag → defaults to GET → read
     return 0

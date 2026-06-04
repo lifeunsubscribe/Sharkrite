@@ -752,6 +752,66 @@ EOF
 }
 
 # ===========================================================================
+# _gh_is_read_op: method-flag detection — case/shift robustness
+# ===========================================================================
+# These tests exercise _gh_is_read_op directly to verify that -X / --method
+# is detected correctly regardless of where the flag appears in the arg list.
+# Previously the index-based walk (args[$((i+1))]) was fragile: adding any
+# argument between --method and its value would shift the offset and misparse.
+
+@test "_gh_is_read_op: api -X PUT is a write op (flag first)" {
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash
+  "
+  # write op → non-zero exit
+  [ "$status" -ne 0 ]
+}
+
+@test "_gh_is_read_op: api -X GET is a read op" {
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api 'repos/owner/repo/pulls/42' -X GET
+  "
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_is_read_op: api --method PUT is a write op" {
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api 'repos/owner/repo/pulls/42/merge' --method PUT
+  "
+  [ "$status" -ne 0 ]
+}
+
+@test "_gh_is_read_op: api -X PUT with leading flags before -X is a write op (was fragile)" {
+  # Regression: index-based walk could skip VALUE when flags were prepended before -X.
+  # With case/shift the walk processes each token in sequence; order does not matter.
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api --header 'Accept: application/vnd.github.v3+json' -X PUT 'repos/owner/repo/pulls/42/merge'
+  "
+  [ "$status" -ne 0 ]
+}
+
+@test "_gh_is_read_op: api --method DELETE with interleaved flags is a write op (was fragile)" {
+  # Regression: index-based walk with i+1 lookup was disrupted by interleaved flags.
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api --field foo=bar --method DELETE 'repos/owner/repo/issues/42'
+  "
+  [ "$status" -ne 0 ]
+}
+
+@test "_gh_is_read_op: api with no -X flag defaults to GET (read op)" {
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api 'repos/owner/repo/pulls/42'
+  "
+  [ "$status" -eq 0 ]
+}
+
+# ===========================================================================
 # Codebase-wide adoption check
 # ===========================================================================
 
