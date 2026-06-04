@@ -631,19 +631,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   start_issue_tracking "$ISSUE_NUM"
 
   # Run workflow and capture exit code explicitly before any if/then test.
-  # This is required because bash's `if cmd; then` discards non-zero codes —
-  # we need to distinguish exit 12 (closed at start) from 0 (active completion)
-  # and from other non-zero codes (failures). The sentinel pattern is documented
-  # in docs/architecture/exit-codes.md.
-  #
-  # Note: `|| true` would mask the exit code ($? would be 0 from true).
-  # Instead, capture inside a subshell assignment using the `{ cmd; } || true`
-  # idiom — but bash's set -e only triggers on the outer statement, not after
-  # a cmd in an assignment context. The `{ ...; } ; _WF_EXIT=$?` pattern is
-  # safe: under set -e, a non-zero exit from the group would abort the script.
-  # We prevent that by making the entire group the condition in a simple test:
-  #   _WF_EXIT=0; "$cmd" || _WF_EXIT=$?
-  # This is the canonical set-e-safe exit-code capture pattern.
+  # `if cmd; then` discards non-zero codes — use the canonical set-e-safe
+  # capture pattern so exit 12 (closed at start), 0 (active completion), and
+  # other non-zero codes (failures) are all distinguishable.
+  # See: docs/architecture/exit-codes.md
   _WF_EXIT=0
   "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised || _WF_EXIT=$?
 

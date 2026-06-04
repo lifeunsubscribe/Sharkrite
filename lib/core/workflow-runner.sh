@@ -1728,15 +1728,19 @@ run_workflow() {
 
   if [ "$issue_state" = "CLOSED" ]; then
     handle_closed_issue "$issue_number" "$issue_data"
+    # Capture immediately — any inserted command after this point would clobber $?.
+    local _closed_exit=$?
     # Propagate the sentinel (exit 12 = closed at start, no new work).
-    # batch-process-issues.sh inspects this to skip post-issue stat gathering.
-    # Single-issue mode: any non-zero exit from run_workflow is treated as an
-    # error by the caller, so we must NOT propagate 12 raw — the outer shell in
-    # bin/rite treats exit 12 as success (see the exit-12-is-success guard there).
-    # Here run_workflow() is called by the top-level executor, which only cares
-    # about 0 vs non-zero — but batch-process-issues.sh captures the code before
-    # the `if; then` test, so it sees 12 correctly. Do NOT return 0 here.
-    return $?
+    # batch-process-issues.sh captures this to skip post-issue stat gathering.
+    # Single-issue mode: bin/rite uses exec, so exit 12 would propagate to the
+    # caller's shell as a non-zero status — not an error, but surprising for
+    # set -e chains and nightly automation. Gate on BATCH_MODE so single-issue
+    # mode exits 0 (the closure summary was already printed by handle_closed_issue).
+    if [ "${BATCH_MODE:-false}" = "true" ]; then
+      return $_closed_exit
+    else
+      return 0
+    fi
   fi
 
   # Ensure normalization variables are set.
@@ -2231,6 +2235,8 @@ main() {
   elif [ $workflow_exit -eq 12 ]; then
     # Issue was already closed at start — sentinel for batch stat-gathering skip.
     # Not an error: the closure summary was already printed by handle_closed_issue().
+    # Only reachable when BATCH_MODE=true (run_workflow returns 0 in single-issue mode
+    # so callers in set -e chains and nightly automation see a clean exit).
     # batch-process-issues.sh captures this exit code and routes to the
     # already_closed_at_start path, skipping the post-issue gh API calls.
     # See: docs/architecture/exit-codes.md
