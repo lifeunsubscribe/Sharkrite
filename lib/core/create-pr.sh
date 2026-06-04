@@ -381,6 +381,50 @@ else
 fi
 echo ""
 
+# lib/ shrinkage check at PR creation time.
+# This is the first opportunity to catch mass-deletions from production lib/ files
+# before a review even starts. The same check fires again as a hard gate in
+# pre-merge (check_blockers "pre-merge"). Running both ensures the author gets
+# early feedback AND the gate is re-validated at merge time after any fix attempts.
+#
+# In supervised mode: interactive prompt (may block PR creation flow).
+# In auto/unsupervised mode: fatal unless --bypass-blockers is set.
+# When workflow-runner.sh calls create-pr.sh it sets WORKFLOW_MODE and
+# BYPASS_BLOCKERS; standalone invocations default to unsupervised (safe).
+print_status "Checking for lib/ production code shrinkage..."
+set +e
+_shrinkage_output=$(detect_lib_shrinkage "$PR_NUMBER" 2>&1)
+_shrinkage_exit=$?
+set -e
+
+if [ "$_shrinkage_exit" -ne 0 ]; then
+  export BLOCKER_TYPE="lib_shrinkage"
+  export BLOCKER_DETAILS="$_shrinkage_output"
+  print_warning "lib/ shrinkage detected at PR creation time"
+  echo "$_shrinkage_output"
+  echo ""
+  _wf_mode="${WORKFLOW_MODE:-unsupervised}"
+  _bypass="${BYPASS_BLOCKERS:-false}"
+  if [ "$_wf_mode" = "supervised" ]; then
+    read -p "Large lib/ deletion detected. Continue with PR/review anyway? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      print_info "PR creation aborted due to lib/ shrinkage. Fix the deletion and re-run."
+      exit 1
+    fi
+    print_warning "lib/ shrinkage acknowledged — continuing (will re-check at pre-merge)"
+  elif [ "$_bypass" = "true" ]; then
+    print_warning "lib/ shrinkage bypassed (--bypass-blockers) — continuing"
+  else
+    print_error "lib/ shrinkage blocker in auto mode — aborting PR flow"
+    print_info "Run with --supervised to review and approve, or --bypass-blockers to force"
+    exit 1
+  fi
+else
+  print_success "No lib/ shrinkage detected"
+fi
+echo ""
+
 # Trigger local Sharkrite review
 if [ "$AUTO_MODE" = true ]; then
   trigger_local_review "$PR_NUMBER" --auto || {

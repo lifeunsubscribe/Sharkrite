@@ -291,6 +291,193 @@ detect_credentials_expired() {
   return 0
 }
 
+# detect_lib_shrinkage PR_NUMBER
+#
+# Hard gate: fires when a PR deletes a large fraction of a production lib/ file.
+#
+# Triggered when ANY file under lib/core/, lib/utils/, or lib/providers/ loses:
+#   - More than 50% of its total line count, OR
+#   - More than 500 lines (absolute)
+#
+# This check exists because auto-review-driven PRs (rite --fix-review) can
+# silently overwrite production code if a buggy test writes through a symlink
+# or if Claude applies overly-aggressive deletions.  The 2026-06-02 incident
+# (PR #260) deleted 1,256 lines of production lib/ code without human review.
+#
+# Thresholds are configurable via env vars:
+#   RITE_SHRINKAGE_RATIO_PCT   — default 50  (percent, integer)
+#   RITE_SHRINKAGE_ABS_LINES   — default 500 (lines, integer)
+#
+# Diff counting: we count only the deleted lines (^-) and added lines (^+) from
+# the per-file hunk headers — using the diff stat approach via `gh pr diff`
+# rather than the API `.files[].deletions` field because the stat-based count
+# includes all content lines, not just the summary.
+#
+# Per-file total line count uses `wc -l` on the file in the current worktree.
+# If the file doesn't exist locally (e.g., deleted in the PR), we skip the ratio
+# check and rely solely on the absolute line count.
+#
+# Returns 1 (blocker) on first file that exceeds a threshold.
+# Exports SHRINKAGE_BLOCKER_FILE, SHRINKAGE_BLOCKER_DELETED, SHRINKAGE_BLOCKER_TOTAL.
+# Logs a structured [diag] line to RITE_LOG_FILE for the health report.
+detect_lib_shrinkage() {
+  local pr_number=$1
+
+  # Default thresholds — overridable via env/config
+  local ratio_pct="${RITE_SHRINKAGE_RATIO_PCT:-50}"
+  local abs_lines="${RITE_SHRINKAGE_ABS_LINES:-500}"
+
+  # Production path prefix pattern (matches lib/core/, lib/utils/, lib/providers/)
+  local prod_path_re="^(lib/core|lib/utils|lib/providers)/"
+
+  # Fetch the diff once; extract only lines that affect production lib files
+  # Use gh pr diff which gives us unified diff text we can parse portably.
+  local diff_text
+  diff_text=$(gh_safe pr diff "$pr_number" 2>/dev/null || true)
+
+  if [ -z "$diff_text" ]; then
+    return 0  # Empty diff is not an error — PR may have no file changes
+  fi
+
+  # Parse the diff: for each file matching the production path, count deletions.
+  # We walk the diff line by line, tracking the current file and counting ^- lines.
+  #
+  # diff --git a/lib/core/foo.sh b/lib/core/foo.sh   ← new file section
+  # --- a/lib/core/foo.sh                              ← may also appear
+  # -deleted line                                      ← count these
+  #
+  # Use awk for portability (no bash 4+ required, works on macOS awk/gawk).
+  # Write the awk program to a temp file so the $(echo | awk) assignment stays on
+  # one line and satisfies the UNSAFE_PIPE_IN_CMDSUB lint rule (which checks the
+  # next line for || true; a multi-line awk body fools it into thinking || true
+  # is missing even when it appears at the close of the heredoc).
+  local _awk_prog
+  _awk_prog=$(mktemp)
+  cat > "$_awk_prog" <<'AWKEOF'
+/^diff --git a\// {
+  if (current_file != "" && deleted > 0 && deleted+0 > abs_lines+0) {
+    print current_file "|" deleted "|" deleted "|ABS"
+  }
+  path = $NF
+  sub(/^b\//, "", path)
+  current_file = (path ~ prod_re) ? path : ""
+  deleted = 0
+  next
+}
+/^-[^-]/ {
+  if (current_file != "") deleted++
+  next
+}
+END {
+  if (current_file != "" && deleted > 0 && deleted+0 > abs_lines+0) {
+    print current_file "|" deleted "|" deleted "|ABS"
+  }
+}
+AWKEOF
+
+  local violations
+  violations=$(echo "$diff_text" | awk -v abs_lines="$abs_lines" -v prod_re="$prod_path_re" -f "$_awk_prog" || true)
+  rm -f "$_awk_prog"
+
+  # The awk pass above catches the absolute threshold without needing file sizes.
+  # Now do the ratio check: for each production lib/ file touched by the PR,
+  # fetch its current line count and compare deleted lines vs total.
+  #
+  # Get the list of production lib/ files changed in the PR (with deletion counts).
+  local changed_lib_files
+  changed_lib_files=$(gh_safe pr view "$pr_number" --json files \
+    --jq ".files[] | select(.path | test(\"${prod_path_re}\")) | \"\(.path)|\(.deletions)\"" \
+    2>/dev/null || true)
+
+  local ratio_violations=""
+  if [ -n "$changed_lib_files" ]; then
+    while IFS='|' read -r filepath deletions; do
+      [ -z "$filepath" ] && continue
+      deletions="${deletions:-0}"
+
+      # Skip files with trivial deletions (avoid stat call for tiny changes)
+      if [ "$deletions" -le 10 ]; then
+        continue
+      fi
+
+      # Get total line count from the local worktree (pre-merge state)
+      # If the file was deleted in the PR it won't exist; skip ratio check in that case.
+      local total_lines=0
+      if [ -f "$filepath" ]; then
+        total_lines=$(wc -l < "$filepath" || echo "0")
+      fi
+
+      if [ "$total_lines" -le 0 ]; then
+        continue  # Cannot compute ratio without original line count
+      fi
+
+      # Ratio check: deletions / total_lines > ratio_pct / 100
+      # Using integer arithmetic: deletions * 100 > total_lines * ratio_pct
+      local deleted_pct=$(( deletions * 100 ))
+      local threshold_pct=$(( total_lines * ratio_pct ))
+      if [ "$deleted_pct" -gt "$threshold_pct" ]; then
+        ratio_violations="${ratio_violations}${filepath}|${deletions}|${total_lines}|RATIO"$'\n'
+      fi
+    done <<< "$changed_lib_files"
+  fi
+
+  # Combine violations
+  local all_violations="${violations}"
+  if [ -n "$ratio_violations" ]; then
+    all_violations="${all_violations}${ratio_violations}"
+  fi
+  all_violations=$(echo "$all_violations" | sed '/^$/d' || true)
+
+  if [ -z "$all_violations" ]; then
+    return 0  # No violations — clear to merge
+  fi
+
+  # Report the first violation (worst case)
+  # head -1 exits 0 even on empty input; || true guards against any pipeline exit
+  local first
+  first=$(echo "$all_violations" | head -1 || true)
+  local viol_file viol_deleted viol_total viol_type
+  IFS='|' read -r viol_file viol_deleted viol_total viol_type <<< "$first"
+
+  export SHRINKAGE_BLOCKER_FILE="$viol_file"
+  export SHRINKAGE_BLOCKER_DELETED="$viol_deleted"
+  export SHRINKAGE_BLOCKER_TOTAL="$viol_total"
+
+  # Build human-readable message
+  echo "BLOCKER: Large deletion detected in production lib/ file"
+  echo ""
+  echo "Threshold: >${ratio_pct}% of file OR >${abs_lines} lines deleted from lib/core|utils|providers"
+  echo ""
+  echo "Violations:"
+  while IFS='|' read -r vf vd vt vtype; do
+    [ -z "$vf" ] && continue
+    if [ "$vtype" = "ABS" ]; then
+      echo "  ${vf}: -${vd} lines (absolute threshold: >${abs_lines})"
+    else
+      if [ "$vt" -gt 0 ]; then
+        local pct=$(( vd * 100 / vt ))
+        echo "  ${vf}: -${vd} lines of ${vt} total (${pct}% deleted; threshold: >${ratio_pct}%)"
+      else
+        echo "  ${vf}: -${vd} lines deleted (ratio threshold: >${ratio_pct}%)"
+      fi
+    fi
+  done <<< "$all_violations"
+  echo ""
+  echo "This pattern matches the 2026-06-02 incident where a buggy test overwrote"
+  echo "1,256 lines of production code (lib/core/assess-review-issues.sh, lib/utils/format-review.sh)."
+  echo "A human must confirm this deletion is intentional before merging."
+  echo ""
+  echo "To bypass (requires explicit acknowledgment):"
+  echo "  RITE_SHRINKAGE_RATIO_PCT=100 rite <issue> --supervised"
+  echo "  # or: rite <issue> --bypass-blockers  (unsupervised, logs to health report)"
+
+  # Log structured diagnostic line for health report aggregation
+  local log_file="${RITE_LOG_FILE:-/tmp/rite-workflow.log}"
+  echo "[diag] SHRINKAGE_BLOCKER pr=$pr_number file=$viol_file deleted=$viol_deleted total=$viol_total type=$viol_type threshold_ratio=$ratio_pct threshold_abs=$abs_lines" >> "$log_file" 2>/dev/null || true
+
+  return 1
+}
+
 detect_protected_scripts() {
   local pr_number=$1
 
@@ -425,6 +612,30 @@ Guidance: Verify changes do not break the CI/CD pipeline, review loop, or merge 
 "
   fi
 
+  # lib/ shrinkage early warning: if the PR deletes substantial code from
+  # production lib paths, surface a sensitivity hint NOW (at PR creation time)
+  # so the reviewer knows to look closely — the hard gate fires at pre-merge.
+  local _shrinkage_ratio_pct="${RITE_SHRINKAGE_RATIO_PCT:-50}"
+  local _shrinkage_abs="${RITE_SHRINKAGE_ABS_LINES:-500}"
+  local _shrinkage_re="^(lib/core|lib/utils|lib/providers)/"
+  local _shrinkage_matches
+  _shrinkage_matches=$(echo "$changed_files" | grep -E "$_shrinkage_re" || true)
+  if [ -n "$_shrinkage_matches" ]; then
+    # Check if any lib/ file has large deletions (using API deletion counts for speed)
+    local _lib_file_deletions
+    _lib_file_deletions=$(gh_safe pr view "$pr_number" --json files \
+      --jq ".files[] | select(.path | test(\"${_shrinkage_re}\")) | select(.deletions > 10) | \"\(.path)|-\(.deletions) lines\"" \
+      2>/dev/null || true)
+    if [ -n "$_lib_file_deletions" ]; then
+      hints+="### Sensitivity: lib/ Production Code Deletions
+Files with non-trivial deletions:
+$(echo "$_lib_file_deletions" | sed 's/^/  /')
+Guidance: Production lib/ files (lib/core/, lib/utils/, lib/providers/) with large deletions will trigger a hard merge gate if any single file loses >${_shrinkage_ratio_pct}% of its lines OR >${_shrinkage_abs} lines. Verify that deletions are intentional refactors, not accidental file overwrites. The 2026-06-02 incident deleted 1,256 lines via a buggy test writing through a symlink — this check exists to prevent a recurrence.
+
+"
+    fi
+  fi
+
   if [ -n "$hints" ]; then
     echo "$hints"
   fi
@@ -472,7 +683,7 @@ check_blockers() {
       # migrations, auth, docs, expensive services, protected scripts) are now
       # handled as review sensitivity hints via detect_sensitivity_areas().
       local _det_output
-      local _det_checks=("critical_issues:detect_critical_issues")
+      local _det_checks=("critical_issues:detect_critical_issues" "lib_shrinkage:detect_lib_shrinkage")
 
       for _check in "${_det_checks[@]}"; do
         local _type="${_check%%:*}"
@@ -530,7 +741,7 @@ get_blocker_urgency() {
   local blocker_type="$1"
 
   case "$blocker_type" in
-    critical_issues)
+    critical_issues|lib_shrinkage)
       echo "high"
       ;;
     session_limit|credentials_expired)
@@ -549,6 +760,9 @@ is_blocking_batch() {
   case "$blocker_type" in
     credentials_expired|session_limit)
       echo "true"  # These block the entire batch
+      ;;
+    lib_shrinkage|critical_issues)
+      echo "false"  # Per-issue blocker — only blocks the current issue
       ;;
     *)
       echo "false"  # These only block current issue
@@ -570,6 +784,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f detect_aws_project
   export -f detect_credentials_expired
   export -f detect_protected_scripts
+  export -f detect_lib_shrinkage
   export -f detect_sensitivity_areas
   export -f check_blockers
   export -f get_blocker_urgency
