@@ -121,6 +121,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/markers.sh"
 }
 
+@test "lib/utils/mid-run-rebase.sh sources twice without error" {
+  _assert_double_source "lib/utils/mid-run-rebase.sh"
+}
+
 @test "lib/utils/logging.sh sources twice without error" {
   _assert_double_source "lib/utils/logging.sh"
 }

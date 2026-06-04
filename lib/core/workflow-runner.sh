@@ -31,6 +31,7 @@ source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
+source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
@@ -1094,6 +1095,36 @@ phase_assess_and_resolve() {
     elif [ -n "$followup_state" ]; then
       print_info "📋 Follow-up issue #$followup_issue_num exists (state: $followup_state)"
       print_info "Workflow will continue assessment to check if PR is ready to merge"
+    fi
+  fi
+
+  # Mid-run drift check: detect if main has advanced since phase 1 (development).
+  # Wide-surface PRs (touching many files) spend 1-2h in phases 1-3.  By the time
+  # phase 4 (merge) fires, main may have moved 10-19 commits ahead, causing the
+  # pre-merge auto-merge to fail on content conflicts after all the Claude time is spent.
+  #
+  # Fix: rebase proactively at the START of phase 3 (and on each fix iteration).
+  # If drift <= threshold (default 5): rebase silently.
+  # If drift >  threshold or conflicts: abort HERE, before generating a review.
+  #
+  # Implementation note: call from WORKTREE_PATH context only — WORKTREE_PATH must be set.
+  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    local _mid_rebase_branch
+    _mid_rebase_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [ -n "$_mid_rebase_branch" ] && [ "$_mid_rebase_branch" != "main" ] && [ "$_mid_rebase_branch" != "master" ]; then
+      local _mid_rebase_result=0
+      check_and_rebase_against_main \
+        "$WORKTREE_PATH" \
+        "$_mid_rebase_branch" \
+        "$issue_number" \
+        "${pr_number:-}" \
+        "$WORKFLOW_MODE" || _mid_rebase_result=$?
+      if [ "$_mid_rebase_result" -ne 0 ]; then
+        # Drift too large or conflicts: abort before spending Claude time on a review
+        print_error "Phase 3 aborted: mid-run drift cannot be resolved automatically"
+        print_info "Run 'rite ${issue_number} --supervised' to resolve conflicts manually"
+        return 1
+      fi
     fi
   fi
 
