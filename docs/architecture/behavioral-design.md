@@ -331,6 +331,71 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 
 ---
 
+## Phase Handoff cwd Invariants (workflow-runner.sh)
+
+### The Problem: Deleted-Directory cwd
+
+`workflow-runner.sh::run_workflow()` changes into the feature-branch worktree early in the workflow (`cd "$WORKTREE_PATH"`). When Phase 4 (`phase_merge_pr`) completes, `merge-pr.sh` has deleted that worktree directory. Control returns to `workflow-runner.sh`, which still has the deleted directory as its cwd. Any subsequent shell built-in or subprocess that probes cwd will fail:
+
+```
+fatal: Unable to read current working directory: No such file or directory
+```
+
+This produces false failures — the PR was successfully merged, but the cleanup phase (`phase_completion`) is reported as failed because its `gh` calls trigger git's internal cwd probe.
+
+**Bug history:**
+- **Issue #161** (fixed by PR #211) — `merge-pr.sh` itself cd'd to `$MAIN_WORKTREE` before removing the worktree, fixing cwd for operations *inside* merge-pr.sh.
+- **Issue #235** (fixed by PR #295) — the *caller's* cwd in `workflow-runner.sh` was never restored. `phase_completion`'s `gh_safe pr view` calls triggered the fatal error.
+
+### The Contract
+
+**At every phase boundary in `workflow-runner.sh`, cwd must be `$RITE_PROJECT_ROOT`.**
+
+More specifically:
+- Phases that need the worktree (dev, push/PR, assess) are responsible for cd-ing into it themselves, not for leaving it set.
+- **`phase_merge_pr` MUST restore cwd to `$RITE_PROJECT_ROOT` before returning.** It removes the worktree (indirectly, via `merge-pr.sh`) and is therefore responsible for leaving the process in a safe directory.
+- **`phase_completion` (and any phase that follows merge) MUST start with a defensive `cd "$RITE_PROJECT_ROOT"`** as defense-in-depth — protecting against any other caller path that might leave cwd in a bad state.
+
+### Implementation
+
+**Option A (architectural fix) — `phase_merge_pr` restores cwd at the end:**
+
+```bash
+# At the end of phase_merge_pr(), after the STASHED_UNRELATED_WORK block:
+# Restore cwd so downstream phases (phase_completion, etc.) start in a valid dir.
+cd "$RITE_PROJECT_ROOT" 2>/dev/null || cd "$(git -C "$RITE_PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null)" || true
+return 0
+```
+
+The fallback chain `2>/dev/null || git -C ... || true` makes this robust: if `$RITE_PROJECT_ROOT` is somehow unset, the fallback uses git's own root detection; if both fail, the `|| true` prevents crashing under `set -e`.
+
+**Option B (defense-in-depth) — `phase_completion` restores cwd defensively:**
+
+```bash
+phase_completion() {
+  # Defensive: ensure we're at the repo root before any gh/git calls.
+  cd "$RITE_PROJECT_ROOT" 2>/dev/null || true
+  ...
+}
+```
+
+Both are implemented. The pattern of recurring cwd bugs in this area justifies defense-in-depth.
+
+### STASHED_UNRELATED_WORK Exception
+
+The `STASHED_UNRELATED_WORK` branch inside `phase_merge_pr` cd's into `$WORKTREE_PATH` to run `git stash pop`. This is intentional — it must happen while the worktree exists. The cwd-restore to `$RITE_PROJECT_ROOT` happens **after** this block, so the exception does not conflict with the contract.
+
+### Regression Test
+
+`tests/regression/post-merge-cwd-restored.bats` pins the contract:
+1. Static: `phase_merge_pr` contains `cd "$RITE_PROJECT_ROOT"` before `return 0`
+2. Static: `phase_completion` contains defensive `cd "$RITE_PROJECT_ROOT"` before first `gh_safe` call
+3. Static: the Option A restore cd is **after** the `STASHED_UNRELATED_WORK` block
+4. Behavioral: a subprocess launched from a removed directory that mirrors the fix succeeds
+5. Behavioral: the same subprocess without the fix reproduces the fatal cwd error
+
+---
+
 ## Decisions Log
 
 ### Removed: Plan Directives System
