@@ -167,10 +167,12 @@ run_locked_dedup_create() {
 }
 
 @test "acquire_pr_followup_lock reclaims stale lock from dead process" {
-  # Create a lock with a dead PID
+  # Create a lock with a provably-dead PID (completed subshell — portable across
+  # all Linux pid_max settings, unlike hardcoded 99999999 which can be a live
+  # PID on systems with pid_max > 99999, e.g. containers or custom kernel configs).
   local lock_dir="$RITE_LOCK_DIR/pr-77-followup.lock"
   mkdir "$lock_dir"
-  echo "99999999" > "$lock_dir/pid"   # PID that does not exist
+  get_dead_pid > "$lock_dir/pid"
 
   run acquire_pr_followup_lock 77
   [ "$status" -eq 0 ]

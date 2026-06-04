@@ -79,6 +79,25 @@ load_provider() {
   done
 }
 
+# Return a provably-dead PID from a completed subshell.
+#
+# Why not hardcode 99999 / 99999999?
+#   On Linux hosts with pid_max > 99999 (containers, custom kernel configs)
+#   those values may be live processes, causing flaky test failures.
+#   A subshell PID is guaranteed dead after wait returns — no assumption
+#   about the kernel's PID ceiling is required.
+#
+# Usage:
+#   _dead=$(get_dead_pid)
+#   echo "$_dead" > some-lock/pid
+get_dead_pid() {
+  local _pid
+  ( true ) &
+  _pid=$!
+  wait "$_pid" 2>/dev/null || true
+  echo "$_pid"
+}
+
 # Common cleanup (called automatically by bats teardown if defined)
 teardown_test_tmpdir() {
   if [ -n "${RITE_TEST_TMPDIR:-}" ] && [ -d "$RITE_TEST_TMPDIR" ]; then
