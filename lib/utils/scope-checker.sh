@@ -119,8 +119,8 @@ _file_matches_pattern() {
   local file="$1"
   local pattern="$2"
 
-  file=$(echo "$file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||')
-  pattern=$(echo "$pattern" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||')
+  file=$(echo "$file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
+  pattern=$(echo "$pattern" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
 
   # Skip non-path-shaped patterns — they have no meaning as path matchers
   if ! _is_path_shaped "$pattern"; then return 1; fi
@@ -229,7 +229,7 @@ check_scope_boundary() {
   local _violations=()
   for _file in "${_changed_files[@]}"; do
     local _file_norm
-    _file_norm=$(echo "$_file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||')
+    _file_norm=$(echo "$_file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
 
     # Check DO NOT patterns first (explicit exclusion wins).
     # _donot_patterns is always declared with local _donot_patterns=() so the

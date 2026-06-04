@@ -170,7 +170,7 @@ assess_internal_changelog() {
   fi
 
   # Build file list (compact)
-  local file_list=$(echo "$changed_files" | head -5 | tr '\n' ', ' | sed 's/,$//')
+  local file_list=$(echo "$changed_files" | head -5 | tr '\n' ', ' | sed 's/,$//' || true)
 
   # Prepend entry: newest date section at the top (Keep a Changelog convention)
   local today=$(date +%Y-%m-%d)
@@ -489,7 +489,7 @@ generate_adr_for_ref() {
   fi
 
   # Build compact file list for the Files: metadata line
-  local changed_files_list=$(echo "$changed_files" | head -10 | tr '\n' ', ' | sed 's/,$//')
+  local changed_files_list=$(echo "$changed_files" | head -10 | tr '\n' ', ' | sed 's/,$//' || true)
 
   # Build metadata line based on ref_type
   local ref_metadata
@@ -530,7 +530,7 @@ ADR_EOF
 
   if [ -n "$adr_output" ]; then
     # Extract brief title for filename
-    local brief_title=$(echo "$adr_output" | head -1 | sed 's/^# ADR-[0-9]*: //' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40)
+    local brief_title=$(echo "$adr_output" | head -1 | sed 's/^# ADR-[0-9]*: //' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40 || true)
     if [ -z "$brief_title" ]; then
       if [ "$ref_type" = "pr" ]; then
         brief_title="pr-${ref_id}"
@@ -1077,7 +1077,7 @@ fi
 CHANGED_FILES_NO_DOCS=$(echo "$PR_DATA" | jq -r '.files[].path' | grep -v '^docs/' | head -20 || true)
 
 # Get commit messages for context
-COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[].messageHeadline' | head -10)
+COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[].messageHeadline' | head -10 || true)
 
 # Get current documentation structure
 DOC_FILES=$(find docs/ -name "*.md" 2>/dev/null | sort || echo "")
@@ -1149,7 +1149,7 @@ Focus on addressing the specific items mentioned in the review.
 fi
 
 # Pre-compute doc structure (avoid nested $() inside heredoc)
-CLAUDE_MD_INLINE=$(echo "$CLAUDE_MD_SECTIONS" | head -10 | tr '\n' ';')
+CLAUDE_MD_INLINE=$(echo "$CLAUDE_MD_SECTIONS" | head -10 | tr '\n' ';' || true)
 README_INLINE=""
 if [ -n "$README_SECTIONS" ]; then
   README_INLINE="- README.md (project overview): $(echo "$README_SECTIONS" | head -10 | tr '\n' ';')"

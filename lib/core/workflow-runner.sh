@@ -480,7 +480,7 @@ Answer:
 EOF
 
             load_provider "${RITE_UTILITY_PROVIDER:-claude}"
-            RELEVANCE=$(provider_run_classify "$(cat "$PROMPT_FILE")" | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
+            RELEVANCE=$(provider_run_classify "$(cat "$PROMPT_FILE")" | grep -oiE "(RELEVANT|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]' || true)
             rm -f "$PROMPT_FILE"
 
             # If Claude CLI failed or returned nothing, fail hard
@@ -1484,7 +1484,7 @@ handle_closed_issue() {
   local issue_data="$2"
 
   local issue_title=$(echo "$issue_data" | jq -r '.title')
-  local closed_at=$(echo "$issue_data" | jq -r '.closedAt')
+  local closed_at=$(echo "$issue_data" | jq -r '.closedAt' || true)
 
   # Find the PR that closed this issue
   local pr_number=$(echo "$issue_data" | jq -r '.closedByPullRequestsReferences[0].number // empty' | head -1 || true)
@@ -1499,7 +1499,7 @@ handle_closed_issue() {
     pr_state=$(echo "$pr_data" | jq -r '.state')
     pr_merged=$(echo "$pr_data" | jq -r '.mergedAt')
     pr_summary=$(echo "$pr_data" | jq -r '.body' | head -5 || true)
-    pr_branch=$(echo "$pr_data" | jq -r '.headRefName')
+    pr_branch=$(echo "$pr_data" | jq -r '.headRefName' || true)
   fi
 
   # Fallback: issue was manually closed (no closedByPullRequestsReferences).

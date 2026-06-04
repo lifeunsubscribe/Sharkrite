@@ -53,7 +53,7 @@ _truncate_at_word_boundary() {
   cut=$(echo "$str" | cut -c1-"$max_len")
   # If the cut lands mid-word, remove the trailing fragment
   if [ "${str:$max_len:1}" != " " ] && [ "${str:$max_len:1}" != "" ]; then
-    cut=$(echo "$cut" | sed 's/ [^ ]*$//')
+    cut=$(echo "$cut" | sed 's/ [^ ]*$//' || true)
   fi
   echo "$cut"
 }
@@ -124,9 +124,9 @@ Rules:
 
     if [ -n "$claude_output" ]; then
       # Parse TITLE: and BODY: markers
-      generated_title=$(echo "$claude_output" | sed -n 's/^TITLE: *//p' | head -1)
+      generated_title=$(echo "$claude_output" | sed -n 's/^TITLE: *//p' | head -1 || true)
       # Everything after the BODY: line
-      generated_body=$(echo "$claude_output" | sed -n '/^BODY:/,$p' | tail -n +2)
+      generated_body=$(echo "$claude_output" | sed -n '/^BODY:/,$p' | tail -n +2 || true)
     fi
   fi
 
@@ -143,7 +143,7 @@ Rules:
   fi
 
   # Strip markdown from title (safety net)
-  generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //')
+  generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //' || true)
 
   # Validate title length
   if [ ${#generated_title} -gt 50 ]; then
@@ -182,7 +182,7 @@ Rules:
       echo -n "Enter new title: " >&2
       read -r generated_title </dev/tty
       # Validate edited title
-      generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //')
+      generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //' || true)
       if [ ${#generated_title} -gt 50 ]; then
         generated_title=$(_truncate_at_word_boundary "$generated_title" 50)
         print_warning "Title truncated to 50 chars: $generated_title" >&2
@@ -294,7 +294,7 @@ ${ISSUE_BODY}"
 # Rejects articles, gerunds (-ing), past tense (-ed), pronouns.
 _is_imperative_title() {
   local first_word
-  first_word=$(echo "$1" | awk '{print tolower($1)}')
+  first_word=$(echo "$1" | awk '{print tolower($1)}' || true)
 
   # Reject articles, determiners, pronouns
   case "$first_word" in
@@ -365,8 +365,8 @@ _paraphrase_title() {
   result=$(provider_run_classify "$(printf "Condense this into an imperative-mood title, maximum 50 characters. Output ONLY the condensed title — no quotes, no prefix, no explanation.\n\n%s" "$long_title")") || return 1
 
   # Validate: single line, strip formatting, strip prefix Claude might add
-  result=$(echo "$result" | head -1 | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //; s/^"//; s/"$//')
-  result=$(echo "$result" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //')
+  result=$(echo "$result" | head -1 | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //; s/^"//; s/"$//' || true)
+  result=$(echo "$result" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //' || true)
 
   if [ -n "$result" ] && [ ${#result} -le 50 ]; then
     echo "$result"
@@ -384,10 +384,10 @@ _cleanup_title() {
 
   # 1. Strip markdown artifacts
   local cleaned
-  cleaned=$(echo "$title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //')
+  cleaned=$(echo "$title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //' || true)
 
   # 2. Strip conventional commit prefix (prefix moves to commit time)
-  cleaned=$(echo "$cleaned" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //')
+  cleaned=$(echo "$cleaned" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //' || true)
 
   # 3. Already short enough? Done.
   if [ ${#cleaned} -le 50 ]; then
@@ -400,7 +400,7 @@ _cleanup_title() {
   split_title=$(_find_natural_split "$cleaned" 50) && {
     _TITLE_REMAINDER="${cleaned:${#split_title}}"
     # Strip leading separators and whitespace from remainder
-    _TITLE_REMAINDER=$(echo "$_TITLE_REMAINDER" | sed -E 's/^[[:space:]]*[-–—]+[[:space:]]*//')
+    _TITLE_REMAINDER=$(echo "$_TITLE_REMAINDER" | sed -E 's/^[[:space:]]*[-–—]+[[:space:]]*//' || true)
     echo "$split_title"
     return
   }

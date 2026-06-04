@@ -236,7 +236,7 @@ CLASSIFY_EOF
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_UTILITY_PROVIDER:-claude}"
   if provider_detect_cli 2>/dev/null; then
-    classification=$(provider_run_classify "$(cat "$prompt_file")" | grep -oiE "(TRIVIAL|RELATED|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]')
+    classification=$(provider_run_classify "$(cat "$prompt_file")" | grep -oiE "(TRIVIAL|RELATED|UNRELATED)" | head -1 | tr '[:lower:]' '[:upper:]' || true)
   fi
   rm -f "$prompt_file"
 

@@ -239,7 +239,7 @@ get_issue_phase() {
   # Check if review is current by comparing to latest commit
   # Use the PR branch to find worktree (if any) for local timestamps
   local pr_branch
-  pr_branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
+  pr_branch=$(echo "$pr_json" | jq -r '.headRefName // ""' || true)
   local wt_path=""
   if [ -n "$pr_branch" ]; then
     wt_path=$(git worktree list 2>/dev/null | grep "\[$pr_branch\]" | awk '{print $1}' || echo "")
@@ -623,7 +623,7 @@ repo_wide_status() {
       local num title closed_at labels_str
       num=$(echo "$issue_json" | jq -r '.number')
       title=$(echo "$issue_json" | jq -r '.title')
-      closed_at=$(echo "$issue_json" | jq -r '.closedAt // ""')
+      closed_at=$(echo "$issue_json" | jq -r '.closedAt // ""' || true)
       labels_str=$(echo "$issue_json" | jq -r '[.labels[].name] | join(", ")')
 
       # Format close date

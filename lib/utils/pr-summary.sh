@@ -94,8 +94,8 @@ replace_changes_summary() {
   if echo "$existing_body" | grep -qF "$SUMMARY_START"; then
     # Delete old section (markers inclusive), insert new section
     local before after
-    before=$(echo "$existing_body" | sed "/${SUMMARY_START}/,\$d")
-    after=$(echo "$existing_body" | sed "1,/${SUMMARY_END//\//\\/}/d")
+    before=$(echo "$existing_body" | sed "/${SUMMARY_START}/,\$d" || true)
+    after=$(echo "$existing_body" | sed "1,/${SUMMARY_END//\//\\/}/d" || true)
     printf '%s\n\n%s\n\n%s' "$before" "$new_summary" "$after"
   else
     # No markers — insert after "## Summary" paragraph

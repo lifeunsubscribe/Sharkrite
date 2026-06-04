@@ -87,7 +87,7 @@ cleanup_on_interrupt() {
   if git rev-parse --is-inside-work-tree &>/dev/null; then
     local current_dir=$(pwd)
     local main_repo
-    main_repo=$(git worktree list | head -1 | awk '{print $1}')
+    main_repo=$(git worktree list | head -1 | awk '{print $1}' || true)
 
     # Check for uncommitted changes (exclude untracked files)
     local uncommitted
@@ -503,7 +503,7 @@ run_test_gate() {
   # Optimize pytest: parallelize, suppress noise, offer xdist install
   if echo "$_test_cmd" | grep -q "pytest"; then
     local _python_bin
-    _python_bin=$(echo "$_test_cmd" | sed 's/ -m pytest.*//')
+    _python_bin=$(echo "$_test_cmd" | sed 's/ -m pytest.*//' || true)
 
     # Parallel execution via xdist (use if already installed, never auto-install)
     if ! echo "$_test_cmd" | grep -qE "\-n "; then
@@ -559,13 +559,13 @@ run_test_gate() {
         # Extract the FAILURES section (pytest prints this between ===== FAILURES =====
         # and ===== short test summary =====). Falls back to grep if section not found.
         local _fail_summary
-        _fail_summary=$(sed -n '/=* FAILURES =*/,/=* short test summary/p' "$_test_output_file" | tail -80)
+        _fail_summary=$(sed -n '/=* FAILURES =*/,/=* short test summary/p' "$_test_output_file" | tail -80 || true)
         if [ -z "$_fail_summary" ]; then
-          _fail_summary=$(grep -E "FAILED|ERROR|AssertionError|assert|Error:" "$_test_output_file" | tail -30)
+          _fail_summary=$(grep -E "FAILED|ERROR|AssertionError|assert|Error:" "$_test_output_file" | tail -30 || true)
         fi
         # Also grab the summary line (e.g., "2 failed, 864 passed")
         local _fail_counts
-        _fail_counts=$(grep -E "failed.*passed|error.*passed" "$_test_output_file" | tail -1)
+        _fail_counts=$(grep -E "failed.*passed|error.*passed" "$_test_output_file" | tail -1 || true)
 
         local _fix_prompt="Tests are failing after your implementation. Fix ALL failing tests — not just the first one.
 
@@ -675,7 +675,7 @@ check_dev_session_output() {
 
   if [ "$uncommitted_count" -gt 0 ]; then
     # Auto-commit path: salvage uncommitted work
-    print_warning "Claude session ended without committing changes"
+    print_warning "$(provider_name) session ended without committing changes"
     print_status "Auto-committing $uncommitted_count uncommitted file(s)..."
 
     # Log diagnostic
@@ -717,7 +717,7 @@ Auto-salvaged to prevent work loss."
   fi
 
   # Fail-loud path: no commits and no uncommitted changes - nothing was done
-  print_error "Claude session ended without making any changes for issue #${ISSUE_NUMBER:-unknown}"
+  print_error "$(provider_name) session ended without making any changes for issue #${ISSUE_NUMBER:-unknown}"
   echo ""
   print_info "Possible causes:"
   echo "  • Claude judged the issue not actionable"
@@ -762,7 +762,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
     # Strip the assessment header metadata (everything before the --- separator)
     # to give Claude just the assessment items
     if [ -n "$REVIEW_CONTENT" ] && echo "$REVIEW_CONTENT" | grep -q "^---$"; then
-      REVIEW_CONTENT=$(echo "$REVIEW_CONTENT" | sed -n '/^---$/,$p' | tail -n +2)
+      REVIEW_CONTENT=$(echo "$REVIEW_CONTENT" | sed -n '/^---$/,$p' | tail -n +2 || true)
     fi
   else
     print_status "No PR number provided, reading review content from stdin..."
@@ -780,12 +780,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   # Extract ONLY the ACTIONABLE_NOW items from the assessment
   # Assessment format: ### Title - ACTIONABLE_NOW\n**Severity:** ...\n**Category:** ...\n...
   # Each item runs from its ### header to the next ### header (or EOF)
-  ACTIONABLE_NOW_ITEMS=$(echo "$REVIEW_CONTENT" | awk '
-    /^### .* - ACTIONABLE_NOW$/ { printing=1 }
-    /^### .* - (ACTIONABLE_LATER|DISMISSED)$/ { printing=0 }
-    /^(✅|───|━━)/ { printing=0 }
-    printing { print }
-  ')
+  ACTIONABLE_NOW_ITEMS=$(echo "$REVIEW_CONTENT" | awk '/^### .* - ACTIONABLE_NOW$/ { printing=1 } /^### .* - (ACTIONABLE_LATER|DISMISSED)$/ { printing=0 } /^(✅|───|━━)/ { printing=0 } printing { print }' || true)
 
   if [ -z "$ACTIONABLE_NOW_ITEMS" ]; then
     print_warning "No ACTIONABLE_NOW items found in assessment — nothing to fix"
@@ -812,11 +807,7 @@ $ACTIONABLE_NOW_ITEMS
 --- END_USER_DATA ---
 "
 
-  if [ "$AUTO_MODE" = true ]; then
-    EXIT_INSTRUCTION="Session will end automatically when you finish making all fixes."
-  else
-    EXIT_INSTRUCTION="When you have finished making all fixes, immediately exit with \`/exit\`. The rite workflow will handle commit and push."
-  fi
+  EXIT_INSTRUCTION=$(provider_exit_instructions "$AUTO_MODE")
 
   FIX_PROMPT+="## Instructions
 
@@ -1189,8 +1180,8 @@ else
     # Sanitize branch name — use NORMALIZED_SUBJECT if available, strip type prefix first
     _branch_source="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
     # Strip conventional commit prefix (e.g., "fix: " or "feat(auth): ") before sanitizing — branch gets PREFIX/ from detection logic
-    _branch_source=$(echo "$_branch_source" | sed -E 's/^[a-z]+(\([^)]*\))?: //')
-    SANITIZED_DESC=$(echo "$_branch_source" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | cut -c1-50)
+    _branch_source=$(echo "$_branch_source" | sed -E 's/^[a-z]+(\([^)]*\))?: //' || true)
+    SANITIZED_DESC=$(echo "$_branch_source" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | cut -c1-50 || true)
 
     # Validate sanitized result
     if [ -z "$SANITIZED_DESC" ] || [ ${#SANITIZED_DESC} -lt 3 ]; then
@@ -1453,13 +1444,10 @@ If the changes are unrelated work, answer UNRELATED."
   SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME%-}"     # Remove trailing dash
 
   # Abbreviate prefix for shorter folder names: feat- → ft-, fix- → fx-, etc.
-  SAFE_BRANCH_NAME=$(echo "$SAFE_BRANCH_NAME" | sed -E '
-    s/^feat-/ft-/; s/^fix-/fx-/; s/^refactor-/rf-/;
-    s/^docs-/dc-/; s/^test-/ts-/; s/^chore-/ch-/'
-  )
+  SAFE_BRANCH_NAME=$(echo "$SAFE_BRANCH_NAME" | sed -E 's/^feat-/ft-/; s/^fix-/fx-/; s/^refactor-/rf-/; s/^docs-/dc-/; s/^test-/ts-/; s/^chore-/ch-/' || true)
   # Truncate at word boundary, max 35 chars
   if [ ${#SAFE_BRANCH_NAME} -gt 35 ]; then
-    SAFE_BRANCH_NAME=$(echo "${SAFE_BRANCH_NAME:0:35}" | sed 's/-[^-]*$//')
+    SAFE_BRANCH_NAME=$(echo "${SAFE_BRANCH_NAME:0:35}" | sed 's/-[^-]*$//' || true)
   fi
 
   # In batch mode, append batch context to worktree name for identification
@@ -2030,8 +2018,8 @@ else
   if ! git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
     commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1)
     # Format: [branch hash] message — show branch/hash on one line, message indented below
-    branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/')
-    commit_msg=$(echo "$commit_output" | head -1 | sed 's/^[^]]*] //')
+    branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/' || true)
+    commit_msg=$(echo "$commit_output" | head -1 | sed 's/^[^]]*] //' || true)
     echo "$branch_info"
     echo "	$commit_msg"
   fi
@@ -2817,7 +2805,7 @@ fi
 
 # Post-workflow cleanup: Exit worktree and return to main repo
 CURRENT_PATH=$(pwd)
-MAIN_REPO=$(git worktree list | head -1 | awk '{print $1}')
+MAIN_REPO=$(git worktree list | head -1 | awk '{print $1}' || true)
 
 if [ -n "$MAIN_REPO" ] && [ "$CURRENT_PATH" != "$MAIN_REPO" ]; then
   echo ""
