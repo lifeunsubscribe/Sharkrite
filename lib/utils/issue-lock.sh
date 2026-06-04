@@ -454,6 +454,160 @@ get_locked_issue_numbers() {
   return 0
 }
 
+# Backfill lock files for legacy worktrees that predate the lock infrastructure.
+#
+# Worktrees created before PR #67 (commit eb714e6) have no lock file, so
+# repo-status.sh cannot map them to an issue number.  This function walks
+# `git worktree list`, derives the issue number from the branch's open PR
+# (via `gh pr list --head <branch>`), and writes a minimal lock directory
+# containing only a `cwd` file — enough for the status display to resolve the
+# worktree → issue mapping without interfering with the live-lock mechanism
+# (which requires a `pid` file written by the running process).
+#
+# The created lock directory is marked with a `backfill` sentinel file so that:
+#   1. `get_locked_issue_numbers()` (which checks for live PIDs) skips it safely.
+#   2. `repo-status.sh`'s backfill-lock lookup path can distinguish it from a
+#      live lock (no `pid` = no PID liveness check needed).
+#   3. `acquire_issue_lock` will delete and recreate the directory when rite
+#      later runs the same issue (mkdir atomically fails → stale-lock reclaim
+#      triggers because there is no live PID).
+#
+# Idempotent: silently skips worktrees that already have a lock directory,
+# and overwrites stale backfill locks when the issue number changes.
+#
+# Requires: RITE_LOCK_DIR (set by config.sh), `git worktree list`, `gh`
+# Args: none
+# Returns: 0 always (best-effort; individual failures are logged to stderr)
+backfill_worktree_locks() {
+  # Load gh_safe if not already available (e.g., when called standalone from
+  # bin/rite --backfill-locks without repo-status.sh's pr-detection.sh chain).
+  if ! declare -f gh_safe >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/gh-retry.sh" 2>/dev/null || true
+  fi
+
+  # Ensure lock directory parent exists
+  mkdir -p "${RITE_LOCK_DIR}"
+
+  local _main_worktree
+  _main_worktree=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2; exit}' || true)
+
+  # Read all worktree entries from porcelain output
+  local _current_path=""
+  local _current_branch=""
+
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^worktree\ (.+) ]]; then
+      _current_path="${BASH_REMATCH[1]}"
+      _current_branch=""
+    elif [[ "$_line" =~ ^branch\ refs/heads/(.+) ]]; then
+      _current_branch="${BASH_REMATCH[1]}"
+    elif [ -z "$_line" ] && [ -n "$_current_path" ]; then
+      # End of block — process non-main worktrees only
+      _backfill_single_worktree "$_current_path" "$_current_branch" "$_main_worktree"
+      _current_path=""
+      _current_branch=""
+    fi
+  done <<< "$(git worktree list --porcelain 2>/dev/null || echo "")"
+
+  # Handle last entry if output doesn't end with blank line
+  if [ -n "$_current_path" ]; then
+    _backfill_single_worktree "$_current_path" "$_current_branch" "$_main_worktree"
+  fi
+
+  return 0
+}
+
+# Internal helper: attempt to backfill a single worktree.
+# Args: worktree_path branch_name main_worktree_path
+# Returns: 0 always
+_backfill_single_worktree() {
+  local _wt_path="$1"
+  local _branch="${2:-}"
+  local _main_wt="${3:-}"
+
+  # Skip main worktree
+  [ "$_wt_path" = "$_main_wt" ] && return 0
+  # Skip non-existent paths
+  [ -d "$_wt_path" ] || return 0
+  # Skip detached HEAD (no branch) or unknown branch
+  [ -n "$_branch" ] || return 0
+
+  # Derive issue number: try branch name first (fast, no API call)
+  local _issue_num=""
+  if [[ "$_branch" =~ (^|[-_/])([0-9]+)($|[-_/]) ]]; then
+    # Heuristic: look for a number in the branch that plausibly is an issue
+    # number.  We still verify via PR below, but this avoids an API call when
+    # the branch already encodes the issue number (e.g. feat/add-stuff-_b34-91).
+    # Use the last numeric group to match Sharkrite branch naming: <desc>_b<pr>-<issue>
+    _issue_num=$(echo "$_branch" | grep -oE '[0-9]+' | tail -1 || true)
+    # Verify that a lock for this number already exists and is not a stale backfill
+    local _existing_lock="${RITE_LOCK_DIR}/issue-${_issue_num}.lock"
+    if [ -d "$_existing_lock" ] && [ ! -f "$_existing_lock/backfill" ]; then
+      # Live lock exists (written by acquire_issue_lock) — do not overwrite
+      return 0
+    fi
+    # Reset: we'll confirm via PR lookup below
+    _issue_num=""
+  fi
+
+  # Look up open PR for this branch and extract closing issue reference.
+  # Use gh_safe for retry/resilience (loaded at top of backfill_worktree_locks).
+  local _pr_json
+  _pr_json=$(gh_safe pr list --head "$_branch" --state open --json number,body --limit 1 \
+    --jq '.[0] // empty' 2>/dev/null || true)
+  _pr_json="${_pr_json:-}"
+
+  if [ -z "$_pr_json" ]; then
+    # Also check all-state PRs (not just open) so closed-but-unmerged branches are handled
+    _pr_json=$(gh_safe pr list --head "$_branch" --state all --json number,body --limit 1 \
+      --jq '.[0] // empty' 2>/dev/null || true)
+    _pr_json="${_pr_json:-}"
+  fi
+
+  [ -z "$_pr_json" ] && return 0
+
+  local _pr_body
+  _pr_body=$(echo "$_pr_json" | jq -r '.body // ""' 2>/dev/null || true)
+
+  # Extract issue number from "Closes #N" / "Fixes #N" / "Resolves #N"
+  _issue_num=$(echo "$_pr_body" | \
+    grep -oiE '(closes?|fixes?|resolves?) #[0-9]+' | \
+    head -1 | grep -oE '[0-9]+' || true)
+
+  [ -z "$_issue_num" ] && return 0
+  [[ "$_issue_num" =~ ^[0-9]+$ ]] || return 0
+
+  local _lock_dir="${RITE_LOCK_DIR}/issue-${_issue_num}.lock"
+
+  # Skip if a live lock (with pid file) already exists — don't clobber it
+  if [ -d "$_lock_dir" ] && [ -f "$_lock_dir/pid" ]; then
+    local _existing_pid
+    _existing_pid=$(cat "$_lock_dir/pid" 2>/dev/null || true)
+    if [ -n "$_existing_pid" ] && kill -0 "$_existing_pid" 2>/dev/null; then
+      return 0  # Live process holds this lock — do not overwrite
+    fi
+  fi
+
+  # Write (or refresh) the backfill lock directory
+  # Use mkdir to atomically create (will fail if live acquire_issue_lock raced us,
+  # but that's fine — the live lock supersedes the backfill).
+  mkdir -p "$_lock_dir" 2>/dev/null || true
+
+  # Write cwd file (the key artifact repo-status.sh uses for mapping)
+  local _cwd_tmp
+  _cwd_tmp=$(mktemp "${_lock_dir}/cwd.XXXXXX" 2>/dev/null) || return 0
+  printf '%s\n' "$_wt_path" > "$_cwd_tmp" && mv "$_cwd_tmp" "${_lock_dir}/cwd" || {
+    rm -f "$_cwd_tmp" 2>/dev/null || true
+    return 0
+  }
+
+  # Write backfill sentinel (distinguishes from live lock; acquire_issue_lock
+  # will delete the whole dir atomically, so the sentinel disappears on first run)
+  printf 'backfill\n' > "${_lock_dir}/backfill" 2>/dev/null || true
+
+  return 0
+}
+
 # Remove durable local evidence for a follow-up issue creation.
 #
 # Called when the locally-evidenced issue is found to be stale (closed/deleted),
