@@ -234,6 +234,14 @@ _setup_mock_lib_tree() {
 
   # Override: assess-review-issues.sh — outputs MOCK_ASSESSMENT_FILE to stdout.
   # This isolates assess-and-resolve.sh from needing a live Claude CLI.
+  #
+  # CRITICAL: `rm -f` first to break the symlink from the broad `ln -sf` loop
+  # above. Without this, `cat >` writes THROUGH the symlink and overwrites the
+  # real production file at $RITE_REPO_ROOT/lib/core/assess-review-issues.sh.
+  # That exact failure mode silently destroyed the real 1,018-line file when
+  # PR #260 ran this test on 2026-06-02; the damage shipped to main and the
+  # assessment phase was broken for 2 days before being diagnosed.
+  rm -f "$MOCK_LIB_DIR/core/assess-review-issues.sh"
   cat > "$MOCK_LIB_DIR/core/assess-review-issues.sh" << 'ASSESS_STUB_EOF'
 #!/usr/bin/env bash
 # Stub assess-review-issues.sh: outputs MOCK_ASSESSMENT_FILE content to stdout.
@@ -248,6 +256,8 @@ ASSESS_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
 
   # Override: format-review.sh — no-op (avoids display logic in tests).
+  # Same symlink-replacement contract as assess-review-issues.sh above.
+  rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
   cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
 #!/usr/bin/env bash
 # Stub format-review.sh: no-op.
