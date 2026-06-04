@@ -22,6 +22,10 @@ if declare -f parse_scope_boundary >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
+# Load marker constants
+_scope_checker_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_scope_checker_dir/markers.sh"
+
 # ---------------------------------------------------------------------------
 # parse_scope_boundary ISSUE_BODY
 #
@@ -343,7 +347,7 @@ format_scope_warning() {
 
 ---
 
-<!-- sharkrite-scope-warning -->
+<!-- ${RITE_MARKER_SCOPE_WARNING} -->
 ## ⚠️ Scope Boundary Warning
 
 This PR modifies **${_count}** file(s) that may be outside the issue's declared scope:

@@ -184,6 +184,7 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -470,7 +471,7 @@ print_success "Review generated successfully"
 echo ""
 
 # Add marker with model metadata for assessment consistency
-REVIEW_COMMENT="<!-- sharkrite-local-review model:${EFFECTIVE_MODEL} timestamp:$(date -u +"%Y-%m-%dT%H:%M:%SZ") -->
+REVIEW_COMMENT="<!-- ${RITE_MARKER_REVIEW} model:${EFFECTIVE_MODEL} timestamp:$(date -u +"%Y-%m-%dT%H:%M:%SZ") -->
 
 $REVIEW_OUTPUT"
 

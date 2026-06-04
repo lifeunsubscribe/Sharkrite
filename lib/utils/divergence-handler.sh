@@ -47,6 +47,11 @@ source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
 # Source stash manager
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source marker constants relative to this file's location (lib/utils/) so that
+# test environments where RITE_LIB_DIR points to the install copy also work.
+_divergence_handler_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_divergence_handler_dir/markers.sh"
+
 # Source conflict resolver if available (provided by issue #21).
 # Guarded: divergence-handler works without it — resolver is an enhancement,
 # not a hard dependency. When present, attempt_claude_merge_resolution()
@@ -324,8 +329,10 @@ _handle_related() {
   local reviewed=false
   if [ -n "$pr_number" ]; then
     local assess_time
+    local _jq_assess_time_f
+    _jq_assess_time_f="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\""
     assess_time=$(gh_safe pr view "$pr_number" --json comments \
-      --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt // ""' \
+      --jq "$_jq_assess_time_f" \
       || true)
     assess_time="${assess_time:-}"
 

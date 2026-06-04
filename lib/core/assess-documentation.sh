@@ -23,6 +23,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
@@ -887,10 +888,12 @@ DOC_SYNC_INSTRUCTIONS=$(cat "$DOC_SYNC_FILE")
 # --- Gather context (quiet — no output) ---
 
 # Look for Sharkrite review in formal reviews first, then comments
-SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r '[.reviews[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-review-data"))] | .[-1] | .body // ""' 2>/dev/null)
+_JQ_SHARKRITE_REVIEW_F="[.reviews[] | select(.body | contains(\"${RITE_MARKER_REVIEW}\") or contains(\"${RITE_MARKER_REVIEW_DATA}\"))] | .[-1] | .body // \"\""
+SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r "$_JQ_SHARKRITE_REVIEW_F" 2>/dev/null)
 
 if [ -z "$SHARKRITE_REVIEW" ] || [ "$SHARKRITE_REVIEW" = "null" ]; then
-  SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r '[.comments[] | select(.body | contains("sharkrite-local-review") or contains("sharkrite-review-data"))] | .[-1] | .body // ""' 2>/dev/null)
+  _JQ_SHARKRITE_REVIEW_C="[.comments[] | select(.body | contains(\"${RITE_MARKER_REVIEW}\") or contains(\"${RITE_MARKER_REVIEW_DATA}\"))] | .[-1] | .body // \"\""
+  SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r "$_JQ_SHARKRITE_REVIEW_C" 2>/dev/null)
 fi
 
 # Extract documentation-related items from review

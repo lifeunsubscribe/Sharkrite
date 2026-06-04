@@ -11,8 +11,12 @@ if declare -f build_changes_summary >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
-SUMMARY_START="<!-- sharkrite-changes-summary -->"
-SUMMARY_END="<!-- /sharkrite-changes-summary -->"
+# Load marker constants
+_pr_summary_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_pr_summary_dir/markers.sh"
+
+SUMMARY_START="<!-- ${RITE_MARKER_CHANGES_SUMMARY} -->"
+SUMMARY_END="<!-- /${RITE_MARKER_CHANGES_SUMMARY} -->"
 
 # build_changes_summary BASE_BRANCH
 # Generates the full marked section from current git state.

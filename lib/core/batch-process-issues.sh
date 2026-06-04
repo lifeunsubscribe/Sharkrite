@@ -51,6 +51,7 @@ source "$_SCRIPT_DIR/../utils/config.sh"
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
@@ -374,9 +375,9 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # inner extraction, which returns empty, which under set -e + pipefail kills
   # the script silently. Live bug: issue #34's body listed the marker as an
   # example and the entire batch died mid-stream with no error output.
-  if echo "$ISSUE_BODY" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
+  if echo "$ISSUE_BODY" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
     # Extract parent PR number from body marker
-    PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+    PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)
 
     if [ -n "$PARENT_PR" ]; then
       # Check if parent PR is still open
@@ -646,7 +647,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       fi
 
       # Check for new tech-debt issues created
-      NEW_DEBT_ISSUE=$(gh_safe issue list --label "tech-debt" --state open --search "sharkrite-parent-pr:$PR_NUMBER in:body" --json number --jq '.[0].number')
+      NEW_DEBT_ISSUE=$(gh_safe issue list --label "tech-debt" --state open --search "${RITE_MARKER_PARENT_PR}:$PR_NUMBER in:body" --json number --jq '.[0].number')
       NEW_DEBT_ISSUE="${NEW_DEBT_ISSUE:-}"
       if [ -n "$NEW_DEBT_ISSUE" ]; then
         NEW_ISSUES_CREATED+=("Issue #$NEW_DEBT_ISSUE (from PR #$PR_NUMBER)")

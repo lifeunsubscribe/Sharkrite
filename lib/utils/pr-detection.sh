@@ -22,6 +22,10 @@ fi
 
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
+# Source markers.sh relative to this file's location (lib/utils/) so that
+# test environments where RITE_LIB_DIR points to the install copy also work.
+_pr_detection_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_pr_detection_dir/markers.sh"
 
 # ---------------------------------------------------------------------------
 # Closing-issue regex constants
@@ -191,12 +195,9 @@ detect_review_state() {
   REVIEW_TIME=""
 
   # Fetch latest review comment (sharkrite-local-review marker only)
-  local review_json
-  review_json=$(gh_safe pr view "$pr_number" --json comments --jq '
-    [.comments[] | select(
-      .body | contains("<!-- sharkrite-local-review")
-    )] | sort_by(.createdAt) | reverse | .[0] // {}
-  ')
+  local review_json _jq_review_filter
+  _jq_review_filter="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0] // {}"
+  review_json=$(gh_safe pr view "$pr_number" --json comments --jq "$_jq_review_filter")
   review_json="${review_json:-"{}"}"
 
   REVIEW_BODY=$(echo "$review_json" | jq -r '.body // ""' 2>/dev/null)
