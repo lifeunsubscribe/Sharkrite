@@ -290,3 +290,41 @@ BODY
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
   [ "$count" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 7: Idempotency for PR recorded in a LATER same-title entry (regression)
+#
+# When multiple entries share the same title (allowed — different PRs), a
+# re-run for a PR that was recorded in the *second* (or later) entry must
+# still be detected as a no-op. The old awk exited on the first entry's
+# heading match and never scanned forward to later entries with the same
+# title, causing an unbounded duplicate to be appended.
+# ---------------------------------------------------------------------------
+
+@test "idempotency: PR in second same-title entry is not duplicated on re-run" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: seed-convention
+rule: Updated rule statement from a new PR
+why: Because the rule evolved
+references: #1
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  # PR #123 → first run → appends second entry for seed-convention
+  update_conventions_from_marker "123" "$pr_body"
+
+  local count
+  count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
+  [ "$count" -eq 2 ]
+
+  # PR #123 again → must be a no-op (PR #123 is now in the *second* entry)
+  update_conventions_from_marker "123" "$pr_body"
+
+  count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
+  [ "$count" -eq 2 ]
+}
