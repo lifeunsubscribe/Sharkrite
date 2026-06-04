@@ -638,10 +638,8 @@ update_conventions_from_marker() {
 
   # Process each block separated by the sentinel
   local _current_block=""
-  local _block_count=0
   while IFS= read -r _line || [ -n "$_line" ]; do
     if [ "$_line" = "---CONVENTION_BLOCK_END---" ]; then
-      _block_count=$((_block_count + 1))
       # Parse YAML-ish fields from _current_block
       local _title _rule _why _example _references
       _title=$(printf '%s' "$_current_block" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
@@ -672,7 +670,7 @@ update_conventions_from_marker() {
       # Match strategy: title_found=1 when we see "## <title>", then scan forward
       # for "**References:**" with "#pr_number" before the next "## " heading.
       local _already_present=false
-      if grep -q "^## ${_title}$" "$conventions_file" 2>/dev/null; then
+      if grep -qF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
         # Title exists — check if this PR# is already in its references line
         if awk -v title="## ${_title}" -v prnum="#${pr_number}" '
           $0 == title { found=1; next }
