@@ -54,7 +54,7 @@ lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-a
 
 Any short-circuit that bypasses `run_workflow()` must be documented with `# Deliberate divergence from single-issue mode: <reason>` and covered by `tests/regression/batch-single-issue-parity.bats`. See full contract: `docs/architecture/behavioral-design.md` → "Batch ↔ Single-Issue Parity Contract".
 
-**Closed-issue remote-branch cleanup:** `handle_closed_issue()` skips the `git ls-remote` check when `pr_state == "MERGED"` — the merge handler already deleted the remote branch. The not-merged path is wrapped in `run_with_timeout 5`. In batch mode, `batch-process-issues.sh` prefetches remote refs at session start so per-issue cleanup uses `git show-ref` (local) instead. See: `docs/architecture/behavioral-design.md` → "Network Calls During Closed-Issue Cleanup".
+**Closed-issue remote-branch cleanup — local-first contract:** `handle_closed_issue()` tracks `found_local_orphans` (true when steps 1–2 removed a worktree or local branch). Step 3 (remote branch deletion, network) only fires when `found_local_orphans=true OR pr_state != MERGED`. If local checks found nothing, any remote orphan is cosmetic — the periodic deep-clean in `merge-pr.sh` catches survivors. This prevents TCP-reset kills when the network call is a guaranteed no-op (live failure: issue #201, 2026-06-04). The MERGED gate is preserved as a secondary defense. In batch mode, `batch-process-issues.sh` prefetches remote refs so per-issue cleanup uses `git show-ref` (local) instead of `git ls-remote` (network). See: `docs/architecture/behavioral-design.md` → "Cleanup Operations Are Lazy About Network State" and "Network Calls During Closed-Issue Cleanup".
 
 ### Data Flow
 

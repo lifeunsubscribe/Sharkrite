@@ -132,21 +132,44 @@ Checks two conditions:
 
 `init_session` resets the session clock. workflow-runner does NOT call `init_session` when `BATCH_MODE=true` — the batch owns the session timer. Without this, each child workflow-runner resets the clock and the batch summary shows "Duration: 2s."
 
+### Cleanup Operations Are Lazy About Network State
+
+**Principle:** Cleanup operations check local state first. Network calls are only made when local checks found actual work to do. If steps 1–2 (worktree removal, local branch deletion) found nothing, any surviving remote orphan is cosmetic — the periodic deep-clean sweep in `merge-pr.sh` catches survivors. Skipping the network call avoids 0.3s–30s+ latency and prevents TCP-reset kills on unreliable connections.
+
+**Primary gate — `found_local_orphans`:** `handle_closed_issue()` tracks whether local steps 1–2 actually removed something. Step 3 (remote branch deletion, network) only runs when `found_local_orphans=true OR pr_state != MERGED`. This is the stronger signal because it applies to all PR states: a closed-not-merged PR with no local artifacts is as safe to skip as a merged one.
+
+**Why orphan remote branches are cosmetic:** An orphan remote branch with no local trace has no functional impact on the current workflow. It cannot block future runs, pollute worktree detection, or affect issue state. The deep-clean sweep in `merge-pr.sh` prunes these periodically.
+
+**Live failure this principle prevents (2026-06-04):** Issue #201 cleanup trace:
+```
+✅ Issue #201 is already closed!
+...
+Nothing to do - issue already complete! 🎉
+Post "https://api.github.com/graphql": read tcp ... read: connection reset by peer
+```
+Local checks found nothing. The pre-`found_local_orphans` implementation still made the network call (because `pr_state != MERGED`), and a TCP reset killed the process mid-call, leaving a stale worktree. With the `found_local_orphans` gate, no network call fires when local checks find nothing.
+
+**Do not reintroduce unconditional network calls here:** Any future contributor adding remote-branch cleanup for closed issues must check `found_local_orphans` first. The guard must be: `[ "$found_local_orphans" = "true" ] || [ "${pr_state:-}" != "MERGED" ]`.
+
+---
+
 ### Network Calls During Closed-Issue Cleanup
 
-**Contract with merge-pr.sh:** When a PR is merged via `gh pr merge --delete-branch`, the merge handler deletes the remote branch as part of the merge operation. `handle_closed_issue()` in `workflow-runner.sh` relies on this contract: when `pr_state == "MERGED"`, step 3 of cleanup (remote branch deletion) is skipped entirely. There is no need to check `git ls-remote` — the branch is already gone.
+**Contract with merge-pr.sh:** When a PR is merged via `gh pr merge --delete-branch`, the merge handler deletes the remote branch as part of the merge operation. `handle_closed_issue()` in `workflow-runner.sh` relies on this contract: when `pr_state == "MERGED"` AND `found_local_orphans=false`, step 3 of cleanup (remote branch deletion) is skipped entirely. There is no need to check `git ls-remote` — the branch is already gone.
 
 **Why this matters:** Without the short-circuit, every closed merged-PR issue made a `git ls-remote --heads origin <branch>` round-trip — a network call that costs 0.3s on fast networks and 30s+ on slow or congested ones. On a hung network it blocks indefinitely. A batch of 10 closed merged issues previously compounded this to 3s–5min of unnecessary blocking.
 
-**Timeout policy (Layer 2):** For the closed-not-merged path (rare), the remote check still runs but is wrapped in `run_with_timeout 5`. Failure is non-fatal — a warning is logged and cleanup continues to step 4 (session state removal). Orphan remote branches are cosmetic, not functional.
+**Timeout policy (Layer 2):** When the gate fires (network call is needed), the remote check is wrapped in `run_with_timeout 5`. Failure is non-fatal — a warning is logged and cleanup continues to step 4 (session state removal). Orphan remote branches are cosmetic, not functional.
 
 **Session-level prefetch (Layer 3, batch only):** `batch-process-issues.sh` runs `timeout 10 git fetch --prune origin` once at session start. When this succeeds (`_BATCH_FETCH_PRUNE_DONE=true`), `handle_closed_issue` uses `git show-ref --verify --quiet refs/remotes/origin/<branch>` (local, instant) instead of `git ls-remote` (network) for the not-merged check. This eliminates compounding network latency for large batches with multiple closed-not-merged issues. Failure of the prefetch is non-fatal — per-issue cleanup falls back to the network check.
 
-**Do not reintroduce the unconditional remote check:** The original `git ls-remote` call at the top of step 3 (pre-fix) was the source of multi-minute batch hangs. Any future contributor adding remote-branch cleanup for closed issues must either: (a) check `pr_state` first and skip for MERGED, OR (b) use `git show-ref` with a prior fetch guarantee. Neither `git ls-remote` nor `git push --delete` should be called unconditionally in this code path.
+**Do not reintroduce the unconditional remote check:** The original `git ls-remote` call at the top of step 3 (pre-fix) was the source of multi-minute batch hangs. Any future contributor adding remote-branch cleanup for closed issues must either: (a) check `found_local_orphans` first (primary gate), OR (b) check `pr_state` for MERGED (secondary gate), OR (c) use `git show-ref` with a prior fetch guarantee. Neither `git ls-remote` nor `git push --delete` should be called unconditionally in this code path.
 
-**Regression test:** `tests/regression/closed-issue-cleanup-no-hang.bats` — static source checks that verify the short-circuit, timeout wrappers, and local-ref fallback are all present.
+**Regression test:** `tests/regression/closed-issue-cleanup-no-hang.bats` — static source checks that verify the short-circuit, timeout wrappers, `found_local_orphans` gate, and local-ref fallback are all present.
 
-**Bug history:** Issue #287 — observed 30s+ hangs per issue in a batch of closed merged PRs. The `git ls-remote` call at workflow-runner.sh:1710 (pre-fix) ran for every issue even though the branch was confirmed gone.
+**Bug history:**
+- Issue #287 — observed 30s+ hangs per issue in a batch of closed merged PRs. The `git ls-remote` call at workflow-runner.sh:1710 (pre-fix) ran for every issue even though the branch was confirmed gone.
+- Issue #301 — closed-not-merged PR with no local orphans still made the network call (pre-`found_local_orphans`). A TCP reset on the #201 cleanup run left a stale worktree. The `found_local_orphans` gate eliminates this path.
 
 ---
 

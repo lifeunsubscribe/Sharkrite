@@ -1737,6 +1737,15 @@ handle_closed_issue() {
 
   if [ -n "$pr_branch" ]; then
     local cleaned_anything=false
+    # Tracks whether local steps 1–2 actually removed something. Used as the primary
+    # gate signal for the network call in step 3: if nothing was found locally, any
+    # surviving remote orphan is cosmetic (merge-pr.sh's periodic deep-clean catches
+    # survivors). Skipping the network call avoids 0.3s–30s+ latency and prevents
+    # TCP-reset kills (live failure: issue #201, 2026-06-04).
+    # Principle: "cleanup is lazy about network state" — local first, escalate to
+    # network only when local found work to do.
+    # See docs/architecture/behavioral-design.md — "Cleanup operations are lazy about network state".
+    local found_local_orphans=false
 
     # 1. Remove worktree if it exists for this branch
     # Worktrees are isolated — removing one doesn't affect others, so no need
@@ -1745,6 +1754,7 @@ handle_closed_issue() {
     if [ -n "$wt_path" ]; then
       if git worktree remove "$wt_path" --force 2>/dev/null; then
         [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        found_local_orphans=true
         echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
       fi
     fi
@@ -1753,24 +1763,34 @@ handle_closed_issue() {
     if git show-ref --verify --quiet "refs/heads/$pr_branch" 2>/dev/null; then
       if git branch -D "$pr_branch" >/dev/null 2>&1; then
         [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        found_local_orphans=true
         echo -e "${GREEN}  ✓ Deleted local branch: $pr_branch${NC}"
       fi
     fi
 
     # 3. Delete remote branch if it still exists.
-    #    Layer 1 — short-circuit for merged PRs: merge-pr.sh's `gh pr merge --delete-branch`
-    #    already deleted the remote branch as part of the merge. Checking again with
-    #    git ls-remote is a confirmed no-op that wastes 0.3s–2min per issue (network latency
-    #    or hangs). Skip the remote check entirely when pr_state == MERGED.
-    #    This relies on the contract that merge-pr.sh always uses --delete-branch;
-    #    see docs/architecture/behavioral-design.md — "Network calls during closed-issue cleanup".
-    #    For closed-not-merged PRs (rare), the remote branch may still exist — run the check.
-    #    Layer 2 — timeout: even on the not-merged path, wrap with run_with_timeout 5 so a
-    #    slow/hung network can't stall the workflow. Failure is non-fatal (orphan remote branches
-    #    are cosmetic — cleanup continues to step 4).
-    if [ "${pr_state:-}" = "MERGED" ]; then
-      : # Merged PRs: remote branch already deleted by merge handler — skip network call
-    else
+    #    Gating — two complementary signals; network is skipped only when BOTH are false:
+    #
+    #    Signal A — found_local_orphans (primary): steps 1–2 found something locally.
+    #    When false, any remote orphan has no functional impact — the periodic deep-clean
+    #    sweep in merge-pr.sh catches survivors. This is the stronger signal because it
+    #    fires for ALL PR states (merged or not) based solely on observed local state.
+    #    Architectural principle: "cleanup is lazy about network state".
+    #    See docs/architecture/behavioral-design.md — "Cleanup operations are lazy about network state".
+    #
+    #    Signal B — pr_state != MERGED (defensive secondary): merge-pr.sh's
+    #    `gh pr merge --delete-branch` already deleted the remote branch for merged PRs,
+    #    making any ls-remote a confirmed no-op. Kept as a second line of defense and for
+    #    backward compatibility with the contract from #287.
+    #    See docs/architecture/behavioral-design.md — "Network Calls During Closed-Issue Cleanup".
+    #
+    #    Escalate to network only when found_local_orphans=true OR pr_state != MERGED.
+    #    Both false = nothing local to clean + already merged = safe to skip entirely.
+    #
+    #    Layer 2 — timeout: network calls are wrapped with run_with_timeout 5 so a
+    #    slow/hung network can't stall the workflow. Failure is non-fatal (orphan remote
+    #    branches are cosmetic — cleanup continues to step 4).
+    if [ "$found_local_orphans" = "true" ] || [ "${pr_state:-}" != "MERGED" ]; then
       # Layer 3 — use local remote-tracking ref when a session-level `git fetch --prune`
       # has already run (batch mode sets _BATCH_FETCH_PRUNE_DONE=true). Local check is
       # instant; network check (git ls-remote) is the fallback for single-issue mode.
