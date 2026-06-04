@@ -271,7 +271,9 @@ SECURITY_EOF
 
   verbose_info "  Assessing security findings..."
   local security_output
-  security_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
+  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+  security_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$security_output" ]; then
@@ -279,6 +281,7 @@ SECURITY_EOF
     echo "$security_output" >> "$doc_file"
     echo "" >> "$doc_file"
     _mark_updated "security"
+    echo "partial_complete:security"
   fi
 }
 
@@ -350,7 +353,9 @@ ARCH_EOF
 
   verbose_info "  Assessing architecture..."
   local arch_output
-  arch_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
+  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+  arch_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$arch_output" ]; then
@@ -363,6 +368,7 @@ ARCH_EOF
       echo "$arch_output" >> "$doc_file"
       echo "" >> "$doc_file"
       _mark_updated "architecture"
+      echo "partial_complete:architecture"
     fi
   fi
 }
@@ -425,7 +431,9 @@ API_EOF
 
   verbose_info "  Assessing API changes..."
   local api_output
-  api_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
+  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+  api_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$api_output" ]; then
@@ -437,6 +445,7 @@ API_EOF
       echo "$api_output" >> "$doc_file"
       echo "" >> "$doc_file"
       _mark_updated "api"
+      echo "partial_complete:api"
     fi
   fi
 }
@@ -525,7 +534,9 @@ ADR_EOF
 
   verbose_info "  Checking for ADR-worthy decisions..."
   local adr_output
-  adr_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
+  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+  adr_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -n "$adr_output" ]; then
@@ -574,8 +585,12 @@ assess_internal_adr() {
     return 0
   fi
 
-  # Call the refactored function
-  generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "${CHANGED_FILES:-}" >/dev/null
+  # Call the refactored function. Capture the returned adr_file path (non-empty = success).
+  local adr_result
+  adr_result=$(generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "${CHANGED_FILES:-}" 2>/dev/null) || true
+  if [ -n "$adr_result" ]; then
+    echo "partial_complete:adr"
+  fi
 }
 
 update_conventions_from_marker() {
@@ -830,7 +845,9 @@ RECONCILE_EOF
 
   verbose_info "  Reconciling doc updates..."
   local reconciled_output
-  reconciled_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  # Use doc_assessment model (sonnet): structured merging of doc sections.
+  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+  reconciled_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -z "$reconciled_output" ]; then
@@ -949,7 +966,9 @@ ${security_content}
 VALIDATE_EOF
 
   local validation_output
-  validation_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+  # Use doc_assessment model (sonnet): cross-doc consistency check, structured comparison.
+  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+  validation_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"
 
   if [ -z "$validation_output" ] || echo "$validation_output" | grep -q "^NO_CONTRADICTIONS"; then
@@ -976,7 +995,9 @@ ${current_content}
 FIX_EOF
 
     local fixed_output
-    fixed_output=$(provider_run_prompt_with_timeout "$(cat "$fix_prompt_file")" "" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+    # Use doc_assessment model (sonnet): applying targeted corrections to a doc file.
+    # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
+    fixed_output=$(provider_run_prompt_with_timeout "$(cat "$fix_prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
     rm -f "$fix_prompt_file"
 
     if [ -n "$fixed_output" ]; then
@@ -1221,8 +1242,9 @@ ASSESS_PROMPT_EOF
 
 echo "    Project docs: analyzing..."
 
-# Run assessment
-ASSESSMENT_OUTPUT=$(provider_run_prompt_with_timeout "$(cat "$ASSESS_PROMPT_FILE")" "" true "$DOC_CLAUDE_TIMEOUT" 2>&1)
+# Run assessment — sonnet handles this structured "does diff affect doc X?" task well.
+# Uses doc_assessment model, independent of RITE_REVIEW_MODEL.
+ASSESSMENT_OUTPUT=$(provider_run_prompt_with_timeout "$(cat "$ASSESS_PROMPT_FILE")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>&1)
 rm -f "$ASSESS_PROMPT_FILE"
 
 # --- Apply or report ---
@@ -1312,7 +1334,8 @@ UPDATE_PROMPT_EOF
       while [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ] && [ -z "$UPDATED_CONTENT" ]; do
         DOC_ATTEMPT=$((DOC_ATTEMPT + 1))
         CLAUDE_EXIT=0
-        UPDATED_CONTENT=$(provider_run_prompt_with_timeout "$(cat "$UPDATE_PROMPT_FILE")" "" true "$DOC_CLAUDE_TIMEOUT" 2>&1) || CLAUDE_EXIT=$?
+        # Use doc_assessment model (sonnet) for applying the doc update.
+        UPDATED_CONTENT=$(provider_run_prompt_with_timeout "$(cat "$UPDATE_PROMPT_FILE")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>&1) || CLAUDE_EXIT=$?
         if [ $CLAUDE_EXIT -eq 0 ] && [ -z "$UPDATED_CONTENT" ] && [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ]; then
           print_warning "Claude returned empty doc update (attempt $DOC_ATTEMPT/$MAX_DOC_ATTEMPTS) — retrying in 3s..."
           sleep 3

@@ -65,6 +65,18 @@ Any short-circuit that bypasses `run_workflow()` must be documented with `# Deli
 - `workflow-runner.sh` captures exit codes and stdout to pass review content to fix mode
 - **stderr** is used for all user-facing output (print_info, print_warning, etc.)
 
+### Model Selection Per Task
+
+Each task uses the model that fits its nature. Three independent model vars — changing one does not affect the others:
+
+| Task | Var | Default | Why |
+|------|-----|---------|-----|
+| Code review | `RITE_REVIEW_MODEL` | `claude-opus-4-8` | Deep reasoning, broad context — catches edge cases that matter |
+| Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
+| Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
+
+**Never pass `""` as the model arg** to `provider_run_prompt_with_timeout` and rely on defaults — use an explicit role via `claude_provider_resolve_model`. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
+
 ## Shell Conventions
 
 ### CWD after worktree removal (CRITICAL)

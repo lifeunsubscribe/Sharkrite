@@ -22,13 +22,20 @@ RITE_MAX_ISSUE_HOURS=4      # Per-issue cap — fires if a single issue runs >4h
 # Claude assessment timeout (seconds)
 RITE_ASSESSMENT_TIMEOUT=300
 
+# Doc assessment model (default: sonnet for structured pattern matching tasks).
+# Doc reconciliation is "did this diff change API surface X? Update accordingly" —
+# pattern matching and structured comparison, sonnet's sweet spot.
+# Use claude-opus-4-8 only if you need deeper reasoning on large diffs.
+# Fully independent of RITE_REVIEW_MODEL (code review stays on opus regardless).
+RITE_DOC_ASSESSMENT_MODEL=claude-sonnet-4-6
+
 # Documentation assessment outer timeout (seconds).
 # Caps the total wall-clock wait for the post-merge doc assessment subprocess.
-# The 4 independent sub-assessments (security, arch, api, ADR) run in parallel,
-# so typical wall-clock is ~25-35s; 180s provides comfortable margin.
-# If the timeout fires, merge-pr.sh logs a warning and continues — doc updates
-# are not a merge blocker.
-RITE_DOC_ASSESSMENT_TIMEOUT=180
+# With doc_assessment on sonnet: typical ~90-120s (fan-out ~30s, reconcile ~30s,
+# validate ~30s). 300s gives headroom for big diffs without firing on normal runs.
+# If the timeout fires, completed sub-assessments are preserved; incomplete ones
+# are skipped. Doc updates are not a merge blocker.
+RITE_DOC_ASSESSMENT_TIMEOUT=300
 ```
 
 See [config/project.conf.example](../config/project.conf.example) for all options.
@@ -80,7 +87,8 @@ Control how Claude assesses PR review issues:
 | `RITE_MAX_ISSUE_HOURS` | Max hours for a **single issue**. Fires when a single `rite N` invocation exceeds this threshold — protects against fix-loop runaway and yak-shaves. | `4` |
 | `RITE_MAX_RETRIES` | Fix loop attempts | `3` |
 | `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) for the review-issue assessment phase | `300` |
-| `RITE_DOC_ASSESSMENT_TIMEOUT` | Outer wall-clock cap (seconds) on the post-merge doc assessment subprocess. The 4 independent sub-assessments (security, arch, api, ADR) run in parallel, so typical wall-clock is ~25-35s; 180s provides comfortable margin. On timeout: warning logged, workflow continues. | `180` |
+| `RITE_DOC_ASSESSMENT_MODEL` | Claude model for doc assessment tasks (security, arch, api, ADR reconciliation). Defaults to sonnet: doc reconciliation is structured pattern matching ("did this diff change API surface X?"), sonnet's sweet spot. Fully independent of `RITE_REVIEW_MODEL` — changing one does not affect the other. Override to `claude-opus-4-8` only if you need deeper reasoning on unusually large diffs. | `claude-sonnet-4-6` |
+| `RITE_DOC_ASSESSMENT_TIMEOUT` | Outer wall-clock cap (seconds) on the post-merge doc assessment subprocess. With doc_assessment on sonnet: typical ~90-120s (4 parallel sub-assessments ~30s + reconcile ~30s + validate ~30s). 300s provides headroom for big diffs and slow API responses without firing on normal runs. On timeout: completed sub-assessments are preserved and reported; incomplete ones are skipped. Workflow continues regardless. | `300` |
 | `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
 | `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |
 | `RITE_LOCK_DIR` | Directory for per-issue lock files. **Must be local storage** — stale lock reclamation uses `kill -0` which is only valid within a single host/PID namespace. Do not point this at NFS/shared storage. | `$RITE_PROJECT_ROOT/.rite/locks` |

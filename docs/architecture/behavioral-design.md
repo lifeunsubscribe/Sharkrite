@@ -317,15 +317,41 @@ These run after the fan-out wait completes, because they consume the sub-assessm
 2. **Cross-doc consistency validation** (`_validate_cross_doc_consistency`) — only fires when a reconciliation actually happened. Makes one Claude provider call to find contradictions across security/arch/api docs, then one provider call per file that needs a correction.
 3. **Layer 2 (user project docs)** — if `.rite/doc-sync.md` exists, runs one assessment call then one update call per doc needing changes. Sequential because the assessment's output drives the update calls.
 
+### Model Selection Per Task
+
+Each workflow task uses the model that fits its nature — not the adjacent role's model.
+
+| Task | Nature | Model | Why |
+|------|--------|-------|-----|
+| Code review (`assess-review-issues.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
+| Doc assessment (`assess-documentation.sh`) | "Did this diff change API surface X? Update api.md accordingly." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
+| Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
+
+**Principle: the model fits the task, not the adjacent role.** Before this was explicit, `assess-documentation.sh` had no model var and fell through to `claude_provider_resolve_model "review"` → `RITE_REVIEW_MODEL`. This created silent coupling: setting `RITE_REVIEW_MODEL=opus` for quality-critical review silently promoted doc assessment to opus too, inflating wall-clock from ~90-120s to 3-6 minutes and regularly firing the 180s watchdog.
+
+**Independence contract:** `RITE_REVIEW_MODEL` and `RITE_DOC_ASSESSMENT_MODEL` are fully independent. Changing one does not affect the other. `claude_provider_resolve_model` dispatches by role:
+
+```bash
+claude_provider_resolve_model() {
+  case "$1" in
+    review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
+  esac
+}
+```
+
+**New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt_with_timeout` and rely on provider defaults — defaults may change. If a call is doc-like (pattern matching, summarization), use `doc_assessment`. If it's bug-detection or nuanced reasoning, use `review`.
+
 ### Wall-clock impact
 
-Before parallelization (if it were sequential): `t_sec + t_arch + t_api + t_adr + t_reconcile` ≈ 80-120s with Sonnet.
+Before parallelization (if it were sequential): `t_sec + t_arch + t_api + t_adr + t_reconcile` ≈ 80-120s with sonnet; ≈ 200-360s with opus.
 
-After parallelization: `max(t_sec, t_arch, t_api, t_adr) + t_reconcile` ≈ 20-30s + 20-30s ≈ 40-60s.
+After parallelization + sonnet default: `max(t_sec, t_arch, t_api, t_adr) + t_reconcile` ≈ 20-30s + 20-30s ≈ 40-60s. Typical end-to-end: ~90-120s.
 
 ### Merge-tail timeout watchdog
 
-`merge-pr.sh` starts the doc assessment background subprocess before cleanup, then waits for it after cleanup. The wait is bounded by `RITE_DOC_ASSESSMENT_TIMEOUT` (default 180s):
+`merge-pr.sh` starts the doc assessment background subprocess before cleanup, then waits for it after cleanup. The wait is bounded by `RITE_DOC_ASSESSMENT_TIMEOUT` (default 300s):
 
 ```
 ( sleep $timeout && kill -TERM $DOC_PID ) &   # watchdog
@@ -337,12 +363,14 @@ kill -TERM $watchdog_pid                        # cancel watchdog if doc finishe
 wait $watchdog_pid
 
 if doc_exit == 143 (SIGTERM) or 137 (SIGKILL):
-    print warning, continue (exit 0 from merge-pr.sh)
+    harvest partial_complete: lines from _DOC_LOG
+    print warning with count of completed sub-assessments
+    continue (exit 0 from merge-pr.sh)
 ```
 
-On timeout: warning logged to stderr, workflow exits 0. Doc assessment results are not a merge blocker — stale or missing doc updates are caught on the next run.
+On timeout: completed sub-assessments are preserved (their doc files were already written to disk before the kill). The warning message distinguishes "N sub-assessments preserved" from "no progress to preserve". Workflow exits 0 regardless — doc assessment results are not a merge blocker.
 
-**Why 180s default:** The fan-out wall-clock is ~25-35s (limited by the slowest of the four parallel calls). Reconcile adds another ~25-35s. Layer 2 varies. 180s leaves 3× headroom for API latency spikes without making the merge tail feel hung.
+**Why 300s default:** With sonnet, fan-out wall-clock is ~20-30s; reconcile ~20-30s; validate ~20-30s. Typical total: ~90-120s. 300s gives 2.5× headroom for big diffs and slow API responses without firing on normal runs. Previous default was 180s (set when opus was the model — that's why it fired regularly).
 
 ### DO NOT skip the assessment based on diff content
 

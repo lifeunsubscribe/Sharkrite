@@ -1543,14 +1543,15 @@ EOF
     echo ""
   fi
   # Wait for background doc assessment and report results.
-  # Bounded by RITE_DOC_ASSESSMENT_TIMEOUT (default 180s): if the assessment
+  # Bounded by RITE_DOC_ASSESSMENT_TIMEOUT (default 300s): if the assessment
   # hangs (Claude API outage, network drop), a watchdog kills the background
   # process and we continue — stale/missing doc updates are not a merge blocker.
-  # The 180s default covers the fan-out wall-clock (max ~30s) plus reconcile
-  # (~30s) with comfortable margin.
+  # Default 300s: with doc_assessment on sonnet, typical wall-clock is ~90-120s
+  # (fan-out ~30s + reconcile ~30s + validate ~30s). 300s gives headroom for
+  # big diffs and slow API responses without firing on normal runs.
   if [ -n "${_DOC_PID:-}" ]; then
     _doc_exit=0
-    _doc_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-180}"
+    _doc_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
 
     # Start a watchdog: after the timeout, SIGTERM the doc assessment subprocess.
     # The watchdog itself is killed when the doc assessment finishes first.
@@ -1565,7 +1566,21 @@ EOF
 
     if [ "$_doc_exit" -eq 143 ] || [ "$_doc_exit" -eq 137 ]; then
       # 143 = SIGTERM (128+15), 137 = SIGKILL (128+9) — both mean timed out.
-      print_warning "Documentation assessment timed out after ${_doc_timeout}s — continuing without doc updates" >&2
+      # Harvest any sub-assessments that completed before the kill.
+      # Each sub-assessment writes "partial_complete:<name>" to the process
+      # stdout (captured in _DOC_LOG) as soon as it writes its doc update.
+      # Reading _DOC_LOG here gives us a count of what finished vs what was lost.
+      _completed_partials=0
+      if [ -s "${_DOC_LOG:-}" ]; then
+        _completed_partials=$(grep -c "^partial_complete:" "$_DOC_LOG" 2>/dev/null || true)
+      fi
+      if [ "$_completed_partials" -gt 0 ]; then
+        print_warning "Documentation assessment timed out after ${_doc_timeout}s — preserving $_completed_partials completed sub-assessment(s)" >&2
+        # Show which sub-assessments completed (doc files already written to disk)
+        grep "^partial_complete:" "$_DOC_LOG" 2>/dev/null | sed 's/^partial_complete:/  ✓ /' >&2 || true
+      else
+        print_warning "Documentation assessment timed out after ${_doc_timeout}s — no sub-assessments completed before timeout" >&2
+      fi
     elif [ $_doc_exit -ne 0 ] && [ $_doc_exit -ne 2 ]; then
       # Surface failure visibly: warning + last 20 lines of log to stderr so
       # the user sees why the assessment failed even in auto/piped mode.
