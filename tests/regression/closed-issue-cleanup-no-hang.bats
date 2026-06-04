@@ -282,3 +282,97 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
     fi
   done <<< "$_func_body"
 }
+
+# ---------------------------------------------------------------------------
+# Tests 12–14: found_local_orphans gate (issue #301)
+#
+# These tests verify the refined gating logic added by #301:
+#   - found_local_orphans is the primary signal; MERGED is secondary/defensive.
+#   - Network is skipped when BOTH signals are false (no local orphans AND MERGED).
+#   - Network fires when either signal is true.
+# ---------------------------------------------------------------------------
+
+@test "found_local_orphans: variable is declared in handle_closed_issue" {
+  [ -f "$WORKFLOW_RUNNER" ]
+
+  _func_body=$(awk '
+    /^handle_closed_issue\(\)/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print $0 }
+  ' "$WORKFLOW_RUNNER")
+
+  # found_local_orphans must be declared and initialized to false
+  echo "$_func_body" | grep -qE 'found_local_orphans=false' || {
+    echo "FAIL: found_local_orphans=false not found in handle_closed_issue" >&2
+    echo "      The variable must be initialized before steps 1-2 (worktree/branch cleanup)" >&2
+    return 1
+  }
+}
+
+@test "found_local_orphans: set to true in worktree removal block (step 1)" {
+  [ -f "$WORKFLOW_RUNNER" ]
+
+  _func_body=$(awk '
+    /^handle_closed_issue\(\)/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print NR": "$0 }
+  ' "$WORKFLOW_RUNNER")
+
+  # Locate the worktree removal block (git worktree remove) and the
+  # found_local_orphans=true assignment. The orphans assignment must
+  # appear AFTER worktree remove (i.e., inside the success branch).
+  _wt_remove_line=$(echo "$_func_body" | grep -E "git worktree remove" | head -1 | cut -d: -f1)
+  [ -n "$_wt_remove_line" ] || {
+    echo "FAIL: git worktree remove not found in handle_closed_issue" >&2
+    return 1
+  }
+
+  # The first found_local_orphans=true must appear after git worktree remove
+  _orphans_true_line=$(echo "$_func_body" | grep -E 'found_local_orphans=true' | head -1 | cut -d: -f1)
+  [ -n "$_orphans_true_line" ] || {
+    echo "FAIL: found_local_orphans=true not found in handle_closed_issue" >&2
+    echo "      It must be set in the worktree removal success block (step 1)" >&2
+    return 1
+  }
+  [ "$_orphans_true_line" -gt "$_wt_remove_line" ] || {
+    echo "FAIL: found_local_orphans=true (line $_orphans_true_line) appears before git worktree remove (line $_wt_remove_line)" >&2
+    echo "      found_local_orphans must be set only when worktree removal actually succeeded" >&2
+    return 1
+  }
+}
+
+@test "found_local_orphans: gate precedes git ls-remote (network skipped when no orphans)" {
+  [ -f "$WORKFLOW_RUNNER" ]
+
+  _func_body=$(awk '
+    /^handle_closed_issue\(\)/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print NR": "$0 }
+  ' "$WORKFLOW_RUNNER")
+
+  [ -n "$_func_body" ] || {
+    echo "FAIL: Could not extract handle_closed_issue function body" >&2
+    return 1
+  }
+
+  # The outer gate that wraps the network block must reference found_local_orphans.
+  # This ensures closed-not-merged PRs with no local orphans skip the network call.
+  _gate_line=$(echo "$_func_body" | grep -E 'found_local_orphans.*true.*MERGED|MERGED.*found_local_orphans' | head -1 | cut -d: -f1)
+  [ -n "$_gate_line" ] || {
+    echo "FAIL: No combined found_local_orphans + MERGED gate found in handle_closed_issue" >&2
+    echo "      Expected: [ \"\$found_local_orphans\" = \"true\" ] || [ \"\${pr_state:-}\" != \"MERGED\" ]" >&2
+    echo "      The gate must short-circuit network calls when no local orphans exist." >&2
+    return 1
+  }
+
+  # git ls-remote must appear AFTER the combined gate (inside the gated block)
+  _ls_remote_line=$(echo "$_func_body" | grep -E "git ls-remote" | head -1 | cut -d: -f1)
+  if [ -n "$_ls_remote_line" ]; then
+    [ "$_ls_remote_line" -gt "$_gate_line" ] || {
+      echo "FAIL: git ls-remote (line $_ls_remote_line) appears before or at the combined gate (line $_gate_line)" >&2
+      echo "      git ls-remote must be inside the found_local_orphans || !MERGED gated block" >&2
+      return 1
+    }
+  fi
+  # If ls-remote is absent entirely, the gate is even stronger — pass.
+}
