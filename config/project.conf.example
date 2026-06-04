@@ -81,6 +81,24 @@
 # Maximum time estimate per issue before requiring decomposition (default: 2hr)
 # RITE_PLAN_MAX_ESTIMATE="2hr"
 
+# Auto-discovery byte cap for grounding docs injected into the plan prompt.
+#
+# `rite plan` automatically discovers and injects ADRs, README.md, and other
+# docs/**/*.md files as authoritative grounding context. This prevents the
+# planner from generating issues that conflict with documented constraints.
+#
+# Priority order within the cap:
+#   1. ADRs (docs/**/*adr*.md, docs/ADR-*.md) — loaded in full, highest priority
+#   2. README.md — loaded in full
+#   3. Other docs/**/*.md — loaded alphabetically until cap is reached
+#
+# ADRs and README always load in full even if the cap is already exceeded.
+# Other docs are skipped (with a logged warning) when the budget runs out.
+#
+# Default: 50000 (50KB). Raise for doc-heavy projects; lower for fast iteration.
+# Set to 0 to disable auto-discovery entirely (explicit doc_paths still work).
+# RITE_PLAN_DOC_BYTE_CAP=50000
+
 # =============================================================================
 # Documentation
 # =============================================================================
