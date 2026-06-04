@@ -179,6 +179,42 @@ EOF
 # INTERNAL: Classify foreign commits after push rejection
 # ===================================================================
 
+# _stale_rebase_and_push_foreign_commits BRANCH_NAME RETURN_CODE_ON_SUCCESS SUCCESS_MSG
+#
+# Shared helper used by supervised mode cases 'a' and 'b' in
+# _stale_classify_after_push_rejection(). Both cases do an identical
+# rebase-onto-remote + force-push sequence; they differ only in the return
+# code and success message emitted on success.
+#
+# Arguments:
+#   BRANCH_NAME          — branch to rebase and push
+#   RETURN_CODE_ON_SUCCESS — exit code to return when push succeeds (0 or 2)
+#   SUCCESS_MSG          — message passed to print_success on push success
+#
+# Exit codes:
+#   RETURN_CODE_ON_SUCCESS — rebase and push both succeeded
+#   1                      — rebase failed or push was rejected (another race)
+_stale_rebase_and_push_foreign_commits() {
+  local branch_name="$1"
+  local return_code_on_success="$2"
+  local success_msg="$3"
+
+  if git rebase "origin/$branch_name" >/dev/null 2>&1; then
+    if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+      print_success "$success_msg"
+      return "$return_code_on_success"
+    else
+      git rebase --abort 2>/dev/null || true
+      print_error "Push rejected after integrating foreign commits (another race?) — blocking"
+      return 1
+    fi
+  else
+    git rebase --abort 2>/dev/null || true
+    print_error "Rebase onto origin/$branch_name failed — cannot integrate foreign commits"
+    return 1
+  fi
+}
+
 # _stale_classify_after_push_rejection WORKTREE_PATH BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER] [WORKFLOW_MODE]
 #
 # Called when git push --force-with-lease is rejected after a successful rebase.
@@ -342,20 +378,10 @@ _stale_classify_after_push_rejection() {
                 print_error "Invalid choice for UNRELATED commits — aborting"
                 return 1
               fi
-              if git rebase "origin/$branch_name" >/dev/null 2>&1; then
-                if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-                  print_success "Integrated $classification foreign commits and pushed — re-entering Phase 2→3 for review"
-                  return 2
-                else
-                  git rebase --abort 2>/dev/null || true
-                  print_error "Push rejected after integrating $classification commits (another race?) — blocking"
-                  return 1
-                fi
-              else
-                git rebase --abort 2>/dev/null || true
-                print_error "Rebase onto origin/$branch_name failed — cannot integrate $classification foreign commits"
-                return 1
-              fi
+              _stale_rebase_and_push_foreign_commits \
+                "$branch_name" 2 \
+                "Integrated $classification foreign commits and pushed — re-entering Phase 2→3 for review"
+              return $?
               ;;
             b|B)
               # Pull without review (RELATED only — 'b' is not offered for UNRELATED)
@@ -363,20 +389,10 @@ _stale_classify_after_push_rejection() {
                 print_error "Invalid choice for UNRELATED commits — aborting"
                 return 1
               fi
-              if git rebase "origin/$branch_name" >/dev/null 2>&1; then
-                if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-                  print_success "Integrated $classification foreign commits and pushed (no re-review)"
-                  return 0
-                else
-                  git rebase --abort 2>/dev/null || true
-                  print_error "Push rejected after integrating $classification commits (another race?) — blocking"
-                  return 1
-                fi
-              else
-                git rebase --abort 2>/dev/null || true
-                print_error "Rebase onto origin/$branch_name failed — cannot integrate $classification foreign commits"
-                return 1
-              fi
+              _stale_rebase_and_push_foreign_commits \
+                "$branch_name" 0 \
+                "Integrated $classification foreign commits and pushed (no re-review)"
+              return $?
               ;;
             c|C)
               # Overwrite remote with local work (available for both RELATED and UNRELATED).
