@@ -252,6 +252,64 @@ LOW findings only become ACTIONABLE_LATER if they represent a real functional or
 
 ---
 
+## Doc Assessment Fan-out / Fan-in (assess-documentation.sh, merge-pr.sh)
+
+Post-merge doc assessment runs as a background subprocess launched by `merge-pr.sh`. Within that subprocess, `assess-documentation.sh` makes multiple Claude provider calls. The sub-assessments are structured as a fan-out / fan-in: four calls run in parallel, then dependent calls run sequentially.
+
+### Independent sub-assessments (fan-out)
+
+These four sub-assessments each evaluate the **same diff** against a **different internal doc**. They have no data dependency on each other:
+
+| Sub-assessment | Output doc | What it captures |
+|---|---|---|
+| `assess_internal_security` | `.rite/docs/security.md` | Auth, credential, infra changes in the diff |
+| `assess_internal_architecture` | `.rite/docs/architecture.md` | New/removed files, config vars, entry points |
+| `assess_internal_api` | `.rite/docs/api.md` | CLI flag, config var, exit code changes |
+| `assess_internal_adr` | `.rite/docs/adr/*.md` | Architectural decisions worth recording |
+
+Implementation: all four are launched via `&` and collected into `_assess_pids`. A `wait` loop then collects exit codes individually — a failing sub-assessment logs a warning but does NOT prevent the others from completing or the reconcile step from running.
+
+### Dependent steps (fan-in / sequential)
+
+These run after the fan-out wait completes, because they consume the sub-assessment outputs:
+
+1. **Reconcile** (`reconcile_internal_doc`) — when a doc accumulates 3+ PR delta sections, merges incremental deltas back into the baseline. Runs in parallel per-doc (each doc is independent), but after the fan-out wait. Each reconcile call is one Claude provider call.
+2. **Cross-doc consistency validation** (`_validate_cross_doc_consistency`) — only fires when a reconciliation actually happened. Makes one Claude provider call to find contradictions across security/arch/api docs, then one provider call per file that needs a correction.
+3. **Layer 2 (user project docs)** — if `.rite/doc-sync.md` exists, runs one assessment call then one update call per doc needing changes. Sequential because the assessment's output drives the update calls.
+
+### Wall-clock impact
+
+Before parallelization (if it were sequential): `t_sec + t_arch + t_api + t_adr + t_reconcile` ≈ 80-120s with Sonnet.
+
+After parallelization: `max(t_sec, t_arch, t_api, t_adr) + t_reconcile` ≈ 20-30s + 20-30s ≈ 40-60s.
+
+### Merge-tail timeout watchdog
+
+`merge-pr.sh` starts the doc assessment background subprocess before cleanup, then waits for it after cleanup. The wait is bounded by `RITE_DOC_ASSESSMENT_TIMEOUT` (default 180s):
+
+```
+( sleep $timeout && kill -TERM $DOC_PID ) &   # watchdog
+watchdog_pid=$!
+
+wait $DOC_PID || doc_exit=$?
+
+kill -TERM $watchdog_pid                        # cancel watchdog if doc finished first
+wait $watchdog_pid
+
+if doc_exit == 143 (SIGTERM) or 137 (SIGKILL):
+    print warning, continue (exit 0 from merge-pr.sh)
+```
+
+On timeout: warning logged to stderr, workflow exits 0. Doc assessment results are not a merge blocker — stale or missing doc updates are caught on the next run.
+
+**Why 180s default:** The fan-out wall-clock is ~25-35s (limited by the slowest of the four parallel calls). Reconcile adds another ~25-35s. Layer 2 varies. 180s leaves 3× headroom for API latency spikes without making the merge tail feel hung.
+
+### DO NOT skip the assessment based on diff content
+
+An earlier approach was rejected: checking whether the PR diff touched any `.md` files and skipping the assessment if not. This was wrong because the entire purpose of the assessment is to surface what docs should change based on dev work — even when the dev work only touched `.sh` or `.ts` files. A new security pattern, a new CLI flag, or a new architectural approach all warrant doc updates regardless of whether the dev session touched docs.
+
+---
+
 ## Session Limit Design: Why Wall-Clock Age Is the Wrong Metric (issue #283)
 
 ### Problem
