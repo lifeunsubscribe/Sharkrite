@@ -145,16 +145,6 @@ setup() {
   [[ "$output" == "sharkrite-managed-stash" ]]
 }
 
-@test "RITE_MARKER_AUTO_RESOLVED is defined with expected value" {
-  run bash -c "
-    set -euo pipefail
-    source '${MARKERS_SH}'
-    echo \"\$RITE_MARKER_AUTO_RESOLVED\"
-  "
-  [ "$status" -eq 0 ]
-  [[ "$output" == "sharkrite-auto-resolved" ]]
-}
-
 # ── Write-then-read round-trip ────────────────────────────────────────────────
 #
 # For each marker: simulate a writer constructing the HTML comment body, then
@@ -267,19 +257,6 @@ setup() {
   [[ "$output" == "MATCH" ]]
 }
 
-@test "round-trip: RITE_MARKER_AUTO_RESOLVED write+grep matches" {
-  run bash -c "
-    set -euo pipefail
-    source '${MARKERS_SH}'
-    # Writer: workflow-runner.sh posts a close comment with this marker
-    written=\"<!-- \${RITE_MARKER_AUTO_RESOLVED} -->\"
-    # Reader: any consumer checking whether an issue was auto-closed
-    echo \"\$written\" | grep -q \"<!-- \${RITE_MARKER_AUTO_RESOLVED} -->\" && echo MATCH
-  "
-  [ "$status" -eq 0 ]
-  [[ "$output" == "MATCH" ]]
-}
-
 @test "round-trip: RITE_MARKER_REVIEW_DATA write+grep matches" {
   run bash -c "
     set -euo pipefail
@@ -303,7 +280,7 @@ setup() {
     for var in RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP \
                RITE_MARKER_PARENT_PR RITE_MARKER_SOURCE_ISSUE RITE_MARKER_REVIEW_DATA \
                RITE_MARKER_SCOPE_WARNING RITE_MARKER_CHANGES_SUMMARY \
-               RITE_MARKER_STASH RITE_MARKER_AUTO_RESOLVED; do
+               RITE_MARKER_STASH; do
       count=\$(grep -c \"^\${var}=\" '${MARKERS_SH}' || true)
       if [ \"\$count\" -ne 1 ]; then
         echo \"ERROR: \$var defined \$count times in markers.sh (expected 1)\"
