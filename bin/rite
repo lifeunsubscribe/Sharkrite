@@ -93,6 +93,10 @@ while [[ $# -gt 0 ]]; do
       MODE="health-report"
       shift
       ;;
+    --refresh-encountered-issues)
+      MODE="refresh-encountered-issues"
+      shift
+      ;;
     --supervised)
       SUPERVISED=true
       export RITE_VERBOSE="${RITE_VERBOSE:-true}"  # supervised implies verbose
@@ -196,6 +200,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
+      echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
@@ -253,7 +258,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -263,6 +268,13 @@ if [ "$MODE" = "health-report" ]; then
     exec "$SCRIPT_DIR/rite-health-report" --latest
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
+fi
+
+# Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
+if [ "$MODE" = "refresh-encountered-issues" ]; then
+  source "$RITE_LIB_DIR/utils/encountered-issues-renderer.sh"
+  render_encountered_issues
+  exit 0
 fi
 
 # Backfill locks: walk worktrees, write lock files for legacy worktrees
