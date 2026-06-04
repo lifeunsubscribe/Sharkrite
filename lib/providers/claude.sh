@@ -412,9 +412,14 @@ EOF
 claude_provider_resolve_model() {
   local role="$1"
   case "$role" in
-    dev)    echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
-    review) echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
-    *)      echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
+    dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
+    review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    # doc_assessment uses its own var, independent of RITE_REVIEW_MODEL.
+    # Sonnet is the right tool here: doc reconciliation is structured pattern
+    # matching and comparison, not the deep reasoning needed for code review.
+    # See: docs/architecture/behavioral-design.md → "Model Selection Per Task"
+    doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    *)              echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
 }
 
