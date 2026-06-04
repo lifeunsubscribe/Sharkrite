@@ -165,7 +165,7 @@ The review itself noted on second look that the comment was already correct — 
 | #315 | Tighten transient regex | 1M 1L | #338 | 1L no-action-needed |
 
 **Total findings triaged:** 11 MEDIUM + 15 LOW = 26
-**Filed as issues:** 9 issues (#328–#338, with #332 unused)
+**Filed as issues:** 10 issues (#328–#338, with #332 unused)
 **Dismissed with reason:** 17 items (11 LOWs cosmetic/harmless, 4 LOWs informational/no-action, 1 MEDIUM informational, 1 LOW explicitly flagged as no-action-needed by reviewer)
 
 ---

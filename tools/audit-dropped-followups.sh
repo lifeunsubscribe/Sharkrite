@@ -137,7 +137,7 @@ for pr in "${prs[@]}"; do
 
   # Count distinct sharkrite-followup-issue:N markers in PR comments
   all_comments=$(echo "$pr_data" | jq -r '.comments[].body' || true)
-  followup_count=$(echo "$all_comments" | grep -oE 'sharkrite-followup-issue:[0-9]+' | sort -u | wc -l | tr -d ' ' || echo "0")
+  followup_count=$(echo "$all_comments" | grep -oE 'sharkrite-followup-issue:[0-9]+' | sort -u | wc -l | tr -d ' ' || true)
   followup_count="${followup_count:-0}"
 
   # Determine status
