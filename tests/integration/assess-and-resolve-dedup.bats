@@ -260,6 +260,8 @@ FORMAT_STUB_EOF
 # Writes a JSON fixture to GH_MOCK_PR_VIEW_FILE that models what
 # `gh pr view PR --json comments` returns when a sharkrite-local-review
 # comment is present with no commits after it (review is current).
+# Used by: setup() default fixture, test 6 (zero-findings override),
+# and tests 11-12 (CLOSED-evidence tests that refresh the fixture explicitly).
 _write_pr_view_json() {
   local _review_body="$1"
   jq -n \
