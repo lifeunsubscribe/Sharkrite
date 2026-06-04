@@ -1506,12 +1506,30 @@ phase_merge_pr() {
     fi
   fi
 
+  # phase_merge_pr removes the worktree (via merge-pr.sh) but the caller's cwd
+  # is still set to $WORKTREE_PATH, which no longer exists.  Restore to the main
+  # repo root before returning so any downstream phase (phase_completion, etc.)
+  # can run gh/git commands without inheriting a deleted directory as cwd.
+  # This mirrors the pattern in merge-pr.sh:981 (cd-before-remove inside the
+  # script that does the removal), applied at the next layer up.
+  # Contract: when phase_merge_pr returns 0, cwd == $RITE_PROJECT_ROOT.
+  cd "$RITE_PROJECT_ROOT" 2>/dev/null || cd "$(git -C "$RITE_PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null)" || true
+
   return 0
 }
 
 phase_completion() {
   local issue_number="$1"
   local pr_number="$2"
+
+  # Defense-in-depth: phase_merge_pr removes the worktree and restores cwd to
+  # $RITE_PROJECT_ROOT before returning (Option A fix), but any other path that
+  # leaves the process in a deleted directory would also break the gh calls below.
+  # Explicitly cd to the repo root here so this phase is robust against any
+  # upstream cwd mismatch — not just the post-merge case.
+  # Related: issue #161 (assess-documentation.sh cwd guard), issue #235 (this fix).
+  # See docs/architecture/behavioral-design.md → "Phase Handoff cwd Invariants".
+  cd "$RITE_PROJECT_ROOT" 2>/dev/null || true
 
   print_header "Phase 5: Completion"
 

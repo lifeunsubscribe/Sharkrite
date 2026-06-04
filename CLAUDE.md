@@ -523,6 +523,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
   - `stale-branch.sh` → `workflow-runner.sh`: exit 11 for "stale branch restarted fresh" (caller resets resume state). **Not 10** — exit 10 is reserved for `batch-process-issues.sh` "blocker detected — defer issue"
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
+- **Phase handoff cwd contract**: When `phase_merge_pr` returns, cwd is always `$RITE_PROJECT_ROOT` — it restores cwd after removing the worktree. Any phase that runs after merge (e.g. `phase_completion`) must also start with `cd "$RITE_PROJECT_ROOT" 2>/dev/null || true` as defense-in-depth. Violating this causes `fatal: Unable to read current working directory` from `gh`'s internal git probe. See `docs/architecture/behavioral-design.md` → "Phase Handoff cwd Invariants" and `tests/regression/post-merge-cwd-restored.bats`.
 
 ## Token Optimization (rtk)
 
