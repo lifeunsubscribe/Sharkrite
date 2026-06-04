@@ -232,3 +232,105 @@ EOF
     }
   fi
 }
+
+@test "LOCAL_OUTSIDE_FUNCTION: lowercase heredoc marker braces do not corrupt depth counter" {
+  # Regression (#236): the heredoc state machine must recognize lowercase markers
+  # (<<eof, <<sql, <<json, etc.) so braces inside such bodies are skipped — not counted.
+  #
+  # Root cause: the original marker regex /^[A-Z_][A-Z_0-9]*$/ was uppercase-only;
+  # <<eof was not recognized as a heredoc open, so { and } in the body corrupted
+  # the Rule 7 depth counter, causing subsequent 'local' inside real functions to
+  # appear as violations (false positives).
+  #
+  # Fix: regex broadened to /^[A-Za-z_][A-Za-z_0-9]*$/ — this test ensures the
+  # fix is verified and prevents regression.
+
+  cat > "$LINT_FIXTURE_DIR/lowercase-hd-marker.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  # Lowercase <<eof — body braces must not be counted toward depth
+  cat <<eof
+{
+  "key": "value"
+}
+eof
+  local foo="bar"
+  echo "$foo"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ lowercase-hd-marker\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after <<eof heredoc (lowercase marker regression)
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: mixed-case heredoc marker braces do not corrupt depth counter" {
+  # Regression (#236): mixed-case markers (<<EndBlock, <<HereDoc) must also be
+  # recognized by the state machine — not just all-uppercase.
+
+  cat > "$LINT_FIXTURE_DIR/mixedcase-hd-marker.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  # Mixed-case marker — body braces must not be counted
+  cat <<EndBlock
+{
+  "nested": {
+    "key": "value"
+  }
+}
+EndBlock
+  local result="done"
+  echo "$result"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ mixedcase-hd-marker\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after <<EndBlock heredoc (mixed-case marker regression)
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: dash-form lowercase heredoc (<<-eof) does not corrupt depth" {
+  # Regression (#236): the dash form <<-eof (which strips leading tabs from the body
+  # and allows an indented terminator) must also be recognized. The sub pattern
+  # /.*<<-?[[:space:]]*/ handles both <<MARKER and <<-MARKER.
+
+  cat > "$LINT_FIXTURE_DIR/dash-lowercase-hd.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+	# dash form <<-eof — tab-indented terminator, body braces must not be counted
+	cat <<-eof
+	{
+	  "key": "value"
+	}
+	eof
+  local foo="bar"
+  echo "$foo"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ dash-lowercase-hd\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after <<-eof heredoc
+    }
+  fi
+}
