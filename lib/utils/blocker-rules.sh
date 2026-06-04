@@ -412,9 +412,11 @@ AWKEOF
       # Get total line count from origin/main (pre-deletion baseline).
       # The worktree copy already has lines removed, so wc -l on the local file
       # would under-count the denominator and produce ratios above 100%.
-      # git show exits non-zero if the file didn't exist on main (new file); skip.
+      # Use -C so the call works regardless of cwd (blocker-rules.sh may be
+      # invoked from within a worktree subdirectory, not the project root).
+      # git show exits non-zero if the ref is unfetched or the file is new; skip.
       local total_lines=0
-      total_lines=$(git show "origin/main:${filepath}" 2>/dev/null | wc -l || true)
+      total_lines=$(git -C "${RITE_PROJECT_ROOT:-.}" show "origin/main:${filepath}" 2>/dev/null | wc -l || true)
       total_lines="${total_lines:-0}"
 
       if [ "$total_lines" -le 0 ]; then
@@ -630,7 +632,10 @@ Guidance: Verify changes do not break the CI/CD pipeline, review loop, or merge 
     # Surface files whose deletion count exceeds the absolute gate threshold.
     # The ratio threshold requires per-file line counts (expensive at hint time),
     # so we use the same abs threshold as a consistent lower bound — any file
-    # that clears abs is guaranteed to trigger the gate regardless of ratio.
+    # that clears abs will very likely trigger the gate.  Note: the hint reads
+    # the API .deletions field while the hard gate counts ^- lines from the diff;
+    # these counters can diverge slightly, so the hint is an early signal rather
+    # than a guaranteed gate trigger.
     local _lib_file_deletions
     _lib_file_deletions=$(gh_safe pr view "$pr_number" --json files \
       --jq ".files[] | select(.path | test(\"${_shrinkage_re}\")) | select(.deletions > ${_shrinkage_abs}) | \"\(.path)|-\(.deletions) lines\"" \

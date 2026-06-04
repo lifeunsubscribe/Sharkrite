@@ -224,12 +224,16 @@ _create_lib_file() {
   # (no surrounding quotes — jq outputs bare strings from "\(.path)|\(.deletions)")
   local _target_file="$target_file"
   local _deleted_lines="$deleted_lines"
+  local _total_lines="$total_lines"
   local _make_lib_diff_fn
   _make_lib_diff_fn=$(declare -f _make_lib_diff)
 
-  # Run from RITE_TEST_TMPDIR so relative path '$target_file' resolves to the local copy
+  # Run from RITE_TEST_TMPDIR so relative path '$target_file' resolves to the local copy.
+  # We mock `git` so `git show origin/main:<path>` returns synthetic file content
+  # (the correct baseline line count) without requiring a real git repo in the tmpdir.
   run bash -c "
     cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
     export RITE_LIB_DIR='${RITE_LIB_DIR}'
     export RITE_SHRINKAGE_RATIO_PCT=50
     export RITE_SHRINKAGE_ABS_LINES=500
@@ -246,7 +250,17 @@ _create_lib_file() {
       fi
       return 1
     }
-    export -f gh_safe _make_lib_diff
+    # Mock git so 'git -C <dir> show origin/main:<path>' returns the expected
+    # baseline line count without requiring a real git repo in the test tmpdir.
+    git() {
+      # Handle: git -C <dir> show origin/main:<path>
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/main:* ]]; then
+        seq 1 '${_total_lines}'
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
     source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
     detect_lib_shrinkage '99'
   "
