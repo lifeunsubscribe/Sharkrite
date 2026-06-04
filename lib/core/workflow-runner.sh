@@ -1472,7 +1472,12 @@ phase_completion() {
 #   docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
 #   tests/regression/batch-single-issue-parity.bats
 #
-# Returns: 0 (always — closed issue is not an error)
+# Returns: 12 — sentinel meaning "issue was already closed at start, no new
+#   work was done in this session". batch-process-issues.sh uses this to skip
+#   the post-issue stat-gathering calls (gh pr list, gh pr view, gh issue list)
+#   that are only meaningful after an active dev session.
+#   See: docs/architecture/exit-codes.md — exit code 12
+#   See: tests/regression/batch-closed-issue-skip-stats.bats
 # ---------------------------------------------------------------------------
 handle_closed_issue() {
   local issue_number="$1"
@@ -1693,7 +1698,12 @@ handle_closed_issue() {
     fi
   fi
 
-  return 0
+  # Sentinel exit code 12: "issue was already closed at start, no new work done."
+  # batch-process-issues.sh recognizes this and skips post-issue stat gathering
+  # (gh pr list / gh pr view / gh issue list) which only make sense after an
+  # active dev session. Single-issue mode treats 12 the same as 0 — not an error.
+  # See: docs/architecture/exit-codes.md
+  return 12
 }
 
 run_workflow() {
@@ -1718,7 +1728,15 @@ run_workflow() {
 
   if [ "$issue_state" = "CLOSED" ]; then
     handle_closed_issue "$issue_number" "$issue_data"
-    return 0
+    # Propagate the sentinel (exit 12 = closed at start, no new work).
+    # batch-process-issues.sh inspects this to skip post-issue stat gathering.
+    # Single-issue mode: any non-zero exit from run_workflow is treated as an
+    # error by the caller, so we must NOT propagate 12 raw — the outer shell in
+    # bin/rite treats exit 12 as success (see the exit-12-is-success guard there).
+    # Here run_workflow() is called by the top-level executor, which only cares
+    # about 0 vs non-zero — but batch-process-issues.sh captures the code before
+    # the `if; then` test, so it sees 12 correctly. Do NOT return 0 here.
+    return $?
   fi
 
   # Ensure normalization variables are set.
@@ -2210,6 +2228,13 @@ main() {
 
   if [ $workflow_exit -eq 0 ]; then
     exit 0
+  elif [ $workflow_exit -eq 12 ]; then
+    # Issue was already closed at start — sentinel for batch stat-gathering skip.
+    # Not an error: the closure summary was already printed by handle_closed_issue().
+    # batch-process-issues.sh captures this exit code and routes to the
+    # already_closed_at_start path, skipping the post-issue gh API calls.
+    # See: docs/architecture/exit-codes.md
+    exit 12
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6

@@ -17,6 +17,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `6`  | `merge-pr.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Merge succeeded but worktree/branch cleanup failed — work IS on remote |
 | `10` | `batch-process-issues.sh` (exit) | Caller of `rite` batch | Batch completed with at least one blocker-deferred issue |
 | `11` | `stale-branch.sh` (`check_stale_branch`) | `workflow-runner.sh` stale-branch handler, `claude-workflow.sh` stale-branch health path | Stale branch: PR closed, branch/worktree cleaned up, restart fresh — caller must reset all resume state variables |
+| `12` | `workflow-runner.sh` (`handle_closed_issue` → `run_workflow` → top-level executor) | `batch-process-issues.sh` | Issue was already closed when the batch started — no new dev work done. `handle_closed_issue()` ran its full cleanup and printed the closure summary. `batch-process-issues.sh` skips the post-issue gh stat-gathering calls (pr list / pr view / issue list) and records the issue as `already_closed_at_start`. Single-issue mode: exit 12 is surfaced to the shell as a non-zero code; the user already saw the closure summary. Not an error. |
 
 > **Why 10 and 11 are separate:**
 > `batch-process-issues.sh` uses exit 10 for its own final exit when blocked
@@ -77,6 +78,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `1`  | Workflow failed (generic) |
 | `5`  | Usage cap — batch must abort |
 | `6`  | Merge succeeded but cleanup failed |
+| `12` | Issue was already closed at start — no new work done (batch should skip stat gathering) |
 
 ### `batch-process-issues.sh` (final process exit)
 
