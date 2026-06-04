@@ -257,10 +257,9 @@ while [[ $# -gt 0 ]]; do
               echo "   Will use title only: $ISSUE_DESC"
             fi
 
-            # Warn if issue is closed
+            # Note if issue is closed (user explicitly invoked it, so just acknowledge)
             if [ "$ISSUE_STATE" = "CLOSED" ]; then
-              echo "⚠️  Issue #$ISSUE_NUMBER is already CLOSED"
-              echo "   Proceeding anyway (may be reopening work)"
+              echo "ℹ️  Issue #$ISSUE_NUMBER is currently CLOSED on GitHub"
             fi
 
             echo "✅ Issue loaded: $ISSUE_DESC"
