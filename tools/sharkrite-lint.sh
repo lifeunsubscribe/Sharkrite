@@ -987,12 +987,12 @@ for file in "${SHELL_FILES[@]}"; do
         "'mapfile'/'readarray' is a bash 4+ builtin — crashes on macOS system bash 3.2. Add a BASH_VERSINFO re-exec guard (see batch-process-issues.sh:69-77) or replace with a portable while-read loop"
     fi
 
-    # Detect declare -A (associative arrays, bash 4+ only)
-    if echo "$line_content" | grep -qE '\bdeclare\s+-[a-zA-Z]*A[a-zA-Z]*\b|\bdeclare\s+-A\b'; then
+    # Detect declare -A / declare -gA / declare -Ar / local -A (associative arrays, bash 4+ only)
+    if echo "$line_content" | grep -qE '\bdeclare\s+-[a-zA-Z]*A[a-zA-Z]*\b|\blocal\s+-[a-zA-Z]*A[a-zA-Z]*\b'; then
       print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
-        "'declare -A' (associative array) is bash 4+ only — crashes on macOS system bash 3.2. Add a BASH_VERSINFO re-exec guard (see batch-process-issues.sh:69-77)"
+        "'declare/local -A' (associative array) is bash 4+ only — crashes on macOS system bash 3.2. Add a BASH_VERSINFO re-exec guard (see batch-process-issues.sh:69-77)"
     fi
-  done < <(grep -n '\(mapfile\|readarray\|declare -A\)' "$file" 2>/dev/null || true)
+  done < <(grep -nE '(mapfile|readarray|declare\s+-[a-zA-Z]*A|local\s+-[a-zA-Z]*A)' "$file" 2>/dev/null || true)
 done
 
 echo ""

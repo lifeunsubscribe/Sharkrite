@@ -73,6 +73,41 @@ echo "${MY_MAP[key]}"'
   [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
 }
 
+@test "rule fires: #!/bin/bash + declare -gA (global assoc array, combined flags) without guard" {
+  _run_lint_with_fixture "bad-declare-gA" '#!/bin/bash
+set -euo pipefail
+
+declare -gA MY_GLOBAL_MAP
+MY_GLOBAL_MAP[key]="value"
+echo "${MY_GLOBAL_MAP[key]}"'
+
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+}
+
+@test "rule fires: #!/bin/bash + declare -Ar (readonly assoc array, combined flags) without guard" {
+  _run_lint_with_fixture "bad-declare-Ar" '#!/bin/bash
+set -euo pipefail
+
+declare -Ar MY_READONLY_MAP=([key]="value")
+echo "${MY_READONLY_MAP[key]}"'
+
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+}
+
+@test "rule fires: #!/bin/bash + local -A (assoc array in function) without guard" {
+  _run_lint_with_fixture "bad-local-A" '#!/bin/bash
+set -euo pipefail
+
+my_func() {
+  local -A my_map
+  my_map[key]="value"
+  echo "${my_map[key]}"
+}
+my_func'
+
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Should PASS (no violations from this rule)
 # ---------------------------------------------------------------------------
