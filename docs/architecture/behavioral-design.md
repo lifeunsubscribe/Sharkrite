@@ -286,6 +286,30 @@ All review comment queries MUST filter by body marker (`contains("<!-- sharkrite
 
 **Why:** Freshup issue #231 hit a stale review loop — rerouted 2 times without generating a fresh review. Root cause: Phase 3 used a wider author-based filter that could pick up assessment comments, and Phase 2 used lexicographic string comparison for timestamps.
 
+### Stale Review Loop — SHA-Based Staleness Detection
+
+**The canonical staleness check is SHA-based, not timestamp-based.** The 2-reroute guard in `workflow-runner.sh::phase_assess_and_resolve` is defense-in-depth; with correct SHA detection it should rarely fire.
+
+**Primary check (SHA-based):** `local-review.sh` embeds the HEAD SHA at review generation time into the review marker:
+```
+<!-- sharkrite-local-review model:X timestamp:Y commit:<sha> -->
+```
+`assess-and-resolve.sh` extracts this SHA and compares it to the current branch HEAD:
+- `review_sha == HEAD_sha` → review covers HEAD, proceed to assessment (no reroute)
+- `review_sha` is ancestor of HEAD → review is genuinely stale (fix commits were pushed after review), reroute to Phase 2
+- `review_sha` not in ancestry chain → likely a force-push, log warning and treat as stale
+
+**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility.
+
+**Why timestamps alone are insufficient (issue #354):**
+Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind the local git commit timestamp by seconds to minutes (API eventual consistency). In a fix-loop iteration, a fix commit pushed at T+1 and a new review generated at T+2 can still appear "stale" if the API returns T+1 as the review timestamp but the local commit time reads T+2. SHAs are deterministic: the review either covers this commit or it doesn't.
+
+**Live false-positive (2026-06-04, issue #354 / PR #342):** Finding counts changed across iterations (MEDIUM/LOW counts fluctuated), proving the review was being regenerated. Yet the staleness detector still flagged each fresh review as stale — the 2-reroute guard fired, the workflow exited 1, and a clean/mergeable PR was abandoned. Fix: embed SHA in review marker, compare SHAs instead of timestamps.
+
+**Do NOT remove timestamp comparison.** It's still used for display (`--status` timestamp output) and as a backward-compat fallback for pre-fix reviews. Only remove it from the *staleness decision* path — which this fix does.
+
+**Do NOT increase the reroute cap from 2.** The guard isn't the bug; the detection is. Bumping the cap delays failure without addressing root cause.
+
 ### LOW Severity Threshold
 
 LOW findings only become ACTIONABLE_LATER if they represent a real functional or security concern. "Consider doing X" and style suggestions are DISMISSED. Added after 5 of 7 tech-debt issues were closed as noise (code aesthetics, hypothetical optimizations, intentional patterns flagged as problems).

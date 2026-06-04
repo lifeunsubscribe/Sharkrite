@@ -69,6 +69,19 @@ Any short-circuit that bypasses `run_workflow()` must be documented with `# Deli
 - `workflow-runner.sh` captures exit codes and stdout to pass review content to fix mode
 - **stderr** is used for all user-facing output (print_info, print_warning, etc.)
 
+### Phase 3 — Review Staleness Contract (CRITICAL)
+
+**Staleness detection is SHA-based, not timestamp-based** (issue #354). `local-review.sh` embeds the HEAD SHA in the review marker at generation time:
+```
+<!-- sharkrite-local-review model:X timestamp:Y commit:<sha> -->
+```
+`assess-and-resolve.sh` extracts this SHA and compares it to the current HEAD:
+- SHA match → review covers HEAD, assess it (no reroute)
+- SHA is ancestor → genuinely stale, reroute to Phase 2
+- No SHA in review → fallback to epoch-seconds timestamp comparison (backward compat for pre-#354 reviews)
+
+**Do NOT replace SHA comparison with timestamp comparison.** Timestamps are racy (GitHub API eventual consistency lag). See `docs/architecture/behavioral-design.md` → "Stale Review Loop — SHA-Based Staleness Detection".
+
 ### Model Selection Per Task
 
 Each task uses the model that fits its nature. Three independent model vars — changing one does not affect the others:
