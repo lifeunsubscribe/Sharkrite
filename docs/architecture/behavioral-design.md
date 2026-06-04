@@ -587,6 +587,51 @@ Existing automation continues unchanged:
 
 ---
 
+## macOS bash 3.2 Compatibility
+
+### Background
+
+macOS ships `/bin/bash` at version 3.2.57 (2007). Sharkrite scripts use `#!/bin/bash` as the deliberate shebang for `lib/`, `bin/`, and `tools/` scripts — this pins the executor to the system shell and avoids PATH-dependent behavior. The tradeoff is that any bash 4.0+ feature used in these scripts will crash on macOS unless an explicit version guard is in place.
+
+### Known bash 4.0+ features that must not appear unguarded in #!/bin/bash scripts
+
+| Feature | Bash version | Portable alternative |
+|---|---|---|
+| `mapfile -t ARR < <(cmd)` | 4.0+ | `while IFS= read -r _line; do ARR+=("$_line"); done < <(cmd)` |
+| `readarray -t ARR < <(cmd)` | 4.0+ | Same while-read pattern |
+| `declare -A ASSOC` | 4.0+ | Pass data as delimited strings or temp files |
+
+### The re-exec pattern (batch-process-issues.sh:69-77)
+
+Scripts that need multiple bash 4+ features use the self-re-exec pattern to transparently upgrade to a newer bash when available:
+
+```bash
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+```
+
+When only a single bash 4+ feature is used, it is simpler and more portable to replace the feature rather than add the re-exec block.
+
+### Live incidents
+
+| Date | File | Root cause | Fix |
+|---|---|---|---|
+| 2026-06-04 | `lib/core/undo-workflow.sh:133` | `mapfile` used for follow-up issue dedup; crashes when `/bin/bash` 3.2 is the executor (issue #327) | Replaced with portable while-read loop + `"${arr[@]+"${arr[@]}"}"` empty-array guard (PR #266 pattern) |
+| (prior) | `lib/core/batch-process-issues.sh` | `declare -A` associative array (issue #266) | Added self-re-exec guard at top |
+
+### Lint enforcement
+
+Rule 21 (`BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT`) in `tools/sharkrite-lint.sh` scans all `#!/bin/bash` scripts in `lib/`, `bin/`, and `tools/` for `mapfile`, `readarray`, and `declare -A` without a `BASH_VERSINFO` guard. The rule fires on the first violation line and points to the portable alternatives. Suppression is available via `# sharkrite-lint disable BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT - reason: <text>` on the preceding line.
+
+---
+
 ## ADR Backfill (bootstrap-docs.sh)
 
 ### Backfill Behavior
