@@ -35,6 +35,12 @@
 
 set -euo pipefail
 
+# Bash 4+ required for mapfile
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "ERROR: Requires bash 4+. macOS ships bash 3.2; install bash via Homebrew: brew install bash" >&2
+  exit 1
+fi
+
 # --- Defaults ---
 WINDOW_START="${WINDOW_START:-2026-06-02T18:49:00Z}"
 WINDOW_END="${WINDOW_END:-2026-06-04T20:26:00Z}"
@@ -88,8 +94,8 @@ else
 fi
 
 echo ""
-echo "| PR | Title | HIGH | MED | LOW | FollowUps | Status |"
-echo "|---|---|---|---|---|---|---|"
+echo "| PR | Title | CRIT | HIGH | MED | LOW | FollowUps | Status |"
+echo "|---|---|---|---|---|---|---|---|"
 
 gap_count=0
 ok_count=0
@@ -99,7 +105,7 @@ for pr in "${prs[@]}"; do
   # Fetch PR title and comments
   pr_data=$(gh pr view "$pr" --repo "$REPO" --json title,comments 2>/dev/null || true)
   if [ -z "$pr_data" ]; then
-    echo "| #$pr | (could not fetch) | - | - | - | - | SKIP |"
+    echo "| #$pr | (could not fetch) | - | - | - | - | - | SKIP |"
     (( skip_count++ )) || true
     continue
   fi
@@ -112,19 +118,22 @@ for pr in "${prs[@]}"; do
   ')
 
   if [ -z "$review_body" ]; then
-    echo "| #$pr | $title | - | - | - | - | NO_REVIEW |"
+    echo "| #$pr | $title | - | - | - | - | - | NO_REVIEW |"
     (( skip_count++ )) || true
     continue
   fi
 
   # Parse findings from the Findings: summary line
   # Format: **Findings:** 🔴 CRITICAL: N | 🟠 HIGH: N | 🟡 MEDIUM: N | 🟢 LOW: N
-  high=$(echo "$review_body" | grep -oE 'HIGH: [0-9]+' | grep -oE '[0-9]+' || echo "0")
-  med=$(echo "$review_body"  | grep -oE 'MEDIUM: [0-9]+' | grep -oE '[0-9]+' || echo "0")
-  low=$(echo "$review_body"  | grep -oE 'LOW: [0-9]+' | grep -oE '[0-9]+' || echo "0")
-  high="${high:-0}"; med="${med:-0}"; low="${low:-0}"
+  # Isolate just the summary line first to prevent multiline grep output feeding $(( ))
+  findings_line=$(echo "$review_body" | grep -m1 'Findings:' || true)
+  crit=$(echo "$findings_line" | grep -oE 'CRITICAL: [0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+  high=$(echo "$findings_line" | grep -oE 'HIGH: [0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+  med=$(echo "$findings_line"  | grep -oE 'MEDIUM: [0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+  low=$(echo "$findings_line"  | grep -oE 'LOW: [0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+  crit="${crit:-0}"; high="${high:-0}"; med="${med:-0}"; low="${low:-0}"
 
-  total_findings=$(( high + med + low ))
+  total_findings=$(( crit + high + med + low ))
 
   # Count distinct sharkrite-followup-issue:N markers in PR comments
   all_comments=$(echo "$pr_data" | jq -r '.comments[].body' || true)
@@ -143,7 +152,7 @@ for pr in "${prs[@]}"; do
     (( gap_count++ )) || true
   fi
 
-  echo "| #$pr | $title | $high | $med | $low | $followup_count | $status |"
+  echo "| #$pr | $title | $crit | $high | $med | $low | $followup_count | $status |"
 done
 
 echo ""
