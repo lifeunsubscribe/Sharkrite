@@ -91,6 +91,10 @@ else
       --jq ".[] | select(.mergedAt >= \"$WINDOW_START\" and .mergedAt <= \"$WINDOW_END\") | .number"
   )
   echo "Found ${#prs[@]} merged PRs in window"
+  if [ "${#prs[@]}" -eq 200 ]; then
+    echo "WARNING: result count equals --limit 200. PRs merged before the window boundary may have been silently truncated." >&2
+    echo "WARNING: Re-run with a narrower window or switch to: gh search prs --merged START..END (no hard limit)" >&2
+  fi
 fi
 
 echo ""
@@ -102,7 +106,13 @@ ok_count=0
 skip_count=0
 
 for pr in "${prs[@]}"; do
-  # Fetch PR title and comments
+  # Fetch PR title and comments.
+  # Assumption: sharkrite posts review bodies and follow-up markers as PR *issue comments*
+  # (via `gh pr comment` in local-review.sh / merge-pr.sh), not as GitHub review-thread
+  # comments (which live under the `reviews` field).  Therefore `--json comments` (issue
+  # comments) is the correct field — `reviews` is intentionally omitted.
+  # Verified against real reviewed PRs: sharkrite-local-review and sharkrite-followup-issue
+  # markers both appear in .comments[].body, not in .reviews[].body.
   pr_data=$(gh pr view "$pr" --repo "$REPO" --json title,comments 2>/dev/null || true)
   if [ -z "$pr_data" ]; then
     echo "| #$pr | (could not fetch) | - | - | - | - | - | SKIP |"
@@ -110,7 +120,7 @@ for pr in "${prs[@]}"; do
     continue
   fi
 
-  title=$(echo "$pr_data" | jq -r '.title')
+  title=$(echo "$pr_data" | jq -r '.title' | sed 's/|/\\|/g')
 
   # Find the sharkrite-local-review comment(s), use the most recent
   review_body=$(echo "$pr_data" | jq -r '
