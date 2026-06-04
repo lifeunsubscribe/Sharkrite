@@ -80,7 +80,7 @@ _batch_print_stats() {
     echo "Already Closed at Start (no new work needed)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     local _closed_num
-    for _closed_num in "${ALREADY_CLOSED_AT_START_ISSUES[@]}"; do
+    for _closed_num in "${ALREADY_CLOSED_AT_START_ISSUES[@]+"${ALREADY_CLOSED_AT_START_ISSUES[@]}"}"; do
       echo "  ✅ Issue #$_closed_num (closed before this session started)"
     done
     echo ""
@@ -90,7 +90,7 @@ _batch_print_stats() {
   # their own section above) — show only the remaining skip reasons.
   local _other_skipped=()
   local _skip_num _skip_reason
-  for _skip_num in "${SKIPPED_ISSUES[@]}"; do
+  for _skip_num in "${SKIPPED_ISSUES[@]+"${SKIPPED_ISSUES[@]}"}"; do
     _skip_reason=${ISSUE_STATUS[$_skip_num]:-"unknown"}
     if [ "$_skip_reason" != "already_closed_at_start" ]; then
       _other_skipped+=("$_skip_num")

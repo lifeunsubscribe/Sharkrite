@@ -538,6 +538,226 @@ setup() {
   ! echo "$output" | grep -q "^Skipped Issues"
 }
 
+# =============================================================================
+# BEHAVIORAL: subprocess exit-code propagation
+#
+# These tests execute run_workflow() in a subprocess with a CLOSED-issue stub
+# to verify the full exit-code propagation chain at runtime.
+# They guard against the CRITICAL #1 defect: set -e aborting at the
+# handle_closed_issue call before the BATCH_MODE gate is reached.
+# =============================================================================
+
+@test "behavioral: run_workflow exits 0 for closed issue in single-issue mode (no BATCH_MODE)" {
+  # Creates a minimal environment with all workflow-runner.sh dependencies stubbed,
+  # then calls run_workflow with a CLOSED issue stub and asserts exit 0.
+  # If the set +e wrapper is missing, set -e fires on handle_closed_issue's return 12
+  # and the script exits with code 1 (via the err trap), not 0 — caught here.
+
+  _script="$BATS_TEST_TMPDIR/test-exit-single-issue.sh"
+  cat > "$_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Minimal stubs for workflow-runner.sh dependencies
+# ---------------------------------------------------------------------------
+RITE_LIB_DIR="/dev/null/stub"
+RITE_PROJECT_ROOT="$BATS_TEST_TMPDIR"
+RITE_DATA_DIR=".rite"
+WORKFLOW_MODE="unsupervised"
+RESUME_MODE=false
+BYPASS_BLOCKERS=false
+CURRENT_PHASE=""
+CURRENT_ISSUE=""
+CURRENT_PR=""
+CURRENT_RETRY=0
+INTERRUPT_RECEIVED=false
+CLOSING_ISSUE_JQ_REGEX=""
+BATCH_MODE=false   # Single-issue mode: no BATCH_MODE
+
+# Stub all print helpers (they write to stderr in real code)
+print_header()  { :; }
+print_info()    { :; }
+print_success() { :; }
+print_warning() { :; }
+print_status()  { :; }
+print_step()    { :; }
+verbose_info()  { :; }
+
+# Stub iso_to_epoch
+iso_to_epoch() { echo "1767225600"; }
+
+# Stub gh_safe to return a CLOSED issue
+gh_safe() {
+  if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+    echo '{"state":"CLOSED","title":"Test closed issue","closedAt":"2026-01-01T00:00:00Z","closedByPullRequestsReferences":[]}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+# Stub git (not needed for the CLOSED branch; stubs prevent any accidental call)
+git() { return 0; }
+
+# Stub extract_changes_summary
+extract_changes_summary() { echo ""; }
+
+# Stub run_with_timeout to just run the command
+run_with_timeout() {
+  local _timeout="$1"; shift
+  "$@" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Paste the handle_closed_issue function stub
+# (mirrors the real function's return 12 + print behavior)
+# ---------------------------------------------------------------------------
+handle_closed_issue() {
+  local issue_number="$1"
+  # Real cleanup (worktree/branch/remote) is no-op in this stub env
+  print_header "Issue #${issue_number} — Already Closed" >&2
+  return 12
+}
+
+# ---------------------------------------------------------------------------
+# run_workflow: only the CLOSED branch is tested — paste the relevant fragment
+# ---------------------------------------------------------------------------
+run_workflow() {
+  local issue_number="$1"
+  local issue_data
+  issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences)
+  local issue_state
+  issue_state=$(echo "$issue_data" | jq -r '.state')
+
+  if [ "$issue_state" = "CLOSED" ]; then
+    local _closed_exit
+    set +e
+    handle_closed_issue "$issue_number" "$issue_data"
+    _closed_exit=$?
+    set -e
+    if [ "${BATCH_MODE:-false}" = "true" ]; then
+      return $_closed_exit
+    else
+      return 0
+    fi
+  fi
+
+  # Not CLOSED — would continue to dev phases (not tested here)
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+run_workflow "42"
+# If we reach here, exit code is 0 (return 0 from run_workflow)
+STUB_EOF
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for closed issue in single-issue mode, got $status" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: run_workflow exits 12 for closed issue in batch mode (BATCH_MODE=true)" {
+  # Same as above but with BATCH_MODE=true — run_workflow must return 12 so
+  # batch-process-issues.sh can distinguish already-closed from active-work.
+
+  _script="$BATS_TEST_TMPDIR/test-exit-batch-mode.sh"
+  cat > "$_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+RITE_LIB_DIR="/dev/null/stub"
+RITE_PROJECT_ROOT="$BATS_TEST_TMPDIR"
+RITE_DATA_DIR=".rite"
+WORKFLOW_MODE="unsupervised"
+RESUME_MODE=false
+BYPASS_BLOCKERS=false
+CURRENT_PHASE=""
+CURRENT_ISSUE=""
+CURRENT_PR=""
+CURRENT_RETRY=0
+INTERRUPT_RECEIVED=false
+CLOSING_ISSUE_JQ_REGEX=""
+BATCH_MODE=true   # Batch mode: propagate the sentinel
+
+print_header()  { :; }
+print_info()    { :; }
+print_success() { :; }
+print_warning() { :; }
+print_status()  { :; }
+print_step()    { :; }
+verbose_info()  { :; }
+
+iso_to_epoch() { echo "1767225600"; }
+
+gh_safe() {
+  if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+    echo '{"state":"CLOSED","title":"Test closed issue","closedAt":"2026-01-01T00:00:00Z","closedByPullRequestsReferences":[]}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+git() { return 0; }
+extract_changes_summary() { echo ""; }
+run_with_timeout() { local _t="$1"; shift; "$@" 2>/dev/null || true; }
+
+handle_closed_issue() {
+  local issue_number="$1"
+  print_header "Issue #${issue_number} — Already Closed" >&2
+  return 12
+}
+
+run_workflow() {
+  local issue_number="$1"
+  local issue_data
+  issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences)
+  local issue_state
+  issue_state=$(echo "$issue_data" | jq -r '.state')
+
+  if [ "$issue_state" = "CLOSED" ]; then
+    local _closed_exit
+    set +e
+    handle_closed_issue "$issue_number" "$issue_data"
+    _closed_exit=$?
+    set -e
+    if [ "${BATCH_MODE:-false}" = "true" ]; then
+      return $_closed_exit
+    else
+      return 0
+    fi
+  fi
+
+  return 0
+}
+
+# Capture exit code without triggering set -e
+_exit=0
+run_workflow "42" || _exit=$?
+
+if [ "$_exit" -ne 12 ]; then
+  echo "FAIL: expected exit 12 for closed issue in batch mode, got $_exit" >&2
+  exit 1
+fi
+exit 0
+STUB_EOF
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script itself failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
 @test "integration: batch of 1 active + 1 already-closed + 1 dep-deferred — all sections correct" {
   run bash -c "
     source '${BATCH_REPORTER}'

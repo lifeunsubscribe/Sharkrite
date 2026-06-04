@@ -1727,9 +1727,15 @@ run_workflow() {
   local issue_state=$(echo "$issue_data" | jq -r '.state')
 
   if [ "$issue_state" = "CLOSED" ]; then
+    # set +e is required: handle_closed_issue returns 12 (sentinel) and under
+    # set -euo pipefail a non-zero return from a bare function call aborts the
+    # script immediately, making the BATCH_MODE gate below unreachable dead code.
+    # Mirror the stale-branch pattern at lines 1814-1817.
+    local _closed_exit
+    set +e
     handle_closed_issue "$issue_number" "$issue_data"
-    # Capture immediately — any inserted command after this point would clobber $?.
-    local _closed_exit=$?
+    _closed_exit=$?
+    set -e
     # Propagate the sentinel (exit 12 = closed at start, no new work).
     # batch-process-issues.sh captures this to skip post-issue stat gathering.
     # Single-issue mode: bin/rite uses exec, so exit 12 would propagate to the
