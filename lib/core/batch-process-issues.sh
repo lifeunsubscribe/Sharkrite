@@ -796,10 +796,12 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     break
   fi
 
-  # Small delay between issues (avoid rate limiting)
+  # No between-issue delay: gh_safe handles 429/5xx with exponential backoff
+  # and Claude provider calls have their own retry logic. The original 5s sleep
+  # was defensive against rate limits before gh_safe existed; it's pure overhead
+  # now. For an 8-issue batch the wait alone added 35s — often >90% of total
+  # batch time after #316's closed-issue optimization.
   if [ "$CURRENT_ISSUE" -lt "$TOTAL_ISSUES" ]; then
-    print_info "Waiting 5s before next issue..."
-    sleep 5
     echo ""
   fi
 done
