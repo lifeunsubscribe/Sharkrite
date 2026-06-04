@@ -328,3 +328,55 @@ BODY
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
   [ "$count" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 8: Idempotency prefix collision — #42 must NOT match #420 (regression)
+#
+# index($0, "#42") is an unanchored substring match: it returns true when
+# "#420" is present, so a re-run for PR #42 after PR #420 was recorded would
+# be treated as a no-op and silently drop the legitimate append.
+# The fix tokenizes the References line and compares each token exactly.
+# ---------------------------------------------------------------------------
+
+@test "idempotency: PR #42 is not mistaken for already-recorded PR #420" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Manually plant an entry for "prefix-collision-test" with PR #420 recorded.
+  cat >> "$conventions_file" <<'EOF'
+
+## prefix-collision-test
+
+**Rule:** Never use substring matching for PR token comparison.
+
+**Why:** #420 contains #42 as a substring; an unanchored index() call would
+falsely detect PR #42 as already recorded.
+
+**References:** #420
+
+---
+EOF
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: prefix-collision-test
+rule: Never use substring matching for PR token comparison
+why: Substring match causes false idempotency hit
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  # PR #42 is NOT yet in the References line — this must NOT be treated as a no-op.
+  update_conventions_from_marker "42" "$pr_body"
+
+  # A second entry must have been appended (PR #42 is a different PR from #420).
+  local count
+  count=$(grep -c "^## prefix-collision-test$" "$conventions_file" || true)
+  [ "$count" -eq 2 ]
+
+  # Re-running for PR #42 now must be a no-op.
+  update_conventions_from_marker "42" "$pr_body"
+
+  count=$(grep -c "^## prefix-collision-test$" "$conventions_file" || true)
+  [ "$count" -eq 2 ]
+}

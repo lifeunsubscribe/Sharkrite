@@ -675,7 +675,13 @@ update_conventions_from_marker() {
         if awk -v title="## ${_title}" -v prnum="#${pr_number}" '
           BEGIN { matched=0 }
           $0 == title { found=1; next }
-          found && /^\*\*References:\*\*/ { if (index($0, prnum) > 0) { matched=1; exit } found=0; next }
+          found && /^\*\*References:\*\*/ {
+            n = split($0, tokens, /[[:space:],]+/)
+            for (i = 1; i <= n; i++) {
+              if (tokens[i] == prnum) { matched=1; exit }
+            }
+            found=0; next
+          }
           found && /^## / { found=0 }
           END { exit (matched ? 0 : 1) }
         ' "$conventions_file" 2>/dev/null; then
