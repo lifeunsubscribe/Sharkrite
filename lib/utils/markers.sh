@@ -58,6 +58,11 @@ RITE_MARKER_REVIEW_DATA="sharkrite-review-data"
 # PR description markers
 # ---------------------------------------------------------------------------
 
+# Convention catalog marker — included in a PR body to auto-append an entry to
+# docs/architecture/conventions.md on merge.
+# Format in PR body: <!-- sharkrite-convention --> ... <!-- /sharkrite-convention -->
+RITE_MARKER_CONVENTION="sharkrite-convention"
+
 # Scope warning marker — injected into PR body when files outside scope are modified.
 # Format in PR body: <!-- sharkrite-scope-warning -->
 RITE_MARKER_SCOPE_WARNING="sharkrite-scope-warning"
