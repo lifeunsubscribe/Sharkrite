@@ -164,25 +164,47 @@ setup() {
     return 1
   }
 
-  # After the fix, `return $?` must appear in run_workflow's CLOSED branch
-  # (to propagate the sentinel from handle_closed_issue).
-  echo "$_func_body" | grep -qE 'return \$\?' || {
-    echo "FAIL: 'return \$?' not found in run_workflow body" >&2
+  # After the fix, the CLOSED branch must propagate handle_closed_issue's exit code.
+  # Accept either form:
+  #   Form A: `return $?`       — direct propagation
+  #   Form B: `_closed_exit=$?` followed by `return $_closed_exit` — capture form
+  #           (preferred under set -e because any intervening command would clobber $?)
+  _has_direct=$(echo "$_func_body" | grep -cE 'return \$\?' || true)
+  _has_capture=$(echo "$_func_body" | grep -cE '_closed_exit=\$\?' || true)
+  if [ "$_has_direct" -eq 0 ] && [ "$_has_capture" -eq 0 ]; then
+    echo "FAIL: Neither 'return \$?' nor '_closed_exit=\$?' found in run_workflow body" >&2
     echo "      run_workflow must propagate handle_closed_issue's exit code (12)" >&2
     return 1
-  }
+  fi
 
-  # The CLOSED branch must NOT have a bare `return 0` directly after handle_closed_issue.
-  # Verify that `return 0` does not appear in the CLOSED state block.
-  # Extract lines between `issue_state = "CLOSED"` check and the next `fi`
+  # The CLOSED branch must NOT have an UNGUARDED `return 0` immediately after
+  # handle_closed_issue — that would discard the sentinel in all modes.
+  # The implementation legitimately has `return 0` for single-issue mode, but it
+  # must be inside a BATCH_MODE guard (i.e. in the `else` branch of an `if BATCH_MODE`
+  # block), not as a bare statement that always executes.
+  #
+  # Strategy: extract the CLOSED block, then remove all lines that are clearly
+  # inside an if/else/fi BATCH_MODE guard.  Any `return 0` remaining after that
+  # removal is truly unguarded and is a bug.
   _closed_block=$(echo "$_func_body" | awk '
     /issue_state.*CLOSED/ { in_block=1; next }
     in_block && /^[[:space:]]*fi$/ { exit }
     in_block { print $0 }
   ')
-  if echo "$_closed_block" | grep -qE '^\s*return 0$'; then
-    echo "FAIL: 'return 0' found in CLOSED branch of run_workflow" >&2
-    echo "      This would discard the exit-12 sentinel from handle_closed_issue" >&2
+
+  # Strip lines inside any `if ... BATCH_MODE ... fi` block to leave only top-level code.
+  _top_level_block=$(echo "$_closed_block" | awk '
+    /if \[.*BATCH_MODE/ { in_guard=1; next }
+    in_guard && /^[[:space:]]*fi$/ { in_guard=0; next }
+    in_guard { next }
+    { print $0 }
+  ')
+
+  if echo "$_top_level_block" | grep -qE '^\s*return 0$'; then
+    echo "FAIL: Unguarded 'return 0' found at top level of CLOSED branch in run_workflow" >&2
+    echo "      A bare 'return 0' here discards the exit-12 sentinel from handle_closed_issue" >&2
+    echo "      If 'return 0' is intentional for single-issue mode, it must be inside a" >&2
+    echo "      BATCH_MODE guard (else branch of 'if [ BATCH_MODE = true ]')" >&2
     return 1
   fi
 }
