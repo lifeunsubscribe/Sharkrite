@@ -216,6 +216,12 @@ RITE_GEMINI_REVIEW_MODEL="${RITE_GEMINI_REVIEW_MODEL:-gemini-2.5-pro}"
 RITE_PLAN_DOCS="${RITE_PLAN_DOCS:-}"
 RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
 
+# Auto-discovery byte cap for docs injected into the plan prompt.
+# ADRs + README are always loaded in full (they count toward the cap first).
+# Remaining docs/**.md are included alphabetically until the cap is reached.
+# Set to 0 to disable auto-discovery entirely (explicit doc_paths still work).
+RITE_PLAN_DOC_BYTE_CAP="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
+
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 
@@ -301,6 +307,7 @@ export RITE_GEMINI_DEV_MODEL
 export RITE_GEMINI_REVIEW_MODEL
 export RITE_PLAN_DOCS
 export RITE_PLAN_MAX_ESTIMATE
+export RITE_PLAN_DOC_BYTE_CAP
 export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD

@@ -44,6 +44,156 @@ if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f gh_safe >/dev/null 2>&1; then
 fi
 
 # =============================================================================
+# _collect_auto_docs: auto-discover docs/**/*.md, ADRs, and README.md
+#
+# Appends grounding context to the plan prompt beyond user-supplied doc paths.
+# Priority order:
+#   1. ADRs: docs/**/*adr*.md + docs/ADR-*.md (loaded in full, highest priority)
+#   2. README.md at project root (loaded in full)
+#   3. Remaining docs/**/*.md (loaded alphabetically until byte cap is reached)
+#
+# The byte cap (RITE_PLAN_DOC_BYTE_CAP) applies to the total auto-injected
+# content.  ADRs + README count first; remaining budget goes to other docs.
+# Set RITE_PLAN_DOC_BYTE_CAP=0 to disable auto-discovery entirely.
+#
+# Output format matches the existing doc_content loop:
+#   --- <basename> ---
+#   <content>
+#   --- end <basename> ---
+#
+# Usage: _collect_auto_docs [already-loaded-paths...]
+#   Already-loaded paths are skipped to avoid double-injection.
+# =============================================================================
+
+_collect_auto_docs() {
+  local byte_cap="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Escape hatch: cap=0 disables auto-discovery entirely.
+  if [ "$byte_cap" -eq 0 ] 2>/dev/null; then
+    return 0
+  fi
+
+  # Build a set of already-loaded paths (passed as arguments) so we don't
+  # double-inject docs the user explicitly provided.
+  local -a loaded_paths=("$@")
+
+  _is_already_loaded() {
+    local candidate="$1"
+    local p
+    for p in "${loaded_paths[@]+"${loaded_paths[@]}"}"; do
+      if [ "$p" = "$candidate" ]; then
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  local total_bytes=0
+  local auto_content=""
+
+  # -------------------------------------------------------------------------
+  # Phase 1: ADRs — load in full (highest priority, count toward cap first)
+  # Matches: docs/**/*adr*.md (case-insensitive) and docs/ADR-*.md
+  # -------------------------------------------------------------------------
+  local -a adr_files=()
+  local _f
+  # Case-insensitive glob via find-style iteration with while-read (bash 3.2 safe).
+  # We use a while-read loop over a glob expansion to stay portable.
+  while IFS= read -r _f; do
+    adr_files+=("$_f")
+  done < <(
+    # Find all .md files under docs/ that match ADR patterns (sort alphabetically)
+    {
+      # Pattern 1: docs/**/*adr*.md (any casing)
+      find "$project_root/docs" -name "*[Aa][Dd][Rr]*.md" -type f 2>/dev/null | sort -u
+      # Pattern 2: docs/ADR-*.md (already covered by the above but explicit for clarity)
+      find "$project_root/docs" -name "ADR-*.md" -type f 2>/dev/null | sort -u
+    } | sort -u
+  )
+
+  local adr_path
+  for adr_path in "${adr_files[@]+"${adr_files[@]}"}"; do
+    _is_already_loaded "$adr_path" && continue
+    local adr_bytes
+    adr_bytes=$(wc -c < "$adr_path" 2>/dev/null || echo 0)
+    local adr_basename
+    adr_basename=$(basename "$adr_path")
+    # ADRs are always loaded in full regardless of remaining budget.
+    # They count toward the cap — if the cap is already exceeded they still load.
+    auto_content+="
+--- $adr_basename ---
+$(cat "$adr_path")
+--- end $adr_basename ---
+
+"
+    total_bytes=$((total_bytes + adr_bytes))
+    loaded_paths+=("$adr_path")
+  done
+
+  # -------------------------------------------------------------------------
+  # Phase 2: README.md — load in full (high priority, counts toward cap)
+  # -------------------------------------------------------------------------
+  local readme_path="$project_root/README.md"
+  if [ -f "$readme_path" ] && ! _is_already_loaded "$readme_path"; then
+    local readme_bytes
+    readme_bytes=$(wc -c < "$readme_path" 2>/dev/null || echo 0)
+    auto_content+="
+--- README.md ---
+$(cat "$readme_path")
+--- end README.md ---
+
+"
+    total_bytes=$((total_bytes + readme_bytes))
+    loaded_paths+=("$readme_path")
+  fi
+
+  # -------------------------------------------------------------------------
+  # Phase 3: Remaining docs/**/*.md — alphabetically, up to remaining budget
+  # -------------------------------------------------------------------------
+  local remaining_budget=$((byte_cap - total_bytes))
+
+  if [ -d "$project_root/docs" ]; then
+    local -a other_docs=()
+    while IFS= read -r _f; do
+      other_docs+=("$_f")
+    done < <(find "$project_root/docs" -name "*.md" -type f 2>/dev/null | sort)
+
+    local doc_path
+    for doc_path in "${other_docs[@]+"${other_docs[@]}"}"; do
+      _is_already_loaded "$doc_path" && continue
+      [ -f "$doc_path" ] || continue
+
+      local doc_bytes
+      doc_bytes=$(wc -c < "$doc_path" 2>/dev/null || echo 0)
+      local doc_basename
+      doc_basename=$(basename "$doc_path")
+
+      if [ "$remaining_budget" -gt 0 ] && [ "$doc_bytes" -le "$remaining_budget" ]; then
+        auto_content+="
+--- $doc_basename ---
+$(cat "$doc_path")
+--- end $doc_basename ---
+
+"
+        remaining_budget=$((remaining_budget - doc_bytes))
+        total_bytes=$((total_bytes + doc_bytes))
+        loaded_paths+=("$doc_path")
+      else
+        # Doc exceeds remaining budget (or budget is already exhausted) — log and skip.
+        print_info "Auto-docs: skipping $doc_basename (${doc_bytes}B > ${remaining_budget}B remaining budget)" >&2
+      fi
+    done
+  fi
+
+  if [ -n "$auto_content" ]; then
+    print_info "Auto-docs: injected ~${total_bytes}B of grounding docs (cap: ${byte_cap}B)" >&2
+  fi
+
+  printf '%s' "$auto_content"
+}
+
+# =============================================================================
 # MAIN: plan_issues
 # =============================================================================
 
@@ -129,6 +279,16 @@ $(cat "$doc")
 
 "
   done
+
+  # Auto-discover additional grounding docs (ADRs, README, docs/**/*.md).
+  # This runs regardless of whether user supplied explicit doc_paths — the
+  # user-supplied paths are passed so auto-discovery skips them (no double-injection).
+  # RITE_PLAN_DOC_BYTE_CAP=0 disables auto-discovery; explicit paths still load.
+  local auto_docs
+  auto_docs=$(_collect_auto_docs "${doc_paths[@]+"${doc_paths[@]}"}")
+  if [ -n "$auto_docs" ]; then
+    doc_content+="$auto_docs"
+  fi
 
   # Load project CLAUDE.md (first 150 lines for context)
   local project_context=""
@@ -323,8 +483,10 @@ You are generating GitHub issues for a software project, following the Sharkrite
 **Project Context (from CLAUDE.md):**
 ${project_context:-No project CLAUDE.md found — infer conventions from the architectural doc.}
 
-**Architectural Document(s) to plan from:**
+**Architectural Document(s) to plan from (including auto-discovered ADRs and grounding docs):**
 ${doc_content:-No document provided — generate issues based on the user instructions below.}
+
+**RECONCILE TODOS AGAINST DESIGN DOCS:** The documents above are authoritative. **Reconcile every TODO comment in code against the design constraints documented above. Any constraint that appears only in docs (not carried by TODOs) must surface as its own issue or as an explicit WARNING flag in the coverage checklist.** Do not let an ADR-documented constraint go unaddressed because no TODO mentions it.
 
 **Issue Runbook (quality standard — follow this precisely):**
 ${runbook_content:-Use standard issue structure: Title, Labels, Time, Description, Claude Context, Acceptance Criteria, Verification Commands, Done Definition, Scope Boundary, Dependencies.}
@@ -567,6 +729,16 @@ command to verify
 Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---.
 PROMPT_EOF
 )
+
+  # Dry-run prompt dump: when RITE_PLAN_DRYRUN_DUMP_PROMPT=1 is set, emit the
+  # assembled prompt to stdout and exit immediately (no provider call).
+  # Used for sentinel testing: verify that auto-discovered docs appear in the prompt.
+  if [ "${RITE_PLAN_DRYRUN_DUMP_PROMPT:-}" = "1" ]; then
+    printf '%s\n' "$prompt"
+    rm -f "$temp_file"
+    echo ""
+    return 0
+  fi
 
   # Stream output to terminal (via stderr so it's visible) while capturing to file.
   # Without tee, $(...) swallows all output and the screen appears frozen.
