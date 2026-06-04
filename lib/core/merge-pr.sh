@@ -1592,7 +1592,9 @@ EOF
       fi
     elif [ -s "${_DOC_LOG:-}" ]; then
       # Success: show full summary output (Documentation header + results)
-      cat "$_DOC_LOG"
+      # Filter internal partial_complete: protocol markers — they are Layer B
+      # coordination signals and must not surface in user-facing output.
+      grep -v '^partial_complete:' "$_DOC_LOG" || true
     fi
   fi
   rm -f "${_DOC_LOG:-}"
