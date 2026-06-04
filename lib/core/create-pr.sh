@@ -242,6 +242,11 @@ ${UPDATED_BODY}"
   echo ""
 fi
 
+# Track whether the PR was created in this run (false = pre-existing PR on resume).
+# The shrinkage blocker only auto-closes the PR when it was created this run —
+# closing a pre-existing PR would destroy review history on a resume run.
+PR_CREATED_THIS_RUN=false
+
 # If PR doesn't exist, create it
 if [ "$PR_EXISTS" = false ]; then
   verbose_header "📝 Creating New Pull Request"
@@ -352,6 +357,10 @@ EOF
     echo "  URL: $PR_URL"
     echo ""
 
+    # Mark that the PR was created in this run (used by shrinkage blocker below
+    # to avoid auto-closing a pre-existing PR on a resume run).
+    PR_CREATED_THIS_RUN=true
+
     # Add comment to issue if applicable
     if [ ! -z "$ISSUE_NUMBER" ]; then
       gh_safe issue comment "$ISSUE_NUMBER" --body "🔗 Pull Request created: $PR_URL
@@ -378,6 +387,67 @@ if [ -n "$sensitivity_hints" ]; then
   print_info "Review focus areas: $sensitivity_areas"
 else
   print_success "No special sensitivity areas detected"
+fi
+echo ""
+
+# lib/ shrinkage check at PR creation time.
+# This is the first opportunity to catch mass-deletions from production lib/ files
+# before a review even starts. The same check fires again as a hard gate in
+# pre-merge (check_blockers "pre-merge"). Running both ensures the author gets
+# early feedback AND the gate is re-validated at merge time after any fix attempts.
+#
+# NOTE: The check runs after `gh pr create` because detect_lib_shrinkage() needs
+# a PR number to call `gh pr diff`. When the blocker fires and we must abort, the
+# PR is explicitly closed ONLY if it was created in this run — closing a pre-existing
+# PR on a resume run would destroy review history. Pre-existing PRs are left open;
+# the pre-merge hard gate will re-check and block merge without closing.
+#
+# In supervised mode: interactive prompt (may block PR creation flow).
+# In auto/unsupervised mode: fatal unless --bypass-blockers is set.
+# When workflow-runner.sh calls create-pr.sh it exports WORKFLOW_MODE and
+# BYPASS_BLOCKERS; standalone invocations default to unsupervised (safe).
+print_status "Checking for lib/ production code shrinkage..."
+set +e
+_shrinkage_output=$(detect_lib_shrinkage "$PR_NUMBER" 2>&1)
+_shrinkage_exit=$?
+set -e
+
+if [ "$_shrinkage_exit" -ne 0 ]; then
+  export BLOCKER_TYPE="lib_shrinkage"
+  export BLOCKER_DETAILS="$_shrinkage_output"
+  print_warning "lib/ shrinkage detected at PR creation time"
+  echo "$_shrinkage_output"
+  echo ""
+  _wf_mode="${WORKFLOW_MODE:-unsupervised}"
+  _bypass="${BYPASS_BLOCKERS:-false}"
+  if [ "$_wf_mode" = "supervised" ]; then
+    read -p "Large lib/ deletion detected. Continue with PR/review anyway? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      if [ "$PR_CREATED_THIS_RUN" = "true" ]; then
+        print_info "Closing PR #$PR_NUMBER due to lib/ shrinkage — fix the deletion and re-run."
+        gh_safe pr close "$PR_NUMBER" -c "Closed: lib/ shrinkage blocker fired at PR creation time. Fix the deletion and re-run." 2>/dev/null || true
+      else
+        print_info "Aborting — pre-existing PR #$PR_NUMBER left open (pre-merge gate will block merge)."
+      fi
+      exit 1
+    fi
+    print_warning "lib/ shrinkage acknowledged — continuing (will re-check at pre-merge)"
+  elif [ "$_bypass" = "true" ]; then
+    print_warning "lib/ shrinkage bypassed (--bypass-blockers) — continuing"
+  else
+    if [ "$PR_CREATED_THIS_RUN" = "true" ]; then
+      print_error "lib/ shrinkage blocker in auto mode — closing PR #$PR_NUMBER and aborting"
+      print_info "Run with --supervised to review and approve, or --bypass-blockers to force"
+      gh_safe pr close "$PR_NUMBER" -c "Closed: lib/ shrinkage blocker fired at PR creation time (auto mode). Fix the deletion and re-run." 2>/dev/null || true
+    else
+      print_error "lib/ shrinkage blocker in auto mode — aborting (pre-existing PR #$PR_NUMBER left open)"
+      print_info "Pre-merge gate will block merge. Run with --supervised to review and approve, or --bypass-blockers to force"
+    fi
+    exit 1
+  fi
+else
+  print_success "No lib/ shrinkage detected"
 fi
 echo ""
 

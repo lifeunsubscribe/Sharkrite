@@ -297,6 +297,31 @@ handle_blocker() {
       echo "   rite ${issue_number}"
       ;;
 
+    lib_shrinkage)
+      echo "1. Review the deletion in the PR diff:"
+      echo ""
+      echo "   gh pr diff ${pr_number:-<PR>}"
+      echo ""
+      echo "2. Confirm the deletion is intentional (refactor, not accidental overwrite)"
+      echo "   File: ${SHRINKAGE_BLOCKER_FILE:-<see above>}"
+      echo "   Deleted: ${SHRINKAGE_BLOCKER_DELETED:-?} lines"
+      [ -n "${SHRINKAGE_BLOCKER_TOTAL:-}" ] && echo "   Total:   ${SHRINKAGE_BLOCKER_TOTAL} lines"
+      echo ""
+      echo "3a. If the deletion is correct — approve in supervised mode:"
+      echo ""
+      echo "    rite ${issue_number} --supervised"
+      echo ""
+      echo "3b. If the deletion is wrong — revert the file and push a fix:"
+      echo ""
+      echo "    git checkout origin/main -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
+      echo "    git commit -m 'revert: restore accidentally deleted ${SHRINKAGE_BLOCKER_FILE:-lib/ file}'"
+      echo "    rite ${issue_number}"
+      echo ""
+      echo "3c. To bypass without supervised prompt (unsupervised, logs to health report):"
+      echo ""
+      echo "    rite ${issue_number} --bypass-blockers"
+      ;;
+
     session_limit|token_limit)
       echo "1. Take a break (session limits reached)"
       echo "2. Resume in fresh session when ready:"
@@ -863,6 +888,8 @@ phase_create_pr() {
   # Call create-pr.sh (pushes commits if needed, waits for review to appear)
   # Does NOT run assessment - that happens in Phase 3
   # create-pr.sh may exit with code 10 if early blocker detection triggers
+  # Export BYPASS_BLOCKERS so create-pr.sh receives it across the process boundary
+  export BYPASS_BLOCKERS
   set +e  # Temporarily disable exit-on-error to capture exit code
   if [ "$WORKFLOW_MODE" = "supervised" ]; then
     "$CREATE_PR"
