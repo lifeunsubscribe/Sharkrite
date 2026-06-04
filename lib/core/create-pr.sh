@@ -387,6 +387,10 @@ echo ""
 # pre-merge (check_blockers "pre-merge"). Running both ensures the author gets
 # early feedback AND the gate is re-validated at merge time after any fix attempts.
 #
+# NOTE: The check runs after `gh pr create` because detect_lib_shrinkage() needs
+# a PR number to call `gh pr diff`. When the blocker fires and we must abort, the
+# PR is explicitly closed before exiting so no orphaned PRs are left behind.
+#
 # In supervised mode: interactive prompt (may block PR creation flow).
 # In auto/unsupervised mode: fatal unless --bypass-blockers is set.
 # When workflow-runner.sh calls create-pr.sh it sets WORKFLOW_MODE and
@@ -409,15 +413,17 @@ if [ "$_shrinkage_exit" -ne 0 ]; then
     read -p "Large lib/ deletion detected. Continue with PR/review anyway? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-      print_info "PR creation aborted due to lib/ shrinkage. Fix the deletion and re-run."
+      print_info "Closing PR #$PR_NUMBER due to lib/ shrinkage — fix the deletion and re-run."
+      gh_safe pr close "$PR_NUMBER" -c "Closed: lib/ shrinkage blocker fired at PR creation time. Fix the deletion and re-run." 2>/dev/null || true
       exit 1
     fi
     print_warning "lib/ shrinkage acknowledged — continuing (will re-check at pre-merge)"
   elif [ "$_bypass" = "true" ]; then
     print_warning "lib/ shrinkage bypassed (--bypass-blockers) — continuing"
   else
-    print_error "lib/ shrinkage blocker in auto mode — aborting PR flow"
+    print_error "lib/ shrinkage blocker in auto mode — closing PR #$PR_NUMBER and aborting"
     print_info "Run with --supervised to review and approve, or --bypass-blockers to force"
+    gh_safe pr close "$PR_NUMBER" -c "Closed: lib/ shrinkage blocker fired at PR creation time (auto mode). Fix the deletion and re-run." 2>/dev/null || true
     exit 1
   fi
 else

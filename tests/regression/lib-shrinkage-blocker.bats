@@ -583,3 +583,80 @@ _create_lib_file() {
   # The incident file must be mentioned
   [[ "$output" == *"assess-review-issues"* ]]
 }
+
+# ===========================================================================
+# TEST 15: Ratio check skipped when git show returns empty baseline —
+#          skip is observable (diag log) and does NOT silently block
+# ===========================================================================
+
+@test "detect_lib_shrinkage: ratio skip is observable when git show returns empty baseline" {
+  # A mid-range deletion (>10 lines, below 500 absolute threshold) in a lib/ file.
+  # git show origin/main:<path> returns empty — simulates an unfetched ref or new file.
+  # Before the fix: the ratio check continued silently with no signal.
+  # After the fix: a [diag] SHRINKAGE_RATIO_SKIP line is written to RITE_LOG_FILE.
+  local target_file="lib/core/workflow-runner.sh"
+  local deleted_lines=100  # >10 (triggers ratio path), <500 (below absolute threshold)
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  local log_file="$RITE_TEST_TMPDIR/rite-ratio-skip.log"
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    export RITE_LOG_FILE='$log_file'
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      return 1
+    }
+    # git show returns no output — simulates unfetched origin/main ref or new file.
+    # Use printf (no args) rather than echo '' to produce truly zero bytes of output
+    # so that wc -l returns 0, triggering the total_lines <= 0 branch.
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/main:* ]]; then
+        printf ''
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    print_warning() { echo \"[WARN] \$*\" >&2; }
+    export -f gh_safe _make_lib_diff git print_warning
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    detect_lib_shrinkage '99'
+  "
+
+  # Absolute threshold does NOT fire (100 < 500) — no blocker
+  [ "$status" -eq 0 ]
+
+  # The [diag] SHRINKAGE_RATIO_SKIP line must be written to the log file
+  [ -f "$log_file" ] || {
+    echo "FAIL: RITE_LOG_FILE was not written — ratio skip is not observable"
+    return 1
+  }
+  grep -q "SHRINKAGE_RATIO_SKIP" "$log_file" || {
+    echo "FAIL: [diag] SHRINKAGE_RATIO_SKIP not found in log"
+    cat "$log_file"
+    return 1
+  }
+  # Must include the file name and deleted count
+  grep -q "file=$target_file" "$log_file" || {
+    echo "FAIL: file= not found in diag line"
+    cat "$log_file"
+    return 1
+  }
+  grep -q "deleted=${deleted_lines}" "$log_file" || {
+    echo "FAIL: deleted= not found in diag line"
+    cat "$log_file"
+    return 1
+  }
+}

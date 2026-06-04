@@ -373,8 +373,8 @@ detect_lib_shrinkage() {
   deleted = 0
   next
 }
-/^-[^-]/ {
-  if (current_file != "") deleted++
+/^-/ {
+  if (current_file != "" && $0 !~ /^--- /) deleted++
   next
 }
 END {
@@ -420,7 +420,12 @@ AWKEOF
       total_lines="${total_lines:-0}"
 
       if [ "$total_lines" -le 0 ]; then
-        continue  # Cannot compute ratio without original line count
+        # Cannot compute ratio — baseline unavailable (new file or unfetched ref).
+        # Emit a [diag] warning so the skip is observable in the health report
+        # and in operator logs. The absolute threshold still applies above.
+        echo "[diag] SHRINKAGE_RATIO_SKIP pr=$pr_number file=$filepath reason=baseline_unavailable deleted=$deletions" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
+        print_warning "lib/ shrinkage: ratio check skipped for $filepath — could not fetch origin/main baseline (deleted=$deletions lines)" >&2
+        continue
       fi
 
       # Ratio check: deletions / total_lines > ratio_pct / 100
