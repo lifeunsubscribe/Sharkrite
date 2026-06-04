@@ -308,14 +308,19 @@ detect_credentials_expired() {
 #   RITE_SHRINKAGE_RATIO_PCT   — default 50  (percent, integer)
 #   RITE_SHRINKAGE_ABS_LINES   — default 500 (lines, integer)
 #
-# Diff counting: we count only the deleted lines (^-) and added lines (^+) from
-# the per-file hunk headers — using the diff stat approach via `gh pr diff`
-# rather than the API `.files[].deletions` field because the stat-based count
-# includes all content lines, not just the summary.
+# Diff counting: we count deleted lines (^-) via awk over `gh pr diff` output.
+# The API `.files[].deletions` field is intentionally NOT used here — the diff
+# count and the API count can diverge, and using two sources for the same metric
+# would cause the same file to appear twice with conflicting deletion tallies.
+# A single awk pass produces all per-file deletion counts; both the absolute and
+# ratio checks run against those values.
 #
-# Per-file total line count uses `wc -l` on the file in the current worktree.
-# If the file doesn't exist locally (e.g., deleted in the PR), we skip the ratio
-# check and rely solely on the absolute line count.
+# Per-file total line count uses `git show origin/main:<path> | wc -l` to get
+# the pre-deletion baseline from the remote main branch.  Using `wc -l` on the
+# local worktree file would produce the post-deletion count, making the ratio
+# denominator too small and potentially producing percentages above 100%.
+# If the file has no entry on origin/main (new file added in this PR), the ratio
+# check is skipped and only the absolute threshold applies.
 #
 # Returns 1 (blocker) on first file that exceeds a threshold.
 # Exports SHRINKAGE_BLOCKER_FILE, SHRINKAGE_BLOCKER_DELETED, SHRINKAGE_BLOCKER_TOTAL.
@@ -351,12 +356,16 @@ detect_lib_shrinkage() {
   # one line and satisfies the UNSAFE_PIPE_IN_CMDSUB lint rule (which checks the
   # next line for || true; a multi-line awk body fools it into thinking || true
   # is missing even when it appears at the close of the heredoc).
+  #
+  # Emit ALL production lib files with any deletions (not just those above the
+  # absolute threshold), so that the ratio check below can use the same
+  # diff-counted deletion values for both checks — a single source of truth.
   local _awk_prog
   _awk_prog=$(mktemp)
   cat > "$_awk_prog" <<'AWKEOF'
 /^diff --git a\// {
-  if (current_file != "" && deleted > 0 && deleted+0 > abs_lines+0) {
-    print current_file "|" deleted "|" deleted "|ABS"
+  if (current_file != "" && deleted > 0) {
+    print current_file "|" deleted
   }
   path = $NF
   sub(/^b\//, "", path)
@@ -369,43 +378,44 @@ detect_lib_shrinkage() {
   next
 }
 END {
-  if (current_file != "" && deleted > 0 && deleted+0 > abs_lines+0) {
-    print current_file "|" deleted "|" deleted "|ABS"
+  if (current_file != "" && deleted > 0) {
+    print current_file "|" deleted
   }
 }
 AWKEOF
 
-  local violations
-  violations=$(echo "$diff_text" | awk -v abs_lines="$abs_lines" -v prod_re="$prod_path_re" -f "$_awk_prog" || true)
+  local _all_lib_deletions
+  _all_lib_deletions=$(echo "$diff_text" | awk -v prod_re="$prod_path_re" -f "$_awk_prog" || true)
   rm -f "$_awk_prog"
 
-  # The awk pass above catches the absolute threshold without needing file sizes.
-  # Now do the ratio check: for each production lib/ file touched by the PR,
-  # fetch its current line count and compare deleted lines vs total.
-  #
-  # Get the list of production lib/ files changed in the PR (with deletion counts).
-  local changed_lib_files
-  changed_lib_files=$(gh_safe pr view "$pr_number" --json files \
-    --jq ".files[] | select(.path | test(\"${prod_path_re}\")) | \"\(.path)|\(.deletions)\"" \
-    2>/dev/null || true)
-
-  local ratio_violations=""
-  if [ -n "$changed_lib_files" ]; then
+  # Single pass: evaluate both the absolute threshold and the ratio threshold
+  # against the same diff-counted deletion values.  This eliminates the separate
+  # gh-API call that previously used .deletions (a different counter), and
+  # prevents the same file from appearing twice with conflicting counts.
+  local all_violations=""
+  if [ -n "$_all_lib_deletions" ]; then
     while IFS='|' read -r filepath deletions; do
       [ -z "$filepath" ] && continue
       deletions="${deletions:-0}"
 
-      # Skip files with trivial deletions (avoid stat call for tiny changes)
+      # Absolute threshold check
+      if [ "$deletions" -gt "$abs_lines" ]; then
+        all_violations="${all_violations}${filepath}|${deletions}|${deletions}|ABS"$'\n'
+        continue  # ABS already fires; skip ratio check for this file (no duplicate row)
+      fi
+
+      # Skip files with trivial deletions before the more expensive ratio check
       if [ "$deletions" -le 10 ]; then
         continue
       fi
 
-      # Get total line count from the local worktree (pre-merge state)
-      # If the file was deleted in the PR it won't exist; skip ratio check in that case.
+      # Get total line count from origin/main (pre-deletion baseline).
+      # The worktree copy already has lines removed, so wc -l on the local file
+      # would under-count the denominator and produce ratios above 100%.
+      # git show exits non-zero if the file didn't exist on main (new file); skip.
       local total_lines=0
-      if [ -f "$filepath" ]; then
-        total_lines=$(wc -l < "$filepath" || echo "0")
-      fi
+      total_lines=$(git show "origin/main:${filepath}" 2>/dev/null | wc -l || true)
+      total_lines="${total_lines:-0}"
 
       if [ "$total_lines" -le 0 ]; then
         continue  # Cannot compute ratio without original line count
@@ -416,16 +426,11 @@ AWKEOF
       local deleted_pct=$(( deletions * 100 ))
       local threshold_pct=$(( total_lines * ratio_pct ))
       if [ "$deleted_pct" -gt "$threshold_pct" ]; then
-        ratio_violations="${ratio_violations}${filepath}|${deletions}|${total_lines}|RATIO"$'\n'
+        all_violations="${all_violations}${filepath}|${deletions}|${total_lines}|RATIO"$'\n'
       fi
-    done <<< "$changed_lib_files"
+    done <<< "$_all_lib_deletions"
   fi
 
-  # Combine violations
-  local all_violations="${violations}"
-  if [ -n "$ratio_violations" ]; then
-    all_violations="${all_violations}${ratio_violations}"
-  fi
   all_violations=$(echo "$all_violations" | sed '/^$/d' || true)
 
   if [ -z "$all_violations" ]; then
@@ -612,25 +617,29 @@ Guidance: Verify changes do not break the CI/CD pipeline, review loop, or merge 
 "
   fi
 
-  # lib/ shrinkage early warning: if the PR deletes substantial code from
-  # production lib paths, surface a sensitivity hint NOW (at PR creation time)
-  # so the reviewer knows to look closely — the hard gate fires at pre-merge.
+  # lib/ shrinkage early warning: surface files that exceed the same thresholds
+  # the hard pre-merge gate uses — keeping hint and gate semantically aligned.
+  # Using the API .deletions field here is intentional (fast, no diff parsing at
+  # PR-creation time); the hard gate re-counts from the diff for accuracy.
   local _shrinkage_ratio_pct="${RITE_SHRINKAGE_RATIO_PCT:-50}"
   local _shrinkage_abs="${RITE_SHRINKAGE_ABS_LINES:-500}"
   local _shrinkage_re="^(lib/core|lib/utils|lib/providers)/"
   local _shrinkage_matches
   _shrinkage_matches=$(echo "$changed_files" | grep -E "$_shrinkage_re" || true)
   if [ -n "$_shrinkage_matches" ]; then
-    # Check if any lib/ file has large deletions (using API deletion counts for speed)
+    # Surface files whose deletion count exceeds the absolute gate threshold.
+    # The ratio threshold requires per-file line counts (expensive at hint time),
+    # so we use the same abs threshold as a consistent lower bound — any file
+    # that clears abs is guaranteed to trigger the gate regardless of ratio.
     local _lib_file_deletions
     _lib_file_deletions=$(gh_safe pr view "$pr_number" --json files \
-      --jq ".files[] | select(.path | test(\"${_shrinkage_re}\")) | select(.deletions > 10) | \"\(.path)|-\(.deletions) lines\"" \
+      --jq ".files[] | select(.path | test(\"${_shrinkage_re}\")) | select(.deletions > ${_shrinkage_abs}) | \"\(.path)|-\(.deletions) lines\"" \
       2>/dev/null || true)
     if [ -n "$_lib_file_deletions" ]; then
       hints+="### Sensitivity: lib/ Production Code Deletions
-Files with non-trivial deletions:
+Files exceeding the hard merge gate threshold (>${_shrinkage_abs} lines deleted):
 $(echo "$_lib_file_deletions" | sed 's/^/  /')
-Guidance: Production lib/ files (lib/core/, lib/utils/, lib/providers/) with large deletions will trigger a hard merge gate if any single file loses >${_shrinkage_ratio_pct}% of its lines OR >${_shrinkage_abs} lines. Verify that deletions are intentional refactors, not accidental file overwrites. The 2026-06-02 incident deleted 1,256 lines via a buggy test writing through a symlink — this check exists to prevent a recurrence.
+Guidance: Production lib/ files (lib/core/, lib/utils/, lib/providers/) will be blocked from merging if any single file loses >${_shrinkage_ratio_pct}% of its lines OR >${_shrinkage_abs} lines. Verify that deletions are intentional refactors, not accidental file overwrites. The 2026-06-02 incident deleted 1,256 lines via a buggy test writing through a symlink — this check exists to prevent a recurrence.
 
 "
     fi
