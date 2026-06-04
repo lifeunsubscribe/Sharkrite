@@ -352,3 +352,157 @@ EOF
     }
   fi
 }
+
+@test "LOCAL_OUTSIDE_FUNCTION: lowercase heredoc marker does not corrupt depth counter" {
+  # Regression: a heredoc opened with a lowercase marker (<<eof, <<sql, <<json, etc.)
+  # must be recognized by the state machine so braces inside its body are not counted.
+  # Without lowercase support, the marker would not match /^[A-Za-z_][A-Za-z_0-9]*$/
+  # and the state machine would stay open; every { and } in the heredoc body would
+  # corrupt the depth counter, producing false positives on subsequent 'local' inside
+  # real functions.
+
+  cat > "$LINT_FIXTURE_DIR/lowercase-marker-heredoc.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  cat <<eof
+{
+  "key": "value"
+}
+eof
+  local foo="bar"
+  echo "$foo"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ lowercase-marker-heredoc\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after lowercase heredoc
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: mixed-case heredoc marker does not corrupt depth counter" {
+  # Regression: a heredoc opened with a mixed-case marker (<<EndBlock, <<HereDoc, etc.)
+  # must be recognized so braces inside its body do not corrupt the depth counter.
+
+  cat > "$LINT_FIXTURE_DIR/mixedcase-marker-heredoc.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  cat <<EndBlock
+{
+  "nested": {
+    "key": "value"
+  }
+}
+EndBlock
+  local result="done"
+  echo "$result"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ mixedcase-marker-heredoc\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after mixed-case heredoc
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: dash-form lowercase heredoc (<<-eof) does not corrupt depth" {
+  # Regression: <<-eof (dash form with lowercase marker) strips the leading dash
+  # before marker matching, so the state machine must still enter heredoc mode.
+  # Braces inside tab-indented heredoc body must not be counted.
+
+  cat > "$LINT_FIXTURE_DIR/dash-lowercase-heredoc.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+	cat <<-eof
+	{
+	  "key": "value"
+	}
+	eof
+  local foo="bar"
+  echo "$foo"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # The local inside my_func is correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ dash-lowercase-heredoc\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local inside function after <<-eof heredoc
+    }
+  fi
+}
+
+@test "GH_UNSAFE_CALL: lowercase heredoc body lines are not scanned for gh calls" {
+  # Regression: if the state machine doesn't recognize a lowercase heredoc marker,
+  # gh commands in the heredoc body (e.g., prompt text or documentation) get
+  # falsely flagged as GH_UNSAFE_CALL violations.
+
+  cat > "$LINT_FIXTURE_DIR/lowercase-marker-gh-call.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+generate_prompt() {
+  cat <<prompt
+Run this to check status:
+  gh pr list
+  gh issue view 42
+prompt
+}
+generate_prompt
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # gh calls inside lowercase heredoc body must not be flagged
+  if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
+    [[ ! "$output" =~ lowercase-marker-gh-call\.sh ]] || {
+      false  # GH_UNSAFE_CALL falsely flagged gh in lowercase heredoc body
+    }
+  fi
+}
+
+@test "UNSAFE_PIPE_IN_CMDSUB: lowercase heredoc body lines are not scanned for unsafe pipes" {
+  # Regression: if the state machine doesn't recognize a lowercase heredoc marker,
+  # pipe expressions in the heredoc body (e.g., example commands in prompt text)
+  # get falsely flagged as UNSAFE_PIPE_IN_CMDSUB violations.
+
+  cat > "$LINT_FIXTURE_DIR/lowercase-marker-pipe.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+show_example() {
+  cat <<example
+Here is how to check:
+  COUNT=$(git log | grep "pattern")
+example
+}
+show_example
+EOF
+
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+
+  # pipe expressions inside lowercase heredoc body must not be flagged
+  if [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]; then
+    [[ ! "$output" =~ lowercase-marker-pipe\.sh ]] || {
+      false  # UNSAFE_PIPE_IN_CMDSUB falsely flagged pipe expression in lowercase heredoc body
+    }
+  fi
+}
