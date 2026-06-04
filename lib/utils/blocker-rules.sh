@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f detect_infrastructure_changes >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source notifications library
 source "$RITE_LIB_DIR/utils/notifications.sh"
 
@@ -183,9 +188,24 @@ detect_expensive_services() {
   return 0
 }
 
+# detect_session_limit ISSUES_COMPLETED CUMULATIVE_WORK_HOURS
+#
+# Hard gate: fires when the session has burned through too many issues or
+# too many hours of ACTIVE work.
+#
+# IMPORTANT — what "hours" means here (issue #283):
+#   CUMULATIVE_WORK_HOURS is the sum of per-issue durations tracked by
+#   start_issue_tracking / end_issue_tracking in session-tracker.sh.
+#   It measures time actually spent running rite workflows, NOT wall-clock
+#   age since the session state file was written. A 40-hour-old zombie state
+#   file with 0 issues run contributes 0 to cumulative_work_hours.
+#
+# Default: RITE_MAX_SESSION_HOURS=12 (raised from 4 — 4h of active work
+# was realistic for wall-clock, but cumulative active work is a much tighter
+# signal; 12h represents a full dev-day of rite automation).
 detect_session_limit() {
   local issues_completed="${1:-0}"
-  local elapsed_hours="${2:-0}"
+  local cumulative_work_hours="${2:-0}"
 
   if [ "$issues_completed" -ge "${RITE_MAX_ISSUES_PER_SESSION:-8}" ]; then
     echo "BLOCKER: Approaching token limit ($issues_completed issues completed)"
@@ -194,10 +214,33 @@ detect_session_limit() {
     return 1
   fi
 
-  if [ "$elapsed_hours" -ge "${RITE_MAX_SESSION_HOURS:-4}" ]; then
-    echo "BLOCKER: Approaching session time limit (${elapsed_hours} hours elapsed)"
+  if [ "$cumulative_work_hours" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
+    echo "BLOCKER: Cumulative active work limit reached (${cumulative_work_hours}h of active work in this session)"
     echo ""
     echo "Saving state for next session"
+    return 1
+  fi
+
+  return 0
+}
+
+# detect_issue_duration_limit ISSUE_NUMBER CURRENT_ISSUE_ELAPSED_HOURS
+#
+# Hard gate: fires when a single issue has been running longer than
+# RITE_MAX_ISSUE_HOURS (default: 4h). This protects against runaway fix
+# loops and yak-shaves within a single issue.
+#
+# Called from the session-check context in workflow-runner.sh, where
+# CURRENT_ISSUE_ELAPSED_HOURS is computed from get_current_issue_elapsed_seconds.
+detect_issue_duration_limit() {
+  local issue_number="${1:-?}"
+  local current_issue_elapsed_hours="${2:-0}"
+
+  if [ "$current_issue_elapsed_hours" -ge "${RITE_MAX_ISSUE_HOURS:-4}" ]; then
+    echo "BLOCKER: Issue #${issue_number} has been running >${current_issue_elapsed_hours}h — likely stuck in fix loop or yak-shave"
+    echo ""
+    echo "Stop and review the issue manually. To continue anyway:"
+    echo "  rite ${issue_number} --bypass-blockers"
     return 1
   fi
 
@@ -444,16 +487,31 @@ check_blockers() {
       ;;
 
     session-check)
-      # Check session limits during processing
-      local issues_completed="${pr_number:-0}"  # Reuse param
-      local elapsed_hours="${issue_number:-0}"  # Reuse param
+      # Check session limits during processing.
+      # pr_number and issue_number params are repurposed here (no PR context):
+      #   pr_number     = issues_completed count
+      #   issue_number  = cumulative_work_hours (active work, not wall-clock)
+      #   workflow_mode = current issue number (for per-issue cap message)
+      local issues_completed="${pr_number:-0}"
+      local cumulative_work_hours="${issue_number:-0}"
+      local current_issue_for_check="${workflow_mode:-}"
 
-      if ! detect_session_limit "$issues_completed" "$elapsed_hours"; then
+      if ! detect_session_limit "$issues_completed" "$cumulative_work_hours"; then
         blocker_type="session_limit"
-        blocker_details=$(detect_session_limit "$issues_completed" "$elapsed_hours" 2>&1)
+        blocker_details=$(detect_session_limit "$issues_completed" "$cumulative_work_hours" 2>&1)
         blocker_detected=true
-      # AWS creds not checked here — test failures catch real AWS dependency issues
+      # Per-issue duration cap: only check when an issue is actively tracked
+      elif [ -n "$current_issue_for_check" ]; then
+        local _issue_elapsed_secs
+        _issue_elapsed_secs=$(get_current_issue_elapsed_seconds 2>/dev/null || echo "0")
+        local _issue_elapsed_hours=$(( _issue_elapsed_secs / 3600 ))
+        if ! detect_issue_duration_limit "$current_issue_for_check" "$_issue_elapsed_hours"; then
+          blocker_type="session_limit"
+          blocker_details=$(detect_issue_duration_limit "$current_issue_for_check" "$_issue_elapsed_hours" 2>&1)
+          blocker_detected=true
+        fi
       fi
+      # AWS creds not checked here — test failures catch real AWS dependency issues
       ;;
   esac
 
@@ -508,6 +566,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f detect_test_failures
   export -f detect_expensive_services
   export -f detect_session_limit
+  export -f detect_issue_duration_limit
   export -f detect_aws_project
   export -f detect_credentials_expired
   export -f detect_protected_scripts

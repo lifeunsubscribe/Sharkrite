@@ -10,6 +10,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_UNDO_WORKFLOW_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_UNDO_WORKFLOW_LOADED=true
+
 # Source configuration
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${RITE_LIB_DIR:-}" ]; then
@@ -20,6 +26,9 @@ source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 
 # Source git helpers (provides git_fetch_safe — retries with backoff, fails loudly)
 source "$RITE_LIB_DIR/utils/git-helpers.sh"
+
+# Source pr-detection for CLOSING_ISSUE_JQ_REGEX / CLOSING_ISSUE_GREP_REGEX constants
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 # =============================================================================
 # PARSE ARGUMENTS
@@ -61,8 +70,8 @@ fi
 # Fall back to GitHub search (body text)
 if [ -z "$PR_NUMBER" ]; then
   PR_NUMBER=$(gh_safe pr list --state all --json number,body --limit 100 | \
-    jq --arg issue "$ISSUE_NUMBER" -r \
-    '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0].number // empty' \
+    jq --arg issue "$ISSUE_NUMBER" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+    '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | .[0].number // empty' \
     || true)
   [ "${PR_NUMBER:-}" = "null" ] && PR_NUMBER=""
   PR_NUMBER="${PR_NUMBER:-}"

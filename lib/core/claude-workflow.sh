@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_CLAUDE_WORKFLOW_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_CLAUDE_WORKFLOW_LOADED=true
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +51,9 @@ source "$RITE_LIB_DIR/utils/git-helpers.sh"
 source "$RITE_LIB_DIR/utils/scope-checker.sh"
 # Source gh retry helper (provides gh_safe — retries 429/5xx, handles not-found)
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
+
+# Source pr-detection for CLOSING_ISSUE_JQ_REGEX / CLOSING_ISSUE_GREP_REGEX constants
+source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -957,7 +966,11 @@ find_worktree_for_task() {
     local issue_body
     issue_body=$(gh_safe issue view "$task" --json body --jq '.body' || true)
 
-    if echo "$issue_body" | grep -q "sharkrite-parent-pr:"; then
+    # Require digits in the outer guard — otherwise issue bodies that DOCUMENT
+    # the marker format (e.g. "sharkrite-parent-pr:N" as an example) trigger the
+    # inner extraction, which returns empty, which under set -e + pipefail kills
+    # the script silently. Same bug fixed in batch-process-issues.sh (commit 206f2be).
+    if echo "$issue_body" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
       # Extract parent PR number from body marker
       local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
 
@@ -983,8 +996,8 @@ find_worktree_for_task() {
       # sort_by: OPEN state preferred (1 > 0), then highest number wins among ties.
       # This is deterministic when both a closed and an open PR reference the same issue.
       pr_branch=$(gh_safe pr list --state all --json headRefName,body,number,state --limit 100 | \
-        jq --arg issue "$task" -r \
-        '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] |
+        jq --arg issue "$task" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+        '[.[] | select(.body | test($closing_re + $issue + "\\b"))] |
         sort_by([if .state == "OPEN" then 1 else 0 end, .number]) | last | .headRefName // empty' || true)
 
       # If no PR found by issue link, try title matching
@@ -1957,7 +1970,7 @@ print_header "📋 Creating Draft PR for Tracking"
 
 # Check if PR already exists for this branch
 EXISTING_PR=$(gh_safe pr list --head "$BRANCH_NAME" --json number,title,url,isDraft --jq '.[0]' || true)
-EXISTING_PR="${EXISTING_PR:-{}}"
+EXISTING_PR="${EXISTING_PR:-"{}"}"
 
 if [ "$EXISTING_PR" != "{}" ] && [ -n "$EXISTING_PR" ]; then
   PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')

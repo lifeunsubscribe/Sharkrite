@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f handle_stale_branch >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -297,6 +302,108 @@ _stale_classify_after_push_rejection() {
         # After that return 2 so the caller re-enters Phase 2→3 for review.
         print_warning "Foreign commits classified as $classification — integrating and requesting re-review"
 
+        # Supervised mode: offer interactive options consistent with divergence-handler.sh
+        # (_handle_related / _handle_unrelated menus). Auto mode proceeds automatically.
+        if [ "$workflow_mode" = "supervised" ]; then
+          echo "" >&2
+          echo "$foreign_commits" | sed 's/^/  /' >&2
+          echo "" >&2
+          if [ "$classification" = "RELATED" ]; then
+            # RELATED supervised: mirror divergence-handler.sh:_handle_related() options
+            echo "These commits appear related to this issue." >&2
+            echo "" >&2
+            echo "Options:" >&2
+            echo "  a) Pull and re-enter review cycle (generates new review for combined changes)" >&2
+            echo "  b) Pull without review (you take responsibility for these commits)" >&2
+            echo "  c) Overwrite remote with local work (force-push, discards foreign commits)" >&2
+            echo "  d) Abort workflow" >&2
+          else
+            # UNRELATED supervised: mirror divergence-handler.sh:_handle_unrelated() options
+            echo "These commits appear unrelated to this issue." >&2
+            echo "" >&2
+            echo "Options:" >&2
+            echo "  c) Overwrite remote with local work (force-push, discards foreign commits)" >&2
+            echo "  d) Abort workflow" >&2
+          fi
+          echo "" >&2
+          local _prompt_opts
+          _prompt_opts="[$([ "$classification" = "RELATED" ] && echo "a/b/c/d" || echo "c/d")]"
+          printf "Choose %s: " "$_prompt_opts" >&2
+          local _choice
+          read -n 1 -r _choice </dev/tty
+          # Drain the trailing newline left in the input buffer by read -n 1
+          read -r -t 0.1 _drain </dev/tty 2>/dev/null || true
+          echo >&2
+
+          case "$_choice" in
+            a|A)
+              # Pull and re-enter review cycle (RELATED only — 'a' is not offered for UNRELATED)
+              if [ "$classification" = "UNRELATED" ]; then
+                print_error "Invalid choice for UNRELATED commits — aborting"
+                return 1
+              fi
+              if git rebase "origin/$branch_name" >/dev/null 2>&1; then
+                if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+                  print_success "Integrated $classification foreign commits and pushed — re-entering Phase 2→3 for review"
+                  return 2
+                else
+                  git rebase --abort 2>/dev/null || true
+                  print_error "Push rejected after integrating $classification commits (another race?) — blocking"
+                  return 1
+                fi
+              else
+                git rebase --abort 2>/dev/null || true
+                print_error "Rebase onto origin/$branch_name failed — cannot integrate $classification foreign commits"
+                return 1
+              fi
+              ;;
+            b|B)
+              # Pull without review (RELATED only — 'b' is not offered for UNRELATED)
+              if [ "$classification" = "UNRELATED" ]; then
+                print_error "Invalid choice for UNRELATED commits — aborting"
+                return 1
+              fi
+              if git rebase "origin/$branch_name" >/dev/null 2>&1; then
+                if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+                  print_success "Integrated $classification foreign commits and pushed (no re-review)"
+                  return 0
+                else
+                  git rebase --abort 2>/dev/null || true
+                  print_error "Push rejected after integrating $classification commits (another race?) — blocking"
+                  return 1
+                fi
+              else
+                git rebase --abort 2>/dev/null || true
+                print_error "Rebase onto origin/$branch_name failed — cannot integrate $classification foreign commits"
+                return 1
+              fi
+              ;;
+            c|C)
+              # Overwrite remote with local work (available for both RELATED and UNRELATED).
+              # Re-fetch before --force-with-lease to refresh the remote-tracking ref;
+              # without this, the lease is stale from the original push rejection and
+              # the push will be rejected again in the exact push-race scenario this
+              # option is designed to handle.
+              print_warning "Force-pushing local work (discarding $classification foreign commits)..."
+              if ! git fetch origin "$branch_name" 2>/dev/null; then
+                print_warning "Could not fetch origin/$branch_name before force-push — lease may be stale"
+              fi
+              if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+                print_success "Force-push succeeded — foreign commits discarded"
+                return 0
+              else
+                print_error "Force-push failed"
+                return 1
+              fi
+              ;;
+            d|D|*)
+              print_info "Workflow aborted by user"
+              return 1
+              ;;
+          esac
+        fi
+
+        # Auto mode: integrate and re-enter review cycle automatically
         local _rebase_onto_remote_output
         if _rebase_onto_remote_output=$(git rebase "origin/$branch_name" 2>&1); then
           # Rebase succeeded — push the integrated history

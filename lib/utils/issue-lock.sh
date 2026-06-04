@@ -43,6 +43,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f acquire_issue_lock >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source config if RITE_LOCK_DIR not already set (defined in config.sh)
 if [ -z "${RITE_LOCK_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +66,7 @@ acquire_issue_lock() {
 
   local lock_attempts=0
   local max_attempts=30
+  local _grace_period_consumed=false
 
   while ! mkdir "$lock_dir" 2>/dev/null; do
     # Check if the holding process is still alive
@@ -83,10 +89,24 @@ acquire_issue_lock() {
         echo "   Refusing to start. Wait for it to finish, or run 'rite ${issue_number} --undo' if it crashed." >&2
       fi
     else
-      # Lock dir exists but no PID file — crashed between mkdir and PID write
-      echo "⚠️  Reclaiming stale lock (no PID file)" >&2
-      rm -rf "$lock_dir" 2>/dev/null
-      continue
+      # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
+      # this window is effectively eliminated for holders using this module, but
+      # a crashed holder or a very old holder using the pre-atomic code path
+      # could still leave this state.  Give it a grace period before reclaiming
+      # — consistent with scratchpad-lock.sh and session-tracker.sh.
+      # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
+      # Only consume the grace period once per acquisition attempt: repeated
+      # no-PID encounters within the same retry loop must not each add a full
+      # sleep (that would compound latency beyond the 1-second-per-retry budget).
+      if [ "$_grace_period_consumed" = "false" ]; then
+        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+        _grace_period_consumed=true
+      fi
+      if [ ! -f "$lock_dir/pid" ]; then
+        echo "⚠️  Reclaiming stale lock (no PID file after grace period)" >&2
+        rm -rf "$lock_dir" 2>/dev/null || true
+        continue
+      fi
     fi
 
     lock_attempts=$((lock_attempts + 1))
@@ -98,8 +118,20 @@ acquire_issue_lock() {
     sleep 1
   done
 
-  # Write our PID so other processes can check liveness
-  echo $$ > "$lock_dir/pid" 2>/dev/null || true
+  # Write our PID atomically via temp+rename so a concurrent waiter never sees
+  # the lock dir exist with no PID file (the TOCTOU window the old direct echo
+  # could create between mkdir and PID write).
+  local _pid_tmp
+  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
+  echo $$ > "$_pid_tmp"
+  mv "$_pid_tmp" "${lock_dir}/pid"
+
+  # Write cwd file so repo-status.sh can map lock → worktree without lsof/procfs.
+  # Written after the PID file so readers that check cwd existence always have a
+  # valid PID to cross-reference.  Best-effort: failure does not block acquisition.
+  local _cwd_tmp
+  _cwd_tmp=$(mktemp "${lock_dir}/cwd.XXXXXX")
+  pwd > "$_cwd_tmp" 2>/dev/null && mv "$_cwd_tmp" "${lock_dir}/cwd" || rm -f "$_cwd_tmp" 2>/dev/null || true
 
   return 0
 }
@@ -133,6 +165,44 @@ release_issue_lock() {
 # Uses the same mkdir-style atomic locking as acquire_issue_lock, with a shorter
 # stale timeout (60s) since the critical section completes in seconds.
 #
+# TIMING BUDGET — waiter timeout vs holder critical-section duration
+# -----------------------------------------------------------------
+# The waiter polls every second and times out after ~60s (60 × 1s sleeps plus
+# per-iteration overhead — actual wall-clock slightly exceeds 60s).
+# The holder's critical section in assess-and-resolve.sh can take significantly
+# longer than the ~5-10s typical case under slow-GitHub conditions:
+#
+#   Holder worst-case timing:
+#     • evidence validation:  1 gh_safe call (up to 20s backoff-sleep only; gh
+#                             round-trip latency is additional and not included here)
+#     • dedup search loop:    up to 4 gh_safe calls per iteration (up to 20s backoff-
+#                             sleep each, plus gh round-trip latency per call):
+#         - Source 2a: gh issue list  (body-marker search)
+#         - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
+#         - Source 3:  gh issue list  (title search; only if still no match)
+#         - Source 4:  gh pr view     (PR comment check; only if no match and not last retry)
+#     • dedup index backoff:  _dedup_max_retries × _dedup_backoff (default: 3×5s = 15s)
+#     ─────────────────────────────────────────────────────────────────────────────
+#     Plausible worst case:  20s + 80s + 15s = 115s backoff-sleep (exceeds the ~60s
+#                            waiter budget); actual wall-clock is higher once gh
+#                            request latency is included for each call
+#     Theoretical worst case: more calls per iteration if loop retries multiple times;
+#                             per-call cost is bounded at 20s (5s+15s backoff, no trailing
+#                             sleep) — growth comes from call count, not per-call duration
+#
+#   What happens on waiter timeout:
+#     The waiter returns 1 to the caller (acquire_pr_followup_lock only returns 1).
+#     The caller (assess-and-resolve.sh) sets _skip_followup_creation=true in the
+#     else branch.  This prevents creation of a follow-up issue rather than creating
+#     a duplicate.  However, it means the follow-up may not be created at all,
+#     requiring a manual re-run of --assess-and-fix.
+#
+#   Tuning:
+#     - Reduce RITE_DEDUP_BACKOFF (default: 5s) to shorten holder dedup wait time.
+#     - Reduce RITE_GH_MAX_RETRIES (default: 3) to shorten gh backoff windows.
+#     - Increase this lock's max_attempts if operating in a high-rate-limit environment.
+#     - See RITE_DEDUP_BACKOFF in config.sh for the configurable knob.
+#
 # Lock key scoping:
 #   - When source_issue is provided: keyed by PR + source issue
 #       pr-${pr_number}-src-${source_issue}-followup.lock
@@ -163,6 +233,7 @@ acquire_pr_followup_lock() {
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
   # takes ~5-10s in practice; 60s gives ample room while still failing safely.
   local max_attempts=60
+  local _grace_period_consumed=false
 
   while ! mkdir "$lock_dir" 2>/dev/null; do
     # Check if the holding process is still alive
@@ -179,10 +250,24 @@ acquire_pr_followup_lock() {
         continue
       fi
     else
-      # Lock dir exists but no PID file — crashed between mkdir and PID write
-      echo "⚠️  Reclaiming stale followup lock (no PID file)" >&2
-      rm -rf "$lock_dir" 2>/dev/null
-      continue
+      # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
+      # this window is effectively eliminated for holders using this module, but
+      # a crashed holder or a very old holder using the pre-atomic code path
+      # could still leave this state.  Give it a grace period before reclaiming
+      # — consistent with scratchpad-lock.sh and session-tracker.sh.
+      # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
+      # Only consume the grace period once per acquisition attempt: repeated
+      # no-PID encounters within the same retry loop must not each add a full
+      # sleep (that would compound latency beyond the 1-second-per-retry budget).
+      if [ "$_grace_period_consumed" = "false" ]; then
+        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+        _grace_period_consumed=true
+      fi
+      if [ ! -f "$lock_dir/pid" ]; then
+        echo "⚠️  Reclaiming stale followup lock (no PID file after grace period)" >&2
+        rm -rf "$lock_dir" 2>/dev/null || true
+        continue
+      fi
     fi
 
     lock_attempts=$((lock_attempts + 1))
@@ -194,8 +279,13 @@ acquire_pr_followup_lock() {
     sleep 1
   done
 
-  # Write our PID so other processes can check liveness
-  echo $$ > "$lock_dir/pid" 2>/dev/null || true
+  # Write our PID atomically via temp+rename so a concurrent waiter never sees
+  # the lock dir exist with no PID file (the TOCTOU window the old direct echo
+  # could create between mkdir and PID write).
+  local _pid_tmp
+  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
+  echo $$ > "$_pid_tmp"
+  mv "$_pid_tmp" "${lock_dir}/pid"
 
   return 0
 }
@@ -301,6 +391,67 @@ read_followup_evidence() {
     issue_num=$(grep -m1 -E '^[0-9]+$' "$evidence_file" 2>/dev/null || true)
     printf '%s' "$issue_num"
   fi
+}
+
+# List issue numbers that currently hold an active (live-process) issue lock.
+#
+# Returns issue numbers one per line, sorted NUMERICALLY — not lexically.
+# Lexical sort (the default `ls` and glob expansion order) would place
+# issue-10.lock before issue-9.lock, so a stale lock for issue 10 could shadow
+# issue 9 when callers take the first match.  Numeric sort is deterministic and
+# independent of lock-dir filesystem order.
+#
+# Only includes locks whose PID file references a still-running process.
+# Stale locks (dead PID or missing PID file) are silently skipped — callers
+# that need to display "in-progress" markers should not show stale artifacts.
+#
+# Output: one issue number per line (may be empty if no live locks)
+# Returns: 0 always
+get_locked_issue_numbers() {
+  local lock_dir_base="${RITE_LOCK_DIR:-}"
+  if [ -z "$lock_dir_base" ] || [ ! -d "$lock_dir_base" ]; then
+    return 0
+  fi
+
+  # Collect numeric issue numbers from issue-N.lock directory names.
+  # Use a temp array and sort numerically to avoid lexical ordering:
+  #   ls issue-*.lock  → issue-10.lock, issue-9.lock  (lexical, wrong)
+  #   sort -n          → 9, 10                          (numeric, correct)
+  local _nums=()
+  local _lock_entry
+  for _lock_entry in "$lock_dir_base"/issue-*.lock; do
+    # Skip if glob found no matches (bash expands unexpanded glob literally)
+    [ -d "$_lock_entry" ] || continue
+
+    # Extract the numeric issue number from the directory name
+    local _basename
+    _basename="${_lock_entry##*/}"        # issue-N.lock
+    local _num="${_basename#issue-}"      # N.lock
+    _num="${_num%.lock}"                  # N
+
+    # Only digits — reject any entry with unexpected characters
+    [[ "$_num" =~ ^[0-9]+$ ]] || continue
+
+    # Only include if the lock is held by a live process
+    if [ -f "$_lock_entry/pid" ]; then
+      local _pid
+      _pid=$(cat "$_lock_entry/pid" 2>/dev/null || true)
+      if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+        _nums+=("$_num")
+      fi
+      # Dead PID or empty PID file → stale lock, skip silently
+    fi
+    # Missing PID file → lock in grace period or stale, skip silently
+  done
+
+  # Print in numeric order.  Use printf + sort -n so the output order is
+  # independent of filesystem directory entry order and shell glob expansion
+  # order (both of which are lexical on most POSIX filesystems).
+  if [ "${#_nums[@]}" -gt 0 ]; then
+    printf '%s\n' "${_nums[@]}" | sort -n
+  fi
+
+  return 0
 }
 
 # Remove durable local evidence for a follow-up issue creation.

@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_ASSESS_AND_RESOLVE_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_ASSESS_AND_RESOLVE_LOADED=true
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -773,11 +779,13 @@ if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "false" ] && [ "${CREATE_SECURITY_DE
 fi
 
 # Determine the merge decision NOW, before follow-up issue creation.
-# Follow-up creation is best-effort — if it crashes (gh API error, network issue),
-# it must NOT override the merge decision. The CREATE_SECURITY_DEBT path means
-# "no ACTIONABLE_NOW items, ready to merge" — a failed `gh issue create` shouldn't
-# turn that into "assessment failed, block merge."
+# The merge decision is based solely on assessment results (CRITICAL items at retry
+# limit = block merge; otherwise = allow merge). If follow-up issue creation fails,
+# _followup_creation_failed=true is set and the final summary exits 1 — follow-up
+# creation failure is NOT silent.
 MERGE_EXIT_CODE=0
+# Tracks whether gh issue create failed inside set +e block; checked at final summary.
+_followup_creation_failed=false
 if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
   # CRITICAL items at retry limit — genuinely cannot merge
   MERGE_EXIT_CODE=1
@@ -806,8 +814,8 @@ if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
 fi
 
 # Create consolidated follow-up issue if needed
-# Disable errexit: follow-up issue creation is best-effort and must not
-# override the merge decision (MERGE_EXIT_CODE) if any gh/grep/jq call fails.
+# Disable errexit: follow-up issue creation uses _followup_creation_failed flag
+# to surface failures instead of letting set -e kill the script mid-creation.
 set +e
 if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   print_header "📝 Creating Consolidated Follow-up Issue"
@@ -1122,7 +1130,32 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   EXISTING_ISSUE=""
   _dedup_retries=0
   _dedup_max_retries=3
-  _dedup_backoff=5  # seconds between retries
+  # _dedup_backoff: seconds to wait between dedup retry iterations.
+  #
+  # TIMING BUDGET NOTE — this directly affects how long the lock is held.
+  # The holder (this process) holds acquire_pr_followup_lock while running the
+  # dedup search loop.  The waiter times out after ~60s (max_attempts in
+  # issue-lock.sh).  Under slow-GitHub conditions the holder can consume:
+  #
+  #   evidence validation gh call  : up to 20s backoff-sleep (gh_safe 3×: 5s+15s);
+  #                                   gh round-trip latency is additional and not included
+  #   dedup search loop (up to 4 gh calls per iteration): up to 80s backoff-sleep
+  #                                   (20s each); gh round-trip latency adds to each call
+  #     - Source 2a: gh issue list  (body-marker search)
+  #     - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
+  #     - Source 3:  gh issue list  (title search; only if still no match)
+  #     - Source 4:  gh pr view     (PR comment check; only if still no match and not last retry)
+  #   this backoff loop (3 retries × _dedup_backoff): _dedup_max_retries × _dedup_backoff
+  #
+  # With defaults (3 retries, 5s backoff): 20 + 80 + 15 = 115s backoff-sleep worst-case,
+  # which exceeds the ~60s waiter budget; actual wall-clock is higher once gh request
+  # latency is included.  In practice the evidence validation short-circuits the loop,
+  # keeping typical holder time under 10s.  But under concurrent slow-GitHub conditions
+  # the waiter may time out and proceed lock-less.
+  #
+  # To reduce worst-case holder time, lower RITE_DEDUP_BACKOFF or RITE_GH_MAX_RETRIES.
+  # See acquire_pr_followup_lock comment in lib/utils/issue-lock.sh for the full analysis.
+  _dedup_backoff="${RITE_DEDUP_BACKOFF:-5}"  # configurable via env; default 5s
 
   # Source 1: local evidence file — no API call, survives comment-write failures.
   # Read and validate once, before the retry loop.  The evidence file is FS-backed
@@ -1237,13 +1270,18 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
       ISSUE_LABELS="tech-debt"
     fi
 
-    # Add priority labels based on highest severity
+    # Add priority labels based on highest severity. Use repo's existing
+    # convention (priority-high/medium/low) — matches what `rite plan` and
+    # 30+ hand-authored issues already use. Prior values "High Priority" /
+    # "Medium Priority" silently failed: ensure_labels_exist's space-stripping
+    # trim created MediumPriority/HighPriority orphans, then gh issue create
+    # looked for the spaced names and 404'd.
     if [ "$HIGH_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="$ISSUE_LABELS,High Priority"
+      ISSUE_LABELS="$ISSUE_LABELS,priority-high"
     elif [ "$MEDIUM_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="$ISSUE_LABELS,Medium Priority"
+      ISSUE_LABELS="$ISSUE_LABELS,priority-medium"
     else
-      ISSUE_LABELS="$ISSUE_LABELS,enhancement"
+      ISSUE_LABELS="$ISSUE_LABELS,priority-low"
     fi
 
     # Ensure all required labels exist (create missing ones rather than failing)
@@ -1304,11 +1342,34 @@ This approach allows all fixes to be completed together in a focused PR."
       echo "  Items: NOW=${ACTIONABLE_NOW_COUNT:-0}, LATER=${ACTIONABLE_LATER_COUNT:-0} (total in issue)"
       echo ""
     else
+      # gh issue create failed — items are NOT tracked anywhere.
+      # Save the full issue body as a recovery artifact before discarding it,
+      # so the user can manually re-file after resolving the API failure.
+      _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+      mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+      {
+        echo "---"
+        echo "# Orphaned Follow-up Items"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# PR: #${PR_NUMBER}"
+        echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+        echo "# Intended title: ${ISSUE_TITLE:-}"
+        echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
+        echo ""
+        cat "$FOLLOWUP_BODY_FILE" 2>/dev/null || echo "(body file unavailable)"
+      } >> "$_orphaned_file" || true
+
       rm -f "$FOLLOWUP_BODY_FILE"
       # Release lock on failure too — don't leave waiters stuck
       [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
+
       print_warning "Failed to create consolidated follow-up issue"
+      print_error "Items NOT tracked. Saved to: $_orphaned_file"
+      print_error "Re-run: rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
+
+      # Signal to the final summary that follow-up creation failed
+      _followup_creation_failed=true
     fi
   fi
 
@@ -1329,17 +1390,23 @@ This approach allows all fixes to be completed together in a focused PR."
 fi
 set -e  # Re-enable errexit after follow-up issue creation
 
-# Final summary — use MERGE_EXIT_CODE (decided before follow-up creation)
+# Final summary — check _followup_creation_failed first.
+# If follow-up issue creation failed, exit 1 to prevent silent data loss.
+# Only proceed to the merge-decision exit code when follow-up creation succeeded.
+# MERGE_EXIT_CODE=1 only when CRITICAL items remain (set at line ~785 above).
 print_header "✅ Assessment Complete"
 
 echo "Summary of actions taken:"
 [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -n "${FOLLOWUP_NUMBER:-}" ] && echo "  ✅ Follow-up issue #$FOLLOWUP_NUMBER created for HIGH/MEDIUM items"
-[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -z "${FOLLOWUP_NUMBER:-}" ] && echo "  ⚠️  Follow-up issue creation failed (items not tracked)"
+[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ "${_followup_creation_failed:-false}" = true ] && echo "  ⚠️  Follow-up issue creation failed (items NOT tracked — see orphaned-followup-items.md)"
 [ "${CREATE_LOW_BATCH:-false}" = true ] && [ "${LOW_COUNT:-0}" -gt 0 ] && echo "  ✅ Batched LOW priority items into single issue"
 
 echo ""
 
-if [ "$MERGE_EXIT_CODE" -eq 0 ]; then
+if [ "${_followup_creation_failed:-false}" = true ]; then
+  print_error "Follow-up issue creation failed — workflow halted to prevent silent data loss"
+  exit 1
+elif [ "$MERGE_EXIT_CODE" -eq 0 ]; then
   print_success "All issues resolved or tracked - ready to proceed"
   exit 0
 else

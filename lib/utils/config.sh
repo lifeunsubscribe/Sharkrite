@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f parse_rite_config >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # =============================================================================
 # HELPER: Safe config file sourcing with validation
 # =============================================================================
@@ -121,11 +126,25 @@ _project_abbrev=$(echo "$RITE_PROJECT_NAME" | sed 's/\([a-z]\)[a-z]*/\1/g; s/-//
 RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-wt}"
 
 # Session limits
+# RITE_MAX_SESSION_HOURS: cumulative active work hours (sum of per-issue durations),
+#   NOT wall-clock age of the session state file. Default raised from 4→12 (issue #283):
+#   4h of active work was correct intuition but the old implementation measured file age,
+#   not work. 12h of actual rite automation is a conservative daily budget.
+# RITE_MAX_ISSUE_HOURS: per-issue cap — protects against fix-loop runaway on a single issue.
 RITE_MAX_ISSUES_PER_SESSION="${RITE_MAX_ISSUES_PER_SESSION:-8}"
-RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-4}"
+RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-12}"
+RITE_MAX_ISSUE_HOURS="${RITE_MAX_ISSUE_HOURS:-4}"
 RITE_MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
 RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-300}"
 RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
+
+# Follow-up issue dedup backoff (seconds between dedup retry iterations in assess-and-resolve.sh)
+#
+# Under slow-GitHub conditions the holder of acquire_pr_followup_lock can consume
+# up to (_dedup_max_retries × RITE_DEDUP_BACKOFF) seconds in the dedup loop, on top
+# of gh_safe call time.  Lower this value to reduce worst-case lock hold time and give
+# the waiter (60s budget) more margin.  See timing budget in lib/utils/issue-lock.sh.
+RITE_DEDUP_BACKOFF="${RITE_DEDUP_BACKOFF:-5}"
 
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -253,6 +272,7 @@ export RITE_WORKTREE_BASE
 export RITE_WORKTREE_DIR
 export RITE_MAX_ISSUES_PER_SESSION
 export RITE_MAX_SESSION_HOURS
+export RITE_MAX_ISSUE_HOURS
 export RITE_MAX_RETRIES
 export RITE_ASSESSMENT_TIMEOUT
 export RITE_STALE_BRANCH_THRESHOLD
@@ -284,6 +304,7 @@ export RITE_PLAN_MAX_ESTIMATE
 export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
+export RITE_DEDUP_BACKOFF
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS

@@ -48,6 +48,12 @@ lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-a
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
 
+### Batch ↔ Single-Issue Parity Contract
+
+`rite N1 N2 N3` must produce identical per-issue side effects as `rite Ni` for each issue. The batch is a thin orchestrator — per-issue work is delegated to `workflow-runner.sh::run_workflow()`. Closed-issue handling uses the shared `handle_closed_issue()` helper (defined in `workflow-runner.sh` above `run_workflow()`).
+
+Any short-circuit that bypasses `run_workflow()` must be documented with `# Deliberate divergence from single-issue mode: <reason>` and covered by `tests/regression/batch-single-issue-parity.bats`. See full contract: `docs/architecture/behavioral-design.md` → "Batch ↔ Single-Issue Parity Contract".
+
 ### Data Flow
 
 - `assess-review-issues.sh` outputs assessment to **stdout** (pipe-friendly)
@@ -56,6 +62,126 @@ lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-a
 - **stderr** is used for all user-facing output (print_info, print_warning, etc.)
 
 ## Shell Conventions
+
+### Re-source safety (CRITICAL)
+
+Every file in `lib/` MUST be safe to source multiple times under `set -euo pipefail`. Without a guard, sourcing a file twice can crash via readonly re-assignment, re-run interactive logic, or re-execute initialization code.
+
+**Live failures that resulted from missing or wrong guards:**
+
+| Date | File | Root cause |
+|---|---|---|
+| 2026-05-31 | `assess-documentation.sh` | `verbose_info` undefined — missing dep source (#61) |
+| 2026-05-31 | `issue-lock.sh` | Guard checked `RITE_LIB_DIR` instead of `RITE_LOCK_DIR` (#69) |
+| 2026-06-01 | `stash-manager.sh` | `readonly` crash on re-source (commit 2267841) |
+| 2026-06-01 | `claude.sh` | Source-path construction bug (commit 93c7ddd) |
+
+**Canonical guard pattern — function libraries:**
+
+```bash
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f <canonical_function_name> >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+```
+
+Place this block immediately after `set -euo pipefail`, before any `source` calls or variable assignments. Pick any function that is stable and defined only by this file as the sentinel.
+
+```bash
+# Example: lib/utils/timeout.sh
+set -euo pipefail
+
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f ensure_timeout_cmd >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
+# ... function definitions and initialization follow
+ensure_timeout_cmd() { ... }
+```
+
+**Dependency-load pattern:**
+
+Source dependencies using absolute paths derived from `BASH_SOURCE[0]`, not from guessed env vars:
+
+```bash
+# GOOD: absolute path from this file's location
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_self_dir/../utils/colors.sh"
+
+# ALSO GOOD: use RITE_LIB_DIR if config.sh bootstrapped it
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_self_dir/config.sh"
+fi
+source "$RITE_LIB_DIR/utils/colors.sh"
+```
+
+**Pattern for executable files that are also sourced by tests:**
+
+Executables that define helper functions AND run a program body should use `RITE_SOURCE_FUNCTIONS_ONLY=1` to separate the function definitions from the executable body (see `local-review.sh` as reference):
+
+```bash
+# Function defs here (no top-level side effects)
+my_helper_function() { ... }
+
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here
+# so tests can load only function definitions without running the program.
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+
+# Executable body follows (git commands, network calls, interactive prompts)
+```
+
+**Canonical guard pattern — standalone scripts (orchestrators with top-level executable code):**
+
+Use an env-var guard when the file has top-level executable code (network calls, interactive prompts, `git` commands) that cannot be function-wrapped:
+
+```bash
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_FOO_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_FOO_LOADED=true
+
+# ... rest of file follows
+```
+
+The `_RITE_*_LOADED` naming convention is consistent across all orchestrators:
+- `_RITE_ASSESS_AND_RESOLVE_LOADED` — `lib/core/assess-and-resolve.sh`
+- `_RITE_BATCH_PROCESS_LOADED` — `lib/core/batch-process-issues.sh`
+- `_RITE_CLAUDE_WORKFLOW_LOADED` — `lib/core/claude-workflow.sh`
+- `_RITE_CREATE_PR_LOADED` — `lib/core/create-pr.sh`
+- `_RITE_MERGE_PR_LOADED` — `lib/core/merge-pr.sh`
+- `_RITE_UNDO_WORKFLOW_LOADED` — `lib/core/undo-workflow.sh`
+- `_RITE_WORKFLOW_RUNNER_LOADED` — `lib/core/workflow-runner.sh`
+- `_RITE_CLEANUP_WORKTREES_LOADED` — `lib/utils/cleanup-worktrees.sh`
+- `_RITE_FORMAT_REVIEW_LOADED` — `lib/utils/format-review.sh`
+- `_RITE_VALIDATE_SETUP_LOADED` — `lib/utils/validate-setup.sh`
+
+**`readonly` declarations (CRITICAL):**
+
+`readonly VAR=value` at the top level of a sourced file **crashes** with "readonly: VAR: is read-only" when the file is sourced a second time under `set -euo pipefail`. Fix in priority order:
+
+1. **Add a re-source guard** (preferred) — the `declare -f` or `_RITE_*_LOADED` guard prevents the `readonly` line from executing a second time.
+2. **Change to idempotent assignment** — `VAR="${VAR:-default_value}"` works even without a guard.
+
+```bash
+# BAD: crashes on second source
+readonly SHARKRITE_STASH_MARKER="sharkrite-stash:"
+
+# GOOD option 1: guard prevents re-execution (readonly line unchanged)
+if declare -f create_sharkrite_stash >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+readonly SHARKRITE_STASH_MARKER="sharkrite-stash:"   # only runs once
+
+# GOOD option 2: idempotent assignment (no guard required)
+SHARKRITE_STASH_MARKER="${SHARKRITE_STASH_MARKER:-sharkrite-stash:}"
+```
+
+**Enforcement:** Lint rules `MISSING_RESOURCE_GUARD` (Rule 16) and `UNGUARDED_READONLY` (Rule 17) in `tools/sharkrite-lint.sh` (invoked by `make check`). Regression test in `tests/regression/lib-resource-safety.bats` sources every lib file twice and asserts both sources exit 0.
 
 ### grep -c pattern (CRITICAL)
 
@@ -83,6 +209,31 @@ COUNT=$(echo "$output" | grep -c "ACTIONABLE_NOW" || true)
 # GOOD: matches only the structured classification headers
 COUNT=$(echo "$output" | grep -c "^### .* - ACTIONABLE_NOW" || true)
 ```
+
+### Unanchored marker grep (bare-prefix guard, CRITICAL)
+
+When greping for a sharkrite marker in issue body text, the outer guard **must** require a format anchor. Without one, any issue body that *documents* the marker format (e.g. `sharkrite-parent-pr:N` as a placeholder) will match, the inner extraction will return empty, and under `set -e + pipefail` the script dies silently.
+
+**Live bug (2026-05-31):** Three `rite --label testing` batch runs died silently at Processing Issue #34. Root cause: `grep -q "sharkrite-parent-pr:"` matched #34's body, which listed the marker as a documentation example. Inner extraction with `[0-9]+` returned nothing, `pipefail` propagated exit-1 up, `set -e` killed the batch silently. Emergency fix: commit `206f2be`. Codebase sweep + regression test added in issue #90.
+
+```bash
+# BAD: outer guard without format anchor — matches documentation placeholders
+if echo "$ISSUE_BODY" | grep -q "sharkrite-parent-pr:"; then
+  PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+  # If ISSUE_BODY contains "sharkrite-parent-pr:N" (a docs example), inner grep
+  # returns empty, pipefail kills the script silently
+fi
+
+# GOOD: outer guard requires digits — rejects all placeholder text
+if echo "$ISSUE_BODY" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
+  PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+  # Only enters branch when body has a real numeric marker value
+fi
+```
+
+**Rule:** Any `grep -q` or `grep -qE` against `"sharkrite-[marker-name]:"` must include `[0-9]+` (or equivalent format anchor) in the same pattern. Never use bare-prefix guards for structured markers.
+
+**Enforcement:** Custom lint rule `BARE_MARKER_GREP` in `tools/sharkrite-lint.sh` (invoked by `make check` CI gate). Regression test in `tests/regression/bare-prefix-grep-silent-death.bats`.
 
 ### Review severity parsing
 
@@ -194,7 +345,9 @@ Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
 - **Test/build failures** — non-zero exit from test suite
-- **Session limits** — token/time limits reached
+- **Session limits** — dual-cap model (issue #283):
+  - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
+  - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
 - **AWS credentials expired** — deployment credentials invalid
 - **Supervised mode**: Interactive `read -p` prompt for approval
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)

@@ -72,7 +72,7 @@ _setup_conflicting_branch() {
 # ───────────────────────────────────────────────────────────────────
 # Test 1: Resolver returns 0 (resolved) → workflow continues
 # ───────────────────────────────────────────────────────────────────
-@test "conflict resolver exit 0: rebase conflict resolved by Claude, push succeeds" {
+@test "conflict resolver exit 0: resolver returns 0, push path executes" {
   _setup_conflicting_branch
 
   # Stub: resolver "resolves" by creating a valid commit on the branch.
@@ -113,14 +113,6 @@ _setup_conflicting_branch() {
   remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null)
   local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null)
   [ "$remote_sha" = "$local_sha" ]
-
-  # NOTE: We intentionally do NOT assert `git merge-base --is-ancestor origin/main HEAD`
-  # here. Because this stub commits on the post-abort branch tip (not after a real
-  # rebase onto origin/main), that ancestry check passes trivially — origin/main was
-  # always an ancestor of the feature branch (it was branched from main). The assertion
-  # would not confirm that a correct rebase occurred; it would only reflect fixture
-  # setup. A meaningful ancestry assertion requires the real resolver contract from
-  # issue #21, which defines the expected git state after conflict resolution.
 
   # Clean up
   cd "$FIXTURE_REPO"

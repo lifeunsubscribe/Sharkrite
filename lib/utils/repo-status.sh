@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f repo_wide_status >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source config and dependencies if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +20,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 # =============================================================================
 # Worktree scanning
@@ -417,8 +423,8 @@ repo_wide_status() {
 
       # Find matching PR (body contains "Closes #N" or "Fixes #N")
       local matched_pr
-      matched_pr=$(echo "$open_prs_json" | jq --arg issue "$num" '
-        [.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0] // empty
+      matched_pr=$(echo "$open_prs_json" | jq --arg issue "$num" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" '
+        [.[] | select(.body | test($closing_re + $issue + "\\b"))] | .[0] // empty
       ' 2>/dev/null || echo "")
 
       # Fetch comments for this PR if it exists
@@ -622,8 +628,8 @@ repo_wide_status() {
       # Find matching merged PR
       local closed_pr_num=""
       local matched_closed_pr
-      matched_closed_pr=$(echo "$merged_prs_json" | jq -r --arg issue "$num" '
-        [.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | .[0].number // ""
+      matched_closed_pr=$(echo "$merged_prs_json" | jq -r --arg issue "$num" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" '
+        [.[] | select(.body | test($closing_re + $issue + "\\b"))] | .[0].number // ""
       ' 2>/dev/null || echo "")
       if [ -n "$matched_closed_pr" ] && [ "$matched_closed_pr" != "null" ]; then
         closed_pr_num="$matched_closed_pr"
@@ -654,10 +660,14 @@ repo_wide_status() {
   if [ "$WORKTREE_COUNT" -gt 0 ]; then
     echo -e "  ${CYAN}Worktree Details:${NC}"
     echo -e "  ${BLUE}─────────────────────────────────────────────────────${NC}"
+    # Hoist lsof availability check outside the per-worktree loop (O(1) not O(N))
+    local _lsof_available=""
+    command -v lsof >/dev/null 2>&1 && _lsof_available="1" || true
     for i in "${!WT_BRANCHES[@]}"; do
       local branch="${WT_BRANCHES[$i]}"
 
-      # Extract issue number: try branch name, worktree path, open PR body, then gh lookup
+      # Extract issue number: try branch name, worktree path, open PR body,
+      # lock-file lookup (numeric order), then gh API fallback.
       local wt_issue_num=""
       if [[ "$branch" =~ issue-?([0-9]+) ]]; then
         wt_issue_num="${BASH_REMATCH[1]}"
@@ -669,7 +679,50 @@ repo_wide_status() {
         local _pr_body
         _pr_body=$(echo "$open_prs_json" | jq -r --arg b "$branch" \
           '[.[] | select(.headRefName == $b)] | .[0].body // ""' 2>/dev/null || echo "")
-        wt_issue_num=$(echo "$_pr_body" | grep -oE '(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        wt_issue_num=$(echo "$_pr_body" | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
+      fi
+      # Lock-file fallback: check which issue lock corresponds to this worktree path.
+      # get_locked_issue_numbers() returns numbers in NUMERIC order (not lexical),
+      # preventing issue-10 from shadowing issue-9 when both lock dirs exist.
+      # Primary: read the cwd file written by acquire_issue_lock at acquire time
+      # (O(N) file reads, no per-process syscalls).
+      # Fallback: /proc/PID/cwd (Linux) or lsof (macOS) — lsof availability is
+      # checked once outside the loop to avoid O(N×M) command -v calls.
+      if [ -z "$wt_issue_num" ]; then
+        local _locked_nums
+        _locked_nums=$(get_locked_issue_numbers 2>/dev/null || true)
+        if [ -n "$_locked_nums" ]; then
+          local _wt_path="${WT_PATHS[$i]}"
+          local _candidate
+          while IFS= read -r _candidate; do
+            [ -n "$_candidate" ] || continue
+            local _lock_dir="${RITE_LOCK_DIR:-}/issue-${_candidate}.lock"
+            local _lock_pid_file="${_lock_dir}/pid"
+            if [ -f "$_lock_pid_file" ]; then
+              local _lock_pid
+              _lock_pid=$(cat "$_lock_pid_file" 2>/dev/null || true)
+              if [ -n "$_lock_pid" ] && kill -0 "$_lock_pid" 2>/dev/null; then
+                # Primary: read cwd file written by acquire_issue_lock (no lsof/procfs)
+                local _proc_cwd=""
+                local _lock_cwd_file="${_lock_dir}/cwd"
+                if [ -f "$_lock_cwd_file" ]; then
+                  _proc_cwd=$(cat "$_lock_cwd_file" 2>/dev/null || true)
+                elif [ -d "/proc/${_lock_pid}/cwd" ]; then
+                  # Linux fallback: procfs symlink
+                  _proc_cwd=$(readlink -f "/proc/${_lock_pid}/cwd" 2>/dev/null || true)
+                elif [ -n "$_lsof_available" ]; then
+                  # macOS fallback: lsof (already checked availability above)
+                  _proc_cwd=$(lsof -a -p "$_lock_pid" -d cwd -Fn 2>/dev/null \
+                    | grep '^n' | head -1 | cut -c2- || true)
+                fi
+                if [ -n "$_proc_cwd" ] && [[ "$_proc_cwd" == "$_wt_path"* ]]; then
+                  wt_issue_num="$_candidate"
+                  break
+                fi
+              fi
+            fi
+          done <<< "$_locked_nums"
+        fi
       fi
       local wt_pr_num=""
       if [ -z "$wt_issue_num" ]; then

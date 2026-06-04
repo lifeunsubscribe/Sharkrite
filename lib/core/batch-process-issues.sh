@@ -16,6 +16,12 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if [ "${_RITE_BATCH_PROCESS_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_BATCH_PROCESS_LOADED=true
+
 # Generate a unique batch ID for this invocation so that parallel batches in
 # the same project each get their own SESSION_STATE_FILE.
 # Use epoch-seconds + PID + RANDOM for portability: date +%s works on both
@@ -218,9 +224,11 @@ fi
 # Check session limits upfront
 SESSION_STATE=$(get_session_info)
 ISSUES_COMPLETED=$(echo "$SESSION_STATE" | jq -r '.issues_completed')
-SESSION_START=$(echo "$SESSION_STATE" | jq -r '.start_time')
-CURRENT_TIME=$(date +%s)
-ELAPSED_HOURS=$(awk "BEGIN {print ($CURRENT_TIME - $SESSION_START) / 3600}")
+# Use cumulative active work (not wall-clock age of the state file) — issue #283.
+# get_cumulative_work_seconds returns the sum of per-issue tracked durations, so a
+# zombie file from a prior batch contributes 0 seconds of active work.
+CUMULATIVE_SECS=$(get_cumulative_work_seconds)
+ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
 
 # Validate batch won't exceed limits
 PROJECTED_TOTAL=$((ISSUES_COMPLETED + TOTAL_ISSUES))
@@ -327,7 +335,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   # Fetch issue details
   ISSUE_DETAILS=$(gh_safe issue view "$ISSUE_NUM" --json title,labels,state)
-  ISSUE_DETAILS="${ISSUE_DETAILS:-{}}"
+  ISSUE_DETAILS="${ISSUE_DETAILS:-"{}"}"
 
   if [ "$ISSUE_DETAILS" = "{}" ]; then
     print_error "Issue #$ISSUE_NUM not found"
@@ -343,14 +351,18 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   print_info "State: $ISSUE_STATE"
   echo ""
 
-  # Skip if already closed
-  if [ "$ISSUE_STATE" = "CLOSED" ]; then
-    print_warning "Issue already closed - skipping"
-    SKIPPED_ISSUES+=("$ISSUE_NUM")
-    ISSUE_STATUS["$ISSUE_NUM"]="already_closed"
-    echo ""
-    continue
-  fi
+  # Closed issues: do NOT short-circuit here. Let workflow-runner.sh handle them
+  # via run_workflow() → handle_closed_issue(). That path prints the full closure
+  # summary, removes dangling artifacts (worktree, local branch, remote branch,
+  # session state file), and returns exit 0 — which the batch records as
+  # "completed" and continues to the next issue.
+  #
+  # Parity contract: batch mode must produce identical per-issue side effects as
+  # single-issue mode. Short-circuiting here would skip all cleanup that
+  # workflow-runner.sh performs for closed issues.
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+  # Bug history: #274 — batch silently bypassed closed-issue cleanup for 8 orphan
+  # worktrees that accumulated from issues processed via batch (#34, #201-#203).
 
   # Check if this is a follow-up issue with parent PR dependency
   ISSUE_BODY=$(gh_safe issue view "$ISSUE_NUM" --json body --jq '.body')
@@ -373,7 +385,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
       if [ "$PARENT_PR_STATE" = "OPEN" ]; then
         # Check if parent issue is also in this batch (deliberate pairing)
-        PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
         PARENT_ISSUE="${PARENT_ISSUE:-}"
 
         # Check if parent issue is in our queue
@@ -389,7 +401,17 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           print_success "✅ Parent issue #$PARENT_ISSUE is in queue - this is a follow-up pair"
           print_info "Follow-up work will update parent PR #$PARENT_PR before merging parent issue"
         else
-          # Parent not in queue, defer this issue
+          # Deliberate divergence from single-issue mode: batch skips follow-up
+          # issues whose parent PR is still open AND the parent issue is not in
+          # this batch. This is an orchestrator-level decision that requires
+          # knowledge of the full queue — run_workflow() cannot make this call
+          # because it processes one issue at a time without queue visibility.
+          # The skip is correct: processing a follow-up before the parent merges
+          # causes failures (the follow-up's code changes reference code that
+          # hasn't landed yet). Single-issue mode does not have this guard because
+          # the user invoking `rite N` is presumed to know the ordering constraint.
+          # Regression test: tests/regression/batch-single-issue-parity.bats
+          #   @test "parent-PR-deferred divergence: documented and intentional"
           print_warning "⏸️  Parent PR #$PARENT_PR is still open - deferring issue #$ISSUE_NUM"
           print_info "This follow-up issue will be processed after parent PR merges"
           SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -429,6 +451,16 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       fi
     done
     if [ "$DEP_FAILED" = true ]; then
+      # Deliberate divergence from single-issue mode: batch skips dependent issues
+      # when a dependency failed/was blocked/is still open within the same batch.
+      # This is an orchestrator-level decision that requires the batch's accumulated
+      # ISSUE_STATUS map — run_workflow() processes one issue at a time and cannot
+      # know what happened to sibling issues in this run. Single-issue mode has no
+      # equivalent guard: the user invoking `rite N` is presumed to have resolved
+      # dependencies manually. Processing a dependent issue while its dependency
+      # hasn't landed causes predictable failures (missing schema, missing APIs, etc.).
+      # Regression test: tests/regression/batch-single-issue-parity.bats
+      #   @test "dep-failed divergence: documented and intentional"
       print_warning "Dependency #$FAILED_DEP not ready (${DEP_REASON:-unknown}) — skipping issue #$ISSUE_NUM"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="dep_failed"
@@ -453,6 +485,16 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     _loop_procs=$(ps -eo pid,command 2>/dev/null || true)
     if echo "$_loop_procs" | grep -qE "workflow-runner\.sh ${ISSUE_NUM}( |$)" || \
        echo "$_loop_procs" | grep -qE "claude-workflow\.sh ${ISSUE_NUM}( |$)"; then
+      # Deliberate divergence from single-issue mode: batch skips issues that
+      # are actively running in a concurrent rite/claude process. This is a
+      # safety guard to prevent two sessions from racing on the same issue and
+      # corrupting the branch, worktree, or session state. Single-issue mode
+      # does not have this guard because invoking `rite N` directly while another
+      # `rite N` runs is intentional (e.g., supervised retry) and the user accepts
+      # responsibility. In batch mode, the same issue appearing twice would be a
+      # bug in the queue, not an intentional retry.
+      # Regression test: tests/regression/batch-single-issue-parity.bats
+      #   @test "active-process divergence: documented and intentional"
       print_warning "Issue #$ISSUE_NUM is actively running in another process — skipping"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="active"
@@ -532,6 +574,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     PR_BRANCH="${PR_BRANCH:-}"
 
     if [ -n "$CURRENT_BRANCH" ] && [ -n "$PR_BRANCH" ] && [ "$CURRENT_BRANCH" = "$PR_BRANCH" ]; then
+      # Deliberate divergence from single-issue mode: batch skips an issue if the
+      # current working directory is already on that issue's branch. This prevents
+      # git operations (checkout, worktree add) from conflicting with the active
+      # branch. Single-issue mode allows this because the user explicitly chose the
+      # issue and can resolve the conflict interactively. In batch mode, reusing the
+      # current branch would corrupt its state for the remaining batch issues.
+      # Regression test: tests/regression/batch-single-issue-parity.bats
+      #   @test "in-current-branch divergence: documented and intentional"
       print_warning "Already in this issue's branch ($PR_BRANCH) - skipping to avoid conflicts"
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="in_current_branch"
@@ -554,8 +604,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # Export full issue list so nested scripts (e.g., merge cleanup) can protect sibling worktrees
   export BATCH_ISSUE_LIST="${ISSUE_LIST[*]}"
 
+  # Record per-issue start time for cumulative active-work tracking (issue #283).
+  # end_issue_tracking is called in the success and failure branches below so
+  # cumulative_work_seconds is always updated regardless of outcome.
+  start_issue_tracking "$ISSUE_NUM"
+
   # Run workflow with exit code handling
   if "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised; then
+    end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
@@ -609,6 +665,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   else
     EXIT_CODE=$?
+    # Record end of per-issue tracking regardless of failure type (issue #283)
+    end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
@@ -670,6 +728,15 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
   if [ "$ISSUES_COMPLETED" -ge "$MAX_ISSUES_LIMIT" ]; then
     print_warning "Session limit reached ($MAX_ISSUES_LIMIT issues)"
+    print_info "Stopping batch processing"
+    break
+  fi
+
+  # Also check cumulative active-work hours limit — issue #283
+  CUMULATIVE_SECS=$(get_cumulative_work_seconds)
+  ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
+  if [ "$ELAPSED_HOURS" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
+    print_warning "Cumulative active-work limit reached (${ELAPSED_HOURS}h)"
     print_info "Stopping batch processing"
     break
   fi

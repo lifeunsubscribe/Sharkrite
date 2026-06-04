@@ -5,9 +5,20 @@
 # Multiple processes should not be able to work on the same issue simultaneously.
 # These tests verify fixes for issue #9 (per-issue locking).
 #
+# Issue #9 = "Add per-issue lock to prevent concurrent rite collisions" (CLOSED).
+# Implemented in lib/utils/issue-lock.sh via atomic mkdir-based locking.
+# Not issue #8 ("Make empty Claude assessment fail loud") — different subsystem.
+#
 # NOTE: The "EXPECTED FAILURE" escape hatches that were here before issue #9 landed
 # have been removed.  These are now hard-failure assertions — if locking regresses,
 # these tests WILL fail (which is the point).
+#
+# WHY these are not flaky: issue-lock.sh uses `mkdir` for acquisition, which is
+# atomic on POSIX filesystems.  Exactly one concurrent caller wins the mkdir race;
+# the rest see EEXIST and either wait or fail.  The barrier helper ensures all
+# subprocesses are spawned before any of them attempts to acquire, maximising the
+# chance of a real race.  A `success_count != 1` result therefore indicates a
+# genuine atomicity regression, not a timing artifact.
 
 load '../helpers/setup.bash'
 
@@ -207,6 +218,8 @@ wait_at_barrier() {
 
   # Exactly one process should have gotten the lock.
   # Issue #9 (per-issue locking) landed — this is now a hard assertion.
+  # `false` is intentional: mkdir atomicity guarantees exactly 1 winner.
+  # A wrong count here is a real regression, not a timing flake.
   [ "$success_count" -eq 1 ] || {
     echo "REGRESSION: $success_count processes got lock instead of 1 - locking not atomic (issue #9 regressed?)"
     false
@@ -255,6 +268,8 @@ wait_at_barrier() {
 
   # Only one should have reclaimed successfully.
   # Issue #9 (per-issue locking) landed — this is now a hard assertion.
+  # `false` is intentional: reclamation uses rm-then-mkdir; only one concurrent
+  # rm+mkdir sequence can win the subsequent mkdir.  A wrong count is a regression.
   [ "$success_count" -eq 1 ] || {
     echo "REGRESSION: $success_count processes reclaimed lock - race in stale detection (issue #9 regressed?)"
     false

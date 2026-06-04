@@ -9,6 +9,11 @@
 
 set -euo pipefail
 
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f detect_pr_for_issue >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +22,22 @@ fi
 
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
+
+# ---------------------------------------------------------------------------
+# Closing-issue regex constants
+#
+# CLOSING_ISSUE_JQ_REGEX — prefix for jq test() expressions.
+#   Usage: test($closing_re + $issue + "\\b")
+#   Pass via --arg: jq --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" ...
+#
+# CLOSING_ISSUE_GREP_REGEX — full pattern for grep -oE extraction.
+#   Usage: grep -oE "$CLOSING_ISSUE_GREP_REGEX"
+#
+# Both cover all GitHub closing-keyword variants (case-insensitive alternation)
+# defined at: https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue
+# ---------------------------------------------------------------------------
+CLOSING_ISSUE_JQ_REGEX='(Closes|closes|Fixes|fixes|Resolves|resolves) #'
+CLOSING_ISSUE_GREP_REGEX='(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+'
 
 # detect_pr_for_issue ISSUE_NUMBER
 #
@@ -33,8 +54,8 @@ detect_pr_for_issue() {
   # when multiple open PRs reference the same issue (e.g., after rite undo + retry).
   # Highest PR number = most recently created; all results are already --state open.
   PR_NUMBER=$(gh_safe pr list --state open --json number,body --limit 100 | \
-    jq --arg issue "$issue_number" -r \
-    '[.[] | select(.body | test("(Closes|closes|Fixes|fixes|Resolves|resolves) #" + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
+    jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+    '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
 
   # Method 2: Search by title fallback — match "#N" in PR title only.
   # Previous approach used --search "#N" which is a GitHub full-text search that
@@ -176,7 +197,7 @@ detect_review_state() {
       .body | contains("<!-- sharkrite-local-review")
     )] | sort_by(.createdAt) | reverse | .[0] // {}
   ')
-  review_json="${review_json:-{}}"
+  review_json="${review_json:-"{}"}"
 
   REVIEW_BODY=$(echo "$review_json" | jq -r '.body // ""' 2>/dev/null)
   REVIEW_TIME=$(echo "$review_json" | jq -r '.createdAt // ""' 2>/dev/null)
