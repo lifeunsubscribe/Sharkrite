@@ -178,10 +178,11 @@ init_session "batch-${ISSUE_LIST[0]}-$(date +%s)"
 BATCH_START_TIME=$(date +%s)
 TOTAL_ISSUES=${#ISSUE_LIST[@]}
 COMPLETED_ISSUES=0
-MERGED_CLEANUP_FAILED=()  # Exit 6: merged but cleanup crashed
-FAILED_ISSUES=()          # Exit 1: genuine failure (dev or merge)
-BLOCKED_ISSUES=()         # Exit 2: blocker
-SKIPPED_ISSUES=()         # Various skip reasons
+MERGED_CLEANUP_FAILED=()         # Exit 6: merged but cleanup crashed
+FAILED_ISSUES=()                 # Exit 1: genuine failure (dev or merge)
+BLOCKED_ISSUES=()                # Exit 2: blocker
+SKIPPED_ISSUES=()                # Various skip reasons (all counted together for stats)
+ALREADY_CLOSED_AT_START_ISSUES=() # Exit 12: already closed when batch started, no new work
 
 # Per-issue tracking (associative arrays, requires bash 4+)
 declare -A ISSUE_STATUS
@@ -629,8 +630,17 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # cumulative_work_seconds is always updated regardless of outcome.
   start_issue_tracking "$ISSUE_NUM"
 
-  # Run workflow with exit code handling
-  if "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised; then
+  # Run workflow and capture exit code explicitly before any if/then test.
+  # `if cmd; then` discards non-zero codes — use the canonical set-e-safe
+  # capture pattern so exit 12 (closed at start), 0 (active completion), and
+  # other non-zero codes (failures) are all distinguishable.
+  # See: docs/architecture/exit-codes.md
+  _WF_EXIT=0
+  "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUM" --unsupervised || _WF_EXIT=$?
+
+  if [ $_WF_EXIT -eq 0 ]; then
+    # Active completion: issue was worked on in this session. Gather PR stats
+    # for the batch summary (PR number, branch, file/line counts, tech-debt).
     end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
@@ -683,8 +693,33 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       send_notification "✅ Auto-Merge Success!" "Issue #$ISSUE_NUM completed and PR #$PR_NUMBER merged automatically! Duration: $((ISSUE_DURATION / 60))m" "success"
     fi
 
+  elif [ $_WF_EXIT -eq 12 ]; then
+    # Already closed at start: handle_closed_issue() ran and printed the closure
+    # summary + cleaned any orphan artifacts. No dev session ran — skip all the
+    # post-issue gh API calls (pr list, pr view x3, issue list) that gather stats
+    # for the batch report. Those calls are only meaningful after active dev work.
+    #
+    # Parity note: the per-issue SIDE EFFECTS (closure summary, artifact cleanup)
+    # are identical to single-issue mode — that's the parity contract. The batch-
+    # level REPORTING layer is intentionally differentiated based on what kind of
+    # work happened. This is documented divergence, not a parity violation.
+    # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+    # See: docs/architecture/exit-codes.md — exit code 12
+    end_issue_tracking "$ISSUE_NUM"
+    ISSUE_END_TIME=$(date +%s)
+    ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
+    ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
+
+    print_info "Issue #$ISSUE_NUM was already closed — no new work this session"
+    print_info "Duration: ${ISSUE_DURATION}s"
+    echo ""
+
+    SKIPPED_ISSUES+=("$ISSUE_NUM")
+    ALREADY_CLOSED_AT_START_ISSUES+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="already_closed_at_start"
+
   else
-    EXIT_CODE=$?
+    EXIT_CODE=$_WF_EXIT
     # Record end of per-issue tracking regardless of failure type (issue #283)
     end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)

@@ -1472,7 +1472,12 @@ phase_completion() {
 #   docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
 #   tests/regression/batch-single-issue-parity.bats
 #
-# Returns: 0 (always — closed issue is not an error)
+# Returns: 12 — sentinel meaning "issue was already closed at start, no new
+#   work was done in this session". batch-process-issues.sh uses this to skip
+#   the post-issue stat-gathering calls (gh pr list, gh pr view, gh issue list)
+#   that are only meaningful after an active dev session.
+#   See: docs/architecture/exit-codes.md — exit code 12
+#   See: tests/regression/batch-closed-issue-skip-stats.bats
 # ---------------------------------------------------------------------------
 handle_closed_issue() {
   local issue_number="$1"
@@ -1693,7 +1698,12 @@ handle_closed_issue() {
     fi
   fi
 
-  return 0
+  # Sentinel exit code 12: "issue was already closed at start, no new work done."
+  # batch-process-issues.sh recognizes this and skips post-issue stat gathering
+  # (gh pr list / gh pr view / gh issue list) which only make sense after an
+  # active dev session. Single-issue mode treats 12 the same as 0 — not an error.
+  # See: docs/architecture/exit-codes.md
+  return 12
 }
 
 run_workflow() {
@@ -1717,8 +1727,26 @@ run_workflow() {
   local issue_state=$(echo "$issue_data" | jq -r '.state')
 
   if [ "$issue_state" = "CLOSED" ]; then
+    # set +e is required: handle_closed_issue returns 12 (sentinel) and under
+    # set -euo pipefail a non-zero return from a bare function call aborts the
+    # script immediately, making the BATCH_MODE gate below unreachable dead code.
+    # Mirror the stale-branch pattern at lines 1814-1817.
+    local _closed_exit
+    set +e
     handle_closed_issue "$issue_number" "$issue_data"
-    return 0
+    _closed_exit=$?
+    set -e
+    # Propagate the sentinel (exit 12 = closed at start, no new work).
+    # batch-process-issues.sh captures this to skip post-issue stat gathering.
+    # Single-issue mode: bin/rite uses exec, so exit 12 would propagate to the
+    # caller's shell as a non-zero status — not an error, but surprising for
+    # set -e chains and nightly automation. Gate on BATCH_MODE so single-issue
+    # mode exits 0 (the closure summary was already printed by handle_closed_issue).
+    if [ "${BATCH_MODE:-false}" = "true" ]; then
+      return $_closed_exit
+    else
+      return 0
+    fi
   fi
 
   # Ensure normalization variables are set.
@@ -2210,6 +2238,15 @@ main() {
 
   if [ $workflow_exit -eq 0 ]; then
     exit 0
+  elif [ $workflow_exit -eq 12 ]; then
+    # Issue was already closed at start — sentinel for batch stat-gathering skip.
+    # Not an error: the closure summary was already printed by handle_closed_issue().
+    # Only reachable when BATCH_MODE=true (run_workflow returns 0 in single-issue mode
+    # so callers in set -e chains and nightly automation see a clean exit).
+    # batch-process-issues.sh captures this exit code and routes to the
+    # already_closed_at_start path, skipping the post-issue gh API calls.
+    # See: docs/architecture/exit-codes.md
+    exit 12
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6

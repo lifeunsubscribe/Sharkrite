@@ -99,13 +99,23 @@ As a safety net, when tests fail after merge AND after dependency reinstall, `ve
 - Closed-issue cleanup (the bug this section was written to fix). `run_workflow()` already returns exit 0 for closed issues, so removing the batch short-circuit is zero-risk.
 - Any per-issue cleanup that `run_workflow()` performs at exit (session state, worktrees, branches).
 
-**Regression test:** `tests/regression/batch-single-issue-parity.bats` asserts:
-- `handle_closed_issue` is defined in `workflow-runner.sh` (structural)
-- The batch no longer has a bare CLOSED short-circuit (structural)
-- Each documented divergence has an inline comment (structural)
-- The behavioral contract for closed issues: full summary + all 4 artifact removals
+**Batch-level reporting is allowed to differ based on work context (not a parity violation):**
 
-**Bug history:** Issue #274 — `batch-process-issues.sh` had a bare `continue` for closed issues that silently bypassed all artifact cleanup. Eight orphan worktrees accumulated (#34, #201-#203 and others) because every batch run hit the short-circuit before `run_workflow()` could clean them up. Fixed by removing the short-circuit and extracting `handle_closed_issue()`.
+The parity contract covers **per-issue side effects**: cleanup, artifact removal, closure summary output. It does NOT require the batch-level reporting layer to treat all successful `run_workflow()` returns identically.
+
+Specifically: after a closed-issue run (exit 12), the batch may — and should — skip the post-issue gh API calls (pr list, pr view, issue list) that gather PR stats for the batch summary. Those calls are only meaningful after an active dev session produced new work. Skipping them for an issue that was already closed when the batch started is not a parity violation; the closure summary (the per-issue side effect) was already produced identically by `handle_closed_issue()`.
+
+This is the "reporting layer differentiation" principle: parity is about **what happened to the issue**; reporting is about **what to surface to the user**.
+
+Concrete implementation: `handle_closed_issue()` returns exit code 12 (sentinel). `batch-process-issues.sh` captures this before any `if/then` test (`_WF_EXIT=0; cmd || _WF_EXIT=$?`) and routes exit 12 to a skip path that adds the issue to `ALREADY_CLOSED_AT_START_ISSUES`, records status `already_closed_at_start`, and proceeds to the next issue without firing any gh API calls. See `docs/architecture/exit-codes.md` — exit code 12.
+
+**Regression tests:**
+- `tests/regression/batch-single-issue-parity.bats` — parity contract (structural + behavioral)
+- `tests/regression/batch-closed-issue-skip-stats.bats` — exit 12 sentinel + stat-gathering skip
+
+**Bug history:**
+- Issue #274 — bare `continue` for closed issues bypassed all cleanup. Fixed by extracting `handle_closed_issue()`.
+- Issue #316 — batch's post-issue gh calls fired even for already-closed issues (exit-12 path missing). Fixed by sentinel exit code + batch routing.
 
 ### Active Process Filtering
 
