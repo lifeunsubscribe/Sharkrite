@@ -21,6 +21,14 @@ RITE_MAX_ISSUE_HOURS=4      # Per-issue cap — fires if a single issue runs >4h
 
 # Claude assessment timeout (seconds)
 RITE_ASSESSMENT_TIMEOUT=300
+
+# Documentation assessment outer timeout (seconds).
+# Caps the total wall-clock wait for the post-merge doc assessment subprocess.
+# The 4 independent sub-assessments (security, arch, api, ADR) run in parallel,
+# so typical wall-clock is ~25-35s; 180s provides comfortable margin.
+# If the timeout fires, merge-pr.sh logs a warning and continues — doc updates
+# are not a merge blocker.
+RITE_DOC_ASSESSMENT_TIMEOUT=180
 ```
 
 See [config/project.conf.example](../config/project.conf.example) for all options.
@@ -71,7 +79,8 @@ Control how Claude assesses PR review issues:
 | `RITE_MAX_SESSION_HOURS` | Max **cumulative active work** hours per session (not wall-clock). Fires when the sum of per-issue tracked durations crosses this threshold. A zombie state file from a prior run contributes 0 to this counter. | `12` |
 | `RITE_MAX_ISSUE_HOURS` | Max hours for a **single issue**. Fires when a single `rite N` invocation exceeds this threshold — protects against fix-loop runaway and yak-shaves. | `4` |
 | `RITE_MAX_RETRIES` | Fix loop attempts | `3` |
-| `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) | `300` |
+| `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) for the review-issue assessment phase | `300` |
+| `RITE_DOC_ASSESSMENT_TIMEOUT` | Outer wall-clock cap (seconds) on the post-merge doc assessment subprocess. The 4 independent sub-assessments (security, arch, api, ADR) run in parallel, so typical wall-clock is ~25-35s; 180s provides comfortable margin. On timeout: warning logged, workflow continues. | `180` |
 | `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
 | `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |
 | `RITE_LOCK_DIR` | Directory for per-issue lock files. **Must be local storage** — stale lock reclamation uses `kill -0` which is only valid within a single host/PID namespace. Do not point this at NFS/shared storage. | `$RITE_PROJECT_ROOT/.rite/locks` |

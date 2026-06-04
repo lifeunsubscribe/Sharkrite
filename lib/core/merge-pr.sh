@@ -1545,12 +1545,31 @@ EOF
     echo "  3. Update project board if using one"
     echo ""
   fi
-  # Wait for background doc assessment and report results
+  # Wait for background doc assessment and report results.
+  # Bounded by RITE_DOC_ASSESSMENT_TIMEOUT (default 180s): if the assessment
+  # hangs (Claude API outage, network drop), a watchdog kills the background
+  # process and we continue — stale/missing doc updates are not a merge blocker.
+  # The 180s default covers the fan-out wall-clock (max ~30s) plus reconcile
+  # (~30s) with comfortable margin.
   if [ -n "${_DOC_PID:-}" ]; then
     _doc_exit=0
+    _doc_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-180}"
+
+    # Start a watchdog: after the timeout, SIGTERM the doc assessment subprocess.
+    # The watchdog itself is killed when the doc assessment finishes first.
+    ( sleep "$_doc_timeout" && kill -TERM "$_DOC_PID" 2>/dev/null ) &
+    _doc_watchdog_pid=$!
+
     wait "$_DOC_PID" 2>/dev/null || _doc_exit=$?
 
-    if [ $_doc_exit -ne 0 ] && [ $_doc_exit -ne 2 ]; then
+    # Cancel the watchdog if the doc assessment finished before the timeout.
+    kill -TERM "$_doc_watchdog_pid" 2>/dev/null || true
+    wait "$_doc_watchdog_pid" 2>/dev/null || true
+
+    if [ "$_doc_exit" -eq 143 ] || [ "$_doc_exit" -eq 137 ]; then
+      # 143 = SIGTERM (128+15), 137 = SIGKILL (128+9) — both mean timed out.
+      print_warning "Documentation assessment timed out after ${_doc_timeout}s — continuing without doc updates" >&2
+    elif [ $_doc_exit -ne 0 ] && [ $_doc_exit -ne 2 ]; then
       # Surface failure visibly: warning + last 20 lines of log to stderr so
       # the user sees why the assessment failed even in auto/piped mode.
       print_warning "Documentation assessment failed (exit $_doc_exit)" >&2
