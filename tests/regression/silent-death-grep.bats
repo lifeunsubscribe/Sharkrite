@@ -140,6 +140,125 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+# ---------------------------------------------------------------------------
+# Boundary tests: Rule 8 AWK lookahead flush at file boundaries
+#
+# The AWK program uses a pending-line buffer: when a triggering line is found
+# it sets pending_line=FNR, then resolves on the NEXT line.  Three flush paths
+# exist and each must be exercised:
+#
+#   1. FNR == 1 (start of next file) — flushes pending from previous file
+#   2. END block                     — flushes pending from last/only file
+#   3. Same file, next line has guard — clears pending without printing
+#
+# The old per-file sed lookahead behaved identically (sed returned empty string
+# for next_line when the trigger was on the last line; no guard = violation).
+# These tests lock in that behavioral equivalence for the AWK replacement.
+# ---------------------------------------------------------------------------
+
+@test "Rule 8 boundary: trigger on last line of file fires violation (END block)" {
+  # Unsafe pattern on the very last line — no next line to resolve the lookahead.
+  # The AWK END block must flush pending_line and fire the violation.
+  cat > "$RITE_LINT_TEST_DIR/r8-last-line-unsafe.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+echo "preamble"
+RESULT=$(echo "data" | grep "pattern")
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
+  [[ "$output" =~ "r8-last-line-unsafe.sh" ]]
+}
+
+@test "Rule 8 boundary: safe pattern on last line of file — no violation" {
+  # Safe pattern (|| true) on the very last line — no violation expected.
+  # Use RITE_LINT_EXTRA_DIRS with a temp dir outside lib/ to avoid Rule 16
+  # (MISSING_RESOURCE_GUARD) firing on the fixture itself.
+  local _safe_dir="${BATS_TEST_TMPDIR}/r8-safe-boundary"
+  mkdir -p "$_safe_dir"
+  cat > "$_safe_dir/r8-last-line-safe.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+echo "preamble"
+RESULT=$(echo "data" | grep "pattern" || true)
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_safe_dir"
+  run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
+
+  [[ ! "$output" =~ "r8-last-line-safe.sh" ]]
+}
+
+@test "Rule 8 boundary: single-line file with unsafe trigger fires violation" {
+  # File has exactly one line (the trigger itself).
+  # AWK: FNR==1 fires (nothing pending yet), then main block sets pending_line=1.
+  # END block must flush and fire the violation.
+  cat > "$RITE_LINT_TEST_DIR/r8-single-line-unsafe.sh" <<'EOF'
+RESULT=$(echo "data" | grep "pattern")
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
+  [[ "$output" =~ "r8-single-line-unsafe.sh" ]]
+}
+
+@test "Rule 8 boundary: trigger on last line of first file fires via FNR==1 of next file" {
+  # When AWK processes multiple files, a pending trigger from the last line of
+  # file N must be flushed at FNR==1 of file N+1 (not silently dropped).
+  # Inject two fixtures; the linter scans both in one AWK pass.
+  cat > "$RITE_LINT_TEST_DIR/r8-multi-file-a.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+RESULT=$(echo "data" | grep "pattern")
+EOF
+  # Second file is clean — present only to force the multi-file AWK pass
+  cat > "$RITE_LINT_TEST_DIR/r8-multi-file-b.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+echo "clean file"
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
+  # Violation must reference the first file, not the second
+  [[ "$output" =~ "r8-multi-file-a.sh" ]]
+}
+
+@test "Rule 8 boundary: multiline pattern where guard is on line after last trigger line" {
+  # Two-line multiline pattern: trigger on line N, guard (|| true) on line N+1.
+  # This is the normal multiline-safe case but ensures the lookahead resolves
+  # correctly when it is also the end of the file.
+  # Use RITE_LINT_EXTRA_DIRS with a temp dir outside lib/ to avoid Rule 16
+  # (MISSING_RESOURCE_GUARD) firing on the fixture itself.
+  local _safe_dir="${BATS_TEST_TMPDIR}/r8-multiline-boundary"
+  mkdir -p "$_safe_dir"
+  cat > "$_safe_dir/r8-multiline-guard-at-eof.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+RESULT=$(echo "data" | \
+  grep "pattern" || true)
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_safe_dir"
+  run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
+
+  [[ ! "$output" =~ "r8-multiline-guard-at-eof.sh" ]]
+}
+
 @test "codebase has zero remaining unsafe patterns" {
   cd "$(dirname "$BATS_TEST_DIRNAME")"
 
