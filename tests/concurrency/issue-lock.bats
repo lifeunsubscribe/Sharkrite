@@ -95,9 +95,10 @@ wait_at_barrier() {
 }
 
 @test "acquire_issue_lock reclaims stale lock from dead process" {
-  # Create a lock with a fake (dead) PID
+  # Create a lock with a provably-dead PID (completed subshell — portable across
+  # all Linux pid_max settings, unlike hardcoded 99999 / 99999999).
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
-  echo "99999" > "$RITE_LOCK_DIR/issue-42.lock/pid"
+  get_dead_pid > "$RITE_LOCK_DIR/issue-42.lock/pid"
 
   # Should reclaim the stale lock
   run acquire_issue_lock 42
@@ -132,9 +133,14 @@ wait_at_barrier() {
 }
 
 @test "release_issue_lock only removes own lock (PID check)" {
-  # Create a lock with different PID
+  # Create a lock with a provably-dead PID that is NOT the current process.
+  # Using get_dead_pid() (completed subshell) is portable across all Linux
+  # pid_max settings — unlike hardcoded 99999 which can be a live PID on
+  # systems with pid_max > 99999 (containers, custom kernel configs).
+  local other_pid
+  other_pid=$(get_dead_pid)
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
-  echo "99999" > "$RITE_LOCK_DIR/issue-42.lock/pid"
+  echo "$other_pid" > "$RITE_LOCK_DIR/issue-42.lock/pid"
 
   # Try to release - should not remove (not our lock)
   release_issue_lock 42
@@ -142,8 +148,8 @@ wait_at_barrier() {
 
   # Verify PID unchanged
   local lock_pid
-  lock_pid=$(cat "$RITE_LOCK_DIR/issue-42.lock/pid")
-  [ "$lock_pid" = "99999" ]
+  lock_pid=$(cat "$RITE_LOCK_DIR/issue-42.lock/pid" || true)
+  [ "$lock_pid" = "$other_pid" ]
 }
 
 @test "concurrent rite invocations - one succeeds, one exits 1" {
@@ -234,9 +240,10 @@ wait_at_barrier() {
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
   mkdir -p "$exit_codes_dir"
 
-  # Create a stale lock
+  # Create a stale lock with a provably-dead PID (completed subshell — portable
+  # across all Linux pid_max settings, unlike hardcoded 99999 / 99999999).
   mkdir -p "$RITE_LOCK_DIR/issue-${issue_number}.lock"
-  echo "99999" > "$RITE_LOCK_DIR/issue-${issue_number}.lock/pid"
+  get_dead_pid > "$RITE_LOCK_DIR/issue-${issue_number}.lock/pid"
 
   for i in $(seq 1 $num_processes); do
     (

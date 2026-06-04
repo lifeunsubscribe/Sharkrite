@@ -85,9 +85,11 @@ teardown() {
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
   echo $$ > "$RITE_LOCK_DIR/issue-42.lock/pid"
 
-  # Issue 99: stale lock (dead PID — no process with PID 99999 on any real system)
+  # Issue 99: stale lock (dead PID — use a completed subshell rather than a
+  # hardcoded value like 99999, which can be a live PID on Linux systems with
+  # pid_max > 99999, e.g. containers or custom kernel configs).
   mkdir -p "$RITE_LOCK_DIR/issue-99.lock"
-  echo "99999" > "$RITE_LOCK_DIR/issue-99.lock/pid"
+  get_dead_pid > "$RITE_LOCK_DIR/issue-99.lock/pid"
 
   run get_locked_issue_numbers
 

@@ -117,9 +117,13 @@ teardown() {
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     _lockfile=\"\${SCRATCHPAD_FILE}.lock\"
 
-    # Simulate stale mkdir-style lock from a dead process (no live PID)
+    # Simulate stale mkdir-style lock from a dead process (no live PID).
+    # Use a completed subshell rather than a hardcoded value like 99999999 —
+    # on Linux systems with pid_max > 99999 (containers, custom kernel configs)
+    # a hardcoded large PID may actually be alive, causing flaky test failures.
     mkdir -p \"\$_lockfile\"
-    echo '99999999' > \"\$_lockfile/pid\"  # Non-existent PID
+    ( true ) & _dead_pid=\$!; wait \"\$_dead_pid\" 2>/dev/null || true
+    echo \"\$_dead_pid\" > \"\$_lockfile/pid\"
 
     # Acquire must succeed — it should remove the stale dir first
     if acquire_scratchpad_lock; then
