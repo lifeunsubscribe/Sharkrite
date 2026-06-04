@@ -729,26 +729,13 @@ done
 # intentional multi-occurrence strings. The bats codebase-sweep test in
 # tests/regression/marker-sed-extraction-validation.bats independently verifies
 # all real source-file markers are balanced.
+#
+# File list: reuses SHELL_FILES (built above) — same find flags (-L), same
+# exclusions (test-fixtures-temp*, sharkrite-lint.sh), and already includes
+# any RITE_LINT_EXTRA_DIRS entries. No separate find block needed.
 echo "Checking for unbalanced or duplicated sharkrite-extract marker pairs..."
 
-mapfile -t ALL_EXTRACT_FILES < <(
-  find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/tools" \
-    -type f \
-    ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
-    \( \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) \
-    -a ! -name 'sharkrite-lint.sh' \) \
-    2>/dev/null
-)
-# Append any extra fixture directories (injected by tests via RITE_LINT_EXTRA_DIRS)
-if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
-  IFS=: read -ra _r18_extra_dirs <<< "$RITE_LINT_EXTRA_DIRS"
-  for _r18_extra_dir in "${_r18_extra_dirs[@]}"; do
-    [ -d "$_r18_extra_dir" ] || continue
-    mapfile -t -O "${#ALL_EXTRACT_FILES[@]}" ALL_EXTRACT_FILES < <(find "$_r18_extra_dir" -type f -name "*.sh" 2>/dev/null)
-  done
-fi
-
-if [ "${#ALL_EXTRACT_FILES[@]}" -eq 0 ]; then
+if [ "${#SHELL_FILES[@]}" -eq 0 ]; then
   print_warning "tools/sharkrite-lint.sh" "0" "UNBALANCED_EXTRACT_MARKERS" \
     "Rule 18 found no source files to scan — check that bin/, lib/, and tools/ exist under PROJECT_ROOT ($PROJECT_ROOT)"
 fi
@@ -763,11 +750,11 @@ fi
 # parse correctly — colon-based field splitting breaks on such paths.
 _r18_starts=""
 _r18_ends=""
-if [ "${#ALL_EXTRACT_FILES[@]}" -gt 0 ]; then
+if [ "${#SHELL_FILES[@]}" -gt 0 ]; then
   _r18_starts=$(awk '/# sharkrite-extract: .*-start/ { print FILENAME "\t" FNR "\t" $0 }' \
-    "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+    "${SHELL_FILES[@]}" 2>/dev/null || true)
   _r18_ends=$(awk '/# sharkrite-extract: .*-end/ { print FILENAME "\t" FNR "\t" $0 }' \
-    "${ALL_EXTRACT_FILES[@]}" 2>/dev/null || true)
+    "${SHELL_FILES[@]}" 2>/dev/null || true)
 fi
 
 # Collect unique (file, marker_name) pairs from start markers.
