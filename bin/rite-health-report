@@ -25,7 +25,7 @@ MIN_WORKFLOWS=3
 # Parse args
 case "${1:-}" in
   --latest)
-    latest=$(find "$REPORTS_DIR" -name "rite-health-*.md" 2>/dev/null | sort | tail -1)
+    latest=$(find "$REPORTS_DIR" -name "rite-health-*.md" 2>/dev/null | sort | tail -1 || true)
     if [ -n "$latest" ]; then
       cat "$latest"
     else
@@ -108,8 +108,8 @@ for logfile in "${RECENT_LOGS[@]+"${RECENT_LOGS[@]}"}"; do
 done
 
 # Clean up blank lines
-DIAG_LINES=$(echo "$DIAG_LINES" | sed '/^$/d')
-TIMING_LINES=$(echo "$TIMING_LINES" | sed '/^$/d')
+DIAG_LINES=$(echo "$DIAG_LINES" | sed '/^$/d' || true)
+TIMING_LINES=$(echo "$TIMING_LINES" | sed '/^$/d' || true)
 
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
@@ -143,7 +143,7 @@ fi
 
 # --- Previous reports (last 2 for trend context) ---
 PREV_REPORTS=""
-prev_files=$(find "$REPORTS_DIR" -name "rite-health-*.md" ! -name "rite-health-${TODAY_COMPACT}.md" 2>/dev/null | sort | tail -2)
+prev_files=$(find "$REPORTS_DIR" -name "rite-health-*.md" ! -name "rite-health-${TODAY_COMPACT}.md" 2>/dev/null | sort | tail -2 || true)
 for prev_file in $prev_files; do
   PREV_REPORTS+="--- $(basename "$prev_file") ---"$'\n'
   PREV_REPORTS+=$(cat "$prev_file" 2>/dev/null || true)

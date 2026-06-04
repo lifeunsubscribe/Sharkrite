@@ -94,7 +94,7 @@ EOF
 
   # Extract sections
   local before_recent=$(sed -n '1,/## Recent Security Findings/p' "$SCRATCHPAD_FILE")
-  local after_recent=$(sed -n '/## Recent Security Findings/,/## /p' "$SCRATCHPAD_FILE" | tail -n +2)
+  local after_recent=$(sed -n '/## Recent Security Findings/,/## /p' "$SCRATCHPAD_FILE" | tail -n +2 || true)
   local after_archive=$(sed -n '/## Completed Work Archive/,$p' "$SCRATCHPAD_FILE")
 
   # Get existing entries (up to 4, since we're adding 1 new = 5 total)
@@ -342,7 +342,7 @@ EOF
 
     # Collect entries in reverse, mark extras for removal
     # Simpler approach: extract section, keep first 50 entries, reconstruct
-    local before_section=$(sed -n '1,/^## Encountered Issues/p' "$SCRATCHPAD_FILE" | head -n -1)
+    local before_section=$(sed -n '1,/^## Encountered Issues/p' "$SCRATCHPAD_FILE" | head -n -1 || true)
     local section_header=$(grep "^## Encountered Issues" "$SCRATCHPAD_FILE")
     local section_desc=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /,$d' | grep "^_" | head -1 || true)
     local entries=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /,$d' | grep "^- \*\*[0-9]" | head -50 || true)
@@ -371,7 +371,7 @@ create_tech_debt_issues() {
   fi
 
   # Extract encountered issues section
-  local section=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /d')
+  local section=$(sed -n '/^## Encountered Issues/,/^## /p' "$SCRATCHPAD_FILE" | sed '1d' | sed '/^## /d' || true)
 
   # Get entry lines
   local entries=$(echo "$section" | grep "^- \*\*[0-9]" || true)
@@ -387,13 +387,13 @@ create_tech_debt_issues() {
     [ -z "$entry" ] && continue
 
     # Parse pipe-delimited fields: - **DATE** | `file:line` | category | description | Affects: ... | Fix: ... | Done: ...
-    local date_field=$(echo "$entry" | sed 's/^- \*\*\([0-9-]*\)\*\*.*/\1/')
-    local location=$(echo "$entry" | sed 's/.*| `\([^`]*\)`.*/\1/')
-    local category=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3}')
-    local description=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4}')
-    local affects=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); sub(/^Affects: /,"",$5); print $5}')
-    local fix=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); sub(/^Fix: /,"",$6); print $6}')
-    local done_criteria=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); sub(/^Done: /,"",$7); print $7}')
+    local date_field=$(echo "$entry" | sed 's/^- \*\*\([0-9-]*\)\*\*.*/\1/' || true)
+    local location=$(echo "$entry" | sed 's/.*| `\([^`]*\)`.*/\1/' || true)
+    local category=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3}' || true)
+    local description=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4}' || true)
+    local affects=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); sub(/^Affects: /,"",$5); print $5}' || true)
+    local fix=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); sub(/^Fix: /,"",$6); print $6}' || true)
+    local done_criteria=$(echo "$entry" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); sub(/^Done: /,"",$7); print $7}' || true)
 
     # Compute a stable dedup key from file:line and category.
     # The issue title is "[tech-debt] ${category}: ${description}" — it does NOT
@@ -417,7 +417,7 @@ create_tech_debt_issues() {
       _dedup_hash=$(printf '%s' "$_dedup_key" | md5 -q | cut -c1-12)
     else
       # POSIX fallback (cksum always available): convert decimal to 12-char hex
-      _dedup_hash=$(printf '%s' "$_dedup_key" | cksum | awk '{printf "%012x", $1}')
+      _dedup_hash=$(printf '%s' "$_dedup_key" | cksum | awk '{printf "%012x", $1}' || true)
     fi
     # Marker must be a single punctuation-free token so GitHub's token-based
     # `in:body` search matches it reliably.  Colons and hyphens are token
@@ -448,7 +448,7 @@ create_tech_debt_issues() {
 
     local issue_title="[tech-debt] ${category}: ${description}"
     # Truncate title to 256 chars (GitHub limit)
-    issue_title=$(echo "$issue_title" | head -c 256)
+    issue_title=$(echo "$issue_title" | head -c 256 || true)
 
     local issue_body
     # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded

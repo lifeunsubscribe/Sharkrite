@@ -415,7 +415,7 @@ Guidance: Verify cost implications of referenced cloud services. Check for appro
       protected_matches+="$_match"$'\n'
     fi
   done
-  protected_matches=$(echo "$protected_matches" | sed '/^$/d')
+  protected_matches=$(echo "$protected_matches" | sed '/^$/d' || true)
   if [ -n "$protected_matches" ]; then
     hints+="### Sensitivity: Workflow Scripts Modified
 Files:

@@ -24,6 +24,10 @@ _r13_awk=""
 _cleanup_awk_tmpfiles() {
   [ -n "$_r8_awk"  ] && rm -f "$_r8_awk"
   [ -n "$_r13_awk" ] && rm -f "$_r13_awk"
+  # Always return 0 — the trap fires on EXIT and a non-zero return here would
+  # override the script's intended exit code (e.g. exit 0 → exit 1 when both
+  # tmpfile vars are empty and the last `[ -n "" ]` test returns 1).
+  return 0
 }
 trap '_cleanup_awk_tmpfiles' EXIT INT TERM
 

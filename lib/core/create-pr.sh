@@ -255,7 +255,7 @@ if [ "$PR_EXISTS" = false ]; then
     if [ ! -z "$ISSUE_JSON" ]; then
       ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
       ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body')
-      ISSUE_LABELS=$(echo "$ISSUE_JSON" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+      ISSUE_LABELS=$(echo "$ISSUE_JSON" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//' || true)
 
       print_success "Issue: $ISSUE_TITLE"
     fi
@@ -268,7 +268,7 @@ if [ "$PR_EXISTS" = false ]; then
     PR_TITLE="$ISSUE_TITLE"
   else
     # Extract title from branch name
-    PR_TITLE=$(echo "$CURRENT_BRANCH" | sed 's/.*\///' | tr '-' ' ' | sed 's/\b\(.\)/\u\1/g')
+    PR_TITLE=$(echo "$CURRENT_BRANCH" | sed 's/.*\///' | tr '-' ' ' | sed 's/\b\(.\)/\u\1/g' || true)
   fi
 
   # Build changes summary (marked section)

@@ -28,7 +28,7 @@ PENDING_SUBHEADER=""
 extract_key_phrase() {
   local item="$1"
   # Remove markdown formatting
-  item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' | sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' | sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
   # Extract key phrase (text before : or - or first sentence)
   if [[ "$item" =~ ^([^:—-]+)[:\—-] ]]; then
     echo "${BASH_REMATCH[1]}"
@@ -83,7 +83,7 @@ process_line() {
     local subtitle="${BASH_REMATCH[1]}"
 
     # Remove bold/italic and clean
-    subtitle=$(echo "$subtitle" | sed -E 's/\*\*//g' | sed -E 's/__//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    subtitle=$(echo "$subtitle" | sed -E 's/\*\*//g' | sed -E 's/__//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
 
     # Extract emoji if present
     local emoji=""
@@ -111,7 +111,7 @@ process_line() {
         echo "🔍 Detailed Review:"
         CURRENT_SECTION="detailed"
         ;;
-      *Suggestion*|*SUGGESTIONS*|*Minor*Suggestion*)
+      *Suggestion*|*SUGGESTIONS*)
         echo "💡 Minor Suggestions:"
         CURRENT_SECTION="suggestions"
         ;;
@@ -168,12 +168,12 @@ process_line() {
         ;;
       alignment)
         # Remove markdown
-        item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g')
+        item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' || true)
         echo "— $item"
         ;;
       *)
         # Other lists: keep compact
-        item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g')
+        item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' || true)
         echo "  • $item"
         ;;
     esac
@@ -192,7 +192,7 @@ process_line() {
     fi
 
     # Remove markdown formatting
-    local clean_line=$(echo "$line" | sed -E 's/\*\*//g' | sed -E 's/__//g')
+    local clean_line=$(echo "$line" | sed -E 's/\*\*//g' | sed -E 's/__//g' || true)
 
     # Skip pure whitespace
     if [[ "$clean_line" =~ ^[[:space:]]*$ ]]; then

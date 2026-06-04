@@ -459,7 +459,7 @@ if [ -n "$ADR_SUGGESTIONS" ]; then
       [ "$_backfill_count" -ge "$BACKFILL_COUNT" ] && break
 
       # Extract SHA and message
-      commit_sha=$(echo "$commit_line" | awk '{print $1}')
+      commit_sha=$(echo "$commit_line" | awk '{print $1}' || true)
       commit_msg=$(echo "$commit_line" | cut -d' ' -f2-)
 
       # Get commit details

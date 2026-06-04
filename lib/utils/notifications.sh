@@ -128,7 +128,7 @@ send_sms() {
   fi
 
   # Truncate message to 140 chars (SMS limit)
-  local short_message=$(echo "$message" | head -c 140)
+  local short_message=$(echo "$message" | head -c 140 || true)
 
   aws sns publish \
     --topic-arn "$SNS_TOPIC_ARN" \
@@ -157,7 +157,7 @@ send_notification_all() {
   send_slack "$message" "$urgency" || true
 
   # Format message for email (convert markdown to plain text)
-  local email_message=$(echo "$message" | sed 's/\*\*//g' | sed 's/`//g' | sed 's/^#\+ //')
+  local email_message=$(echo "$message" | sed 's/\*\*//g' | sed 's/`//g' | sed 's/^#\+ //' || true)
   local email_subject=$(echo "$email_message" | head -1 | cut -c 1-50)
   send_email "$email_subject" "$email_message" "$urgency" || true
 

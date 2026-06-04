@@ -291,7 +291,7 @@ ANALYSIS_EOF
   fi
 
   if [ -s "$CLAUDE_ERROR" ]; then
-    print_warning "Claude CLI error: $(cat "$CLAUDE_ERROR" | head -1)"
+    print_warning "$(provider_name) error: $(cat "$CLAUDE_ERROR" | head -1)"
   fi
 
   if [ -z "$SECURITY_ANALYSIS" ]; then
@@ -349,7 +349,7 @@ UPDATE_EOF
   fi
 
   if [ -s "$CLAUDE_ERROR2" ]; then
-    print_warning "Claude CLI error: $(cat "$CLAUDE_ERROR2" | head -1)"
+    print_warning "$(provider_name) error: $(cat "$CLAUDE_ERROR2" | head -1)"
   fi
 
   if [ -z "$UPDATED_GUIDE" ]; then
@@ -434,7 +434,7 @@ PR_IS_DRAFT=$(echo "$PR_DETAILS" | jq -r '.isDraft')
 PR_MERGEABLE=$(echo "$PR_DETAILS" | jq -r '.mergeable')
 PR_URL=$(echo "$PR_DETAILS" | jq -r '.url')
 PR_BASE=$(echo "$PR_DETAILS" | jq -r '.baseRefName')
-PR_HEAD=$(echo "$PR_DETAILS" | jq -r '.headRefName')
+PR_HEAD=$(echo "$PR_DETAILS" | jq -r '.headRefName' || true)
 
 if is_verbose; then
   print_header "📋 PR Information"
@@ -579,7 +579,7 @@ if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
   if [ -z "$CRITICAL_COUNT" ]; then
     # Fallback: check for "### ❌ CRITICAL" sections with actual content
     if echo "$LATEST_CLAUDE_REVIEW" | grep -q "### ❌ CRITICAL"; then
-      CRITICAL_SECTION=$(echo "$LATEST_CLAUDE_REVIEW" | sed -n '/### ❌ CRITICAL/,/###/p')
+      CRITICAL_SECTION=$(echo "$LATEST_CLAUDE_REVIEW" | sed -n '/### ❌ CRITICAL/,/###/p' || true)
       if echo "$CRITICAL_SECTION" | grep -q "#### "; then
         CRITICAL_COUNT=1
       else
@@ -1021,10 +1021,7 @@ EOF
   # Two cases:
   #   1. main is checked out in some worktree (typical) — git pull --ff-only there
   #   2. main not checked out anywhere — git fetch origin main:main updates the ref directly
-  MAIN_CHECKOUT_PATH=$(git worktree list --porcelain 2>/dev/null | awk '
-    /^worktree / { p = substr($0, 10) }
-    /^branch refs\/heads\/main$/ { print p; exit }
-  ')
+  MAIN_CHECKOUT_PATH=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree / { p = substr($0, 10) } /^branch refs\/heads\/main$/ { print p; exit }' || true)
   if [ -n "$MAIN_CHECKOUT_PATH" ]; then
     if (cd "$MAIN_CHECKOUT_PATH" && git pull --ff-only origin main >/dev/null 2>&1); then
       print_success "Local main fast-forwarded to origin/main"
@@ -1053,7 +1050,7 @@ EOF
   # Cleanup worktree if running from one
   CURRENT_DIR=$(pwd)
   if git worktree list | grep -q "$CURRENT_DIR"; then
-    MAIN_WORKTREE=$(git worktree list | head -1 | awk '{print $1}')
+    MAIN_WORKTREE=$(git worktree list | head -1 | awk '{print $1}' || true)
 
     if [ "$CURRENT_DIR" != "$MAIN_WORKTREE" ]; then
       print_status "Cleaning up worktree..."
@@ -1122,7 +1119,7 @@ EOF
 )
           # Insert after "## Completed Work Archive" header
           # Avoid awk -v with multiline value (BSD awk rejects embedded newlines)
-          ARCHIVE_LINE=$(grep -n "^## Completed Work Archive" "$TEMP_SCRATCH" | head -1 | cut -d: -f1)
+          ARCHIVE_LINE=$(grep -n "^## Completed Work Archive" "$TEMP_SCRATCH" | head -1 | cut -d: -f1 || true)
           { head -n "$ARCHIVE_LINE" "$TEMP_SCRATCH"; echo "$ARCHIVE_ENTRY"; tail -n +"$((ARCHIVE_LINE + 1))" "$TEMP_SCRATCH"; } > "$TEMP_SCRATCH.2"
           mv "$TEMP_SCRATCH.2" "$TEMP_SCRATCH"
         else
@@ -1286,7 +1283,7 @@ EOF
           # Check HIGH PRIORITY completion status
           print_status "Checking HIGH PRIORITY items completion status..."
 
-          HIGH_PRIORITY=$(sed -n '/^## 🔥 HIGH PRIORITY/,/^## /p' "$SCRATCHPAD_FILE" | sed '$d')
+          HIGH_PRIORITY=$(sed -n '/^## 🔥 HIGH PRIORITY/,/^## /p' "$SCRATCHPAD_FILE" | sed '$d' || true)
 
           if [ -n "$HIGH_PRIORITY" ]; then
             # Check each item against git history

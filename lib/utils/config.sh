@@ -120,7 +120,7 @@ RITE_DATA_DIR="${RITE_DATA_DIR:-.rite}"
 # Worktrees (global, organized by project)
 RITE_WORKTREE_BASE="${RITE_WORKTREE_BASE:-$HOME/Dev/rite-wt}"
 # Abbreviate project name to initials: clearance-screener → cs, sharkrite → sh
-_project_abbrev=$(echo "$RITE_PROJECT_NAME" | sed 's/\([a-z]\)[a-z]*/\1/g; s/-//g')
+_project_abbrev=$(echo "$RITE_PROJECT_NAME" | sed 's/\([a-z]\)[a-z]*/\1/g; s/-//g' || true)
 # Single-char abbreviations are ambiguous — use first 2 chars of single-word names
 [ ${#_project_abbrev} -le 1 ] && _project_abbrev="${RITE_PROJECT_NAME:0:2}"
 RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-wt}"

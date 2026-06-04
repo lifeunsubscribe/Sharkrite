@@ -977,7 +977,7 @@ fi
 
 # Add session stats
 SESSION_STATE=$(get_session_info)
-TOTAL_TOKENS=$(echo "$SESSION_STATE" | jq -r '.tokens_used // 0')
+TOTAL_TOKENS=$(echo "$SESSION_STATE" | jq -r '.tokens_used // 0' || true)
 SESSION_DURATION=$(echo "$SESSION_STATE" | jq -r '.session_start // 0')
 if [ "$SESSION_DURATION" != "0" ]; then
   SESSION_ELAPSED=$(( $(date +%s) - SESSION_DURATION ))

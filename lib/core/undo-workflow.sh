@@ -99,7 +99,7 @@ if [ -n "$PR_NUMBER" ]; then
   PR_DATA="${PR_DATA:-}"
   if [ -n "$PR_DATA" ]; then
     PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
-    PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName')
+    PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName' || true)
 
     # Hard stop if merged
     if [ "$PR_STATE" = "MERGED" ]; then

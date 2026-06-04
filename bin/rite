@@ -538,7 +538,7 @@ CLASSIFY_EOF
         print_warning "Doc classification failed. Configure RITE_PLAN_DOCS manually in .rite/config"
       else
         # Strip markdown fences if Claude added them despite instructions
-        _classification=$(echo "$_classification" | sed '/^```/d')
+        _classification=$(echo "$_classification" | sed '/^```/d' || true)
 
         # Parse categories
         _planning_docs=()
@@ -850,7 +850,7 @@ if [ -n "${PR_INPUT:-}" ]; then
   if [ -z "$LINKED_ISSUE" ]; then
     # Orphan PR — no linked issue. Handle based on staleness.
     PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // ""')
-    PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName // ""')
+    PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName // ""' || true)
     print_info "PR #$PR_INPUT has no linked issue"
 
     # Check staleness using remote branch (no local worktree needed)
@@ -1051,7 +1051,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
     PR_JSON=$(gh_safe pr view "$PR_NUMBER" --json state,title,headRefName,additions,deletions,changedFiles,commits,createdAt,mergedAt || true)
     PR_JSON="${PR_JSON:-"{}"}"
     PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
-    PR_BRANCH_NAME=$(echo "$PR_JSON" | jq -r '.headRefName // ""')
+    PR_BRANCH_NAME=$(echo "$PR_JSON" | jq -r '.headRefName // ""' || true)
     PR_ADDITIONS=$(echo "$PR_JSON" | jq -r '.additions // 0')
     PR_DELETIONS=$(echo "$PR_JSON" | jq -r '.deletions // 0')
     PR_FILES=$(echo "$PR_JSON" | jq -r '.changedFiles // 0')
@@ -1178,7 +1178,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
   LOG_DIR="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/logs"
   LATEST_LOG=""
   if [ -d "$LOG_DIR" ]; then
-    LATEST_LOG=$(ls -1t "$LOG_DIR"/rite-${STATUS_ISSUE}-*.log 2>/dev/null | head -1)
+    LATEST_LOG=$(ls -1t "$LOG_DIR"/rite-${STATUS_ISSUE}-*.log 2>/dev/null | head -1 || true)
   fi
   if [ "$RUN_COUNT" -gt 0 ]; then
     echo ""

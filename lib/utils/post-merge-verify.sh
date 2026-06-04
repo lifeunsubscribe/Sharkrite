@@ -81,7 +81,7 @@ verify_post_merge() {
   # Optimize pytest: parallelize if xdist available, suppress noise
   if echo "$test_cmd" | grep -q "pytest"; then
     local _py_bin
-    _py_bin=$(echo "$test_cmd" | sed 's/ -m pytest.*//')
+    _py_bin=$(echo "$test_cmd" | sed 's/ -m pytest.*//' || true)
     # Parallel execution
     if ! echo "$test_cmd" | grep -qE "\-n " && $_py_bin -c "import xdist" 2>/dev/null; then
       test_cmd="$test_cmd -n auto"

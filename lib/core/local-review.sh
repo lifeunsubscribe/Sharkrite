@@ -253,7 +253,7 @@ fi
 
 PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
 PR_BASE=$(echo "$PR_INFO" | jq -r '.baseRefName')
-PR_HEAD=$(echo "$PR_INFO" | jq -r '.headRefName')
+PR_HEAD=$(echo "$PR_INFO" | jq -r '.headRefName' || true)
 PR_URL=$(echo "$PR_INFO" | jq -r '.url')
 
 echo "  Title: $PR_TITLE"

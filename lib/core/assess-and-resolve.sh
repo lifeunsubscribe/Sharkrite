@@ -425,7 +425,7 @@ export RITE_ASSESSMENT_MODEL="$REVIEW_MODEL"
 extract_review_json() {
   local review_body="$1"
   # Extract JSON from <!-- sharkrite-review-data ... --> block
-  local json_block=$(echo "$review_body" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d')
+  local json_block=$(echo "$review_body" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
   if [ -n "$json_block" ] && echo "$json_block" | jq empty 2>/dev/null; then
     echo "$json_block"
   else
@@ -568,9 +568,9 @@ ACTIONABLE_COUNT=0
 if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   # Only show retry count if actually retrying (count > 0)
   if [ "$RETRY_COUNT" -gt 0 ]; then
-    print_status "Running Claude CLI assessment (retry $RETRY_COUNT/3)..."
+    print_status "Running review assessment (retry $RETRY_COUNT/3)..."
   else
-    print_status "Running Claude CLI assessment on all review issues..."
+    print_status "Running review assessment on all review issues..."
   fi
 
   # Run smart assessment - pass --auto flag if in auto mode
@@ -940,7 +940,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   CHANGED_FILES="${CHANGED_FILES:-}"
   CLAUDE_CONTEXT=""
   if [ -n "$CHANGED_FILES" ]; then
-    CLAUDE_CONTEXT=$(echo "$CHANGED_FILES" | sed 's/^/- `/' | sed 's/$/`/')
+    CLAUDE_CONTEXT=$(echo "$CHANGED_FILES" | sed 's/^/- `/' | sed 's/$/`/' || true)
   fi
 
   # Acceptance Criteria: extract item titles and severities from assessment headers
@@ -949,7 +949,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Parse "### Title - ACTIONABLE_NOW" or "### Title - ACTIONABLE_LATER" headers
     # Use process substitution to avoid subshell variable loss
     while IFS= read -r _ac_line; do
-      _ac_title=$(echo "$_ac_line" | sed 's/^### //; s/ - ACTIONABLE_.*//')
+      _ac_title=$(echo "$_ac_line" | sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
       # Look up severity for this item (lines after the header in assessment)
       _ac_severity=$(echo "$FILTERED_CONTENT" | grep -A 3 -F "$_ac_line" | grep -oE "Severity:.*" | head -1 | sed 's/Severity:[[:space:]]*//' | sed 's/\*//g' || true)
       _ac_severity=${_ac_severity:-MEDIUM}
@@ -959,7 +959,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
 - [ ] [$_ac_severity] $_ac_title"
     done < <(echo "$FILTERED_CONTENT" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
     # Trim leading newline
-    ACCEPTANCE_ITEMS=$(echo "$ACCEPTANCE_ITEMS" | sed '/^$/d')
+    ACCEPTANCE_ITEMS=$(echo "$ACCEPTANCE_ITEMS" | sed '/^$/d' || true)
   fi
   # Fallback if no items extracted
   if [ -z "$ACCEPTANCE_ITEMS" ]; then
@@ -1069,7 +1069,7 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   _pr_context=""
   if [ -n "${PR_TITLE:-}" ]; then
     # Truncate long PR titles to keep issue title under ~80 chars
-    _pr_context=$(echo "$PR_TITLE" | cut -c1-50 | sed 's/[[:space:]]*$//')
+    _pr_context=$(echo "$PR_TITLE" | cut -c1-50 | sed 's/[[:space:]]*$//' || true)
     [ ${#PR_TITLE} -gt 50 ] && _pr_context="${_pr_context}..."
     _pr_context="${_pr_context}: "
   fi

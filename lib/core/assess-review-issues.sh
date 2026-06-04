@@ -34,6 +34,7 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -52,9 +53,10 @@ check_assessment_freshness() {
   local pr_number="$1"
 
   # Find the most recent assessment comment timestamp
-  local assessment_timestamp
+  local assessment_timestamp _jq_assessment_ts
+  _jq_assessment_ts="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt"
   assessment_timestamp=$(gh_safe pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].createdAt' || true)
+    --jq "$_jq_assessment_ts" || true)
 
   if [ -z "$assessment_timestamp" ] || [ "$assessment_timestamp" = "null" ]; then
     return 1  # No assessment exists
@@ -78,9 +80,10 @@ check_assessment_freshness() {
   fi
 
   # Assessment is fresh — return the assessment content (after the --- separator)
-  local assessment_body
+  local assessment_body _jq_assessment_body
+  _jq_assessment_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
   assessment_body=$(gh_safe pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' || true)
+    --jq "$_jq_assessment_body" || true)
 
   echo "$assessment_body" | sed -n '/^---$/,$p' | tail -n +2
   return 0
@@ -133,9 +136,10 @@ build_prior_decisions_ledger() {
 
   # Fetch all sharkrite assessment comments, newest first
   # (newest-first + skip-if-seen = latest classification wins, no declare -A needed)
-  local assessments_json
+  local assessments_json _jq_all_assessments
+  _jq_all_assessments="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse"
   assessments_json=$(gh_safe pr view "$pr_number" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse' || true)
+    --jq "$_jq_all_assessments" || true)
   assessments_json="${assessments_json:-[]}"
 
   local count
@@ -152,7 +156,7 @@ build_prior_decisions_ledger() {
     timestamp=$(echo "$assessments_json" | jq -r ".[$i].createdAt" 2>/dev/null || echo "")
 
     # Assessment content lives after the '---' separator in the comment body
-    assessment_content=$(echo "$comment_body" | sed -n '/^---$/,$p' | tail -n +2)
+    assessment_content=$(echo "$comment_body" | sed -n '/^---$/,$p' | tail -n +2 || true)
     [ -z "$assessment_content" ] && continue
 
     # Files changed since this assessment (informational — lets assessor judge relevance)
@@ -644,9 +648,9 @@ if [ "$AUTO_MODE" = true ]; then
     fi
   done
 else
-  # SUPERVISED MODE: Interactive Claude session with permission prompts
-  print_status "Starting interactive Claude session..."
-  print_status "You can review and approve Claude's assessment decisions"
+  # SUPERVISED MODE: Interactive provider session with permission prompts
+  print_status "Starting interactive $(provider_name) session..."
+  print_status "You can review and approve assessment decisions"
   echo ""
 
   while [ $ASSESSMENT_ATTEMPT -lt $MAX_ASSESSMENT_ATTEMPTS ] && [ -z "$ASSESSMENT_OUTPUT" ]; do
@@ -752,7 +756,7 @@ fi
 
 # Build assessment summary for PR comment
 ASSESSMENT_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-ASSESSMENT_COMMENT="<!-- sharkrite-assessment pr:${PR_NUMBER} iteration:1 timestamp:${ASSESSMENT_TIMESTAMP} -->
+ASSESSMENT_COMMENT="<!-- ${RITE_MARKER_ASSESSMENT} pr:${PR_NUMBER} iteration:1 timestamp:${ASSESSMENT_TIMESTAMP} -->
 
 ## 🔍 Sharkrite Assessment
 
@@ -864,7 +868,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           if [ -n "${REASONING_KEYWORDS// /}" ]; then
             SEARCH_QUALIFIER="$REASONING_KEYWORDS in:body"
             [ -n "${RITE_ISSUE_NUMBER:-}" ] && \
-              SEARCH_QUALIFIER="\"sharkrite-source-issue:${RITE_ISSUE_NUMBER}\" $REASONING_KEYWORDS in:body"
+              SEARCH_QUALIFIER="\"${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER}\" $REASONING_KEYWORDS in:body"
             _dup_candidate=$(gh_safe issue list \
               --state open \
               --search "$SEARCH_QUALIFIER" \
@@ -877,7 +881,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             if [ -n "$_dup_candidate" ] && [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
               _dup_body=$(gh_safe issue view "$_dup_candidate" --json body --jq '.body' || true)
               _dup_body="${_dup_body:-}"
-              if echo "$_dup_body" | grep -qE "sharkrite-source-issue:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+              if echo "$_dup_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
                 DUPLICATE_ISSUE="$_dup_candidate"
               fi
             elif [ -n "$_dup_candidate" ]; then
@@ -890,7 +894,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           # Only update if the existing body is missing content we have
           EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body' || true)
           EXISTING_BODY="${EXISTING_BODY:-}"
-          REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60)
+          REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60 || true)
           if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
             print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
           else
@@ -918,7 +922,7 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # Create new issue
           print_info "  Creating issue: $ITEM_TITLE"
           SOURCE_ISSUE_MARKER=""
-          [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- sharkrite-source-issue:${RITE_ISSUE_NUMBER} -->"
+          [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER} -->"
           ISSUE_BODY="${SOURCE_ISSUE_MARKER}## From PR #${PR_NUMBER} Assessment
 
 **Severity:** ${ITEM_SEVERITY}
@@ -991,7 +995,7 @@ _Parent PR: #${PR_NUMBER}_"
       [ -n "$UPDATED_ISSUES" ] && NEW_ISSUES_LINE="${NEW_ISSUES_LINE} Updated: ${UPDATED_ISSUES}"
 
       UPDATED_BODY=$(echo "$CURRENT_BODY" | sed "/## Follow-up Issues/a\\
-${NEW_ISSUES_LINE}")
+${NEW_ISSUES_LINE}" || true)
     else
       # Add new section
       UPDATED_BODY="${CURRENT_BODY}

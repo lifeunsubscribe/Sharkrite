@@ -74,7 +74,7 @@ create_followup_issues() {
     if [[ "$line" =~ (####|Issue[[:space:]]*#|^\*\*)[[:space:]]*([0-9]+)[\.\):] ]]; then
       CURRENT_ISSUE_NUM="${BASH_REMATCH[2]}"
       # Extract title from same line or next
-      CURRENT_ISSUE_TITLE=$(echo "$line" | sed -E 's/^(####|Issue[[:space:]]*#|\*\*)[[:space:]]*[0-9]+[\.\):]?[[:space:]]*//' | sed 's/\*\*//g')
+      CURRENT_ISSUE_TITLE=$(echo "$line" | sed -E 's/^(####|Issue[[:space:]]*#|\*\*)[[:space:]]*[0-9]+[\.\):]?[[:space:]]*//' | sed 's/\*\*//g' || true)
       IN_SKIP_ITEM=false
       continue
     fi

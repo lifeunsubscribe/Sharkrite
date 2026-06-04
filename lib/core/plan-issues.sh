@@ -731,13 +731,12 @@ _lint_issues() {
             # Extract router name from "Files to Modify" section only (not "Files to Read"
             # which may reference other routers as patterns)
             # Stop at blank line OR next markdown section (**, ##, Related)
-            _router_name=$(echo "$_issue_block" | sed -n '/Files to Modify/,/^\*\*\|^##\|^Related\|^$/p' | \
-              grep -oiE 'routers/[a-z_]+\.py' | head -1 | sed 's|routers/||; s|\.py||')
+            _router_name=$(echo "$_issue_block" | sed -n '/Files to Modify/,/^\*\*\|^##\|^Related\|^$/p' | grep -oiE 'routers/[a-z_]+\.py' | head -1 | sed 's|routers/||; s|\.py||' || true)
             if [ -n "$_router_name" ]; then
               _service_file="src/services/${_router_name}_service.py"
               print_info "Adding $_service_file to '$_issue_title'" >&2
               # Insert service file after the router line in Files to Modify
-              _issue_block=$(echo "$_issue_block" | sed "s|routers/${_router_name}.py|routers/${_router_name}.py\n- ${_service_file} (create — router delegates to service)|")
+              _issue_block=$(echo "$_issue_block" | sed "s|routers/${_router_name}.py|routers/${_router_name}.py\n- ${_service_file} (create — router delegates to service)|" || true)
               warnings=$((warnings + 1))
             fi
           fi
@@ -774,7 +773,7 @@ _validate_coverage() {
 
   # Extract actual issue titles from ---ISSUE--- blocks
   local actual_titles
-  actual_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //')
+  actual_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
 
   # Find phantom titles (✅ in checklist but no matching issue)
   local phantoms=""
@@ -1017,7 +1016,7 @@ _persist_feedback_deferrals() {
   while IFS= read -r deferral_line; do
     [ -z "$deferral_line" ] && continue
     # Check if a substantially similar deferral already exists
-    _check_text=$(echo "$deferral_line" | sed 's/^- ⏭️ ([^)]*) //')
+    _check_text=$(echo "$deferral_line" | sed 's/^- ⏭️ ([^)]*) //' || true)
     if ! grep -qiF "$_check_text" "$deferrals_file" 2>/dev/null; then
       echo "$deferral_line" >> "$deferrals_file"
     fi
@@ -1106,7 +1105,7 @@ _dedup_issues() {
       if [[ "$line" =~ ^TITLE:\ (.+) ]]; then
         # Normalize: trim whitespace, lowercase for comparison
         current_title="${BASH_REMATCH[1]}"
-        current_title=$(echo "$current_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')
+        current_title=$(echo "$current_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
       fi
 
       if [[ "$line" == "---END---" ]]; then
