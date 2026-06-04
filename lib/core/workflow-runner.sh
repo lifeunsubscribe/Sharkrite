@@ -58,6 +58,8 @@ MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
+source "$RITE_LIB_DIR/utils/timeout.sh"
+ensure_timeout_cmd
 
 # ===================================================================
 # GRACEFUL EXIT HANDLING
@@ -1737,11 +1739,42 @@ handle_closed_issue() {
       fi
     fi
 
-    # 3. Delete remote branch if it still exists
-    if git ls-remote --heads origin "$pr_branch" 2>/dev/null | grep -q "$pr_branch"; then
-      if git push origin --delete "$pr_branch" 2>/dev/null; then
-        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
-        echo -e "${GREEN}  ✓ Deleted remote branch: origin/$pr_branch${NC}"
+    # 3. Delete remote branch if it still exists.
+    #    Layer 1 — short-circuit for merged PRs: merge-pr.sh's `gh pr merge --delete-branch`
+    #    already deleted the remote branch as part of the merge. Checking again with
+    #    git ls-remote is a confirmed no-op that wastes 0.3s–2min per issue (network latency
+    #    or hangs). Skip the remote check entirely when pr_state == MERGED.
+    #    This relies on the contract that merge-pr.sh always uses --delete-branch;
+    #    see docs/architecture/behavioral-design.md — "Network calls during closed-issue cleanup".
+    #    For closed-not-merged PRs (rare), the remote branch may still exist — run the check.
+    #    Layer 2 — timeout: even on the not-merged path, wrap with run_with_timeout 5 so a
+    #    slow/hung network can't stall the workflow. Failure is non-fatal (orphan remote branches
+    #    are cosmetic — cleanup continues to step 4).
+    if [ "${pr_state:-}" = "MERGED" ]; then
+      : # Merged PRs: remote branch already deleted by merge handler — skip network call
+    else
+      # Layer 3 — use local remote-tracking ref when a session-level `git fetch --prune`
+      # has already run (batch mode sets _BATCH_FETCH_PRUNE_DONE=true). Local check is
+      # instant; network check (git ls-remote) is the fallback for single-issue mode.
+      local _remote_branch_exists=false
+      if [ "${_BATCH_FETCH_PRUNE_DONE:-false}" = "true" ]; then
+        # Local ref check — no network round-trip
+        if git show-ref --verify --quiet "refs/remotes/origin/$pr_branch" 2>/dev/null; then
+          _remote_branch_exists=true
+        fi
+      else
+        # Network check — single-issue mode or batch fetch failed; timeout prevents hangs
+        if run_with_timeout 5 git ls-remote --heads origin "$pr_branch" 2>/dev/null | grep -q "$pr_branch"; then
+          _remote_branch_exists=true
+        fi
+      fi
+      if [ "$_remote_branch_exists" = "true" ]; then
+        if run_with_timeout 5 git push origin --delete "$pr_branch" 2>/dev/null; then
+          [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+          echo -e "${GREEN}  ✓ Deleted remote branch: origin/$pr_branch${NC}"
+        else
+          print_warning "Could not delete remote branch origin/$pr_branch (non-fatal, orphan branch is cosmetic)"
+        fi
       fi
     fi
 
