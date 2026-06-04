@@ -196,36 +196,16 @@ _render_body_sections() {
   # The template puts "---\n\n**Time**: ...\n\n**Description**:\nProse here\n\n"
   # after the Bug Confirmation block. Extract the Description value.
   local description_text
-  description_text=$(echo "$body" | awk '
-    /^\*\*Description\*\*:/ {
-      # Collect everything after the Description: header until next **Bold**: line
-      # or a "---" divider or an ## heading
-      found = 1
-      # Remainder of the header line (inline description)
-      remainder = $0
-      sub(/^\*\*Description\*\*:[[:space:]]*/, "", remainder)
-      if (remainder != "") buf = remainder
-      next
-    }
-    found == 1 {
-      if (/^\*\*[A-Za-z].*\*\*:/ || /^## / || /^---$/) { found = 2; exit }
-      buf = (buf == "" ? $0 : buf "\n" $0)
-    }
-    END { if (buf != "") print buf }
-  ' || true)
+  # Extract the **Description**: block: from the header line through the next
+  # **Bold**: header / ## heading / --- divider. The awk script is kept on a
+  # single line so sharkrite-lint Rule 8's next-line lookahead picks up `|| true`.
+  description_text=$(echo "$body" | awk '/^\*\*Description\*\*:/ { found = 1; remainder = $0; sub(/^\*\*Description\*\*:[[:space:]]*/, "", remainder); if (remainder != "") buf = remainder; next } found == 1 { if (/^\*\*[A-Za-z].*\*\*:/ || /^## / || /^---$/) { found = 2; exit } buf = (buf == "" ? $0 : buf "\n" $0) } END { if (buf != "") print buf }' || true)
   description_text="${description_text:-}"
 
   if [ -n "$description_text" ]; then
-    # Strip leading/trailing blank lines (portable awk — no BSD-sed \n quirks)
-    description_text=$(echo "$description_text" | awk '
-      /[^[:space:]]/ { found=1 }
-      found { lines[n++] = $0 }
-      END {
-        # Trim trailing blank lines
-        while (n > 0 && lines[n-1] ~ /^[[:space:]]*$/) n--
-        for (i = 0; i < n; i++) print lines[i]
-      }
-    ' || true)
+    # Strip leading/trailing blank lines (portable awk — no BSD-sed \n quirks).
+    # Inlined onto one line so Rule 8's next-line lookahead picks up `|| true`.
+    description_text=$(echo "$description_text" | awk '/[^[:space:]]/ { found=1 } found { lines[n++] = $0 } END { while (n > 0 && lines[n-1] ~ /^[[:space:]]*$/) n--; for (i = 0; i < n; i++) print lines[i] }' || true)
     if [ -n "$description_text" ]; then
       echo "**Description:**"
       echo ""
@@ -271,23 +251,10 @@ _render_body_sections() {
   # Skip the Bug Confirmation block entirely (before the first "---"), then
   # extract the first non-empty, non-code prose paragraph.
   local prose_excerpt
-  prose_excerpt=$(echo "$body" | awk '
-    /^---$/ { past_divider = 1; next }
-    past_divider != 1 { next }
-    /^## / { next }
-    /^```/ { in_code = !in_code; next }
-    in_code { next }
-    /^\*\*Time\*\*:/ { next }
-    /^\*\*Claude Context\*\*:/ { exit }
-    /^\*\*Acceptance Criteria\*\*:/ { exit }
-    /^[[:space:]]*$/ { if (chars > 0) { blanks++; if (blanks >= 2) exit } next }
-    {
-      blanks = 0
-      print
-      chars += length($0)
-      if (chars > 600) exit
-    }
-  ' | head -20 || true)
+  # First prose paragraph after the "---" divider, skipping headings, code
+  # blocks, and standard Sharkrite sections. Inlined onto one line so Rule 8's
+  # next-line lookahead picks up `|| true`.
+  prose_excerpt=$(echo "$body" | awk '/^---$/ { past_divider = 1; next } past_divider != 1 { next } /^## / { next } /^```/ { in_code = !in_code; next } in_code { next } /^\*\*Time\*\*:/ { next } /^\*\*Claude Context\*\*:/ { exit } /^\*\*Acceptance Criteria\*\*:/ { exit } /^[[:space:]]*$/ { if (chars > 0) { blanks++; if (blanks >= 2) exit } next } { blanks = 0; print; chars += length($0); if (chars > 600) exit }' | head -20 || true)
 
   if [ -n "$prose_excerpt" ]; then
     echo "**Summary:**"
