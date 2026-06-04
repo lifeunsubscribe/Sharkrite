@@ -204,7 +204,6 @@ _stale_rebase_and_push_foreign_commits() {
       print_success "$success_msg"
       return "$return_code_on_success"
     else
-      git rebase --abort 2>/dev/null || true
       print_error "Push rejected after integrating foreign commits (another race?) — blocking"
       return 1
     fi
