@@ -356,6 +356,13 @@ _pr_link() {
 repo_wide_status() {
   local group_by_label="${1:-}"
 
+  # Backfill lock files for legacy worktrees that predate the lock infrastructure
+  # (PR #67).  This is a best-effort, fast operation: it walks git worktree list
+  # and writes a minimal `cwd`-only lock dir for any worktree whose branch maps
+  # to an open PR with a "Closes #N" reference.  Done here (before the worktree
+  # details rendering) so the backfill-lock lookup below can find the results.
+  backfill_worktree_locks 2>/dev/null || true
+
   local repo_name
   repo_name=$(basename "$RITE_PROJECT_ROOT")
 
@@ -723,6 +730,31 @@ repo_wide_status() {
             fi
           done <<< "$_locked_nums"
         fi
+      fi
+      # Backfill-lock fallback: check for lock dirs written by backfill_worktree_locks().
+      # These have a `cwd` file and a `backfill` sentinel but no live `pid`.
+      # This path is reached only when the branch name, worktree path, open PR body,
+      # and live-lock lookup all failed to identify the issue — i.e., exactly the
+      # legacy-worktree case this backfill was designed to handle.
+      if [ -z "$wt_issue_num" ] && [ -n "${RITE_LOCK_DIR:-}" ] && [ -d "${RITE_LOCK_DIR}" ]; then
+        local _bf_entry
+        for _bf_entry in "${RITE_LOCK_DIR}"/issue-*.lock; do
+          [ -d "$_bf_entry" ] || continue
+          # Must have the backfill sentinel (skip live locks without sentinel)
+          [ -f "$_bf_entry/backfill" ] || continue
+          # Must have a cwd file
+          [ -f "$_bf_entry/cwd" ] || continue
+          local _bf_cwd
+          _bf_cwd=$(cat "$_bf_entry/cwd" 2>/dev/null || true)
+          if [ -n "$_bf_cwd" ] && [ "$_bf_cwd" = "${WT_PATHS[$i]}" ]; then
+            # Extract issue number from directory name
+            local _bf_basename="${_bf_entry##*/}"  # issue-N.lock
+            local _bf_num="${_bf_basename#issue-}"  # N.lock
+            _bf_num="${_bf_num%.lock}"              # N
+            [[ "$_bf_num" =~ ^[0-9]+$ ]] && wt_issue_num="$_bf_num"
+            break
+          fi
+        done
       fi
       local wt_pr_num=""
       if [ -z "$wt_issue_num" ]; then

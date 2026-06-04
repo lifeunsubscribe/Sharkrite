@@ -13,6 +13,7 @@
 #   rite --status --by-label      Repo-wide status grouped by label
 #   rite plan [doc] [instructions] Generate issues from architectural docs
 #   rite --init                   Initialize .rite/ in current project
+#   rite --backfill-locks         Backfill issue lock files for legacy worktrees
 #   rite --dry-run <...>          Print execution plan without running
 
 set -euo pipefail
@@ -82,6 +83,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reset-approval)
       MODE="reset-approval"
+      shift
+      ;;
+    --backfill-locks)
+      MODE="backfill-locks"
       shift
       ;;
     --health-report|--rtk-report)
@@ -190,6 +195,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
+      echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
@@ -247,7 +253,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -257,6 +263,15 @@ if [ "$MODE" = "health-report" ]; then
     exec "$SCRIPT_DIR/rite-health-report" --latest
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
+fi
+
+# Backfill locks: walk worktrees, write lock files for legacy worktrees
+if [ "$MODE" = "backfill-locks" ]; then
+  source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  print_info "Backfilling lock files for legacy worktrees..."
+  backfill_worktree_locks
+  print_success "Backfill complete — run 'rite --status' to verify issue associations"
+  exit 0
 fi
 
 # Reset approval state: dispatch immediately (no workflow setup needed)
