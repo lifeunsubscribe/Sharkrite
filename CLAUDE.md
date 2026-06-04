@@ -18,6 +18,10 @@ Cross-project communication between Mako (sharkrite), Remora (clearance-screener
 
 **Conventions catalog:** `docs/architecture/conventions.md` — append-only catalog of shell conventions and anti-patterns. Auto-populated on merge via `<!-- sharkrite-convention -->` blocks in PR bodies. Load order: `CLAUDE.md` → `behavioral-design.md` → `conventions.md` → issue-specific context.
 
+## Recurring Bug Pattern Catalog
+
+**Reference:** `docs/architecture/encountered-issues.md` — auto-generated catalog of bug classes that recurred 2+ times during dogfooding. Check this when diagnosing a failure that looks familiar — it lists the variant signatures and fixes for each known pattern. Refreshed on demand via `rite --refresh-encountered-issues` (fetches closed issues labeled `recurring-pattern` from GitHub). Do not hand-edit; add patterns by labeling the originating closed issue.
+
 ## Architecture
 
 ```
