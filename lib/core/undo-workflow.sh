@@ -126,11 +126,18 @@ if [ -n "$PR_NUMBER" ]; then
   done < <(gh_safe pr view "$PR_NUMBER" --json comments --jq '.comments[].body' | \
     grep -oE "${RITE_MARKER_FOLLOWUP}:[0-9]+" | cut -d: -f2 || true)
 
-  # Deduplicate — use mapfile to read sort output line-by-line so elements
-  # with embedded whitespace stay intact (defense in depth; today's elements
-  # are issue numbers, but the pattern shouldn't depend on that).
+  # Deduplicate — portable while-read loop replaces `mapfile` (bash 4+ builtin
+  # not available in macOS system bash 3.2). Same effect: sort numerically
+  # (-n) and deduplicate (-u), read each line into a fresh array.
+  # Issue #327: mapfile crashed on macOS without homebrew bash on PATH.
+  # The "${_tmp[@]+"${_tmp[@]}"}" idiom protects against bash 3.2's "unbound
+  # variable" failure when the array is empty under set -u (PR #266 pattern).
   if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
-    mapfile -t FOLLOWUP_ISSUES < <(printf '%s\n' "${FOLLOWUP_ISSUES[@]}" | sort -un)
+    _tmp_unique=()
+    while IFS= read -r _line; do
+      _tmp_unique+=("$_line")
+    done < <(printf '%s\n' "${FOLLOWUP_ISSUES[@]}" | sort -un)
+    FOLLOWUP_ISSUES=("${_tmp_unique[@]+"${_tmp_unique[@]}"}")
   fi
 fi
 

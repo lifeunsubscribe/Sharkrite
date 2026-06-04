@@ -363,6 +363,48 @@ _dep_state=""
 
 **Exported env vars survive subprocesses, function definitions don't.** Don't use an env var as a "skip" guard for `source` if the sourced file defines functions that child processes need.
 
+### macOS bash 3.2 compatibility (CRITICAL)
+
+Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when invoked directly (e.g., from `bin/rite`). Bash 3.2 does **not** have the following bash 4.0+ features:
+
+- `mapfile` / `readarray` (array-population builtins)
+- `declare -A` (associative arrays)
+
+**Live crash (2026-06-04):** `rite --undo <N>` with follow-up issues exploded with `mapfile: command not found` when run without Homebrew bash on PATH (issue #327). Same class of bug as issue #266 (`TEMP_FILES[@]` empty-array under bash 3.2).
+
+**Fix options (in priority order):**
+
+1. **Replace with portable equivalent** (preferred for isolated usages) — replace `mapfile -t ARR < <(cmd)` with a `while IFS= read -r` loop:
+
+   ```bash
+   # Portable dedup that works on bash 3.2 (no mapfile builtin).
+   _tmp_unique=()
+   while IFS= read -r _line; do
+     _tmp_unique+=("$_line")
+   done < <(printf '%s\n' "${ARR[@]}" | sort -un)
+   ARR=("${_tmp_unique[@]+"${_tmp_unique[@]}"}")
+   ```
+
+   The `"${arr[@]+"${arr[@]}"}"` idiom prevents the bash 3.2 "unbound variable" failure for empty arrays under `set -u` (PR #266 pattern).
+
+2. **Self-re-exec guard** (preferred when a script needs multiple bash 4+ features) — add at the top, matching the established pattern in `batch-process-issues.sh:69-77`:
+
+   ```bash
+   if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+     for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+       if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+         exec "$_newer_bash" "$0" "$@"
+       fi
+     done
+     echo "Error: requires bash 4+. Install via: brew install bash" >&2
+     exit 1
+   fi
+   ```
+
+**Do NOT** change shebangs to `#!/usr/bin/env bash` — the `/bin/bash` shebang is the deliberate Sharkrite choice for scripts in `lib/`, `bin/`, and `tools/`. Write portable code instead.
+
+**Enforcement:** Lint rule `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) in `tools/sharkrite-lint.sh` flags `mapfile`, `readarray`, and `declare -A` in `#!/bin/bash` scripts without a `BASH_VERSINFO` guard. Regression tests: `tests/regression/undo-workflow-bash-3-2-compat.bats` and `tests/lint/bash-4-builtin-detection.bats`.
+
 ### .gitignore and symlinks
 
 Use `.rite` (no trailing slash). `.rite/` only matches directories, but in worktrees `.rite` is a symlink (git mode 120000 = file).
@@ -488,6 +530,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `PIPESTATUS[0]` after `|| true` — value is lost
 - `local` outside function — only works inside functions
 - Test stub committed to production path (`TEST_STUB_IN_LIB`) — files in `lib/core/`, `lib/utils/`, `lib/providers/` must never start with `# Stub `, reference `MOCK_*_FILE` env vars, or contain the literal `STUB ERROR`. These are integration-test fixtures and indicate an accidental wholesale overwrite of real code.
+- `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) — `mapfile`, `readarray`, or `declare -A` in a `#!/bin/bash` script without a `BASH_VERSINFO` re-exec guard. Crashes on macOS system bash 3.2. Add a self-re-exec guard (see `batch-process-issues.sh:69-77`) or replace with a portable while-read loop.
 
 **Suppressing false positives:**
 
@@ -503,6 +546,7 @@ EOF
 
 Supported suppression rules:
 - `UNQUOTED_HEREDOC` — for intentional variable expansion in heredocs
+- `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` — for scripts that are guaranteed to run under bash 4+ through another mechanism (document the reason clearly)
 
 **Pre-push hook** (optional):
 ```bash
