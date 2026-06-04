@@ -132,6 +132,22 @@ Checks two conditions:
 
 `init_session` resets the session clock. workflow-runner does NOT call `init_session` when `BATCH_MODE=true` — the batch owns the session timer. Without this, each child workflow-runner resets the clock and the batch summary shows "Duration: 2s."
 
+### Network Calls During Closed-Issue Cleanup
+
+**Contract with merge-pr.sh:** When a PR is merged via `gh pr merge --delete-branch`, the merge handler deletes the remote branch as part of the merge operation. `handle_closed_issue()` in `workflow-runner.sh` relies on this contract: when `pr_state == "MERGED"`, step 3 of cleanup (remote branch deletion) is skipped entirely. There is no need to check `git ls-remote` — the branch is already gone.
+
+**Why this matters:** Without the short-circuit, every closed merged-PR issue made a `git ls-remote --heads origin <branch>` round-trip — a network call that costs 0.3s on fast networks and 30s+ on slow or congested ones. On a hung network it blocks indefinitely. A batch of 10 closed merged issues previously compounded this to 3s–5min of unnecessary blocking.
+
+**Timeout policy (Layer 2):** For the closed-not-merged path (rare), the remote check still runs but is wrapped in `run_with_timeout 5`. Failure is non-fatal — a warning is logged and cleanup continues to step 4 (session state removal). Orphan remote branches are cosmetic, not functional.
+
+**Session-level prefetch (Layer 3, batch only):** `batch-process-issues.sh` runs `timeout 10 git fetch --prune origin` once at session start. When this succeeds (`_BATCH_FETCH_PRUNE_DONE=true`), `handle_closed_issue` uses `git show-ref --verify --quiet refs/remotes/origin/<branch>` (local, instant) instead of `git ls-remote` (network) for the not-merged check. This eliminates compounding network latency for large batches with multiple closed-not-merged issues. Failure of the prefetch is non-fatal — per-issue cleanup falls back to the network check.
+
+**Do not reintroduce the unconditional remote check:** The original `git ls-remote` call at the top of step 3 (pre-fix) was the source of multi-minute batch hangs. Any future contributor adding remote-branch cleanup for closed issues must either: (a) check `pr_state` first and skip for MERGED, OR (b) use `git show-ref` with a prior fetch guarantee. Neither `git ls-remote` nor `git push --delete` should be called unconditionally in this code path.
+
+**Regression test:** `tests/regression/closed-issue-cleanup-no-hang.bats` — static source checks that verify the short-circuit, timeout wrappers, and local-ref fallback are all present.
+
+**Bug history:** Issue #287 — observed 30s+ hangs per issue in a batch of closed merged PRs. The `git ls-remote` call at workflow-runner.sh:1710 (pre-fix) ran for every issue even though the branch was confirmed gone.
+
 ---
 
 ## Plan System (plan-issues.sh)

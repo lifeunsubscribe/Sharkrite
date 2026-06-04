@@ -54,6 +54,8 @@ lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-a
 
 Any short-circuit that bypasses `run_workflow()` must be documented with `# Deliberate divergence from single-issue mode: <reason>` and covered by `tests/regression/batch-single-issue-parity.bats`. See full contract: `docs/architecture/behavioral-design.md` → "Batch ↔ Single-Issue Parity Contract".
 
+**Closed-issue remote-branch cleanup:** `handle_closed_issue()` skips the `git ls-remote` check when `pr_state == "MERGED"` — the merge handler already deleted the remote branch. The not-merged path is wrapped in `run_with_timeout 5`. In batch mode, `batch-process-issues.sh` prefetches remote refs at session start so per-issue cleanup uses `git show-ref` (local) instead. See: `docs/architecture/behavioral-design.md` → "Network Calls During Closed-Issue Cleanup".
+
 ### Data Flow
 
 - `assess-review-issues.sh` outputs assessment to **stdout** (pipe-friendly)

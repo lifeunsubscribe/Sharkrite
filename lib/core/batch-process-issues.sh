@@ -319,6 +319,25 @@ else
   echo ""
 fi
 
+# Layer 3 — Session-level remote-ref prefetch (optional, best-effort):
+# A single `git fetch --prune` refreshes refs/remotes/origin/* so per-issue
+# closed-issue cleanup can use `git show-ref --verify --quiet refs/remotes/origin/<branch>`
+# (local, instant) instead of a per-issue `git ls-remote` (network).
+# This is a belt-and-suspenders optimization: Layer 1 already eliminates the
+# network call for merged PRs (the common case). This helps the rare
+# closed-not-merged path scale to large batches without compounding latency.
+# Failure is non-fatal — per-issue cleanup degrades gracefully.
+_BATCH_FETCH_PRUNE_DONE=false
+print_info "Prefetching remote refs (git fetch --prune)..."
+if timeout 10 git fetch --prune origin >/dev/null 2>&1; then
+  _BATCH_FETCH_PRUNE_DONE=true
+  print_success "Remote refs up to date"
+else
+  print_warning "git fetch --prune failed or timed out (non-fatal — cleanup will use network checks)"
+fi
+export _BATCH_FETCH_PRUNE_DONE
+echo ""
+
 # Send batch start notification
 send_notification_all "🚀 *Batch Processing Started*
 *Total Issues:* $TOTAL_ISSUES
