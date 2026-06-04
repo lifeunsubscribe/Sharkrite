@@ -1464,12 +1464,16 @@ phase_merge_pr() {
     return 1
   fi
 
-  # merge-pr.sh runs inside the worktree and can't delete the branch it has checked
-  # out (git refuses to delete a branch checked out in the current worktree). After
-  # merge-pr.sh returns the worktree is gone, but the CWD is now a deleted directory.
-  # Use -C with the main repo root so git commands resolve correctly.
-  #
-  # Prune stale worktree metadata first — git worktree remove sometimes leaves
+  # merge-pr.sh ran inside the worktree and removed it. Our shell's CWD is now a
+  # deleted directory. Restore a valid CWD before anything else runs — `git -C`
+  # protects explicit git invocations, but `gh` shells out to git internally for
+  # repo detection and does NOT honor -C, so `gh_safe pr view` below fails with
+  # `fatal: Unable to read current working directory` if we skip this cd.
+  # Regression: PR #211 fixed this for assess-documentation.sh but not for the
+  # phase_merge_pr code path; see tests/regression/cleanup-cwd-after-worktree-removal.bats.
+  cd "$RITE_PROJECT_ROOT" || cd /
+
+  # Prune stale worktree metadata — git worktree remove sometimes leaves
   # entries in .git/worktrees/, causing branch -D to fail with "checked out at".
   git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
 

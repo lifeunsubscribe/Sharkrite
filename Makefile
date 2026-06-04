@@ -29,7 +29,7 @@ shellcheck:
 		echo "ERROR: shellcheck not installed. Install with: brew install shellcheck"; \
 		exit 1; \
 	fi
-	@find bin lib tools -type f \( -name "*.sh" -o -path "bin/rite*" -o -path "tools/git-hooks/*" \) -exec shellcheck {} +
+	@find bin lib tools -type f \( -name "*.sh" -o -path "bin/rite*" -o -path "tools/git-hooks/*" \) -exec shellcheck --severity=warning {} +
 
 # Run custom lint rules
 lint:

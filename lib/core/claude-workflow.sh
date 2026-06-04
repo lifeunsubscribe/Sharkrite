@@ -176,6 +176,9 @@ setup_issue_lock_if_needed() {
       exit 1
     fi
     # Add EXIT trap to release lock on normal completion (cleanup_on_interrupt also releases it)
+    # Early expansion of ISSUE_NUMBER is intentional — we want to release THIS
+    # specific issue's lock even if ISSUE_NUMBER is reassigned later.
+    # shellcheck disable=SC2064
     trap "release_issue_lock '$ISSUE_NUMBER'" EXIT
   fi
 }
@@ -753,7 +756,6 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   # Fetch latest assessment from PR comment (single source of truth)
   if [ -n "$FIX_PR_NUMBER" ]; then
     print_status "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
-    local _jq_assessment_body
     _jq_assessment_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
     REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
       --jq "$_jq_assessment_body" || true)
@@ -1882,7 +1884,7 @@ If the changes are unrelated work, answer UNRELATED."
     RITE_DATA_PATH="$MAIN_WORKTREE/$RITE_DATA_DIR"
     if [ -d "$RITE_DATA_PATH" ]; then
       print_status "Symlinking $RITE_DATA_DIR directory for shared scratchpad..."
-      rm -rf "$WORKTREE_PATH/$RITE_DATA_DIR" 2>/dev/null || true
+      rm -rf "${WORKTREE_PATH:?}/${RITE_DATA_DIR:?}" 2>/dev/null || true
       ln -s "$RITE_DATA_PATH" "$WORKTREE_PATH/$RITE_DATA_DIR"
       print_success "Shared scratchpad linked"
     fi

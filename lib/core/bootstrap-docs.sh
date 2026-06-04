@@ -248,12 +248,13 @@ if ! _skip_existing "$ARCH_FILE"; then
 
   EXISTING_DOCS="$EXISTING_PROJECT_DOCS"
 
-  # Detect stub/empty source files (< 10 lines, common indicator of unbuilt modules)
+  # Detect stub/empty source files (< 10 lines, common indicator of unbuilt modules).
+  # Use -print0/-0 so filenames with whitespace or special chars don't break the pipe.
   STUB_FILES=$(find . -maxdepth 4 -type f \
     \( -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \) \
     -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/__pycache__/*' \
-    -not -name "__init__.py" -not -name "*.d.ts" 2>/dev/null | \
-    xargs wc -l 2>/dev/null | awk '$1 > 0 && $1 < 10 && $2 != "total"' | head -15 || echo "")
+    -not -name "__init__.py" -not -name "*.d.ts" -print0 2>/dev/null | \
+    xargs -0 wc -l 2>/dev/null | awk '$1 > 0 && $1 < 10 && $2 != "total"' | head -15 || echo "")
 
   PROMPT_FILE=$(mktemp)
   cat > "$PROMPT_FILE" <<PROMPT_EOF
