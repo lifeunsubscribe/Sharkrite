@@ -888,6 +888,8 @@ phase_create_pr() {
   # Call create-pr.sh (pushes commits if needed, waits for review to appear)
   # Does NOT run assessment - that happens in Phase 3
   # create-pr.sh may exit with code 10 if early blocker detection triggers
+  # Export BYPASS_BLOCKERS so create-pr.sh receives it across the process boundary
+  export BYPASS_BLOCKERS
   set +e  # Temporarily disable exit-on-error to capture exit code
   if [ "$WORKFLOW_MODE" = "supervised" ]; then
     "$CREATE_PR"

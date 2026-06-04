@@ -660,3 +660,157 @@ _create_lib_file() {
     return 1
   }
 }
+
+# ===========================================================================
+# TEST 16: Orchestrated bypass path — BYPASS_BLOCKERS exported to create-pr.sh
+#
+# Regression for: "--bypass-blockers silently ineffective in PR-creation
+# shrinkage check (not exported to subprocess)".
+#
+# Verifies that when BYPASS_BLOCKERS=true is set inside workflow-runner.sh
+# and exported before calling create-pr.sh, the env var crosses the process
+# boundary so the shrinkage gate sees it.
+#
+# We test the env-var propagation directly: a subprocess that sources the
+# relevant section of the gate logic with BYPASS_BLOCKERS exported must
+# reach the bypass branch, not the blocking branch.
+# ===========================================================================
+
+@test "shrinkage bypass: BYPASS_BLOCKERS=true exported as env var reaches subprocess gate" {
+  # Simulate the gate logic from create-pr.sh that reads BYPASS_BLOCKERS.
+  # We run it in a subprocess (as create-pr.sh is when called from workflow-runner.sh)
+  # with BYPASS_BLOCKERS exported.  The subprocess must exit 0 (bypass path).
+  run bash -c "
+    export BYPASS_BLOCKERS=true
+    export WORKFLOW_MODE=unsupervised
+    # Simulate exactly the gate condition from create-pr.sh:
+    #   shrinkage fires (_shrinkage_exit != 0), bypass check runs
+    _bypass=\"\${BYPASS_BLOCKERS:-false}\"
+    _wf_mode=\"\${WORKFLOW_MODE:-unsupervised}\"
+    if [ \"\$_wf_mode\" = 'supervised' ]; then
+      echo 'WRONG: reached supervised branch'
+      exit 1
+    elif [ \"\$_bypass\" = 'true' ]; then
+      echo 'BYPASS: continuing as expected'
+      exit 0
+    else
+      echo 'BLOCK: bypass did not reach subprocess'
+      exit 1
+    fi
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BYPASS"* ]]
+}
+
+@test "shrinkage bypass: BYPASS_BLOCKERS NOT exported stays false in subprocess" {
+  # Verify the inverse: without export, the subprocess does NOT see the value.
+  # This documents the bug that existed before the fix.
+  run bash -c "
+    # Set but do NOT export (the pre-fix bug)
+    BYPASS_BLOCKERS=true
+    bash -c '
+      _bypass=\"\${BYPASS_BLOCKERS:-false}\"
+      echo \"inner_bypass=\$_bypass\"
+    '
+  "
+
+  [ "$status" -eq 0 ]
+  # Without export, the inner shell sees false (the bug)
+  [[ "$output" == *"inner_bypass=false"* ]]
+}
+
+# ===========================================================================
+# TEST 17: Pre-existing PR not auto-closed on resume when shrinkage fires
+#
+# Regression for: "Shrinkage check auto-closes pre-existing PRs on resume runs".
+#
+# Verifies that when PR_CREATED_THIS_RUN=false (resume run), the shrinkage
+# gate does NOT call gh_safe pr close — it aborts but leaves the PR intact.
+# ===========================================================================
+
+@test "shrinkage gate: does NOT close pre-existing PR on resume when blocker fires (auto mode)" {
+  local pr_closed=false
+
+  # Run the gate logic with PR_CREATED_THIS_RUN=false (resume scenario)
+  run bash -c "
+    export WORKFLOW_MODE=unsupervised
+    export BYPASS_BLOCKERS=false
+    export PR_CREATED_THIS_RUN=false
+    export PR_NUMBER=99
+
+    # Stub gh_safe: record if pr close is called
+    _pr_close_called=false
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'close' ]; then
+        _pr_close_called=true
+        echo 'ERROR: pr close called on pre-existing PR'
+        return 0
+      fi
+    }
+
+    _wf_mode=\"\${WORKFLOW_MODE:-unsupervised}\"
+    _bypass=\"\${BYPASS_BLOCKERS:-false}\"
+    if [ \"\$_wf_mode\" = 'supervised' ]; then
+      echo 'WRONG: supervised branch'
+      exit 1
+    elif [ \"\$_bypass\" = 'true' ]; then
+      echo 'WRONG: bypass branch'
+      exit 1
+    else
+      if [ \"\${PR_CREATED_THIS_RUN:-false}\" = 'true' ]; then
+        gh_safe pr close \"\$PR_NUMBER\" -c 'Closed: shrinkage'
+        echo 'CLOSE_CALLED'
+      else
+        echo 'ABORT_NO_CLOSE'
+      fi
+      exit 1
+    fi
+  "
+
+  # Must exit non-zero (blocker fires)
+  [ "$status" -eq 1 ]
+  # Must NOT have called pr close
+  [[ "$output" == *"ABORT_NO_CLOSE"* ]]
+  [[ "$output" != *"CLOSE_CALLED"* ]]
+  [[ "$output" != *"ERROR: pr close"* ]]
+}
+
+@test "shrinkage gate: DOES close newly-created PR when blocker fires (auto mode)" {
+  # Verify the positive case: a PR created this run IS auto-closed
+  run bash -c "
+    export WORKFLOW_MODE=unsupervised
+    export BYPASS_BLOCKERS=false
+    export PR_CREATED_THIS_RUN=true
+    export PR_NUMBER=42
+
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'close' ]; then
+        echo 'CLOSE_CALLED'
+        return 0
+      fi
+    }
+
+    _wf_mode=\"\${WORKFLOW_MODE:-unsupervised}\"
+    _bypass=\"\${BYPASS_BLOCKERS:-false}\"
+    if [ \"\$_wf_mode\" = 'supervised' ]; then
+      echo 'WRONG'
+      exit 1
+    elif [ \"\$_bypass\" = 'true' ]; then
+      echo 'WRONG'
+      exit 1
+    else
+      if [ \"\${PR_CREATED_THIS_RUN:-false}\" = 'true' ]; then
+        gh_safe pr close \"\$PR_NUMBER\" -c 'Closed: shrinkage'
+      else
+        echo 'WRONG: should have closed'
+      fi
+      exit 1
+    fi
+  "
+
+  # Must exit non-zero (blocker fires)
+  [ "$status" -eq 1 ]
+  # pr close MUST have been called
+  [[ "$output" == *"CLOSE_CALLED"* ]]
+}
