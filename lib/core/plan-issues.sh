@@ -797,8 +797,15 @@ _validate_coverage() {
     local _ref_canon
     _ref_canon=$(echo "$ref_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
 
-    # Check whether the canonical title appears in the index (exact-line match)
-    if echo "$_canon_index" | grep -qF "$_ref_canon"; then
+    # Skip entries that canonicalize to empty (whitespace/punctuation-only titles):
+    # grep -qxF "" matches every line, so an empty _ref_canon would never be an orphan.
+    [ -z "$_ref_canon" ] && continue
+
+    # Check whether the canonical title is a whole-line match in the index.
+    # -x (whole-line) provides parity with _dedup_issues which uses [ "$seen" = "$current_title" ]
+    # (exact equality). Without -x, a checklist title that is a substring of an emitted
+    # title would be falsely treated as matched, silently swallowing a genuine orphan.
+    if echo "$_canon_index" | grep -qxF "$_ref_canon"; then
       continue  # Matched — leave the checklist line as-is
     fi
 
@@ -807,8 +814,11 @@ _validate_coverage() {
     _orphan_count=$((_orphan_count + 1))
 
     # Remove the checklist line that references this title from the output file.
-    # Use a fixed-string sed delete to avoid regex metacharacter issues.
-    portable_sed_i "/→ Issue \"$ref_title\"/d" "$_filtered_file"
+    # grep -vF uses fixed-string (not regex) matching so titles containing /
+    # or other sed regex metacharacters cannot produce syntax errors or delete
+    # the wrong line.
+    local _needle="→ Issue \"$ref_title\""
+    grep -vF "$_needle" "$_filtered_file" > "${_filtered_file}.tmp" && mv "${_filtered_file}.tmp" "$_filtered_file" || true
   done <<< "$checklist_titles"
 
   if [ "$_orphan_count" -gt 0 ]; then

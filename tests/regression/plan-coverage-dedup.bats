@@ -328,6 +328,147 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Fixture E — slash / regex-metacharacter title
+#
+# Checklist references a title containing forward slashes and other
+# sed-regex metacharacters (e.g. "CI/CD pipeline setup").  The old
+# portable_sed_i "/→ Issue \"$ref_title\"/d" interpolated the raw title
+# into a sed address; a `/` in the title produced an unterminated address
+# error that aborted _validate_coverage under set -euo pipefail.
+#
+# With the grep -vF fix the title is treated as a fixed string, so the
+# slash is harmless.  The orphan line must be stripped and one WARNING
+# emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture E: checklist title with slashes/metacharacters strips orphan without sed error" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-e.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+- ✅ Pipeline → Issue "CI/CD pipeline setup"
+- ✅ Auth → Issue "Add Auth Module"
+
+---ISSUE---
+TITLE: Add Auth Module
+LABELS: feature
+TIME: 1hr
+BODY:
+Implement authentication.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _validate_coverage "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  # Must exit 0 (no sed syntax error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: _validate_coverage exited $exit_code — possible sed metacharacter crash" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly one WARNING (for the slash-title orphan)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Orphaned checklist line must be stripped
+  grep -q "CI/CD pipeline setup" "$issues_file" && {
+    echo "FAIL: slash-title orphan line still present in output" >&2
+    false
+  }
+
+  # The matched checklist line must remain
+  grep -q "Add Auth Module" "$issues_file" || {
+    echo "FAIL: matched checklist line was incorrectly removed" >&2
+    false
+  }
+
+  # Issue count must remain 1
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue, got $issue_count" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture F — substring collision
+#
+# Checklist references "Add API" which is a strict prefix/substring of the
+# emitted title "Add API Rate Limiting".  With unanchored grep -qF the
+# shorter title matched the longer one, so a genuine orphan was silently
+# swallowed.  With grep -qxF (whole-line) the match requires the full
+# canonical string, so the shorter title is correctly treated as an orphan
+# and one WARNING is emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture F: substring checklist title is not falsely matched by longer emitted title" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-f.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+- ✅ API integration → Issue "Add API"
+- ✅ Rate limiting → Issue "Add API Rate Limiting"
+
+---ISSUE---
+TITLE: Add API Rate Limiting
+LABELS: feature
+TIME: 1hr
+BODY:
+Implement rate limiting for the API.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _validate_coverage "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+
+  # "Add API" has no matching issue (only "Add API Rate Limiting" was emitted).
+  # Must emit exactly one WARNING for the substring orphan.
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING for substring orphan, got $warning_count" >&2
+    echo "--- stderr ---" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Warning must name the shorter title
+  grep -q "Add API\"" "$stderr_out" || grep -q "Add API'" "$stderr_out" || grep -q 'Add API' "$stderr_out" || {
+    echo "FAIL: WARNING does not mention the orphaned title 'Add API'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue count must remain 1
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue, got $issue_count" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Acceptance criterion: _validate_coverage makes zero provider_run calls
 # (structural check via grep on the source file)
 # ---------------------------------------------------------------------------
