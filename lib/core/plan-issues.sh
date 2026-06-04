@@ -69,8 +69,19 @@ _collect_auto_docs() {
   local byte_cap="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
   local project_root="${RITE_PROJECT_ROOT:-.}"
 
+  # Validate that byte_cap is a non-negative integer.  A non-numeric value
+  # (e.g. "50kb") silently passes the -eq guard above but explodes at the
+  # arithmetic expansion on line "remaining_budget=$((byte_cap - total_bytes))"
+  # under set -euo pipefail.  Warn and reset to the built-in default.
+  case "$byte_cap" in
+    ''|*[!0-9]*)
+      print_info "Auto-docs: RITE_PLAN_DOC_BYTE_CAP='$byte_cap' is not a valid integer — using default 50000" >&2
+      byte_cap=50000
+      ;;
+  esac
+
   # Escape hatch: cap=0 disables auto-discovery entirely.
-  if [ "$byte_cap" -eq 0 ] 2>/dev/null; then
+  if [ "$byte_cap" -eq 0 ]; then
     return 0
   fi
 
@@ -152,6 +163,13 @@ $(cat "$readme_path")
   # Phase 3: Remaining docs/**/*.md — alphabetically, up to remaining budget
   # -------------------------------------------------------------------------
   local remaining_budget=$((byte_cap - total_bytes))
+
+  # Warn prominently when ADRs + README have already consumed the entire budget.
+  # Without this, every remaining doc is silently skipped with only a per-file
+  # "skipping" message, making it non-obvious that grounding quality is degraded.
+  if [ "$remaining_budget" -le 0 ] && [ -d "$project_root/docs" ]; then
+    print_info "Auto-docs: ADRs + README consumed ${total_bytes}B which meets or exceeds the ${byte_cap}B cap — remaining docs/**/*.md will not be injected. Set RITE_PLAN_DOC_BYTE_CAP to a higher value to include them." >&2
+  fi
 
   if [ -d "$project_root/docs" ]; then
     local -a other_docs=()
