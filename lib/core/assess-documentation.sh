@@ -676,6 +676,7 @@ update_conventions_from_marker() {
           $0 == title { found=1; next }
           found && /^\*\*References:\*\*/ { if (index($0, prnum) > 0) { exit 0 } exit 1 }
           found && /^## / { exit 1 }
+          END { exit 1 }
         ' "$conventions_file" 2>/dev/null; then
           _already_present=true
         fi
