@@ -24,13 +24,18 @@ if ! source "$RITE_LIB_DIR/utils/colors.sh"; then
   exit 1
 fi
 
+# Source markers.sh relative to this file's location (lib/utils/) so that
+# test environments where RITE_LIB_DIR points to the install copy also work.
+_stash_manager_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_stash_manager_dir/markers.sh"
+
 # Marker tag for sharkrite-created stashes.
 # Guard the readonly declaration: when this file is sourced multiple times in
 # the same shell (which happens when several lib files independently include
 # it), bash raises "readonly variable" on the second source. Only declare if
 # not already set.
 if [ -z "${SHARKRITE_STASH_MARKER:-}" ]; then
-  readonly SHARKRITE_STASH_MARKER="[sharkrite-managed-stash]"
+  readonly SHARKRITE_STASH_MARKER="[${RITE_MARKER_STASH}]"
 fi
 
 # ===================================================================

@@ -21,6 +21,10 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
+# Source markers.sh relative to this file's location (lib/utils/) so that
+# test environments where RITE_LIB_DIR points to the install copy also work.
+_repo_status_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_repo_status_dir/markers.sh"
 
 # =============================================================================
 # Worktree scanning
@@ -211,14 +215,11 @@ get_issue_phase() {
   local review_body=""
   local review_time=""
   if [ -n "$pr_comments_json" ]; then
-    review_body=$(echo "$pr_comments_json" | jq -r '
-      [.[] | select(.body | contains("<!-- sharkrite-local-review"))]
-      | sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null || echo "")
-    review_time=$(echo "$pr_comments_json" | jq -r '
-      [.[] | select(.body | contains("<!-- sharkrite-local-review"))]
-      | sort_by(.createdAt) | reverse | .[0].createdAt // ""
-    ' 2>/dev/null || echo "")
+    local _jq_review_body_f _jq_review_time_f
+    _jq_review_body_f="[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\""
+    _jq_review_time_f="[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\""
+    review_body=$(echo "$pr_comments_json" | jq -r "$_jq_review_body_f" 2>/dev/null || echo "")
+    review_time=$(echo "$pr_comments_json" | jq -r "$_jq_review_time_f" 2>/dev/null || echo "")
   fi
 
   if [ -z "$review_body" ] || [ "$review_body" = "null" ]; then
@@ -229,9 +230,9 @@ get_issue_phase() {
   # Count review iterations
   local review_count=1
   if [ -n "$pr_comments_json" ]; then
-    review_count=$(echo "$pr_comments_json" | jq '
-      [.[] | select(.body | contains("<!-- sharkrite-local-review"))] | length
-    ' 2>/dev/null || echo "1")
+    local _jq_review_count_f
+    _jq_review_count_f="[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length"
+    review_count=$(echo "$pr_comments_json" | jq "$_jq_review_count_f" 2>/dev/null || echo "1")
     [ -z "$review_count" ] || [ "$review_count" = "0" ] && review_count=1
   fi
 
@@ -269,10 +270,9 @@ get_issue_phase() {
   # Check assessment from comments
   local assess_body=""
   if [ -n "$pr_comments_json" ]; then
-    assess_body=$(echo "$pr_comments_json" | jq -r '
-      [.[] | select(.body | contains("<!-- sharkrite-assessment"))]
-      | sort_by(.createdAt) | reverse | .[0].body // ""
-    ' 2>/dev/null || echo "")
+    local _jq_assess_body_f
+    _jq_assess_body_f="[.[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\""
+    assess_body=$(echo "$pr_comments_json" | jq -r "$_jq_assess_body_f" 2>/dev/null || echo "")
   fi
 
   if [ -z "$assess_body" ] || [ "$assess_body" = "null" ]; then

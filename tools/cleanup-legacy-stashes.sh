@@ -42,6 +42,10 @@ print_error() {
   echo -e "${RED}✗${NC} $1"
 }
 
+# Source marker constants (tools/ is one level up from lib/utils/)
+_cleanup_stashes_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_cleanup_stashes_dir/../lib/utils/markers.sh"
+
 # Parse arguments
 DRY_RUN=true
 TARGET_REPO="."
@@ -116,7 +120,7 @@ while IFS= read -r stash_line; do
   done
 
   # Also exclude already-marked stashes
-  if echo "$stash_line" | grep -qF "[sharkrite-managed-stash]"; then
+  if echo "$stash_line" | grep -qF "[${RITE_MARKER_STASH}]"; then
     is_legacy=false
   fi
 

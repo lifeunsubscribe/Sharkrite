@@ -49,6 +49,8 @@ source "$RITE_LIB_DIR/utils/git-helpers.sh"
 
 # Source scope checker (check_scope_boundary — validates changed files vs issue Scope Boundary)
 source "$RITE_LIB_DIR/utils/scope-checker.sh"
+# Source marker constants (canonical sharkrite-* marker strings)
+source "$RITE_LIB_DIR/utils/markers.sh"
 # Source gh retry helper (provides gh_safe — retries 429/5xx, handles not-found)
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
@@ -751,8 +753,10 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   # Fetch latest assessment from PR comment (single source of truth)
   if [ -n "$FIX_PR_NUMBER" ]; then
     print_status "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
+    local _jq_assessment_body
+    _jq_assessment_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
     REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
-      --jq '[.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] | sort_by(.createdAt) | reverse | .[0].body' || true)
+      --jq "$_jq_assessment_body" || true)
 
     # Strip the assessment header metadata (everything before the --- separator)
     # to give Claude just the assessment items
@@ -766,7 +770,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
 
   if [ -z "$REVIEW_CONTENT" ] || [ "$REVIEW_CONTENT" = "null" ]; then
     print_error "No assessment found on PR #${FIX_PR_NUMBER:-unknown}"
-    print_info "Expected a comment with <!-- sharkrite-assessment --> marker"
+    print_info "Expected a comment with <!-- ${RITE_MARKER_ASSESSMENT} --> marker"
     exit 1
   fi
 
@@ -970,9 +974,9 @@ find_worktree_for_task() {
     # the marker format (e.g. "sharkrite-parent-pr:N" as an example) trigger the
     # inner extraction, which returns empty, which under set -e + pipefail kills
     # the script silently. Same bug fixed in batch-process-issues.sh (commit 206f2be).
-    if echo "$issue_body" | grep -qE "sharkrite-parent-pr:[0-9]+"; then
+    if echo "$issue_body" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
       # Extract parent PR number from body marker
-      local parent_pr=$(echo "$issue_body" | grep -oE 'sharkrite-parent-pr:[0-9]+' | cut -d: -f2 || true)
+      local parent_pr=$(echo "$issue_body" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)
 
       if [ -n "$parent_pr" ]; then
         pr_branch=$(gh_safe pr view "$parent_pr" --json headRefName --jq '.headRefName' || true)
@@ -2415,7 +2419,7 @@ else
             # Append scope warning to PR body — but only if not already present
             # (guards against duplicate blocks on retry/resume runs)
             _current_pr_body=$(gh_safe pr view "$_pr_for_scope" --json body --jq '.body' || true)
-            if echo "$_current_pr_body" | grep -q '<!-- sharkrite-scope-warning -->' 2>/dev/null; then
+            if echo "$_current_pr_body" | grep -q "<!-- ${RITE_MARKER_SCOPE_WARNING} -->" 2>/dev/null; then
               print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
             else
               _scope_warn_text=$(format_scope_warning "$_scope_violations")

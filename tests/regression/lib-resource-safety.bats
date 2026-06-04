@@ -117,6 +117,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/labels.sh"
 }
 
+@test "lib/utils/markers.sh sources twice without error" {
+  _assert_double_source "lib/utils/markers.sh"
+}
+
 @test "lib/utils/logging.sh sources twice without error" {
   _assert_double_source "lib/utils/logging.sh"
 }

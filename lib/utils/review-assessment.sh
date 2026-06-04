@@ -12,11 +12,12 @@ if declare -f assess_pr_review >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
-# Source gh retry wrapper if not already loaded
+# Source gh retry wrapper and marker constants if not already loaded
 _REVIEW_ASSESSMENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -f gh_safe >/dev/null 2>&1; then
   source "$_REVIEW_ASSESSMENT_DIR/gh-retry.sh"
 fi
+source "$_REVIEW_ASSESSMENT_DIR/markers.sh"
 
 # Function: assess_pr_review
 # Extracts latest review and saves it for Claude assessment
@@ -48,9 +49,10 @@ assess_pr_review() {
 
   # Get the LATEST review only (match by body marker, not author — avoids picking up
   # assessment or other bot comments). Sorted by createdAt to ensure newest first.
-  local LATEST_REVIEW
+  local LATEST_REVIEW _jq_latest_review_f
+  _jq_latest_review_f="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body"
   LATEST_REVIEW=$(gh_safe pr view "$PR_NUMBER" --json comments \
-    --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | sort_by(.createdAt) | reverse | .[0].body' \
+    --jq "$_jq_latest_review_f" \
     || true)
   LATEST_REVIEW="${LATEST_REVIEW:-}"
 
@@ -62,7 +64,7 @@ assess_pr_review() {
 
   # Validate this is actually a code review (not arbitrary bot comment)
   # Accept: section markers OR sharkrite local review marker
-  if ! echo "$LATEST_REVIEW" | grep -qiE "##? Code Review|##+ Overview|sharkrite-local-review"; then
+  if ! echo "$LATEST_REVIEW" | grep -qiE "##? Code Review|##+ Overview|${RITE_MARKER_REVIEW}"; then
     echo "⚠️  Comment found but doesn't appear to be a code review"
     echo "   (Missing 'Code Review' or 'Overview' section markers)"
     return 3  # Exit code 3: invalid format

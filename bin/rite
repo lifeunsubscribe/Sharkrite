@@ -44,6 +44,8 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 # Source gh retry wrapper for resilient GitHub API calls
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
+# Source marker constants
+source "$RITE_LIB_DIR/utils/markers.sh"
 
 # Default mode: full lifecycle (workflow-runner)
 MODE="full"
@@ -1111,10 +1113,8 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
     fi
 
     # ── Assessment state ──
-    ASSESS_BODY=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
-      [.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
-      sort_by(.createdAt) | reverse | .[0].body // ""
-    ' || true)
+    _jq_assess_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\""
+    ASSESS_BODY=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_assess_body" || true)
     ASSESS_BODY="${ASSESS_BODY:-}"
 
     if [ -n "$ASSESS_BODY" ] && [ "$ASSESS_BODY" != "" ]; then
@@ -1127,9 +1127,8 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
     fi
 
     # ── Follow-up issues ──
-    FOLLOWUP_MARKERS=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
-      [.comments[].body | capture("sharkrite-followup-issue:(?<num>[0-9]+)") | .num] | join(", ")
-    ' || true)
+    _jq_followup_nums="[.comments[].body | capture(\"${RITE_MARKER_FOLLOWUP}:(?<num>[0-9]+)\") | .num] | join(\", \")"
+    FOLLOWUP_MARKERS=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_followup_nums" || true)
     FOLLOWUP_MARKERS="${FOLLOWUP_MARKERS:-}"
 
     if [ -n "$FOLLOWUP_MARKERS" ]; then

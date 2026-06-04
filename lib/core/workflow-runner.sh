@@ -27,6 +27,7 @@ source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
 source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
@@ -772,7 +773,7 @@ EOF
 
 **Verification results:** $_pass_count/$_cmd_count commands passed.
 
-<!-- sharkrite-auto-resolved -->" 2>/dev/null || true
+<!-- ${RITE_MARKER_AUTO_RESOLVED} -->" 2>/dev/null || true
 
             ISSUE_ALREADY_RESOLVED=true
             return 0
@@ -977,12 +978,9 @@ phase_create_pr() {
     get_latest_work_commit_time "." "$PR_NUMBER"
     latest_local_commit_time="$LATEST_COMMIT_TIME"
 
-    local latest_review_time
-    latest_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
-      [.comments[] | select(
-        .body | contains("<!-- sharkrite-local-review")
-      )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""
-    ')
+    local latest_review_time _jq_latest_review_time
+    _jq_latest_review_time="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\""
+    latest_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_latest_review_time")
 
     if [ -n "$latest_review_time" ] && [ -n "$latest_local_commit_time" ]; then
       # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison.
@@ -1049,12 +1047,9 @@ phase_assess_and_resolve() {
   # Only check on first entry (retry_count=0) — retries should always re-assess.
   if [ "$retry_count" -eq 0 ]; then
     # Fetch assessment AND check for existing follow-up issue marker in one call
-    local pr_assess_state
-    pr_assess_state=$(gh_safe pr view "$pr_number" --json comments --jq '{
-      assessment: ([.comments[] | select(.body | contains("<!-- sharkrite-assessment"))] |
-        sort_by(.createdAt) | reverse | .[0].body // ""),
-      has_followup: ([.comments[] | select(.body | contains("sharkrite-followup-issue:"))] | length > 0)
-    }')
+    local pr_assess_state _jq_pr_assess_state
+    _jq_pr_assess_state="{assessment: ([.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\"), has_followup: ([.comments[] | select(.body | contains(\"${RITE_MARKER_FOLLOWUP}:\"))] | length > 0)}"
+    pr_assess_state=$(gh_safe pr view "$pr_number" --json comments --jq "$_jq_pr_assess_state")
     pr_assess_state="${pr_assess_state:-"{}"}"
 
     local existing_assessment=$(echo "$pr_assess_state" | jq -r '.assessment // ""' 2>/dev/null)
@@ -1086,7 +1081,7 @@ phase_assess_and_resolve() {
   # Check if a follow-up issue was created in a previous run and is now resolved
   # This allows the workflow to skip directly to merge if resuming after manual resolution
   local followup_marker
-  followup_marker=$(gh_safe pr view "$pr_number" --json comments --jq '.comments[].body' | grep -oE 'sharkrite-followup-issue:[0-9]+' | tail -1 || true)
+  followup_marker=$(gh_safe pr view "$pr_number" --json comments --jq '.comments[].body' | grep -oE "${RITE_MARKER_FOLLOWUP}:[0-9]+" | tail -1 || true)
   if [ -n "$followup_marker" ]; then
     local followup_issue_num=$(echo "$followup_marker" | cut -d: -f2)
     local followup_state
@@ -1232,7 +1227,7 @@ phase_assess_and_resolve() {
         echo "  2. The Claude session may have timed out or errored"
         echo "  3. Run manually to debug:"
         echo "     cd $WORKTREE_PATH"
-        echo "     gh pr view $pr_number --json comments --jq '[.comments[] | select(.body | contains(\"sharkrite-assessment\"))] | .[-1].body'"
+        echo "     gh pr view $pr_number --json comments --jq '[.comments[] | select(.body | contains(\"${RITE_MARKER_ASSESSMENT}\"))] | .[-1].body'"
         echo "     $CLAUDE_WORKFLOW $issue_number --fix-review --pr-number $pr_number"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
@@ -1278,12 +1273,9 @@ phase_assess_and_resolve() {
     # Validate that a fresh review was actually posted before re-entering assessment.
     # Without this, a silent review generation failure causes assess-and-resolve to
     # see the same stale review → exit 3 again → infinite reroute loop.
-    local _post_reroute_review_time
-    _post_reroute_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '
-      [.comments[] | select(
-        .body | contains("<!-- sharkrite-local-review")
-      )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""
-    ')
+    local _post_reroute_review_time _jq_reroute_review_time
+    _jq_reroute_review_time="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\""
+    _post_reroute_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_reroute_review_time")
 
     # Ensure commit time is available (phase_create_pr may skip computing it)
     if [ -z "${LATEST_COMMIT_TIME:-}" ]; then
@@ -1895,18 +1887,9 @@ run_workflow() {
     local pr_latest_commit="$LATEST_COMMIT_TIME"
 
     # Get review/assessment/followup state from API (comments are immediately consistent)
-    local pr_state_json
-    pr_state_json=$(gh_safe pr view "$PR_NUMBER" --json comments --jq '{
-      latest_review: ([.comments[] | select(
-        .body | contains("<!-- sharkrite-local-review")
-      )] | sort_by(.createdAt) | reverse | .[0].createdAt // ""),
-      latest_assessment: ([.comments[] | select(
-        .body | contains("<!-- sharkrite-assessment")
-      )] | sort_by(.createdAt) | reverse | .[0].body // ""),
-      has_followup: ([.comments[] | select(
-        .body | contains("sharkrite-followup-issue:")
-      )] | length > 0)
-    }')
+    local pr_state_json _jq_pr_state
+    _jq_pr_state="{latest_review: ([.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\"), latest_assessment: ([.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body // \"\"), has_followup: ([.comments[] | select(.body | contains(\"${RITE_MARKER_FOLLOWUP}:\"))] | length > 0)}"
+    pr_state_json=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_pr_state")
     pr_state_json="${pr_state_json:-"{}"}"
     local pr_latest_review=$(echo "$pr_state_json" | jq -r '.latest_review // ""' 2>/dev/null)
     local pr_latest_assessment=$(echo "$pr_state_json" | jq -r '.latest_assessment // ""' 2>/dev/null)
