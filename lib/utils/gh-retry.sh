@@ -165,9 +165,11 @@ gh_safe() {
     #      e.g. "error: 503 Service Unavailable", curl-level messages, some gh versions
     #
     # The bare-number form uses word-boundary framing:
-    #   - Must be preceded by a non-digit (or start of string): (?<![0-9])
-    #   - Must be followed by a non-digit (or end of string): ([^0-9]|$)
-    # This prevents matching digits embedded in larger numbers (e.g. "5001", "14290").
+    #   - Must be preceded by a non-digit (or start of string): (^|[^0-9])
+    #   - Must be followed by a non-digit, non-colon (or end of string): ([^0-9:]|$)
+    # This prevents matching digits embedded in larger numbers (e.g. "5001", "14290")
+    # and avoids false positives like "configuration line 503:" where the code is
+    # immediately followed by a colon (a non-digit but clearly not an HTTP status).
     #
     # Bare parenthesised forms — false-positive guard:
     # \(429\) and \(5[0-9][0-9]\) match the gh CLI pattern "Service Unavailable (503)"
@@ -180,7 +182,7 @@ gh_safe() {
     # Text-based tokens (rate limit, server error, etc.) are long enough to be
     # unambiguous and need no additional anchoring.
     if echo "$stderr_content" | grep -qiE \
-        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9]|$)|rate limit|secondary rate|too many requests|server error"; then
+        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:]|$)|rate limit|secondary rate|too many requests|server error"; then
       if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
         # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
         local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
