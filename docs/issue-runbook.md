@@ -49,7 +49,7 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
    - [ ] Documentation updated (if applicable): specify which docs
    ```
 
-7. **Verification Commands**: Copy-paste-able commands to confirm the work
+7. **Verification Commands**: Copy-paste-able commands a human (or Claude) can run to confirm the work. These are reference material, not auto-executed — feel free to include repro setup, shell pipelines, placeholders, and inline comments.
    ```bash
    npm test -- specific.test.ts
    curl localhost:3000/endpoint | jq .field

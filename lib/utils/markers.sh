@@ -73,11 +73,3 @@ RITE_MARKER_CHANGES_SUMMARY="sharkrite-changes-summary"
 # Stash message tag — all sharkrite-created git stashes include this tag.
 # Format in stash message: [sharkrite-managed-stash]
 RITE_MARKER_STASH="sharkrite-managed-stash"
-
-# ---------------------------------------------------------------------------
-# Auto-resolution marker
-# ---------------------------------------------------------------------------
-
-# Injected into the close comment when an issue auto-resolves (all checks pass on main).
-# Format in close comment: <!-- sharkrite-auto-resolved -->
-RITE_MARKER_AUTO_RESOLVED="sharkrite-auto-resolved"
