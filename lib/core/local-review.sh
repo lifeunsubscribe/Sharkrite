@@ -241,7 +241,7 @@ echo ""
 
 # Get PR info
 print_status "Fetching PR information..."
-PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url) || {
+PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url,headRefOid) || {
   print_error "Failed to fetch PR #$PR_NUMBER"
   exit 1
 }
@@ -255,6 +255,10 @@ PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
 PR_BASE=$(echo "$PR_INFO" | jq -r '.baseRefName')
 PR_HEAD=$(echo "$PR_INFO" | jq -r '.headRefName' || true)
 PR_URL=$(echo "$PR_INFO" | jq -r '.url')
+# HEAD SHA at review time — embedded in the review marker so assess-and-resolve.sh
+# can use SHA comparison instead of timestamp comparison for staleness detection.
+PR_HEAD_SHA=$(echo "$PR_INFO" | jq -r '.headRefOid // ""' 2>/dev/null || true)
+PR_HEAD_SHA="${PR_HEAD_SHA:-}"
 
 echo "  Title: $PR_TITLE"
 echo "  Branch: $PR_HEAD -> $PR_BASE"
@@ -470,8 +474,17 @@ _timer_end "review_generation"
 print_success "Review generated successfully"
 echo ""
 
-# Add marker with model metadata for assessment consistency
-REVIEW_COMMENT="<!-- ${RITE_MARKER_REVIEW} model:${EFFECTIVE_MODEL} timestamp:$(date -u +"%Y-%m-%dT%H:%M:%SZ") -->
+# Add marker with model metadata for assessment consistency.
+# The commit: attribute records the HEAD SHA at review generation time.
+# assess-and-resolve.sh uses this for SHA-based staleness detection —
+# a deterministic "does this review cover the current HEAD?" check that
+# avoids the timestamp race conditions that caused false stale-review-loop
+# failures (see issue #354, behavioral-design.md § "Stale Review Loop").
+_REVIEW_SHA_ATTR=""
+if [ -n "${PR_HEAD_SHA:-}" ]; then
+  _REVIEW_SHA_ATTR=" commit:${PR_HEAD_SHA}"
+fi
+REVIEW_COMMENT="<!-- ${RITE_MARKER_REVIEW} model:${EFFECTIVE_MODEL} timestamp:$(date -u +"%Y-%m-%dT%H:%M:%SZ")${_REVIEW_SHA_ATTR} -->
 
 $REVIEW_OUTPUT"
 

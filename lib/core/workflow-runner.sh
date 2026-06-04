@@ -1166,25 +1166,97 @@ phase_assess_and_resolve() {
     # Validate that a fresh review was actually posted before re-entering assessment.
     # Without this, a silent review generation failure causes assess-and-resolve to
     # see the same stale review → exit 3 again → infinite reroute loop.
-    local _post_reroute_review_time _jq_reroute_review_time
-    _jq_reroute_review_time="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\""
-    _post_reroute_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_reroute_review_time")
+    #
+    # PRIMARY CHECK: SHA-based (deterministic, race-free).
+    # A fresh review embeds the HEAD SHA in its marker (commit:SHA). We verify
+    # that the latest review's embedded SHA matches the current HEAD. If it does,
+    # phase_create_pr successfully generated a fresh review covering HEAD.
+    #
+    # FALLBACK: Timestamp-based (for reviews predating issue #354 SHA embedding).
+    local _jq_reroute_latest_review
+    _jq_reroute_latest_review="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0]"
+    local _post_reroute_review_json
+    _post_reroute_review_json=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_reroute_latest_review")
+    _post_reroute_review_json="${_post_reroute_review_json:-}"
 
-    # Ensure commit time is available (phase_create_pr may skip computing it)
-    if [ -z "${LATEST_COMMIT_TIME:-}" ]; then
-      get_latest_work_commit_time "$WORKTREE_PATH" "$PR_NUMBER"
-    fi
+    if [ -n "$_post_reroute_review_json" ] && [ "$_post_reroute_review_json" != "null" ]; then
+      local _post_reroute_review_body _post_reroute_review_sha
+      _post_reroute_review_body=$(echo "$_post_reroute_review_json" | jq -r '.body // ""' 2>/dev/null || true)
+      # Extract the SHA embedded in the review marker (if present)
+      _post_reroute_review_sha=$(echo "$_post_reroute_review_body" | \
+        grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
+        grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true)
+      _post_reroute_review_sha="${_post_reroute_review_sha:-}"
 
-    if [ -n "$_post_reroute_review_time" ] && [ -n "${LATEST_COMMIT_TIME:-}" ]; then
-      local _rr_review_epoch _rr_commit_epoch
-      _rr_review_epoch=$(iso_to_epoch "$_post_reroute_review_time")
-      _rr_commit_epoch=$(iso_to_epoch "$LATEST_COMMIT_TIME")
-      if [ "$_rr_review_epoch" -gt 0 ] && [ "$_rr_commit_epoch" -gt 0 ] && \
-         [ "$_rr_review_epoch" -le "$_rr_commit_epoch" ]; then
-        print_error "Review regeneration did not produce a fresh review (review still older than latest commit)"
-        print_info "Review: $_post_reroute_review_time  Commit: $LATEST_COMMIT_TIME"
-        print_info "Manual regeneration: rite $issue_number --review-latest"
-        return 1
+      # Get current HEAD SHA — authoritative-remote-first, matching the strategy
+      # used in assess-and-resolve.sh (lines 524-530). Local git rev-parse is
+      # unreliable here: cwd may be the main checkout rather than the worktree,
+      # yielding main's HEAD SHA. That wrong SHA would compare unequal to the
+      # review SHA and falsely abort with "Review regeneration did not produce a
+      # fresh review", re-introducing the exact false-positive this issue fixes.
+      #
+      # Strategy (mirrors assess-and-resolve.sh):
+      #   1. Fetch headRefOid from the GitHub API (authoritative — matches what
+      #      was actually pushed to the remote PR branch).
+      #   2. Fall back to local git only when the worktree exists AND the local
+      #      branch matches the PR's headRefName — this guards against cwd being
+      #      on main or another branch.
+      local _rr_head_sha=""
+      local _rr_pr_head_ref _rr_remote_sha _rr_branch_name
+      _rr_pr_head_ref=$(gh_safe pr view "$PR_NUMBER" --json headRefName,headRefOid \
+        --jq '{name: .headRefName, sha: .headRefOid}' 2>/dev/null || true)
+      _rr_remote_sha=$(echo "$_rr_pr_head_ref" | jq -r '.sha // ""' 2>/dev/null || true)
+      _rr_branch_name=$(echo "$_rr_pr_head_ref" | jq -r '.name // ""' 2>/dev/null || true)
+
+      if [ -n "${_rr_remote_sha:-}" ]; then
+        # Remote API is authoritative — use it regardless of cwd.
+        _rr_head_sha="$_rr_remote_sha"
+      elif [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
+        # API call failed; fall back to local git only if we can confirm we are
+        # on the PR branch (not main).
+        local _rr_local_branch
+        _rr_local_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        if [ -n "$_rr_branch_name" ] && [ "${_rr_local_branch:-}" = "$_rr_branch_name" ]; then
+          _rr_head_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
+        elif [ -z "$_rr_branch_name" ]; then
+          # Branch name unknown (API partial failure) — fall back with a warning.
+          print_warning "Could not verify PR branch name for reroute validation — falling back to local git HEAD"
+          _rr_head_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
+        fi
+      fi
+      _rr_head_sha="${_rr_head_sha:-}"
+
+      if [ -n "$_post_reroute_review_sha" ] && [ -n "$_rr_head_sha" ]; then
+        # SHA-based validation: the fresh review must cover the current HEAD
+        if [ "$_post_reroute_review_sha" != "$_rr_head_sha" ]; then
+          print_error "Review regeneration did not produce a fresh review (review SHA ${_post_reroute_review_sha:0:8} != HEAD ${_rr_head_sha:0:8})"
+          print_info "Manual regeneration: rite $issue_number --review-latest"
+          return 1
+        fi
+        # SHA match: review is fresh, continue to reassessment
+      else
+        # Timestamp-based fallback: review predates SHA embedding or HEAD unavailable
+        local _post_reroute_review_time
+        _post_reroute_review_time=$(echo "$_post_reroute_review_json" | jq -r '.createdAt // ""' 2>/dev/null || true)
+        _post_reroute_review_time="${_post_reroute_review_time:-}"
+
+        # Ensure commit time is available (phase_create_pr may skip computing it)
+        if [ -z "${LATEST_COMMIT_TIME:-}" ]; then
+          get_latest_work_commit_time "$WORKTREE_PATH" "$PR_NUMBER"
+        fi
+
+        if [ -n "$_post_reroute_review_time" ] && [ -n "${LATEST_COMMIT_TIME:-}" ]; then
+          local _rr_review_epoch _rr_commit_epoch
+          _rr_review_epoch=$(iso_to_epoch "$_post_reroute_review_time")
+          _rr_commit_epoch=$(iso_to_epoch "$LATEST_COMMIT_TIME")
+          if [ "$_rr_review_epoch" -gt 0 ] && [ "$_rr_commit_epoch" -gt 0 ] && \
+             [ "$_rr_review_epoch" -le "$_rr_commit_epoch" ]; then
+            print_error "Review regeneration did not produce a fresh review (review still older than latest commit)"
+            print_info "Review: $_post_reroute_review_time  Commit: $LATEST_COMMIT_TIME"
+            print_info "Manual regeneration: rite $issue_number --review-latest"
+            return 1
+          fi
+        fi
       fi
     fi
 

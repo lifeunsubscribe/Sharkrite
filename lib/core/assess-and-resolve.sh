@@ -413,6 +413,19 @@ extract_review_model() {
   fi
 }
 
+# Extract the HEAD SHA that was embedded in the review marker at generation time.
+# Returns the SHA string, or empty string if the review predates SHA embedding
+# (reviews generated before issue #354 won't have this attribute).
+#
+# The SHA attribute format in the marker is: commit:<sha>
+# Full marker example: <!-- sharkrite-local-review model:X timestamp:Y commit:abc1234 -->
+extract_review_sha() {
+  local review_body="$1"
+  # Match "commit:" followed by a hex SHA (7-40 chars) inside the marker comment
+  echo "$review_body" | grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
+    grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true
+}
+
 REVIEW_MODEL=$(extract_review_model "$REVIEW_BODY")
 print_info "Review model: $REVIEW_MODEL"
 export RITE_ASSESSMENT_MODEL="$REVIEW_MODEL"
@@ -456,10 +469,28 @@ else
   export RITE_REVIEW_FORMAT="markdown"
 fi
 
-# Check if review is stale (commits pushed after review).
-# Runs on every invocation, including retries. Phase 2 should push fix commits
-# and generate a fresh review before Phase 3 re-enters, but if that fails
-# (e.g., push skipped, review generation failed), this catches it as a safety net.
+# Check if review is stale (review does not cover the current HEAD commit).
+# Runs on every invocation, including retries.
+#
+# PRIMARY CHECK: SHA-based (deterministic, race-free).
+#   Reviews generated after issue #354 embed the HEAD SHA at generation time
+#   in the marker: <!-- sharkrite-local-review ... commit:<sha> -->
+#   We compare that SHA to the PR's current HEAD:
+#     - SHA match      → review is current, proceed to assessment
+#     - SHA is ancestor → review is genuinely stale (fix commits pushed after review)
+#     - SHA not found  → force-push or SHA absent, treat as stale (log warning)
+#
+# FALLBACK: Timestamp-based (for older reviews without the commit: attribute).
+#   Uses epoch seconds comparison, not string comparison, to avoid format races.
+#   This path is preserved for backward compatibility but should rarely be reached
+#   once all active reviews are regenerated with the new marker format.
+#
+# Why SHA is superior to timestamps (issue #354):
+#   Timestamps are racy — the review's createdAt from the GitHub API can lag
+#   behind the local git commit timestamp by seconds to minutes (eventual
+#   consistency). A fix commit pushed at T+1 and a new review generated at T+2
+#   can still appear "stale" if the API returns the old review's timestamp.
+#   SHAs are deterministic: the review either covers this commit or it doesn't.
 if [ "$RETRY_COUNT" -gt 0 ]; then
   print_status "Retry $RETRY_COUNT: Checking review currency..."
 else
@@ -467,60 +498,180 @@ else
 fi
 echo ""
 
-# Get review timestamp
+# Always read review timestamp (used for display and fallback comparison)
 REVIEW_TIME="${REVIEW_TIME:-$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/null)}"
 
-# Get latest commit timestamp (local git preferred, API fallback)
-get_latest_work_commit_time "." "$PR_NUMBER"
+# Extract SHA embedded in the review marker (empty if review predates issue #354)
+REVIEW_SHA=$(extract_review_sha "$REVIEW_BODY")
 
-# Check if there are commits after the review
-if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
-  # Convert ISO timestamps to seconds since epoch for reliable comparison
-  COMMIT_EPOCH=$(iso_to_epoch "$LATEST_COMMIT_TIME")
-  REVIEW_EPOCH=$(iso_to_epoch "$REVIEW_TIME")
+# Get current HEAD SHA for the PR.
+#
+# IMPORTANT: Always use gh pr view --json headRefOid as the authoritative source.
+# Local git rev-parse HEAD is only valid when cwd is the PR's worktree, not the
+# main checkout. When called standalone (rite N --assess-and-fix), cwd is set to
+# the worktree by the caller, but we cannot assume that here — a mis-routed call
+# or direct invocation could leave cwd on main, yielding main's HEAD SHA.
+# That wrong SHA would compare unequal to the review SHA and falsely mark a
+# fresh review as stale, re-introducing the class of bug this PR fixes (#354).
+#
+# Strategy:
+#   1. Always fetch headRefOid from the GitHub API (authoritative, matches what
+#      was actually pushed to the remote PR branch).
+#   2. If the API call succeeds, use that SHA.
+#   3. Fall back to local git only when the local branch name matches the PR's
+#      headRefName — this guards against cwd being on main or another branch.
+CURRENT_HEAD_SHA=""
+_PR_HEAD_REF=$(gh_safe pr view "$PR_NUMBER" --json headRefName,headRefOid --jq '{name: .headRefName, sha: .headRefOid}' 2>/dev/null || true)
+_PR_REMOTE_SHA=$(echo "$_PR_HEAD_REF" | jq -r '.sha // ""' 2>/dev/null || true)
+_PR_BRANCH_NAME=$(echo "$_PR_HEAD_REF" | jq -r '.name // ""' 2>/dev/null || true)
 
-  if [ "$COMMIT_EPOCH" -gt "$REVIEW_EPOCH" ]; then
-    print_warning "Review is stale — commits pushed after review"
-    echo "  Review created: $REVIEW_TIME"
-    echo "  Latest commit:  $LATEST_COMMIT_TIME"
+if [ -n "$_PR_REMOTE_SHA" ]; then
+  # Use the remote HEAD SHA — this is always correct regardless of cwd.
+  CURRENT_HEAD_SHA="$_PR_REMOTE_SHA"
+else
+  # API call failed; try local git only if cwd is on the PR's branch.
+  _LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  if [ -n "$_PR_BRANCH_NAME" ] && [ "$_LOCAL_BRANCH" = "$_PR_BRANCH_NAME" ]; then
+    CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+  elif git rev-parse --git-dir >/dev/null 2>&1 && [ -z "$_PR_BRANCH_NAME" ]; then
+    # Branch name unknown (API partial failure) — fall back to local git with a
+    # warning. Worst case: a false-positive stale verdict, not a false-negative.
+    print_warning "Could not verify PR branch name — falling back to local git HEAD"
+    CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+  fi
+fi
+CURRENT_HEAD_SHA="${CURRENT_HEAD_SHA:-}"
+
+# ---- SHA-based staleness check (primary) ----
+_review_is_stale=false
+_staleness_method=""
+
+if [ -n "$REVIEW_SHA" ] && [ -n "$CURRENT_HEAD_SHA" ]; then
+  _staleness_method="sha"
+
+  if [ "$REVIEW_SHA" = "$CURRENT_HEAD_SHA" ]; then
+    # SHA match: review was generated against the exact current HEAD
+    print_success "Review is current (SHA match: ${REVIEW_SHA:0:8})"
+    echo ""
+    _review_is_stale=false
+
+  elif git merge-base --is-ancestor "$REVIEW_SHA" "$CURRENT_HEAD_SHA" 2>/dev/null; then
+    # Review SHA is an ancestor of HEAD: fix commits have been pushed since review
+    _review_is_stale=true
+    print_warning "Review is stale — review covers ${REVIEW_SHA:0:8}, HEAD is ${CURRENT_HEAD_SHA:0:8}"
+    echo "  Fix commits were pushed after the review was generated."
     echo ""
 
-    # Check if there's a newer review we missed (match only actual review comments)
-    _JQ_ALL_REVIEWS="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse"
-    ALL_REVIEWS=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_JQ_ALL_REVIEWS")
-    ALL_REVIEWS="${ALL_REVIEWS:-[]}"
+  else
+    # SHA not found in ancestry chain — force-push during workflow or git object
+    # not locally available. Treat as stale but log a warning.
+    _review_is_stale=true
+    print_warning "Review SHA (${REVIEW_SHA:0:8}) is not an ancestor of HEAD (${CURRENT_HEAD_SHA:0:8})"
+    print_info  "This may indicate a force-push occurred during the workflow. Treating as stale."
+    echo ""
+  fi
 
-    # Compare using epoch seconds (not jq string comparison) for reliable cross-format matching
-    NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | .createdAt] | map(sub("Z$";"") | split("T") | .[0] + "T" + .[1]) | map(. > "'"$LATEST_COMMIT_TIME"'" | if . then 1 else 0 end) | add // 0' 2>/dev/null || echo "0")
-    # Fallback: use the already-computed COMMIT_EPOCH for a proper epoch comparison
-    if [ "$NEWER_REVIEW_COUNT" -eq 0 ] && [ -n "$ALL_REVIEWS" ]; then
-      # Check the newest review's createdAt against commit epoch
-      _newest_review_time=$(echo "$ALL_REVIEWS" | jq -r '.[0].createdAt // ""' 2>/dev/null)
-      if [ -n "$_newest_review_time" ]; then
-        _newest_epoch=$(iso_to_epoch "$_newest_review_time")
-        if [ "$_newest_epoch" -gt "$COMMIT_EPOCH" ]; then
-          NEWER_REVIEW_COUNT=1
+else
+  # ---- Timestamp-based fallback (for reviews predating issue #354) ----
+  _staleness_method="timestamp"
+
+  if [ -z "$REVIEW_SHA" ]; then
+    print_info "Review predates SHA embedding — using timestamp comparison (fallback)"
+  else
+    print_info "HEAD SHA unavailable — using timestamp comparison (fallback)"
+  fi
+
+  # Get latest commit timestamp (local git preferred, API fallback)
+  get_latest_work_commit_time "." "$PR_NUMBER"
+
+  if [ -n "$LATEST_COMMIT_TIME" ] && [ -n "$REVIEW_TIME" ]; then
+    COMMIT_EPOCH=$(iso_to_epoch "$LATEST_COMMIT_TIME")
+    REVIEW_EPOCH=$(iso_to_epoch "$REVIEW_TIME")
+
+    if [ "$COMMIT_EPOCH" -gt "$REVIEW_EPOCH" ]; then
+      _review_is_stale=true
+      print_warning "Review is stale — commits pushed after review (timestamp comparison)"
+      echo "  Review created: $REVIEW_TIME"
+      echo "  Latest commit:  $LATEST_COMMIT_TIME"
+      echo ""
+    fi
+  fi
+fi
+
+# ---- Handle stale review ----
+if [ "$_review_is_stale" = "true" ]; then
+  # Before routing back, check if there is already a newer review posted
+  # (can happen if a concurrent run already regenerated it).
+  _JQ_ALL_REVIEWS="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse"
+  ALL_REVIEWS=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_JQ_ALL_REVIEWS")
+  ALL_REVIEWS="${ALL_REVIEWS:-[]}"
+
+  # Try to find a review that covers the current HEAD (SHA-based when available,
+  # timestamp fallback for older reviews)
+  _found_current_review=false
+  if [ -n "$CURRENT_HEAD_SHA" ]; then
+    # SHA-based: check if any existing review's commit: attribute matches current HEAD
+    _all_review_bodies=$(echo "$ALL_REVIEWS" | jq -r '.[].body' 2>/dev/null || true)
+    if echo "$_all_review_bodies" | grep -qE "${RITE_MARKER_REVIEW}[^>]*commit:${CURRENT_HEAD_SHA}"; then
+      _found_current_review=true
+      # Load the review whose SHA matches HEAD
+      REVIEW_JSON=$(echo "$ALL_REVIEWS" | \
+        jq --arg sha "$CURRENT_HEAD_SHA" \
+          '[.[] | select(.body | test("'"${RITE_MARKER_REVIEW}"'[^>]*commit:" + $sha))] | .[0]' \
+          2>/dev/null || echo "")
+      if [ -n "$REVIEW_JSON" ] && [ "$REVIEW_JSON" != "null" ] && [ "$REVIEW_JSON" != "" ]; then
+        REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null || true)
+        if [ -n "$REVIEW_BODY" ]; then
+          echo "$REVIEW_BODY" > "$REVIEW_FILE"
+          print_success "Found existing review for current HEAD (${CURRENT_HEAD_SHA:0:8}) — using it"
+          echo ""
+          _review_is_stale=false
+        else
+          _found_current_review=false
         fi
+      else
+        _found_current_review=false
       fi
     fi
+  fi
 
-    if [ "$NEWER_REVIEW_COUNT" -gt 0 ]; then
-      # A newer review exists — use it instead
-      print_info "Found newer review after latest commit — using that instead"
-      REVIEW_JSON=$(echo "$ALL_REVIEWS" | jq '.[0]' 2>/dev/null)
-      REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null)
-      echo "$REVIEW_BODY" > "$REVIEW_FILE"
-      print_success "Using current review (created after latest commit)"
-      echo ""
-    else
-      # No current review exists. Route back to Phase 2 for proper
-      # push + review generation via the standard pipeline (create-pr.sh
-      # → local-review.sh). Phase 3 should only assess, not generate.
-      print_info "No current review found — routing back to review phase"
-      exit 3
+  if [ "$_found_current_review" = "false" ] && [ "$_staleness_method" = "timestamp" ]; then
+    # Timestamp fallback: look for a review created after the latest commit
+    get_latest_work_commit_time "." "$PR_NUMBER"
+    if [ -n "${LATEST_COMMIT_TIME:-}" ]; then
+      COMMIT_EPOCH=$(iso_to_epoch "$LATEST_COMMIT_TIME")
+      # Compare using epoch seconds (not jq string comparison) for reliable cross-format matching
+      NEWER_REVIEW_COUNT=$(echo "$ALL_REVIEWS" | jq '[.[] | .createdAt] | map(sub("Z$";"") | split("T") | .[0] + "T" + .[1]) | map(. > "'"$LATEST_COMMIT_TIME"'" | if . then 1 else 0 end) | add // 0' 2>/dev/null || echo "0")
+      if [ "$NEWER_REVIEW_COUNT" -eq 0 ] && [ -n "$ALL_REVIEWS" ]; then
+        _newest_review_time=$(echo "$ALL_REVIEWS" | jq -r '.[0].createdAt // ""' 2>/dev/null)
+        if [ -n "$_newest_review_time" ]; then
+          _newest_epoch=$(iso_to_epoch "$_newest_review_time")
+          if [ "$_newest_epoch" -gt "$COMMIT_EPOCH" ]; then
+            NEWER_REVIEW_COUNT=1
+          fi
+        fi
+      fi
+      if [ "$NEWER_REVIEW_COUNT" -gt 0 ]; then
+        _found_current_review=true
+        REVIEW_JSON=$(echo "$ALL_REVIEWS" | jq '.[0]' 2>/dev/null)
+        REVIEW_BODY=$(echo "$REVIEW_JSON" | jq -r '.body' 2>/dev/null)
+        echo "$REVIEW_BODY" > "$REVIEW_FILE"
+        print_success "Found newer review after latest commit — using that instead"
+        echo ""
+        _review_is_stale=false
+      fi
     fi
   fi
+
+  # If still stale after checking all existing reviews, route back to Phase 2
+  if [ "$_review_is_stale" = "true" ]; then
+    # No current review exists. Route back to Phase 2 for proper
+    # push + review generation via the standard pipeline (create-pr.sh
+    # → local-review.sh). Phase 3 should only assess, not generate.
+    print_info "No current review found — routing back to review phase"
+    exit 3
   fi
+fi
 
 # ============================================================================
 # RAW REVIEW DISPLAY: Show what Claude will see (compact format for debugging)

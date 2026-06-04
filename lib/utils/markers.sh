@@ -31,7 +31,10 @@ rite_markers_loaded() { return 0; }
 # ---------------------------------------------------------------------------
 
 # Review comment marker — sharkrite posts code reviews under this marker.
-# Format in comment: <!-- sharkrite-local-review model:NAME timestamp:ISO -->
+# Format in comment: <!-- sharkrite-local-review model:NAME timestamp:ISO commit:SHA -->
+# The commit: attribute records the HEAD SHA at review generation time, enabling
+# SHA-based staleness detection (see assess-and-resolve.sh). Older reviews without
+# this attribute fall back to timestamp comparison.
 RITE_MARKER_REVIEW="sharkrite-local-review"
 
 # Assessment comment marker — assessment results are posted under this marker.
