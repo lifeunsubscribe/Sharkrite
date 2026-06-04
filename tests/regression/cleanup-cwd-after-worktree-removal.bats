@@ -173,3 +173,60 @@ SCRIPT2
   # The cd must come before the first gh/provider call.
   [ "$_cd_line" -lt "$_first_gh_line" ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 5: workflow-runner.sh phase_merge_pr cd's to RITE_PROJECT_ROOT after
+# merge-pr.sh returns and before any subsequent gh/git call.
+#
+# Regression: PR #211 closed #161 by fixing assess-documentation.sh, but the
+# same bug pattern existed in phase_merge_pr — it calls `gh_safe pr view`
+# after merge-pr.sh has removed the worktree. `gh` shells out to git
+# internally and does not honor `-C`, so the call fails with
+# `fatal: Unable to read current working directory`. Live failures on
+# 2026-06-04 batch (issues #182, #287). Fix: add `cd "$RITE_PROJECT_ROOT"`
+# between the merge-pr.sh return and the gh_safe pr view call.
+# ---------------------------------------------------------------------------
+
+@test "workflow-runner.sh: phase_merge_pr cd's to RITE_PROJECT_ROOT before post-merge gh/git calls" {
+  _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+  [ -f "$_wfr" ]
+
+  # Extract the body of phase_merge_pr() — from its definition to the next
+  # top-level function definition (lines starting with `phase_...() {` or
+  # `run_workflow() {` etc).
+  _body=$(awk '
+    /^phase_merge_pr\(\)/ { in_func=1 }
+    in_func && /^[a-z_]+\(\) \{/ && !/^phase_merge_pr/ { exit }
+    in_func { print }
+  ' "$_wfr")
+
+  [ -n "$_body" ]
+
+  # The body must contain a cd to RITE_PROJECT_ROOT. The exact form may be
+  # `cd "$RITE_PROJECT_ROOT"` or `cd "${RITE_PROJECT_ROOT}"`, optionally with
+  # a fallback like `|| cd /`. The pattern only asserts the cd target.
+  echo "$_body" | grep -qE 'cd "\$\{?RITE_PROJECT_ROOT\}?"'
+}
+
+@test "workflow-runner.sh: cd to RITE_PROJECT_ROOT appears between merge-pr.sh call and next gh_safe pr view" {
+  _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+  [ -f "$_wfr" ]
+
+  # Find the line that invokes merge-pr.sh (the subprocess that may remove
+  # the worktree) and the next gh_safe pr view that follows. The cd guard
+  # must appear between them. Skip comment lines (^# or whitespace + #) when
+  # locating real calls so explanatory comments don't trigger false matches.
+  _merge_line=$(grep -n '"$MERGE_PR" "$pr_number"' "$_wfr" | head -1 | cut -d: -f1)
+  _cd_line=$(awk -v start="$_merge_line" 'NR > start && !/^[[:space:]]*#/ && /cd "\$\{?RITE_PROJECT_ROOT\}?"/ { print NR; exit }' "$_wfr")
+  _next_gh_line=$(awk -v start="$_merge_line" 'NR > start && !/^[[:space:]]*#/ && /gh_safe pr view/ { print NR; exit }' "$_wfr")
+
+  [ -n "$_merge_line" ]
+  [ -n "$_cd_line" ]
+  [ -n "$_next_gh_line" ]
+
+  # merge call < cd guard < next gh call
+  [ "$_merge_line" -lt "$_cd_line" ]
+  [ "$_cd_line" -lt "$_next_gh_line" ]
+}

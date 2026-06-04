@@ -65,6 +65,44 @@ Any short-circuit that bypasses `run_workflow()` must be documented with `# Deli
 
 ## Shell Conventions
 
+### CWD after worktree removal (CRITICAL)
+
+When `merge-pr.sh` finishes a successful merge it removes the feature-branch worktree. The shell that called `merge-pr.sh` is still cd'd inside that now-deleted directory. **Any subsequent `gh` or `git` call from that shell will fail** with `fatal: Unable to read current working directory: No such file or directory`.
+
+- `git -C "$RITE_PROJECT_ROOT" ...` works around it for direct `git` calls.
+- `gh` does **not** honor `-C`; it always shells out to `git` in the current directory for repo detection. Adding `-C` to `gh` is not an option.
+- The canonical fix is to `cd "$RITE_PROJECT_ROOT" || cd /` immediately after `merge-pr.sh` returns, before any subsequent `gh`/`git` call.
+
+Live regression history:
+- **2026-06-01** — Issue #161, PR #211 fixed this for `assess-documentation.sh` (a background subprocess spawned during merge cleanup).
+- **2026-06-04** — Same bug pattern resurfaced in `workflow-runner.sh::phase_merge_pr` because PR #211's regression test only covered `assess-documentation.sh`. Issues #182 and #287 ran to successful merge (PRs #289, #291 landed in main), but `phase_merge_pr`'s `gh_safe pr view` for branch cleanup crashed afterward, causing the batch reporter to mark both as `failed`. Fixed in this PR.
+
+**Enforcement:** Tests in `tests/regression/cleanup-cwd-after-worktree-removal.bats` assert the cd guard exists in both `assess-documentation.sh` and `phase_merge_pr`. Any new code path that runs `gh`/`git` after a worktree removal must add a similar test.
+
+### Shell style (CRITICAL)
+
+The project has a deliberate shell style that disagrees with shellcheck's defaults. **Do not "fix" code to match shellcheck's defaults if it follows the project style.** The policy is encoded in `.shellcheckrc` and enforced via `make check`.
+
+| Element | Project style | Shellcheck rule | Why |
+|---|---|---|---|
+| Variable references | bare `$VAR` | SC2250 disabled | Codebase ratio is 2514 unbraced : 397 braced. Braces are required only when next char would extend the var name (e.g. `"${VAR}suffix"`); shellcheck still catches those as parse errors. |
+| Test brackets | POSIX `[ "$x" = "y" ]` | SC2292 disabled | Codebase ratio is 1391 `[ ]` : 100 `[[ ]]`. Both work when properly quoted. |
+| Quoting | existing patterns | SC2248 disabled | Over-broad; existing pattern is "quote when expansion could split or glob"; SC2248 wants quotes on every variable always. |
+| Negation | `[ -n "$x" ]` over `[ ! -z "$x" ]` | SC2236 disabled | Readability preference; both work. |
+| sed replacement | `echo "$x" \| sed 's/.../.../''` | SC2001 disabled | Parameter expansion is preferred for trivial cases but sed is fine here. |
+| Group redirects | per-line `>> file` | SC2129 disabled | Code clarity preference. |
+
+**Rules that ARE enforced (real bug risk):**
+- SC2155: declare and assign separately (`local foo=$(cmd)` masks cmd's exit code under `set -e`) — currently disabled with a 125-occurrence ledger; new violations must be addressed.
+- SC2034: unused variables — currently disabled with a 49-occurrence ledger; new violations must be addressed.
+- SC2086: word splitting / globbing — fix or quote.
+- SC2168: `local` outside function — covered by both shellcheck and our `LOCAL_OUTSIDE_FUNCTION` custom rule.
+- All shellcheck errors and remaining warnings.
+
+**Severity filter:** Set in `Makefile` via `--severity=warning` (shellcheck 0.11.0's rcfile `severity=` directive is silently ignored — known shellcheck quirk; see `.shellcheckrc` for the inline note).
+
+**Why CI was red for 100+ runs before this PR:** there was no `.shellcheckrc` declaring the project style, so every style preference fired. Branch protection wasn't enforcing the Lint check (PRs merged red anyway), so the broken-window problem compounded — new code was added without anyone running `make check` locally, then merged through red CI, then nobody felt motivated to clean up.
+
 ### Re-source safety (CRITICAL)
 
 Every file in `lib/` MUST be safe to source multiple times under `set -euo pipefail`. Without a guard, sourcing a file twice can crash via readonly re-assignment, re-run interactive logic, or re-execute initialization code.

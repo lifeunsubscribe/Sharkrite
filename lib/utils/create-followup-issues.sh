@@ -130,8 +130,10 @@ create_followup_issues() {
 
   rm -f "$TEMP_REVIEW"
 
-  # Export created issues for caller
-  export ISSUES_CREATED="${CREATED_ISSUES[@]}"
+  # Export created issues for caller. Env vars are strings, so flatten the
+  # array via IFS-joined `*` (callers parse on whitespace) and export the
+  # length separately for unambiguous count access.
+  export ISSUES_CREATED="${CREATED_ISSUES[*]}"
   export ISSUES_CREATED_COUNT="${#CREATED_ISSUES[@]}"
 
   return 0

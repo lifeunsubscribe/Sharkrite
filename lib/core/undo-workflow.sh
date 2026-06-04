@@ -126,9 +126,11 @@ if [ -n "$PR_NUMBER" ]; then
   done < <(gh_safe pr view "$PR_NUMBER" --json comments --jq '.comments[].body' | \
     grep -oE "${RITE_MARKER_FOLLOWUP}:[0-9]+" | cut -d: -f2 || true)
 
-  # Deduplicate
+  # Deduplicate — use mapfile to read sort output line-by-line so elements
+  # with embedded whitespace stay intact (defense in depth; today's elements
+  # are issue numbers, but the pattern shouldn't depend on that).
   if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
-    FOLLOWUP_ISSUES=($(printf '%s\n' "${FOLLOWUP_ISSUES[@]}" | sort -un))
+    mapfile -t FOLLOWUP_ISSUES < <(printf '%s\n' "${FOLLOWUP_ISSUES[@]}" | sort -un)
   fi
 fi
 

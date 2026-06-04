@@ -137,8 +137,9 @@ _file_matches_pattern() {
   fi
 
   # Glob match via bash — only reached for path-shaped patterns (guards against
-  # glob injection from arbitrary issue prose)
-  # shellcheck disable=SC2254
+  # glob injection from arbitrary issue prose). Unquoted $pattern is intentional
+  # so [[ == ]] performs glob matching, not literal comparison.
+  # shellcheck disable=SC2254,SC2053
   if [[ "$file" == $pattern ]]; then return 0; fi
 
   return 1

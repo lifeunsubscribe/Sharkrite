@@ -186,6 +186,7 @@ _release_session_lock() {
 #   session_limit blocker on every fresh single-issue invocation until the
 #   file was manually deleted. start_time measures THIS invocation's clock,
 #   not the age of the JSON file.
+# shellcheck disable=SC2120  # CI's older shellcheck misses cross-file callers; local 0.11.0 doesn't flag this. Callers DO pass mode: workflow-runner.sh:2290, batch-process-issues.sh:175.
 init_session() {
   local mode="${1:-supervised}"  # supervised or unsupervised
 
