@@ -1492,10 +1492,14 @@ If the changes are unrelated work, answer UNRELATED."
         print_warning "At worktree limit ($WORKTREE_COUNT/$MAX_WORKTREES)"
         print_status "Auto-cleanup: Looking for reusable worktrees..."
 
-        # Find worktrees with:
-        # 1. No uncommitted changes
-        # 2. Branch already merged (check if exists on remote)
-        # 3. Not currently in use
+        # Find worktrees with a merged PR.
+        # Merge detection uses `gh pr list --state merged` (reliable even when the
+        # branch is still on origin — repos without auto-delete-branch-on-merge keep
+        # the branch after merge, so `git ls-remote` would incorrectly report
+        # "not merged").  When gh is unreachable we fall back to the old heuristic.
+        # A merged PR overrides the uncommitted-changes guard: once the PR is merged,
+        # any residue in the worktree (scratchpad files, build artifacts, .rite/
+        # symlink quirks) is disposable — the real work is already in main.
 
         CLEANED_COUNT=0
         while IFS= read -r wt_path; do
@@ -1504,15 +1508,46 @@ If the changes are unrelated work, answer UNRELATED."
           WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "")
           [ -z "$WT_BRANCH" ] && continue
 
-          # Skip if has uncommitted changes
-          UNCOMMITTED=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-          [ "$UNCOMMITTED" -gt 0 ] && continue
+          # --- Merge detection (authoritative) ---
+          # Query GitHub for a merged PR whose head branch matches.
+          # gh_safe returns empty (exit 0) on 404 / unreachable; fall back to
+          # git ls-remote in that case.
+          _MERGED_PR_NUMBER=""
+          _GH_AVAILABLE=true
+          _MERGED_PR_NUMBER=$(gh_safe pr list --head "$WT_BRANCH" --state merged \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)
 
-          # Check if branch is merged (not on remote anymore)
-          if ! git ls-remote --heads origin "$WT_BRANCH" 2>/dev/null | grep -q "$WT_BRANCH"; then
-            print_status "Cleaning merged worktree: $WT_BRANCH"
-            git worktree remove "$wt_path" 2>/dev/null || true
-            git branch -d "$WT_BRANCH" 2>/dev/null || true
+          # If gh returned nothing, check whether gh itself is reachable at all.
+          if [ -z "$_MERGED_PR_NUMBER" ]; then
+            if ! gh auth status >/dev/null 2>&1; then
+              _GH_AVAILABLE=false
+              print_warning "gh unreachable — falling back to git ls-remote for merge detection"
+            fi
+          fi
+
+          # Determine whether this worktree's branch is merged.
+          _IS_MERGED=false
+          if [ -n "$_MERGED_PR_NUMBER" ]; then
+            # gh found a merged PR — definitive signal.
+            _IS_MERGED=true
+          elif [ "$_GH_AVAILABLE" = false ]; then
+            # gh offline fallback: infer merged from branch absence on origin.
+            if ! git ls-remote --heads origin "$WT_BRANCH" 2>/dev/null | grep -q "$WT_BRANCH"; then
+              _IS_MERGED=true
+            fi
+          fi
+          # If gh is available but returned empty, the PR is still open (or never
+          # existed) — _IS_MERGED stays false; the stale-branch path below handles it.
+
+          if [ "$_IS_MERGED" = true ]; then
+            # Skip uncommitted-changes guard: merged PR means the work is in main.
+            # Any residue is disposable.
+            print_status "Cleaning merged worktree: $WT_BRANCH${_MERGED_PR_NUMBER:+ (PR #$_MERGED_PR_NUMBER)}"
+            git worktree remove --force "$wt_path" 2>/dev/null || true
+            git branch -D "$WT_BRANCH" 2>/dev/null || true
+            # Remove the now-stale origin branch so future preflights don't re-evaluate it.
+            git push origin --delete "$WT_BRANCH" 2>/dev/null || true
+            _diag "WORKTREE_CLEANED branch=${WT_BRANCH} pr=${_MERGED_PR_NUMBER:-unknown}"
             CLEANED_COUNT=$((CLEANED_COUNT + 1))
             [ "$CLEANED_COUNT" -ge 1 ] && break  # Only need to clean one to make room
           fi
@@ -1522,8 +1557,8 @@ If the changes are unrelated work, answer UNRELATED."
           print_success "Cleaned $CLEANED_COUNT worktree(s) - proceeding"
           WORKTREE_COUNT=$((WORKTREE_COUNT - CLEANED_COUNT))
         else
-          # No clean worktrees found - look for oldest stale one
-          print_status "No merged branches found - checking for stale worktrees..."
+          # No worktrees with merged PRs found - look for oldest stale one
+          print_status "No merged-PR worktrees found - checking for stale worktrees..."
 
           OLDEST_WORKTREE=""
           OLDEST_AGE=0
