@@ -578,7 +578,173 @@ assess_internal_adr() {
   generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "${CHANGED_FILES:-}" >/dev/null
 }
 
+update_conventions_from_marker() {
+  # update_conventions_from_marker PR_NUMBER
+  #
+  # Extracts all <!-- sharkrite-convention -->...<!-- /sharkrite-convention --> blocks
+  # from the PR body and appends rendered markdown entries to
+  # docs/architecture/conventions.md in the project root.
+  #
+  # Idempotent: if the convention title already appears in conventions.md AND
+  # the PR number already appears on that entry's References line, this is a no-op.
+  #
+  # No Claude call — purely local file I/O + one gh API call already cached in
+  # PR_BODY (passed as arg 2).  Runs synchronously (fast).
+  local pr_number="$1"
+  local pr_body="$2"
+  local conventions_file="${RITE_PROJECT_ROOT}/docs/architecture/conventions.md"
+
+  # Ensure the conventions file exists (it ships with the repo; this is a safety net)
+  if [ ! -f "$conventions_file" ]; then
+    print_warning "conventions.md not found at $conventions_file — skipping convention extraction"
+    return 0
+  fi
+
+  # Extract the raw content between every <!-- sharkrite-convention --> pair.
+  # Strategy: write PR body to a temp file, then use awk to collect all blocks.
+  # Using a temp file avoids subshell + pipeline issues with set -e.
+  local _body_file
+  _body_file=$(mktemp)
+  # Write PR body to temp file; printf '%s' avoids interpreting escape sequences
+  printf '%s' "$pr_body" > "$_body_file"
+
+  # awk extracts zero or more blocks; each block is separated by a sentinel line
+  # "---CONVENTION_BLOCK_END---" so the outer loop can split on it.
+  # Use -v to pass the marker constant so no raw "sharkrite-*" literal appears here.
+  local _blocks_file
+  _blocks_file=$(mktemp)
+  awk -v open_marker="<!-- ${RITE_MARKER_CONVENTION} -->" \
+      -v close_marker="<!-- /${RITE_MARKER_CONVENTION} -->" '
+    $0 == open_marker  { in_block=1; block=""; next }
+    $0 == close_marker {
+      if (in_block) {
+        print block
+        print "---CONVENTION_BLOCK_END---"
+        in_block=0
+      }
+      next
+    }
+    in_block {
+      block = (block == "") ? $0 : block "\n" $0
+    }
+  ' "$_body_file" > "$_blocks_file"
+  rm -f "$_body_file"
+
+  # If no blocks found, nothing to do
+  if [ ! -s "$_blocks_file" ]; then
+    rm -f "$_blocks_file"
+    return 0
+  fi
+
+  # Process each block separated by the sentinel
+  local _current_block=""
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    if [ "$_line" = "---CONVENTION_BLOCK_END---" ]; then
+      # Parse YAML-ish fields from _current_block
+      local _title _rule _why _example _references
+      _title=$(printf '%s' "$_current_block" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
+      _rule=$(printf '%s' "$_current_block" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
+      _why=$(printf '%s' "$_current_block" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
+      _references=$(printf '%s' "$_current_block" | grep "^references:" | head -1 | sed 's/^references:[[:space:]]*//' || true)
+
+      # Extract multi-line example block (everything after "example: |" up to the
+      # next top-level key or end of block).  The example field uses YAML literal
+      # block scalar style ("example: |") — subsequent indented lines are content.
+      # The awk program is stored in a variable first so the || true guard appears
+      # on the next line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
+      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^[a-z_]+:/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
+      _example=$(printf '%s' "$_current_block" | awk "$_example_awk" || true)
+
+      # Skip blocks with no title (malformed)
+      if [ -z "$_title" ]; then
+        print_warning "  conventions: skipping malformed block (no title) in PR #${pr_number}"
+        _current_block=""
+        continue
+      fi
+
+      # Idempotency: skip if title already present in conventions.md AND this PR#
+      # is already in the references line immediately following the title heading.
+      # We check for "## <title>" (the rendered heading format) and then scan
+      # forward for "**References:**" containing the PR number.
+      #
+      # Match strategy: title_found=1 when we see "## <title>", then scan forward
+      # for "**References:**" with "#pr_number" before the next "## " heading.
+      local _already_present=false
+      if grep -qF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
+        # Title exists — check if this PR# is already in its references line
+        if awk -v title="## ${_title}" -v prnum="#${pr_number}" '
+          BEGIN { matched=0 }
+          $0 == title { found=1; next }
+          found && /^\*\*References:\*\*/ {
+            n = split($0, tokens, /[[:space:],]+/)
+            for (i = 1; i <= n; i++) {
+              if (tokens[i] == prnum) { matched=1; exit }
+            }
+            found=0; next
+          }
+          found && /^## / { found=0 }
+          END { exit (matched ? 0 : 1) }
+        ' "$conventions_file" 2>/dev/null; then
+          _already_present=true
+        fi
+      fi
+
+      if [ "$_already_present" = "true" ]; then
+        verbose_info "  conventions: '$_title' already recorded for PR #${pr_number} — skipping"
+        _current_block=""
+        continue
+      fi
+
+      # Build the rendered markdown entry and append it
+      # If references already contains a value from the PR body, append the PR#.
+      # If references is empty, use just the PR#.
+      local _refs_line
+      if [ -n "$_references" ]; then
+        _refs_line="${_references}, #${pr_number}"
+      else
+        _refs_line="#${pr_number}"
+      fi
+
+      {
+        echo ""
+        echo "## ${_title}"
+        echo ""
+        [ -n "$_rule" ] && echo "**Rule:** ${_rule}"
+        echo ""
+        [ -n "$_why" ] && echo "**Why:** ${_why}"
+        if [ -n "$_example" ]; then
+          echo ""
+          echo "**Example:**"
+          echo '```bash'
+          printf '%s\n' "$_example"
+          echo '```'
+        fi
+        echo ""
+        echo "**References:** ${_refs_line}"
+        echo ""
+        echo "---"
+      } >> "$conventions_file"
+
+      print_info "  conventions: appended '${_title}' (PR #${pr_number})"
+      _mark_updated "conventions"
+      _current_block=""
+    else
+      # Accumulate block lines
+      if [ -z "$_current_block" ]; then
+        _current_block="$_line"
+      else
+        _current_block="${_current_block}
+${_line}"
+      fi
+    fi
+  done < "$_blocks_file"
+  rm -f "$_blocks_file"
+}
+
 # --- Run internal doc assessments ---
+
+# Conventions marker extraction is instant (no Claude call) — run inline
+update_conventions_from_marker "$PR_NUMBER" "$PR_BODY"
 
 # Changelog is instant (no Claude call) — run inline
 assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"

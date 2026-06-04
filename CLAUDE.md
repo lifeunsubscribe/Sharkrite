@@ -16,6 +16,8 @@ Cross-project communication between Mako (sharkrite), Remora (clearance-screener
 
 **Reference:** `docs/architecture/behavioral-design.md` — living document of design decisions, behavioral contracts, and rejected approaches. Check before modifying any subsystem. Update when adding or changing behavior.
 
+**Conventions catalog:** `docs/architecture/conventions.md` — append-only catalog of shell conventions and anti-patterns. Auto-populated on merge via `<!-- sharkrite-convention -->` blocks in PR bodies. Load order: `CLAUDE.md` → `behavioral-design.md` → `conventions.md` → issue-specific context.
+
 ## Architecture
 
 ```
