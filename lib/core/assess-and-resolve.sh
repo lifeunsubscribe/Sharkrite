@@ -504,15 +504,41 @@ REVIEW_TIME="${REVIEW_TIME:-$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/nu
 # Extract SHA embedded in the review marker (empty if review predates issue #354)
 REVIEW_SHA=$(extract_review_sha "$REVIEW_BODY")
 
-# Get current HEAD SHA for the PR (prefer local git, fall back to GitHub API)
-# The local worktree may not exist when assess-and-resolve.sh is called standalone,
-# so we try local git first and fall back to gh pr view --json headRefOid.
+# Get current HEAD SHA for the PR.
+#
+# IMPORTANT: Always use gh pr view --json headRefOid as the authoritative source.
+# Local git rev-parse HEAD is only valid when cwd is the PR's worktree, not the
+# main checkout. When called standalone (rite N --assess-and-fix), cwd is set to
+# the worktree by the caller, but we cannot assume that here — a mis-routed call
+# or direct invocation could leave cwd on main, yielding main's HEAD SHA.
+# That wrong SHA would compare unequal to the review SHA and falsely mark a
+# fresh review as stale, re-introducing the class of bug this PR fixes (#354).
+#
+# Strategy:
+#   1. Always fetch headRefOid from the GitHub API (authoritative, matches what
+#      was actually pushed to the remote PR branch).
+#   2. If the API call succeeds, use that SHA.
+#   3. Fall back to local git only when the local branch name matches the PR's
+#      headRefName — this guards against cwd being on main or another branch.
 CURRENT_HEAD_SHA=""
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-fi
-if [ -z "$CURRENT_HEAD_SHA" ]; then
-  CURRENT_HEAD_SHA=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid // ""' 2>/dev/null || true)
+_PR_HEAD_REF=$(gh_safe pr view "$PR_NUMBER" --json headRefName,headRefOid --jq '{name: .headRefName, sha: .headRefOid}' 2>/dev/null || true)
+_PR_REMOTE_SHA=$(echo "$_PR_HEAD_REF" | jq -r '.sha // ""' 2>/dev/null || true)
+_PR_BRANCH_NAME=$(echo "$_PR_HEAD_REF" | jq -r '.name // ""' 2>/dev/null || true)
+
+if [ -n "$_PR_REMOTE_SHA" ]; then
+  # Use the remote HEAD SHA — this is always correct regardless of cwd.
+  CURRENT_HEAD_SHA="$_PR_REMOTE_SHA"
+else
+  # API call failed; try local git only if cwd is on the PR's branch.
+  _LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  if [ -n "$_PR_BRANCH_NAME" ] && [ "$_LOCAL_BRANCH" = "$_PR_BRANCH_NAME" ]; then
+    CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+  elif git rev-parse --git-dir >/dev/null 2>&1 && [ -z "$_PR_BRANCH_NAME" ]; then
+    # Branch name unknown (API partial failure) — fall back to local git with a
+    # warning. Worst case: a false-positive stale verdict, not a false-negative.
+    print_warning "Could not verify PR branch name — falling back to local git HEAD"
+    CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+  fi
 fi
 CURRENT_HEAD_SHA="${CURRENT_HEAD_SHA:-}"
 
