@@ -483,20 +483,8 @@ FIXTURE
   stderr_out=$(mktemp)
   _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
 
-  # The downstream issue body must reference the spike placeholder
-  # AND must not have duplicate **Dependencies** lines
-  local dep_count
-  dep_count=$(grep -c "^\*\*Dependencies\*\*:" "$issues_file" || true)
-
-  # Downstream issue must have exactly 1 **Dependencies** line (not 2)
-  # Note: the spike issue itself may have 0 dep lines; the original has 1.
-  # grep across whole file: spike (0 or 1) + original (1) = at most 2.
-  # The original must not be split into two lines.
-  local downstream_deps
-  downstream_deps=$(awk '
-    /^---ISSUE---/ { block++ }
-    block==2 && /^\*\*Dependencies\*\*:/ { count++ }
-  ' "$issues_file")
+  # The downstream issue (block 2 after spike is prepended) must have exactly
+  # 1 **Dependencies** line (no duplicate) AND it must contain the spike placeholder.
 
   local dep_line_count
   dep_line_count=$(awk '
@@ -507,6 +495,21 @@ FIXTURE
 
   [ "$dep_line_count" -le 1 ] || {
     echo "FAIL: downstream issue has $dep_line_count **Dependencies** lines (expected ≤ 1)" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Assert the downstream Dependencies line actually contains the spike placeholder.
+  # This is the acceptance criterion: the pass must rewrite the line with #SPIKE-<key>.
+  local downstream_dep_line
+  downstream_dep_line=$(awk '
+    /^---ISSUE---/ { block++ }
+    block==2 && /^\*\*Dependencies\*\*:/ { print; exit }
+  ' "$issues_file")
+
+  echo "$downstream_dep_line" | grep -q "#SPIKE-" || {
+    echo "FAIL: downstream **Dependencies** line does not contain a #SPIKE- placeholder" >&2
+    echo "  Dependencies line: $downstream_dep_line" >&2
     cat "$issues_file" >&2
     false
   }

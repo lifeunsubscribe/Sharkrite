@@ -846,8 +846,17 @@ PROMPT_EOF
     "$temp_file" > "$normalized"
   mv "$normalized" "$temp_file"
 
+  # Detect unverified external integrations (deterministic — no LLM calls).
+  # Emits WARNING lines to stderr and prepends spike-issue prerequisites for
+  # any host or package referenced in issue bodies that is not grounded in the
+  # repo's fixture directories or dependency manifests.
+  # Must run BEFORE _dedup_issues so injected spike issues are subject to
+  # deduplication on re-runs (avoids duplicate spike titles when run twice).
+  _detect_unverified_integrations "$temp_file"
+
   # Deduplicate issues — Claude sometimes repeats the full issue set.
   # Keep only the first occurrence of each issue (by title).
+  # Runs after _detect_unverified_integrations so spike issues are also deduped.
   _dedup_issues "$temp_file"
 
   # Validate coverage checklist integrity: every ✅ line that references
@@ -856,12 +865,6 @@ PROMPT_EOF
 
   # Post-generation lint: catch known anti-patterns that Claude keeps generating
   _lint_issues "$temp_file"
-
-  # Detect unverified external integrations (deterministic — no LLM calls).
-  # Emits WARNING lines to stderr and prepends spike-issue prerequisites for
-  # any host or package referenced in issue bodies that is not grounded in the
-  # repo's fixture directories or dependency manifests.
-  _detect_unverified_integrations "$temp_file"
 
   echo "$temp_file"
 }
@@ -1539,11 +1542,23 @@ a schema — those are the downstream issue's responsibility.
             _key=$(_sanitize_spike_key "$_name")
             local _placeholder="#SPIKE-$_key"
 
-            # Check if block references the candidate (case-insensitive, fixed-string).
-            # -F prevents hostnames (with '.') and package names from being treated
-            # as regex patterns, which avoids both false matches and unresolvable
-            # #SPIKE-<key> placeholders from spurious substring hits.
-            if echo "$_current_block" | grep -qiF "$_name"; then
+            # Check if block references the candidate in its extraction context,
+            # not as a bare substring.  This prevents common words (e.g. "requests")
+            # from matching unrelated prose ("incoming requests").
+            #   host candidates  → must appear inside a URL scheme (https?://)
+            #   package candidates → must appear in an import/require statement
+            local _ctype
+            _ctype=$(echo "$_candidate_line" | cut -f1)
+            local _context_match=false
+            if [ "$_ctype" = "host" ]; then
+              # Match only when the name appears after a URL scheme, anchored to
+              # the start of the hostname (avoids foo.example.com matching example.com).
+              echo "$_current_block" | grep -qiE "https?://(www\.)?$(echo "$_name" | sed 's/\./\\./g')" && _context_match=true
+            else
+              # pkg: match import/require patterns only
+              echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true
+            fi
+            if [ "$_context_match" = true ]; then
               # Check if block already has a Dependencies line
               if echo "$_current_block" | grep -q "^\*\*Dependencies\*\*:"; then
                 # Append to existing Dependencies line
