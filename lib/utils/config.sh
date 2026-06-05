@@ -223,10 +223,14 @@ RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
 RITE_PLAN_DOC_BYTE_CAP="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
 
 # Unverified external integration detection (rite plan post-generation pass).
-# Glob pattern for fixture directories: hosts/packages present under these paths
-# are considered "grounded" and will not trigger a spike-issue prerequisite.
-# Brace expansion syntax is supported (e.g. "{fixtures,tests/fixtures}/**").
-RITE_PLAN_FIXTURE_GLOB="${RITE_PLAN_FIXTURE_GLOB:-{fixtures,tests/fixtures}/**}"
+# Path to a custom additional fixture directory: hosts/packages found under this
+# path (and under the always-scanned "fixtures/" and "tests/fixtures/") are
+# considered "grounded" and will not trigger a spike-issue prerequisite.
+# Supply a single directory path, optionally with a trailing /** or /*, e.g.:
+#   RITE_PLAN_FIXTURE_GLOB="test/vcr_cassettes/**"
+# Brace expansion is NOT supported.  Leave unset (default) to scan only the
+# two conventional directories: fixtures/ and tests/fixtures/.
+RITE_PLAN_FIXTURE_GLOB="${RITE_PLAN_FIXTURE_GLOB:-}"
 
 # Set to "1" to skip the _detect_unverified_integrations pass entirely.
 # Useful when the project has no external integrations or the check produces

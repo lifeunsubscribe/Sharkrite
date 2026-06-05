@@ -1176,7 +1176,7 @@ _save_deferrals() {
 #
 # Controlled by:
 #   RITE_PLAN_SKIP_INTEGRATION_CHECK=1  — bypass this pass entirely
-#   RITE_PLAN_FIXTURE_GLOB              — glob for fixture root paths
+#   RITE_PLAN_FIXTURE_GLOB              — custom additional fixture directory path (single path, no brace expansion)
 # =============================================================================
 
 # _extract_packages_for_language: pluggable per-language import extractor.
@@ -1281,22 +1281,27 @@ _build_grounded_packages() {
 # Prints one hostname per line (lowercased) to stdout.
 _build_grounded_hosts() {
   local project_root="${RITE_PROJECT_ROOT:-.}"
-  local fixture_glob="${RITE_PLAN_FIXTURE_GLOB:-{fixtures,tests/fixtures}/**}"
+  # RITE_PLAN_FIXTURE_GLOB accepts a single directory path (optionally with a
+  # trailing /** or /*).  It does NOT support brace expansion — the default
+  # covers the two conventional fixture directories directly in the loop below.
+  # If you need a custom path set RITE_PLAN_FIXTURE_GLOB to a single base path,
+  # e.g. "test/vcr_cassettes/**".
+  local fixture_glob="${RITE_PLAN_FIXTURE_GLOB:-}"
 
-  # Expand the glob pattern relative to project root and collect immediate
-  # subdirectory names (these are the "grounded" host markers).
-  # Use a loop with globbing — bash 3.2 compatible.
-  local _fixture_dirs="fixtures tests/fixtures"
+  # Always scan the two conventional fixture directories, then also scan any
+  # custom path supplied via RITE_PLAN_FIXTURE_GLOB (if it differs from the
+  # defaults).  Walk one level: strip trailing /** or /* to get the base dir.
   local _dir _name
   for _dir in $( (
     for _base in fixtures tests/fixtures; do
       [ -d "$project_root/$_base" ] && echo "$project_root/$_base" || true
     done
-    # Also honour RITE_PLAN_FIXTURE_GLOB if it was overridden to a custom path.
-    # Walk one level: strip trailing /** and use the base directory.
-    _custom_base=$(echo "$fixture_glob" | sed 's|/\*\*$||; s|/\*$||' || true)
-    if [ -n "$_custom_base" ] && [ "$_custom_base" != "fixtures" ] && [ "$_custom_base" != "tests/fixtures" ]; then
-      [ -d "$project_root/$_custom_base" ] && echo "$project_root/$_custom_base" || true
+    # Honour RITE_PLAN_FIXTURE_GLOB if it was overridden to a custom path.
+    if [ -n "$fixture_glob" ]; then
+      _custom_base=$(echo "$fixture_glob" | sed 's|/\*\*$||; s|/\*$||' || true)
+      if [ -n "$_custom_base" ] && [ "$_custom_base" != "fixtures" ] && [ "$_custom_base" != "tests/fixtures" ]; then
+        [ -d "$project_root/$_custom_base" ] && echo "$project_root/$_custom_base" || true
+      fi
     fi
   ) | sort -u ); do
     if [ -d "$_dir" ]; then
@@ -1431,8 +1436,7 @@ _detect_unverified_integrations() {
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
-    local _kind _name
-    _kind=$(echo "$_candidate_line" | cut -f1)
+    local _name
     _name=$(echo "$_candidate_line" | cut -f2)
     local _key
     _key=$(_sanitize_spike_key "$_name")
@@ -1484,7 +1488,6 @@ a schema — those are the downstream issue's responsibility.
   rewritten=$(mktemp)
 
   local _preamble_done=false
-  local _preamble_written=false
 
   while IFS= read -r line; do
     if [ "$_preamble_done" = false ] && [[ "$line" == "---ISSUE---" ]]; then
@@ -1511,11 +1514,9 @@ a schema — those are the downstream issue's responsibility.
   _spike_rewritten=$(mktemp)
   local _in_issue=false
   local _current_block=""
-  local _in_preamble=true
 
   while IFS= read -r line; do
     if [[ "$line" == "---ISSUE---" ]]; then
-      _in_preamble=false
       _in_issue=true
       _current_block="$line"$'\n'
       continue
@@ -1533,14 +1534,16 @@ a schema — those are the downstream issue's responsibility.
           # If so, inject "Blocked by: #SPIKE-<key>" into the **Dependencies** line.
           while IFS= read -r _candidate_line; do
             [ -z "$_candidate_line" ] && continue
-            local _kind _name _key
-            _kind=$(echo "$_candidate_line" | cut -f1)
+            local _name _key
             _name=$(echo "$_candidate_line" | cut -f2)
             _key=$(_sanitize_spike_key "$_name")
             local _placeholder="#SPIKE-$_key"
 
-            # Check if block references the candidate (case-insensitive)
-            if echo "$_current_block" | grep -qi "$_name"; then
+            # Check if block references the candidate (case-insensitive, fixed-string).
+            # -F prevents hostnames (with '.') and package names from being treated
+            # as regex patterns, which avoids both false matches and unresolvable
+            # #SPIKE-<key> placeholders from spurious substring hits.
+            if echo "$_current_block" | grep -qiF "$_name"; then
               # Check if block already has a Dependencies line
               if echo "$_current_block" | grep -q "^\*\*Dependencies\*\*:"; then
                 # Append to existing Dependencies line
@@ -1548,8 +1551,13 @@ a schema — those are the downstream issue's responsibility.
                   sed "s|^\(\*\*Dependencies\*\*:.*\)|\1, Blocked by: ${_placeholder}|" || true)
               else
                 # Insert a Dependencies line before ---END---
-                _current_block=$(echo "$_current_block" | \
-                  sed "s|^---END---$|**Dependencies**: Blocked by: ${_placeholder}\n---END---|" || true)
+                # BSD sed (macOS) does not interpret \n in replacement strings;
+                # use a shell substitution to insert the literal newline portably.
+                _current_block="${_current_block%---END---
+}"
+                _current_block="${_current_block}**Dependencies**: Blocked by: ${_placeholder}
+---END---
+"
               fi
             fi
           done <<< "$unique_candidates"
@@ -1771,6 +1779,17 @@ create_issues() {
             current_body="${current_body//${_placeholder}/#${_spike_num}}"
           done < "$spike_map_file"
         fi
+
+        # Post-substitution sweep: remove any surviving unresolvable #SPIKE-<key>
+        # placeholders (can occur when a candidate matched via a false substring hit
+        # before the -F fix, or when a spike was emitted but its map entry was never
+        # recorded due to a title mismatch). Strip the whole "Blocked by: #SPIKE-…"
+        # clause rather than leaving a broken reference in the created issue.
+        current_body=$(echo "$current_body" | \
+          sed 's|,\? *Blocked by: #SPIKE-[a-zA-Z0-9-]*||g; s|^[[:space:]]*Blocked by: #SPIKE-[a-zA-Z0-9-]*[[:space:]]*$||g' || true)
+        # Clean up an empty Dependencies line that results from stripping all refs
+        current_body=$(echo "$current_body" | \
+          sed 's|^\*\*Dependencies\*\*:[[:space:]]*$||g' || true)
 
         # Prepend time estimate to body
         if [ -n "$current_time" ]; then
