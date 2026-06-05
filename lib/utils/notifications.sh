@@ -23,7 +23,6 @@ fi
 
 # Configuration from environment (with config.sh defaults)
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
-EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
 SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
 AWS_PROFILE="${RITE_AWS_PROFILE:-default}"
 
