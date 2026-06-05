@@ -528,6 +528,24 @@ Shared utilities used by standalone commands and the orchestrator:
 
 Uses local git timestamps when worktree is available (avoids GitHub API eventual consistency).
 
+### Worktree → Issue Mapping (`lib/utils/issue-lock.sh`)
+
+The lock file is the **source of truth** for the worktree → issue association displayed by `rite --status`. When `acquire_issue_lock` runs, it writes:
+- `${RITE_LOCK_DIR}/issue-N.lock/pid` — the holding process PID (required for live locks)
+- `${RITE_LOCK_DIR}/issue-N.lock/cwd` — the worktree path (used by `repo-status.sh` for mapping)
+
+Worktrees created before the lock infrastructure (PR #67, commit eb714e6) — or worktrees that bypassed the lock — have no lock file, so `rite --status` cannot associate them with an issue. The `backfill_worktree_locks()` function in `issue-lock.sh` fixes this retroactively: it walks `git worktree list`, queries each branch's open PR for a "Closes #N" reference, and writes a minimal lock dir (cwd + backfill sentinel, no pid) for legacy worktrees. `repo-status.sh` calls this automatically at the top of `repo_wide_status()`.
+
+**One-time cleanup** for pre-existing installs: `rite --backfill-locks`
+
+**Backfill lock format** — distinguished from a live lock by the absence of a `pid` file and the presence of a `backfill` sentinel file:
+```
+${RITE_LOCK_DIR}/issue-N.lock/
+  cwd          ← worktree path (same as live lock)
+  backfill     ← sentinel: identifies this as a backfill, not a live process lock
+  # NO pid file — so get_locked_issue_numbers() skips it, acquire_issue_lock can reclaim it
+```
+
 ## Follow-up Issue Template
 
 Follow-up issues (tech-debt, review follow-ups) follow the structure in `templates/issue-template.md`:
