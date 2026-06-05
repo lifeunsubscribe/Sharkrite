@@ -164,25 +164,38 @@ gh_safe() {
     #   3. Bare unframed:       "429", "503"             — observed in raw gh output
     #      e.g. "error: 503 Service Unavailable", curl-level messages, some gh versions
     #
-    # The bare-number form uses word-boundary framing:
-    #   - Must be preceded by a non-digit (or start of string): (^|[^0-9])
-    #   - Must be followed by a non-digit, non-colon (or end of string): ([^0-9:]|$)
-    # This prevents matching digits embedded in larger numbers (e.g. "5001", "14290")
-    # and avoids false positives like "configuration line 503:" where the code is
-    # immediately followed by a colon (a non-digit but clearly not an HTTP status).
+    # All numeric status arms share a trailing anchor invariant — the char after the
+    # status code must not be a digit or colon (or end of string). Arms that match the
+    # code in a position where ")" could follow (HTTP-prefix and bare unframed) also
+    # exclude ")" from the trailing set: ([^0-9:)]|$). This prevents matching digits
+    # embedded in larger numbers (e.g. "5001", "14290"), avoids false positives like
+    # "HTTP 503:" or "configuration line 503:" (colon excluded), and prevents the bare
+    # unframed arm from matching the code inside "(HTTP 503):" via the ")" separator.
     #
-    # Bare parenthesised forms — false-positive guard:
+    # HTTP-prefixed forms — trailing anchor applied uniformly:
+    # Both "HTTP NNN" and "(HTTP NNN)" use ([^0-9:)]|$) — the trailing char must NOT
+    # be a digit, colon, or closing paren. This prevents:
+    #   "HTTP 503:" — colon excluded → no match ✓
+    #   "(HTTP 503):" — arm 1 sees "HTTP 503)" and ")" is excluded → no match ✓
+    # The "(HTTP NNN)" form (arm 2) uses ([^0-9:]|$) after the closing paren — ")"
+    # is already consumed as part of the literal "\)" in the pattern, so ")" in the
+    # exclusion set is not needed there.
+    #
+    # Bare parenthesised forms — same trailing anchor:
     # \(429\) and \(5[0-9][0-9]\) match the gh CLI pattern "Service Unavailable (503)"
-    # where the code appears at the end of the message. To avoid matching module or
-    # config references like "Error in module (503): bad config" or "(5031)", these
-    # patterns require the closing parenthesis to NOT be followed immediately by a
-    # colon or digit (i.e. they must be at end-of-string or followed by whitespace
-    # or other non-digit/non-colon char).
+    # where the code appears at the end of the message. The trailing anchor prevents
+    # false positives like "Error in module (503): bad config" or "(5031)".
+    #
+    # Bare unframed arm — trailing anchor also excludes ')':
+    # Uses ([^0-9:)]|$) to prevent matching the numeric code inside "(HTTP 503):" —
+    # where "503" is followed by ")" (satisfies [^0-9:] but is part of the paren-HTTP
+    # form). "(HTTP NNN)" forms are already covered by the explicit paren-HTTP arm
+    # (arm 2) which applies the colon-exclusion on the char after the closing paren.
     #
     # Text-based tokens (rate limit, server error, etc.) are long enough to be
     # unambiguous and need no additional anchoring.
     if echo "$stderr_content" | grep -qiE \
-        "HTTP (429|5[0-9][0-9])|\(HTTP (429|5[0-9][0-9])\)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:]|$)|rate limit|secondary rate|too many requests|server error"; then
+        "HTTP (429|5[0-9][0-9])([^0-9:)]|$)|\(HTTP (429|5[0-9][0-9])\)([^0-9:]|$)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:)]|$)|rate limit|secondary rate|too many requests|server error"; then
       if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
         # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
         local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
