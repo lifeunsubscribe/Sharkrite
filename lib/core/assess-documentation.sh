@@ -569,11 +569,15 @@ update_conventions_from_marker() {
       #
       # _block_no_example strips the example section before scalar field extraction:
       # - When `example: |` is seen, skip=1.
-      # - While skip=1, skip indented lines (2-space prefix = YAML literal content).
-      # - Any non-indented line resets skip=0 and is printed (it's a new top-level key).
+      # - While skip=1, skip all lines that are NOT a known top-level field name.
+      # - A known field name (title|rule|why|example|references) at column-0 resets
+      #   skip=0 and is printed (it's a real top-level key, not example content).
+      # The terminator uses the same known-field-name boundary as _example_awk so
+      # that column-0 lines inside the example (e.g., "references: some-doc-link")
+      # are not leaked into _block_no_example and cannot corrupt scalar field reads.
       # The awk program is stored in a variable so the || true guard appears on a
       # separate line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^  / { next } { skip=0; print }'
+      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^(title|rule|why|example|references):/ { skip=0; print; next } skip { next } { print }'
       local _block_no_example
       _block_no_example=$(printf '%s' "$_current_block" | awk "$_no_example_awk" || true)
 
@@ -581,7 +585,13 @@ update_conventions_from_marker() {
       _title=$(printf '%s' "$_block_no_example" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
       _rule=$(printf '%s' "$_block_no_example" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
       _why=$(printf '%s' "$_block_no_example" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
-      _references=$(printf '%s' "$_block_no_example" | grep "^references:" | head -1 | sed 's/^references:[[:space:]]*//' || true)
+      # Use tail -1 (not head -1) for references: the field appears AFTER example:
+      # in the standard convention block order (title/rule/why/example/references).
+      # A col-0 "references:" line inside the example would appear first in
+      # _block_no_example (because _no_example_awk treats it as a known-field
+      # terminator), making head -1 pick up the wrong (example-embedded) value.
+      # tail -1 picks the LAST occurrence, which is always the real field.
+      _references=$(printf '%s' "$_block_no_example" | grep "^references:" | tail -1 | sed 's/^references:[[:space:]]*//' || true)
 
       # Extract multi-line example block (everything after "example: |" up to the
       # next top-level key or end of block).  The example field uses YAML literal

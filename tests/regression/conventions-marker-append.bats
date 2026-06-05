@@ -573,3 +573,54 @@ BODY
   grep -q "references: http://example.com/bad" "$conventions_file"
   grep -q "references: ./docs/refs.md" "$conventions_file"
 }
+
+# ---------------------------------------------------------------------------
+# Test 12: example: block precedes real field, column-0 field name inside
+#          example must NOT overwrite the real scalar field
+#
+# This is the field-stripping asymmetry bug: _no_example_awk previously
+# terminated the skip on ANY non-indented line, so a column-0 "references:"
+# or "rule:" inside the example would leak into _block_no_example.  When the
+# example block appears BEFORE the real field, head -1 picks the example's
+# value instead of the real one.
+#
+# The fix (issue #328): _no_example_awk now terminates the skip only on the
+# same known-field-name boundary used by _example_awk
+# (title|rule|why|example|references), matching the behavior documented in the
+# comment at assess-documentation.sh:570.
+# ---------------------------------------------------------------------------
+
+@test "example before real field: column-0 field name in example does not corrupt scalar field" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Build a block where:
+  #   - example: appears BEFORE the real references: field
+  #   - the example contains a column-0 "references: fake-value" line
+  #   - the real references: field follows after the example
+  # printf is used so the column-0 line has no leading whitespace.
+  local pr_body
+  pr_body=$(printf '%s\n' \
+    '<!-- sharkrite-convention -->' \
+    'title: example-before-real-field' \
+    'rule: Field stripping must use field-name boundary not indentation boundary' \
+    'why: Indentation-only boundary leaks column-0 lines from example into scalar extraction' \
+    'example: |' \
+    '  # A YAML snippet that has a column-0 references: key (no indent):' \
+    'references: fake-doc-link' \
+    '  # The real field below must not be overwritten by this line' \
+    'references: real-ref-value, #328' \
+    '<!-- /sharkrite-convention -->')
+
+  update_conventions_from_marker "328" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## example-before-real-field$" "$conventions_file"
+
+  # The References line must use the REAL field value, not the fake one from
+  # inside the example.
+  grep -q "\*\*References:\*\* real-ref-value, #328" "$conventions_file"
+
+  # The fake value must NOT appear in the References rendered line
+  run grep "\*\*References:\*\*.*fake-doc-link" "$conventions_file"
+  [ "$status" -ne 0 ]
+}
