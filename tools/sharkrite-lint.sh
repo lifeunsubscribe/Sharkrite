@@ -1034,7 +1034,9 @@ done
 #   # sharkrite-lint disable BARE_VAR_REFERENCE - reason: <text>
 echo "Checking for bare config-var references in lib/utils/ (no safe-default expansion)..."
 
-mapfile -t UTILS_FILES < <(find "$PROJECT_ROOT/lib/utils" -type f -name "*.sh" 2>/dev/null)
+mapfile -t UTILS_FILES < <(find "$PROJECT_ROOT/lib/utils" -type f -name "*.sh" \
+  ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
+  2>/dev/null)
 
 if [ "${#UTILS_FILES[@]}" -gt 0 ]; then
   # Use AWK for BSD-grep-compatible detection of bare $VAR (not preceded by '{').

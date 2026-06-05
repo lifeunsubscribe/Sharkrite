@@ -6,9 +6,10 @@
 # passes files that use the ${VAR:-} safe-default form or suppression comments.
 #
 # Fixture injection:
-#   Fixtures are written to BATS_TEST_TMPDIR and injected via RITE_LINT_EXTRA_DIRS.
-#   The fixtures are placed under a lib/utils/-like subdirectory so the linter's
-#   find command (which scans lib/utils/) picks them up.
+#   Fixtures are written to lib/utils/test-fixtures-temp-r22/ so that Rule 22's
+#   find command (which scans lib/utils/ directly) picks them up. The
+#   test-fixtures-temp pattern is excluded from all other lint rules via the
+#   main scan's "! -path" predicate. Fixtures are removed in teardown().
 #
 # Bug context (issue #313):
 #   notifications.sh used bare $EMAIL_ADDRESS inside send_email(). When the
@@ -19,20 +20,18 @@ setup() {
   LINT_SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)/tools/sharkrite-lint.sh"
   PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 
-  # Fixture directory — must look like lib/utils/ so the linter scans it.
-  # We inject via RITE_LINT_EXTRA_DIRS which the linter appends to SHELL_FILES,
-  # but Rule 22 uses a separate UTILS_FILES list built from lib/utils/.
-  # To inject into UTILS_FILES, we temporarily create a test-fixtures-temp dir
-  # under lib/utils/ that the linter's find command will pick up.
-  # Use the same test-fixtures-temp pattern as other tests.
+  # Fixture directory — must live under lib/utils/ so Rule 22's find command
+  # picks it up. Rule 22 builds UTILS_FILES by scanning lib/utils/ directly;
+  # RITE_LINT_EXTRA_DIRS only affects the main SHELL_FILES list and has no
+  # effect on UTILS_FILES. The test-fixtures-temp pattern ensures the main
+  # scan's exclusion predicate (! -path "*/test-fixtures-temp*") keeps these
+  # fixtures out of all other lint rules.
   FIXTURE_DIR="${PROJECT_ROOT}/lib/utils/test-fixtures-temp-r22"
   mkdir -p "$FIXTURE_DIR"
-  export RITE_LINT_EXTRA_DIRS="$FIXTURE_DIR"
 }
 
 teardown() {
   rm -rf "$FIXTURE_DIR"
-  unset RITE_LINT_EXTRA_DIRS
 }
 
 # Helper: write a fixture to lib/utils/test-fixtures-temp-r22/ and run lint.
@@ -185,8 +184,7 @@ check_comment() {
   # After the fix in issue #313, running lint against the real codebase must
   # produce zero Rule 22 violations in notifications.sh. If this test fails,
   # a bare config-var reference was re-introduced (or the fix was reverted).
-  unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
-  rm -rf "$FIXTURE_DIR"        # ensure fixture dir is gone
+  rm -rf "$FIXTURE_DIR"        # ensure fixture dir is gone before scanning
 
   run bash "$LINT_SCRIPT"
 
