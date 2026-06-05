@@ -785,6 +785,40 @@ EOF
   [[ "$output" =~ "calls:1" ]]
 }
 
+@test "gh_safe does NOT retry when stderr contains '(HTTP 503):' with parenthesised form and trailing colon" {
+  # "(HTTP 503):" — parenthesised HTTP-prefix form followed immediately by a colon is
+  # not a real transient HTTP error response. The bare unframed arm excludes ')' from
+  # its trailing character set ([^0-9:)]) so that the numeric code inside "(HTTP NNN)"
+  # is not matched when the closing paren is immediately followed by a colon.
+  local call_count_file="$TEST_TMPDIR/call-count-paren-http503colon"
+  echo "0" > "$call_count_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+echo "(HTTP 503): internal configuration error" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr view 42 --json title || true
+    echo \"calls:\$(cat '$call_count_file')\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Must have called gh exactly once — "(HTTP 503):" is not a real transient HTTP response
+  [[ "$output" =~ "calls:1" ]]
+}
 
 # ===========================================================================
 # _gh_is_read_op: method-flag detection — case/shift robustness
