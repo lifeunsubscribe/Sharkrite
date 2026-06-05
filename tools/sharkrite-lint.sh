@@ -1005,6 +1005,102 @@ for file in "${SHELL_FILES[@]}"; do
   done < <(grep -nE '(mapfile|readarray|declare\s+-[a-zA-Z]*A|local\s+-[a-zA-Z]*A)' "$file" 2>/dev/null || true)
 done
 
+# Rule 22: Bare $VAR reference for optional config vars in lib/utils/*.sh
+#
+# Config-style environment variables (EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*,
+# RITE_AWS_*) are optional — callers may or may not export them. Under
+# `set -euo pipefail`, a bare `$VAR` reference when the variable is unset
+# crashes the script with "unbound variable" before any error handling runs.
+#
+# Live bug (2026-06-04): `notifications.sh` used bare `$EMAIL_ADDRESS` and
+# `$RITE_EMAIL_FROM` inside `send_email()`. When the function was called from
+# an exported-function context (subprocess), the top-level alias variables were
+# not in scope, crashing the notifications phase after a successful merge and
+# causing the batch reporter to mark already-merged issues as "failed".
+#
+# Safe form: `${VAR:-}` (empty default) or `${VAR:-default_value}`.
+# The bare form is safe only when the variable is declared with a guaranteed
+# default at the top of the file — but even then, exported functions called in
+# subprocesses don't inherit bare shell variables, only exported ones.
+#
+# Pattern detected:
+#   `$EMAIL_ADDRESS`, `$RITE_EMAIL_FROM`, `$SLACK_WEBHOOK`, `$AWS_PROFILE`, etc.
+#   when NOT already wrapped in `${VAR:-...}` form.
+#
+# This rule scans lib/utils/*.sh only (the config-consuming utility layer).
+# Broader rollout (lib/core/, bin/) is a follow-up.
+#
+# Suppression: add on the line immediately before the flagged reference:
+#   # sharkrite-lint disable BARE_VAR_REFERENCE - reason: <text>
+echo "Checking for bare config-var references in lib/utils/ (no safe-default expansion)..."
+
+mapfile -t UTILS_FILES < <(find "$PROJECT_ROOT/lib/utils" -type f -name "*.sh" 2>/dev/null)
+
+if [ "${#UTILS_FILES[@]}" -gt 0 ]; then
+  # Use AWK for BSD-grep-compatible detection of bare $VAR (not preceded by '{').
+  # Negative lookahead (?!\{) is PCRE-only and not supported by BSD grep on macOS.
+  # AWK matches a dollar sign followed directly by a known config-var prefix,
+  # where the preceding character is NOT '{' — distinguishing bare $VAR from ${VAR:-}.
+  # Output format: file<TAB>linenum so paths with colons parse safely.
+  _r22_hits=$(awk '
+  FNR == 1 { in_heredoc = 0; hd_marker = ""; prev_suppress = 0 }
+  {
+    if (in_heredoc) {
+      _close = $0; sub(/^[[:space:]]*/, "", _close)
+      if (_close == hd_marker) in_heredoc = 0
+      # Reset suppress flag even in heredoc body to avoid leaking into next line
+      prev_suppress = 0
+      next
+    }
+    if (index($0, "<<") > 0) {
+      tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
+      gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
+      if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }
+    }
+    # Handle suppression: check BEFORE skipping comments so that suppression
+    # comment lines (which start with #) can set prev_suppress=1.
+    # A line with sharkrite-lint disable BARE_VAR_REFERENCE signals: skip next non-comment line.
+    if ($0 ~ /sharkrite-lint.*disable.*BARE_VAR_REFERENCE/) { prev_suppress = 1; next }
+    # Skip full-line comments (after checking for suppression markers above)
+    if ($0 ~ /^[[:space:]]*#/) next
+    # Apply suppression flag: skip the flagged line
+    if (prev_suppress) { prev_suppress = 0; next }
+
+    # Match lines that contain a bare $VAR reference for optional config vars.
+    # Config-var name prefixes: EMAIL_, SLACK_, RITE_EMAIL_, AWS_, RITE_AWS_
+    # A bare $VAR is: "$" not immediately preceded by "{"
+    # We scan for "$" + known prefix; then verify the char before "$" is not "{"
+    # by checking the string around each match position.
+    line = $0
+    n = split(line, chars, "")
+    i = 1
+    while (i <= n) {
+      if (chars[i] == "$") {
+        # Check the character immediately before this $
+        pre = (i > 1) ? chars[i-1] : ""
+        if (pre != "{") {
+          # Check if what follows matches a known config-var prefix
+          rest = substr(line, i+1)
+          if (rest ~ /^(EMAIL_[A-Z_]+|SLACK_[A-Z_]+|RITE_EMAIL_[A-Z_]+|AWS_[A-Z_]+|RITE_AWS_[A-Z_]+)/) {
+            print FILENAME "\t" FNR
+            break
+          }
+        }
+      }
+      i++
+    }
+  }' "${UTILS_FILES[@]}" 2>/dev/null || true)
+
+  if [ -n "$_r22_hits" ]; then
+    while IFS= read -r _hit; do
+      _hit_file=$(echo "$_hit" | cut -f1)
+      _hit_line=$(echo "$_hit" | cut -f2)
+      print_violation "$_hit_file" "$_hit_line" "BARE_VAR_REFERENCE" \
+        "bare \$VAR reference for optional config var — use \${VAR:-} to prevent 'unbound variable' crash under set -u when var is unset or not exported to subshell"
+    done <<< "$_r22_hits"
+  fi
+fi
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then

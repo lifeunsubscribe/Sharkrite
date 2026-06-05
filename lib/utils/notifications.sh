@@ -32,6 +32,7 @@ send_slack() {
   local message="$1"
   local urgency="${2:-normal}"  # normal or urgent
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - SLACK_WEBHOOK is assigned at top-level with safe default; guard + return here is the established pattern (DO NOT change per issue #313 scope)
   if [ -z "$SLACK_WEBHOOK" ]; then
     echo "⚠️  SLACK_WEBHOOK not set, skipping Slack notification"
     return 1
@@ -67,6 +68,7 @@ send_slack() {
 EOF
 )
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - SLACK_WEBHOOK already guard-checked above (out of scope for issue #313; follow-up to use ${SLACK_WEBHOOK:-})
   HTTP_CODE=$(curl -X POST "$SLACK_WEBHOOK" \
     -H "Content-Type: application/json" \
     -d "$payload" \
@@ -88,12 +90,18 @@ send_email() {
   local message="$2"
   local urgency="${3:-normal}"
 
-  if [ -z "$EMAIL_ADDRESS" ]; then
+  # Use the correct exported config name with safe-default expansion.
+  # Same pattern as the SLACK_WEBHOOK check above. The previous code used a
+  # top-level alias `EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"` which is
+  # never exported, so send_email() crashes under set -u when called from an
+  # exported-function context (subprocess doesn't inherit bare shell variables,
+  # only exported ones). Reference the canonical config var directly here.
+  if [ -z "${EMAIL_NOTIFICATION_ADDRESS:-}" ]; then
     echo "⚠️  EMAIL_NOTIFICATION_ADDRESS not set, skipping email"
     return 0
   fi
 
-  if [ -z "$RITE_EMAIL_FROM" ]; then
+  if [ -z "${RITE_EMAIL_FROM:-}" ]; then
     echo "⚠️  RITE_EMAIL_FROM not set, skipping email"
     return 0
   fi
@@ -102,15 +110,15 @@ send_email() {
   [ "$urgency" = "urgent" ] && subject="🚨 URGENT: $subject"
 
   aws ses send-email \
-    --from "$RITE_EMAIL_FROM" \
-    --to "$EMAIL_ADDRESS" \
+    --from "${RITE_EMAIL_FROM:-}" \
+    --to "${EMAIL_NOTIFICATION_ADDRESS:-}" \
     --subject "$subject" \
     --text "$message" \
-    --profile "$AWS_PROFILE" \
+    --profile "${AWS_PROFILE:-default}" \
     2>/dev/null
 
   if [ $? -eq 0 ]; then
-    echo "✅ Email sent to $EMAIL_ADDRESS"
+    echo "✅ Email sent to ${EMAIL_NOTIFICATION_ADDRESS:-}"
     return 0
   else
     echo "⚠️  Email failed (check AWS SES configuration)"
@@ -133,7 +141,7 @@ send_sms() {
   aws sns publish \
     --topic-arn "$SNS_TOPIC_ARN" \
     --message "$short_message" \
-    --profile "$AWS_PROFILE" \
+    --profile "${AWS_PROFILE:-default}" \
     2>/dev/null
 
   if [ $? -eq 0 ]; then

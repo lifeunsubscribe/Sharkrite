@@ -251,6 +251,7 @@ detect_aws_project() {
   # Detect whether this repo uses AWS by checking for local indicators.
   # Fast, zero API calls. Cached per session via RITE_AWS_PROJECT.
   if [ -n "${RITE_AWS_PROJECT:-}" ]; then
+    # sharkrite-lint disable BARE_VAR_REFERENCE - RITE_AWS_PROJECT is guard-checked with ${:-} on the line above; bare ref here is safe (already proven non-empty by the -n test)
     [ "$RITE_AWS_PROJECT" = "true" ]
     return $?
   fi

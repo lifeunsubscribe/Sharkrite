@@ -583,6 +583,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `local` outside function — only works inside functions
 - Test stub committed to production path (`TEST_STUB_IN_LIB`) — files in `lib/core/`, `lib/utils/`, `lib/providers/` must never start with `# Stub `, reference `MOCK_*_FILE` env vars, or contain the literal `STUB ERROR`. These are integration-test fixtures and indicate an accidental wholesale overwrite of real code.
 - `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) — `mapfile`, `readarray`, or `declare -A` in a `#!/bin/bash` script without a `BASH_VERSINFO` re-exec guard. Crashes on macOS system bash 3.2. Add a self-re-exec guard (see `batch-process-issues.sh:69-77`) or replace with a portable while-read loop.
+- `BARE_VAR_REFERENCE` (Rule 22) — bare `$VAR` reference in `lib/utils/*.sh` for optional config-style vars (`EMAIL_*`, `SLACK_*`, `RITE_EMAIL_*`, `AWS_*`, `RITE_AWS_*`). Under `set -u`, the script crashes with "unbound variable" when the var is unset or not exported to the subshell. Use `${VAR:-}` or `${VAR:-default}`. Suppress with `# sharkrite-lint disable BARE_VAR_REFERENCE - reason` on the preceding line.
 
 **Suppressing false positives:**
 
@@ -599,6 +600,7 @@ EOF
 Supported suppression rules:
 - `UNQUOTED_HEREDOC` — for intentional variable expansion in heredocs
 - `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` — for scripts that are guaranteed to run under bash 4+ through another mechanism (document the reason clearly)
+- `BARE_VAR_REFERENCE` — for config vars that are provably set (e.g., already guard-checked with `${VAR:-}` on the preceding line)
 
 **Pre-push hook** (optional):
 ```bash
@@ -660,6 +662,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
 - **Phase handoff cwd contract**: When `phase_merge_pr` returns, cwd is always `$RITE_PROJECT_ROOT` — it restores cwd after removing the worktree. Any phase that runs after merge (e.g. `phase_completion`) must also start with `cd "$RITE_PROJECT_ROOT" 2>/dev/null || true` as defense-in-depth. Violating this causes `fatal: Unable to read current working directory` from `gh`'s internal git probe. See `docs/architecture/behavioral-design.md` → "Phase Handoff cwd Invariants" and `tests/regression/post-merge-cwd-restored.bats`.
+- **Bare `$VAR` for optional config vars crashes under `set -u`**: Config-style env vars (`EMAIL_*`, `SLACK_*`, `RITE_EMAIL_*`, `AWS_*`) are optional — they may be unset or not exported to subshells. Always use `${VAR:-}` (or `${VAR:-default}`) in functions that reference them. Exported functions in subshells do NOT inherit top-level variable assignments — only `export`ed variables. Live bug: `notifications.sh` used bare `$EMAIL_ADDRESS` inside `send_email()`; crashed workflows after successful merges (issue #313). See `BARE_VAR_REFERENCE` lint rule in `tools/sharkrite-lint.sh`.
 
 ## Token Optimization (rtk)
 
