@@ -3,10 +3,14 @@
 
 set -euo pipefail
 
-# Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f print_header >/dev/null 2>&1; then
+# Re-source guard — variable-based (not function-sentinel) because this file
+# `export -f`s its functions; see blocker-rules.sh for the full rationale and
+# tests/regression/blocker-rules-stale-inherited-functions.bats for the trap.
+# Do NOT export _RITE_COLORS_LOADED — subprocesses must re-source.
+if [ "${_RITE_COLORS_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
 fi
+_RITE_COLORS_LOADED=true
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

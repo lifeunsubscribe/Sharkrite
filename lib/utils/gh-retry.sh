@@ -51,12 +51,16 @@ export RITE_GH_MAX_RETRIES
 : "${RITE_GH_RETRY_MAX_SLEEP:=30}"
 export RITE_GH_RETRY_MAX_SLEEP
 
-# Re-source guard: skip the function definitions if already loaded
-# (idempotent sourcing). Must come AFTER defaults so subprocess re-sourcing
-# still gets the env vars.
-if declare -f gh_safe >/dev/null 2>&1; then
+# Re-source guard — variable-based (not function-sentinel) because this file
+# `export -f`s its functions; see blocker-rules.sh for the full rationale and
+# tests/regression/blocker-rules-stale-inherited-functions.bats for the trap.
+# Do NOT export _RITE_GH_RETRY_LOADED — subprocesses must re-source.
+# Must come AFTER the env-var defaults above so subprocess re-sourcing still
+# gets the env vars on the second pass (the guard skips function defs, not vars).
+if [ "${_RITE_GH_RETRY_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
 fi
+_RITE_GH_RETRY_LOADED=true
 
 # ---------------------------------------------------------------------------
 # _gh_is_read_op — returns 0 (true) if the gh subcommand is a read-only op
