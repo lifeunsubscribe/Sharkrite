@@ -751,6 +751,41 @@ EOF
   [[ "$output" =~ "Back online" ]]
 }
 
+@test "gh_safe does NOT retry when stderr contains 'HTTP 503:' with trailing colon (false-positive guard)" {
+  # "HTTP 503:" — colon immediately after the status code is not a real transient HTTP
+  # error response. The HTTP-prefix arm now carries ([^0-9:]|$) to reject this pattern,
+  # matching the same invariant as the bare-number arm.
+  local call_count_file="$TEST_TMPDIR/call-count-http503colon"
+  echo "0" > "$call_count_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$call_count_file")
+count=\$((count + 1))
+echo "\$count" > "$call_count_file"
+echo "HTTP 503: internal configuration error" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr view 42 --json title || true
+    echo \"calls:\$(cat '$call_count_file')\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Must have called gh exactly once — "HTTP 503:" is not a real transient HTTP response
+  [[ "$output" =~ "calls:1" ]]
+}
+
+
 # ===========================================================================
 # _gh_is_read_op: method-flag detection — case/shift robustness
 # ===========================================================================
