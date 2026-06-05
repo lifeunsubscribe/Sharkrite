@@ -1295,18 +1295,24 @@ _build_grounded_hosts() {
   # custom path supplied via RITE_PLAN_FIXTURE_GLOB (if it differs from the
   # defaults).  Walk one level: strip trailing /** or /* to get the base dir.
   local _dir _name
-  for _dir in $( (
-    for _base in fixtures tests/fixtures; do
-      [ -d "$project_root/$_base" ] && echo "$project_root/$_base" || true
-    done
-    # Honour RITE_PLAN_FIXTURE_GLOB if it was overridden to a custom path.
-    if [ -n "$fixture_glob" ]; then
-      _custom_base=$(echo "$fixture_glob" | sed 's|/\*\*$||; s|/\*$||' || true)
-      if [ -n "$_custom_base" ] && [ "$_custom_base" != "fixtures" ] && [ "$_custom_base" != "tests/fixtures" ]; then
-        [ -d "$project_root/$_custom_base" ] && echo "$project_root/$_custom_base" || true
-      fi
+  # Portable dedup that works on bash 3.2 (no mapfile builtin).
+  # Using while-read instead of "for _dir in $(...)" prevents word-splitting
+  # on paths that contain spaces (SC2086 enforced rule).
+  local _dirs_tmp
+  _dirs_tmp=$(mktemp)
+  for _base in fixtures tests/fixtures; do
+    [ -d "$project_root/$_base" ] && echo "$project_root/$_base" >> "$_dirs_tmp" || true
+  done
+  # Honour RITE_PLAN_FIXTURE_GLOB if it was overridden to a custom path.
+  if [ -n "$fixture_glob" ]; then
+    local _custom_base
+    _custom_base=$(echo "$fixture_glob" | sed 's|/\*\*$||; s|/\*$||' || true)
+    if [ -n "$_custom_base" ] && [ "$_custom_base" != "fixtures" ] && [ "$_custom_base" != "tests/fixtures" ]; then
+      [ -d "$project_root/$_custom_base" ] && echo "$project_root/$_custom_base" >> "$_dirs_tmp" || true
     fi
-  ) | sort -u ); do
+  fi
+  sort -u "$_dirs_tmp" > "${_dirs_tmp}.sorted" && mv "${_dirs_tmp}.sorted" "$_dirs_tmp" || true
+  while IFS= read -r _dir; do
     if [ -d "$_dir" ]; then
       for _entry in "$_dir"/*/; do
         [ -d "$_entry" ] || continue
@@ -1323,7 +1329,8 @@ _build_grounded_hosts() {
         echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done
     fi
-  done
+  done < "$_dirs_tmp"
+  rm -f "$_dirs_tmp"
 }
 
 # _sanitize_spike_key: convert a host/package name to a safe placeholder key.
@@ -1436,6 +1443,12 @@ _detect_unverified_integrations() {
   # Pass 2: for each ungrounded candidate, emit a WARNING and build a spike block.
   # Spike blocks are collected then prepended to the file in a single rewrite.
   local spikes_block=""
+  # seen_spike_keys: newline-separated list of keys already emitted in this pass.
+  # Deduplicates by sanitized key so that two candidates that collapse to the
+  # same key (e.g. "foo.bar" and "foo-bar" → "foo-bar") produce only one spike
+  # issue and one spike-map entry.  Without this guard, the collision leaves an
+  # unreferenced orphan spike and a broken downstream dependency.
+  local seen_spike_keys=""
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
@@ -1445,6 +1458,15 @@ _detect_unverified_integrations() {
     _key=$(_sanitize_spike_key "$_name")
 
     print_warning "unverified external integration: $_name" >&2
+
+    # Skip if a spike with this key was already emitted (key collision).
+    # The downstream #SPIKE-<key> placeholder will resolve to the first spike.
+    if echo "$seen_spike_keys" | grep -qxF "$_key" 2>/dev/null; then
+      print_warning "spike key collision: '$_name' maps to key '$_key' which is already emitted — skipping duplicate spike" >&2
+      continue
+    fi
+    seen_spike_keys="${seen_spike_keys}${_key}
+"
 
     # Build spike issue block
     spikes_block+="---ISSUE---
@@ -1843,17 +1865,22 @@ create_issues() {
           local issue_num
           issue_num=$(echo "$issue_url" | grep -oE '[0-9]+$' || true)
           created_numbers+=("$issue_num")
-          prev_issue_num="$issue_num"
           print_success "Created #$issue_num"
 
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
           # Title format: "spike: capture <name> sample for grounding"
+          # Spike issues do NOT update prev_issue_num — they are prepended
+          # prerequisites and are not part of the sequential #PREV dependency
+          # chain the planner authored among the real (non-spike) issues.
           if [[ "$current_title" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]; then
             local _spike_name="${BASH_REMATCH[1]}"
             local _spike_key
             _spike_key=$(_sanitize_spike_key "$_spike_name")
             echo "#SPIKE-${_spike_key}=${issue_num}" >> "$spike_map_file"
+          else
+            # Only non-spike issues advance the #PREV pointer.
+            prev_issue_num="$issue_num"
           fi
         else
           print_error "Failed: $issue_url"
