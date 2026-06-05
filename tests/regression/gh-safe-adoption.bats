@@ -784,6 +784,23 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "_gh_is_read_op: api --method GET is a read op" {
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api 'repos/owner/repo/pulls/42' --method GET
+  "
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_is_read_op: api --method POST after URL is a write op" {
+  # Documents that --method appearing after the URL is handled correctly (case/shift walk)
+  run bash -c "
+    source '$GH_RETRY_SH'
+    _gh_is_read_op api 'repos/owner/repo/issues' --method POST
+  "
+  [ "$status" -ne 0 ]
+}
+
 @test "_gh_is_read_op: api -X PUT with leading flags before -X is a write op (was fragile)" {
   # Regression: index-based walk could skip VALUE when flags were prepended before -X.
   # With case/shift the walk processes each token in sequence; order does not matter.
