@@ -365,16 +365,21 @@ $(cat "$doc")
   fi
 
   # Generate issues with Claude
-  # Use || true to prevent set -e from killing the script when generate_issues
-  # returns non-zero (e.g. provenance lint gate fired). The guard below detects
-  # both empty output and a missing/deleted temp file.
+  # Capture exit code explicitly — generate_issues returns non-zero when the
+  # provenance lint gate fires (low-signal detected). Distinguish that from a
+  # genuine generation failure so we can surface the correct message.
   local issues_file
+  local _gen_rc=0
   issues_file=$(generate_issues "$doc_content" "$project_context" \
     "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-    "$accumulated_feedback" "$previous_deferrals" "") || true
+    "$accumulated_feedback" "$previous_deferrals" "") || _gen_rc=$?
 
   if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
-    print_error "Issue generation failed"
+    if [ "$_gen_rc" -ne 0 ]; then
+      print_error "Issue generation rejected by provenance lint gate (exit $_gen_rc). Review the warnings above and either fix the provenance tables or set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check."
+    else
+      print_error "Issue generation failed"
+    fi
     exit 1
   fi
 
@@ -460,12 +465,17 @@ ${feedback}"
 
         print_status "Regenerating with your feedback..."
         rm -f "$issues_file"
+        local _regen_rc=0
         issues_file=$(generate_issues "$doc_content" "$project_context" \
           "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-          "$accumulated_feedback" "$previous_deferrals" "$prior_coverage")
+          "$accumulated_feedback" "$previous_deferrals" "$prior_coverage") || _regen_rc=$?
 
         if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
-          print_error "Regeneration failed"
+          if [ "$_regen_rc" -ne 0 ]; then
+            print_error "Regeneration rejected by provenance lint gate (exit $_regen_rc). Review the warnings above and either fix the provenance tables or set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check."
+          else
+            print_error "Regeneration failed"
+          fi
           exit 1
         fi
         ;;
@@ -1045,7 +1055,7 @@ _lint_provenance_flags() {
         _in_issue=false
 
         # Only process issues that have a provenance section
-        if ! echo "$_issue_block" | grep -qF "**Field provenance:**"; then
+        if ! echo "$_issue_block" | grep -qE '^\*\*Field provenance:\*\*'; then
           _issue_block=""
           continue
         fi
@@ -1089,7 +1099,7 @@ _lint_provenance_flags() {
         local _obvious_count=0
 
         while IFS= read -r _pline; do
-          if echo "$_pline" | grep -qF "**Field provenance:**"; then
+          if echo "$_pline" | grep -qE '^\*\*Field provenance:\*\*'; then
             _in_prov=true
             continue
           fi
@@ -1109,12 +1119,22 @@ _lint_provenance_flags() {
                 fi
 
                 # Check if source is obvious: does any filename from "Files to Read"
-                # appear in the provenance entry line?
+                # appear in the SOURCE SEGMENT of the provenance entry only?
+                # Format: "- fieldname: <source> — <status>"
+                # We extract only the source segment (between ": " and " —") to
+                # avoid false-positives where a basename appears in the description
+                # or status text of an external/derived field.
                 if [ -n "$_files_to_read_basenames" ]; then
                   local _is_obvious=false
+                  # Extract source segment: text between first ": " and " —" (em-dash).
+                  # If the entry doesn't contain " —", fall back to the text after ": "
+                  # to the end of the line. This avoids matching basenames that only
+                  # appear in the trailing status word (UNVERIFIED, derived, etc.).
+                  local _prov_source
+                  _prov_source=$(echo "$_pline" | sed 's/^[^:]*: //' | sed 's/ —.*//' || true)
                   while IFS= read -r _bn; do
                     [ -z "$_bn" ] && continue
-                    if echo "$_pline" | grep -qF "$_bn"; then
+                    if echo "$_prov_source" | grep -qF "$_bn"; then
                       _is_obvious=true
                       break
                     fi
