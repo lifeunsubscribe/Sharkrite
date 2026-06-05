@@ -37,6 +37,7 @@ lib/core/plan-issues.sh           # Issue generation from architectural docs
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (primary)
 lib/providers/gemini.sh           # Gemini CLI provider (skeleton)
+lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
@@ -61,6 +62,8 @@ lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-a
 Any short-circuit that bypasses `run_workflow()` must be documented with `# Deliberate divergence from single-issue mode: <reason>` and covered by `tests/regression/batch-single-issue-parity.bats`. See full contract: `docs/architecture/behavioral-design.md` → "Batch ↔ Single-Issue Parity Contract".
 
 **Closed-issue remote-branch cleanup — local-first contract:** `handle_closed_issue()` tracks `found_local_orphans` (true when steps 1–2 removed a worktree or local branch). Step 3 (remote branch deletion, network) only fires when `found_local_orphans=true OR pr_state != MERGED`. If local checks found nothing, any remote orphan is cosmetic — the periodic deep-clean in `merge-pr.sh` catches survivors. This prevents TCP-reset kills when the network call is a guaranteed no-op (live failure: issue #201, 2026-06-04). The MERGED gate is preserved as a secondary defense. In batch mode, `batch-process-issues.sh` prefetches remote refs so per-issue cleanup uses `git show-ref` (local) instead of `git ls-remote` (network). See: `docs/architecture/behavioral-design.md` → "Cleanup Operations Are Lazy About Network State" and "Network Calls During Closed-Issue Cleanup".
+
+**Closed-issue cleanup fallback chain (pr_branch discovery):** `handle_closed_issue()` uses three layers to set `pr_branch` before the cleanup gate: (0) `closedByPullRequestsReferences` from the issue JSON, (1) closed-PR body search with `--limit 1000` (bumped from 50 — issue #42), (2) local `git worktree list` scan for batch-suffix pattern `(_b|-)N(-|$)` as a whole-token match. Layer 2 is conservative: single candidate → use it + warn; multiple candidates → slug tie-breaker; no clear winner → skip cleanup (prefer orphan over wrong worktree). See: `docs/architecture/behavioral-design.md` → "Closed-Issue Cleanup Fallback Chain".
 
 ### Data Flow
 

@@ -17,33 +17,18 @@ load '../helpers/git-fixtures.bash'
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Source only generate_adr_for_ref() from assess-documentation.sh without
-# running the script's top-level code (which calls `gh pr view`, etc.).
-# Strategy: extract the function body via awk and source it as a snippet.
+# Source generate_adr_for_ref() from its own library file (no side effects
+# on source, no top-level code). _mark_updated() is the optional callback
+# the function calls on success; we define it ourselves so the test can
+# observe which markers fire.
 _source_generate_adr_for_ref() {
-  local script="$RITE_REPO_ROOT/lib/core/assess-documentation.sh"
-  # Also source _mark_updated helper: awk extracts lines between
-  # "_mark_updated() {" and the matching close brace, plus generate_adr_for_ref.
-  eval "$(awk '
-    /^_mark_updated\(\)/ { in_fn=1; depth=0 }
-    in_fn {
-      for (i=1; i<=length($0); i++) {
-        c=substr($0,i,1)
-        if (c=="{") depth++
-        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
-      }
-      print; next
-    }
-    /^generate_adr_for_ref\(\)/ { in_fn=1; depth=0 }
-    in_fn {
-      for (i=1; i<=length($0); i++) {
-        c=substr($0,i,1)
-        if (c=="{") depth++
-        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
-      }
-      print
-    }
-  ' "$script")"
+  # shellcheck disable=SC1091
+  source "$RITE_REPO_ROOT/lib/utils/adr-generator.sh"
+
+  # Define _mark_updated locally — the helper calls it via `declare -f`
+  # check, so anything that exists by this name will be invoked on success.
+  _mark_updated() { touch "$_MARKER_DIR/$1"; }
+  export -f _mark_updated
 }
 
 setup() {
