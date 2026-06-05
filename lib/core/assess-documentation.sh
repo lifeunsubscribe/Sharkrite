@@ -494,14 +494,18 @@ assess_internal_adr() {
 }
 
 update_conventions_from_marker() {
-  # update_conventions_from_marker PR_NUMBER
+  # update_conventions_from_marker PR_NUMBER PR_BODY
   #
   # Extracts all <!-- sharkrite-convention -->...<!-- /sharkrite-convention --> blocks
-  # from the PR body and appends rendered markdown entries to
-  # docs/architecture/conventions.md in the project root.
+  # from the PR body and updates docs/architecture/conventions.md in the project root.
   #
-  # Idempotent: if the convention title already appears in conventions.md AND
-  # the PR number already appears on that entry's References line, this is a no-op.
+  # Each convention title is canonical — exactly ONE entry per unique title.
+  # Three cases (see behavioral-design.md → "Conventions Catalog: Accumulate-in-Place
+  # Contract" for the full rationale):
+  #   title absent              → append a new rendered entry
+  #   title present, PR# present → no-op (idempotent — already recorded)
+  #   title present, PR# absent  → accumulate in place: append ", #PR" to the existing
+  #                                entry's References line (no duplicate heading created)
   #
   # No Claude call — purely local file I/O + one gh API call already cached in
   # PR_BODY (passed as arg 2).  Runs synchronously (fast).
@@ -577,15 +581,26 @@ update_conventions_from_marker() {
         continue
       fi
 
-      # Idempotency: skip if title already present in conventions.md AND this PR#
-      # is already in the references line immediately following the title heading.
-      # We check for "## <title>" (the rendered heading format) and then scan
-      # forward for "**References:**" containing the PR number.
+      # Idempotency and accumulate-in-place contract (#320):
       #
-      # Match strategy: title_found=1 when we see "## <title>", then scan forward
-      # for "**References:**" with "#pr_number" before the next "## " heading.
+      # Conventions are canonical — each unique title has exactly ONE entry in the
+      # catalog. Multiple PRs that surface or refine the same convention accumulate
+      # their PR numbers in that single entry's References line, rather than
+      # producing duplicate headings.
+      #
+      # Cases:
+      #   title absent              → append a new entry (existing behavior)
+      #   title present, PR# present → already recorded, no-op (idempotent)
+      #   title present, PR# absent  → accumulate: append PR# to existing References line
+      #
+      # Match strategy for idempotency: title_found=1 when we see "## <title>",
+      # then scan forward for "**References:**" with "#pr_number" as a whole token
+      # (tokenized on spaces/commas to avoid #42 matching #420) before the next
+      # "## " heading.
       local _already_present=false
+      local _title_exists=false
       if grep -qF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
+        _title_exists=true
         # Title exists — check if this PR# is already in its references line
         if awk -v title="## ${_title}" -v prnum="#${pr_number}" '
           BEGIN { matched=0 }
@@ -610,7 +625,43 @@ update_conventions_from_marker() {
         continue
       fi
 
-      # Build the rendered markdown entry and append it
+      if [ "$_title_exists" = "true" ]; then
+        # Title exists but this PR# is not yet in its References line.
+        # Accumulate in place: append ", #PR_NUMBER" to the existing entry's
+        # References line rather than creating a duplicate heading.
+        # This preserves the append-only catalog contract (one canonical entry
+        # per convention; multiple PRs accumulate on the same entry).
+        #
+        # awk rewrites the file in-place via a temp file:
+        # - scans for "## <title>" to locate the right entry (handles multiple
+        #   entries with different titles; stops at the first match)
+        # - within that entry, finds "**References:**" and appends ", #PR_NUMBER"
+        # - all other lines pass through unchanged
+        local _refs_tmp
+        _refs_tmp=$(mktemp)
+        awk -v title="## ${_title}" -v prnum="#${pr_number}" '
+          BEGIN { in_target=0; updated=0 }
+          $0 == title && !updated { in_target=1; print; next }
+          in_target && /^\*\*References:\*\*/ && !updated {
+            print $0 ", " prnum
+            in_target=0; updated=1; next
+          }
+          in_target && /^## / { in_target=0 }
+          { print }
+        ' "$conventions_file" > "$_refs_tmp" || true
+        # Only replace the file if awk produced non-empty output (safety net)
+        if [ -s "$_refs_tmp" ]; then
+          mv "$_refs_tmp" "$conventions_file"
+        else
+          rm -f "$_refs_tmp"
+        fi
+        print_info "  conventions: updated references for '$_title' (added PR #${pr_number})"
+        _mark_updated "conventions"
+        _current_block=""
+        continue
+      fi
+
+      # Title is new — build the rendered markdown entry and append it.
       # If references already contains a value from the PR body, append the PR#.
       # If references is empty, use just the PR#.
       local _refs_line

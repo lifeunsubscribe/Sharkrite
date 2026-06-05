@@ -687,6 +687,28 @@ Existing automation continues unchanged:
 3. **Append-only growth** for `conventions.md` keeps merge conflicts trivial; `behavioral-design.md` curated narrative resists drift.
 4. **Future agents inherit lessons** — every Claude session loads the conventions catalog automatically. The "rediscover the same lesson every session" failure mode is prevented at the source.
 
+### Conventions Catalog: Accumulate-in-Place Contract
+
+Each convention title is **canonical** — there is exactly one entry per unique title in `conventions.md`. When multiple PRs surface or refine the same convention, their PR numbers accumulate in that single entry's `**References:**` line.
+
+**Three cases handled by `update_conventions_from_marker()`:**
+
+| Situation | Action |
+|---|---|
+| Title absent | Append a new rendered entry (rule, why, example, references) |
+| Title present, PR# already in its References line | No-op (idempotent — already recorded) |
+| Title present, PR# NOT yet in its References line | Accumulate in place: append `, #PR_NUMBER` to the existing entry's References line |
+
+**Why accumulate in place rather than append duplicate headings:**
+
+The catalog's prose contract describes it as "append-only" meaning entries are never deleted or overwritten — not that a new heading is blindly inserted for every PR that touches a convention. Having two `## no-keyword-matching` headings in the catalog is confusing; having one heading with `References: #34, #74, #90, #92` clearly shows the convention's provenance.
+
+The existing seed entries (e.g., `**References:** 206f2be, #34, #74, #90, #92`) already express the intended semantics: one entry, multiple references. The accumulate-in-place behavior makes this consistent for PRs processed after the initial entry was added.
+
+**Implementation:** `assess-documentation.sh::update_conventions_from_marker()` — the `_title_exists` gate (added in issue #320) routes to an awk rewrite that appends `, #PR_NUMBER` to the matching References line without touching any other content.
+
+**Regression tests:** `tests/regression/conventions-marker-append.bats` — Tests 6 and 7 cover the accumulate-in-place path and its idempotency.
+
 ---
 
 ## macOS bash 3.2 Compatibility
