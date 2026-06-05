@@ -26,6 +26,10 @@ source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
+# generate_adr_for_ref lives in its own helper module so other callers
+# (bootstrap-docs.sh) can use it without sourcing this script's
+# top-level executable body. See lib/utils/adr-generator.sh.
+source "$RITE_LIB_DIR/utils/adr-generator.sh"
 
 # Ensure a valid cwd before any git-aware tool (e.g. claude --print) runs.
 #
@@ -117,7 +121,7 @@ if [ "${_pr_diff_exit}" -ne 0 ]; then
   exit 0
 fi
 PR_DIFF="${PR_DIFF:-}"
-CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[].path' | head -30 || true)
+CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | head -30 || true)
 
 # =====================================================================
 # LAYER 1: INTERNAL DOCS (always runs)
@@ -450,112 +454,8 @@ API_EOF
   fi
 }
 
-# generate_adr_for_ref - Generate ADR for either a PR or a commit
-# Args:
-#   $1: ref_type - "pr" or "commit"
-#   $2: ref_id - PR number (e.g., "123") or commit SHA (e.g., "a1b2c3d")
-#   $3: title - PR title or commit message subject
-#   $4: body - PR body or full commit message
-#   $5: diff - PR diff or commit diff
-#   $6: changed_files - newline-separated list of changed files
-# Returns: path to created ADR file (stdout), or empty if skipped
-generate_adr_for_ref() {
-  local ref_type="$1"
-  local ref_id="$2"
-  local title="$3"
-  local body="$4"
-  local diff="$5"
-  local changed_files="$6"
-  local adr_dir="${RITE_INTERNAL_DOCS_DIR}/adr"
-
-  mkdir -p "$adr_dir"
-
-  # Scan existing ADRs for highest number
-  local highest=0
-  for adr_file in "$adr_dir"/*.md; do
-    if [ -f "$adr_file" ]; then
-      local num=$(basename "$adr_file" | grep -oE "^[0-9]+" || echo "0")
-      # Strip leading zeros to prevent bash octal interpretation (008 is invalid octal)
-      num=$((10#$num))
-      if [ "$num" -gt "$highest" ]; then
-        highest="$num"
-      fi
-    fi
-  done
-  local next_num=$((highest + 1))
-  local next_num_padded=$(printf "%03d" "$next_num")
-
-  # Deduplication: check if ADR already exists for this PR or commit
-  # Note: metadata is written in bold markdown format (**PR:** and **Commit:**)
-  if [ "$ref_type" = "pr" ]; then
-    if grep -rl "\*\*PR:\*\* #${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
-      return 0
-    fi
-  elif [ "$ref_type" = "commit" ]; then
-    if grep -rl "\*\*Commit:\*\* ${ref_id}" "$adr_dir" 2>/dev/null | head -1 | grep -q .; then
-      return 0
-    fi
-  fi
-
-  # Build compact file list for the Files: metadata line
-  local changed_files_list=$(echo "$changed_files" | head -10 | tr '\n' ', ' | sed 's/,$//' || true)
-
-  # Build metadata line based on ref_type
-  local ref_metadata
-  if [ "$ref_type" = "pr" ]; then
-    ref_metadata="**PR:** #${ref_id}"
-  else
-    ref_metadata="**Commit:** ${ref_id}"
-  fi
-
-  # Generate ADR via Claude
-  local prompt_file=$(mktemp)
-  cat > "$prompt_file" <<ADR_EOF
-Output ONLY a single ADR document in this exact format. No extra text before or after.
-
-# ADR-${next_num_padded}: <Brief Title>
-
-**Date:** $(date +%Y-%m-%d)
-${ref_metadata}
-**Files:** ${changed_files_list}
-**Context:** <1-2 lines from the description and diff explaining why this change was needed>
-**Decision:** <1-2 lines describing what was changed>
-**Tradeoffs:** <1-2 lines on what was gained vs lost>
-
-If this change does NOT represent a significant architectural decision (pattern change, approach substitution, tradeoff decision), output nothing.
-
-Title: ${title}
-Description:
-${body}
-
-Diff (truncated):
-${diff}
-ADR_EOF
-
-  verbose_info "  Checking for ADR-worthy decisions..."
-  local adr_output
-  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
-  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-  adr_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -n "$adr_output" ]; then
-    # Extract brief title for filename
-    local brief_title=$(echo "$adr_output" | head -1 | sed 's/^# ADR-[0-9]*: //' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40 || true)
-    if [ -z "$brief_title" ]; then
-      if [ "$ref_type" = "pr" ]; then
-        brief_title="pr-${ref_id}"
-      else
-        brief_title="commit-${ref_id:0:7}"
-      fi
-    fi
-
-    local adr_file="${adr_dir}/${next_num_padded}-${brief_title}.md"
-    echo "$adr_output" > "$adr_file"
-    _mark_updated "ADR-${next_num_padded}"
-    echo "$adr_file"
-  fi
-}
+# generate_adr_for_ref is defined in lib/utils/adr-generator.sh and sourced
+# at the top of this file. It calls _mark_updated() (defined above) on success.
 
 assess_internal_adr() {
   local pr_number="$1"
@@ -1095,10 +995,10 @@ if [ -n "$SHARKRITE_REVIEW" ] && [ "$SHARKRITE_REVIEW" != "null" ]; then
 fi
 
 # Get changed files (excluding docs/)
-CHANGED_FILES_NO_DOCS=$(echo "$PR_DATA" | jq -r '.files[].path' | grep -v '^docs/' | head -20 || true)
+CHANGED_FILES_NO_DOCS=$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)
 
 # Get commit messages for context
-COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[].messageHeadline' | head -10 || true)
+COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[]?.messageHeadline // empty' | head -10 || true)
 
 # Get current documentation structure
 DOC_FILES=$(find docs/ -name "*.md" 2>/dev/null | sort || echo "")

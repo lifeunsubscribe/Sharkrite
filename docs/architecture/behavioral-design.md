@@ -183,6 +183,41 @@ Local checks found nothing. The pre-`found_local_orphans` implementation still m
 
 ---
 
+### Closed-Issue Cleanup Fallback Chain
+
+`handle_closed_issue()` uses three layers to discover `pr_branch` before the cleanup gate fires. Each layer is attempted only if the previous layer found nothing.
+
+**Layer 0 — `closedByPullRequestsReferences` (primary, via GraphQL):**
+GitHub's issue data includes the PR that closed the issue. This is the fastest, most reliable path — one field in the issue JSON already fetched. Works for any issue closed by a merged PR via the GitHub UI or `gh pr merge`.
+
+**Layer 1 — Closed-PR body search (fallback, `--limit 1000`):**
+When `closedByPullRequestsReferences` is empty (manually-closed issue, or closed by a PR that was itself closed without merging), search recently-closed PRs for `Closes #N` / `Fixes #N` / `Resolves #N` in their body. The search window is `--limit 1000` (gh's max per-page).
+
+**Why 1000, not 50:** An active dogfooding repo generates closed PRs faster than orphan worktrees are reaped. Issue #201's closing PR (#206) fell outside the old `--limit 50` window after only 78 subsequent closed PRs (3 days of work). 1000 covers the practical worktree lifetime; gh's default max per-page is 1000. Issue #42.
+
+**Layer 2 — Local worktree batch-suffix scan (last resort):**
+When both API paths return nothing (manually-closed with no "Closes #N" in any PR body, or no associated PR at all), inspect local `git worktree list` for directories whose batch-suffix encodes the issue number as a whole token.
+
+Worktree directory naming (from `claude-workflow.sh`):
+- Single-issue batch: `<slug>_b<N>` (e.g., `ft-fix-thing_b201`)
+- Multi-issue batch: `<slug>_b<A>-<B>-<N>` (e.g., `ft-fix-thing_b200-201-202-203`)
+
+The regex `(_b|-)N(-|$)` anchors on token boundaries so `_b2010` does NOT match when searching for N=201.
+
+**Conservative policy (false-positive risk = deleting the wrong worktree):**
+- Zero candidates → skip cleanup (current behavior — no change).
+- One candidate → use it; log a `print_warning` so the user sees the non-standard path.
+- Multiple candidates → apply title-slug tie-breaker (normalize issue title to a slug, check which candidate's dirname contains it). If exactly one matches → use it. If none or multiple match → log warning, skip cleanup (better to leave an orphan than remove the wrong worktree).
+
+**Why conservative:** A batch worktree for issues A, B, N, C contains all four issue numbers in its suffix. If cleanup #N fires, it would find the same worktree as cleanups #A, #B, #C. The single-candidate gate and slug tie-breaker prevent over-cleaning when siblings haven't been cleaned yet.
+
+**Regression test:** `tests/regression/closed-issue-cleanup-no-pr.bats` — static and behavioral checks for both the limit bump (Layer 1) and the local-state fallback (Layer 2), including the substring collision guard (_b2010 must not match #201).
+
+**Bug history:**
+- Issue #42 — issue #201, manually closed via `gh issue close` with a comment (no merging PR). Its orphan worktree (`ft-rebase-pr-172-onto-main-and_b200-201-202-203`) persisted across multiple cleanup runs because: (a) `closedByPullRequestsReferences` was empty, (b) the associated PR (#206) had fallen outside the `--limit 50` window, and (c) no local-state fallback existed. Fixed by bumping to `--limit 1000` (Layer 1) and adding the batch-suffix scan (Layer 2).
+
+---
+
 ## Plan System (plan-issues.sh)
 
 ### Coverage Checklist Validation
@@ -236,6 +271,21 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 ---
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
+
+### ADR generation helper lives in lib/utils/, not lib/core/
+
+`generate_adr_for_ref` is in [lib/utils/adr-generator.sh](../../lib/utils/adr-generator.sh). Two callers source it: `lib/core/assess-documentation.sh` (post-merge doc assessment) and `lib/core/bootstrap-docs.sh` (one-time bootstrap of internal docs). The helper has no side effects on source — it only defines the function plus an `ADR_GENERATOR_TIMEOUT` default.
+
+**Why it's not inline in assess-documentation.sh anymore:** `assess-documentation.sh` is a script with top-level executable code (it parses `$1` as `PR_NUMBER`, calls `gh pr view`, runs through the full post-merge assessment, and ends with `exit 0`). Anything that sources it runs that entire flow as a side effect — and the `exit 0` terminates the *parent* shell.
+
+**Live regression — 2026-06-04, finance-glance batch `rite 1 2 3 4 5 6 7`:** `bootstrap-docs.sh` used to `source assess-documentation.sh` just to use `generate_adr_for_ref`. On a fresh repo (no PRs), the sourced top-level called `gh pr view $1` (with `$1`= issue number), got back JSON missing `.files` and `.commits`, hit `jq: error (at <stdin>:1): Cannot iterate over null (null)`, continued into the post-merge documentation summary, then hit `exit 0`. That terminated workflow-runner.sh with status 0. The batch reporter saw exit 0 and logged `✅ Issue #1 → PR #1 (167s)` — except issue #1 was still open, no branch existed, no PR existed.
+
+**Pattern lesson:** Same class of bug as [Test stubs MUST NOT live in production paths](#test-stubs-must-not-live-in-production-paths-critical) below: a file that's BOTH a library (defines functions other code wants) AND a script (runs top-level code on source/execute) without a guard separating the two modes. Sharkrite's options for handling this:
+
+1. **Extract the function** to its own file in `lib/utils/` (or another helpers location). The library file has no top-level executable code. *This is what was done for `generate_adr_for_ref`.*
+2. Use `RITE_SOURCE_FUNCTIONS_ONLY=1` guard pattern (see `lib/core/local-review.sh` as the in-repo example) — caller sets the env var before sourcing; the script's executable body checks it and returns early.
+
+Option 1 is preferred when the function is reusable. Option 2 fits when the script is dominated by a single workflow that doesn't decompose cleanly.
 
 ### Test stubs MUST NOT live in production paths (CRITICAL)
 

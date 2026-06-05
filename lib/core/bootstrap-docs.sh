@@ -423,11 +423,14 @@ fi
 # ADR BACKFILL (generate from historical commits during bootstrap)
 # =====================================================================
 
-# Stub for _mark_updated since assess-documentation.sh expects it
-_mark_updated() { :; }
-
-# Source the ADR generation function from assess-documentation.sh
-source "$RITE_LIB_DIR/core/assess-documentation.sh"
+# ADR generation helper. Lives in lib/utils/ so bootstrap doesn't have to
+# pull in assess-documentation.sh (which is a script with top-level
+# executable code, not a function library — sourcing it ran the entire
+# post-merge assessment as a side effect, including an `exit 0` that
+# silently terminated the bootstrap and made the batch runner report
+# false success). The helper is a pure function with no side effects on
+# source.
+source "$RITE_LIB_DIR/utils/adr-generator.sh"
 
 echo ""
 ADR_SUGGESTIONS=$(git log --oneline -50 2>/dev/null | grep -iE "(refactor|feat|breaking|migrate|replace|switch|adopt|drop)" | head -5 || echo "")
