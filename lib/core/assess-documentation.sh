@@ -599,7 +599,7 @@ update_conventions_from_marker() {
       # "## " heading.
       local _already_present=false
       local _title_exists=false
-      if grep -qF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
+      if grep -qxF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
         _title_exists=true
         # Title exists — check if this PR# is already in its references line
         if awk -v title="## ${_title}" -v prnum="#${pr_number}" '
@@ -639,6 +639,7 @@ update_conventions_from_marker() {
         # - all other lines pass through unchanged
         local _refs_tmp
         _refs_tmp=$(mktemp)
+        local _awk_exit=0
         awk -v title="## ${_title}" -v prnum="#${pr_number}" '
           BEGIN { in_target=0; updated=0 }
           $0 == title && !updated { in_target=1; print; next }
@@ -648,15 +649,19 @@ update_conventions_from_marker() {
           }
           in_target && /^## / { in_target=0 }
           { print }
-        ' "$conventions_file" > "$_refs_tmp" || true
+          END { if (!updated) exit 3 }
+        ' "$conventions_file" > "$_refs_tmp" || _awk_exit=$?
         # Only replace the file if awk produced non-empty output (safety net)
-        if [ -s "$_refs_tmp" ]; then
+        # and awk reported a successful update (exit 0; exit 3 means no References
+        # line was found — the catalog entry is malformed or has no References line).
+        if [ -s "$_refs_tmp" ] && [ "$_awk_exit" -eq 0 ]; then
           mv "$_refs_tmp" "$conventions_file"
+          print_info "  conventions: updated references for '$_title' (added PR #${pr_number})"
+          _mark_updated "conventions"
         else
           rm -f "$_refs_tmp"
+          print_warning "  conventions: could not append PR #${pr_number} to '$_title' — no References line found in entry (skipping)"
         fi
-        print_info "  conventions: updated references for '$_title' (added PR #${pr_number})"
-        _mark_updated "conventions"
         _current_block=""
         continue
       fi
