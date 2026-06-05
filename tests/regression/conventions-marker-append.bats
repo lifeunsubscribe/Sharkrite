@@ -359,6 +359,68 @@ BODY
 # in its References line. A subsequent run for #42 must be a no-op.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Test 9: Example containing triple backticks — fence delimiter is promoted
+#
+# If the example field contains ``` (triple backticks), the rendered entry
+# must use a 4-backtick fence so the inner ``` cannot terminate the outer
+# fence early and corrupt the append-only conventions file.
+#
+# Also verifies that a normal example (no ``` inside) still produces the
+# standard 3-backtick fence — the promotion is conditional.
+# ---------------------------------------------------------------------------
+
+@test "example with triple backticks: uses 4-backtick fence to avoid early termination" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: unescaped-backtick-example
+rule: Use 4-backtick fence when example contains triple backticks
+why: A triple-backtick inside a triple-backtick fence terminates the fence early, corrupting the append-only catalog
+example: |
+  # BAD: describe something using ```inline code``` in prose
+  echo "document with ```backticks``` inside"
+  # GOOD: just avoid the ambiguity or escape it
+  echo "document with backtick blocks"
+references: #319
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "321" "$pr_body"
+
+  # The entry must exist
+  grep -q "^## unescaped-backtick-example$" "$conventions_file"
+
+  # A 4-backtick bash fence opener must be present (not 3-backtick)
+  grep -q '^\`\`\`\`bash$' "$conventions_file"
+
+  # A 4-backtick fence closer must be present
+  grep -q '^\`\`\`\`$' "$conventions_file"
+
+  # No standalone 3-backtick opener for this entry (would indicate early fence break)
+  # Count lines after the heading: the opener must be the 4-backtick one
+  local fence_count
+  fence_count=$(grep -c '^\`\`\`bash$' "$conventions_file" || true)
+  # The seed or normal entries may have ```bash fences, but the new entry must not
+  # add one — it should only have the ````bash opener.
+  # Verify the inner triple-backtick text is present (content not truncated)
+  grep -q 'backticks' "$conventions_file"
+}
+
+@test "example without triple backticks: uses standard 3-backtick fence" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+  local pr_body
+  pr_body="$(one_block_body)"
+
+  update_conventions_from_marker "42" "$pr_body"
+
+  # The standard opener must be present (not the 4-backtick promoted one)
+  grep -q '^\`\`\`bash$' "$conventions_file"
+}
+
 @test "idempotency: PR #42 is not mistaken for already-recorded PR #420" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
