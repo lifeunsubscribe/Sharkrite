@@ -815,12 +815,13 @@ $ACTIONABLE_NOW_ITEMS
 2. **Make the necessary code changes** at the locations specified in each item
 3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
 4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
+5. **VERIFY NO REGRESSIONS BEFORE DECLARING DONE.** Each fix can break code that was passing before. Run the project's test/lint commands that cover the files you touched (\`make check\`, \`bats tests/...\`, \`pytest tests/...\`, etc. — pick what's relevant for this repo). If any check that was passing now fails, fix or revert the change. **Do not finish the session with a regression you introduced.** Live precedent: in PR #313's fix loop, an earlier cycle's fix added a \`find\` exclusion that broke 4 positive tests in the same file — the next review cycle caught it, but only after burning another 5 min of LLM time. Catching it inside this session would have saved that cycle.
 
 The workflow will automatically commit, push, and request a new review.
 
 ## Scope
 - Read and edit source code files to fix the listed issues
-- Run tests if mentioned in the issue
+- Run tests/lint covering the files you touched (required by step 5 above)
 - Do NOT modify workflow, config, or CI files (.rite/, .github/workflows/, .claude/)
 
 $EXIT_INSTRUCTION"
@@ -860,6 +861,13 @@ $EXIT_INSTRUCTION"
         print_error "No fixes made before timeout"
         exit 1
       fi
+    elif [ $FIX_EXIT_CODE -eq 5 ]; then
+      # Usage cap reached during fix session — propagate so batch aborts.
+      # The provider session function detected the cap message internally
+      # and returned 5; here we just surface it cleanly instead of letting
+      # the generic non-zero handler treat it as an ordinary fix failure.
+      print_error "Claude usage cap reached during fix session — aborting batch"
+      exit 5
     elif [ $FIX_EXIT_CODE -ne 0 ]; then
       print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
     fi
@@ -2353,6 +2361,19 @@ else
     print_error "This usually means a required tool is missing."
     print_info "Check that the '$(provider_name)' CLI is installed"
     exit 127
+  elif [ $CLAUDE_EXIT_CODE -eq 5 ]; then
+    # Usage cap reached — claude_provider_run_agentic_session detected the
+    # "Spending cap reached" / "usage limit reached" message in the CLI's
+    # output and translated it into exit 5. Propagate so the batch processor
+    # aborts the rest of the batch instead of burning ~40s per remaining
+    # issue on doomed dev-session restarts.
+    # See: lib/core/batch-process-issues.sh exit-5 handler.
+    print_error "Claude usage cap reached during dev session — aborting batch"
+    if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
+      echo "Provider message:"
+      grep -iE "spending cap|usage limit|rate limit|[0-9]+-hour limit" "$CLAUDE_STDERR_FILE" | head -3 || true
+    fi
+    exit 5
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
     if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then

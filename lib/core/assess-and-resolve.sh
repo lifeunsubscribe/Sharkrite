@@ -788,14 +788,39 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # Will create issue below, then exit 0
 
     elif [ "$ACTIONABLE_NOW_COUNT" -gt 0 ]; then
-      # ACTIONABLE_NOW items exist - need to fix them
+      # ACTIONABLE_NOW items exist - need to fix them OR defer if PR is
+      # already shippable (no CRITICAL/HIGH severity items).
+      #
+      # Severity breakdown — computed once, reused below.
+      CRITICAL_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*CRITICAL" || true)
+      HIGH_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*HIGH" || true)
 
+      # Shippable-PR defer: if all NOW items are MEDIUM/LOW, the PR is
+      # functionally ready. Convert the NOW items to LATER (file a single
+      # tech-debt follow-up issue) and proceed to merge instead of looping.
+      #
+      # Why: each fix-loop cycle is ~5min of LLM time. Real-world data from
+      # the 2026-06-04 batch (issues #313, #319) showed 4-7 cycles burning
+      # 28-29min in Phase 3 on PRs that were shippable from cycle 1. The
+      # findings were real and worth filing — just not worth blocking a
+      # merge over. See: docs/architecture/behavioral-design.md →
+      # "Fix-loop policy: defer non-critical findings on shippable PRs".
+      if [ "$CRITICAL_NOW_COUNT" -eq 0 ] && [ "$HIGH_NOW_COUNT" -eq 0 ]; then
+        print_info "✅ No CRITICAL/HIGH findings — PR is shippable"
+        print_status "Deferring $ACTIONABLE_NOW_COUNT MEDIUM/LOW NOW item(s) to a follow-up issue and merging..."
+        CREATE_SECURITY_DEBT=true
+        FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
+        # SHIPPABLE_DEFER signals the downstream tech-debt extractor that
+        # ACTIONABLE_NOW items (not just ACTIONABLE_LATER) should be rolled
+        # into the follow-up issue. Without this, the extractor (line ~1010)
+        # only pulls from ACTIONABLE_LATER headers and our NOW items would
+        # be silently dropped from the follow-up — defeating the whole
+        # point of the deferral.
+        SHIPPABLE_DEFER=true
+        # Fall through to follow-up-issue creation below.
       # Check retry limit for ACTIONABLE_NOW items
-      if [ "$RETRY_COUNT" -ge 3 ]; then
+      elif [ "$RETRY_COUNT" -ge 3 ]; then
         print_warning "⚠️  At retry limit ($RETRY_COUNT/3) with $ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items remaining"
-
-        # Check if any ACTIONABLE_NOW items are CRITICAL
-        CRITICAL_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*CRITICAL" || true)
 
         if [ "$CRITICAL_NOW_COUNT" -gt 0 ]; then
           print_critical "🚨 $CRITICAL_NOW_COUNT CRITICAL items remain at retry limit"
@@ -996,8 +1021,13 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*MEDIUM" || echo "")
       LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*LOW" || echo "")
 
-      if [ "$RETRY_COUNT" -ge 3 ]; then
-        print_status "Also including unresolved ACTIONABLE_NOW items (retry limit reached)..."
+      # Include ACTIONABLE_NOW items in the tech-debt follow-up when either:
+      # (a) retry limit reached — couldn't fix the NOW items in the loop
+      # (b) shippable-defer fired — NOW items were all MEDIUM/LOW so we
+      #     skipped the loop entirely (see the SHIPPABLE_DEFER assignment
+      #     in the assessment decision tree)
+      if [ "$RETRY_COUNT" -ge 3 ] || [ "${SHIPPABLE_DEFER:-false}" = "true" ]; then
+        print_status "Also including unresolved ACTIONABLE_NOW items..."
         CRITICAL_ISSUES="$CRITICAL_ISSUES
 $(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*CRITICAL" || echo "")"
         HIGH_ISSUES="$HIGH_ISSUES
