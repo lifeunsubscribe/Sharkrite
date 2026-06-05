@@ -222,6 +222,21 @@ RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
 # Set to 0 to disable auto-discovery entirely (explicit doc_paths still work).
 RITE_PLAN_DOC_BYTE_CAP="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
 
+# Unverified external integration detection (rite plan post-generation pass).
+# Path to a custom additional fixture directory: hosts/packages found under this
+# path (and under the always-scanned "fixtures/" and "tests/fixtures/") are
+# considered "grounded" and will not trigger a spike-issue prerequisite.
+# Supply a single directory path, optionally with a trailing /** or /*, e.g.:
+#   RITE_PLAN_FIXTURE_GLOB="test/vcr_cassettes/**"
+# Brace expansion is NOT supported.  Leave unset (default) to scan only the
+# two conventional directories: fixtures/ and tests/fixtures/.
+RITE_PLAN_FIXTURE_GLOB="${RITE_PLAN_FIXTURE_GLOB:-}"
+
+# Set to "1" to skip the _detect_unverified_integrations pass entirely.
+# Useful when the project has no external integrations or the check produces
+# false positives for a specific run.
+RITE_PLAN_SKIP_INTEGRATION_CHECK="${RITE_PLAN_SKIP_INTEGRATION_CHECK:-0}"
+
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 
@@ -308,6 +323,8 @@ export RITE_GEMINI_REVIEW_MODEL
 export RITE_PLAN_DOCS
 export RITE_PLAN_MAX_ESTIMATE
 export RITE_PLAN_DOC_BYTE_CAP
+export RITE_PLAN_FIXTURE_GLOB
+export RITE_PLAN_SKIP_INTEGRATION_CHECK
 export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
