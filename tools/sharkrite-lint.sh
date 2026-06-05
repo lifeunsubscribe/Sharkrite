@@ -59,7 +59,10 @@ echo "Running Sharkrite custom lint rules..."
 echo ""
 
 # Find all shell scripts (bin/, lib/, and tools/ including git-hooks without .sh extension)
-# Exclude sharkrite-lint.sh itself to prevent false positives from its own pattern-definition lines
+# Exclude sharkrite-lint.sh itself to prevent false positives: it contains # sharkrite-extract:
+# marker patterns in comments and awk strings used to detect those markers in other files —
+# scanning it could cause Rule 18 (UNBALANCED_EXTRACT_MARKERS) to fire spuriously if a
+# concretely-named example marker were ever added to this file.
 #
 # Path patterns use "$PROJECT_ROOT/..." anchors (not "*/..." wildcards) to mirror the Makefile's
 # relative anchors: `find bin lib tools -path "bin/rite*" -path "tools/git-hooks/*"`.
@@ -76,6 +79,9 @@ mapfile -t SHELL_FILES < <(find -L "$PROJECT_ROOT/bin" "$PROJECT_ROOT/lib" "$PRO
   -type f ! -name 'sharkrite-lint.sh' \
   ! -path "*/test-fixtures-temp*/*" ! -path "*/test-fixtures-temp*" \
   \( -name "*.sh" -o -path "$PROJECT_ROOT/bin/rite*" -o -path "$PROJECT_ROOT/tools/git-hooks/*" \) 2>/dev/null)
+# ^^^ ! -name 'sharkrite-lint.sh': exclude self — contains # sharkrite-extract: marker patterns
+# in comments and awk strings; scanning it could cause Rule 18 (UNBALANCED_EXTRACT_MARKERS)
+# to fire spuriously if a concretely-named example marker were ever added to this file.
 
 # RITE_LINT_EXTRA_DIRS: optional colon-separated list of additional directories to scan.
 # Used by regression tests to inject fixture directories without creating symlinks in lib/.

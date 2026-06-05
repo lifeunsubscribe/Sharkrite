@@ -522,3 +522,27 @@ EOF
   # test's fixture dir independent for parallel execution safety.
   [[ "$RITE_LINT_FIXTURES_DIR" == "${BATS_TEST_TMPDIR}"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Self-exclusion: sharkrite-lint.sh must not be scanned by Rule 18
+# Issue #337: SHELL_FILES find block must exclude sharkrite-lint.sh itself
+#
+# sharkrite-lint.sh contains # sharkrite-extract: marker patterns in its own
+# comments and awk strings (used to detect those markers in other files).
+# If the self-exclusion were removed, Rule 18 would scan the lint script,
+# find unbalanced pattern-definition text, and emit spurious
+# UNBALANCED_EXTRACT_MARKERS warnings — causing false-positive CI failures.
+# ---------------------------------------------------------------------------
+
+@test "Rule 18 produces no UNBALANCED_EXTRACT_MARKERS violation for sharkrite-lint.sh itself" {
+  # Structural check: verify the find block in sharkrite-lint.sh contains the
+  # ! -name 'sharkrite-lint.sh' exclusion. This is the definitive guard — the
+  # side-effect-based approach (checking whether UNBALANCED_EXTRACT_MARKERS
+  # fires) is insufficient because the rule may not fire in all environments
+  # even when the exclusion is missing.
+  grep -q "type f ! -name 'sharkrite-lint.sh'" "$PROJECT_ROOT/tools/sharkrite-lint.sh" || {
+    echo "FAIL: SHELL_FILES find block is missing '! -name sharkrite-lint.sh' exclusion"
+    echo "Without this exclusion, Rule 18 could fire spuriously against the lint script itself."
+    false
+  }
+}
