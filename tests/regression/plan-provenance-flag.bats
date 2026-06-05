@@ -520,6 +520,146 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Fixture E — indented/nested **Field provenance:** (within Claude Context block)
+#
+# The runbook (docs/issue-runbook.md line 345) explicitly permits placing the
+# provenance block "within the Claude Context block". This means the header
+# line may be indented. The parser must detect and process it just like a
+# column-0 header.
+#
+# Layout tested:
+#   **Claude Context**:
+#   Files to Read:
+#   - docs/simplefin-api.md
+#
+#   **Field provenance:**            ← indented with leading spaces
+#   - `amount`: SimpleFIN API — UNVERIFIED (no fixture)
+#
+# Linter must:
+#   - detect the provenance section despite indentation
+#   - emit one WARNING for the UNVERIFIED entry
+#   - exit 0
+# ---------------------------------------------------------------------------
+
+@test "Fixture E: indented **Field provenance:** inside Claude Context is detected" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-e.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Sync exchange rates from forex API
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Fetch currency exchange rates from the forex API and persist locally.
+
+**Claude Context**:
+Files to Read:
+- docs/forex-api.md (API spec)
+
+Files to Modify:
+- src/sync/forex.py
+
+  **Field provenance:**
+  - `rate`: Forex API (`/rates[].mid`) — UNVERIFIED (no fixture)
+  - `currency_pair`: Forex API (`/rates[].pair`) — UNVERIFIED (no fixture)
+
+**Acceptance Criteria**:
+- [ ] Rates fetched: `python -m pytest tests/sync/test_forex.py`
+
+**Done Definition**: Done when rates sync and tests pass.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _lint_provenance_flags "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  # Must exit 0 (UNVERIFIED is a warning, not a gate)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly 2 WARNING lines (one per UNVERIFIED field)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 2 ] || {
+    echo "FAIL: expected 2 WARNING lines for 2 UNVERIFIED fields in indented section, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Each WARNING must mention UNVERIFIED
+  local unverified_warning_count
+  unverified_warning_count=$(grep -c "UNVERIFIED" "$stderr_out" || true)
+  [ "$unverified_warning_count" -ge 2 ] || {
+    echo "FAIL: expected at least 2 lines mentioning UNVERIFIED, got $unverified_warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture E: indented **Field provenance:** with obvious-source entries exits 1" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-e-obvious.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Load goals from goals.json (nested provenance)
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Read savings goals from the local goals.json file.
+
+**Claude Context**:
+Files to Read:
+- data/goals.json (goal definitions)
+
+Files to Modify:
+- src/goals.py
+
+  **Field provenance:**
+  - `name`: goals.json — obvious (local config file)
+
+**Acceptance Criteria**:
+- [ ] Goals loaded: `python -m pytest tests/test_goals.py`
+
+**Done Definition**: Done when goals load correctly.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_provenance_flags "$issues_file" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 1 (obvious-source detected even though header was indented)
+  [ "$exit_code" -eq 1 ] || {
+    echo "FAIL: expected exit 1 for obvious-source in indented provenance section, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING about low-signal entries
+  grep -qi "low-signal" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention 'low-signal'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Edge case: issue with no "Files to Read" section and provenance section
 #
 # When there are no Files to Read entries, no source can match a local file,

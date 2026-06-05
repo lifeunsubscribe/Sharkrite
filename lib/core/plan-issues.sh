@@ -1054,8 +1054,11 @@ _lint_provenance_flags() {
       if [ "$_line" = "---END---" ]; then
         _in_issue=false
 
-        # Only process issues that have a provenance section
-        if ! echo "$_issue_block" | grep -qE '^\*\*Field provenance:\*\*'; then
+        # Only process issues that have a provenance section.
+        # Match with optional leading whitespace to support placement within
+        # an indented block (e.g. inside the Claude Context section), which
+        # the runbook (docs/issue-runbook.md) explicitly permits.
+        if ! echo "$_issue_block" | grep -qE '^[[:space:]]*\*\*Field provenance:\*\*'; then
           _issue_block=""
           continue
         fi
@@ -1099,18 +1102,24 @@ _lint_provenance_flags() {
         local _obvious_count=0
 
         while IFS= read -r _pline; do
-          if echo "$_pline" | grep -qE '^\*\*Field provenance:\*\*'; then
+          # Match **Field provenance:** with optional leading whitespace so that
+          # placement within an indented block (e.g. inside Claude Context) is
+          # handled correctly — the runbook explicitly permits this layout.
+          if echo "$_pline" | grep -qE '^[[:space:]]*\*\*Field provenance:\*\*'; then
             _in_prov=true
             continue
           fi
 
           if [ "$_in_prov" = true ]; then
-            # Stop at next markdown header or empty block boundary
-            case "$_pline" in
+            # Stop at next markdown header or empty block boundary.
+            # Strip leading whitespace before matching so that indented headers
+            # (e.g. "  **Next Section:**") also terminate the provenance block.
+            _pline_stripped=$(echo "$_pline" | sed 's/^[[:space:]]*//' || true)
+            case "$_pline_stripped" in
               "**"*|"##"*|"---END---")
                 _in_prov=false
                 ;;
-              "- "*|"  - "*)
+              "- "*)
                 # This is a provenance entry line.
                 # Check if UNVERIFIED
                 if echo "$_pline" | grep -qF "UNVERIFIED"; then
