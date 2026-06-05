@@ -254,15 +254,21 @@ BODY
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: Seed entry already in file — different PR# appends new entry
+# Test 6: Seed entry already in file — different PR# accumulates in place
+#
+# Under the accumulate-in-place contract (#320):
+# - Conventions are canonical: each unique title has exactly ONE entry.
+# - When a new PR references the same convention title, its PR# is appended
+#   to the existing entry's References line rather than creating a duplicate
+#   heading.
 # ---------------------------------------------------------------------------
 
-@test "existing title different PR: same title from new PR appends a second entry" {
+@test "existing title different PR: same title from new PR accumulates references in place" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   # The seed entry uses title "seed-convention" with references #1.
-  # A new PR (123) with the same title is NOT a duplicate (different PR#) —
-  # the function only skips when title AND PR# both match.
+  # A new PR (123) with the same title should NOT create a duplicate heading;
+  # it should accumulate #123 into the existing entry's References line.
   local pr_body
   pr_body=$(cat <<'BODY'
 <!-- sharkrite-convention -->
@@ -283,25 +289,27 @@ BODY
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
   [ "$count" -eq 1 ]
 
-  # Now a new PR (123) with the same title SHOULD add another entry
+  # Now a new PR (123) with the same title SHOULD accumulate in place —
+  # exactly one heading, but the References line now contains both PR numbers.
   update_conventions_from_marker "123" "$pr_body"
 
-  # Two instances of the heading now
+  # Still exactly one heading (no duplicate entry created)
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
+
+  # References line must now include both PR numbers
+  grep -q "\*\*References:\*\*.*#1.*#123" "$conventions_file"
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: Idempotency for PR recorded in a LATER same-title entry (regression)
+# Test 7: Idempotency after accumulate-in-place — re-run is still a no-op
 #
-# When multiple entries share the same title (allowed — different PRs), a
-# re-run for a PR that was recorded in the *second* (or later) entry must
-# still be detected as a no-op. The old awk exited on the first entry's
-# heading match and never scanned forward to later entries with the same
-# title, causing an unbounded duplicate to be appended.
+# After PR #123 has been accumulated into the seed-convention's References
+# line, a second run for PR #123 must be detected as already-present and
+# produce no changes.
 # ---------------------------------------------------------------------------
 
-@test "idempotency: PR in second same-title entry is not duplicated on re-run" {
+@test "idempotency: PR accumulated into existing entry is not duplicated on re-run" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   local pr_body
@@ -315,27 +323,40 @@ references: #1
 BODY
 )
 
-  # PR #123 → first run → appends second entry for seed-convention
+  # PR #123 → first run → accumulates #123 into seed-convention's References
   update_conventions_from_marker "123" "$pr_body"
 
   local count
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
 
-  # PR #123 again → must be a no-op (PR #123 is now in the *second* entry)
+  # Capture content after first accumulation
+  local after_first
+  after_first=$(cat "$conventions_file")
+
+  # PR #123 again → must be a no-op (idempotent: #123 is now in References)
   update_conventions_from_marker "123" "$pr_body"
 
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
+
+  # File content must be byte-for-byte identical (no changes on re-run)
+  local after_second
+  after_second=$(cat "$conventions_file")
+  [ "$after_first" = "$after_second" ]
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: Idempotency prefix collision — #42 must NOT match #420 (regression)
+# Test 8: Prefix collision guard — #42 must NOT be mistaken for #420
 #
-# index($0, "#42") is an unanchored substring match: it returns true when
-# "#420" is present, so a re-run for PR #42 after PR #420 was recorded would
-# be treated as a no-op and silently drop the legitimate append.
-# The fix tokenizes the References line and compares each token exactly.
+# The idempotency check tokenizes the References line on spaces/commas and
+# compares each token exactly (so "#42" != "#420"). Under the accumulate-in-
+# place contract (#320), PR #42 (not yet in the entry) should:
+#   - NOT be silently treated as a no-op (that was the old substring bug)
+#   - Accumulate into the existing entry's References line (new behavior)
+#
+# After accumulation, the entry has exactly ONE heading with "#420, #42"
+# in its References line. A subsequent run for #42 must be a no-op.
 # ---------------------------------------------------------------------------
 
 @test "idempotency: PR #42 is not mistaken for already-recorded PR #420" {
@@ -367,16 +388,29 @@ BODY
 )
 
   # PR #42 is NOT yet in the References line — this must NOT be treated as a no-op.
+  # Under the accumulate-in-place contract, #42 should be appended to the
+  # existing entry's References line (not create a duplicate heading).
   update_conventions_from_marker "42" "$pr_body"
 
-  # A second entry must have been appended (PR #42 is a different PR from #420).
+  # Still exactly ONE heading (accumulate-in-place, not duplicate)
   local count
   count=$(grep -c "^## prefix-collision-test$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
 
-  # Re-running for PR #42 now must be a no-op.
+  # References line must now include BOTH #420 and #42
+  grep -q "\*\*References:\*\*.*#420.*#42" "$conventions_file"
+
+  # Re-running for PR #42 now must be a no-op (idempotent)
+  local after_first
+  after_first=$(cat "$conventions_file")
+
   update_conventions_from_marker "42" "$pr_body"
 
   count=$(grep -c "^## prefix-collision-test$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
+
+  # File content must be byte-for-byte identical (no changes on re-run)
+  local after_second
+  after_second=$(cat "$conventions_file")
+  [ "$after_first" = "$after_second" ]
 }
