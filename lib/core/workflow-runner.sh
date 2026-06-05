@@ -1638,9 +1638,9 @@ handle_closed_issue() {
   # See: behavioral-design.md → "Closed-issue cleanup fallback chain".
   if [ -z "$pr_branch" ]; then
     local _wt_list
-    _wt_list=$(git worktree list 2>/dev/null || true)
+    _wt_list=$(git -C "$RITE_PROJECT_ROOT" worktree list 2>/dev/null || true)
     local _main_wt
-    _main_wt=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    _main_wt=$(git -C "$RITE_PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)
 
     # Sub-strategy A: batch-suffix whole-token match.
     # Batch suffix format: _b<N1>-<N2>-... (e.g. _b201, _b201-202-203).
@@ -1654,9 +1654,12 @@ handle_closed_issue() {
       [ "$_wt_path" = "$_main_wt" ] && continue
       local _basename
       _basename=$(basename "$_wt_path" || true)
-      # Match _b<issue_number> at start of suffix or -<issue_number> within suffix,
-      # but only where the number is followed by - or end of string (whole-token).
-      if echo "$_basename" | grep -qE "_b${issue_number}(-|$)|_b[0-9]+-.*-${issue_number}(-|$)"; then
+      # Match the issue number as a whole token anywhere in the batch suffix.
+      # Batch suffix format: _b<N1>-<N2>-<N3>-...
+      # A token is valid when preceded by _b or - and followed by - or end-of-string.
+      # Pattern (_b|-)<N>(-|$) handles all positions: first (_b319), middle (-320),
+      # and last (-328) — and still rejects substring collisions (_b2010 != #201).
+      if echo "$_basename" | grep -qE "(_b|-)${issue_number}(-|\$)"; then
         _batch_candidates+=("$_wt_path")
       fi
     done <<< "$_wt_list"

@@ -378,8 +378,13 @@ _get_func_body() {
     skip "Could not extract batch-suffix grep pattern for collision test (structural tests already cover this)"
   fi
 
-  # Expand with issue_number=201 and test against _b2010
-  _expanded=$(echo "$_grep_pattern" | sed 's/\${issue_number}/201/g; s/$issue_number/201/g')
+  # Expand with issue_number=201 and test against _b2010.
+  # Also unescape \$ → $ so the ERE end-of-string anchor works correctly when
+  # the extracted pattern is re-used in a second grep -qE call. The source uses \$
+  # to prevent shell expansion inside the original double-quoted grep string; that
+  # escaping must be stripped before passing the pattern to a second regex engine.
+  # Note: sed "s/\\\\\\\$/\$/g" matches a literal backslash+dollar and replaces with dollar.
+  _expanded=$(echo "$_grep_pattern" | sed 's/\${issue_number}/201/g; s/$issue_number/201/g' | sed "s/\\\\\\\$/\$/g")
 
   # _b2010 should NOT match the pattern for issue 201
   if echo "ft-some-thing_b2010" | grep -qE "$_expanded" 2>/dev/null; then
@@ -396,4 +401,56 @@ _get_func_body() {
     echo "      The pattern must match the exact suffix form used by single-issue batch runs." >&2
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: behavioral — every member of a multi-token batch suffix matches
+# (regression for the _b319-320-321-324-328 five-issue batch failure)
+# ---------------------------------------------------------------------------
+
+@test "Tier 3 regex: every member of a 5-issue batch suffix matches its own issue number" {
+  # Regression test for: batch-suffix regex `_b<N>(-|$)|_b[0-9]+-.*-<N>(-|$)` empirically
+  # dropped the 2nd position (#320) in _b319-320-321-324-328 because the alternate
+  # `_b[0-9]+-.*-<N>(-|$)` requires text between the first token and <N>, but position 2
+  # immediately follows position 1 with only a dash separator.
+  #
+  # The correct pattern `(_b|-)<N>(-|$)` matches any position by allowing either _b or -
+  # as the left boundary.
+
+  [ -f "$WORKFLOW_RUNNER" ]
+
+  _func_body=$(_get_func_body)
+
+  # Extract the grep -qE pattern used for batch suffix matching.
+  _grep_pattern=$(echo "$_func_body" | grep -oE 'grep -qE "[^"]+"' | grep '_b' | head -1 | sed 's/grep -qE "//; s/"//' || true)
+
+  if [ -z "$_grep_pattern" ]; then
+    skip "Could not extract batch-suffix grep pattern for multi-position test (structural tests already cover structure)"
+  fi
+
+  # The 5-issue batch worktree name from the live failure case
+  _batch_name="ft-add-manual-close-tracking-_b319-320-321-324-328"
+
+  # Every issue in the batch must match when its number is substituted.
+  # After substitution, unescape \$ → $ so the ERE end-of-string anchor works
+  # correctly when the pattern is re-used in a second grep -qE call (the source
+  # uses \$ to prevent shell expansion inside the original double-quoted string).
+  # sed "s/\\\\\\\$/\$/g" matches a literal backslash+dollar and replaces with dollar.
+  for _n in 319 320 321 324 328; do
+    _expanded=$(echo "$_grep_pattern" | sed "s/\\\${issue_number}/$_n/g" | sed "s/\\\\\\\$/\$/g")
+    echo "$_batch_name" | grep -qE "$_expanded" 2>/dev/null || {
+      echo "FAIL: Batch-suffix regex did not match issue #$_n in '$_batch_name'" >&2
+      echo "      Expanded pattern: $_expanded" >&2
+      echo "      Every member of a batch must match its own position." >&2
+      return 1
+    }
+  done
+
+  # Sanity-check: a non-member must NOT match (e.g. #322 is not in the batch)
+  _expanded_322=$(echo "$_grep_pattern" | sed 's/\${issue_number}/322/g; s/$issue_number/322/g' | sed "s/\\\\\\\$/\$/g")
+  if echo "$_batch_name" | grep -qE "$_expanded_322" 2>/dev/null; then
+    echo "FAIL: Batch-suffix regex incorrectly matched non-member #322 in '$_batch_name'" >&2
+    echo "      Pattern: $_expanded_322" >&2
+    return 1
+  fi
 }
