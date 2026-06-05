@@ -110,6 +110,15 @@ claude_provider_run_agentic_session() {
 
   local _exit_code=0
 
+  # Capture stdout to a tee file so we can detect non-JSON usage-cap messages
+  # ("Spending cap reached resets 11:20pm" and similar) that claude --print
+  # emits outside the stream-json envelope. The jq stream filter silently
+  # drops non-JSON input, so without this tee we lose the cap signal entirely
+  # — exit code 1 reaches the batch as a generic dev-session failure and the
+  # cap then cascades across every remaining issue in the batch.
+  local _stdout_capture
+  _stdout_capture=$(mktemp)
+
   if [ "$auto_mode" = true ]; then
     # Auto mode: prompt as positional arg, permissions bypassed.
     # --disallowedTools is variadic but positional arg works when it's last.
@@ -117,7 +126,9 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       "$prompt" 2>"$stderr_file" | \
-      _claude_stream_filter_colored || _exit_code=${PIPESTATUS[0]}
+      tee "$_stdout_capture" | \
+      _claude_stream_filter_colored
+    _exit_code=${PIPESTATUS[0]}
   else
     # Supervised mode: prompt via stdin because --disallowedTools is variadic
     # and eats positional args after it.
@@ -128,9 +139,26 @@ claude_provider_run_agentic_session() {
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" --output-format stream-json \
       < "$_prompt_file" 2>"$stderr_file" | \
-      _claude_stream_filter_colored || _exit_code=${PIPESTATUS[0]}
+      tee "$_stdout_capture" | \
+      _claude_stream_filter_colored
+    _exit_code=${PIPESTATUS[0]}
     rm -f "$_prompt_file"
   fi
+
+  # Detect usage-cap exhaustion in stdout or stderr. Live phrasings observed:
+  #   - "Spending cap reached resets 11:20pm"      (claude --print on stdout)
+  #   - "5-hour limit reached"                     (rate-limit variant)
+  #   - "Claude usage limit reached"               (defensive — any future phrasing)
+  # Emit exit 5 so the batch processor's existing usage-cap path aborts the
+  # rest of the batch instead of cascading the cap across the remaining
+  # issues at ~40s wasted per issue. See: lib/core/batch-process-issues.sh
+  # exit-5 handler.
+  if [ "$_exit_code" -ne 0 ] && \
+     grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached" \
+       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+    _exit_code=5
+  fi
+  rm -f "$_stdout_capture"
 
   return "$_exit_code"
 }
