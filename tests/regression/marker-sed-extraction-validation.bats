@@ -535,21 +535,14 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "Rule 18 produces no UNBALANCED_EXTRACT_MARKERS violation for sharkrite-lint.sh itself" {
-  # Run the linter against the real codebase (no fixture injection needed).
-  # If SHELL_FILES includes sharkrite-lint.sh, Rule 18 will fire on the
-  # marker pattern strings inside the lint script and report a violation
-  # attributed to tools/sharkrite-lint.sh.
-  cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
-
-  # The linter may report other violations; we only care that sharkrite-lint.sh
-  # is not among the UNBALANCED_EXTRACT_MARKERS hits.
-  if [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]; then
-    [[ ! "$output" =~ sharkrite-lint\.sh ]] || {
-      echo "FAIL: Rule 18 fired against sharkrite-lint.sh itself — self-exclusion is missing or broken"
-      echo "Relevant output:"
-      echo "$output" | grep "UNBALANCED_EXTRACT_MARKERS\|sharkrite-lint"
-      false
-    }
-  fi
+  # Structural check: verify the find block in sharkrite-lint.sh contains the
+  # ! -name 'sharkrite-lint.sh' exclusion. This is the definitive guard — the
+  # side-effect-based approach (checking whether UNBALANCED_EXTRACT_MARKERS
+  # fires) is insufficient because the rule may not fire in all environments
+  # even when the exclusion is missing.
+  grep -q "! -name 'sharkrite-lint.sh'" "$PROJECT_ROOT/tools/sharkrite-lint.sh" || {
+    echo "FAIL: SHELL_FILES find block is missing '! -name sharkrite-lint.sh' exclusion"
+    echo "Without this exclusion, Rule 18 could fire spuriously against the lint script itself."
+    false
+  }
 }
