@@ -540,7 +540,7 @@ EOF
   # side-effect-based approach (checking whether UNBALANCED_EXTRACT_MARKERS
   # fires) is insufficient because the rule may not fire in all environments
   # even when the exclusion is missing.
-  grep -q "! -name 'sharkrite-lint.sh'" "$PROJECT_ROOT/tools/sharkrite-lint.sh" || {
+  grep -q "type f ! -name 'sharkrite-lint.sh'" "$PROJECT_ROOT/tools/sharkrite-lint.sh" || {
     echo "FAIL: SHELL_FILES find block is missing '! -name sharkrite-lint.sh' exclusion"
     echo "Without this exclusion, Rule 18 could fire spuriously against the lint script itself."
     false
