@@ -476,3 +476,100 @@ BODY
   after_second=$(cat "$conventions_file")
   [ "$after_first" = "$after_second" ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 10: Example containing a column-0 non-field key: line — not truncated
+#
+# Bug fixed in issue #319/#320/#321: the awk terminator was /^[a-z_]+:/
+# which matched ANY lowercase identifier followed by a colon at column-0,
+# including lines inside the example that are not real convention field names.
+# The fix restricts the terminator to the five known top-level field names:
+# title|rule|why|example|references.
+#
+# This test uses a block where the example section contains a line "timeout: 30"
+# at column-0 (no indentation — malformed YAML literal block, but the parser
+# must be robust).  The old terminator stopped the example at "timeout:";
+# the new terminator only stops at recognized field names, so the full
+# content after "timeout: 30" must also appear in the rendered output.
+# ---------------------------------------------------------------------------
+
+@test "example with column-0 non-field key: line is not truncated by the awk terminator" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Build the block with a column-0 "timeout:" line inside the example section.
+  # printf is used to avoid heredoc indentation issues — the block must have
+  # "timeout: 30" at column-0 (no leading spaces) to trigger the old bug.
+  local pr_body
+  pr_body=$(printf '%s\n' \
+    '<!-- sharkrite-convention -->' \
+    'title: example-with-bare-key' \
+    'rule: Example blocks may contain config-style key: value lines' \
+    'why: Restricting the awk terminator prevents example truncation' \
+    'example: |' \
+    '  # BAD: hardcoded values' \
+    'timeout: 30' \
+    '  retries: 3' \
+    '  # GOOD: via environment' \
+    '  timeout: ${TIMEOUT:-30}' \
+    'references: #319' \
+    '<!-- /sharkrite-convention -->')
+
+  update_conventions_from_marker "319" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## example-with-bare-key$" "$conventions_file"
+
+  # "timeout: 30" at column-0 must NOT have terminated the example — both
+  # "retries: 3" (after timeout:) and the GOOD section must be present.
+  grep -q "retries: 3" "$conventions_file"
+  grep -q 'timeout: \${TIMEOUT' "$conventions_file"
+
+  # References must use the real field value, not be empty or wrong
+  grep -q "\*\*References:\*\* #319" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: Example containing "references: ..." at column-0 — field not corrupted
+#
+# Bug fixed in issue #319/#320/#321: grep "^references:" ran against the full
+# block including example content.  If the example contained a line like
+# "references: some-docs-link" at column-0 (before dedent), that line would
+# be picked up as the actual references field value, overwriting the real one.
+#
+# The fix: field extraction runs against _block_no_example (the block with the
+# example section stripped out) so example content cannot corrupt scalar fields.
+# ---------------------------------------------------------------------------
+
+@test "example containing references: line does not corrupt the references field" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: references-in-example
+rule: Field extraction must ignore example content
+why: grep against the full block picks up key: value lines from inside the example
+example: |
+  # This example documents a YAML file that has a "references:" key
+  # BAD: inline refs
+  references: http://example.com/bad
+  # GOOD: external file
+  references: ./docs/refs.md
+references: abc1234, #99
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "320" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## references-in-example$" "$conventions_file"
+
+  # The References line must use the REAL field value (abc1234, #99, #320),
+  # NOT the value from inside the example ("http://example.com/bad").
+  grep -q "\*\*References:\*\* abc1234, #99, #320" "$conventions_file"
+
+  # The example content must still be present (not lost during field stripping)
+  grep -q "references: http://example.com/bad" "$conventions_file"
+  grep -q "references: ./docs/refs.md" "$conventions_file"
+}

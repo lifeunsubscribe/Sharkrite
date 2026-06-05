@@ -559,19 +559,39 @@ update_conventions_from_marker() {
   local _current_block=""
   while IFS= read -r _line || [ -n "$_line" ]; do
     if [ "$_line" = "---CONVENTION_BLOCK_END---" ]; then
-      # Parse YAML-ish fields from _current_block
+      # Parse YAML-ish fields from _current_block.
+      #
+      # Field extraction must operate only on the scalar (non-example) portion of
+      # the block.  The multi-line `example: |` literal block scalar can contain
+      # arbitrary content — including lines that start with "rule:", "references:",
+      # or any other key name.  Running grep "^rule:" against the full block would
+      # silently pick up such lines from inside the example and corrupt the field.
+      #
+      # _block_no_example strips the example section before scalar field extraction:
+      # - When `example: |` is seen, skip=1.
+      # - While skip=1, skip indented lines (2-space prefix = YAML literal content).
+      # - Any non-indented line resets skip=0 and is printed (it's a new top-level key).
+      # The awk program is stored in a variable so the || true guard appears on a
+      # separate line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
+      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^  / { next } { skip=0; print }'
+      local _block_no_example
+      _block_no_example=$(printf '%s' "$_current_block" | awk "$_no_example_awk" || true)
+
       local _title _rule _why _example _references
-      _title=$(printf '%s' "$_current_block" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
-      _rule=$(printf '%s' "$_current_block" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
-      _why=$(printf '%s' "$_current_block" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
-      _references=$(printf '%s' "$_current_block" | grep "^references:" | head -1 | sed 's/^references:[[:space:]]*//' || true)
+      _title=$(printf '%s' "$_block_no_example" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
+      _rule=$(printf '%s' "$_block_no_example" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
+      _why=$(printf '%s' "$_block_no_example" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
+      _references=$(printf '%s' "$_block_no_example" | grep "^references:" | head -1 | sed 's/^references:[[:space:]]*//' || true)
 
       # Extract multi-line example block (everything after "example: |" up to the
       # next top-level key or end of block).  The example field uses YAML literal
       # block scalar style ("example: |") — subsequent indented lines are content.
+      # The terminator matches only the known top-level field names so that lines
+      # inside the example that look like "key: value" (e.g., shell assignments,
+      # config snippets) do not prematurely truncate the example content.
       # The awk program is stored in a variable first so the || true guard appears
       # on the next line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^[a-z_]+:/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
+      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^(title|rule|why|example|references):/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
       _example=$(printf '%s' "$_current_block" | awk "$_example_awk" || true)
 
       # Skip blocks with no title (malformed)
