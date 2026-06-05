@@ -7,10 +7,14 @@
 
 set -euo pipefail
 
-# Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f update_scratchpad_from_pr >/dev/null 2>&1; then
+# Re-source guard — variable-based (not function-sentinel) because this file
+# `export -f`s its functions; see blocker-rules.sh for the full rationale and
+# tests/regression/blocker-rules-stale-inherited-functions.bats for the trap.
+# Do NOT export _RITE_SCRATCHPAD_MANAGER_LOADED — subprocesses must re-source.
+if [ "${_RITE_SCRATCHPAD_MANAGER_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
 fi
+_RITE_SCRATCHPAD_MANAGER_LOADED=true
 
 # Use configured scratchpad path (set by config.sh)
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
