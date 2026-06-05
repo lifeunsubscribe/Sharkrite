@@ -365,13 +365,21 @@ $(cat "$doc")
   fi
 
   # Generate issues with Claude
+  # Capture exit code explicitly — generate_issues returns non-zero when the
+  # provenance lint gate fires (low-signal detected). Distinguish that from a
+  # genuine generation failure so we can surface the correct message.
   local issues_file
+  local _gen_rc=0
   issues_file=$(generate_issues "$doc_content" "$project_context" \
     "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-    "$accumulated_feedback" "$previous_deferrals" "")
+    "$accumulated_feedback" "$previous_deferrals" "") || _gen_rc=$?
 
   if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
-    print_error "Issue generation failed"
+    if [ "$_gen_rc" -ne 0 ]; then
+      print_error "Issue generation rejected by provenance lint gate (exit $_gen_rc). Review the warnings above and either fix the provenance tables or set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check."
+    else
+      print_error "Issue generation failed"
+    fi
     exit 1
   fi
 
@@ -457,12 +465,17 @@ ${feedback}"
 
         print_status "Regenerating with your feedback..."
         rm -f "$issues_file"
+        local _regen_rc=0
         issues_file=$(generate_issues "$doc_content" "$project_context" \
           "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-          "$accumulated_feedback" "$previous_deferrals" "$prior_coverage")
+          "$accumulated_feedback" "$previous_deferrals" "$prior_coverage") || _regen_rc=$?
 
         if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
-          print_error "Regeneration failed"
+          if [ "$_regen_rc" -ne 0 ]; then
+            print_error "Regeneration rejected by provenance lint gate (exit $_regen_rc). Review the warnings above and either fix the provenance tables or set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check."
+          else
+            print_error "Regeneration failed"
+          fi
           exit 1
         fi
         ;;
@@ -702,6 +715,16 @@ If an issue references a schema that doesn't exist and no prior issue creates it
 **O. Coverage checklist integrity (CRITICAL).**
 The coverage checklist is a post-generation audit, not a pre-generation plan. Every issue title referenced in a ✅ line (e.g., \`✅ Feature X → Issue "Title Y"\`) MUST match an actual ---ISSUE--- block title in the output. After drafting all issues, scan every ✅ line in the checklist. If a checklist line references a title that does not appear in any ---ISSUE--- block, either fix the checklist to reference the correct issue title or flag the gap as a missing issue. A checklist that references phantom issues is worse than no checklist — it hides coverage gaps.
 
+**P. Output-field provenance flagging.**
+For any issue that produces or transforms structured data, scan the output fields. For each field, ask: does its source come from an external system (a third-party API, a remote service, a feed), or is it otherwise non-obvious (derived from multiple sources, computed under a non-trivial rule, etc.)?
+
+- If **no flagged fields**: do nothing. Do not include any provenance section.
+- If **any flagged field**: include a \`**Field provenance:**\` section in that issue's BODY listing ONLY the flagged fields, each with:
+  - source (specific external system or derivation description), and
+  - one of: \`verified-available\` (a fixture or test data path exists confirming the field is actually returned), \`UNVERIFIED\` (no fixture — field presence assumed but not confirmed), or \`derived\` (with the formula or rule).
+
+Do not include provenance entries for fields whose source is a local file already listed in the issue's "Files to Read" section — those are obvious-source fields and a table of obvious fields will be rejected as low-signal noise. A provenance section that only documents local-file-sourced fields defeats the purpose of the section. When in doubt about whether a field source is obvious: if its origin requires no explanation beyond "it's in the input file," omit it.
+
 **Output format (follow EXACTLY — coverage checklist first, then issues):**
 
 First output the COVERAGE checklist (see Step 1).
@@ -866,6 +889,18 @@ PROMPT_EOF
   # Post-generation lint: catch known anti-patterns that Claude keeps generating
   _lint_issues "$temp_file"
 
+  # Post-generation provenance lint: catch low-signal or UNVERIFIED provenance tables
+  # Capture exit code explicitly — a non-zero return (low-signal gate) must not
+  # silently kill generate_issues under set -e when called via command substitution.
+  _prov_lint_rc=0
+  _lint_provenance_flags "$temp_file" || _prov_lint_rc=$?
+  if [ "$_prov_lint_rc" -ne 0 ]; then
+    # Gate fired: low-signal provenance detected. Return non-zero so the caller
+    # (plan_issues) can surface the failure via its "if [ -z "$issues_file" ]" guard.
+    rm -f "$temp_file"
+    return "$_prov_lint_rc"
+  fi
+
   echo "$temp_file"
 }
 
@@ -952,6 +987,200 @@ _lint_issues() {
   if [ "$warnings" -gt 0 ]; then
     print_info "Fixed $warnings issue(s) in post-generation lint" >&2
   fi
+}
+
+# =============================================================================
+# Lint provenance flags: catch low-signal or unverified field provenance entries
+#
+# Deterministic (no LLM calls). Reads the issues file and for each ---ISSUE---
+# block that contains a "**Field provenance:**" section:
+#
+#   1. Extract the list of files named in "Files to Read" for that issue.
+#   2. For each provenance entry, check whether the source string matches
+#      a file path already listed in "Files to Read". If it does, the entry
+#      is obvious-source and counts toward the low-signal threshold.
+#   3. If obvious-source entry count > RITE_PLAN_PROVENANCE_MAX_OBVIOUS (default 0)
+#      emit WARNING and return non-zero unless RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1.
+#   4. For each provenance entry marked UNVERIFIED, emit WARNING (defense-in-depth
+#      signal — not a gate; the run continues).
+#
+# The "Files to Read" heuristic is best-effort: a source string is considered
+# obvious if any basename from "Files to Read" appears in the source string.
+# =============================================================================
+
+_lint_provenance_flags() {
+  local issues_file="$1"
+  local max_obvious="${RITE_PLAN_PROVENANCE_MAX_OBVIOUS:-0}"
+  local allow_obvious="${RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS:-0}"
+
+  # Validate that max_obvious is a non-negative integer.
+  case "$max_obvious" in
+    ''|*[!0-9]*)
+      print_info "Provenance lint: RITE_PLAN_PROVENANCE_MAX_OBVIOUS='$max_obvious' is not a valid integer — using default 0" >&2
+      max_obvious=0
+      ;;
+  esac
+
+  local _found_low_signal=false
+  local _total_unverified=0
+  local _prov_lint_exit=0
+
+  # Parse file block by block. We need to extract per-issue context so we can
+  # compare provenance source strings against that issue's "Files to Read".
+  # Strategy: collect each ---ISSUE--- ... ---END--- block as a unit, then
+  # analyse the block in-memory (no temp files needed — blocks are small).
+  local _in_issue=false
+  local _issue_block=""
+  local _issue_title=""
+
+  while IFS= read -r _line; do
+    if [ "$_line" = "---ISSUE---" ]; then
+      _in_issue=true
+      _issue_block=""
+      _issue_title=""
+      continue
+    fi
+
+    if [ "$_in_issue" = true ]; then
+      _issue_block="${_issue_block}${_line}"$'\n'
+
+      # Capture title for warning messages
+      case "$_line" in
+        TITLE:\ *)
+          _issue_title="${_line#TITLE: }"
+          ;;
+      esac
+
+      if [ "$_line" = "---END---" ]; then
+        _in_issue=false
+
+        # Only process issues that have a provenance section.
+        # Match with optional leading whitespace to support placement within
+        # an indented block (e.g. inside the Claude Context section), which
+        # the runbook (docs/issue-runbook.md) explicitly permits.
+        if ! echo "$_issue_block" | grep -qE '^[[:space:]]*\*\*Field provenance:\*\*'; then
+          _issue_block=""
+          continue
+        fi
+
+        # ---------------------------------------------------------------
+        # Extract "Files to Read" basenames for this issue.
+        # Lines under "Files to Read:" up to the next blank line or "Files
+        # to Modify:" header are file paths; take their basenames.
+        # ---------------------------------------------------------------
+        local _files_to_read_basenames=""
+        local _in_files_to_read=false
+        while IFS= read -r _fline; do
+          if echo "$_fline" | grep -qF "Files to Read:"; then
+            _in_files_to_read=true
+            continue
+          fi
+          if [ "$_in_files_to_read" = true ]; then
+            # Stop at blank line, "Files to Modify:", "Related Issues:", or any other header
+            case "$_fline" in
+              ""|"Files to Modify:"*|"Related Issues:"*|"**"*|"##"*)
+                _in_files_to_read=false
+                continue
+                ;;
+            esac
+            # Extract the path (first token on bullet line, strip "- " prefix)
+            _fpath=$(echo "$_fline" | sed 's/^[[:space:]]*-[[:space:]]*//' | awk '{print $1}' || true)
+            if [ -n "$_fpath" ]; then
+              _basename=$(basename "$_fpath" 2>/dev/null || echo "$_fpath")
+              _files_to_read_basenames="${_files_to_read_basenames}${_basename}"$'\n'
+            fi
+          fi
+        done <<< "$_issue_block"
+
+        # ---------------------------------------------------------------
+        # Extract provenance entries from the "**Field provenance:**" section.
+        # Format: "- fieldname: source — verified-available|UNVERIFIED|derived"
+        # We capture from the "**Field provenance:**" line to the next "**" header
+        # or "---END---".
+        # ---------------------------------------------------------------
+        local _in_prov=false
+        local _obvious_count=0
+
+        while IFS= read -r _pline; do
+          # Match **Field provenance:** with optional leading whitespace so that
+          # placement within an indented block (e.g. inside Claude Context) is
+          # handled correctly — the runbook explicitly permits this layout.
+          if echo "$_pline" | grep -qE '^[[:space:]]*\*\*Field provenance:\*\*'; then
+            _in_prov=true
+            continue
+          fi
+
+          if [ "$_in_prov" = true ]; then
+            # Stop at next markdown header or empty block boundary.
+            # Strip leading whitespace before matching so that indented headers
+            # (e.g. "  **Next Section:**") also terminate the provenance block.
+            _pline_stripped=$(echo "$_pline" | sed 's/^[[:space:]]*//' || true)
+            case "$_pline_stripped" in
+              "**"*|"##"*|"---END---")
+                _in_prov=false
+                ;;
+              "- "*)
+                # This is a provenance entry line.
+                # Check if UNVERIFIED
+                if echo "$_pline" | grep -qF "UNVERIFIED"; then
+                  _total_unverified=$((_total_unverified + 1))
+                  print_warning "Provenance lint: UNVERIFIED field provenance in '${_issue_title}': ${_pline}" >&2
+                fi
+
+                # Check if source is obvious: does any filename from "Files to Read"
+                # appear in the SOURCE SEGMENT of the provenance entry only?
+                # Format: "- fieldname: <source> — <status>"
+                # We extract only the source segment (between ": " and " —") to
+                # avoid false-positives where a basename appears in the description
+                # or status text of an external/derived field.
+                if [ -n "$_files_to_read_basenames" ]; then
+                  local _is_obvious=false
+                  # Extract source segment: text between first ": " and " —" (em-dash).
+                  # If the entry doesn't contain " —", fall back to the text after ": "
+                  # to the end of the line. This avoids matching basenames that only
+                  # appear in the trailing status word (UNVERIFIED, derived, etc.).
+                  local _prov_source
+                  _prov_source=$(echo "$_pline" | sed 's/^[^:]*: //' | sed 's/ —.*//' || true)
+                  while IFS= read -r _bn; do
+                    [ -z "$_bn" ] && continue
+                    if echo "$_prov_source" | grep -qF "$_bn"; then
+                      _is_obvious=true
+                      break
+                    fi
+                  done <<< "$_files_to_read_basenames"
+
+                  if [ "$_is_obvious" = true ]; then
+                    _obvious_count=$((_obvious_count + 1))
+                  fi
+                fi
+                ;;
+            esac
+          fi
+        done <<< "$_issue_block"
+
+        # ---------------------------------------------------------------
+        # Evaluate obvious-source threshold for this issue.
+        # ---------------------------------------------------------------
+        if [ "$_obvious_count" -gt "$max_obvious" ]; then
+          _found_low_signal=true
+          print_warning "Provenance lint: low-signal provenance entries in '${_issue_title}': ${_obvious_count} obvious-source field(s) (sources named in 'Files to Read'). A table of obvious fields trains readers to skim; omit obvious-source entries. Set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress this check." >&2
+        fi
+
+        _issue_block=""
+      fi
+    fi
+  done < "$issues_file"
+
+  # Fail the run if low-signal provenance was found and allow flag is not set.
+  if [ "$_found_low_signal" = true ] && [ "$allow_obvious" != "1" ]; then
+    _prov_lint_exit=1
+  fi
+
+  if [ "$_total_unverified" -gt 0 ]; then
+    print_info "Provenance lint: ${_total_unverified} UNVERIFIED field(s) flagged — pair with integration fixtures to confirm availability" >&2
+  fi
+
+  return "$_prov_lint_exit"
 }
 
 # =============================================================================

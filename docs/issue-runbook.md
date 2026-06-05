@@ -328,6 +328,68 @@ Files to Modify:
 
 ---
 
+## Field Provenance Flagging
+
+### When to include a provenance table
+
+**Default: omit.** Most issues do not need a provenance table. A `**Field provenance:**` section is only warranted when a data-producing or data-transforming issue has at least one output field whose source is non-obvious.
+
+A field source is **non-obvious** if:
+- It comes from an **external system** (a third-party API, a remote feed, a payment processor, a financial data provider, etc.), OR
+- It is **derived** from multiple inputs under a non-trivial rule (e.g., a running balance computed from a sequence of transactions, a score weighted across several columns).
+
+A field source is **obvious** if its origin requires no explanation beyond "it's in the input file" — for example, reading a `name` field from `goals.json` and writing it to the output. Do not document obvious-source fields.
+
+### Format
+
+Add `**Field provenance:**` as a section inside the issue BODY (after the description, within the Claude Context block or as a standalone section):
+
+```markdown
+**Field provenance:**
+- `amount`: SimpleFIN API (`/accounts` endpoint) — UNVERIFIED (no fixture)
+- `running_balance`: derived — sum of all prior `amount` values for this account
+- `institution_name`: SimpleFIN API (`/accounts[].org.name`) — verified-available (tests/fixtures/simplefin-accounts.json)
+```
+
+Each entry format: `` `field_name` ``: source description — `verified-available` / `UNVERIFIED` / `derived`
+
+- **`verified-available`**: A fixture or test data file exists that confirms the field is actually returned by the source. Include the fixture path.
+- **`UNVERIFIED`**: The field is expected from the external system but no fixture exists to confirm it. The post-generation linter emits a `WARNING:` for these — treat as a reminder to add a fixture before shipping.
+- **`derived`**: The field is computed from other fields. Include the formula or rule.
+
+### What the linter checks
+
+After `rite plan` generates issues, `_lint_provenance_flags` runs deterministically (no LLM):
+
+1. **UNVERIFIED warning**: Every `UNVERIFIED` entry emits `WARNING: Provenance lint: UNVERIFIED field provenance`. This is a signal, not a gate — the plan run continues.
+2. **Low-signal rejection**: If a provenance entry's source matches a file already listed in the issue's "Files to Read", it is obvious-source. When the count of obvious-source entries exceeds `RITE_PLAN_PROVENANCE_MAX_OBVIOUS` (default 0), the linter fails the run. Override with `RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1` when you genuinely need the exception.
+
+### Examples
+
+**Correct — omit entirely** (loading goals from a local file):
+```markdown
+**Description**: Load savings goals from goals.json and display current progress.
+```
+No `**Field provenance:**` section needed — every field is local-file-obvious.
+
+**Correct — flag external fields only** (SimpleFIN transaction sync):
+```markdown
+**Field provenance:**
+- `amount`: SimpleFIN API (`/transactions[].amount`) — UNVERIFIED (no fixture)
+- `posted_date`: SimpleFIN API (`/transactions[].transacted_at`) — UNVERIFIED (no fixture)
+- `running_balance`: derived — cumulative sum of `amount` ordered by `posted_date`
+```
+
+**Incorrect — documenting obvious fields** (will be rejected by linter):
+```markdown
+**Field provenance:**
+- `name`: goals.json — obvious (local file)
+- `target_amount`: goals.json — obvious (local file)
+```
+These fields are sourced from `goals.json`, which is already in "Files to Read". The linter will flag this as low-signal and fail unless `RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1`.
+
+---
+
 ## Anti-Patterns
 
 ### Vague Acceptance Criteria
