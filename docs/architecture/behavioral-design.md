@@ -272,6 +272,35 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
 
+### Fix-loop policy: defer non-critical findings on shippable PRs
+
+`assess-and-resolve.sh` enters the fix loop (exit 2 → claude-workflow fixes → re-review) only when **at least one ACTIONABLE_NOW finding has Severity CRITICAL or HIGH**. If every NOW item is MEDIUM/LOW, the PR is considered shippable: the NOW items are reclassified into a single tech-debt follow-up issue (via the existing `CREATE_SECURITY_DEBT` path + a new `SHIPPABLE_DEFER` flag that extends the tech-debt extractor to include ACTIONABLE_NOW headers, not just LATER ones) and the workflow proceeds to merge with exit 0.
+
+**Why this rule exists — 2026-06-04 finance-glance batch:** Issues #313 and #319 each spent 28–29 minutes in Phase 3 fix-looping on MEDIUM-only findings. Each fix-loop cycle is ~5 minutes of LLM time:
+
+- #313: 4 cycles → 0/1/0 → 1/0/0 → 2/0/0 → stale-review trip → **2,776s (46m), 0 merges**
+- #319: 1 cycle → 0/1/1 → mid-run rebase conflict (main moved during the 28-min Phase 3) → **2,946s (49m), 0 merges**
+
+The findings themselves were real and worth filing — just not worth blocking a merge over. Both PRs were shippable from cycle 1; the loop was burning tokens to fix code quality items that could have been deferred.
+
+**Rule of thumb:** the fix loop is for *correctness-blocking* findings. MEDIUM and LOW findings should ship as-is and get filed as follow-ups. If the reviewer is consistently producing CRITICAL/HIGH findings on shippable PRs, that's a review-prompt problem (loosen the severity threshold), not a fix-loop problem.
+
+**Implementation:** [assess-and-resolve.sh](../../lib/core/assess-and-resolve.sh) — the `ACTIONABLE_NOW_COUNT > 0` branch first computes `CRITICAL_NOW_COUNT` and `HIGH_NOW_COUNT` from the assessment text, then dispatches: zero CRITICAL+HIGH → defer-and-merge; otherwise → existing retry-limit or fix-loop path.
+
+**Coverage:** `tests/integration/assess-and-resolve-dedup.bats` — "ACTIONABLE_NOW with only MEDIUM severity defers to follow-up and exits 0" asserts both the exit code AND that a single follow-up issue is created via the gh mock.
+
+### Fix-review prompt: verify no regressions before declaring done
+
+Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt requires Claude to run the project's test/lint commands covering the files it touched, BEFORE the session ends. Without this, a fix can introduce a regression (e.g., a `find` exclusion that breaks four positive tests) that the next review cycle catches — burning another 5+ minutes of LLM time.
+
+The hard test gate (`run_test_gate`) runs after the session anyway, so this is defense-in-depth: the prompt-level instruction catches issues earlier, while the gate catches anything that slipped through. Live precedent: PR #313's cycle 3 fix added a `find` exclusion to Rule 22 that broke 4 positive tests — cycle 4's review caught it, but only after another full cycle.
+
+### Spend-cap detection in the dev session aborts the whole batch
+
+When `claude --print` hits the user's spending cap mid-session, it emits a message like `Spending cap reached resets 11:20pm` (variations: `usage limit reached`, `[N]-hour limit reached`) and exits non-zero. Sharkrite's claude provider ([lib/providers/claude.sh](../../lib/providers/claude.sh)) `tee`s stdout to a temp file and greps both stdout and stderr after the session exits. If the cap pattern matches, the provider returns exit code 5 — which propagates through [claude-workflow.sh](../../lib/core/claude-workflow.sh) (both dev and fix paths) → workflow-runner.sh → batch-process-issues.sh's exit-5 handler → batch aborts.
+
+**Why this matters — 2026-06-04:** the spend cap fired at the start of issue #321 in a batch of 8. Six subsequent issues (#321, #324, #328, #330, #331, #333) each cascaded through ~35-50s of dev-session startup before hitting the cap and failing. That's ~4 minutes of wasted dev-startup time + 6 false "failed" entries in the batch summary. The cap was already wired in 9 other paths (conflict resolver, divergence handler, fix-review push divergence, merge-time divergence, stale-branch handler) — the plain dev-session path was the gap.
+
 ### ADR generation helper lives in lib/utils/, not lib/core/
 
 `generate_adr_for_ref` is in [lib/utils/adr-generator.sh](../../lib/utils/adr-generator.sh). Two callers source it: `lib/core/assess-documentation.sh` (post-merge doc assessment) and `lib/core/bootstrap-docs.sh` (one-time bootstrap of internal docs). The helper has no side effects on source — it only defines the function plus an `ADR_GENERATOR_TIMEOUT` default.
