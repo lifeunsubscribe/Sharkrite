@@ -686,9 +686,18 @@ update_conventions_from_marker() {
         if [ -n "$_example" ]; then
           echo ""
           echo "**Example:**"
-          echo '```bash'
+          # Use a longer fence if the example itself contains triple backticks,
+          # so the fence delimiter cannot appear inside the fenced content.
+          # Standard markdown: a fence can be closed only by an equal or longer
+          # sequence of the same character, so 4 backticks safely wraps any
+          # content that contains 3-backtick sequences.
+          local _fence='```'
+          case "$_example" in
+            *'```'*) _fence='````' ;;
+          esac
+          echo "${_fence}bash"
           printf '%s\n' "$_example"
-          echo '```'
+          echo "$_fence"
         fi
         echo ""
         echo "**References:** ${_refs_line}"
