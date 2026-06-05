@@ -28,6 +28,11 @@
 
 load '../helpers/setup'
 load '../helpers/gh-mock.bash'
+# Load order note:
+#   setup_test_tmpdir    — defined in tests/helpers/setup.bash (loaded above as 'setup')
+#   setup_gh_mock_state  — defined in tests/helpers/gh-mock.bash (loaded above)
+#   gh-mock.bash sources gh-mock-state.bash internally, so all _gh_mock_state_*
+#   functions are also available after the gh-mock.bash load directive.
 
 setup() {
   setup_test_tmpdir
@@ -58,7 +63,11 @@ teardown() {
   local issues_file
   issues_file=$(_gh_mock_state_issues_file)
   [ -f "$issues_file" ]
-  [ "$(cat "$issues_file")" = "[]" ]
+  # Two-step capture: if issues_file doesn't exist, cat exits non-zero and the
+  # failure points at the assignment line rather than dying opaquely inside [ ].
+  local content
+  content=$(cat "$issues_file")
+  [ "$content" = "[]" ]
 }
 
 @test "backward-compat: _gh_mock_init_state initializes pr-comments.json to empty object" {
@@ -67,7 +76,11 @@ teardown() {
   local comments_file
   comments_file=$(_gh_mock_state_comments_file)
   [ -f "$comments_file" ]
-  [ "$(cat "$comments_file")" = "{}" ]
+  # Two-step capture: if comments_file doesn't exist, cat exits non-zero and the
+  # failure points at the assignment line rather than dying opaquely inside [ ].
+  local content
+  content=$(cat "$comments_file")
+  [ "$content" = "{}" ]
 }
 
 @test "backward-compat: _gh_mock_init_state resets state (clears previously created issues)" {
@@ -95,7 +108,11 @@ teardown() {
   local issues_file
   issues_file=$(_gh_mock_state_issues_file)
   [ -f "$issues_file" ]
-  [ "$(cat "$issues_file")" = "[]" ]
+  # Two-step capture: if issues_file doesn't exist, cat exits non-zero and the
+  # failure points at the assignment line rather than dying opaquely inside [ ].
+  local content
+  content=$(cat "$issues_file")
+  [ "$content" = "[]" ]
 }
 
 # ---------------------------------------------------------------------------
