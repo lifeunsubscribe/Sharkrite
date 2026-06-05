@@ -365,10 +365,13 @@ $(cat "$doc")
   fi
 
   # Generate issues with Claude
+  # Use || true to prevent set -e from killing the script when generate_issues
+  # returns non-zero (e.g. provenance lint gate fired). The guard below detects
+  # both empty output and a missing/deleted temp file.
   local issues_file
   issues_file=$(generate_issues "$doc_content" "$project_context" \
     "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-    "$accumulated_feedback" "$previous_deferrals" "")
+    "$accumulated_feedback" "$previous_deferrals" "") || true
 
   if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
     print_error "Issue generation failed"
@@ -877,7 +880,16 @@ PROMPT_EOF
   _lint_issues "$temp_file"
 
   # Post-generation provenance lint: catch low-signal or UNVERIFIED provenance tables
-  _lint_provenance_flags "$temp_file"
+  # Capture exit code explicitly — a non-zero return (low-signal gate) must not
+  # silently kill generate_issues under set -e when called via command substitution.
+  _prov_lint_rc=0
+  _lint_provenance_flags "$temp_file" || _prov_lint_rc=$?
+  if [ "$_prov_lint_rc" -ne 0 ]; then
+    # Gate fired: low-signal provenance detected. Return non-zero so the caller
+    # (plan_issues) can surface the failure via its "if [ -z "$issues_file" ]" guard.
+    rm -f "$temp_file"
+    return "$_prov_lint_rc"
+  fi
 
   echo "$temp_file"
 }
