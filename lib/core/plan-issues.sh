@@ -1587,6 +1587,14 @@ _lint_issues_strict() {
     local _did2_suppress
     _did2_suppress=$(echo "$_issue_suppress" | grep "^${_did2}|" | sed "s/^${_did2}|//" || true)
 
+    # Hoist title lookup to top of loop so both #N and #SPIKE-* branches
+    # report the correct issue title. Without this, a SPIKE-only dep entry
+    # (no numeric #N ref) would fall into the SPIKE branch with _did2_title
+    # still holding a stale value from the previous iteration (bash local is
+    # function-scoped, not block-scoped).
+    local _did2_title
+    _did2_title=$(echo "$_issue_titles" | sed -n "$(echo "$_issue_ids" | grep -n "^${_did2}$" | cut -d: -f1)p" || true)
+
     # Extract all #N numeric references (exclude #PREV — always valid)
     local _refs
     _refs=$(echo "$_draw2" | grep -oE '#[0-9]+' || true)
@@ -1606,8 +1614,6 @@ _lint_issues_strict() {
         fi
 
         # #N not found in existing issues → dangling ref
-        local _did2_title
-        _did2_title=$(echo "$_issue_titles" | sed -n "$(echo "$_issue_ids" | grep -n "^${_did2}$" | cut -d: -f1)p" || true)
         echo "ERROR: unresolved Dependencies ref: $_ref_num in issue '${_did2_title:-$_did2}'" >&2
         _strict_errors=$((_strict_errors + 1))
 

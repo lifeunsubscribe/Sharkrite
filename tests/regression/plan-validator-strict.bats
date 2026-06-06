@@ -15,6 +15,8 @@
 #       emits "ERROR: dependency cycle"
 #   B — dangling ref to #9999 not in batch and not in existing_issues: exits
 #       non-zero, emits "ERROR: unresolved Dependencies ref: #9999"
+#   B2 — SPIKE-only dep entry (no numeric #N ref): error must name the correct
+#        issue title, not a stale value from the previous loop iteration
 #   C — verification command references src/handler.ts not in Files to Modify
 #       or repo: emits "WARNING: verification path not produced by this issue",
 #       exits 0
@@ -310,6 +312,126 @@ FIXTURE
   # Must NOT emit an ERROR about dangling ref
   grep -q "unresolved Dependencies ref: #42" "$stderr_out" && {
     echo "FAIL: should not flag #42 as dangling when it is in existing_issues" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture B2 — SPIKE-only dangling ref (no numeric #N ref in same dep entry)
+#
+# This fixture exercises the stale-_did2_title bug fixed in this PR.
+# Two issues are present:
+#   Issue "Alpha" — has a numeric dangling ref (#9999) so _did2_title gets set
+#   Issue "Beta"  — has ONLY a #SPIKE-missing-spike ref (no numeric #N)
+#
+# Before the fix, the outer loop's _did2_title was declared local inside the
+# `if [ -n "$_refs" ]` block.  bash local is function-scoped, so on the
+# second iteration (Beta) the variable still held "Alpha" from the first
+# iteration — the SPIKE error would wrongly say "issue 'Alpha'" instead of
+# "issue 'Beta'".
+#
+# Validator must:
+#   - emit "ERROR: unresolved SPIKE ref: #SPIKE-missing-spike in issue 'Beta'"
+#     (not "in issue 'Alpha'")
+#   - exit non-zero
+# ---------------------------------------------------------------------------
+
+@test "Fixture B2: SPIKE-only dep entry reports the correct issue title (not stale from prior iteration)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-b2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+COVERAGE:
+- ✅ Alpha feature → Issue "Alpha"
+- ✅ Beta feature → Issue "Beta"
+
+---ISSUE---
+TITLE: Alpha
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Implements Alpha.
+
+**Claude Context**:
+Files to Read:
+- src/base.py
+
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `pytest tests/test_alpha.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_alpha.py
+```
+
+**Done Definition**: Done when Alpha passes tests.
+
+**Scope Boundary**:
+- DO: implement Alpha
+
+**Dependencies**: After #9999
+---END---
+
+---ISSUE---
+TITLE: Beta
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Implements Beta.
+
+**Claude Context**:
+Files to Read:
+- src/base.py
+
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `pytest tests/test_beta.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_beta.py
+```
+
+**Done Definition**: Done when Beta passes tests.
+
+**Scope Boundary**:
+- DO: implement Beta
+
+**Dependencies**: Blocked by: #SPIKE-missing-spike
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit non-zero (both errors are hard errors)
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # SPIKE error must name the correct issue ("Beta"), not the stale one ("Alpha")
+  grep -q "unresolved SPIKE ref: #SPIKE-missing-spike in issue 'Beta'" "$stderr_out" || {
+    echo "FAIL: expected error attributing SPIKE ref to 'Beta', got:" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT attribute the SPIKE error to "Alpha" (stale value regression)
+  grep -q "unresolved SPIKE ref: #SPIKE-missing-spike in issue 'Alpha'" "$stderr_out" && {
+    echo "FAIL: SPIKE error wrongly attributed to 'Alpha' — stale _did2_title bug not fixed" >&2
     cat "$stderr_out" >&2
     false
   }
