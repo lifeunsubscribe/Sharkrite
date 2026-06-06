@@ -122,6 +122,9 @@ teardown() {
     # on Linux systems with pid_max > 99999 (containers, custom kernel configs)
     # a hardcoded large PID may actually be alive, causing flaky test failures.
     mkdir -p \"\$_lockfile\"
+    # get_dead_pid() from setup.bash is not available in this bash -c subshell
+    # context (helpers are not sourced here), so we inline the equivalent logic
+    # directly. If get_dead_pid() changes, update this inline copy too.
     ( true ) & _dead_pid=\$!; wait \"\$_dead_pid\" 2>/dev/null || true
     echo \"\$_dead_pid\" > \"\$_lockfile/pid\"
 
