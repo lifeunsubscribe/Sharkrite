@@ -1330,7 +1330,7 @@ _lint_issues_strict() {
     # Format (bad): <!-- RITE_MARKER_PLAN_LINT disable <rule> --> (no Reason: field)
     # Use variable via grep-F to avoid a raw marker literal in this source file
     # (RAW_MARKER_LITERAL lint rule: all sharkrite-* strings must use RITE_MARKER_* constants)
-    local _plan_lint_marker="<!-- ${RITE_MARKER_PLAN_LINT} disable"
+    local _plan_lint_marker="<!-- ${RITE_MARKER_PLAN_LINT:-} disable"
     if echo "$_ln" | grep -qF "$_plan_lint_marker"; then
       # Extract rule name
       local _sup_rule
