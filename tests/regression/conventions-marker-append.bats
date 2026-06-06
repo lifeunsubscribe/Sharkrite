@@ -47,6 +47,11 @@ setup() {
   verbose_info()  { :; }
   export -f print_warning print_info verbose_info
 
+  # Source tag-index.sh so update_tag_index_from_block() is available.
+  # update_conventions_from_marker() calls it directly; without this source
+  # the function is undefined and the test would crash.
+  source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
+
   # Extract _mark_updated() and update_conventions_from_marker() from
   # assess-documentation.sh via awk, same pattern as changelog-ordering.bats.
   eval "$(awk '
@@ -665,4 +670,200 @@ BODY
 
   # File must still not exist (no marker → no bootstrap → no empty file in repo)
   [ ! -f "$conventions_file" ]
+}
+
+# ---------------------------------------------------------------------------
+# Tag extraction tests (Stage 2)
+#
+# These tests verify that update_conventions_from_marker() also extracts the
+# `tags:` and `new-tags:` fields from convention blocks and writes the
+# corresponding pointers into docs/architecture/tag-index.md.
+# ---------------------------------------------------------------------------
+
+# Helper: build a PR body with a convention block that has a tags: field
+tagged_block_body() {
+  cat <<'BODY'
+<!-- sharkrite-convention -->
+title: tagged-convention-example
+rule: Always declare tags for new conventions
+why: Tags enable the tag-index routing system to load relevant prior art
+tags: set-e, subshell
+references: #50
+<!-- /sharkrite-convention -->
+BODY
+}
+
+# Helper: PR body with a new-tags: justification for a brand-new tag
+new_tag_block_body() {
+  cat <<'BODY'
+<!-- sharkrite-convention -->
+title: new-tag-convention-example
+rule: New tags must be justified in new-tags:
+why: Forces explicit reasoning for expanding the tag vocabulary
+tags: brand-new-tag
+new-tags:
+  - brand-new-tag: Covers patterns related to this brand-new concept
+references: #60
+<!-- /sharkrite-convention -->
+BODY
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: tags: field → tag-index.md headings and pointers are created
+# ---------------------------------------------------------------------------
+
+@test "tags: field creates headings and pointers in tag-index.md" {
+  local tag_index_file="${RITE_TEST_TMPDIR}/docs/architecture/tag-index.md"
+  local pr_body
+  pr_body="$(tagged_block_body)"
+
+  # Pre-populate tag-index.md with the tags that the block references
+  cat > "$tag_index_file" <<'EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## set-e
+
+## subshell
+
+EOF
+
+  update_conventions_from_marker "50" "$pr_body"
+
+  # Both tag sections must have pointers to conventions.md → tagged-convention-example
+  # (use -F not -xF: BSD grep on macOS chokes on -xF with multi-byte UTF-8 chars like →)
+  grep -qF "conventions.md → tagged-convention-example" "$tag_index_file"
+
+  # The pointer must appear under the correct heading
+  # Check that "set-e" section contains the pointer
+  awk '/^## set-e/{found=1} found && /conventions.md.*tagged-convention-example/{exit 0} found && /^## / && !/^## set-e/{exit 1}' \
+    "$tag_index_file"
+
+  # Check that "subshell" section contains the pointer
+  awk '/^## subshell/{found=1} found && /conventions.md.*tagged-convention-example/{exit 0} found && /^## / && !/^## subshell/{exit 1}' \
+    "$tag_index_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: Pointer accumulation is idempotent — running twice does not duplicate
+# ---------------------------------------------------------------------------
+
+@test "tag pointer accumulation is idempotent: re-running same PR does not duplicate pointers" {
+  local tag_index_file="${RITE_TEST_TMPDIR}/docs/architecture/tag-index.md"
+  local pr_body
+  pr_body="$(tagged_block_body)"
+
+  cat > "$tag_index_file" <<'EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## set-e
+
+## subshell
+
+EOF
+
+  # First run
+  update_conventions_from_marker "50" "$pr_body"
+
+  # Second run — must be a no-op for tag-index
+  update_conventions_from_marker "50" "$pr_body"
+
+  # Each pointer must appear exactly once
+  local count
+  count=$(grep -c "conventions.md → tagged-convention-example" "$tag_index_file" || true)
+  # One pointer per tag section (2 tags), but each should appear exactly once per section
+  # set-e section: 1 pointer; subshell section: 1 pointer → total 2 lines with the pointer text
+  [ "$count" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: new-tags: field creates a new heading in tag-index.md
+# ---------------------------------------------------------------------------
+
+@test "new-tags: field auto-creates the corresponding heading in tag-index.md" {
+  local tag_index_file="${RITE_TEST_TMPDIR}/docs/architecture/tag-index.md"
+  local pr_body
+  pr_body="$(new_tag_block_body)"
+
+  # tag-index.md does NOT have "brand-new-tag" yet
+  cat > "$tag_index_file" <<'EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+EOF
+
+  update_conventions_from_marker "60" "$pr_body"
+
+  # The new tag heading must have been created
+  grep -qxF "## brand-new-tag" "$tag_index_file"
+
+  # A pointer must exist under the new heading
+  # (use -F not -xF: BSD grep on macOS chokes on -xF with multi-byte UTF-8 chars like →)
+  grep -qF "conventions.md → new-tag-convention-example" "$tag_index_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: tag-index.md auto-bootstrapped when missing
+# ---------------------------------------------------------------------------
+
+@test "tag-index.md is auto-created when missing and a tagged convention block is processed" {
+  local tag_index_file="${RITE_TEST_TMPDIR}/docs/architecture/tag-index.md"
+  local pr_body
+  pr_body="$(new_tag_block_body)"
+
+  # Ensure it does not exist
+  rm -f "$tag_index_file"
+  [ ! -f "$tag_index_file" ]
+
+  update_conventions_from_marker "60" "$pr_body"
+
+  # tag-index.md must now exist
+  [ -f "$tag_index_file" ]
+
+  # Bootstrap header must be present
+  grep -q "^# Tag Index$" "$tag_index_file"
+
+  # The new tag heading must have been created
+  grep -qxF "## brand-new-tag" "$tag_index_file"
+
+  # A pointer must exist under the new heading
+  # (use -F not -xF: BSD grep on macOS chokes on -xF with multi-byte UTF-8 chars like →)
+  grep -qF "conventions.md → new-tag-convention-example" "$tag_index_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: Convention block without tags: leaves tag-index.md unchanged
+# ---------------------------------------------------------------------------
+
+@test "convention block without tags: field leaves tag-index.md unchanged" {
+  local tag_index_file="${RITE_TEST_TMPDIR}/docs/architecture/tag-index.md"
+  cat > "$tag_index_file" <<'EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+EOF
+  local before_content
+  before_content=$(cat "$tag_index_file")
+
+  # Use the original one_block_body which has no tags: field
+  local pr_body
+  pr_body="$(one_block_body)"
+  update_conventions_from_marker "42" "$pr_body"
+
+  local after_content
+  after_content=$(cat "$tag_index_file")
+  [ "$before_content" = "$after_content" ]
 }

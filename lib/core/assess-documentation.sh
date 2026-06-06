@@ -30,6 +30,7 @@ load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 # (bootstrap-docs.sh) can use it without sourcing this script's
 # top-level executable body. See lib/utils/adr-generator.sh.
 source "$RITE_LIB_DIR/utils/adr-generator.sh"
+source "$RITE_LIB_DIR/utils/tag-index.sh"
 
 # Ensure a valid cwd before any git-aware tool (e.g. claude --print) runs.
 #
@@ -603,18 +604,19 @@ EOF
       # _block_no_example strips the example section before scalar field extraction:
       # - When `example: |` is seen, skip=1.
       # - While skip=1, skip all lines that are NOT a known top-level field name.
-      # - A known field name (title|rule|why|example|references) at column-0 resets
-      #   skip=0 and is printed (it's a real top-level key, not example content).
+      # - A known field name (title|rule|why|example|references|tags|new-tags) at
+      #   column-0 resets skip=0 and is printed (it's a real top-level key, not
+      #   example content).
       # The terminator uses the same known-field-name boundary as _example_awk so
       # that column-0 lines inside the example (e.g., "references: some-doc-link")
       # are not leaked into _block_no_example and cannot corrupt scalar field reads.
       # The awk program is stored in a variable so the || true guard appears on a
       # separate line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^(title|rule|why|example|references):/ { skip=0; print; next } skip { next } { print }'
+      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^(title|rule|why|example|references|tags|new-tags):/ { skip=0; print; next } skip { next } { print }'
       local _block_no_example
       _block_no_example=$(printf '%s' "$_current_block" | awk "$_no_example_awk" || true)
 
-      local _title _rule _why _example _references
+      local _title _rule _why _example _references _tags _new_tags
       _title=$(printf '%s' "$_block_no_example" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
       _rule=$(printf '%s' "$_block_no_example" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
       _why=$(printf '%s' "$_block_no_example" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
@@ -625,6 +627,13 @@ EOF
       # terminator), making head -1 pick up the wrong (example-embedded) value.
       # tail -1 picks the LAST occurrence, which is always the real field.
       _references=$(printf '%s' "$_block_no_example" | grep "^references:" | tail -1 | sed 's/^references:[[:space:]]*//' || true)
+      # tags: is a single-line comma-separated field (e.g. "tags: foo, bar")
+      _tags=$(printf '%s' "$_block_no_example" | grep "^tags:" | head -1 | sed 's/^tags:[[:space:]]*//' || true)
+      # new-tags: is a multi-line block — extract the "  - name: justification" lines.
+      # These appear between "new-tags:" and the next top-level field or end of block.
+      # The awk program is stored in a variable first for UNSAFE_PIPE_IN_CMDSUB compliance.
+      local _new_tags_awk='/^new-tags:/ { in_nt=1; next } in_nt && /^(title|rule|why|example|references|tags|new-tags):/ { in_nt=0 } in_nt { print }'
+      _new_tags=$(printf '%s' "$_current_block" | awk "$_new_tags_awk" || true)
 
       # Extract multi-line example block (everything after "example: |" up to the
       # next top-level key or end of block).  The example field uses YAML literal
@@ -634,7 +643,7 @@ EOF
       # config snippets) do not prematurely truncate the example content.
       # The awk program is stored in a variable first so the || true guard appears
       # on the next line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^(title|rule|why|example|references):/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
+      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^(title|rule|why|example|references|tags|new-tags):/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
       _example=$(printf '%s' "$_current_block" | awk "$_example_awk" || true)
 
       # Skip blocks with no title (malformed)
@@ -684,6 +693,10 @@ EOF
 
       if [ "$_already_present" = "true" ]; then
         verbose_info "  conventions: '$_title' already recorded for PR #${pr_number} — skipping"
+        # Still update tag-index even when convention is a no-op: the pointer may
+        # not exist yet (e.g. tag-index was bootstrapped after the first PR merged).
+        update_tag_index_from_block "$_tags" "$_new_tags" "conventions.md" "$_title" "$pr_number"
+        _mark_updated "tag-index"
         _current_block=""
         continue
       fi
@@ -725,6 +738,9 @@ EOF
           rm -f "$_refs_tmp"
           print_warning "  conventions: could not append PR #${pr_number} to '$_title' — no References line found in entry (skipping)"
         fi
+        # Update tag-index regardless of whether the References accumulation succeeded
+        update_tag_index_from_block "$_tags" "$_new_tags" "conventions.md" "$_title" "$pr_number"
+        _mark_updated "tag-index"
         _current_block=""
         continue
       fi
@@ -770,6 +786,9 @@ EOF
 
       print_info "  conventions: appended '${_title}' (PR #${pr_number})"
       _mark_updated "conventions"
+      # Update tag-index with any tags declared in this new convention block
+      update_tag_index_from_block "$_tags" "$_new_tags" "conventions.md" "$_title" "$pr_number"
+      _mark_updated "tag-index"
       _current_block=""
     else
       # Accumulate block lines

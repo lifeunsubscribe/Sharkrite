@@ -409,6 +409,198 @@ render_tag_index_history() {
 }
 
 # =============================================================================
+# Write helpers (Stage 2 — post-merge tag-index updates)
+# =============================================================================
+
+# tag_index_ensure_file
+#
+# Creates docs/architecture/tag-index.md with the bootstrap scaffold if it
+# does not already exist.  Mirrors the conventions.md bootstrap pattern in
+# assess-documentation.sh::update_conventions_from_marker.
+#
+# Returns 0 on success (file existed or was created).
+tag_index_ensure_file() {
+  if [ -f "$TAG_INDEX_FILE" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$TAG_INDEX_FILE")"
+  cat > "$TAG_INDEX_FILE" <<'BOOTSTRAP_EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.** See `docs/architecture/tag-index-system.md`.
+
+---
+
+BOOTSTRAP_EOF
+}
+
+# tag_index_ensure_heading TAG
+#
+# Ensures a `## TAG` heading exists in tag-index.md.  Creates it (appended at
+# the end of the file) when missing.  No-op when the heading already exists.
+# Assumes tag_index_ensure_file has already been called.
+#
+# Arguments:
+#   $1 — tag name (the heading text after "## ")
+tag_index_ensure_heading() {
+  local tag="$1"
+
+  # Already present — no-op
+  if grep -qxF -- "## ${tag}" "$TAG_INDEX_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  # Append a new heading section at the end of the file
+  {
+    echo ""
+    echo "## ${tag}"
+    echo ""
+  } >> "$TAG_INDEX_FILE"
+}
+
+# tag_index_add_pointer TAG SOURCE_FILE HEADING
+#
+# Adds a pointer line under the ## TAG heading in tag-index.md.  Idempotent:
+# does nothing when the exact pointer (source_file → heading) already exists
+# under that tag.
+#
+# Pointer format:  - conventions.md → Heading Text
+#
+# Arguments:
+#   $1 — tag name (must be an existing heading — call tag_index_ensure_heading first)
+#   $2 — source catalog file short name (e.g. "conventions.md")
+#   $3 — heading text in the source catalog (e.g. "grep -c pattern")
+tag_index_add_pointer() {
+  local tag="$1"
+  local source_file="$2"
+  local heading="$3"
+  local pointer_line="- ${source_file} → ${heading}"
+
+  # Idempotency check: scan lines under ## TAG for an exact pointer match.
+  # We use awk to look only within the target tag's section (between ## TAG
+  # and the next ## or end of file) rather than a global grep, so a pointer
+  # in a different tag's section does not suppress a legitimate new addition.
+  local _already_present
+  _already_present=$(awk -v tag="## ${tag}" -v ptr="${pointer_line}" '
+    $0 == tag      { in_tag=1; next }
+    in_tag && /^## / { in_tag=0 }
+    in_tag && $0 == ptr { print "yes"; exit }
+  ' "$TAG_INDEX_FILE" || true)
+
+  if [ "$_already_present" = "yes" ]; then
+    return 0
+  fi
+
+  # Insert the pointer immediately after the ## TAG heading line.
+  # Strategy: awk rewrites the file via a temp file — when it sees the target
+  # heading, it prints the heading then inserts the new pointer line.
+  # The `inserted` flag prevents duplicate insertions if the heading appears
+  # more than once (should not happen in a well-formed index, but be defensive).
+  local _tmp
+  _tmp=$(mktemp)
+  local _awk_exit=0
+  awk -v tag="## ${tag}" -v ptr="${pointer_line}" '
+    BEGIN { inserted=0 }
+    $0 == tag && !inserted {
+      print
+      print ptr
+      inserted=1
+      next
+    }
+    { print }
+  ' "$TAG_INDEX_FILE" > "$_tmp" || _awk_exit=$?
+
+  if [ -s "$_tmp" ] && [ "$_awk_exit" -eq 0 ]; then
+    mv "$_tmp" "$TAG_INDEX_FILE"
+  else
+    rm -f "$_tmp"
+  fi
+}
+
+# update_tag_index_from_block TAG_LINE NEW_TAGS_BLOCK SOURCE_CATALOG SOURCE_HEADING PR_NUMBER
+#
+# Called from update_conventions_from_marker after a convention block is
+# processed.  Reads the block's `tags:` and `new-tags:` fields and updates
+# tag-index.md accordingly:
+#   - For each tag in `tags:`, ensures the heading exists and adds a pointer.
+#   - For each tag in `new-tags:`, does the same (the lint rule enforces that
+#     new-tags entries must have a justification; this function just creates them).
+#
+# Arguments:
+#   $1 — raw `tags:` line content (comma-separated tag names, or empty)
+#   $2 — raw `new-tags:` block content (newline-separated "  - tag: justif", or empty)
+#   $3 — source catalog short name (e.g. "conventions.md")
+#   $4 — heading text from the convention entry (the title field)
+#   $5 — PR number (for informational messages only)
+update_tag_index_from_block() {
+  local tags_line="$1"
+  local new_tags_block="$2"
+  local source_catalog="$3"
+  local source_heading="$4"
+  local pr_number="$5"
+
+  # Collect all tags: start with tags: field, then add new-tags: entries
+  local all_tags=""
+
+  # Parse comma-separated tags: field.
+  # Use a herestring (<<< "$tags_line") so tr's output always has a trailing
+  # newline — without it, 'while read' silently drops the last token because
+  # read treats a line with no terminating newline as incomplete.
+  if [ -n "$tags_line" ]; then
+    local _tag
+    while IFS= read -r _tag; do
+      _tag="${_tag#"${_tag%%[![:space:]]*}"}"  # ltrim
+      _tag="${_tag%"${_tag##*[![:space:]]}"}"  # rtrim
+      [ -z "$_tag" ] && continue
+      if [ -z "$all_tags" ]; then
+        all_tags="$_tag"
+      else
+        all_tags="${all_tags}
+${_tag}"
+      fi
+    done < <(tr ',' '\n' <<< "$tags_line" || true)
+  fi
+
+  # Parse new-tags: block (format: "  - tagname: justification" per spec)
+  if [ -n "$new_tags_block" ]; then
+    local _ntag_line _ntag
+    while IFS= read -r _ntag_line; do
+      # Match "  - tagname:" or "- tagname:" patterns
+      if echo "$_ntag_line" | grep -qE '^\s*-\s+[a-zA-Z0-9_-]+:'; then
+        _ntag=$(echo "$_ntag_line" | grep -oE '[a-zA-Z0-9_-]+:' | head -1 | sed 's/:$//' || true)
+        [ -z "$_ntag" ] && continue
+        # Add only if not already in all_tags
+        if ! printf '%s\n' "$all_tags" | grep -qxF "$_ntag" 2>/dev/null; then
+          if [ -z "$all_tags" ]; then
+            all_tags="$_ntag"
+          else
+            all_tags="${all_tags}
+${_ntag}"
+          fi
+        fi
+      fi
+    done <<< "$new_tags_block"
+  fi
+
+  # No tags to process — nothing to do
+  if [ -z "$all_tags" ]; then
+    return 0
+  fi
+
+  # Ensure tag-index.md exists (bootstrap if missing)
+  tag_index_ensure_file
+
+  # Process each tag
+  local _tag
+  while IFS= read -r _tag; do
+    [ -z "$_tag" ] && continue
+    tag_index_ensure_heading "$_tag"
+    tag_index_add_pointer "$_tag" "$source_catalog" "$source_heading"
+    verbose_info "  tag-index: updated tag '${_tag}' ← ${source_catalog} → ${source_heading} (PR #${pr_number})"
+  done <<< "$all_tags"
+}
+
+# =============================================================================
 # Top-level dispatcher
 # =============================================================================
 
