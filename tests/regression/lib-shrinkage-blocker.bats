@@ -229,8 +229,10 @@ _create_lib_file() {
   _make_lib_diff_fn=$(declare -f _make_lib_diff)
 
   # Run from RITE_TEST_TMPDIR so relative path '$target_file' resolves to the local copy.
-  # We mock `git` so `git show origin/main:<path>` returns synthetic file content
+  # We mock `git` so `git show origin/<base_branch>:<path>` returns synthetic file content
   # (the correct baseline line count) without requiring a real git repo in the tmpdir.
+  # gh_safe is also mocked: the new base-branch resolution call returns "main" so
+  # detect_lib_shrinkage uses origin/main:path as expected for a main-base PR.
   run bash -c "
     cd '$RITE_TEST_TMPDIR'
     export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
@@ -243,18 +245,23 @@ _create_lib_file() {
         _make_lib_diff '${_target_file}' '${_deleted_lines}'
         return 0
       fi
-      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ]; then
-        # Output format matches jq .files[] | \"\(.path)|\(.deletions)\" output
-        printf '%s|%d\n' '${_target_file}' '${_deleted_lines}'
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Return the base branch name for dynamic base-branch resolution
+        echo 'main'
         return 0
       fi
       return 1
     }
-    # Mock git so 'git -C <dir> show origin/main:<path>' returns the expected
+    # Mock git so 'git -C <dir> show origin/<base_branch>:<path>' returns the expected
     # baseline line count without requiring a real git repo in the test tmpdir.
+    # Also handle 'git -C <dir> fetch origin <branch>' (best-effort fetch — no-op here).
     git() {
-      # Handle: git -C <dir> show origin/main:<path>
-      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/main:* ]]; then
+      # Handle: git -C <dir> fetch origin <branch>
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        return 0
+      fi
+      # Handle: git -C <dir> show origin/<branch>:<path>
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/*:* ]]; then
         seq 1 '${_total_lines}'
         return 0
       fi
@@ -617,13 +624,23 @@ _create_lib_file() {
         _make_lib_diff '${_target_file}' '${_deleted_lines}'
         return 0
       fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Return base branch for dynamic resolution (main for this test)
+        echo 'main'
+        return 0
+      fi
       return 1
     }
-    # git show returns no output — simulates unfetched origin/main ref or new file.
+    # git show returns no output — simulates an unfetched or new-file ref even
+    # after the best-effort fetch attempt.  fetch is mocked as a no-op.
     # Use printf (no args) rather than echo '' to produce truly zero bytes of output
     # so that wc -l returns 0, triggering the total_lines <= 0 branch.
     git() {
-      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/main:* ]]; then
+      # Handle: git -C <dir> fetch origin <branch> (best-effort — no-op in test)
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/*:* ]]; then
         printf ''
         return 0
       fi
@@ -958,4 +975,257 @@ _create_lib_file() {
   # Destination is in lib/core/ — blocker must fire
   [ "$status" -eq 1 ]
   [[ "$output" == *"BLOCKER"* ]]
+}
+
+# ===========================================================================
+# TEST 21: Dynamic base branch — non-main PR uses the correct baseline ref
+#
+# Regression for: hardcoded origin/main baseline ignores non-main PR targets.
+# When a PR targets "develop", the ratio baseline must use origin/develop, not
+# origin/main.  A >50% deletion against develop should fire; the same deletion
+# against a 2x-larger main file should NOT fire (different baseline = different ratio).
+# ===========================================================================
+
+@test "detect_lib_shrinkage: uses dynamic base branch from PR for ratio baseline" {
+  local target_file="lib/core/workflow-runner.sh"
+  local total_lines_develop=200   # file is 200 lines on develop
+  local deleted_lines=110         # 55% of develop — should fire
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _total_lines_develop="$total_lines_develop"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # PR targets develop, not main
+        echo 'develop'
+        return 0
+      fi
+      return 1
+    }
+    # Mock git: fetch is a no-op; show returns the develop-branch line count
+    # (200 lines).  The pattern matches origin/<any-branch>:<path>.
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/develop:* ]]; then
+        seq 1 '${_total_lines_develop}'
+        return 0
+      fi
+      # origin/main must NOT be called — the PR targets develop
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/main:* ]]; then
+        echo 'ERROR: origin/main used for non-main PR' >&2
+        return 1
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    detect_lib_shrinkage '99'
+  "
+
+  # 110 deleted of 200 on develop = 55% > 50% threshold — blocker must fire
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+  # Must NOT have accidentally used origin/main (would be a different baseline)
+  [[ "$output" != *"ERROR: origin/main"* ]]
+}
+
+# ===========================================================================
+# TEST 22: Dynamic base branch — fetch refreshes stale ref before git show
+#
+# Verifies that detect_lib_shrinkage attempts git fetch origin <base_branch>
+# before calling git show, so a stale local ref does not silently skip the
+# ratio check.  We confirm the fetch is called with the correct branch name.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: fetches base branch ref before git show baseline lookup" {
+  local target_file="lib/core/create-pr.sh"
+  local total_lines=300
+  local deleted_lines=160  # ~53% — above 50% threshold
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _total_lines="$total_lines"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  # Use a temp file to record fetch calls so the state survives detect_lib_shrinkage
+  # returning exit 1 (which kills the outer bash -c script under set -e).
+  local fetch_state_file="$RITE_TEST_TMPDIR/fetch-state-$$.txt"
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'main'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        # Write fetch call to temp file so it survives set -e abort after blocker
+        echo \"fetch_called=true fetch_branch=\$5\" > '${fetch_state_file}'
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/*:* ]]; then
+        seq 1 '${_total_lines}'
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    detect_lib_shrinkage '77'
+  "
+
+  # Blocker fires (160/300 = 53% > 50%)
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+  # The fetch must have been called with the resolved base branch
+  [ -f "$fetch_state_file" ] || {
+    echo "FAIL: fetch was never called (state file not written)"
+    return 1
+  }
+  grep -q "fetch_called=true" "$fetch_state_file" || {
+    echo "FAIL: fetch_called=true not found in state file"
+    cat "$fetch_state_file"
+    return 1
+  }
+  grep -q "fetch_branch=main" "$fetch_state_file" || {
+    echo "FAIL: fetch_branch=main not found in state file"
+    cat "$fetch_state_file"
+    return 1
+  }
+}
+
+# ===========================================================================
+# TEST 23: Dynamic base branch — falls back to "main" when API call fails
+#
+# When gh_safe pr view --json baseRefName returns non-zero (network error,
+# PR not found), base_branch must fall back to "main" so the check degrades
+# gracefully rather than crashing or skipping entirely.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: falls back to main when base-branch API call fails" {
+  local target_file="lib/utils/blocker-rules.sh"
+  local n_deleted=600  # above absolute threshold — blocker fires regardless of ratio
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      _make_lib_diff "$target_file" "$n_deleted"
+      return 0
+    fi
+    if [ "$1" = "pr" ] && [ "$2" = "view" ] && [[ "$*" == *"baseRefName"* ]]; then
+      # Simulate API failure (network error, auth issue, etc.)
+      return 1
+    fi
+    return 1
+  }
+  export -f gh_safe
+
+  # Function must not crash — it falls back to "main" and fires the absolute blocker
+  run detect_lib_shrinkage "77"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+}
+
+# ===========================================================================
+# TEST 24: Dynamic base branch — diag log includes base_branch= field
+#
+# Verifies that both the SHRINKAGE_RATIO_SKIP and SHRINKAGE_BLOCKER [diag]
+# lines include a base_branch= field so health reports and operator logs can
+# distinguish main-base from non-main-base shrinkage events.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: diag log includes base_branch= for ratio skip" {
+  local target_file="lib/core/workflow-runner.sh"
+  local deleted_lines=100  # >10 (triggers ratio path), <500 (below absolute threshold)
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  local log_file="$RITE_TEST_TMPDIR/rite-ratio-skip-basebranch.log"
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    export RITE_LOG_FILE='$log_file'
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'develop'
+        return 0
+      fi
+      return 1
+    }
+    # git show returns empty to trigger the SHRINKAGE_RATIO_SKIP diag line
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/*:* ]]; then
+        printf ''
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    print_warning() { echo \"[WARN] \$*\" >&2; }
+    export -f gh_safe _make_lib_diff git print_warning
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    detect_lib_shrinkage '99'
+  "
+
+  # No blocker (100 < 500 abs, ratio skipped due to empty baseline)
+  [ "$status" -eq 0 ]
+
+  # The diag line must include base_branch=develop
+  [ -f "$log_file" ] || {
+    echo "FAIL: RITE_LOG_FILE was not written"
+    return 1
+  }
+  grep -q "SHRINKAGE_RATIO_SKIP" "$log_file" || {
+    echo "FAIL: SHRINKAGE_RATIO_SKIP not found"
+    cat "$log_file"
+    return 1
+  }
+  grep -q "base_branch=develop" "$log_file" || {
+    echo "FAIL: base_branch=develop not found in diag line"
+    cat "$log_file"
+    return 1
+  }
 }

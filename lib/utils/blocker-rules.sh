@@ -332,12 +332,16 @@ detect_credentials_expired() {
 # A single awk pass produces all per-file deletion counts; both the absolute and
 # ratio checks run against those values.
 #
-# Per-file total line count uses `git show origin/main:<path> | wc -l` to get
-# the pre-deletion baseline from the remote main branch.  Using `wc -l` on the
-# local worktree file would produce the post-deletion count, making the ratio
-# denominator too small and potentially producing percentages above 100%.
-# If the file has no entry on origin/main (new file added in this PR), the ratio
-# check is skipped and only the absolute threshold applies.
+# Per-file total line count uses `git show origin/<base_branch>:<path> | wc -l`
+# to get the pre-deletion baseline from the PR's actual base branch.  The base
+# branch is resolved dynamically from the PR via `gh pr view --json baseRefName`
+# so that PRs targeting non-main branches use the correct baseline.  A fetch is
+# attempted before the git show so a stale/unfetched ref does not silently skip
+# the ratio check.  Using `wc -l` on the local worktree file would produce the
+# post-deletion count, making the ratio denominator too small and potentially
+# producing percentages above 100%.
+# If the file has no entry on the base branch (new file added in this PR), the
+# ratio check is skipped and only the absolute threshold applies.
 #
 # Returns 1 (blocker) on first file that exceeds a threshold.
 # Exports SHRINKAGE_BLOCKER_FILE, SHRINKAGE_BLOCKER_DELETED, SHRINKAGE_BLOCKER_TOTAL.
@@ -348,6 +352,19 @@ detect_lib_shrinkage() {
   # Default thresholds — overridable via env/config
   local ratio_pct="${RITE_SHRINKAGE_RATIO_PCT:-50}"
   local abs_lines="${RITE_SHRINKAGE_ABS_LINES:-500}"
+
+  # Resolve the PR's actual base branch dynamically so that non-main-base PRs
+  # use the correct baseline ref.  Falls back to "main" if the API call fails
+  # (network error, PR not found) so the check degrades rather than crashes.
+  local base_branch
+  base_branch=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
+  base_branch="${base_branch:-main}"
+
+  # Attempt a fetch of the base branch before git show so a stale or never-fetched
+  # ref does not silently cause the ratio check to skip.  This is best-effort —
+  # if the fetch fails (e.g. offline, no permissions) we proceed and let the
+  # git show empty-output path handle the miss transparently with a [diag] log.
+  git -C "${RITE_PROJECT_ROOT:-.}" fetch origin "$base_branch" --quiet 2>/dev/null || true
 
   # Production path prefix pattern (matches lib/core/, lib/utils/, lib/providers/)
   local prod_path_re="^(lib/core|lib/utils|lib/providers)/"
@@ -452,22 +469,24 @@ AWKEOF
         continue
       fi
 
-      # Get total line count from origin/main (pre-deletion baseline).
+      # Get total line count from the PR's base branch (pre-deletion baseline).
       # The worktree copy already has lines removed, so wc -l on the local file
       # would under-count the denominator and produce ratios above 100%.
       # Use -C so the call works regardless of cwd (blocker-rules.sh may be
       # invoked from within a worktree subdirectory, not the project root).
       # git show exits non-zero if the ref is unfetched or the file is new; skip.
+      # base_branch was resolved from the PR earlier in this function so non-main
+      # base PRs get the correct baseline (not always origin/main).
       local total_lines=0
-      total_lines=$(git -C "${RITE_PROJECT_ROOT:-.}" show "origin/main:${filepath}" 2>/dev/null | wc -l || true)
+      total_lines=$(git -C "${RITE_PROJECT_ROOT:-.}" show "origin/${base_branch}:${filepath}" 2>/dev/null | wc -l || true)
       total_lines="${total_lines:-0}"
 
       if [ "$total_lines" -le 0 ]; then
         # Cannot compute ratio — baseline unavailable (new file or unfetched ref).
         # Emit a [diag] warning so the skip is observable in the health report
         # and in operator logs. The absolute threshold still applies above.
-        echo "[diag] SHRINKAGE_RATIO_SKIP pr=$pr_number file=$filepath reason=baseline_unavailable deleted=$deletions" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
-        print_warning "lib/ shrinkage: ratio check skipped for $filepath — could not fetch origin/main baseline (deleted=$deletions lines)" >&2
+        echo "[diag] SHRINKAGE_RATIO_SKIP pr=$pr_number file=$filepath base_branch=$base_branch reason=baseline_unavailable deleted=$deletions" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
+        print_warning "lib/ shrinkage: ratio check skipped for $filepath — could not fetch origin/${base_branch} baseline (deleted=$deletions lines)" >&2
         continue
       fi
 
@@ -528,7 +547,7 @@ AWKEOF
 
   # Log structured diagnostic line for health report aggregation
   local log_file="${RITE_LOG_FILE:-/tmp/rite-workflow.log}"
-  echo "[diag] SHRINKAGE_BLOCKER pr=$pr_number file=$viol_file deleted=$viol_deleted total=$viol_total type=$viol_type threshold_ratio=$ratio_pct threshold_abs=$abs_lines" >> "$log_file" 2>/dev/null || true
+  echo "[diag] SHRINKAGE_BLOCKER pr=$pr_number file=$viol_file deleted=$viol_deleted total=$viol_total type=$viol_type threshold_ratio=$ratio_pct threshold_abs=$abs_lines base_branch=$base_branch" >> "$log_file" 2>/dev/null || true
 
   return 1
 }
