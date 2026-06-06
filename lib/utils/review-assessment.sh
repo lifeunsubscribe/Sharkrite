@@ -7,10 +7,14 @@
 
 set -euo pipefail
 
-# Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f assess_pr_review >/dev/null 2>&1; then
+# Re-source guard — variable-based (not function-sentinel) because this file
+# `export -f`s its functions; see blocker-rules.sh for the full rationale and
+# tests/regression/blocker-rules-stale-inherited-functions.bats for the trap.
+# Do NOT export _RITE_REVIEW_ASSESSMENT_LOADED — subprocesses must re-source.
+if [ "${_RITE_REVIEW_ASSESSMENT_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
 fi
+_RITE_REVIEW_ASSESSMENT_LOADED=true
 
 # Source gh retry wrapper and marker constants if not already loaded
 _REVIEW_ASSESSMENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

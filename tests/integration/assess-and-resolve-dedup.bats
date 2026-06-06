@@ -102,6 +102,29 @@ _ASSESSMENT_NOW_ITEMS='### Input Not Validated - ACTIONABLE_NOW
 **Fix Effort:** <10min
 '
 
+# Assessment with ACTIONABLE_NOW items but ONLY at MEDIUM severity. Under the
+# "defer-when-shippable" rule, this should NOT trigger a fix loop — the PR is
+# functionally shippable (no CRITICAL/HIGH findings) so the MEDIUM items get
+# deferred to a follow-up issue and the workflow proceeds to merge.
+_ASSESSMENT_NOW_MEDIUM_ONLY='### Code Quality Polish - ACTIONABLE_NOW
+
+**Severity:** MEDIUM
+**Category:** CodeQuality
+**Reasoning:** Tangential improvement to file touched by this PR.
+**Context:** Within scope but not blocking.
+**Location:** lib/core/foo.sh:42
+**Fix Effort:** <10min
+
+### Comment Clarity - ACTIONABLE_NOW
+
+**Severity:** MEDIUM
+**Category:** CodeQuality
+**Reasoning:** Comment could be clearer.
+**Context:** Within scope but not blocking.
+**Location:** lib/core/foo.sh:80
+**Fix Effort:** <5min
+'
+
 # Assessment with only DISMISSED items — exit 0, no follow-up.
 _ASSESSMENT_ALL_DISMISSED='### Some Style Issue - DISMISSED
 
@@ -623,6 +646,47 @@ run_assess_and_resolve() {
   _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
   [ "$_count" -eq 0 ] || {
     echo "FAIL: no follow-up issue expected on exit 2, got $_count"
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Defer-when-shippable rule (introduced after the 2026-06-04 finance-glance batch
+# burned 28+ minutes of LLM time fix-looping on MEDIUM-only findings in #313, #319):
+#
+# ACTIONABLE_NOW items at MEDIUM/LOW severity (no CRITICAL/HIGH) → workflow does
+# NOT enter the fix loop. The items are reclassified into a single tech-debt
+# follow-up issue and the workflow exits 0 so the orchestrator can proceed to
+# merge. CRITICAL/HIGH NOW items still trigger the fix loop (covered by test 10
+# above with the HIGH-severity fixture).
+# ---------------------------------------------------------------------------
+
+@test "integration: ACTIONABLE_NOW with only MEDIUM severity defers to follow-up and exits 0" {
+  printf '%s' "$_ASSESSMENT_NOW_MEDIUM_ONLY" > "$MOCK_ASSESSMENT_FILE"
+
+  run_assess_and_resolve 52 21
+
+  # Exit 0: PR is shippable, no fix loop needed
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (MEDIUM-only NOW defers to follow-up), got $status"
+    echo "Output: ${output:0:800}"
+    false
+  }
+
+  # Display message names the new behavior explicitly so a future contributor
+  # who breaks the deferral path will see this test surface the regression.
+  echo "$output" | grep -q "PR is shippable" || {
+    echo "FAIL: expected 'PR is shippable' message in output"
+    echo "Output: ${output:0:800}"
+    false
+  }
+
+  # A single tech-debt follow-up issue should have been created with the
+  # deferred items, since CREATE_SECURITY_DEBT=true was set.
+  local _count
+  _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
+  [ "$_count" -eq 1 ] || {
+    echo "FAIL: expected 1 follow-up issue from deferred MEDIUM items, got $_count"
     false
   }
 }

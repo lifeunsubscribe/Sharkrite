@@ -227,8 +227,14 @@ _source_and_print() {
   }
 
   # Line number of the first use of CLOSING_ISSUE_JQ_REGEX
+  # Exclude comment lines (^N:#) and source lines to avoid false matches on
+  # documentation comments or source statements that contain the constant name.
   local first_use_line
-  first_use_line=$(grep -n 'CLOSING_ISSUE_JQ_REGEX' "$file" | head -1 | cut -d: -f1)
+  first_use_line=$(grep -n 'CLOSING_ISSUE_JQ_REGEX' "$file" \
+    | grep -v '^[0-9]*:[[:space:]]*#' \
+    | grep -v 'source ' \
+    | head -1 \
+    | cut -d: -f1)
   [ -n "$first_use_line" ] || {
     echo "FAIL: CLOSING_ISSUE_JQ_REGEX is not referenced in $file" >&2
     false
@@ -259,10 +265,20 @@ _source_and_print() {
     false
   }
 
-  # Line number of the first use of either constant
+  # Line number of the first use of either constant.
+  # Exclude comment lines (^N:#) and source lines to avoid false matches on
+  # documentation comments or source statements that contain the constant name.
   local first_jq_line first_grep_line first_use_line
-  first_jq_line=$(grep -n 'CLOSING_ISSUE_JQ_REGEX' "$file" | head -1 | cut -d: -f1)
-  first_grep_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" | head -1 | cut -d: -f1)
+  first_jq_line=$(grep -n 'CLOSING_ISSUE_JQ_REGEX' "$file" \
+    | grep -v '^[0-9]*:[[:space:]]*#' \
+    | grep -v 'source ' \
+    | head -1 \
+    | cut -d: -f1)
+  first_grep_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" \
+    | grep -v '^[0-9]*:[[:space:]]*#' \
+    | grep -v 'source ' \
+    | head -1 \
+    | cut -d: -f1)
 
   # Pick the earliest of the two (skip empty values)
   if [ -n "$first_jq_line" ] && [ -n "$first_grep_line" ]; then
@@ -301,9 +317,15 @@ _source_and_print() {
     false
   }
 
-  # Line number of the first use of CLOSING_ISSUE_GREP_REGEX
+  # Line number of the first use of CLOSING_ISSUE_GREP_REGEX.
+  # Exclude comment lines (^N:#) and source lines to avoid false matches on
+  # documentation comments or source statements that contain the constant name.
   local first_use_line
-  first_use_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" | head -1 | cut -d: -f1)
+  first_use_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" \
+    | grep -v '^[0-9]*:[[:space:]]*#' \
+    | grep -v 'source ' \
+    | head -1 \
+    | cut -d: -f1)
   [ -n "$first_use_line" ] || {
     echo "FAIL: CLOSING_ISSUE_GREP_REGEX is not referenced in $file" >&2
     false
