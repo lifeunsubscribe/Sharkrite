@@ -49,10 +49,16 @@ trap '_diag "ASSESS_RESOLVE_ERR exit=$? line=$LINENO"' ERR
 # Temp file cleanup trap handler (minimal - only for initial review fetch)
 cleanup() {
   local exit_code=$?
-  # Clean up minimal temp files on exit
-  # Note: REVIEW_FILE is kept minimal (only for initial gh pr view)
-  # All assessment data flows through variables/pipes (no temp files)
-  rm -f /tmp/pr_review_*.txt 2>/dev/null || true
+  # Clean up ONLY the file this invocation owns — never a glob.
+  # A glob (/tmp/pr_review_*.txt) would wipe peer invocations' review files
+  # under concurrent runs (e.g. a retry from workflow-runner overlapping with
+  # a manual --assess-and-fix against the same or a different PR).
+  # Live failure: issue #345 batch run 2026-06-06 — format-review.sh received
+  # "Error: Review file not found" because a peer cleanup trap fired the glob
+  # between the write at line ~411 and the read at line ~705.
+  # ${REVIEW_FILE:-} guard: variable is unset until line ~411; the :- expansion
+  # satisfies set -u without crashing if EXIT fires before REVIEW_FILE is set.
+  rm -f "${REVIEW_FILE:-}" 2>/dev/null || true
   # Release follow-up lock on signal (SIGINT/SIGTERM) to avoid leaving it
   # held for the full 60s acquire-loop timeout on the next run.
   # Pass ISSUE_NUMBER (if set) to release the correct compound lock key.
@@ -406,8 +412,13 @@ if [ -z "$REVIEW_BODY" ] || [ "$REVIEW_BODY" = "null" ]; then
   exit 1
 fi
 
-# Save review to temp file for parsing
-REVIEW_FILE="/tmp/pr_review_${PR_NUMBER}.txt"
+# Save review to temp file for parsing.
+# PID-scoped ($$ is stable within this script and inherited by subprocesses)
+# so concurrent invocations — same or different PR — get isolated files.
+# Fix for issue #345 (2026-06-06): original path /tmp/pr_review_${PR_NUMBER}.txt
+# was per-PR only; concurrent runs against the same PR overwrote each other,
+# and the glob in cleanup() could wipe a different PR's file mid-run.
+REVIEW_FILE="/tmp/pr_review_${PR_NUMBER}_$$.txt"
 echo "$REVIEW_BODY" > "$REVIEW_FILE"
 
 if [ -n "$ISSUE_NUMBER" ]; then
