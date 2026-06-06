@@ -433,9 +433,11 @@ create_tech_debt_issues() {
     # its body.  `in:body` is reliable because the body is never truncated by GitHub.
     # The marker is a single alphanumeric token — no quoting needed, and GitHub
     # will match it as a whole word against body text.
+    # `// empty` prevents jq from outputting literal "null" when no matching issue exists.
     local existing
-    existing=$(gh_safe issue list -S "${_dedup_marker} in:body" --state all --json number --jq '.[0].number')
+    existing=$(gh_safe issue list -S "${_dedup_marker} in:body" --state all --json number --jq '.[0].number // empty')
     existing="${existing:-}"
+    [ "$existing" = "null" ] && existing=""
 
     if [ -n "$existing" ] && [ "$existing" != "null" ]; then
       echo "Tech-debt issue already exists for ${location}: #${existing}" >&2

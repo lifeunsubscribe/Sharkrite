@@ -829,7 +829,10 @@ phase_create_pr() {
   # gh pr view returns closed PRs too, which causes wrong-PR-number bugs
   # when a previous draft was closed during a no-work cleanup)
   local branch_name=$(git rev-parse --abbrev-ref HEAD)
-  PR_NUMBER=$(gh_safe pr list --head "$branch_name" --json number --jq '.[0].number')
+  # `// empty` ensures jq returns empty output (not literal "null") when no open PR exists.
+  # The `[ "$PR_NUMBER" = "null" ]` check below is belt-and-suspenders.
+  PR_NUMBER=$(gh_safe pr list --head "$branch_name" --json number --jq '.[0].number // empty')
+  [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
     print_error "No open PR found for branch '$branch_name'"
@@ -1973,7 +1976,9 @@ run_workflow() {
     if { [ -z "$_detected_pr" ] || [ "$_detected_pr" = "null" ]; } && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
       local _branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       if [ -n "$_branch" ]; then
-        _detected_pr=$(gh_safe pr list --head "$_branch" --json number --jq '.[0].number')
+        # `// empty` prevents literal "null" capture when no open PR exists for the branch.
+        _detected_pr=$(gh_safe pr list --head "$_branch" --json number --jq '.[0].number // empty')
+        [ "$_detected_pr" = "null" ] && _detected_pr=""
       fi
     fi
 

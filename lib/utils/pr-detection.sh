@@ -96,7 +96,9 @@ detect_pr_for_current_branch() {
     return 1
   fi
 
-  PR_NUMBER=$(gh_safe pr list --head "$branch_name" --json number --jq '.[0].number')
+  # `// empty` prevents jq from outputting literal "null" when no PR exists for the branch.
+  PR_NUMBER=$(gh_safe pr list --head "$branch_name" --json number --jq '.[0].number // empty')
+  [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 
   if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
     return 1
