@@ -442,18 +442,9 @@ extract_review_model() {
   fi
 }
 
-# Extract the HEAD SHA that was embedded in the review marker at generation time.
-# Returns the SHA string, or empty string if the review predates SHA embedding
-# (reviews generated before issue #354 won't have this attribute).
-#
-# The SHA attribute format in the marker is: commit:<sha>
-# Full marker example: <!-- sharkrite-local-review model:X timestamp:Y commit:abc1234 -->
-extract_review_sha() {
-  local review_body="$1"
-  # Match "commit:" followed by a hex SHA (7-40 chars) inside the marker comment
-  echo "$review_body" | grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
-    grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true
-}
+# extract_review_sha is defined in lib/utils/markers.sh (sourced above).
+# It parses RITE_MARKER_REVIEW — a constant owned by markers.sh — so it
+# lives there to avoid duplication across callers (issue #364).
 
 REVIEW_MODEL=$(extract_review_model "$REVIEW_BODY")
 print_info "Review model: $REVIEW_MODEL"

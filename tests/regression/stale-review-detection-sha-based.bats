@@ -27,7 +27,9 @@ setup() {
   MARKERS_SH="${RITE_REPO_ROOT}/lib/utils/markers.sh"
   ASSESS_AND_RESOLVE="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
 
-  # Source markers to get RITE_MARKER_REVIEW constant
+  # Source markers to get RITE_MARKER_REVIEW constant and extract_review_sha().
+  # extract_review_sha() was previously inlined per-test; it now lives in
+  # markers.sh alongside the RITE_MARKER_REVIEW constant it parses (issue #364).
   # shellcheck source=/dev/null
   source "$MARKERS_SH"
 }
@@ -41,12 +43,7 @@ setup() {
     set -euo pipefail
     source '${MARKERS_SH}'
 
-    extract_review_sha() {
-      local review_body=\"\$1\"
-      echo \"\$review_body\" | grep -oE \"\${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}\" | \
-        grep -oE \"commit:[a-f0-9]{7,40}\" | sed 's/commit://' | head -1 || true
-    }
-
+    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     # Use the expanded constant in the fixture (double-quoted so variable expands)
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-06-04T15:03:35Z commit:abc1234def567 -->
 
@@ -64,12 +61,7 @@ Some review content here.\"
     set -euo pipefail
     source '${MARKERS_SH}'
 
-    extract_review_sha() {
-      local review_body=\"\$1\"
-      echo \"\$review_body\" | grep -oE \"\${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}\" | \
-        grep -oE \"commit:[a-f0-9]{7,40}\" | sed 's/commit://' | head -1 || true
-    }
-
+    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     # Old review format (before issue #354 fix) — no commit: attribute
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-05-01T10:00:00Z -->
 
@@ -87,12 +79,7 @@ Some review content here.\"
     set -euo pipefail
     source '${MARKERS_SH}'
 
-    extract_review_sha() {
-      local review_body=\"\$1\"
-      echo \"\$review_body\" | grep -oE \"\${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}\" | \
-        grep -oE \"commit:[a-f0-9]{7,40}\" | sed 's/commit://' | head -1 || true
-    }
-
+    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     full_sha='a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-06-04T15:00:00Z commit:\${full_sha} -->\"
 
@@ -108,12 +95,7 @@ Some review content here.\"
     set -euo pipefail
     source '${MARKERS_SH}'
 
-    extract_review_sha() {
-      local review_body=\"\$1\"
-      echo \"\$review_body\" | grep -oE \"\${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}\" | \
-        grep -oE \"commit:[a-f0-9]{7,40}\" | sed 's/commit://' | head -1 || true
-    }
-
+    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     # Review body has commit: SHA in the text content but NOT in the marker
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-06-04T15:00:00Z -->
 
@@ -377,12 +359,9 @@ The commit:deadbeef123 introduced a new function. See also commit:feedface456.\"
     set -euo pipefail
     source '${MARKERS_SH}'
 
-    extract_review_sha() {
-      local review_body=\"\$1\"
-      echo \"\$review_body\" | grep -oE \"\${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}\" | \
-        grep -oE \"commit:[a-f0-9]{7,40}\" | sed 's/commit://' | head -1 || true
-    }
-
+    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
+    # This tests the canonical path: local-review.sh writes the marker, then
+    # assess-and-resolve.sh reads it back — both now share the same implementation.
     original_sha='abc1234def567890abc1234def567890abc12345'
     _REVIEW_SHA_ATTR=\" commit:\${original_sha}\"
 
