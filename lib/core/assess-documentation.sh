@@ -525,10 +525,17 @@ update_conventions_from_marker() {
   # awk extracts zero or more blocks; each block is separated by a sentinel line
   # "---CONVENTION_BLOCK_END---" so the outer loop can split on it.
   # Use -v to pass the marker constant so no raw "sharkrite-*" literal appears here.
+  #
+  # Fenced code block guard: PR bodies often document the convention format inside
+  # triple-backtick blocks. Without a fence guard the extractor would ingest the
+  # template example as a real convention block.  Track in_fence so that markers
+  # inside ``` ... ``` are treated as literal text, not as real extraction triggers.
   local _blocks_file
   _blocks_file=$(mktemp)
   awk -v open_marker="<!-- ${RITE_MARKER_CONVENTION} -->" \
       -v close_marker="<!-- /${RITE_MARKER_CONVENTION} -->" '
+    /^```/ { in_fence = !in_fence; next }
+    in_fence { next }
     $0 == open_marker  { in_block=1; block=""; next }
     $0 == close_marker {
       if (in_block) {

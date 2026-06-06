@@ -16,6 +16,8 @@
 #   3. No marker: PR body without any marker block → conventions.md unchanged
 #   4. Multiple blocks: PR body with two marker blocks → both entries appended
 #   5. Malformed block (no title): skipped with warning, no crash
+#  14. Fenced code block guard: marker inside ``` ... ``` is not extracted
+#  15. Fenced code block guard: real marker after a fence IS still extracted
 
 load '../helpers/setup.bash'
 
@@ -866,4 +868,103 @@ EOF
   local after_content
   after_content=$(cat "$tag_index_file")
   [ "$before_content" = "$after_content" ]
+}
+
+# Test 14: Fenced code block guard — marker inside ``` is not extracted
+#
+# PR bodies that document the convention format (e.g. "To add a convention,
+# include a block like this: ```...```") contain real <!-- sharkrite-convention
+# --> lines inside a fenced code block.  Without a fence guard the extractor
+# would ingest those template lines as a real convention block, creating a
+# spurious catalog entry (e.g. "## Your convention title").
+#
+# The fix: the AWK extractor tracks in_fence and skips all lines inside
+# ``` ... ``` fences, so the marker is treated as literal text rather than
+# an extraction trigger.
+# ---------------------------------------------------------------------------
+
+@test "fenced code block: marker inside backtick fence is not extracted" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # PR body that documents the convention format with the marker inside a fence.
+  # This mirrors what a documentation PR or a CLAUDE.md update PR body would look
+  # like — the template example is fenced, not a real convention block.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+This PR updates the documentation to explain the self-documenting convention format.
+
+To add a convention, include a block like this in your PR body:
+
+```
+<!-- sharkrite-convention -->
+title: Your convention title
+rule: One-sentence statement of the rule
+why: Why this rule exists
+example: |
+  # BAD
+  ...
+  # GOOD
+  ...
+references: <commit-sha>, #<issue>, #<pr>
+<!-- /sharkrite-convention -->
+```
+
+The merge automation extracts the block and appends a rendered entry.
+BODY
+)
+
+  update_conventions_from_marker "400" "$pr_body"
+
+  # The template title must NOT appear in conventions.md — it is inside a fence
+  run grep "^## Your convention title$" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # conventions.md must be unchanged (no new entries beyond the seed)
+  run grep "^## " "$conventions_file"
+  [ "$status" -eq 0 ]
+  # Only the seed entry should be present
+  [ "${#lines[@]}" -eq 1 ]
+  [ "${lines[0]}" = "## seed-convention" ]
+}
+
+@test "fenced code block: real marker after fence is still extracted" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # PR body with a fenced template example AND a real convention block after it.
+  # The fenced block must be skipped; the real block must be extracted.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+This PR adds a new convention and documents the format.
+
+Template (do not extract):
+
+```
+<!-- sharkrite-convention -->
+title: Template title — do not extract
+rule: This is only a template example
+why: Documentation of the format
+references: #0
+<!-- /sharkrite-convention -->
+```
+
+Real convention block below (DO extract):
+
+<!-- sharkrite-convention -->
+title: fenced-guard-real-block
+rule: Markers inside fenced code blocks must not be extracted
+why: PR bodies that document the format would otherwise produce spurious catalog entries
+references: abc1234, #401
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "401" "$pr_body"
+
+  # The template title (inside the fence) must NOT appear
+  run grep "^## Template title" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # The real convention title (outside the fence) MUST appear
+  grep -q "^## fenced-guard-real-block$" "$conventions_file"
+  grep -q "\*\*References:\*\* abc1234, #401" "$conventions_file"
 }
