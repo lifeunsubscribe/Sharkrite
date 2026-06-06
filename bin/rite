@@ -11,6 +11,7 @@
 #   rite <issue> --undo           Undo: close PR, cleanup
 #   rite --status                 Repo-wide status overview
 #   rite --status --by-label      Repo-wide status grouped by label
+#   rite --tags                   Show tag index (--tags <tag> | --orphans | --history)
 #   rite plan [doc] [instructions] Generate issues from architectural docs
 #   rite --init                   Initialize .rite/ in current project
 #   rite --backfill-locks         Backfill issue lock files for legacy worktrees
@@ -88,6 +89,20 @@ while [[ $# -gt 0 ]]; do
     --backfill-locks)
       MODE="backfill-locks"
       shift
+      ;;
+    --tags)
+      MODE="tags"
+      shift
+      # Collect the optional sub-arg: <tag>, --orphans, or --history
+      # Stop consuming args after the first non-flag or recognized sub-flag.
+      TAGS_SUBARG=""
+      if [ "${1:-}" = "--orphans" ] || [ "${1:-}" = "--history" ]; then
+        TAGS_SUBARG="$1"
+        shift
+      elif [ -n "${1:-}" ] && [[ "$1" != -* ]]; then
+        TAGS_SUBARG="$1"
+        shift
+      fi
       ;;
     --health-report|--rtk-report)
       MODE="health-report"
@@ -201,6 +216,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
+      echo "  rite --tags                   Show full tag index"
+      echo "  rite --tags <tag>             Show pointers for a specific tag"
+      echo "  rite --tags --orphans         Show catalog entries with no tag pointers"
+      echo "  rite --tags --history         Show tag merge history (stub)"
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
@@ -258,7 +277,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -274,6 +293,13 @@ fi
 if [ "$MODE" = "refresh-encountered-issues" ]; then
   source "$RITE_LIB_DIR/utils/encountered-issues-renderer.sh"
   render_encountered_issues
+  exit 0
+fi
+
+# Tag index: read-only display of the tag-index system state
+if [ "$MODE" = "tags" ]; then
+  source "$RITE_LIB_DIR/utils/tag-index.sh"
+  show_tag_index "${TAGS_SUBARG:-}"
   exit 0
 fi
 

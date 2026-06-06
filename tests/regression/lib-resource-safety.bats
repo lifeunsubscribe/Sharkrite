@@ -190,6 +190,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/stash-manager.sh"
 }
 
+@test "lib/utils/tag-index.sh sources twice without error" {
+  _assert_double_source "lib/utils/tag-index.sh"
+}
+
 @test "lib/utils/timeout.sh sources twice without error" {
   # Reference implementation of the canonical guard pattern
   _assert_double_source "lib/utils/timeout.sh"
