@@ -1428,28 +1428,131 @@ _save_deferrals() {
 # Prints one package name per line to stdout.
 # Usage: echo "$issue_body" | _extract_packages_for_language <lang>
 # Supported languages: python, node
+#
+# New helper functions that _extract_packages_for_language depends on are
+# placed AFTER this function (between the _extract_packages_for_language and
+# _dedup_issues markers) so that the test setup line-range extraction in
+# tests/regression/plan-unverified-integration.bats captures them in a single
+# eval block.  Bash resolves function names at call time, not parse time, so
+# the helpers can be defined after the caller as long as both are eval'd before
+# any test runs.
 _extract_packages_for_language() {
   local lang="$1"
   case "$lang" in
     python)
       # Match: import foo, from foo import bar, from foo.bar import baz
-      # Capture the top-level module name only (before the first '.')
+      # Capture the top-level module name only (before the first '.').
+      # Pipe through _normalize_python_import_name to map import names to their
+      # PyPI distribution names (e.g. yaml → pyyaml, bs4 → beautifulsoup4).
       grep -oE '^\s*(import|from)\s+[a-zA-Z_][a-zA-Z0-9_]*' | \
         sed 's/^[[:space:]]*//' | \
         sed 's/^import[[:space:]]\+//; s/^from[[:space:]]\+//' | \
-        grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*' || true
+        grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*' | \
+        _normalize_python_import_name || true
       ;;
     node)
       # Match: require('foo'), require("foo"), from 'foo', from "foo"
-      # Capture bare package names only (no relative paths starting with . or /)
+      # Capture bare package names only (no relative paths starting with . or /).
+      # Pipe through _trim_node_package_name to strip subpath suffixes so that
+      # "lodash/fp" matches the manifest entry "lodash" (and "@scope/pkg/sub"
+      # matches "@scope/pkg").
       grep -oE "(require\(['\"][^'\"./][^'\"]*['\"]|from[[:space:]]+['\"][^'\"./][^'\"]*['\"])" | \
         grep -oE "['\"][^'\"./][^'\"]*['\"]" | \
-        sed "s/['\"]//g" || true
+        sed "s/['\"]//g" | \
+        _trim_node_package_name || true
       ;;
     *)
       # Unknown language — no extraction (returns nothing)
       ;;
   esac
+}
+
+# _normalize_python_import_name: map a Python import module name to its
+# distribution (PyPI) name when they differ.
+#
+# Many widely-used packages are imported under a name that does not match
+# what appears in requirements.txt / pyproject.toml (e.g. "import yaml"
+# but the distribution is "PyYAML", "import bs4" but the distribution is
+# "beautifulsoup4").  Without this mapping, _detect_unverified_integrations
+# produces false-positive spike issues for packages that are genuinely
+# grounded in the manifest.
+#
+# The table covers the most common cases observed in the wild.  Import names
+# that are NOT in the table are passed through unchanged; the subsequent
+# hyphen/underscore normalisation in _detect_unverified_integrations handles
+# remaining naming variations (e.g. requests_toolbelt vs requests-toolbelt).
+#
+# Reads one import name per line from stdin; prints the distribution name
+# (lowercased) per line to stdout.
+_normalize_python_import_name() {
+  while IFS= read -r _import; do
+    case "$_import" in
+      yaml)         echo "pyyaml" ;;
+      bs4)          echo "beautifulsoup4" ;;
+      cv2)          echo "opencv-python" ;;
+      PIL)          echo "pillow" ;;
+      pil)          echo "pillow" ;;
+      sklearn)      echo "scikit-learn" ;;
+      skimage)      echo "scikit-image" ;;
+      MySQLdb)      echo "mysqlclient" ;;
+      mysqldb)      echo "mysqlclient" ;;
+      usb)          echo "pyusb" ;;
+      serial)       echo "pyserial" ;;
+      gi)           echo "pygobject" ;;
+      wx)           echo "wxpython" ;;
+      Crypto)       echo "pycryptodome" ;;
+      crypto)       echo "pycryptodome" ;;
+      OpenSSL)      echo "pyopenssl" ;;
+      openssl)      echo "pyopenssl" ;;
+      magic)        echo "python-magic" ;;
+      dateutil)     echo "python-dateutil" ;;
+      dotenv)       echo "python-dotenv" ;;
+      jose)         echo "python-jose" ;;
+      attr)         echo "attrs" ;;
+      _strptime)    echo "_strptime" ;;  # stdlib, will never be in manifest — pass through
+      *)            echo "$_import" ;;
+    esac
+  done
+}
+
+# _trim_node_package_name: strip subpath suffixes from a Node.js package name
+# so that extracted imports match the top-level entry in package.json.
+#
+# Node allows importing sub-paths within a package:
+#   require('lodash/fp')         → should match "lodash" in package.json
+#   require('@scope/pkg/utils')  → should match "@scope/pkg" in package.json
+#   from 'react-dom/client'      → should match "react-dom" in package.json
+#
+# Rules:
+#  - Scoped packages (@scope/name): keep exactly two path segments; discard any
+#    additional "/..." suffix.  The first two segments are the package identity.
+#  - Unscoped packages: keep everything up to the first "/" (the base name).
+#  - Names with no "/" are returned unchanged.
+#
+# Reads one package name per line from stdin; prints the trimmed name to stdout.
+_trim_node_package_name() {
+  while IFS= read -r _pkg; do
+    case "$_pkg" in
+      @*/*/*)
+        # Scoped with sub-path: @scope/name/sub → @scope/name
+        # Use two sed passes (portable: no \1 back-reference complications across BSD/GNU)
+        # Extract "@scope/name" by cutting after the second slash.
+        echo "$_pkg" | sed 's|^\(@[^/]*/[^/]*\)/.*|\1|'
+        ;;
+      @*/*)
+        # Scoped without sub-path: @scope/name — already correct, pass through
+        echo "$_pkg"
+        ;;
+      */*)
+        # Unscoped with sub-path: lodash/fp → lodash
+        echo "$_pkg" | sed 's|/.*||'
+        ;;
+      *)
+        # No slash — plain package name, pass through
+        echo "$_pkg"
+        ;;
+    esac
+  done
 }
 
 # _detect_project_language: infer primary language from project manifests.
