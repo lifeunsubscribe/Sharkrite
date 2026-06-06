@@ -86,12 +86,35 @@ safe_source() {
 # =============================================================================
 
 detect_project_root() {
-  if git rev-parse --show-toplevel 2>/dev/null; then
-    return 0
-  else
+  # Always resolve to the MAIN repo root, even when invoked from a worktree.
+  # `git rev-parse --show-toplevel` returns the *worktree's* toplevel — which is
+  # the wrong path for rite, because after merge-pr.sh removes the worktree, every
+  # `cd "$RITE_PROJECT_ROOT"` guard would cd into a deleted directory, then fall
+  # through to `cd /`, then any subsequent `gh` call (which doesn't honor `-C`)
+  # crashes with "fatal: Unable to read current working directory".
+  #
+  # `git rev-parse --git-common-dir` returns the path to the *main* repo's .git
+  # in both contexts:
+  #   - Main repo:  returns ".git" (relative) or an absolute path
+  #   - Worktree:   returns the main repo's .git (absolute), because worktrees'
+  #                 own .git is a file pointing back at the main repo
+  # So `dirname` of the resolved-absolute common-dir is always the main repo root.
+  #
+  # Live regression history (third occurrence of this bug class):
+  #   - PR #211 (2026-06-01): cd-guard in assess-documentation.sh
+  #   - PR #289/291 (2026-06-04): cd-guard in phase_merge_pr
+  #   - PR #426 (2026-06-06): #422 merge — guard at line 1436 cd'd into dead
+  #     worktree because RITE_PROJECT_ROOT was bound to the worktree path.
+  # All three cd guards were correct; the root assumption underneath them was wrong.
+  local common_dir
+  common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || { echo ""; return 0; }
+  if [ -z "$common_dir" ]; then
     echo ""
     return 0
   fi
+  # Resolve to absolute path (common_dir may be relative when in main repo root)
+  common_dir=$(cd "$common_dir" 2>/dev/null && pwd) || { echo ""; return 0; }
+  dirname "$common_dir"
 }
 
 # Only detect if not already set (caller may override)
