@@ -1333,6 +1333,9 @@ If the changes are unrelated work, answer UNRELATED."
           # NOT exit 10 — that is reserved for batch "blocker detected" (batch-process-issues.sh).
           # Stale handler restarted fresh — exec to restart workflow
           print_status "Restarting workflow after stale branch cleanup..."
+          # Release lock before exec: exec replaces the process image without firing EXIT traps,
+          # so the trap "release_issue_lock" registered above would never run. Release explicitly.
+          release_issue_lock "$ISSUE_NUMBER"
           if [ "$AUTO_MODE" = true ]; then
             exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
           else
@@ -1360,6 +1363,9 @@ If the changes are unrelated work, answer UNRELATED."
             # Restart workflow fresh (exec replaces current process, starts from Phase 1 with clean state)
             # This ensures new worktree is created from current main, not the deleted stale branch
             print_status "Restarting workflow after empty branch cleanup..."
+            # Release lock before exec: exec replaces the process image without firing EXIT traps,
+            # so the trap "release_issue_lock" registered above would never run. Release explicitly.
+            release_issue_lock "$ISSUE_NUMBER"
             exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
           else
             print_error "Auto-recovery cleanup failed — manual intervention required"
@@ -1389,6 +1395,9 @@ If the changes are unrelated work, answer UNRELATED."
 
               if preflight_auto_recover_empty "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "${PR_NUMBER:-}"; then
                 print_status "Restarting workflow after cleanup..."
+                # Release lock before exec: exec replaces the process image without firing EXIT traps,
+                # so the trap "release_issue_lock" registered above would never run. Release explicitly.
+                release_issue_lock "$ISSUE_NUMBER"
                 exec "$SCRIPT_PATH" "$ISSUE_NUMBER"
               else
                 print_error "Cleanup failed — manual intervention required"

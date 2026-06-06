@@ -83,6 +83,18 @@ acquire_issue_lock() {
         continue
       fi
 
+      # Defense-in-depth: if WE are the lock holder (same PID), reclaim our own lock.
+      # This happens when a script execs itself to restart (exec replaces the process
+      # image without firing EXIT traps, so the "release_issue_lock" EXIT trap from the
+      # previous incarnation never ran). The re-exec'd process has the same $$ and finds
+      # its own live lock. Reclaim it silently and retry the mkdir.
+      # Live failure: issue #343 batch run 2026-06-06.
+      if [ -n "$lock_pid" ] && [ "$lock_pid" = "$$" ]; then
+        echo "⚠️  Reclaiming self-held lock (post-exec restart) for issue #${issue_number}" >&2
+        rm -rf "$lock_dir" 2>/dev/null
+        continue
+      fi
+
       # Lock is held by a live process
       if [ $lock_attempts -eq 0 ]; then
         echo "❌ Issue #${issue_number} is already being processed by PID ${lock_pid}" >&2
