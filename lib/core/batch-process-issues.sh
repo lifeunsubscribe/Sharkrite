@@ -650,9 +650,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
-    # Get PR number for this issue (search by body text, most recent first)
-    PR_NUMBER=$(gh_safe pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number')
+    # Get PR number for this issue (search by body text, most recent first).
+    # jq `// empty` converts null (returned when the array is empty) to no output,
+    # so bash captures "" instead of the literal 4-char string "null".
+    # The bash-level strip below is belt-and-suspenders for any future call path
+    # that may not use `// empty` at the jq layer.
+    PR_NUMBER=$(gh_safe pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number // empty')
     PR_NUMBER="${PR_NUMBER:-}"
+    [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 
     print_success "Issue #$ISSUE_NUM completed successfully"
     if [ -n "$PR_NUMBER" ]; then
@@ -679,9 +684,11 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         SECURITY_UPDATES+=("PR #$PR_NUMBER: Updated DEVELOPMENT-GUIDE.md with findings from #$ISSUE_NUM")
       fi
 
-      # Check for new tech-debt issues created
-      NEW_DEBT_ISSUE=$(gh_safe issue list --label "tech-debt" --state open --search "${RITE_MARKER_PARENT_PR}:$PR_NUMBER in:body" --json number --jq '.[0].number')
+      # Check for new tech-debt issues created.
+      # `// empty` prevents jq from outputting literal "null" when no issue matches.
+      NEW_DEBT_ISSUE=$(gh_safe issue list --label "tech-debt" --state open --search "${RITE_MARKER_PARENT_PR}:$PR_NUMBER in:body" --json number --jq '.[0].number // empty')
       NEW_DEBT_ISSUE="${NEW_DEBT_ISSUE:-}"
+      [ "$NEW_DEBT_ISSUE" = "null" ] && NEW_DEBT_ISSUE=""
       if [ -n "$NEW_DEBT_ISSUE" ]; then
         NEW_ISSUES_CREATED+=("Issue #$NEW_DEBT_ISSUE (from PR #$PR_NUMBER)")
       fi

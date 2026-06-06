@@ -2088,8 +2088,11 @@ _Draft PR created automatically by rite for tracking purposes._"
     2>/dev/null || print_warning "PR creation failed (may already exist)"
   rm -f "$DRAFT_BODY_FILE"
 
-  # Get PR number
-  PR_NUMBER=$(gh_safe pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' || true)
+  # Get PR number.
+  # `// empty` converts jq null (empty array → .[0] is null) to empty output
+  # so bash captures "" rather than the literal string "null".
+  PR_NUMBER=$(gh_safe pr list --head "$BRANCH_NAME" --json number --jq '.[0].number // empty' || true)
+  [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 
   if [ -n "$PR_NUMBER" ]; then
     print_success "Draft PR created for issue #${ISSUE_NUMBER}"
@@ -2569,8 +2572,10 @@ if [ $CHANGES_COUNT -eq 0 ]; then
       if git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
         print_status "Cleaning up empty branch..."
 
-        # Delete the draft PR if it exists
-        DRAFT_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' || true)
+        # Delete the draft PR if it exists.
+        # `// empty` prevents capturing literal "null" when no PR exists for branch.
+        DRAFT_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number // empty' || true)
+        [ "$DRAFT_PR" = "null" ] && DRAFT_PR=""
         if [ -n "$DRAFT_PR" ]; then
           gh_safe pr close "$DRAFT_PR" --delete-branch 2>/dev/null || true
           print_info "Closed draft PR for issue #${ISSUE_NUMBER}"
