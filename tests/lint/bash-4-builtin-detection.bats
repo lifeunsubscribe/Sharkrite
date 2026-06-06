@@ -149,6 +149,26 @@ echo "done"'
   [[ "$r21_lines" != *"good-versinfo-guard"* ]]
 }
 
+@test "rule passes: #!/bin/bash + mapfile + arithmetic BASH_VERSINFO guard (( BASH_VERSINFO[0] < 4 ))" {
+  # Covers audit-dropped-followups.sh style guard: arithmetic conditional, no exec.
+  # The exemption must fire for both test-builtin and arithmetic guard shapes.
+  _run_lint_with_fixture "good-arithmetic-versinfo" '#!/bin/bash
+set -euo pipefail
+
+# Bash 4+ required for mapfile
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "ERROR: Requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
+mapfile -t MY_ARRAY < <(find . -name "*.sh")
+echo "done"'
+
+  local r21_lines
+  r21_lines=$(echo "$output" | grep "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" || true)
+  [[ "$r21_lines" != *"good-arithmetic-versinfo"* ]]
+}
+
 @test "rule passes: #!/bin/bash + mapfile + suppression comment on preceding line" {
   _run_lint_with_fixture "good-suppressed" '#!/bin/bash
 set -euo pipefail
@@ -161,6 +181,40 @@ echo "done"'
   local r21_lines
   r21_lines=$(echo "$output" | grep "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" || true)
   [[ "$r21_lines" != *"good-suppressed"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Granular exemption: BASH_VERSINFO in comment / diagnostic must NOT exempt
+# ---------------------------------------------------------------------------
+# These tests cover the "over-broad exemption" fix (issue #334): a file that
+# only mentions BASH_VERSINFO in a comment or in a diagnostic echo — without
+# an actual version-comparison guard — must still be flagged by Rule 21.
+
+@test "rule fires: #!/bin/bash + mapfile + BASH_VERSINFO only in a comment" {
+  # BASH_VERSINFO appears but only inside a comment — no functional guard.
+  # The old implementation exempted the whole file; the new one must not.
+  _run_lint_with_fixture "bad-versinfo-comment-only" '#!/bin/bash
+set -euo pipefail
+# Note: this script requires bash 4+. See BASH_VERSINFO for version info.
+
+mapfile -t MY_ARRAY < <(find . -name "*.sh")
+echo "done"'
+
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+}
+
+@test "rule fires: #!/bin/bash + mapfile + BASH_VERSINFO only in diagnostic echo" {
+  # BASH_VERSINFO appears in an echo for diagnostic output, not a guard.
+  # Accessing ${BASH_VERSINFO[*]} for display does not protect against bash 3.2.
+  _run_lint_with_fixture "bad-versinfo-diagnostic-only" '#!/bin/bash
+set -euo pipefail
+
+echo "Running on bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" >&2
+
+mapfile -t MY_ARRAY < <(find . -name "*.sh")
+echo "done"'
+
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
 }
 
 # ---------------------------------------------------------------------------
