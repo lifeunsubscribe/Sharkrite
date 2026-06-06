@@ -15,10 +15,27 @@
 
 set -euo pipefail
 
-# Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f detect_infrastructure_changes >/dev/null 2>&1; then
+# Re-source guard: skip if already loaded (idempotent sourcing).
+#
+# Variable-based, NOT function-sentinel, because this file `export -f`s its
+# function set (lines 794-810). With a `declare -f <fn>` guard, a subprocess
+# of a batch parent that sourced an OLDER blocker-rules.sh inherits the parent's
+# exported function (sentinel match) and short-circuits — never defining functions
+# added to the file after the parent started. Live failure: PR #350 added
+# detect_lib_shrinkage mid-batch on 2026-06-04 → #351/#352 failed in create-pr.sh
+# with "detect_lib_shrinkage: command not found".
+#
+# The variable is deliberately NOT exported. Same-shell re-sources see it set
+# (guard fires, no double-load). True subprocesses see it unset (guard misses,
+# they re-source against the current on-disk file). Subshells via `( ... )` inherit
+# it — that's fine, they share the parent's function set verbatim.
+#
+# DO NOT `export _RITE_BLOCKER_RULES_LOADED`. Regression test in
+# tests/regression/blocker-rules-stale-inherited-functions.bats asserts this.
+if [ "${_RITE_BLOCKER_RULES_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
 fi
+_RITE_BLOCKER_RULES_LOADED=true
 
 # Source notifications library
 source "$RITE_LIB_DIR/utils/notifications.sh"
