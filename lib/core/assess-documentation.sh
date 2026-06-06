@@ -518,7 +518,13 @@ update_conventions_from_marker() {
   # Strategy: write PR body to a temp file, then use awk to collect all blocks.
   # Using a temp file avoids subshell + pipeline issues with set -e.
   local _body_file
-  _body_file=$(mktemp)
+  # Guard: mktemp failure (disk full, /tmp missing) must not abort the parent
+  # assess-documentation.sh process — conventions are a nice-to-have, not a
+  # hard blocker.  Return 0 (graceful skip) so downstream assessments still run.
+  _body_file=$(mktemp 2>/dev/null) || {
+    print_warning "  conventions: mktemp failed for body file — skipping (temp space issue?)"
+    return 0
+  }
   # Write PR body to temp file; printf '%s' avoids interpreting escape sequences
   printf '%s' "$pr_body" > "$_body_file"
 
@@ -531,7 +537,12 @@ update_conventions_from_marker() {
   # template example as a real convention block.  Track in_fence so that markers
   # inside ``` ... ``` are treated as literal text, not as real extraction triggers.
   local _blocks_file
-  _blocks_file=$(mktemp)
+  # Guard: same isolation contract as _body_file — clean up _body_file on failure.
+  _blocks_file=$(mktemp 2>/dev/null) || {
+    print_warning "  conventions: mktemp failed for blocks file — skipping (temp space issue?)"
+    rm -f "$_body_file"
+    return 0
+  }
   awk -v open_marker="<!-- ${RITE_MARKER_CONVENTION} -->" \
       -v close_marker="<!-- /${RITE_MARKER_CONVENTION} -->" '
     /^```/ { in_fence = !in_fence; next }
@@ -721,7 +732,13 @@ EOF
         # - within that entry, finds "**References:**" and appends ", #PR_NUMBER"
         # - all other lines pass through unchanged
         local _refs_tmp
-        _refs_tmp=$(mktemp)
+        # Guard: mktemp failure must not propagate — skip this block's accumulation
+        # and continue the while loop so other blocks in the PR body are processed.
+        _refs_tmp=$(mktemp 2>/dev/null) || {
+          print_warning "  conventions: mktemp failed for refs rewrite — skipping accumulate for '$_title' (temp space issue?)"
+          _current_block=""
+          continue
+        }
         local _awk_exit=0
         awk -v title="## ${_title}" -v prnum="#${pr_number}" '
           BEGIN { in_target=0; updated=0 }
