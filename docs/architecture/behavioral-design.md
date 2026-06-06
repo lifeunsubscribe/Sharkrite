@@ -885,6 +885,25 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 **Rule of thumb:** If the question is "does X appear in set Y?" — use a set lookup. Only reach for a model when the question genuinely requires language understanding (e.g., "does this PR description accurately reflect the diff?").
 
+**H5 critique dissolution — completing the deterministic linter chain (issues #348/#351/#367/#353):**
+
+The original H5 proposal asked the planner to run a self-critique LLM pass after drafting issues — a model would validate its own draft against a checklist (coverage 1:1, acyclic DAG, no dangling deps, verification commands reference real files, deferral reasoning consistent with docs) and revise. This adds LLM cost, latency, and another failure mode. Same-model self-critique is famously weak at catching same-model errors.
+
+The four sibling deterministic linters that replaced it, in pipeline order:
+
+| PR | Function | Check |
+|----|----------|-------|
+| #348 | `_validate_coverage` | Coverage 1:1: every ✅ checklist entry matches an emitted ---ISSUE--- title (canonical lookup, no LLM). |
+| #351 | `_detect_unverified_integrations` | Integration check: external hostnames and packages referenced in issue bodies must be grounded in the repo's fixture directories or dependency manifests, or a spike issue is prepended. |
+| #367 | `_lint_provenance_flags` | Provenance: output fields from external systems must be flagged; fields whose source is obvious from "Files to Read" are rejected as low-signal. Flag-first pattern — model marks, code rejects. |
+| #353 | `_lint_issues_strict` | Graph and citation checks: acyclic dependency graph (DFS cycle detection), no dangling `#N` refs, verification commands reference reachable paths (WARNING), deferral entries require a citation (WARNING). |
+
+**If you find yourself wanting to add an LLM critique pass:** list the items on the checklist and pull each into code first. The historical evidence is that every item on the H5 checklist was a deterministic check expressed in natural language. If, after pulling everything into code, genuine residue remains — a single concrete item that truly requires language understanding, not just pattern matching — file a focused follow-up issue with a narrow scope. Do not add it inline.
+
+**Citation-over-judgment pattern (issue #353):**
+
+For deferral entries, rather than asking the model whether the deferral's reasoning is sound (which would require an LLM call with the same model that wrote the reasoning), `_lint_issues_strict` requires a *citation*: a quoted phrase, a `file:line` reference, or a block-quote pointing at the evidence. Citations are deterministically verifiable; soundness of reasoning is not. If the model must point at evidence, it is forced to anchor its reasoning in the source material instead of generating unsupported assertions.
+
 ---
 
 ## Temp File Conventions

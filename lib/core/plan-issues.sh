@@ -32,6 +32,11 @@ if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 fi
 
+# Source marker constants (for RITE_MARKER_PLAN_LINT used by _lint_issues_strict)
+if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f rite_markers_loaded >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/markers.sh"
+fi
+
 # Source provider abstraction
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -914,6 +919,17 @@ PROMPT_EOF
     return "$_prov_lint_rc"
   fi
 
+  # Strict deterministic validator: cycles, dangling refs, verification paths,
+  # deferral citations. Runs last in the linter chain (after coverage,
+  # integration, provenance). Passes existing_issues for dangling-ref check.
+  # Non-zero return (cycle / dangling ref detected) gates the pipeline.
+  _strict_lint_rc=0
+  _lint_issues_strict "$temp_file" "$existing_issues" || _strict_lint_rc=$?
+  if [ "$_strict_lint_rc" -ne 0 ]; then
+    rm -f "$temp_file"
+    return "$_strict_lint_rc"
+  fi
+
   echo "$temp_file"
 }
 
@@ -1194,6 +1210,561 @@ _lint_provenance_flags() {
   fi
 
   return "$_prov_lint_exit"
+}
+
+# =============================================================================
+# Strict deterministic validator: cycles, dangling refs, verification paths,
+# deferral citations
+#
+# Deterministic (zero LLM calls). Runs after _lint_provenance_flags in the
+# linter chain. Completes the dissolution of the H5 LLM critique proposal
+# (PRs #348/#351/#367 covered coverage, integration, provenance; this PR
+# adds the remaining four checks).
+#
+# Arguments:
+#   $1  — path to the issues file
+#   $2  — existing_issues string (one "#N title [labels]" entry per line,
+#          from gh issue list; may be empty)
+#
+# Return codes:
+#   0 — passed (warnings may have been emitted to stderr)
+#   1 — hard error: cycle detected or dangling dependency ref
+#
+# Suppression (per-issue inline marker):
+#   <!-- sharkrite-plan-lint disable <rule> - Reason: <text> -->
+#   Supported rules: cycle-check, dangling-ref, verification-path, deferral-citation
+#   Reason field is REQUIRED. A marker without "- Reason: " does NOT suppress;
+#   instead the validator emits a WARNING and runs the check anyway.
+#   Suppression is always logged visibly to stderr: "[suppressed] rule: reason".
+# =============================================================================
+
+_lint_issues_strict() {
+  local issues_file="$1"
+  local existing_issues="${2:-}"
+
+  # Track fatal errors (cycles, dangling refs)
+  local _strict_errors=0
+  # Track warnings (verification-path, deferral-citation) — do not increment errors
+  # Collected arrays for cycle detection — bash 3.2 compatible (no declare -A)
+  # Each element: "TITLE_SLUG:dep_number" stored as parallel arrays
+  # We use a flat list of "issuenum:depnum" edges: _dep_edges
+  # And a title→number map: _title_slugs / _title_nums
+
+  # -------------------------------------------------------------------------
+  # Pass 1: Build per-issue metadata from ---ISSUE--- blocks
+  #   - Assign each issue a synthetic number (batch-local, e.g. BATCH-1)
+  #   - Collect titles, dependency lines, files-to-modify, files-to-read,
+  #     verification commands, suppression markers
+  # -------------------------------------------------------------------------
+
+  # Parallel arrays (bash 3.2 compat — no associative arrays)
+  local _issue_ids=""        # newline-sep list of synthetic IDs: "BATCH-1", "BATCH-2", ...
+  local _issue_titles=""     # newline-sep list of TITLE values (same order as _issue_ids)
+  local _issue_dep_lines=""  # each element: "BATCH-N|<raw Dependencies line>" (one per issue)
+  local _issue_ftm=""        # each element: "BATCH-N|<files-to-modify colon-sep>"
+  local _issue_ftr=""        # each element: "BATCH-N|<files-to-read colon-sep>"
+  local _issue_vcmds=""      # each element: "BATCH-N|<verification cmd block>"
+  local _issue_suppress=""   # each element: "BATCH-N|rule1 rule2 ..." (space-sep suppressed rules)
+  local _batch_counter=0
+
+  local _cur_id=""
+  local _cur_title=""
+  local _cur_dep_line=""
+  local _cur_ftm=""
+  local _cur_ftr=""
+  local _cur_vcmds=""
+  local _cur_suppress=""
+
+  # Parsing state machine
+  local _in_issue=false
+  local _in_verify_block=false
+  local _in_ftm=false
+  local _in_ftr=false
+
+  while IFS= read -r _ln; do
+    if [ "$_ln" = "---ISSUE---" ]; then
+      _in_issue=true
+      _in_verify_block=false
+      _in_ftm=false
+      _in_ftr=false
+      _batch_counter=$((_batch_counter + 1))
+      _cur_id="BATCH-$_batch_counter"
+      _cur_title=""
+      _cur_dep_line=""
+      _cur_ftm=""
+      _cur_ftr=""
+      _cur_vcmds=""
+      _cur_suppress=""
+      continue
+    fi
+
+    if [ "$_in_issue" = false ]; then
+      continue
+    fi
+
+    if [ "$_ln" = "---END---" ]; then
+      # Commit this issue's data to parallel arrays
+      _issue_ids="${_issue_ids}${_cur_id}"$'\n'
+      _issue_titles="${_issue_titles}${_cur_title}"$'\n'
+      _issue_dep_lines="${_issue_dep_lines}${_cur_id}|${_cur_dep_line}"$'\n'
+      _issue_ftm="${_issue_ftm}${_cur_id}|${_cur_ftm}"$'\n'
+      _issue_ftr="${_issue_ftr}${_cur_id}|${_cur_ftr}"$'\n'
+      _issue_vcmds="${_issue_vcmds}${_cur_id}|${_cur_vcmds}"$'\n'
+      _issue_suppress="${_issue_suppress}${_cur_id}|${_cur_suppress}"$'\n'
+      _in_issue=false
+      _in_verify_block=false
+      _in_ftm=false
+      _in_ftr=false
+      continue
+    fi
+
+    # Capture title
+    case "$_ln" in
+      TITLE:\ *)
+        _cur_title="${_ln#TITLE: }"
+        ;;
+    esac
+
+    # Capture inline suppression markers
+    # Format: <!-- RITE_MARKER_PLAN_LINT disable <rule> - Reason: <text> -->
+    # Format (bad): <!-- RITE_MARKER_PLAN_LINT disable <rule> --> (no Reason: field)
+    # Use variable via grep-F to avoid a raw marker literal in this source file
+    # (RAW_MARKER_LITERAL lint rule: all sharkrite-* strings must use RITE_MARKER_* constants)
+    local _plan_lint_marker="<!-- ${RITE_MARKER_PLAN_LINT} disable"
+    if echo "$_ln" | grep -qF "$_plan_lint_marker"; then
+      # Extract rule name
+      local _sup_rule
+      _sup_rule=$(echo "$_ln" | grep -oE 'disable [a-z-]+' | sed 's/disable //' || true)
+      if [ -n "$_sup_rule" ]; then
+        # Check for required Reason: field
+        # Use sed to extract the reason to avoid grep treating "- Reason:" as an option flag
+        local _has_reason
+        _has_reason=$(echo "$_ln" | sed -n 's/.*- Reason: //p' || true)
+        if [ -n "$_has_reason" ]; then
+          local _sup_reason
+          # Extract text between "- Reason: " and the closing " -->"
+          _sup_reason=$(echo "$_ln" | sed 's/.*- Reason: //; s/ *-->.*$//' || true)
+          print_info "[suppressed] $_sup_rule: ${_sup_reason}" >&2
+          _cur_suppress="${_cur_suppress}${_sup_rule} "
+        else
+          print_warning "suppression marker missing required Reason: field; rule '$_sup_rule' will run: $_ln" >&2
+        fi
+      fi
+    fi
+
+    # Capture Dependencies line
+    case "$_ln" in
+      '**Dependencies**:'*|'Dependencies:'*)
+        _cur_dep_line="$_ln"
+        ;;
+    esac
+
+    # Capture Files to Modify (section lines until blank or next header)
+    case "$_ln" in
+      'Files to Modify:'*)
+        _in_ftm=true
+        _in_ftr=false
+        _in_verify_block=false
+        continue
+        ;;
+      'Files to Read:'*)
+        _in_ftr=true
+        _in_ftm=false
+        _in_verify_block=false
+        continue
+        ;;
+      '**Verification Commands**:'*|'Verification Commands:'*)
+        _in_verify_block=true
+        _in_ftm=false
+        _in_ftr=false
+        continue
+        ;;
+      '**'*|'##'*|'---END---')
+        _in_ftm=false
+        _in_ftr=false
+        # Keep _in_verify_block until next section header
+        case "$_ln" in
+          '**'*|'##'*)
+            _in_verify_block=false
+            ;;
+        esac
+        ;;
+    esac
+
+    if [ "$_in_ftm" = true ] && [ -n "$_ln" ]; then
+      # Extract path (strip bullet "- " prefix and annotation in parens)
+      local _fpath
+      _fpath=$(echo "$_ln" | sed 's/^[[:space:]]*-[[:space:]]*//' | awk '{print $1}' | sed 's/([^)]*)$//' || true)
+      _fpath="${_fpath%"${_fpath##*[! ]}"}"  # rtrim
+      if [ -n "$_fpath" ]; then
+        _cur_ftm="${_cur_ftm}${_fpath}:"
+      fi
+    fi
+
+    if [ "$_in_ftr" = true ] && [ -n "$_ln" ]; then
+      local _frpath
+      _frpath=$(echo "$_ln" | sed 's/^[[:space:]]*-[[:space:]]*//' | awk '{print $1}' | sed 's/([^)]*)$//' | sed 's/:[0-9]*$//' || true)
+      _frpath="${_frpath%"${_frpath##*[! ]}"}"  # rtrim
+      if [ -n "$_frpath" ]; then
+        _cur_ftr="${_cur_ftr}${_frpath}:"
+      fi
+    fi
+
+    if [ "$_in_verify_block" = true ] && [ -n "$_ln" ]; then
+      # Append verification command lines (skip code fence markers)
+      case "$_ln" in
+        '```'*)  ;;  # skip
+        *)  _cur_vcmds="${_cur_vcmds}${_ln}|" ;;
+      esac
+    fi
+
+  done < "$issues_file"
+
+  # -------------------------------------------------------------------------
+  # Build lookup sets for dangling-ref check:
+  #   (a) batch issue numbers — we use synthetic BATCH-N IDs in the DAG,
+  #       but dep lines reference real #N or #PREV or #SPIKE-* or BATCH-N
+  #   (b) titles (canonicalized)
+  #   (c) existing_issues numbers (#N)
+  # -------------------------------------------------------------------------
+
+  # Extract all real existing issue numbers from existing_issues string
+  local _existing_nums=""
+  _existing_nums=$(echo "$existing_issues" | grep -oE '#[0-9]+' || true)
+
+  # Extract all SPIKE placeholder IDs that were emitted in this batch
+  local _spike_ids=""
+  _spike_ids=$(grep "^TITLE:.*SPIKE" "$issues_file" | grep -oE 'SPIKE-[A-Za-z0-9_-]+' || true)
+
+  # Build canonical title index for batch issues
+  local _batch_canon_titles=""
+  _batch_canon_titles=$(echo "$_issue_titles" | \
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+    tr '[:upper:]' '[:lower:]' || true)
+
+  # -------------------------------------------------------------------------
+  # Check 1: Acyclic dependency graph (DFS cycle detection)
+  # Edges: "BATCH-N → BATCH-M" derived from Dependencies lines
+  # -------------------------------------------------------------------------
+
+  # Build adjacency list as a flat string: "BATCH-N:BATCH-M\n" per edge
+  # We need to map referenced issue numbers to BATCH-N IDs.
+  # Strategy: for each dep reference #R, look up which BATCH-N title contains
+  # a match.  Since we don't store real issue numbers (they don't exist yet for
+  # batch-generated issues), we treat any #PREV as a reference to the previous
+  # issue in the list, and any other #N as either an existing issue (external
+  # → no edge) or unresolvable (flagged by dangling-ref check).
+  # For cycle purposes: only intra-batch edges matter.  External (#existing)
+  # deps cannot form intra-batch cycles.
+
+  local _adj_list=""  # "FROM_ID:TO_ID\n" lines
+
+  # Assign ordinal position to each BATCH-N for #PREV resolution
+  local _batch_order=""  # "BATCH-1\nBATCH-2\n..."
+  _batch_order=$(echo "$_issue_ids")
+
+  local _prev_id=""
+  while IFS= read -r _dep_entry; do
+    [ -z "$_dep_entry" ] && continue
+    local _dep_id="${_dep_entry%%|*}"
+    local _dep_raw="${_dep_entry#*|}"
+
+    # Resolve #PREV to previous issue in order
+    if echo "$_dep_raw" | grep -qF "#PREV"; then
+      if [ -n "$_prev_id" ]; then
+        _adj_list="${_adj_list}${_dep_id}:${_prev_id}"$'\n'
+      fi
+    fi
+
+    # Resolve "After #N" / "Blocked by: #N" — only intra-batch
+    # For batch-generated issues, we look for "BATCH-N" style references.
+    # Real existing #N deps are external; skip them for cycle check.
+    # (They can't form intra-batch cycles since they pre-exist.)
+    local _after_refs
+    _after_refs=$(echo "$_dep_raw" | grep -oE 'After BATCH-[0-9]+|Blocked by: BATCH-[0-9]+' || true)
+    if [ -n "$_after_refs" ]; then
+      while IFS= read -r _ref; do
+        [ -z "$_ref" ] && continue
+        local _ref_id
+        _ref_id=$(echo "$_ref" | grep -oE 'BATCH-[0-9]+' || true)
+        if [ -n "$_ref_id" ]; then
+          _adj_list="${_adj_list}${_dep_id}:${_ref_id}"$'\n'
+        fi
+      done <<< "$_after_refs"
+    fi
+
+    _prev_id="$_dep_id"
+  done <<< "$_issue_dep_lines"
+
+  # DFS cycle detection (bash 3.2 compat — no associative arrays)
+  # _dfs_visited: space-sep list of fully-processed nodes
+  # _dfs_in_path: space-sep list of nodes in current DFS path
+  local _dfs_visited=""
+  local _cycle_found=false
+  local _cycle_path=""
+
+  _dfs_visit() {
+    local node="$1"
+    local path="$2"
+
+    # If node is already fully processed, no cycle through it
+    case " $_dfs_visited " in
+      *" $node "*) return 0 ;;
+    esac
+
+    # If node is in current path, we have a cycle
+    case " $path " in
+      *" $node "*)
+        _cycle_found=true
+        # Extract the cycle segment from path
+        local _seg="${path#*$node}"
+        _cycle_path="$node →${_seg}→ $node"
+        _cycle_path=$(echo "$_cycle_path" | sed 's/ :/ →/g; s/: /→/g' || true)
+        return 1
+        ;;
+    esac
+
+    local _new_path="$path $node"
+
+    # Find all outgoing edges from this node
+    local _nbrs
+    _nbrs=$(echo "$_adj_list" | grep "^${node}:" | sed "s/^${node}://" || true)
+
+    while IFS= read -r _nbr; do
+      [ -z "$_nbr" ] && continue
+      _dfs_visit "$_nbr" "$_new_path" || return 1
+    done <<< "$_nbrs"
+
+    # Mark node as fully processed
+    _dfs_visited="$_dfs_visited $node"
+    return 0
+  }
+
+  if [ -n "$_adj_list" ]; then
+    # Get all unique nodes that appear in the adjacency list
+    local _all_nodes
+    _all_nodes=$(echo "$_adj_list" | \
+      sed 's/:/\n/g' | \
+      grep -v '^$' | \
+      sort -u || true)
+
+    while IFS= read -r _node; do
+      [ -z "$_node" ] && continue
+      # Check if cycle-check is suppressed for this node's issue
+      local _node_suppress
+      _node_suppress=$(echo "$_issue_suppress" | grep "^${_node}|" | sed "s/^${_node}|//" || true)
+      if echo "$_node_suppress" | grep -qF "cycle-check"; then
+        continue
+      fi
+      if ! _dfs_visit "$_node" ""; then
+        break
+      fi
+    done <<< "$_all_nodes"
+
+    if [ "$_cycle_found" = true ]; then
+      # Use explicit print since print_error may not be available in all contexts
+      echo "ERROR: dependency cycle detected: $_cycle_path" >&2
+      _strict_errors=$((_strict_errors + 1))
+    fi
+  fi
+
+  # -------------------------------------------------------------------------
+  # Check 2: No dangling dependency refs
+  # For each #N reference in Dependencies lines, verify:
+  #   (a) #N is in existing_issues, OR
+  #   (b) #SPIKE-* is in the batch's emitted spike issues, OR
+  #   (c) it is #PREV (always valid intra-batch)
+  # -------------------------------------------------------------------------
+
+  local _prev_batch_id=""
+  while IFS= read -r _dep_entry2; do
+    [ -z "$_dep_entry2" ] && continue
+    local _did2="${_dep_entry2%%|*}"
+    local _draw2="${_dep_entry2#*|}"
+
+    # Check suppression for this issue
+    local _did2_suppress
+    _did2_suppress=$(echo "$_issue_suppress" | grep "^${_did2}|" | sed "s/^${_did2}|//" || true)
+
+    # Extract all #N numeric references (exclude #PREV — always valid)
+    local _refs
+    _refs=$(echo "$_draw2" | grep -oE '#[0-9]+' || true)
+
+    if [ -n "$_refs" ]; then
+      while IFS= read -r _ref_num; do
+        [ -z "$_ref_num" ] && continue
+
+        # Check if dangling-ref is suppressed
+        if echo "$_did2_suppress" | grep -qF "dangling-ref"; then
+          break
+        fi
+
+        # Check if #N is in existing_issues
+        if echo "$_existing_nums" | grep -qxF "$_ref_num"; then
+          continue  # Valid — pre-existing open issue
+        fi
+
+        # #N not found in existing issues → dangling ref
+        local _did2_title
+        _did2_title=$(echo "$_issue_titles" | sed -n "$(echo "$_issue_ids" | grep -n "^${_did2}$" | cut -d: -f1)p" || true)
+        echo "ERROR: unresolved Dependencies ref: $_ref_num in issue '${_did2_title:-$_did2}'" >&2
+        _strict_errors=$((_strict_errors + 1))
+
+      done <<< "$_refs"
+    fi
+
+    # Also check SPIKE-* references
+    local _spike_refs
+    _spike_refs=$(echo "$_draw2" | grep -oE '#SPIKE-[A-Za-z0-9_-]+' || true)
+    if [ -n "$_spike_refs" ]; then
+      while IFS= read -r _sref; do
+        [ -z "$_sref" ] && continue
+        local _sname="${_sref#\#}"
+        if ! echo "$_spike_ids" | grep -qxF "$_sname"; then
+          if ! echo "$_did2_suppress" | grep -qF "dangling-ref"; then
+            echo "ERROR: unresolved SPIKE ref: $_sref in issue '${_did2_title:-$_did2}'" >&2
+            _strict_errors=$((_strict_errors + 1))
+          fi
+        fi
+      done <<< "$_spike_refs"
+    fi
+
+  done <<< "$_issue_dep_lines"
+
+  # -------------------------------------------------------------------------
+  # Check 3: Verification commands reference reachable paths (WARNING, not error)
+  # For each verification command, extract file paths mentioned.
+  # If a path is NOT in Files to Modify AND NOT in Files to Read AND NOT in
+  # the existing repo → emit WARNING (not fatal; sibling issues may create it).
+  # -------------------------------------------------------------------------
+
+  local _project_root="${RITE_PROJECT_ROOT:-.}"
+
+  while IFS= read -r _vcmd_entry; do
+    [ -z "$_vcmd_entry" ] && continue
+    local _vid="${_vcmd_entry%%|*}"
+    local _vcmds_raw="${_vcmd_entry#*|}"
+
+    # Check if verification-path is suppressed for this issue
+    local _vid_suppress
+    _vid_suppress=$(echo "$_issue_suppress" | grep "^${_vid}|" | sed "s/^${_vid}|//" || true)
+    if echo "$_vid_suppress" | grep -qF "verification-path"; then
+      continue
+    fi
+
+    # Get Files to Modify and Files to Read for this issue
+    local _vid_ftm
+    _vid_ftm=$(echo "$_issue_ftm" | grep "^${_vid}|" | sed "s/^${_vid}|//" || true)
+    local _vid_ftr
+    _vid_ftr=$(echo "$_issue_ftr" | grep "^${_vid}|" | sed "s/^${_vid}|//" || true)
+
+    local _vid_title
+    _vid_title=$(echo "$_issue_titles" | sed -n "$(echo "$_issue_ids" | grep -n "^${_vid}$" | cut -d: -f1)p" || true)
+
+    # Split verification commands on "|" separator we used during collection
+    local _old_IFS="$IFS"
+    IFS='|'
+    local _vcmd_arr
+    # shellcheck disable=SC2206
+    _vcmd_arr=($_vcmds_raw)
+    IFS="$_old_IFS"
+
+    local _vcmd
+    for _vcmd in "${_vcmd_arr[@]+"${_vcmd_arr[@]}"}"; do
+      [ -z "$_vcmd" ] && continue
+
+      # Extract file-path-like tokens from verification command
+      # Match: src/..., lib/..., tests/..., relative paths with /
+      local _vpaths
+      _vpaths=$(echo "$_vcmd" | grep -oE '[a-zA-Z_][a-zA-Z0-9_/.-]*\.[a-zA-Z]{1,6}' || true)
+
+      while IFS= read -r _vp; do
+        [ -z "$_vp" ] && continue
+        # Skip single-component names without "/" (likely command names not paths)
+        case "$_vp" in
+          */*) ;;
+          *) continue ;;
+        esac
+
+        # Check if in Files to Modify
+        if echo "$_vid_ftm" | grep -qF "$_vp"; then
+          continue
+        fi
+        # Check if in Files to Read
+        if echo "$_vid_ftr" | grep -qF "$_vp"; then
+          continue
+        fi
+        # Check if file exists in repo
+        if [ -f "$_project_root/$_vp" ] || [ -d "$_project_root/$_vp" ]; then
+          continue
+        fi
+
+        print_warning "verification path not produced by this issue: $_vp (in issue '${_vid_title:-$_vid}')" >&2
+        echo "WARNING: verification path not produced by this issue: $_vp" >&2
+
+      done <<< "$_vpaths"
+    done
+
+  done <<< "$_issue_vcmds"
+
+  # -------------------------------------------------------------------------
+  # Check 4: Deferral citation requirement (WARNING, not error)
+  # For each ⏭️ deferral entry in the coverage checklist (before ---ISSUE---),
+  # require a citation: a quoted phrase or "<file>:<line>" reference.
+  # -------------------------------------------------------------------------
+
+  # Extract deferral lines (before first ---ISSUE--- marker)
+  local _deferred_lines
+  _deferred_lines=$(sed '/^---ISSUE---$/q' "$issues_file" | grep -E "^- ⏭️" || true)
+
+  if [ -n "$_deferred_lines" ]; then
+    while IFS= read -r _dline; do
+      [ -z "$_dline" ] && continue
+
+      # Check if deferral-citation is globally suppressed
+      # (We don't have a per-deferral issue ID; apply global suppression
+      #  from any issue's suppress list that includes "deferral-citation")
+      if echo "$_issue_suppress" | grep -qF "deferral-citation"; then
+        local _dc_reason
+        _dc_reason=$(echo "$_issue_suppress" | grep "deferral-citation" | head -1 || true)
+        print_info "[suppressed] deferral-citation: $_dc_reason" >&2
+        break
+      fi
+
+      # A citation is present if the deferral line contains:
+      #   - a quoted phrase: "..." or '...'
+      #   - a file:line reference: <word>.<ext>:<digits>
+      #   - a doc reference: docs/... or a known doc path
+      local _has_citation=false
+
+      # Check for quoted phrase
+      if echo "$_dline" | grep -qE '"[^"]{3,}"|'"'"'[^'"'"']{3,}'"'"; then
+        _has_citation=true
+      fi
+      # Check for file:line reference
+      if echo "$_dline" | grep -qE '[a-zA-Z_][a-zA-Z0-9_/.-]+\.[a-z]+:[0-9]+'; then
+        _has_citation=true
+      fi
+      # Check for "> " block-quote style citation
+      if echo "$_dline" | grep -qE '>[[:space:]]'; then
+        _has_citation=true
+      fi
+
+      if [ "$_has_citation" = false ]; then
+        print_warning "uncited deferral: $_dline" >&2
+        echo "WARNING: uncited deferral: $_dline" >&2
+      fi
+
+    done <<< "$_deferred_lines"
+  fi
+
+  # -------------------------------------------------------------------------
+  # Return
+  # -------------------------------------------------------------------------
+  if [ "$_strict_errors" -gt 0 ]; then
+    return 1
+  fi
+  return 0
 }
 
 # =============================================================================

@@ -75,6 +75,15 @@ RITE_MARKER_SCOPE_WARNING="sharkrite-scope-warning"
 RITE_MARKER_CHANGES_SUMMARY="sharkrite-changes-summary"
 
 # ---------------------------------------------------------------------------
+# Plan-lint suppression marker (plan-issues.sh inline validation)
+# ---------------------------------------------------------------------------
+
+# Per-issue suppression marker for _lint_issues_strict in plan-issues.sh.
+# Format in issue body: <!-- sharkrite-plan-lint disable <rule> - Reason: <text> -->
+# The "Reason: " field is required; markers without it are rejected by the validator.
+RITE_MARKER_PLAN_LINT="sharkrite-plan-lint"
+
+# ---------------------------------------------------------------------------
 # Git stash marker
 # ---------------------------------------------------------------------------
 
