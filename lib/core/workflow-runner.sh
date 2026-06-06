@@ -1601,18 +1601,110 @@ handle_closed_issue() {
     pr_branch=$(echo "$pr_data" | jq -r '.headRefName' || true)
   fi
 
-  # Fallback: issue was manually closed (no closedByPullRequestsReferences).
+  # Fallback 1: issue was manually closed (no closedByPullRequestsReferences).
   # Search closed PRs for "Closes #N" to find the branch for artifact cleanup.
+  # --limit 1000 (gh's max page) covers repos with high PR churn — the previous
+  # --limit 50 dropped off on active repos where 50+ PRs closed since the orphan
+  # was created (live case: issue #201, 78 closed PRs in 3 days made PR #206 fall
+  # off the window). See: issue #319 (this fix) and behavioral-design.md →
+  # "Closed-issue cleanup fallback chain".
   if [ -z "$pr_branch" ]; then
     local closed_pr_number
     # sort_by(.number) | last picks the most recently created closed PR
     # deterministically when multiple closed PRs reference the same issue.
-    closed_pr_number=$(gh_safe pr list --state closed --json number,body --limit 50 | \
+    closed_pr_number=$(gh_safe pr list --state closed --json number,body --limit 1000 | \
       jq --arg issue "$issue_number" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
       '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
     if [ -n "$closed_pr_number" ]; then
       pr_branch=$(gh_safe pr view "$closed_pr_number" --json headRefName --jq '.headRefName')
       [ -z "$pr_number" ] && pr_number="$closed_pr_number"
+    fi
+  fi
+
+  # Fallback 2: local-state fallback when no PR can be found via the API.
+  # This catches manually-closed issues (no closedByPullRequestsReferences) where
+  # the closing PR either never existed, was force-pushed without the "Closes #N"
+  # marker, or has fallen off even the 1000-result window.
+  #
+  # Strategy: scan local git worktree list for worktrees whose directory name
+  # encodes the issue number. Two sub-strategies (tried in order):
+  #   A) Batch-suffix match: _b<N>-... where N == issue_number as a whole token.
+  #      Prevents substring collisions (#201 must not match _b2010).
+  #   B) Title-slug match: normalize the issue title to a branch slug and check
+  #      if the worktree basename contains that slug.
+  #
+  # Conservative contract: multiple candidates with no clear winner → skip cleanup
+  # (leave the orphan) rather than risk removing the wrong worktree.
+  # See: behavioral-design.md → "Closed-issue cleanup fallback chain".
+  if [ -z "$pr_branch" ]; then
+    local _wt_list
+    _wt_list=$(git -C "$RITE_PROJECT_ROOT" worktree list 2>/dev/null || true)
+    local _main_wt
+    _main_wt=$(git -C "$RITE_PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+
+    # Sub-strategy A: batch-suffix whole-token match.
+    # Batch suffix format: _b<N1>-<N2>-... (e.g. _b201, _b201-202-203).
+    # Whole-token regex: the issue number must be preceded by _b or - and
+    # followed by - or end-of-string. This prevents #201 matching #2010.
+    local _batch_candidates=()
+    local _wt_path
+    while IFS= read -r _wt_line; do
+      _wt_path=$(echo "$_wt_line" | awk '{print $1}' || true)
+      [ -z "$_wt_path" ] && continue
+      [ "$_wt_path" = "$_main_wt" ] && continue
+      local _basename
+      _basename=$(basename "$_wt_path" || true)
+      # Match the issue number as a whole token anywhere in the batch suffix.
+      # Batch suffix format: _b<N1>-<N2>-<N3>-...
+      # A token is valid when preceded by _b or - and followed by - or end-of-string.
+      # Pattern (_b|-)<N>(-|$) handles all positions: first (_b319), middle (-320),
+      # and last (-328) — and still rejects substring collisions (_b2010 != #201).
+      if echo "$_basename" | grep -qE "(_b|-)${issue_number}(-|\$)"; then
+        _batch_candidates+=("$_wt_path")
+      fi
+    done <<< "$_wt_list"
+
+    # Sub-strategy B: title-slug match (covers non-batch orphans like #201).
+    # Normalize the issue title to a branch slug using the same rules as claude-workflow.sh:
+    # lowercase, spaces→dashes, strip non-alnum-dash, cut to 50 chars.
+    local _title_slug=""
+    if [ -n "${issue_title:-}" ] && [ "$issue_title" != "null" ]; then
+      # Strip conventional commit prefix first (matches claude-workflow.sh logic)
+      local _slug_source
+      _slug_source=$(echo "$issue_title" | sed -E 's/^[a-z]+(\([^)]*\))?: //' || true)
+      _title_slug=$(echo "$_slug_source" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | cut -c1-50 || true)
+    fi
+
+    local _slug_candidates=()
+    if [ -n "$_title_slug" ] && [ ${#_title_slug} -ge 5 ]; then
+      while IFS= read -r _wt_line; do
+        _wt_path=$(echo "$_wt_line" | awk '{print $1}' || true)
+        [ -z "$_wt_path" ] && continue
+        [ "$_wt_path" = "$_main_wt" ] && continue
+        local _basename
+        _basename=$(basename "$_wt_path" || true)
+        if echo "$_basename" | grep -qF "$_title_slug"; then
+          _slug_candidates+=("$_wt_path")
+        fi
+      done <<< "$_wt_list"
+    fi
+
+    # Resolve: prefer batch-suffix matches; fall back to slug matches.
+    # In both cases: exactly one match → use it. Zero or multiple → skip (conservative).
+    local _candidate_wt=""
+    if [ ${#_batch_candidates[@]} -eq 1 ]; then
+      _candidate_wt="${_batch_candidates[0]}"
+    elif [ ${#_batch_candidates[@]} -eq 0 ] && [ ${#_slug_candidates[@]} -eq 1 ]; then
+      _candidate_wt="${_slug_candidates[0]}"
+    elif [ ${#_batch_candidates[@]} -gt 1 ] || [ ${#_slug_candidates[@]} -gt 1 ]; then
+      print_warning "Ambiguous worktree candidates for #$issue_number — skipping local-state cleanup (multiple matches, can't determine which is safe)"
+    fi
+
+    if [ -n "$_candidate_wt" ]; then
+      pr_branch=$(git -C "$_candidate_wt" branch --show-current 2>/dev/null || true)
+      if [ -n "$pr_branch" ]; then
+        print_warning "No closing PR found for #$issue_number; using local worktree association from $(basename "$_candidate_wt") (local-state fallback)"
+      fi
     fi
   fi
 
