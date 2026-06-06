@@ -1568,7 +1568,7 @@ phase_completion() {
 # Parity contract: batch mode and single-issue mode must produce identical
 # per-issue side effects for closed issues. Any caller that short-circuits
 # before reaching this function violates the contract. See:
-#   docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+#   docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
 #   tests/regression/batch-single-issue-parity.bats
 #
 # Returns: 12 — sentinel meaning "issue was already closed at start, no new
@@ -1607,7 +1607,7 @@ handle_closed_issue() {
   # --limit 50 dropped off on active repos where 50+ PRs closed since the orphan
   # was created (live case: issue #201, 78 closed PRs in 3 days made PR #206 fall
   # off the window). See: issue #319 (this fix) and behavioral-design.md →
-  # "Closed-issue cleanup fallback chain".
+  # "Closed-Issue Cleanup Fallback Chain".
   if [ -z "$pr_branch" ]; then
     local closed_pr_number
     # sort_by(.number) | last picks the most recently created closed PR
@@ -1635,7 +1635,7 @@ handle_closed_issue() {
   #
   # Conservative contract: multiple candidates with no clear winner → skip cleanup
   # (leave the orphan) rather than risk removing the wrong worktree.
-  # See: behavioral-design.md → "Closed-issue cleanup fallback chain".
+  # See: behavioral-design.md → "Closed-Issue Cleanup Fallback Chain".
   if [ -z "$pr_branch" ]; then
     local _wt_list
     _wt_list=$(git -C "$RITE_PROJECT_ROOT" worktree list 2>/dev/null || true)
@@ -1804,7 +1804,7 @@ handle_closed_issue() {
     # TCP-reset kills (live failure: issue #201, 2026-06-04).
     # Principle: "cleanup is lazy about network state" — local first, escalate to
     # network only when local found work to do.
-    # See docs/architecture/behavioral-design.md — "Cleanup operations are lazy about network state".
+    # See docs/architecture/behavioral-design.md — "Cleanup Operations Are Lazy About Network State".
     local found_local_orphans=false
 
     # 1. Remove worktree if it exists for this branch
@@ -1836,7 +1836,7 @@ handle_closed_issue() {
     #    sweep in merge-pr.sh catches survivors. This is the stronger signal because it
     #    fires for ALL PR states (merged or not) based solely on observed local state.
     #    Architectural principle: "cleanup is lazy about network state".
-    #    See docs/architecture/behavioral-design.md — "Cleanup operations are lazy about network state".
+    #    See docs/architecture/behavioral-design.md — "Cleanup Operations Are Lazy About Network State".
     #
     #    Signal B — pr_state != MERGED (defensive secondary): merge-pr.sh's
     #    `gh pr merge --delete-branch` already deleted the remote branch for merged PRs,
@@ -1912,7 +1912,7 @@ run_workflow() {
 
   # Check if issue is already closed — delegate to the shared helper so both
   # single-issue and batch paths execute identical cleanup side effects.
-  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
   local issue_data
   issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences)
   local issue_state=$(echo "$issue_data" | jq -r '.state')
