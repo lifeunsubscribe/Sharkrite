@@ -953,9 +953,14 @@ done
 # Root cause: undo-workflow.sh used mapfile for deduplication but lacked the
 # bash-version guard present in batch-process-issues.sh. Fixed in issue #327.
 #
-# A file is EXEMPT when it contains a BASH_VERSINFO re-exec guard anywhere
-# (the check for bash 4+ and exec to a newer bash binary). This covers both
-# the batch-process-issues.sh pattern and any script that already guards.
+# A file is EXEMPT when it contains a functional BASH_VERSINFO version-
+# comparison guard: BASH_VERSINFO[<index>] used with a comparison operator
+# and a version number on the same line. Bare mentions of BASH_VERSINFO in
+# comments or diagnostic output do NOT exempt the file.
+#
+# Canonical guard shapes (from the codebase):
+#   [ "${BASH_VERSINFO[0]}" -lt 4 ]   (test builtin numeric comparison)
+#   (( BASH_VERSINFO[0] < 4 ))        (arithmetic conditional)
 #
 # The rule ONLY fires on #!/bin/bash scripts — not #!/usr/bin/env bash ones.
 # The latter let the user's PATH pick the bash binary, so Homebrew bash 5.x
@@ -972,8 +977,22 @@ for file in "${SHELL_FILES[@]}"; do
     continue
   fi
 
-  # Exempt: file already has a BASH_VERSINFO re-exec guard anywhere
-  if grep -q 'BASH_VERSINFO' "$file" 2>/dev/null; then
+  # Exempt: file has a functional BASH_VERSINFO version-comparison guard.
+  #
+  # Require BASH_VERSINFO[<index>] used in a version comparison (-lt/-gt/-le/-ge/-eq/-ne
+  # or arithmetic < / > / == / != operators) — not just any mention of BASH_VERSINFO.
+  #
+  # Why: a bare `grep -q 'BASH_VERSINFO'` fires on:
+  #   - Comment lines: "# Requires a BASH_VERSINFO check"
+  #   - Diagnostic output: echo "bash version: ${BASH_VERSINFO[*]}"
+  # Either of those would exempt the whole file even though no functional guard exists.
+  #
+  # The two canonical guard shapes in the codebase are:
+  #   [ "${BASH_VERSINFO[0]}" -lt 4 ]   (test builtin with numeric comparison)
+  #   (( BASH_VERSINFO[0] < 4 ))        (arithmetic conditional)
+  # Both require BASH_VERSINFO[ with a comparison operator and a version number on
+  # the same line — that is the signal we require here.
+  if grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*((-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]|[<>=!][=]?[[:space:]]*[0-9])' "$file" 2>/dev/null; then
     continue
   fi
 
