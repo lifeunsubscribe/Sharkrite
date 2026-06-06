@@ -27,7 +27,11 @@ fi
 
 # Configuration from environment (with config.sh defaults)
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
-EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
+# Note: EMAIL_NOTIFICATION_ADDRESS is referenced via ${EMAIL_NOTIFICATION_ADDRESS:-}
+# at each use site inside send_email() — not captured into a module-level alias.
+# Reason: a module-level alias (EMAIL_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}") is
+# set at source time and would silently stay empty if config.sh was loaded after this
+# file. Direct ${VAR:-} expansion at use site is the safe form under set -u.
 SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
 AWS_PROFILE="${RITE_AWS_PROFILE:-default}"
 
@@ -36,6 +40,7 @@ send_slack() {
   local message="$1"
   local urgency="${2:-normal}"  # normal or urgent
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - module-local alias initialized safely via SLACK_WEBHOOK="${SLACK_WEBHOOK:-}" at module load (line 29)
   if [ -z "$SLACK_WEBHOOK" ]; then
     echo "⚠️  SLACK_WEBHOOK not set, skipping Slack notification"
     return 1
@@ -71,6 +76,7 @@ send_slack() {
 EOF
 )
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - module-local alias, always non-empty after the guard check above
   HTTP_CODE=$(curl -X POST "$SLACK_WEBHOOK" \
     -H "Content-Type: application/json" \
     -d "$payload" \
@@ -92,12 +98,18 @@ send_email() {
   local message="$2"
   local urgency="${3:-normal}"
 
-  if [ -z "$EMAIL_ADDRESS" ]; then
+  # Use the correct exported config name with safe-default expansion.
+  # Same pattern as the SLACK_WEBHOOK check above.
+  # The previous code referenced $EMAIL_ADDRESS (a module-level alias set at source
+  # time from EMAIL_NOTIFICATION_ADDRESS) which was both a name mismatch vs. the
+  # config export and unsafe under set -u when the alias itself was unset.
+  if [ -z "${EMAIL_NOTIFICATION_ADDRESS:-}" ]; then
     echo "⚠️  EMAIL_NOTIFICATION_ADDRESS not set, skipping email"
     return 0
   fi
 
-  if [ -z "$RITE_EMAIL_FROM" ]; then
+  # Safe-default expansion: RITE_EMAIL_FROM is optional config; crash-safe under set -u.
+  if [ -z "${RITE_EMAIL_FROM:-}" ]; then
     echo "⚠️  RITE_EMAIL_FROM not set, skipping email"
     return 0
   fi
@@ -106,15 +118,15 @@ send_email() {
   [ "$urgency" = "urgent" ] && subject="🚨 URGENT: $subject"
 
   aws ses send-email \
-    --from "$RITE_EMAIL_FROM" \
-    --to "$EMAIL_ADDRESS" \
+    --from "${RITE_EMAIL_FROM}" \
+    --to "${EMAIL_NOTIFICATION_ADDRESS}" \
     --subject "$subject" \
     --text "$message" \
-    --profile "$AWS_PROFILE" \
+    --profile "${AWS_PROFILE:-default}" \
     2>/dev/null
 
   if [ $? -eq 0 ]; then
-    echo "✅ Email sent to $EMAIL_ADDRESS"
+    echo "✅ Email sent to ${EMAIL_NOTIFICATION_ADDRESS}"
     return 0
   else
     echo "⚠️  Email failed (check AWS SES configuration)"
@@ -134,10 +146,11 @@ send_sms() {
   # Truncate message to 140 chars (SMS limit)
   local short_message=$(echo "$message" | head -c 140 || true)
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - SNS_TOPIC_ARN is a module-local alias initialized safely at module load (line 35)
   aws sns publish \
     --topic-arn "$SNS_TOPIC_ARN" \
     --message "$short_message" \
-    --profile "$AWS_PROFILE" \
+    --profile "${AWS_PROFILE:-default}" \
     2>/dev/null
 
   if [ $? -eq 0 ]; then
