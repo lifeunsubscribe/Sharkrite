@@ -109,6 +109,16 @@ if [ -n "$ISSUE_NUMBER" ]; then
   fi
 fi
 
+# Backfill ISSUE_NUMBER from PR body (Closes #N) for status messages that
+# refer to the workflow by its issue rather than its PR. Best-effort — when
+# no linked issue exists, messages fall back to "PR #N".
+if [ -z "$ISSUE_NUMBER" ]; then
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null \
+    | grep -oiE '(close[ds]?|fix(es|ed)?|resolve[ds]?) #[0-9]+' \
+    | head -1 | grep -oE '[0-9]+' || true)
+  ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -350,7 +360,11 @@ fi
 # (header already printed by workflow-runner.sh with PR + issue context)
 _JQ_REVIEW_FETCH="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0]"
 REVIEW_JSON=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_JQ_REVIEW_FETCH") || {
-  print_error "Failed to fetch PR #$PR_NUMBER"
+  if [ -n "$ISSUE_NUMBER" ]; then
+    print_error "Failed to fetch review for issue #$ISSUE_NUMBER"
+  else
+    print_error "Failed to fetch PR #$PR_NUMBER"
+  fi
   exit 1
 }
 
@@ -396,7 +410,11 @@ fi
 REVIEW_FILE="/tmp/pr_review_${PR_NUMBER}.txt"
 echo "$REVIEW_BODY" > "$REVIEW_FILE"
 
-print_success "Review fetched from PR #$PR_NUMBER"
+if [ -n "$ISSUE_NUMBER" ]; then
+  print_success "Review fetched for issue #$ISSUE_NUMBER"
+else
+  print_success "Review fetched from PR #$PR_NUMBER"
+fi
 echo ""
 
 # =============================================================================

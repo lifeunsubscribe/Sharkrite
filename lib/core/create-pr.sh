@@ -139,8 +139,18 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   PR_STATE=$(echo "$EXISTING_PR" | jq -r '.state')
   IS_DRAFT=$(echo "$EXISTING_PR" | jq -r '.isDraft')
 
+  # Backfill ISSUE_NUMBER from PR body (Closes #N) so status messages can
+  # refer to the issue — Sarah's primary mental model — even when the script
+  # was invoked from the orchestrator without an explicit issue arg.
+  if [ -z "${ISSUE_NUMBER:-}" ]; then
+    ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null \
+      | grep -oiE '(close[ds]?|fix(es|ed)?|resolve[ds]?) #[0-9]+' \
+      | head -1 | grep -oE '[0-9]+' || true)
+    ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+  fi
+
   print_info "PR already exists for branch '$CURRENT_BRANCH'"
-  echo "  PR #$PR_NUMBER: $PR_TITLE"
+  echo "  Issue #${ISSUE_NUMBER:-?} (PR #$PR_NUMBER): $PR_TITLE"
   echo "  State: $PR_STATE"
   echo "  Draft: $IS_DRAFT"
   echo "  URL: $PR_URL"
@@ -198,7 +208,11 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
     PUSHED_NEW_COMMITS=true
     print_success "Pushed new commits"
   else
-    print_success "Issue #${ISSUE_NUMBER:-$PR_NUMBER} branch is up to date — all commits already pushed"
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      print_success "Issue #${ISSUE_NUMBER} branch is up to date — all commits already pushed"
+    else
+      print_success "PR #${PR_NUMBER} branch is up to date — all commits already pushed"
+    fi
   fi
 
   # Update PR body with changes summary if stale or missing.
@@ -353,7 +367,11 @@ EOF
     PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$' || true)
 
     print_success "Pull Request Created"
-    echo "  PR #$PR_NUMBER"
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      echo "  Issue #$ISSUE_NUMBER (PR #$PR_NUMBER)"
+    else
+      echo "  PR #$PR_NUMBER"
+    fi
     echo "  URL: $PR_URL"
     echo ""
 
@@ -425,10 +443,10 @@ if [ "$_shrinkage_exit" -ne 0 ]; then
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
       if [ "$PR_CREATED_THIS_RUN" = "true" ]; then
-        print_info "Closing PR #$PR_NUMBER due to lib/ shrinkage — fix the deletion and re-run."
+        print_info "Closing issue #${ISSUE_NUMBER:-?} PR due to lib/ shrinkage — fix the deletion and re-run."
         gh_safe pr close "$PR_NUMBER" -c "Closed: lib/ shrinkage blocker fired at PR creation time. Fix the deletion and re-run." 2>/dev/null || true
       else
-        print_info "Aborting — pre-existing PR #$PR_NUMBER left open (pre-merge gate will block merge)."
+        print_info "Aborting — pre-existing PR for issue #${ISSUE_NUMBER:-?} left open (pre-merge gate will block merge)."
       fi
       exit 1
     fi
@@ -437,11 +455,11 @@ if [ "$_shrinkage_exit" -ne 0 ]; then
     print_warning "lib/ shrinkage bypassed (--bypass-blockers) — continuing"
   else
     if [ "$PR_CREATED_THIS_RUN" = "true" ]; then
-      print_error "lib/ shrinkage blocker in auto mode — closing PR #$PR_NUMBER and aborting"
+      print_error "lib/ shrinkage blocker in auto mode — closing issue #${ISSUE_NUMBER:-?} PR and aborting"
       print_info "Run with --supervised to review and approve, or --bypass-blockers to force"
       gh_safe pr close "$PR_NUMBER" -c "Closed: lib/ shrinkage blocker fired at PR creation time (auto mode). Fix the deletion and re-run." 2>/dev/null || true
     else
-      print_error "lib/ shrinkage blocker in auto mode — aborting (pre-existing PR #$PR_NUMBER left open)"
+      print_error "lib/ shrinkage blocker in auto mode — aborting (pre-existing PR for issue #${ISSUE_NUMBER:-?} left open)"
       print_info "Pre-merge gate will block merge. Run with --supervised to review and approve, or --bypass-blockers to force"
     fi
     exit 1
@@ -464,6 +482,10 @@ else
   }
 fi
 
-print_success "Review posted to PR #$PR_NUMBER"
+if [ -n "${ISSUE_NUMBER:-}" ]; then
+  print_success "Review posted for issue #$ISSUE_NUMBER"
+else
+  print_success "Review posted to PR #$PR_NUMBER"
+fi
 echo ""
 exit 0

@@ -754,7 +754,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
 
   # Fetch latest assessment from PR comment (single source of truth)
   if [ -n "$FIX_PR_NUMBER" ]; then
-    print_status "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
+    print_status "Fetching latest assessment for issue #${ISSUE_NUMBER:-?}..."
     _jq_assessment_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
     REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
       --jq "$_jq_assessment_body" || true)
@@ -770,7 +770,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   fi
 
   if [ -z "$REVIEW_CONTENT" ] || [ "$REVIEW_CONTENT" = "null" ]; then
-    print_error "No assessment found on PR #${FIX_PR_NUMBER:-unknown}"
+    print_error "No assessment found for issue #${ISSUE_NUMBER:-unknown}"
     print_info "Expected a comment with <!-- ${RITE_MARKER_ASSESSMENT} --> marker"
     exit 1
   fi
@@ -1129,7 +1129,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
 
     if [ "$PR_STATE" = "MERGED" ]; then
       print_success "✅ Work already completed!"
-      echo "  PR #$PR_NUMBER: $PR_TITLE"
+      echo "  Issue #${ISSUE_NUMBER:-?} (PR #$PR_NUMBER): $PR_TITLE"
       echo "  Status: MERGED"
       echo "  URL: $PR_URL"
       echo ""
@@ -1539,7 +1539,13 @@ If the changes are unrelated work, answer UNRELATED."
           if [ "$_IS_MERGED" = true ]; then
             # Skip uncommitted-changes guard: merged PR means the work is in main.
             # Any residue is disposable.
-            print_status "Cleaning merged worktree: $WT_BRANCH${_MERGED_PR_NUMBER:+ (PR #$_MERGED_PR_NUMBER)}"
+            # Extract issue # from branch name (e.g. "issue-42-foo" → "42") for user-facing label.
+            _WT_ISSUE=$(echo "$WT_BRANCH" | grep -oE 'issue-?[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+            if [ -n "$_WT_ISSUE" ]; then
+              print_status "Cleaning merged worktree for issue #$_WT_ISSUE: $WT_BRANCH"
+            else
+              print_status "Cleaning merged worktree: $WT_BRANCH${_MERGED_PR_NUMBER:+ (PR #$_MERGED_PR_NUMBER)}"
+            fi
             git worktree remove --force "$wt_path" 2>/dev/null || true
             git branch -D "$WT_BRANCH" 2>/dev/null || true
             # Remove the now-stale origin branch so future preflights don't re-evaluate it.
@@ -1646,7 +1652,14 @@ If the changes are unrelated work, answer UNRELATED."
               UNCOM=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
               [ "$UNCOM" -gt 0 ] && REASONS="${REASONS}uncommitted, "
               PR_N=$(gh_safe pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' || true)
-              [ -n "$PR_N" ] && REASONS="${REASONS}PR #$PR_N, "
+              if [ -n "$PR_N" ]; then
+                _WT_ISSUE_N=$(echo "$WT_BRANCH" | grep -oE 'issue-?[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+                if [ -n "$_WT_ISSUE_N" ]; then
+                  REASONS="${REASONS}issue #${_WT_ISSUE_N} open, "
+                else
+                  REASONS="${REASONS}PR #$PR_N, "
+                fi
+              fi
               if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
               elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
@@ -1754,7 +1767,7 @@ If the changes are unrelated work, answer UNRELATED."
       if [ "$_has_remote_branch" = true ]; then
         # Resume from existing remote branch (recreate worktree from PR branch)
         if [ -n "$_pr_number" ]; then
-          print_info "Resuming existing PR #$_pr_number — recreating worktree from origin/$BRANCH_NAME"
+          print_info "Resuming existing issue #${ISSUE_NUMBER} — recreating worktree from origin/$BRANCH_NAME"
         else
           print_info "Remote branch exists — recreating worktree from origin/$BRANCH_NAME"
         fi
@@ -2079,7 +2092,7 @@ _Draft PR created automatically by rite for tracking purposes._"
   PR_NUMBER=$(gh_safe pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' || true)
 
   if [ -n "$PR_NUMBER" ]; then
-    print_success "Draft PR #$PR_NUMBER created"
+    print_success "Draft PR created for issue #${ISSUE_NUMBER}"
     echo ""
   else
     print_warning "Could not get PR number - continuing without PR link"
@@ -2465,16 +2478,16 @@ else
             # (guards against duplicate blocks on retry/resume runs)
             _current_pr_body=$(gh_safe pr view "$_pr_for_scope" --json body --jq '.body' || true)
             if echo "$_current_pr_body" | grep -q "<!-- ${RITE_MARKER_SCOPE_WARNING} -->" 2>/dev/null; then
-              print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
+              print_info "Scope warning already present for issue #${ISSUE_NUMBER:-?} — skipping duplicate append"
             else
               _scope_warn_text=$(format_scope_warning "$_scope_violations")
               _updated_body="${_current_pr_body}${_scope_warn_text}"
               _scope_body_file=$(mktemp)
               printf '%s' "$_updated_body" > "$_scope_body_file"
               gh_safe pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
-                print_warning "Could not append scope warning to PR #${_pr_for_scope}"
+                print_warning "Could not append scope warning for issue #${ISSUE_NUMBER:-?}"
               rm -f "$_scope_body_file"
-              print_info "Scope violation warning appended to PR #${_pr_for_scope}"
+              print_info "Scope violation warning appended for issue #${ISSUE_NUMBER:-?}"
             fi
           else
             print_info "No PR found yet — scope warning will appear in workflow log only"
@@ -2560,7 +2573,7 @@ if [ $CHANGES_COUNT -eq 0 ]; then
         DRAFT_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' || true)
         if [ -n "$DRAFT_PR" ]; then
           gh_safe pr close "$DRAFT_PR" --delete-branch 2>/dev/null || true
-          print_info "Closed draft PR #$DRAFT_PR"
+          print_info "Closed draft PR for issue #${ISSUE_NUMBER}"
         fi
       fi
     fi

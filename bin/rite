@@ -1243,7 +1243,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
   DIFF_BYTES=$(gh_safe pr diff "$PR_NUMBER" | wc -c | tr -d ' ' || true)
   DIFF_BYTES="${DIFF_BYTES:-0}"
   if [ "${DIFF_BYTES:-0}" -eq 0 ]; then
-    print_error "No code to review — PR #$PR_NUMBER has no diff from main"
+    print_error "No code to review — issue #$ISSUE_NUMBER has no diff from main"
     exit 1
   fi
 
@@ -1254,7 +1254,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
   if [ "$HAS_REVIEW" = "true" ] && [ "$REVIEW_IS_CURRENT" = "true" ]; then
     # Review exists and is current — show it, prompt if supervised
     echo ""
-    print_info "Current review exists for PR #$PR_NUMBER:"
+    print_info "Current review exists for issue #$ISSUE_NUMBER:"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     # Strip HTML comment markers for display
@@ -1285,7 +1285,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
   else
     "$RITE_LIB_DIR/core/local-review.sh" "$PR_NUMBER" --post --auto
   fi
-  print_success "Review posted for PR #$PR_NUMBER"
+  print_success "Review posted for issue #$ISSUE_NUMBER"
   exit 0
 
 elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
@@ -1303,7 +1303,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
 
   # Find worktree
   if ! detect_worktree_for_pr "$PR_NUMBER"; then
-    print_error "No worktree found for PR #$PR_NUMBER"
+    print_error "No worktree found for issue #$ISSUE_NUMBER"
     print_info "Run 'rite $ISSUE_NUMBER --dev-and-pr' first to create a worktree"
     exit 1
   fi
@@ -1312,7 +1312,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
   # Check for current review
   detect_review_state "$PR_NUMBER" "$WORKTREE_PATH"
   if [ "$HAS_REVIEW" != "true" ] || [ "$REVIEW_IS_CURRENT" != "true" ]; then
-    print_error "No current review found for PR #$PR_NUMBER"
+    print_error "No current review found for issue #$ISSUE_NUMBER"
     if [ "$HAS_REVIEW" = "true" ]; then
       print_info "Review exists but is stale (code pushed since last review)"
     fi
@@ -1348,7 +1348,7 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
 
     if [ $ASSESS_EXIT -eq 0 ]; then
       # Done — assessment passes (may have created follow-up issues)
-      print_success "Assessment complete — PR #$PR_NUMBER is ready to merge"
+      print_success "Assessment complete — issue #$ISSUE_NUMBER is ready to merge"
       FINAL_EXIT=0
       break
 

@@ -58,8 +58,8 @@ EOF
     source '$GH_RETRY_SH'
     # Capture stderr to a temp file since run captures stdout
     err_file=\$(mktemp '$TEST_TMPDIR/err.XXXXXX')
-    gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123 2>'\$err_file' || true
-    echo \"stderr_content:\$(cat '\$err_file')\"
+    gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123 2>\"\$err_file\" || true
+    echo \"stderr_content:\$(cat \"\$err_file\")\"
   "
 
   # The 409 message must appear in stderr output
@@ -196,8 +196,8 @@ EOF
     export RITE_GH_MAX_RETRIES=1
     source '$GH_RETRY_SH'
     err_file=\$(mktemp '$TEST_TMPDIR/err.XXXXXX')
-    gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123 2>'\$err_file' || true
-    echo \"stderr:\$(cat '\$err_file')\"
+    gh_safe api 'repos/owner/repo/pulls/42/merge' -X PUT -f merge_method=squash -f sha=abc123 2>\"\$err_file\" || true
+    echo \"stderr:\$(cat \"\$err_file\")\"
   "
 
   # The error text must have reached the caller's stderr

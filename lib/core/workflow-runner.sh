@@ -605,7 +605,7 @@ EOF
                 _pr_adds="${_pr_adds:-0}"
                 if [ "${_pr_adds:-0}" -eq 0 ]; then
                   gh_safe pr close "$pr_number" --delete-branch 2>/dev/null || true
-                  print_info "Closed empty draft PR #$pr_number"
+                  print_info "Closed empty draft PR for issue #$issue_number"
                 fi
               fi
               return 1
@@ -755,7 +755,7 @@ EOF
             _pr_additions="${_pr_additions:-0}"
             if [ "${_pr_additions:-0}" -eq 0 ]; then
               gh_safe pr close "$PR_NUMBER" --delete-branch 2>/dev/null || true
-              print_info "Closed empty draft PR #$PR_NUMBER"
+              print_info "Closed empty draft PR for issue #$issue_number"
             fi
           fi
           return 1
@@ -1113,7 +1113,7 @@ phase_assess_and_resolve() {
     if [ -n "$review_content" ]; then
       # Assessment is already posted as a PR comment (<!-- sharkrite-assessment --> marker).
       # Pass PR number so claude-workflow.sh can fetch the latest assessment directly.
-      print_info "Assessment available as PR #$pr_number comment (retry $retry_count)"
+      print_info "Assessment available for issue #$issue_number (retry $retry_count)"
 
       # Respect supervised/unsupervised mode
       if [ "$WORKFLOW_MODE" = "supervised" ]; then
@@ -1143,7 +1143,7 @@ phase_assess_and_resolve() {
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "Troubleshooting:"
-        echo "  1. Check the latest assessment comment on PR #$pr_number"
+        echo "  1. Check the latest assessment comment on issue #$issue_number's PR"
         echo "  2. The Claude session may have timed out or errored"
         echo "  3. Run manually to debug:"
         echo "     cd $WORKTREE_PATH"
@@ -1324,7 +1324,7 @@ phase_merge_pr() {
 
   if [ -n "$_pr_title" ]; then
     echo ""
-    echo "📋 PR #$pr_number: $_pr_title"
+    echo "📋 Issue #$issue_number: $_pr_title"
 
     local _summary
     _summary=$(extract_changes_summary "$_pr_body" 2>/dev/null) || _summary=""
@@ -2139,11 +2139,11 @@ run_workflow() {
     print_header "Resume Summary"
     if [ "$skip_to_phase" = "merge" ]; then
       print_success "Phase 1: Development — complete"
-      print_success "Phase 2: Push & PR — open (PR #${PR_NUMBER})"
+      print_success "Phase 2: Push & PR — open (issue #${issue_number})"
       print_success "Phase 3: Review & Assessment — all items resolved"
     elif [ "$skip_to_phase" = "assess-resolve" ]; then
       print_success "Phase 1: Development — complete"
-      print_success "Phase 2: Push & PR — open (PR #${PR_NUMBER})"
+      print_success "Phase 2: Push & PR — open (issue #${issue_number})"
     elif [ "$skip_to_phase" = "create-pr" ]; then
       print_success "Phase 1: Development — complete"
     fi

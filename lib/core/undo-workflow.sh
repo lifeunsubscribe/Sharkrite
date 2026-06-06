@@ -103,7 +103,7 @@ if [ -n "$PR_NUMBER" ]; then
 
     # Hard stop if merged
     if [ "$PR_STATE" = "MERGED" ]; then
-      print_error "PR #$PR_NUMBER has already been merged"
+      print_error "Issue #$ISSUE_NUMBER's PR has already been merged"
       print_info "Cannot undo a merged PR. Use 'git revert' instead."
       exit 1
     fi
@@ -281,9 +281,9 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
   # Revert to draft instead of closing — avoids PR number stacking on rerun.
   # The next `rite` run finds the existing draft PR and reuses it.
   if gh_safe pr ready --undo "$PR_NUMBER" 2>/dev/null; then
-    print_success "Reverted PR #$PR_NUMBER to draft"
+    print_success "Reverted issue #$ISSUE_NUMBER's PR to draft"
   else
-    print_info "PR #$PR_NUMBER may already be a draft"
+    print_info "Issue #$ISSUE_NUMBER's PR may already be a draft"
   fi
 
   # Reset the remote branch to origin/main's HEAD (clean code slate).
@@ -308,7 +308,7 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
     fi
   fi
 elif [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "CLOSED" ]; then
-  print_info "PR #$PR_NUMBER already closed"
+  print_info "Issue #$ISSUE_NUMBER's PR already closed"
   # Delete orphaned remote branch if it still exists
   if [ -n "$BRANCH_NAME" ]; then
     if git push origin --delete "$BRANCH_NAME" 2>/dev/null; then
@@ -488,7 +488,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "  Issue #$ISSUE_NUMBER is ready to be re-worked."
 if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
-  echo "  PR #$PR_NUMBER preserved as draft (will be reused on next run)."
+  echo "  Issue #$ISSUE_NUMBER's PR preserved as draft (will be reused on next run)."
 fi
 echo "  Run 'rite $ISSUE_NUMBER' to start fresh."
 echo ""

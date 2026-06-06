@@ -762,7 +762,11 @@ _stale_close_and_cleanup() {
   comment_file=$(mktemp)
   printf '%s' "$comment_body" > "$comment_file"
   if ! gh_safe pr comment "$pr_number" --body-file "$comment_file"; then
-    print_warning "Failed to post close comment on PR #$pr_number"
+    if [ -n "${issue_number:-}" ]; then
+      print_warning "Failed to post close comment for issue #$issue_number"
+    else
+      print_warning "Failed to post close comment on PR #$pr_number"
+    fi
   fi
   rm -f "$comment_file"
 
@@ -774,16 +778,28 @@ _stale_close_and_cleanup() {
   _pr_close_output=$(gh_safe pr close "$pr_number" 2>&1) || _pr_close_exit=$?
   if [ "${_pr_close_exit:-1}" -eq 0 ]; then
     _pr_close_ok=true
-    print_info "Closed PR #$pr_number"
+    if [ -n "${issue_number:-}" ]; then
+      print_info "Closed PR for issue #$issue_number"
+    else
+      print_info "Closed PR #$pr_number"
+    fi
   elif echo "$_pr_close_output" | grep -qiE "already closed|already merged|no open pull request|Pull request .* is already closed"; then
     # PR is not open — treat as already resolved, safe to proceed with branch delete.
     # NOTE: "not found" is intentionally excluded — it can match genuine API errors
     # (e.g. wrong PR number, network issue) and would falsely permit branch deletion
     # while the PR is still OPEN, re-introducing the race condition this code guards against.
     _pr_close_ok=true
-    print_info "PR #$pr_number is already closed/merged — continuing cleanup"
+    if [ -n "${issue_number:-}" ]; then
+      print_info "Issue #$issue_number's PR is already closed/merged — continuing cleanup"
+    else
+      print_info "PR #$pr_number is already closed/merged — continuing cleanup"
+    fi
   else
-    print_warning "Failed to close PR #$pr_number — skipping remote branch deletion to avoid inconsistent state"
+    if [ -n "${issue_number:-}" ]; then
+      print_warning "Failed to close PR for issue #$issue_number — skipping remote branch deletion to avoid inconsistent state"
+    else
+      print_warning "Failed to close PR #$pr_number — skipping remote branch deletion to avoid inconsistent state"
+    fi
     print_warning "  gh output: $(echo "$_pr_close_output" | head -1)"
   fi
 

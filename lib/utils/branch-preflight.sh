@@ -177,11 +177,11 @@ preflight_auto_recover_empty() {
 
     # Validate pr_state before checking (protect against paste/gh failures)
     if [ -z "$pr_state" ] || ! echo "$pr_state" | grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$'; then
-      print_warning "Failed to detect PR state for #$pr_number — skipping PR cleanup"
+      print_warning "Failed to detect PR state for issue #${issue_number:-?} — skipping PR cleanup"
     elif echo "$pr_state" | grep -qE "(CLOSED|MERGED)"; then
       # PR already closed/merged — safe to proceed with branch deletion
       _preflight_pr_close_ok=true
-      print_info "PR #$pr_number is already closed/merged"
+      print_info "Issue #${issue_number:-?}'s PR is already closed/merged"
     elif echo "$pr_state" | grep -q "true"; then
       # Draft PR — check if it has zero additions (empty)
       local additions
@@ -193,7 +193,7 @@ preflight_auto_recover_empty() {
       fi
 
       if [ "$additions" -eq 0 ]; then
-        print_status "Closing empty draft PR #$pr_number..."
+        print_status "Closing empty draft PR for issue #${issue_number:-?}..."
         local close_comment="Auto-closing: Branch has no real work (only init commit). Restarting fresh."
         echo "$close_comment" | gh_safe pr comment "$pr_number" --body-file - 2>/dev/null || true
         # gh_safe handles transient retries; capture exit code via || assignment
@@ -202,15 +202,15 @@ preflight_auto_recover_empty() {
         _close_out=$(gh_safe pr close "$pr_number" 2>&1) || _close_exit=$?
         if [ "${_close_exit:-1}" -eq 0 ]; then
           _preflight_pr_close_ok=true
-          print_info "Closed PR #$pr_number"
+          print_info "Closed PR for issue #${issue_number:-?}"
         elif echo "$_close_out" | grep -qiE "already closed|already merged|no open pull request|Pull request .* is already closed"; then
           # NOTE: "not found" is intentionally excluded — it can match genuine API errors
           # (e.g. wrong PR number, network issue) and would falsely permit branch deletion
           # while the PR is still OPEN, re-introducing the race condition this code guards against.
           _preflight_pr_close_ok=true
-          print_info "PR #$pr_number already resolved — continuing cleanup"
+          print_info "Issue #${issue_number:-?}'s PR already resolved — continuing cleanup"
         else
-          print_warning "Failed to close PR #$pr_number — remote branch deletion skipped to avoid inconsistent state"
+          print_warning "Failed to close PR for issue #${issue_number:-?} — remote branch deletion skipped to avoid inconsistent state"
           print_warning "  gh output: $(echo "$_close_out" | head -1)"
         fi
       else
@@ -219,7 +219,7 @@ preflight_auto_recover_empty() {
         # inconsistent state (open PR pointing at a missing branch) — exactly the
         # race condition this entire PR was created to prevent.
         _preflight_pr_close_ok=false
-        print_warning "PR #$pr_number is an open draft with real work — remote branch deletion skipped to avoid inconsistent state"
+        print_warning "Issue #${issue_number:-?}'s PR is an open draft with real work — remote branch deletion skipped to avoid inconsistent state"
       fi
     fi
   else

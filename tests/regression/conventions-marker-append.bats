@@ -624,3 +624,45 @@ BODY
   run grep "\*\*References:\*\*.*fake-doc-link" "$conventions_file"
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 13: Auto-bootstrap — conventions.md is created when missing IF a PR
+# body contains a marker block. Projects without sharkrite-convention markers
+# never trigger creation (verified separately by removing the seed file and
+# running with a no-marker body — see end of this test).
+# ---------------------------------------------------------------------------
+
+@test "auto-bootstrap: missing conventions.md is created when a marker block exists" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Remove the seed file so the bootstrap path is exercised
+  rm -f "$conventions_file"
+  [ ! -f "$conventions_file" ]
+
+  local pr_body
+  pr_body="$(one_block_body)"
+  update_conventions_from_marker "42" "$pr_body"
+
+  # File must now exist
+  [ -f "$conventions_file" ]
+
+  # Scaffold header must be present
+  grep -q "^# Conventions Catalog$" "$conventions_file"
+
+  # The marker block from the PR must have been appended
+  grep -q "^## no-eval-on-gh-data$" "$conventions_file"
+  grep -q "\*\*References:\*\* abc1234, #99, #42" "$conventions_file"
+}
+
+@test "auto-bootstrap: missing conventions.md is NOT created when PR body has no marker" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Remove the seed file
+  rm -f "$conventions_file"
+
+  local pr_body="This PR fixes a thing. No conventions here. Closes #77"
+  update_conventions_from_marker "77" "$pr_body"
+
+  # File must still not exist (no marker → no bootstrap → no empty file in repo)
+  [ ! -f "$conventions_file" ]
+}

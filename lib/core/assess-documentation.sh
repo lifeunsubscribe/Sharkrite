@@ -513,12 +513,6 @@ update_conventions_from_marker() {
   local pr_body="$2"
   local conventions_file="${RITE_PROJECT_ROOT}/docs/architecture/conventions.md"
 
-  # Ensure the conventions file exists (it ships with the repo; this is a safety net)
-  if [ ! -f "$conventions_file" ]; then
-    print_warning "conventions.md not found at $conventions_file — skipping convention extraction"
-    return 0
-  fi
-
   # Extract the raw content between every <!-- sharkrite-convention --> pair.
   # Strategy: write PR body to a temp file, then use awk to collect all blocks.
   # Using a temp file avoids subshell + pipeline issues with set -e.
@@ -549,10 +543,49 @@ update_conventions_from_marker() {
   ' "$_body_file" > "$_blocks_file"
   rm -f "$_body_file"
 
-  # If no blocks found, nothing to do
+  # If no blocks found, nothing to do (silent — no warning, no file creation)
   if [ ! -s "$_blocks_file" ]; then
     rm -f "$_blocks_file"
     return 0
+  fi
+
+  # Blocks exist — auto-bootstrap the catalog if missing. Only create when there
+  # is something to write so projects that never use the marker don't accumulate
+  # an empty doc.
+  if [ ! -f "$conventions_file" ]; then
+    mkdir -p "$(dirname "$conventions_file")"
+    # Marker literals are injected via variable to satisfy RAW_MARKER_LITERAL lint.
+    local _open_marker="<!-- ${RITE_MARKER_CONVENTION} -->"
+    local _close_marker="<!-- /${RITE_MARKER_CONVENTION} -->"
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: marker constants must expand
+    cat > "$conventions_file" <<EOF
+# Conventions Catalog
+
+**Auto-appended on merge — do not hand-edit.**
+
+To add a convention, include a \`${RITE_MARKER_CONVENTION}\` block in your PR body:
+
+\`\`\`
+${_open_marker}
+title: Your convention title
+rule: One-sentence statement of the rule
+why: Why this rule exists / what goes wrong without it
+example: |
+  # BAD
+  ...
+  # GOOD
+  ...
+references: <commit-sha>, #<issue>, #<pr>
+${_close_marker}
+\`\`\`
+
+The merge automation extracts the block and appends a rendered entry below.
+Entries are append-only; each entry's \`references\` field links to the issue(s) and
+commit(s) that surfaced or fixed the pattern.
+
+---
+EOF
+    print_info "Created $conventions_file (first convention entry triggered bootstrap)"
   fi
 
   # Process each block separated by the sentinel
