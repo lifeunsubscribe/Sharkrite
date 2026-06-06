@@ -341,6 +341,41 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   }
 }
 
+@test "found_local_orphans: set to true in local branch deletion block (step 2)" {
+  [ -f "$WORKFLOW_RUNNER" ]
+
+  _func_body=$(awk '
+    /^handle_closed_issue\(\)/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print NR": "$0 }
+  ' "$WORKFLOW_RUNNER")
+
+  # Locate the local branch deletion block (git branch -D) and verify
+  # found_local_orphans=true is set inside its success branch.
+  # The second found_local_orphans=true assignment (step 2) must appear
+  # AFTER git branch -D so that the flag is only raised when a local branch
+  # was actually deleted — not merely when one was checked for.
+  _branch_delete_line=$(echo "$_func_body" | grep -E "git branch -D" | head -1 | cut -d: -f1)
+  [ -n "$_branch_delete_line" ] || {
+    echo "FAIL: git branch -D not found in handle_closed_issue" >&2
+    return 1
+  }
+
+  # The second found_local_orphans=true assignment belongs to step 2.
+  # sed -n '2p' selects the second matching line (step 1 is first, step 2 is second).
+  _second_orphans_line=$(echo "$_func_body" | grep -E 'found_local_orphans=true' | sed -n '2p' | cut -d: -f1)
+  [ -n "$_second_orphans_line" ] || {
+    echo "FAIL: second found_local_orphans=true assignment not found in handle_closed_issue" >&2
+    echo "      Step 2 (git branch -D success block) must set found_local_orphans=true" >&2
+    return 1
+  }
+  [ "$_second_orphans_line" -gt "$_branch_delete_line" ] || {
+    echo "FAIL: second found_local_orphans=true (line $_second_orphans_line) appears before git branch -D (line $_branch_delete_line)" >&2
+    echo "      found_local_orphans must be set only when local branch deletion actually succeeded (step 2)" >&2
+    return 1
+  }
+}
+
 @test "found_local_orphans: gate precedes git ls-remote (network skipped when no orphans)" {
   [ -f "$WORKFLOW_RUNNER" ]
 
