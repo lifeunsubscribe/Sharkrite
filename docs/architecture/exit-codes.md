@@ -79,6 +79,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `5`  | Usage cap — batch must abort |
 | `6`  | Merge succeeded but cleanup failed |
 | `12` | Issue was already closed at start — no new work done (batch should skip stat gathering) |
+| `13` | **Invariant violated** — workflow reached its normal exit path but produced no commits on the feature branch and no PR for the issue. This is a bug (sourcing side-effect, phase-skip logic error, etc.), not a user-actionable failure. `batch-process-issues.sh` records this as `invariant_violated` and continues the loop. The full error was already printed by `run_workflow` before returning 13. Set `RITE_WORKFLOW_EXPLICIT_COMPLETE=1` to bypass (for future "completed without code" paths). |
 
 ### `batch-process-issues.sh` (final process exit)
 

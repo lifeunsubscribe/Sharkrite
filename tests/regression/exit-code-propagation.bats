@@ -615,7 +615,8 @@ EOF
 # ─────────────────────────────────────────────────────────────────────────────
 @test "exit code uniqueness: all documented cross-script codes are distinct values" {
   # Cross-script signal codes from docs/architecture/exit-codes.md
-  declare -a CODES=(0 1 2 3 4 5 6 10 11 124 127)
+  # Exit 13 added: invariant violated — workflow produced no commits and no PR
+  declare -a CODES=(0 1 2 3 4 5 6 10 11 12 13 124 127)
 
   # Verify all codes are distinct
   declare -A SEEN
@@ -628,7 +629,7 @@ EOF
   done
 
   # Total count must equal array length (no deduplication occurred)
-  [ "${#CODES[@]}" -eq 11 ]
+  [ "${#CODES[@]}" -eq 13 ]
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
