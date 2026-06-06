@@ -128,14 +128,15 @@ _collect_auto_docs() {
     _is_already_loaded "$adr_path" && continue
     local adr_bytes
     adr_bytes=$(wc -c < "$adr_path" 2>/dev/null || echo 0)
-    local adr_basename
-    adr_basename=$(basename "$adr_path")
+    # Use project-relative path as header label to prevent collision when multiple
+    # files share the same basename (e.g., docs/README.md vs README.md).
+    local adr_label="${adr_path#"$project_root/"}"
     # ADRs are always loaded in full regardless of remaining budget.
     # They count toward the cap — if the cap is already exceeded they still load.
     auto_content+="
---- $adr_basename ---
+--- $adr_label ---
 $(cat "$adr_path")
---- end $adr_basename ---
+--- end $adr_label ---
 
 "
     total_bytes=$((total_bytes + adr_bytes))
@@ -144,19 +145,29 @@ $(cat "$adr_path")
 
   # -------------------------------------------------------------------------
   # Phase 2: README.md — load in full (high priority, counts toward cap)
+  #
+  # Controlled by RITE_PLAN_INCLUDE_README (default: true).
+  # Set to "false" or "0" to skip README injection (useful when the README is
+  # large or not relevant to the planning context).
   # -------------------------------------------------------------------------
+  local include_readme="${RITE_PLAN_INCLUDE_README:-true}"
   local readme_path="$project_root/README.md"
-  if [ -f "$readme_path" ] && ! _is_already_loaded "$readme_path"; then
-    local readme_bytes
-    readme_bytes=$(wc -c < "$readme_path" 2>/dev/null || echo 0)
-    auto_content+="
+  if [ "$include_readme" != "false" ] && [ "$include_readme" != "0" ]; then
+    if [ -f "$readme_path" ] && ! _is_already_loaded "$readme_path"; then
+      local readme_bytes
+      readme_bytes=$(wc -c < "$readme_path" 2>/dev/null || echo 0)
+      # Root README uses bare "README.md" label (no path prefix needed — it's at root).
+      auto_content+="
 --- README.md ---
 $(cat "$readme_path")
 --- end README.md ---
 
 "
-    total_bytes=$((total_bytes + readme_bytes))
-    loaded_paths+=("$readme_path")
+      total_bytes=$((total_bytes + readme_bytes))
+      loaded_paths+=("$readme_path")
+    fi
+  else
+    print_info "Auto-docs: README.md injection disabled (RITE_PLAN_INCLUDE_README=$include_readme)" >&2
   fi
 
   # -------------------------------------------------------------------------
@@ -184,14 +195,16 @@ $(cat "$readme_path")
 
       local doc_bytes
       doc_bytes=$(wc -c < "$doc_path" 2>/dev/null || echo 0)
-      local doc_basename
-      doc_basename=$(basename "$doc_path")
+      # Use project-relative path as header label (dedup fix: prevents two files with
+      # the same basename, e.g., docs/README.md vs README.md, from producing
+      # identically-labeled blocks with different content).
+      local doc_label="${doc_path#"$project_root/"}"
 
       if [ "$remaining_budget" -gt 0 ] && [ "$doc_bytes" -le "$remaining_budget" ]; then
         auto_content+="
---- $doc_basename ---
+--- $doc_label ---
 $(cat "$doc_path")
---- end $doc_basename ---
+--- end $doc_label ---
 
 "
         remaining_budget=$((remaining_budget - doc_bytes))
@@ -199,7 +212,7 @@ $(cat "$doc_path")
         loaded_paths+=("$doc_path")
       else
         # Doc exceeds remaining budget (or budget is already exhausted) — log and skip.
-        print_info "Auto-docs: skipping $doc_basename (${doc_bytes}B > ${remaining_budget}B remaining budget)" >&2
+        print_info "Auto-docs: skipping $doc_label (${doc_bytes}B > ${remaining_budget}B remaining budget)" >&2
       fi
     done
   fi

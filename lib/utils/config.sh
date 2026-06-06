@@ -245,6 +245,11 @@ RITE_PLAN_MAX_ESTIMATE="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
 # Set to 0 to disable auto-discovery entirely (explicit doc_paths still work).
 RITE_PLAN_DOC_BYTE_CAP="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
 
+# Whether to auto-inject the root README.md in plan runs (default: true).
+# Set to "false" or "0" to skip README injection when it is large or not
+# relevant to the planning context.  ADRs and docs/**/*.md are unaffected.
+RITE_PLAN_INCLUDE_README="${RITE_PLAN_INCLUDE_README:-true}"
+
 # Unverified external integration detection (rite plan post-generation pass).
 # Path to a custom additional fixture directory: hosts/packages found under this
 # path (and under the always-scanned "fixtures/" and "tests/fixtures/") are
@@ -346,6 +351,7 @@ export RITE_GEMINI_REVIEW_MODEL
 export RITE_PLAN_DOCS
 export RITE_PLAN_MAX_ESTIMATE
 export RITE_PLAN_DOC_BYTE_CAP
+export RITE_PLAN_INCLUDE_README
 export RITE_PLAN_FIXTURE_GLOB
 export RITE_PLAN_SKIP_INTEGRATION_CHECK
 export RITE_DRY_RUN
