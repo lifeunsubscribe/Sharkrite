@@ -814,3 +814,148 @@ _create_lib_file() {
   # pr close MUST have been called
   [[ "$output" == *"CLOSE_CALLED"* ]]
 }
+
+# ===========================================================================
+# TEST 18: Path with spaces in filename — $NF would return only last token;
+#          split-on-" b/" must return the full path so the blocker fires.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: fires for lib/ file whose path contains spaces" {
+  # A hypothetical file with a space — unusual but valid in git.
+  # $NF would return "issues.sh" (last token); the split(" b/") approach
+  # returns the full path "lib/core/assess review issues.sh".
+  local target_file="lib/core/assess review issues.sh"
+  local n_deleted=600  # above absolute threshold
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      # Build diff header manually so the space in the path is preserved
+      printf 'diff --git a/%s b/%s\n' "$target_file" "$target_file"
+      printf 'index abc1234..def5678 100755\n'
+      printf '--- a/%s\n' "$target_file"
+      printf '+++ b/%s\n' "$target_file"
+      printf '@@ -1,%d +1,5 @@\n' "$n_deleted"
+      local i
+      for i in $(seq 1 "$n_deleted"); do printf -- '-deleted line %d\n' "$i"; done
+      for i in $(seq 1 5);           do printf '+added line %d\n'   "$i"; done
+      return 0
+    fi
+    return 1
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "313"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+  # The path (or at least the unique fragment) must appear in the output
+  [[ "$output" == *"assess review issues"* ]] || [[ "$output" == *"assess"* ]]
+}
+
+# ===========================================================================
+# TEST 19: Pure rename within lib/ — no content changes, no blocker.
+#          similarity index 100% means no -/+ content lines exist.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: does NOT fire for pure rename within lib/ (similarity 100%)" {
+  # A pure rename produces no deleted content lines — only the diff header,
+  # similarity index, rename from/to metadata, and no hunk body.
+  local old_file="lib/core/old-name.sh"
+  local new_file="lib/core/new-name.sh"
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      printf 'diff --git a/%s b/%s\n' "$old_file" "$new_file"
+      printf 'similarity index 100%%\n'
+      printf 'rename from %s\n' "$old_file"
+      printf 'rename to %s\n'   "$new_file"
+      # No hunk — pure rename has no content diff
+      return 0
+    fi
+    return 1
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "313"
+
+  # No deleted lines → no blocker
+  [ "$status" -eq 0 ]
+}
+
+# ===========================================================================
+# TEST 20: Rename OUT of lib/ with content gutting — destination is outside
+#          lib/, so the blocker should NOT fire (file is no longer production).
+#          The "rename to" rule must update current_file to the destination.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: does NOT fire when renamed-and-gutted file moves OUT of lib/" {
+  # Old file was in lib/core/, new file lands in tests/ — not a production path.
+  # Without the "rename to" fix, current_file stays as the lib/ source path and
+  # the blocker fires incorrectly.
+  local old_file="lib/core/assess-review-issues.sh"
+  local new_file="tests/regression/assess-review-issues.sh"
+  local n_deleted=600
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      printf 'diff --git a/%s b/%s\n' "$old_file" "$new_file"
+      printf 'similarity index 40%%\n'
+      printf 'rename from %s\n' "$old_file"
+      printf 'rename to %s\n'   "$new_file"
+      printf 'index abc1234..def5678 100755\n'
+      printf '--- a/%s\n' "$old_file"
+      printf '+++ b/%s\n' "$new_file"
+      printf '@@ -1,%d +1,5 @@\n' "$n_deleted"
+      local i
+      for i in $(seq 1 "$n_deleted"); do printf -- '-deleted line %d\n' "$i"; done
+      for i in $(seq 1 5);           do printf '+added line %d\n'   "$i"; done
+      return 0
+    fi
+    return 1
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "313"
+
+  # Destination is outside lib/ — no blocker
+  [ "$status" -eq 0 ]
+}
+
+# ===========================================================================
+# TEST 21: Rename INTO lib/ with content gutting — destination IS in lib/,
+#          blocker MUST fire because production code is being gutted.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: fires when file renamed INTO lib/ and gutted" {
+  # Old file was outside lib/, new file lands in lib/core/ with lots of deletions.
+  # The "rename to" rule updates current_file to the new lib/ path, and the
+  # blocker correctly fires because the destination is a production path.
+  local old_file="tests/regression/some-test.sh"
+  local new_file="lib/core/some-helper.sh"
+  local n_deleted=600
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      printf 'diff --git a/%s b/%s\n' "$old_file" "$new_file"
+      printf 'similarity index 40%%\n'
+      printf 'rename from %s\n' "$old_file"
+      printf 'rename to %s\n'   "$new_file"
+      printf 'index abc1234..def5678 100755\n'
+      printf '--- a/%s\n' "$old_file"
+      printf '+++ b/%s\n' "$new_file"
+      printf '@@ -1,%d +1,5 @@\n' "$n_deleted"
+      local i
+      for i in $(seq 1 "$n_deleted"); do printf -- '-deleted line %d\n' "$i"; done
+      for i in $(seq 1 5);           do printf '+added line %d\n'   "$i"; done
+      return 0
+    fi
+    return 1
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "313"
+
+  # Destination is in lib/core/ — blocker must fire
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+}
