@@ -302,19 +302,54 @@ handle_blocker() {
       echo ""
       echo "   gh pr diff ${pr_number:-<PR>}"
       echo ""
-      echo "2. Confirm the deletion is intentional (refactor, not accidental overwrite)"
-      echo "   File: ${SHRINKAGE_BLOCKER_FILE:-<see above>}"
-      echo "   Deleted: ${SHRINKAGE_BLOCKER_DELETED:-?} lines"
-      [ -n "${SHRINKAGE_BLOCKER_TOTAL:-}" ] && echo "   Total:   ${SHRINKAGE_BLOCKER_TOTAL} lines"
+      echo "2. Confirm each deletion is intentional (refactor, not accidental overwrite)"
       echo ""
+      # List every violating file, not just the first.
+      # SHRINKAGE_BLOCKER_ALL_FILES is a newline-separated list of
+      # "filepath|deleted|total|type" records exported by detect_lib_shrinkage().
+      # Fall back to the single-file export when only one violation was found or
+      # when the env var is absent (e.g. called from older detect_lib_shrinkage).
+      local _all_files="${SHRINKAGE_BLOCKER_ALL_FILES:-}"
+      if [ -n "$_all_files" ]; then
+        while IFS='|' read -r _sf _sd _st _stype; do
+          [ -z "$_sf" ] && continue
+          echo "   File: ${_sf}"
+          echo "   Deleted: ${_sd:-?} lines"
+          [ -n "${_st:-}" ] && [ "${_st:-0}" -gt 0 ] && echo "   Total:   ${_st} lines"
+          echo ""
+        done <<< "$_all_files"
+      else
+        echo "   File: ${SHRINKAGE_BLOCKER_FILE:-<see above>}"
+        echo "   Deleted: ${SHRINKAGE_BLOCKER_DELETED:-?} lines"
+        [ -n "${SHRINKAGE_BLOCKER_TOTAL:-}" ] && echo "   Total:   ${SHRINKAGE_BLOCKER_TOTAL} lines"
+        echo ""
+      fi
       echo "3a. If the deletion is correct — approve in supervised mode:"
       echo ""
       echo "    rite ${issue_number} --supervised"
       echo ""
-      echo "3b. If the deletion is wrong — revert the file and push a fix:"
+      echo "3b. If the deletion is wrong — revert each file and push a fix:"
       echo ""
-      echo "    git checkout origin/main -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
-      echo "    git commit -m 'revert: restore accidentally deleted ${SHRINKAGE_BLOCKER_FILE:-lib/ file}'"
+      # Print a git checkout revert command for every violating file.
+      if [ -n "$_all_files" ]; then
+        while IFS='|' read -r _sf _sd _st _stype; do
+          [ -z "$_sf" ] && continue
+          echo "    git checkout origin/main -- ${_sf}"
+        done <<< "$_all_files"
+        # Build a commit message that names all affected files.
+        local _first_file
+        _first_file=$(echo "$_all_files" | head -1 | cut -d'|' -f1 || true)
+        local _viol_count
+        _viol_count=$(echo "$_all_files" | grep -c '.' || true)
+        if [ "${_viol_count:-1}" -gt 1 ]; then
+          echo "    git commit -m 'revert: restore ${_viol_count} accidentally deleted lib/ files'"
+        else
+          echo "    git commit -m 'revert: restore accidentally deleted ${_first_file:-lib/ file}'"
+        fi
+      else
+        echo "    git checkout origin/main -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
+        echo "    git commit -m 'revert: restore accidentally deleted ${SHRINKAGE_BLOCKER_FILE:-lib/ file}'"
+      fi
       echo "    rite ${issue_number}"
       echo ""
       echo "3c. To bypass without supervised prompt (unsupervised, logs to health report):"

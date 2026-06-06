@@ -959,3 +959,153 @@ _create_lib_file() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"BLOCKER"* ]]
 }
+
+# ===========================================================================
+# TEST 22: Multi-file blocker exports ALL violations in SHRINKAGE_BLOCKER_ALL_FILES
+#
+# Regression for issue #357: "Only first violation exported for remediation".
+# Before the fix, SHRINKAGE_BLOCKER_ALL_FILES did not exist and only
+# SHRINKAGE_BLOCKER_FILE (head -1) was exported, making multi-file remediation
+# guidance incomplete.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: SHRINKAGE_BLOCKER_ALL_FILES contains all violating files (not just first)" {
+  local file1="lib/core/assess-review-issues.sh"
+  local file2="lib/utils/format-review.sh"
+  local n_deleted1=1015
+  local n_deleted2=600
+
+  local _file1="$file1"
+  local _file2="$file2"
+  local _n1="$n_deleted1"
+  local _n2="$n_deleted2"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_file1}' '${_n1}'
+        _make_lib_diff '${_file2}' '${_n2}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ]; then
+        echo '{\"comments\":[],\"files\":[]}'
+        return 0
+      fi
+      return 1
+    }
+    export -f gh_safe _make_lib_diff
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { :; }
+    export -f print_info print_warning print_error
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    # Capture exit without triggering set -e
+    _exit=0
+    detect_lib_shrinkage '260' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+    echo \"ALL_FILES=\${SHRINKAGE_BLOCKER_ALL_FILES:-MISSING}\"
+    echo \"FIRST_FILE=\${SHRINKAGE_BLOCKER_FILE:-MISSING}\"
+  "
+
+  # Blocker must fire
+  [[ "$output" == *"EXIT=1"* ]]
+
+  # SHRINKAGE_BLOCKER_ALL_FILES must contain BOTH files, not just the first
+  [[ "$output" == *"assess-review-issues.sh"* ]]
+  [[ "$output" == *"format-review.sh"* ]]
+
+  # ALL_FILES must not be MISSING (was not exported before fix)
+  [[ "$output" != *"ALL_FILES=MISSING"* ]]
+
+  # SHRINKAGE_BLOCKER_FILE (legacy single-file export) must still be the first file
+  [[ "$output" == *"FIRST_FILE=${file1}"* ]] || [[ "$output" == *"assess-review-issues"* ]]
+}
+
+# ===========================================================================
+# TEST 23: handle_blocker lib_shrinkage prints revert commands for ALL files
+#
+# Regression for issue #357: remediation guidance must name every violating file
+# so a multi-file deletion PR does not produce incomplete remediation guidance.
+# ===========================================================================
+
+@test "handle_blocker lib_shrinkage: revert commands cover all violating files (not just first)" {
+  local file1="lib/core/assess-review-issues.sh"
+  local file2="lib/utils/format-review.sh"
+
+  # Build SHRINKAGE_BLOCKER_ALL_FILES in the same format detect_lib_shrinkage exports:
+  # each record is "filepath|deleted|total|type", newline-separated.
+  # Pass via env so the newline is safe across the bash -c boundary.
+  export TEST_SHRINKAGE_ALL_FILES="${file1}|1015|1015|ABS
+${file2}|600|600|ABS"
+  export TEST_SHRINKAGE_FILE1="$file1"
+  export TEST_SHRINKAGE_FILE2="$file2"
+
+  run bash -c "
+    set -euo pipefail
+
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+
+    # Pre-define stubs for functions that workflow-runner.sh's dependencies may call
+    # at source time (e.g. blocker-rules.sh calls gh_safe; notifications.sh may call
+    # external tools).  These stubs prevent real network calls during loading.
+    gh_safe() { :; }
+    gh() { :; }
+    notify() { :; }
+    send_notification() { :; }
+    send_blocker_notification() { :; }
+    export -f gh_safe gh notify send_notification send_blocker_notification
+
+    # Source workflow-runner.sh — its re-source guard means it will only load once.
+    # Use || true so that non-critical sourcing failures (e.g. missing optional utils)
+    # don't abort the test subprocess.
+    source '${RITE_LIB_DIR}/core/workflow-runner.sh' 2>/dev/null || true
+
+    # Confirm handle_blocker was loaded
+    declare -f handle_blocker >/dev/null 2>&1 || {
+      echo 'FAIL: handle_blocker not found after sourcing workflow-runner.sh'
+      exit 1
+    }
+
+    # Override stubs that handle_blocker itself calls at runtime
+    has_approved_blocker()          { return 1; }  # not previously approved
+    get_blocker_urgency()           { echo 'high'; }
+    is_blocking_batch()             { echo 'false'; }
+    save_session_state_with_phase() { :; }
+    has_sent_notification()         { return 1; }
+    add_sent_notification()         { :; }
+    export -f has_approved_blocker get_blocker_urgency is_blocking_batch
+    export -f save_session_state_with_phase has_sent_notification add_sent_notification
+
+    export WORKFLOW_MODE=unsupervised
+    export BLOCKER_TYPE=lib_shrinkage
+    export BLOCKER_DETAILS='BLOCKER: Large deletion detected in production lib/ file'
+    # TEST_SHRINKAGE_ALL_FILES and TEST_SHRINKAGE_FILE1 were exported by the outer shell
+    export SHRINKAGE_BLOCKER_ALL_FILES=\"\$TEST_SHRINKAGE_ALL_FILES\"
+    export SHRINKAGE_BLOCKER_FILE=\"\$TEST_SHRINKAGE_FILE1\"
+    export SHRINKAGE_BLOCKER_DELETED='1015'
+    export SHRINKAGE_BLOCKER_TOTAL='1015'
+
+    handle_blocker 'pre-merge' '42' '99'
+  "
+
+  # Both files must appear in the revert commands
+  [[ "$output" == *"git checkout origin/main -- ${file1}"* ]]
+  [[ "$output" == *"git checkout origin/main -- ${file2}"* ]]
+
+  # Output must mention the PR diff command
+  [[ "$output" == *"gh pr diff"* ]]
+
+  # Must mention supervised bypass option
+  [[ "$output" == *"--supervised"* ]]
+
+  # Clean up exported test env vars
+  unset TEST_SHRINKAGE_ALL_FILES TEST_SHRINKAGE_FILE1 TEST_SHRINKAGE_FILE2
+}

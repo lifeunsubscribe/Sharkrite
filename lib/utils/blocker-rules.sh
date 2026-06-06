@@ -487,8 +487,14 @@ AWKEOF
     return 0  # No violations — clear to merge
   fi
 
-  # Report the first violation (worst case)
-  # head -1 exits 0 even on empty input; || true guards against any pipeline exit
+  # Export all violations for complete remediation guidance.
+  # SHRINKAGE_BLOCKER_ALL_FILES is a newline-separated list of
+  # "filepath|deleted|total|type" records (one per violating file).
+  # handle_blocker() iterates this to print a revert command per file.
+  export SHRINKAGE_BLOCKER_ALL_FILES="$all_violations"
+
+  # Also export the first violation's fields for the [diag] log line and for
+  # backward-compatible single-file references in external callers.
   local first
   first=$(echo "$all_violations" | head -1 || true)
   local viol_file viol_deleted viol_total viol_type
