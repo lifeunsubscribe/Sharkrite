@@ -364,9 +364,23 @@ detect_lib_shrinkage() {
   # Parse the diff: for each file matching the production path, count deletions.
   # We walk the diff line by line, tracking the current file and counting ^- lines.
   #
-  # diff --git a/lib/core/foo.sh b/lib/core/foo.sh   ← new file section
+  # diff --git a/lib/core/foo.sh b/lib/core/foo.sh   ← new file section (normal)
+  # diff --git a/lib/core/old.sh b/lib/core/new.sh   ← rename header
+  # similarity index 100%                             ← pure rename (no content changes)
+  # rename from lib/core/old.sh
+  # rename to lib/core/new.sh
   # --- a/lib/core/foo.sh                              ← may also appear
   # -deleted line                                      ← count these
+  #
+  # Path extraction: we split on " b/" rather than using $NF so that paths
+  # containing spaces are handled correctly.  $NF would return only the last
+  # whitespace-delimited token (e.g. "bar.sh" for "lib/core/foo bar.sh").
+  #
+  # Rename handling: "rename to <path>" updates current_file so cross-directory
+  # renames are attributed to the destination path (which determines whether the
+  # file is still in lib/core|utils|providers after the rename).  Pure renames
+  # (similarity index 100%) have no diff body, so deleted stays 0 naturally;
+  # we still track them in case later processing adds lines.
   #
   # Use awk for portability (no bash 4+ required, works on macOS awk/gawk).
   # Write the awk program to a temp file so the $(echo | awk) assignment stays on
@@ -384,10 +398,22 @@ detect_lib_shrinkage() {
   if (current_file != "" && deleted > 0) {
     print current_file "|" deleted
   }
-  path = $NF
-  sub(/^b\//, "", path)
+  # Extract destination path by splitting on " b/" rather than using $NF.
+  # $NF breaks on paths with spaces (returns only the last whitespace token).
+  # split() on the literal substring " b/" correctly captures the full path,
+  # including any embedded spaces, from that marker to end of line.
+  n = split($0, parts, " b/")
+  path = (n >= 2) ? parts[n] : ""
   current_file = (path ~ prod_re) ? path : ""
   deleted = 0
+  next
+}
+/^rename to / {
+  # For cross-directory renames the destination path may differ from the source.
+  # Re-evaluate current_file against the actual destination so that a file
+  # renamed OUT of lib/ is not counted and a file renamed INTO lib/ is tracked.
+  dest = substr($0, 11)  # strip "rename to " prefix (10 chars + 1)
+  current_file = (dest ~ prod_re) ? dest : ""
   next
 }
 /^-/ {
