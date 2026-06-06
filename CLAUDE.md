@@ -585,6 +585,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `local` outside function — only works inside functions
 - Test stub committed to production path (`TEST_STUB_IN_LIB`) — files in `lib/core/`, `lib/utils/`, `lib/providers/` must never start with `# Stub `, reference `MOCK_*_FILE` env vars, or contain the literal `STUB ERROR`. These are integration-test fixtures and indicate an accidental wholesale overwrite of real code.
 - `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) — `mapfile`, `readarray`, or `declare -A` in a `#!/bin/bash` script without a `BASH_VERSINFO` re-exec guard. Crashes on macOS system bash 3.2. Add a self-re-exec guard (see `batch-process-issues.sh:69-77`) or replace with a portable while-read loop.
+- `BARE_VAR_REFERENCE` (Rule 23) — bare `$VAR` reference (no braces) for optional config variables (`EMAIL_*`, `SLACK_*`, `RITE_EMAIL_*`, `AWS_*`) in `lib/utils/*.sh`. Crashes under `set -u` when the variable is unset. Use `${VAR:-}` or `${VAR:-default}` instead. Suppress with `# sharkrite-lint disable BARE_VAR_REFERENCE - Reason: ...` on the preceding line for module-local aliases that are safely initialized at module load time.
 
 **Suppressing false positives:**
 
@@ -601,6 +602,7 @@ EOF
 Supported suppression rules:
 - `UNQUOTED_HEREDOC` — for intentional variable expansion in heredocs
 - `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` — for scripts that are guaranteed to run under bash 4+ through another mechanism (document the reason clearly)
+- `BARE_VAR_REFERENCE` — for module-local alias variables in `lib/utils/*.sh` that are safely initialized at module load time (e.g., `SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"` at module top)
 
 **Pre-push hook** (optional):
 ```bash
@@ -664,6 +666,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Phase handoff cwd contract**: When `phase_merge_pr` returns, cwd is always `$RITE_PROJECT_ROOT` — it restores cwd after removing the worktree. Any phase that runs after merge (e.g. `phase_completion`) must also start with `cd "$RITE_PROJECT_ROOT" 2>/dev/null || true` as defense-in-depth. Violating this causes `fatal: Unable to read current working directory` from `gh`'s internal git probe. See `docs/architecture/behavioral-design.md` → "Phase Handoff cwd Invariants" and `tests/regression/post-merge-cwd-restored.bats`.
 - **`exec` does NOT fire EXIT traps**: Releasing a lock-trap-protected resource via an EXIT trap does NOT work across `exec`. When a script execs itself to restart (e.g., after stale-branch or empty-branch auto-recovery), the process image is replaced and all registered traps are cleared. Any resource held via `trap "release ..." EXIT` must be released **explicitly before the `exec` call**. Live failure: issue #343 batch run 2026-06-06. See `docs/architecture/behavioral-design.md` → "Lock Release Before exec".
 - **Temp file cleanup globs in trap handlers**: Never use a glob (`rm -f /tmp/prefix_*.txt`) in a cleanup trap. Under concurrent runs (e.g. a batch retry overlapping with a manual `--assess-and-fix`, or two batch slots hitting the same phase), a glob in one invocation's EXIT trap wipes peer files mid-run. Use `rm -f "${MY_FILE:-}"` (scoped to the specific variable this invocation set) and name files with a PID suffix (`/tmp/prefix_${KEY}_$$.txt`) so each invocation owns a distinct path. Live failure: issue #345 batch run 2026-06-06 — `assess-and-resolve.sh` glob wiped a peer PR's review file between write and read. See `tests/regression/assess-and-resolve-temp-file-isolation.bats`.
+- **Bare `$VAR` for optional config vars crashes under `set -u`**: Use `${VAR:-}` idiom. Common offenders: `EMAIL_NOTIFICATION_ADDRESS`, `RITE_EMAIL_FROM`, `SLACK_WEBHOOK`, `AWS_PROFILE` — all optional, all crash when unset if referenced bare. The `BARE_VAR_REFERENCE` lint rule (Rule 24, `lib/utils/*.sh` scope) catches this pattern automatically. Live incident: `notifications.sh` post-merge crash that made PR #302 appear failed despite a successful merge (issue #313).
 
 ## Token Optimization (rtk)
 
