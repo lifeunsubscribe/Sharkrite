@@ -442,18 +442,9 @@ extract_review_model() {
   fi
 }
 
-# Extract the HEAD SHA that was embedded in the review marker at generation time.
-# Returns the SHA string, or empty string if the review predates SHA embedding
-# (reviews generated before issue #354 won't have this attribute).
-#
-# The SHA attribute format in the marker is: commit:<sha>
-# Full marker example: <!-- sharkrite-local-review model:X timestamp:Y commit:abc1234 -->
-extract_review_sha() {
-  local review_body="$1"
-  # Match "commit:" followed by a hex SHA (7-40 chars) inside the marker comment
-  echo "$review_body" | grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
-    grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true
-}
+# extract_review_sha and resolve_pr_head_sha are shared helpers defined in
+# lib/utils/review-helper.sh (sourced above). They are NOT defined inline here —
+# see review-helper.sh for the canonical implementations.
 
 REVIEW_MODEL=$(extract_review_model "$REVIEW_BODY")
 print_info "Review model: $REVIEW_MODEL"
@@ -533,42 +524,13 @@ REVIEW_TIME="${REVIEW_TIME:-$(echo "$REVIEW_JSON" | jq -r '.createdAt' 2>/dev/nu
 # Extract SHA embedded in the review marker (empty if review predates issue #354)
 REVIEW_SHA=$(extract_review_sha "$REVIEW_BODY")
 
-# Get current HEAD SHA for the PR.
-#
-# IMPORTANT: Always use gh pr view --json headRefOid as the authoritative source.
-# Local git rev-parse HEAD is only valid when cwd is the PR's worktree, not the
-# main checkout. When called standalone (rite N --assess-and-fix), cwd is set to
-# the worktree by the caller, but we cannot assume that here — a mis-routed call
-# or direct invocation could leave cwd on main, yielding main's HEAD SHA.
-# That wrong SHA would compare unequal to the review SHA and falsely mark a
-# fresh review as stale, re-introducing the class of bug this PR fixes (#354).
-#
-# Strategy:
-#   1. Always fetch headRefOid from the GitHub API (authoritative, matches what
-#      was actually pushed to the remote PR branch).
-#   2. If the API call succeeds, use that SHA.
-#   3. Fall back to local git only when the local branch name matches the PR's
-#      headRefName — this guards against cwd being on main or another branch.
-CURRENT_HEAD_SHA=""
-_PR_HEAD_REF=$(gh_safe pr view "$PR_NUMBER" --json headRefName,headRefOid --jq '{name: .headRefName, sha: .headRefOid}' 2>/dev/null || true)
-_PR_REMOTE_SHA=$(echo "$_PR_HEAD_REF" | jq -r '.sha // ""' 2>/dev/null || true)
-_PR_BRANCH_NAME=$(echo "$_PR_HEAD_REF" | jq -r '.name // ""' 2>/dev/null || true)
-
-if [ -n "$_PR_REMOTE_SHA" ]; then
-  # Use the remote HEAD SHA — this is always correct regardless of cwd.
-  CURRENT_HEAD_SHA="$_PR_REMOTE_SHA"
-else
-  # API call failed; try local git only if cwd is on the PR's branch.
-  _LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-  if [ -n "$_PR_BRANCH_NAME" ] && [ "$_LOCAL_BRANCH" = "$_PR_BRANCH_NAME" ]; then
-    CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-  elif git rev-parse --git-dir >/dev/null 2>&1 && [ -z "$_PR_BRANCH_NAME" ]; then
-    # Branch name unknown (API partial failure) — fall back to local git with a
-    # warning. Worst case: a false-positive stale verdict, not a false-negative.
-    print_warning "Could not verify PR branch name — falling back to local git HEAD"
-    CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-  fi
-fi
+# Get current HEAD SHA for the PR using the authoritative-remote-first strategy.
+# resolve_pr_head_sha (from lib/utils/review-helper.sh) prefers the GitHub API
+# over local git to avoid false-positive stale verdicts when cwd is the main
+# checkout rather than the PR worktree. No WORKTREE_PATH is passed here because
+# assess-and-resolve.sh is always invoked with cwd set to the worktree by the
+# caller (rite N --assess-and-fix) — the cwd-relative git fallback is correct.
+CURRENT_HEAD_SHA=$(resolve_pr_head_sha "$PR_NUMBER")
 CURRENT_HEAD_SHA="${CURRENT_HEAD_SHA:-}"
 
 # ---- SHA-based staleness check (primary) ----

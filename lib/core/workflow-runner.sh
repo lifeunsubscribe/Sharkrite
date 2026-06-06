@@ -32,6 +32,8 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+# review-helper.sh: shared extract_review_sha / resolve_pr_head_sha helpers
+source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
@@ -1212,48 +1214,18 @@ phase_assess_and_resolve() {
     if [ -n "$_post_reroute_review_json" ] && [ "$_post_reroute_review_json" != "null" ]; then
       local _post_reroute_review_body _post_reroute_review_sha
       _post_reroute_review_body=$(echo "$_post_reroute_review_json" | jq -r '.body // ""' 2>/dev/null || true)
-      # Extract the SHA embedded in the review marker (if present)
-      _post_reroute_review_sha=$(echo "$_post_reroute_review_body" | \
-        grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
-        grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true)
+      # Extract the SHA embedded in the review marker using the shared helper
+      # (lib/utils/review-helper.sh::extract_review_sha). Avoids duplicating the
+      # grep pipeline that assess-and-resolve.sh uses for the same purpose.
+      _post_reroute_review_sha=$(extract_review_sha "$_post_reroute_review_body")
       _post_reroute_review_sha="${_post_reroute_review_sha:-}"
 
-      # Get current HEAD SHA — authoritative-remote-first, matching the strategy
-      # used in assess-and-resolve.sh (lines 524-530). Local git rev-parse is
-      # unreliable here: cwd may be the main checkout rather than the worktree,
-      # yielding main's HEAD SHA. That wrong SHA would compare unequal to the
-      # review SHA and falsely abort with "Review regeneration did not produce a
-      # fresh review", re-introducing the exact false-positive this issue fixes.
-      #
-      # Strategy (mirrors assess-and-resolve.sh):
-      #   1. Fetch headRefOid from the GitHub API (authoritative — matches what
-      #      was actually pushed to the remote PR branch).
-      #   2. Fall back to local git only when the worktree exists AND the local
-      #      branch matches the PR's headRefName — this guards against cwd being
-      #      on main or another branch.
-      local _rr_head_sha=""
-      local _rr_pr_head_ref _rr_remote_sha _rr_branch_name
-      _rr_pr_head_ref=$(gh_safe pr view "$PR_NUMBER" --json headRefName,headRefOid \
-        --jq '{name: .headRefName, sha: .headRefOid}' 2>/dev/null || true)
-      _rr_remote_sha=$(echo "$_rr_pr_head_ref" | jq -r '.sha // ""' 2>/dev/null || true)
-      _rr_branch_name=$(echo "$_rr_pr_head_ref" | jq -r '.name // ""' 2>/dev/null || true)
-
-      if [ -n "${_rr_remote_sha:-}" ]; then
-        # Remote API is authoritative — use it regardless of cwd.
-        _rr_head_sha="$_rr_remote_sha"
-      elif [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-        # API call failed; fall back to local git only if we can confirm we are
-        # on the PR branch (not main).
-        local _rr_local_branch
-        _rr_local_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-        if [ -n "$_rr_branch_name" ] && [ "${_rr_local_branch:-}" = "$_rr_branch_name" ]; then
-          _rr_head_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
-        elif [ -z "$_rr_branch_name" ]; then
-          # Branch name unknown (API partial failure) — fall back with a warning.
-          print_warning "Could not verify PR branch name for reroute validation — falling back to local git HEAD"
-          _rr_head_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
-        fi
-      fi
+      # Get current HEAD SHA using the shared authoritative-remote-first helper
+      # (lib/utils/review-helper.sh::resolve_pr_head_sha). Passing WORKTREE_PATH
+      # ensures the local-git fallback uses the worktree rather than cwd, which
+      # may be the main checkout when this runs inside phase_assess_and_resolve.
+      local _rr_head_sha
+      _rr_head_sha=$(resolve_pr_head_sha "$PR_NUMBER" "${WORKTREE_PATH:-}")
       _rr_head_sha="${_rr_head_sha:-}"
 
       if [ -n "$_post_reroute_review_sha" ] && [ -n "$_rr_head_sha" ]; then
