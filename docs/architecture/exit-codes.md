@@ -18,6 +18,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `10` | `batch-process-issues.sh` (exit) | Caller of `rite` batch | Batch completed with at least one blocker-deferred issue |
 | `11` | `stale-branch.sh` (`check_stale_branch`) | `workflow-runner.sh` stale-branch handler, `claude-workflow.sh` stale-branch health path | Stale branch: PR closed, branch/worktree cleaned up, restart fresh — caller must reset all resume state variables |
 | `12` | `workflow-runner.sh` (`handle_closed_issue` → `run_workflow`) | `batch-process-issues.sh` | Issue was already closed when the batch started — no new dev work done. `handle_closed_issue()` ran its full cleanup and printed the closure summary. `batch-process-issues.sh` skips the post-issue gh stat-gathering calls (pr list / pr view / issue list) and records the issue as `already_closed_at_start`. **Single-issue mode exits 0** (the closure summary was already printed; a non-zero exit would be surprising in `set -e` chains). **Batch mode exits 12** so `batch-process-issues.sh` can distinguish already-closed from active-work issues. |
+| `13` | `workflow-runner.sh` (`verify_workflow_produced_work` → `run_workflow`) | `batch-process-issues.sh` | Post-phase invariant violated — all phases returned 0 but no work artifact (commit or PR) was produced. Protects against silent false-positive completions where a sourcing side-effect or phantom exit 0 bypassed real work. Batch and single-issue mode both treat this as a failure. Issue state is preserved; re-run after investigating the root cause. |
 
 > **Why 10 and 11 are separate:**
 > `batch-process-issues.sh` uses exit 10 for its own final exit when blocked
@@ -79,6 +80,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `5`  | Usage cap — batch must abort |
 | `6`  | Merge succeeded but cleanup failed |
 | `12` | Issue was already closed at start — no new work done (batch should skip stat gathering) |
+| `13` | Post-phase invariant violated — all phases returned 0 but no work artifact (commit or PR) was produced. Indicates a silent false-positive: a sourcing side-effect or phantom exit 0 bypassed real work. Batch treats this as a failure. Issue state is preserved for investigation. |
 
 ### `batch-process-issues.sh` (final process exit)
 

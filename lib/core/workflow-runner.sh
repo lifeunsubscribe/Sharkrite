@@ -1900,6 +1900,56 @@ handle_closed_issue() {
   return 12
 }
 
+# verify_workflow_produced_work ISSUE_NUMBER PR_NUMBER
+#
+# Post-phase invariant: assert that at least one work artifact was produced
+# before run_workflow() returns 0. Prevents silent false-positive completions
+# when all phase functions exit 0 without doing any real work (e.g., a sourcing
+# side-effect silently terminates the script and injects a phantom exit 0).
+#
+# "Work produced" means any of:
+#   1. A PR exists for this issue (PR_NUMBER is set and non-empty).
+#   2. Commits exist on the feature branch beyond origin/main (WORKTREE_PATH
+#      is still accessible — i.e., merge phase was skipped/not yet run).
+#
+# After phase_merge_pr completes successfully the worktree is removed, so
+# commit-count checking is no longer possible. In that path PR_NUMBER was
+# required for the merge, so criterion 1 already covers it.
+#
+# Returns:
+#   0  — at least one artifact found (invariant satisfied)
+#   13 — no artifact found (invariant violated, caller should return 13)
+#
+# See: docs/architecture — workflow-runner exit code 13
+verify_workflow_produced_work() {
+  local issue_number="$1"
+  local pr_number="${2:-}"
+
+  # Criterion 1: a PR was created for this issue.
+  if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
+    return 0
+  fi
+
+  # Criterion 2: the worktree still exists and has commits beyond origin/main.
+  # This covers the case where all phases ran but the merge phase was skipped
+  # (e.g., --dev-and-pr mode) yet commits were genuinely produced.
+  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    local _commits_on_branch
+    _commits_on_branch=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
+    if [ "${_commits_on_branch:-0}" -gt 0 ]; then
+      return 0
+    fi
+  fi
+
+  # Nothing found — invariant violated.
+  print_error "Workflow returned 0 but produced no commits and no PR — this is a bug"
+  print_info  "Issue #${issue_number} state preserved; investigate before re-running"
+  print_info  "  Expected: at least one commit on feature branch OR an open PR"
+  print_info  "  Possible cause: a sourcing side-effect silently exited 0 mid-workflow"
+  print_info  "  Code 13 (workflow invariant) — see docs/architecture for details"
+  return 13
+}
+
 run_workflow() {
   local issue_number="$1"
 
@@ -2275,6 +2325,22 @@ run_workflow() {
   # Phase 5: Completion and notifications
   CURRENT_PHASE="completion"
   phase_completion "$issue_number" "$PR_NUMBER"
+
+  # Post-phase invariant: verify at least one work artifact was produced.
+  # Guards against silent false-positive completions where all phases returned 0
+  # but no commits or PR were created (e.g., a sourcing side-effect injected a
+  # phantom exit 0 before any real work started).
+  # Exit 13 = "invariant violated: completed phases but no work artifact produced".
+  # See: docs/architecture — workflow-runner exit code 13
+  local _invariant_exit=0
+  set +e
+  verify_workflow_produced_work "$issue_number" "${PR_NUMBER:-}"
+  _invariant_exit=$?
+  set -e
+  if [ $_invariant_exit -ne 0 ]; then
+    _diag "INVARIANT_VIOLATED issue=${issue_number} pr=${PR_NUMBER:-none} worktree=${WORKTREE_PATH:-none}"
+    return 13
+  fi
 
   # Clear state file on successful completion
   local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"

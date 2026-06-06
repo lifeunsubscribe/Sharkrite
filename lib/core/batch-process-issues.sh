@@ -778,6 +778,20 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       echo ""
       # Continue with next issue instead of breaking
 
+    elif [ $EXIT_CODE -eq 13 ]; then
+      # Post-phase invariant violated: phases returned 0 but no PR or commits exist.
+      # workflow-runner.sh already printed diagnostic details (what was checked, why
+      # it failed). Surface the issue in batch summary so it's not silently counted
+      # as a success — this is the core scenario the invariant was added to catch.
+      # See: docs/architecture/exit-codes.md — exit code 13
+      print_error "Issue #$ISSUE_NUM: workflow invariant violated — no work produced despite exit 0 (exit code: 13)"
+      print_info  "Possible cause: a sourcing side-effect silently exited 0 mid-workflow"
+      print_info  "Re-run 'rite $ISSUE_NUM' after investigating; issue state was preserved"
+      print_info  "Duration: ${ISSUE_DURATION}s"
+      echo ""
+      FAILED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+
     else
       # Other failure (dev or merge actually failed)
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
