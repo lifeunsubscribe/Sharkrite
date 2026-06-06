@@ -884,3 +884,42 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 **The fix:** `_validate_coverage` now builds a canonical-title index from emitted issues (lowercase + whitespace-trimmed, matching `_dedup_issues` normalization) and does a deterministic lookup. Matched titles pass through unchanged. Unmatched titles emit a `WARNING:` line to stderr and the orphaned checklist entry is stripped. No LLM call. `_dedup_issues` remains the single source of truth for deduplication after reconciliation.
 
 **Rule of thumb:** If the question is "does X appear in set Y?" — use a set lookup. Only reach for a model when the question genuinely requires language understanding (e.g., "does this PR description accurately reflect the diff?").
+
+---
+
+## Temp File Conventions
+
+### Per-Invocation Isolation (PID Scoping)
+
+Temp files that are written by one code path and read by another within the same script must be **per-invocation unique**. The pattern:
+
+```bash
+REVIEW_FILE="/tmp/pr_review_${PR_NUMBER}.txt"   # BAD: shared across concurrent runs
+REVIEW_FILE="/tmp/pr_review_${PR_NUMBER}_$$.txt" # GOOD: PID-scoped, per-invocation unique
+```
+
+`$$` is bash's current PID. It is stable within a script and inherited by child processes (subshells, `$()`, sourced files), so a file written by the parent and read by a subprocess using `$REVIEW_FILE` sees the same path. Concurrent sibling invocations have different PIDs, so their files are isolated.
+
+### Trap Handlers Must Not Use Globs
+
+A cleanup trap (`trap cleanup EXIT INT TERM`) fires from every exit path — including those in subshells created by process substitution (`2> >(tee ...)`) if they are explicitly set or the file is sourced in tests. **Never use a glob in a cleanup trap:**
+
+```bash
+# BAD: wipes every peer invocation's file in /tmp
+rm -f /tmp/pr_review_*.txt 2>/dev/null || true
+
+# GOOD: wipes only the file this invocation owns
+rm -f "${REVIEW_FILE:-}" 2>/dev/null || true
+```
+
+The `${REVIEW_FILE:-}` expansion is required (not `$REVIEW_FILE`) because `REVIEW_FILE` may be unset if EXIT fires before the assignment line is reached (e.g., early `exit 1` due to argument validation). Under `set -u`, referencing an unset variable crashes the script; the `:-` guard evaluates to empty string, making `rm -f ""` a no-op.
+
+### Live Failures
+
+| Date | File | Root cause | Issue |
+|---|---|---|---|
+| 2026-06-06 | `assess-and-resolve.sh` | Glob in cleanup trap wiped peer PR's `/tmp/pr_review_N.txt` between write and read; `format-review.sh` reported "Review file not found". Concurrent context: batch run with 4 issues | #345 / fixed in #422 |
+
+### Regression Test
+
+`tests/regression/assess-and-resolve-temp-file-isolation.bats` — asserts glob is absent, PID suffix is present, and cleanup does not remove peer files.
