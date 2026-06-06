@@ -2283,6 +2283,46 @@ run_workflow() {
     print_info "Cleared session state (workflow complete)"
   fi
 
+  # ── Post-phase invariant: assert at least one work artifact was produced ──
+  # A workflow that reaches this point without commits on the feature branch
+  # AND without an open/merged PR is a bug. The live trigger was #378
+  # (bootstrap-docs sourcing assess-documentation.sh's top-level code, which
+  # ran the full post-merge flow as a side effect and hit `exit 0`). #378 fixed
+  # that specific path, but the invariant guards the entire class:
+  # any future sourcing side-effect or phase-skip logic error that gets
+  # run_workflow to return 0 without doing real work will trip this gate instead
+  # of producing a phantom "✅ Issue #N → PR #M" in the batch summary.
+  #
+  # Predicate: commits on feature branch OR PR detected for this issue.
+  # "Completed without code" paths (future use) must set RITE_WORKFLOW_EXPLICIT_COMPLETE=1
+  # to bypass this check with a documented signal.
+  #
+  # Exit 13 = invariant violated. See exit-codes.md in docs/architecture.
+  if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
+    _inv_commits=0
+    _inv_pr=""
+
+    # Check commits on the feature branch (requires a live worktree)
+    if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
+      _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
+    fi
+
+    # Check whether a PR exists for the issue (set by PR detection or Phase 2)
+    if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
+      _inv_pr="$PR_NUMBER"
+    fi
+
+    if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
+      print_error "BUG: workflow returned 0 for issue #${issue_number} but produced no commits and no PR"
+      print_error "This is a sourcing side-effect or phase-skip logic error — not a real completion"
+      print_info  "Issue #${issue_number} state preserved; investigate before re-running"
+      print_info  "Hint: check for scripts sourced during this workflow that ran top-level side-effecting code"
+      print_info  "See exit-codes.md in docs/architecture (exit 13 — invariant violated)"
+      _diag "INVARIANT_VIOLATED issue=${issue_number} commits=0 pr=none worktree=${WORKTREE_PATH:-none}"
+      return 13
+    fi
+  fi
+
   return 0
 }
 
@@ -2443,6 +2483,13 @@ main() {
     # already_closed_at_start path, skipping the post-issue gh API calls.
     # See: docs/architecture/exit-codes.md
     exit 12
+  elif [ $workflow_exit -eq 13 ]; then
+    # Invariant violated: workflow returned 0 internally but produced no commits
+    # and no PR — indicates a sourcing side-effect or phase-skip logic bug.
+    # Propagate exit 13 so batch can record this as a distinct failure class
+    # rather than silently logging it as a phantom completion.
+    # See exit-codes.md in docs/architecture.
+    exit 13
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6

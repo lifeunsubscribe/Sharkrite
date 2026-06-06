@@ -753,6 +753,21 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"
       fi
 
+    elif [ $EXIT_CODE -eq 13 ]; then
+      # Invariant violated: workflow completed all phases but produced no commits
+      # and no PR — this is a bug in the workflow logic or a sourcing side-effect.
+      # The full diagnostic was already printed by run_workflow before it returned 13.
+      # Record as a distinct failure class (not the same as a dev/merge failure)
+      # so operators can identify phantom completions in the batch log.
+      # Continue the loop — other issues are not affected by this bug.
+      # See: docs/architecture/exit-codes.md (exit 13 — invariant violated)
+      print_error "Issue #$ISSUE_NUM: workflow invariant violated — no commits and no PR produced (exit code: 13)"
+      print_error "This is a workflow logic bug, not a user-actionable failure — check logs above"
+      print_info "Duration: ${ISSUE_DURATION}s"
+      echo ""
+      FAILED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort the entire batch to avoid hammering the API
       print_error "Issue #$ISSUE_NUM hit usage cap (exit code: 5) — aborting batch"
