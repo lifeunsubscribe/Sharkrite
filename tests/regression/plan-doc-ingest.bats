@@ -442,3 +442,134 @@ ADR
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# Fixture I: dedup — docs/README.md and root README.md produce distinct headers
+#
+# When both files exist, their block labels must differ so that a reader of
+# the assembled prompt can distinguish which content came from which file.
+# Before the fix, both used basename-only labels (--- README.md ---), producing
+# two identically-labeled blocks with different content.
+# ---------------------------------------------------------------------------
+
+@test "Fixture I: docs/README.md and root README.md produce distinct headers" {
+  mkdir -p "$RITE_TEST_TMPDIR/docs"
+
+  # Root README
+  printf '# Root README\nSENTINEL_ROOT_README\n' > "$RITE_TEST_TMPDIR/README.md"
+
+  # docs/README.md — same basename, different path and content
+  printf '# Docs README\nSENTINEL_DOCS_README\n' > "$RITE_TEST_TMPDIR/docs/README.md"
+
+  local auto_docs
+  auto_docs=$(_collect_auto_docs)
+
+  # Both sentinels must appear
+  echo "$auto_docs" | grep -q "SENTINEL_ROOT_README" || {
+    echo "FAIL: root README sentinel not found in auto_docs" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+  echo "$auto_docs" | grep -q "SENTINEL_DOCS_README" || {
+    echo "FAIL: docs/README.md sentinel not found in auto_docs" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+
+  # Headers must be distinct — the root uses "README.md" and the docs one
+  # uses the project-relative path "docs/README.md".
+  echo "$auto_docs" | grep -q "^--- README.md ---" || {
+    echo "FAIL: root README header '--- README.md ---' not found" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+  echo "$auto_docs" | grep -q "^--- docs/README.md ---" || {
+    echo "FAIL: docs/README.md relative-path header '--- docs/README.md ---' not found" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+
+  # Count occurrences of "--- README.md ---": must be exactly 1 (root only).
+  # "docs/README.md" must appear separately.
+  local root_count
+  root_count=$(echo "$auto_docs" | grep -c "^--- README.md ---" || true)
+  [ "$root_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 '--- README.md ---' header, got $root_count" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture J: RITE_PLAN_INCLUDE_README=false skips root README injection
+# ---------------------------------------------------------------------------
+
+@test "Fixture J: RITE_PLAN_INCLUDE_README=false suppresses root README injection" {
+  printf '# My Project README\nSENTINEL_README_SKIP\n' > "$RITE_TEST_TMPDIR/README.md"
+
+  local auto_docs
+  RITE_PLAN_INCLUDE_README=false auto_docs=$(_collect_auto_docs)
+
+  # README content must NOT appear
+  ! echo "$auto_docs" | grep -q "SENTINEL_README_SKIP" || {
+    echo "FAIL: README content found in auto_docs despite RITE_PLAN_INCLUDE_README=false" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+}
+
+@test "Fixture J2: RITE_PLAN_INCLUDE_README=0 suppresses root README injection" {
+  printf '# My Project README\nSENTINEL_README_SKIP_ZERO\n' > "$RITE_TEST_TMPDIR/README.md"
+
+  local auto_docs
+  RITE_PLAN_INCLUDE_README=0 auto_docs=$(_collect_auto_docs)
+
+  ! echo "$auto_docs" | grep -q "SENTINEL_README_SKIP_ZERO" || {
+    echo "FAIL: README content found in auto_docs despite RITE_PLAN_INCLUDE_README=0" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+}
+
+@test "Fixture J3: RITE_PLAN_INCLUDE_README=true (default) still injects root README" {
+  printf '# My Project README\nSENTINEL_README_DEFAULT\n' > "$RITE_TEST_TMPDIR/README.md"
+
+  local auto_docs
+  RITE_PLAN_INCLUDE_README=true auto_docs=$(_collect_auto_docs)
+
+  echo "$auto_docs" | grep -q "SENTINEL_README_DEFAULT" || {
+    echo "FAIL: README content not found despite RITE_PLAN_INCLUDE_README=true" >&2
+    echo "--- collected ---" >&2
+    echo "$auto_docs" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance: RITE_PLAN_INCLUDE_README is declared in config.sh
+# ---------------------------------------------------------------------------
+
+@test "acceptance: RITE_PLAN_INCLUDE_README is declared in config.sh" {
+  grep -q "RITE_PLAN_INCLUDE_README" "${RITE_REPO_ROOT}/lib/utils/config.sh" || {
+    echo "FAIL: RITE_PLAN_INCLUDE_README not found in config.sh" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance: RITE_PLAN_INCLUDE_README is documented in project.conf.example
+# ---------------------------------------------------------------------------
+
+@test "acceptance: RITE_PLAN_INCLUDE_README is documented in project.conf.example" {
+  grep -q "RITE_PLAN_INCLUDE_README" "${RITE_REPO_ROOT}/config/project.conf.example" || {
+    echo "FAIL: RITE_PLAN_INCLUDE_README not documented in config/project.conf.example" >&2
+    false
+  }
+}

@@ -519,6 +519,8 @@ rite --health-report --latest  # Show most recent report
 
 **`rite plan`** generates GitHub issues from architectural docs. Loads the doc + project CLAUDE.md + the issue runbook (`docs/issue-runbook.md`) and generates well-structured issues via Claude. Interactive feedback loop: preview → approve/adjust → create. Supports natural language instructions for filtering (e.g., `rite plan "phases 2-4 except auth"`). Default doc(s) configured via `RITE_PLAN_DOCS` in `.rite/config`. Issues follow the runbook template: title format, labels (phase + category + priority), time estimates (Fibonacci, capped at 2hr), Claude Context, acceptance criteria with verification commands, done definitions, scope boundaries, and dependency chains.
 
+Auto-discovery injects grounding context beyond the explicit doc path: ADRs (`docs/**/*adr*.md`), root `README.md`, and remaining `docs/**/*.md` up to `RITE_PLAN_DOC_BYTE_CAP` bytes (default 50 KB). ADRs and README always load in full; other docs are dropped alphabetically when the cap is hit. Set `RITE_PLAN_DOC_BYTE_CAP=0` to disable entirely. Set `RITE_PLAN_INCLUDE_README=false` to skip README injection without disabling other auto-discovery. Doc block headers use project-relative paths (e.g., `--- docs/architecture/adr-001.md ---`) to prevent identical-label collisions when multiple files share the same basename.
+
 The full `rite <issue>` resume correctly detects state (via PR comments/commits) and skips completed phases, so running standalone commands then resuming with the full lifecycle works seamlessly.
 
 ### PR Detection (`lib/utils/pr-detection.sh`)

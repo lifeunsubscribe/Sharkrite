@@ -99,6 +99,13 @@
 # Set to 0 to disable auto-discovery entirely (explicit doc_paths still work).
 # RITE_PLAN_DOC_BYTE_CAP=50000
 
+# Whether to auto-inject the root README.md when running `rite plan`.
+# Default: true (README is included as high-priority grounding context).
+# Set to false or 0 to skip README injection — useful when the README is very
+# large (e.g. a monorepo megadoc) or is not relevant to the planning session.
+# ADRs and docs/**/*.md auto-discovery are unaffected by this toggle.
+# RITE_PLAN_INCLUDE_README=true
+
 # =============================================================================
 # Unverified External Integration Detection (rite plan post-generation pass)
 # =============================================================================
