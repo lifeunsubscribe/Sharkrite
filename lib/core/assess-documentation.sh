@@ -494,26 +494,24 @@ assess_internal_adr() {
 }
 
 update_conventions_from_marker() {
-  # update_conventions_from_marker PR_NUMBER
+  # update_conventions_from_marker PR_NUMBER PR_BODY
   #
   # Extracts all <!-- sharkrite-convention -->...<!-- /sharkrite-convention --> blocks
-  # from the PR body and appends rendered markdown entries to
-  # docs/architecture/conventions.md in the project root.
+  # from the PR body and updates docs/architecture/conventions.md in the project root.
   #
-  # Idempotent: if the convention title already appears in conventions.md AND
-  # the PR number already appears on that entry's References line, this is a no-op.
+  # Each convention title is canonical — exactly ONE entry per unique title.
+  # Three cases (see behavioral-design.md → "Conventions Catalog: Accumulate-in-Place
+  # Contract" for the full rationale):
+  #   title absent              → append a new rendered entry
+  #   title present, PR# present → no-op (idempotent — already recorded)
+  #   title present, PR# absent  → accumulate in place: append ", #PR" to the existing
+  #                                entry's References line (no duplicate heading created)
   #
   # No Claude call — purely local file I/O + one gh API call already cached in
   # PR_BODY (passed as arg 2).  Runs synchronously (fast).
   local pr_number="$1"
   local pr_body="$2"
   local conventions_file="${RITE_PROJECT_ROOT}/docs/architecture/conventions.md"
-
-  # Ensure the conventions file exists (it ships with the repo; this is a safety net)
-  if [ ! -f "$conventions_file" ]; then
-    print_warning "conventions.md not found at $conventions_file — skipping convention extraction"
-    return 0
-  fi
 
   # Extract the raw content between every <!-- sharkrite-convention --> pair.
   # Strategy: write PR body to a temp file, then use awk to collect all blocks.
@@ -545,29 +543,98 @@ update_conventions_from_marker() {
   ' "$_body_file" > "$_blocks_file"
   rm -f "$_body_file"
 
-  # If no blocks found, nothing to do
+  # If no blocks found, nothing to do (silent — no warning, no file creation)
   if [ ! -s "$_blocks_file" ]; then
     rm -f "$_blocks_file"
     return 0
+  fi
+
+  # Blocks exist — auto-bootstrap the catalog if missing. Only create when there
+  # is something to write so projects that never use the marker don't accumulate
+  # an empty doc.
+  if [ ! -f "$conventions_file" ]; then
+    mkdir -p "$(dirname "$conventions_file")"
+    # Marker literals are injected via variable to satisfy RAW_MARKER_LITERAL lint.
+    local _open_marker="<!-- ${RITE_MARKER_CONVENTION} -->"
+    local _close_marker="<!-- /${RITE_MARKER_CONVENTION} -->"
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: marker constants must expand
+    cat > "$conventions_file" <<EOF
+# Conventions Catalog
+
+**Auto-appended on merge — do not hand-edit.**
+
+To add a convention, include a \`${RITE_MARKER_CONVENTION}\` block in your PR body:
+
+\`\`\`
+${_open_marker}
+title: Your convention title
+rule: One-sentence statement of the rule
+why: Why this rule exists / what goes wrong without it
+example: |
+  # BAD
+  ...
+  # GOOD
+  ...
+references: <commit-sha>, #<issue>, #<pr>
+${_close_marker}
+\`\`\`
+
+The merge automation extracts the block and appends a rendered entry below.
+Entries are append-only; each entry's \`references\` field links to the issue(s) and
+commit(s) that surfaced or fixed the pattern.
+
+---
+EOF
+    print_info "Created $conventions_file (first convention entry triggered bootstrap)"
   fi
 
   # Process each block separated by the sentinel
   local _current_block=""
   while IFS= read -r _line || [ -n "$_line" ]; do
     if [ "$_line" = "---CONVENTION_BLOCK_END---" ]; then
-      # Parse YAML-ish fields from _current_block
+      # Parse YAML-ish fields from _current_block.
+      #
+      # Field extraction must operate only on the scalar (non-example) portion of
+      # the block.  The multi-line `example: |` literal block scalar can contain
+      # arbitrary content — including lines that start with "rule:", "references:",
+      # or any other key name.  Running grep "^rule:" against the full block would
+      # silently pick up such lines from inside the example and corrupt the field.
+      #
+      # _block_no_example strips the example section before scalar field extraction:
+      # - When `example: |` is seen, skip=1.
+      # - While skip=1, skip all lines that are NOT a known top-level field name.
+      # - A known field name (title|rule|why|example|references) at column-0 resets
+      #   skip=0 and is printed (it's a real top-level key, not example content).
+      # The terminator uses the same known-field-name boundary as _example_awk so
+      # that column-0 lines inside the example (e.g., "references: some-doc-link")
+      # are not leaked into _block_no_example and cannot corrupt scalar field reads.
+      # The awk program is stored in a variable so the || true guard appears on a
+      # separate line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
+      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^(title|rule|why|example|references):/ { skip=0; print; next } skip { next } { print }'
+      local _block_no_example
+      _block_no_example=$(printf '%s' "$_current_block" | awk "$_no_example_awk" || true)
+
       local _title _rule _why _example _references
-      _title=$(printf '%s' "$_current_block" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
-      _rule=$(printf '%s' "$_current_block" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
-      _why=$(printf '%s' "$_current_block" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
-      _references=$(printf '%s' "$_current_block" | grep "^references:" | head -1 | sed 's/^references:[[:space:]]*//' || true)
+      _title=$(printf '%s' "$_block_no_example" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
+      _rule=$(printf '%s' "$_block_no_example" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
+      _why=$(printf '%s' "$_block_no_example" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
+      # Use tail -1 (not head -1) for references: the field appears AFTER example:
+      # in the standard convention block order (title/rule/why/example/references).
+      # A col-0 "references:" line inside the example would appear first in
+      # _block_no_example (because _no_example_awk treats it as a known-field
+      # terminator), making head -1 pick up the wrong (example-embedded) value.
+      # tail -1 picks the LAST occurrence, which is always the real field.
+      _references=$(printf '%s' "$_block_no_example" | grep "^references:" | tail -1 | sed 's/^references:[[:space:]]*//' || true)
 
       # Extract multi-line example block (everything after "example: |" up to the
       # next top-level key or end of block).  The example field uses YAML literal
       # block scalar style ("example: |") — subsequent indented lines are content.
+      # The terminator matches only the known top-level field names so that lines
+      # inside the example that look like "key: value" (e.g., shell assignments,
+      # config snippets) do not prematurely truncate the example content.
       # The awk program is stored in a variable first so the || true guard appears
       # on the next line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^[a-z_]+:/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
+      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^(title|rule|why|example|references):/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
       _example=$(printf '%s' "$_current_block" | awk "$_example_awk" || true)
 
       # Skip blocks with no title (malformed)
@@ -577,15 +644,26 @@ update_conventions_from_marker() {
         continue
       fi
 
-      # Idempotency: skip if title already present in conventions.md AND this PR#
-      # is already in the references line immediately following the title heading.
-      # We check for "## <title>" (the rendered heading format) and then scan
-      # forward for "**References:**" containing the PR number.
+      # Idempotency and accumulate-in-place contract (#320):
       #
-      # Match strategy: title_found=1 when we see "## <title>", then scan forward
-      # for "**References:**" with "#pr_number" before the next "## " heading.
+      # Conventions are canonical — each unique title has exactly ONE entry in the
+      # catalog. Multiple PRs that surface or refine the same convention accumulate
+      # their PR numbers in that single entry's References line, rather than
+      # producing duplicate headings.
+      #
+      # Cases:
+      #   title absent              → append a new entry (existing behavior)
+      #   title present, PR# present → already recorded, no-op (idempotent)
+      #   title present, PR# absent  → accumulate: append PR# to existing References line
+      #
+      # Match strategy for idempotency: title_found=1 when we see "## <title>",
+      # then scan forward for "**References:**" with "#pr_number" as a whole token
+      # (tokenized on spaces/commas to avoid #42 matching #420) before the next
+      # "## " heading.
       local _already_present=false
-      if grep -qF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
+      local _title_exists=false
+      if grep -qxF -- "## ${_title}" "$conventions_file" 2>/dev/null; then
+        _title_exists=true
         # Title exists — check if this PR# is already in its references line
         if awk -v title="## ${_title}" -v prnum="#${pr_number}" '
           BEGIN { matched=0 }
@@ -610,7 +688,48 @@ update_conventions_from_marker() {
         continue
       fi
 
-      # Build the rendered markdown entry and append it
+      if [ "$_title_exists" = "true" ]; then
+        # Title exists but this PR# is not yet in its References line.
+        # Accumulate in place: append ", #PR_NUMBER" to the existing entry's
+        # References line rather than creating a duplicate heading.
+        # This preserves the append-only catalog contract (one canonical entry
+        # per convention; multiple PRs accumulate on the same entry).
+        #
+        # awk rewrites the file in-place via a temp file:
+        # - scans for "## <title>" to locate the right entry (handles multiple
+        #   entries with different titles; stops at the first match)
+        # - within that entry, finds "**References:**" and appends ", #PR_NUMBER"
+        # - all other lines pass through unchanged
+        local _refs_tmp
+        _refs_tmp=$(mktemp)
+        local _awk_exit=0
+        awk -v title="## ${_title}" -v prnum="#${pr_number}" '
+          BEGIN { in_target=0; updated=0 }
+          $0 == title && !updated { in_target=1; print; next }
+          in_target && /^\*\*References:\*\*/ && !updated {
+            print $0 ", " prnum
+            in_target=0; updated=1; next
+          }
+          in_target && /^## / { in_target=0 }
+          { print }
+          END { if (!updated) exit 3 }
+        ' "$conventions_file" > "$_refs_tmp" || _awk_exit=$?
+        # Only replace the file if awk produced non-empty output (safety net)
+        # and awk reported a successful update (exit 0; exit 3 means no References
+        # line was found — the catalog entry is malformed or has no References line).
+        if [ -s "$_refs_tmp" ] && [ "$_awk_exit" -eq 0 ]; then
+          mv "$_refs_tmp" "$conventions_file"
+          print_info "  conventions: updated references for '$_title' (added PR #${pr_number})"
+          _mark_updated "conventions"
+        else
+          rm -f "$_refs_tmp"
+          print_warning "  conventions: could not append PR #${pr_number} to '$_title' — no References line found in entry (skipping)"
+        fi
+        _current_block=""
+        continue
+      fi
+
+      # Title is new — build the rendered markdown entry and append it.
       # If references already contains a value from the PR body, append the PR#.
       # If references is empty, use just the PR#.
       local _refs_line
@@ -630,9 +749,18 @@ update_conventions_from_marker() {
         if [ -n "$_example" ]; then
           echo ""
           echo "**Example:**"
-          echo '```bash'
+          # Use a longer fence if the example itself contains triple backticks,
+          # so the fence delimiter cannot appear inside the fenced content.
+          # Standard markdown: a fence can be closed only by an equal or longer
+          # sequence of the same character, so 4 backticks safely wraps any
+          # content that contains 3-backtick sequences.
+          local _fence='```'
+          case "$_example" in
+            *'```'*) _fence='````' ;;
+          esac
+          echo "${_fence}bash"
           printf '%s\n' "$_example"
-          echo '```'
+          echo "$_fence"
         fi
         echo ""
         echo "**References:** ${_refs_line}"

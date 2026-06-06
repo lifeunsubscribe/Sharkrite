@@ -236,13 +236,21 @@ if [ -z "${ISSUE_NUMBER:-}" ]; then
   ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 fi
 
-print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER:-$PR_NUMBER}"
+if [ -n "${ISSUE_NUMBER:-}" ]; then
+  print_header "🦈 Sharkrite Code Review — Issue #${ISSUE_NUMBER}"
+else
+  print_header "🦈 Sharkrite Code Review — PR #${PR_NUMBER}"
+fi
 echo ""
 
 # Get PR info
 print_status "Fetching PR information..."
 PR_INFO=$(gh_safe pr view "$PR_NUMBER" --json title,baseRefName,headRefName,url,headRefOid) || {
-  print_error "Failed to fetch PR #$PR_NUMBER"
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    print_error "Failed to fetch PR for issue #$ISSUE_NUMBER"
+  else
+    print_error "Failed to fetch PR #$PR_NUMBER"
+  fi
   exit 1
 }
 PR_INFO="${PR_INFO:-}"
@@ -511,7 +519,11 @@ if [ "$POST_REVIEW" = true ]; then
 
   # Post as PR comment (via temp file to avoid shell interpretation of
   # backticks and $() in code blocks within the review content)
-  print_status "Posting review to PR #$PR_NUMBER..."
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    print_status "Posting review for issue #$ISSUE_NUMBER..."
+  else
+    print_status "Posting review to PR #$PR_NUMBER..."
+  fi
 
   COMMENT_FILE=$(mktemp)
   printf '%s' "$REVIEW_COMMENT" > "$COMMENT_FILE"
@@ -524,7 +536,11 @@ if [ "$POST_REVIEW" = true ]; then
   rm -f "$COMMENT_FILE"
 
   if [ $POST_RC -ne 0 ]; then
-    print_error "Failed to post review to PR #$PR_NUMBER"
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      print_error "Failed to post review for issue #$ISSUE_NUMBER"
+    else
+      print_error "Failed to post review to PR #$PR_NUMBER"
+    fi
     echo "$REVIEW_RESULT"
     echo ""
     echo "Review content (not posted):"

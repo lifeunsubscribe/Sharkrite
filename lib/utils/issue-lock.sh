@@ -272,7 +272,11 @@ acquire_pr_followup_lock() {
 
     lock_attempts=$((lock_attempts + 1))
     if [ $lock_attempts -ge $max_attempts ]; then
-      echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
+      if [ -n "$source_issue" ]; then
+        echo "❌ Follow-up lock timeout for issue #${source_issue} after ${max_attempts}s" >&2
+      else
+        echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
+      fi
       return 1
     fi
 

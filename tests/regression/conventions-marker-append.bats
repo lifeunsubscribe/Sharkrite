@@ -254,15 +254,21 @@ BODY
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: Seed entry already in file — different PR# appends new entry
+# Test 6: Seed entry already in file — different PR# accumulates in place
+#
+# Under the accumulate-in-place contract (#320):
+# - Conventions are canonical: each unique title has exactly ONE entry.
+# - When a new PR references the same convention title, its PR# is appended
+#   to the existing entry's References line rather than creating a duplicate
+#   heading.
 # ---------------------------------------------------------------------------
 
-@test "existing title different PR: same title from new PR appends a second entry" {
+@test "existing title different PR: same title from new PR accumulates references in place" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   # The seed entry uses title "seed-convention" with references #1.
-  # A new PR (123) with the same title is NOT a duplicate (different PR#) —
-  # the function only skips when title AND PR# both match.
+  # A new PR (123) with the same title should NOT create a duplicate heading;
+  # it should accumulate #123 into the existing entry's References line.
   local pr_body
   pr_body=$(cat <<'BODY'
 <!-- sharkrite-convention -->
@@ -283,25 +289,27 @@ BODY
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
   [ "$count" -eq 1 ]
 
-  # Now a new PR (123) with the same title SHOULD add another entry
+  # Now a new PR (123) with the same title SHOULD accumulate in place —
+  # exactly one heading, but the References line now contains both PR numbers.
   update_conventions_from_marker "123" "$pr_body"
 
-  # Two instances of the heading now
+  # Still exactly one heading (no duplicate entry created)
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
+
+  # References line must now include both PR numbers
+  grep -q "\*\*References:\*\*.*#1.*#123" "$conventions_file"
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: Idempotency for PR recorded in a LATER same-title entry (regression)
+# Test 7: Idempotency after accumulate-in-place — re-run is still a no-op
 #
-# When multiple entries share the same title (allowed — different PRs), a
-# re-run for a PR that was recorded in the *second* (or later) entry must
-# still be detected as a no-op. The old awk exited on the first entry's
-# heading match and never scanned forward to later entries with the same
-# title, causing an unbounded duplicate to be appended.
+# After PR #123 has been accumulated into the seed-convention's References
+# line, a second run for PR #123 must be detected as already-present and
+# produce no changes.
 # ---------------------------------------------------------------------------
 
-@test "idempotency: PR in second same-title entry is not duplicated on re-run" {
+@test "idempotency: PR accumulated into existing entry is not duplicated on re-run" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   local pr_body
@@ -315,28 +323,103 @@ references: #1
 BODY
 )
 
-  # PR #123 → first run → appends second entry for seed-convention
+  # PR #123 → first run → accumulates #123 into seed-convention's References
   update_conventions_from_marker "123" "$pr_body"
 
   local count
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
 
-  # PR #123 again → must be a no-op (PR #123 is now in the *second* entry)
+  # Capture content after first accumulation
+  local after_first
+  after_first=$(cat "$conventions_file")
+
+  # PR #123 again → must be a no-op (idempotent: #123 is now in References)
   update_conventions_from_marker "123" "$pr_body"
 
   count=$(grep -c "^## seed-convention$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
+
+  # File content must be byte-for-byte identical (no changes on re-run)
+  local after_second
+  after_second=$(cat "$conventions_file")
+  [ "$after_first" = "$after_second" ]
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: Idempotency prefix collision — #42 must NOT match #420 (regression)
+# Test 8: Prefix collision guard — #42 must NOT be mistaken for #420
 #
-# index($0, "#42") is an unanchored substring match: it returns true when
-# "#420" is present, so a re-run for PR #42 after PR #420 was recorded would
-# be treated as a no-op and silently drop the legitimate append.
-# The fix tokenizes the References line and compares each token exactly.
+# The idempotency check tokenizes the References line on spaces/commas and
+# compares each token exactly (so "#42" != "#420"). Under the accumulate-in-
+# place contract (#320), PR #42 (not yet in the entry) should:
+#   - NOT be silently treated as a no-op (that was the old substring bug)
+#   - Accumulate into the existing entry's References line (new behavior)
+#
+# After accumulation, the entry has exactly ONE heading with "#420, #42"
+# in its References line. A subsequent run for #42 must be a no-op.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 9: Example containing triple backticks — fence delimiter is promoted
+#
+# If the example field contains ``` (triple backticks), the rendered entry
+# must use a 4-backtick fence so the inner ``` cannot terminate the outer
+# fence early and corrupt the append-only conventions file.
+#
+# Also verifies that a normal example (no ``` inside) still produces the
+# standard 3-backtick fence — the promotion is conditional.
+# ---------------------------------------------------------------------------
+
+@test "example with triple backticks: uses 4-backtick fence to avoid early termination" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: unescaped-backtick-example
+rule: Use 4-backtick fence when example contains triple backticks
+why: A triple-backtick inside a triple-backtick fence terminates the fence early, corrupting the append-only catalog
+example: |
+  # BAD: describe something using ```inline code``` in prose
+  echo "document with ```backticks``` inside"
+  # GOOD: just avoid the ambiguity or escape it
+  echo "document with backtick blocks"
+references: #319
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "321" "$pr_body"
+
+  # The entry must exist
+  grep -q "^## unescaped-backtick-example$" "$conventions_file"
+
+  # A 4-backtick bash fence opener must be present (not 3-backtick)
+  grep -q '^\`\`\`\`bash$' "$conventions_file"
+
+  # A 4-backtick fence closer must be present
+  grep -q '^\`\`\`\`$' "$conventions_file"
+
+  # No standalone 3-backtick opener for this entry (would indicate early fence break)
+  # Count lines after the heading: the opener must be the 4-backtick one
+  local fence_count
+  fence_count=$(grep -c '^\`\`\`bash$' "$conventions_file" || true)
+  # The seed or normal entries may have ```bash fences, but the new entry must not
+  # add one — it should only have the ````bash opener.
+  # Verify the inner triple-backtick text is present (content not truncated)
+  grep -q 'backticks' "$conventions_file"
+}
+
+@test "example without triple backticks: uses standard 3-backtick fence" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+  local pr_body
+  pr_body="$(one_block_body)"
+
+  update_conventions_from_marker "42" "$pr_body"
+
+  # The standard opener must be present (not the 4-backtick promoted one)
+  grep -q '^\`\`\`bash$' "$conventions_file"
+}
 
 @test "idempotency: PR #42 is not mistaken for already-recorded PR #420" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
@@ -367,16 +450,219 @@ BODY
 )
 
   # PR #42 is NOT yet in the References line — this must NOT be treated as a no-op.
+  # Under the accumulate-in-place contract, #42 should be appended to the
+  # existing entry's References line (not create a duplicate heading).
   update_conventions_from_marker "42" "$pr_body"
 
-  # A second entry must have been appended (PR #42 is a different PR from #420).
+  # Still exactly ONE heading (accumulate-in-place, not duplicate)
   local count
   count=$(grep -c "^## prefix-collision-test$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
 
-  # Re-running for PR #42 now must be a no-op.
+  # References line must now include BOTH #420 and #42
+  grep -q "\*\*References:\*\*.*#420.*#42" "$conventions_file"
+
+  # Re-running for PR #42 now must be a no-op (idempotent)
+  local after_first
+  after_first=$(cat "$conventions_file")
+
   update_conventions_from_marker "42" "$pr_body"
 
   count=$(grep -c "^## prefix-collision-test$" "$conventions_file" || true)
-  [ "$count" -eq 2 ]
+  [ "$count" -eq 1 ]
+
+  # File content must be byte-for-byte identical (no changes on re-run)
+  local after_second
+  after_second=$(cat "$conventions_file")
+  [ "$after_first" = "$after_second" ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: Example containing a column-0 non-field key: line — not truncated
+#
+# Bug fixed in issue #319/#320/#321: the awk terminator was /^[a-z_]+:/
+# which matched ANY lowercase identifier followed by a colon at column-0,
+# including lines inside the example that are not real convention field names.
+# The fix restricts the terminator to the five known top-level field names:
+# title|rule|why|example|references.
+#
+# This test uses a block where the example section contains a line "timeout: 30"
+# at column-0 (no indentation — malformed YAML literal block, but the parser
+# must be robust).  The old terminator stopped the example at "timeout:";
+# the new terminator only stops at recognized field names, so the full
+# content after "timeout: 30" must also appear in the rendered output.
+# ---------------------------------------------------------------------------
+
+@test "example with column-0 non-field key: line is not truncated by the awk terminator" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Build the block with a column-0 "timeout:" line inside the example section.
+  # printf is used to avoid heredoc indentation issues — the block must have
+  # "timeout: 30" at column-0 (no leading spaces) to trigger the old bug.
+  local pr_body
+  pr_body=$(printf '%s\n' \
+    '<!-- sharkrite-convention -->' \
+    'title: example-with-bare-key' \
+    'rule: Example blocks may contain config-style key: value lines' \
+    'why: Restricting the awk terminator prevents example truncation' \
+    'example: |' \
+    '  # BAD: hardcoded values' \
+    'timeout: 30' \
+    '  retries: 3' \
+    '  # GOOD: via environment' \
+    '  timeout: ${TIMEOUT:-30}' \
+    'references: #319' \
+    '<!-- /sharkrite-convention -->')
+
+  update_conventions_from_marker "319" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## example-with-bare-key$" "$conventions_file"
+
+  # "timeout: 30" at column-0 must NOT have terminated the example — both
+  # "retries: 3" (after timeout:) and the GOOD section must be present.
+  grep -q "retries: 3" "$conventions_file"
+  grep -q 'timeout: \${TIMEOUT' "$conventions_file"
+
+  # References must use the real field value, not be empty or wrong
+  grep -q "\*\*References:\*\* #319" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: Example containing "references: ..." at column-0 — field not corrupted
+#
+# Bug fixed in issue #319/#320/#321: grep "^references:" ran against the full
+# block including example content.  If the example contained a line like
+# "references: some-docs-link" at column-0 (before dedent), that line would
+# be picked up as the actual references field value, overwriting the real one.
+#
+# The fix: field extraction runs against _block_no_example (the block with the
+# example section stripped out) so example content cannot corrupt scalar fields.
+# ---------------------------------------------------------------------------
+
+@test "example containing references: line does not corrupt the references field" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: references-in-example
+rule: Field extraction must ignore example content
+why: grep against the full block picks up key: value lines from inside the example
+example: |
+  # This example documents a YAML file that has a "references:" key
+  # BAD: inline refs
+  references: http://example.com/bad
+  # GOOD: external file
+  references: ./docs/refs.md
+references: abc1234, #99
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "320" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## references-in-example$" "$conventions_file"
+
+  # The References line must use the REAL field value (abc1234, #99, #320),
+  # NOT the value from inside the example ("http://example.com/bad").
+  grep -q "\*\*References:\*\* abc1234, #99, #320" "$conventions_file"
+
+  # The example content must still be present (not lost during field stripping)
+  grep -q "references: http://example.com/bad" "$conventions_file"
+  grep -q "references: ./docs/refs.md" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 12: example: block precedes real field, column-0 field name inside
+#          example must NOT overwrite the real scalar field
+#
+# This is the field-stripping asymmetry bug: _no_example_awk previously
+# terminated the skip on ANY non-indented line, so a column-0 "references:"
+# or "rule:" inside the example would leak into _block_no_example.  When the
+# example block appears BEFORE the real field, head -1 picks the example's
+# value instead of the real one.
+#
+# The fix (issue #328): _no_example_awk now terminates the skip only on the
+# same known-field-name boundary used by _example_awk
+# (title|rule|why|example|references), matching the behavior documented in the
+# comment at assess-documentation.sh:570.
+# ---------------------------------------------------------------------------
+
+@test "example before real field: column-0 field name in example does not corrupt scalar field" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Build a block where:
+  #   - example: appears BEFORE the real references: field
+  #   - the example contains a column-0 "references: fake-value" line
+  #   - the real references: field follows after the example
+  # printf is used so the column-0 line has no leading whitespace.
+  local pr_body
+  pr_body=$(printf '%s\n' \
+    '<!-- sharkrite-convention -->' \
+    'title: example-before-real-field' \
+    'rule: Field stripping must use field-name boundary not indentation boundary' \
+    'why: Indentation-only boundary leaks column-0 lines from example into scalar extraction' \
+    'example: |' \
+    '  # A YAML snippet that has a column-0 references: key (no indent):' \
+    'references: fake-doc-link' \
+    '  # The real field below must not be overwritten by this line' \
+    'references: real-ref-value, #328' \
+    '<!-- /sharkrite-convention -->')
+
+  update_conventions_from_marker "328" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## example-before-real-field$" "$conventions_file"
+
+  # The References line must use the REAL field value, not the fake one from
+  # inside the example.
+  grep -q "\*\*References:\*\* real-ref-value, #328" "$conventions_file"
+
+  # The fake value must NOT appear in the References rendered line
+  run grep "\*\*References:\*\*.*fake-doc-link" "$conventions_file"
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 13: Auto-bootstrap — conventions.md is created when missing IF a PR
+# body contains a marker block. Projects without sharkrite-convention markers
+# never trigger creation (verified separately by removing the seed file and
+# running with a no-marker body — see end of this test).
+# ---------------------------------------------------------------------------
+
+@test "auto-bootstrap: missing conventions.md is created when a marker block exists" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Remove the seed file so the bootstrap path is exercised
+  rm -f "$conventions_file"
+  [ ! -f "$conventions_file" ]
+
+  local pr_body
+  pr_body="$(one_block_body)"
+  update_conventions_from_marker "42" "$pr_body"
+
+  # File must now exist
+  [ -f "$conventions_file" ]
+
+  # Scaffold header must be present
+  grep -q "^# Conventions Catalog$" "$conventions_file"
+
+  # The marker block from the PR must have been appended
+  grep -q "^## no-eval-on-gh-data$" "$conventions_file"
+  grep -q "\*\*References:\*\* abc1234, #99, #42" "$conventions_file"
+}
+
+@test "auto-bootstrap: missing conventions.md is NOT created when PR body has no marker" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Remove the seed file
+  rm -f "$conventions_file"
+
+  local pr_body="This PR fixes a thing. No conventions here. Closes #77"
+  update_conventions_from_marker "77" "$pr_body"
+
+  # File must still not exist (no marker → no bootstrap → no empty file in repo)
+  [ ! -f "$conventions_file" ]
 }

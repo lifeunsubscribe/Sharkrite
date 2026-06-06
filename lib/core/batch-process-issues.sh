@@ -290,7 +290,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       # Extract blocker type from check_blockers output
       BLOCKER_TYPE=$(echo "$BLOCKER_CHECK" | grep -o "BLOCKER:.*" | head -1 || echo "Unknown blocker")
       PREFLIGHT_BLOCKERS+=("$ISSUE_NUM")
-      PREFLIGHT_BLOCKER_MSGS+=("$BLOCKER_TYPE (PR #$PR_NUMBER)")
+      PREFLIGHT_BLOCKER_MSGS+=("$BLOCKER_TYPE")
       print_warning "⚠️  Issue #$ISSUE_NUM: $BLOCKER_TYPE"
     }
   fi
@@ -404,11 +404,15 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       PARENT_PR_STATE=$(gh_safe pr view "$PARENT_PR" --json state --jq '.state')
       PARENT_PR_STATE="${PARENT_PR_STATE:-}"
 
-      if [ "$PARENT_PR_STATE" = "OPEN" ]; then
-        # Check if parent issue is also in this batch (deliberate pairing)
-        PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
-        PARENT_ISSUE="${PARENT_ISSUE:-}"
+      # Resolve parent issue number from parent PR body — needed by both the
+      # OPEN branch (queue-membership check) and the MERGED branch (status
+      # message). Must run unconditionally before the state dispatch; live
+      # crash 2026-06-05 (finance-glance): PARENT_ISSUE was only set inside
+      # the OPEN branch, so the MERGED branch hit `unbound variable`.
+      PARENT_ISSUE=$(gh_safe pr view "$PARENT_PR" --json body --jq '.body' | grep -oE "$CLOSING_ISSUE_GREP_REGEX" | head -1 | grep -oE '[0-9]+' || true)
+      PARENT_ISSUE="${PARENT_ISSUE:-}"
 
+      if [ "$PARENT_PR_STATE" = "OPEN" ]; then
         # Check if parent issue is in our queue
         PARENT_IN_QUEUE=false
         for queued_issue in "${ISSUE_LIST[@]}"; do
@@ -420,7 +424,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
         if [ "$PARENT_IN_QUEUE" = true ]; then
           print_success "✅ Parent issue #$PARENT_ISSUE is in queue - this is a follow-up pair"
-          print_info "Follow-up work will update parent PR #$PARENT_PR before merging parent issue"
+          print_info "Follow-up work will update parent issue #$PARENT_ISSUE's PR before merging parent"
         else
           # Deliberate divergence from single-issue mode: batch skips follow-up
           # issues whose parent PR is still open AND the parent issue is not in
@@ -433,15 +437,15 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           # the user invoking `rite N` is presumed to know the ordering constraint.
           # Regression test: tests/regression/batch-single-issue-parity.bats
           #   @test "parent-PR-deferred divergence: documented and intentional"
-          print_warning "⏸️  Parent PR #$PARENT_PR is still open - deferring issue #$ISSUE_NUM"
-          print_info "This follow-up issue will be processed after parent PR merges"
+          print_warning "⏸️  Parent issue #$PARENT_ISSUE is still open - deferring issue #$ISSUE_NUM"
+          print_info "This follow-up issue will be processed after parent issue merges"
           SKIPPED_ISSUES+=("$ISSUE_NUM")
           ISSUE_STATUS["$ISSUE_NUM"]="waiting_for_parent"
           echo ""
           continue
         fi
       elif [ "$PARENT_PR_STATE" = "MERGED" ]; then
-        print_success "✅ Parent PR #$PARENT_PR is merged - proceeding with follow-up"
+        print_success "✅ Parent issue #$PARENT_ISSUE is merged - proceeding with follow-up"
       fi
     fi
   fi

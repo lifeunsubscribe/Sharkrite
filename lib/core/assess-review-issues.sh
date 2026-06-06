@@ -730,7 +730,7 @@ if [ -z "$ASSESSMENT_OUTPUT" ]; then
   echo "This indicates a transient API failure, not an actual empty assessment." >&2
   echo "Refusing to fall through to heuristic filter (which silently merges without proper assessment)." >&2
   echo "" >&2
-  echo "Re-run assessment manually: rite ${ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix" >&2
+  echo "Re-run assessment manually: rite ${RITE_ISSUE_NUMBER:-$PR_NUMBER} --assess-and-fix" >&2
   exit 1
 fi
 
@@ -774,7 +774,11 @@ ASSESSMENT_COMMENT="<!-- ${RITE_MARKER_ASSESSMENT} pr:${PR_NUMBER} iteration:1 t
 ${ASSESSMENT_OUTPUT}"
 
 # Post assessment as PR comment (via temp file to avoid shell metacharacter issues)
-print_status "Posting assessment to PR #$PR_NUMBER..."
+if [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
+  print_status "Posting assessment for issue #${RITE_ISSUE_NUMBER}..."
+else
+  print_status "Posting assessment to PR #$PR_NUMBER..."
+fi
 ASSESSMENT_BODY_FILE=$(mktemp)
 printf '%s' "$ASSESSMENT_COMMENT" > "$ASSESSMENT_BODY_FILE"
 if gh_safe pr comment "$PR_NUMBER" --body-file "$ASSESSMENT_BODY_FILE" >/dev/null 2>&1; then

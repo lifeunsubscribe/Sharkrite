@@ -185,36 +185,28 @@ Local checks found nothing. The pre-`found_local_orphans` implementation still m
 
 ### Closed-Issue Cleanup Fallback Chain
 
-`handle_closed_issue()` uses three layers to discover `pr_branch` before the cleanup gate fires. Each layer is attempted only if the previous layer found nothing.
+`handle_closed_issue()` discovers `pr_branch` (the branch to clean up) via a three-tier fallback chain. Each tier fires only when the previous tier returned nothing.
 
-**Layer 0 — `closedByPullRequestsReferences` (primary, via GraphQL):**
-GitHub's issue data includes the PR that closed the issue. This is the fastest, most reliable path — one field in the issue JSON already fetched. Works for any issue closed by a merged PR via the GitHub UI or `gh pr merge`.
+**Tier 1 — closedByPullRequestsReferences (GitHub graph):**
+`gh issue view` returns a `closedByPullRequestsReferences` array. When it's non-empty, the first entry gives the PR number directly, and `gh pr view` fetches the `headRefName` branch. This is the fast path: zero extra network calls, always accurate for normal PR-merged-closes-issue flows.
 
-**Layer 1 — Closed-PR body search (fallback, `--limit 1000`):**
-When `closedByPullRequestsReferences` is empty (manually-closed issue, or closed by a PR that was itself closed without merging), search recently-closed PRs for `Closes #N` / `Fixes #N` / `Resolves #N` in their body. The search window is `--limit 1000` (gh's max per-page).
+**Tier 2 — PR-body search up to 1000:**
+When `closedByPullRequestsReferences` is empty (issue was manually closed via `gh issue close`, or closed by a PR that itself was later closed without merge), Tier 1 yields nothing. Tier 2 searches all closed PRs for "Closes #N" / "Fixes #N" / "Resolves #N" in their body, up to the last 1000 results. The limit was 50 before issue #319 — at Sharkrite's dogfooding pace (78 closed PRs in 3 days), even a 2-day-old PR could fall off the window. 1000 is gh's max page size and covers months of history on any normally-active repo.
 
-**Why 1000, not 50:** An active dogfooding repo generates closed PRs faster than orphan worktrees are reaped. Issue #201's closing PR (#206) fell outside the old `--limit 50` window after only 78 subsequent closed PRs (3 days of work). 1000 covers the practical worktree lifetime; gh's default max per-page is 1000. Issue #42.
+**Tier 3 — Local worktree association (last resort):**
+When no PR can be found via the API (manual close with no matching PR body, or the closing PR never used a GitHub closing keyword), Tier 3 inspects local `git worktree list` for worktrees whose directory name encodes the issue number. Two sub-strategies are tried in order:
 
-**Layer 2 — Local worktree batch-suffix scan (last resort):**
-When both API paths return nothing (manually-closed with no "Closes #N" in any PR body, or no associated PR at all), inspect local `git worktree list` for directories whose batch-suffix encodes the issue number as a whole token.
+- **Sub-strategy A — Batch suffix whole-token match:** Sharkrite's batch mode appends `_b<N1>-<N2>-...` to the worktree directory name. A worktree with suffix `_b201` or `_b199-201-203` belongs to a batch that included issue #201. The whole-token regex prevents substring collisions: `_b2010` does NOT match issue #201.
+- **Sub-strategy B — Title-slug match:** The issue title is normalized to a branch slug using the same rules as `claude-workflow.sh` (lowercase, spaces→dashes, strip non-alnum-dash, cut to 50 chars). If a worktree's basename contains that slug, it's a candidate. This covers single-issue non-batch orphans (e.g., #201's worktree `ft-rebase-pr-172-onto-main-and-resolve-conflicts` matches the issue title "Rebase PR 172 onto main and resolve conflicts").
 
-Worktree directory naming (from `claude-workflow.sh`):
-- Single-issue batch: `<slug>_b<N>` (e.g., `ft-fix-thing_b201`)
-- Multi-issue batch: `<slug>_b<A>-<B>-<N>` (e.g., `ft-fix-thing_b200-201-202-203`)
+**Conservative contract:** Tier 3 is intentionally conservative. If either sub-strategy returns multiple candidates (ambiguous batch), cleanup is skipped and a warning is logged. The risk of deleting the wrong worktree is higher than the cost of leaving an orphan — the user can clean up manually. Only when exactly one candidate exists does Tier 3 proceed.
 
-The regex `(_b|-)N(-|$)` anchors on token boundaries so `_b2010` does NOT match when searching for N=201.
+**Why Tier 3 is last-resort:** It cannot know PR state (merged/closed/never-existed), so it cannot set `pr_state`, which affects the network-call gate in step 3 (remote branch deletion). When Tier 3 fires, `pr_state` stays empty, which means `pr_state != "MERGED"` is true, which allows the remote-branch check. The `found_local_orphans` gate still applies — the remote call only fires if a local worktree or branch was actually removed in steps 1–2.
 
-**Conservative policy (false-positive risk = deleting the wrong worktree):**
-- Zero candidates → skip cleanup (current behavior — no change).
-- One candidate → use it; log a `print_warning` so the user sees the non-standard path.
-- Multiple candidates → apply title-slug tie-breaker (normalize issue title to a slug, check which candidate's dirname contains it). If exactly one matches → use it. If none or multiple match → log warning, skip cleanup (better to leave an orphan than remove the wrong worktree).
-
-**Why conservative:** A batch worktree for issues A, B, N, C contains all four issue numbers in its suffix. If cleanup #N fires, it would find the same worktree as cleanups #A, #B, #C. The single-candidate gate and slug tie-breaker prevent over-cleaning when siblings haven't been cleaned yet.
-
-**Regression test:** `tests/regression/closed-issue-cleanup-no-pr.bats` — static and behavioral checks for both the limit bump (Layer 1) and the local-state fallback (Layer 2), including the substring collision guard (_b2010 must not match #201).
+**Regression test:** `tests/regression/closed-issue-cleanup-no-pr.bats` — behavioral tests covering: manually-closed issue with orphan worktree (Tier 3 title-slug path), PR beyond the original 50-result window (Tier 2 bumped limit), ambiguous batch suffix (conservative skip), and substring collision guard.
 
 **Bug history:**
-- Issue #42 — issue #201, manually closed via `gh issue close` with a comment (no merging PR). Its orphan worktree (`ft-rebase-pr-172-onto-main-and_b200-201-202-203`) persisted across multiple cleanup runs because: (a) `closedByPullRequestsReferences` was empty, (b) the associated PR (#206) had fallen outside the `--limit 50` window, and (c) no local-state fallback existed. Fixed by bumping to `--limit 1000` (Layer 1) and adding the batch-suffix scan (Layer 2).
+- Issue #319 (2026-06-04) — `--limit 50` dropped PR #206 off the window for issue #201 (78 closed PRs in 3 days). Issue #201 had no `closedByPullRequestsReferences` (manually closed). The orphan worktree `ft-rebase-pr-172-onto-main-and-resolve-conflicts` persisted across multiple cleanup runs. Fixed: Tier 2 bumped to `--limit 1000`, Tier 3 local-state fallback added.
 
 ---
 
@@ -271,6 +263,35 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 ---
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
+
+### Fix-loop policy: defer non-critical findings on shippable PRs
+
+`assess-and-resolve.sh` enters the fix loop (exit 2 → claude-workflow fixes → re-review) only when **at least one ACTIONABLE_NOW finding has Severity CRITICAL or HIGH**. If every NOW item is MEDIUM/LOW, the PR is considered shippable: the NOW items are reclassified into a single tech-debt follow-up issue (via the existing `CREATE_SECURITY_DEBT` path + a new `SHIPPABLE_DEFER` flag that extends the tech-debt extractor to include ACTIONABLE_NOW headers, not just LATER ones) and the workflow proceeds to merge with exit 0.
+
+**Why this rule exists — 2026-06-04 finance-glance batch:** Issues #313 and #319 each spent 28–29 minutes in Phase 3 fix-looping on MEDIUM-only findings. Each fix-loop cycle is ~5 minutes of LLM time:
+
+- #313: 4 cycles → 0/1/0 → 1/0/0 → 2/0/0 → stale-review trip → **2,776s (46m), 0 merges**
+- #319: 1 cycle → 0/1/1 → mid-run rebase conflict (main moved during the 28-min Phase 3) → **2,946s (49m), 0 merges**
+
+The findings themselves were real and worth filing — just not worth blocking a merge over. Both PRs were shippable from cycle 1; the loop was burning tokens to fix code quality items that could have been deferred.
+
+**Rule of thumb:** the fix loop is for *correctness-blocking* findings. MEDIUM and LOW findings should ship as-is and get filed as follow-ups. If the reviewer is consistently producing CRITICAL/HIGH findings on shippable PRs, that's a review-prompt problem (loosen the severity threshold), not a fix-loop problem.
+
+**Implementation:** [assess-and-resolve.sh](../../lib/core/assess-and-resolve.sh) — the `ACTIONABLE_NOW_COUNT > 0` branch first computes `CRITICAL_NOW_COUNT` and `HIGH_NOW_COUNT` from the assessment text, then dispatches: zero CRITICAL+HIGH → defer-and-merge; otherwise → existing retry-limit or fix-loop path.
+
+**Coverage:** `tests/integration/assess-and-resolve-dedup.bats` — "ACTIONABLE_NOW with only MEDIUM severity defers to follow-up and exits 0" asserts both the exit code AND that a single follow-up issue is created via the gh mock.
+
+### Fix-review prompt: verify no regressions before declaring done
+
+Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt requires Claude to run the project's test/lint commands covering the files it touched, BEFORE the session ends. Without this, a fix can introduce a regression (e.g., a `find` exclusion that breaks four positive tests) that the next review cycle catches — burning another 5+ minutes of LLM time.
+
+The hard test gate (`run_test_gate`) runs after the session anyway, so this is defense-in-depth: the prompt-level instruction catches issues earlier, while the gate catches anything that slipped through. Live precedent: PR #313's cycle 3 fix added a `find` exclusion to Rule 22 that broke 4 positive tests — cycle 4's review caught it, but only after another full cycle.
+
+### Spend-cap detection in the dev session aborts the whole batch
+
+When `claude --print` hits the user's spending cap mid-session, it emits a message like `Spending cap reached resets 11:20pm` (variations: `usage limit reached`, `[N]-hour limit reached`) and exits non-zero. Sharkrite's claude provider ([lib/providers/claude.sh](../../lib/providers/claude.sh)) `tee`s stdout to a temp file and greps both stdout and stderr after the session exits. If the cap pattern matches, the provider returns exit code 5 — which propagates through [claude-workflow.sh](../../lib/core/claude-workflow.sh) (both dev and fix paths) → workflow-runner.sh → batch-process-issues.sh's exit-5 handler → batch aborts.
+
+**Why this matters — 2026-06-04:** the spend cap fired at the start of issue #321 in a batch of 8. Six subsequent issues (#321, #324, #328, #330, #331, #333) each cascaded through ~35-50s of dev-session startup before hitting the cap and failing. That's ~4 minutes of wasted dev-startup time + 6 false "failed" entries in the batch summary. The cap was already wired in 9 other paths (conflict resolver, divergence handler, fix-review push divergence, merge-time divergence, stale-branch handler) — the plain dev-session path was the gap.
 
 ### ADR generation helper lives in lib/utils/, not lib/core/
 
@@ -686,6 +707,28 @@ Existing automation continues unchanged:
 2. **No keyword matching** — markers and labels are content-addressable, deterministic.
 3. **Append-only growth** for `conventions.md` keeps merge conflicts trivial; `behavioral-design.md` curated narrative resists drift.
 4. **Future agents inherit lessons** — every Claude session loads the conventions catalog automatically. The "rediscover the same lesson every session" failure mode is prevented at the source.
+
+### Conventions Catalog: Accumulate-in-Place Contract
+
+Each convention title is **canonical** — there is exactly one entry per unique title in `conventions.md`. When multiple PRs surface or refine the same convention, their PR numbers accumulate in that single entry's `**References:**` line.
+
+**Three cases handled by `update_conventions_from_marker()`:**
+
+| Situation | Action |
+|---|---|
+| Title absent | Append a new rendered entry (rule, why, example, references) |
+| Title present, PR# already in its References line | No-op (idempotent — already recorded) |
+| Title present, PR# NOT yet in its References line | Accumulate in place: append `, #PR_NUMBER` to the existing entry's References line |
+
+**Why accumulate in place rather than append duplicate headings:**
+
+The catalog's prose contract describes it as "append-only" meaning entries are never deleted or overwritten — not that a new heading is blindly inserted for every PR that touches a convention. Having two `## no-keyword-matching` headings in the catalog is confusing; having one heading with `References: #34, #74, #90, #92` clearly shows the convention's provenance.
+
+The existing seed entries (e.g., `**References:** 206f2be, #34, #74, #90, #92`) already express the intended semantics: one entry, multiple references. The accumulate-in-place behavior makes this consistent for PRs processed after the initial entry was added.
+
+**Implementation:** `assess-documentation.sh::update_conventions_from_marker()` — the `_title_exists` gate (added in issue #320) routes to an awk rewrite that appends `, #PR_NUMBER` to the matching References line without touching any other content.
+
+**Regression tests:** `tests/regression/conventions-marker-append.bats` — Tests 6 and 7 cover the accumulate-in-place path and its idempotency.
 
 ---
 

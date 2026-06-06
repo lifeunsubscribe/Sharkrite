@@ -198,7 +198,11 @@ update_security_guide_from_pr() {
     return 0
   fi
 
-  print_status "Checking for security findings in PR #$pr_number..."
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    print_status "Checking for security findings in issue #$ISSUE_NUMBER..."
+  else
+    print_status "Checking for security findings in PR #$pr_number..."
+  fi
 
   # Extract Claude review comments (check multiple possible bot names)
   REVIEW_COMMENTS=$(gh_safe pr view "$pr_number" --json comments --jq '.comments[] | select(.author.login | test("claude"; "i")) | .body')
@@ -231,7 +235,11 @@ update_security_guide_from_pr() {
     return 0
   fi
 
-  print_warning "Security findings detected in PR #$pr_number"
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    print_warning "Security findings detected in issue #$ISSUE_NUMBER"
+  else
+    print_warning "Security findings detected in PR #$pr_number"
+  fi
   print_status "Analyzing findings against existing security guide..."
 
   # Use provider to analyze and update guide
@@ -413,17 +421,36 @@ if [ -z "$PR_NUMBER" ]; then
   fi
 
   PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
-  print_success "Found PR #$PR_NUMBER for branch $CURRENT_BRANCH"
+  print_success "Found PR for branch $CURRENT_BRANCH"
 fi
 
-verbose_header "🔍 PR Merge Workflow - PR #$PR_NUMBER"
+# Backfill ISSUE_NUMBER from PR body (Closes #N) so workflow messages refer to
+# the issue rather than the PR. Best-effort — falls back to "PR #N" when no
+# linked issue exists.
+ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+if [ -z "$ISSUE_NUMBER" ]; then
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null \
+    | grep -oiE '(close[ds]?|fix(es|ed)?|resolve[ds]?) #[0-9]+' \
+    | head -1 | grep -oE '[0-9]+' || true)
+  ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+fi
+
+if [ -n "$ISSUE_NUMBER" ]; then
+  verbose_header "🔍 Merge Workflow - Issue #$ISSUE_NUMBER"
+else
+  verbose_header "🔍 PR Merge Workflow - PR #$PR_NUMBER"
+fi
 
 # Fetch PR details
 verbose_status "Fetching PR details..."
 PR_DETAILS=$(gh_safe pr view "$PR_NUMBER" --json number,title,state,isDraft,mergeable,url,baseRefName,headRefName,statusCheckRollup)
 
 if [ -z "$PR_DETAILS" ]; then
-  print_error "Could not fetch PR #$PR_NUMBER"
+  if [ -n "$ISSUE_NUMBER" ]; then
+    print_error "Could not fetch PR for issue #$ISSUE_NUMBER"
+  else
+    print_error "Could not fetch PR #$PR_NUMBER"
+  fi
   exit 1
 fi
 
@@ -651,7 +678,11 @@ update_security_guide_from_pr "$PR_NUMBER"
 # Confirm merge
 if [ "$AUTO_MODE" = false ]; then
   echo ""
-  echo "Ready to merge PR #$PR_NUMBER:"
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    echo "Ready to merge issue #$ISSUE_NUMBER:"
+  else
+    echo "Ready to merge PR #$PR_NUMBER:"
+  fi
   echo "  $PR_TITLE"
   echo ""
   read -p "Proceed with merge? (y/n) " -n 1 -r
@@ -688,7 +719,11 @@ case $MERGE_STRATEGY in
 esac
 
 # Perform merge
-verbose_header "🚀 Merging PR #$PR_NUMBER"
+if [ -n "${ISSUE_NUMBER:-}" ]; then
+  verbose_header "🚀 Merging Issue #$ISSUE_NUMBER"
+else
+  verbose_header "🚀 Merging PR #$PR_NUMBER"
+fi
 
 # Atomic merge with SHA verification: use the GitHub API merge endpoint with the
 # sha parameter to reject the merge if the PR head changed since we last checked.
@@ -801,7 +836,11 @@ if [ $MERGE_EXIT_CODE -eq 5 ]; then
 elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   verbose_header "✅ PR Merged Successfully"
 
-  print_success "PR #$PR_NUMBER merged into $PR_BASE"
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    print_success "Issue #$ISSUE_NUMBER merged into $PR_BASE"
+  else
+    print_success "PR #$PR_NUMBER merged into $PR_BASE"
+  fi
 
   # Merge succeeded — now run cleanup phase. If cleanup crashes, exit with code 6
   # (not code 1) so batch reporter can distinguish "merge failed" from "merge succeeded
@@ -1530,7 +1569,11 @@ EOF
   if is_verbose; then
     verbose_header "🎉 Merge Complete"
     echo "Summary:"
-    echo "  ✓ PR #$PR_NUMBER merged into $PR_BASE"
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      echo "  ✓ Issue #$ISSUE_NUMBER merged into $PR_BASE"
+    else
+      echo "  ✓ PR #$PR_NUMBER merged into $PR_BASE"
+    fi
     echo "  ✓ Remote branch deleted: origin/$PR_HEAD"
     echo "  ✓ Local branch deleted: $PR_HEAD"
     echo "  ✓ Security guide updated (if applicable)"
@@ -1552,6 +1595,14 @@ EOF
   if [ -n "${_DOC_PID:-}" ]; then
     _doc_exit=0
     _doc_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+
+    # Only show the wait notice if the background job is still running. If it
+    # already finished while cleanup ran, `wait` returns immediately and the
+    # notice would be misleading noise.
+    if kill -0 "$_DOC_PID" 2>/dev/null; then
+      print_status "Waiting on documentation assessment (typical 90-120s, cap ${_doc_timeout}s)..."
+      echo "  Log: $_DOC_LOG"
+    fi
 
     # Start a watchdog: after the timeout, SIGTERM the doc assessment subprocess.
     # The watchdog itself is killed when the doc assessment finishes first.
@@ -1606,7 +1657,11 @@ EOF
   # can distinguish "merge succeeded but cleanup crashed" from "everything succeeded"
   if [ "$CLEANUP_FAILED" = true ]; then
     print_warning "PR merged successfully, but post-merge cleanup encountered errors"
-    print_info "Work is on remote (PR #$PR_NUMBER merged to $PR_BASE)"
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      print_info "Work is on remote (issue #$ISSUE_NUMBER merged to $PR_BASE)"
+    else
+      print_info "Work is on remote (PR #$PR_NUMBER merged to $PR_BASE)"
+    fi
     exit 6
   fi
 

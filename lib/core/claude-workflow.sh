@@ -754,7 +754,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
 
   # Fetch latest assessment from PR comment (single source of truth)
   if [ -n "$FIX_PR_NUMBER" ]; then
-    print_status "Fetching latest assessment from PR #$FIX_PR_NUMBER..."
+    print_status "Fetching latest assessment for issue #${ISSUE_NUMBER:-?}..."
     _jq_assessment_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
     REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
       --jq "$_jq_assessment_body" || true)
@@ -770,7 +770,7 @@ if [ "$FIX_REVIEW_MODE" = true ]; then
   fi
 
   if [ -z "$REVIEW_CONTENT" ] || [ "$REVIEW_CONTENT" = "null" ]; then
-    print_error "No assessment found on PR #${FIX_PR_NUMBER:-unknown}"
+    print_error "No assessment found for issue #${ISSUE_NUMBER:-unknown}"
     print_info "Expected a comment with <!-- ${RITE_MARKER_ASSESSMENT} --> marker"
     exit 1
   fi
@@ -815,12 +815,13 @@ $ACTIONABLE_NOW_ITEMS
 2. **Make the necessary code changes** at the locations specified in each item
 3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
 4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
+5. **VERIFY NO REGRESSIONS BEFORE DECLARING DONE.** Each fix can break code that was passing before. Run the project's test/lint commands that cover the files you touched (\`make check\`, \`bats tests/...\`, \`pytest tests/...\`, etc. — pick what's relevant for this repo). If any check that was passing now fails, fix or revert the change. **Do not finish the session with a regression you introduced.** Live precedent: in PR #313's fix loop, an earlier cycle's fix added a \`find\` exclusion that broke 4 positive tests in the same file — the next review cycle caught it, but only after burning another 5 min of LLM time. Catching it inside this session would have saved that cycle.
 
 The workflow will automatically commit, push, and request a new review.
 
 ## Scope
 - Read and edit source code files to fix the listed issues
-- Run tests if mentioned in the issue
+- Run tests/lint covering the files you touched (required by step 5 above)
 - Do NOT modify workflow, config, or CI files (.rite/, .github/workflows/, .claude/)
 
 $EXIT_INSTRUCTION"
@@ -860,6 +861,13 @@ $EXIT_INSTRUCTION"
         print_error "No fixes made before timeout"
         exit 1
       fi
+    elif [ $FIX_EXIT_CODE -eq 5 ]; then
+      # Usage cap reached during fix session — propagate so batch aborts.
+      # The provider session function detected the cap message internally
+      # and returned 5; here we just surface it cleanly instead of letting
+      # the generic non-zero handler treat it as an ordinary fix failure.
+      print_error "Claude usage cap reached during fix session — aborting batch"
+      exit 5
     elif [ $FIX_EXIT_CODE -ne 0 ]; then
       print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
     fi
@@ -1121,7 +1129,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
 
     if [ "$PR_STATE" = "MERGED" ]; then
       print_success "✅ Work already completed!"
-      echo "  PR #$PR_NUMBER: $PR_TITLE"
+      echo "  Issue #${ISSUE_NUMBER:-?} (PR #$PR_NUMBER): $PR_TITLE"
       echo "  Status: MERGED"
       echo "  URL: $PR_URL"
       echo ""
@@ -1531,7 +1539,13 @@ If the changes are unrelated work, answer UNRELATED."
           if [ "$_IS_MERGED" = true ]; then
             # Skip uncommitted-changes guard: merged PR means the work is in main.
             # Any residue is disposable.
-            print_status "Cleaning merged worktree: $WT_BRANCH${_MERGED_PR_NUMBER:+ (PR #$_MERGED_PR_NUMBER)}"
+            # Extract issue # from branch name (e.g. "issue-42-foo" → "42") for user-facing label.
+            _WT_ISSUE=$(echo "$WT_BRANCH" | grep -oE 'issue-?[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+            if [ -n "$_WT_ISSUE" ]; then
+              print_status "Cleaning merged worktree for issue #$_WT_ISSUE: $WT_BRANCH"
+            else
+              print_status "Cleaning merged worktree: $WT_BRANCH${_MERGED_PR_NUMBER:+ (PR #$_MERGED_PR_NUMBER)}"
+            fi
             git worktree remove --force "$wt_path" 2>/dev/null || true
             git branch -D "$WT_BRANCH" 2>/dev/null || true
             # Remove the now-stale origin branch so future preflights don't re-evaluate it.
@@ -1638,7 +1652,14 @@ If the changes are unrelated work, answer UNRELATED."
               UNCOM=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
               [ "$UNCOM" -gt 0 ] && REASONS="${REASONS}uncommitted, "
               PR_N=$(gh_safe pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' || true)
-              [ -n "$PR_N" ] && REASONS="${REASONS}PR #$PR_N, "
+              if [ -n "$PR_N" ]; then
+                _WT_ISSUE_N=$(echo "$WT_BRANCH" | grep -oE 'issue-?[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+                if [ -n "$_WT_ISSUE_N" ]; then
+                  REASONS="${REASONS}issue #${_WT_ISSUE_N} open, "
+                else
+                  REASONS="${REASONS}PR #$PR_N, "
+                fi
+              fi
               if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
               elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
@@ -1746,7 +1767,7 @@ If the changes are unrelated work, answer UNRELATED."
       if [ "$_has_remote_branch" = true ]; then
         # Resume from existing remote branch (recreate worktree from PR branch)
         if [ -n "$_pr_number" ]; then
-          print_info "Resuming existing PR #$_pr_number — recreating worktree from origin/$BRANCH_NAME"
+          print_info "Resuming existing issue #${ISSUE_NUMBER} — recreating worktree from origin/$BRANCH_NAME"
         else
           print_info "Remote branch exists — recreating worktree from origin/$BRANCH_NAME"
         fi
@@ -2071,7 +2092,7 @@ _Draft PR created automatically by rite for tracking purposes._"
   PR_NUMBER=$(gh_safe pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' || true)
 
   if [ -n "$PR_NUMBER" ]; then
-    print_success "Draft PR #$PR_NUMBER created"
+    print_success "Draft PR created for issue #${ISSUE_NUMBER}"
     echo ""
   else
     print_warning "Could not get PR number - continuing without PR link"
@@ -2353,6 +2374,19 @@ else
     print_error "This usually means a required tool is missing."
     print_info "Check that the '$(provider_name)' CLI is installed"
     exit 127
+  elif [ $CLAUDE_EXIT_CODE -eq 5 ]; then
+    # Usage cap reached — claude_provider_run_agentic_session detected the
+    # "Spending cap reached" / "usage limit reached" message in the CLI's
+    # output and translated it into exit 5. Propagate so the batch processor
+    # aborts the rest of the batch instead of burning ~40s per remaining
+    # issue on doomed dev-session restarts.
+    # See: lib/core/batch-process-issues.sh exit-5 handler.
+    print_error "Claude usage cap reached during dev session — aborting batch"
+    if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
+      echo "Provider message:"
+      grep -iE "spending cap|usage limit|rate limit|[0-9]+-hour limit" "$CLAUDE_STDERR_FILE" | head -3 || true
+    fi
+    exit 5
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
     if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
@@ -2444,16 +2478,16 @@ else
             # (guards against duplicate blocks on retry/resume runs)
             _current_pr_body=$(gh_safe pr view "$_pr_for_scope" --json body --jq '.body' || true)
             if echo "$_current_pr_body" | grep -q "<!-- ${RITE_MARKER_SCOPE_WARNING} -->" 2>/dev/null; then
-              print_info "Scope warning already present on PR #${_pr_for_scope} — skipping duplicate append"
+              print_info "Scope warning already present for issue #${ISSUE_NUMBER:-?} — skipping duplicate append"
             else
               _scope_warn_text=$(format_scope_warning "$_scope_violations")
               _updated_body="${_current_pr_body}${_scope_warn_text}"
               _scope_body_file=$(mktemp)
               printf '%s' "$_updated_body" > "$_scope_body_file"
               gh_safe pr edit "$_pr_for_scope" --body-file "$_scope_body_file" 2>/dev/null || \
-                print_warning "Could not append scope warning to PR #${_pr_for_scope}"
+                print_warning "Could not append scope warning for issue #${ISSUE_NUMBER:-?}"
               rm -f "$_scope_body_file"
-              print_info "Scope violation warning appended to PR #${_pr_for_scope}"
+              print_info "Scope violation warning appended for issue #${ISSUE_NUMBER:-?}"
             fi
           else
             print_info "No PR found yet — scope warning will appear in workflow log only"
@@ -2539,7 +2573,7 @@ if [ $CHANGES_COUNT -eq 0 ]; then
         DRAFT_PR=$(gh_safe pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' || true)
         if [ -n "$DRAFT_PR" ]; then
           gh_safe pr close "$DRAFT_PR" --delete-branch 2>/dev/null || true
-          print_info "Closed draft PR #$DRAFT_PR"
+          print_info "Closed draft PR for issue #${ISSUE_NUMBER}"
         fi
       fi
     fi
