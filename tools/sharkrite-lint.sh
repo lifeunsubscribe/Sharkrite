@@ -1145,7 +1145,7 @@ if [ -f "$_tag_index_path" ]; then
         tags_line = ""
         new_tags_block = ""
       }
-      $0 == open_marker  { in_block = 1; block_start_line = NR; tags_line = ""; new_tags_block = ""; in_new_tags = 0; next }
+      $0 == open_marker  { in_block = 1; block_start_line = NR; tags_line = ""; new_tags_block = ""; in_new_tags = 0; in_example = 0; next }
       $0 == close_marker {
         if (!in_block) { next }
         in_block = 0
@@ -1184,6 +1184,9 @@ if [ -f "$_tag_index_path" ]; then
         }
         next
       }
+      in_block && /^example:[[:space:]]*\|/ { in_example = 1; in_new_tags = 0; next }
+      in_block && in_example && /^(title|rule|why|example|references|tags|new-tags):/ { in_example = 0 }
+      in_block && in_example { next }
       in_block && /^tags:/ {
         tags_line = substr($0, 6)
         gsub(/^[[:space:]]+/, "", tags_line)

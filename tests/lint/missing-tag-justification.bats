@@ -27,12 +27,18 @@ setup() {
   FAKE_PROJECT_ROOT="${BATS_TEST_TMPDIR}/fake-project-root"
   mkdir -p "$FAKE_PROJECT_ROOT/docs/architecture"
   TAG_INDEX_PATH="$FAKE_PROJECT_ROOT/docs/architecture/tag-index.md"
+
+  # Back up the real tag-index.md once at the start of each test so that
+  # teardown() can always restore it — even if the test body fails mid-way.
+  _backup_tag_index
 }
 
 teardown() {
   rm -rf "$LINT_FIXTURE_DIR"
   rm -rf "$FAKE_PROJECT_ROOT"
   unset RITE_LINT_EXTRA_DIRS
+  # Always restore the real tag-index.md, regardless of test outcome.
+  _restore_tag_index
 }
 
 # Helper: create a fixture shell file in LINT_FIXTURE_DIR
@@ -85,19 +91,24 @@ _real_tag_index() {
   echo "$repo_root/docs/architecture/tag-index.md"
 }
 
-# Seed the real tag-index.md with content; save original if it exists
+# Back up the real tag-index.md at test start (called from setup())
+_backup_tag_index() {
+  local real_path
+  real_path="$(_real_tag_index)"
+  if [ -f "$real_path" ]; then
+    cp "$real_path" "${real_path}.bak"
+  fi
+}
+
+# Seed the real tag-index.md with fixture content (no backup — setup() already did it)
 _seed_tag_index() {
   local content="$1"
   local real_path
   real_path="$(_real_tag_index)"
-  # Save backup (may not exist)
-  if [ -f "$real_path" ]; then
-    cp "$real_path" "${real_path}.bak"
-  fi
   printf '%s\n' "$content" > "$real_path"
 }
 
-# Restore the real tag-index.md after a test
+# Restore the real tag-index.md after a test (called from teardown())
 _restore_tag_index() {
   local real_path
   real_path="$(_real_tag_index)"
@@ -114,13 +125,11 @@ _restore_tag_index() {
 # ---------------------------------------------------------------------------
 
 @test "MISSING_TAG_JUSTIFICATION: rule is skipped when tag-index.md does not exist" {
-  # Ensure the real tag-index.md does not exist
+  # Ensure the real tag-index.md does not exist for this test
+  # (setup() already backed it up, so we can safely remove it here)
   local real_path
   real_path="$(_real_tag_index)"
-  if [ -f "$real_path" ]; then
-    cp "$real_path" "${real_path}.bak"
-    rm "$real_path"
-  fi
+  rm -f "$real_path"
 
   # Convention block with an unknown tag — but since index is absent, no violation
   create_fixture "convention-no-index.sh" \
@@ -135,8 +144,6 @@ tags: unknown-tag-xyz
   # Must NOT fire MISSING_TAG_JUSTIFICATION
   echo "$output" | grep -qvF "MISSING_TAG_JUSTIFICATION" || true
   [[ "$output" != *"MISSING_TAG_JUSTIFICATION"* ]]
-
-  _restore_tag_index
 }
 
 # ---------------------------------------------------------------------------
@@ -165,8 +172,6 @@ tags: set-e, subshell
 
   _run_linter
   [[ "$output" != *"MISSING_TAG_JUSTIFICATION"* ]]
-
-  _restore_tag_index
 }
 
 # ---------------------------------------------------------------------------
@@ -195,8 +200,6 @@ new-tags:
 
   _run_linter
   [[ "$output" != *"MISSING_TAG_JUSTIFICATION"* ]]
-
-  _restore_tag_index
 }
 
 # ---------------------------------------------------------------------------
@@ -225,8 +228,6 @@ tags: totally-unknown-zzz
   [ "$status" -ne 0 ]
   [[ "$output" == *"MISSING_TAG_JUSTIFICATION"* ]]
   [[ "$output" == *"totally-unknown-zzz"* ]]
-
-  _restore_tag_index
 }
 
 # ---------------------------------------------------------------------------
@@ -258,8 +259,6 @@ tags: set-e, unknown-partial-tag
   [[ "$output" != *"'set-e'"* ]]
   # Unknown tag must be reported
   [[ "$output" == *"unknown-partial-tag"* ]]
-
-  _restore_tag_index
 }
 
 # ---------------------------------------------------------------------------
@@ -283,8 +282,6 @@ why: Because
 
   _run_linter
   [[ "$output" != *"MISSING_TAG_JUSTIFICATION"* ]]
-
-  _restore_tag_index
 }
 
 # ---------------------------------------------------------------------------
@@ -314,6 +311,4 @@ new-tags:
   _run_linter
   # Both tags are justified (one in index, one in new-tags:) → no violation
   [[ "$output" != *"MISSING_TAG_JUSTIFICATION"* ]]
-
-  _restore_tag_index
 }

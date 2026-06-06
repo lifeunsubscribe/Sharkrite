@@ -633,7 +633,7 @@ EOF
       # These appear between "new-tags:" and the next top-level field or end of block.
       # The awk program is stored in a variable first for UNSAFE_PIPE_IN_CMDSUB compliance.
       local _new_tags_awk='/^new-tags:/ { in_nt=1; next } in_nt && /^(title|rule|why|example|references|tags|new-tags):/ { in_nt=0 } in_nt { print }'
-      _new_tags=$(printf '%s' "$_current_block" | awk "$_new_tags_awk" || true)
+      _new_tags=$(printf '%s' "$_block_no_example" | awk "$_new_tags_awk" || true)
 
       # Extract multi-line example block (everything after "example: |" up to the
       # next top-level key or end of block).  The example field uses YAML literal
