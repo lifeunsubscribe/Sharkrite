@@ -573,6 +573,43 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 - `RITE_GH_MAX_RETRIES` (default: 3) — reduce to shorten gh backoff windows
 - To increase the waiter budget: edit `max_attempts` in `acquire_pr_followup_lock` (not currently configurable via env)
 
+### Lock Release Before exec (CRITICAL)
+
+**Contract:** Any code path that calls `exec` to restart the script (replacing the process image) MUST release any lock acquired via `trap "release_issue_lock ..." EXIT` **before** the `exec` call.
+
+**Why:** `exec` replaces the process image without running EXIT traps (bash documented behavior: "If the command is supplied, it replaces the shell. No new process is created."). The lock directory is left on disk with the current PID written to the `pid` file. The re-exec'd process is the **same PID** (`$$` is unchanged). When it attempts `acquire_issue_lock`, it finds the lock directory already exists, reads its own PID, runs `kill -0 $$` — which succeeds (the process is alive) — and concludes the lock is held by a live process. It prints the "already being processed" error, waits 30 seconds, and times out with exit 1.
+
+**Live failure:** Issue #343, batch run `rite-338-340-343-345-20260606-092031.log:1012`. The empty-branch auto-recovery path exited and re-exec'd without releasing the lock:
+```
+✅ Empty branch cleanup complete — ready to restart fresh
+Restarting workflow after empty branch cleanup...
+🦈 Initializing Sharkrite workflow...
+❌ Issue #343 is already being processed by PID 88811
+   Refusing to start. Wait for it to finish, or run 'rite 343 --undo' if it crashed.
+❌ Lock timeout after 30 seconds
+❌ Development workflow failed
+```
+
+**Fix pattern (Option A — primary):** Release explicitly before each `exec`:
+```bash
+# Release lock before exec: exec replaces the process image without firing EXIT traps,
+# so the trap "release_issue_lock" registered above would never run. Release explicitly.
+release_issue_lock "$ISSUE_NUMBER"
+exec "$SCRIPT_PATH" "$ISSUE_NUMBER" --auto
+```
+
+**Defense-in-depth (Option B):** `acquire_issue_lock` also detects `lock_pid == $$` and self-reclaims with a warning. This catches exec sites that forget Option A:
+```
+⚠️  Reclaiming self-held lock (post-exec restart) for issue #N
+```
+
+**Known exec sites in `claude-workflow.sh` (all fixed, all require Option A):**
+- Stale-branch restart (auto mode and supervised) — lines after `_stale_exit -eq 11`
+- Empty/divergent branch auto-recovery restart (auto mode) — after `preflight_auto_recover_empty`
+- Supervised cleanup restart (option 1 in the prompt) — after `preflight_auto_recover_empty`
+
+**Enforcement:** `tests/regression/claude-workflow-lock-survives-exec.bats` asserts that the release call precedes each exec and that the re-exec'd process acquires the lock without the "already being processed" error.
+
 ---
 
 ## Phase Handoff cwd Invariants (workflow-runner.sh)
