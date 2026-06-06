@@ -1436,12 +1436,6 @@ _lint_issues_strict() {
   local _spike_ids=""
   _spike_ids=$(grep "^TITLE:.*SPIKE" "$issues_file" | grep -oE 'SPIKE-[A-Za-z0-9_-]+' || true)
 
-  # Build canonical title index for batch issues
-  local _batch_canon_titles=""
-  _batch_canon_titles=$(echo "$_issue_titles" | \
-    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
-    tr '[:upper:]' '[:lower:]' || true)
-
   # -------------------------------------------------------------------------
   # Check 1: Acyclic dependency graph (DFS cycle detection)
   # Edges: "BATCH-N → BATCH-M" derived from Dependencies lines
@@ -1458,10 +1452,6 @@ _lint_issues_strict() {
   # deps cannot form intra-batch cycles.
 
   local _adj_list=""  # "FROM_ID:TO_ID\n" lines
-
-  # Assign ordinal position to each BATCH-N for #PREV resolution
-  local _batch_order=""  # "BATCH-1\nBATCH-2\n..."
-  _batch_order=$(echo "$_issue_ids")
 
   local _prev_id=""
   while IFS= read -r _dep_entry; do
@@ -1507,6 +1497,9 @@ _lint_issues_strict() {
     local node="$1"
     local path="$2"
 
+    # If a cycle was already found, stop recursing (flag-based, not exit-code-based)
+    [ "$_cycle_found" = true ] && return 0
+
     # If node is already fully processed, no cycle through it
     case " $_dfs_visited " in
       *" $node "*) return 0 ;;
@@ -1516,11 +1509,20 @@ _lint_issues_strict() {
     case " $path " in
       *" $node "*)
         _cycle_found=true
-        # Extract the cycle segment from path
-        local _seg="${path#*$node}"
-        _cycle_path="$node →${_seg}→ $node"
-        _cycle_path=$(echo "$_cycle_path" | sed 's/ :/ →/g; s/: /→/g' || true)
-        return 1
+        # Extract the cycle segment from path: everything after the first occurrence of node
+        # Use parameter expansion with quoted pattern to avoid glob issues
+        local _after_node="${path##* $node}"
+        # _after_node is the portion of the path after the repeated node
+        # Build: node → <intermediate nodes> → node
+        # The path is space-separated; convert spaces to " → "
+        local _seg
+        _seg=$(echo "$_after_node" | sed 's/  */ → /g; s/^ → //; s/ → $//' || true)
+        if [ -n "$_seg" ]; then
+          _cycle_path="$node → $_seg → $node"
+        else
+          _cycle_path="$node → $node"
+        fi
+        return 0
         ;;
     esac
 
@@ -1532,7 +1534,7 @@ _lint_issues_strict() {
 
     while IFS= read -r _nbr; do
       [ -z "$_nbr" ] && continue
-      _dfs_visit "$_nbr" "$_new_path" || return 1
+      _dfs_visit "$_nbr" "$_new_path"
     done <<< "$_nbrs"
 
     # Mark node as fully processed
@@ -1556,9 +1558,9 @@ _lint_issues_strict() {
       if echo "$_node_suppress" | grep -qF "cycle-check"; then
         continue
       fi
-      if ! _dfs_visit "$_node" ""; then
-        break
-      fi
+      _dfs_visit "$_node" ""
+      # _cycle_found flag is set inside _dfs_visit; early-exit the driver loop
+      [ "$_cycle_found" = true ] && break
     done <<< "$_all_nodes"
 
     if [ "$_cycle_found" = true ]; then
@@ -1576,7 +1578,6 @@ _lint_issues_strict() {
   #   (c) it is #PREV (always valid intra-batch)
   # -------------------------------------------------------------------------
 
-  local _prev_batch_id=""
   while IFS= read -r _dep_entry2; do
     [ -z "$_dep_entry2" ] && continue
     local _did2="${_dep_entry2%%|*}"
@@ -1675,8 +1676,11 @@ _lint_issues_strict() {
 
       # Extract file-path-like tokens from verification command
       # Match: src/..., lib/..., tests/..., relative paths with /
+      # First strip URLs so their path components don't appear as false positives
+      local _vcmd_stripped
+      _vcmd_stripped=$(echo "$_vcmd" | sed 's|https\?://[^[:space:]]*||g; s|git@[^[:space:]]*||g' || true)
       local _vpaths
-      _vpaths=$(echo "$_vcmd" | grep -oE '[a-zA-Z_][a-zA-Z0-9_/.-]*\.[a-zA-Z]{1,6}' || true)
+      _vpaths=$(echo "$_vcmd_stripped" | grep -oE '[a-zA-Z_][a-zA-Z0-9_/.-]*\.[a-zA-Z]{1,6}' || true)
 
       while IFS= read -r _vp; do
         [ -z "$_vp" ] && continue
@@ -1684,6 +1688,20 @@ _lint_issues_strict() {
         case "$_vp" in
           */*) ;;
           *) continue ;;
+        esac
+        # Skip bare hostname-like tokens (e.g. api.github.com — no leading dir component)
+        # A valid relative path must start with a directory segment, not a hostname-style token.
+        # Heuristic: if the first component contains no underscore or uppercase and has 2+ dots,
+        # it looks like a hostname rather than a path.
+        case "$_vp" in
+          *.*.*)
+            # Three or more components separated by dots with slashes — likely hostname/path
+            # Only skip if it doesn't start like a known path prefix
+            case "$_vp" in
+              src/* | lib/* | tests/* | test/* | bin/* | docs/* | tools/* | config/* | ./* ) ;;
+              *) continue ;;
+            esac
+            ;;
         esac
 
         # Check if in Files to Modify
@@ -1728,7 +1746,7 @@ _lint_issues_strict() {
         local _dc_reason
         _dc_reason=$(echo "$_issue_suppress" | grep "deferral-citation" | head -1 || true)
         print_info "[suppressed] deferral-citation: $_dc_reason" >&2
-        break
+        continue
       fi
 
       # A citation is present if the deferral line contains:
