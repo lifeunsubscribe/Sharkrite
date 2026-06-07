@@ -3,7 +3,8 @@
 # Claude-assisted merge conflict resolution.
 #
 # Entry condition:
-#   Caller must have git in a merge-conflict state (git diff --diff-filter=U returns files).
+#   Caller may invoke from either a merge-conflict state OR a clean tree (e.g. after
+#   aborting a rebase/merge). Step 3 re-runs git merge to recreate conflict markers.
 #   This file does NOT commit, push, run tests, or print to stdout.
 #
 # Exit codes (public contract — do NOT change without updating all call sites):
@@ -56,9 +57,10 @@ _cr_status()  { echo "$1" >&2; }
 
 # attempt_claude_merge_resolution [OPTIONS]
 #
-# Attempts to resolve current merge conflicts using an agentic Claude session.
-# PRECONDITION: Must be called while git merge is in a conflicted state
-#               (i.e., git diff --diff-filter=U returns files).
+# Attempts to resolve merge conflicts using an agentic Claude session.
+# May be called from a clean tree (e.g. after a caller aborts rebase/merge) or
+# from an active conflict state. Step 3 re-runs git merge to recreate conflict
+# markers regardless of entry state.
 #
 # Options (all optional):
 #   --issue-number NUM    GitHub issue number
@@ -114,24 +116,24 @@ attempt_claude_merge_resolution() {
     _cr_branch_name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
   fi
 
-  # ── Step 1: Record conflicting files ──
+  # ── Step 1: Check for any active conflict state ──
+  # Callers may invoke us from a clean tree (they aborted the rebase/merge before
+  # calling, which is the common pattern in stale-branch.sh and divergence-handler.sh).
+  # We record files here if we're mid-merge — Step 2 aborts it and gathers context,
+  # then Step 3 re-runs the merge to recreate conflict markers for Claude.
+  # After Step 3 re-creates the conflict, we refresh _cr_conflict_files from the live state.
   local _cr_conflict_files
   _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
 
-  if [ -z "$_cr_conflict_files" ]; then
-    _cr_error "No unmerged files found — not in a conflict state"
-    return 1
-  fi
-
-  _cr_info "Conflicting files:" >&2
-  echo "$_cr_conflict_files" | sed 's/^/  /' >&2
-
-  # ── Step 2: Abort merge and gather context ──
+  # ── Step 2: Abort any in-progress merge and gather context ──
+  # No-op when called from a clean tree (the common caller pattern).
   git merge --abort 2>/dev/null || true
 
-  # Branch's diff to conflicting files (what our branch changed)
+  # Gather context diffs before Step 3 re-runs the merge.
+  # If _cr_conflict_files is empty (clean-tree entry), these diffs will be based
+  # on all files changed between HEAD and merge target — still useful context for Claude.
   local _cr_branch_diff=""
-  _cr_branch_diff=$(git diff "${_cr_merge_target}...HEAD" -- $_cr_conflict_files 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+  _cr_branch_diff=$(git diff "${_cr_merge_target}...HEAD" ${_cr_conflict_files:+-- $_cr_conflict_files} 2>/dev/null | head -"$_cr_diff_lines" || echo "")
 
   # Main's commits and diff to conflicting files since branch diverged
   local _cr_merge_base
@@ -139,8 +141,8 @@ attempt_claude_merge_resolution() {
   local _cr_main_log=""
   local _cr_main_diff=""
   if [ -n "$_cr_merge_base" ]; then
-    _cr_main_log=$(git log --oneline "${_cr_merge_base}..${_cr_merge_target}" -- $_cr_conflict_files 2>/dev/null | head -20 || echo "")
-    _cr_main_diff=$(git diff "${_cr_merge_base}..${_cr_merge_target}" -- $_cr_conflict_files 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+    _cr_main_log=$(git log --oneline "${_cr_merge_base}..${_cr_merge_target}" ${_cr_conflict_files:+-- $_cr_conflict_files} 2>/dev/null | head -20 || echo "")
+    _cr_main_diff=$(git diff "${_cr_merge_base}..${_cr_merge_target}" ${_cr_conflict_files:+-- $_cr_conflict_files} 2>/dev/null | head -"$_cr_diff_lines" || echo "")
   fi
 
   # PR context (if available)
@@ -158,10 +160,22 @@ attempt_claude_merge_resolution() {
 
   # ── Step 3: Re-start merge so Claude sees conflict markers ──
   if git merge "$_cr_merge_target" --no-edit 2>/dev/null; then
-    # Unexpected success (race condition or transient) — merge resolved itself
-    _cr_info "Merge succeeded on retry — no conflict resolution needed"
+    # Merge succeeded — no conflicts to resolve
+    _cr_info "Merge succeeded — no conflict resolution needed"
     return 0
   fi
+
+  # Refresh conflict files from the live merge state (covers the case where Step 1
+  # found none because the caller had already aborted before invoking us).
+  _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+  if [ -z "$_cr_conflict_files" ]; then
+    _cr_error "Merge failed but no unmerged files found — unexpected state"
+    git merge --abort 2>/dev/null || true
+    return 1
+  fi
+
+  _cr_info "Conflicting files:" >&2
+  echo "$_cr_conflict_files" | sed 's/^/  /' >&2
 
   # ── Step 4: Build prompt ──
   local _cr_prompt="You are in a git worktree with merge conflicts that need resolution.
