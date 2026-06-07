@@ -231,15 +231,14 @@ Resolve every conflict, then stage each file with git add."
   local _cr_session_exit=0
   provider_run_agentic_session "$_cr_prompt" "$_cr_timeout" true "$_cr_stderr_file" || _cr_session_exit=$?
 
-  # Check for usage cap — stream errors may arrive on exit 0
-  if [ -s "$_cr_stderr_file" ]; then
-    local _cr_err_type
-    _cr_err_type=$(provider_detect_error "$(cat "$_cr_stderr_file")" "$_cr_session_exit") || true
-    if [ "$_cr_err_type" = "USAGE_CAP" ]; then
-      rm -f "$_cr_stderr_file"
-      _cr_error "Provider usage cap reached during conflict resolution"
-      return 5
-    fi
+  # Check for usage cap — provider_run_agentic_session sets exit 5 for usage cap
+  # (see claude.sh:156-160). provider_detect_error never returns "USAGE_CAP" (only
+  # PROVIDER_BUG|RATE_LIMITED|AUTH_EXPIRED|NETWORK_ERROR|UNKNOWN), so the real signal
+  # is the exit code itself. Check exit code first; also check stderr for belt-and-suspenders.
+  if [ "$_cr_session_exit" -eq 5 ]; then
+    rm -f "$_cr_stderr_file"
+    _cr_error "Provider usage cap reached during conflict resolution"
+    return 5
   fi
 
   if [ "$_cr_session_exit" -ne 0 ]; then

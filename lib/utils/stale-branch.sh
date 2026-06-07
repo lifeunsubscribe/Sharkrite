@@ -574,13 +574,20 @@ _stale_rebase_onto_main() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
+        # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
+        # Commit the resolution before verifying or pushing.
+        if ! git commit --no-edit 2>/dev/null; then
+          print_error "Failed to commit resolved conflicts"
+          git merge --abort 2>/dev/null || true
+          return 1
+        fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
           return 1
         fi
-        # Resolution committed the result — push with force-with-lease (rebase rewrote history)
+        # Resolution committed and verified — push with force-with-lease (rebase rewrote history)
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
           print_success "Branch rebased onto origin/main (with conflict resolution)"
           return 0

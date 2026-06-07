@@ -231,9 +231,16 @@ _mid_run_rebase_onto_main() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "mid-run-rebase: conflicts resolved by Claude"
-        # Resolver stages files but does not push; do force-with-lease push here.
+        # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
+        # Commit the resolution before pushing.
+        if ! git commit --no-edit 2>/dev/null; then
+          print_error "mid-run-rebase: failed to commit resolved conflicts"
+          git merge --abort 2>/dev/null || true
+          return 1
+        fi
+        # Resolution committed — force-with-lease push (history was rewritten by resolver).
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-          print_info "mid-run rebase: conflict resolved and pushed"
+          print_info "mid-run rebase: conflict resolved, committed, and pushed"
           return 0
         else
           print_error "mid-run-rebase: push failed after conflict resolution (force-with-lease rejected)"
