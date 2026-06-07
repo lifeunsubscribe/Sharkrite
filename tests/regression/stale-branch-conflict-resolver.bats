@@ -133,9 +133,9 @@ _setup_conflicting_branch() {
   }
 
   # Capture stderr for message assertions
-  local output
-  output=$(_stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "75" "101" 2>&1) || true
-  local exit_code=$?
+  # Note: use || exit_code=$? pattern to capture non-zero exit codes; plain || true + $? always gives 0.
+  local output exit_code=0
+  output=$(_stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "75" "101" 2>&1) || exit_code=$?
 
   # Should return non-zero (auto mode bail)
   [ "$exit_code" -ne 0 ]
@@ -169,9 +169,9 @@ _setup_conflicting_branch() {
   }
 
   # Capture output and exit code
-  local output
-  output=$(_stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "75" "101" 2>&1) || true
-  local exit_code=$?
+  # Note: use || exit_code=$? pattern to capture non-zero exit codes; plain || true + $? always gives 0.
+  local output exit_code=0
+  output=$(_stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "75" "101" 2>&1) || exit_code=$?
 
   # Must propagate exit 5 exactly (batch-blocking)
   [ "$exit_code" -eq 5 ]
@@ -205,9 +205,9 @@ _setup_conflicting_branch() {
   export RITE_STALE_BRANCH_THRESHOLD=10
 
   # Capture output and exit code from the PUBLIC entry point
-  local output
-  output=$(check_stale_branch "$WORKTREE_PATH" "101" "75" "unsupervised" 2>&1) || true
-  local exit_code=$?
+  # Note: use || exit_code=$? pattern to capture non-zero exit codes; plain || true + $? always gives 0.
+  local output exit_code=0
+  output=$(check_stale_branch "$WORKTREE_PATH" "101" "75" "unsupervised" 2>&1) || exit_code=$?
 
   # Must propagate exit 5 exactly through the public entry point
   [ "$exit_code" -eq 5 ]

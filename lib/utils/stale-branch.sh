@@ -24,6 +24,11 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 
+# Source logging for _diag structured diagnostic lines (no-op if already loaded)
+if ! declare -f _diag >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/logging.sh"
+fi
+
 # Source gh retry wrapper if not already loaded (stash-manager.sh does not chain to it)
 if ! declare -f gh_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/gh-retry.sh"
@@ -561,9 +566,13 @@ _stale_rebase_onto_main() {
     # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
     if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
       print_status "Attempting Claude-assisted conflict resolution..."
-      local _resolver_result=0
+      local _resolver_result=0 _cr_start _cr_duration
+      _cr_start=$(date +%s)
+      _diag "CONFLICT_RESOLVER_START context=stale_rebase issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name}"
       attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
+        _diag "CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
@@ -580,13 +589,20 @@ _stale_rebase_onto_main() {
           return 1
         fi
       elif [ "$_resolver_result" -eq 5 ]; then
+        _diag "CONFLICT_RESOLVER context=stale_rebase outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         print_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
       else
+        _diag "CONFLICT_RESOLVER context=stale_rebase outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
         print_warning "Claude could not resolve conflicts — supervised mode required"
       fi
+    elif [ "$workflow_mode" != "supervised" ]; then
+      # Canary: resolver function not available but we're in auto mode — emit a diagnostic
+      # so wiring drift is visible in health reports. If this appears, conflict-resolver.sh
+      # was removed or uninstalled unexpectedly.
+      _diag "CONFLICT_RESOLVER context=stale_rebase outcome=skipped_no_resolver issue=${issue_number:-} pr=${pr_number:-}"
     fi
 
     if [ "$workflow_mode" = "supervised" ]; then
@@ -688,9 +704,13 @@ _stale_merge_main_legacy() {
     # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
     if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
       print_status "Attempting Claude-assisted conflict resolution..."
-      local _resolver_result=0
+      local _resolver_result=0 _cr_start _cr_duration
+      _cr_start=$(date +%s)
+      _diag "CONFLICT_RESOLVER_START context=stale_merge issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name}"
       attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
+        _diag "CONFLICT_RESOLVER context=stale_merge outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
@@ -707,13 +727,19 @@ _stale_merge_main_legacy() {
           return 1
         fi
       elif [ "$_resolver_result" -eq 5 ]; then
+        _diag "CONFLICT_RESOLVER context=stale_merge outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         print_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
       else
+        _diag "CONFLICT_RESOLVER context=stale_merge outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
         print_warning "Claude could not resolve conflicts — supervised mode required"
       fi
+    elif [ "$workflow_mode" != "supervised" ]; then
+      # Canary: resolver function not available but we're in auto mode — emit a diagnostic
+      # so wiring drift is visible in health reports.
+      _diag "CONFLICT_RESOLVER context=stale_merge outcome=skipped_no_resolver issue=${issue_number:-} pr=${pr_number:-}"
     fi
 
     if [ "$workflow_mode" = "supervised" ]; then

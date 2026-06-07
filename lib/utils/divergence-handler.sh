@@ -52,6 +52,11 @@ source "$RITE_LIB_DIR/utils/stash-manager.sh"
 _divergence_handler_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_divergence_handler_dir/markers.sh"
 
+# Source logging for _diag structured diagnostic lines (no-op if already loaded)
+if ! declare -f _diag >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/logging.sh"
+fi
+
 # Source conflict resolver if available (provided by issue #21).
 # Guarded: divergence-handler works without it — resolver is an enhancement,
 # not a hard dependency. When present, attempt_claude_merge_resolution()
@@ -488,19 +493,25 @@ _do_rebase_and_push() {
     # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
     if [ "$auto_mode" = "true" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
       _div_status "Attempting Claude-assisted conflict resolution..."
-      local _resolver_result=0
+      local _resolver_result=0 _cr_start _cr_duration
+      _cr_start=$(date +%s)
+      _diag "CONFLICT_RESOLVER_START context=divergence issue=${_issue_number:-} pr=${_pr_number:-} branch=${branch_name}"
       attempt_claude_merge_resolution "$branch_name" "${_issue_number:-}" "${_pr_number:-}" || _resolver_result=$?
+      _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
+        _diag "CONFLICT_RESOLVER context=divergence outcome=resolved issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
         _div_success "Conflicts resolved by Claude"
         # The resolver commits on top of un-rebased HEAD (not a fast-forward from origin).
         # Mark that the final push must use --force-with-lease to avoid rejection.
         _resolver_rewrote_history=true
         # Fall through to verify + push below (rebase state is clean after resolution)
       elif [ "$_resolver_result" -eq 5 ]; then
+        _diag "CONFLICT_RESOLVER context=divergence outcome=cap_hit issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         _div_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
       else
+        _diag "CONFLICT_RESOLVER context=divergence outcome=failed issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
         # Resolver could not resolve (exit 1) — fall through to auto bail below
         _div_warning "Claude could not resolve conflicts — manual intervention required"
         _div_error "Rebase failed with conflicts — blocking in auto mode"
@@ -508,6 +519,9 @@ _do_rebase_and_push() {
         return 1
       fi
     elif [ "$auto_mode" = "true" ]; then
+      # Canary: resolver function not available but we're in auto mode — emit a diagnostic
+      # so wiring drift is visible in health reports.
+      _diag "CONFLICT_RESOLVER context=divergence outcome=skipped_no_resolver issue=${_issue_number:-} pr=${_pr_number:-}"
       _div_error "Rebase failed with conflicts — blocking in auto mode"
       _send_divergence_notification "${_issue_number:-}" "${_pr_number:-}" "REBASE_CONFLICT" "Rebase conflicts on $branch_name"
       return 1
