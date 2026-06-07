@@ -306,7 +306,7 @@ print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 source "$RITE_LIB_DIR/utils/logging.sh"
 
 # ===================================================================
-# TEST GATE (shared by dev and fix-review paths)
+# TEST GATE (dev/initial-commit path only — not run during fix-review)
 # Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
 # Supervised mode: prompt the user.
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
@@ -815,13 +815,14 @@ $ACTIONABLE_NOW_ITEMS
 2. **Make the necessary code changes** at the locations specified in each item
 3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
 4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
-5. **VERIFY NO REGRESSIONS BEFORE DECLARING DONE.** Each fix can break code that was passing before. Run the project's test/lint commands that cover the files you touched (\`make check\`, \`bats tests/...\`, \`pytest tests/...\`, etc. — pick what's relevant for this repo). If any check that was passing now fails, fix or revert the change. **Do not finish the session with a regression you introduced.** Live precedent: in PR #313's fix loop, an earlier cycle's fix added a \`find\` exclusion that broke 4 positive tests in the same file — the next review cycle caught it, but only after burning another 5 min of LLM time. Catching it inside this session would have saved that cycle.
+5. **SYNTAX-CHECK EVERY FILE YOU TOUCHED.** Before declaring done, run \`bash -n <file>\` on every shell file you edited and confirm zero output. Do NOT run \`make check\`, \`bats tests/\`, \`pytest tests/\`, or any broader test/lint commands — those run automatically after you commit, in parallel with the next review. Your job in this session is to make the code right; verification is the workflow's job.
 
-The workflow will automatically commit, push, and request a new review.
+The workflow will automatically commit, push, and request a new review. Post-commit, \`make check\` and \`bats -r tests/\` run in parallel with review generation — any failures appear as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle.
 
 ## Scope
 - Read and edit source code files to fix the listed issues
-- Run tests/lint covering the files you touched (required by step 5 above)
+- Run \`bash -n <file>\` syntax checks only on the shell files you touched
+- Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands
 - Do NOT modify workflow, config, or CI files (.rite/, .github/workflows/, .claude/)
 
 $EXIT_INSTRUCTION"
@@ -830,7 +831,13 @@ $EXIT_INSTRUCTION"
   echo ""
 
   # Run provider with the fix prompt
-  FIX_TIMEOUT=${RITE_FIX_TIMEOUT:-1800}
+  # Proportional timeout: editing-only sessions are bounded by edit count, not full-codebase
+  # verification. Formula: 300s base + 240s per ACTIONABLE_NOW finding, capped at 1800s.
+  # 1 finding → 9 min, 3 findings → 17 min, 6 findings → 25 min, ceiling 30 min.
+  # RITE_FIX_TIMEOUT env var overrides the formula (operator escape hatch).
+  _default_fix_timeout=$(( 300 + 240 * ${ACTIONABLE_NOW_COUNT:-1} ))
+  [ "$_default_fix_timeout" -gt 1800 ] && _default_fix_timeout=1800
+  FIX_TIMEOUT=${RITE_FIX_TIMEOUT:-$_default_fix_timeout}
 
   if [ "$AUTO_MODE" = true ]; then
     # Safety gate: provider must support tool restrictions for unsupervised mode
@@ -890,9 +897,10 @@ $EXIT_INSTRUCTION"
   _timer_end "claude_fix_session"
   print_success "Review fix session complete"
 
-  # Run test gate before committing fixes (same gate as dev phase).
-  # Without this, review fixes that break tests slip through to merge.
-  run_test_gate
+  # NOTE: Verification (make check + bats -r tests/) no longer runs here.
+  # It runs post-commit in parallel with review generation (lib/utils/test-gate.sh).
+  # Gate failures appear as [GATE] ACTIONABLE_NOW items in the next assessment cycle.
+  # See: docs/architecture/behavioral-design.md → "Verification Out of Fix Session".
 
   # Commit and push the fixes
   print_status "Committing fixes..."
@@ -2607,7 +2615,7 @@ else
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
-  # Run test gate before commit (shared function handles auto/supervised + exit 3)
+  # Run test gate before commit (dev/initial-commit path only; not run during fix-review)
   run_test_gate
 
 # Commit workflow

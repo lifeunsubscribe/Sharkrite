@@ -35,6 +35,8 @@ source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
 # review-helper.sh: shared extract_review_sha / resolve_pr_head_sha helpers
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
+# test-gate.sh: post-commit structured verification (make check + bats -r tests/)
+source "$RITE_LIB_DIR/utils/test-gate.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -1128,13 +1130,7 @@ phase_assess_and_resolve() {
       fi
       local fix_result=$?
 
-      if [ $fix_result -eq 3 ]; then
-        # Test failure during fix-review — route through blocker handler
-        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed after review fixes — see output above"
-        if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
-          return 1
-        fi
-      elif [ $fix_result -eq 5 ]; then
+      if [ $fix_result -eq 5 ]; then
         # Usage cap reached during fix-review push — propagate so batch aborts cleanly
         print_warning "Usage cap reached during fix-review — aborting batch"
         return 5
@@ -1163,10 +1159,48 @@ phase_assess_and_resolve() {
       return 1
     fi
 
-    # After fixes, restart from Phase 2 (create/update PR)
+    # After fixes: start gate in background, run review generation in foreground,
+    # wait for both. Gate (make check + bats -r tests/) runs on CPU; review runs on LLM.
+    # Both complete before the next assessment so gate findings are available.
+    # See: docs/architecture/behavioral-design.md → "Verification Out of Fix Session".
+    local _gate_output_file
+    _gate_output_file="$(mktemp "/tmp/rite_gate_${pr_number}_$$.json")"
+    local _gate_pid=""
+
+    # Export PR_NUMBER so run_test_gate can include it in the [diag] line
+    export PR_NUMBER="$pr_number"
+
+    print_info "Starting post-commit gate in background (make check + bats -r tests/)..."
+    run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
+    _gate_pid=$!
+
+    # Phase 2 (push + review generation) runs in foreground
     if ! phase_create_pr "$issue_number" --loop; then
       print_error "Failed to push fixes and regenerate review"
+      # Gate is still running — kill it and clean up before returning
+      kill "$_gate_pid" 2>/dev/null || true
+      wait "$_gate_pid" 2>/dev/null || true
+      rm -f "${_gate_output_file:-}"
       return 1
+    fi
+
+    # Wait for gate to complete (review is done; gate may still be running)
+    local _gate_exit=0
+    wait "$_gate_pid" || _gate_exit=$?
+
+    # Persist gate findings for assess-and-resolve.sh via RITE_GATE_FINDINGS env var.
+    # Fallback path (.rite/state/gate-findings-N.json) is used when env var is not set.
+    local _gate_state_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+    mkdir -p "$_gate_state_dir" 2>/dev/null || true
+    local _gate_fallback_path="$_gate_state_dir/gate-findings-${pr_number}.json"
+    cp "$_gate_output_file" "$_gate_fallback_path" 2>/dev/null || true
+    rm -f "${_gate_output_file:-}"
+
+    # Export gate findings path for assess-and-resolve.sh
+    export RITE_GATE_FINDINGS="$_gate_fallback_path"
+
+    if [ "$_gate_exit" -ne 0 ]; then
+      print_warning "Post-commit gate found failures — they will appear as [GATE] ACTIONABLE_NOW items in the next assessment"
     fi
 
     # Increment retry count and recurse (compact headers via retry_count > 0)

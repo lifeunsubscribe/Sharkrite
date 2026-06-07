@@ -684,20 +684,92 @@ fi
 echo ""
 
 # ============================================================================
+# GATE FINDINGS: Load post-commit gate results (make check + bats -r tests/)
+# Gate findings skip LLM categorization — they are objective failures that
+# are unconditionally ACTIONABLE_NOW. Prepended to the review assessment output.
+# Source: RITE_GATE_FINDINGS env var (set by workflow-runner.sh) or fallback path.
+# ============================================================================
+
+# Detect gate findings file (env var from workflow-runner, or fallback path)
+_GATE_FINDINGS_FILE="${RITE_GATE_FINDINGS:-}"
+if [ -z "$_GATE_FINDINGS_FILE" ] && [ -n "$PR_NUMBER" ]; then
+  _GATE_FINDINGS_FILE="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/gate-findings-${PR_NUMBER}.json"
+fi
+
+GATE_PREPEND_ITEMS=""
+GATE_NOW_COUNT=0
+
+if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
+  _gate_skipped=$(jq -r '.skipped // false' "$_GATE_FINDINGS_FILE" 2>/dev/null || echo "false")
+  _gate_exit_code=$(jq -r '.exit_code // 0' "$_GATE_FINDINGS_FILE" 2>/dev/null || echo "0")
+
+  if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
+    # Build [GATE] ACTIONABLE_NOW items from lint failures
+    while IFS= read -r _lint_item; do
+      _lint_file=$(echo "$_lint_item" | jq -r '.file // ""' 2>/dev/null || true)
+      _lint_line=$(echo "$_lint_item" | jq -r '.line // ""' 2>/dev/null || true)
+      _lint_rule=$(echo "$_lint_item" | jq -r '.rule // "lint"' 2>/dev/null || true)
+      _lint_msg=$(echo "$_lint_item" | jq -r '.message // ""' 2>/dev/null || true)
+      if [ -n "$_lint_msg" ]; then
+        GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Lint failure (objective — no LLM categorization needed)
+**Location:** ${_lint_file}:${_lint_line}
+**Fix Effort:** Quick (lint rule violation)
+**Reasoning:** \`make check\` (post-commit gate) reported this violation. Fix: address the lint rule violation at the indicated location.
+**Message:** ${_lint_msg}
+
+"
+        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+      fi
+    done < <(jq -c '.lint[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
+
+    # Build [GATE] ACTIONABLE_NOW items from test failures
+    while IFS= read -r _test_item; do
+      _test_file=$(echo "$_test_item" | jq -r '.file // "bats"' 2>/dev/null || true)
+      _test_name=$(echo "$_test_item" | jq -r '.test_name // "unknown test"' 2>/dev/null || true)
+      _test_reason=$(echo "$_test_item" | jq -r '.reason // "assertion failed"' 2>/dev/null || true)
+      if [ -n "$_test_name" ]; then
+        GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_file} - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Test failure (objective — no LLM categorization needed)
+**Location:** ${_test_file}
+**Fix Effort:** Medium (failing test needs investigation)
+**Reasoning:** \`bats -r tests/\` (post-commit gate) reported this failure. Fix: identify root cause and address the failing test assertion.
+**Test:** ${_test_name}
+**Reason:** ${_test_reason}
+
+"
+        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+      fi
+    done < <(jq -c '.tests[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
+
+    if [ "$GATE_NOW_COUNT" -gt 0 ]; then
+      print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
+    fi
+  fi
+
+  # Delete after consumption so stale findings cannot leak into a later resume or
+  # standalone --assess-and-fix run.  The env-var path (RITE_GATE_FINDINGS) is
+  # always preferred; the fallback file (gate-findings-N.json) is the one that
+  # persists across process boundaries, so it is the one that must be cleaned up.
+  rm -f "${_GATE_FINDINGS_FILE:-}" 2>/dev/null || true
+fi
+
+# ============================================================================
 # SMART ASSESSMENT: Use Claude CLI to filter ACTIONABLE items
 # This runs BEFORE displaying summary so counts are accurate
 # ============================================================================
 
-# Early exit: if the review has zero findings across all severities, skip
-# assessment entirely and go straight to merge. The assessment's job is to
-# categorize review findings — when there are none, there's nothing to categorize.
-# Without this, the assessment Claude reads positive prose and invents issues.
+# Early exit: if the review has zero findings AND gate found no failures,
+# skip assessment entirely and go straight to merge.
+# Guard: when gate found failures, we MUST run the fix loop regardless of review verdict.
 REVIEW_FINDINGS_LINE=$(grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" "$REVIEW_FILE" 2>/dev/null | head -1 || true)
 if [ -n "$REVIEW_FINDINGS_LINE" ]; then
   REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
-  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ]; then
+  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ]; then
     print_header "🦈 Smart Assessment (Sharkrite)"
-    print_success "Review has zero findings — skipping assessment, proceeding to merge"
+    print_success "Review has zero findings and gate passed — skipping assessment, proceeding to merge"
     echo ""
     exit 0
   fi
@@ -736,6 +808,14 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   if [ $ASSESSMENT_EXIT_CODE -eq 0 ] && [ -n "$ASSESSMENT_RESULT" ] && [ "$ASSESSMENT_RESULT" != "ALL_ITEMS" ]; then
     print_success "Smart assessment complete - three-state categorization applied"
 
+    # Prepend [GATE] ACTIONABLE_NOW items from the post-commit gate (make check + bats).
+    # Gate findings skip LLM categorization — they are objective failures.
+    # Prepending (not appending) ensures they appear at the top of the fix-mode findings
+    # list and are visible to Claude before the review items.
+    if [ -n "${GATE_PREPEND_ITEMS:-}" ]; then
+      ASSESSMENT_RESULT="${GATE_PREPEND_ITEMS}${ASSESSMENT_RESULT}"
+    fi
+
     # Parse three-state actionability (keep in variable, no temp file!)
     # IMPORTANT: Match structured headers only (^### Title - STATE) to avoid
     # counting mentions of state names in reasoning text
@@ -764,11 +844,28 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
 
     # Decision tree based on three-state counts
     if [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -eq 0 ]; then
+      # Guard: gate findings unconditionally force a fix loop even when the LLM
+      # dismissed all review items. This mirrors the protection in the else-branch
+      # (line ~982) where assessment fails. GATE_NOW_COUNT is the authoritative
+      # count — it is set from structured JSON, not from header-string matching,
+      # so it cannot be lost by a header-format mismatch.
+      if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
+        print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite all-dismissed review"
+        echo "$ASSESSMENT_RESULT" >&3
+        exit 2
+      fi
       print_success "All items dismissed — ready to merge!"
 
       exit 0
 
     elif [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
+      # Guard: gate findings unconditionally force a fix loop even when the LLM
+      # found only ACTIONABLE_LATER items in the review. Same rationale as above.
+      if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
+        print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite no NOW review items"
+        echo "$ASSESSMENT_RESULT" >&3
+        exit 2
+      fi
       # Only ACTIONABLE_LATER items - create tech-debt issue and merge
       print_info "✅ No immediate fixes needed"
       print_status "Creating tech-debt issue for $ACTIONABLE_LATER_COUNT deferred items..."
@@ -896,6 +993,18 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     LOW_COUNT=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" 2>/dev/null | grep '^### [0-9]' 2>/dev/null | wc -l | tr -d ' ' || true)
     LOW_COUNT=${LOW_COUNT:-0}
     ACTIONABLE_COUNT=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+
+    # Even if LLM assessment failed, gate findings must still be surfaced.
+    # If gate found failures, override ACTIONABLE_COUNT to force the fix loop.
+    if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
+      print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop"
+      ASSESSMENT_RESULT="${GATE_PREPEND_ITEMS}"
+      ACTIONABLE_NOW_COUNT="$GATE_NOW_COUNT"
+      ACTIONABLE_LATER_COUNT=0
+      DISMISSED_COUNT=0
+      echo "$ASSESSMENT_RESULT" >&3
+      exit 2
+    fi
   fi
 
 else
