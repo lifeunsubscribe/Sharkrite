@@ -719,13 +719,20 @@ _stale_merge_main_legacy() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
+        # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
+        # Commit the resolution before verifying or pushing.
+        if ! git commit --no-edit 2>/dev/null; then
+          print_error "Failed to commit resolved conflicts"
+          git merge --abort 2>/dev/null || true
+          return 1
+        fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
           return 1
         fi
-        # Resolution committed the result — regular push (merge doesn't rewrite history)
+        # Resolution committed and verified — regular push (merge doesn't rewrite history)
         if git push origin "$branch_name" 2>/dev/null; then
           print_success "Branch updated with main (conflict resolved)"
           return 0

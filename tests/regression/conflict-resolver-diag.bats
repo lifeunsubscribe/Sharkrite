@@ -254,6 +254,58 @@ _refute_diag() {
   _cleanup_branch
 }
 
+@test "stale_merge: caller commits staged resolution — resolver-stages/caller-commits contract" {
+  # Regression for the CRITICAL bug where _stale_merge_main_legacy ran verify_post_merge
+  # and git push against staged-but-uncommitted work, silently discarding the resolution.
+  #
+  # This stub only stages the resolved file (no git commit) — exactly what the real
+  # conflict-resolver.sh does per contract line 10. The test asserts that the caller
+  # (_stale_merge_main_legacy) issues the commit and that the resolution is present in HEAD.
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  _setup_conflicting_branch
+
+  # Override verify_post_merge to always pass (we're testing the commit contract, not tests)
+  verify_post_merge() { return 0; }
+
+  attempt_claude_merge_resolution() {
+    # Stages-only stub: mirrors exactly what conflict-resolver.sh does per contract line 10.
+    # The real resolver aborts the first failed merge, then re-runs git merge to get conflict
+    # markers (step 3, conflict-resolver.sh:160), which sets MERGE_HEAD. It then stages the
+    # resolved files and returns 0 WITHOUT committing — the caller is responsible for the commit.
+    #
+    # We replicate that here: abort the in-progress merge, restart it (sets MERGE_HEAD), write
+    # the resolved content, stage it, then return 0 without committing.
+    cd "$WORKTREE_PATH" || return 1
+    git merge --abort 2>/dev/null || true
+    # Restart merge so MERGE_HEAD is set (conflict-resolver.sh step 3 pattern)
+    git merge origin/main --no-edit 2>/dev/null || true  # expected to leave conflict markers
+    echo "Resolved content" > README.md
+    git add README.md
+    return 0
+  }
+
+  local exit_code=0
+  _stale_merge_main_legacy "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "99" "101" || exit_code=$?
+
+  # The function must succeed
+  [ "$exit_code" -eq 0 ]
+
+  # The resolution must be committed to HEAD — not just staged
+  cd "$WORKTREE_PATH" || return 1
+  local head_content
+  head_content=$(git show HEAD:README.md 2>/dev/null || true)
+  if [ "$head_content" != "Resolved content" ]; then
+    echo "FAIL: Resolution not committed to HEAD — staged-only content was not committed by caller" >&2
+    echo "HEAD README.md content: '$head_content'" >&2
+    git log --oneline -3 >&2
+    git status >&2
+    return 1
+  fi
+  cd "$FIXTURE_REPO" || true
+
+  _cleanup_branch
+}
+
 # ===========================================================================
 # CONTEXT: divergence (divergence-handler.sh _do_rebase_and_push)
 # ===========================================================================

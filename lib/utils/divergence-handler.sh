@@ -496,7 +496,15 @@ _do_rebase_and_push() {
       local _resolver_result=0 _cr_start _cr_duration
       _cr_start=$(date +%s)
       _diag "CONFLICT_RESOLVER_START context=divergence issue=${_issue_number:-} pr=${_pr_number:-} branch=${branch_name}"
-      attempt_claude_merge_resolution "$branch_name" "${_issue_number:-}" "${_pr_number:-}" || _resolver_result=$?
+      # Pass --merge-target so the resolver resolves conflicts against origin/$branch_name
+      # (the same ref that _do_rebase rebased against), not the default origin/main.
+      # Without this, the resolver merges the wrong base and then force-pushes — clobbering
+      # the foreign commits the divergence handler exists to preserve.
+      attempt_claude_merge_resolution \
+        --branch-name "$branch_name" \
+        --issue-number "${_issue_number:-}" \
+        --pr-number "${_pr_number:-}" \
+        --merge-target "origin/$branch_name" || _resolver_result=$?
       _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=divergence outcome=resolved issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
