@@ -18,28 +18,6 @@ setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
 }
 
-# Helper: compute FIX_TIMEOUT for a given ACTIONABLE_NOW_COUNT using the formula
-_compute_fix_timeout() {
-  local count="$1"
-  local env_override="${2:-}"
-  bash -c "
-    ACTIONABLE_NOW_COUNT='$count'
-    _default_fix_timeout=\$(( 300 + 240 * \${ACTIONABLE_NOW_COUNT:-1} ))
-    [ \"\$_default_fix_timeout\" -gt 1800 ] && _default_fix_timeout=1800
-    FIX_TIMEOUT=\${RITE_FIX_TIMEOUT:-\$_default_fix_timeout}
-    echo \"\$FIX_TIMEOUT\"
-  " <<< "${env_override:+export RITE_FIX_TIMEOUT=$env_override}"
-  # Simpler: inline it
-  bash -c "
-    ACTIONABLE_NOW_COUNT='$count'
-    ${env_override:+export RITE_FIX_TIMEOUT=$env_override}
-    _default_fix_timeout=\$(( 300 + 240 * \${ACTIONABLE_NOW_COUNT:-1} ))
-    [ \"\$_default_fix_timeout\" -gt 1800 ] && _default_fix_timeout=1800
-    FIX_TIMEOUT=\${RITE_FIX_TIMEOUT:-\$_default_fix_timeout}
-    echo \"\$FIX_TIMEOUT\"
-  "
-}
-
 @test "FIX_TIMEOUT: count=1 → 540s" {
   run bash -c "
     ACTIONABLE_NOW_COUNT=1

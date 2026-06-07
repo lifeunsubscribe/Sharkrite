@@ -312,7 +312,13 @@ assessment ────────────────────┘  wait
 
 1. **Fix prompt** (`claude-workflow.sh`): step 5 replaced with `bash -n` syntax-check only. Claude is explicitly told NOT to run `make check`, `bats`, or `pytest` — those run automatically after commit. Fix timeout lowered proportionally: `300 + 240 * ACTIONABLE_NOW_COUNT`, capped at 1800s.
 
-2. **Test gate** (`lib/utils/test-gate.sh`): new utility that runs `make check` + `bats -r tests/` (recursive) for Sharkrite repos. Emits structured JSON: `{lint, tests, exit_code}`. Runs in background, parallel with review generation. Exits 0 with `skipped=true` when `make`/`bats` are absent.
+2. **Test gate** (`lib/utils/test-gate.sh`): new utility that runs `make shellcheck` + `make lint` (independently, so custom-lint findings are never masked by shellcheck failures) + `bats -r tests/` (recursive) for Sharkrite repos. Emits structured JSON: `{lint, tests, exit_code}`. Runs in background, parallel with review generation. Exits 0 with `skipped=true` when `make`/`bats` are absent.
+
+**Gate coverage boundary — fix-loop commits vs. initial dev commit:**
+
+The parallel gate (`run_test_gate` in `test-gate.sh`) runs **after every fix-loop commit** (workflow-runner.sh, Phase 3). It does NOT run after the initial dev commit from Phase 1.
+
+The initial dev commit is covered by the dev-phase gate in `claude-workflow.sh::run_test_gate()` (line ~2619). That gate auto-detects the test runner: for Sharkrite repos it resolves to `make test` (via `_test_cmd="make test"` at line ~494), which calls the Makefile `test:` target — this runs `bats tests/` (non-recursive). The recursive `bats -r tests/` form is used **only** by the post-commit parallel gate (`test-gate.sh`). This is intentional: the dev-phase gate uses the project's standard `make test` command (non-recursive, same as `make test` in CI); the parallel gate uses `bats -r tests/` to fix the exact non-recursive bug (PR #432) that motivated this PR.
 
 3. **Assessment** (`assess-and-resolve.sh`): reads gate findings from `RITE_GATE_FINDINGS` env var (or `.rite/state/gate-findings-N.json` fallback). Gate findings are prepended to the fix-mode list as `[GATE] ACTIONABLE_NOW` items — no LLM categorization needed (objective failures). The zero-findings early-exit is guarded: if gate found failures, assessment MUST run the fix loop regardless of review verdict.
 
@@ -332,6 +338,8 @@ The old section argued that having Claude run tests INSIDE the session is defens
 ### Fix-review prompt: syntax-check before declaring done
 
 Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt now requires Claude to run `bash -n <file>` on every shell file it touched before declaring done. This is a fast, in-session check that catches broken syntax before commit. Full lint and test verification runs post-commit via the parallel gate (see "Verification Out of Fix Session" above).
+
+**`bash -n` is prompt-level only — not enforced by the workflow.** The fix-review session is editing-only: it does not call the dev-phase `run_test_gate()` and does not return exit 3. If Claude skips the `bash -n` check and commits a syntax error, the parallel gate's `make check` (which includes shellcheck) will catch it in the next cycle as a `[GATE] ACTIONABLE_NOW` item. There is no in-workflow enforcement of the `bash -n` step.
 
 **Why not full test/lint in-session:** PR #432's fix loop burned the full 1800s budget on `make check` thrash (full-codebase shellcheck on files the fix never touched), then the outer gate ran `bats tests/` non-recursively and found zero tests — both verification windows were simultaneously broken. Moving verification out of the fix session lets it run: (a) after commit so it reflects the actual committed state, (b) in parallel with review generation (no extra wall-clock time), and (c) recursively (`bats -r tests/` instead of the old non-recursive `bats tests/`).
 

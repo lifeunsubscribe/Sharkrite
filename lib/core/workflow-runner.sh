@@ -1130,15 +1130,7 @@ phase_assess_and_resolve() {
       fi
       local fix_result=$?
 
-      if [ $fix_result -eq 3 ]; then
-        # Exit 3 from fix-review: pre-commit syntax check failed (bash -n).
-        # The post-commit gate (test-gate.sh) reports lint/test failures as [GATE]
-        # ACTIONABLE_NOW items via assess-and-resolve.sh. A bash -n failure is fatal.
-        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Fix-review session: bash -n syntax check failed — see output above"
-        if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
-          return 1
-        fi
-      elif [ $fix_result -eq 5 ]; then
+      if [ $fix_result -eq 5 ]; then
         # Usage cap reached during fix-review push — propagate so batch aborts cleanly
         print_warning "Usage cap reached during fix-review — aborting batch"
         return 5

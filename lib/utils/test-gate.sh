@@ -1,7 +1,7 @@
 #!/bin/bash
 # lib/utils/test-gate.sh — Post-commit structured verification gate
 #
-# Runs make check (full lint) + bats -r tests/ (recursive bats suite) for
+# Runs make shellcheck + make lint (independently) + bats -r tests/ (recursive bats suite) for
 # Sharkrite repos, or the project's detected test runner for non-Sharkrite projects.
 # Emits a structured JSON findings file consumed by assess-and-resolve.sh.
 #
@@ -63,7 +63,7 @@ _gate_write_json() {
 # ---------------------------------------------------------------------------
 _parse_lint_line() {
   local raw_line="$1"
-  # shellcheck format: path/file.sh:LINE:COL: levelXXXX: message
+  # sc output format: path/file.sh:LINE:COL: levelXXXX: message
   # E.g.: lib/foo.sh:42:5: error SC2086: Double quote to prevent globbing
   if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:'; then
     local file line rule message
@@ -127,6 +127,15 @@ run_test_gate() {
     _is_sharkrite=true
   fi
 
+  # --- Worktree existence guard ---
+  # If project_root was removed between gate launch and execution (e.g. worktree deleted
+  # mid-run), skip gracefully rather than silently pass with exit code 0 from a no-op cd.
+  if [ ! -d "$project_root" ]; then
+    _diag "TEST_GATE outcome=skipped reason=missing_worktree pr=${PR_NUMBER:-?}"
+    _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_worktree"
+    return 0
+  fi
+
   # --- Missing-runner check ---
   if [ "$_is_sharkrite" = "true" ]; then
     if ! command -v make >/dev/null 2>&1; then
@@ -154,12 +163,20 @@ run_test_gate() {
   local _tests_count=0
 
   if [ "$_is_sharkrite" = "true" ]; then
-    # --- Sharkrite: make check (shellcheck + custom lint) ---
-    echo "[test-gate] Running make check..." >&2
+    # --- Sharkrite: shellcheck + custom lint (run independently so both run even if shellcheck fails) ---
+    # Running as two separate invocations ensures custom-lint findings are never masked
+    # by a shellcheck failure (make check: shellcheck lint stops make after shellcheck exits non-zero).
+    local _shellcheck_exit=0
+    local _lint_tool_exit=0
+    echo "[test-gate] Running make shellcheck..." >&2
     set +e
-    (cd "$project_root" && make check 2>&1) > "$_lint_raw_file" || _lint_exit=$?
+    (cd "$project_root" && make shellcheck 2>&1) >> "$_lint_raw_file" || _shellcheck_exit=$?
+    echo "[test-gate] Running make lint..." >&2
+    (cd "$project_root" && make lint 2>&1) >> "$_lint_raw_file" || _lint_tool_exit=$?
     set -e
-    _lint_count=$(grep -cE ':[0-9]+:[0-9]+:|:[0-9]+: \[' "$_lint_raw_file" || true)
+    [ "$_shellcheck_exit" -ne 0 ] && _lint_exit=1
+    [ "$_lint_tool_exit" -ne 0 ] && _lint_exit=1
+    # _lint_count is derived from the JSON array builder below (not a broad grep)
 
     # --- Sharkrite: bats -r tests/ (recursive) ---
     echo "[test-gate] Running bats -r tests/..." >&2
@@ -205,6 +222,7 @@ run_test_gate() {
       [ "$_first_lint" = "true" ] || _lint_items+=","
       _lint_items+="$_item"
       _first_lint=false
+      _lint_count=$(( _lint_count + 1 ))
     fi
   done < "$_lint_raw_file"
   _lint_items+="]"

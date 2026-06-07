@@ -68,10 +68,14 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "test-gate.sh references make check for Sharkrite repos" {
-  # The source file must contain make check as a command
-  run grep -n 'make check' "${RITE_LIB_DIR}/utils/test-gate.sh"
+  # The source file must contain make shellcheck and make lint as independent commands
+  # (split from make check to prevent shellcheck failures masking custom lint findings)
+  run grep -n 'make shellcheck' "${RITE_LIB_DIR}/utils/test-gate.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"make check"* ]]
+  [[ "$output" == *"make shellcheck"* ]]
+  run grep -n 'make lint' "${RITE_LIB_DIR}/utils/test-gate.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"make lint"* ]]
 }
 
 @test "test-gate.sh references bats -r tests/ for Sharkrite repos" {
@@ -125,12 +129,15 @@ teardown() {
   _mock_dir=$(mktemp -d)
   mkdir -p "$_mock_dir/tests/regression"
 
-  # Create a Makefile with check: target (identifies as Sharkrite)
+  # Create a Makefile with check:/shellcheck:/lint: targets (identifies as Sharkrite)
+  # test-gate.sh detects Sharkrite via check: target, but runs make shellcheck + make lint separately
   cat > "$_mock_dir/Makefile" << 'EOF'
-.PHONY: check
-check:
+.PHONY: check shellcheck lint
+check: shellcheck lint
+shellcheck:
+	@echo "shellcheck OK"
+lint:
 	@echo "lint OK"
-	@exit 0
 EOF
 
   # Create a minimal passing bats test
@@ -182,9 +189,13 @@ EOF
 @test "run_test_gate: skips gracefully when bats command missing" {
   # Create a Sharkrite-looking project but mock bats to not exist
   _mock_dir=$(mktemp -d)
+  # Include shellcheck: and lint: targets since test-gate.sh calls them independently
   cat > "$_mock_dir/Makefile" << 'EOF'
-.PHONY: check
-check:
+.PHONY: check shellcheck lint
+check: shellcheck lint
+shellcheck:
+	@exit 0
+lint:
 	@exit 0
 EOF
 
