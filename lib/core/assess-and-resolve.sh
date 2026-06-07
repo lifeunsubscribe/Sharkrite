@@ -748,12 +748,13 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
     fi
   fi
-fi
 
-# Export combined count so the next fix session's FIX_TIMEOUT formula can use it.
-# This includes gate failures that were NOT in the review findings (review may have
-# been clean while gate caught a lint violation introduced by the fix session).
-export RITE_GATE_NOW_COUNT="${GATE_NOW_COUNT:-0}"
+  # Delete after consumption so stale findings cannot leak into a later resume or
+  # standalone --assess-and-fix run.  The env-var path (RITE_GATE_FINDINGS) is
+  # always preferred; the fallback file (gate-findings-N.json) is the one that
+  # persists across process boundaries, so it is the one that must be cleaned up.
+  rm -f "${_GATE_FINDINGS_FILE:-}" 2>/dev/null || true
+fi
 
 # ============================================================================
 # SMART ASSESSMENT: Use Claude CLI to filter ACTIONABLE items

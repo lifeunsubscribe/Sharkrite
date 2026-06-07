@@ -306,7 +306,7 @@ print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 source "$RITE_LIB_DIR/utils/logging.sh"
 
 # ===================================================================
-# TEST GATE (shared by dev and fix-review paths)
+# TEST GATE (dev/initial-commit path only — not run during fix-review)
 # Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
 # Supervised mode: prompt the user.
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
@@ -2615,7 +2615,7 @@ else
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
-  # Run test gate before commit (shared function handles auto/supervised + exit 3)
+  # Run test gate before commit (dev/initial-commit path only; not run during fix-review)
   run_test_gate
 
 # Commit workflow

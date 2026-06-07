@@ -1196,24 +1196,8 @@ phase_assess_and_resolve() {
     cp "$_gate_output_file" "$_gate_fallback_path" 2>/dev/null || true
     rm -f "${_gate_output_file:-}"
 
-    # Compute combined ACTIONABLE_NOW count (gate failures + review findings) for
-    # the next fix session's proportional timeout (Change 1 formula uses this env var).
-    local _gate_now_count=0
-    if [ -f "$_gate_fallback_path" ] && command -v jq >/dev/null 2>&1; then
-      local _gate_lint_count _gate_test_count _gate_skipped
-      _gate_skipped=$(jq -r '.skipped // false' "$_gate_fallback_path" 2>/dev/null || echo "false")
-      if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit" -ne 0 ]; then
-        _gate_lint_count=$(jq '.lint | length' "$_gate_fallback_path" 2>/dev/null || echo "0")
-        _gate_test_count=$(jq '.tests | length' "$_gate_fallback_path" 2>/dev/null || echo "0")
-        _gate_now_count=$(( _gate_lint_count + _gate_test_count ))
-      fi
-    fi
-
-    # Export gate findings path and combined count for assess-and-resolve.sh
+    # Export gate findings path for assess-and-resolve.sh
     export RITE_GATE_FINDINGS="$_gate_fallback_path"
-    # ACTIONABLE_NOW_COUNT passed into the next fix session includes both gate + review NOW items
-    # assess-and-resolve.sh will export the combined count after merging findings
-    export RITE_GATE_NOW_COUNT="$_gate_now_count"
 
     if [ "$_gate_exit" -ne 0 ]; then
       print_warning "Post-commit gate found failures — they will appear as [GATE] ACTIONABLE_NOW items in the next assessment"

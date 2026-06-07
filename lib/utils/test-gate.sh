@@ -70,8 +70,14 @@ _parse_lint_line() {
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
     rule=$(echo "$raw_line" | grep -oE 'SC[0-9]+' | head -1 || true)
-    # Escape backslashes and double-quotes for valid JSON
-    message=$(echo "$raw_line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    # Strip ANSI escape sequences and control chars, then escape for JSON.
+    # sed: (1) remove ANSI CSI sequences (\x1b[...m and similar), (2) remove
+    # remaining ESC bytes, (3) remove other C0 control bytes (tabs OK → keep \t
+    # literal, but CR/BEL/BS etc. break JSON parsers).
+    # Then escape backslashes and double-quotes for valid JSON.
+    message=$(printf '%s' "$raw_line" \
+      | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
+      | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     printf '{"file":"%s","line":"%s","rule":"%s","message":"%s"}' \
       "$file" "$line" "${rule:-lint}" "$message"
     return 0
@@ -83,7 +89,9 @@ _parse_lint_line() {
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
     rule=$(echo "$raw_line" | grep -oE '\[[A-Z_]+\]' | head -1 | tr -d '[]' || true)
-    message=$(echo "$raw_line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    message=$(printf '%s' "$raw_line" \
+      | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
+      | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     printf '{"file":"%s","line":"%s","rule":"%s","message":"%s"}' \
       "$file" "$line" "${rule:-lint}" "$message"
     return 0
@@ -100,8 +108,16 @@ _parse_bats_failure_line() {
   local raw_line="$1"
   # bats failure format: "not ok N test description"
   if echo "$raw_line" | grep -qE '^not ok [0-9]+ '; then
-    local test_name
-    test_name=$(echo "$raw_line" | sed 's/^not ok [0-9]* //' | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    local test_name _stripped
+    # Strip "not ok N " prefix, then ANSI/control bytes, then JSON-escape.
+    # Each transformation is a separate variable to satisfy the || true rule:
+    # a pipeline inside $() that exits non-zero silently kills the script.
+    _stripped=$(echo "$raw_line" | sed 's/^not ok [0-9]* //' || true)
+    _stripped=$(printf '%s' "$_stripped" \
+      | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' || true)
+    # sharkrite-lint disable UNSAFE_PIPE_IN_CMDSUB - Reason: || true on next line; single-sed, no grep/awk
+    test_name=$(printf '%s' "$_stripped" \
+      | sed 's/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g; s/\\/\\\\/g; s/"/\\"/g' || true)
     printf '{"file":"bats","test_name":"%s","reason":"assertion failed"}' "$test_name"
     return 0
   fi
