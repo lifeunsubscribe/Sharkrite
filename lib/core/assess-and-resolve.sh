@@ -844,11 +844,28 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
 
     # Decision tree based on three-state counts
     if [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -eq 0 ]; then
+      # Guard: gate findings unconditionally force a fix loop even when the LLM
+      # dismissed all review items. This mirrors the protection in the else-branch
+      # (line ~982) where assessment fails. GATE_NOW_COUNT is the authoritative
+      # count — it is set from structured JSON, not from header-string matching,
+      # so it cannot be lost by a header-format mismatch.
+      if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
+        print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite all-dismissed review"
+        echo "$ASSESSMENT_RESULT" >&3
+        exit 2
+      fi
       print_success "All items dismissed — ready to merge!"
 
       exit 0
 
     elif [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
+      # Guard: gate findings unconditionally force a fix loop even when the LLM
+      # found only ACTIONABLE_LATER items in the review. Same rationale as above.
+      if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
+        print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite no NOW review items"
+        echo "$ASSESSMENT_RESULT" >&3
+        exit 2
+      fi
       # Only ACTIONABLE_LATER items - create tech-debt issue and merge
       print_info "✅ No immediate fixes needed"
       print_status "Creating tech-debt issue for $ACTIONABLE_LATER_COUNT deferred items..."

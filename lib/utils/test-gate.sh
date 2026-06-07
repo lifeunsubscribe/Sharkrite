@@ -78,6 +78,11 @@ _parse_lint_line() {
     message=$(printf '%s' "$raw_line" \
       | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
       | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    # JSON-escape file and line the same way as message to handle unusual paths
+    # (backslashes, quotes) that would produce malformed JSON and cause jq to
+    # silently yield zero gate items via || true in assess-and-resolve.sh.
+    file=$(printf '%s' "$file" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    line=$(printf '%s' "$line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     printf '{"file":"%s","line":"%s","rule":"%s","message":"%s"}' \
       "$file" "$line" "${rule:-lint}" "$message"
     return 0
@@ -92,6 +97,9 @@ _parse_lint_line() {
     message=$(printf '%s' "$raw_line" \
       | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
       | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    # JSON-escape file and line the same way as message (same fail-open risk)
+    file=$(printf '%s' "$file" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    line=$(printf '%s' "$line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     printf '{"file":"%s","line":"%s","rule":"%s","message":"%s"}' \
       "$file" "$line" "${rule:-lint}" "$message"
     return 0
@@ -170,8 +178,21 @@ run_test_gate() {
   local _lint_raw_file _tests_raw_file
   _lint_raw_file=$(mktemp "/tmp/rite_gate_lint_${PR_NUMBER:-0}_$$.txt")
   _tests_raw_file=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$.txt")
-  # Register cleanup for this invocation's specific files (never a glob)
-  trap 'rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}"' EXIT
+  # Register cleanup for this invocation's specific files (never a glob).
+  # Also write a valid-JSON crash sentinel if the function exits non-zero before
+  # _gate_write_json runs — an empty/absent output_file causes jq to silently
+  # return zero findings (fail-open), defeating the gate's purpose.
+  # The sentinel uses skipped:true so assess-and-resolve.sh skips gate injection
+  # rather than reading malformed JSON, while still logging the crash via _diag.
+  # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
+  trap '_gate_exit_status=$?
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}"
+        if [ "$_gate_exit_status" -ne 0 ]; then
+          if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
+            printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
+            echo "[test-gate] WARNING: gate crashed (exit $_gate_exit_status) — wrote sentinel JSON to prevent fail-open" >&2
+          fi
+        fi' EXIT
 
   local _lint_exit=0
   local _tests_exit=0
