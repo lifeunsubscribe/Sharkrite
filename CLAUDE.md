@@ -45,13 +45,18 @@ lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart
+lib/utils/test-gate.sh           # Post-commit verification gate (make check + bats -r tests/)
 ```
 
 ### Workflow Phases
 
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
-3. **Review/Assess Loop** — Generate review, assess findings, fix ACTIONABLE_NOW items (up to 3 retries)
+3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
+   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit
+   - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
+   - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
+   - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
 
