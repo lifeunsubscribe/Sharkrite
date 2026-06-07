@@ -111,6 +111,15 @@ done
 DIAG_LINES=$(echo "$DIAG_LINES" | sed '/^$/d' || true)
 TIMING_LINES=$(echo "$TIMING_LINES" | sed '/^$/d' || true)
 
+# --- Pre-parse conflict resolver stats for health checks ---
+# Extract CONFLICT_RESOLVER exit-event lines (not START lines; those are entry events)
+CR_LINES=$(echo "$DIAG_LINES" | grep 'CONFLICT_RESOLVER ' || true)
+CR_TOTAL=$(echo "$CR_LINES" | grep -c 'CONFLICT_RESOLVER ' || true)
+CR_RESOLVED=$(echo "$CR_LINES" | grep -c 'outcome=resolved' || true)
+CR_FAILED=$(echo "$CR_LINES" | grep -c 'outcome=failed' || true)
+CR_CAP_HIT=$(echo "$CR_LINES" | grep -c 'outcome=cap_hit' || true)
+CR_SKIPPED=$(echo "$CR_LINES" | grep -c 'outcome=skipped_no_resolver' || true)
+
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
 
@@ -176,9 +185,15 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - Any issue hitting max fix iterations (3) → flag that specific issue
    - Review finding 0 issues consistently → WATCH (review prompt may be too lenient)
    - CRITICAL findings appearing → flag
-4. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
-5. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
-6. **Action Items** — Specific, actionable recommendations. Examples:
+4. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
+   - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (top 5), median resolution duration if duration_s values are present
+   - Thresholds:
+     - `skipped_no_resolver` > 0 → **WARNING**: "Resolver not wired — conflict-resolver.sh may be missing"
+     - failure rate > 30% → **WATCH**: "Resolver failing frequently"
+   - If CR_TOTAL is 0, say "No conflict resolution attempts this week."
+5. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
+6. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
+7. **Action Items** — Specific, actionable recommendations. Examples:
    - "Consider adding `gh pr diff` to rtk exclude list — Phase 3 fix iterations up"
    - "Phase 1 duration trending down — rtk compression appears effective"
    - "Review severity skewing toward LOW — tighten review prompt for more meaningful findings"
@@ -186,11 +201,12 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 
 ## Data Format
 
-- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`
+- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`
 - `[timing]` lines show phase durations: `END phase_name (Xm Xs)`
 - rtk stats are JSON from `rtk gain --format json`
 - Git log shows recent tool changes with file stats
 - Previous reports provide trend context
+- Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts)
 
 ## Constraints
 
@@ -211,6 +227,17 @@ $DIAG_LINES
 ## Phase Timing Lines (past 7 days)
 
 $TIMING_LINES
+
+## Conflict Resolver Stats (pre-parsed, past 7 days)
+
+- CR_TOTAL (total invocations): $CR_TOTAL
+- CR_RESOLVED: $CR_RESOLVED
+- CR_FAILED: $CR_FAILED
+- CR_CAP_HIT: $CR_CAP_HIT
+- CR_SKIPPED (skipped_no_resolver — canary): $CR_SKIPPED
+
+Raw CONFLICT_RESOLVER diag lines for issue/duration details:
+$CR_LINES
 
 ## rtk Token Stats (cumulative)
 
