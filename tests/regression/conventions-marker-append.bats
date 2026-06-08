@@ -969,3 +969,69 @@ BODY
   grep -q "^## fenced-guard-real-block$" "$conventions_file"
   grep -q "\*\*References:\*\* abc1234, #401" "$conventions_file"
 }
+
+# ---------------------------------------------------------------------------
+# Test 19: col-0 known-field-name inside example — tail -1 correctness and
+#          truncation boundary are both documented and tested
+#
+# The "KNOWN ASYMMETRY" in assess-documentation.sh:
+#   (a) _example_awk terminates the example at the col-0 known-field-name line —
+#       example content that follows is silently lost (truncated).
+#   (b) _no_example_awk treats the same col-0 line as a real scalar field and
+#       prints it into _block_no_example.
+#
+# For `references:` this is benign because `tail -1` selects the last
+# occurrence (the real field that follows the example), not the first
+# (the fake value from inside the example).
+#
+# This test explicitly asserts both behaviors:
+#   1. The references scalar field uses the REAL value (tail -1 correctness).
+#   2. Example content that follows the col-0 field-name IS truncated
+#      (known limitation — lines after the col-0 field-name do not appear
+#      in the rendered example section).
+# ---------------------------------------------------------------------------
+
+@test "col-0 field name in example: tail -1 selects real references, example is truncated after the col-0 line" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Build a block where:
+  #   - The example contains a col-0 "references: fake" line mid-example
+  #   - More example content follows (AFTER-TRUNCATION-MARKER)
+  #   - The real references: field comes last
+  # printf is used so the col-0 line has exactly no leading whitespace.
+  local pr_body
+  pr_body=$(printf '%s\n' \
+    '<!-- sharkrite-convention -->' \
+    'title: col-zero-field-in-example' \
+    'rule: Scalar field correctness depends on tail -1, not field-name boundary' \
+    'why: _no_example_awk leaks col-0 field names from inside the example into _block_no_example' \
+    'example: |' \
+    '  # BEFORE: content before the col-0 fake field line' \
+    'references: fake-value-inside-example' \
+    '  # AFTER: content after the col-0 fake field line (silently truncated)' \
+    'references: real-ref-value, #397' \
+    '<!-- /sharkrite-convention -->')
+
+  update_conventions_from_marker "397" "$pr_body"
+
+  # Entry must exist
+  grep -q "^## col-zero-field-in-example$" "$conventions_file"
+
+  # --- correctness assertion: tail -1 picks the real field ---
+  # The References line must use the REAL field value, not the fake embedded one.
+  grep -q "\*\*References:\*\* real-ref-value, #397" "$conventions_file"
+
+  # The fake value must NOT appear in the rendered References line.
+  run grep "\*\*References:\*\*.*fake-value-inside-example" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # --- truncation assertion: example content after col-0 field is lost ---
+  # "BEFORE" content (before the col-0 fake field) IS in the rendered example.
+  grep -q "BEFORE: content before the col-0 fake field line" "$conventions_file"
+
+  # "AFTER" content (after the col-0 fake field) is NOT in the rendered example
+  # because _example_awk terminates the example at the col-0 known-field-name.
+  # This is the KNOWN LIMITATION documented in the source code comment.
+  run grep "AFTER: content after the col-0 fake field line" "$conventions_file"
+  [ "$status" -ne 0 ]
+}
