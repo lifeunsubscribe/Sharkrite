@@ -623,14 +623,28 @@ EOF
       # - When `example: |` is seen, skip=1.
       # - While skip=1, skip all lines that are NOT a known top-level field name.
       # - A known field name (title|rule|why|example|references|tags|new-tags) at
-      #   column-0 resets skip=0 and is printed (it's a real top-level key, not
-      #   example content).
-      # The terminator uses the same known-field-name boundary as _example_awk so
-      # that column-0 lines inside the example (e.g., "references: some-doc-link")
-      # are not leaked into _block_no_example and cannot corrupt scalar field reads.
+      #   column-0 resets skip=0 and is printed (it's the real top-level key that
+      #   ends the example section, even if the same name appears inside the example).
+      #
+      # KNOWN ASYMMETRY: a col-0 known-field-name line inside the example section
+      # simultaneously (a) terminates the example in _example_awk (truncating any
+      # example content that follows it) and (b) is treated as a real scalar field
+      # by _no_example_awk (printed into _block_no_example).  This means such a line
+      # IS leaked into _block_no_example as a candidate scalar value.  For `references`
+      # this is benign because `tail -1` (not `head -1`) is used for extraction —
+      # `tail -1` always selects the last occurrence, which is the real field that
+      # follows the example.  For `title`, `rule`, and `why` the standard convention
+      # block order places those fields BEFORE the example section, so they are never
+      # affected by this asymmetry in practice.
+      #
+      # Shared field-name boundary pattern used by both _no_example_awk and
+      # _example_awk below.  Centralised here so a new field name (e.g. a future
+      # "severity:" key) is added in exactly one place.  Both awk programs must
+      # use the same set — see "KNOWN ASYMMETRY" note above for why they must agree.
+      local _FIELD_NAMES='(title|rule|why|example|references|tags|new-tags)'
       # The awk program is stored in a variable so the || true guard appears on a
       # separate line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _no_example_awk='/^example:[[:space:]]*\|/ { skip=1; next } skip && /^(title|rule|why|example|references|tags|new-tags):/ { skip=0; print; next } skip { next } { print }'
+      local _no_example_awk="/^example:[[:space:]]*\|/ { skip=1; next } skip && /^${_FIELD_NAMES}:/ { skip=0; print; next } skip { next } { print }"
       local _block_no_example
       _block_no_example=$(printf '%s' "$_current_block" | awk "$_no_example_awk" || true)
 
@@ -638,30 +652,41 @@ EOF
       _title=$(printf '%s' "$_block_no_example" | grep "^title:" | head -1 | sed 's/^title:[[:space:]]*//' || true)
       _rule=$(printf '%s' "$_block_no_example" | grep "^rule:" | head -1 | sed 's/^rule:[[:space:]]*//' || true)
       _why=$(printf '%s' "$_block_no_example" | grep "^why:" | head -1 | sed 's/^why:[[:space:]]*//' || true)
-      # Use tail -1 (not head -1) for references: the field appears AFTER example:
-      # in the standard convention block order (title/rule/why/example/references).
-      # A col-0 "references:" line inside the example would appear first in
-      # _block_no_example (because _no_example_awk treats it as a known-field
-      # terminator), making head -1 pick up the wrong (example-embedded) value.
-      # tail -1 picks the LAST occurrence, which is always the real field.
+      # Use tail -1 (not head -1) for references — tail -1 is the actual correctness
+      # mechanism here (not the field-name boundary in _no_example_awk).
+      # In the standard convention block order (title/rule/why/example/references),
+      # `references:` appears AFTER the example section.  However, if the example
+      # contains a col-0 "references:" line, _no_example_awk treats it as a
+      # known-field terminator and prints it into _block_no_example before the real
+      # field.  head -1 would therefore pick up the example-embedded (wrong) value.
+      # tail -1 always picks the LAST occurrence, which is the real references field
+      # that follows the example section.  See "KNOWN ASYMMETRY" note above.
       _references=$(printf '%s' "$_block_no_example" | grep "^references:" | tail -1 | sed 's/^references:[[:space:]]*//' || true)
       # tags: is a single-line comma-separated field (e.g. "tags: foo, bar")
       _tags=$(printf '%s' "$_block_no_example" | grep "^tags:" | head -1 | sed 's/^tags:[[:space:]]*//' || true)
       # new-tags: is a multi-line block — extract the "  - name: justification" lines.
       # These appear between "new-tags:" and the next top-level field or end of block.
       # The awk program is stored in a variable first for UNSAFE_PIPE_IN_CMDSUB compliance.
-      local _new_tags_awk='/^new-tags:/ { in_nt=1; next } in_nt && /^(title|rule|why|example|references|tags|new-tags):/ { in_nt=0 } in_nt { print }'
+      local _new_tags_awk="/^new-tags:/ { in_nt=1; next } in_nt && /^${_FIELD_NAMES}:/ { in_nt=0 } in_nt { print }"
       _new_tags=$(printf '%s' "$_block_no_example" | awk "$_new_tags_awk" || true)
 
       # Extract multi-line example block (everything after "example: |" up to the
       # next top-level key or end of block).  The example field uses YAML literal
       # block scalar style ("example: |") — subsequent indented lines are content.
-      # The terminator matches only the known top-level field names so that lines
-      # inside the example that look like "key: value" (e.g., shell assignments,
-      # config snippets) do not prematurely truncate the example content.
+      # The terminator matches only the known top-level field names, so lines inside
+      # the example that use non-field key names (e.g., "timeout: 30", shell
+      # assignments) do not prematurely truncate the example content.
+      #
+      # KNOWN LIMITATION: a col-0 known-field-name line inside the example (e.g.,
+      # "references: some-link" at column-0 with no indent) DOES terminate the
+      # example extraction — content after that line is silently lost from the
+      # extracted example.  This is the same boundary used by _no_example_awk
+      # (see "KNOWN ASYMMETRY" note above).  Well-formed convention blocks use
+      # 2-space indentation for all example content, making col-0 field names
+      # unambiguous terminators in practice.
       # The awk program is stored in a variable first so the || true guard appears
       # on the next line (required by the UNSAFE_PIPE_IN_CMDSUB lint rule).
-      local _example_awk='/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^(title|rule|why|example|references|tags|new-tags):/ { in_ex=0 } in_ex { sub(/^  /, ""); print }'
+      local _example_awk="/^example:[[:space:]]*\|/ { in_ex=1; next } in_ex && /^${_FIELD_NAMES}:/ { in_ex=0 } in_ex { sub(/^  /, \"\"); print }"
       _example=$(printf '%s' "$_current_block" | awk "$_example_awk" || true)
 
       # Skip blocks with no title (malformed)
