@@ -3,13 +3,19 @@
 #
 # Verifies:
 #   1. Known test output appears in the process's stdout stream (not only in temp file)
-#   2. Exit codes are preserved correctly through the tee process substitution
+#   2. Exit codes are preserved correctly through the capture-then-stream pattern
 #   3. Temp files are still populated after the run (parser still works)
 #   4. Output appears exactly once in stdout and once in temp file (no double-write)
+#   5. High-volume output: all lines captured (no flush race undercounting)
 #
 # Related issue: #465 (Stream test_gate output, don't only capture it)
 # Root cause: All capture sites used >/$>> redirect; output went to temp file only.
-# Fix: Replaced with > >(tee -a "$file") at all six sites.
+# Fix #465: Replaced with > >(tee -a "$file") at all six sites.
+# Fix #465 rev2: Replaced async tee process substitution with synchronous capture-then-stream
+#   pattern. > >(tee) spawns tee asynchronously — bash does not reap it before the parse
+#   loops run, causing a read-before-flush race that can undercount failures. The new pattern
+#   captures output to a variable first (synchronous), then streams to stdout and writes the
+#   temp file — both happen before the parse loops, eliminating the race.
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -27,55 +33,79 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Structural: all six capture sites use tee (not bare > or >>)
+# Structural: capture sites use synchronous capture-then-stream pattern (no async tee)
+#
+# The capture-then-stream pattern:
+#   _cmd_out=$( (cd "$root" && cmd 2>&1) ) || _exit=$?
+#   printf '%s\n' "$_cmd_out"
+#   printf '%s\n' "$_cmd_out" >> "$_raw_file"
+#
+# This is the synchronous alternative to > >(tee -a): tee launched via process
+# substitution is asynchronous — bash does not reap it before proceeding, causing a
+# read-before-flush race when the parse loops run. The capture-then-stream approach
+# eliminates the race by writing the temp file before the parse loops execute.
 # ---------------------------------------------------------------------------
 
-@test "structural: make shellcheck capture site uses tee (not bare redirect)" {
-  # The line must contain tee, not a bare >> redirect
+@test "structural: make shellcheck capture site uses capture-then-stream (not async tee)" {
+  # The capture line must use $(...) command substitution, not > >(tee ...)
   _line=$(grep -n 'make shellcheck 2>&1' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -n "$_line" ]
-  echo "$_line" | grep -q 'tee'
+  # Must use variable capture ($(...)) not process-substitution tee
+  echo "$_line" | grep -qE '\$\('
+  # Must NOT use async process-substitution tee (the pattern we replaced)
+  echo "$_line" | grep -qvE '> >\(tee'
 }
 
-@test "structural: make lint capture site uses tee (not bare redirect)" {
+@test "structural: make lint capture site uses capture-then-stream (not async tee)" {
   _line=$(grep -n 'make lint 2>&1' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -n "$_line" ]
-  echo "$_line" | grep -q 'tee'
+  echo "$_line" | grep -qE '\$\('
+  echo "$_line" | grep -qvE '> >\(tee'
 }
 
-@test "structural: bats capture site uses tee (not bare redirect)" {
+@test "structural: bats capture site uses capture-then-stream (not async tee)" {
   _line=$(grep -n 'bats -r tests/ 2>&1' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -n "$_line" ]
-  echo "$_line" | grep -q 'tee'
+  echo "$_line" | grep -qE '\$\('
+  echo "$_line" | grep -qvE '> >\(tee'
 }
 
-@test "structural: make test fallback capture site uses tee" {
+@test "structural: make test fallback capture site uses capture-then-stream (not async tee)" {
   _line=$(grep -n 'make test 2>&1' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -n "$_line" ]
-  echo "$_line" | grep -q 'tee'
+  echo "$_line" | grep -qE '\$\('
+  echo "$_line" | grep -qvE '> >\(tee'
 }
 
-@test "structural: npm test fallback capture site uses tee" {
+@test "structural: npm test fallback capture site uses capture-then-stream (not async tee)" {
   _line=$(grep -n 'npm test 2>&1' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -n "$_line" ]
-  echo "$_line" | grep -q 'tee'
+  echo "$_line" | grep -qE '\$\('
+  echo "$_line" | grep -qvE '> >\(tee'
 }
 
-@test "structural: python3 -m pytest fallback capture site uses tee" {
+@test "structural: python3 -m pytest fallback capture site uses capture-then-stream (not async tee)" {
   _line=$(grep -n 'python3 -m pytest 2>&1' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -n "$_line" ]
-  echo "$_line" | grep -q 'tee'
+  echo "$_line" | grep -qE '\$\('
+  echo "$_line" | grep -qvE '> >\(tee'
 }
 
-@test "structural: no bare >> to lint_raw_file without tee" {
-  # Must not have: ) >> "$_lint_raw_file" (the old pure-redirect pattern)
-  # tee -a is the expected form. This rule only applies to the capture sites — not the comment lines.
+@test "structural: no async tee process substitution at any capture site" {
+  # Verify no > >(tee ...) pattern remains in non-comment code — the async race is gone.
+  _async_tee=$(grep -nE '> >\(tee' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
+  [ -z "$_async_tee" ]
+}
+
+@test "structural: no bare >> to lint_raw_file without prior capture (subshell-close pattern)" {
+  # Must not have: ) >> "$_lint_raw_file" — the old subshell-then-redirect pattern that bypassed
+  # capture and went directly to file (skipping stdout streaming entirely).
   _bare=$(grep -nE '\) >> "?\$_lint_raw_file"?' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -z "$_bare" ]
 }
 
-@test "structural: no bare > to tests_raw_file without tee" {
-  # Must not have: ) > "$_tests_raw_file" (the old pure-redirect pattern)
+@test "structural: no bare > to tests_raw_file without prior capture (subshell-close pattern)" {
+  # Must not have: ) > "$_tests_raw_file" — the old subshell-then-redirect pattern.
   _bare=$(grep -nE '\) > "?\$_tests_raw_file"?' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -v '^\s*#' || true)
   [ -z "$_bare" ]
 }
@@ -285,9 +315,81 @@ EOF
   _alpha_count=$(echo "$_stream_output" | grep -c "unique-line-alpha" || true)
   _beta_count=$(echo "$_stream_output" | grep -c "unique-line-beta" || true)
 
-  # Each line should appear exactly once (tee writes to stdout once, not twice)
+  # Each line should appear exactly once (capture-then-stream writes to stdout once, not twice)
   [ "$_alpha_count" -eq 1 ]
   [ "$_beta_count" -eq 1 ]
+
+  rm -rf "$_mock_dir"
+}
+
+# ---------------------------------------------------------------------------
+# High-volume parse-completeness test: all lines captured (no flush race)
+#
+# The previous > >(tee -a) pattern could undercount failures because tee was
+# asynchronous — some lines might not have been flushed to the temp file before
+# the parse loops ran. This test emits a large, deterministic number of
+# "not ok" lines and verifies that the parsed _tests_count equals the emitted count.
+# ---------------------------------------------------------------------------
+
+@test "run_test_gate: high-volume bats output — all not-ok lines parsed (no flush race)" {
+  if ! command -v make >/dev/null 2>&1 || ! command -v bats >/dev/null 2>&1; then
+    skip "make or bats not available"
+  fi
+
+  _mock_dir=$(mktemp -d)
+  mkdir -p "$_mock_dir/tests/regression"
+
+  cat > "$_mock_dir/Makefile" << 'EOF'
+.PHONY: shellcheck lint
+shellcheck:
+	@exit 0
+lint:
+	@exit 0
+EOF
+
+  # Generate a bats file with 200 deterministically failing tests.
+  # Each test emits a unique "not ok N" line that the parser must capture.
+  # 200 lines is large enough to expose a flush race with tee but small enough
+  # to run quickly in CI (bats processes them in under a second).
+  _bats_file="$_mock_dir/tests/regression/high_volume.bats"
+  printf '#!/usr/bin/env bats\n' > "$_bats_file"
+  _i=1
+  while [ "$_i" -le 200 ]; do
+    printf '@test "high-volume-failure-%d" { false; }\n' "$_i" >> "$_bats_file"
+    _i=$(( _i + 1 ))
+  done
+
+  _gate_output="$_mock_dir/gate.json"
+
+  # Run the gate; it will exit 1 due to test failures — that's expected.
+  run bash -c "
+    set -uo pipefail
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_PROJECT_ROOT='$_mock_dir'
+    export PR_NUMBER='42'
+    RITE_LOG_FILE=''
+    _diag() { true; }
+    export -f _diag 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    run_test_gate '$_gate_output' '$_mock_dir'
+  " 2>/dev/null
+  # Gate must exit 1 (failures detected)
+  [ "$status" -eq 1 ]
+
+  # The JSON tests array must contain exactly 200 entries — one per emitted failure.
+  # If the flush race existed, some lines would be missing and the count would be < 200.
+  [ -f "$_gate_output" ]
+  if command -v jq >/dev/null 2>&1; then
+    _parsed_count=$(jq '.tests | length' "$_gate_output" || echo "0")
+    # All 200 failures must be captured — undercounting indicates a flush race.
+    [ "$_parsed_count" -eq 200 ]
+  else
+    # Without jq, verify the JSON contains the expected number of test_name entries
+    # by counting "assertion failed" occurrences (one per failure entry).
+    _parsed_count=$(grep -c '"assertion failed"' "$_gate_output" || true)
+    [ "$_parsed_count" -eq 200 ]
+  fi
 
   rm -rf "$_mock_dir"
 }
