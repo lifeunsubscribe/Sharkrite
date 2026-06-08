@@ -468,6 +468,10 @@ tag_index_ensure_heading() {
 # does nothing when the exact pointer (source_file → heading) already exists
 # under that tag.
 #
+# Returns 0 on success.
+# Returns 1 with an error message on stderr when the ## TAG heading is absent —
+# callers must call tag_index_ensure_heading before this function.
+#
 # Pointer format:  - conventions.md → Heading Text
 #
 # Arguments:
@@ -500,6 +504,10 @@ tag_index_add_pointer() {
   # heading, it prints the heading then inserts the new pointer line.
   # The `inserted` flag prevents duplicate insertions if the heading appears
   # more than once (should not happen in a well-formed index, but be defensive).
+  #
+  # The END block exits with status 1 when inserted==0, meaning the heading was
+  # never found in the file.  This causes _awk_exit to be non-zero, which is
+  # caught below to surface a diagnostic instead of silently no-oping.
   local _tmp
   _tmp=$(mktemp)
   local _awk_exit=0
@@ -512,12 +520,20 @@ tag_index_add_pointer() {
       next
     }
     { print }
+    END { exit !inserted }
   ' "$TAG_INDEX_FILE" > "$_tmp" || _awk_exit=$?
 
   if [ -s "$_tmp" ] && [ "$_awk_exit" -eq 0 ]; then
     mv "$_tmp" "$TAG_INDEX_FILE"
   else
     rm -f "$_tmp"
+    # Non-zero _awk_exit means the heading was not found (inserted==0 at END).
+    # Report the missing heading so the caller can diagnose the problem rather
+    # than silently dropping the pointer.
+    if [ "$_awk_exit" -ne 0 ]; then
+      echo "tag_index_add_pointer: heading '## ${tag}' not found in ${TAG_INDEX_FILE} — pointer not inserted (call tag_index_ensure_heading first)" >&2
+      return 1
+    fi
   fi
 }
 

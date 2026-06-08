@@ -14,6 +14,9 @@
 #   9. update_tag_index_from_block() new-tags: field creates new headings
 #  10. update_tag_index_from_block() with no tags is a no-op
 #  11. update_tag_index_from_block() bootstraps tag-index.md if missing
+#  12. tag_index_add_pointer() returns 1 when heading is absent (not silent no-op)
+#  13. tag_index_add_pointer() prints error to stderr when heading is absent
+#  14. tag_index_add_pointer() does not modify the file when heading is absent
 
 load '../helpers/setup.bash'
 
@@ -262,6 +265,61 @@ EOF
   local count
   count=$(grep -c "conventions.md → Some Convention" "$TAG_INDEX_PATH" || true)
   [ "$count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# tag_index_add_pointer() — missing heading detection
+# ---------------------------------------------------------------------------
+
+@test "tag_index_add_pointer: returns 1 when heading is absent" {
+  cat > "$TAG_INDEX_PATH" <<'EOF'
+# Tag Index
+
+**Auto-maintained.**
+
+---
+
+## some-other-tag
+
+EOF
+  run tag_index_add_pointer "nonexistent-tag" "conventions.md" "My Heading"
+  [ "$status" -eq 1 ]
+}
+
+@test "tag_index_add_pointer: prints error to stderr when heading is absent" {
+  cat > "$TAG_INDEX_PATH" <<'EOF'
+# Tag Index
+
+**Auto-maintained.**
+
+---
+
+## some-other-tag
+
+EOF
+  run --separate-stderr tag_index_add_pointer "nonexistent-tag" "conventions.md" "My Heading"
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"heading '## nonexistent-tag' not found"* ]]
+}
+
+@test "tag_index_add_pointer: does not modify file when heading is absent" {
+  cat > "$TAG_INDEX_PATH" <<'EOF'
+# Tag Index
+
+**Auto-maintained.**
+
+---
+
+## some-other-tag
+
+EOF
+  local before
+  before=$(cat "$TAG_INDEX_PATH")
+  # run captures exit code without crashing the test on non-zero
+  run tag_index_add_pointer "nonexistent-tag" "conventions.md" "My Heading"
+  local after
+  after=$(cat "$TAG_INDEX_PATH")
+  [ "$before" = "$after" ]
 }
 
 @test "update_tag_index_from_block: tags: and new-tags: combined works correctly" {
