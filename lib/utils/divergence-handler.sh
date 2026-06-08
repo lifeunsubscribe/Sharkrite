@@ -571,7 +571,7 @@ _do_rebase_and_push() {
   fi
 
   # Verify rebase didn't introduce silent semantic conflicts (tests pass)
-  if ! verify_post_merge "."; then
+  if ! verify_post_merge "." "$_pre_rebase_head"; then
     _div_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
     # Roll back to the pre-rebase HEAD snapshot captured at function entry.
     # Prefer _pre_rebase_head (always fresh, set from git rev-parse at entry) over
