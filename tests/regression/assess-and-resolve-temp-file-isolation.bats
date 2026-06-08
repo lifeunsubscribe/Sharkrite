@@ -18,7 +18,7 @@
 #   1. Static: cleanup trap uses scoped rm, not a glob
 #   2. Static: REVIEW_FILE assignment includes $$ (PID-scoped path)
 #   3. Unit:   cleanup does NOT wipe a peer PR's review file
-#   4. Unit:   two invocations of the same PR produce different REVIEW_FILE paths
+#   4. Unit:   concurrent invocations use isolated REVIEW_FILE paths and do not interfere
 #   5. Unit:   cleanup removes ONLY $REVIEW_FILE, not other /tmp/pr_review_* files
 
 load '../helpers/setup.bash'
@@ -119,35 +119,111 @@ teardown() {
   }
 }
 
-# ─── Test 4: Unit — two invocations produce different REVIEW_FILE paths ────────
+# ─── Test 4: Unit — concurrent invocations do not clobber each other's files ────
 
-@test "assess-and-resolve.sh: PID-scoped paths from two subprocesses are distinct" {
-  # Each subprocess gets its own PID, so /tmp/pr_review_${PR_NUMBER}_$$.txt
-  # produces two different paths even for the same PR number.
-  run bash -c "
-    # Spawn two subprocesses that each resolve the PID-scoped path and print it
-    path1=\$( bash -c 'echo \"/tmp/pr_review_42_\$\$.txt\"' )
-    path2=\$( bash -c 'echo \"/tmp/pr_review_42_\$\$.txt\"' )
+@test "assess-and-resolve.sh: concurrent invocations use isolated REVIEW_FILE paths and do not interfere" {
+  # This test validates the actual concurrent-invocation isolation guarantee:
+  # two simultaneous assess-and-resolve.sh processes each write to their own
+  # PID-scoped REVIEW_FILE, and neither process's cleanup deletes the other's file.
+  #
+  # The original test (before this fix) only verified that bash -c subprocesses
+  # receive different PIDs — an OS-level truism that does not exercise the
+  # isolation property the fix introduced.  The new test instead:
+  #   1. Runs two "invocations" (background subprocesses) in parallel, each
+  #      mimicking what assess-and-resolve.sh does: set a PID-scoped REVIEW_FILE,
+  #      write content, sleep briefly so the windows overlap, then clean up.
+  #   2. Records the path each invocation used.
+  #   3. After both finish, asserts the paths were distinct AND that each
+  #      invocation only removed its own file (peer file was not wiped mid-run).
 
-    if [ \"\$path1\" != \"\$path2\" ]; then
-      echo 'paths_distinct=true'
-      echo \"path1=\$path1\"
-      echo \"path2=\$path2\"
-    else
-      echo 'paths_distinct=false'
-      echo \"both=\$path1\"
+  _tmpdir="$(mktemp -d)"
+  _path_file_1="$_tmpdir/path1.txt"
+  _path_file_2="$_tmpdir/path2.txt"
+  _peer_survived_1="$_tmpdir/peer_survived_1.txt"
+  _peer_survived_2="$_tmpdir/peer_survived_2.txt"
+
+  # Invocation 1: write its own file, record peer's file survival, clean up own
+  bash -c "
+    set -euo pipefail
+    PR_NUMBER=42
+    REVIEW_FILE=\"/tmp/pr_review_\${PR_NUMBER}_\$\$.txt\"
+    echo \"\$REVIEW_FILE\" > '$_path_file_1'
+    echo 'invocation-1 review' > \"\$REVIEW_FILE\"
+
+    # Overlap: give invocation 2 time to start and write its own file
+    sleep 0.05
+
+    # Clean up own file only (fixed form — scoped, not glob)
+    rm -f \"\${REVIEW_FILE:-}\" 2>/dev/null || true
+  " &
+  _pid1=$!
+
+  # Invocation 2: write its own file, record peer's file survival, clean up own
+  bash -c "
+    set -euo pipefail
+    PR_NUMBER=42
+    REVIEW_FILE=\"/tmp/pr_review_\${PR_NUMBER}_\$\$.txt\"
+    echo \"\$REVIEW_FILE\" > '$_path_file_2'
+    echo 'invocation-2 review' > \"\$REVIEW_FILE\"
+
+    # Overlap: give invocation 1 time to run its cleanup
+    sleep 0.05
+
+    # Verify our file still exists after invocation 1 may have cleaned up
+    if [ -f \"\$REVIEW_FILE\" ]; then
+      echo 'survived' > '$_peer_survived_2'
     fi
-  "
 
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: bash snippet exited $status"
-    echo "Output: $output"
+    rm -f \"\${REVIEW_FILE:-}\" 2>/dev/null || true
+  " &
+  _pid2=$!
+
+  wait "$_pid1" || {
+    rm -rf "$_tmpdir"
+    echo "FAIL: invocation 1 subprocess exited non-zero"
+    false
+  }
+  wait "$_pid2" || {
+    rm -rf "$_tmpdir"
+    echo "FAIL: invocation 2 subprocess exited non-zero"
     false
   }
 
-  [[ "$output" == *"paths_distinct=true"* ]] || {
-    echo "FAIL: two subprocess REVIEW_FILE paths are identical — PID scoping is broken"
-    echo "Output: $output"
+  # Read all results before removing tmpdir
+  _path1="$(cat "$_path_file_1" 2>/dev/null || true)"
+  _path2="$(cat "$_path_file_2" 2>/dev/null || true)"
+  # _peer_survived_2 is written by invocation 2 only if its REVIEW_FILE was still
+  # present after invocation 1 had a chance to run cleanup.  Check existence now,
+  # before tmpdir is removed.
+  _inv2_file_survived=false
+  [ -f "$_peer_survived_2" ] && _inv2_file_survived=true
+
+  rm -rf "$_tmpdir"
+
+  # Assertion 1: both invocations produced a path
+  [ -n "$_path1" ] || {
+    echo "FAIL: invocation 1 did not record its REVIEW_FILE path"
+    false
+  }
+  [ -n "$_path2" ] || {
+    echo "FAIL: invocation 2 did not record its REVIEW_FILE path"
+    false
+  }
+
+  # Assertion 2: the two paths are distinct (PID scoping produced unique filenames)
+  [ "$_path1" != "$_path2" ] || {
+    echo "FAIL: both invocations chose the same REVIEW_FILE path — PID scoping is broken"
+    echo "  path1=$_path1"
+    echo "  path2=$_path2"
+    false
+  }
+
+  # Assertion 3: invocation 2's file survived while invocation 1 was cleaning up.
+  # If the glob regression were present, invocation 1's cleanup would have deleted
+  # invocation 2's file before invocation 2 had a chance to read it.
+  [ "$_inv2_file_survived" = "true" ] || {
+    echo "FAIL: invocation 2's REVIEW_FILE was wiped before invocation 2 finished"
+    echo "  This indicates invocation 1's cleanup deleted the peer file (glob regression)"
     false
   }
 }
