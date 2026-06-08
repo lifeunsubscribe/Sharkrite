@@ -82,34 +82,3 @@ RITE_MARKER_CHANGES_SUMMARY="sharkrite-changes-summary"
 # Format in stash message: [sharkrite-managed-stash]
 RITE_MARKER_STASH="sharkrite-managed-stash"
 
-# ---------------------------------------------------------------------------
-# SHA extraction helper
-# ---------------------------------------------------------------------------
-
-# extract_review_sha: extract the HEAD SHA embedded in a review marker comment.
-#
-# Usage: extract_review_sha REVIEW_BODY
-#   REVIEW_BODY — the full text of the review PR comment
-#
-# Outputs the SHA string (7-40 hex chars) to stdout, or empty string if the
-# review predates SHA embedding (reviews generated before issue #354 won't
-# have the commit: attribute).
-#
-# The SHA attribute format in the marker is: commit:<sha>
-# Full marker example: <!-- sharkrite-local-review model:X timestamp:Y commit:abc1234 -->
-#
-# WHY THIS LIVES IN markers.sh:
-#   The function parses RITE_MARKER_REVIEW — a constant owned by this file.
-#   Two callers originally each defined their own copy of this logic:
-#   assess-and-resolve.sh (line ~451) and the regression tests
-#   (stale-review-detection-sha-based.bats, inlined in each test case).
-#   Centralising here eliminates the duplication and ensures both callers
-#   and any future consumers share a single implementation (issue #364).
-extract_review_sha() {
-  local review_body="$1"
-  # Match "commit:" followed by a hex SHA (7-40 chars) inside the marker comment.
-  # The outer grep anchors the match inside the marker (before >) so that a
-  # "commit:SHA" reference in the review body text does not produce a false match.
-  echo "$review_body" | grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
-    grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true
-}
