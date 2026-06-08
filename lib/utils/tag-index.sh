@@ -185,6 +185,10 @@ _ti_is_heading_pointed() {
 #
 # Builds a newline-separated string of all pointer entries from the currently
 # parsed TAG_POINTERS array. Outputs to stdout.
+#
+# Uses printf '%s' instead of echo to avoid the echo round-trip, which would
+# mangle pointer text containing backslashes, $() sequences, or other special
+# characters that echo may interpret or expand.
 _ti_build_pointer_text() {
   local text=""
   local p
@@ -192,7 +196,7 @@ _ti_build_pointer_text() {
     text="${text}${p}
 "
   done
-  echo "$text"
+  printf '%s' "$text"
 }
 
 # _ti_count_orphans_in_file CATALOG_FILE ALL_POINTER_TEXT
