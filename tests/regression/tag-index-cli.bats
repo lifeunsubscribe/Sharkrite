@@ -408,3 +408,80 @@ EOCONV
   run grep -q '"tags"' "$RITE_REPO_ROOT/bin/rite"
   [ "$status" -eq 0 ]
 }
+
+# ===========================================================================
+# Test 9: _ti_build_pointer_text preserves special content (no echo round-trip)
+# ===========================================================================
+
+@test "_ti_build_pointer_text preserves backslash sequences in pointer text" {
+  # Pointer text with a backslash-n sequence should NOT be interpreted as a newline.
+  # The old echo round-trip would mangle \n in heading text on some platforms.
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    source '$RITE_LIB_DIR/utils/tag-index.sh'
+    # Populate TAG_POINTERS directly — bypasses file I/O so the test is self-contained
+    TAG_POINTERS=('conventions.md → Use \\\\n not newline' 'conventions.md → Normal entry')
+    _ti_build_pointer_text
+  "
+  [ "$status" -eq 0 ]
+  # Both pointer strings must appear in the output, unmangled
+  [[ "$output" == *'Use \\n not newline'* ]]
+  [[ "$output" == *'Normal entry'* ]]
+}
+
+@test "_ti_build_pointer_text preserves dollar-sign content in pointer text" {
+  # Pointer text with dollar-sign sequences should pass through without expansion.
+  # The old echo round-trip could potentially interact with such content.
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    source '$RITE_LIB_DIR/utils/tag-index.sh'
+    TAG_POINTERS=('conventions.md → Silent death: pipelines inside \$()' 'conventions.md → Normal entry')
+    _ti_build_pointer_text
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'pipelines inside'* ]]
+  [[ "$output" == *'Normal entry'* ]]
+}
+
+@test "_ti_build_pointer_text with special chars is still matched by orphan detection" {
+  # Orphan detection must still work correctly when pointer text contains
+  # parentheses (special chars must survive the round-trip through
+  # _ti_build_pointer_text → _ti_is_heading_pointed comparison).
+  cat > "$TAG_INDEX_PATH" <<'EOTAG'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## set-e
+
+- conventions.md → Silent death: pipelines inside $()
+EOTAG
+
+  cat > "$CONVENTIONS_PATH" <<'EOCONV'
+# Conventions
+
+## Silent death: pipelines inside $()
+
+Content here.
+
+## Some untagged entry
+
+No tag for this.
+EOCONV
+
+  _run_tag_index "--orphans"
+
+  [ "$status" -eq 0 ]
+  # "Silent death: pipelines inside $()" IS pointed at — should NOT be an orphan
+  [[ "$output" != *'Silent death: pipelines inside'* ]]
+  # "Some untagged entry" is NOT pointed at — should appear as an orphan
+  [[ "$output" == *"Some untagged entry"* ]]
+}
