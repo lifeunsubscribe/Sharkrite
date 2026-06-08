@@ -154,7 +154,8 @@ RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-w
 #   4h of active work was correct intuition but the old implementation measured file age,
 #   not work. 12h of actual rite automation is a conservative daily budget.
 # RITE_MAX_ISSUE_HOURS: per-issue cap — protects against fix-loop runaway on a single issue.
-RITE_MAX_ISSUES_PER_SESSION="${RITE_MAX_ISSUES_PER_SESSION:-8}"
+# RITE_MAX_ISSUES_PER_SESSION removed — was a stale heuristic with a misleading
+# "Approaching token limit" message; see detect_session_limit() in blocker-rules.sh.
 RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-12}"
 RITE_MAX_ISSUE_HOURS="${RITE_MAX_ISSUE_HOURS:-4}"
 RITE_MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
