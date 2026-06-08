@@ -979,20 +979,37 @@ for file in "${SHELL_FILES[@]}"; do
 
   # Exempt: file has a functional BASH_VERSINFO version-comparison guard.
   #
-  # Require BASH_VERSINFO[<index>] used in a version comparison (-lt/-gt/-le/-ge/-eq/-ne
-  # or arithmetic < / > / == / != operators) — not just any mention of BASH_VERSINFO.
+  # Two bugs to avoid in this check:
   #
-  # Why: a bare `grep -q 'BASH_VERSINFO'` fires on:
-  #   - Comment lines: "# Requires a BASH_VERSINFO check"
-  #   - Diagnostic output: echo "bash version: ${BASH_VERSINFO[*]}"
-  # Either of those would exempt the whole file even though no functional guard exists.
+  #   1. Comment lines must NOT grant exemption: a comment documenting the
+  #      guard pattern (e.g. "# if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then")
+  #      contains the full pattern and would exempt a file with no real guard
+  #      if we scan all lines.  Fix: strip comment lines before matching.
   #
-  # The two canonical guard shapes in the codebase are:
-  #   [ "${BASH_VERSINFO[0]}" -lt 4 ]   (test builtin with numeric comparison)
-  #   (( BASH_VERSINFO[0] < 4 ))        (arithmetic conditional)
-  # Both require BASH_VERSINFO[ with a comparison operator and a version number on
-  # the same line — that is the signal we require here.
-  if grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*((-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]|[<>=!][=]?[[:space:]]*[0-9])' "$file" 2>/dev/null; then
+  #   2. Redirects to numeric filenames must NOT grant exemption: the
+  #      arithmetic-operator alternative "[<>=!][=]?[[:space:]]*[0-9]" also
+  #      matches shell redirect syntax like ">2" (stdout to file named "2").
+  #      A diagnostic line such as `echo "${BASH_VERSINFO[0]}" >2` would
+  #      incorrectly exempt the file.  Fix: anchor the arithmetic form to a
+  #      "(( " prefix so it only matches inside arithmetic conditionals,
+  #      where ">" is always a comparison, never a redirect.
+  #
+  # Two passes — one per canonical guard shape:
+  #
+  #   Shape 1 (test builtin):   [ "${BASH_VERSINFO[0]}" -lt 4 ]
+  #   Shape 2 (arithmetic):     (( BASH_VERSINFO[0] < 4 ))
+  #
+  # Comment lines (^[[:space:]]*#) are stripped before both passes so that
+  # commented-out guards do not trigger the exemption.
+  _non_comment_lines=$(grep -v '^[[:space:]]*#' "$file" 2>/dev/null || true)
+  # Shape 1: test-builtin numeric comparison (-lt/-gt/-le/-ge/-eq/-ne)
+  # No redirect ambiguity: -lt etc. are unambiguous comparison keywords.
+  if echo "$_non_comment_lines" | grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*(-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]'; then
+    continue
+  fi
+  # Shape 2: arithmetic conditional — anchored to "((" so ">" means comparison,
+  # not redirect.  Inside "(( ))", "<" and ">" are always arithmetic operators.
+  if echo "$_non_comment_lines" | grep -qE '\(\([^)]*BASH_VERSINFO\[[0-9]+\][^)]*[<>][=]?[[:space:]]*[0-9]'; then
     continue
   fi
 
