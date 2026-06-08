@@ -216,19 +216,37 @@ if detect_aws_project && ! detect_credentials_expired; then
 fi
 
 # Filter out issues that are actively running in another process.
-_all_procs=$(ps -eo pid,command 2>/dev/null || true)
+#
+# The regex requires the issue number to follow workflow-runner.sh or
+# claude-workflow.sh as a positional argument — NOT just appear anywhere on
+# the line. The old pattern (" ${N}( |$)") false-positived against:
+#   - the PID column (ps -eo pid,command pads with spaces, so a workflow-runner.sh
+#     whose PID is N produces a line containing " N " from the PID column itself)
+#   - any unrelated number that happened to land between spaces in argv
+# Live failure: 2026-06-08 batch for issues 393 395 377 silently skipped 377
+# even though no process was running it.
+#
+# When the skip fires we also print the matched line so a future false positive
+# is debuggable from the log instead of requiring live process inspection.
+_all_procs=$(ps -eo command 2>/dev/null || true)
 _active_matches=$(echo "$_all_procs" | grep -E "(workflow-runner|claude-workflow)\.sh" | grep -v "grep" || true)
 _filtered_list=()
 _active_skipped=()
+declare -A _active_skipped_matches
 for _issue_num in "${ISSUE_LIST[@]}"; do
-  if echo "$_active_matches" | grep -qE " ${_issue_num}( |$)"; then
+  _match_line=$(echo "$_active_matches" | grep -E "(workflow-runner|claude-workflow)\.sh ${_issue_num}( |$)" | head -1 || true)
+  if [ -n "$_match_line" ]; then
     _active_skipped+=("$_issue_num")
+    _active_skipped_matches["$_issue_num"]="$_match_line"
   else
     _filtered_list+=("$_issue_num")
   fi
 done
 if [ ${#_active_skipped[@]} -gt 0 ]; then
   print_warning "Skipping issues already running: ${_active_skipped[*]}"
+  for _skip_issue in "${_active_skipped[@]}"; do
+    print_info "  #${_skip_issue} matched: ${_active_skipped_matches[$_skip_issue]}"
+  done
   ISSUE_LIST=("${_filtered_list[@]}")
   TOTAL_ISSUES=${#ISSUE_LIST[@]}
 fi
