@@ -111,6 +111,26 @@ done
 DIAG_LINES=$(echo "$DIAG_LINES" | sed '/^$/d' || true)
 TIMING_LINES=$(echo "$TIMING_LINES" | sed '/^$/d' || true)
 
+# --- Pre-parse conflict resolver stats for health checks ---
+# Extract CONFLICT_RESOLVER exit-event lines (not START lines; those are entry events)
+CR_LINES=$(echo "$DIAG_LINES" | grep 'CONFLICT_RESOLVER ' || true)
+CR_TOTAL=$(echo "$CR_LINES" | grep -c 'CONFLICT_RESOLVER ' || true)
+CR_RESOLVED=$(echo "$CR_LINES" | grep -c 'outcome=resolved' || true)
+CR_FAILED=$(echo "$CR_LINES" | grep -c 'outcome=failed' || true)
+CR_CAP_HIT=$(echo "$CR_LINES" | grep -c 'outcome=cap_hit' || true)
+CR_SKIPPED=$(echo "$CR_LINES" | grep -c 'outcome=skipped_no_resolver' || true)
+
+# --- Pre-parse test gate stats for health checks ---
+# TEST_GATE diag format: "TEST_GATE outcome=passed|failed|skipped lint_count=N test_count=N duration_s=N pr=N"
+TG_LINES=$(echo "$DIAG_LINES" | grep 'TEST_GATE ' || true)
+TG_TOTAL=$(echo "$TG_LINES" | grep -c 'TEST_GATE ' || true)
+TG_PASSED=$(echo "$TG_LINES" | grep -c 'outcome=passed' || true)
+TG_FAILED=$(echo "$TG_LINES" | grep -c 'outcome=failed' || true)
+TG_SKIPPED=$(echo "$TG_LINES" | grep -c 'outcome=skipped' || true)
+# Sum lint and test failure counts across all gate runs
+TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
 
@@ -176,9 +196,22 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - Any issue hitting max fix iterations (3) → flag that specific issue
    - Review finding 0 issues consistently → WATCH (review prompt may be too lenient)
    - CRITICAL findings appearing → flag
-4. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
-5. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
-6. **Action Items** — Specific, actionable recommendations. Examples:
+4. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
+   - Show: Total gate runs, outcome breakdown (passed/failed/skipped), lint failures total, bats test failures total
+   - Thresholds:
+     - gate failure rate > 30% → **WARNING**: "Fix sessions introducing regressions frequently"
+     - `skipped` > 0 → **WATCH**: "Gate skipped (bats/make missing on some runners)"
+     - TG_LINT_TOTAL > 0 → flag which fix iterations introduced lint violations
+   - If TG_TOTAL is 0, say "No post-commit gate runs recorded this week (feature new or gate not yet active)."
+5. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
+   - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (top 5), median resolution duration if duration_s values are present
+   - Thresholds:
+     - `skipped_no_resolver` > 0 → **WARNING**: "Resolver not wired — conflict-resolver.sh may be missing"
+     - failure rate > 30% → **WATCH**: "Resolver failing frequently"
+   - If CR_TOTAL is 0, say "No conflict resolution attempts this week."
+6. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
+7. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
+8. **Action Items** — Specific, actionable recommendations. Examples:
    - "Consider adding `gh pr diff` to rtk exclude list — Phase 3 fix iterations up"
    - "Phase 1 duration trending down — rtk compression appears effective"
    - "Review severity skewing toward LOW — tighten review prompt for more meaningful findings"
@@ -186,11 +219,13 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 
 ## Data Format
 
-- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`
+- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`
 - `[timing]` lines show phase durations: `END phase_name (Xm Xs)`
 - rtk stats are JSON from `rtk gain --format json`
 - Git log shows recent tool changes with file stats
 - Previous reports provide trend context
+- Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts)
+- Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
 
 ## Constraints
 
@@ -211,6 +246,29 @@ $DIAG_LINES
 ## Phase Timing Lines (past 7 days)
 
 $TIMING_LINES
+
+## Test Gate Stats (pre-parsed, past 7 days)
+
+- TG_TOTAL (total gate runs): $TG_TOTAL
+- TG_PASSED: $TG_PASSED
+- TG_FAILED: $TG_FAILED
+- TG_SKIPPED (missing runner): $TG_SKIPPED
+- TG_LINT_TOTAL (total lint failures across all failed runs): $TG_LINT_TOTAL
+- TG_TEST_TOTAL (total bats test failures across all failed runs): $TG_TEST_TOTAL
+
+Raw TEST_GATE diag lines for per-run details:
+$TG_LINES
+
+## Conflict Resolver Stats (pre-parsed, past 7 days)
+
+- CR_TOTAL (total invocations): $CR_TOTAL
+- CR_RESOLVED: $CR_RESOLVED
+- CR_FAILED: $CR_FAILED
+- CR_CAP_HIT: $CR_CAP_HIT
+- CR_SKIPPED (skipped_no_resolver — canary): $CR_SKIPPED
+
+Raw CONFLICT_RESOLVER diag lines for issue/duration details:
+$CR_LINES
 
 ## rtk Token Stats (cumulative)
 

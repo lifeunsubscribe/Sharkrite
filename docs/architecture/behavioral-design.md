@@ -281,11 +281,67 @@ The findings themselves were real and worth filing — just not worth blocking a
 
 **Coverage:** `tests/integration/assess-and-resolve-dedup.bats` — "ACTIONABLE_NOW with only MEDIUM severity defers to follow-up and exits 0" asserts both the exit code AND that a single follow-up issue is created via the gh mock.
 
-### Fix-review prompt: verify no regressions before declaring done
+### Verification Out of Fix Session
 
-Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt requires Claude to run the project's test/lint commands covering the files it touched, BEFORE the session ends. Without this, a fix can introduce a regression (e.g., a `find` exclusion that breaks four positive tests) that the next review cycle catches — burning another 5+ minutes of LLM time.
+**Issue #448, 2026-06-07.** Verification (`make check` + `bats -r tests/`) was moved OUT of the fix session and into a parallel post-commit gate.
 
-The hard test gate (`run_test_gate`) runs after the session anyway, so this is defense-in-depth: the prompt-level instruction catches issues earlier, while the gate catches anything that slipped through. Live precedent: PR #313's cycle 3 fix added a `find` exclusion to Rule 22 that broke 4 positive tests — cycle 4's review caught it, but only after another full cycle.
+**Before (broken):**
+```
+fix_session (Claude, LLM $$)
+  ├── read findings, make edits
+  ├── make check  ← full-codebase shellcheck ON LLM WALLET CLOCK
+  ├── bats tests/ ← non-recursive: found 0 tests (broken gate)
+  └── declare done
+outer test gate: bats tests/ → 1..0 (zero tests, non-recursive bug)
+```
+
+**After (correct):**
+```
+fix_session (Claude, editing only)
+  ├── read findings, make edits
+  ├── bash -n <files>  ← syntax-check only, fast
+  └── commit
+
+[PARALLEL, after commit]
+make check + bats -r tests/ ───┐  run_test_gate() in background (CPU)
+review generation ─────────────┤  phase_create_pr() in foreground (LLM)
+assessment ────────────────────┘  waits for both, merges findings
+```
+
+**Three structural changes:**
+
+1. **Fix prompt** (`claude-workflow.sh`): step 5 replaced with `bash -n` syntax-check only. Claude is explicitly told NOT to run `make check`, `bats`, or `pytest` — those run automatically after commit. Fix timeout lowered proportionally: `300 + 240 * ACTIONABLE_NOW_COUNT`, capped at 1800s.
+
+2. **Test gate** (`lib/utils/test-gate.sh`): new utility that runs `make shellcheck` + `make lint` (independently, so custom-lint findings are never masked by shellcheck failures) + `bats -r tests/` (recursive) for Sharkrite repos. Emits structured JSON: `{lint, tests, exit_code}`. Runs in background, parallel with review generation. Exits 0 with `skipped=true` when `make`/`bats` are absent.
+
+**Gate coverage boundary — fix-loop commits vs. initial dev commit:**
+
+The parallel gate (`run_test_gate` in `test-gate.sh`) runs **after every fix-loop commit** (workflow-runner.sh, Phase 3). It does NOT run after the initial dev commit from Phase 1.
+
+The initial dev commit is covered by the dev-phase gate in `claude-workflow.sh::run_test_gate()` (line ~2619). That gate auto-detects the test runner: for Sharkrite repos it resolves to `make test` (via `_test_cmd="make test"` at line ~494), which calls the Makefile `test:` target — this runs `bats tests/` (non-recursive). The recursive `bats -r tests/` form is used **only** by the post-commit parallel gate (`test-gate.sh`). This is intentional: the dev-phase gate uses the project's standard `make test` command (non-recursive, same as `make test` in CI); the parallel gate uses `bats -r tests/` to fix the exact non-recursive bug (PR #432) that motivated this PR.
+
+3. **Assessment** (`assess-and-resolve.sh`): reads gate findings from `RITE_GATE_FINDINGS` env var (or `.rite/state/gate-findings-N.json` fallback). Gate findings are prepended to the fix-mode list as `[GATE] ACTIONABLE_NOW` items — no LLM categorization needed (objective failures). The zero-findings early-exit is guarded: if gate found failures, assessment MUST run the fix loop regardless of review verdict.
+
+**Why the old "defense-in-depth" argument no longer applies:**
+
+The old section argued that having Claude run tests INSIDE the session is defense-in-depth (catches issues before the gate). The live data disproved this: the PR #432 run spent the full 1800s on `make check` thrash (Claude ran it multiple times), then the outer gate ran `bats tests/` non-recursively and found zero tests. Both windows were broken simultaneously. Defense-in-depth only works when both layers are functional.
+
+**Proportional fix timeout:**
+- 1 finding → 300 + 240 = 540s (~9 min)
+- 3 findings → 300 + 720 = 1020s (~17 min)
+- 6 findings → 300 + 1440 = 1740s (~29 min)
+- 10+ findings → capped at 1800s (30 min)
+- `RITE_FIX_TIMEOUT` env var overrides (operator escape hatch)
+
+**Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`.
+
+### Fix-review prompt: syntax-check before declaring done
+
+Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt now requires Claude to run `bash -n <file>` on every shell file it touched before declaring done. This is a fast, in-session check that catches broken syntax before commit. Full lint and test verification runs post-commit via the parallel gate (see "Verification Out of Fix Session" above).
+
+**`bash -n` is prompt-level only — not enforced by the workflow.** The fix-review session is editing-only: it does not call the dev-phase `run_test_gate()` and does not return exit 3. If Claude skips the `bash -n` check and commits a syntax error, the parallel gate's `make check` (which includes shellcheck) will catch it in the next cycle as a `[GATE] ACTIONABLE_NOW` item. There is no in-workflow enforcement of the `bash -n` step.
+
+**Why not full test/lint in-session:** PR #432's fix loop burned the full 1800s budget on `make check` thrash (full-codebase shellcheck on files the fix never touched), then the outer gate ran `bats tests/` non-recursively and found zero tests — both verification windows were simultaneously broken. Moving verification out of the fix session lets it run: (a) after commit so it reflects the actual committed state, (b) in parallel with review generation (no extra wall-clock time), and (c) recursively (`bats -r tests/` instead of the old non-recursive `bats tests/`).
 
 ### Spend-cap detection in the dev session aborts the whole batch
 

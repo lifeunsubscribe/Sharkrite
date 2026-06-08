@@ -25,25 +25,36 @@ setup() {
   export RITE_REPO_ROOT
 
   MARKERS_SH="${RITE_REPO_ROOT}/lib/utils/markers.sh"
+  REVIEW_HELPER_SH="${RITE_REPO_ROOT}/lib/utils/review-helper.sh"
   ASSESS_AND_RESOLVE="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
 
-  # Source markers to get RITE_MARKER_REVIEW constant and extract_review_sha().
-  # extract_review_sha() was previously inlined per-test; it now lives in
-  # markers.sh alongside the RITE_MARKER_REVIEW constant it parses (issue #364).
+  export MARKERS_SH REVIEW_HELPER_SH ASSESS_AND_RESOLVE
+
+  # Source markers to get RITE_MARKER_REVIEW constant
   # shellcheck source=/dev/null
   source "$MARKERS_SH"
 }
+
+# Helper: source review-helper.sh in a subshell snippet, setting up the
+# minimal RITE_LIB_DIR env that review-helper.sh requires.
+# Usage: add to the beginning of a bash -c block:
+#   _setup_review_helper='
+#     export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+#     source "${REVIEW_HELPER_SH}"
+#   '
+#   run bash -c "${_setup_review_helper}; ..."
 
 # =============================================================================
 # extract_review_sha: correctly parses the commit: attribute
 # =============================================================================
 
 @test "extract_review_sha: returns SHA from marker with commit attribute" {
+  # Uses the canonical extract_review_sha from lib/utils/review-helper.sh.
   run bash -c "
     set -euo pipefail
-    source '${MARKERS_SH}'
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
 
-    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     # Use the expanded constant in the fixture (double-quoted so variable expands)
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-06-04T15:03:35Z commit:abc1234def567 -->
 
@@ -59,9 +70,9 @@ Some review content here.\"
 @test "extract_review_sha: returns empty for review without commit attribute (pre-fix review)" {
   run bash -c "
     set -euo pipefail
-    source '${MARKERS_SH}'
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
 
-    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     # Old review format (before issue #354 fix) — no commit: attribute
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-05-01T10:00:00Z -->
 
@@ -77,9 +88,9 @@ Some review content here.\"
 @test "extract_review_sha: returns full 40-char SHA when full SHA is embedded" {
   run bash -c "
     set -euo pipefail
-    source '${MARKERS_SH}'
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
 
-    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     full_sha='a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-06-04T15:00:00Z commit:\${full_sha} -->\"
 
@@ -93,9 +104,9 @@ Some review content here.\"
 @test "extract_review_sha: does not match commit: outside the marker comment" {
   run bash -c "
     set -euo pipefail
-    source '${MARKERS_SH}'
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
 
-    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
     # Review body has commit: SHA in the text content but NOT in the marker
     review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-06-04T15:00:00Z -->
 
@@ -355,13 +366,13 @@ The commit:deadbeef123 introduced a new function. See also commit:feedface456.\"
 # =============================================================================
 
 @test "round-trip: write marker with SHA, extract SHA back" {
+  # Verifies that the canonical extract_review_sha (from review-helper.sh)
+  # correctly round-trips a SHA written by local-review.sh's marker format.
   run bash -c "
     set -euo pipefail
-    source '${MARKERS_SH}'
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
 
-    # extract_review_sha is now provided by markers.sh (no local redefinition needed).
-    # This tests the canonical path: local-review.sh writes the marker, then
-    # assess-and-resolve.sh reads it back — both now share the same implementation.
     original_sha='abc1234def567890abc1234def567890abc12345'
     _REVIEW_SHA_ATTR=\" commit:\${original_sha}\"
 
@@ -370,7 +381,7 @@ The commit:deadbeef123 introduced a new function. See also commit:feedface456.\"
 
 Actual review content follows here.\"
 
-    # Simulate assess-and-resolve.sh reading the SHA back
+    # Simulate assess-and-resolve.sh reading the SHA back using the shared helper
     extracted_sha=\$(extract_review_sha \"\$review_comment\")
 
     if [ \"\$extracted_sha\" = \"\$original_sha\" ]; then
@@ -381,4 +392,95 @@ Actual review content follows here.\"
   "
   [ "$status" -eq 0 ]
   [[ "$output" == "ROUND_TRIP_OK" ]]
+}
+
+# =============================================================================
+# resolve_pr_head_sha: local-git fallback path (no network required)
+# =============================================================================
+
+@test "resolve_pr_head_sha: falls back to local git when API unavailable and branch matches" {
+  # Verifies that resolve_pr_head_sha correctly falls back to local git when
+  # gh is mocked to fail (API unavailable). The worktree_path argument guides
+  # the fallback to the correct git context rather than cwd.
+  #
+  # This tests the branch-name-guard path: when branch name is unavailable
+  # (partial API failure), the function warns and uses the worktree's HEAD.
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
+  run bash -c "
+    set -euo pipefail
+    tmpdir='$tmpdir'
+
+    # Set up a minimal git repo to represent the PR worktree
+    cd \"\$tmpdir\"
+    git init -q
+    git config user.email 'test@test.com'
+    git config user.name 'Test'
+    echo 'content' > file.txt
+    git add file.txt
+    git commit -q -m 'test commit'
+    expected_sha=\$(git rev-parse HEAD)
+
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    # Override gh_safe to simulate a complete API failure (empty output).
+    # This forces the function into the local-git fallback path.
+    gh_safe() { echo ''; }
+    export -f gh_safe
+
+    # With both _rph_remote_sha and _rph_branch_name empty, the function
+    # falls into the 'branch name unknown — fall back with a warning' path.
+    # It should return the worktree's HEAD SHA (not cwd's HEAD, which could
+    # be different if cwd is the main checkout).
+    result=\$(resolve_pr_head_sha '42' \"\$tmpdir\" 2>/dev/null)
+
+    if [ \"\$result\" = \"\$expected_sha\" ]; then
+      echo 'FALLBACK_OK'
+    else
+      echo \"MISMATCH: expected '\$expected_sha', got '\$result'\"
+    fi
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "FALLBACK_OK" ]]
+}
+
+@test "resolve_pr_head_sha: returns empty when API fails and no worktree provided and branch mismatches" {
+  # Verifies that resolve_pr_head_sha returns empty (safe) rather than
+  # guessing when API fails, no worktree_path is given, and the current
+  # branch does not match the expected PR branch. This prevents the
+  # false-positive stale verdict that issue #354 fixed.
+  run bash -c "
+    set -euo pipefail
+
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    # Mock gh_safe: returns a valid branch name but empty SHA (partial failure).
+    # The local git fallback will only proceed if cwd's branch matches.
+    # We are running outside any git repo in this subshell, so git commands fail.
+    gh_safe() {
+      # Return branch name but empty sha — simulates partial API failure
+      echo '{\"name\": \"feat/some-pr-branch\", \"sha\": \"\"}'
+    }
+    export -f gh_safe
+
+    # resolve_pr_head_sha should return empty because:
+    # - Remote SHA is empty (partial failure)
+    # - No worktree_path provided
+    # - git rev-parse may fail outside a repo (so branch guard fires empty)
+    result=\$(resolve_pr_head_sha '42' 2>/dev/null || true)
+    result=\"\${result:-}\"
+
+    # The result should be empty — no guessing from wrong context
+    if [ -z \"\$result\" ]; then
+      echo 'SAFE_EMPTY_OK'
+    else
+      echo \"UNEXPECTED_SHA: '\$result'\"
+    fi
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "SAFE_EMPTY_OK" ]]
 }

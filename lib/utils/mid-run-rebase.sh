@@ -37,6 +37,19 @@ if ! declare -f gh_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
+# Source logging for _diag structured diagnostic lines (no-op if already loaded)
+if ! declare -f _diag >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/logging.sh"
+fi
+
+# Source conflict resolver if available (provided by issue #21).
+# Guarded: mid-run-rebase works without it — resolver is an enhancement,
+# not a hard dependency. When present, attempt_claude_merge_resolution()
+# is called on rebase conflict bail paths.
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+fi
+
 # ===================================================================
 # PUBLIC: Main entry point
 # ===================================================================
@@ -202,8 +215,51 @@ _mid_run_rebase_onto_main() {
       return 1
     fi
   else
-    # Rebase has conflicts — abort and report clearly
+    # Rebase has conflicts — abort and attempt Claude-assisted resolution in auto mode.
     git rebase --abort 2>/dev/null || true
+
+    # In auto mode, attempt Claude-assisted conflict resolution before bailing.
+    # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
+    # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
+    if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+      print_status "mid-run-rebase: attempting Claude-assisted conflict resolution..."
+      local _resolver_result=0 _cr_start _cr_duration
+      _cr_start=$(date +%s)
+      _diag "CONFLICT_RESOLVER_START context=mid_run_rebase issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name}"
+      attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      _cr_duration=$(( $(date +%s) - _cr_start ))
+      if [ "$_resolver_result" -eq 0 ]; then
+        _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        print_success "mid-run-rebase: conflicts resolved by Claude"
+        # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
+        # Commit the resolution before pushing.
+        if ! git commit --no-edit 2>/dev/null; then
+          print_error "mid-run-rebase: failed to commit resolved conflicts"
+          git merge --abort 2>/dev/null || true
+          return 1
+        fi
+        # Resolution committed — force-with-lease push (history was rewritten by resolver).
+        if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+          print_info "mid-run rebase: conflict resolved, committed, and pushed"
+          return 0
+        else
+          print_error "mid-run-rebase: push failed after conflict resolution (force-with-lease rejected)"
+          return 1
+        fi
+      elif [ "$_resolver_result" -eq 5 ]; then
+        _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        print_error "mid-run-rebase: Claude usage cap reached during conflict resolution — aborting batch"
+        return 5
+      else
+        _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        print_warning "mid-run-rebase: Claude could not resolve conflicts"
+      fi
+    elif [ "$workflow_mode" != "supervised" ]; then
+      # Canary: resolver function not available but we're in auto mode — emit a diagnostic
+      # so wiring drift is visible in health reports.
+      _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=skipped_no_resolver issue=${issue_number:-} pr=${pr_number:-}"
+    fi
+
     echo "" >&2
     print_warning "⚠️  Mid-run rebase conflict: cannot auto-rebase ${branch_name} onto origin/main"
     echo "" >&2

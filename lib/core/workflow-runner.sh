@@ -32,7 +32,11 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+# review-helper.sh: shared extract_review_sha / resolve_pr_head_sha helpers
+source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
+# test-gate.sh: post-commit structured verification (make check + bats -r tests/)
+source "$RITE_LIB_DIR/utils/test-gate.sh"
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -1126,13 +1130,7 @@ phase_assess_and_resolve() {
       fi
       local fix_result=$?
 
-      if [ $fix_result -eq 3 ]; then
-        # Test failure during fix-review — route through blocker handler
-        BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed after review fixes — see output above"
-        if ! handle_blocker "pre-merge" "$issue_number" "$pr_number"; then
-          return 1
-        fi
-      elif [ $fix_result -eq 5 ]; then
+      if [ $fix_result -eq 5 ]; then
         # Usage cap reached during fix-review push — propagate so batch aborts cleanly
         print_warning "Usage cap reached during fix-review — aborting batch"
         return 5
@@ -1161,10 +1159,48 @@ phase_assess_and_resolve() {
       return 1
     fi
 
-    # After fixes, restart from Phase 2 (create/update PR)
+    # After fixes: start gate in background, run review generation in foreground,
+    # wait for both. Gate (make check + bats -r tests/) runs on CPU; review runs on LLM.
+    # Both complete before the next assessment so gate findings are available.
+    # See: docs/architecture/behavioral-design.md → "Verification Out of Fix Session".
+    local _gate_output_file
+    _gate_output_file="$(mktemp "/tmp/rite_gate_${pr_number}_$$.json")"
+    local _gate_pid=""
+
+    # Export PR_NUMBER so run_test_gate can include it in the [diag] line
+    export PR_NUMBER="$pr_number"
+
+    print_info "Starting post-commit gate in background (make check + bats -r tests/)..."
+    run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
+    _gate_pid=$!
+
+    # Phase 2 (push + review generation) runs in foreground
     if ! phase_create_pr "$issue_number" --loop; then
       print_error "Failed to push fixes and regenerate review"
+      # Gate is still running — kill it and clean up before returning
+      kill "$_gate_pid" 2>/dev/null || true
+      wait "$_gate_pid" 2>/dev/null || true
+      rm -f "${_gate_output_file:-}"
       return 1
+    fi
+
+    # Wait for gate to complete (review is done; gate may still be running)
+    local _gate_exit=0
+    wait "$_gate_pid" || _gate_exit=$?
+
+    # Persist gate findings for assess-and-resolve.sh via RITE_GATE_FINDINGS env var.
+    # Fallback path (.rite/state/gate-findings-N.json) is used when env var is not set.
+    local _gate_state_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+    mkdir -p "$_gate_state_dir" 2>/dev/null || true
+    local _gate_fallback_path="$_gate_state_dir/gate-findings-${pr_number}.json"
+    cp "$_gate_output_file" "$_gate_fallback_path" 2>/dev/null || true
+    rm -f "${_gate_output_file:-}"
+
+    # Export gate findings path for assess-and-resolve.sh
+    export RITE_GATE_FINDINGS="$_gate_fallback_path"
+
+    if [ "$_gate_exit" -ne 0 ]; then
+      print_warning "Post-commit gate found failures — they will appear as [GATE] ACTIONABLE_NOW items in the next assessment"
     fi
 
     # Increment retry count and recurse (compact headers via retry_count > 0)
@@ -1212,48 +1248,18 @@ phase_assess_and_resolve() {
     if [ -n "$_post_reroute_review_json" ] && [ "$_post_reroute_review_json" != "null" ]; then
       local _post_reroute_review_body _post_reroute_review_sha
       _post_reroute_review_body=$(echo "$_post_reroute_review_json" | jq -r '.body // ""' 2>/dev/null || true)
-      # Extract the SHA embedded in the review marker (if present)
-      _post_reroute_review_sha=$(echo "$_post_reroute_review_body" | \
-        grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" | \
-        grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true)
+      # Extract the SHA embedded in the review marker using the shared helper
+      # (lib/utils/review-helper.sh::extract_review_sha). Avoids duplicating the
+      # grep pipeline that assess-and-resolve.sh uses for the same purpose.
+      _post_reroute_review_sha=$(extract_review_sha "$_post_reroute_review_body")
       _post_reroute_review_sha="${_post_reroute_review_sha:-}"
 
-      # Get current HEAD SHA — authoritative-remote-first, matching the strategy
-      # used in assess-and-resolve.sh (lines 524-530). Local git rev-parse is
-      # unreliable here: cwd may be the main checkout rather than the worktree,
-      # yielding main's HEAD SHA. That wrong SHA would compare unequal to the
-      # review SHA and falsely abort with "Review regeneration did not produce a
-      # fresh review", re-introducing the exact false-positive this issue fixes.
-      #
-      # Strategy (mirrors assess-and-resolve.sh):
-      #   1. Fetch headRefOid from the GitHub API (authoritative — matches what
-      #      was actually pushed to the remote PR branch).
-      #   2. Fall back to local git only when the worktree exists AND the local
-      #      branch matches the PR's headRefName — this guards against cwd being
-      #      on main or another branch.
-      local _rr_head_sha=""
-      local _rr_pr_head_ref _rr_remote_sha _rr_branch_name
-      _rr_pr_head_ref=$(gh_safe pr view "$PR_NUMBER" --json headRefName,headRefOid \
-        --jq '{name: .headRefName, sha: .headRefOid}' 2>/dev/null || true)
-      _rr_remote_sha=$(echo "$_rr_pr_head_ref" | jq -r '.sha // ""' 2>/dev/null || true)
-      _rr_branch_name=$(echo "$_rr_pr_head_ref" | jq -r '.name // ""' 2>/dev/null || true)
-
-      if [ -n "${_rr_remote_sha:-}" ]; then
-        # Remote API is authoritative — use it regardless of cwd.
-        _rr_head_sha="$_rr_remote_sha"
-      elif [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-        # API call failed; fall back to local git only if we can confirm we are
-        # on the PR branch (not main).
-        local _rr_local_branch
-        _rr_local_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-        if [ -n "$_rr_branch_name" ] && [ "${_rr_local_branch:-}" = "$_rr_branch_name" ]; then
-          _rr_head_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
-        elif [ -z "$_rr_branch_name" ]; then
-          # Branch name unknown (API partial failure) — fall back with a warning.
-          print_warning "Could not verify PR branch name for reroute validation — falling back to local git HEAD"
-          _rr_head_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
-        fi
-      fi
+      # Get current HEAD SHA using the shared authoritative-remote-first helper
+      # (lib/utils/review-helper.sh::resolve_pr_head_sha). Passing WORKTREE_PATH
+      # ensures the local-git fallback uses the worktree rather than cwd, which
+      # may be the main checkout when this runs inside phase_assess_and_resolve.
+      local _rr_head_sha
+      _rr_head_sha=$(resolve_pr_head_sha "$PR_NUMBER" "${WORKTREE_PATH:-}")
       _rr_head_sha="${_rr_head_sha:-}"
 
       if [ -n "$_post_reroute_review_sha" ] && [ -n "$_rr_head_sha" ]; then
@@ -2283,6 +2289,46 @@ run_workflow() {
     print_info "Cleared session state (workflow complete)"
   fi
 
+  # ── Post-phase invariant: assert at least one work artifact was produced ──
+  # A workflow that reaches this point without commits on the feature branch
+  # AND without an open/merged PR is a bug. The live trigger was #378
+  # (bootstrap-docs sourcing assess-documentation.sh's top-level code, which
+  # ran the full post-merge flow as a side effect and hit `exit 0`). #378 fixed
+  # that specific path, but the invariant guards the entire class:
+  # any future sourcing side-effect or phase-skip logic error that gets
+  # run_workflow to return 0 without doing real work will trip this gate instead
+  # of producing a phantom "✅ Issue #N → PR #M" in the batch summary.
+  #
+  # Predicate: commits on feature branch OR PR detected for this issue.
+  # "Completed without code" paths (future use) must set RITE_WORKFLOW_EXPLICIT_COMPLETE=1
+  # to bypass this check with a documented signal.
+  #
+  # Exit 13 = invariant violated. See exit-codes.md in docs/architecture.
+  if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
+    _inv_commits=0
+    _inv_pr=""
+
+    # Check commits on the feature branch (requires a live worktree)
+    if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
+      _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
+    fi
+
+    # Check whether a PR exists for the issue (set by PR detection or Phase 2)
+    if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
+      _inv_pr="$PR_NUMBER"
+    fi
+
+    if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
+      print_error "BUG: workflow returned 0 for issue #${issue_number} but produced no commits and no PR"
+      print_error "This is a sourcing side-effect or phase-skip logic error — not a real completion"
+      print_info  "Issue #${issue_number} state preserved; investigate before re-running"
+      print_info  "Hint: check for scripts sourced during this workflow that ran top-level side-effecting code"
+      print_info  "See exit-codes.md in docs/architecture (exit 13 — invariant violated)"
+      _diag "INVARIANT_VIOLATED issue=${issue_number} commits=0 pr=none worktree=${WORKTREE_PATH:-none}"
+      return 13
+    fi
+  fi
+
   return 0
 }
 
@@ -2443,6 +2489,13 @@ main() {
     # already_closed_at_start path, skipping the post-issue gh API calls.
     # See: docs/architecture/exit-codes.md
     exit 12
+  elif [ $workflow_exit -eq 13 ]; then
+    # Invariant violated: workflow returned 0 internally but produced no commits
+    # and no PR — indicates a sourcing side-effect or phase-skip logic bug.
+    # Propagate exit 13 so batch can record this as a distinct failure class
+    # rather than silently logging it as a phantom completion.
+    # See exit-codes.md in docs/architecture.
+    exit 13
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6

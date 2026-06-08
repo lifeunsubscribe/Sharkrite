@@ -544,3 +544,203 @@ FIXTURE
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# Fixture J: Python import name differs from distribution name (yaml / PyYAML)
+#
+# Issue body uses `import yaml` but the manifest has "PyYAML".
+# _normalize_python_import_name maps yaml → pyyaml, which then matches the
+# lowercased manifest entry "pyyaml".  No spike should be emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture J: 'import yaml' with PyYAML in requirements.txt produces no spike" {
+  echo "PyYAML==6.0" > "$RITE_TEST_TMPDIR/requirements.txt"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-j.txt"
+  write_issues_file "$issues_file" \
+    "Parse YAML configuration" \
+    "Use import yaml to load the configuration file and parse its contents."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit NO WARNING (yaml is grounded via PyYAML alias)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for 'import yaml' + PyYAML in manifest, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have exactly 1 issue (no spike prepended)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture K: Python import name differs from distribution name (bs4 / beautifulsoup4)
+#
+# Issue body uses `from bs4 import BeautifulSoup` but the manifest has
+# "beautifulsoup4".  _normalize_python_import_name maps bs4 → beautifulsoup4.
+# No spike should be emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture K: 'from bs4 import ...' with beautifulsoup4 in requirements.txt produces no spike" {
+  echo "beautifulsoup4==4.12.0" > "$RITE_TEST_TMPDIR/requirements.txt"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-k.txt"
+  write_issues_file "$issues_file" \
+    "Scrape HTML pages" \
+    "Use from bs4 import BeautifulSoup to parse the HTML response."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for 'from bs4' + beautifulsoup4 in manifest, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture L: Node deep import subpath is trimmed (lodash/fp → lodash)
+#
+# Issue body uses require('lodash/fp') but package.json has bare "lodash".
+# _trim_node_package_name strips "/fp" so the lookup matches "lodash".
+# No spike should be emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture L: require('lodash/fp') with lodash in package.json produces no spike" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "lodash": "^4.17.21"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-l.txt"
+  write_issues_file "$issues_file" \
+    "Use lodash functional utilities" \
+    "Use require('lodash/fp') to access the functional programming helpers."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for require('lodash/fp') + lodash in manifest, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture M: Scoped Node package with sub-path is trimmed (@scope/pkg/sub → @scope/pkg)
+#
+# Issue body uses require('@myorg/utils/helpers') but package.json has
+# "@myorg/utils".  _trim_node_package_name strips "/helpers" leaving
+# "@myorg/utils" which matches the manifest entry.  No spike should be emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture M: require('@myorg/utils/helpers') with @myorg/utils in package.json produces no spike" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "@myorg/utils": "^1.0.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-m.txt"
+  write_issues_file "$issues_file" \
+    "Use internal utilities" \
+    "Use require('@myorg/utils/helpers') to access the shared helper functions."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for '@myorg/utils/helpers' + @myorg/utils in manifest, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
