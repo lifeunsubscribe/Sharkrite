@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/gh-retry.sh
 # Regression test: assess-documentation.sh retries on GitHub 5xx (transient)
 # Issue #62
 #

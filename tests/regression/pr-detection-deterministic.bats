@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/pr-detection.sh
 # tests/regression/pr-detection-deterministic.bats
 #
 # Regression test for: PR detection non-determinism across duplicate PRs

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh
 # Regression test for: Remove glob pattern from assess cleanup trap
 # Issue #422 / Live failure: issue #345 batch run 2026-06-06
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/notifications.sh
 # Regression test for: notifications.sh send_email crashes under set -u when env vars unset
 #
 # Bug history (2026-06-06 — issue #313):

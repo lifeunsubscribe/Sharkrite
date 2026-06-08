@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh, lib/utils/issue-lock.sh
 # tests/regression/claude-workflow-lock-survives-exec.bats
 #
 # Regression test for: claude-workflow.sh leaks issue lock across exec (issue #421)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/config.sh
 # tests/test_utils/test_config_parser.bats
 # Tests for parse_rite_config() - strict KEY=VALUE parser
 

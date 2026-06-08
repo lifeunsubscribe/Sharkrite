@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/divergence-handler.sh
 # tests/concurrency/stale-branch-push-race.bats - Git push race condition tests
 #
 # Tests that concurrent pushes to the same branch are handled correctly.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/plan-issues.sh
 # tests/regression/plan-doc-ingest.bats
 #
 # Regression tests for the docs/ auto-discovery feature in plan-issues.sh.

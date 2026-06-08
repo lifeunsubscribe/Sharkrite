@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/undo-workflow.sh
 # Regression test: undo-workflow.sh follow-up issue dedup must work under bash 3.2
 #
 # Bug history (2026-06-04):

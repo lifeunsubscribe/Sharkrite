@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/**
 # Smoke test: ensure all library files can be sourced without errors
 #
 # This is a pure helper test pattern - no external dependencies, just syntax validation

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/markers.sh
 # Regression test: marker constants round-trip
 #
 # Verifies that lib/utils/markers.sh:

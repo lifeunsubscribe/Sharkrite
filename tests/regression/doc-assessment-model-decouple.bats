@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/config.sh
 # Regression test: RITE_DOC_ASSESSMENT_MODEL is independent of RITE_REVIEW_MODEL
 # Issue #341
 #

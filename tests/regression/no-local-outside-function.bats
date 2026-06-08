@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Regression test for #77: Detect 'local' outside function scope
 #
 # Bug history:

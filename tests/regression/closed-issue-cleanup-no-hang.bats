@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/merge-pr.sh
 # tests/regression/closed-issue-cleanup-no-hang.bats
 #
 # Regression test: closed-issue cleanup does not make unnecessary network calls

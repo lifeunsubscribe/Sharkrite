@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/claude-workflow.sh, lib/utils/markers.sh
 # Regression test for: Unanchored sharkrite marker grep causes silent death
 #
 # Bug history (2026-05-31):

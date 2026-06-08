@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/branch-preflight.sh
 # tests/regression/branch-preflight-auto-recover.bats
 # Tests for branch preflight auto-recovery (EMPTY_INIT/DIVERGENT_NO_WORK)
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/blocker-rules.sh
 # Regression test: blocker-rules.sh resilience against stale inherited functions
 #
 # Live failure (2026-06-04): #323/PR #350 added detect_lib_shrinkage to

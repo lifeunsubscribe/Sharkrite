@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # Regression test: assess-documentation.sh runs the 4 independent sub-assessments
 # in parallel (fan-out), not sequentially.
 # Issue #308

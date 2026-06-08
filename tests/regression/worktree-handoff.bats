@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh
 # tests/regression/worktree-handoff.bats
 #
 # Regression tests for issue #13: Define RITE_STATE_DIR so worktree handoff works.

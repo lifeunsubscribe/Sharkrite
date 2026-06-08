@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/blocker-rules.sh
 # tests/regression/resume-rechecks-blockers.bats
 #
 # Regression test for: Re-check pre-start blockers on resume

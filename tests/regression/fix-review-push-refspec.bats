@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh
 # Test suite for issue #10: Fix bare git push in fix-review path
 #
 # Verifies that the fix-review push uses an explicit refspec (origin <branch>)

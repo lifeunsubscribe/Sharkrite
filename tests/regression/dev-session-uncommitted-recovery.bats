@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh
 # Test suite for issue #68: Add auto-commit or fail-loud guard before PR phase
 #
 # Verifies that when Claude dev session ends with uncommitted changes (files written

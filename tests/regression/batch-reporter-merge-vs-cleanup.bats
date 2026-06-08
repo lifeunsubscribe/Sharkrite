@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh
 # Regression test for: Batch reporter must distinguish merge-succeeded from merge-failed
 # Issue #57
 #

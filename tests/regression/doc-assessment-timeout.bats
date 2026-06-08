@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # Regression test: merge-pr.sh RITE_DOC_ASSESSMENT_TIMEOUT watchdog
 # Issue #308
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/local-review.sh
 # Regression test for milestone #11: local declaration outside function in local-review.sh
 #
 # Bug: lib/core/local-review.sh had `local _err_type=""` inside the top-level

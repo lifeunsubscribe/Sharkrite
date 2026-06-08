@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/stash-manager.sh
 # Regression test for stash-manager.sh
 # Tests sharkrite-managed stash marking and cleanup system
 

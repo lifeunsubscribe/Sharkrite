@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tests/helpers/*
 # Self-tests for fault-injection harness
 # Demonstrates all fault injection patterns
 

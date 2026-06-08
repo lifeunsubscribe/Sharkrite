@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # Regression test: on doc-assessment timeout, completed sub-assessments are preserved
 # Issue #341
 #

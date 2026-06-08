@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/divergence-handler.sh, lib/utils/conflict-resolver.sh
 # tests/regression/divergence-handler-conflict-resolver.bats
 #
 # Tests that divergence-handler conflict bail paths invoke attempt_claude_merge_resolution

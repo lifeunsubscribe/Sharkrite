@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/session-tracker.sh
 # Regression test for issue #283: RITE_RESUMING=true preserves start_time
 #
 # Verifies that when init_session is called with RITE_RESUMING=true, the

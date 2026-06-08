@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/date-helpers.sh
 # Regression test for date-helpers.sh
 # Tests iso_to_epoch, epoch_to_iso, and iso_to_local_display functions
 # Covers both GNU date and BSD date behaviors

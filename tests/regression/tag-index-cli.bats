@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/tag-index.sh, bin/rite
 # Regression test: tag-index CLI behavior (rite --tags)
 #
 # Tests that:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/session-tracker.sh
 # tests/concurrency/session-state-race.bats - Session state file race condition tests
 #
 # Tests that concurrent updates to SESSION_STATE_FILE don't corrupt JSON or lose data.

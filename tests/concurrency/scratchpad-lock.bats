@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/scratchpad-lock.sh, lib/utils/scratchpad-manager.sh
 # tests/concurrency/scratchpad-lock.bats - Scratchpad concurrent write and lock tests
 #
 # Tests that:

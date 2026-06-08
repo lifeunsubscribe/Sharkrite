@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Regression test for: Fix PIPESTATUS bugs masking provider failures
 #
 # Bug #2: local-review.sh:270-271 used `cmd || true` followed by

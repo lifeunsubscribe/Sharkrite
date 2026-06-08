@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/plan-issues.sh
 # tests/regression/plan-validator-strict.bats
 #
 # Regression tests for _lint_issues_strict in plan-issues.sh.

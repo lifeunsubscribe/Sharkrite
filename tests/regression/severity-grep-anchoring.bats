@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/local-review.sh
 # Test suite for issue #28: Anchor severity grep to structured headers only
 #
 # Verifies that severity keyword matching uses structured headers/lines only,

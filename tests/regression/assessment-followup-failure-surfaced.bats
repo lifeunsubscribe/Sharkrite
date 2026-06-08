@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh
 # Regression test for: Add error handling for follow-up issue creation
 # Issue #156
 #

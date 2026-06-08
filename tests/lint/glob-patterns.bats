@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Tests for sharkrite-lint.sh file discovery glob patterns
 #
 # Regression guard for #128: lint glob patterns must mirror the Makefile's

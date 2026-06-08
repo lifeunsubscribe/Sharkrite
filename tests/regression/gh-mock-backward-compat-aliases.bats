@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tests/helpers/*
 # tests/regression/gh-mock-backward-compat-aliases.bats
 #
 # Regression test: backward-compatibility aliases in gh-mock.bash

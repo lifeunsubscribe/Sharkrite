@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/claude-workflow.sh, lib/core/create-pr.sh, lib/core/local-review.sh, lib/core/assess-and-resolve.sh, lib/core/merge-pr.sh
 # Integration test: Full workflow phase
 #
 # Demonstrates full-phase integration:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/portable-cmds.sh
 # Regression test for: Make sed/stat/xargs portable for Linux CI
 #
 # Covers:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh
 # Integration test: Claude CLI workflow
 #
 # Demonstrates Claude interaction pattern:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
 # tests/regression/batch-single-issue-parity.bats
 #
 # Regression test for: Batch processor must apply every single-issue side effect

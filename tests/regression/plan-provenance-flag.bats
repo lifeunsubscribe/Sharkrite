@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/plan-issues.sh
 # tests/regression/plan-provenance-flag.bats
 #
 # Regression tests for the flag-first provenance linting feature in plan-issues.sh.

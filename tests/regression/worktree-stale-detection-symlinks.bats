@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/repo-status.sh
 # tests/regression/worktree-stale-detection-symlinks.bats
 #
 # Regression test for: Prevent stale detection from traversing symlinks

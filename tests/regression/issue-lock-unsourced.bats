@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/issue-lock.sh
 # Regression test for: Add RITE_LOCK_DIR default in issue-lock.sh
 # Issue #69: lib/utils/issue-lock.sh referenced ${RITE_LOCK_DIR} but checked
 # ${RITE_LIB_DIR} instead of ${RITE_LOCK_DIR} to decide whether to source config.sh.

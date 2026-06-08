@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/local-review.sh
 # Test suite for issue #65: Add 5xx fallback to local-review GitHub diff fetch
 #
 # Verifies that local-review.sh retries gh pr diff on transient errors (5xx, 429)

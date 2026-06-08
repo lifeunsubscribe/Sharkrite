@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # Regression test for: Wait on backgrounded doc assessment, surface failure
 # Issue #19
 #

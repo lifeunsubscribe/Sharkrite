@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # tests/regression/changelog-ordering.bats
 #
 # Regression test for changelog prepend ordering bug.

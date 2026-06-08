@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/session-tracker.sh
 # Regression test for issue #283: Cumulative active-work session cap
 #
 # Verifies that detect_session_limit reads cumulative_work_seconds (not

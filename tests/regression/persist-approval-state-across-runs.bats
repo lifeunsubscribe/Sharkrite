@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/blocker-rules.sh, lib/core/workflow-runner.sh
 # tests/regression/persist-approval-state-across-runs.bats
 #
 # Regression test for issue #169: Persist approval/notification state across runs.

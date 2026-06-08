@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh
 # tests/regression/closed-issue-cleanup-no-pr.bats
 #
 # Regression tests: closed-issue cleanup works when no PR is discoverable.

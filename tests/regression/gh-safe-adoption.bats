@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/gh-retry.sh
 # Regression test: gh_safe adoption across the codebase
 #
 # Verifies three things:

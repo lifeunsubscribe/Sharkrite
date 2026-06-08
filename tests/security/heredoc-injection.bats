@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/create-pr.sh, lib/core/workflow-runner.sh
 # tests/security/heredoc-injection.bats
 # Test that heredoc patterns don't execute injected shell commands
 

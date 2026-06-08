@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/providers/claude.sh, lib/utils/timeout.sh
 # Regression test for: Add timeout to all Claude provider prompt calls
 #
 # Verifies that run_prompt, run_classify, run_streaming_prompt, and run_uncached

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh, lib/utils/tag-index.sh
 # Tests for Rule 23: MISSING_TAG_JUSTIFICATION
 #
 # A convention block with tags: foo declares a tag.  Every declared tag must:

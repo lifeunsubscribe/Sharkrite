@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/stale-branch.sh, lib/core/batch-process-issues.sh
 # tests/regression/exit-code-10-ambiguity.bats
 #
 # Regression test for issue #21: Disambiguate exit code 10 handling.

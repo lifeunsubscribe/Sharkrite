@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tests/helpers/*
 # tests/regression/gh-mock-dedup.bats
 #
 # Regression tests verifying that mock_gh's stateful deduplication mode

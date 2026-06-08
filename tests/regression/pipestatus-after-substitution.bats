@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Regression test for: Fix PIPESTATUS bugs masking provider failures
 #
 # Bug: assess-review-issues.sh:632-633 (supervised mode) used PIPESTATUS[0]

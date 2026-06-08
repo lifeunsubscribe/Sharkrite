@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/stale-branch.sh
 # tests/regression/git-fetch-stale-data.bats
 #
 # Regression test for: Stop reading refs after silent git fetch failure

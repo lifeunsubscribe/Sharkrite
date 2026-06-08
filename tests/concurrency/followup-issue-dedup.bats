@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/create-followup-issues.sh, lib/utils/issue-lock.sh
 # tests/concurrency/followup-issue-dedup.bats - Follow-up issue deduplication tests
 #
 # Tests that concurrent follow-up issue creation properly deduplicates via the

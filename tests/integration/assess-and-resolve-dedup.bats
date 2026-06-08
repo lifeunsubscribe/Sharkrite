@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/issue-lock.sh
 # tests/integration/assess-and-resolve-dedup.bats
 #
 # Integration tests that drive assess-and-resolve.sh's dedup block against the

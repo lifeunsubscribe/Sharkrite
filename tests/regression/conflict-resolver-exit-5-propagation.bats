@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/conflict-resolver.sh, lib/core/batch-process-issues.sh
 # tests/regression/conflict-resolver-exit-5-propagation.bats
 #
 # Regression test for issue #22: Propagate conflict-resolver exit 5 to batch abort.
