@@ -55,7 +55,7 @@
 # identical between single-issue and batch mode — that's the parity contract.
 # The BATCH-LEVEL REPORTING LAYER is intentionally differentiated based on what
 # kind of work happened. This is documented divergence, not a parity violation.
-# See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+# See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
 # See: docs/architecture/exit-codes.md — exit code 12
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
