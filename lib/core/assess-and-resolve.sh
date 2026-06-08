@@ -1230,6 +1230,16 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     CLAUDE_CONTEXT=$(echo "$CHANGED_FILES" | sed 's/^/- `/' | sed 's/$/`/' || true)
   fi
 
+  # Scope Boundary DO bullets: one per parent-PR file so scope-checker has
+  # path-shaped patterns to match against. Falls back to prose when the PR
+  # has no detectable files (the scope-checker then treats this as
+  # non-enforceable and skips with a diag line — see lib/utils/scope-checker.sh).
+  if [ -n "$CHANGED_FILES" ]; then
+    SCOPE_DO_BULLETS=$(echo "$CHANGED_FILES" | sed 's/^/- DO: /' || true)
+  else
+    SCOPE_DO_BULLETS="- DO: Address the specific review findings listed above"
+  fi
+
   # Acceptance Criteria: extract item titles and severities from assessment headers
   ACCEPTANCE_ITEMS=""
   if [ -n "${FILTERED_CONTENT:-}" ]; then
@@ -1337,7 +1347,7 @@ $ACCEPTANCE_ITEMS
 $DONE_DEFINITION
 
 ## Scope Boundary
-- DO: Address the specific review findings listed above
+$SCOPE_DO_BULLETS
 - DO NOT: Refactor surrounding code, add new features, or modify unrelated files
 
 ## Dependencies

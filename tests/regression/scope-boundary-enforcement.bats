@@ -298,6 +298,97 @@ VIOLATION: tests/regression/bar.bats\"
 }
 
 # ---------------------------------------------------------------------------
+# Test: scope_boundary_is_enforceable returns 1 for prose-only DO bullets
+#   The original follow-up-issue boilerplate produced bodies like:
+#     - DO: Address the specific review findings listed above
+#     - DO NOT: Refactor surrounding code, ...
+#   No DO bullet has a path-shaped token, so every changed file would fail
+#   the "must match at least one DO" rule and the warning would fire on
+#   every run. The enforceability predicate exists so callers can skip the
+#   check with a diag line instead of emitting noise.
+# ---------------------------------------------------------------------------
+@test "scope_boundary_is_enforceable: prose-only DO bullets return non-enforceable" {
+  local body_file="${BATS_TEST_TMPDIR}/prose-only.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary
+- DO: Address the specific review findings listed above
+- DO NOT: Refactor surrounding code, add new features, or modify unrelated files
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    scope_boundary_is_enforceable \"\$BODY\"
+  "
+
+  [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test: scope_boundary_is_enforceable returns 0 for path-shaped DO bullets
+# ---------------------------------------------------------------------------
+@test "scope_boundary_is_enforceable: path-shaped DO bullets return enforceable" {
+  local body_file="${BATS_TEST_TMPDIR}/path-shaped.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary
+- DO: lib/core/foo.sh
+- DO: lib/utils/bar.sh
+- DO NOT: Refactor surrounding code
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    scope_boundary_is_enforceable \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test: scope_boundary_is_enforceable returns 0 when prose mentions a path
+#   "DO: tweak the regex in lib/core/foo.sh" — the path-shaped token inside
+#   the prose makes the bullet enforceable.
+# ---------------------------------------------------------------------------
+@test "scope_boundary_is_enforceable: prose with embedded path is enforceable" {
+  local body_file="${BATS_TEST_TMPDIR}/prose-with-path.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary
+- DO: tweak the regex in lib/core/foo.sh
+- DO NOT: touch unrelated tests
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    scope_boundary_is_enforceable \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test: scope_boundary_is_enforceable returns 0 when no scope section exists
+#   No DO bullets means there's nothing to over-match on; check_scope_boundary
+#   handles this case correctly (returns 0 silently).
+# ---------------------------------------------------------------------------
+@test "scope_boundary_is_enforceable: no scope section returns enforceable" {
+  local body_file="${BATS_TEST_TMPDIR}/no-scope.txt"
+  cat > "$body_file" <<'EOF'
+## Description
+Just a regular description, no scope boundary.
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    scope_boundary_is_enforceable \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Test 10: Literal-path DO NOT exclusion fires correctly
 #   A file inside a DO'd directory but also matching a literal-path DO NOT
 #   bullet must still be flagged as a violation (DO NOT overrides DO).
