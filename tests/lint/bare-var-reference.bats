@@ -256,6 +256,62 @@ send_email() {
   [[ "$r23_lines" != *"good-comment-only"* ]]
 }
 
+@test "rule fires: suppression above multi-line continuation does NOT suppress flagged token on next physical line" {
+  # Regression fixture for the CRITICAL in issue #357/#372.
+  #
+  # The pattern that broke CI: suppression comment on line N, continuation `cmd \`
+  # on line N+1, and `"$SNS_TOPIC_ARN"` (flagged token) on line N+2.  The rule
+  # reads only line_num - 1 (line N+1 = the continuation line), sees no suppression
+  # comment there, and fires.  This test documents that behaviour so we can detect
+  # regressions if the rule is changed to look back further than one line.
+  #
+  # The correct fix is to collapse the command onto one line so the suppression
+  # comment is directly above the flagged token (verified by the codebase-sweep
+  # test below).
+  _run_lint_with_fixture "bad-sns-multiline-continuation" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_BAD_SNS_CONT_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_BAD_SNS_CONT_LOADED=true
+
+SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
+
+send_sms() {
+  local message="$1"
+  local profile="default"
+  # sharkrite-lint disable BARE_VAR_REFERENCE - suppression above continuation, not above token
+  aws sns publish \
+    --topic-arn "$SNS_TOPIC_ARN" \
+    --message "$message" \
+    --profile "$profile" 2>/dev/null
+}'
+
+  [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
+}
+
+@test "rule passes: suppression directly above single-line aws sns publish with \$SNS_TOPIC_ARN" {
+  # Companion to the multi-line-continuation test above.
+  # Verifies that collapsing the command onto one line (the fix applied to
+  # notifications.sh in issue #357) makes the suppression visible to the rule.
+  _run_lint_with_fixture "good-sns-singleline-suppressed" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_GOOD_SNS_SL_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_GOOD_SNS_SL_LOADED=true
+
+SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
+
+send_sms() {
+  local message="$1"
+  # sharkrite-lint disable BARE_VAR_REFERENCE - SNS_TOPIC_ARN module-local alias, safely initialized at module load
+  aws sns publish --topic-arn "$SNS_TOPIC_ARN" --message "$message" --profile "default" 2>/dev/null
+}'
+
+  local r23_lines
+  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r23_lines" != *"good-sns-singleline-suppressed"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Codebase sweep: notifications.sh after the fix passes Rule 23
 # ---------------------------------------------------------------------------
