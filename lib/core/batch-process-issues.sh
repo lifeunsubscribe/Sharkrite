@@ -385,7 +385,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # Parity contract: batch mode must produce identical per-issue side effects as
   # single-issue mode. Short-circuiting here would skip all cleanup that
   # workflow-runner.sh performs for closed issues.
-  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
   # Bug history: #274 — batch silently bypassed closed-issue cleanup for 8 orphan
   # worktrees that accumulated from issues processed via batch (#34, #201-#203).
 
@@ -718,7 +718,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     # are identical to single-issue mode — that's the parity contract. The batch-
     # level REPORTING layer is intentionally differentiated based on what kind of
     # work happened. This is documented divergence, not a parity violation.
-    # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity"
+    # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
     # See: docs/architecture/exit-codes.md — exit code 12
     end_issue_tracking "$ISSUE_NUM"
     ISSUE_END_TIME=$(date +%s)
