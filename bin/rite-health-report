@@ -131,6 +131,24 @@ TG_SKIPPED=$(echo "$TG_LINES" | grep -c 'outcome=skipped' || true)
 TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
 TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
 
+# --- Pre-parse test-gate selection stats for health checks ---
+# TEST_GATE_SELECTION diag format: "TEST_GATE_SELECTION mode=targeted|full selected=N total=N issue=N"
+TGS_LINES=$(echo "$DIAG_LINES" | grep 'TEST_GATE_SELECTION ' || true)
+TGS_TOTAL=$(echo "$TGS_LINES" | grep -c 'TEST_GATE_SELECTION ' || true)
+TGS_TARGETED=$(echo "$TGS_LINES" | grep -c 'mode=targeted' || true)
+TGS_FULL=$(echo "$TGS_LINES" | grep -c 'mode=full' || true)
+# Compute average selection ratio: sum(selected/total) across targeted runs
+# Use awk to safely handle division-by-zero when total=0
+TGS_AVG_RATIO=$(echo "$TGS_LINES" | grep 'mode=targeted' | \
+  awk '{
+    sel=0; tot=0
+    for (i=1;i<=NF;i++) {
+      if ($i ~ /^selected=/) { sub(/selected=/, "", $i); sel=$i }
+      if ($i ~ /^total=/)    { sub(/total=/,    "", $i); tot=$i }
+    }
+    if (tot > 0) { sum += sel/tot; count++ }
+  } END { if (count > 0) printf "%.0f", (sum/count)*100; else print "N/A" }' || echo "N/A")
+
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
 
@@ -198,11 +216,15 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - CRITICAL findings appearing → flag
 4. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
    - Show: Total gate runs, outcome breakdown (passed/failed/skipped), lint failures total, bats test failures total
+   - Show: Test selection stats — targeted runs vs full-suite runs, avg selection ratio
    - Thresholds:
      - gate failure rate > 30% → **WARNING**: "Fix sessions introducing regressions frequently"
      - `skipped` > 0 → **WATCH**: "Gate skipped (bats/make missing on some runners)"
      - TG_LINT_TOTAL > 0 → flag which fix iterations introduced lint violations
+     - TGS_AVG_RATIO < 50% (on targeted runs) → **WARNING**: "Test coverage header adoption lagging — targeted selection not saving much work; backfill sharkrite-test-covers: headers in high-traffic bats files"
+     - TGS_FULL / TGS_TOTAL > 30% → note: "Many full-suite runs (infra files changed frequently)"
    - If TG_TOTAL is 0, say "No post-commit gate runs recorded this week (feature new or gate not yet active)."
+   - If TGS_TOTAL is 0, say "No test-selection diag recorded — test-gate selection feature may not yet be active."
 5. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
    - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (top 5), median resolution duration if duration_s values are present
    - Thresholds:
@@ -219,13 +241,14 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 
 ## Data Format
 
-- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`
+- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`, `TEST_GATE_SELECTION`
 - `[timing]` lines show phase durations: `END phase_name (Xm Xs)`
 - rtk stats are JSON from `rtk gain --format json`
 - Git log shows recent tool changes with file stats
 - Previous reports provide trend context
 - Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts)
 - Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
+- Pre-parsed test gate selection stats: TGS_TOTAL, TGS_TARGETED, TGS_FULL, TGS_AVG_RATIO (avg % of suite selected on targeted runs)
 
 ## Constraints
 
@@ -256,8 +279,19 @@ $TIMING_LINES
 - TG_LINT_TOTAL (total lint failures across all failed runs): $TG_LINT_TOTAL
 - TG_TEST_TOTAL (total bats test failures across all failed runs): $TG_TEST_TOTAL
 
+## Test Gate Selection Stats (pre-parsed, past 7 days)
+
+- TGS_TOTAL (total TEST_GATE_SELECTION diag lines): $TGS_TOTAL
+- TGS_TARGETED (mode=targeted runs — partial bats subset): $TGS_TARGETED
+- TGS_FULL (mode=full runs — full suite, trigger files changed): $TGS_FULL
+- TGS_AVG_RATIO (avg selected/total ratio on targeted runs, as %): $TGS_AVG_RATIO%
+  - WARNING fires at < 50% (indicates sharkrite-test-covers: header adoption is lagging)
+
 Raw TEST_GATE diag lines for per-run details:
 $TG_LINES
+
+Raw TEST_GATE_SELECTION diag lines for per-run details:
+$TGS_LINES
 
 ## Conflict Resolver Stats (pre-parsed, past 7 days)
 

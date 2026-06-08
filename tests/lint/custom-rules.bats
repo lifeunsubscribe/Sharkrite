@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/sharkrite-lint.sh
 # Tests for Sharkrite custom lint rules
 
 setup() {

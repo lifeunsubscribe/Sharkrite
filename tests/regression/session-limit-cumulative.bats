@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/blocker-rules.sh
 # Regression test for issue #283: Cumulative active-work session cap
 #
 # Verifies that detect_session_limit reads cumulative_work_seconds (not

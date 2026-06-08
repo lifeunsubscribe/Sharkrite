@@ -641,6 +641,35 @@ rite 42 --assess-and-fix   # Assess + fix loop
 rite 42 --supervised
 ```
 
+### `sharkrite-test-covers:` Header Convention
+
+Each bats file in `tests/regression/` and `tests/lint/` should declare which source paths it covers, so the post-commit test gate can run a targeted subset when only a few files changed.
+
+**Format** — add as the second line of the bats file (after the shebang):
+
+```bash
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/markers.sh
+```
+
+**Rules:**
+- Optional during rollout: files **without** the header are **always** run (conservative, safe)
+- Multiple paths: comma-separated
+- Glob patterns allowed: `lib/utils/*.sh` matches all files under `lib/utils/`
+- Exact format required: `# sharkrite-test-covers: <paths>` — parser is strict
+- Add the header when creating a **new** bats file or **modifying** an existing one
+
+**When to add multiple paths:**
+```bash
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/assess-and-resolve.sh
+```
+Add all source files the test exercises — both the primary target and any helpers it uses.
+
+**Full-suite triggers** — when any of these change, the gate ignores headers and runs all tests:
+- `lib/utils/test-gate.sh`, `tools/sharkrite-lint.sh`, `Makefile`, `tests/helpers/**`, `tests/fixtures/**`
+
+**Why this matters:** Without headers, the gate runs all 125+ bats files on every fix iteration (~14 min). With headers, a 1-3 file fix typically runs only 10-20 relevant tests (~2 min). The gate enforces correctness: a missing header means "always run me" — never "skip me".
+
 ## Claude Session Prompt Design (CRITICAL)
 
 The prompt passed to Claude Code in `claude-workflow.sh` must include:

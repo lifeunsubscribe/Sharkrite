@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/workflow-runner.sh
 # Regression test: FIX_TIMEOUT proportional formula
 #
 # Verifies:

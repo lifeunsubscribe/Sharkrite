@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/divergence-handler.sh, lib/core/conflict-resolver.sh
 # tests/regression/conflict-resolver.bats
 #
 # End-to-end tests for the real attempt_claude_merge_resolution function.

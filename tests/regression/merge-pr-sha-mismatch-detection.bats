@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/merge-pr.sh
 # Regression test: merge-pr.sh 409 detection depends on gh_safe stderr passthrough
 #
 # Documents and pins the contract between merge-pr.sh and gh-retry.sh:

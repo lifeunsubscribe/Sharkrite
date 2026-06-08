@@ -335,6 +335,54 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`.
 
+### Test Selection by Changed Paths
+
+**Issue #462, 2026-06-07.** The parallel gate (`test-gate.sh`) always ran the full `bats -r tests/` suite (125+ bats files) regardless of which files changed. For a 1-3 file fix, running all 125 bats files is mostly busywork — 14 minutes per iteration even though only ~10 files were relevant.
+
+**Convention: `# sharkrite-test-covers:` header**
+
+Each bats file may declare a coverage header in the first 10 lines:
+
+```bash
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/markers.sh
+```
+
+Rules:
+- Optional during rollout — files **without** the header are **always included** (conservative)
+- Multiple paths are comma-separated
+- Glob patterns are allowed: `lib/utils/*.sh` matches every file under `lib/utils/`
+- The exact format `# sharkrite-test-covers: <paths>` is required — parser is strict
+
+**Selection logic in `test-gate.sh`:**
+
+After lint passes, `select_tests_by_changed_paths()` computes the diff vs `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`) and selects only tests whose covered paths intersect the changed set. Files without a header are always included.
+
+**Full-suite triggers** (auditable const block `_GATE_FULL_SUITE_TRIGGER_PATTERNS` in `test-gate.sh`):
+- `lib/utils/test-gate.sh` — gate verifier itself
+- `tools/sharkrite-lint.sh` — lint rules affect all tests
+- `Makefile` — build targets affect the whole suite
+- `tests/helpers/` — shared test helpers affect all tests
+- `tests/fixtures/` — shared fixtures affect all tests
+
+When any of these trigger files change, the gate falls back to `bats -r tests/` unconditionally.
+
+**`make check` always runs regardless** — it's structurally fast (~30-60s) and catches issues across the codebase. The optimization is purely about bats selection.
+
+**Lint-fail skip:** If lint fails, bats is skipped entirely. A broken codebase means tests may not even load — running them produces misleading failures that obscure the real issue.
+
+**Zero-diff degenerate case:** When `git diff` vs the base returns empty (detached HEAD, empty branch, etc.), the gate logs a warning and runs the full suite conservatively rather than silently skipping.
+
+**Diag line emitted at every run:**
+```
+[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N issue=N
+```
+The health report aggregates these to show avg selection ratio. A warning fires when avg `selected/total` < 50% — indicating header adoption is lagging and the optimization isn't saving much work.
+
+**Conservative correctness guarantee:** The optimization is safe-by-default. A file without a header is always run. The worst case of a missing header is extra work (false-positive inclusion) — never a missed regression.
+
+**Implementation:** `lib/utils/test-gate.sh` (`parse_test_coverage_header`, `select_tests_by_changed_paths`, `_gate_path_matches_changed`, `_GATE_FULL_SUITE_TRIGGER_PATTERNS`), `tests/regression/test-gate-targeted-selection.bats`.
+
 ### Fix-review prompt: syntax-check before declaring done
 
 Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt now requires Claude to run `bash -n <file>` on every shell file it touched before declaring done. This is a fast, in-session check that catches broken syntax before commit. Full lint and test verification runs post-commit via the parallel gate (see "Verification Out of Fix Session" above).

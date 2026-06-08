@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/*.sh, lib/core/*.sh, tools/sharkrite-lint.sh
 # Regression test for: Sweep codebase for set -e + pipefail silent-death
 #
 # Bug pattern: VAR=$(... | grep ...) under set -euo pipefail silently kills

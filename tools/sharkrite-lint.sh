@@ -1289,6 +1289,41 @@ for file in "${_r23_utils_files[@]}"; do
   done < <(grep -nE '\$(EMAIL_|SLACK_|RITE_EMAIL_|AWS_)[A-Z_]+' "$file" 2>/dev/null || true)
 done
 
+# Rule 25: MISSING_TEST_COVERAGE_HEADER — bats file without # sharkrite-test-covers: header
+#
+# Each bats file in tests/regression/ and tests/lint/ should declare which source
+# paths it covers via a `# sharkrite-test-covers:` header so the test gate can run
+# a targeted subset on fix-loop iterations where only a few files changed.
+#
+# This is a **WARNING, not an error** — backfilling all 125+ existing files at once
+# is out of scope. New tests should adopt the header; existing tests get backfilled
+# organically as they are modified.
+#
+# Format: the header must appear in the first 10 lines as:
+#   # sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/markers.sh
+# Glob patterns are allowed: lib/utils/*.sh
+#
+# Without the header, the test gate conservatively includes the file on every run —
+# correct but not optimal. The warning nudges new tests in the right direction.
+echo "Checking for missing sharkrite-test-covers: headers in bats files (soft warning)..."
+
+_bats_no_header=0
+while IFS= read -r _bats_file; do
+  [ -z "$_bats_file" ] && continue
+  # Skip if the header already exists in the first 10 lines
+  if head -10 "$_bats_file" 2>/dev/null | grep -q '^# sharkrite-test-covers:'; then
+    continue
+  fi
+  print_warning "$_bats_file" "1" "MISSING_TEST_COVERAGE_HEADER" \
+    "bats file has no '# sharkrite-test-covers: <paths>' header — add one so the test gate can run a targeted subset. Without it, this file runs on every fix-loop iteration regardless of what changed."
+  _bats_no_header=$(( _bats_no_header + 1 ))
+done < <(find "$PROJECT_ROOT/tests/regression" "$PROJECT_ROOT/tests/lint" \
+  -maxdepth 1 -name "*.bats" 2>/dev/null | sort || true)
+
+if [ "$_bats_no_header" -gt 0 ]; then
+  echo -e "${YELLOW}⚠${NC} $_bats_no_header bats files lack sharkrite-test-covers: headers (warnings only — does not fail build)"
+fi
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then
