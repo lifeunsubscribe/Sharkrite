@@ -504,11 +504,10 @@ should_save_and_exit() {
   cumulative_secs=$(get_cumulative_work_seconds)
   local cumulative_hours=$(( cumulative_secs / 3600 ))
 
-  # Conservative limits (from blocker-rules.sh)
-  if [ "$issues_completed" -ge "${RITE_MAX_ISSUES_PER_SESSION:-8}" ]; then
-    echo "token_limit"
-    return 0
-  fi
+  # issues_completed read but no longer used as a gate — the issue-count cap
+  # was removed (was a stale heuristic with misleading "token limit" message;
+  # see detect_session_limit in blocker-rules.sh). The cumulative-hours cap
+  # is the real session-budget signal.
 
   if [ "$cumulative_hours" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
     echo "time_limit"
