@@ -43,14 +43,14 @@ test:
 		if [ -n "$(FILTER)" ]; then \
 			if [ -d "tests/$(FILTER)" ]; then \
 				echo "Running bats tests (filter: $(FILTER))..."; \
-				bats "tests/$(FILTER)/"; \
+				bats -r "tests/$(FILTER)/"; \
 			else \
 				echo "ERROR: tests/$(FILTER)/ not found"; \
 				exit 1; \
 			fi; \
 		else \
 			echo "Running bats tests..."; \
-			bats tests/; \
+			bats -r tests/; \
 		fi; \
 	else \
 		echo "WARN: bats not installed. Skipping tests. Install with: brew install bats-core"; \
