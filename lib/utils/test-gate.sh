@@ -162,6 +162,67 @@ _TEST_GATE_FULL_SUITE_TRIGGERS=(
   "tests/fixtures/*"
 )
 
+# Files whose change forces a full lint scan. Smaller list than bats triggers:
+# lint behavior over the codebase only depends on the lint rules and the build
+# wrapper. A change to lib/utils/markers.sh is intentionally NOT a trigger —
+# adding/renaming a constant doesn't change which existing files violate
+# RAW_MARKER_LITERAL (literals live in the same files before and after).
+_LINT_GATE_FULL_SUITE_TRIGGERS=(
+  "tools/*-lint.sh"
+  "Makefile"
+)
+
+# _select_lint_by_changed_paths — produce the lint scope plan
+# Args: $1=changed_files (newline-separated relative paths), $2=project_root
+# Stdout: one of
+#   FORCE_FULL  — run lint over the full codebase
+#   <newline-separated absolute paths> — targeted subset
+#   (empty)     — no shell-source changes; caller should skip lint
+# Returns 0 always (caller branches on stdout).
+_select_lint_by_changed_paths() {
+  local changed_files="$1"
+  local project_root="$2"
+
+  # No diff (e.g. brand-new branch with no upstream) → full scan, safer default.
+  if [ -z "$changed_files" ]; then
+    echo "FORCE_FULL"
+    return 0
+  fi
+
+  # Full-suite trigger: lint rule change, Makefile change.
+  local _trigger _changed
+  while IFS= read -r _changed; do
+    [ -z "$_changed" ] && continue
+    for _trigger in "${_LINT_GATE_FULL_SUITE_TRIGGERS[@]}"; do
+      # shellcheck disable=SC2254  # glob expansion in case is intentional
+      case "$_changed" in
+        $_trigger)
+          echo "FORCE_FULL"
+          return 0
+          ;;
+      esac
+    done
+  done <<< "$changed_files"
+
+  # Emit absolute paths for changed files that look lint-eligible by path. The
+  # final scope filter is the intersection inside sharkrite-lint.sh (it knows
+  # exactly which files are in SHELL_FILES, including its own self-exclusion),
+  # so this check just keeps the env-var compact and avoids passing obviously
+  # irrelevant entries (docs, tests, etc).
+  while IFS= read -r _changed; do
+    [ -z "$_changed" ] && continue
+    case "$_changed" in
+      bin/*|lib/*|tools/*)
+        [ -f "$project_root/$_changed" ] && echo "$project_root/$_changed"
+        ;;
+    esac
+  done <<< "$changed_files"
+
+  # Explicit return so the function never inherits the [ -f ] exit code from
+  # the final iteration — contract is "returns 0 always; caller branches on stdout".
+  return 0
+}
+
 # _parse_test_coverage_header — extract the sharkrite-test-covers paths
 # Looks in the first 15 lines for `# sharkrite-test-covers: <paths>`.
 # Returns the comma-separated path list, or empty string if no header.
@@ -354,6 +415,11 @@ run_test_gate() {
     _lint_exit_file=$(mktemp "/tmp/rite_gate_lint_exit_${PR_NUMBER:-0}_$$.txt")
     _bats_exit_file=$(mktemp "/tmp/rite_gate_bats_exit_${PR_NUMBER:-0}_$$.txt")
 
+    # --- Compute changed-file set once for both lint and bats selection ---
+    local _diff_base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
+    local _changed_files
+    _changed_files=$(cd "$project_root" && git diff --name-only "$_diff_base"...HEAD 2>/dev/null || true)
+
     echo "[test-gate] Running make shellcheck..."
     # Capture exit code via a temp file (PIPESTATUS is lost when tee is the last
     # command in the pipeline; the approach used here works under bash 3.2).
@@ -365,9 +431,32 @@ run_test_gate() {
       | tee -a "$_lint_raw_file" || true
     _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 0)
 
-    echo "[test-gate] Running make lint..."
-    { (cd "$project_root" && make lint 2>&1); echo $? > "$_lint_exit_file"; } \
-      | tee -a "$_lint_raw_file" || true
+    # --- Targeted custom-lint selection (parallel to bats #462) ---
+    # Apply the same changed-paths optimization to `make lint`. Trigger files
+    # (lint rule itself, Makefile) force a full scan. Otherwise pass the list
+    # of changed shell-source paths via RITE_LINT_FILES; the lint script
+    # intersects it with SHELL_FILES to bound the scan.
+    local _lint_selection _lint_selected_count
+    _lint_selection=$(_select_lint_by_changed_paths "$_changed_files" "$project_root")
+
+    if [ "$_lint_selection" = "FORCE_FULL" ]; then
+      echo "[test-gate] Lint: full scan"
+      _diag "LINT_GATE_SELECTION mode=full pr=${PR_NUMBER:-?}"
+      echo "[test-gate] Running make lint..."
+      { (cd "$project_root" && make lint 2>&1); echo $? > "$_lint_exit_file"; } \
+        | tee -a "$_lint_raw_file" || true
+    elif [ -z "$_lint_selection" ]; then
+      echo "[test-gate] Lint: no shell-source changes — skipping"
+      _diag "LINT_GATE_SELECTION mode=skipped selected=0 pr=${PR_NUMBER:-?}"
+      echo 0 > "$_lint_exit_file"
+    else
+      _lint_selected_count=$(echo "$_lint_selection" | grep -c '.' || true)
+      echo "[test-gate] Lint: targeted (${_lint_selected_count} changed shell file(s))"
+      _diag "LINT_GATE_SELECTION mode=targeted selected=${_lint_selected_count} pr=${PR_NUMBER:-?}"
+      echo "[test-gate] Running make lint..."
+      { (cd "$project_root" && RITE_LINT_FILES="$_lint_selection" make lint 2>&1); echo $? > "$_lint_exit_file"; } \
+        | tee -a "$_lint_raw_file" || true
+    fi
     _lint_tool_exit=$(cat "$_lint_exit_file" 2>/dev/null || echo 0)
 
     [ "$_shellcheck_exit" -ne 0 ] && _lint_exit=1
@@ -379,9 +468,7 @@ run_test_gate() {
     # Files declare coverage via `# sharkrite-test-covers: <paths>` headers.
     # Headerless files always run (conservative). Verifier/lint/helper changes
     # force the full suite. See: _select_tests_by_changed_paths above.
-    local _diff_base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
-    local _changed_files _total_bats _selection _selected_count _selection_mode
-    _changed_files=$(cd "$project_root" && git diff --name-only "$_diff_base"...HEAD 2>/dev/null || true)
+    local _total_bats _selection _selected_count _selection_mode
     _total_bats=$(cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ')
     _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
 
