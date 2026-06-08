@@ -224,12 +224,9 @@ detect_session_limit() {
   local issues_completed="${1:-0}"
   local cumulative_work_hours="${2:-0}"
 
-  if [ "$issues_completed" -ge "${RITE_MAX_ISSUES_PER_SESSION:-8}" ]; then
-    echo "BLOCKER: Approaching token limit ($issues_completed issues completed)"
-    echo ""
-    echo "Starting fresh session to prevent quality degradation"
-    return 1
-  fi
+  # Issue-count cap removed (was stale heuristic with misleading "token limit"
+  # message; no token measurement behind it). The real spending cap is exit
+  # code 5 from provider_run_agentic_session in lib/providers/claude.sh.
 
   if [ "$cumulative_work_hours" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
     echo "BLOCKER: Cumulative active work limit reached (${cumulative_work_hours}h of active work in this session)"
