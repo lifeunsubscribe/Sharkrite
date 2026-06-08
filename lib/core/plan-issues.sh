@@ -2162,7 +2162,8 @@ _build_grounded_hosts() {
 
   # Always scan the two conventional fixture directories, then also scan any
   # custom path supplied via RITE_PLAN_FIXTURE_GLOB (if it differs from the
-  # defaults).  Walk one level: strip trailing /** or /* to get the base dir.
+  # defaults).  Strip trailing /** or /* to get the base dir; the walk is
+  # recursive (all depths) so nested fixture layouts are fully covered.
   local _dir _name
   # Portable dedup that works on bash 3.2 (no mapfile builtin).
   # Using while-read instead of "for _dir in $(...)" prevents word-splitting
@@ -2183,20 +2184,22 @@ _build_grounded_hosts() {
   sort -u "$_dirs_tmp" > "${_dirs_tmp}.sorted" && mv "${_dirs_tmp}.sorted" "$_dirs_tmp" || true
   while IFS= read -r _dir; do
     if [ -d "$_dir" ]; then
-      for _entry in "$_dir"/*/; do
-        [ -d "$_entry" ] || continue
+      # Recursive walk: find all subdirectories at any depth so that nested
+      # fixture layouts (e.g. fixtures/region/api.example.com/) are grounded.
+      # find -mindepth 1 skips the root dir itself; || true prevents set -e
+      # from firing on "permission denied" or other non-fatal find errors.
+      while IFS= read -r _entry; do
         _name=$(basename "$_entry")
         echo "$_name" | tr '[:upper:]' '[:lower:]'
-      done
-      # Also capture top-level fixture files like sample.json → parent dir is already listed
-      # Check for json/yaml files directly under fixtures/ (e.g. fixtures/api.example.com.json)
-      for _entry in "$_dir"/*.json "$_dir"/*.yaml "$_dir"/*.yml; do
-        [ -f "$_entry" ] || continue
+      done < <(find "$_dir" -mindepth 1 -type d 2>/dev/null || true)
+      # Also capture fixture files at any depth like api.example.com.json.
+      # -type f -name "*.ext" is portable on BSD and GNU find.
+      while IFS= read -r _entry; do
         _name=$(basename "$_entry")
         _name="${_name%.*}"  # strip extension
         # Only treat it as a hostname if it looks like a domain (contains a dot)
         echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
-      done
+      done < <(find "$_dir" -mindepth 1 \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null || true)
     fi
   done < "$_dirs_tmp"
   rm -f "$_dirs_tmp"
