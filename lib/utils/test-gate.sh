@@ -167,8 +167,16 @@ parse_test_coverage_header() {
   if [ -z "$_header_line" ]; then
     return 0
   fi
-  # Strip the leading "# sharkrite-test-covers: " prefix to get the path list.
-  printf '%s' "${_header_line#\# sharkrite-test-covers: }"
+  # Strip the leading "# sharkrite-test-covers:" prefix, then trim any leading
+  # whitespace — handles both "# sharkrite-test-covers: paths" (space present)
+  # and "# sharkrite-test-covers:paths" (no space) without silently dropping the file.
+  local _path_list
+  _path_list="${_header_line#\# sharkrite-test-covers:}"
+  # Trim leading whitespace (portable; no sed/awk required)
+  while [ "${_path_list#[[:space:]]}" != "$_path_list" ]; do
+    _path_list="${_path_list#[[:space:]]}"
+  done
+  printf '%s' "$_path_list"
 }
 
 # ---------------------------------------------------------------------------
@@ -178,6 +186,13 @@ parse_test_coverage_header() {
 # Args: $1=coverage_path (may contain * glob wildcard)
 #       $2=changed_files (newline-separated list of paths from git diff)
 # Returns: 0 if any changed file matches, 1 otherwise
+#
+# Glob semantics: the * wildcard spans path separators (/).
+#   "lib/utils/*.sh"  matches  "lib/utils/sub/deep.sh"  (not just top-level .sh files)
+# This is intentional and conservative — over-matching means more tests run, never fewer.
+# Writers of sharkrite-test-covers: headers should be aware that single-* patterns are
+# not restricted to one directory level; use an exact path or a tighter prefix when
+# you only want to cover a specific directory depth.
 # ---------------------------------------------------------------------------
 _gate_path_matches_changed() {
   local cover_path="$1"
@@ -250,7 +265,7 @@ select_tests_by_changed_paths() {
     while IFS= read -r _changed; do
       [ -z "$_changed" ] && continue
       case "$_changed" in
-        "${_trigger_pat}"*|*"${_trigger_pat}"*)
+        "${_trigger_pat}"*)
           echo "FULL_SUITE"
           return 0
           ;;
@@ -259,9 +274,15 @@ select_tests_by_changed_paths() {
   done
 
   # --- Build selected set from bats files ---
+  # Enumerate ALL bats files under tests/ recursively (excluding helpers/fixtures)
+  # so that header-less files in tests/{unit,integration,security,smoke,...} also
+  # receive the conservative "always run" fallback — same as regression/lint files.
   local _bats_files _selected_files _total_count _selected_count
-  _bats_files=$(find "$project_root/tests/regression" "$project_root/tests/lint" \
-    -maxdepth 1 -name "*.bats" 2>/dev/null | sort || true)
+  _bats_files=$(find "$project_root/tests" \
+    -name "*.bats" \
+    -not -path "*/helpers/*" \
+    -not -path "*/fixtures/*" \
+    2>/dev/null | sort || true)
   _total_count=$(echo "$_bats_files" | grep -c '\.bats$' || true)
   _selected_files=""
   _selected_count=0
@@ -302,7 +323,7 @@ select_tests_by_changed_paths() {
     fi
   done <<< "$_bats_files"
 
-  # Output the selected files list; echo counts on stderr for caller's diag emission.
+  # Output the selected files list; echo counts on stdout for caller's diag emission.
   # Format: "SELECTED:<N>/<total>" on first line, then space-separated paths.
   echo "SELECTED:${_selected_count}/${_total_count}"
   if [ -n "$_selected_files" ]; then
@@ -440,8 +461,11 @@ run_test_gate() {
         if [ "$_sel_first_line" = "FULL_SUITE" ]; then
           # A full-suite trigger fired (verifier/lint/helper changed)
           _sel_mode="full"
-          _gate_total=$(find "$project_root/tests/regression" "$project_root/tests/lint" \
-            -maxdepth 1 -name "*.bats" 2>/dev/null | wc -l | tr -d ' ' || true)
+          _gate_total=$(find "$project_root/tests" \
+            -name "*.bats" \
+            -not -path "*/helpers/*" \
+            -not -path "*/fixtures/*" \
+            2>/dev/null | wc -l | tr -d ' ' || true)
           _gate_selected="$_gate_total"
           echo "[test-gate] full suite (verifier/lint/helper changed)" >&2
           set +e
