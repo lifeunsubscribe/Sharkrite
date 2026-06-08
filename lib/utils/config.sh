@@ -256,6 +256,8 @@ RITE_PLAN_INCLUDE_README="${RITE_PLAN_INCLUDE_README:-true}"
 # considered "grounded" and will not trigger a spike-issue prerequisite.
 # Supply a single directory path, optionally with a trailing /** or /*, e.g.:
 #   RITE_PLAN_FIXTURE_GLOB="test/vcr_cassettes/**"
+# The walk is recursive (all subdirectory depths), so nested fixture layouts
+# such as test/vcr_cassettes/prod/api.example.com/ are fully covered.
 # Brace expansion is NOT supported.  Leave unset (default) to scan only the
 # two conventional directories: fixtures/ and tests/fixtures/.
 RITE_PLAN_FIXTURE_GLOB="${RITE_PLAN_FIXTURE_GLOB:-}"

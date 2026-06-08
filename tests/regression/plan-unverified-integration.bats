@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # tests/regression/plan-unverified-integration.bats
+# sharkrite-test-covers: lib/core/plan-issues.sh
 #
 # Regression tests for _detect_unverified_integrations — deterministic post-generation
 # pass that enforces "no external integration without a real fixture sample".
@@ -730,6 +731,119 @@ JSON
   warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
   [ "$warning_count" -eq 0 ] || {
     echo "FAIL: expected 0 WARNINGs for '@myorg/utils/helpers' + @myorg/utils in manifest, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture N: host grounded in a nested subdirectory — no spike
+#
+# Regression for the single-level walk bug: when RITE_PLAN_FIXTURE_GLOB was
+# set (or even with the default fixtures/ directory), hosts nested more than
+# one level deep were not discovered, producing false-positive spike issues.
+#
+# Project has:
+#   fixtures/region/api.example.com/   (two levels deep under fixtures/)
+# Issue body references https://api.example.com/
+# Expected: recursive walk finds the host; no spike issued, exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fixture N: host nested two levels deep under fixtures/ is grounded (recursive walk)" {
+  # Nest the fixture two levels: fixtures/region/api.example.com/
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/region/api.example.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/region/api.example.com/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-n.txt"
+  write_issues_file "$issues_file" \
+    "Integrate with external API" \
+    "Call https://api.example.com/data to fetch results."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Recursive walk must have grounded the host — no WARNING should be emitted
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for host grounded at fixtures/region/api.example.com/, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have exactly 1 issue (no spike prepended)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture O: host nested under RITE_PLAN_FIXTURE_GLOB custom path — no spike
+#
+# Regression for the single-level walk bug with a custom RITE_PLAN_FIXTURE_GLOB.
+# The config example advertised "test/vcr_cassettes/**" as supported; this test
+# verifies that a host nested under that path is actually grounded.
+#
+# Project has:
+#   test/vcr_cassettes/prod/api.example.com/   (nested under custom path)
+# RITE_PLAN_FIXTURE_GLOB="test/vcr_cassettes/**"
+# Issue body references https://api.example.com/
+# Expected: recursive walk into the custom path grounds the host; no spike.
+# ---------------------------------------------------------------------------
+
+@test "Fixture O: host nested under RITE_PLAN_FIXTURE_GLOB custom path is grounded (recursive walk)" {
+  mkdir -p "$RITE_TEST_TMPDIR/test/vcr_cassettes/prod/api.example.com"
+  echo '{"status": "ok"}' > "$RITE_TEST_TMPDIR/test/vcr_cassettes/prod/api.example.com/response.json"
+
+  export RITE_PLAN_FIXTURE_GLOB="test/vcr_cassettes/**"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-o.txt"
+  write_issues_file "$issues_file" \
+    "Integrate with external API" \
+    "Call https://api.example.com/data to fetch results."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  # Restore env
+  unset RITE_PLAN_FIXTURE_GLOB
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for host nested under RITE_PLAN_FIXTURE_GLOB custom path, got $warning_count" >&2
     cat "$stderr_out" >&2
     false
   }
