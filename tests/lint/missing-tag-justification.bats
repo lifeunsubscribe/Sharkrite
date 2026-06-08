@@ -18,28 +18,28 @@ setup() {
   mkdir -p "$LINT_FIXTURE_DIR"
   export RITE_LINT_EXTRA_DIRS="$LINT_FIXTURE_DIR"
 
-  # Point the linter's PROJECT_ROOT to a tmp dir so tag-index.md can be seeded
-  # without modifying the real repository.  The linter resolves PROJECT_ROOT
-  # relative to its own script location; we override it via an env var that the
-  # linter reads when constructing _tag_index_path.
+  # True test isolation for tag-index.md via RITE_TAG_INDEX_PATH_OVERRIDE.
   #
-  # Strategy: create a fresh PROJECT_ROOT tmp dir per test that mirrors the
-  # directory structure sharkrite-lint.sh expects for the tag-index file.
-  FAKE_PROJECT_ROOT="${BATS_TEST_TMPDIR}/fake-project-root"
-  mkdir -p "$FAKE_PROJECT_ROOT/docs/architecture"
-  TAG_INDEX_PATH="$FAKE_PROJECT_ROOT/docs/architecture/tag-index.md"
-
-  # Back up the real tag-index.md once at the start of each test so that
-  # teardown() can always restore it — even if the test body fails mid-way.
-  _backup_tag_index
+  # The linter derives PROJECT_ROOT from its own BASH_SOURCE[0] location, so it
+  # always resolves to the real repo root — there is no way to redirect it via
+  # a fake project root without patching the linter.  Instead, we added
+  # RITE_TAG_INDEX_PATH_OVERRIDE to sharkrite-lint.sh so each test can supply a
+  # fresh temp file as the tag-index without touching docs/architecture/tag-index.md.
+  #
+  # This eliminates the old backup/restore hazard: if a test crashed between
+  # backup and restore, the real file was left in fixture state.  Parallel runs
+  # also clobbered each other's backup files.  The override approach gives each
+  # bats worker its own path in BATS_TEST_TMPDIR (per-test tmp), so there is no
+  # shared mutable state at all.
+  TAG_INDEX_PATH="${BATS_TEST_TMPDIR}/tag-index.md"
+  export RITE_TAG_INDEX_PATH_OVERRIDE="$TAG_INDEX_PATH"
 }
 
 teardown() {
   rm -rf "$LINT_FIXTURE_DIR"
-  rm -rf "$FAKE_PROJECT_ROOT"
   unset RITE_LINT_EXTRA_DIRS
-  # Always restore the real tag-index.md, regardless of test outcome.
-  _restore_tag_index
+  unset RITE_TAG_INDEX_PATH_OVERRIDE
+  # TAG_INDEX_PATH lives inside BATS_TEST_TMPDIR which bats cleans up automatically.
 }
 
 # Helper: create a fixture shell file in LINT_FIXTURE_DIR
@@ -52,73 +52,15 @@ $content
 FIXTURE_EOF
 }
 
-# Helper: run the linter with PROJECT_ROOT overridden to FAKE_PROJECT_ROOT.
-# We patch this by temporarily symlinking the docs dir inside the real script's
-# PROJECT_ROOT — but since the linter resolves PROJECT_ROOT from SCRIPT_DIR,
-# the cleanest approach is to run the linter with a wrapper that overrides the
-# _tag_index_path variable.
-#
-# Instead, we create the tag-index.md inside the REAL project root's docs/
-# directory — but that would modify the real repo.  Instead: we patch by
-# running a modified version of the linter that accepts RITE_TAG_INDEX_PATH_OVERRIDE.
-#
-# Since neither approach is clean without modifying the linter, we use a
-# simpler strategy: place a real tag-index.md at the actual project location
-# and rely on cleanup.  But the project root already has a tag-index.md, so
-# we cannot do that without risk.
-#
-# Final approach: the linter uses PROJECT_ROOT derived from BASH_SOURCE[0]
-# (the lint script location), so it always resolves to the real repo root.
-# We create the tag-index.md in the REAL repo's docs/architecture/tag-index.md
-# in a temp location and symlink it in place for the duration of the test.
-#
-# Actually, looking at the linter code:
-#   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-#   PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-#   _tag_index_path="${PROJECT_ROOT}/docs/architecture/tag-index.md"
-#
-# PROJECT_ROOT is always the real repo root.  We cannot override this via env
-# without patching the linter.  Instead, we will create/remove the real
-# tag-index.md in the repo's docs/architecture/ directory within each test.
-# Since tests are isolated subshells and use proper teardown, this is safe.
+# Helper: run the linter (RITE_TAG_INDEX_PATH_OVERRIDE is already exported by setup())
 _run_linter() {
   run "$LINT_SCRIPT"
 }
 
-# The REAL tag-index.md path (in the repo's docs/architecture/)
-_real_tag_index() {
-  local repo_root
-  repo_root="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  echo "$repo_root/docs/architecture/tag-index.md"
-}
-
-# Back up the real tag-index.md at test start (called from setup())
-_backup_tag_index() {
-  local real_path
-  real_path="$(_real_tag_index)"
-  if [ -f "$real_path" ]; then
-    cp "$real_path" "${real_path}.bak"
-  fi
-}
-
-# Seed the real tag-index.md with fixture content (no backup — setup() already did it)
+# Helper: seed the per-test tag-index temp file with fixture content
 _seed_tag_index() {
   local content="$1"
-  local real_path
-  real_path="$(_real_tag_index)"
-  printf '%s\n' "$content" > "$real_path"
-}
-
-# Restore the real tag-index.md after a test (called from teardown())
-_restore_tag_index() {
-  local real_path
-  real_path="$(_real_tag_index)"
-  if [ -f "${real_path}.bak" ]; then
-    mv "${real_path}.bak" "$real_path"
-  else
-    # No backup → file did not exist before; remove our temp version
-    rm -f "$real_path"
-  fi
+  printf '%s\n' "$content" > "$TAG_INDEX_PATH"
 }
 
 # ---------------------------------------------------------------------------
@@ -126,11 +68,9 @@ _restore_tag_index() {
 # ---------------------------------------------------------------------------
 
 @test "MISSING_TAG_JUSTIFICATION: rule is skipped when tag-index.md does not exist" {
-  # Ensure the real tag-index.md does not exist for this test
-  # (setup() already backed it up, so we can safely remove it here)
-  local real_path
-  real_path="$(_real_tag_index)"
-  rm -f "$real_path"
+  # RITE_TAG_INDEX_PATH_OVERRIDE points to a non-existent temp file (not seeded).
+  # The linter must detect the absence and skip rule 23 entirely.
+  # No need to remove the real tag-index.md — this test never touches it.
 
   # Convention block with an unknown tag — but since index is absent, no violation
   create_fixture "convention-no-index.sh" \

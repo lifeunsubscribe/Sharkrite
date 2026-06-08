@@ -1138,12 +1138,18 @@ done
 # When tag-index.md does not exist, this rule is skipped entirely — a missing
 # index is acceptable before the first tagged PR merges.
 #
+# Override: set RITE_TAG_INDEX_PATH_OVERRIDE to redirect to a temp file.
+# This is the test-isolation hook — tests set this variable so the linter reads
+# a seeded fixture instead of the real docs/architecture/tag-index.md.
+# Without this, any test that seeds tag-index.md must mutate the real file, which
+# is a crash-unsafe isolation hazard (backup/restore races in parallel runs).
+#
 # Files scanned: SHELL_FILES (bin/, lib/, tools/) — the same files already
 # processed by other lint rules.  Convention blocks may also appear embedded as
 # heredoc strings in PR creation scripts; the file scan catches those.
 echo "Checking for missing tag justification in convention blocks..."
 
-_tag_index_path="${PROJECT_ROOT}/docs/architecture/tag-index.md"
+_tag_index_path="${RITE_TAG_INDEX_PATH_OVERRIDE:-${PROJECT_ROOT}/docs/architecture/tag-index.md}"
 
 # Only run the check when tag-index.md exists; a missing index means no tags
 # have been established yet, so no violation is possible.
