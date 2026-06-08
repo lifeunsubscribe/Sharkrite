@@ -96,6 +96,28 @@ if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
   done
 fi
 
+# RITE_LINT_FILES: optional newline-separated list of absolute file paths.
+# When set, SHELL_FILES is filtered to the intersection — only the listed files
+# get scanned by each rule. Used by test-gate.sh to target lint at the commit's
+# changed-file set (parallel to the bats targeted-selection mechanism from #462).
+#
+# Files in RITE_LINT_FILES that aren't already in SHELL_FILES (e.g. docs, deleted
+# files, fixtures, tests/, the lint script's self-exclusion) are silently dropped
+# — the intersection is by design. Empty intersection → exit 0 with a notice
+# (e.g. docs-only commit). Direct `make lint` (no env var) keeps full-scan
+# behavior unchanged.
+if [ -n "${RITE_LINT_FILES:-}" ]; then
+  _lint_targeted_tmp=$(mktemp)
+  printf '%s\n' "${SHELL_FILES[@]}" > "$_lint_targeted_tmp"
+  mapfile -t SHELL_FILES < <(printf '%s\n' "$RITE_LINT_FILES" | grep -Fxf "$_lint_targeted_tmp" 2>/dev/null || true)
+  rm -f "$_lint_targeted_tmp"
+  if [ "${#SHELL_FILES[@]}" -eq 0 ]; then
+    echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
+    exit 0
+  fi
+  echo "Sharkrite custom lint: targeted scope (${#SHELL_FILES[@]} file(s))"
+fi
+
 # Rule 1: grep -c with || echo "0" (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
 for file in "${SHELL_FILES[@]}"; do
