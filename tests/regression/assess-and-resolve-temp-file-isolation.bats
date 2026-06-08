@@ -126,23 +126,56 @@ teardown() {
   # two simultaneous assess-and-resolve.sh processes each write to their own
   # PID-scoped REVIEW_FILE, and neither process's cleanup deletes the other's file.
   #
-  # The original test (before this fix) only verified that bash -c subprocesses
-  # receive different PIDs — an OS-level truism that does not exercise the
-  # isolation property the fix introduced.  The new test instead:
-  #   1. Runs two "invocations" (background subprocesses) in parallel, each
-  #      mimicking what assess-and-resolve.sh does: set a PID-scoped REVIEW_FILE,
-  #      write content, sleep briefly so the windows overlap, then clean up.
-  #   2. Records the path each invocation used.
-  #   3. After both finish, asserts the paths were distinct AND that each
-  #      invocation only removed its own file (peer file was not wiped mid-run).
+  # Negative-control design — the cleanup rm command is extracted from the real
+  # assess-and-resolve.sh cleanup() function and injected into both invocations.
+  # This means if the production cleanup() is changed back to the buggy glob form
+  #   rm -f /tmp/pr_review_*.txt
+  # invocation 1's cleanup (running while both files coexist) WILL wipe invocation
+  # 2's file, and Assertion 3 WILL fail — exactly the regression detection required.
+  # When the production cleanup uses the fixed scoped form
+  #   rm -f "${REVIEW_FILE:-}"
+  # invocation 2's file survives and Assertion 3 passes.
+  #
+  # Barrier-file synchronization ensures the overlap window is deterministic:
+  #   - invocation 2 signals "ready" once its REVIEW_FILE is written
+  #   - invocation 1 waits for that signal before running its cleanup
+  #   - this guarantees both files coexist when invocation 1's cleanup runs,
+  #     so a glob would always wipe invocation 2's file (no timing window)
+  #
+  # Assertions:
+  #   1. Both invocations produced a path
+  #   2. The two paths are distinct (PID scoping)
+  #   3. Invocation 2's file survived invocation 1's cleanup (no glob wipe)
+  #   4. Invocation 2's own file was removed by its own cleanup (cleanup ran)
 
   _tmpdir="$(mktemp -d)"
+  # Ensure _tmpdir is removed on any exit from this test (assertion failures, etc.)
+  trap 'rm -rf "${_tmpdir:-}"' RETURN
+
   _path_file_1="$_tmpdir/path1.txt"
   _path_file_2="$_tmpdir/path2.txt"
   _peer_survived_1="$_tmpdir/peer_survived_1.txt"
   _peer_survived_2="$_tmpdir/peer_survived_2.txt"
+  # Barrier: invocation 2 touches this file once its REVIEW_FILE is written;
+  # invocation 1 polls for it before running cleanup.
+  _barrier="$_tmpdir/inv2_ready.barrier"
+  # Invocation-1-done marker: invocation 2 polls for this before checking survival.
+  _inv1_done="$_tmpdir/inv1_done.marker"
 
-  # Invocation 1: write its own file, record peer's file survival, clean up own
+  # Extract the rm -f line from the production cleanup() function.
+  # If that line is changed back to a glob, the extracted command uses the glob.
+  # awk: start printing inside cleanup(), stop at the closing brace.
+  # head -1 so we get only the rm line, not the lock-release boilerplate.
+  _cleanup_rm_file="$_tmpdir/cleanup_rm.sh"
+  awk '/^cleanup\(\)/{inside=1} inside && /rm -f /{print; exit}' \
+    "$ASSESS_RESOLVE_SCRIPT" > "$_cleanup_rm_file"
+  [ -s "$_cleanup_rm_file" ] || {
+    echo "FAIL: could not extract rm -f line from cleanup() in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+
+  # Invocation 1: writes its file, waits for invocation 2's barrier (guaranteeing
+  # overlap), then runs the production cleanup rm, then signals done.
   bash -c "
     set -euo pipefail
     PR_NUMBER=42
@@ -150,15 +183,25 @@ teardown() {
     echo \"\$REVIEW_FILE\" > '$_path_file_1'
     echo 'invocation-1 review' > \"\$REVIEW_FILE\"
 
-    # Overlap: give invocation 2 time to start and write its own file
-    sleep 0.05
+    # Wait (barrier) until invocation 2 has written its own REVIEW_FILE
+    _waited=0
+    until [ -f '$_barrier' ]; do
+      sleep 0.01
+      _waited=\$((_waited + 1))
+      [ \"\$_waited\" -lt 200 ] || { echo 'barrier timeout' >&2; exit 1; }
+    done
 
-    # Clean up own file only (fixed form — scoped, not glob)
-    rm -f \"\${REVIEW_FILE:-}\" 2>/dev/null || true
+    # Run the production cleanup rm — extracted from assess-and-resolve.sh.
+    # If the production code reverts to rm -f /tmp/pr_review_42_*.txt (glob),
+    # this will wipe invocation 2's file and Assertion 3 below will fail.
+    . '$_cleanup_rm_file'
+
+    touch '$_inv1_done'
   " &
   _pid1=$!
 
-  # Invocation 2: write its own file, record peer's file survival, clean up own
+  # Invocation 2: writes its file, signals the barrier, waits for invocation 1's
+  # cleanup to complete, checks its own file's survival, then cleans up.
   bash -c "
     set -euo pipefail
     PR_NUMBER=42
@@ -166,39 +209,49 @@ teardown() {
     echo \"\$REVIEW_FILE\" > '$_path_file_2'
     echo 'invocation-2 review' > \"\$REVIEW_FILE\"
 
-    # Overlap: give invocation 1 time to run its cleanup
-    sleep 0.05
+    # Signal invocation 1 that our file is now on disk
+    touch '$_barrier'
 
-    # Verify our file still exists after invocation 1 may have cleaned up
+    # Wait for invocation 1 to finish its cleanup before we check survival
+    _waited=0
+    until [ -f '$_inv1_done' ]; do
+      sleep 0.01
+      _waited=\$((_waited + 1))
+      [ \"\$_waited\" -lt 200 ] || { echo 'inv1-done timeout' >&2; exit 1; }
+    done
+
+    # Check if our file survived invocation 1's cleanup
     if [ -f \"\$REVIEW_FILE\" ]; then
       echo 'survived' > '$_peer_survived_2'
     fi
 
+    # Check if invocation 1's file was removed by its own cleanup (symmetric)
+    _inv1_path=\"\$(cat '$_path_file_1' 2>/dev/null || true)\"
+    if [ -n \"\$_inv1_path\" ] && [ ! -f \"\$_inv1_path\" ]; then
+      echo 'removed' > '$_peer_survived_1'
+    fi
+
+    # Run own cleanup (fixed scoped form)
     rm -f \"\${REVIEW_FILE:-}\" 2>/dev/null || true
   " &
   _pid2=$!
 
   wait "$_pid1" || {
-    rm -rf "$_tmpdir"
     echo "FAIL: invocation 1 subprocess exited non-zero"
     false
   }
   wait "$_pid2" || {
-    rm -rf "$_tmpdir"
     echo "FAIL: invocation 2 subprocess exited non-zero"
     false
   }
 
-  # Read all results before removing tmpdir
+  # Read all results before trap removes tmpdir
   _path1="$(cat "$_path_file_1" 2>/dev/null || true)"
   _path2="$(cat "$_path_file_2" 2>/dev/null || true)"
-  # _peer_survived_2 is written by invocation 2 only if its REVIEW_FILE was still
-  # present after invocation 1 had a chance to run cleanup.  Check existence now,
-  # before tmpdir is removed.
   _inv2_file_survived=false
   [ -f "$_peer_survived_2" ] && _inv2_file_survived=true
-
-  rm -rf "$_tmpdir"
+  _inv1_file_removed=false
+  [ -f "$_peer_survived_1" ] && _inv1_file_removed=true
 
   # Assertion 1: both invocations produced a path
   [ -n "$_path1" ] || {
@@ -218,12 +271,28 @@ teardown() {
     false
   }
 
-  # Assertion 3: invocation 2's file survived while invocation 1 was cleaning up.
-  # If the glob regression were present, invocation 1's cleanup would have deleted
-  # invocation 2's file before invocation 2 had a chance to read it.
+  # Assertion 3: invocation 2's file survived invocation 1's cleanup.
+  # Invocation 1 ran the PRODUCTION rm line extracted from cleanup() in
+  # assess-and-resolve.sh.  If that line is a glob (rm -f /tmp/pr_review_42_*.txt),
+  # it WILL have wiped invocation 2's file (barrier guaranteed overlap) and this
+  # assertion WILL fail.  It can only pass when the production cleanup uses the
+  # scoped rm -f "${REVIEW_FILE:-}" form.
   [ "$_inv2_file_survived" = "true" ] || {
     echo "FAIL: invocation 2's REVIEW_FILE was wiped before invocation 2 finished"
-    echo "  This indicates invocation 1's cleanup deleted the peer file (glob regression)"
+    echo "  Invocation 1 ran the production cleanup rm from assess-and-resolve.sh"
+    echo "  This indicates the production cleanup() reverted to a glob (regression present)"
+    echo "  Expected: rm -f \"\${REVIEW_FILE:-}\"  (scoped, not a glob)"
+    echo "  path1=$_path1  path2=$_path2"
+    false
+  }
+
+  # Assertion 4 (symmetric): invocation 1's own file was removed by its cleanup.
+  # The scoped rm correctly removes the current invocation's file even though
+  # it does not touch peer files.
+  [ "$_inv1_file_removed" = "true" ] || {
+    echo "FAIL: invocation 1's REVIEW_FILE was NOT removed by its own cleanup"
+    echo "  Expected the scoped rm to remove its own file"
+    echo "  path1=$_path1"
     false
   }
 }
