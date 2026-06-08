@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/session-tracker.sh
 # Regression test for issue #283: Per-issue duration cap
 #
 # Verifies that detect_issue_duration_limit fires when a single issue has been

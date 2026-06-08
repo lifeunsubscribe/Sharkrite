@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/stale-branch.sh
 # tests/regression/stale-branch-rebase.bats - Stale branch rebase tests
 #
 # Tests that stale branches are brought up to date via rebase (not merge).

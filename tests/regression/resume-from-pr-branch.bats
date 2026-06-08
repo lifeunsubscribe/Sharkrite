@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/pr-detection.sh
 # tests/regression/resume-from-pr-branch.bats - Resume from PR branch tests
 #
 # Tests that resuming an issue with existing PR recreates worktree from

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/session-tracker.sh
 # Regression test for issue #283: Session-limit blocker measures file age, not work
 #
 # Verifies that a stale "zombie" state file from a prior invocation does NOT

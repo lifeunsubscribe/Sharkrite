@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/mid-run-rebase.sh, lib/utils/stale-branch.sh, lib/utils/divergence-handler.sh, lib/utils/conflict-resolver.sh
 # tests/regression/conflict-resolver-clean-tree-skip.bats
 #
 # Regression test: post-resolution commit step must be skipped when the tree is

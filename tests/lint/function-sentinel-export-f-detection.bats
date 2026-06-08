@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Tests for Rule 22: FUNCTION_SENTINEL_GUARD_WITH_EXPORT_F
 #
 # The combo of `if declare -f <fn>; then return 0; fi` (function-sentinel

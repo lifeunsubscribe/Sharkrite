@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/post-merge-verify.sh
 # Regression test for: Fix tee'd pipeline test_exit in post-merge-verify
 #
 # Bug: post-merge-verify.sh used `$?` after a pipeline (`... | sed`) without

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/validate-setup.sh
 # tests/regression/setup-guard-ordering.bats
 #
 # Regression tests for setup() guard ordering in test files.

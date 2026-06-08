@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/scope-checker.sh, lib/core/create-pr.sh
 # Regression test for: Dev session deletes unrelated regression tests
 #
 # Bug history (PR #121, issue #49):

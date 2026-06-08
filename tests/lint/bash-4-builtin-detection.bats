@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Tests for Rule 21: BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT
 #
 # Verifies that the lint rule correctly flags bash 4+ builtins (mapfile,

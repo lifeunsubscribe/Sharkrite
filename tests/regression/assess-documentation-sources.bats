@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # Regression test for: Source logging.sh in assess-documentation.sh
 # Issue #61
 #

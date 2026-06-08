@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Regression test: lint rules correctly report file/line when the scanned file
 # resides in a path containing a colon.
 #

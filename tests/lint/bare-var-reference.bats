@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Tests for Rule 23: BARE_VAR_REFERENCE
 #
 # Verifies that the lint rule correctly flags bare $VAR references for optional

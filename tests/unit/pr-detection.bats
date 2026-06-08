@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/pr-detection.sh
 # Unit test for PR detection utilities
 #
 # This demonstrates the git interaction test pattern:

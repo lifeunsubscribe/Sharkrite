@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/divergence-handler.sh
 # tests/regression/post-rollback-stale-head.bats
 #
 # Regression tests for issue #133: Post-rollback uses potentially stale local HEAD.

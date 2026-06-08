@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/encountered-issues-renderer.sh
 # Regression test for: encountered-issues-renderer.sh
 #
 # Tests that the renderer:

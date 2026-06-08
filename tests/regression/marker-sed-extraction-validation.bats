@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/markers.sh, tools/*-lint.sh
 # Regression test for #197: Validate sharkrite-extract marker pairs for sed extraction
 #
 # Failure modes this test guards against:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/mid-run-rebase.sh, lib/utils/conflict-resolver.sh
 # tests/regression/mid-run-rebase-conflict.bats
 #
 # Regression test: mid-run rebase aborts cleanly when main has content conflicts.

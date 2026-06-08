@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/markers.sh
 # tests/regression/closing-issue-regex-constants.bats
 #
 # Regression test for: closing-issue regex duplicated across multiple files

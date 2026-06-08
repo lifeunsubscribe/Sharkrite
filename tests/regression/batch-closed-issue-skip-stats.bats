@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh
 # tests/regression/batch-closed-issue-skip-stats.bats
 #
 # Regression test: batch processor must NOT fire post-issue gh API calls for

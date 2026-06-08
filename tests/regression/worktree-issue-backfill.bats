@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/issue-lock.sh, lib/utils/repo-status.sh
 # tests/regression/worktree-issue-backfill.bats
 #
 # Regression test for: Backfill issue lock files for legacy worktrees (#91)

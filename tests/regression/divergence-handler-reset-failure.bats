@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/divergence-handler.sh
 # tests/regression/divergence-handler-reset-failure.bats
 #
 # Tests the supervised fall-through behaviour when git reset --hard fails

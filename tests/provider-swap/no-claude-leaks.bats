@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/**, lib/providers/**
 # tests/provider-swap/no-claude-leaks.bats
 #
 # Smoke test: Verify provider abstraction works and no Claude-specific

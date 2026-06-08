@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/assess-documentation.sh, lib/utils/cleanup-worktrees.sh
 # Regression test: cleanup phase emits no cwd error after worktree removal
 # Issue #161
 #

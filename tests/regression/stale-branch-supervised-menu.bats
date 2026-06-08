@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/stale-branch.sh
 # tests/regression/stale-branch-supervised-menu.bats
 #
 # Regression tests for issue #165: Supervised mode does not offer interactive options

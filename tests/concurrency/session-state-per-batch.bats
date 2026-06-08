@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/session-tracker.sh, lib/core/batch-process-issues.sh
 # tests/concurrency/session-state-per-batch.bats - Per-batch session state isolation
 #
 # Verifies that parallel batches each get their own SESSION_STATE_FILE so that

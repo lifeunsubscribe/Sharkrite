@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh
 # Test suite for issue #12: Gate venv ready message on install success
 #
 # Verifies that when pip install fails (for base or dev requirements), the

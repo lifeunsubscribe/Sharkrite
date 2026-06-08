@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tests/helpers/*
 # tests/regression/gh-mock-binary-concurrent.bats
 #
 # Regression tests verifying that gh-mock-binary.sh's stateful issue-create

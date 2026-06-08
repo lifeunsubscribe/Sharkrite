@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh
 # Regression test for: Batch reporter must count all skipped issues in Skipped tally
 # Issue #138 (sibling to #57 which fixed merge-vs-cleanup accounting)
 #

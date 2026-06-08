@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # tests/regression/conventions-mktemp-failure-isolation.bats
 #
 # Regression test for: inline mktemp failure-isolation gap in

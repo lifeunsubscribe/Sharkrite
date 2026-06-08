@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/config.sh
 # Regression test for: Bump RITE_ASSESSMENT_TIMEOUT default from 120s to 300s
 #
 # Verifies:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/scope-checker.sh
 # Regression test for issue #323: Add review-shrinkage check for lib/ file edits
 #
 # Verifies that detect_lib_shrinkage() fires a blocker when a PR deletes:

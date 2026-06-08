@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
 # Regression test for: Make Ctrl-C reliably terminate rite workflow
 # Issue: The structured-log pipeline (tee | perl) doesn't propagate SIGINT to
 # parent bash, so Ctrl-C is absorbed and the workflow can't be interrupted.

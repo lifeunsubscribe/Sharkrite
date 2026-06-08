@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh
 # tests/regression/pr-number-null-from-jq.bats
 #
 # Regression test for: PR_NUMBER capturing literal 'null' from jq

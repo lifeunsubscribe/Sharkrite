@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # Regression test for: mktemp AWK program file leaks on script abort
 # Issue #237 — parent PR #225
 #

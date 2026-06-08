@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/issue-lock.sh, lib/core/assess-and-resolve.sh
 # tests/regression/followup-lock-timeout-diag.bats
 #
 # Regression test: lock timeout during follow-up creation emits a durable

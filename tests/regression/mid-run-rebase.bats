@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/mid-run-rebase.sh
 # tests/regression/mid-run-rebase.bats
 #
 # Regression test: mid-run rebase fires when main advances during an active workflow.

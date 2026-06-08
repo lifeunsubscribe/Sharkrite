@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/bootstrap-docs.sh, lib/utils/adr-generator.sh
 # Tests for ADR generation via the real generate_adr_for_ref() function.
 #
 # Previously this test created ADR files manually with cat heredocs,

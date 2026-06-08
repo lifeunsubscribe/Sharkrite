@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh
 # tests/regression/jq-default-brace-expansion.bats
 #
 # Regression test for the ${VAR:-{}} parameter expansion bug.

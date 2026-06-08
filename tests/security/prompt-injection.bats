@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh, lib/core/assess-and-resolve.sh, lib/core/local-review.sh
 # tests/security/prompt-injection.bats
 # Test that malicious issue bodies with prompt injection payloads cannot
 # execute unauthorized commands or write to sensitive paths.

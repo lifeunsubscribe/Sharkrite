@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/issue-lock.sh, lib/utils/scratchpad-lock.sh
 # Regression test for: Use consistent lock paths across all processes
 # Issue #148: Lock strategy (flock vs mkdir) was re-detected independently at
 # acquire and release time via `command -v flock`.  In mixed-capability

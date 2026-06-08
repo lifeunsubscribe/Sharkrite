@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/create-pr.sh
 # tests/regression/empty-diff-after-fetch.bats
 #
 # Regression tests for issue #101: Add validation for empty diff after fetch

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh, lib/utils/markers.sh
 # Lint tests for Rule 19: RAW_MARKER_LITERAL
 #
 # Verifies that:

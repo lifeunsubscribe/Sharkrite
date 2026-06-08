@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/plan-issues.sh
 # tests/regression/plan-coverage-dedup.bats
 #
 # Regression test for phantom-dupe in coverage reconciliation.

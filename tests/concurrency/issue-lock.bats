@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/issue-lock.sh
 # tests/concurrency/issue-lock.bats - Per-issue locking tests
 #
 # Tests that per-issue locking prevents duplicate work on the same issue.

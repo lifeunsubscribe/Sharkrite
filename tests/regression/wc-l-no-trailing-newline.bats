@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: tools/*-lint.sh
 # tests/regression/wc-l-no-trailing-newline.bats
 #
 # Regression tests for issue #119: Strip newline fixes — wc -l undercount edge case

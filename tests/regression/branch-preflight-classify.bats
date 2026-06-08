@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/branch-preflight.sh
 # tests/regression/branch-preflight-classify.bats
 # Tests for branch preflight classification (5 states)
 #

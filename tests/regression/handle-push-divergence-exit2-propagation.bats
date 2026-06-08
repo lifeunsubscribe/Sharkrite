@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/divergence-handler.sh, lib/core/workflow-runner.sh
 # tests/regression/handle-push-divergence-exit2-propagation.bats
 #
 # Regression test for issue #126: Audit handle_push_divergence callers for 5→1 collapse.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/stale-branch.sh
 # tests/regression/stale-branch-dirty-worktree.bats - Dirty worktree stash/restore tests
 #
 # Tests that _stale_rebase_onto_main correctly stashes uncommitted changes before

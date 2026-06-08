@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/blocker-rules.sh
 # tests/regression/reset-approval-state.bats
 #
 # Regression test for issue #255: Reset durable approval state for blockers.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: bin/rite, lib/core/workflow-runner.sh
 # Regression test for: Workflow exits silently after Phase 2 review post (#471)
 #
 # Bug history:

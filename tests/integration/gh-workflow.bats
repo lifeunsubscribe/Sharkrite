@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/gh-retry.sh, lib/core/workflow-runner.sh
 # Integration test: gh CLI workflow
 #
 # Demonstrates gh interaction pattern:

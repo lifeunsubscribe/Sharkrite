@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/config.sh
 # tests/regression/dedup-backoff-configurable.bats
 #
 # Regression test: RITE_DEDUP_BACKOFF env var controls the dedup backoff interval

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/merge-pr.sh
 # Regression test for: Fix unbound LOCKFILE variable in merge-pr cleanup
 # Issue: lib/core/merge-pr.sh:1493 referenced $LOCKFILE in cleanup without
 # defensive syntax, causing "unbound variable" crashes when no scratchpad

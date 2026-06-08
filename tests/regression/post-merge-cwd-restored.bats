@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/merge-pr.sh
 # Regression test: phase_merge_pr restores cwd after worktree removal
 # Issue #295
 #
