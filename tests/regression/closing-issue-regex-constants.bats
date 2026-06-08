@@ -102,7 +102,7 @@ _source_and_print() {
     local result
     result=$(echo "[{\"body\": \"$body\"}]" | \
       jq --arg issue "42" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length')
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length' || true)
     [ "$result" -gt 0 ] || {
       echo "FAIL: expected match for: $body" >&2
       false
@@ -150,7 +150,7 @@ _source_and_print() {
     local jq_match
     jq_match=$(echo "\"${kw} #42\"" | \
       jq --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-      'test($closing_re + "42\\b")')
+      'test($closing_re + "42\\b")' || true)
     [ "$jq_match" = "true" ] || {
       echo "FAIL: CLOSING_ISSUE_JQ_REGEX did not match keyword '$kw'" >&2
       false
@@ -184,7 +184,7 @@ _source_and_print() {
     local result
     result=$(echo "[{\"body\": \"$body\"}]" | \
       jq --arg issue "42" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length')
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length' || true)
     [ "$result" -eq 0 ] || {
       echo "FAIL: unexpected match for non-closing reference: $body" >&2
       false
@@ -221,7 +221,7 @@ _source_and_print() {
 
   # Line number where pr-detection.sh is sourced
   local source_line
-  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1)
+  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1 || true)
   [ -n "$source_line" ] || {
     echo "FAIL: pr-detection.sh is not sourced in $file" >&2
     false
@@ -235,7 +235,7 @@ _source_and_print() {
     | grep -v '^[0-9]*:[[:space:]]*#' \
     | grep -v 'source ' \
     | head -1 \
-    | cut -d: -f1)
+    | cut -d: -f1 || true)
   [ -n "$first_use_line" ] || {
     echo "FAIL: CLOSING_ISSUE_JQ_REGEX is not referenced in $file" >&2
     false
@@ -260,7 +260,7 @@ _source_and_print() {
 
   # Line number where pr-detection.sh is sourced
   local source_line
-  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1)
+  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1 || true)
   [ -n "$source_line" ] || {
     echo "FAIL: pr-detection.sh is not sourced in $file" >&2
     false
@@ -274,12 +274,12 @@ _source_and_print() {
     | grep -v '^[0-9]*:[[:space:]]*#' \
     | grep -v 'source ' \
     | head -1 \
-    | cut -d: -f1)
+    | cut -d: -f1 || true)
   first_grep_line=$(grep -n 'CLOSING_ISSUE_GREP_REGEX' "$file" \
     | grep -v '^[0-9]*:[[:space:]]*#' \
     | grep -v 'source ' \
     | head -1 \
-    | cut -d: -f1)
+    | cut -d: -f1 || true)
 
   # Pick the earliest of the two (skip empty values)
   if [ -n "$first_jq_line" ] && [ -n "$first_grep_line" ]; then
@@ -312,7 +312,7 @@ _source_and_print() {
 
   # Line number where pr-detection.sh is sourced
   local source_line
-  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1)
+  source_line=$(grep -n 'source.*pr-detection\.sh' "$file" | head -1 | cut -d: -f1 || true)
   [ -n "$source_line" ] || {
     echo "FAIL: pr-detection.sh is not sourced in $file" >&2
     false
@@ -326,7 +326,7 @@ _source_and_print() {
     | grep -v '^[0-9]*:[[:space:]]*#' \
     | grep -v 'source ' \
     | head -1 \
-    | cut -d: -f1)
+    | cut -d: -f1 || true)
   [ -n "$first_use_line" ] || {
     echo "FAIL: CLOSING_ISSUE_GREP_REGEX is not referenced in $file" >&2
     false
