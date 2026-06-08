@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh
 # tests/regression/workflow-runner-no-work-invariant.bats
 #
 # Regression test for: workflow-runner.sh should fail loud when no work produced

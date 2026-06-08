@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/tag-index.sh
 # Regression test: tag-index write helpers (Stage 2)
 #
 # Tests that:

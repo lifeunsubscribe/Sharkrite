@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/conflict-resolver.sh, lib/utils/stale-branch.sh, lib/utils/divergence-handler.sh, lib/utils/mid-run-rebase.sh
 # tests/regression/conflict-resolver-diag.bats
 #
 # Verifies that all four conflict-resolver call sites (stale_rebase, stale_merge,

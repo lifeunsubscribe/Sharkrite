@@ -16,6 +16,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+# Source markers.sh so the report prompt can reference marker constants
+# (e.g., ${RITE_MARKER_TEST_COVERS}) without embedding literal sharkrite-* strings
+# that would trip the RAW_MARKER_LITERAL lint rule.
+# shellcheck source=../lib/utils/markers.sh
+[ -f "$SCRIPT_DIR/../lib/utils/markers.sh" ] && source "$SCRIPT_DIR/../lib/utils/markers.sh"
 DATA_DIR="${RITE_DATA_DIR:-.rite}"
 LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
 REPORTS_DIR="$PROJECT_ROOT/$DATA_DIR/reports"
@@ -131,6 +137,18 @@ TG_SKIPPED=$(echo "$TG_LINES" | grep -c 'outcome=skipped' || true)
 TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
 TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
 
+# --- Pre-parse test gate selection stats (issue #462) ---
+# TEST_GATE_SELECTION diag format: "TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N"
+TGS_LINES=$(echo "$DIAG_LINES" | grep 'TEST_GATE_SELECTION ' || true)
+TGS_TOTAL_RUNS=$(echo "$TGS_LINES" | grep -c 'TEST_GATE_SELECTION ' || true)
+TGS_FULL_RUNS=$(echo "$TGS_LINES" | grep -c 'mode=full' || true)
+TGS_TARGETED_RUNS=$(echo "$TGS_LINES" | grep -c 'mode=targeted' || true)
+# Sum selected + total across targeted runs to compute the avg reduction ratio.
+# A reduction ratio < 50% means the optimization is helping; > 50% means too many
+# files lack covers headers and the gate keeps falling back to the full path.
+TGS_SELECTED_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE 'selected=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+TGS_TOTAL_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE ' total=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
 
@@ -203,6 +221,11 @@ Analyze the provided data and produce a concise markdown health report. Be direc
      - `skipped` > 0 → **WATCH**: "Gate skipped (bats/make missing on some runners)"
      - TG_LINT_TOTAL > 0 → flag which fix iterations introduced lint violations
    - If TG_TOTAL is 0, say "No post-commit gate runs recorded this week (feature new or gate not yet active)."
+   - **Test Selection** (issue #462) sub-section: report from TGS_* stats provided:
+     - Show: total gate invocations, targeted-vs-full breakdown, average targeted-selection ratio (TGS_SELECTED_SUM / TGS_TOTAL_SUM × 100%)
+     - Threshold: if targeted runs exist and the avg selected/total ratio > 50% → **WATCH**: "Test selection ratio is high — most bats files lack the ${RITE_MARKER_TEST_COVERS}: header; backfill more to realize the optimization."
+     - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs forced full suite this week (verifier/lint/helpers changed often)."
+     - If TGS_TOTAL_RUNS is 0 → "No selection data this week."
 5. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
    - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (top 5), median resolution duration if duration_s values are present
    - Thresholds:
@@ -226,6 +249,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 - Previous reports provide trend context
 - Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts)
 - Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
+- Pre-parsed test gate selection stats: TGS_TOTAL_RUNS, TGS_TARGETED_RUNS, TGS_FULL_RUNS, TGS_SELECTED_SUM, TGS_TOTAL_SUM (counts)
 
 ## Constraints
 
@@ -258,6 +282,17 @@ $TIMING_LINES
 
 Raw TEST_GATE diag lines for per-run details:
 $TG_LINES
+
+## Test Gate Selection Stats (pre-parsed, past 7 days)
+
+- TGS_TOTAL_RUNS (gate invocations that emitted a selection diag): $TGS_TOTAL_RUNS
+- TGS_TARGETED_RUNS (ran a subset based on changed paths): $TGS_TARGETED_RUNS
+- TGS_FULL_RUNS (forced full suite — trigger fired or no diff): $TGS_FULL_RUNS
+- TGS_SELECTED_SUM (sum of selected files across targeted runs): $TGS_SELECTED_SUM
+- TGS_TOTAL_SUM (sum of total bats files across targeted runs): $TGS_TOTAL_SUM
+
+Raw TEST_GATE_SELECTION diag lines:
+$TGS_LINES
 
 ## Conflict Resolver Stats (pre-parsed, past 7 days)
 

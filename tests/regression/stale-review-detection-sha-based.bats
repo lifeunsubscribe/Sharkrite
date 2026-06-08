@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/review-helper.sh
 # Regression test for issue #354: Stale-review-loop guard fires on fresh reviews
 #
 # Root cause: The staleness check in assess-and-resolve.sh used timestamp
