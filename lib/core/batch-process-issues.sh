@@ -53,6 +53,7 @@ source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/logging.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -166,7 +167,16 @@ fi
 # (normal, error, kill).  Without this, abnormal exits (break/exit 1/5/10 or
 # SIGTERM) leave orphaned /tmp files that grow unbounded across batch runs.
 # The trap fires after the summary report exits, so cleanup always runs.
+#
+# The trap also emits a RITE_EXIT diag so silent exits from the batch
+# dispatcher itself (set -e firing in the loop, subshell crashes, etc.) are
+# observable in the log. The per-issue workflow-runner.sh process has its
+# own RITE_EXIT diag — this one covers the batch orchestrator. See issue #471.
 _cleanup_batch_session() {
+  local rc=$?
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "RITE_EXIT code=${rc} mode=batch current_issue=${ISSUE_NUM:-unknown}"
+  fi
   rm -f "${SESSION_STATE_FILE:-}"
 }
 trap '_cleanup_batch_session' EXIT
