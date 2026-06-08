@@ -7,6 +7,11 @@
 #
 # Called after merge/rebase succeeds but BEFORE push.
 # If verification fails, the caller should abort (revert the merge, don't push).
+#
+# For Sharkrite repos, delegates to run_test_gate (lib/utils/test-gate.sh) so
+# the same targeted-selection logic used by the pre-merge gate applies here too.
+# This avoids running the full 1400+ test suite after every merge when only a
+# handful of bats files actually cover the changed paths.
 
 set -euo pipefail
 
@@ -21,11 +26,33 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
+# Source logging for _diag (needed by run_test_gate)
+if ! declare -f _diag >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/logging.sh"
+fi
+
+# Source marker constants (needed by run_test_gate for RITE_MARKER_TEST_COVERS)
+if ! declare -f rite_markers_loaded >/dev/null 2>&1; then
+  _pmv_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_pmv_self_dir/markers.sh"
+fi
+
+# Source test gate for run_test_gate (targeted selection + structured findings)
+source "$RITE_LIB_DIR/utils/test-gate.sh"
+
 # ===================================================================
 # PUBLIC: verify_post_merge [worktree_path]
 #
 # Runs the project's test suite (if detectable) to verify that a
 # merge/rebase didn't introduce silent semantic conflicts.
+#
+# For Sharkrite repos, delegates to run_test_gate so targeted selection
+# applies: only bats files covering changed paths run (not the full 1400+
+# test suite). Full-suite triggers (test-gate.sh, lint rules, Makefile,
+# helpers/fixtures) still force the full suite.
+#
+# For non-Sharkrite repos (npm/pytest/make test), the original test
+# command construction and execution path is preserved unchanged.
 #
 # Returns:
 #   0 = verification passed (or no test runner found — can't verify)
@@ -40,6 +67,85 @@ verify_post_merge() {
   if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
     return 0
   fi
+
+  # Detect whether this is a Sharkrite repo.
+  # Detection: Makefile with both shellcheck: and lint: targets — same
+  # check used by run_test_gate so the paths stay in sync.
+  local _is_sharkrite=false
+  if [ -f "$worktree_path/Makefile" ] \
+     && grep -q "^shellcheck:" "$worktree_path/Makefile" 2>/dev/null \
+     && grep -q "^lint:" "$worktree_path/Makefile" 2>/dev/null; then
+    _is_sharkrite=true
+  fi
+
+  if [ "$_is_sharkrite" = "true" ]; then
+    # ---------------------------------------------------------------
+    # Sharkrite path: delegate to run_test_gate for targeted selection.
+    # run_test_gate internally: computes changed paths against the diff
+    # base (default: origin/main), selects covering bats files, runs
+    # make shellcheck + make lint + bats on the subset, emits
+    # [diag] TEST_GATE_SELECTION mode=... for health-report aggregation.
+    # ---------------------------------------------------------------
+    echo "Running post-merge verification (targeted gate)..." >&2
+
+    local _pmv_gate_file
+    _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$.json")
+    local _pmv_gate_exit=0
+    run_test_gate "$_pmv_gate_file" "$worktree_path" || _pmv_gate_exit=$?
+    rm -f "${_pmv_gate_file:-}"
+
+    if [ "$_pmv_gate_exit" -ne 0 ]; then
+      # Before blaming the merge, check if main itself is broken.
+      # A broken main will poison every feature branch that merges it.
+      # Distinguish so callers block on real semantic conflicts, not
+      # pre-existing failures in main.
+      echo "⚠️  Post-merge tests failed — checking if main is the cause..." >&2
+
+      local _main_broken=false
+      local _main_test_dir
+      _main_test_dir=$(mktemp -d)
+
+      if git -C "$worktree_path" worktree add --quiet "$_main_test_dir" origin/main 2>/dev/null; then
+        local _main_gate_file _main_gate_exit
+        _main_gate_file=$(mktemp "/tmp/rite_pmv_main_gate_$$.json")
+        _main_gate_exit=0
+        # Run against origin/main worktree; discard output (just need exit code)
+        run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
+        rm -f "${_main_gate_file:-}"
+        git -C "$worktree_path" worktree remove --force "$_main_test_dir" 2>/dev/null \
+          || rm -rf "$_main_test_dir"
+
+        if [ "$_main_gate_exit" -ne 0 ]; then
+          _main_broken=true
+        fi
+      else
+        # Can't create worktree (maybe origin/main not fetched) — skip the check
+        rm -rf "$_main_test_dir"
+      fi
+
+      if [ "$_main_broken" = true ]; then
+        echo "🔴 Tests fail on main too — main branch is broken (not a merge conflict)" >&2
+        echo "Fix main first, then retry. Allowing workflow to proceed." >&2
+        # Return success: the failure isn't from this branch's merge.
+        # Callers would otherwise revert the merge and block the workflow,
+        # but the feature branch isn't at fault.
+        return 0
+      fi
+
+      echo "⚠️  Post-merge verification FAILED (exit $_pmv_gate_exit)" >&2
+      echo "The merge/rebase succeeded at the git level but tests now fail." >&2
+      echo "This likely indicates a silent semantic conflict." >&2
+      return 1
+    fi
+
+    echo "Post-merge verification passed" >&2
+    return 0
+  fi
+
+  # ---------------------------------------------------------------
+  # Non-Sharkrite path: original test-command detection and execution.
+  # Handles npm/pytest/make test for non-Sharkrite projects.
+  # ---------------------------------------------------------------
 
   # Detect test command
   local test_cmd="${RITE_TEST_CMD:-}"

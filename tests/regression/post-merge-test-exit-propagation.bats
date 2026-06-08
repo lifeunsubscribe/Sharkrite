@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/post-merge-verify.sh
+# sharkrite-test-covers: lib/utils/post-merge-verify.sh, lib/utils/test-gate.sh
 # Regression test for: Fix tee'd pipeline test_exit in post-merge-verify
 #
 # Bug: post-merge-verify.sh used `$?` after a pipeline (`... | sed`) without
@@ -10,6 +10,10 @@
 # Fix: Enable `set -o pipefail` at the top of the script so that $? after
 # a pipeline captures the first failing command's exit code, not the last
 # command in the pipeline.
+#
+# Issue #485: post-merge-verify now delegates to run_test_gate for Sharkrite
+# repos, applying the same targeted-selection logic as the pre-merge gate.
+# Tests added here cover the new delegation path.
 
 setup() {
   # Create minimal test environment
@@ -22,6 +26,8 @@ setup() {
   export TEST_WORKTREE="${RITE_TEST_ROOT}/test-wt"
   mkdir -p "$TEST_WORKTREE"
 
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+
   # Stub config.sh (required by post-merge-verify.sh)
   cat > "$RITE_LIB_DIR/utils/config.sh" <<'CONFIG_EOF'
 #!/bin/bash
@@ -31,14 +37,29 @@ RITE_SKIP_TESTS="${RITE_SKIP_TESTS:-false}"
 RITE_TEST_CMD="${RITE_TEST_CMD:-}"
 CONFIG_EOF
 
+  # Stub logging.sh with a _diag that is a no-op (avoids RITE_LOG_FILE dep)
+  cat > "$RITE_LIB_DIR/utils/logging.sh" <<'LOG_EOF'
+#!/bin/bash
+_diag() { true; }
+is_verbose() { false; }
+export -f _diag is_verbose 2>/dev/null || true
+LOG_EOF
+
+  # Copy real markers.sh — needed by test-gate.sh for RITE_MARKER_TEST_COVERS
+  cp "${REAL_RITE_ROOT}/lib/utils/markers.sh" "$RITE_LIB_DIR/utils/"
+
   # Copy actual post-merge-verify.sh from the real repo
-  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
   cp "${REAL_RITE_ROOT}/lib/utils/post-merge-verify.sh" "$RITE_LIB_DIR/utils/"
 }
 
 teardown() {
   rm -rf "$RITE_TEST_ROOT"
 }
+
+# ---------------------------------------------------------------------------
+# Original tests: non-Sharkrite path (RITE_TEST_CMD override)
+# These verify the fallback (non-Sharkrite) code path is unchanged.
+# ---------------------------------------------------------------------------
 
 @test "verify_post_merge returns 0 when test command exits 0" {
   # Create a fake test command that succeeds
@@ -148,4 +169,199 @@ teardown() {
 
   # Should show "pipefail on"
   [[ "$output" == *"pipefail"*"on"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# New tests: Sharkrite path — delegates to run_test_gate (issue #485)
+# ---------------------------------------------------------------------------
+
+@test "verify_post_merge uses run_test_gate for Sharkrite repos" {
+  # A Sharkrite repo has a Makefile with shellcheck: and lint: targets.
+  # Verify that verify_post_merge calls run_test_gate (not the old test_cmd path).
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+
+  # Copy real test-gate.sh
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  # Create a Sharkrite-style Makefile in the test worktree
+  cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
+shellcheck:
+	@echo "shellcheck stub: OK"
+lint:
+	@echo "lint stub: OK"
+test:
+	@echo "test stub"
+MF_EOF
+
+  # Install a stub run_test_gate that records it was called and exits 0.
+  # This verifies the delegation path fires without running the real gate.
+  run_test_gate_called_file="${BATS_TEST_TMPDIR}/run_test_gate_called"
+  # Export path so the overriding function can write to it
+  export _PMV_GATE_CALLED_FILE="$run_test_gate_called_file"
+
+  # Source post-merge-verify.sh (which sources test-gate.sh), then override
+  # run_test_gate with our recording stub
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+  run_test_gate() {
+    local _out_file="$1"
+    touch "${_PMV_GATE_CALLED_FILE:-/dev/null}"
+    # Write valid gate JSON (passed result)
+    printf '{"lint":[],"tests":[],"exit_code":0}' > "$_out_file"
+    return 0
+  }
+  export -f run_test_gate
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  [ "$status" -eq 0 ]
+  # Confirm run_test_gate was invoked (not the old RITE_TEST_CMD path)
+  [ -f "$run_test_gate_called_file" ]
+}
+
+@test "verify_post_merge returns 1 when run_test_gate fails on Sharkrite repo (no broken main)" {
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  # Sharkrite Makefile
+  cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
+shellcheck:
+	@true
+lint:
+	@true
+MF_EOF
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+
+  # Stub run_test_gate to fail (simulates test failures after merge)
+  run_test_gate() {
+    local _out_file="$1"
+    printf '{"lint":[],"tests":[{"file":"bats","test_name":"foo","reason":"assertion failed"}],"exit_code":1}' > "$_out_file"
+    return 1
+  }
+  export -f run_test_gate
+
+  # Stub git worktree add to fail so the "is main broken" check is skipped
+  git() {
+    if [[ "$*" == *"worktree add"* ]]; then
+      return 1
+    fi
+    command git "$@"
+  }
+  export -f git
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Post-merge verification FAILED"* ]]
+}
+
+@test "verify_post_merge returns 0 when run_test_gate fails but main is also broken" {
+  # If both the feature branch AND main fail the gate, the failure is a
+  # pre-existing main problem — not a semantic conflict from this merge.
+  # verify_post_merge should return 0 (allow workflow to proceed).
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  # Sharkrite Makefile
+  cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
+shellcheck:
+	@true
+lint:
+	@true
+MF_EOF
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+
+  # Stub run_test_gate to always fail (both feature branch and main checks)
+  run_test_gate() {
+    local _out_file="$1"
+    printf '{"lint":[],"tests":[{"file":"bats","test_name":"broken","reason":"assertion failed"}],"exit_code":1}' > "$_out_file"
+    return 1
+  }
+  export -f run_test_gate
+
+  # Stub git worktree add to succeed (so main-broken check runs)
+  local _fake_main_dir="${BATS_TEST_TMPDIR}/fake-main"
+  mkdir -p "$_fake_main_dir"
+  export _FAKE_MAIN_DIR="$_fake_main_dir"
+  git() {
+    if [[ "$*" == *"worktree add"* ]]; then
+      # Succeed: copy the fake dir path from the args
+      # The actual temp dir was created above; just return 0
+      return 0
+    fi
+    if [[ "$*" == *"worktree remove"* ]]; then
+      return 0
+    fi
+    command git "$@"
+  }
+  export -f git
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  # Should return 0: main is broken too, so this branch isn't at fault
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"main branch is broken"* ]]
+}
+
+@test "verify_post_merge emits targeted-gate banner for Sharkrite repos" {
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
+shellcheck:
+	@true
+lint:
+	@true
+MF_EOF
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+
+  # Stub run_test_gate to succeed immediately
+  run_test_gate() {
+    local _out_file="$1"
+    printf '{"lint":[],"tests":[],"exit_code":0}' > "$_out_file"
+    return 0
+  }
+  export -f run_test_gate
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  [ "$status" -eq 0 ]
+  # The Sharkrite path prints "targeted gate" rather than the old
+  # "Running post-merge verification (make test)" style banner
+  [[ "$output" == *"targeted gate"* ]]
+}
+
+@test "verify_post_merge does NOT use run_test_gate for non-Sharkrite repos" {
+  # A non-Sharkrite worktree (no shellcheck: + lint: Makefile) must go through
+  # the original RITE_TEST_CMD path, not the gate delegation.
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  # No Makefile in TEST_WORKTREE (or Makefile without shellcheck:/lint:)
+  cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
+test:
+	@echo "non-sharkrite test"
+MF_EOF
+
+  export RITE_TEST_CMD="exit 0"
+
+  gate_called_sentinel="${BATS_TEST_TMPDIR}/gate_called"
+  export _PMV_NONSR_SENTINEL="$gate_called_sentinel"
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+
+  # Override run_test_gate to record if it's called (it should NOT be)
+  run_test_gate() {
+    touch "${_PMV_NONSR_SENTINEL:-/dev/null}"
+    return 0
+  }
+  export -f run_test_gate
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  [ "$status" -eq 0 ]
+  # Gate must NOT have been called for a non-Sharkrite repo
+  [ ! -f "$gate_called_sentinel" ]
 }
