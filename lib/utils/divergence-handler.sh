@@ -510,11 +510,16 @@ _do_rebase_and_push() {
         _diag "CONFLICT_RESOLVER context=divergence outcome=resolved issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
         _div_success "Conflicts resolved by Claude"
         # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
-        # Commit the resolution now before verify + push.
-        if ! git commit --no-edit 2>/dev/null; then
-          _div_error "Failed to commit resolved conflicts"
-          git merge --abort 2>/dev/null || true
-          return 1
+        # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
+        # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
+        # case the working tree is already clean and `git commit --no-edit` would exit non-zero
+        # with "nothing to commit". Only commit if the tree is actually dirty.
+        if [ -n "$(git status --porcelain)" ]; then
+          if ! git commit --no-edit 2>/dev/null; then
+            _div_error "Failed to commit resolved conflicts"
+            git merge --abort 2>/dev/null || true
+            return 1
+          fi
         fi
         # Resolver committed on top of un-rebased HEAD (not a fast-forward from origin).
         # Mark that the final push must use --force-with-lease to avoid rejection.
