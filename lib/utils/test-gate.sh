@@ -214,9 +214,12 @@ run_test_gate() {
     local _lint_tool_exit=0
     echo "[test-gate] Running make shellcheck..." >&2
     set +e
-    (cd "$project_root" && make shellcheck 2>&1) >> "$_lint_raw_file" || _shellcheck_exit=$?
+    # Stream output to terminal AND capture to temp file via process substitution.
+    # Process substitution preserves the subshell exit code at the || site (no PIPESTATUS dance).
+    # tee -a appends so shellcheck + lint both accumulate into the same _lint_raw_file for parsing.
+    (cd "$project_root" && make shellcheck 2>&1) > >(tee -a "$_lint_raw_file") || _shellcheck_exit=$?
     echo "[test-gate] Running make lint..." >&2
-    (cd "$project_root" && make lint 2>&1) >> "$_lint_raw_file" || _lint_tool_exit=$?
+    (cd "$project_root" && make lint 2>&1) > >(tee -a "$_lint_raw_file") || _lint_tool_exit=$?
     set -e
     [ "$_shellcheck_exit" -ne 0 ] && _lint_exit=1
     [ "$_lint_tool_exit" -ne 0 ] && _lint_exit=1
@@ -225,7 +228,9 @@ run_test_gate() {
     # --- Sharkrite: bats -r tests/ (recursive) ---
     echo "[test-gate] Running bats -r tests/..." >&2
     set +e
-    (cd "$project_root" && bats -r tests/ 2>&1) > "$_tests_raw_file" || _tests_exit=$?
+    # Stream per-test pass/fail lines to terminal in real time, capture to temp file for parsing.
+    # tee -a used for consistency with the lint sites (file starts empty here, so -a == > in effect).
+    (cd "$project_root" && bats -r tests/ 2>&1) > >(tee -a "$_tests_raw_file") || _tests_exit=$?
     set -e
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   else
@@ -234,17 +239,18 @@ run_test_gate() {
     if [ -f "$project_root/Makefile" ] && grep -q "^test:" "$project_root/Makefile" 2>/dev/null; then
       echo "[test-gate] Running make test..." >&2
       set +e
-      (cd "$project_root" && make test 2>&1) > "$_tests_raw_file" || _tests_exit=$?
+      # Stream output to terminal AND capture to temp file (same tee pattern as Sharkrite paths).
+      (cd "$project_root" && make test 2>&1) > >(tee -a "$_tests_raw_file") || _tests_exit=$?
       set -e
     elif [ -f "$project_root/package.json" ]; then
       echo "[test-gate] Running npm test..." >&2
       set +e
-      (cd "$project_root" && npm test 2>&1) > "$_tests_raw_file" || _tests_exit=$?
+      (cd "$project_root" && npm test 2>&1) > >(tee -a "$_tests_raw_file") || _tests_exit=$?
       set -e
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       echo "[test-gate] Running pytest..." >&2
       set +e
-      (cd "$project_root" && python3 -m pytest 2>&1) > "$_tests_raw_file" || _tests_exit=$?
+      (cd "$project_root" && python3 -m pytest 2>&1) > >(tee -a "$_tests_raw_file") || _tests_exit=$?
       set -e
     else
       # No recognizable test runner — skip gracefully
