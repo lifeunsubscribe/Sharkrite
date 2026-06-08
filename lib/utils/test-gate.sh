@@ -223,6 +223,46 @@ _select_lint_by_changed_paths() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Bats parallelism (--jobs N) — opt-in, gated by GNU parallel availability
+# ---------------------------------------------------------------------------
+# bats-core natively supports `--jobs N` for file-level parallelism via GNU
+# parallel (or shenwei356/rush). Default model: parallel ACROSS .bats files,
+# serial WITHIN each file. The within-file serial guarantee means a test that
+# touches shared state (e.g. /tmp/sharkrite-config-rce in
+# test_config_parser.bats) is safe so long as the *other* parallel files don't
+# also touch the same path — which the codebase already avoids via
+# BATS_TEST_TMPDIR / BATS_FILE_TMPDIR / setup_test_tmpdir helpers.
+#
+# Default behavior is auto-detection:
+#   - parallel installed → use min(ncpu, 4)
+#   - parallel missing   → serial (1)
+# Override via RITE_BATS_JOBS=N (set to 1 to force serial, >1 to override auto).
+# Capped at 4 to keep load reasonable on shared/CI boxes; raise via env var.
+_compute_bats_jobs() {
+  # Explicit override wins
+  if [ -n "${RITE_BATS_JOBS:-}" ]; then
+    # Sanitize: must be a positive integer
+    if echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
+      echo "${RITE_BATS_JOBS}"
+      return 0
+    fi
+    # Garbage value → fall through to auto-detection
+  fi
+  # Auto-detection requires GNU parallel (or rush) on PATH
+  if ! command -v parallel >/dev/null 2>&1 && ! command -v rush >/dev/null 2>&1; then
+    echo 1
+    return 0
+  fi
+  local _ncpu
+  _ncpu=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)
+  if [ "$_ncpu" -gt 4 ]; then
+    echo 4
+  else
+    echo "$_ncpu"
+  fi
+}
+
 # _parse_test_coverage_header — extract the sharkrite-test-covers paths
 # Looks in the first 15 lines for `# sharkrite-test-covers: <paths>`.
 # Returns the comma-separated path list, or empty string if no header.
@@ -390,7 +430,7 @@ run_test_gate() {
   # rather than reading malformed JSON, while still logging the crash via _diag.
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
-        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
             printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
@@ -420,17 +460,6 @@ run_test_gate() {
     local _changed_files
     _changed_files=$(cd "$project_root" && git diff --name-only "$_diff_base"...HEAD 2>/dev/null || true)
 
-    echo "[test-gate] Running make shellcheck..."
-    # Capture exit code via a temp file (PIPESTATUS is lost when tee is the last
-    # command in the pipeline; the approach used here works under bash 3.2).
-    # tee -a to both stdout (captured by the parent's full-transcript tee for the
-    # run log) and the lint temp file (parsed for structured JSON findings below).
-    # Without the tee, lint violations only appeared in the JSON gate output and
-    # were invisible to `tail -f rite-*.log` during a live run.
-    { (cd "$project_root" && make shellcheck 2>&1); echo $? > "$_sc_exit_file"; } \
-      | tee -a "$_lint_raw_file" || true
-    _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 0)
-
     # --- Targeted custom-lint selection (parallel to bats #462) ---
     # Apply the same changed-paths optimization to `make lint`. Trigger files
     # (lint rule itself, Makefile) force a full scan. Otherwise pass the list
@@ -442,22 +471,57 @@ run_test_gate() {
     if [ "$_lint_selection" = "FORCE_FULL" ]; then
       echo "[test-gate] Lint: full scan"
       _diag "LINT_GATE_SELECTION mode=full pr=${PR_NUMBER:-?}"
-      echo "[test-gate] Running make lint..."
-      { (cd "$project_root" && make lint 2>&1); echo $? > "$_lint_exit_file"; } \
-        | tee -a "$_lint_raw_file" || true
     elif [ -z "$_lint_selection" ]; then
       echo "[test-gate] Lint: no shell-source changes — skipping"
       _diag "LINT_GATE_SELECTION mode=skipped selected=0 pr=${PR_NUMBER:-?}"
-      echo 0 > "$_lint_exit_file"
     else
       _lint_selected_count=$(echo "$_lint_selection" | grep -c '.' || true)
       echo "[test-gate] Lint: targeted (${_lint_selected_count} changed shell file(s))"
       _diag "LINT_GATE_SELECTION mode=targeted selected=${_lint_selected_count} pr=${PR_NUMBER:-?}"
-      echo "[test-gate] Running make lint..."
-      { (cd "$project_root" && RITE_LINT_FILES="$_lint_selection" make lint 2>&1); echo $? > "$_lint_exit_file"; } \
-        | tee -a "$_lint_raw_file" || true
     fi
+
+    # --- Run shellcheck + custom lint CONCURRENTLY ---
+    # Both scan read-only source files — no shared mutable state between them,
+    # so they can race safely. Each writes its raw output to a per-invocation
+    # temp file (PID-scoped, never globbed) and we merge into _lint_raw_file
+    # after wait so the JSON parser sees clean input. Live progress during the
+    # gate's shellcheck+lint phase is sacrificed in exchange for the speedup —
+    # both finish within a few seconds and the merged output is then streamed
+    # to stdout (which the parent FIFO-tee captures for the run log).
+    local _sc_raw_individual _lint_raw_individual
+    _sc_raw_individual=$(mktemp "/tmp/rite_gate_sc_raw_${PR_NUMBER:-0}_$$.txt")
+    _lint_raw_individual=$(mktemp "/tmp/rite_gate_lint_raw_${PR_NUMBER:-0}_$$.txt")
+
+    echo "[test-gate] Running make shellcheck + make lint (concurrent)..."
+    { (cd "$project_root" && make shellcheck) > "$_sc_raw_individual" 2>&1; echo $? > "$_sc_exit_file"; } &
+    local _sc_pid=$!
+
+    local _lint_pid=""
+    if [ "$_lint_selection" = "FORCE_FULL" ]; then
+      { (cd "$project_root" && make lint) > "$_lint_raw_individual" 2>&1; echo $? > "$_lint_exit_file"; } &
+      _lint_pid=$!
+    elif [ -z "$_lint_selection" ]; then
+      # Skipped — no lint process launched, treat as clean.
+      echo 0 > "$_lint_exit_file"
+    else
+      # Targeted — pass RITE_LINT_FILES via inline env assignment.
+      { (cd "$project_root" && RITE_LINT_FILES="$_lint_selection" make lint) > "$_lint_raw_individual" 2>&1; echo $? > "$_lint_exit_file"; } &
+      _lint_pid=$!
+    fi
+
+    wait "$_sc_pid" 2>/dev/null || true
+    [ -n "$_lint_pid" ] && { wait "$_lint_pid" 2>/dev/null || true; }
+    _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 0)
     _lint_tool_exit=$(cat "$_lint_exit_file" 2>/dev/null || echo 0)
+
+    # Merge into the JSON parser's input AND stream to stdout for the run log.
+    # Order: shellcheck first, then lint (matches the previous sequential output
+    # layout that downstream readers may pattern-match on).
+    {
+      [ -s "$_sc_raw_individual" ] && cat "$_sc_raw_individual"
+      [ -s "$_lint_raw_individual" ] && cat "$_lint_raw_individual"
+    } | tee -a "$_lint_raw_file" || true
+    rm -f "$_sc_raw_individual" "$_lint_raw_individual"
 
     [ "$_shellcheck_exit" -ne 0 ] && _lint_exit=1
     [ "$_lint_tool_exit" -ne 0 ] && _lint_exit=1
@@ -472,13 +536,28 @@ run_test_gate() {
     _total_bats=$(cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ')
     _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
 
+    # --- Bats parallelism (--jobs N) ---
+    # Auto-detect: use GNU parallel if installed (capped at 4 procs); serial
+    # otherwise. RITE_BATS_JOBS=N overrides. File-level parallel only — within
+    # each bats file, tests still run sequentially (bats-core default).
+    local _bats_jobs _bats_jobs_args
+    _bats_jobs=$(_compute_bats_jobs)
+    if [ "$_bats_jobs" -gt 1 ]; then
+      _bats_jobs_args=(--jobs "$_bats_jobs")
+      echo "[test-gate] bats: parallel (--jobs ${_bats_jobs})"
+    else
+      _bats_jobs_args=()
+      echo "[test-gate] bats: serial (parallel binary not found; install GNU parallel to enable)"
+    fi
+    _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
+
     if [ "$_selection" = "FORCE_FULL" ] || [ -z "$_selection" ]; then
       _selection_mode="full"
       _selected_count="$_total_bats"
       echo "[test-gate] Selection: full suite (${_total_bats} bats files)"
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo "[test-gate] Running bats -r tests/..."
-      { (cd "$project_root" && bats -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
+      { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
         | tee "$_tests_raw_file" || true
     else
       _selected_count=$(echo "$_selection" | grep -c '.' || true)
@@ -491,7 +570,7 @@ run_test_gate() {
         [ -n "$_bf" ] && _selected_files+=("$_bf")
       done <<< "$_selection"
       echo "[test-gate] Running bats on ${#_selected_files[@]} selected files..."
-      { (cd "$project_root" && bats "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
+      { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
         | tee "$_tests_raw_file" || true
     fi
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
