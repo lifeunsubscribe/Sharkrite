@@ -702,6 +702,12 @@ GATE_NOW_COUNT=0
 if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
   _gate_skipped=$(jq -r '.skipped // false' "$_GATE_FINDINGS_FILE" 2>/dev/null || echo "false")
   _gate_exit_code=$(jq -r '.exit_code // 0' "$_GATE_FINDINGS_FILE" 2>/dev/null || echo "0")
+  # Guard: jq can return "null" or empty if the field is missing/malformed, which would
+  # crash the integer test below with "integer expression expected" under set -e.
+  # Treat any non-numeric value as 0 (safe: means "passed", gate is not blocked).
+  case "$_gate_exit_code" in
+    ''|*[!0-9]*) _gate_exit_code=0 ;;
+  esac
 
   if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
     # Build [GATE] ACTIONABLE_NOW items from lint failures

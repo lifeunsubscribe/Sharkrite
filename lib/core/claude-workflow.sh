@@ -306,12 +306,24 @@ print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 source "$RITE_LIB_DIR/utils/logging.sh"
 
 # ===================================================================
-# TEST GATE (dev/initial-commit path only — not run during fix-review)
+# _run_dev_test_gate — dev/initial-commit test runner (NOT the structured gate)
+#
+# This is the dev-path test gate: runs the project's test suite before
+# committing during Phase 1 (development). It differs from the structured
+# run_test_gate() in lib/utils/test-gate.sh in three ways:
+#   1. No args — runs in the current directory (the worktree)
+#   2. No JSON output — emits human-readable output to stdout/stderr
+#   3. Auto-fix loop — tries a Claude fix session on failure before giving up
+#
+# The structured run_test_gate() (lib/utils/test-gate.sh) takes an output_file
+# and project_root, emits machine-readable JSON consumed by assess-and-resolve.sh,
+# and runs in parallel with review generation during Phase 3.
+#
 # Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
 # Supervised mode: prompt the user.
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
 # ===================================================================
-run_test_gate() {
+_run_dev_test_gate() {
   local _should_run=false
   if [ "$AUTO_MODE" = true ]; then
     if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
@@ -2623,8 +2635,9 @@ else
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
-  # Run test gate before commit (dev/initial-commit path only; not run during fix-review)
-  run_test_gate
+  # Run dev test gate before commit (dev/initial-commit path only; not run during fix-review)
+  # Uses _run_dev_test_gate (not run_test_gate from test-gate.sh — that one takes args and emits JSON)
+  _run_dev_test_gate
 
 # Commit workflow
 if [ "$AUTO_MODE" = false ]; then
