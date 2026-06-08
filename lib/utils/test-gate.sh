@@ -182,14 +182,22 @@ _parse_test_coverage_header() {
 # _bats_file_matches_changed — decide if a single bats file should run
 # Args: $1=bats_file_path, $2=changed_files (newline-separated)
 # Returns: 0 (include) or 1 (skip)
-# Headerless files always include (conservative default).
+#
+# Default behavior changed after the all-files backfill landed (#480):
+# headerless files are now SKIPPED, not included. The previous "headerless
+# = always include" fallback gave the conservative-safe answer when most
+# files lacked headers, but it also defeated the optimization (95%+ of
+# files still ran every time). With 100% header coverage as the new
+# baseline, missing headers are treated as missing coverage signal —
+# enforce via the MISSING_TEST_COVERAGE_HEADER lint rule in sharkrite-lint.sh.
 _bats_file_matches_changed() {
   local bats_file="$1"
   local changed_files="$2"
   local _header
   _header=$(_parse_test_coverage_header "$bats_file")
   if [ -z "$_header" ]; then
-    return 0
+    # No header → exclude (new default; rule enforces backfill on new files)
+    return 1
   fi
   # Header is comma-separated; iterate each pattern.
   # set -f disables filesystem glob expansion during the split — without it,
