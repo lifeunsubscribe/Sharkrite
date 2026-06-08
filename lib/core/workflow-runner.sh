@@ -315,10 +315,29 @@ handle_blocker() {
       echo ""
       echo "    rite ${issue_number} --supervised"
       echo ""
-      echo "3b. If the deletion is wrong — revert the file and push a fix:"
+      echo "3b. If the deletion is wrong — revert the file(s) and push a fix:"
       echo ""
-      echo "    git checkout origin/main -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
-      echo "    git commit -m 'revert: restore accidentally deleted ${SHRINKAGE_BLOCKER_FILE:-lib/ file}'"
+      # Emit one git checkout line per violated file so multi-file deletions produce
+      # complete remediation guidance (issue #357: head -1 export named only one file).
+      # Falls back to the singular SHRINKAGE_BLOCKER_FILE when SHRINKAGE_BLOCKER_FILES
+      # is unset (pre-#357 callers or environments where the export did not propagate).
+      if [ -n "${SHRINKAGE_BLOCKER_FILES:-}" ]; then
+        while IFS= read -r _sf; do
+          [ -n "$_sf" ] && echo "    git checkout origin/main -- ${_sf}"
+        done <<< "$SHRINKAGE_BLOCKER_FILES"
+        # Build a short label for the commit message (first file, ellipsis if multiple)
+        _first_sf=$(echo "$SHRINKAGE_BLOCKER_FILES" | head -1 || true)
+        _sf_count=$(echo "$SHRINKAGE_BLOCKER_FILES" | grep -c '.' || true)
+        if [ "${_sf_count:-1}" -gt 1 ]; then
+          _sf_label="${_first_sf:-lib/ files} (and $((${_sf_count} - 1)) more)"
+        else
+          _sf_label="${_first_sf:-lib/ file}"
+        fi
+      else
+        echo "    git checkout origin/main -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
+        _sf_label="${SHRINKAGE_BLOCKER_FILE:-lib/ file}"
+      fi
+      echo "    git commit -m 'revert: restore accidentally deleted ${_sf_label}'"
       echo "    rite ${issue_number}"
       echo ""
       echo "3c. To bypass without supervised prompt (unsupervised, logs to health report):"
