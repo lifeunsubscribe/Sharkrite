@@ -335,6 +335,34 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`.
 
+### Test Selection by Changed Paths
+
+**Issue #462, 2026-06-08.** The post-commit `test_gate` now selects a subset of bats files based on the commit's changed paths instead of running the full 140+ file suite every iteration.
+
+**Convention:** bats files declare which source paths they cover via a single-line header (the `sharkrite-test-covers:` marker, defined in `markers.sh`):
+
+```bash
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh, lib/utils/bar.sh
+@test "..." { ... }
+```
+
+**Selection rules** (in `lib/utils/test-gate.sh::_select_tests_by_changed_paths`):
+
+1. **Full-suite triggers** (verifier internals, lint, helpers, fixtures) override path selection — change any of `lib/utils/test-gate.sh`, `tools/*-lint.sh`, `Makefile`, `tests/helpers/*`, `tests/fixtures/*` and the full suite runs. This is the safe-by-default escape for changes that could affect any test.
+2. **Headerless files always run.** A bats file without a `sharkrite-test-covers:` header is included in every gate invocation (conservative fallback during rollout — backfill grows organically).
+3. **Header match.** For files with a header, the comma-separated path list is intersected with the commit's changed-file set via shell case-statement glob matching. Globs (`lib/utils/*.sh`) supported; note `*` doesn't match `/` per standard bash glob rules.
+
+**Empty diff falls back to full suite.** A degenerate case (brand-new branch, no upstream) where we can't compute changes — run everything rather than nothing.
+
+**Diag emission:** every gate run logs `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N`. The health report aggregates these into a "Test Selection" sub-section under Test Gate, with a WATCH threshold at avg selected/total > 50% (indicates header adoption is lagging).
+
+**Override the diff base** via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
+
+**Glob expansion hazard.** The selection function calls `set -f` (noglob) before splitting comma-separated patterns, then `set +f` after. Without `set -f`, a header like `lib/utils/*.sh` would be expanded against the filesystem at parse time, replacing the pattern with the list of currently-matching files — breaking the case-statement match against changed paths.
+
+**Implementation:** `tests/regression/test-gate-targeted-selection.bats` (18 tests covering parser, file matching, glob handling, full-suite triggers, edge cases).
+
 ### Fix-review prompt: syntax-check before declaring done
 
 Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt now requires Claude to run `bash -n <file>` on every shell file it touched before declaring done. This is a fast, in-session check that catches broken syntax before commit. Full lint and test verification runs post-commit via the parallel gate (see "Verification Out of Fix Session" above).

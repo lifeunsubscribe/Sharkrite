@@ -2323,8 +2323,8 @@ ${PHASE_0_INSTRUCTIONS}
 
 ### Phase 4: Testing & Validation
 1. Write or update unit tests for the code you changed
-2. Verify your new code imports/compiles without errors (quick syntax check)
-3. Do NOT run the full test suite — the rite workflow runs it automatically after this session with parallel execution. Running it here wastes time.
+2. Syntax-check shell files you touched with \`bash -n <file>\` — zero output means OK
+3. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands — not even a single targeted file, not even in the background. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours.
 
 ### Phase 5: Code Comments
 1. Add inline comments and JSDoc/TSDoc for complex logic only
@@ -2481,8 +2481,16 @@ else
     # Runs after the dev session commits (or auto-commit salvage) so the diff is final.
     # Only meaningful when we have an issue body with a Scope Boundary section.
     if [ -n "${ISSUE_BODY:-}" ] && [ "$ISSUE_BODY" != "null" ]; then
-      _scope_violations=""
-      _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" 2>/dev/null || true)
+      # Skip when DO bullets are pure prose ("Address the review findings") —
+      # the check would flag every changed file because no path can match a
+      # prose-only DO. Emit a diag line so the skip is visible in the log.
+      if ! scope_boundary_is_enforceable "${ISSUE_BODY:-}"; then
+        print_info "[diag] scope-check skipped: no path-shaped DO bullets — scope not enforceable"
+        _scope_violations=""
+      else
+        _scope_violations=""
+        _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" 2>/dev/null || true)
+      fi
 
       if [ -n "$_scope_violations" ]; then
         echo ""

@@ -325,6 +325,60 @@ check_scope_boundary() {
 }
 
 # ---------------------------------------------------------------------------
+# scope_boundary_is_enforceable ISSUE_BODY
+#
+# Returns 0 (enforceable) when:
+#   - the body has no Scope Boundary section (no DO patterns to enforce), OR
+#   - at least one DO bullet contains a path-shaped token (file path, dir
+#     prefix, or glob).
+#
+# Returns 1 (NOT enforceable) only when DO bullets exist but every one of them
+# is pure prose. In that case check_scope_boundary would flag every changed
+# file as a violation (no path can match a prose-only DO), so the caller
+# should skip the check and log a diag line instead of emitting noise.
+# ---------------------------------------------------------------------------
+scope_boundary_is_enforceable() {
+  local issue_body="${1:-}"
+
+  if [ -z "$issue_body" ] || [ "$issue_body" = "null" ]; then
+    return 0
+  fi
+
+  local _parsed
+  _parsed=$(parse_scope_boundary "$issue_body")
+
+  local _do_patterns=()
+  local _in_do=false
+  while IFS= read -r _line; do
+    if [ "$_line" = "DO_PATTERNS_START" ]; then _in_do=true; continue; fi
+    if [ "$_line" = "DO_PATTERNS_END" ];   then _in_do=false; continue; fi
+    if [ "$_in_do" = true ] && [ -n "$_line" ]; then
+      _do_patterns+=("$_line")
+    fi
+  done <<< "$_parsed"
+
+  # No DO patterns parsed — check_scope_boundary handles this case (returns 0
+  # silently). Treat as enforceable so we don't short-circuit the no-scope path.
+  if [ "${#_do_patterns[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  local _pat _token
+  for _pat in "${_do_patterns[@]}"; do
+    [ -z "$_pat" ] && continue
+    if [[ "$_pat" == *" "* ]]; then
+      for _token in $_pat; do
+        if _is_path_shaped "$_token"; then return 0; fi
+      done
+    else
+      if _is_path_shaped "$_pat"; then return 0; fi
+    fi
+  done
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # format_scope_warning VIOLATIONS_TEXT
 #
 # Formats a human-readable scope violation warning for PR body insertion.

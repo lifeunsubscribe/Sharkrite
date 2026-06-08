@@ -1229,3 +1229,129 @@ _create_lib_file() {
     return 1
   }
 }
+
+# ===========================================================================
+# TEST 25: SHRINKAGE_BLOCKER_FILES exports ALL violating file paths
+#
+# Regression for issue #357: head -1 export meant only the first file was
+# exported, so handle_blocker's revert guidance named only one file for a
+# multi-file deletion PR — causing an extra fix cycle for the remaining files.
+#
+# Verifies that SHRINKAGE_BLOCKER_FILES is a newline-separated list of every
+# file that exceeded a threshold, and that SHRINKAGE_BLOCKER_FILE (singular)
+# still holds the first violation for backward compat / diag logging.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: SHRINKAGE_BLOCKER_FILES contains all violating files (multi-file PR)" {
+  # Simulate the 2026-06-02 incident: two lib/ files both exceed the absolute threshold.
+  # Both files use >500 line deletions so only the absolute check fires — no git show needed.
+  local file1="lib/core/assess-review-issues.sh"
+  local file2="lib/utils/format-review.sh"
+  local file1_deleted=1015
+  local file2_deleted=600  # above absolute threshold — no ratio check path needed
+
+  local _file1="$file1"
+  local _file2="$file2"
+  local _file1_deleted="$file1_deleted"
+  local _file2_deleted="$file2_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_file1}' '${_file1_deleted}'
+        _make_lib_diff '${_file2}' '${_file2_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'main'
+        return 0
+      fi
+      return 1
+    }
+    export -f gh_safe _make_lib_diff
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    # detect_lib_shrinkage exits 1 on blocker; capture without triggering set -e
+    _exit=0
+    detect_lib_shrinkage '260' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+    echo \"BLOCKER_FILE=\${SHRINKAGE_BLOCKER_FILE:-UNSET}\"
+    # Print each entry in SHRINKAGE_BLOCKER_FILES on its own prefixed line
+    # so the assertions below can grep for exact paths without false matches.
+    while IFS= read -r _f; do
+      [ -n \"\$_f\" ] && echo \"FILES_ENTRY:\$_f\"
+    done <<< \"\${SHRINKAGE_BLOCKER_FILES:-}\"
+    _files_count=\$(echo \"\${SHRINKAGE_BLOCKER_FILES:-}\" | grep -c '.' || true)
+    echo \"FILES_COUNT=\${_files_count}\"
+  "
+
+  # Blocker must fire
+  [[ "$output" == *"EXIT=1"* ]]
+
+  # SHRINKAGE_BLOCKER_FILE (singular) must still be set to the first violation
+  [[ "$output" == *"BLOCKER_FILE=${file1}"* ]] || [[ "$output" == *"BLOCKER_FILE="* ]]
+
+  # SHRINKAGE_BLOCKER_FILES must contain BOTH files
+  [[ "$output" == *"FILES_ENTRY:${file1}"* ]]
+  [[ "$output" == *"FILES_ENTRY:${file2}"* ]]
+
+  # Must have exactly 2 entries (no duplicates, no missing)
+  [[ "$output" == *"FILES_COUNT=2"* ]]
+}
+
+# ===========================================================================
+# TEST 26: Single-file violation — SHRINKAGE_BLOCKER_FILES has exactly one entry
+#
+# Ensures the fix does not regress single-file PRs: one violation must still
+# produce one entry in SHRINKAGE_BLOCKER_FILES (not zero, not duplicated).
+# ===========================================================================
+
+@test "detect_lib_shrinkage: SHRINKAGE_BLOCKER_FILES has exactly one entry for single-file violation" {
+  local target_file="lib/core/assess-review-issues.sh"
+  local n_deleted=1015
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'main'
+        return 0
+      fi
+      return 1
+    }
+    export -f gh_safe _make_lib_diff
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '260' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+    while IFS= read -r _f; do
+      [ -n \"\$_f\" ] && echo \"FILES_ENTRY:\$_f\"
+    done <<< \"\${SHRINKAGE_BLOCKER_FILES:-}\"
+    _files_count=\$(echo \"\${SHRINKAGE_BLOCKER_FILES:-}\" | grep -c '.' || true)
+    echo \"FILES_COUNT=\${_files_count}\"
+  "
+
+  # Blocker must fire
+  [[ "$output" == *"EXIT=1"* ]]
+
+  # SHRINKAGE_BLOCKER_FILES must have exactly one entry
+  [[ "$output" == *"FILES_ENTRY:${target_file}"* ]]
+  [[ "$output" == *"FILES_COUNT=1"* ]]
+}

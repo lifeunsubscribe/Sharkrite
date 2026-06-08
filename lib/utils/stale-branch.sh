@@ -575,11 +575,16 @@ _stale_rebase_onto_main() {
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
         # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
-        # Commit the resolution before verifying or pushing.
-        if ! git commit --no-edit 2>/dev/null; then
-          print_error "Failed to commit resolved conflicts"
-          git merge --abort 2>/dev/null || true
-          return 1
+        # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
+        # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
+        # case the working tree is already clean and `git commit --no-edit` would exit non-zero
+        # with "nothing to commit". Only commit if the tree is actually dirty.
+        if [ -n "$(git status --porcelain)" ]; then
+          if ! git commit --no-edit 2>/dev/null; then
+            print_error "Failed to commit resolved conflicts"
+            git merge --abort 2>/dev/null || true
+            return 1
+          fi
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
@@ -587,7 +592,7 @@ _stale_rebase_onto_main() {
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
           return 1
         fi
-        # Resolution committed and verified — push with force-with-lease (rebase rewrote history)
+        # Resolution committed (or already committed inside resolver) and verified — push with force-with-lease
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
           print_success "Branch rebased onto origin/main (with conflict resolution)"
           return 0
@@ -720,11 +725,16 @@ _stale_merge_main_legacy() {
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
         # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
-        # Commit the resolution before verifying or pushing.
-        if ! git commit --no-edit 2>/dev/null; then
-          print_error "Failed to commit resolved conflicts"
-          git merge --abort 2>/dev/null || true
-          return 1
+        # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
+        # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
+        # case the working tree is already clean and `git commit --no-edit` would exit non-zero
+        # with "nothing to commit". Only commit if the tree is actually dirty.
+        if [ -n "$(git status --porcelain)" ]; then
+          if ! git commit --no-edit 2>/dev/null; then
+            print_error "Failed to commit resolved conflicts"
+            git merge --abort 2>/dev/null || true
+            return 1
+          fi
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
@@ -732,7 +742,7 @@ _stale_merge_main_legacy() {
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
           return 1
         fi
-        # Resolution committed and verified — regular push (merge doesn't rewrite history)
+        # Resolution committed (or already committed inside resolver) and verified — regular push (merge doesn't rewrite history)
         if git push origin "$branch_name" 2>/dev/null; then
           print_success "Branch updated with main (conflict resolved)"
           return 0

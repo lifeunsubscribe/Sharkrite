@@ -367,16 +367,20 @@ claude_provider_build_tool_restrictions() {
   #
   # Categories:
   # 1. Git/GitHub workflow (post-workflow handles these)
-  # 2. Destructive filesystem operations
-  # 3. Remote access and network commands
-  # 4. Environment/credential exposure
-  # 5. Critical system file modifications
+  # 2. Test/lint runners (workflow runs make check + bats -r tests/ in parallel
+  #    with review generation post-session; targeted in-session runs are
+  #    redundant and just burn the timeout budget — the prompt forbids them,
+  #    the tool-level block enforces it deterministically)
+  # 3. Destructive filesystem operations
+  # 4. Remote access and network commands
+  # 5. Environment/credential exposure
+  # 6. Critical system file modifications
   #
   # Pattern syntax: Bash(pattern) blocks bash commands matching glob pattern.
   # Multiple patterns separated by commas (no spaces).
 
   local RITE_CLAUDE_DISALLOWED_TOOLS
-  RITE_CLAUDE_DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(curl *),Bash(wget *),Bash(rm -rf*),Bash(ssh *),Bash(ssh),Bash(*ssh *),Bash(scp *),Bash(scp),Bash(*scp *),Bash(env),Bash(printenv*),Bash(*authorized_keys*),Bash(* ~/.ssh/*),Bash(*~/.ssh/*),Bash(~/.ssh/*),Bash(* ~/.zsh*),Bash(*~/.zsh*),Bash(~/.zsh*),Bash(* ~/.bash*),Bash(*~/.bash*),Bash(~/.bash*),Bash(* ~/.*rc),Bash(*~/.*rc),Bash(~/.*rc),Bash(* /etc/*),Bash(*/etc/*),Bash(/etc/*),Bash(* /var/*),Bash(*/var/*),Bash(/var/*)'
+  RITE_CLAUDE_DISALLOWED_TOOLS='Bash(git commit*),Bash(git push*),Bash(*git commit*),Bash(*git push*),Bash(gh *),Bash(gh),Bash(*gh pr*),Bash(*gh issue*),Bash(*gh api*),Bash(make *),Bash(make),Bash(*make *),Bash(bats *),Bash(bats),Bash(*bats *),Bash(pytest *),Bash(pytest),Bash(*pytest *),Bash(curl *),Bash(wget *),Bash(rm -rf*),Bash(ssh *),Bash(ssh),Bash(*ssh *),Bash(scp *),Bash(scp),Bash(*scp *),Bash(env),Bash(printenv*),Bash(*authorized_keys*),Bash(* ~/.ssh/*),Bash(*~/.ssh/*),Bash(~/.ssh/*),Bash(* ~/.zsh*),Bash(*~/.zsh*),Bash(~/.zsh*),Bash(* ~/.bash*),Bash(*~/.bash*),Bash(~/.bash*),Bash(* ~/.*rc),Bash(*~/.*rc),Bash(~/.*rc),Bash(* /etc/*),Bash(*/etc/*),Bash(/etc/*),Bash(* /var/*),Bash(*/var/*),Bash(/var/*)'
 
   echo "$RITE_CLAUDE_DISALLOWED_TOOLS"
 }

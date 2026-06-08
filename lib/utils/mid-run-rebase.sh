@@ -232,13 +232,18 @@ _mid_run_rebase_onto_main() {
         _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "mid-run-rebase: conflicts resolved by Claude"
         # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
-        # Commit the resolution before pushing.
-        if ! git commit --no-edit 2>/dev/null; then
-          print_error "mid-run-rebase: failed to commit resolved conflicts"
-          git merge --abort 2>/dev/null || true
-          return 1
+        # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
+        # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
+        # case the working tree is already clean and `git commit --no-edit` would exit non-zero
+        # with "nothing to commit". Only commit if the tree is actually dirty.
+        if [ -n "$(git status --porcelain)" ]; then
+          if ! git commit --no-edit 2>/dev/null; then
+            print_error "mid-run-rebase: failed to commit resolved conflicts"
+            git merge --abort 2>/dev/null || true
+            return 1
+          fi
         fi
-        # Resolution committed — force-with-lease push (history was rewritten by resolver).
+        # Resolution committed (or already committed inside resolver) — force-with-lease push.
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
           print_info "mid-run rebase: conflict resolved, committed, and pushed"
           return 0

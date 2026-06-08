@@ -82,3 +82,12 @@ RITE_MARKER_CHANGES_SUMMARY="sharkrite-changes-summary"
 # Format in stash message: [sharkrite-managed-stash]
 RITE_MARKER_STASH="sharkrite-managed-stash"
 
+# ---------------------------------------------------------------------------
+# Test file markers (issue #462)
+# ---------------------------------------------------------------------------
+
+# Test coverage header — bats files declare which source paths they cover.
+# The test_gate uses this to select a subset of bats files based on changed paths.
+# Format at top of bats file: # sharkrite-test-covers: lib/core/foo.sh, lib/utils/bar.sh
+# Headerless files always run (conservative fallback during rollout).
+RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
