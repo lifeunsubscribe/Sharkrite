@@ -536,7 +536,8 @@ _run_dev_test_gate() {
   [ -z "$_env_file" ] && [ -f ".env" ] && _env_file=".env"
 
   _timer_start "test_gate"
-  print_status "Running tests ($_test_cmd)..."
+  print_status "Running tests..."
+  verbose_info "Test command: $_test_cmd"
   local _test_exit=0
   local _test_output_file
   _test_output_file=$(mktemp)
