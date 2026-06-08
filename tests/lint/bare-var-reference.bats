@@ -107,6 +107,36 @@ do_aws() {
   [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
 }
 
+@test "rule fires: bare \$SNS_TOPIC_ARN in lib/utils script" {
+  _run_lint_with_fixture "bad-sns-topic-arn" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_BAD5_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_BAD5_LOADED=true
+
+SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
+
+send_sms() {
+  aws sns publish --topic-arn "$SNS_TOPIC_ARN" --message "hello"
+}'
+
+  [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
+}
+
+@test "rule fires: bare \$RITE_SNS_TOPIC_ARN in lib/utils script" {
+  _run_lint_with_fixture "bad-rite-sns-topic-arn" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_BAD6_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_BAD6_LOADED=true
+
+send_sms() {
+  aws sns publish --topic-arn "$RITE_SNS_TOPIC_ARN" --message "hello"
+}'
+
+  [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Should PASS (no violations from this rule)
 # ---------------------------------------------------------------------------
@@ -163,6 +193,44 @@ do_aws() {
   local r23_lines
   r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
   [[ "$r23_lines" != *"good-aws-default"* ]]
+}
+
+@test "rule passes: \${SNS_TOPIC_ARN:-} safe expansion" {
+  _run_lint_with_fixture "good-sns-topic-arn" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_GOOD6_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_GOOD6_LOADED=true
+
+send_sms() {
+  if [ -z "${SNS_TOPIC_ARN:-}" ]; then
+    echo "SNS_TOPIC_ARN not set, skipping SMS"
+    return 0
+  fi
+}'
+
+  local r23_lines
+  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r23_lines" != *"good-sns-topic-arn"* ]]
+}
+
+@test "rule passes: suppression comment on bare \$SNS_TOPIC_ARN (module-local alias pattern)" {
+  _run_lint_with_fixture "good-sns-suppressed" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_GOOD7_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_GOOD7_LOADED=true
+
+SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
+
+send_sms() {
+  # sharkrite-lint disable BARE_VAR_REFERENCE - module-local alias initialized safely at module load
+  aws sns publish --topic-arn "$SNS_TOPIC_ARN" --message "hello"
+}'
+
+  local r23_lines
+  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r23_lines" != *"good-sns-suppressed"* ]]
 }
 
 @test "rule passes: suppression comment on preceding line" {

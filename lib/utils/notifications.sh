@@ -138,6 +138,7 @@ send_email() {
 send_sms() {
   local message="$1"
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - module-local alias initialized safely via SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}" at module load (line 35)
   if [ -z "$SNS_TOPIC_ARN" ]; then
     echo "⚠️  RITE_SNS_TOPIC_ARN not set, skipping SMS"
     return 1
@@ -147,8 +148,7 @@ send_sms() {
   local short_message=$(echo "$message" | head -c 140 || true)
 
   # sharkrite-lint disable BARE_VAR_REFERENCE - SNS_TOPIC_ARN is a module-local alias initialized safely at module load (line 35)
-  aws sns publish \
-    --topic-arn "$SNS_TOPIC_ARN" \
+  aws sns publish --topic-arn "$SNS_TOPIC_ARN" \
     --message "$short_message" \
     --profile "${AWS_PROFILE:-default}" \
     2>/dev/null
