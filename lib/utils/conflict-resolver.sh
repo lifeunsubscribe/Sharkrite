@@ -174,7 +174,7 @@ attempt_claude_merge_resolution() {
     return 1
   fi
 
-  _cr_info "Conflicting files:" >&2
+  _cr_status "Conflicts to resolve via Claude:" >&2
   echo "$_cr_conflict_files" | sed 's/^/  /' >&2
 
   # ── Step 4: Build prompt ──
