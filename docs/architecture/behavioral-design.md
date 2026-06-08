@@ -969,6 +969,52 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 **Rule of thumb:** If the question is "does X appear in set Y?" — use a set lookup. Only reach for a model when the question genuinely requires language understanding (e.g., "does this PR description accurately reflect the diff?").
 
+**Second application — deterministic integration check (issue #351, 2026-06-05):**
+
+`_detect_unverified_integrations` in `lib/core/plan-issues.sh` checks whether external hostnames and package/SDK names referenced in issue bodies are grounded in the project's fixture directories or dependency manifests. Issues that reference un-grounded dependencies get a spike-issue prerequisite prepended (no LLM call). This is a deterministic lookup: "is this hostname/package in the project's known-good set?" is a set membership test, not a language-understanding question.
+
+**Third application — flag-first provenance + deterministic low-signal gate (issue #367, 2026-06-06):**
+
+`_lint_provenance_flags` in `lib/core/plan-issues.sh` checks whether a `**Field provenance:**` section documents fields whose source is already listed in "Files to Read" (obvious-source, low-signal). The check is: "does any filename from Files to Read appear in the source segment of each provenance entry?" — a string-containment check. If the count of obvious-source entries exceeds the threshold, the run is rejected. This dissolved the cargo-cult "every data issue must have a provenance table" pattern into "model flags non-obvious fields; deterministic linter rejects obvious-source entries as low-signal."
+
+**Fourth application — dissolution of the H5 LLM critique pass (issue #353, 2026-06-07):**
+
+The original H5 planning proposal called for a self-critique LLM pass after issue generation: the model would validate its own draft against a five-point checklist (coverage 1:1, acyclic DAG, no dangling deps, verification commands reference real files, deferral reasoning consistent with docs) and revise. Same-model self-critique is famously weak at catching same-model errors. Every item on that checklist is a deterministic check expressed in natural language.
+
+`_lint_issues_strict` in `lib/core/plan-issues.sh` implements the remaining three checks that #348/#351/#367 hadn't yet covered:
+
+| Check | What it tests | Severity |
+|---|---|---|
+| Acyclic dependency graph | DFS cycle detection on `Dependencies:` lines | ERROR (exit 1) |
+| No dangling `#N` refs | Every dep ref resolves to a batch issue or existing open issue | ERROR (exit 1) |
+| Verification path sanity | Verification commands reference paths in Files to Modify or the repo | WARNING (exit 0) |
+| Deferral citation | Each `⏭️` deferral entry cites evidence (`> text`, `file:line`, or quoted phrase) | WARNING (exit 0) |
+
+The complete four-linter chain (in call order within `generate_issues`):
+1. `_detect_unverified_integrations` — external dependency grounding (#351)
+2. `_dedup_issues` — title deduplication
+3. `_validate_coverage` — coverage checklist 1:1 invariant (#348)
+4. `_lint_issues` — service-layer anti-patterns
+5. `_lint_provenance_flags` — provenance table signal quality (#367)
+6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353)
+
+**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match.
+
+**Suppression markers (inline per issue, not env-var flags):**
+
+Per-issue overrides use HTML comment markers embedded in the issue body:
+
+```
+<!-- sharkrite-plan-lint disable cycle-check - Reason: ... -->
+<!-- sharkrite-plan-lint disable dangling-ref - Reason: ... -->
+<!-- sharkrite-plan-lint disable verification-path - Reason: ... -->
+<!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
+```
+
+The `Reason:` field is required. A marker without `Reason:` is rejected with a WARNING and the check runs anyway — this prevents silent permanent suppressions that decay into ignored noise. All active suppressions are logged visibly to stderr: `[suppressed] <rule>: <reason>`.
+
+This mirrors the `# sharkrite-lint disable RULE - Reason: ...` pattern in `tools/sharkrite-lint.sh` and the design principle in `memory/feedback_no_env_var_escape_hatches.md`: env vars are for global operator config (model selection, timeouts, paths), not per-issue dynamic overrides.
+
 ---
 
 ## Temp File Conventions
