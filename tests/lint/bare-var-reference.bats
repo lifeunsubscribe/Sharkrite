@@ -2,8 +2,8 @@
 # Tests for Rule 23: BARE_VAR_REFERENCE
 #
 # Verifies that the lint rule correctly flags bare $VAR references for optional
-# config variables (EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*) in lib/utils/*.sh,
-# and passes on safe ${VAR:-} expansions and properly suppressed lines.
+# config variables (EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*, SNS_*, RITE_SNS_*) in
+# lib/utils/*.sh, and passes on safe ${VAR:-} expansions and properly suppressed lines.
 #
 # Bug context (issue #313, 2026-06-06):
 #   notifications.sh send_email() referenced $EMAIL_ADDRESS (bare, wrong name)
@@ -106,6 +106,37 @@ do_aws() {
   [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
 }
 
+@test "rule fires: bare \$SNS_TOPIC_ARN in lib/utils script" {
+  _run_lint_with_fixture "bad-sns-topic-arn" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_BAD5_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_BAD5_LOADED=true
+
+send_sms() {
+  if [ -z "$SNS_TOPIC_ARN" ]; then
+    echo "skip"
+    return 0
+  fi
+}'
+
+  [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
+}
+
+@test "rule fires: bare \$RITE_SNS_TOPIC_ARN in lib/utils script" {
+  _run_lint_with_fixture "bad-rite-sns-topic-arn" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_BAD6_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_BAD6_LOADED=true
+
+send_sms() {
+  aws sns publish --topic-arn "$RITE_SNS_TOPIC_ARN" --message "hi"
+}'
+
+  [[ "$output" == *"BARE_VAR_REFERENCE"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Should PASS (no violations from this rule)
 # ---------------------------------------------------------------------------
@@ -184,6 +215,28 @@ send_slack() {
   local r23_lines
   r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
   [[ "$r23_lines" != *"good-suppressed"* ]]
+}
+
+@test "rule passes: \${SNS_TOPIC_ARN:-} safe expansion" {
+  _run_lint_with_fixture "good-sns-safe" '#!/bin/bash
+set -euo pipefail
+
+if [ "${_RITE_GOOD5A_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_GOOD5A_LOADED=true
+
+SNS_TOPIC_ARN="${RITE_SNS_TOPIC_ARN:-}"
+
+send_sms() {
+  # sharkrite-lint disable BARE_VAR_REFERENCE - SNS_TOPIC_ARN is a module-local alias initialized safely at module load
+  if [ -z "$SNS_TOPIC_ARN" ]; then
+    echo "skip"
+    return 0
+  fi
+}'
+
+  local r23_lines
+  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r23_lines" != *"good-sns-safe"* ]]
 }
 
 @test "rule passes: comment-only line with var name (full-line comment)" {

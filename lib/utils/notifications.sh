@@ -138,6 +138,7 @@ send_email() {
 send_sms() {
   local message="$1"
 
+  # sharkrite-lint disable BARE_VAR_REFERENCE - SNS_TOPIC_ARN is a module-local alias initialized safely at module load (line 35)
   if [ -z "$SNS_TOPIC_ARN" ]; then
     echo "⚠️  RITE_SNS_TOPIC_ARN not set, skipping SMS"
     return 1

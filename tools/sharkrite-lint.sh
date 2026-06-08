@@ -1216,10 +1216,10 @@ fi
 
 # Rule 24: Bare $VAR reference for known optional config variables in lib/utils/*.sh
 #
-# Config variables in the EMAIL_*, SLACK_*, RITE_EMAIL_*, and AWS_* families are
-# optional (not guaranteed to be set by the caller). Under `set -u`, a bare `$VAR`
-# reference (without braces or a default) when the variable is unset crashes the
-# script immediately with "VAR: unbound variable" before any error handling can run.
+# Config variables in the EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*, SNS_*, and RITE_SNS_*
+# families are optional (not guaranteed to be set by the caller). Under `set -u`, a
+# bare `$VAR` reference (without braces or a default) when the variable is unset crashes
+# the script immediately with "VAR: unbound variable" before any error handling can run.
 #
 # Live bug (2026-06-06): notifications.sh send_email() crashed with
 # "EMAIL_ADDRESS: unbound variable" — wrong variable name AND bare reference.
@@ -1231,9 +1231,11 @@ fi
 #   FLAGGED: $RITE_EMAIL_FROM        (no braces)
 #   FLAGGED: $SLACK_WEBHOOK          (no braces — even if checked in prior guard,
 #                                     the bare form is fragile: future moves break it)
+#   FLAGGED: $SNS_TOPIC_ARN          (no braces — SNS is optional, unset crashes set -u)
 #   PASSES:  ${EMAIL_NOTIFICATION_ADDRESS:-}   (safe: default to empty)
 #   PASSES:  ${RITE_EMAIL_FROM:-}              (safe: default to empty)
 #   PASSES:  ${AWS_PROFILE:-default}           (safe: explicit default)
+#   PASSES:  ${SNS_TOPIC_ARN:-}               (safe: default to empty)
 #
 # Note: ${VAR} without :- is NOT flagged by this rule. While technically unsafe
 # under set -u, ${VAR} is also caught by shellcheck SC2168 (used-before-set).
@@ -1244,7 +1246,7 @@ fi
 #
 # Suppression: place on the line immediately before the flagged code:
 #   # sharkrite-lint disable BARE_VAR_REFERENCE - Reason: variable is always set by <caller>
-echo "Checking for bare config-var references (EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*) in lib/utils/*.sh..."
+echo "Checking for bare config-var references (EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*, SNS_*, RITE_SNS_*) in lib/utils/*.sh..."
 
 # Build the candidate file list from SHELL_FILES filtered to lib/utils/ paths.
 # This reuses the RITE_LINT_EXTRA_DIRS expansion already applied to SHELL_FILES,
@@ -1273,7 +1275,7 @@ for file in "${_r23_utils_files[@]}"; do
     # Technique: strip all ${...} brace expansions from the line, then check if
     # any bare $VAR from the config families remains.
     _stripped_line=$(echo "$line_content" | sed 's/\${[^}]*}//g' || true)
-    if ! echo "$_stripped_line" | grep -qE '\$(EMAIL_|SLACK_|RITE_EMAIL_|AWS_)[A-Z_]+'; then
+    if ! echo "$_stripped_line" | grep -qE '\$(EMAIL_|SLACK_|RITE_EMAIL_|AWS_|SNS_|RITE_SNS_)[A-Z_]+'; then
       continue
     fi
 
@@ -1286,7 +1288,7 @@ for file in "${_r23_utils_files[@]}"; do
 
     print_violation "$file" "$line_num" "BARE_VAR_REFERENCE" \
       "bare \$VAR reference for optional config variable — use \${VAR:-} to prevent 'unbound variable' crash under set -u (see: issue #313, notifications.sh EMAIL_ADDRESS bug)"
-  done < <(grep -nE '\$(EMAIL_|SLACK_|RITE_EMAIL_|AWS_)[A-Z_]+' "$file" 2>/dev/null || true)
+  done < <(grep -nE '\$(EMAIL_|SLACK_|RITE_EMAIL_|AWS_|SNS_|RITE_SNS_)[A-Z_]+' "$file" 2>/dev/null || true)
 done
 
 echo ""
