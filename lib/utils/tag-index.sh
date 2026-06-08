@@ -615,7 +615,10 @@ ${_ntag}"
   while IFS= read -r _tag; do
     [ -z "$_tag" ] && continue
     tag_index_ensure_heading "$_tag"
-    tag_index_add_pointer "$_tag" "$source_catalog" "$source_heading"
+    if ! tag_index_add_pointer "$_tag" "$source_catalog" "$source_heading"; then
+      verbose_info "  tag-index: skipped tag '${_tag}' — heading not found after ensure (PR #${pr_number})"
+      continue
+    fi
     verbose_info "  tag-index: updated tag '${_tag}' ← ${source_catalog} → ${source_heading} (PR #${pr_number})"
   done <<< "$all_tags"
 }
