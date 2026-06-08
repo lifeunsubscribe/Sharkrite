@@ -641,6 +641,30 @@ rite 42 --assess-and-fix   # Assess + fix loop
 rite 42 --supervised
 ```
 
+### Test Coverage Headers (issue #462)
+
+Bats files in `tests/regression/` and `tests/lint/` can declare which source paths they cover via a single-line header:
+
+```bash
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh, lib/utils/bar.sh
+@test "..." { ... }
+```
+
+The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers and runs only the bats files whose covered paths intersect the commit's changed-file list. Files **without** a header always run (conservative fallback during rollout). Patterns support globs (`lib/utils/*.sh`).
+
+**Full-suite triggers** override path-based selection — change any of these → full bats suite runs:
+- `lib/utils/test-gate.sh` (the verifier itself)
+- `tools/*-lint.sh` (lint rules)
+- `Makefile`
+- `tests/helpers/*`, `tests/fixtures/*`
+
+**Override the diff base** for the selection via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
+
+**Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N` for health-report aggregation.
+
+When you add a new bats file, include the header for it to participate in targeted selection. Until backfill reaches most files, the typical run still falls back to most/all of the suite — incremental adoption is fine.
+
 ## Claude Session Prompt Design (CRITICAL)
 
 The prompt passed to Claude Code in `claude-workflow.sh` must include:
@@ -736,9 +760,25 @@ rite --health-report              # Generate and display now
 rite --health-report --latest     # Show most recent without regenerating
 ```
 
+### Log files
+
+`.rite/logs/rite-<issue>-<timestamp>.log` is the **full transcript** of the run — everything you would have seen in the terminal, including subprocess output (Claude tool calls with `⚡` indicators, bats per-test output, make check / lint output). Use `tail -f` to watch a running workflow in real time.
+
+```bash
+tail -f .rite/logs/rite-360-*.log   # live view during a run
+```
+
+**Two-channel write convention** (important when modifying logging code):
+
+1. **Human-readable output** (Claude tool indicators, bats results, lint output, `print_info`/`print_step`/etc.) → write to stdout/stderr. The FIFO-based tee in `bin/rite` captures everything that flows through the inherited stdout fd into the log file automatically. Subprocesses inherit the fd; no special handling needed.
+
+2. **Structured metadata** (`[diag]`, `[timing]`, `[rtk]` lines) → `_diag`, `_timer_start/_end`, `_rtk_snapshot` write directly to `$RITE_LOG_FILE` via `>>`. This is intentional: these events must appear in the log even in `--verbose` mode (where stdout is the terminal, not the tee). **Do NOT also print them to stdout** — the tee would capture them a second time, producing duplicates. Note: in verbose+logged mode the single-appearance guarantee depends on the `if/elif` exclusivity inside `_diag` and `_timer_*` (exactly one branch executes per call, so the direct-write path fires once and stdout is skipped); the direct-write-only convention is necessary but not sufficient on its own.
+
+**FIFO-based tee (implemented in `bin/rite`):** The log capture uses a named FIFO (`mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX"` — `XXXXXX` must be at the end; BSD `mktemp -u` does not support suffixes after the template) rather than the simpler nested-process-substitution pattern `exec > >(tee >(strip_ansi >> FILE))`. The nested pattern loses data: the inner `>(...)` process exits before the outer tee flushes, truncating the last kilobytes of output. The FIFO keeps the `strip_ansi` reader alive for exactly as long as the tee write end is open.
+
 ### Diagnostic logging
 
-Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation:
+Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation. They write directly to the file (not via stdout tee) so they appear exactly once — see two-channel write convention above.
 
 - `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
 - `ASSESSMENT` — per-issue assessment counts (NOW/LATER/DISMISSED)

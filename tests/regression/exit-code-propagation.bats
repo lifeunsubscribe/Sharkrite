@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/claude-workflow.sh, lib/core/batch-process-issues.sh
 # tests/regression/exit-code-propagation.bats
 #
 # Table-driven test for exit-code propagation through the Sharkrite workflow stack.

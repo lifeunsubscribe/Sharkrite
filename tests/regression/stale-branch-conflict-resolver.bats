@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/conflict-resolver.sh
 # tests/regression/stale-branch-conflict-resolver.bats
 #
 # Tests that stale-branch conflict bail paths invoke attempt_claude_merge_resolution

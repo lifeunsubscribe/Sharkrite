@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 # tests/regression/conventions-marker-append.bats
 #
 # Regression tests for update_conventions_from_marker() in assess-documentation.sh.

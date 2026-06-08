@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/claude-workflow.sh
 # Regression test: FIX_TIMEOUT proportional formula
 #
 # Verifies:

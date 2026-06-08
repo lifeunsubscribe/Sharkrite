@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/workflow-runner.sh, lib/core/assess-and-resolve.sh, lib/core/claude-workflow.sh
 # Regression test: Post-commit test gate behavior
 #
 # Verifies:
