@@ -260,33 +260,9 @@ ISSUES_COMPLETED=$(echo "$SESSION_STATE" | jq -r '.issues_completed')
 CUMULATIVE_SECS=$(get_cumulative_work_seconds)
 ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
 
-# Validate batch won't exceed limits
-PROJECTED_TOTAL=$((ISSUES_COMPLETED + TOTAL_ISSUES))
-MAX_ISSUES_LIMIT="${RITE_MAX_ISSUES_PER_SESSION:-8}"
-
-if [ "$PROJECTED_TOTAL" -gt "$MAX_ISSUES_LIMIT" ]; then
-  print_warning "Batch would exceed session limit ($MAX_ISSUES_LIMIT issues)"
-  print_info "Current: $ISSUES_COMPLETED issues completed"
-  print_info "Batch size: $TOTAL_ISSUES issues"
-  print_info "Projected: $PROJECTED_TOTAL issues total"
-  echo ""
-
-  # Calculate how many we can do
-  ALLOWED_ISSUES=$((MAX_ISSUES_LIMIT - ISSUES_COMPLETED))
-
-  if [ "$ALLOWED_ISSUES" -le 0 ]; then
-    print_error "Session limit already reached"
-    print_info "Start new session to continue"
-    exit 1
-  fi
-
-  SKIPPED_BY_LIMIT=("${ISSUE_LIST[@]:$ALLOWED_ISSUES}")
-  ISSUE_LIST=("${ISSUE_LIST[@]:0:$ALLOWED_ISSUES}")
-  TOTAL_ISSUES=${#ISSUE_LIST[@]}
-  print_warning "Limiting batch to $ALLOWED_ISSUES issues: ${ISSUE_LIST[*]}"
-  print_info "Deferred to next session: ${SKIPPED_BY_LIMIT[*]}"
-  echo ""
-fi
+# Issue-count cap removed — was a stale heuristic with misleading "token limit"
+# message. The real session-budget signal is the cumulative-hours cap enforced
+# inside the batch loop below.
 
 print_success "Pre-start checks passed"
 echo ""
@@ -831,17 +807,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     fi
   fi
 
-  # Check session limits after each issue
-  SESSION_STATE=$(get_session_info)
-  ISSUES_COMPLETED=$(echo "$SESSION_STATE" | jq -r '.issues_completed')
-
-  if [ "$ISSUES_COMPLETED" -ge "$MAX_ISSUES_LIMIT" ]; then
-    print_warning "Session limit reached ($MAX_ISSUES_LIMIT issues)"
-    print_info "Stopping batch processing"
-    break
-  fi
-
-  # Also check cumulative active-work hours limit — issue #283
+  # Issue-count cap removed. Only cumulative active-work hours cap matters now.
   CUMULATIVE_SECS=$(get_cumulative_work_seconds)
   ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
   if [ "$ELAPSED_HOURS" -ge "${RITE_MAX_SESSION_HOURS:-12}" ]; then
