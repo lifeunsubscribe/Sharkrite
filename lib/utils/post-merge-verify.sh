@@ -41,7 +41,7 @@ fi
 source "$RITE_LIB_DIR/utils/test-gate.sh"
 
 # ===================================================================
-# PUBLIC: verify_post_merge [worktree_path]
+# PUBLIC: verify_post_merge [worktree_path] [pre_merge_ref]
 #
 # Runs the project's test suite (if detectable) to verify that a
 # merge/rebase didn't introduce silent semantic conflicts.
@@ -50,6 +50,14 @@ source "$RITE_LIB_DIR/utils/test-gate.sh"
 # applies: only bats files covering changed paths run (not the full 1400+
 # test suite). Full-suite triggers (test-gate.sh, lint rules, Makefile,
 # helpers/fixtures) still force the full suite.
+#
+# pre_merge_ref (optional, default: HEAD~1):
+#   The commit SHA or ref representing the state BEFORE the merge/rebase.
+#   Used as RITE_TEST_GATE_DIFF_BASE so targeted selection covers the files
+#   that actually changed due to the merge — including main-originated files
+#   that origin/main...HEAD (three-dot merge-base) would exclude.
+#   For merge commits: HEAD~1 is the pre-merge feature branch tip.
+#   For rebases: pass the pre-rebase HEAD saved before 'git rebase'.
 #
 # For non-Sharkrite repos (npm/pytest/make test), the original test
 # command construction and execution path is preserved unchanged.
@@ -62,6 +70,10 @@ source "$RITE_LIB_DIR/utils/test-gate.sh"
 # ===================================================================
 verify_post_merge() {
   local worktree_path="${1:-.}"
+  # pre_merge_ref: the commit that was HEAD before the merge/rebase.
+  # Defaults to HEAD~1 (parent of current HEAD, i.e. the pre-merge commit).
+  # Callers that saved the pre-rebase HEAD should pass it explicitly.
+  local pre_merge_ref="${2:-HEAD~1}"
 
   # Honor skip flag
   if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
@@ -82,16 +94,23 @@ verify_post_merge() {
     # ---------------------------------------------------------------
     # Sharkrite path: delegate to run_test_gate for targeted selection.
     # run_test_gate internally: computes changed paths against the diff
-    # base (default: origin/main), selects covering bats files, runs
+    # base (RITE_TEST_GATE_DIFF_BASE), selects covering bats files, runs
     # make shellcheck + make lint + bats on the subset, emits
     # [diag] TEST_GATE_SELECTION mode=... for health-report aggregation.
+    #
+    # Diff base for feature-branch run: pre_merge_ref (the commit that was
+    # HEAD before the merge/rebase). Using three-dot origin/main...HEAD here
+    # would exclude main-originated files via the merge-base shortcut —
+    # exactly the files that could cause silent semantic conflicts.
+    # pre_merge_ref → HEAD~1 by default → git diff HEAD~1...HEAD shows
+    # only what the merge commit itself introduced.
     # ---------------------------------------------------------------
     echo "Running post-merge verification (targeted gate)..." >&2
 
     local _pmv_gate_file
     _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$.json")
     local _pmv_gate_exit=0
-    run_test_gate "$_pmv_gate_file" "$worktree_path" || _pmv_gate_exit=$?
+    RITE_TEST_GATE_DIFF_BASE="$pre_merge_ref" run_test_gate "$_pmv_gate_file" "$worktree_path" || _pmv_gate_exit=$?
     rm -f "${_pmv_gate_file:-}"
 
     if [ "$_pmv_gate_exit" -ne 0 ]; then
@@ -99,6 +118,12 @@ verify_post_merge() {
       # A broken main will poison every feature branch that merges it.
       # Distinguish so callers block on real semantic conflicts, not
       # pre-existing failures in main.
+      #
+      # Main-broken check: run the full bats suite on origin/main (no targeted
+      # selection — main has no merge commit, so a diff-base would select a
+      # different subset than the feature-branch run). Full suite ensures both
+      # runs are comparable: if main passes full but feature fails targeted,
+      # the merge is the cause; if main fails full, main itself is broken.
       echo "⚠️  Post-merge tests failed — checking if main is the cause..." >&2
 
       local _main_broken=false
@@ -109,8 +134,11 @@ verify_post_merge() {
         local _main_gate_file _main_gate_exit
         _main_gate_file=$(mktemp "/tmp/rite_pmv_main_gate_$$.json")
         _main_gate_exit=0
-        # Run against origin/main worktree; discard output (just need exit code)
-        run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
+        # Force full suite for the main-broken check: set diff base to HEAD so
+        # git diff HEAD...HEAD returns empty → _selection is empty → FORCE_FULL.
+        # This ensures the main run is not scoped to a narrow subset that
+        # might produce a false "main passes" when main is actually broken.
+        RITE_TEST_GATE_DIFF_BASE="HEAD" run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
         rm -f "${_main_gate_file:-}"
         git -C "$worktree_path" worktree remove --force "$_main_test_dir" 2>/dev/null \
           || rm -rf "$_main_test_dir"

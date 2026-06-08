@@ -333,6 +333,157 @@ MF_EOF
   [[ "$output" == *"targeted gate"* ]]
 }
 
+# ---------------------------------------------------------------------------
+# Real run_test_gate selection test (issue #485 / review finding #3)
+#
+# The four tests above stub run_test_gate, which means they cannot detect
+# the diff-base defect fixed in items #1/#2. This test runs the REAL
+# run_test_gate against a tiny fixture repo to verify:
+#   1. RITE_TEST_GATE_DIFF_BASE=pre_merge_ref flows through correctly
+#   2. Targeted selection picks only bats files whose covered paths changed
+#      in the merge commit — not based on origin/main...HEAD merge-base
+#   3. The TEST_GATE_SELECTION diag line is emitted with mode=targeted
+# ---------------------------------------------------------------------------
+
+@test "run_test_gate uses RITE_TEST_GATE_DIFF_BASE for targeted selection (real gate, no stub)" {
+  # This test uses the REAL run_test_gate (not stubbed) against a tiny
+  # fixture repo. It verifies that:
+  # (a) When RITE_TEST_GATE_DIFF_BASE=<pre_merge_sha>, the gate diffs from
+  #     that SHA to HEAD, picking only bats files whose covered paths changed.
+  # (b) A bats file covering an UNCHANGED path is NOT selected.
+  # (c) The [diag] TEST_GATE_SELECTION line is emitted with mode=targeted.
+  #
+  # Fixture layout:
+  #   Makefile     — shellcheck: and lint: targets are no-ops
+  #   tests/some-feature.bats  — covers lib/some-feature.sh (CHANGED in merge)
+  #   tests/other-thing.bats   — covers lib/other-thing.sh (NOT changed)
+  # Git history:
+  #   commit A (pre-merge) — adds Makefile, bats files, lib/other-thing.sh
+  #   commit B (merge)     — adds lib/some-feature.sh (simulates what main brought in)
+  # RITE_TEST_GATE_DIFF_BASE=<SHA of commit A> → diff A...B shows only lib/some-feature.sh
+  # → only tests/some-feature.bats selected (targeted mode, 1/2 files)
+
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+
+  # Set up a real git repo in a temp dir
+  local _fixture_repo
+  _fixture_repo="$(mktemp -d "${BATS_TEST_TMPDIR}/fixture-repo.XXXXXX")"
+
+  (
+    cd "$_fixture_repo"
+    git init -q
+    git config user.email "test@sharkrite.local"
+    git config user.name "Sharkrite Test"
+
+    # Makefile: shellcheck: and lint: are no-ops so run_test_gate succeeds
+    cat > Makefile <<'MF'
+shellcheck:
+	@true
+lint:
+	@true
+MF
+
+    # First bats file: covers lib/some-feature.sh (will be changed in "merge")
+    mkdir -p tests
+    cat > tests/some-feature.bats <<'BATS1'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/some-feature.sh
+@test "some-feature stub always passes" {
+  true
+}
+BATS1
+
+    # Second bats file: covers lib/other-thing.sh (NOT changed in "merge")
+    cat > tests/other-thing.bats <<'BATS2'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/other-thing.sh
+@test "other-thing stub always passes" {
+  true
+}
+BATS2
+
+    # Initial source files
+    mkdir -p lib
+    echo "# other-thing" > lib/other-thing.sh
+
+    # Commit A: baseline (pre-merge state)
+    git add .
+    git commit -q -m "baseline: add Makefile, tests, and other-thing"
+  )
+
+  # Save the pre-merge SHA (commit A)
+  local _pre_merge_sha
+  _pre_merge_sha=$(git -C "$_fixture_repo" rev-parse HEAD)
+
+  # Commit B: add lib/some-feature.sh — simulates what main brought in via merge
+  (
+    cd "$_fixture_repo"
+    echo "# some-feature" > lib/some-feature.sh
+    git add lib/some-feature.sh
+    git commit -q -m "merge: add lib/some-feature.sh from main"
+  )
+
+  # Set up RITE_LIB_DIR pointing to the real lib (for logging.sh, markers.sh, etc.)
+  # but override config.sh so RITE_LIB_DIR points back to the real lib
+  local _test_lib_dir="${BATS_TEST_TMPDIR}/testlib"
+  mkdir -p "$_test_lib_dir/utils"
+
+  # Stub config.sh so RITE_LIB_DIR keeps pointing to real lib
+  cat > "$_test_lib_dir/utils/config.sh" <<CONFIG
+#!/bin/bash
+RITE_LIB_DIR="${REAL_RITE_ROOT}/lib"
+RITE_PROJECT_ROOT="${_fixture_repo}"
+CONFIG
+
+  # Run the real run_test_gate in a subshell, capturing all output.
+  # RITE_TEST_GATE_DIFF_BASE=<pre_merge_sha> → diff shows only lib/some-feature.sh
+  # RITE_LOG_FILE=/dev/null → suppress [diag] direct-write path (avoid RITE_LOG_FILE dep)
+  local _gate_out _gate_json _gate_exit
+  _gate_json="${BATS_TEST_TMPDIR}/gate-real-$$.json"
+
+  _gate_out=$(
+    export RITE_LIB_DIR="${REAL_RITE_ROOT}/lib"
+    export RITE_PROJECT_ROOT="${_fixture_repo}"
+    export RITE_LOG_FILE="/dev/null"
+    export RITE_TEST_GATE_DIFF_BASE="${_pre_merge_sha}"
+    unset run_test_gate 2>/dev/null || true  # ensure real function loads
+    source "${REAL_RITE_ROOT}/lib/utils/test-gate.sh"
+    run_test_gate "${_gate_json}" "${_fixture_repo}" 2>&1
+  ) || _gate_exit=$?
+
+  # Verify targeted mode was selected (not full suite)
+  [[ "$_gate_out" == *"targeted"* ]] || {
+    echo "Expected targeted selection in gate output, got:" >&2
+    echo "$_gate_out" >&2
+    return 1
+  }
+
+  # Verify only 1 of 2 bats files was selected
+  [[ "$_gate_out" == *"1/2"* ]] || [[ "$_gate_out" == *"1 of 2"* ]] || \
+  [[ "$_gate_out" == *"(1/"* ]] || {
+    echo "Expected 1/2 bats files selected, got:" >&2
+    echo "$_gate_out" >&2
+    return 1
+  }
+
+  # Verify some-feature.bats was run (its covered path changed)
+  [[ "$_gate_out" == *"some-feature"* ]] || {
+    echo "Expected some-feature.bats to be selected, got:" >&2
+    echo "$_gate_out" >&2
+    return 1
+  }
+
+  # Verify other-thing.bats was NOT run (its covered path did not change)
+  [[ "$_gate_out" != *"other-thing"* ]] || {
+    echo "other-thing.bats should NOT have been selected (its covered path unchanged), got:" >&2
+    echo "$_gate_out" >&2
+    return 1
+  }
+
+  rm -f "${_gate_json:-}"
+  rm -rf "$_fixture_repo"
+}
+
 @test "verify_post_merge does NOT use run_test_gate for non-Sharkrite repos" {
   # A non-Sharkrite worktree (no shellcheck: + lint: Makefile) must go through
   # the original RITE_TEST_CMD path, not the gate delegation.
