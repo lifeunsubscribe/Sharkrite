@@ -1156,17 +1156,21 @@ _lint_provenance_flags() {
                 # Check if source is obvious: does any filename from "Files to Read"
                 # appear in the SOURCE SEGMENT of the provenance entry only?
                 # Format: "- fieldname: <source> — <status>"
-                # We extract only the source segment (between ": " and " —") to
-                # avoid false-positives where a basename appears in the description
-                # or status text of an external/derived field.
+                # We extract only the source segment (before the status separator)
+                # to avoid false-positives where a basename appears in the status
+                # text of an external/derived field (e.g. UNVERIFIED, derived).
                 if [ -n "$_files_to_read_basenames" ]; then
                   local _is_obvious=false
-                  # Extract source segment: text between first ": " and " —" (em-dash).
-                  # If the entry doesn't contain " —", fall back to the text after ": "
-                  # to the end of the line. This avoids matching basenames that only
-                  # appear in the trailing status word (UNVERIFIED, derived, etc.).
+                  # Extract source segment: text between first ": " and the status
+                  # separator. The runbook mandates em-dash (—) as the separator, so
+                  # conforming output is handled by the first sed. As a robustness
+                  # measure against non-conforming LLM output, a second pass strips
+                  # after " - " (space-hyphen-space), which is the most common
+                  # hyphen-variant the model emits. Hyphens inside source strings
+                  # (e.g. "my-api.json") are never surrounded by spaces, so the
+                  # second pass does not truncate legitimate source text.
                   local _prov_source
-                  _prov_source=$(echo "$_pline" | sed 's/^[^:]*: //' | sed 's/ —.*//' || true)
+                  _prov_source=$(echo "$_pline" | sed 's/^[^:]*: //' | sed 's/ —.*//' | sed 's/ - .*//' || true)
                   while IFS= read -r _bn; do
                     [ -z "$_bn" ] && continue
                     if echo "$_prov_source" | grep -qF "$_bn"; then
