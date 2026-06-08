@@ -223,6 +223,9 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --dry-run <...>          Print execution plan without running"
       echo "  rite <issue> --no-log         Full lifecycle without logging (logs are on by default)"
       echo ""
+      echo "Logs: .rite/logs/rite-<issue>-<timestamp>.log — full terminal transcript (Claude tool calls,"
+      echo "      bats output, lint output). Use 'tail -f' to watch a running workflow in real time."
+      echo ""
       echo "Workflow flags:"
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
@@ -438,11 +441,44 @@ if [ -n "$RITE_LOG_FILE" ]; then
     echo ""
   } > "$RITE_LOG_FILE"
 
-  # Single tee for both stdout and stderr to avoid log interleaving.
-  # Two separate tee processes (one per fd) race when appending to the same file,
-  # causing non-deterministic output ordering. Merging stderr into the tee'd stdout
-  # ensures all output flows through one pipe and arrives in execution order.
-  exec > >(tee >(strip_ansi >> "$RITE_LOG_FILE"))
+  # Full-transcript tee: every byte the parent shell writes — and every byte
+  # from subprocesses that inherit the parent's stdout/stderr — flows into the
+  # log file as plain text (ANSI codes stripped).
+  #
+  # Why a FIFO instead of the simpler nested-process-substitution pattern
+  # `exec > >(tee >(strip_ansi >> FILE))`:
+  #   The inner `>(...)` creates a short-lived background process.  When the
+  #   outer tee closes its write end (on shell exit), the inner process
+  #   substitution may already have exited, silently truncating the last few
+  #   kilobytes of output.  A named FIFO keeps the strip_ansi reader alive for
+  #   exactly as long as the tee write end is open — there is no race.
+  #
+  # Subprocess coverage — what this captures:
+  #   • All print_info/print_step/print_success/print_warning calls (direct stdout)
+  #   • Claude streaming output (⚡ BashOutput, ⚡ Edit, reasoning text) from
+  #     claude_provider_run_agentic_session, which writes to inherited stdout
+  #   • test-gate.sh make check + bats output (after the test-gate fix in this
+  #     commit that also tees raw subprocess output to stdout)
+  #   • Any other subprocess that inherits this shell's stdout fd
+  #
+  # What intentionally bypasses this tee (direct-write to RITE_LOG_FILE):
+  #   • _diag, _timer_start, _timer_end, _rtk_snapshot (lib/utils/logging.sh)
+  #     These are structured metadata lines that must appear in the log even
+  #     in verbose mode (where stdout is the terminal, not the tee).  Direct
+  #     write avoids double-printing: if they also printed to stdout the tee
+  #     would capture them a second time.  Convention: structured-event writers
+  #     MUST use direct write; human-readable output MUST use stdout/stderr.
+  #
+  _rite_log_fifo=""
+  _rite_log_bg_pid=""
+  _rite_log_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX.fifo")
+  mkfifo "$_rite_log_fifo"
+  # strip_ansi reader: stays alive until the write end of the FIFO closes
+  strip_ansi < "$_rite_log_fifo" >> "$RITE_LOG_FILE" &
+  _rite_log_bg_pid=$!
+  # Redirect stdout through tee (terminal copy) → FIFO (log copy)
+  exec > >(tee "$_rite_log_fifo")
+  # Merge stderr into the tee'd stdout so both streams appear in order in the log
   exec 2>&1
 
   export RITE_LOG_FILE

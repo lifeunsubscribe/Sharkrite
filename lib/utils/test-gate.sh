@@ -212,40 +212,63 @@ run_test_gate() {
     # by a shellcheck failure (make check: shellcheck lint stops make after shellcheck exits non-zero).
     local _shellcheck_exit=0
     local _lint_tool_exit=0
-    echo "[test-gate] Running make shellcheck..." >&2
-    set +e
-    (cd "$project_root" && make shellcheck 2>&1) >> "$_lint_raw_file" || _shellcheck_exit=$?
-    echo "[test-gate] Running make lint..." >&2
-    (cd "$project_root" && make lint 2>&1) >> "$_lint_raw_file" || _lint_tool_exit=$?
-    set -e
+    # Exit-code capture temp files (PID-scoped; one per invocation to prevent glob collision)
+    local _sc_exit_file _lint_exit_file _bats_exit_file
+    _sc_exit_file=$(mktemp "/tmp/rite_gate_sc_exit_${PR_NUMBER:-0}_$$.txt")
+    _lint_exit_file=$(mktemp "/tmp/rite_gate_lint_exit_${PR_NUMBER:-0}_$$.txt")
+    _bats_exit_file=$(mktemp "/tmp/rite_gate_bats_exit_${PR_NUMBER:-0}_$$.txt")
+
+    echo "[test-gate] Running make shellcheck..."
+    # Capture exit code via a temp file (PIPESTATUS is lost when tee is the last
+    # command in the pipeline; the approach used here works under bash 3.2).
+    # tee -a to both stdout (captured by the parent's full-transcript tee for the
+    # run log) and the lint temp file (parsed for structured JSON findings below).
+    # Without the tee, lint violations only appeared in the JSON gate output and
+    # were invisible to `tail -f rite-*.log` during a live run.
+    { (cd "$project_root" && make shellcheck 2>&1); echo $? > "$_sc_exit_file"; } \
+      | tee -a "$_lint_raw_file" || true
+    _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 0)
+
+    echo "[test-gate] Running make lint..."
+    { (cd "$project_root" && make lint 2>&1); echo $? > "$_lint_exit_file"; } \
+      | tee -a "$_lint_raw_file" || true
+    _lint_tool_exit=$(cat "$_lint_exit_file" 2>/dev/null || echo 0)
+
     [ "$_shellcheck_exit" -ne 0 ] && _lint_exit=1
     [ "$_lint_tool_exit" -ne 0 ] && _lint_exit=1
     # _lint_count is derived from the JSON array builder below (not a broad grep)
 
     # --- Sharkrite: bats -r tests/ (recursive) ---
-    echo "[test-gate] Running bats -r tests/..." >&2
-    set +e
-    (cd "$project_root" && bats -r tests/ 2>&1) > "$_tests_raw_file" || _tests_exit=$?
-    set -e
+    echo "[test-gate] Running bats -r tests/..."
+    # tee to stdout so per-test pass/fail lines appear in the run log transcript.
+    # The temp file copy is still consumed by the JSON builder below.
+    { (cd "$project_root" && bats -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
+      | tee "$_tests_raw_file" || true
+    _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+
+    rm -f "$_sc_exit_file" "$_lint_exit_file" "$_bats_exit_file"
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   else
     # Non-Sharkrite: best-effort detection (npm test / make test / pytest)
     # For non-Sharkrite repos the gate runs whatever make test does (unchanged behavior)
+    local _nonsr_exit_file
+    _nonsr_exit_file=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$.txt")
     if [ -f "$project_root/Makefile" ] && grep -q "^test:" "$project_root/Makefile" 2>/dev/null; then
-      echo "[test-gate] Running make test..." >&2
-      set +e
-      (cd "$project_root" && make test 2>&1) > "$_tests_raw_file" || _tests_exit=$?
-      set -e
+      echo "[test-gate] Running make test..."
+      # tee to stdout for full-transcript log capture; temp file for JSON findings
+      { (cd "$project_root" && make test 2>&1); echo $? > "$_nonsr_exit_file"; } \
+        | tee "$_tests_raw_file" || true
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     elif [ -f "$project_root/package.json" ]; then
-      echo "[test-gate] Running npm test..." >&2
-      set +e
-      (cd "$project_root" && npm test 2>&1) > "$_tests_raw_file" || _tests_exit=$?
-      set -e
+      echo "[test-gate] Running npm test..."
+      { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
+        | tee "$_tests_raw_file" || true
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
-      echo "[test-gate] Running pytest..." >&2
-      set +e
-      (cd "$project_root" && python3 -m pytest 2>&1) > "$_tests_raw_file" || _tests_exit=$?
-      set -e
+      echo "[test-gate] Running pytest..."
+      { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
+        | tee "$_tests_raw_file" || true
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     else
       # No recognizable test runner — skip gracefully
       _diag "TEST_GATE outcome=skipped reason=missing_runner pr=${PR_NUMBER:-?}"
@@ -254,6 +277,7 @@ run_test_gate() {
       _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_runner"
       return 0
     fi
+    rm -f "${_nonsr_exit_file:-}"
     _tests_count=$(grep -c "^not ok \|FAILED\|ERROR" "$_tests_raw_file" || true)
   fi
 

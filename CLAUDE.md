@@ -736,9 +736,25 @@ rite --health-report              # Generate and display now
 rite --health-report --latest     # Show most recent without regenerating
 ```
 
+### Log files
+
+`.rite/logs/rite-<issue>-<timestamp>.log` is the **full transcript** of the run — everything you would have seen in the terminal, including subprocess output (Claude tool calls with `⚡` indicators, bats per-test output, make check / lint output). Use `tail -f` to watch a running workflow in real time.
+
+```bash
+tail -f .rite/logs/rite-360-*.log   # live view during a run
+```
+
+**Two-channel write convention** (important when modifying logging code):
+
+1. **Human-readable output** (Claude tool indicators, bats results, lint output, `print_info`/`print_step`/etc.) → write to stdout/stderr. The FIFO-based tee in `bin/rite` captures everything that flows through the inherited stdout fd into the log file automatically. Subprocesses inherit the fd; no special handling needed.
+
+2. **Structured metadata** (`[diag]`, `[timing]`, `[rtk]` lines) → `_diag`, `_timer_start/_end`, `_rtk_snapshot` write directly to `$RITE_LOG_FILE` via `>>`. This is intentional: these events must appear in the log even in `--verbose` mode (where stdout is the terminal, not the tee). **Do NOT also print them to stdout** — the tee would capture them a second time, producing duplicates.
+
+**FIFO-based tee (implemented in `bin/rite`):** The log capture uses a named FIFO (`mktemp -u ... .fifo`) rather than the simpler nested-process-substitution pattern `exec > >(tee >(strip_ansi >> FILE))`. The nested pattern loses data: the inner `>(...)` process exits before the outer tee flushes, truncating the last kilobytes of output. The FIFO keeps the `strip_ansi` reader alive for exactly as long as the tee write end is open.
+
 ### Diagnostic logging
 
-Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation:
+Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation. They write directly to the file (not via stdout tee) so they appear exactly once — see two-channel write convention above.
 
 - `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
 - `ASSESSMENT` — per-issue assessment counts (NOW/LATER/DISMISSED)
