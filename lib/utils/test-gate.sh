@@ -2,7 +2,8 @@
 # lib/utils/test-gate.sh — Post-commit structured verification gate
 #
 # Runs make shellcheck + make lint (independently) + bats -r tests/ (recursive bats suite) for
-# Sharkrite repos, or the project's detected test runner for non-Sharkrite projects.
+# Sharkrite repos (detected by shellcheck: and lint: Makefile targets), or the project's
+# detected test runner for non-Sharkrite projects.
 # Emits a structured JSON findings file consumed by assess-and-resolve.sh.
 #
 # Contract:
@@ -143,11 +144,17 @@ run_test_gate() {
   local _gate_start
   _gate_start=$(date +%s)
 
-  # Determine if this is a Sharkrite repo (has Makefile with check: target)
-  # Sharkrite gate: make check (lint) + bats -r tests/ (recursive)
+  # Determine if this is a Sharkrite repo.
+  # Detection: Makefile must have both shellcheck: and lint: targets — those are the two
+  # commands the gate actually runs (make shellcheck + make lint, independently).
+  # Checking check: alone is insufficient: a non-Sharkrite project could have check: without
+  # the shellcheck: and lint: sub-targets, causing "no rule to make target" errors.
+  # Sharkrite gate path: make shellcheck + make lint (independently) + bats -r tests/
   # Other repos: run make test / npm test / pytest as usual (best-effort)
   local _is_sharkrite=false
-  if [ -f "$project_root/Makefile" ] && grep -q "^check:" "$project_root/Makefile" 2>/dev/null; then
+  if [ -f "$project_root/Makefile" ] \
+     && grep -q "^shellcheck:" "$project_root/Makefile" 2>/dev/null \
+     && grep -q "^lint:" "$project_root/Makefile" 2>/dev/null; then
     _is_sharkrite=true
   fi
 
