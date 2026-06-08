@@ -2075,12 +2075,21 @@ else
     _commit_range="origin/main..HEAD"
   fi
   if ! git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
-    commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1)
-    # Format: [branch hash] message — show branch/hash on one line, message indented below
-    branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/' || true)
-    commit_msg=$(echo "$commit_output" | head -1 | sed 's/^[^]]*] //' || true)
-    echo "$branch_info"
-    echo "	$commit_msg"
+    if commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1); then
+      # Format: [branch hash] message — show branch/hash on one line, message indented below
+      branch_info=$(echo "$commit_output" | head -1 | sed 's/] .*/]/' || true)
+      commit_msg=$(echo "$commit_output" | head -1 | sed 's/^[^]]*] //' || true)
+      echo "$branch_info"
+      echo "	$commit_msg"
+    else
+      # git commit failed — without this guard, the sed splits below would echo
+      # the same "fatal: ..." line twice (once bare, once tab-indented), because
+      # neither substitution matches a fatal message lacking `[branch hash]`.
+      # Fail loud instead of cascading into the push/PR path with no commit.
+      print_error "git commit failed:"
+      echo "$commit_output" | sed 's/^/  /'
+      return 1
+    fi
   fi
 
   # Push to create remote branch
@@ -2091,7 +2100,7 @@ else
         echo "$line" | sed "s/ set up to track /\n	set up to track /"
       fi
     done
-  else
+  elif echo "$push_output" | grep -qE "non-fast-forward|fetch first|\(non-fast-forward\)|\(fetch first\)"; then
     # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
     # Force push instead of delete+recreate — delete closes any linked PR.
     print_warning "Remote branch diverged — force pushing to sync"
@@ -2099,6 +2108,14 @@ else
     git_fetch_safe origin "$BRANCH_NAME" || true
     git push -u --force-with-lease origin "$BRANCH_NAME" >/dev/null 2>&1 || \
       git push -u --force origin "$BRANCH_NAME" >/dev/null 2>&1 || true
+  else
+    # Push failed for a non-divergence reason: missing remote, auth, network,
+    # branch protection, etc. Don't silently force-push — that would either
+    # fail again or, worse, overwrite history on the wrong remote. Surface
+    # the actual git output so the operator can see what happened.
+    print_error "git push failed:"
+    echo "$push_output" | sed 's/^/  /'
+    return 1
   fi
 
   # Create draft PR

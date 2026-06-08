@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/batch-process-issues.sh
 # Regression test for: batch skip-running check false-positives on PID column
 #
 # Bug history:
