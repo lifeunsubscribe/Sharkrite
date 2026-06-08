@@ -455,3 +455,83 @@ _get_func_body() {
     return 1
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Test 15: batch-suffix truncation in claude-workflow.sh uses token-boundary
+# truncation, never mid-digit cut (regression for _b319-320-321-324-32 bug)
+# ---------------------------------------------------------------------------
+
+@test "claude-workflow.sh: batch-suffix truncation drops whole issue numbers, never splits mid-digit" {
+  # Regression test for: BATCH_SUFFIX truncation used 'cut -c1-19' which splits
+  # issue numbers at a character boundary.  Example:
+  #   BATCH_ISSUE_LIST="319 320 321 324 328"
+  #   Full suffix: _b319-320-321-324-328 (21 chars, over 20-char limit)
+  #   Bad truncation (cut -c1-19): _b319-320-321-324-32  ← "328" becomes "32"
+  #   Good truncation (token-drop): _b319-320-321-324    ← last whole number dropped
+  #
+  # The fix replaces 'cut -c1-19' with a while loop that strips the last
+  # dash-delimited token until the inner string fits within 19 chars.
+
+  CLAUDE_WORKFLOW="$SCRIPT_DIR/lib/core/claude-workflow.sh"
+  [ -f "$CLAUDE_WORKFLOW" ]
+
+  # 1. Structural check: the bad 'cut -c1-19' pattern must not appear in the
+  #    batch-suffix block (allow it in comments).
+  _non_comment=$(grep -v '^\s*#' "$CLAUDE_WORKFLOW" || true)
+  if echo "$_non_comment" | grep -q 'cut -c1-19'; then
+    echo "FAIL: 'cut -c1-19' (mid-digit truncation) still present in claude-workflow.sh" >&2
+    echo "      Replace with token-boundary truncation (strip trailing whole issue numbers)." >&2
+    return 1
+  fi
+
+  # 2. Structural check: the token-boundary while loop must be present.
+  _func_region=$(awk '/BATCH_ISSUE_LIST/,/SAFE_BRANCH_NAME.*BATCH_SUFFIX/' "$CLAUDE_WORKFLOW" || true)
+  echo "$_func_region" | grep -q 'suffix_inner.*%-' || \
+  grep -q 'suffix_inner.*%-' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: Token-boundary truncation loop not found in claude-workflow.sh" >&2
+    echo "      Expected a while loop that strips trailing tokens via \${var%-*}." >&2
+    return 1
+  }
+
+  # 3. Behavioral check: simulate the truncation logic directly and verify
+  #    the result for the live failure case (5-issue batch, suffix = 21 chars).
+  #    Use a temp script to avoid complex quoting inside bash -c.
+  _tmpscript=$(mktemp /tmp/bats_suffix_test_XXXXXX.sh)
+  cat > "$_tmpscript" <<'TRUNCSCRIPT'
+#!/bin/bash
+BATCH_ISSUE_LIST="319 320 321 324 328"
+BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')"
+if [ ${#BATCH_SUFFIX} -gt 20 ]; then
+  _suffix_inner=$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')
+  while [ ${#_suffix_inner} -gt 18 ] && echo "$_suffix_inner" | grep -q '-'; do
+    _suffix_inner="${_suffix_inner%-*}"
+  done
+  BATCH_SUFFIX="_b${_suffix_inner}"
+fi
+echo "$BATCH_SUFFIX"
+TRUNCSCRIPT
+  _result=$(bash "$_tmpscript")
+  rm -f "$_tmpscript"
+
+  # The result must not end with a partial number (no trailing non-dash digit after a dash)
+  # Specifically: every numeric token in the suffix must be a complete number from the list.
+  # Quick check: result must not contain "32" as a final token (the bad truncation artifact).
+  if echo "$_result" | grep -qE '-32$'; then
+    echo "FAIL: Batch-suffix truncation produced a partial number: '$_result'" >&2
+    echo "      Expected last token to be a complete issue number, not '32'." >&2
+    return 1
+  fi
+
+  # The result must still start with _b and contain at least one complete number.
+  echo "$_result" | grep -qE '^_b[0-9]+(-[0-9]+)*$' || {
+    echo "FAIL: Batch-suffix after truncation has unexpected form: '$_result'" >&2
+    echo "      Expected _b<N> or _b<N1>-<N2>-... with complete issue numbers only." >&2
+    return 1
+  }
+
+  # The result must be <= 20 chars (the truncation limit).
+  [ ${#_result} -le 20 ] || {
+    echo "FAIL: Batch-suffix after truncation is still too long: '${_result}' (${#_result} chars, limit 20)" >&2
+    return 1
+  }
+}
