@@ -1491,9 +1491,17 @@ If the changes are unrelated work, answer UNRELATED."
   # In batch mode, append batch context to worktree name for identification
   if [ "${BATCH_MODE:-false}" = true ] && [ -n "${BATCH_ISSUE_LIST:-}" ]; then
     BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')"
-    # Keep total path reasonable: truncate suffix if too long
+    # Keep total path reasonable: truncate suffix if too long.
+    # Must truncate at a token boundary — never mid-digit — or Tier 3 local
+    # fallback cannot match the dropped issue number (e.g. _b319-320-321-324-32
+    # silently loses #328 because "32" != "328").  Drop trailing whole issue
+    # numbers until BATCH_SUFFIX (_b + inner) is <= 20 chars, i.e. inner <= 18.
     if [ ${#BATCH_SUFFIX} -gt 20 ]; then
-      BATCH_SUFFIX="_b$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-' | cut -c1-19)"
+      _suffix_inner=$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')
+      while [ ${#_suffix_inner} -gt 18 ] && echo "$_suffix_inner" | grep -q '-'; do
+        _suffix_inner="${_suffix_inner%-*}"
+      done
+      BATCH_SUFFIX="_b${_suffix_inner}"
     fi
     SAFE_BRANCH_NAME="${SAFE_BRANCH_NAME}${BATCH_SUFFIX}"
   fi
