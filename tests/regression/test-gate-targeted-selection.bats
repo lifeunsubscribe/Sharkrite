@@ -100,17 +100,20 @@ teardown() {
   [ "$status" -eq 1 ]
 }
 
-@test "_bats_file_matches_changed: headerless file always matches (conservative)" {
+@test "_bats_file_matches_changed: headerless file is now SKIPPED (post-#480 default)" {
+  # After #480 backfilled all bats files with covers headers, the gate treats
+  # missing headers as missing coverage signal and skips them. New bats files
+  # must declare coverage (enforced by MISSING_TEST_COVERAGE_HEADER lint rule).
   run _bats_file_matches_changed \
     "$TEST_REPO/tests/regression/headerless.bats" \
     "any/random/file.sh"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
 }
 
-@test "_select_tests_by_changed_paths: targeted selection includes matching + headerless" {
+@test "_select_tests_by_changed_paths: targeted selection includes matching, excludes headerless" {
   result=$(_select_tests_by_changed_paths "lib/core/foo.sh" "$TEST_REPO")
   echo "$result" | grep -q "covers-foo.bats"
-  echo "$result" | grep -q "headerless.bats"
+  ! echo "$result" | grep -q "headerless.bats"
   ! echo "$result" | grep -q "covers-utils-glob.bats"
   ! echo "$result" | grep -q "covers-unrelated.bats"
 }
@@ -118,7 +121,7 @@ teardown() {
 @test "_select_tests_by_changed_paths: glob header file is included when matching" {
   result=$(_select_tests_by_changed_paths "lib/utils/foo.sh" "$TEST_REPO")
   echo "$result" | grep -q "covers-utils-glob.bats"
-  echo "$result" | grep -q "headerless.bats"
+  ! echo "$result" | grep -q "headerless.bats"
   ! echo "$result" | grep -q "covers-foo.bats"
 }
 
@@ -162,7 +165,7 @@ teardown() {
 @test "_select_tests_by_changed_paths: only unrelated change excludes covers-foo" {
   result=$(_select_tests_by_changed_paths "lib/some/other.sh" "$TEST_REPO")
   echo "$result" | grep -q "covers-unrelated.bats"
-  echo "$result" | grep -q "headerless.bats"
+  ! echo "$result" | grep -q "headerless.bats"
   ! echo "$result" | grep -q "covers-foo.bats"
   ! echo "$result" | grep -q "covers-utils-glob.bats"
 }
