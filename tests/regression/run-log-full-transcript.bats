@@ -22,6 +22,7 @@
 #   6. Structural: bin/rite uses FIFO pattern; test-gate.sh tees to stdout
 
 setup() {
+  command -v perl >/dev/null || skip "perl not available"
   export BATS_TEST_DIR="${BATS_TEST_TMPDIR}/run-log-test"
   mkdir -p "$BATS_TEST_DIR"
 }
@@ -45,6 +46,8 @@ _write_tee_harness() {
     '_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX")' \
     'mkfifo "$_fifo"' \
     '( strip_ansi < "$_fifo" >> "$LOG_FILE"; rm -f "$_fifo" ) &' \
+    '_bg_pid=$!' \
+    'trap '"'"'exec 1>&-; wait "$_bg_pid"'"'"' EXIT' \
     'exec > >(tee "$_fifo")' \
     'exec 2>&1' \
     'echo -e "\033[0;32mphase: dev-start\033[0m"' \
@@ -68,9 +71,6 @@ _write_tee_harness() {
   run bash "$_script" "$_log"
   [ "$status" -eq 0 ]
 
-  # Allow background processes to flush
-  sleep 0.3
-
   grep -q "subprocess-line-alpha" "$_log"
   grep -q "subprocess-line-beta" "$_log"
   grep -q "phase: dev-start" "$_log"
@@ -88,7 +88,6 @@ _write_tee_harness() {
 
   run bash "$_script" "$_log"
   [ "$status" -eq 0 ]
-  sleep 0.3
 
   # grep -q $'\033' checks for literal ESC byte — no ANSI in the log
   if grep -q $'\033' "$_log" 2>/dev/null; then
@@ -109,7 +108,6 @@ _write_tee_harness() {
 
   run bash "$_script" "$_log"
   [ "$status" -eq 0 ]
-  sleep 0.3
 
   local _count
   _count=$(grep -c "WORKFLOW_COMPLETE" "$_log" || true)
@@ -136,6 +134,8 @@ _write_tee_harness() {
     '_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX")' \
     'mkfifo "$_fifo"' \
     '( strip_ansi < "$_fifo" >> "$LOG_FILE"; rm -f "$_fifo" ) &' \
+    '_bg_pid=$!' \
+    'trap '"'"'exec 1>&-; wait "$_bg_pid"'"'"' EXIT' \
     'exec > >(tee "$_fifo")' \
     'exec 2>&1' \
     'echo "line-A"' \
@@ -146,7 +146,6 @@ _write_tee_harness() {
 
   run bash "$_script" "$_log"
   [ "$status" -eq 0 ]
-  sleep 0.3
 
   grep -q "line-A" "$_log"
   grep -q "line-B" "$_log"
