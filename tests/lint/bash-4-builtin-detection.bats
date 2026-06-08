@@ -218,6 +218,42 @@ echo "done"'
   [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
 }
 
+@test "rule fires: #!/bin/bash + mapfile + comment contains full guard pattern (no functional guard)" {
+  # Bug fix (issue #411 / #397): a comment that documents the guard pattern
+  # contains the full BASH_VERSINFO comparison text.  The old single-pass grep
+  # scanned all lines including comments, so such a comment would exempt the
+  # whole file even though no real guard existed.  The fix strips comment lines
+  # before checking, so only non-comment lines can grant exemption.
+  _run_lint_with_fixture "bad-versinfo-comment-has-full-guard" '#!/bin/bash
+set -euo pipefail
+# TODO: add guard: if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then exec brew_bash "$0" "$@"; fi
+
+mapfile -t MY_ARRAY < <(find . -name "*.sh")
+echo "done"'
+
+  # Rule 21 must still fire — the guard lives only in a comment, not functional code.
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+}
+
+@test "rule fires: #!/bin/bash + mapfile + BASH_VERSINFO in diagnostic with redirect to numeric filename" {
+  # Bug fix (issue #411 / #398): the arithmetic-operator alternative in the old
+  # exemption regex matched "[<>=!][=]?[[:space:]]*[0-9]", which also matched
+  # shell redirect syntax like ">2" (redirect stdout to file named "2").
+  # A line like `echo "${BASH_VERSINFO[0]}" >2` would falsely exempt the file.
+  # The fix anchors the arithmetic form to "((" so ">" means comparison, not redirect.
+  _run_lint_with_fixture "bad-versinfo-redirect-to-numeric-file" '#!/bin/bash
+set -euo pipefail
+
+# Diagnostic: log bash major version to a numbered fd/file
+echo "${BASH_VERSINFO[0]}" >2
+
+mapfile -t MY_ARRAY < <(find . -name "*.sh")
+echo "done"'
+
+  # Rule 21 must still fire — ">2" is a redirect, not a version guard.
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Codebase sweep: no existing violations in the production codebase
 # ---------------------------------------------------------------------------
