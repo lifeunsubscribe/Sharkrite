@@ -2481,8 +2481,16 @@ else
     # Runs after the dev session commits (or auto-commit salvage) so the diff is final.
     # Only meaningful when we have an issue body with a Scope Boundary section.
     if [ -n "${ISSUE_BODY:-}" ] && [ "$ISSUE_BODY" != "null" ]; then
-      _scope_violations=""
-      _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" 2>/dev/null || true)
+      # Skip when DO bullets are pure prose ("Address the review findings") —
+      # the check would flag every changed file because no path can match a
+      # prose-only DO. Emit a diag line so the skip is visible in the log.
+      if ! scope_boundary_is_enforceable "${ISSUE_BODY:-}"; then
+        print_info "[diag] scope-check skipped: no path-shaped DO bullets — scope not enforceable"
+        _scope_violations=""
+      else
+        _scope_violations=""
+        _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" 2>/dev/null || true)
+      fi
 
       if [ -n "$_scope_violations" ]; then
         echo ""
