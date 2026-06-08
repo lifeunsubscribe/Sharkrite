@@ -715,3 +715,138 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Robustness: hyphen-variant separator ( " - " instead of " — ")
+#
+# When the LLM emits a space-hyphen-space as the status separator rather than
+# the mandated em-dash, the extraction must still correctly scope to the source
+# segment only. Two cases:
+#
+#   Fixture F1 — obvious-source entry with hyphen separator: linter must
+#     detect the obvious source and exit 1 (gate), not be fooled into thinking
+#     the entire "goals.json - obvious (local config file)" string is the source.
+#
+#   Fixture F2 — external-only entry with hyphen separator: linter must NOT
+#     flag as obvious-source and exit 0, because the source is an API path.
+# ---------------------------------------------------------------------------
+
+@test "Fixture F1: hyphen-variant separator — obvious-source still detected (exits 1)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-f1.txt"
+
+  # Provenance uses " - " (hyphen) instead of " — " (em-dash) as separator.
+  # The source ("goals.json") matches a file in "Files to Read", so this is
+  # an obvious-source entry regardless of which separator the LLM used.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Load savings goals from goals.json (hyphen separator)
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Read savings goals from the local goals.json config file.
+
+**Claude Context**:
+Files to Read:
+- data/goals.json (goal definitions)
+
+Files to Modify:
+- src/goals.py
+
+**Field provenance:**
+- `name`: goals.json - obvious (local config file)
+- `target_amount`: goals.json - obvious (local config file)
+
+**Acceptance Criteria**:
+- [ ] Goals loaded: `python -m pytest tests/test_goals.py`
+
+**Done Definition**: Done when goals load correctly.
+
+**Scope Boundary**:
+- DO: read goals.json
+- DO NOT: fetch external data
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_provenance_flags "$issues_file" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 1 — obvious-source detected even with hyphen separator
+  [ "$exit_code" -eq 1 ] || {
+    echo "FAIL: expected exit 1 for obvious-source with hyphen separator, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING about low-signal entries
+  grep -qi "low-signal" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention 'low-signal'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture F2: hyphen-variant separator — external source not false-flagged (exits 0)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-f2.txt"
+
+  # Provenance uses " - " (hyphen) instead of " — " (em-dash) as separator.
+  # The source is an external API path, NOT a filename from "Files to Read",
+  # so the linter must NOT flag this as obvious-source.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Sync transactions from external API (hyphen separator)
+LABELS: backend,priority-high
+TIME: 2hr
+BODY:
+**Description**:
+Fetch transaction data from an external API.
+
+**Claude Context**:
+Files to Read:
+- src/sync/base.py (sync interface)
+
+Files to Modify:
+- src/sync/api.py
+
+**Field provenance:**
+- `amount`: External API (`/transactions[].amount`) - UNVERIFIED (no fixture)
+- `posted_date`: External API (`/transactions[].transacted_at`) - UNVERIFIED (no fixture)
+
+**Acceptance Criteria**:
+- [ ] Transactions fetched: `python -m pytest tests/sync/test_api.py`
+
+**Done Definition**: Done when transactions sync and tests pass.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _lint_provenance_flags "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  # Must exit 0 — external source with hyphen separator is not an obvious-source
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, external source with hyphen separator should not gate, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still emit WARNINGs for UNVERIFIED entries (2 fields)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 2 ] || {
+    echo "FAIL: expected 2 WARNING lines for 2 UNVERIFIED fields, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
