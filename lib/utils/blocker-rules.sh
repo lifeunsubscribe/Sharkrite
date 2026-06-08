@@ -506,7 +506,7 @@ AWKEOF
     return 0  # No violations — clear to merge
   fi
 
-  # Report the first violation (worst case)
+  # Report the first violation (worst case) and collect all violating file paths.
   # head -1 exits 0 even on empty input; || true guards against any pipeline exit
   local first
   first=$(echo "$all_violations" | head -1 || true)
@@ -516,6 +516,16 @@ AWKEOF
   export SHRINKAGE_BLOCKER_FILE="$viol_file"
   export SHRINKAGE_BLOCKER_DELETED="$viol_deleted"
   export SHRINKAGE_BLOCKER_TOTAL="$viol_total"
+
+  # Export all violating file paths (newline-separated) so handle_blocker can
+  # generate a revert command for every affected file — not just the first.
+  # A multi-file deletion PR with only the first file exported yields incomplete
+  # remediation guidance and forces an extra fix cycle (issue #357).
+  local _all_viol_files
+  _all_viol_files=$(echo "$all_violations" | while IFS='|' read -r vf vd vt vtype; do
+    [ -n "$vf" ] && echo "$vf"
+  done || true)
+  export SHRINKAGE_BLOCKER_FILES="$_all_viol_files"
 
   # Build human-readable message
   echo "BLOCKER: Large deletion detected in production lib/ file"
