@@ -844,3 +844,241 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# PR test 13 — acyclic chain with batch-internal deps (IFS split regression)
+#
+# Issue #2 depends on #1, Issue #3 depends on #2 (linear chain).
+# With the broken IFS= read override, the reverse-adjacency split leaves a
+# trailing "|" that flows into arithmetic and crashes Kahn's algorithm.
+# This fixture confirms the IFS fix: exits 0 and no errors.
+# ---------------------------------------------------------------------------
+
+@test "PR test 13: acyclic batch-internal dep chain — exits 0, Kahn's processes all nodes" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-pr13.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Base Issue
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**: Foundation issue with no deps.
+
+**Claude Context**:
+Files to Modify:
+- src/base.py
+
+**Acceptance Criteria**:
+- [ ] Base works: `python -m pytest tests/test_base.py`
+
+**Done Definition**: Done when base works.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Middle Issue
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**: Depends on base.
+
+**Claude Context**:
+Files to Modify:
+- src/middle.py
+
+**Acceptance Criteria**:
+- [ ] Middle works: `python -m pytest tests/test_middle.py`
+
+**Done Definition**: Done when middle works.
+
+**Dependencies**: Blocked by: #1
+---END---
+---ISSUE---
+TITLE: Top Issue
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**: Depends on middle.
+
+**Claude Context**:
+Files to Modify:
+- src/top.py
+
+**Acceptance Criteria**:
+- [ ] Top works: `python -m pytest tests/test_top.py`
+
+**Done Definition**: Done when top works.
+
+**Dependencies**: Blocked by: #2
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (acyclic chain should pass)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for acyclic batch-internal deps, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit any cycle or error
+  grep -qi "cycle\|ERROR" "$stderr_out" && {
+    echo "FAIL: unexpected ERROR/cycle in acyclic batch-internal dep chain" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# PR test 13b — diamond DAG: acyclic with two paths to same root
+#
+# #1 (root) ← #2 (left branch)  ← #4 (merge)
+#           ← #3 (right branch) ← #4
+# Kahn's should process all 4 nodes; no cycle error.
+# ---------------------------------------------------------------------------
+
+@test "PR test 13b: diamond DAG acyclic — exits 0, no cycle error" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-diamond.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Root
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**: Root issue, no deps.
+
+**Claude Context**:
+Files to Modify:
+- src/root.py
+
+**Acceptance Criteria**:
+- [ ] Root works: `python -m pytest tests/test_root.py`
+
+**Done Definition**: Done when root works.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Left Branch
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**: Left path from root.
+
+**Claude Context**:
+Files to Modify:
+- src/left.py
+
+**Acceptance Criteria**:
+- [ ] Left works: `python -m pytest tests/test_left.py`
+
+**Done Definition**: Done when left works.
+
+**Dependencies**: Blocked by: #1
+---END---
+---ISSUE---
+TITLE: Right Branch
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**: Right path from root.
+
+**Claude Context**:
+Files to Modify:
+- src/right.py
+
+**Acceptance Criteria**:
+- [ ] Right works: `python -m pytest tests/test_right.py`
+
+**Done Definition**: Done when right works.
+
+**Dependencies**: Blocked by: #1
+---END---
+---ISSUE---
+TITLE: Merge Point
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**: Depends on both left and right branches.
+
+**Claude Context**:
+Files to Modify:
+- src/merge.py
+
+**Acceptance Criteria**:
+- [ ] Merge works: `python -m pytest tests/test_merge.py`
+
+**Done Definition**: Done when merge works.
+
+**Dependencies**: Blocked by: #2
+After #3
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 — diamond DAG is acyclic
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for diamond DAG, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a cycle error
+  grep -qi "cycle" "$stderr_out" && {
+    echo "FAIL: unexpected cycle error for acyclic diamond DAG" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# PR test 14 — zero-issue input (only coverage checklist, no ---ISSUE--- blocks)
+#
+# When _issue_count=0, seq 1 0 produces descending "1 0" range and drives
+# per-issue loops to index empty arrays, crashing under set -u with
+# "_titles[0]: parameter not set". This fixture confirms the seq guard fix.
+# ---------------------------------------------------------------------------
+
+@test "PR test 14: zero-issue input exits 0 gracefully (seq guard regression)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-zero-pr14.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+✅ All features already implemented in prior batch.
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for zero-issue input, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must not emit any array-index or arithmetic errors
+  grep -qi "parameter not set\|unbound variable\|arithmetic" "$stderr_out" && {
+    echo "FAIL: array-index crash on zero-issue input" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

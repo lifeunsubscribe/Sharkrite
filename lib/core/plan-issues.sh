@@ -1455,7 +1455,9 @@ _lint_issues_strict() {
   # For each issue's deps, verify each #N is either:
   #   (a) a valid ordinal within this batch (1.._issue_count), or
   #   (b) an existing open issue number
-  for _i in $(seq 1 "$_issue_count"); do
+  # Guard: skip all seq-based per-issue checks when there are no issues.
+  # seq 1 0 produces a descending "1 0" range on bash/POSIX — not empty.
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 1 "$_issue_count" || true); do
     local _idx=$((_i - 1))
     local _issue_title="${_titles[$_idx]}"
     local _issue_deps_str="${_deps[$_idx]}"
@@ -1510,13 +1512,13 @@ _lint_issues_strict() {
 
   local -a _pred_count=()
   local -a _rev_adj=()
-  for _i in $(seq 1 "$_issue_count"); do
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 1 "$_issue_count" || true); do
     _pred_count+=("0")
     _rev_adj+=("")
   done
 
   # Build _pred_count and _rev_adj from the deps arrays
-  for _i in $(seq 0 $((_issue_count - 1))); do
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     local _issue_deps_str="${_deps[$_i]}"
     local _issue_supps="${_suppressions[$_i]}"
 
@@ -1545,7 +1547,7 @@ _lint_issues_strict() {
 
   # Kahn's algorithm: process nodes with zero predecessors first
   local _kahn_queue=""
-  for _i in $(seq 0 $((_issue_count - 1))); do
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     if [ "${_pred_count[$_i]}" -eq 0 ]; then
       _kahn_queue="${_kahn_queue} ${_i}"
     fi
@@ -1565,13 +1567,10 @@ _lint_issues_strict() {
     local _rev="${_rev_adj[$_cur]}"
     [ -z "$_rev" ] && continue
 
-    local _old_ifs="$IFS"
-    IFS='|'
     local -a _rev_arr=()
     while IFS= read -r _rev_item; do
       [ -n "$_rev_item" ] && _rev_arr+=("$_rev_item")
-    done < <(printf '%s\n' "$_rev")
-    IFS="$_old_ifs"
+    done < <(printf '%s' "$_rev" | tr '|' '\n')
 
     for _succ in "${_rev_arr[@]+"${_rev_arr[@]}"}"; do
       [ -z "$_succ" ] && continue
@@ -1585,7 +1584,7 @@ _lint_issues_strict() {
 
   # Count how many issues participated in cycle-check (non-suppressed)
   local _cycle_eligible=0
-  for _i in $(seq 0 $((_issue_count - 1))); do
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     if ! echo "${_suppressions[$_i]}" | grep -qw "cycle-check"; then
       _cycle_eligible=$((_cycle_eligible + 1))
     fi
@@ -1595,7 +1594,7 @@ _lint_issues_strict() {
   if [ "$_kahn_processed" -lt "$_cycle_eligible" ]; then
     # Identify cycle participants: non-suppressed nodes still with pred_count > 0
     local _cycle_nodes=""
-    for _i in $(seq 0 $((_issue_count - 1))); do
+    for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
       if ! echo "${_suppressions[$_i]}" | grep -qw "cycle-check" && \
          [ "${_pred_count[$_i]:-0}" -gt 0 ]; then
         _cycle_nodes="${_cycle_nodes} #$((_i + 1)) (${_titles[$_i]})"
@@ -1609,7 +1608,7 @@ _lint_issues_strict() {
   # Check 4: Verification commands reference creatable files (WARNING only)
   # For each issue: collect verification commands; warn if any mention a path
   # that is NOT in Files to Modify AND NOT in Files to Read AND NOT in the repo.
-  for _i in $(seq 1 "$_issue_count"); do
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 1 "$_issue_count" || true); do
     local _idx=$((_i - 1))
     local _issue_title="${_titles[$_idx]}"
     local _issue_supps="${_suppressions[$_idx]}"
@@ -1674,15 +1673,17 @@ _lint_issues_strict() {
       local _def_text
       _def_text=$(echo "$_def_line" | sed 's/^- ⏭️[[:space:]]*//' || true)
 
-      # Check if the issue-level suppression applies (deferral-citation is global,
-      # not per-issue, so we check if any issue suppresses it)
+      # Check if this individual deferral line carries an inline suppression marker.
+      # Per-issue inline-marker contract: suppression is per-line, not file-global.
+      # A stray deferral-citation marker on one issue must NOT suppress other lines.
+      # Format: <!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
       local _deferral_suppressed=false
-      for _i in $(seq 0 $((_issue_count - 1))); do
-        if echo "${_suppressions[$_i]}" | grep -qw "deferral-citation"; then
-          _deferral_suppressed=true
-          break
-        fi
-      done
+      if echo "$_def_line" | grep -qE '<!--\s*sharkrite-plan-lint\s+disable\s+deferral-citation\s+-\s+Reason:'; then
+        _deferral_suppressed=true
+        local _def_reason
+        _def_reason=$(echo "$_def_line" | sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | sed 's/[[:space:]]*$//' || true)
+        print_info "[suppressed] deferral-citation: ${_def_reason}" >&2
+      fi
       [ "$_deferral_suppressed" = true ] && continue
 
       # Check for citation patterns:

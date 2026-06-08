@@ -1000,18 +1000,25 @@ The complete four-linter chain (in call order within `generate_issues`):
 
 **If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match.
 
-**Suppression markers (inline per issue, not env-var flags):**
+**Suppression markers (inline per item, not env-var flags):**
 
-Per-issue overrides use HTML comment markers embedded in the issue body:
+Per-item overrides use HTML comment markers. Scope depends on the check:
 
-```
-<!-- sharkrite-plan-lint disable cycle-check - Reason: ... -->
-<!-- sharkrite-plan-lint disable dangling-ref - Reason: ... -->
-<!-- sharkrite-plan-lint disable verification-path - Reason: ... -->
-<!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
-```
+- `cycle-check`, `dangling-ref`, `verification-path` — marker embedded in the **issue body** (suppresses the check for that issue only):
+  ```
+  <!-- sharkrite-plan-lint disable cycle-check - Reason: ... -->
+  <!-- sharkrite-plan-lint disable dangling-ref - Reason: ... -->
+  <!-- sharkrite-plan-lint disable verification-path - Reason: ... -->
+  ```
+
+- `deferral-citation` — marker appended to the **deferral line itself** in the coverage checklist (suppresses the citation check for that line only). A stray marker in an issue body does NOT suppress deferral-citation checks for any line:
+  ```
+  - ⏭️ Feature Beta deferred to Phase 2 <!-- sharkrite-plan-lint disable deferral-citation - Reason: internal decision, no public doc yet -->
+  ```
 
 The `Reason:` field is required. A marker without `Reason:` is rejected with a WARNING and the check runs anyway — this prevents silent permanent suppressions that decay into ignored noise. All active suppressions are logged visibly to stderr: `[suppressed] <rule>: <reason>`.
+
+**Important:** Suppression is strictly per-item. A single marker on one issue or deferral line does NOT silence the same check for any other item in the batch.
 
 This mirrors the `# sharkrite-lint disable RULE - Reason: ...` pattern in `tools/sharkrite-lint.sh` and the design principle in `memory/feedback_no_env_var_escape_hatches.md`: env vars are for global operator config (model selection, timeouts, paths), not per-issue dynamic overrides.
 
