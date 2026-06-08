@@ -2323,8 +2323,8 @@ ${PHASE_0_INSTRUCTIONS}
 
 ### Phase 4: Testing & Validation
 1. Write or update unit tests for the code you changed
-2. Verify your new code imports/compiles without errors (quick syntax check)
-3. Do NOT run the full test suite — the rite workflow runs it automatically after this session with parallel execution. Running it here wastes time.
+2. Syntax-check shell files you touched with \`bash -n <file>\` — zero output means OK
+3. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands — not even a single targeted file, not even in the background. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours.
 
 ### Phase 5: Code Comments
 1. Add inline comments and JSDoc/TSDoc for complex logic only
