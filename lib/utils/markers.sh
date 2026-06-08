@@ -91,3 +91,13 @@ RITE_MARKER_STASH="sharkrite-managed-stash"
 # Format at top of bats file: # sharkrite-test-covers: lib/core/foo.sh, lib/utils/bar.sh
 # Headerless files always run (conservative fallback during rollout).
 RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
+
+# ---------------------------------------------------------------------------
+# Planning markers
+# ---------------------------------------------------------------------------
+
+# Plan-lint suppression marker — inline per-issue suppression of provenance
+# lint rules during `rite plan`. Format in issue body:
+#   <!-- sharkrite-plan-lint disable <rule> - Reason: ... -->
+# Used by lib/core/plan-issues.sh provenance lint gate.
+RITE_MARKER_PLAN_LINT="sharkrite-plan-lint"

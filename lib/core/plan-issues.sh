@@ -43,6 +43,11 @@ if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f gh_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
+# Source marker constants (RITE_MARKER_PLAN_LINT, etc.)
+if [ -n "${RITE_LIB_DIR:-}" ]; then
+  source "$RITE_LIB_DIR/utils/markers.sh"
+fi
+
 # =============================================================================
 # _collect_auto_docs: auto-discover docs/**/*.md, ADRs, and README.md
 #
@@ -1311,11 +1316,11 @@ _lint_issues_strict() {
           local _rule=""
           local _has_reason=false
           # Match: <!-- sharkrite-plan-lint disable RULE - Reason: ... -->
-          if echo "$_sline" | grep -qE '<!--\s*sharkrite-plan-lint\s+disable\s+[a-z-]+\s+-\s+Reason:'; then
+          if echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z-]+\s+-\s+Reason:"; then
             _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=true
           # Match: <!-- sharkrite-plan-lint disable RULE --> (no Reason)
-          elif echo "$_sline" | grep -qE '<!--\s*sharkrite-plan-lint\s+disable\s+[a-z-]+'; then
+          elif echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z-]+"; then
             _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=false
           fi
@@ -1331,7 +1336,7 @@ _lint_issues_strict() {
               _issue_suppressions="${_issue_suppressions} ${_rule}"
             fi
           fi
-        done < <(echo "$_issue_block" | grep "sharkrite-plan-lint" || true)
+        done < <(echo "$_issue_block" | grep "${RITE_MARKER_PLAN_LINT}" || true)
         _suppressions+=("${_issue_suppressions}")
 
         # --- Extract Dependencies: lines (collect all #N refs) ---
@@ -1682,7 +1687,7 @@ _lint_issues_strict() {
       # A stray deferral-citation marker on one issue must NOT suppress other lines.
       # Format: <!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
       local _deferral_suppressed=false
-      if echo "$_def_line" | grep -qE '<!--\s*sharkrite-plan-lint\s+disable\s+deferral-citation\s+-\s+Reason:'; then
+      if echo "$_def_line" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+deferral-citation\s+-\s+Reason:"; then
         _deferral_suppressed=true
         local _def_reason
         _def_reason=$(echo "$_def_line" | sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | sed 's/[[:space:]]*$//' || true)
