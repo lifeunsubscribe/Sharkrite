@@ -363,8 +363,10 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   }
 
   # The second found_local_orphans=true assignment belongs to step 2.
-  # sed -n '2p' selects the second matching line (step 1 is first, step 2 is second).
-  _second_orphans_line=$(echo "$_func_body" | grep -E 'found_local_orphans=true' | sed -n '2p' | cut -d: -f1)
+  # Exclude comment lines (^LINENO:[space]*#) so that inline comments mentioning
+  # found_local_orphans=true don't shift the position count; head -2 | tail -1 then
+  # selects the second code assignment robustly without relying on sed line numbers.
+  _second_orphans_line=$(echo "$_func_body" | grep -E 'found_local_orphans=true' | grep -vE '^[0-9]+:[[:space:]]*#' | head -2 | tail -1 | cut -d: -f1)
   [ -n "$_second_orphans_line" ] || {
     echo "FAIL: second found_local_orphans=true assignment not found in handle_closed_issue" >&2
     echo "      Step 2 (git branch -D success block) must set found_local_orphans=true" >&2
