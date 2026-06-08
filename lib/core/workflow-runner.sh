@@ -187,11 +187,28 @@ EOF
   echo "💾 State saved: $state_file"
 }
 
+# Top-level EXIT trap: logs a [diag] RITE_EXIT line on every termination of
+# the workflow — silent exits (set -e firing inside a function), subshell
+# crashes that propagate via pipefail, normal completion (exit 0), and
+# everything in between. The bare INT/TERM/HUP traps above fire only on
+# signals; this fires on the exit syscall itself.
+#
+# Load-bearing for diagnosis: when the next silent exit happens, the log
+# will end with RITE_EXIT and the captured CURRENT_PHASE will tell us which
+# phase boundary the workflow died at. See issue #471.
+_rite_atexit() {
+  local rc=$?
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "RITE_EXIT code=${rc} issue=${CURRENT_ISSUE:-unknown} phase=${CURRENT_PHASE:-unknown} pr=${CURRENT_PR:-none}"
+  fi
+}
+
 # Set up trap handlers (called after sourcing libraries)
 setup_interrupt_handlers() {
   trap 'cleanup_on_interrupt 130' INT   # Ctrl-C
   trap 'cleanup_on_interrupt 143' TERM  # kill
   trap 'cleanup_on_interrupt 129' HUP   # Terminal closed
+  trap '_rite_atexit' EXIT
 }
 
 # ===================================================================
@@ -2203,6 +2220,7 @@ run_workflow() {
   esac
 
   if [ -z "$skip_to_phase" ] || [ "$_force_prestart" = true ]; then
+    _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=pre-start"
     CURRENT_PHASE="pre-start"
     if ! phase_pre_start_checks "$issue_number"; then
       return 1
@@ -2211,6 +2229,7 @@ run_workflow() {
 
   # Phase 1: Claude workflow (development)
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "claude-workflow" ]; then
+    _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=claude-workflow"
     CURRENT_PHASE="claude-workflow"
     skip_to_phase=""  # Clear skip flag after reaching target
     _rtk_snapshot "phase1_start"
@@ -2228,13 +2247,14 @@ run_workflow() {
 
   # Phase 2: Push work and wait for review
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "create-pr" ]; then
+    _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=create-pr"
     CURRENT_PHASE="create-pr"
     skip_to_phase=""
     _timer_start "phase2_push_review"
     phase_create_pr "$issue_number" || {
       local _create_pr_rc=$?
       _timer_end "phase2_push_review"
-      _diag "PHASE_FAILED issue=${issue_number} phase=create-pr"
+      _diag "PHASE_FAILED issue=${issue_number} phase=create-pr exit=${_create_pr_rc}"
       if [ $_create_pr_rc -eq 5 ]; then
         print_warning "Usage cap reached during PR phase — aborting batch"
         return 5
@@ -2247,6 +2267,7 @@ run_workflow() {
 
   # Phase 3: Assess review and resolve issues (auto-fix loop)
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "assess-resolve" ]; then
+    _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=assess-resolve"
     CURRENT_PHASE="assess-resolve"
     CURRENT_PR="$PR_NUMBER"
     skip_to_phase=""
@@ -2270,6 +2291,7 @@ run_workflow() {
 
   # Phase 4: Merge PR and update docs
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "merge" ]; then
+    _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=merge"
     CURRENT_PHASE="merge"
     skip_to_phase=""
     _timer_start "phase4_merge"
@@ -2298,6 +2320,7 @@ run_workflow() {
   fi
 
   # Phase 5: Completion and notifications
+  _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=completion"
   CURRENT_PHASE="completion"
   phase_completion "$issue_number" "$PR_NUMBER"
 
