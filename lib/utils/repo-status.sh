@@ -339,14 +339,59 @@ _issue_link() {
 }
 
 # Format PR number as dim OSC 8 terminal hyperlink.
-# Usage: _pr_link PR_NUMBER REPO_URL
+# Usage: _pr_link PR_NUMBER REPO_URL [MIN_WIDTH]
+# When MIN_WIDTH is set, right-pads with trailing spaces so the labels column
+# starts at a predictable position regardless of PR-number digit count.
 _pr_link() {
-  local num="$1" url="$2"
+  local num="$1" url="$2" min_width="${3:-0}"
+  local text="PR#${num}"
+  local pad_len=$((min_width - ${#text}))
+  local padding=""
+  [ "$pad_len" -gt 0 ] && padding=$(printf "%${pad_len}s" "")
   if [ -n "$url" ]; then
-    printf '%s' "\\033[2m\\033]8;;${url}/pull/${num}\\aPR#${num}\\033]8;;\\a\\033[0m"
+    printf '%s' "\\033[2m\\033]8;;${url}/pull/${num}\\a${text}\\033]8;;\\a\\033[0m${padding}"
   else
-    printf '%s' "\\033[2mPR#${num}\\033[0m"
+    printf '%s' "\\033[2m${text}\\033[0m${padding}"
   fi
+}
+
+# Strip a "[label] " prefix from an issue title when the bracket content
+# matches one of the issue's labels — otherwise the labels column
+# duplicates info already visible in the title.
+#
+# Matching is case-insensitive and only triggers when the title starts
+# with "[<word>] " (one bracketed token followed by whitespace + body).
+# Bare prefixes that don't match a label are left alone.
+#
+# Usage: strip_label_prefix_from_title TITLE LABELS_CSV
+#   TITLE       — raw GitHub issue title
+#   LABELS_CSV  — comma-separated label list (the same string used in display)
+strip_label_prefix_from_title() {
+  local title="$1"
+  local labels_csv="$2"
+  if ! [[ "$title" =~ ^\[([^]]+)\][[:space:]]+(.+)$ ]]; then
+    printf '%s' "$title"
+    return 0
+  fi
+  local prefix="${BASH_REMATCH[1]}"
+  local rest="${BASH_REMATCH[2]}"
+  local prefix_lc
+  prefix_lc=$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')
+
+  local IFS=','
+  local lbl
+  for lbl in $labels_csv; do
+    # Trim leading/trailing spaces from each comma-separated entry
+    lbl="${lbl# }"
+    lbl="${lbl% }"
+    local lbl_lc
+    lbl_lc=$(printf '%s' "$lbl" | tr '[:upper:]' '[:lower:]')
+    if [ "$prefix_lc" = "$lbl_lc" ]; then
+      printf '%s' "$rest"
+      return 0
+    fi
+  done
+  printf '%s' "$title"
 }
 
 # =============================================================================
@@ -487,8 +532,10 @@ repo_wide_status() {
         for i in "${!issue_numbers[@]}"; do
           if echo ", ${issue_labels_list[$i]}, " | grep -q ", ${label}, \|, ${label}$\|^${label}, "; then
             label_count=$((label_count + 1))
+            local _display_title
+            _display_title=$(strip_label_prefix_from_title "${issue_titles[$i]}" "${issue_labels_list[$i]}")
             local trunc_title
-            trunc_title=$(truncate_str "${issue_titles[$i]}" 38)
+            trunc_title=$(truncate_str "$_display_title" 38)
             local padded_title
             padded_title=$(pad_str "$trunc_title" 40)
             local padded_phase
@@ -518,8 +565,10 @@ repo_wide_status() {
       for i in "${!issue_numbers[@]}"; do
         if [ -z "${issue_labels_list[$i]}" ]; then
           unlabeled_count=$((unlabeled_count + 1))
+          local _display_title
+          _display_title=$(strip_label_prefix_from_title "${issue_titles[$i]}" "${issue_labels_list[$i]}")
           local trunc_title
-          trunc_title=$(truncate_str "${issue_titles[$i]}" 38)
+          trunc_title=$(truncate_str "$_display_title" 38)
           local padded_title
           padded_title=$(pad_str "$trunc_title" 40)
           local padded_phase
@@ -557,15 +606,19 @@ repo_wide_status() {
         echo -e "  ${DIM}In Progress (${started_count}):${NC}"
         for i in "${!issue_numbers[@]}"; do
           [ "${issue_phases[$i]}" = "Not started" ] && continue
+          local _display_title
+          _display_title=$(strip_label_prefix_from_title "${issue_titles[$i]}" "${issue_labels_list[$i]}")
           local trunc_title
-          trunc_title=$(truncate_str "${issue_titles[$i]}" 38)
+          trunc_title=$(truncate_str "$_display_title" 38)
           local padded_title
           padded_title=$(pad_str "$trunc_title" 40)
           local padded_phase
           padded_phase=$(pad_str "${issue_phases[$i]}" 18)
-          local pr_display=""
+          # Fixed-width PR column (10 chars) so the labels column starts at a
+          # predictable position regardless of whether a PR exists.
+          local pr_display="          "
           if [ -n "${issue_pr_numbers[$i]}" ]; then
-            pr_display="$(_pr_link "${issue_pr_numbers[$i]}" "$repo_url")  "
+            pr_display="$(_pr_link "${issue_pr_numbers[$i]}" "$repo_url" 10)"
           fi
           local labels_display=""
           if [ -n "${issue_labels_list[$i]}" ]; then
@@ -583,8 +636,10 @@ repo_wide_status() {
         echo -e "  ${DIM}Not Started (${not_started_count}):${NC}"
         for i in "${!issue_numbers[@]}"; do
           [ "${issue_phases[$i]}" != "Not started" ] && continue
+          local _display_title
+          _display_title=$(strip_label_prefix_from_title "${issue_titles[$i]}" "${issue_labels_list[$i]}")
           local trunc_title
-          trunc_title=$(truncate_str "${issue_titles[$i]}" 60)
+          trunc_title=$(truncate_str "$_display_title" 60)
           local padded_title
           padded_title=$(pad_str "$trunc_title" 62)
           local labels_display=""
@@ -642,15 +697,18 @@ repo_wide_status() {
         closed_pr_num="$matched_closed_pr"
       fi
 
+      local _display_title
+      _display_title=$(strip_label_prefix_from_title "$title" "$labels_str")
       local trunc_title
-      trunc_title=$(truncate_str "$title" 40)
+      trunc_title=$(truncate_str "$_display_title" 40)
       local padded_title
       padded_title=$(pad_str "$trunc_title" 42)
       local padded_date
       padded_date=$(pad_str "$close_date" 12)
-      local pr_display=""
+      # Fixed-width PR column (10 chars) so labels start at a predictable column.
+      local pr_display="          "
       if [ -n "$closed_pr_num" ]; then
-        pr_display="$(_pr_link "$closed_pr_num" "$repo_url")  "
+        pr_display="$(_pr_link "$closed_pr_num" "$repo_url" 10)"
       fi
       local labels_display=""
       if [ -n "$labels_str" ]; then
