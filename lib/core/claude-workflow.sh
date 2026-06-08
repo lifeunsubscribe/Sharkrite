@@ -1670,7 +1670,15 @@ If the changes are unrelated work, answer UNRELATED."
               [ "$UNCOM" -gt 0 ] && REASONS="${REASONS}uncommitted, "
               PR_N=$(gh_safe pr list --head "$WT_BRANCH" --state open --json number --jq '.[0].number // ""' || true)
               if [ -n "$PR_N" ]; then
-                _WT_ISSUE_N=$(echo "$WT_BRANCH" | grep -oE 'issue-?[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+                # Resolve the issue this PR closes — branch names like
+                # feat/<slug> don't carry the issue number, so prefer the PR's
+                # linked issue (closingIssuesReferences) and fall back to a
+                # branch-name regex for legacy issue-N branches. PR # is a last
+                # resort because the user resumes by issue number, not PR.
+                _WT_ISSUE_N=$(gh_safe pr view "$PR_N" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' || true)
+                if [ -z "$_WT_ISSUE_N" ]; then
+                  _WT_ISSUE_N=$(echo "$WT_BRANCH" | grep -oE 'issue-?[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+                fi
                 if [ -n "$_WT_ISSUE_N" ]; then
                   REASONS="${REASONS}issue #${_WT_ISSUE_N} open, "
                 else
