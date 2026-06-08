@@ -42,9 +42,9 @@ _write_tee_harness() {
     'set -euo pipefail' \
     'LOG_FILE="$1"' \
     'strip_ansi() { perl -pe '"'"'BEGIN { $| = 1 } s/\e\[[0-9;]*[a-zA-Z]//g'"'"'; }' \
-    '_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX.fifo")' \
+    '_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX")' \
     'mkfifo "$_fifo"' \
-    'strip_ansi < "$_fifo" >> "$LOG_FILE" &' \
+    '( strip_ansi < "$_fifo" >> "$LOG_FILE"; rm -f "$_fifo" ) &' \
     'exec > >(tee "$_fifo")' \
     'exec 2>&1' \
     'echo -e "\033[0;32mphase: dev-start\033[0m"' \
@@ -133,9 +133,9 @@ _write_tee_harness() {
     'set -euo pipefail' \
     'LOG_FILE="$1"' \
     'strip_ansi() { perl -pe '"'"'BEGIN { $| = 1 } s/\e\[[0-9;]*[a-zA-Z]//g'"'"'; }' \
-    '_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX.fifo")' \
+    '_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX")' \
     'mkfifo "$_fifo"' \
-    'strip_ansi < "$_fifo" >> "$LOG_FILE" &' \
+    '( strip_ansi < "$_fifo" >> "$LOG_FILE"; rm -f "$_fifo" ) &' \
     'exec > >(tee "$_fifo")' \
     'exec 2>&1' \
     'echo "line-A"' \
@@ -204,7 +204,7 @@ _write_tee_harness() {
   grep -q "mkfifo" "$_project_root/bin/rite"
   grep -q "_rite_log_fifo" "$_project_root/bin/rite"
 
-  if grep -q 'tee >(strip_ansi' "$_project_root/bin/rite"; then
+  if grep -vE '^\s*#' "$_project_root/bin/rite" | grep -q 'tee >(strip_ansi'; then
     echo "FAIL: bin/rite still uses old nested process-substitution tee pattern" >&2
     return 1
   fi

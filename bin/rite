@@ -471,10 +471,12 @@ if [ -n "$RITE_LOG_FILE" ]; then
   #
   _rite_log_fifo=""
   _rite_log_bg_pid=""
-  _rite_log_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX.fifo")
+  # BSD mktemp -u requires XXXXXX at the end of the template (no suffix allowed).
+  _rite_log_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX")
   mkfifo "$_rite_log_fifo"
-  # strip_ansi reader: stays alive until the write end of the FIFO closes
-  strip_ansi < "$_rite_log_fifo" >> "$RITE_LOG_FILE" &
+  # strip_ansi reader: stays alive until the write end of the FIFO closes.
+  # Subshell removes the FIFO after reading completes (self-cleaning).
+  ( strip_ansi < "$_rite_log_fifo" >> "$RITE_LOG_FILE"; rm -f "$_rite_log_fifo" ) &
   _rite_log_bg_pid=$!
   # Redirect stdout through tee (terminal copy) → FIFO (log copy)
   exec > >(tee "$_rite_log_fifo")
