@@ -429,6 +429,53 @@ BODY
   grep -q '^\`\`\`bash$' "$conventions_file"
 }
 
+# ---------------------------------------------------------------------------
+# Test: Example containing 4 consecutive backticks — fence promoted to 5
+#
+# The previous hard-cap at 4 backticks failed when the example itself
+# contained a 4-backtick sequence (e.g. a ````code```` span). This test
+# verifies that the fence is dynamically promoted to 5 backticks so the
+# inner 4-backtick sequence cannot close the outer fence early.
+# ---------------------------------------------------------------------------
+
+@test "example with 4 consecutive backticks: fence promoted to 5 backticks" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: four-backtick-example
+rule: Fence length must exceed the longest backtick run in the example
+why: A 4-backtick fence is terminated by any 4-backtick sequence inside the content
+example: |
+  # BAD: using a 4-backtick code span inside a 4-backtick fence
+  ```` inline code span ````
+  # GOOD: use the appropriate fence length dynamically
+  echo "no ambiguity"
+references: #395
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "395" "$pr_body"
+
+  # The entry must exist
+  grep -q "^## four-backtick-example$" "$conventions_file"
+
+  # A 5-backtick bash fence opener must be present (promoted past 4)
+  grep -q '^\`\`\`\`\`bash$' "$conventions_file"
+
+  # A 5-backtick fence closer must be present
+  grep -q '^\`\`\`\`\`$' "$conventions_file"
+
+  # The 4-backtick content must be preserved inside the fence (not truncated)
+  grep -q 'inline code span' "$conventions_file"
+
+  # No 3-backtick or 4-backtick opener for this entry (both would be too short)
+  # The references line must be correct
+  grep -q '\*\*References:\*\* #395' "$conventions_file"
+}
+
 @test "idempotency: PR #42 is not mistaken for already-recorded PR #420" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 

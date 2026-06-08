@@ -814,15 +814,26 @@ EOF
         if [ -n "$_example" ]; then
           echo ""
           echo "**Example:**"
-          # Use a longer fence if the example itself contains triple backticks,
-          # so the fence delimiter cannot appear inside the fenced content.
-          # Standard markdown: a fence can be closed only by an equal or longer
-          # sequence of the same character, so 4 backticks safely wraps any
-          # content that contains 3-backtick sequences.
-          local _fence='```'
-          case "$_example" in
-            *'```'*) _fence='````' ;;
-          esac
+          # Use a fence that is longer than any run of backticks inside the example.
+          # Standard markdown: a fenced block is closed only by a fence of equal
+          # or greater length, so we need at least (max_run + 1) backticks.
+          # Minimum is 3 (the CommonMark minimum fence length).
+          #
+          # Algorithm:
+          #   1. grep -oE finds every maximal run of backticks in the example.
+          #   2. awk computes the length of the longest run (0 when no runs found).
+          #   3. fence_len = max(3, longest_run + 1).
+          #
+          # Using printf '%s' + grep avoids $() subshell newline-stripping issues
+          # and is safe under set -euo pipefail (|| true guards the grep).
+          local _max_backtick_run
+          _max_backtick_run=$(printf '%s' "$_example" | grep -oE '`+' | awk 'BEGIN{m=0} {if(length($0)>m) m=length($0)} END{print m}' || true)
+          _max_backtick_run="${_max_backtick_run:-0}"
+          local _fence_len
+          _fence_len=$(( _max_backtick_run + 1 ))
+          [ "$_fence_len" -lt 3 ] && _fence_len=3
+          local _fence
+          _fence=$(printf '%*s' "$_fence_len" '' | tr ' ' '`')
           echo "${_fence}bash"
           printf '%s\n' "$_example"
           echo "$_fence"
