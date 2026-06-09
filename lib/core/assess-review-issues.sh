@@ -901,6 +901,10 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60 || true)
           if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
             print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
+            # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
+            if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
+              echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
+            fi
           else
             print_info "  Updating #$DUPLICATE_ISSUE with new content: $ITEM_TITLE"
             UPDATED_BODY="${EXISTING_BODY}
@@ -921,6 +925,10 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
             gh_safe issue edit "$DUPLICATE_ISSUE" --body-file "$EDIT_BODY_FILE" >/dev/null 2>&1 && \
               UPDATED_ISSUES="${UPDATED_ISSUES}#${DUPLICATE_ISSUE} "
             rm -f "$EDIT_BODY_FILE"
+            # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
+            if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
+              echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
+            fi
           fi
         else
           # Create new issue

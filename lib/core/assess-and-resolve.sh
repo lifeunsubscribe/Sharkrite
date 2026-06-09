@@ -297,8 +297,9 @@ print_assessment_details() {
   fi
 
   # Extract and display DISMISSED items
-  local dismissed_items=$(echo "$assessment_content" | grep -A 20 "DISMISSED" 2>/dev/null | grep -B 1 "DISMISSED" 2>/dev/null || true)
-  if [ -n "$dismissed_items" ]; then
+  # Use structured header match (not grep -A N) to avoid spanning item boundaries.
+  local dismissed_items=$(echo "$assessment_content" | grep -c "^### .* - DISMISSED" || true)
+  if [ "${dismissed_items:-0}" -gt 0 ]; then
     echo "🗑️  DISMISSED (not worth tracking):"
     echo ""
 
@@ -1151,8 +1152,15 @@ if [ "${SKIP_ROLLUP_DUE_TO_PER_ITEM:-false}" = "true" ] && [ -n "${PER_ITEM_ISSU
     _per_item_refs="${_per_item_refs}#${_num} "
   done <<< "$PER_ITEM_ISSUES"
   _per_item_refs=$(echo "$_per_item_refs" | sed 's/[[:space:]]*$//' || true)
-  _summary_comment="<!-- ${RITE_MARKER_FOLLOWUP}:per-item -->
-📋 **Follow-up issues filed (per-item):** ${_per_item_refs}
+  # Emit one machine-readable marker per issue number so undo/audit/merge consumers
+  # (which grep for ${RITE_MARKER_FOLLOWUP}:[0-9]+) can find each filed issue.
+  _per_item_markers=""
+  while IFS= read -r _mnum; do
+    [ -z "$_mnum" ] && continue
+    _per_item_markers="${_per_item_markers}<!-- ${RITE_MARKER_FOLLOWUP}:${_mnum} -->
+"
+  done <<< "$PER_ITEM_ISSUES"
+  _summary_comment="${_per_item_markers}📋 **Follow-up issues filed (per-item):** ${_per_item_refs}
 
 Each deferred finding has its own prioritized issue — no consolidated rollup needed."
   _summary_file=$(mktemp)
@@ -1163,7 +1171,7 @@ Each deferred finding has its own prioritized issue — no consolidated rollup n
     print_warning "Could not post summary comment (per-item issues are still filed)"
   fi
   rm -f "$_summary_file"
-  unset _per_item_refs _summary_comment _summary_file _num
+  unset _per_item_refs _per_item_markers _summary_comment _summary_file _num _mnum
 fi
 
 # Create consolidated follow-up issue if needed
@@ -1319,24 +1327,8 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     FOLLOWUP_DESCRIPTION="This issue consolidates all review feedback items that should be addressed. Items are grouped by priority."
   fi
 
-  # Load issue runbook for authoritative title/structure guidance.
-  # Mirrors the pattern from plan-issues.sh:332-341.
-  # The runbook defines the canonical section order, title format, label dimensions,
-  # and time-estimate scale. We pass it as context so the body follows runbook
-  # conventions (Acceptance Criteria with verification commands, Done Definition,
-  # Scope Boundary DO/DO NOT bullets).  We don't regenerate via Claude here —
-  # the body structure is already hardcoded below; the runbook is loaded for
-  # reference and stored in FOLLOWUP_RUNBOOK_CONTENT for future prompt injection.
-  FOLLOWUP_RUNBOOK_CONTENT=""
-  if [ -f "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/issue-runbook.md" ]; then
-    FOLLOWUP_RUNBOOK_CONTENT=$(cat "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/issue-runbook.md" 2>/dev/null || true)
-  elif [ -f "${RITE_INSTALL_DIR:-}/docs/issue-runbook.md" ]; then
-    FOLLOWUP_RUNBOOK_CONTENT=$(cat "${RITE_INSTALL_DIR:-}/docs/issue-runbook.md" 2>/dev/null || true)
-  fi
-  FOLLOWUP_RUNBOOK_CONTENT="${FOLLOWUP_RUNBOOK_CONTENT:-}"
-
   # Build follow-up issue body using the structure from templates/issue-template.md
-  # and the conventions in docs/issue-runbook.md (loaded above).
+  # and the conventions in docs/issue-runbook.md.
   # Sections: Description, Claude Context, Acceptance Criteria, Done Definition,
   # Scope Boundary, Dependencies, Time Estimate.
 
