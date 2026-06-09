@@ -42,6 +42,13 @@ setup() {
   export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 
+  # Source canonical marker constants so _lint_issues_strict's suppression regex
+  # (e.g. "<!-- ${RITE_MARKER_PLAN_LINT} disable cycle-check ...") interpolates
+  # the real marker value. Without this, RITE_MARKER_PLAN_LINT is empty, the
+  # regex never matches the fixtures' markers, and suppression silently fails.
+  # shellcheck disable=SC1090
+  source "${RITE_REPO_ROOT}/lib/utils/markers.sh"
+
   # Stub print_* functions so output goes cleanly without terminal setup.
   print_warning() { echo "WARNING: $*" >&2; }
   print_info()    { echo "INFO: $*" >&2; }
@@ -1077,6 +1084,69 @@ FIXTURE
   # Must not emit any array-index or arithmetic errors
   grep -qi "parameter not set\|unbound variable\|arithmetic" "$stderr_out" && {
     echo "FAIL: array-index crash on zero-issue input" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture K — ADR-decision-ID citations are recognized (not false-positives)
+#
+# Real incident: finance-glance run 2026-06-09 emitted deferrals citing ADR
+# decisions — "(ADR D7, follow-up #4)", "(ADR follow-up #7)" — which are genuine
+# citations, but the recognizer only knew blockquote / file:line / quoted-string
+# forms, so it flagged all of them as "uncited deferral". Fix adds ADR-decision-ID
+# and follow-up patterns. These deferrals must now pass silently.
+# ---------------------------------------------------------------------------
+
+@test "Fixture K: ADR-decision-ID and follow-up citations are recognized — no uncited warning" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-k.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+✅ Feature Alpha → Issue "Feature Alpha"
+- ⏭️ Recurring-vendor label-mapping table → Deferred to Phase 4 (ADR D7, follow-up #4)
+- ⏭️ 3D-printed frame → Deferred to Phase 4 (ADR follow-up #7)
+
+---ISSUE---
+TITLE: Feature Alpha
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Alpha feature.
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when alpha works.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (cited deferrals are not even warnings)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for ADR-cited deferrals, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT flag either ADR-cited deferral as uncited.
+  grep -qi "uncited deferral" "$stderr_out" && {
+    echo "FAIL: ADR-decision-ID citation falsely flagged as uncited" >&2
     cat "$stderr_out" >&2
     false
   }

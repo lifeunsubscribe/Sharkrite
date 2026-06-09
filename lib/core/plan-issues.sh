@@ -361,9 +361,19 @@ $(cat "$doc")
   # Load previous plan feedback (corrections from last approved session)
   local plan_feedback_file="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/plan-feedback.md"
   local accumulated_feedback=""
+  # Tracks whether NEW feedback was captured this session. We only rewrite
+  # plan-feedback.md when this is true — re-saving merely-loaded content wraps a
+  # fresh header around the prior file contents on every approved run, so the
+  # header block (and any duplicated body) accumulates unbounded over time.
+  local _feedback_dirty=false
   if [ -f "$plan_feedback_file" ]; then
-    accumulated_feedback=$(cat "$plan_feedback_file")
-    print_info "Loaded corrections from previous session"
+    # Load only the body — strip the leading auto-generated header comment block
+    # (and the blank line after it) so a later re-save can't embed the old header
+    # as body. awk: skip leading "#"/blank lines until the first content line.
+    accumulated_feedback=$(awk 'p{print;next} /^#/||/^[[:space:]]*$/{next} {p=1;print}' "$plan_feedback_file" || true)
+    if [ -n "$accumulated_feedback" ]; then
+      print_info "Loaded corrections from previous session"
+    fi
   fi
 
   local max_estimate="${RITE_PLAN_MAX_ESTIMATE:-2hr}"
@@ -394,7 +404,7 @@ $(cat "$doc")
 
   if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
     if [ "$_gen_rc" -ne 0 ]; then
-      print_error "Issue generation rejected by provenance lint gate (exit $_gen_rc). Review the warnings above and either fix the provenance tables or set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check."
+      print_error "Issue generation aborted by a validation gate (exit $_gen_rc) — see the error/warnings above. (If the provenance gate fired, set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check.)"
     else
       print_error "Issue generation failed"
     fi
@@ -420,8 +430,10 @@ $(cat "$doc")
       [Yy]|[Yy]es)
         create_issues "$issues_file"
         _save_deferrals "$issues_file" "$deferrals_file"
-        # Persist accumulated feedback so next session starts with corrections
-        if [ -n "${accumulated_feedback:-}" ]; then
+        # Persist accumulated feedback so next session starts with corrections —
+        # but only when NEW feedback was captured this session. Re-saving content
+        # that was merely loaded would nest a fresh header in the file each run.
+        if [ "$_feedback_dirty" = true ] && [ -n "${accumulated_feedback:-}" ]; then
           _save_plan_feedback "$accumulated_feedback" "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/plan-feedback.md"
         fi
         rm -f "$issues_file"
@@ -469,6 +481,7 @@ ${feedback}"
         else
           accumulated_feedback="$feedback"
         fi
+        _feedback_dirty=true
 
         # Extract deferral-like statements from feedback and persist them.
         # This ensures "defer X to phase Y" survives across sessions even if
@@ -490,7 +503,7 @@ ${feedback}"
 
         if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
           if [ "$_regen_rc" -ne 0 ]; then
-            print_error "Regeneration rejected by provenance lint gate (exit $_regen_rc). Review the warnings above and either fix the provenance tables or set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check."
+            print_error "Regeneration aborted by a validation gate (exit $_regen_rc) — see the error/warnings above. (If the provenance gate fired, set RITE_PLAN_PROVENANCE_ALLOW_OBVIOUS=1 to suppress the obvious-source check.)"
           else
             print_error "Regeneration failed"
           fi
@@ -786,6 +799,8 @@ command to verify
 ---END---
 
 Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---.
+
+**The issue blocks are the required deliverable.** The COVERAGE checklist and any WARNING flags are an audit preface, NOT the output. A response that contains the checklist (or a closing summary) but no ---ISSUE--- blocks is incomplete and will be rejected. After the checklist, immediately emit one complete ---ISSUE--- ... ---END--- block for every ✅ entry.
 PROMPT_EOF
 )
 
@@ -806,6 +821,12 @@ PROMPT_EOF
   local claude_stderr
   claude_stderr=$(mktemp)
 
+  # The prompt actually sent each attempt. On a truncated generation (checklist
+  # emitted, 0 issue blocks) we re-issue with an escalation directive appended to
+  # the base prompt — always append to $prompt, never compound, so the directive
+  # stays at the salient tail and doesn't stack across retries.
+  local _active_prompt="$prompt"
+
   # Log prompt size for debugging
   local prompt_lines
   prompt_lines=$(echo "$prompt" | wc -l | tr -d ' ')
@@ -815,7 +836,7 @@ PROMPT_EOF
     attempt=$((attempt + 1))
 
     # Use streaming prompt for real-time output visibility
-    provider_run_streaming_prompt "$prompt" "" 2>"$claude_stderr" \
+    provider_run_streaming_prompt "$_active_prompt" "" 2>"$claude_stderr" \
       | awk '
           # Truncate output on first duplicate issue (Claude sometimes regenerates the full set).
           # Buffer each ---ISSUE--- block; only emit on ---END--- if title is new.
@@ -853,6 +874,28 @@ PROMPT_EOF
 
     if [ -s "$temp_file" ]; then
       print_info "Generated $(wc -l < "$temp_file" | tr -d ' ') lines of output" >&2
+
+      # Truncation guard: a non-empty response that produced a COVERAGE checklist
+      # but ZERO ---ISSUE--- blocks is a truncated generation — the model emitted
+      # the analysis and stopped (finance-glance regression, 2026-06-09). Retry
+      # with an escalated directive instead of accepting it. Count the marker as
+      # an occurrence (not a whole-line match): normalization runs later, so
+      # pre-normalization the marker may be concatenated with surrounding text.
+      local _issue_markers
+      _issue_markers=$(grep -o -- "---ISSUE---" "$temp_file" | wc -l | tr -d ' ' || true)
+      if [ "${_issue_markers:-0}" -eq 0 ] && grep -q "COVERAGE" "$temp_file"; then
+        if [ $attempt -lt $max_attempts ]; then
+          print_warning "Provider emitted a coverage checklist but 0 issue blocks — retrying with an escalated directive..." >&2
+          _active_prompt="${prompt}
+
+**RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE.** You output the COVERAGE checklist (and possibly a closing summary) and then stopped. That is NOT the deliverable. You MUST now emit one complete ---ISSUE--- ... ---END--- block for every ✅ entry in the checklist, using the exact output format specified above. Do not re-output the checklist or any summary. Begin emitting ---ISSUE--- blocks immediately and STOP after the final ---END---."
+          sleep 3
+          continue
+        fi
+        # Final attempt also truncated: fall through. The downstream
+        # _validate_coverage zero-emission guard aborts cleanly with one error.
+        print_warning "Provider still emitted 0 issue blocks after $max_attempts attempts" >&2
+      fi
       break
     fi
 
@@ -902,7 +945,14 @@ PROMPT_EOF
 
   # Validate coverage checklist integrity: every ✅ line that references
   # an issue title must match an actual ---ISSUE--- block in the output.
-  _validate_coverage "$temp_file"
+  # Returns non-zero on a truncated generation (checklist present, 0 issues
+  # emitted) — propagate so the caller aborts instead of "succeeding" with 0 issues.
+  _cov_rc=0
+  _validate_coverage "$temp_file" || _cov_rc=$?
+  if [ "$_cov_rc" -ne 0 ]; then
+    rm -f "$temp_file"
+    return "$_cov_rc"
+  fi
 
   # Post-generation lint: catch known anti-patterns that Claude keeps generating
   _lint_issues "$temp_file"
@@ -1699,12 +1749,18 @@ _lint_issues_strict() {
       #   1. "> text" (blockquote citation)
       #   2. file:line reference (e.g. docs/architecture.md:42)
       #   3. quoted phrase ("..." or '...')
+      #   4. ADR-decision-ID / follow-up reference (e.g. "ADR D7", "follow-up #4")
+      #      — the citation dialect the planner naturally emits when grounding a
+      #      deferral in the ADR. Without this, "(ADR D7, follow-up #4)" is flagged
+      #      as uncited even though it cites a specific ADR decision.
       local _has_citation=false
       if echo "$_def_text" | grep -qE '>\s+\S'; then
         _has_citation=true
       elif echo "$_def_text" | grep -qE '[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,6}:[0-9]+'; then
         _has_citation=true
       elif echo "$_def_text" | grep -qE '"[^"]{4,}"|'"'"'[^'"'"']{4,}'"'"; then
+        _has_citation=true
+      elif echo "$_def_text" | grep -qiE 'ADR[[:space:]]+[A-Za-z]*[0-9]+|follow-up[[:space:]]+#?[0-9]+'; then
         _has_citation=true
       fi
 
@@ -1756,6 +1812,21 @@ _validate_coverage() {
       _canon_index="${_canon_index}${_canon}"$'\n'
     fi
   done < <(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
+
+  # Zero-emission guard: the checklist references ≥1 issue but NO ---ISSUE---
+  # blocks were emitted (empty index). This is a truncated generation — the model
+  # produced the coverage analysis and stopped before emitting issue bodies — NOT
+  # a set of orphans to strip. Treating it as orphans emits one cosmetic
+  # "stripping orphan" warning per intended issue and silently reports the empty
+  # result as success (exit 0, 0 issues). Fail hard with a single accurate error.
+  # (A legitimately all-deferred plan has 0 ✅ checklist entries, so checklist_titles
+  # is empty and we returned at the guard above — this branch only fires on truncation.)
+  if [ -z "$_canon_index" ]; then
+    local _expected_count
+    _expected_count=$(echo "$checklist_titles" | grep -c . || true)
+    print_error "plan: coverage checklist references $_expected_count issue(s) but 0 issue blocks were emitted — generation truncated after the checklist. Not creating issues." >&2
+    return 1
+  fi
 
   # For each checklist title, canonicalize and look up in the index.
   # Unmatched titles are orphans — strip them from the checklist and emit a WARNING.
@@ -2788,6 +2859,16 @@ create_issues() {
   # Summary
   echo ""
   print_header "Plan Complete"
+
+  # Zero-guard: with no issues created there is nothing to process, so suppress
+  # the success checkmark and the "Next steps: rite ..." batch suggestion (which
+  # would otherwise expand to a bare `rite` against an empty issue list).
+  if [ ${#created_numbers[@]} -eq 0 ]; then
+    print_warning "No issues created — nothing to process"
+    rm -f "$spike_map_file"
+    return 0
+  fi
+
   print_success "Created ${#created_numbers[@]} issues"
   echo ""
 
