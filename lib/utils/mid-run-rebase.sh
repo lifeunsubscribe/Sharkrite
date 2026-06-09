@@ -7,12 +7,15 @@
 # PRs the pre-merge auto-merge usually succeeds; for wide PRs it fails on content
 # conflicts and the run dies after all the Claude time has been spent.
 #
-# Fix: check drift at the START of phase 3 (assess) and between fix iterations.  If
-# behind <= threshold (default 5), rebase silently.  If above threshold or conflicts,
-# print a clear abort message BEFORE generating a review — saving the full phase-3 time.
-#
-# Threshold: RITE_MID_RUN_REBASE_THRESHOLD (default: 5 commits).
-# Setting it to 0 disables automatic rebase (always aborts on any drift).
+# Fix: at the START of phase 3 (assess) — and between fix iterations — ask the only
+# question that matters: does the branch actually CONFLICT with main?  Compute it with
+# `git merge-tree` (a pure in-memory merge; no working-tree, commit, push, or gate).
+#   - No conflict → do nothing.  A behind-but-clean branch merges fine in phase 4; a
+#     needless rebase would only churn history and re-trigger the post-commit test gate.
+#   - Conflict    → try Claude-assisted resolution, else print a clear abort message
+#                   BEFORE the review — saving the full phase-3 time.
+# Commit distance is deliberately NOT a gate: it is not a reliable proxy for conflict
+# risk and previously produced false aborts on clean far-behind PRs (#433/#439 incident).
 #
 # Related: lib/utils/stale-branch.sh handles the RESUME path (same problem, different
 # entry point).  This file handles the ACTIVE-RUN path.
@@ -57,16 +60,15 @@ fi
 # check_and_rebase_against_main WORKTREE_PATH BRANCH_NAME ISSUE_NUMBER PR_NUMBER [WORKFLOW_MODE]
 #
 # Call this at the start of phase 3 (assess-and-resolve) and between fix iterations.
-# The function fetches origin/main, counts drift, and acts:
+# The function fetches origin/main, then decides on CONFLICT, not on distance:
 #
 #   drift == 0            : return 0 silently (no drift)
-#   drift <= threshold    : rebase onto origin/main + force-with-lease push, return 0
-#   drift >  threshold    : print clear abort message, return 1
-#   rebase has conflicts  : print clear abort message, return 1
+#   behind but no conflict: return 0 silently (phase 4 merges it as-is; no rebase)
+#   conflicts with main   : try Claude-assisted resolution; if unresolved, abort, return 1
 #
 # Exit codes:
-#   0 = no drift, or rebase succeeded (workflow continues normally)
-#   1 = drift exceeds threshold, or rebase failed — abort BEFORE generating review
+#   0 = no drift, or branch merges cleanly, or conflict resolved (workflow continues)
+#   1 = unresolved conflict with main — abort BEFORE generating review
 #
 # The NO-rebase path (return 1) intentionally fires BEFORE the Claude review
 # session so no Claude time is wasted.  Caller should surface the message and
@@ -114,40 +116,38 @@ check_and_rebase_against_main() {
     return 0
   fi
 
-  local threshold="${RITE_MID_RUN_REBASE_THRESHOLD:-5}"
+  # Drift alone is harmless.  Commit distance does NOT determine anything here: a
+  # branch 50 commits behind that touches isolated files merges instantly, while a
+  # branch 2 commits behind editing the same lines conflicts hard.  The only thing
+  # that would make the eventual merge fail is a real CONTENT CONFLICT with main.
+  #
+  # Compute that directly with `git merge-tree` — a pure in-memory merge that writes
+  # NOTHING: no working-tree change, no commit, no force-push, no test-gate re-run.
+  # GitHub merges PRs with merge (not rebase) semantics, so a clean merge-tree means
+  # phase 4 will merge the PR as-is, however far behind it is (merge-pr.sh also
+  # updates the branch itself if GitHub ever reports it unmergeable).
+  #
+  #   merge-tree clean    → do NOTHING.  No rebase, no churn — let phase 4 merge it.
+  #   merge-tree conflict → surface early (try Claude resolution, else abort) BEFORE
+  #                         spending Claude review time on a PR that cannot merge.
+  #   merge-tree error    → fail open (skip), consistent with the fetch-failure path.
+  local _mt_rc=0
+  git -C "$worktree_path" merge-tree --write-tree --no-messages origin/main HEAD \
+    >/dev/null 2>&1 || _mt_rc=$?
 
-  if [ "$behind" -le "$threshold" ]; then
-    # Within threshold: rebase silently onto main and force-push
-    print_info "mid-run rebase: main advanced by ${behind} commit(s) — rebasing before review"
-    _mid_run_rebase_onto_main "$worktree_path" "$branch_name" "$issue_number" "$pr_number" "$workflow_mode"
-    return $?
-  else
-    # Above threshold: abort early, before any Claude review time is spent
-    echo "" >&2
-    print_warning "⚠️  Mid-run drift detected: main advanced by ${behind} commit(s) (threshold: ${threshold})"
-    echo "" >&2
-    echo "  Branch:    $branch_name" >&2
-    echo "  PR:        #${pr_number:-?}" >&2
-    echo "  Issue:     #${issue_number:-?}" >&2
-    echo "  Behind:    ${behind} commits (threshold for auto-rebase: ${threshold})" >&2
-    echo "" >&2
-    echo "  This PR is too far behind main for automatic rebase." >&2
-    echo "  Manual rebase is required before the review can proceed." >&2
-    echo "" >&2
-    echo "  To resolve:" >&2
-    echo "    cd $worktree_path" >&2
-    echo "    git fetch origin main" >&2
-    echo "    git rebase origin/main" >&2
-    echo "    # Resolve any conflicts, then:" >&2
-    echo "    git push --force-with-lease origin $branch_name" >&2
-    echo "    # Then resume:" >&2
-    echo "    rite ${issue_number:-<issue>}" >&2
-    echo "" >&2
-    echo "  Or run in supervised mode for interactive conflict resolution:" >&2
-    echo "    rite ${issue_number:-<issue>} --supervised" >&2
-    echo "" >&2
-    return 1
+  if [ "$_mt_rc" -eq 0 ]; then
+    print_info "mid-run: branch is ${behind} commit(s) behind main but merges cleanly — no rebase needed"
+    return 0
+  elif [ "$_mt_rc" -ge 2 ]; then
+    # merge-tree unavailable / unexpected error — don't block the workflow on tooling.
+    print_warning "mid-run: merge-tree check unavailable (rc=${_mt_rc}) — skipping conflict check"
+    return 0
   fi
+
+  # _mt_rc == 1: real conflict with main.  Resolve it now (or abort) before the review.
+  print_warning "mid-run: branch conflicts with main (${behind} commit(s) behind) — resolving before review"
+  _mid_run_rebase_onto_main "$worktree_path" "$branch_name" "$issue_number" "$pr_number" "$workflow_mode"
+  return $?
 }
 
 # ===================================================================

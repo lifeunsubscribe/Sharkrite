@@ -1157,9 +1157,11 @@ phase_assess_and_resolve() {
   # phase 4 (merge) fires, main may have moved 10-19 commits ahead, causing the
   # pre-merge auto-merge to fail on content conflicts after all the Claude time is spent.
   #
-  # Fix: rebase proactively at the START of phase 3 (and on each fix iteration).
-  # If drift <= threshold (default 5): rebase silently.
-  # If drift >  threshold or conflicts: abort HERE, before generating a review.
+  # Fix: at the START of phase 3 (and on each fix iteration), check whether the branch
+  # actually CONFLICTS with main (via merge-tree — no side effects). A behind-but-clean
+  # branch is left untouched (phase 4 merges it as-is). Only a genuine content conflict
+  # (after Claude-assisted resolution fails) aborts HERE, before generating a review.
+  # Commit distance is NOT a gate.
   #
   # Implementation note: call from WORKTREE_PATH context only — WORKTREE_PATH must be set.
   if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
@@ -1174,7 +1176,8 @@ phase_assess_and_resolve() {
         "${pr_number:-}" \
         "$WORKFLOW_MODE" || _mid_rebase_result=$?
       if [ "$_mid_rebase_result" -ne 0 ]; then
-        # Drift too large or conflicts: abort before spending Claude time on a review
+        # Rebase conflict (Claude-assisted resolution failed): abort before spending
+        # Claude time on a review.
         print_error "Phase 3 aborted: mid-run drift cannot be resolved automatically"
         print_info "Run 'rite ${issue_number} --supervised' to resolve conflicts manually"
         return 1

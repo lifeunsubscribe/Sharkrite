@@ -7,19 +7,22 @@
 # Scenario: A wide-surface PR starts development while main is at SHA A.
 # During phase 3 setup, a conflicting change lands on main (both the feature
 # branch and main modified the same file with different content).
-# The drift is BELOW the threshold (so auto-rebase is attempted), but the
-# rebase has content conflicts.  check_and_rebase_against_main() must:
-#   1. Attempt the rebase
-#   2. Detect the conflict
+# merge-tree detects the conflict, so resolution is attempted; the rebase has
+# content conflicts.  check_and_rebase_against_main() must:
+#   1. Detect the conflict (via merge-tree)
+#   2. Attempt the rebase
 #   3. Abort the rebase cleanly (no leftover rebase-merge state)
 #   4. Print a clear message (not a silent die)
 #   5. Return exit code 1 (workflow stops BEFORE generating a review)
 #
-# AC: "If the drift is above the threshold OR the rebase fails on content
-#      conflicts, the workflow surfaces the situation early enough that the
-#      Claude time spent in phase 3 isn't wasted."
+# AC: "If the rebase fails on content conflicts, the workflow surfaces the
+#      situation early enough that the Claude time spent in phase 3 isn't wasted."
 # AC: "simulate main advancing with a content conflict — assert the workflow
 #      aborts cleanly with a clear message, not after 77 min of phase-3 work."
+#
+# Note: a clean branch — however far behind — is a NO-OP (it is NOT aborted on
+# distance; that false-abort was removed in the #433/#439 redesign). See the
+# clean-drift coverage in mid-run-rebase.bats.
 #
 # Issue: #200 (Prevent merge races in wide-surface refactor PRs)
 
@@ -42,6 +45,14 @@ setup() {
   cd "$FIXTURE_REPO"
 
   source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+
+  # Force the deterministic "cannot auto-resolve" path: stub the conflict resolver to
+  # report failure so these tests exercise the clean-abort contract (return 1, clear
+  # message) without invoking the LIVE Claude resolver — which is non-deterministic,
+  # slow, costs tokens, and on a machine with Claude available would actually resolve
+  # the conflict and make the function return 0. The resolve-SUCCESS / cap-hit paths
+  # are covered separately in conflict-resolver-diag.bats.
+  attempt_claude_merge_resolution() { return 1; }
 }
 
 teardown() {
@@ -111,6 +122,16 @@ teardown() {
   [[ "$shared_content" =~ "feature_function" ]]
   [[ ! "$shared_content" =~ "main_function" ]]
 
+  # AC: the DO-NOT-rebase-published-commits-without-a-backup contract holds — a
+  # backup ref pointing at the pre-rebase HEAD was written before history was touched.
+  local backup_refs
+  backup_refs=$(git -C "$worktree_path" for-each-ref --format='%(refname)' \
+    "refs/rite-rebase-backup/${branch_name}/*" 2>/dev/null || true)
+  [ -n "$backup_refs" ]
+  local backup_sha
+  backup_sha=$(git -C "$worktree_path" rev-parse "$(echo "$backup_refs" | head -1)" 2>/dev/null || true)
+  [ "$backup_sha" = "$feature_head_before" ]
+
   # Cleanup
   cd "$FIXTURE_REPO"
   git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
@@ -161,10 +182,11 @@ teardown() {
   git push origin --delete "$branch_name" >/dev/null 2>&1 || true
 }
 
-@test "check_and_rebase_against_main: above-threshold message mentions drift count" {
-  # When drift > threshold, the abort message must tell the user HOW far behind
-  # they are (so they know whether to run supervised or wait for main to stabilize).
-  local branch_name="fix/above-threshold-message-212"
+@test "check_and_rebase_against_main: far behind but clean (drift 10) — no-op, returns 0" {
+  # Distance is NOT a gate.  A branch 10 commits behind with NO conflicting files
+  # must be left untouched and return 0 — not aborted (the removed false-abort) and
+  # not rebased (needless churn).  This is the direct #433/#439 regression.
+  local branch_name="fix/far-behind-clean-212"
   local issue_number="212"
   local pr_number="175"
 
@@ -174,7 +196,7 @@ teardown() {
   git commit -m "Feature work" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Advance main by 10 commits (well above default threshold 5)
+  # Advance main by 10 NON-conflicting commits (distinct new files)
   git checkout main >/dev/null 2>&1
   for i in 1 2 3 4 5 6 7 8 9 10; do
     echo "main $i" > "main-${i}.txt"
@@ -186,21 +208,19 @@ teardown() {
   local worktree_path="$RITE_WORKTREE_DIR/issue-212"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
-  # Use 'run' to capture output and exit status
-  run check_and_rebase_against_main \
+  local head_before
+  head_before=$(git -C "$worktree_path" rev-parse HEAD)
+
+  check_and_rebase_against_main \
     "$worktree_path" "$branch_name" "$issue_number" "$pr_number" "unsupervised"
+  local exit_code=$?
 
-  # AC: abort (exit 1)
-  [ "$status" -eq 1 ]
-
-  # AC: message mentions the drift count (10)
-  [[ "$output" =~ "10" ]]
-
-  # AC: message mentions the threshold (5)
-  [[ "$output" =~ "5" ]]
-
-  # AC: message suggests supervised mode or manual rebase
-  [[ "$output" =~ "supervised" ]] || [[ "$output" =~ "rebase" ]]
+  # AC: returns 0 (workflow continues to review), branch untouched
+  [ "$exit_code" -eq 0 ]
+  local head_after
+  head_after=$(git -C "$worktree_path" rev-parse HEAD)
+  [ "$head_after" = "$head_before" ]
+  [ ! -f "$worktree_path/main-10.txt" ]
 
   # Cleanup
   cd "$FIXTURE_REPO"
