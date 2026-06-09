@@ -653,7 +653,7 @@ Before writing your first issue, determine: does the existing codebase use 403 o
 **C. Real dependency graph — not a linear chain.**
 \`#PREV\` means "depends on the immediately preceding issue." Do NOT default to \`#PREV\` for every issue. Before writing dependencies, sketch the actual graph:
 - What is the true root issue? (Usually: schemas or migrations.)
-- Which issues depend ONLY on the root? They can be done in parallel — list them as "After #[root title]", not "After #PREV".
+- Which issues depend ONLY on the root? They can be done in parallel — list them as "After #1" (the root's batch ordinal), not "After #PREV".
 - Which issues depend on each other directly? Only those get explicit sequential references.
 
 Correct:
@@ -1274,7 +1274,7 @@ _lint_issues_strict() {
 
   # Parallel arrays (bash 3.2: no declare -A)
   local -a _titles=()
-  local -a _deps=()            # per-issue: newline-separated #N refs from Dependencies
+  local -a _deps=()            # per-issue: newline-separated refs from Dependencies (#N, #PREV, #[title])
   local -a _files_modify=()    # per-issue: newline-separated paths from Files to Modify
   local -a _verif_cmds=()      # per-issue: newline-separated verification command lines
   local -a _suppressions=()    # per-issue: space-separated suppressed rule names
