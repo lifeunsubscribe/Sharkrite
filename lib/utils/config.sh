@@ -170,6 +170,26 @@ RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
 # the waiter (60s budget) more margin.  See timing budget in lib/utils/issue-lock.sh.
 RITE_DEDUP_BACKOFF="${RITE_DEDUP_BACKOFF:-5}"
 
+# Follow-up issue sentinel TTL (seconds).
+#
+# The source-marker sentinel file written to RITE_STATE_DIR/followup-sentinels/
+# after every successful follow-up create acts as a local-FS dedup oracle that
+# outlives the lock.  It is trusted for RITE_FOLLOWUP_SENTINEL_TTL_S seconds after
+# creation; after that it is treated as expired and the dedup check proceeds to
+# GitHub search.  60 seconds covers the expected GitHub search-index lag window.
+# Configurable so tests can set it to 0 (instant expiry) or 999 (never expiry).
+RITE_FOLLOWUP_SENTINEL_TTL_S="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
+
+# Follow-up lock post-create dwell (seconds the lock is held after gh issue create succeeds).
+#
+# Holding the lock for a brief window after the create call gives the GitHub search
+# index time to catch up before the next waiter acquires the lock and runs its own
+# dedup search.  A waiting process that acquires the lock while the index is still
+# lagged would find no results and create a duplicate without the sentinel check.
+# 5 seconds is sufficient for typical GitHub index lag; the sentinel provides the
+# secondary guard for longer lag periods.
+RITE_FOLLOWUP_LOCK_DWELL_S="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
+
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
@@ -360,6 +380,8 @@ export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
 export RITE_DEDUP_BACKOFF
+export RITE_FOLLOWUP_SENTINEL_TTL_S
+export RITE_FOLLOWUP_LOCK_DWELL_S
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS

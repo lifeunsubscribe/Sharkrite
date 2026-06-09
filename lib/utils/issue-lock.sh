@@ -31,6 +31,9 @@
 #   acquire_issue_lock <issue_number>                        # Returns 0 on success, 1 if locked by live process
 #   release_issue_lock <issue_number>                        # Cleanup lock directory
 #   acquire_pr_followup_lock <pr_number> [source_issue]      # Returns 0 on success, 1 on timeout
+#     Optional: RITE_FOLLOWUP_LOCK_CONTENDED_FILE env var — if set, writes "contended" to
+#     this path when the lock was acquired after blocking (i.e., another process held it).
+#     Callers use this to broaden retry conditions in the dedup check.
 #   release_pr_followup_lock <pr_number> [source_issue]      # Cleanup followup lock directory
 #   write_followup_evidence <pr_number> <issue_number> [source_issue]  # Persist durable local evidence
 #   read_followup_evidence <pr_number> [source_issue]                  # Read back evidence (returns issue number or empty)
@@ -244,6 +247,15 @@ acquire_pr_followup_lock() {
   local lock_attempts=0
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
   # takes ~5-10s in practice; 60s gives ample room while still failing safely.
+  #
+  # The lock holder may also sleep for RITE_FOLLOWUP_LOCK_DWELL_S (default 5s)
+  # after create before releasing (see assess-and-resolve.sh post-create dwell).
+  # This dwell extends the holder's critical section but not the effective wait
+  # for most waiters: a waiter that was queued during the dwell will find the
+  # source-marker sentinel file fresh and short-circuit BEFORE acquiring the lock,
+  # so it never actually spends its budget waiting out the dwell.  In the rare
+  # case where the sentinel is unavailable, the worst-case hold time is
+  # ~10s (critical section) + 5s (dwell) = ~15s, well inside the 60s budget.
   local max_attempts=60
   local _grace_period_consumed=false
 
@@ -302,6 +314,16 @@ acquire_pr_followup_lock() {
   _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
   echo $$ > "$_pid_tmp"
   mv "$_pid_tmp" "${lock_dir}/pid"
+
+  # Contention signal: when RITE_FOLLOWUP_LOCK_CONTENDED_FILE is set and the
+  # lock was acquired after blocking (lock_attempts > 0), write "contended" to
+  # the file.  Callers read this to broaden dedup retry conditions — a contended
+  # acquire implies another process just finished the dedup-then-create sequence,
+  # which is precisely when GitHub index lag is most likely to affect the next
+  # search and return empty even though the issue was just created.
+  if [ "$lock_attempts" -gt 0 ] && [ -n "${RITE_FOLLOWUP_LOCK_CONTENDED_FILE:-}" ]; then
+    printf 'contended\n' > "${RITE_FOLLOWUP_LOCK_CONTENDED_FILE}" 2>/dev/null || true
+  fi
 
   return 0
 }
