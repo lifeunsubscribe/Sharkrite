@@ -32,39 +32,63 @@ load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 source "$RITE_LIB_DIR/utils/adr-generator.sh"
 source "$RITE_LIB_DIR/utils/tag-index.sh"
 
-# Ensure a valid cwd before any git-aware tool (e.g. claude --print) runs.
-#
-# This script is launched as a background subprocess (&) from merge-pr.sh while
-# the parent shell is still cd'd into the feature-branch worktree.  The worktree
-# is removed shortly after the fork.  When the claude CLI starts it probes the
-# cwd for git context; if the directory is already gone it emits:
-#   "failed to run git: fatal: Unable to read current working directory"
-# and exits 1, making the whole doc assessment appear to fail.
-#
-# RITE_PROJECT_ROOT is exported by config.sh and always points to the main
-# worktree (the permanent git root), so it is always safe to cd there.
-cd "${RITE_PROJECT_ROOT}"
-
 # Timeout per provider call in doc assessment (seconds)
 DOC_CLAUDE_TIMEOUT="${RITE_DOC_CLAUDE_TIMEOUT:-120}"
 
-PR_NUMBER="$1"
-AUTO_MODE="${2:-}"
+PR_NUMBER="${1:-}"
+AUTO_MODE=""
+WORKTREE_PATH=""
 
 if [ -z "$PR_NUMBER" ]; then
-  print_error "Usage: $0 <pr_number> [--auto]"
+  print_error "Usage: $0 <pr_number> [--auto] [--worktree <path>]"
   exit 1
 fi
+shift
 
-# Validate optional second argument — only --auto is accepted.
-# An unrecognized flag silently falls through to supervised mode, which can
-# confuse operators following the re-run instruction in the warning message.
-# Use ${AUTO_MODE:-} (not $AUTO_MODE) so this block is safe under set -u in
-# case AUTO_MODE is not yet set on any execution path (e.g. test sourcing).
-if [ -n "${AUTO_MODE:-}" ] && [ "${AUTO_MODE:-}" != "--auto" ]; then
-  print_error "Unknown argument: ${AUTO_MODE:-}"
-  print_error "Usage: $0 <pr_number> [--auto]"
-  exit 1
+# Parse remaining flags. Order is not significant.
+# --auto runs in unsupervised mode (no interactive prompts).
+# --worktree <path> tells the script to operate in the feature worktree so Layer 2
+# commits land on the feature branch (squash-merged with the PR). When omitted,
+# falls back to RITE_PROJECT_ROOT (main worktree) for backward compatibility with
+# any caller still invoking this post-merge.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --auto)
+      AUTO_MODE="--auto"
+      shift
+      ;;
+    --worktree)
+      if [ -z "${2:-}" ]; then
+        print_error "--worktree requires a path argument"
+        exit 1
+      fi
+      WORKTREE_PATH="$2"
+      shift 2
+      ;;
+    *)
+      print_error "Unknown argument: $1"
+      print_error "Usage: $0 <pr_number> [--auto] [--worktree <path>]"
+      exit 1
+      ;;
+  esac
+done
+
+# Ensure a valid cwd before any git-aware tool (e.g. claude --print) runs.
+#
+# Historically this script ran post-merge from the main worktree (RITE_PROJECT_ROOT).
+# Now it runs pre-merge from the feature worktree when invoked with --worktree, so
+# Layer 2's git commit lands on the feature branch and rides the squash merge.
+#
+# Why the cwd matters: the claude CLI probes cwd for git context on startup; if the
+# directory is gone it emits "failed to run git: fatal: Unable to read current
+# working directory" and exits 1. RITE_PROJECT_ROOT is always safe (main worktree
+# never disappears mid-run); a passed --worktree is safe for the duration of the
+# fix loop because workflow-runner.sh waits for this script before any worktree
+# removal in phase_merge_pr.
+if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
+  cd "$WORKTREE_PATH"
+else
+  cd "${RITE_PROJECT_ROOT}"
 fi
 
 # Check provider CLI availability and authentication
@@ -115,8 +139,31 @@ _pr_diff_exit=0
 if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
   _pr_diff_exit=1
 fi
-PR_DIFF=$(head -500 "$_diff_raw_file" || true)
+
+# Filter out hunks whose file path matches a documentation location, so this
+# assessment doesn't see its own prior commits in the diff on later fix-loop
+# iterations. The doc commit that lands on the feature branch during loop N
+# would otherwise appear as input to loop N+1's doc assessment — wasted tokens
+# at best, feedback loop at worst (changelog entries getting recursively summarized).
+#
+# Paths filtered: .rite/docs/* (Layer 1 internal docs, tracked only in sharkrite
+# itself) and docs/* / *.md at repo root (typical Layer 2 user-doc targets).
+# Filter is conservative: a project that puts code in docs/ would lose those hunks
+# from doc assessment, but doc assessment is supposed to reason about docs, not
+# code under docs/.
+_diff_filtered_file=$(mktemp 2>/dev/null) || _diff_filtered_file="$_diff_raw_file"
+if [ "$_diff_filtered_file" != "$_diff_raw_file" ]; then
+  awk '
+    /^diff --git a\/(\.rite\/docs|docs)\// { skip=1; next }
+    /^diff --git a\/[^/]+\.md / { skip=1; next }
+    /^diff --git / { skip=0 }
+    !skip { print }
+  ' "$_diff_raw_file" > "$_diff_filtered_file"
+fi
+
+PR_DIFF=$(head -500 "$_diff_filtered_file" || true)
 rm -f "$_diff_raw_file"
+[ "$_diff_filtered_file" != "$_diff_raw_file" ] && rm -f "$_diff_filtered_file"
 if [ "${_pr_diff_exit}" -ne 0 ]; then
   print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
   exit 0

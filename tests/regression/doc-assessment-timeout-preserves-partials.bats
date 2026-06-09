@@ -1,18 +1,22 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/core/workflow-runner.sh
 # Regression test: on doc-assessment timeout, completed sub-assessments are preserved
 # Issue #341
 #
-# Bug: when the merge-pr.sh watchdog fired, all in-flight doc assessment work was
-# discarded (the background process was killed and _DOC_LOG was deleted). Even
+# Bug: when the watchdog fired, all in-flight doc assessment work was
+# discarded (the background process was killed and the log file was deleted). Even
 # sub-assessments that completed before the kill had their doc file writes survive
 # on disk, but the user saw "continuing without doc updates" with no indication
 # that partial work was preserved.
 #
 # Fix: each sub-assessment writes "partial_complete:<name>" to stdout (captured in
-# _DOC_LOG) when it completes a doc update. The merge-pr.sh watchdog reads _DOC_LOG
+# the log file) when it completes a doc update. The watchdog reads the log
 # on timeout to count and report completed sub-assessments. Completed doc files
 # remain on disk - only the in-flight ones are lost.
+#
+# Historical note: this logic originally lived in merge-pr.sh (post-merge spawn).
+# It now lives in workflow-runner.sh's phase_wait_doc_assessment, because doc
+# assessment runs pre-merge so Layer 2 commits ride the squash merge.
 #
 # Test strategy:
 # 1. Watchdog fires with 2 completed sub-assessments: output reports "2 completed".
@@ -25,9 +29,9 @@
 
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  MERGE_PR_SCRIPT="$PROJECT_ROOT/lib/core/merge-pr.sh"
+  WORKFLOW_RUNNER_SCRIPT="$PROJECT_ROOT/lib/core/workflow-runner.sh"
   ASSESS_DOC="$PROJECT_ROOT/lib/core/assess-documentation.sh"
-  export PROJECT_ROOT MERGE_PR_SCRIPT ASSESS_DOC
+  export PROJECT_ROOT WORKFLOW_RUNNER_SCRIPT ASSESS_DOC
 
   # Write the watchdog block as a helper script to avoid quoting nightmares.
   # This mirrors the actual watchdog section from merge-pr.sh.
@@ -166,9 +170,12 @@ teardown() {
 # Test 5: Static check -- merge-pr.sh reads partial_complete: from _DOC_LOG on timeout
 # ---------------------------------------------------------------------------
 
-@test "merge-pr.sh: partial_complete: harvest present in timeout branch" {
+@test "workflow-runner.sh: partial_complete: harvest present in timeout branch" {
   local timeout_block
-  timeout_block=$(grep -A 20 '_completed_partials=0' "$MERGE_PR_SCRIPT" || true)
+  # The waiter is in phase_wait_doc_assessment now (moved from merge-pr.sh).
+  # The new code uses `completed=0` (no leading underscore) — match the
+  # current naming.
+  timeout_block=$(grep -A 20 -E 'local completed=0|_completed_partials=0' "$WORKFLOW_RUNNER_SCRIPT" || true)
 
   [ -n "$timeout_block" ]
 
@@ -195,8 +202,8 @@ teardown() {
 # Test 7: Static check -- default timeout is 300s (not the old 180s)
 # ---------------------------------------------------------------------------
 
-@test "merge-pr.sh: default RITE_DOC_ASSESSMENT_TIMEOUT is 300 (not 180)" {
+@test "workflow-runner.sh: default RITE_DOC_ASSESSMENT_TIMEOUT is 300 (not 180)" {
   local default_timeout
-  default_timeout=$(grep 'RITE_DOC_ASSESSMENT_TIMEOUT:-' "$MERGE_PR_SCRIPT" | grep -oE '[0-9]+' | head -1 || true)
+  default_timeout=$(grep 'RITE_DOC_ASSESSMENT_TIMEOUT:-' "$WORKFLOW_RUNNER_SCRIPT" | grep -oE '[0-9]+' | head -1 || true)
   [ "$default_timeout" = "300" ]
 }

@@ -87,6 +87,14 @@ cleanup_on_interrupt() {
   echo ""
   print_header "⚡ Interrupt Received - Saving State"
 
+  # Kill any in-flight doc assessment before saving state. We don't want to wait
+  # the 300s watchdog on a clean Ctrl-C, and the subprocess might be mid-write
+  # to .rite/docs/*.md — letting the process group SIGKILL it later could
+  # corrupt a doc file mid-flush.
+  if declare -f phase_kill_doc_assessment >/dev/null 2>&1; then
+    phase_kill_doc_assessment
+  fi
+
   # Save session state if we have enough context
   if [ -n "$CURRENT_ISSUE" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
     local phase_info="${CURRENT_PHASE:-unknown}"
@@ -416,6 +424,120 @@ handle_blocker() {
     # Single issue unsupervised mode - stop
     exit 1
   fi
+}
+
+# ===================================================================
+# DOCUMENTATION ASSESSMENT (PRE-MERGE, BACKGROUND)
+# ===================================================================
+#
+# Doc assessment used to run post-merge from merge-pr.sh, serial with cleanup.
+# It now runs pre-merge in the feature worktree so Layer 2 commits land on the
+# feature branch and ride the squash merge as one atomic unit.
+#
+# Spawn points: right after a fix commit pushes (parallel with gate + review
+# regen) AND right after the final assess decides NOW=0 (parallel with the
+# pre-merge validation gate). Wait points: before any new claude session
+# touches the worktree, and at the entry to phase_merge_pr.
+#
+# State carried across phase function calls via global vars (not exported —
+# only the parent shell coordinates; the subprocess inherits nothing it needs).
+
+_RITE_DOC_PID=""
+_RITE_DOC_LOG=""
+
+phase_spawn_doc_assessment() {
+  local pr_number="$1"
+  local worktree_path="$2"
+
+  # Skip if a prior subprocess is still running. We serialize doc assessments
+  # per workflow (one in flight at a time) so two concurrent writes to
+  # .rite/docs/*.md or the feature branch can't race.
+  if [ -n "$_RITE_DOC_PID" ] && kill -0 "$_RITE_DOC_PID" 2>/dev/null; then
+    return 0
+  fi
+
+  local doc_script="$RITE_LIB_DIR/core/assess-documentation.sh"
+  if [ ! -f "$doc_script" ]; then
+    return 0
+  fi
+
+  _RITE_DOC_LOG=$(mktemp "/tmp/rite_doc_${pr_number}_$$.XXXXXX")
+
+  if [ "$WORKFLOW_MODE" = "supervised" ]; then
+    "$doc_script" "$pr_number" --worktree "$worktree_path" > "$_RITE_DOC_LOG" 2>&1 &
+  else
+    "$doc_script" "$pr_number" --auto --worktree "$worktree_path" > "$_RITE_DOC_LOG" 2>&1 &
+  fi
+  _RITE_DOC_PID=$!
+  print_info "Doc assessment started in background (pid $_RITE_DOC_PID)"
+}
+
+phase_wait_doc_assessment() {
+  if [ -z "$_RITE_DOC_PID" ]; then
+    return 0
+  fi
+
+  local timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+  local pid="$_RITE_DOC_PID"
+
+  # Only show the wait notice if the background job is still running. If it
+  # already finished while other phases ran, `wait` returns immediately and the
+  # notice would be misleading noise.
+  if kill -0 "$pid" 2>/dev/null; then
+    print_status "Waiting on documentation assessment (cap ${timeout}s)..."
+  fi
+
+  # Start a watchdog: SIGTERM the doc assessment after timeout. The watchdog
+  # itself is killed when doc finishes first.
+  ( sleep "$timeout" && kill -TERM "$pid" 2>/dev/null ) &
+  local watchdog_pid=$!
+
+  local doc_exit=0
+  wait "$pid" 2>/dev/null || doc_exit=$?
+
+  kill -TERM "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+
+  if [ "$doc_exit" -eq 143 ] || [ "$doc_exit" -eq 137 ]; then
+    # 143 = SIGTERM (128+15), 137 = SIGKILL (128+9) — timed out.
+    # Harvest any sub-assessments that completed before the kill (each emits
+    # "partial_complete:<name>" as soon as it writes its doc update).
+    local completed=0
+    if [ -s "${_RITE_DOC_LOG:-}" ]; then
+      completed=$(grep -c "^partial_complete:" "$_RITE_DOC_LOG" 2>/dev/null || true)
+    fi
+    if [ "$completed" -gt 0 ]; then
+      print_warning "Documentation assessment timed out after ${timeout}s — preserving $completed completed sub-assessment(s)" >&2
+      grep "^partial_complete:" "$_RITE_DOC_LOG" 2>/dev/null | sed 's/^partial_complete:/  ✓ /' >&2 || true
+    else
+      print_warning "Documentation assessment timed out after ${timeout}s — no sub-assessments completed" >&2
+    fi
+  elif [ "$doc_exit" -ne 0 ] && [ "$doc_exit" -ne 2 ]; then
+    print_warning "Documentation assessment failed (exit $doc_exit)" >&2
+    if [ -s "${_RITE_DOC_LOG:-}" ]; then
+      echo "--- doc-assessment log (last 20 lines) ---" >&2
+      tail -20 "$_RITE_DOC_LOG" >&2
+      echo "---" >&2
+    fi
+  elif [ -s "${_RITE_DOC_LOG:-}" ]; then
+    # Success: filter Layer B coordination markers; surface the summary.
+    grep -v '^partial_complete:' "$_RITE_DOC_LOG" || true
+  fi
+
+  rm -f "${_RITE_DOC_LOG:-}"
+  _RITE_DOC_PID=""
+  _RITE_DOC_LOG=""
+}
+
+# Kill any in-flight doc assessment without waiting. Called from the interrupt
+# handler — we want a quick exit, not a 300s wait.
+phase_kill_doc_assessment() {
+  if [ -n "$_RITE_DOC_PID" ] && kill -0 "$_RITE_DOC_PID" 2>/dev/null; then
+    kill -TERM "$_RITE_DOC_PID" 2>/dev/null || true
+  fi
+  rm -f "${_RITE_DOC_LOG:-}"
+  _RITE_DOC_PID=""
+  _RITE_DOC_LOG=""
 }
 
 # ===================================================================
@@ -1153,6 +1275,12 @@ phase_assess_and_resolve() {
     # Pass PR number so it can fetch the latest assessment from PR comments
     cd "$WORKTREE_PATH" || return 1
 
+    # Wait for any in-flight doc assessment from the previous iteration before the
+    # LLM session starts. The doc subprocess commits to the feature branch; we want
+    # those commits to land BEFORE the LLM examines the worktree, so the LLM sees a
+    # clean state and HEAD reflects the cumulative branch progress.
+    phase_wait_doc_assessment
+
     if [ -n "$review_content" ]; then
       # Assessment is already posted as a PR comment (<!-- sharkrite-assessment --> marker).
       # Pass PR number so claude-workflow.sh can fetch the latest assessment directly.
@@ -1210,6 +1338,14 @@ phase_assess_and_resolve() {
     run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
     _gate_pid=$!
 
+    # Spawn doc assessment in parallel with the gate + review regeneration.
+    # The doc subprocess runs against the fix commit's HEAD, writes Layer 1 to
+    # .rite/docs/ (via the worktree's symlink to the main worktree), and commits
+    # Layer 2 user-doc changes to THIS feature branch. We wait for it at the next
+    # phase_wait_doc_assessment call (start of next iteration's fix, or
+    # phase_merge_pr entry).
+    phase_spawn_doc_assessment "$pr_number" "$WORKTREE_PATH"
+
     # Phase 2 (push + review generation) runs in foreground
     if ! phase_create_pr "$issue_number" --loop; then
       print_error "Failed to push fixes and regenerate review"
@@ -1217,6 +1353,9 @@ phase_assess_and_resolve() {
       kill "$_gate_pid" 2>/dev/null || true
       wait "$_gate_pid" 2>/dev/null || true
       rm -f "${_gate_output_file:-}"
+      # Doc assessment may also still be running — kill it so it doesn't
+      # outlive the workflow as a zombie writing to .rite/docs/ after we fail.
+      phase_kill_doc_assessment
       return 1
     fi
 
@@ -1349,6 +1488,15 @@ phase_assess_and_resolve() {
   # Assessment complete - decision already shown in Phase 3 header
   # (No redundant summary needed - assess-and-resolve.sh already printed decision box)
 
+  # NOW=0 path: ready to merge. If no doc assessment has been spawned yet
+  # (single-pass case — initial review passed without a fix loop), kick one off
+  # now on the current HEAD so it runs in parallel with phase_merge_pr's
+  # pre-merge validation. The spawn is a no-op when one is already in flight
+  # from a prior fix iteration.
+  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    phase_spawn_doc_assessment "$pr_number" "$WORKTREE_PATH"
+  fi
+
   return 0
 }
 
@@ -1359,6 +1507,11 @@ phase_merge_pr() {
   print_header "Phase 4: Merge and Update Docs"
 
   cd "$WORKTREE_PATH"
+
+  # Wait for the background doc assessment (spawned in Phase 3) to finish before
+  # merging. Its Layer 2 commits land on this feature branch; we need them on the
+  # remote before the squash merge so they ride along atomically.
+  phase_wait_doc_assessment
 
   # Show a brief changes summary so the user knows what's about to be merged
   local _pr_info
