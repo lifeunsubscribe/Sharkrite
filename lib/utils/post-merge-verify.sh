@@ -110,7 +110,17 @@ verify_post_merge() {
     local _pmv_gate_file
     _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$.json")
     local _pmv_gate_exit=0
-    RITE_TEST_GATE_DIFF_BASE="$pre_merge_ref" run_test_gate "$_pmv_gate_file" "$worktree_path" || _pmv_gate_exit=$?
+    # RITE_TEST_GATE_SKIP_TRIGGERS=true — disable the bats / lint full-suite
+    # trigger lists for this call. The triggers protect against "you changed
+    # test-gate.sh, so re-validate every test", which is the right safety net
+    # for the regular post-commit gate. Here, the diff includes main commits
+    # the rebase pulled in (the whole point of using pre_merge_ref) — and
+    # those main commits routinely touch trigger files. Main already
+    # validated them via its own CI; we only need to verify the feature
+    # branch's own logic against the post-rebase state.
+    RITE_TEST_GATE_DIFF_BASE="$pre_merge_ref" \
+    RITE_TEST_GATE_SKIP_TRIGGERS=true \
+      run_test_gate "$_pmv_gate_file" "$worktree_path" || _pmv_gate_exit=$?
     rm -f "${_pmv_gate_file:-}"
 
     if [ "$_pmv_gate_exit" -ne 0 ]; then

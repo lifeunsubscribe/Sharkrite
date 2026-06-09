@@ -189,20 +189,24 @@ _select_lint_by_changed_paths() {
     return 0
   fi
 
-  # Full-suite trigger: lint rule change, Makefile change.
-  local _trigger _changed
-  while IFS= read -r _changed; do
-    [ -z "$_changed" ] && continue
-    for _trigger in "${_LINT_GATE_FULL_SUITE_TRIGGERS[@]}"; do
-      # shellcheck disable=SC2254  # glob expansion in case is intentional
-      case "$_changed" in
-        $_trigger)
-          echo "FORCE_FULL"
-          return 0
-          ;;
-      esac
-    done
-  done <<< "$changed_files"
+  # Full-suite trigger: lint rule change, Makefile change. Suppressed by
+  # RITE_TEST_GATE_SKIP_TRIGGERS=true (used by post-merge-verify.sh — see the
+  # matching comment in _select_tests_by_changed_paths for the rationale).
+  if [ "${RITE_TEST_GATE_SKIP_TRIGGERS:-false}" != "true" ]; then
+    local _trigger _changed
+    while IFS= read -r _changed; do
+      [ -z "$_changed" ] && continue
+      for _trigger in "${_LINT_GATE_FULL_SUITE_TRIGGERS[@]}"; do
+        # shellcheck disable=SC2254  # glob expansion in case is intentional
+        case "$_changed" in
+          $_trigger)
+            echo "FORCE_FULL"
+            return 0
+            ;;
+        esac
+      done
+    done <<< "$changed_files"
+  fi
 
   # Emit absolute paths for changed files that look lint-eligible by path. The
   # final scope filter is the intersection inside sharkrite-lint.sh (it knows
@@ -346,19 +350,30 @@ _select_tests_by_changed_paths() {
   fi
 
   # Full-suite trigger: any change to verifier internals / lint / helpers / fixtures
-  local _trigger _changed
-  while IFS= read -r _changed; do
-    [ -z "$_changed" ] && continue
-    for _trigger in "${_TEST_GATE_FULL_SUITE_TRIGGERS[@]}"; do
-      # shellcheck disable=SC2254  # glob expansion in case is intentional
-      case "$_changed" in
-        $_trigger)
-          echo "FORCE_FULL"
-          return 0
-          ;;
-      esac
-    done
-  done <<< "$changed_files"
+  # forces the whole bats suite to run. For most invocations this is the right
+  # safety net — changing the gate or a lint rule could affect test correctness
+  # across the codebase. But post-merge-verify.sh uses run_test_gate with the
+  # diff base set to pre_merge_ref to catch semantic conflicts from main's
+  # rebased-in commits, and those main commits routinely touch trigger files
+  # (e.g. test-gate.sh edits land on main, then every rebase past them lights
+  # this branch). Main already validated those files via its own CI, so the
+  # post-merge run only needs to verify the feature branch's own logic.
+  # RITE_TEST_GATE_SKIP_TRIGGERS=true skips the trigger check for that caller.
+  if [ "${RITE_TEST_GATE_SKIP_TRIGGERS:-false}" != "true" ]; then
+    local _trigger _changed
+    while IFS= read -r _changed; do
+      [ -z "$_changed" ] && continue
+      for _trigger in "${_TEST_GATE_FULL_SUITE_TRIGGERS[@]}"; do
+        # shellcheck disable=SC2254  # glob expansion in case is intentional
+        case "$_changed" in
+          $_trigger)
+            echo "FORCE_FULL"
+            return 0
+            ;;
+        esac
+      done
+    done <<< "$changed_files"
+  fi
 
   # Walk every bats file and decide inclusion. Output is relative paths so the
   # caller can `cd "$project_root" && bats <relative-paths>`.

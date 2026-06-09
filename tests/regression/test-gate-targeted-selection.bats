@@ -222,3 +222,61 @@ teardown() {
   echo "$result" | grep -q "covers-foo.bats" || { echo "$result" >&2; return 1; }
   echo "$result" | grep -q "covers-unrelated.bats" || { echo "$result" >&2; return 1; }
 }
+
+# ---------------------------------------------------------------------------
+# Regression: RITE_TEST_GATE_SKIP_TRIGGERS=true bypasses the full-suite
+# trigger list. Used by post-merge-verify.sh — see the comment in
+# test-gate.sh::_select_tests_by_changed_paths for the rationale. Without
+# this, every rebase that pulled in a test-gate.sh / Makefile change from
+# main lit the full bats suite for the feature branch's post-merge run.
+# ---------------------------------------------------------------------------
+
+@test "_select_tests_by_changed_paths: RITE_TEST_GATE_SKIP_TRIGGERS bypasses full-suite triggers" {
+  # Pre-fix: changed file 'lib/utils/test-gate.sh' → FORCE_FULL.
+  # Post-fix with the env var set: no triggers apply; falls through to
+  # header-matching; emits empty (no test covers lib/utils/test-gate.sh
+  # in our fixture).
+  RITE_TEST_GATE_SKIP_TRIGGERS=true \
+    result=$(_select_tests_by_changed_paths "lib/utils/test-gate.sh" "$TEST_REPO")
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "regression: env var ignored, still FORCE_FULL" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: RITE_TEST_GATE_SKIP_TRIGGERS bypasses Makefile trigger too" {
+  RITE_TEST_GATE_SKIP_TRIGGERS=true \
+    result=$(_select_tests_by_changed_paths "Makefile" "$TEST_REPO")
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "regression: Makefile still forced full suite under env var" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: RITE_TEST_GATE_SKIP_TRIGGERS off → triggers still fire" {
+  # Default behavior unchanged: the regular post-commit gate must still
+  # see test-gate.sh as a trigger when the env var is NOT set.
+  result=$(_select_tests_by_changed_paths "lib/utils/test-gate.sh" "$TEST_REPO")
+  [ "$result" = "FORCE_FULL" ] || {
+    echo "regression: trigger NOT firing in default mode" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: SKIP_TRIGGERS + source-coverage change → targeted selection" {
+  # Real post-merge scenario: rebase pulled in lib/utils/test-gate.sh
+  # (trigger) AND lib/core/foo.sh (covered by fixture A). With env var
+  # set, the trigger is bypassed and we get a targeted selection covering
+  # the source change.
+  changed=$(printf 'lib/utils/test-gate.sh\nlib/core/foo.sh\n')
+  RITE_TEST_GATE_SKIP_TRIGGERS=true \
+    result=$(_select_tests_by_changed_paths "$changed" "$TEST_REPO")
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "expected targeted, got FORCE_FULL" >&2
+    return 1
+  }
+  echo "$result" | grep -q "covers-foo.bats" || {
+    echo "expected covers-foo.bats; got: $result" >&2
+    return 1
+  }
+}
