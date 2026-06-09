@@ -169,3 +169,56 @@ teardown() {
   ! echo "$result" | grep -q "covers-foo.bats"
   ! echo "$result" | grep -q "covers-utils-glob.bats"
 }
+
+# ---------------------------------------------------------------------------
+# Regression: changed .bats file is included in its own diff (issue surfaced
+# 2026-06-09 — editing a single test fell back to FORCE_FULL because the
+# sharkrite-test-covers headers list SOURCE paths, never test paths, so a
+# changed .bats path matched no header anywhere and the selection emerged
+# empty. The empty → FORCE_FULL fallback in run_test_gate then ran the entire
+# ~1500-test suite for what should have been one file.
+# ---------------------------------------------------------------------------
+
+@test "_select_tests_by_changed_paths: changed .bats file is included verbatim" {
+  # Direct edit to a test file → that test file must appear in the output.
+  result=$(_select_tests_by_changed_paths "tests/regression/covers-foo.bats" "$TEST_REPO")
+  echo "$result" | grep -q "covers-foo.bats" || {
+    echo "expected covers-foo.bats in selection; got:" >&2
+    echo "$result" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: changed headerless .bats file is included" {
+  # Headerless files are normally skipped (post-#480 default), but a DIRECT
+  # change to a headerless test must still cause it to run — otherwise the
+  # user gets zero feedback on the file they just edited.
+  result=$(_select_tests_by_changed_paths "tests/regression/headerless.bats" "$TEST_REPO")
+  echo "$result" | grep -q "headerless.bats" || {
+    echo "expected headerless.bats in selection (direct change overrides skip); got:" >&2
+    echo "$result" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: changed .bats does NOT force full suite" {
+  # Pre-fix behavior: result was empty, caller treated as FORCE_FULL.
+  # Post-fix: result contains the changed .bats path, NOT the FORCE_FULL marker.
+  result=$(_select_tests_by_changed_paths "tests/regression/covers-foo.bats" "$TEST_REPO")
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "regression: changed .bats fell back to FORCE_FULL" >&2
+    return 1
+  }
+  [ -n "$result" ] || {
+    echo "regression: changed .bats produced empty selection (caller would fall back to FORCE_FULL)" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: mixed source + .bats change includes both" {
+  # Realistic case: a fix touches both a source file and its test.
+  changed=$(printf 'lib/core/foo.sh\ntests/regression/covers-unrelated.bats\n')
+  result=$(_select_tests_by_changed_paths "$changed" "$TEST_REPO")
+  echo "$result" | grep -q "covers-foo.bats" || { echo "$result" >&2; return 1; }
+  echo "$result" | grep -q "covers-unrelated.bats" || { echo "$result" >&2; return 1; }
+}
