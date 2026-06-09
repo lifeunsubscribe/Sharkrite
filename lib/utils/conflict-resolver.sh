@@ -298,10 +298,19 @@ Resolve every conflict, then stage each file with git add."
   fi
 
   # Check 2: No literal conflict markers in resolved files (belt-and-suspenders)
+  #
+  # Regex anchors each marker precisely to avoid false positives:
+  #   <<<<<<<[[:space:]] — conflict open-marker always followed by a space + branch name
+  #   =======$           — conflict separator is exactly 7 '=' alone on the line;
+  #                        avoids false-positives from markdown setext underlines
+  #                        (e.g. "========") or doc separators (e.g. "=======foo")
+  #   >>>>>>>[[:space:]] — conflict close-marker always followed by a space + branch name
+  #   |||||||[[:space:]] — diff3/zdiff3 base-version marker always followed by a space;
+  #                        produced by merge.conflictstyle=diff3 or zdiff3
   local _cr_marker_found=false
   while IFS= read -r _cr_f; do
     [ -z "$_cr_f" ] && continue
-    if grep -qE '^(<<<<<<<|=======|>>>>>>>)' "$_cr_f" 2>/dev/null; then
+    if grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])' "$_cr_f" 2>/dev/null; then
       _cr_error "Conflict markers remain in: $_cr_f"
       _cr_marker_found=true
     fi

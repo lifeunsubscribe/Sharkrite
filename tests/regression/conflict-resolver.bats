@@ -132,8 +132,11 @@ _setup_conflict_scenario() {
   remaining=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ')
   [ "$remaining" -eq 0 ]
 
-  # Verify: no conflict markers in resolved files
-  if grep -rqE '^(<<<<<<<|=======|>>>>>>>)' . --include="*.md" 2>/dev/null; then
+  # Verify: no conflict markers in resolved files.
+  # Use the same precise regex as conflict-resolver.sh Check 2 to avoid
+  # false-positives from markdown setext underlines or doc separators.
+  # Includes the diff3/zdiff3 base-version marker (|||||||).
+  if grep -rqE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])' . --include="*.md" 2>/dev/null; then
     echo "FAIL: Conflict markers still present after resolver returned 0" >&2
     return 1
   fi
