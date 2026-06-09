@@ -1379,6 +1379,46 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     ISSUE_SEARCH="review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
   fi
 
+  # Source-marker sentinel pre-check (before lock acquisition).
+  #
+  # The sentinel file is written immediately after gh issue create succeeds and
+  # lives in RITE_STATE_DIR/followup-sentinels/ keyed by source issue number.
+  # It acts as a local-FS dedup oracle that outlives the lock — if a sibling
+  # process created the follow-up within RITE_FOLLOWUP_SENTINEL_TTL_S seconds,
+  # we can skip the entire lock-and-search sequence.  This is the primary guard
+  # against the source-marker dedup race where:
+  #   Process A: acquires lock, creates issue, writes sentinel, releases lock
+  #   Process B: acquires lock (A already released), searches → empty (index lag)
+  #              → would create duplicate without sentinel check
+  # The sentinel check fires BEFORE the lock so it also catches the case where
+  # B's lock acquisition contended against A and A completed during the wait.
+  _sentinel_skipped=false
+  if [ -n "${ISSUE_NUMBER:-}" ]; then
+    _sentinel_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
+    _sentinel_file="${_sentinel_dir}/source-issue-${ISSUE_NUMBER}.created"
+    if [ -f "$_sentinel_file" ]; then
+      # macOS-compatible mtime: try BSD stat -f %m, fallback to 0 (always expired)
+      _sentinel_mtime=$(stat -f %m "$_sentinel_file" 2>/dev/null || echo "0")
+      _sentinel_age=$(( $(date +%s) - _sentinel_mtime ))
+      _sentinel_ttl="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
+      if [ "$_sentinel_age" -lt "$_sentinel_ttl" ]; then
+        print_info "Source-marker sentinel: a follow-up for source-issue #${ISSUE_NUMBER} was created ${_sentinel_age}s ago (TTL ${_sentinel_ttl}s) — skipping duplicate"
+        _sentinel_skipped=true
+      fi
+    fi
+    unset _sentinel_dir _sentinel_file _sentinel_mtime _sentinel_age _sentinel_ttl
+  fi
+
+  # Contention signal file: acquire_pr_followup_lock writes "contended" here
+  # when the lock was blocked by another process (lock_attempts > 0).  We pass
+  # this file path via RITE_FOLLOWUP_LOCK_CONTENDED_FILE so we can check it
+  # after acquisition and broaden the dedup retry condition accordingly.
+  # The file is keyed by PR + source issue to avoid cross-invocation collisions
+  # (multiple parallel assessments on different issues use different temp files).
+  _lock_contended_file=$(mktemp "${RITE_LOCK_DIR}/.contended-signal-XXXXXX" 2>/dev/null || \
+    mktemp "/tmp/.rite-contended-signal-XXXXXX")
+  export RITE_FOLLOWUP_LOCK_CONTENDED_FILE="$_lock_contended_file"
+
   # Acquire per-PR follow-up lock before the check-then-create sequence.
   #
   # Without this lock, two concurrent assess-and-resolve calls on the same PR can
@@ -1396,8 +1436,12 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   # same PR operate on independent locks (no false blocking) and independent dedup
   # search scopes (no false "already exists" detection).
   _followup_lock_held=false
-  if acquire_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
+  if [ "${_sentinel_skipped:-false}" != "true" ] && \
+     acquire_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
     _followup_lock_held=true
+  elif [ "${_sentinel_skipped:-false}" = "true" ]; then
+    # Sentinel blocked — no lock needed; skip creation (sentinel is active)
+    _skip_followup_creation=true
   else
     _lock_scope="PR #$PR_NUMBER${ISSUE_NUMBER:+ / issue #$ISSUE_NUMBER}"
     print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — another process is still in the critical section."
@@ -1405,6 +1449,16 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     _diag "FOLLOWUP_LOCK_TIMEOUT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER}"
     _skip_followup_creation=true
   fi
+
+  # Read lock-contention signal (written by acquire_pr_followup_lock when lock
+  # was acquired after blocking).  Used below to broaden the dedup retry condition.
+  _lock_was_contended=false
+  if [ -n "${_lock_contended_file:-}" ] && [ -f "$_lock_contended_file" ]; then
+    _contended_content=$(cat "$_lock_contended_file" 2>/dev/null || true)
+    [ "$_contended_content" = "contended" ] && _lock_was_contended=true
+  fi
+  rm -f "${_lock_contended_file:-}" 2>/dev/null || true
+  unset RITE_FOLLOWUP_LOCK_CONTENDED_FILE
 
   if [ "${_skip_followup_creation:-false}" != "true" ]; then
 
@@ -1520,18 +1574,41 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     # If found by any source, no need to retry
     [ -n "$EXISTING_ISSUE" ] && break
 
-    # Source 4: PR marker comment — if the comment was posted by a prior run
-    # but neither local evidence nor the search index has caught up yet,
-    # back off and retry rather than creating a duplicate.
+    # Source 4: PR marker comment OR lock-contention signal.
+    #
+    # Two independent signals indicate that another process may have just created
+    # a follow-up issue that the GitHub search index hasn't yet caught up with:
+    #
+    #   (a) PR comment with a sharkrite-followup-issue marker — the original
+    #       guard from PR #127; works when the creating process posted a comment.
+    #
+    #   (b) _lock_was_contended=true — the lock was blocked when we acquired it,
+    #       meaning another process just held and released the lock (i.e., just
+    #       completed the dedup-then-create sequence).  This is the fix for Gap 1
+    #       from issue #478: for follow-up *issue* creation there may be no PR
+    #       comment to act as the lag signal, so contention alone is sufficient
+    #       evidence that we should retry rather than proceed to create.
+    #
+    # Either signal triggers a retry.  Lock contention is only used on the first
+    # retry iteration (it's a one-time signal from the previous lock holder).
     if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
       _jq_followup_count="[.comments[].body | select(contains(\"<!-- ${RITE_MARKER_FOLLOWUP}:\"))] | length"
       _recent_followup_comment=$(gh_safe pr view "$PR_NUMBER" \
         --json comments \
         --jq "$_jq_followup_count")
       _recent_followup_comment="${_recent_followup_comment:-0}"
+      _retry_reason=""
       if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
+        _retry_reason="follow-up comment found on PR but issue not yet indexed"
+      elif [ "${_lock_was_contended:-false}" = "true" ] && [ "$_dedup_retries" -eq 0 ]; then
+        # Lock was contended: another process just completed the critical section.
+        # Fire one retry to let the GitHub index catch up before proceeding to create.
+        _retry_reason="lock was contended (another process just finished) — index may lag"
+        _lock_was_contended=false  # consume signal; only retry once for contention alone
+      fi
+      if [ -n "$_retry_reason" ]; then
         _dedup_retries=$((_dedup_retries + 1))
-        print_info "Follow-up comment found on PR but issue not yet indexed (attempt $_dedup_retries/$_dedup_max_retries) — retrying in ${_dedup_backoff}s..."
+        print_info "Dedup retry: ${_retry_reason} (attempt $_dedup_retries/$_dedup_max_retries) — retrying in ${_dedup_backoff}s..."
         sleep "$_dedup_backoff"
         continue
       fi
@@ -1626,7 +1703,45 @@ This approach allows all fixes to be completed together in a focused PR."
       fi
       rm -f "$COMMENT_BODY_FILE"
 
-      # Release lock only after both evidence writes have been attempted
+      # Write source-marker sentinel file (Change 2: local FS dedup oracle).
+      #
+      # The sentinel is keyed by source issue number and written to
+      # RITE_STATE_DIR/followup-sentinels/.  It persists for
+      # RITE_FOLLOWUP_SENTINEL_TTL_S seconds (default 60s) and acts as a
+      # local-FS dedup oracle for sibling processes that acquire the lock after
+      # this process releases it.  The sentinel is checked BEFORE the lock
+      # acquisition so even fast-spinning sibling processes see it.
+      #
+      # Relationship to the evidence file: the evidence file (RITE_LOCK_DIR)
+      # is the long-lived dedup record keyed by PR + source issue; it is
+      # validated via gh issue view on each read.  The sentinel (RITE_STATE_DIR)
+      # is the short-lived TTL-gated record keyed by source issue alone; it
+      # requires no network call.  Both are written here; they serve different
+      # parts of the dedup guarantee.
+      if [ -n "${ISSUE_NUMBER:-}" ]; then
+        _sentinel_write_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
+        mkdir -p "$_sentinel_write_dir" 2>/dev/null || true
+        touch "${_sentinel_write_dir}/source-issue-${ISSUE_NUMBER}.created" 2>/dev/null || true
+        unset _sentinel_write_dir
+      fi
+
+      # Post-create lock dwell (Gap 2 fix).
+      #
+      # Hold the lock for RITE_FOLLOWUP_LOCK_DWELL_S seconds after the create
+      # so that the GitHub search index has time to catch up before the next
+      # waiter acquires the lock and runs its dedup search.  Without this dwell,
+      # a fast-spinning waiter could acquire the lock immediately after this
+      # process releases it, run the dedup search (which returns empty because
+      # the index hasn't caught up), and create a duplicate.
+      # The sentinel (above) provides a secondary guard; the dwell is a belt-and-
+      # suspenders measure for the same consistency window.
+      _dwell_seconds="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
+      if [ "$_dwell_seconds" -gt 0 ] 2>/dev/null; then
+        sleep "$_dwell_seconds"
+      fi
+      unset _dwell_seconds
+
+      # Release lock only after all evidence writes and the dwell have completed
       [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
       _followup_lock_held=false
 
