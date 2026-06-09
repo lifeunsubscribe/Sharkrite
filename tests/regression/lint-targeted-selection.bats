@@ -200,3 +200,35 @@ docs/architecture/foo.md"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "expected empty output for deleted file; got: '$output'" >&2; return 1; }
 }
+
+# ---------------------------------------------------------------------------
+# RITE_TEST_GATE_SKIP_TRIGGERS — same env var that bypasses bats triggers
+# also bypasses lint triggers. post-merge-verify.sh sets it once and both
+# selectors respond.
+# ---------------------------------------------------------------------------
+
+@test "_select_lint_by_changed_paths: SKIP_TRIGGERS bypasses Makefile trigger" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+
+  RITE_TEST_GATE_SKIP_TRIGGERS=true \
+    run _select_lint_by_changed_paths "Makefile" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ "$output" != "FORCE_FULL" ] || {
+    echo "regression: Makefile still forced FORCE_FULL under SKIP_TRIGGERS" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: SKIP_TRIGGERS off → Makefile still triggers" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+
+  # Default mode unchanged: trigger fires.
+  run _select_lint_by_changed_paths "Makefile" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "FORCE_FULL" ] || {
+    echo "regression: Makefile NOT triggering FORCE_FULL in default mode" >&2
+    return 1
+  }
+}
