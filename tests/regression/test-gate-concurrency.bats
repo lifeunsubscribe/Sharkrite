@@ -68,8 +68,12 @@ teardown() {
   [ "$output" = "1" ] || { echo "expected 1 (no parallel binary); got: '$output'" >&2; return 1; }
 }
 
-@test "_compute_bats_jobs: caps auto-detection at 4 even on bigger boxes" {
-  # Stub `parallel` and an `nproc` returning 16 in a shadow PATH.
+@test "_compute_bats_jobs: scales with ncpu, no cap" {
+  # Stub `parallel` and an `nproc` returning 16 in a shadow PATH. Earlier
+  # versions capped the result at 4 to protect shared boxes; benchmarking
+  # showed the cap left cores idle even under concurrent batches, so the
+  # default is now ncpu. Users on shared infra can pin a lower value via
+  # RITE_BATS_JOBS=N.
   _shadow_dir="${BATS_TEST_TMPDIR}/parallel-stub"
   mkdir -p "$_shadow_dir"
   cat > "$_shadow_dir/parallel" <<'EOF'
@@ -90,7 +94,33 @@ EOF
   unset RITE_BATS_JOBS
   PATH="$_shadow_dir:$PATH" run _compute_bats_jobs
   [ "$status" -eq 0 ]
-  [ "$output" = "4" ] || { echo "expected cap at 4; got: '$output'" >&2; return 1; }
+  [ "$output" = "16" ] || { echo "expected ncpu (16); got: '$output'" >&2; return 1; }
+}
+
+@test "_compute_bats_jobs: small box (2 cores) returns 2" {
+  # Regression: the no-cap default must still return the actual ncpu on
+  # small boxes (don't accidentally floor at some higher value).
+  _shadow_dir="${BATS_TEST_TMPDIR}/parallel-stub-small"
+  mkdir -p "$_shadow_dir"
+  cat > "$_shadow_dir/parallel" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  cat > "$_shadow_dir/nproc" <<'EOF'
+#!/bin/sh
+echo 2
+EOF
+  cat > "$_shadow_dir/sysctl" <<'EOF'
+#!/bin/sh
+echo 2
+EOF
+  chmod +x "$_shadow_dir/parallel" "$_shadow_dir/nproc" "$_shadow_dir/sysctl"
+
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  unset RITE_BATS_JOBS
+  PATH="$_shadow_dir:$PATH" run _compute_bats_jobs
+  [ "$status" -eq 0 ]
+  [ "$output" = "2" ] || { echo "expected ncpu (2); got: '$output'" >&2; return 1; }
 }
 
 # ---------------------------------------------------------------------------

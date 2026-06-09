@@ -239,10 +239,19 @@ _select_lint_by_changed_paths() {
 # BATS_TEST_TMPDIR / BATS_FILE_TMPDIR / setup_test_tmpdir helpers.
 #
 # Default behavior is auto-detection:
-#   - parallel installed → use min(ncpu, 4)
+#   - parallel installed → use ncpu (no cap)
 #   - parallel missing   → serial (1)
-# Override via RITE_BATS_JOBS=N (set to 1 to force serial, >1 to override auto).
-# Capped at 4 to keep load reasonable on shared/CI boxes; raise via env var.
+# Override via RITE_BATS_JOBS=N (any positive int wins; set 1 to force serial).
+#
+# History: capped at 4 in #510 to "keep load reasonable on shared/CI boxes". On
+# multi-core dev boxes the cap defeated the optimization. Measured on an 8-core
+# MBP, the 9-file post-merge subset took 24s at --jobs 4 vs 18s at --jobs 8
+# (25% faster single batch). Two concurrent batches: uncapped was STILL faster
+# per batch (33s vs 38s) — under oversubscription the OS keeps all cores busy,
+# while the cap leaves cores idle whenever the suite hits a serially-bound
+# file. GitHub Actions free runners have ~4 cores so auto-detect there still
+# yields 4. Users on truly shared boxes can pin a lower value via
+# RITE_BATS_JOBS=N.
 _compute_bats_jobs() {
   # Explicit override wins
   if [ -n "${RITE_BATS_JOBS:-}" ]; then
@@ -260,11 +269,7 @@ _compute_bats_jobs() {
   fi
   local _ncpu
   _ncpu=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)
-  if [ "$_ncpu" -gt 4 ]; then
-    echo 4
-  else
-    echo "$_ncpu"
-  fi
+  echo "$_ncpu"
 }
 
 # _parse_test_coverage_header — extract the sharkrite-test-covers paths
