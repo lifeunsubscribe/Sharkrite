@@ -350,19 +350,6 @@ detect_lib_shrinkage() {
   local ratio_pct="${RITE_SHRINKAGE_RATIO_PCT:-50}"
   local abs_lines="${RITE_SHRINKAGE_ABS_LINES:-500}"
 
-  # Resolve the PR's actual base branch dynamically so that non-main-base PRs
-  # use the correct baseline ref.  Falls back to "main" if the API call fails
-  # (network error, PR not found) so the check degrades rather than crashes.
-  local base_branch
-  base_branch=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
-  base_branch="${base_branch:-main}"
-
-  # Attempt a fetch of the base branch before git show so a stale or never-fetched
-  # ref does not silently cause the ratio check to skip.  This is best-effort —
-  # if the fetch fails (e.g. offline, no permissions) we proceed and let the
-  # git show empty-output path handle the miss transparently with a [diag] log.
-  git -C "${RITE_PROJECT_ROOT:-.}" fetch origin "$base_branch" --quiet 2>/dev/null || true
-
   # Production path prefix pattern (matches lib/core/, lib/utils/, lib/providers/)
   local prod_path_re="^(lib/core|lib/utils|lib/providers)/"
 
@@ -444,6 +431,41 @@ AWKEOF
   local _all_lib_deletions
   _all_lib_deletions=$(echo "$diff_text" | awk -v prod_re="$prod_path_re" -f "$_awk_prog" || true)
   rm -f "$_awk_prog"
+
+  # No lib/ deletions in the diff — skip the base-branch resolution and fetch
+  # entirely.  This is the common case for PRs that only touch tests, docs, or
+  # non-lib files.  Resolving the PR base ref and fetching origin are both
+  # network calls; skipping them when unnecessary keeps the check fast.
+  if [ -z "$_all_lib_deletions" ]; then
+    return 0
+  fi
+
+  # Resolve the PR's actual base branch dynamically so that non-main-base PRs
+  # use the correct baseline ref.  Falls back to "main" if the API call fails
+  # (network error, PR not found) so the check degrades rather than crashes.
+  #
+  # Validation: base_branch must be a safe git ref component — only
+  # alphanumeric, '-', '_', '.', '/' characters.  Anything else (path traversal
+  # sequences like "../evil", shell meta-characters, whitespace) is rejected and
+  # falls back to "main" so the interpolation into "origin/${base_branch}:path"
+  # cannot be exploited by a crafted baseRefName from the GitHub API.
+  local base_branch
+  base_branch=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
+  base_branch="${base_branch:-main}"
+  # Reject branch names with unsafe characters or path-traversal sequences.
+  # Only alphanumeric, '-', '_', '.', '/' are valid git ref characters.
+  # Also explicitly reject '..' sequences (path traversal, e.g. "../evil").
+  if ! echo "$base_branch" | grep -qE '^[a-zA-Z0-9_./-]+$' || echo "$base_branch" | grep -qF '..'; then
+    echo "[diag] SHRINKAGE_BASE_BRANCH_INVALID pr=$pr_number base_branch_raw=${base_branch} fallback=main" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
+    base_branch="main"
+  fi
+
+  # Attempt a fetch of the base branch before git show so a stale or never-fetched
+  # ref does not silently cause the ratio check to skip.  This is best-effort —
+  # if the fetch fails (e.g. offline, no permissions) we proceed and let the
+  # git show empty-output path handle the miss transparently with a [diag] log.
+  # Only runs here because we confirmed lib/ files are present in the diff above.
+  git -C "${RITE_PROJECT_ROOT:-.}" fetch origin "$base_branch" --quiet 2>/dev/null || true
 
   # Single pass: evaluate both the absolute threshold and the ratio threshold
   # against the same diff-counted deletion values.  This eliminates the separate

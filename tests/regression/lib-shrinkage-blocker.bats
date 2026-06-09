@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/scope-checker.sh
+# sharkrite-test-covers: lib/utils/blocker-rules.sh
 # Regression test for issue #323: Add review-shrinkage check for lib/ file edits
 #
 # Verifies that detect_lib_shrinkage() fires a blocker when a PR deletes:
@@ -1355,4 +1355,326 @@ _create_lib_file() {
   # SHRINKAGE_BLOCKER_FILES must have exactly one entry
   [[ "$output" == *"FILES_ENTRY:${target_file}"* ]]
   [[ "$output" == *"FILES_COUNT=1"* ]]
+}
+
+# ===========================================================================
+# TEST 27: Fetch NOT called when PR has no lib/ file changes
+#
+# Regression for issue #429: git fetch ran unconditionally even when no
+# lib/ files were touched, burning unnecessary network time on every PR.
+# The fetch is a pre-requisite only for the ratio check, which itself only
+# runs when lib/ files have deletions — skip both when no lib/ files changed.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: does NOT call git fetch when diff has no lib/ files" {
+  # Diff contains only a docs file — no lib/ changes.  git fetch must NOT be called.
+  local fetch_state_file="$RITE_TEST_TMPDIR/fetch-state-no-lib-$$.txt"
+
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        # Only non-lib/ changes — large deletions in docs should not trigger
+        _make_lib_diff 'docs/architecture/behavioral-design.md' 800
+        _make_lib_diff 'tests/regression/some-test.bats' 600
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # This call must NOT be reached when there are no lib/ files in the diff
+        echo 'ERROR: baseRefName called for non-lib PR' >&2
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        echo 'FETCH_CALLED' > '${fetch_state_file}'
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    detect_lib_shrinkage '99'
+  "
+
+  # No blocker (non-lib files)
+  [ "$status" -eq 0 ]
+
+  # git fetch must NOT have been called
+  [ ! -f "$fetch_state_file" ] || {
+    echo "FAIL: git fetch was called for a non-lib PR (fetch-state file exists)"
+    cat "$fetch_state_file"
+    return 1
+  }
+}
+
+@test "detect_lib_shrinkage: DOES call git fetch when lib/ files are present in diff" {
+  # Confirms the positive case: fetch IS called when lib/ files have deletions.
+  # This prevents a regression where the conditional fetch optimization is
+  # applied too aggressively and skips the fetch even for lib/ PRs.
+  local target_file="lib/core/workflow-runner.sh"
+  local total_lines=300
+  local deleted_lines=160  # ~53% — above 50% ratio threshold
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _total_lines="$total_lines"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  local fetch_state_file="$RITE_TEST_TMPDIR/fetch-state-with-lib-$$.txt"
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'main'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        echo \"fetch_called=true fetch_branch=\$5\" > '${fetch_state_file}'
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/*:* ]]; then
+        seq 1 '${_total_lines}'
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    detect_lib_shrinkage '77'
+  "
+
+  # Blocker fires (160/300 = 53% > 50%)
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # git fetch MUST have been called (lib/ files were present)
+  [ -f "$fetch_state_file" ] || {
+    echo "FAIL: git fetch was not called for lib/ PR"
+    return 1
+  }
+  grep -q "fetch_called=true" "$fetch_state_file" || {
+    echo "FAIL: fetch_called=true not found"
+    cat "$fetch_state_file"
+    return 1
+  }
+}
+
+# ===========================================================================
+# TEST 28: base_branch validation — invalid characters fall back to "main"
+#
+# Regression for: base_branch not validated before interpolation into git refs.
+# A crafted baseRefName from the GitHub API (path traversal, shell meta-chars)
+# could be interpolated as "origin/${base_branch}:${filepath}" in git show.
+# The validation must reject non-safe characters and fall back to "main".
+# ===========================================================================
+
+@test "detect_lib_shrinkage: rejects path-traversal base_branch and falls back to main" {
+  # Simulate a crafted baseRefName containing "../evil" path traversal.
+  # The validation must reject this and fall back to "main".
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600  # above absolute threshold — simple blocker case
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Return a malicious branch name with path traversal
+        printf '../evil-ref'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        # Record which branch was used for the fetch
+        echo \"fetch_branch=\$5\" >&2
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ]; then
+        echo \"git_show_ref=\$4\" >&2
+        return 1
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+  "
+
+  # Blocker fires (absolute threshold: 600 > 500)
+  [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # The invalid base_branch must NOT appear in git ref calls.
+  # stderr captures the git calls; "../evil-ref" must not appear there.
+  [[ "$stderr" != *"../evil-ref"* ]] || {
+    echo "FAIL: path-traversal base_branch was used in a git ref call"
+    echo "stderr: $stderr"
+    return 1
+  }
+}
+
+@test "detect_lib_shrinkage: rejects shell-metachar base_branch and falls back to main" {
+  # Simulate a crafted baseRefName with shell meta-characters (e.g. command injection).
+  # Must be rejected and fall back to "main".
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Return a branch name with shell meta-character (semicolon)
+        printf 'main;touch /tmp/pwned'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        echo \"fetch_branch=\$5\" >&2
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ]; then
+        return 1
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+  "
+
+  # Blocker fires (absolute threshold)
+  [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # The invalid base_branch with shell meta-chars must not appear in git calls
+  [[ "$stderr" != *"touch /tmp/pwned"* ]] || {
+    echo "FAIL: shell-metachar base_branch was used in a git call"
+    return 1
+  }
+}
+
+@test "detect_lib_shrinkage: accepts valid non-main base_branch (e.g. develop, release/1.0)" {
+  # Ensure the validation does NOT reject valid branch names with slashes and dots.
+  local target_file="lib/core/workflow-runner.sh"
+  local total_lines=200
+  local deleted_lines=110  # 55% above threshold
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _total_lines="$total_lines"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  # Test with "release/1.0" — contains slash and dot, both valid
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'release/1.0'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        echo \"fetch_branch=\$5\" >&2
+        return 0
+      fi
+      # Return correct line count for origin/release/1.0
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == 'origin/release/1.0:'* ]]; then
+        seq 1 '${_total_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == 'origin/main:'* ]]; then
+        echo 'ERROR: used main instead of release/1.0' >&2
+        return 1
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+  "
+
+  # 110/200 = 55% > 50% threshold — blocker fires
+  [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # Must not have fallen back to main (fetch uses release/1.0)
+  [[ "$stderr" != *"ERROR: used main"* ]] || {
+    echo "FAIL: valid release/1.0 branch was rejected and fell back to main"
+    return 1
+  }
+  # Fetch must have been called with the right branch
+  [[ "$stderr" == *"fetch_branch=release/1.0"* ]] || {
+    echo "FAIL: fetch_branch does not show release/1.0"
+    echo "stderr: $stderr"
+    return 1
+  }
 }
