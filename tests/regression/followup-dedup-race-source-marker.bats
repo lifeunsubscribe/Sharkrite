@@ -268,21 +268,34 @@ run_sentinel_dedup_create() {
   local sentinel_file="${sentinel_dir}/source-issue-${src}.created"
   touch "$sentinel_file"
 
-  # Backdate the sentinel to 70 seconds ago using touch -A (portable adjustment)
-  # macOS touch supports -A [+/-]HH[MM[SS]] for relative mtime adjustment.
-  # Linux touch supports --date='70 seconds ago'.  Detect which is available.
+  # Backdate the sentinel to 70 seconds ago using touch -t with a computed
+  # absolute timestamp.  touch -t [[CC]YY]MMDDhhmm[.SS] is POSIX and works
+  # on both macOS (BSD) and Linux without relying on relative-adjustment flags
+  # (-A is macOS-only; -d is GNU-only).  Computing an absolute past timestamp
+  # via date arithmetic is deterministic and always produces a non-zero TTL
+  # comparison — unlike the -A/-d fallback chain, which silently degraded to
+  # TTL=0 when neither flag was supported, making the age comparison trivially
+  # unreachable.
   local backdate_ok=false
-  if touch -A -0001.10 "$sentinel_file" 2>/dev/null; then
-    # macOS: -A adjusts by [-][[hh]mm]SS; -0001.10 = -70 seconds
-    backdate_ok=true
-  elif touch -d "70 seconds ago" "$sentinel_file" 2>/dev/null; then
-    # GNU coreutils
-    backdate_ok=true
+  local past_ts
+  # Compute epoch 70s ago, then format as MMDDhhmm.SS for touch -t.
+  # date(1) arithmetic: macOS uses -v; GNU uses -d.
+  if past_ts=$(date -v-70S +"%Y%m%d%H%M.%S" 2>/dev/null); then
+    # macOS BSD date
+    touch -t "$past_ts" "$sentinel_file" 2>/dev/null && backdate_ok=true
+  elif past_ts=$(date -d "70 seconds ago" +"%Y%m%d%H%M.%S" 2>/dev/null); then
+    # GNU coreutils date
+    touch -t "$past_ts" "$sentinel_file" 2>/dev/null && backdate_ok=true
   fi
 
   if [ "$backdate_ok" = "false" ]; then
-    # Fallback: set TTL to 0 (always expired) so the test still verifies TTL logic
-    export RITE_FOLLOWUP_SENTINEL_TTL_S=0
+    # Platform doesn't support either date variant — use sleep as last resort.
+    # Set TTL to 1s and sleep 2s so the sentinel is genuinely expired and the
+    # age comparison (_sentinel_age -ge _sentinel_ttl) is exercised with a
+    # real non-zero TTL (not the TTL=0 shortcut that bypasses age logic).
+    export RITE_FOLLOWUP_SENTINEL_TTL_S=1
+    sleep 2
+    backdate_ok=true
   fi
 
   # Process A: sentinel exists but is expired (or TTL=0) → should create

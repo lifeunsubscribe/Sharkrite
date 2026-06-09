@@ -60,6 +60,10 @@ cleanup() {
   # ${REVIEW_FILE:-} guard: variable is unset until line ~411; the :- expansion
   # satisfies set -u without crashing if EXIT fires before REVIEW_FILE is set.
   rm -f "${REVIEW_FILE:-}" 2>/dev/null || true
+  # Clean up the contention-signal temp file owned by this invocation.
+  # This is the safety net for crashes between mktemp and the explicit rm at
+  # line ~1461; normal exits clean it up before reaching here.
+  rm -f "${_lock_contended_file:-}" 2>/dev/null || true
   # Release follow-up lock on signal (SIGINT/SIGTERM) to avoid leaving it
   # held for the full 60s acquire-loop timeout on the next run.
   # Pass ISSUE_NUMBER (if set) to release the correct compound lock key.
@@ -1416,8 +1420,12 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   # after acquisition and broaden the dedup retry condition accordingly.
   # The file is keyed by PR + source issue to avoid cross-invocation collisions
   # (multiple parallel assessments on different issues use different temp files).
-  _lock_contended_file=$(mktemp "${RITE_LOCK_DIR}/.contended-signal-XXXXXX" 2>/dev/null || \
-    mktemp "/tmp/.rite-contended-signal-XXXXXX")
+  # Ensure RITE_LOCK_DIR exists before mktemp so the file lands on the same
+  # filesystem as other lock files (same-FS invariant) and the EXIT trap's
+  # scoped rm -f can always find it.  No /tmp fallback: a /tmp file would
+  # violate the invariant and is outside the EXIT trap's cleanup scope.
+  mkdir -p "$RITE_LOCK_DIR" 2>/dev/null || true
+  _lock_contended_file=$(mktemp "${RITE_LOCK_DIR}/.contended-signal-XXXXXX")
   export RITE_FOLLOWUP_LOCK_CONTENDED_FILE="$_lock_contended_file"
 
   # Acquire per-PR follow-up lock before the check-then-create sequence.
@@ -1722,7 +1730,12 @@ This approach allows all fixes to be completed together in a focused PR."
       if [ -n "${ISSUE_NUMBER:-}" ]; then
         _sentinel_write_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
         mkdir -p "$_sentinel_write_dir" 2>/dev/null || true
-        touch "${_sentinel_write_dir}/source-issue-${ISSUE_NUMBER}.created" 2>/dev/null || true
+        if touch "${_sentinel_write_dir}/source-issue-${ISSUE_NUMBER}.created" 2>/dev/null; then
+          : # sentinel written — primary dedup guard active
+        else
+          _diag "FOLLOWUP_SENTINEL_WRITE_FAILED issue=${ISSUE_NUMBER} dir=${_sentinel_write_dir}"
+          print_warning "⚠️  Could not write follow-up sentinel for issue #${ISSUE_NUMBER} — dedup will rely on lock dwell only."
+        fi
         unset _sentinel_write_dir
       fi
 
