@@ -858,3 +858,39 @@ JSON
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fixture P: _strptime is NOT an explicit entry in _normalize_python_import_name
+#
+# Regression for the dead/redundant table entry removed in issue #429.
+# _strptime is a Python stdlib internal (used by datetime.strptime internally).
+# It must NOT have a dedicated case that echoes "_strptime" unchanged — that
+# entry was identical to the default *) case and is dead code.
+#
+# This is a structural check: verify the normalization table contains no
+# explicit "_strptime)" entry.  The default *) case already handles it.
+# ---------------------------------------------------------------------------
+
+@test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
+  local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
+
+  # Count explicit _strptime case entries in the normalization function.
+  # The function range is _normalize_python_import_name() to _trim_node_package_name().
+  local _start _end
+  _start=$(grep -n '^_normalize_python_import_name()' "$plan_issues_sh" | head -1 | cut -d: -f1)
+  _end=$(grep -n '^_trim_node_package_name()' "$plan_issues_sh" | head -1 | cut -d: -f1)
+  _end=$((_end - 1))
+
+  local fn_body
+  fn_body=$(sed -n "${_start},${_end}p" "$plan_issues_sh")
+
+  # Must NOT contain an explicit _strptime case (it is dead — default *) handles it)
+  local strptime_case_count
+  strptime_case_count=$(echo "$fn_body" | grep -c '_strptime)' || true)
+
+  [ "$strptime_case_count" -eq 0 ] || {
+    echo "FAIL: _normalize_python_import_name has $strptime_case_count dead '_strptime)' case(s) — remove them; the default *) case is sufficient" >&2
+    echo "$fn_body" | grep '_strptime)' >&2
+    false
+  }
+}

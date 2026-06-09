@@ -2042,7 +2042,6 @@ _normalize_python_import_name() {
       dotenv)       echo "python-dotenv" ;;
       jose)         echo "python-jose" ;;
       attr)         echo "attrs" ;;
-      _strptime)    echo "_strptime" ;;  # stdlib, will never be in manifest — pass through
       *)            echo "$_import" ;;
     esac
   done
