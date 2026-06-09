@@ -831,6 +831,16 @@ PROMPT_EOF
   # stays at the salient tail and doesn't stack across retries.
   local _active_prompt="$prompt"
 
+  # Track the MOST COMPLETE attempt across retries. A retry can come back worse
+  # (fewer blocks, or zero) than an earlier try, and the loop's temp_file only
+  # holds the LAST attempt — so without this we could discard a good partial slate
+  # for a bad re-roll and then hard-fail to zero (regression 2026-06-09: a 5-of-6
+  # attempt was thrown away by a retry that emitted 0). We restore the best after
+  # the loop so the retry can only ever improve the result, never regress it.
+  local _best_file _best_emitted
+  _best_file=$(mktemp)
+  _best_emitted=-1
+
   # Log prompt size for debugging
   local prompt_lines
   prompt_lines=$(echo "$prompt" | wc -l | tr -d ' ')
@@ -866,7 +876,7 @@ PROMPT_EOF
       print_warning "Provider stderr:" >&2
       cat "$claude_stderr" >&2
       print_error "Provider streaming prompt timed out (exit 124) — aborting plan-issues" >&2
-      rm -f "$claude_stderr" "$temp_file"
+      rm -f "$claude_stderr" "$temp_file" "$_best_file"
       return 1
     fi
 
@@ -892,6 +902,16 @@ PROMPT_EOF
       # than accepting a partial slate and silently stripping the remainder.
       local _missing
       _missing=$(_coverage_missing_titles "$temp_file" || true)
+
+      # Save this attempt as the best-so-far if it emitted more issue blocks than
+      # any prior attempt (restored after the loop — see _best_file init above).
+      local _emitted_now
+      _emitted_now=$(grep -c "^TITLE:" "$temp_file" || true)
+      if [ "${_emitted_now:-0}" -gt "$_best_emitted" ]; then
+        cp "$temp_file" "$_best_file"
+        _best_emitted=$_emitted_now
+      fi
+
       if [ -n "$_missing" ] && grep -q "COVERAGE" "$temp_file"; then
         if [ $attempt -lt $max_attempts ]; then
           local _missing_count _missing_list
@@ -910,10 +930,11 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
           sleep 3
           continue
         fi
-        # Retries exhausted, still incomplete: fall through. If 0 blocks emitted,
-        # _validate_coverage's zero-emission guard aborts with one error; if a
-        # partial slate emitted, it strips + warns loudly per dropped issue.
-        print_warning "Provider still omitted planned issue block(s) after $max_attempts attempts — proceeding with what emitted" >&2
+        # Retries exhausted, still incomplete: fall through. The best attempt is
+        # restored after the loop. If it had 0 blocks, _validate_coverage's
+        # zero-emission guard aborts with one error; if it was a partial slate,
+        # it keeps those issues and warns loudly per dropped issue.
+        print_warning "Provider still omitted planned issue block(s) after $max_attempts attempts — keeping the most complete attempt ($_best_emitted issue block(s))" >&2
       fi
       break
     fi
@@ -925,6 +946,15 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
   done
 
   rm -f "$claude_stderr"
+
+  # Restore the most complete attempt. The loop's temp_file holds only the LAST
+  # attempt, which a bad retry may have left worse (fewer blocks, or zero) than an
+  # earlier try. _best_file holds the attempt with the most emitted blocks, so a
+  # retry can only ever improve the result — never discard a good partial slate.
+  if [ "$_best_emitted" -ge 0 ] && [ -s "$_best_file" ]; then
+    cp "$_best_file" "$temp_file"
+  fi
+  rm -f "$_best_file"
 
   if [ ! -s "$temp_file" ]; then
     print_error "Claude returned empty response after $max_attempts attempts" >&2
