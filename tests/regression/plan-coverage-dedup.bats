@@ -742,6 +742,50 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Acceptance: generate_issues preserves the MOST COMPLETE attempt across retries
+#
+# Regression 2026-06-09 (second-order): the partial-emission retry overwrote the
+# streamed output each attempt and kept the LAST one. A 5-of-6 attempt was retried,
+# the retry came back with 0 blocks, and that worse result was kept and hard-failed
+# to zero — strictly worse than not retrying. The fix tracks the attempt with the
+# most emitted blocks (_best_file/_best_emitted) and restores it after the loop, so
+# a retry can only improve the result, never regress it. Structural check (the loop
+# embeds a live provider call).
+# ---------------------------------------------------------------------------
+
+@test "acceptance: generate_issues keeps the most complete attempt across retries" {
+  local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
+
+  local fn_body
+  fn_body=$(awk '
+    /^generate_issues\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print; next
+    }
+  ' "$plan_issues_sh")
+
+  # Must track the best attempt and only overwrite it when an attempt emits MORE.
+  echo "$fn_body" | grep -q '_best_emitted' || {
+    echo "FAIL: generate_issues no longer tracks the most complete attempt (_best_emitted)" >&2
+    false
+  }
+  echo "$fn_body" | grep -qE '_emitted_now.*-gt.*_best_emitted|"\$\{_emitted_now:-0\}" -gt "\$_best_emitted"' || {
+    echo "FAIL: best-attempt is not guarded by an emitted-block comparison" >&2
+    false
+  }
+  # Must restore the best attempt into temp_file after the loop.
+  echo "$fn_body" | grep -q 'cp "$_best_file" "$temp_file"' || {
+    echo "FAIL: generate_issues does not restore the best attempt after the retry loop" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Acceptance: the base prompt's closing directive states the issue blocks are
 # the required deliverable (prompt hardening against treating the checklist as
 # the output).
