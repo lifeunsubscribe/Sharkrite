@@ -1061,6 +1061,27 @@ find_worktree_for_task() {
   echo "$result"
 }
 
+# ---------------------------------------------------------------------------
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
+# can load only the function definitions above without executing the script body
+# (which calls gh/git, detects the provider CLI, navigates worktrees, and
+# ultimately launches a real Claude Code dev session via provider_run_agentic_session).
+#
+# This guard must appear AFTER all function definitions (so callers get the
+# functions they need) and BEFORE the network/filesystem-heavy executable body.
+#
+# Without this guard, every bats test that sources this file to test helpers like
+# check_dev_session_output inadvertently launches a real Claude Code session —
+# causing 7+ spurious claude_dev_session markers in the Phase 3 test-gate log
+# and ~33 minutes of unexplained LLM work per run. Live regression: issue #469.
+#
+# See: CLAUDE.md → "Pattern for executable files that are also sourced by tests"
+# See also: lib/core/local-review.sh for reference implementation.
+# ---------------------------------------------------------------------------
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+
 # Check dependencies
 if ! command -v gh &> /dev/null; then
   print_error "GitHub CLI required: brew install gh"

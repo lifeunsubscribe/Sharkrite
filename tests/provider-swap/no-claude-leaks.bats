@@ -119,9 +119,12 @@ teardown() {
   # Load provider interface and mock
   load_provider "gemini-mock"
 
-  # Source the workflow file to get its prompt building functions
-  # We need to test the actual prompt construction logic in claude-workflow.sh
-  if ! source "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" 2>/dev/null; then
+  # Source the workflow file to get its prompt building functions.
+  # We need to test the actual prompt construction logic in claude-workflow.sh.
+  # RITE_SOURCE_FUNCTIONS_ONLY=1 loads only function definitions without executing
+  # the main program body (arg parsing, worktree navigation, Claude dev session).
+  # Without this, sourcing launches a real Claude Code session (issue #469).
+  if ! RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" 2>/dev/null; then
     echo "Failed to source claude-workflow.sh - cannot test prompt construction" >&2
     return 1
   fi
