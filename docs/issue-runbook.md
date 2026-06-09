@@ -80,6 +80,28 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
     - `Blocked by: #N` — cannot start until N is complete
     - `None` — can start independently
 
+11. **Bug Class Analysis** *(required for bug-fix issues; omit for feature/infra issues)*
+
+    Before writing the fix, enumerate:
+
+    ```
+    **Bug Class Analysis:**
+    1. **Specific failure mode observed:** [what exactly broke, with log evidence]
+    2. **General bug class:** [what pattern is this an instance of? e.g. "guard prevents one path but sibling code path has identical root cause"]
+    3. **Sibling instances:** [2-3 other places in the codebase where this same pattern exists]
+       - `lib/core/foo.sh:140` — [same root cause, different trigger]
+       - `lib/utils/bar.sh:72` — [same root cause, different trigger]
+    4. **Scope decision:** For each sibling: is it addressed by this fix? If not, why is it out of scope?
+       - foo.sh: YES — same guard added in this PR
+       - bar.sh: NO — different subsystem, lower severity, tracked as follow-up #N
+    ```
+
+    **Why this section exists:** The single most common regression pattern in Sharkrite dogfooding is the "fix that doesn't fully fix" — a correct, narrow fix for the observed failure mode that leaves sibling instances of the same bug class untouched. These siblings surface as new issues within hours or days, each requiring a separate fix cycle. The Bug Class Analysis is the checkpoint that forces this question before the PR is written, when it costs nothing to widen the scope.
+
+    **When to omit:** Feature issues, infrastructure issues, documentation issues. The section applies only when the issue title begins with a bug description or the issue was filed in response to an observed failure.
+
+    **Minimum bar:** At least one sibling instance considered (even if the conclusion is "no siblings exist because this code path is unique — here's why"). "No siblings found, here's why" is a valid and sufficient answer.
+
 ---
 
 ## Issue Sizing Guidelines
