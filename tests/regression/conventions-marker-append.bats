@@ -19,6 +19,10 @@
 #   5. Malformed block (no title): skipped with warning, no crash
 #  14. Fenced code block guard: marker inside ``` ... ``` is not extracted
 #  15. Fenced code block guard: real marker after a fence IS still extracted
+#  20. Bug1 fix: real block with col-0 code fence in example is NOT truncated
+#  21. Bug1 fix: real block with multiple col-0 code fences in example extracts fully
+#  22. Bug2 fix: marker inside 4-backtick fence with inner 3-backtick is NOT extracted
+#  23. Bug2 fix: real block after 4-backtick fence with inner 3-backtick IS extracted
 
 load '../helpers/setup.bash'
 
@@ -1081,4 +1085,210 @@ BODY
   # This is the KNOWN LIMITATION documented in the source code comment.
   run grep "AFTER: content after the col-0 fake field line" "$conventions_file"
   [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 20 (Bug 1 fix): Real convention block with column-0 code fence in
+# example — block is NOT truncated (fence guard does not fire inside block)
+#
+# Bug: The original fence guard `/^```/ { in_fence = !in_fence; next }` fired
+# unconditionally.  When a real convention block's example field contained a
+# column-0 ``` fence, the guard toggled in_fence while in_block=1, causing
+# subsequent lines (including the close marker) to be skipped.  The block was
+# never emitted — silently truncated.
+#
+# Fix: Convention block content is accumulated BEFORE the fence guard, so the
+# guard never fires when in_block=1.
+# ---------------------------------------------------------------------------
+
+@test "Bug1: real block with col-0 code fence in example is NOT truncated" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # Convention block whose example field contains a column-0 ``` fence.
+  # The original fence guard would toggle in_fence at the ``` line inside
+  # the block, causing the close marker to be skipped and the block to be lost.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: col-zero-fence-in-example
+rule: Convention blocks with column-0 code fences must be fully extracted
+why: The fence guard must not fire inside a convention block
+example: |
+  # BAD: unguarded grep
+  COUNT=$(echo "$text" | grep -c "pattern")
+```bash
+  # This inner fence is at column-0 inside the example
+  COUNT=$(echo "$text" | grep -c "pattern" || true)
+```
+  # GOOD: guarded
+  COUNT=$(echo "$text" | grep -c "pattern" || true)
+references: #429
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "429" "$pr_body"
+
+  # The entry MUST exist (block was not truncated)
+  grep -q "^## col-zero-fence-in-example$" "$conventions_file"
+
+  # Content before the column-0 fence must be present
+  grep -q "unguarded grep" "$conventions_file"
+
+  # Content from inside the column-0 fence must be present (not skipped)
+  grep -q "inner fence is at column-0" "$conventions_file"
+
+  # Content after the column-0 fence must be present (not dropped)
+  grep -q "GOOD: guarded" "$conventions_file"
+
+  # References must be correct
+  grep -q "\*\*References:\*\* #429" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 21 (Bug 1 fix): Real convention block ends correctly even when its
+# example contains MULTIPLE column-0 code fences
+#
+# Verifies that the fence guard does not interleave state with in_block
+# for a block that has paired (open+close) column-0 fences in the example.
+# ---------------------------------------------------------------------------
+
+@test "Bug1: real block with multiple col-0 fences in example extracts fully" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+<!-- sharkrite-convention -->
+title: multi-col-zero-fences-in-example
+rule: Paired column-0 fences inside example do not corrupt extraction
+why: Both the opening and closing fence are inside the block and must be captured
+example: |
+  # BEFORE-FIRST-FENCE
+```
+  first inner fence content
+```
+  # BETWEEN-FENCES
+```bash
+  second inner fence content
+```
+  # AFTER-LAST-FENCE
+references: #430
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "430" "$pr_body"
+
+  # The entry MUST exist
+  grep -q "^## multi-col-zero-fences-in-example$" "$conventions_file"
+
+  # Content from each section must be present
+  grep -q "BEFORE-FIRST-FENCE" "$conventions_file"
+  grep -q "first inner fence content" "$conventions_file"
+  grep -q "BETWEEN-FENCES" "$conventions_file"
+  grep -q "second inner fence content" "$conventions_file"
+  grep -q "AFTER-LAST-FENCE" "$conventions_file"
+
+  grep -q "\*\*References:\*\* #430" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 22 (Bug 2 fix): Convention marker inside a 4-backtick fence is NOT
+# extracted (4-backtick fence closes correctly, guard is not prematurely
+# turned off by an inner 3-backtick sequence)
+#
+# Bug: The original /^```/ pattern toggled in_fence for ANY line starting
+# with 3+ backticks.  A 4-backtick outer fence containing an unindented
+# 3-backtick inner sequence would turn in_fence OFF at the inner ```, causing
+# lines after it (including a convention marker) to be processed as top-level
+# content and spuriously extracted.
+#
+# Fix: Track fence_len so only a fence of >= opening length closes the block.
+# ---------------------------------------------------------------------------
+
+@test "Bug2: marker inside 4-backtick fence with inner 3-backtick is NOT extracted" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # PR body where the convention template is inside a 4-backtick fence.
+  # The fence contains an inner ``` sequence that would confuse the original guard.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+This PR documents the convention format using a 4-backtick fence:
+
+````markdown
+Here is a code block inside the documentation:
+
+```
+some code here
+```
+
+<!-- sharkrite-convention -->
+title: Spurious extraction title — must NOT appear
+rule: This must not be extracted
+why: It is inside a 4-backtick fence
+references: #0
+<!-- /sharkrite-convention -->
+````
+
+The above is just documentation.
+BODY
+)
+
+  update_conventions_from_marker "433" "$pr_body"
+
+  # The spurious title must NOT appear in conventions.md
+  run grep "^## Spurious extraction title" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # conventions.md must be unchanged (no new entries beyond the seed)
+  local count
+  count=$(grep -c "^## " "$conventions_file" || true)
+  [ "$count" -eq 1 ]
+  grep -q "^## seed-convention$" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 23 (Bug 2 fix): Real convention block AFTER a 4-backtick fence (that
+# contains an inner 3-backtick) is still correctly extracted
+#
+# Verifies that the fence state is fully reset after the 4-backtick fence
+# closes, so real convention blocks that follow it are not lost.
+# ---------------------------------------------------------------------------
+
+@test "Bug2: real block after 4-backtick fence with inner 3-backtick IS extracted" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+Documentation section (4-backtick fence, do not extract):
+
+````markdown
+```
+code inside the documentation fence
+```
+<!-- sharkrite-convention -->
+title: Should NOT be extracted (in 4-backtick fence)
+<!-- /sharkrite-convention -->
+````
+
+Real convention block (DO extract):
+
+<!-- sharkrite-convention -->
+title: real-after-4-backtick-fence
+rule: Blocks after a properly-closed 4-backtick fence must be extracted
+why: Fence state must be fully reset after close
+references: #434
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "434" "$pr_body"
+
+  # The spurious (fenced) title must NOT appear
+  run grep "^## Should NOT be extracted" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # The real convention block (outside the fence) MUST appear
+  grep -q "^## real-after-4-backtick-fence$" "$conventions_file"
+  grep -q "\*\*References:\*\* #434" "$conventions_file"
 }
