@@ -945,14 +945,24 @@ ${ITEM_DEFER}
 _Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
 _Parent PR: #${PR_NUMBER}_"
 
+          # Priority label fix (defect #4): derive priority from the item's severity
+          # so HIGH findings are distinguishable from cosmetic items in triage.
+          _priority_label="priority-medium"
+          case "${ITEM_SEVERITY:-MEDIUM}" in
+            CRITICAL|HIGH) _priority_label="priority-high" ;;
+            MEDIUM)        _priority_label="priority-medium" ;;
+            LOW)           _priority_label="priority-low" ;;
+            *)             _priority_label="priority-medium" ;;
+          esac
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
-          ensure_labels_exist "tech-debt,from-review"
+          ensure_labels_exist "tech-debt,from-review,${_priority_label}"
           ISSUE_URL=$(gh_safe issue create \
             --title "$ITEM_TITLE" \
             --body-file "$CREATE_BODY_FILE" \
             --label "tech-debt" \
-            --label "from-review" || true)
+            --label "from-review" \
+            --label "$_priority_label" || true)
           ISSUE_URL="${ISSUE_URL:-}"
           rm -f "$CREATE_BODY_FILE"
 
@@ -961,6 +971,11 @@ _Parent PR: #${PR_NUMBER}_"
             if [ -n "$NEW_ISSUE" ]; then
               CREATED_ISSUES="${CREATED_ISSUES}#${NEW_ISSUE} "
               print_success "  Created issue #$NEW_ISSUE"
+              # Passback: write issue number to temp file so assess-and-resolve.sh
+              # knows per-item issues were filed and can skip the consolidated rollup.
+              if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
+                echo "$NEW_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
+              fi
             fi
           else
             print_warning "  Failed to create issue: $ITEM_TITLE"

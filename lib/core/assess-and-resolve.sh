@@ -238,8 +238,9 @@ print_assessment_details() {
   fi
 
   # Extract and display ACTIONABLE_LATER items
-  local later_items=$(echo "$assessment_content" | grep -A 20 "ACTIONABLE_LATER" 2>/dev/null | grep -B 1 "ACTIONABLE_LATER" 2>/dev/null || true)
-  if [ -n "$later_items" ]; then
+  # Use structured header match (not grep -A N) to avoid spanning item boundaries.
+  local later_items=$(echo "$assessment_content" | grep -c "^### .* - ACTIONABLE_LATER" || true)
+  if [ "${later_items:-0}" -gt 0 ]; then
     echo "📝 ACTIONABLE_LATER (defer to follow-up):"
     echo ""
 
@@ -806,6 +807,11 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   ASSESSMENT_EXIT_CODE=0
   # Export source issue number so assess-review-issues.sh can scope dedup searches
   export RITE_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+  # Per-item issue passback: assess-review-issues.sh writes created issue numbers
+  # (one per line) to this temp file so we can skip the consolidated rollup when
+  # per-item issues already cover the ACTIONABLE_LATER findings.
+  _per_item_issues_file=$(mktemp)
+  export RITE_PER_ITEM_ISSUES_FILE="$_per_item_issues_file"
   if [ "$AUTO_MODE" = true ]; then
     ASSESSMENT_RESULT=$("$RITE_LIB_DIR/core/assess-review-issues.sh" "$PR_NUMBER" "$REVIEW_FILE" --auto 2> >(tee "$ASSESSMENT_STDERR" >&2)) || ASSESSMENT_EXIT_CODE=$?
   else
@@ -815,6 +821,19 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   wait
   ASSESSMENT_ERROR=$(cat "$ASSESSMENT_STDERR")
   rm -f "$ASSESSMENT_STDERR"
+
+  # Read per-item issue numbers written by assess-review-issues.sh.
+  # Format: one issue number per line (e.g. "459\n460\n").
+  # Non-empty → assess-review-issues.sh already filed per-item issues for
+  # ACTIONABLE_LATER findings; we skip the consolidated rollup and post a
+  # PR comment summary instead (defect #2 fix).
+  PER_ITEM_ISSUES=""
+  if [ -n "${_per_item_issues_file:-}" ] && [ -f "$_per_item_issues_file" ]; then
+    PER_ITEM_ISSUES=$(cat "$_per_item_issues_file" 2>/dev/null || true)
+    rm -f "$_per_item_issues_file"
+    unset RITE_PER_ITEM_ISSUES_FILE
+  fi
+  unset _per_item_issues_file
 
   if [ $ASSESSMENT_EXIT_CODE -eq 0 ] && [ -n "$ASSESSMENT_RESULT" ] && [ "$ASSESSMENT_RESULT" != "ALL_ITEMS" ]; then
     print_success "Smart assessment complete - three-state categorization applied"
@@ -882,14 +901,26 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
-      # Only ACTIONABLE_LATER items - create tech-debt issue and merge
+      # Only ACTIONABLE_LATER items.
       print_info "✅ No immediate fixes needed"
-      print_status "Creating tech-debt issue for $ACTIONABLE_LATER_COUNT deferred items..."
 
-      # Set flag to create tech-debt issue, then exit 0 to allow merge
-      CREATE_SECURITY_DEBT=true
-      FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
-      # Will create issue below, then exit 0
+      # Dual-filing fix (defect #2): assess-review-issues.sh already created per-item
+      # issues for each ACTIONABLE_LATER finding. Skip the consolidated rollup and post
+      # a PR comment listing those issues instead.
+      if [ -n "${PER_ITEM_ISSUES:-}" ]; then
+        _per_item_count=$(echo "$PER_ITEM_ISSUES" | grep -c "^[0-9]" || true)
+        print_success "Per-item issues already filed by assess-review-issues.sh: $_per_item_count issue(s)"
+        print_info "Skipping consolidated rollup — per-item issues are the canonical record"
+        # Post a summary PR comment so the PR has a visible record
+        SKIP_ROLLUP_DUE_TO_PER_ITEM=true
+        FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
+      else
+        print_status "Creating tech-debt issue for $ACTIONABLE_LATER_COUNT deferred items..."
+        # Set flag to create tech-debt issue, then exit 0 to allow merge
+        CREATE_SECURITY_DEBT=true
+        FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
+      fi
+      # Will post comment or create issue below, then exit 0
 
     elif [ "$ACTIONABLE_NOW_COUNT" -gt 0 ]; then
       # ACTIONABLE_NOW items exist - need to fix them OR defer if PR is
@@ -934,11 +965,23 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
           CREATE_CRITICAL_FOLLOWUP=true
           FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
         else
-          print_info "✅ No CRITICAL items remain (only HIGH/MEDIUM/LOW)"
-          print_status "Creating tech-debt issue for remaining items..."
-          # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit
+          # Final-retry shoe-horn fix (defect #5): only HIGH findings are worth
+          # filing at retry limit. MEDIUM/LOW findings that the fix loop couldn't
+          # address in 3 cycles are nice-to-haves — filing them clutters the backlog
+          # without adding triage value (they were already low-priority and couldn't
+          # be auto-fixed). Drop them with a log message.
+          if [ "$HIGH_NOW_COUNT" -gt 0 ]; then
+            print_info "✅ No CRITICAL items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
+            print_status "Creating tech-debt issue for HIGH items (dropping MEDIUM/LOW)..."
+          else
+            print_info "✅ No CRITICAL/HIGH items remain at retry limit — all remaining are MEDIUM/LOW"
+            print_info "Dropping MEDIUM/LOW findings (not worth follow-up backlog space at retry limit)"
+          fi
+          # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit.
+          # MEDIUM/LOW will be filtered out by the extraction step (DROP_RETRY_MEDIUM_LOW=true).
           CREATE_SECURITY_DEBT=true
           FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
+          DROP_RETRY_MEDIUM_LOW=true
         fi
 
         # Also handle ACTIONABLE_LATER items if they exist
@@ -1097,6 +1140,32 @@ if [ "${CREATE_CRITICAL_FOLLOWUP:-false}" = "true" ]; then
   CREATE_LOW_BATCH=false
 fi
 
+# When per-item issues already cover all ACTIONABLE_LATER findings, post a PR
+# comment that lists those issues so the PR has a machine-readable summary record.
+# This replaces the consolidated rollup (defect #2 fix).
+if [ "${SKIP_ROLLUP_DUE_TO_PER_ITEM:-false}" = "true" ] && [ -n "${PER_ITEM_ISSUES:-}" ]; then
+  print_header "📝 Follow-up Issues Summary (per-item — no rollup)"
+  _per_item_refs=""
+  while IFS= read -r _num; do
+    [ -z "$_num" ] && continue
+    _per_item_refs="${_per_item_refs}#${_num} "
+  done <<< "$PER_ITEM_ISSUES"
+  _per_item_refs=$(echo "$_per_item_refs" | sed 's/[[:space:]]*$//' || true)
+  _summary_comment="<!-- ${RITE_MARKER_FOLLOWUP}:per-item -->
+📋 **Follow-up issues filed (per-item):** ${_per_item_refs}
+
+Each deferred finding has its own prioritized issue — no consolidated rollup needed."
+  _summary_file=$(mktemp)
+  printf '%s' "$_summary_comment" > "$_summary_file"
+  if gh_safe pr comment "$PR_NUMBER" --body-file "$_summary_file" 2>/dev/null; then
+    print_success "Posted per-item follow-up summary to PR #$PR_NUMBER"
+  else
+    print_warning "Could not post summary comment (per-item issues are still filed)"
+  fi
+  rm -f "$_summary_file"
+  unset _per_item_refs _summary_comment _summary_file _num
+fi
+
 # Create consolidated follow-up issue if needed
 # Disable errexit: follow-up issue creation uses _followup_creation_failed flag
 # to surface failures instead of letting set -e kill the script mid-creation.
@@ -1115,15 +1184,41 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
 
   # Extract issues from holistic assessment
   if [ "$USE_FILTERED" = true ] && [ -n "$FILTERED_CONTENT" ]; then
-    # Determine which items to include based on issue type
-    # Match structured headers first (^### Title - STATE), then check Severity: metadata
-    # within those blocks (not bare keywords that could appear in reasoning text)
+    # Determine which items to include based on issue type.
+    # DISMISSED leak fix (defect #3): use awk to extract complete per-item blocks
+    # rather than grep -A 20 | grep -B 2. The grep approach spans item boundaries:
+    # a 20-line look-ahead on item N can include item N+1's header (even if DISMISSED),
+    # and grep -B 2 then pulls that header into the severity bucket.
+    # The awk extractor accumulates each item until the next ### header and only
+    # includes blocks whose content matches the target severity pattern.
+    _extract_items_by_state() {
+      local _state_pattern="$1"
+      local _severity_pattern="$2"
+      # sharkrite-lint disable UNSAFE_PIPE_IN_CMDSUB - Reason: || true at end of pipeline
+      # Use length(block) > 0 instead of block != "" to avoid BSD awk locale bug
+      # where != is misinterpreted when LANG is not C (macOS awk 20200816 issue).
+      echo "$FILTERED_CONTENT" | awk -v states="$_state_pattern" -v sev="$_severity_pattern" '
+        /^### .* - ACTIONABLE_/ {
+          if (length(block) > 0 && block ~ sev) { print block; print "" }
+          in_block = ($0 ~ states)
+          block = in_block ? $0 : ""
+          next
+        }
+        /^### / {
+          if (length(block) > 0 && block ~ sev) { print block; print "" }
+          in_block = 0; block = ""; next
+        }
+        in_block { block = block "\n" $0 }
+        END { if (length(block) > 0 && block ~ sev) { print block; print "" } }
+      ' || true
+    }
+
     if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
       print_status "Extracting ACTIONABLE_LATER items for tech-debt issue..."
-      CRITICAL_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*CRITICAL" || echo "")
-      HIGH_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*HIGH" || echo "")
-      MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*MEDIUM" || echo "")
-      LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*LOW" || echo "")
+      CRITICAL_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*CRITICAL")
+      HIGH_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*HIGH")
+      MEDIUM_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*MEDIUM")
+      LOW_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*LOW")
 
       # Include ACTIONABLE_NOW items in the tech-debt follow-up when either:
       # (a) retry limit reached — couldn't fix the NOW items in the loop
@@ -1133,19 +1228,19 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       if [ "$RETRY_COUNT" -ge 3 ] || [ "${SHIPPABLE_DEFER:-false}" = "true" ]; then
         print_status "Also including unresolved ACTIONABLE_NOW items..."
         CRITICAL_ISSUES="$CRITICAL_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*CRITICAL" || echo "")"
+$(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*CRITICAL")"
         HIGH_ISSUES="$HIGH_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*HIGH" || echo "")"
+$(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*HIGH")"
         MEDIUM_ISSUES="$MEDIUM_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*MEDIUM" || echo "")"
+$(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*MEDIUM")"
         LOW_ISSUES="$LOW_ISSUES
-$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "Severity:.*LOW" || echo "")"
+$(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*LOW")"
       fi
     else
-      CRITICAL_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*CRITICAL" || echo "")
-      HIGH_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*HIGH" || echo "")
-      MEDIUM_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*MEDIUM" || echo "")
-      LOW_ISSUES=$(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_\(NOW\|LATER\)" | grep -B 2 "Severity:.*LOW" || echo "")
+      CRITICAL_ISSUES=$(_extract_items_by_state "ACTIONABLE_(NOW|LATER)" "Severity:.*CRITICAL")
+      HIGH_ISSUES=$(_extract_items_by_state "ACTIONABLE_(NOW|LATER)" "Severity:.*HIGH")
+      MEDIUM_ISSUES=$(_extract_items_by_state "ACTIONABLE_(NOW|LATER)" "Severity:.*MEDIUM")
+      LOW_ISSUES=$(_extract_items_by_state "ACTIONABLE_(NOW|LATER)" "Severity:.*LOW")
     fi
 
     # Recount after filtering - count structured headers (^### Title - STATE)
@@ -1169,6 +1264,16 @@ $(echo "$FILTERED_CONTENT" | grep -A 20 "^### .* - ACTIONABLE_NOW" | grep -B 2 "
     fi
     LOW_ISSUES=""
     LOW_COUNT=0
+
+    # Final-retry MEDIUM drop (defect #5): when retry limit was reached with no
+    # CRITICAL items, MEDIUM findings are also dropped. They were already medium-priority
+    # and the fix loop couldn't address them — filing them clutters the backlog.
+    # Only HIGH/CRITICAL findings get a follow-up issue at retry limit.
+    if [ "${DROP_RETRY_MEDIUM_LOW:-false}" = "true" ] && [ "$MEDIUM_COUNT" -gt 0 ]; then
+      print_info "Final-retry: dropping $MEDIUM_COUNT MEDIUM-severity item(s) (not worth follow-up backlog space at retry limit)"
+      MEDIUM_ISSUES=""
+      MEDIUM_COUNT=0
+    fi
   else
     # Fallback: Extract all issues from review using sed (when Claude unavailable)
     CRITICAL_ISSUES=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
@@ -1214,7 +1319,24 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     FOLLOWUP_DESCRIPTION="This issue consolidates all review feedback items that should be addressed. Items are grouped by priority."
   fi
 
-  # Build follow-up issue body using the structure from templates/issue-template.md.
+  # Load issue runbook for authoritative title/structure guidance.
+  # Mirrors the pattern from plan-issues.sh:332-341.
+  # The runbook defines the canonical section order, title format, label dimensions,
+  # and time-estimate scale. We pass it as context so the body follows runbook
+  # conventions (Acceptance Criteria with verification commands, Done Definition,
+  # Scope Boundary DO/DO NOT bullets).  We don't regenerate via Claude here —
+  # the body structure is already hardcoded below; the runbook is loaded for
+  # reference and stored in FOLLOWUP_RUNBOOK_CONTENT for future prompt injection.
+  FOLLOWUP_RUNBOOK_CONTENT=""
+  if [ -f "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/issue-runbook.md" ]; then
+    FOLLOWUP_RUNBOOK_CONTENT=$(cat "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/issue-runbook.md" 2>/dev/null || true)
+  elif [ -f "${RITE_INSTALL_DIR:-}/docs/issue-runbook.md" ]; then
+    FOLLOWUP_RUNBOOK_CONTENT=$(cat "${RITE_INSTALL_DIR:-}/docs/issue-runbook.md" 2>/dev/null || true)
+  fi
+  FOLLOWUP_RUNBOOK_CONTENT="${FOLLOWUP_RUNBOOK_CONTENT:-}"
+
+  # Build follow-up issue body using the structure from templates/issue-template.md
+  # and the conventions in docs/issue-runbook.md (loaded above).
   # Sections: Description, Claude Context, Acceptance Criteria, Done Definition,
   # Scope Boundary, Dependencies, Time Estimate.
 
@@ -1358,16 +1480,42 @@ $TIME_ESTIMATE" || echo "")
 
 _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
-  # Determine issue title and search term based on type
-  # Title format follows templates/issue-template.md convention: [type] Brief description
-  # Include PR title for domain context (e.g., "[tech-debt] Grocery filtering: review feedback from PR #132")
-  _pr_context=""
-  if [ -n "${PR_TITLE:-}" ]; then
-    # Truncate long PR titles to keep issue title under ~80 chars
-    _pr_context=$(echo "$PR_TITLE" | cut -c1-50 | sed 's/[[:space:]]*$//' || true)
-    [ ${#PR_TITLE} -gt 50 ] && _pr_context="${_pr_context}..."
-    _pr_context="${_pr_context}: "
+  # Determine issue title and search term based on type.
+  # Title format: [tech-debt] <first item description, capped at 60 chars> (+N more) — PR #N
+  # Using the first item's actual title makes issues triageable at a glance.
+  # Old format (PR title truncated at 50 chars + colon) produced mid-phrase truncations
+  # like "[tech-debt] Fence guard truncates real blocks: review feedback from PR #387".
+  _first_item_title=""
+  _remaining_item_count=0
+  if [ -n "${FILTERED_CONTENT:-}" ]; then
+    _first_item_title=$(echo "$FILTERED_CONTENT" | grep -m1 -E "^### .* - ACTIONABLE_(NOW|LATER)" | \
+      sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
+    _total_items=$(echo "$FILTERED_CONTENT" | grep -c -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
+    _total_items=${_total_items:-0}
+    if [ "$_total_items" -gt 1 ]; then
+      _remaining_item_count=$((_total_items - 1))
+    fi
   fi
+
+  # Build meaningful description: first item title or PR title as fallback
+  _item_desc=""
+  if [ -n "$_first_item_title" ]; then
+    # Cap at 60 chars without mid-word truncation
+    if [ "${#_first_item_title}" -gt 60 ]; then
+      _item_desc="${_first_item_title:0:60}"
+      # Walk back to last space to avoid mid-word cut
+      _item_desc=$(echo "$_item_desc" | sed 's/ [^ ]*$//' || true)
+      _item_desc="${_item_desc}..."
+    else
+      _item_desc="$_first_item_title"
+    fi
+    [ "$_remaining_item_count" -gt 0 ] && _item_desc="${_item_desc} (+${_remaining_item_count} more)"
+    _item_desc="${_item_desc} — PR #${PR_NUMBER}"
+  else
+    # Fallback: use PR title without truncation artifact (append PR ref cleanly)
+    _item_desc="review feedback — PR #${PR_NUMBER}"
+  fi
+
   # When a source issue number is known, include it in both the title and the search
   # key so that two distinct source-issue follow-ups for the same PR get unique titles
   # and independent dedup scopes.  Without this, a title-search fallback for PR #N
@@ -1377,11 +1525,11 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
   [ -n "${ISSUE_NUMBER:-}" ] && _src_issue_suffix=" for issue #${ISSUE_NUMBER}"
 
   if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    ISSUE_TITLE="[tech-debt] ${_pr_context}review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
-    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
+    ISSUE_TITLE="[tech-debt] ${_item_desc}${_src_issue_suffix}"
+    ISSUE_SEARCH="review feedback — PR #${PR_NUMBER}${_src_issue_suffix}"
   else
-    ISSUE_TITLE="[review-follow-up] ${_pr_context}review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
-    ISSUE_SEARCH="review feedback from PR #$PR_NUMBER${_src_issue_suffix}"
+    ISSUE_TITLE="[review-follow-up] ${_item_desc}${_src_issue_suffix}"
+    ISSUE_SEARCH="review feedback — PR #${PR_NUMBER}${_src_issue_suffix}"
   fi
 
   # Source-marker sentinel pre-check (before lock acquisition).
