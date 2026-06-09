@@ -168,7 +168,7 @@ print_assessment_details() {
   # Extract and display ACTIONABLE_NOW items
   local now_items=$(echo "$assessment_content" | grep -A 20 "ACTIONABLE_NOW" 2>/dev/null | grep -B 1 "ACTIONABLE_NOW" 2>/dev/null || true)
   if [ -n "$now_items" ]; then
-    echo "🔴 ACTIONABLE_NOW (fix in this PR):" >&2
+    echo "🔧 ACTIONABLE_NOW (fix in this PR):" >&2
     echo "" >&2
 
     # Parse each item (pure awk — no system() calls to avoid shell injection
@@ -235,7 +235,7 @@ print_assessment_details() {
   # Extract and display ACTIONABLE_LATER items
   local later_items=$(echo "$assessment_content" | grep -A 20 "ACTIONABLE_LATER" 2>/dev/null | grep -B 1 "ACTIONABLE_LATER" 2>/dev/null || true)
   if [ -n "$later_items" ]; then
-    echo "🟡 ACTIONABLE_LATER (defer to follow-up):"
+    echo "📝 ACTIONABLE_LATER (defer to follow-up):"
     echo ""
 
     echo "$assessment_content" | awk '
@@ -293,7 +293,7 @@ print_assessment_details() {
   # Extract and display DISMISSED items
   local dismissed_items=$(echo "$assessment_content" | grep -A 20 "DISMISSED" 2>/dev/null | grep -B 1 "DISMISSED" 2>/dev/null || true)
   if [ -n "$dismissed_items" ]; then
-    echo "⚪ DISMISSED (not worth tracking):"
+    echo "🗑️  DISMISSED (not worth tracking):"
     echo ""
 
     echo "$assessment_content" | awk '
@@ -835,13 +835,18 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       echo ""
     }
 
-    # Print decision summary AFTER details (acts as summary/TL;DR)
+    # Print decision summary AFTER details (acts as summary/TL;DR).
+    # This is the single authoritative summary — three-state (NOW/LATER/
+    # DISMISSED) is the axis the workflow actually decides on. Loud per-line
+    # emoji + Total mirror the old severity rollup that used to print below.
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "📊 Assessment Summary:"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    print_status "  • ACTIONABLE_NOW: $ACTIONABLE_NOW_COUNT items (fix now)"
-    print_status "  • ACTIONABLE_LATER: $ACTIONABLE_LATER_COUNT items (defer to tech-debt)"
-    print_status "  • DISMISSED: $DISMISSED_COUNT items (not worth tracking)"
+    echo "🔧 ACTIONABLE_NOW: $ACTIONABLE_NOW_COUNT items - fix now"
+    echo "📝 ACTIONABLE_LATER: $ACTIONABLE_LATER_COUNT items - defer to tech-debt"
+    echo "🗑️  DISMISSED: $DISMISSED_COUNT items - not worth tracking"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Total actionable: $((ACTIONABLE_NOW_COUNT + ACTIONABLE_LATER_COUNT)) items"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
@@ -1029,28 +1034,16 @@ fi
 
 echo ""
 
-# ============================================================================
-# DISPLAY ISSUE SUMMARY (after smart assessment has filtered counts)
-# ============================================================================
-
-# Initialize counts if not already set (happens when early exit paths are taken)
+# Defensive: ensure severity counts are numeric before the follow-up block
+# reads them. The three-state Assessment Summary printed above is the single
+# user-facing breakdown; these severity counts feed only the tech-debt issue
+# body and are normally recomputed from FILTERED_CONTENT at follow-up creation.
+# (The old severity "Issue Summary" display that lived here misreported 0/0/0/0
+# on the defer/later paths — it predated the three-state system. Removed.)
 CRITICAL_COUNT=${CRITICAL_COUNT:-0}
 HIGH_COUNT=${HIGH_COUNT:-0}
 MEDIUM_COUNT=${MEDIUM_COUNT:-0}
 LOW_COUNT=${LOW_COUNT:-0}
-
-TOTAL_ISSUES=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Issue Summary:"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-print_critical "$CRITICAL_COUNT issues - Must fix before merge"
-print_high "$HIGH_COUNT issues - Should fix immediately"
-print_medium "$MEDIUM_COUNT issues - Create GitHub issues"
-print_low "$LOW_COUNT issues - Batch into nice-to-have"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Total: $TOTAL_ISSUES issues"
-echo ""
 
 # ============================================================================
 # FOLLOW-UP ISSUE CREATION
