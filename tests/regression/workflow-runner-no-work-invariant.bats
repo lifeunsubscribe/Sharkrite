@@ -57,11 +57,24 @@ teardown() {
 # STRUCTURAL: verify the invariant guard is present in source files
 # =============================================================================
 
-@test "structural: run_workflow() contains INVARIANT_VIOLATED guard block" {
+@test "structural: check_workflow_invariant() is defined in workflow-runner.sh" {
   _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
   [ -f "$_wfr" ]
 
-  # The invariant check must exist in the source
+  # The invariant predicate must be extracted into a named function so tests
+  # can call it directly without re-implementing it. Refactored in issue #429.
+  _count=$(grep -c "^check_workflow_invariant()" "$_wfr" || true)
+  [ "$_count" -ge 1 ] || {
+    echo "FAIL: check_workflow_invariant() not found as a top-level function in workflow-runner.sh"
+    return 1
+  }
+}
+
+@test "structural: check_workflow_invariant() contains INVARIANT_VIOLATED diagnostic" {
+  _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+  [ -f "$_wfr" ]
+
+  # The INVARIANT_VIOLATED _diag line must exist inside check_workflow_invariant()
   _count=$(grep -c "INVARIANT_VIOLATED" "$_wfr" || true)
   [ "$_count" -ge 1 ] || {
     echo "FAIL: INVARIANT_VIOLATED diagnostic not found in workflow-runner.sh"
@@ -80,11 +93,62 @@ teardown() {
   }
 }
 
-@test "structural: invariant guard is positioned after phase_completion call in run_workflow()" {
+@test "structural: check_workflow_invariant() does not hardcode origin/main (uses dynamic base branch)" {
+  _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+  # Extract check_workflow_invariant() body and verify it does NOT contain the
+  # hardcoded "origin/main" string — a regression guard for issues #365/#420/#429.
+  # The function must use a dynamically resolved base branch (from PR baseRefName
+  # or RITE_MAIN_BRANCH fallback) rather than assuming the target is always main.
+  _fn_body=$(awk '
+    /^check_workflow_invariant\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c = substr($0,i,1)
+        if (c == "{") depth++
+        else if (c == "}") {
+          depth--
+          if (depth == 0) { print; in_fn=0; next }
+        }
+      }
+      print
+    }
+  ' "$_wfr")
+
+  _hardcoded_count=$(echo "$_fn_body" | grep -cF '"origin/main"' || true)
+  [ "$_hardcoded_count" -eq 0 ] || {
+    echo "FAIL: check_workflow_invariant() contains hardcoded \"origin/main\" — re-introduced anti-pattern"
+    echo "Use dynamic base branch resolution (PR baseRefName or RITE_MAIN_BRANCH fallback)"
+    return 1
+  }
+}
+
+@test "structural: check_workflow_invariant() is defined BEFORE run_workflow()" {
+  _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+  # check_workflow_invariant() must be defined before run_workflow() calls it
+  _line_helper=$(grep -n "^check_workflow_invariant()" "$_wfr" | head -1 | cut -d: -f1)
+  _line_run=$(grep -n "^run_workflow()" "$_wfr" | head -1 | cut -d: -f1)
+
+  [ -n "$_line_helper" ] || {
+    echo "FAIL: check_workflow_invariant() not found in workflow-runner.sh"
+    return 1
+  }
+  [ -n "$_line_run" ] || {
+    echo "FAIL: run_workflow() not found in workflow-runner.sh"
+    return 1
+  }
+  [ "$_line_helper" -lt "$_line_run" ] || {
+    echo "FAIL: check_workflow_invariant() (line $_line_helper) must be defined before run_workflow() (line $_line_run)"
+    return 1
+  }
+}
+
+@test "structural: run_workflow() calls check_workflow_invariant after phase_completion" {
   _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
   # Extract run_workflow() body and verify ordering:
-  # phase_completion call must appear BEFORE the INVARIANT_VIOLATED guard
+  # phase_completion call must appear BEFORE the check_workflow_invariant call
   _fn_body=$(awk '
     /^run_workflow\(\)/ { in_fn=1; depth=0 }
     in_fn {
@@ -101,18 +165,18 @@ teardown() {
   ' "$_wfr")
 
   _line_completion=$(echo "$_fn_body" | grep -n "phase_completion" | head -1 | cut -d: -f1)
-  _line_invariant=$(echo "$_fn_body" | grep -n "INVARIANT_VIOLATED" | head -1 | cut -d: -f1)
+  _line_invariant=$(echo "$_fn_body" | grep -n "check_workflow_invariant" | head -1 | cut -d: -f1)
 
   [ -n "$_line_completion" ] || {
     echo "FAIL: phase_completion call not found in run_workflow() body"
     return 1
   }
   [ -n "$_line_invariant" ] || {
-    echo "FAIL: INVARIANT_VIOLATED not found in run_workflow() body"
+    echo "FAIL: check_workflow_invariant call not found in run_workflow() body"
     return 1
   }
   [ "$_line_completion" -lt "$_line_invariant" ] || {
-    echo "FAIL: phase_completion (line $_line_completion) must appear before INVARIANT_VIOLATED guard (line $_line_invariant)"
+    echo "FAIL: phase_completion (line $_line_completion) must appear before check_workflow_invariant (line $_line_invariant)"
     return 1
   }
 }
@@ -180,90 +244,134 @@ teardown() {
 }
 
 # =============================================================================
-# BEHAVIORAL: simulate phases that return 0 with no git artifacts
+# BEHAVIORAL: call the real check_workflow_invariant() from workflow-runner.sh
+#
+# These tests source workflow-runner.sh with all external calls stubbed and
+# call check_workflow_invariant() directly. This ensures the predicate logic
+# lives in exactly one place — the source file — and tests cannot drift from
+# the implementation. Previously these tests re-implemented the predicate
+# inline (anti-pattern fixed by this issue; see issue #429).
 # =============================================================================
 
-@test "behavioral: workflow returning 0 with no commits and no PR triggers exit 13" {
-  # Simulate the scenario: all phase functions return 0 (no error),
-  # but the issue ends with no commits on branch and no PR.
-  # The invariant check must fire and return 13.
-  _script="$RITE_TEST_TMPDIR/test-no-work-invariant.sh"
-  cat > "$_script" <<'EOF'
+# Shared scaffold: source workflow-runner.sh with all dependency libs
+# short-circuited so check_workflow_invariant() is callable without
+# network or git access.
+#
+# Strategy: each lib in lib/utils/ and lib/providers/ has a re-source guard
+# (either a _RITE_*_LOADED var or a declare -f sentinel).  We set those vars
+# and pre-define those sentinel functions BEFORE sourcing workflow-runner.sh,
+# so every "source RITE_LIB_DIR/..." call returns immediately.
+# workflow-runner.sh checks "if [ -z RITE_LIB_DIR ]" before sourcing config.sh,
+# so pre-setting RITE_LIB_DIR also prevents the config.sh source chain.
+# workflow-runner.sh's own _RITE_WORKFLOW_RUNNER_LOADED guard is NOT set here
+# so its function bodies (including check_workflow_invariant) ARE loaded.
+#
+# Written to a temp file and sourced by each behavioral test script.
+_write_invariant_stubs() {
+  local stub_file="$1"
+  local rite_lib_dir="$2"
+  cat > "$stub_file" <<STUBS
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stubs for all dependencies
-GREEN="\033[0;32m"
-NC="\033[0m"
-print_status()  { :; }
-print_info()    { echo "INFO: $*" >&2; }
-print_warning() { :; }
-print_error()   { echo "ERROR: $*" >&2; }
-print_success() { :; }
-print_header()  { :; }
-_diag()         { :; }
-gh_safe()       { echo ""; }
-get_session_summary() { :; }
-_rtk_snapshot() { :; }
-_rtk_summary()  { echo ""; }
+# ── Skip config.sh: pre-set RITE_LIB_DIR so workflow-runner.sh skips it ──
+export RITE_LIB_DIR="$rite_lib_dir"
+export RITE_PROJECT_ROOT="\${RITE_PROJECT_ROOT:-\$(mktemp -d)}"
+export RITE_DATA_DIR=".rite"
+export RITE_LOG_FILE=""
+export WORKFLOW_MODE="unsupervised"
+export CURRENT_RETRY=0
+export RITE_MAX_RETRIES=3
+export RITE_ASSESSMENT_TIMEOUT=300
+export RITE_STALE_BRANCH_THRESHOLD=10
+export RITE_WORKTREE_BASE="/tmp/rite-test-wt"
+export RITE_WORKTREE_DIR="/tmp/rite-test-wt/stub-wt"
+export RITE_LOCK_DIR="\$RITE_PROJECT_ROOT/.rite/locks"
+export CLOSING_ISSUE_JQ_REGEX="(closes?|fixes?|resolves?) #"
+export RITE_MARKER_REVIEW="sharkrite-local-review"
+export RITE_MARKER_ASSESSMENT="sharkrite-assessment"
+export RITE_MARKER_FOLLOWUP="sharkrite-followup"
+
+# ── Skip dependency libs via their _RITE_*_LOADED re-source guards ──
+export _RITE_NOTIFICATIONS_LOADED=true
+export _RITE_BLOCKER_RULES_LOADED=true
+export _RITE_SESSION_TRACKER_LOADED=true
+export _RITE_REVIEW_HELPER_LOADED=true
+export _RITE_COLORS_LOADED=true
+export _RITE_LOGGING_LOADED=true
+# timeout.sh guard: checks _RITE_TIMEOUT_CHECKED=true AND declare -f run_with_timeout
+export _RITE_TIMEOUT_CHECKED=true
+
+# ── Skip libs that use declare -f sentinel guards ──
+# Pre-define the sentinel so each lib returns at its guard check.
+build_changes_summary()          { :; }
+normalize_existing_issue()       { :; }
+rite_markers_loaded()            { :; }
+detect_pr_for_issue()            { :; }
+iso_to_epoch()                   { echo "0"; }
+create_sharkrite_stash()         { :; }
+check_and_rebase_against_main()  { :; }
+run_test_gate()                  { return 0; }
+ensure_timeout_cmd()             { :; }
+# provider-interface.sh: stub its primary entry points
+load_provider()                  { :; }
+provider_name()                  { echo "stub"; }
+
+# ── Stubs for functions called by workflow-runner.sh function bodies ──
+print_status()   { :; }
+print_info()     { echo "INFO: \$*" >&2; }
+print_warning()  { :; }
+print_error()    { echo "ERROR: \$*" >&2; }
+print_success()  { :; }
+print_header()   { :; }
+print_step()     { :; }
+_diag()          { :; }
+_timer_start()   { :; }
+_timer_end()     { :; }
+_rtk_snapshot()  { :; }
+_rtk_summary()   { echo ""; }
 _rtk_phase_delta() { echo "0"; }
-_timer_start()  { :; }
-_timer_end()    { :; }
-send_completion_notification() { :; }
-get_latest_work_commit_time() { LATEST_COMMIT_TIME=""; }
-iso_to_epoch()  { echo "0"; }
+get_session_summary()            { :; }
+send_completion_notification()   { :; }
+get_latest_work_commit_time()    { LATEST_COMMIT_TIME=""; }
+acquire_issue_lock()             { return 0; }
+release_issue_lock()             { return 0; }
+backfill_worktree_locks()        { :; }
+setup_interrupt_handlers()       { :; }
+run_with_timeout()               { shift; "\$@"; }
+GREEN=""
+NC=""
+# gh_safe: default stub returns empty (no network calls in invariant check)
+gh_safe() { echo ""; }
+# git: pass-through — behavioral tests that need a real repo set up their own
+STUBS
+}
 
-# Environment
-RITE_PROJECT_ROOT="$(mktemp -d)"
-RITE_DATA_DIR=".rite"
-RITE_MARKER_REVIEW="sharkrite-local-review"
-RITE_MARKER_ASSESSMENT="sharkrite-assessment"
-RITE_MARKER_FOLLOWUP="sharkrite-followup"
-CLOSING_ISSUE_JQ_REGEX="(closes?|fixes?|resolves?) #"
-WORKFLOW_MODE="unsupervised"
-CURRENT_RETRY=0
-RITE_LOG_FILE=""
-export RITE_PROJECT_ROOT RITE_DATA_DIR WORKFLOW_MODE CURRENT_RETRY
+@test "behavioral: workflow returning 0 with no commits and no PR triggers exit 13" {
+  # Scenario: all phase functions return 0 (no error), but the issue ends with
+  # no commits on branch and no PR.  check_workflow_invariant() must return 13.
+  # Uses the real function from workflow-runner.sh — no predicate re-implementation.
+  _stubs="$RITE_TEST_TMPDIR/stubs.sh"
+  _script="$RITE_TEST_TMPDIR/test-no-work-invariant.sh"
+  _write_invariant_stubs "$_stubs" "$RITE_LIB_DIR"
 
-# Stub phase functions — all succeed with no side effects
-phase_pre_start_checks() { return 0; }
-phase_claude_workflow()   { return 0; }
-phase_create_pr()         { return 0; }
-phase_assess_and_resolve() { return 0; }
-phase_merge_pr()          { return 0; }
-phase_completion()        { return 0; }
+  cat > "$_script" <<OUTER
+#!/usr/bin/env bash
+set -euo pipefail
+source "$_stubs"
 
-# Simulate the invariant check logic from run_workflow()
-# (isolated from the full workflow — tests the predicate in the exact form
-# it appears in the source, triggered after all phases return 0)
-issue_number=42
+# Source workflow-runner.sh — stubs file above has pre-set all dependency lib
+# guards so the transitive source chain returns immediately for each dep.
+# workflow-runner.sh's own guard (_RITE_WORKFLOW_RUNNER_LOADED) is NOT set,
+# so its function bodies including check_workflow_invariant() ARE defined.
+# shellcheck disable=SC1091
+source "$RITE_LIB_DIR/core/workflow-runner.sh"
 
-# No worktree (simulates: phases ran but produced no git artifacts)
-WORKTREE_PATH=""
-PR_NUMBER=""
-
-# Replicate the invariant check exactly as it appears in run_workflow():
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
-
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: workflow returned 0 for issue #${issue_number} but produced no commits and no PR"
-    _diag "INVARIANT_VIOLATED issue=${issue_number} commits=0 pr=none worktree=${WORKTREE_PATH:-none}"
-    exit 13
-  fi
-fi
-
-exit 0
-EOF
+# No worktree, no PR → invariant must fire
+_result=0
+check_workflow_invariant 42 "" "" || _result=\$?
+exit \$_result
+OUTER
   chmod +x "$_script"
   run bash "$_script"
 
@@ -284,40 +392,27 @@ EOF
 
 @test "behavioral: workflow with PR_NUMBER set bypasses invariant (legitimate completion)" {
   # Scenario: all phases complete, PR was created — invariant must NOT fire.
+  # Uses the real check_workflow_invariant() — no predicate re-implementation.
+  _stubs="$RITE_TEST_TMPDIR/stubs.sh"
   _script="$RITE_TEST_TMPDIR/test-with-pr-invariant.sh"
-  cat > "$_script" <<'EOF'
+  _write_invariant_stubs "$_stubs" "$RITE_LIB_DIR"
+
+  cat > "$_script" <<OUTER
 #!/usr/bin/env bash
 set -euo pipefail
+source "$_stubs"
 
-print_error() { echo "ERROR: $*" >&2; }
-print_info()  { echo "INFO: $*" >&2; }
-_diag()       { :; }
+# shellcheck disable=SC1091
+source "$RITE_LIB_DIR/core/workflow-runner.sh"
 
-issue_number=42
-WORKTREE_PATH=""
-PR_NUMBER="99"  # PR exists — invariant must pass
-
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
-
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: invariant violated"
-    exit 13
-  fi
+# PR_NUMBER="99" → invariant must pass (PR exists is sufficient)
+_result=0
+check_workflow_invariant 42 "" "99" || _result=\$?
+if [ \$_result -eq 0 ]; then
+  echo "invariant_passed"
 fi
-
-echo "invariant_passed"
-exit 0
-EOF
+exit \$_result
+OUTER
   chmod +x "$_script"
   run bash "$_script"
 
@@ -332,65 +427,59 @@ EOF
 }
 
 @test "behavioral: workflow with commits on branch bypasses invariant" {
-  # Scenario: worktree has commits ahead of origin/main — invariant must pass.
+  # Scenario: worktree has commits ahead of the base branch — invariant must pass.
+  # Uses the real check_workflow_invariant() with a real git repo.
+  # The base branch is resolved via RITE_MAIN_BRANCH fallback (no PR → no API call).
+  _stubs="$RITE_TEST_TMPDIR/stubs.sh"
   _script="$RITE_TEST_TMPDIR/test-with-commits-invariant.sh"
-  cat > "$_script" <<'OUTER'
+  _write_invariant_stubs "$_stubs" "$RITE_LIB_DIR"
+
+  cat > "$_script" <<OUTER
 #!/usr/bin/env bash
 set -euo pipefail
+source "$_stubs"
 
-print_error() { echo "ERROR: $*" >&2; }
-_diag()       { :; }
+# shellcheck disable=SC1091
+source "$RITE_LIB_DIR/core/workflow-runner.sh"
 
-# Set up a real git repo with a feature branch ahead of origin/main
-TMPDIR_LOCAL="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_LOCAL"' EXIT
+# Set up a real git repo: "origin/main" as remote-tracking ref, feature branch
+# with one commit ahead of it.  check_workflow_invariant() will detect the
+# commit via rev-list --count "origin/main..HEAD" (RITE_MAIN_BRANCH falls back
+# to "main" when no PR_NUMBER is supplied).
+TMPDIR_LOCAL="\$(mktemp -d)"
+trap 'rm -rf "\$TMPDIR_LOCAL"' EXIT
 
-MAIN_REPO="$TMPDIR_LOCAL/main"
-git init -q "$MAIN_REPO"
-git -C "$MAIN_REPO" config user.email "test@test.com"
-git -C "$MAIN_REPO" config user.name "Test"
-echo "init" > "$MAIN_REPO/file.txt"
-git -C "$MAIN_REPO" add .
-git -C "$MAIN_REPO" commit -qm "init"
-git -C "$MAIN_REPO" branch -M main
+ORIGIN_REPO="\$TMPDIR_LOCAL/origin"
+FEATURE_REPO="\$TMPDIR_LOCAL/feature"
 
-WORKTREE_DIR="$TMPDIR_LOCAL/feature"
-git -C "$MAIN_REPO" checkout -q -b feature
-echo "feature work" > "$MAIN_REPO/feature.txt"
-git -C "$MAIN_REPO" add .
-git -C "$MAIN_REPO" commit -qm "feat: add feature"
+# Create origin repo with a main branch
+git init -q "\$ORIGIN_REPO"
+git -C "\$ORIGIN_REPO" config user.email "test@test.com"
+git -C "\$ORIGIN_REPO" config user.name "Test"
+echo "init" > "\$ORIGIN_REPO/file.txt"
+git -C "\$ORIGIN_REPO" add .
+git -C "\$ORIGIN_REPO" commit -qm "init"
+git -C "\$ORIGIN_REPO" branch -M main
 
-# Simulate origin/main reference (tag it so rev-list can compare)
-git -C "$MAIN_REPO" tag "origin-main" main 2>/dev/null || true
-# Use the init commit as origin/main for rev-list comparison
-ORIGIN_MAIN=$(git -C "$MAIN_REPO" rev-parse main 2>/dev/null || echo "")
+# Clone into feature repo so origin/main tracking ref exists
+git clone -q "\$ORIGIN_REPO" "\$FEATURE_REPO"
+git -C "\$FEATURE_REPO" config user.email "test@test.com"
+git -C "\$FEATURE_REPO" config user.name "Test"
 
-WORKTREE_PATH="$MAIN_REPO"
-PR_NUMBER=""
+# Add a feature commit ahead of origin/main
+echo "feature work" > "\$FEATURE_REPO/feature.txt"
+git -C "\$FEATURE_REPO" add .
+git -C "\$FEATURE_REPO" commit -qm "feat: add feature"
 
-issue_number=42
-
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
-
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    # Use the actual commits-ahead check against the init commit (acting as origin/main)
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "${ORIGIN_MAIN}..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: invariant violated"
-    exit 13
-  fi
+# check_workflow_invariant with the feature worktree, no PR
+# RITE_MAIN_BRANCH falls back to "main"; rev-list sees 1 commit ahead of origin/main
+export RITE_MAIN_BRANCH=main
+_result=0
+check_workflow_invariant 42 "\$FEATURE_REPO" "" || _result=\$?
+if [ \$_result -eq 0 ]; then
+  echo "invariant_passed"
 fi
-
-echo "invariant_passed commits=${_inv_commits}"
-exit 0
+exit \$_result
 OUTER
   chmod +x "$_script"
   run bash "$_script"
@@ -410,40 +499,28 @@ OUTER
   # Scenario: no commits, no PR, but RITE_WORKFLOW_EXPLICIT_COMPLETE=1 is set.
   # This bypass is reserved for future "completed without code" workflow paths
   # (e.g., auto-close when already resolved upstream).
+  # Uses the real check_workflow_invariant() — no predicate re-implementation.
+  _stubs="$RITE_TEST_TMPDIR/stubs.sh"
   _script="$RITE_TEST_TMPDIR/test-explicit-complete-bypass.sh"
-  cat > "$_script" <<'EOF'
+  _write_invariant_stubs "$_stubs" "$RITE_LIB_DIR"
+
+  cat > "$_script" <<OUTER
 #!/usr/bin/env bash
 set -euo pipefail
+source "$_stubs"
 
-print_error() { echo "ERROR: $*" >&2; }
-_diag()       { :; }
+# shellcheck disable=SC1091
+source "$RITE_LIB_DIR/core/workflow-runner.sh"
 
-issue_number=42
-WORKTREE_PATH=""
-PR_NUMBER=""
-export RITE_WORKFLOW_EXPLICIT_COMPLETE=1  # bypass signal
-
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
-
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: invariant violated"
-    exit 13
-  fi
+# RITE_WORKFLOW_EXPLICIT_COMPLETE=1: invariant must be bypassed even with no artifacts
+export RITE_WORKFLOW_EXPLICIT_COMPLETE=1
+_result=0
+check_workflow_invariant 42 "" "" || _result=\$?
+if [ \$_result -eq 0 ]; then
+  echo "bypass_worked"
 fi
-
-echo "bypass_worked"
-exit 0
-EOF
+exit \$_result
+OUTER
   chmod +x "$_script"
   run bash "$_script"
 
