@@ -55,8 +55,9 @@ setup() {
 
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
 
-  # Extract _mark_updated() and update_conventions_from_marker() — same awk
-  # extraction pattern used in conventions-marker-append.bats.
+  # Extract _mark_updated(), update_conventions_from_marker(), and
+  # assess_internal_changelog() — same awk extraction pattern used in
+  # conventions-marker-append.bats.
   eval "$(awk '
     /^_mark_updated\(\)/ { in_fn=1; depth=0 }
     in_fn {
@@ -68,6 +69,15 @@ setup() {
       print; next
     }
     /^update_conventions_from_marker\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print; next
+    }
+    /^assess_internal_changelog\(\)/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -213,6 +223,110 @@ BODY
   # There must be at least the 3 known mktemp calls in the function.
   if [ "$_guarded_count" -lt 3 ]; then
     echo "FAIL: expected at least 3 guarded mktemp calls, found $_guarded_count" >&2
+    return 1
+  fi
+}
+
+# ===========================================================================
+# assess_internal_changelog() mktemp failure isolation
+# ===========================================================================
+#
+# Mirrors the three-test pattern above, but targets assess_internal_changelog.
+# assess_internal_changelog has two mktemp call-sites (one in each branch of
+# the date-section exists/does-not-exist if/else).  Both must be guarded so
+# that a disk-full or /tmp-missing condition does not kill the parent process.
+
+# ---------------------------------------------------------------------------
+# Test 4: mktemp failure in assess_internal_changelog → returns 0
+# ---------------------------------------------------------------------------
+
+@test "assess_internal_changelog: mktemp failure returns 0 (does not propagate)" {
+  # Shadow mktemp with a function that always fails.
+  mktemp() { return 1; }
+  export -f mktemp
+
+  # Provide a minimal changelog doc so the function reaches the mktemp calls.
+  local _doc_file="${RITE_INTERNAL_DOCS_DIR}/changelog.md"
+  printf '# Changelog\n\n' > "$_doc_file"
+
+  # The function must return 0 (graceful skip), not propagate the mktemp failure.
+  run assess_internal_changelog "42" "fix: some fix" "lib/core/foo.sh"
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: caller continues after assess_internal_changelog mktemp failure
+# ---------------------------------------------------------------------------
+
+@test "assess_internal_changelog: caller continues after mktemp failure" {
+  # Shadow mktemp to always fail — simulates disk-full / /tmp missing.
+  mktemp() { return 1; }
+  export -f mktemp
+
+  local _doc_file="${RITE_INTERNAL_DOCS_DIR}/changelog.md"
+  printf '# Changelog\n\n' > "$_doc_file"
+
+  local _sentinel_file="${BATS_TEST_TMPDIR}/sentinel_changelog"
+
+  # Run both calls in a subshell under set -euo pipefail so that any accidental
+  # propagation would kill the subshell and leave _sentinel_file unwritten.
+  (
+    set -euo pipefail
+    assess_internal_changelog "42" "fix: some fix" "lib/core/foo.sh"
+    # This line must execute even after the mktemp failure above.
+    echo "reached" > "$_sentinel_file"
+  )
+
+  [ -f "$_sentinel_file" ] || {
+    echo "FAIL: code after assess_internal_changelog did not execute — process was killed" >&2
+    return 1
+  }
+  [ "$(cat "$_sentinel_file")" = "reached" ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 6: static assertion — both mktemp sites in assess_internal_changelog
+#          have || guards
+# ---------------------------------------------------------------------------
+
+@test "all mktemp call-sites in assess_internal_changelog have || guard" {
+  local _src="${RITE_REPO_ROOT}/lib/core/assess-documentation.sh"
+
+  # Extract lines of the function body only (from the function open to its
+  # closing brace at column 0) so we don't accidentally count mktemp calls
+  # outside the function.
+  local _fn_body
+  _fn_body="$(awk '
+    /^assess_internal_changelog\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print; next
+    }
+  ' "$_src")"
+
+  # Count bare mktemp assignments (without a guard) — pattern: $(mktemp not
+  # followed by || on the same line.
+  local _guarded_count
+  _guarded_count=$(printf '%s\n' "$_fn_body" | grep -c '\$(mktemp' || true)
+
+  local _unguarded_count
+  _unguarded_count=$(printf '%s\n' "$_fn_body" | \
+    grep '\$(mktemp' | grep -vc '||' || true)
+
+  if [ "$_unguarded_count" -ne 0 ]; then
+    echo "FAIL: $_unguarded_count unguarded mktemp call(s) found in assess_internal_changelog()" >&2
+    printf '%s\n' "$_fn_body" | grep '\$(mktemp' >&2
+    return 1
+  fi
+
+  # There must be at least the 2 known mktemp calls in the function
+  # (one per if/else branch).
+  if [ "$_guarded_count" -lt 2 ]; then
+    echo "FAIL: expected at least 2 guarded mktemp calls, found $_guarded_count" >&2
     return 1
   fi
 }
