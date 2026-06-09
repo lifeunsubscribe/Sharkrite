@@ -555,6 +555,18 @@ On timeout: completed sub-assessments are preserved (their doc files were alread
 
 An earlier approach was rejected: checking whether the PR diff touched any `.md` files and skipping the assessment if not. This was wrong because the entire purpose of the assessment is to surface what docs should change based on dev work — even when the dev work only touched `.sh` or `.ts` files. A new security pattern, a new CLI flag, or a new architectural approach all warrant doc updates regardless of whether the dev session touched docs.
 
+### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
+
+`mid-run-rebase.sh::check_and_rebase_against_main()` runs at the start of Phase 3 to catch the case where main moved during the run. The decision is driven by **whether the branch actually conflicts with main**, computed with `git merge-tree --write-tree` (a pure in-memory merge — no working tree, commit, force-push, or test-gate re-run):
+
+- **No conflict** → do **nothing**. A behind-but-clean branch merges fine in Phase 4 (`merge-pr.sh` calls `gh pr merge`, and only updates the branch if GitHub itself reports it unmergeable). Rebasing it would only churn history and re-trigger the post-commit test gate for no benefit.
+- **Conflict** → try Claude-assisted resolution; if unresolved, abort with a clear message **before** the review session, so no Claude review time is wasted on an unmergeable PR.
+- **merge-tree error** (old git, unexpected) → fail open (skip), consistent with the fetch-failure path.
+
+**Rejected approach — commit-distance threshold (`RITE_MID_RUN_REBASE_THRESHOLD`, default 5):** The original #290 design aborted when the branch was more than N commits behind, *without attempting a rebase*, on the assumption that far-behind ⇒ likely-to-conflict. Commit distance is a poor proxy: a branch 50 commits behind that touches isolated files merges instantly; a branch 2 commits behind editing the same lines conflicts hard. On 2026-06-09 this falsely aborted PRs #522 (issue #433, 12 behind) and #525 (issue #439, 11 behind) — both had **zero** conflicting files and would have merged clean — *after* each had already spent a full LLM review. The threshold guarded nothing expensive (a clean rebase is sub-second git regardless of N; only conflict resolution is costly, and that path is reached only on a real conflict). The env var was deleted: distance no longer determines anything. Real protection from #290 (surfacing genuine conflicts before review time) is preserved and *strengthened* — clean far-behind PRs now proceed instead of falsely aborting.
+
+Tests: `tests/regression/mid-run-rebase.bats` (clean drift → no-op, including the 12-behind #433/#439 regression) and `mid-run-rebase-conflict.bats` (real conflict → resolve-or-abort; the resolver is stubbed to fail so the abort contract is deterministic rather than dependent on live Claude availability).
+
 ---
 
 ## Session Limit Design: Why Wall-Clock Age Is the Wrong Metric (issue #283)
