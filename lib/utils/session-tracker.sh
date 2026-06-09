@@ -170,7 +170,10 @@ _release_session_lock() {
 #   approved_blockers and sent_notifications (legitimately durable cross-run
 #   state); clear current_issue, worktree_path (per-invocation fields).
 #   Also resets per-issue timing fields: current_issue_started_at = null,
-#   cumulative_work_seconds = 0.
+#   cumulative_work_seconds = 0, issues_completed = 0, issues_failed = 0.
+#   The counters reset because get_session_summary reports them alongside the
+#   per-invocation Duration — mixing scopes would show cumulative totals
+#   against a freshly-reset clock.
 #
 #   Resume mode (RITE_RESUMING=true in env): keep the file completely
 #   untouched — inherit start_time, cumulative_work_seconds, and all other
@@ -210,6 +213,12 @@ init_session() {
     # Fresh invocation found an existing state file (e.g. zombie from prior run
     # or a parallel batch's file from a previous batch ID collision).
     # Reset the clock and per-invocation fields; preserve cross-run state.
+    #
+    # issues_completed / issues_failed are per-invocation: get_session_summary
+    # reports them alongside Duration, which is itself reset above. Without
+    # resetting the counters, the summary mixes scopes and shows the cumulative
+    # total against the per-invocation clock — e.g. "Duration: 6m 50s / Issues
+    # Completed: 10" after processing one issue.
     local _tmp
     _tmp=$(mktemp)
     jq \
@@ -220,6 +229,8 @@ init_session() {
        | .worktree_path = null
        | .current_issue_started_at = null
        | .cumulative_work_seconds = (.cumulative_work_seconds // 0 | 0)
+       | .issues_completed = 0
+       | .issues_failed = 0
        | .mode = "'"$mode"'"' \
       "$SESSION_STATE_FILE" > "$_tmp"
     mv "$_tmp" "$SESSION_STATE_FILE"
