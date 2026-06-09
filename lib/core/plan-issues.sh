@@ -666,8 +666,12 @@ Before writing your first issue, determine: does the existing codebase use 403 o
 **C. Real dependency graph — not a linear chain.**
 \`#PREV\` means "depends on the immediately preceding issue." Do NOT default to \`#PREV\` for every issue. Before writing dependencies, sketch the actual graph:
 - What is the true root issue? (Usually: schemas or migrations.)
-- Which issues depend ONLY on the root? They can be done in parallel — list them as "After #[root title]", not "After #PREV".
+- Which issues depend ONLY on the root? They can be done in parallel — reference the root using its batch ordinal (e.g., \`After #1\`) or by title (e.g., \`After #[Database Schema Setup]\`), not \`After #PREV\`.
 - Which issues depend on each other directly? Only those get explicit sequential references.
+
+**Dependency reference formats (both are supported and cycle-checked):**
+- By batch ordinal: \`After #N\` or \`Blocked by: #N\` where N is the issue's position in this batch (1-based)
+- By title: \`After #[Exact Issue Title]\` or \`Blocked by: #[Exact Issue Title]\` — use the exact TITLE: field value of the target issue in square brackets
 
 Correct:
 \`\`\`
@@ -1283,9 +1287,12 @@ _lint_provenance_flags() {
 # Checks:
 #   1. Coverage ↔ emitted 1:1 assertion (belt-and-suspenders; _validate_coverage
 #      already enforces this — we just assert the invariant still holds post-pipeline)
-#   2. Acyclic dependency graph — DFS cycle detection on Dependencies: lines
-#   3. No dangling #N refs — every dependency ref must resolve to a batch issue
-#      or an existing open issue (passed as existing_issues string)
+#   2. Acyclic dependency graph — Kahn's algorithm cycle detection on Dependencies:
+#      lines. Recognizes both numeric ordinal refs (#N) and title refs (#[Title]).
+#      Title refs are resolved to ordinals in Phase 2b before cycle detection runs.
+#   3. No dangling #N refs — every numeric dependency ref must resolve to a batch
+#      issue or an existing open issue (passed as existing_issues string).
+#      Unresolved #[Title] refs (title not found in batch) are WARNING-only.
 #   4. Verification commands reference creatable files — WARNING (not fatal)
 #   5. Deferral citation check — each ⏭️ deferral entry must cite evidence
 #      (WARNING, not fatal)
@@ -1329,6 +1336,7 @@ _lint_issues_strict() {
   # Parallel arrays (bash 3.2: no declare -A)
   local -a _titles=()
   local -a _deps=()            # per-issue: newline-separated #N refs from Dependencies
+  local -a _title_deps=()      # per-issue: newline-separated raw title strings from #[Title] refs
   local -a _files_modify=()    # per-issue: newline-separated paths from Files to Modify
   local -a _verif_cmds=()      # per-issue: newline-separated verification command lines
   local -a _suppressions=()    # per-issue: space-separated suppressed rule names
@@ -1393,8 +1401,9 @@ _lint_issues_strict() {
         done < <(echo "$_issue_block" | grep "${RITE_MARKER_PLAN_LINT}" || true)
         _suppressions+=("${_issue_suppressions}")
 
-        # --- Extract Dependencies: lines (collect all #N refs) ---
+        # --- Extract Dependencies: lines (collect all #N refs and #[Title] refs) ---
         local _issue_deps=""
+        local _issue_title_deps=""
         local _in_deps=false
         while IFS= read -r _dline; do
           # Start at "**Dependencies**:" or "Dependencies:" header
@@ -1404,6 +1413,10 @@ _lint_issues_strict() {
             local _inline_refs
             _inline_refs=$(echo "$_dline" | grep -oE '#[0-9]+' || true)
             [ -n "$_inline_refs" ] && _issue_deps="${_issue_deps}${_inline_refs}"$'\n'
+            # Also grab inline title refs: #[Title Text]
+            local _inline_title_refs
+            _inline_title_refs=$(echo "$_dline" | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+            [ -n "$_inline_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_inline_title_refs}"$'\n'
             continue
           fi
           # Stop at next markdown section header or end marker
@@ -1416,6 +1429,10 @@ _lint_issues_strict() {
             local _line_refs
             _line_refs=$(echo "$_dline" | grep -oE '#[0-9]+' || true)
             [ -n "$_line_refs" ] && _issue_deps="${_issue_deps}${_line_refs}"$'\n'
+            # Also collect title refs: #[Title Text] patterns
+            local _line_title_refs
+            _line_title_refs=$(echo "$_dline" | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+            [ -n "$_line_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_line_title_refs}"$'\n'
           fi
         done <<< "$_issue_block"
         # Also scan the full block for explicit "Blocked by: #N" / "After: #N" lines
@@ -1423,7 +1440,12 @@ _lint_issues_strict() {
         local _body_refs
         _body_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#[0-9]+' | grep -oE '#[0-9]+' || true)
         [ -n "$_body_refs" ] && _issue_deps="${_issue_deps}${_body_refs}"$'\n'
+        # Also scan for title refs in Blocked by / After lines anywhere in the block
+        local _body_title_refs
+        _body_title_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#\[' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+        [ -n "$_body_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_body_title_refs}"$'\n'
         _deps+=("${_issue_deps}")
+        _title_deps+=("${_issue_title_deps}")
 
         # --- Extract Files to Modify paths ---
         local _issue_modify=""
@@ -1500,6 +1522,57 @@ _lint_issues_strict() {
   fi
 
   # -----------------------------------------------------------------------
+  # Phase 2b: Resolve #[Title] refs to ordinals and merge into _deps.
+  #
+  # The planner prompt instructs Claude to reference other issues by title
+  # using #[Title Text] notation (e.g. "After #[Implement Schemas]"). The
+  # first-pass parser collected these in _title_deps[]. Here we look each
+  # title up in _titles[] (case-insensitive exact match) and append the
+  # resolved ordinal ref (#N) to _deps[] so that cycle detection and the
+  # dangling-ref check both see it.
+  #
+  # If a title ref cannot be resolved (no matching issue in this batch),
+  # we emit a WARNING — the dangling-ref check in Check 3 will not catch
+  # it (since it only checks numeric refs), so we surface it here instead.
+  # -----------------------------------------------------------------------
+
+  local _res_i=0
+  for _res_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _raw_title_deps="${_title_deps[$_res_i]}"
+    [ -z "$_raw_title_deps" ] && continue
+
+    local _referencing_title="${_titles[$_res_i]}"
+    while IFS= read -r _tref; do
+      [ -z "$_tref" ] && continue
+
+      # Normalize: lowercase for case-insensitive comparison
+      local _tref_lower
+      _tref_lower=$(echo "$_tref" | tr '[:upper:]' '[:lower:]' || true)
+
+      # Search _titles[] for a case-insensitive match
+      local _found_ordinal=0
+      local _scan_j=0
+      for _scan_j in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+        local _candidate_lower
+        _candidate_lower=$(echo "${_titles[$_scan_j]}" | tr '[:upper:]' '[:lower:]' || true)
+        if [ "$_candidate_lower" = "$_tref_lower" ]; then
+          _found_ordinal=$((_scan_j + 1))  # 1-based ordinal
+          break
+        fi
+      done
+
+      if [ "$_found_ordinal" -gt 0 ]; then
+        # Append the resolved ordinal ref to the referring issue's deps
+        _deps[$_res_i]="${_deps[$_res_i]}#${_found_ordinal}"$'\n'
+      else
+        # Unresolved title ref: emit a warning (not captured by numeric dangling-ref check)
+        print_warning "strict-lint: WARNING: unresolved title ref: #[${_tref}] in '${_referencing_title}' (no batch issue with that title)" >&2
+        _warning_count=$((_warning_count + 1))
+      fi
+    done <<< "$_raw_title_deps"
+  done
+
+  # -----------------------------------------------------------------------
   # Check 2 + 3: Cycle detection and dangling ref check
   #
   # First assign ordinal numbers to batch issues. Issue numbers in Dependencies
@@ -1508,8 +1581,8 @@ _lint_issues_strict() {
   #
   # In the generated output, dependencies reference other batch issues by their
   # position (1-based ordinal matching the order they appear in the file).
-  # The format is typically: "After #N" or "Blocked by: #N" where N is the
-  # ordinal of the earlier issue in the same batch.
+  # The format is typically: "After #N", "Blocked by: #N", or "After #[Title]"
+  # where #[Title] refs are resolved to ordinals in Phase 2b above.
   # -----------------------------------------------------------------------
 
   local _i=0

@@ -1153,3 +1153,228 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fixture H — cyclic dependency graph via #[Title] refs
+#
+# Issue #1 "Feature Alpha" says "After #[Feature Beta]",
+# Issue #2 "Feature Beta" says "After #[Feature Alpha]".
+# This is the same 1↔2 cycle as Fixture A but expressed with title refs
+# instead of numeric ordinals. Cycle detection must still catch it.
+# ---------------------------------------------------------------------------
+
+@test "Fixture H: cyclic deps via title refs #[Title] — validator emits ERROR and exits non-zero" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-h.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha depends on Beta (cycle!).
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when alpha works.
+
+**Dependencies**: After #[Feature Beta]
+---END---
+---ISSUE---
+TITLE: Feature Beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta depends on Alpha (cycle!).
+
+**Claude Context**:
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `python -m pytest tests/test_beta.py`
+
+**Done Definition**: Done when beta works.
+
+**Dependencies**: After #[Feature Alpha]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit non-zero (cycle is a hard error)
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for title-ref cycle, got 0" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a message mentioning "cycle"
+  grep -qi "cycle" "$stderr_out" || {
+    echo "FAIL: expected 'cycle' in stderr output" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture I — acyclic chain via #[Title] refs
+#
+# Issue #1 "Schemas" has no deps.
+# Issue #2 "CRUD" depends on "After #[Schemas]" (resolves to #1).
+# Issue #3 "Filters" depends on "After #[CRUD]" (resolves to #2).
+# This is an acyclic chain — validator must exit 0 with no errors.
+# ---------------------------------------------------------------------------
+
+@test "Fixture I: acyclic chain via title refs #[Title] — exits 0, no errors" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-i.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Schemas
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Schema definitions, no dependencies.
+
+**Claude Context**:
+Files to Modify:
+- src/models.py
+
+**Acceptance Criteria**:
+- [ ] Schemas created: `python -m pytest tests/test_models.py`
+
+**Done Definition**: Done when models created.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: CRUD
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+CRUD endpoints, depends on schemas.
+
+**Claude Context**:
+Files to Modify:
+- src/router.py
+
+**Acceptance Criteria**:
+- [ ] CRUD works: `python -m pytest tests/test_router.py`
+
+**Done Definition**: Done when CRUD works.
+
+**Dependencies**: After #[Schemas]
+---END---
+---ISSUE---
+TITLE: Filters
+LABELS: backend,priority-low
+TIME: 1hr
+BODY:
+**Description**:
+Filter endpoints, depends on CRUD.
+
+**Claude Context**:
+Files to Modify:
+- src/filters.py
+
+**Acceptance Criteria**:
+- [ ] Filters work: `python -m pytest tests/test_filters.py`
+
+**Done Definition**: Done when filters work.
+
+**Dependencies**: After #[CRUD]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (acyclic chain passes)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for acyclic title-ref chain, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit any cycle or unresolved-ref errors
+  grep -qiE "cycle|ERROR.*unresolved|unresolved.*ERROR" "$stderr_out" && {
+    echo "FAIL: unexpected cycle/error in acyclic title-ref chain" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture J — unresolved #[Title] ref (no matching batch issue)
+#
+# Issue #1 references "After #[Nonexistent Issue]" — no batch issue has
+# that title. Validator must emit a WARNING (not a hard error, since the
+# ref may point to an external/pre-existing issue whose title matches).
+# Exit code must be 0 (warning-only, not a hard gate).
+# ---------------------------------------------------------------------------
+
+@test "Fixture J: unresolved title ref #[Nonexistent] — emits WARNING, exits 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-j.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Gamma
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Depends on a non-existent issue title.
+
+**Claude Context**:
+Files to Modify:
+- src/gamma.py
+
+**Acceptance Criteria**:
+- [ ] Gamma works: `python -m pytest tests/test_gamma.py`
+
+**Done Definition**: Done when gamma works.
+
+**Dependencies**: After #[Nonexistent Issue]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (unresolved title ref is a warning, not a hard error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for unresolved title ref (warning only), got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a warning mentioning the unresolved title
+  grep -qi "unresolved title ref\|Nonexistent" "$stderr_out" || {
+    echo "FAIL: expected warning about unresolved title ref in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
