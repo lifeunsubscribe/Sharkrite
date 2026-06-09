@@ -362,8 +362,19 @@ _select_tests_by_changed_paths() {
 
   # Walk every bats file and decide inclusion. Output is relative paths so the
   # caller can `cd "$project_root" && bats <relative-paths>`.
+  #
+  # First rule (obvious-case shortcut): if the file IS itself in the diff, run
+  # it. The sharkrite-test-covers header lists SOURCE paths, not test paths —
+  # without this check, editing a .bats file would match no header anywhere,
+  # _select_tests_by_changed_paths returns empty, and run_test_gate's empty →
+  # FORCE_FULL fallback runs the whole 1500-test suite for what should have
+  # been a one-file change.
   (cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null) \
     | while IFS= read -r _rel; do
+        if echo "$changed_files" | grep -Fxq "$_rel"; then
+          echo "$_rel"
+          continue
+        fi
         if _bats_file_matches_changed "$project_root/$_rel" "$changed_files"; then
           echo "$_rel"
         fi
