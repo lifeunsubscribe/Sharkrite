@@ -126,6 +126,56 @@ CR_FAILED=$(echo "$CR_LINES" | grep -c 'outcome=failed' || true)
 CR_CAP_HIT=$(echo "$CR_LINES" | grep -c 'outcome=cap_hit' || true)
 CR_SKIPPED=$(echo "$CR_LINES" | grep -c 'outcome=skipped_no_resolver' || true)
 
+# --- Pre-compute top-5 most-affected issues from CR_LINES ---
+# Bare-marker guard: require digits after "issue=" to avoid matching placeholder text.
+# Counts per issue number, sorts descending, takes top 5, formats as "#N (Kx), ...".
+# Uses a portable while-read loop (bash 3.2 compatible — no mapfile/declare -A).
+CR_TOP5_ISSUES="N/A"
+if [ -n "$CR_LINES" ]; then
+  _cr_top5_raw=$(echo "$CR_LINES" | grep -oE 'issue=[0-9]+' | grep -oE '[0-9]+' | sort | uniq -c | sort -rn | head -5 || true)
+  if [ -n "$_cr_top5_raw" ]; then
+    _cr_top5_parts=""
+    while IFS= read -r _cr_line; do
+      # Each line from uniq -c is "  COUNT NUMBER" — trim leading whitespace
+      _cr_count=$(echo "$_cr_line" | awk '{print $1}' || true)
+      _cr_issue=$(echo "$_cr_line" | awk '{print $2}' || true)
+      if [ -n "$_cr_issue" ] && [ -n "$_cr_count" ]; then
+        if [ -n "$_cr_top5_parts" ]; then
+          _cr_top5_parts="${_cr_top5_parts}, #${_cr_issue} (${_cr_count}x)"
+        else
+          _cr_top5_parts="#${_cr_issue} (${_cr_count}x)"
+        fi
+      fi
+    done <<< "$_cr_top5_raw"
+    [ -n "$_cr_top5_parts" ] && CR_TOP5_ISSUES="$_cr_top5_parts"
+  fi
+fi
+
+# --- Pre-compute median resolution duration from CR_LINES ---
+# Only lines with duration_s=N (skipped_no_resolver lines have no duration field).
+# Median: middle value for odd count; integer average of two middle values for even count.
+# Uses a portable while-read sort+count approach (bash 3.2 compatible).
+CR_MEDIAN_DURATION_S="N/A"
+if [ -n "$CR_LINES" ]; then
+  _cr_durations=$(echo "$CR_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | sort -n || true)
+  if [ -n "$_cr_durations" ]; then
+    _cr_dur_count=$(echo "$_cr_durations" | wc -l | tr -d ' ' || true)
+    if [ "${_cr_dur_count:-0}" -gt 0 ] 2>/dev/null; then
+      _cr_mid=$(( (_cr_dur_count + 1) / 2 ))
+      _cr_median_val=$(echo "$_cr_durations" | sed -n "${_cr_mid}p" || true)
+      # For even counts, average the two middle values
+      if [ $(( _cr_dur_count % 2 )) -eq 0 ] 2>/dev/null; then
+        _cr_mid2=$(( _cr_mid + 1 ))
+        _cr_val2=$(echo "$_cr_durations" | sed -n "${_cr_mid2}p" || true)
+        if [ -n "$_cr_median_val" ] && [ -n "$_cr_val2" ]; then
+          _cr_median_val=$(( (_cr_median_val + _cr_val2) / 2 ))
+        fi
+      fi
+      [ -n "$_cr_median_val" ] && CR_MEDIAN_DURATION_S="${_cr_median_val}s"
+    fi
+  fi
+fi
+
 # --- Pre-parse test gate stats for health checks ---
 # TEST_GATE diag format: "TEST_GATE outcome=passed|failed|skipped lint_count=N test_count=N duration_s=N pr=N"
 TG_LINES=$(echo "$DIAG_LINES" | grep 'TEST_GATE ' || true)
@@ -227,7 +277,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
      - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs forced full suite this week (verifier/lint/helpers changed often)."
      - If TGS_TOTAL_RUNS is 0 → "No selection data this week."
 5. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
-   - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (top 5), median resolution duration if duration_s values are present
+   - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (use CR_TOP5_ISSUES directly — do not recompute), median resolution duration (use CR_MEDIAN_DURATION_S directly — do not recompute)
    - Thresholds:
      - `skipped_no_resolver` > 0 → **WARNING**: "Resolver not wired — conflict-resolver.sh may be missing"
      - failure rate > 30% → **WATCH**: "Resolver failing frequently"
@@ -247,7 +297,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 - rtk stats are JSON from `rtk gain --format json`
 - Git log shows recent tool changes with file stats
 - Previous reports provide trend context
-- Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts)
+- Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts); CR_TOP5_ISSUES (formatted string); CR_MEDIAN_DURATION_S (formatted string, e.g. "45s" or "N/A")
 - Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
 - Pre-parsed test gate selection stats: TGS_TOTAL_RUNS, TGS_TARGETED_RUNS, TGS_FULL_RUNS, TGS_SELECTED_SUM, TGS_TOTAL_SUM (counts)
 
@@ -301,8 +351,10 @@ $TGS_LINES
 - CR_FAILED: $CR_FAILED
 - CR_CAP_HIT: $CR_CAP_HIT
 - CR_SKIPPED (skipped_no_resolver — canary): $CR_SKIPPED
+- CR_TOP5_ISSUES (top 5 most-affected issues by invocation count): $CR_TOP5_ISSUES
+- CR_MEDIAN_DURATION_S (median conflict resolution duration, resolved/failed/cap_hit only): $CR_MEDIAN_DURATION_S
 
-Raw CONFLICT_RESOLVER diag lines for issue/duration details:
+Raw CONFLICT_RESOLVER diag lines for context:
 $CR_LINES
 
 ## rtk Token Stats (cumulative)
