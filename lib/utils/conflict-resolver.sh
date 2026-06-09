@@ -129,11 +129,25 @@ attempt_claude_merge_resolution() {
   # No-op when called from a clean tree (the common caller pattern).
   git merge --abort 2>/dev/null || true
 
+  # Convert the newline-delimited conflict-file list to an array so that each
+  # file path is passed as a distinct, properly-quoted argument to git commands.
+  # Using a while-read loop (not mapfile) for bash 3.2 compatibility.
+  # When _cr_conflict_files is empty the loop body never runs, leaving the array empty.
+  local _cr_conflict_files_arr=()
+  while IFS= read -r _cr_f; do
+    [ -n "$_cr_f" ] && _cr_conflict_files_arr+=("$_cr_f")
+  done <<< "$_cr_conflict_files"
+
   # Gather context diffs before Step 3 re-runs the merge.
   # If _cr_conflict_files is empty (clean-tree entry), these diffs will be based
   # on all files changed between HEAD and merge target — still useful context for Claude.
+  # When the array is non-empty, pass "-- file1 file2 ..." with each path quoted.
   local _cr_branch_diff=""
-  _cr_branch_diff=$(git diff "${_cr_merge_target}...HEAD" ${_cr_conflict_files:+-- $_cr_conflict_files} 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+  if [ "${#_cr_conflict_files_arr[@]}" -gt 0 ]; then
+    _cr_branch_diff=$(git diff "${_cr_merge_target}...HEAD" -- "${_cr_conflict_files_arr[@]}" 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+  else
+    _cr_branch_diff=$(git diff "${_cr_merge_target}...HEAD" 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+  fi
 
   # Main's commits and diff to conflicting files since branch diverged
   local _cr_merge_base
@@ -141,8 +155,13 @@ attempt_claude_merge_resolution() {
   local _cr_main_log=""
   local _cr_main_diff=""
   if [ -n "$_cr_merge_base" ]; then
-    _cr_main_log=$(git log --oneline "${_cr_merge_base}..${_cr_merge_target}" ${_cr_conflict_files:+-- $_cr_conflict_files} 2>/dev/null | head -20 || echo "")
-    _cr_main_diff=$(git diff "${_cr_merge_base}..${_cr_merge_target}" ${_cr_conflict_files:+-- $_cr_conflict_files} 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+    if [ "${#_cr_conflict_files_arr[@]}" -gt 0 ]; then
+      _cr_main_log=$(git log --oneline "${_cr_merge_base}..${_cr_merge_target}" -- "${_cr_conflict_files_arr[@]}" 2>/dev/null | head -20 || echo "")
+      _cr_main_diff=$(git diff "${_cr_merge_base}..${_cr_merge_target}" -- "${_cr_conflict_files_arr[@]}" 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+    else
+      _cr_main_log=$(git log --oneline "${_cr_merge_base}..${_cr_merge_target}" 2>/dev/null | head -20 || echo "")
+      _cr_main_diff=$(git diff "${_cr_merge_base}..${_cr_merge_target}" 2>/dev/null | head -"$_cr_diff_lines" || echo "")
+    fi
   fi
 
   # PR context (if available)

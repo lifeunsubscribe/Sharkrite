@@ -233,3 +233,72 @@ _setup_conflict_scenario() {
   # Must propagate exit 5 intact (batch-abort sentinel)
   [ "$result" -eq 5 ]
 }
+
+# ===========================================================================
+# REGRESSION: _cr_conflict_files array — paths with spaces do not word-split
+#
+# Before the fix, $_cr_conflict_files (newline-delimited) was passed unquoted
+# to `git diff/log`, causing word-splitting on paths with spaces or glob chars.
+# After the fix, the list is converted to an array via while-read and each
+# element is passed as a properly-quoted argument.
+# ===========================================================================
+
+@test "resolver: context diff uses correct file when conflict path contains a space" {
+  # Create a conflict on a file whose name contains a space.
+  local SPACED_FILE="my feature.md"
+  BRANCH_NAME="fix/spaced-path-test-$$"
+
+  # Feature branch: create and modify a file with a space in the name
+  git checkout -b "$BRANCH_NAME" main >/dev/null 2>&1
+  printf '# Feature\n' > "$SPACED_FILE"
+  git add "$SPACED_FILE"
+  git commit -m "Add spaced file on branch" >/dev/null 2>&1
+
+  # Advance origin/main with conflicting content on the same spaced file
+  git checkout main >/dev/null 2>&1
+  printf '# Main version\n' > "$SPACED_FILE"
+  git add "$SPACED_FILE"
+  git commit -m "Add spaced file on main (conflicts with branch)" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  # Return to feature branch
+  git checkout "$BRANCH_NAME" >/dev/null 2>&1
+
+  # Reproduce caller pattern: attempt merge, abort, call resolver from clean tree
+  git merge origin/main --no-edit 2>/dev/null || true
+  local unmerged_count
+  unmerged_count=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ')
+  [ "$unmerged_count" -gt 0 ]  # sanity: conflict exists on spaced file
+
+  git merge --abort 2>/dev/null || true
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+
+  # Capture the prompt so we can verify it references the spaced filename correctly
+  local captured_prompt=""
+  provider_run_agentic_session() {
+    captured_prompt="$1"
+    # Resolve the conflict so the resolver completes successfully
+    local _conflicted
+    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      echo "Resolved" > "$_f"
+      git add "$_f"
+    done <<< "$_conflicted"
+    return 0
+  }
+  load_provider() { return 0; }
+
+  local result=0
+  attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>/dev/null || result=$?
+
+  # Resolver must succeed
+  [ "$result" -eq 0 ]
+
+  # The prompt's "Conflicting files" section must list the spaced filename intact —
+  # if word-splitting had occurred, it would appear as two separate tokens ("my" and "feature.md")
+  echo "$captured_prompt" | grep -qF "my feature.md"
+}
