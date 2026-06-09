@@ -10,7 +10,9 @@
 #   2. workflow-runner.sh has phase_spawn_doc_assessment + phase_wait_doc_assessment
 #      helpers, and the spawn invokes assess-documentation.sh with --worktree.
 #   3. workflow-runner.sh wires spawn after the test gate kicks off in Phase 3.
-#   4. workflow-runner.sh waits for doc assessment at the entry to phase_merge_pr.
+#   4. workflow-runner.sh waits for doc assessment in phase_merge_pr right before
+#      the merge-pr.sh call (NOT at the top of phase_merge_pr — placement matters
+#      so doc work overlaps with the pre-merge gate).
 #   5. merge-pr.sh no longer spawns or waits on assess-documentation.sh.
 #   6. The PR-diff filter strips .rite/docs/ and docs/ hunks so prior doc commits
 #      don't recursively appear in the next iteration's doc assessment input.
@@ -123,9 +125,27 @@ setup() {
   [[ "$_fn_body" == *"run_test_gate"* ]]
 }
 
-@test "workflow-runner.sh: waits for doc assessment at phase_merge_pr entry" {
+@test "workflow-runner.sh: waits for doc assessment in phase_merge_pr, right before merge-pr.sh runs" {
+  # The wait must sit immediately before the "$MERGE_PR" invocation (not at the
+  # top of phase_merge_pr) so doc work runs in parallel with the pre-merge gate
+  # — changes summary fetch, check_blockers, verify_pr_head, divergence handling.
+  # Placing it at the entry collapses parallelism to ~zero in the no-fix-loop case.
   _fn_body=$(awk '/^phase_merge_pr\(\)/,/^phase_completion\(\)/' "$WORKFLOW_RUNNER")
   [[ "$_fn_body" == *"phase_wait_doc_assessment"* ]]
+
+  # The wait must appear AFTER the pre-merge gate (check_blockers, verify_pr_head)
+  # and BEFORE the merge-pr.sh invocation.
+  _wait_line=$(echo "$_fn_body" | grep -n 'phase_wait_doc_assessment' | head -1 | cut -d: -f1)
+  _blockers_line=$(echo "$_fn_body" | grep -n 'check_blockers "pre-merge"' | head -1 | cut -d: -f1)
+  _merge_call_line=$(echo "$_fn_body" | grep -n '"\$MERGE_PR" "\$pr_number"' | head -1 | cut -d: -f1)
+
+  [ -n "$_wait_line" ]
+  [ -n "$_blockers_line" ]
+  [ -n "$_merge_call_line" ]
+
+  # Order: blockers gate < wait < merge call
+  [ "$_blockers_line" -lt "$_wait_line" ]
+  [ "$_wait_line" -lt "$_merge_call_line" ]
 }
 
 @test "workflow-runner.sh: waits for doc assessment before claude --fix-review" {

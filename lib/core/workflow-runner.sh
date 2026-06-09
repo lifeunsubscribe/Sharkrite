@@ -1508,11 +1508,6 @@ phase_merge_pr() {
 
   cd "$WORKTREE_PATH"
 
-  # Wait for the background doc assessment (spawned in Phase 3) to finish before
-  # merging. Its Layer 2 commits land on this feature branch; we need them on the
-  # remote before the squash merge so they ride along atomically.
-  phase_wait_doc_assessment
-
   # Show a brief changes summary so the user knows what's about to be merged
   local _pr_info
   _pr_info=$(gh_safe pr view "$pr_number" --json title,body)
@@ -1592,6 +1587,18 @@ phase_merge_pr() {
       # div_result=0: resolved, continue to merge
     fi
   fi
+
+  # Wait for the background doc assessment (spawned in Phase 3) to finish before
+  # invoking merge-pr.sh. Its Layer 2 commits land on this feature branch; we
+  # need them on the remote before the squash merge so they ride along atomically.
+  #
+  # Placement matters: the wait sits HERE (right before the merge call) rather
+  # than at phase_merge_pr entry so doc work runs in parallel with the pre-merge
+  # gate above (changes summary fetch, check_blockers, verify_pr_head,
+  # divergence handling). In the no-fix-loop case where doc was spawned at end of
+  # Phase 3, that pre-merge gate is the only parallel window — placing the wait
+  # earlier collapses it to ~zero overlap.
+  phase_wait_doc_assessment
 
   # merge-pr.sh will:
   # - Update security guide with findings from PR review
