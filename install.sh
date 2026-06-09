@@ -134,6 +134,32 @@ else
   print_success "Bash $BASH_VERSION (4+ requirement met)"
 fi
 
+# Check optional perf tool: GNU parallel (enables bats --jobs N in test-gate).
+# Without it, the post-commit gate runs bats serially; with it, file-level
+# parallel execution roughly quarters the bats wall time on a 4-core box.
+# bats-core's `--jobs` flag accepts either GNU parallel or shenwei356/rush,
+# so if rush is already installed we don't need to ask.
+if command -v parallel &>/dev/null || command -v rush &>/dev/null; then
+  print_success "GNU parallel available (enables bats parallel test runs)"
+elif command -v brew &>/dev/null; then
+  echo ""
+  read -p "Install GNU parallel via Homebrew? Enables parallel bats test runs in test-gate (Y/n): " INSTALL_PARALLEL
+  if [[ ! "$INSTALL_PARALLEL" =~ ^[Nn]$ ]]; then
+    echo "Installing parallel via Homebrew..."
+    if brew install parallel; then
+      print_success "parallel installed"
+    else
+      print_warning "parallel install failed; test-gate will run bats serially"
+    fi
+  else
+    print_info "Skipped — test-gate will run bats serially. Install later with: brew install parallel"
+  fi
+else
+  print_warning "Homebrew not found — install GNU parallel manually to enable bats parallelism"
+  echo "  brew install parallel    # macOS"
+  echo "  apt install parallel     # Debian/Ubuntu"
+fi
+
 # =============================================================================
 # Step 2: Detect Existing Installation
 # =============================================================================
