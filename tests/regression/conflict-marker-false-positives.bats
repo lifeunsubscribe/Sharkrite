@@ -11,7 +11,10 @@
 # resolution.
 #
 # Fix: tightened the regex to:
-#   ^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]])
+#   ^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])
+#
+# The fourth alternation catches the diff3/zdiff3 base-version marker (|||||||)
+# produced by merge.conflictstyle=diff3 or zdiff3.
 #
 # This file tests the check-2 regex specifically, independently of a full
 # resolver run. That isolation keeps the tests fast and focused.
@@ -48,7 +51,7 @@ teardown() {
 # marker was detected), non-zero otherwise.
 # ---------------------------------------------------------------------------
 _has_conflict_marker() {
-  grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]])' "$1" 2>/dev/null
+  grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])' "$1" 2>/dev/null
 }
 
 # ===========================================================================
@@ -72,6 +75,24 @@ _has_conflict_marker() {
 
 @test "conflict-marker check: detects full conflict block" {
   printf '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature/x\n' > test_file.txt
+  _has_conflict_marker test_file.txt
+}
+
+@test "conflict-marker check: detects diff3/zdiff3 base-version marker '||||||| base'" {
+  # diff3/zdiff3 conflict style (merge.conflictstyle=diff3 or zdiff3) produces:
+  #   <<<<<<< HEAD
+  #   ours
+  #   ||||||| base-sha  ← base-version marker (not detected before this fix)
+  #   base content
+  #   =======
+  #   theirs
+  #   >>>>>>> branch
+  printf '||||||| base-sha\n' > test_file.txt
+  _has_conflict_marker test_file.txt
+}
+
+@test "conflict-marker check: detects full diff3 conflict block" {
+  printf '<<<<<<< HEAD\nours\n||||||| base\nbase content\n=======\ntheirs\n>>>>>>> feature/x\n' > test_file.txt
   _has_conflict_marker test_file.txt
 }
 
@@ -109,6 +130,12 @@ _has_conflict_marker() {
 
 @test "conflict-marker check: does NOT flag '>>>>>>>' without trailing space (bare 7 >)" {
   printf '>>>>>>>\n' > test_file.txt
+  ! _has_conflict_marker test_file.txt
+}
+
+@test "conflict-marker check: does NOT flag '|||||||' without trailing space (bare 7 |)" {
+  # Real diff3 markers always have a space + sha/label; bare '|||||||' is not a marker
+  printf '|||||||\n' > test_file.txt
   ! _has_conflict_marker test_file.txt
 }
 

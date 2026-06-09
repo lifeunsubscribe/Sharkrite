@@ -135,7 +135,8 @@ _setup_conflict_scenario() {
   # Verify: no conflict markers in resolved files.
   # Use the same precise regex as conflict-resolver.sh Check 2 to avoid
   # false-positives from markdown setext underlines or doc separators.
-  if grep -rqE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]])' . --include="*.md" 2>/dev/null; then
+  # Includes the diff3/zdiff3 base-version marker (|||||||).
+  if grep -rqE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])' . --include="*.md" 2>/dev/null; then
     echo "FAIL: Conflict markers still present after resolver returned 0" >&2
     return 1
   fi
