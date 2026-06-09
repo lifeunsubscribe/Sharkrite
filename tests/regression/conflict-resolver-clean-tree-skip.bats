@@ -465,3 +465,179 @@ _cleanup_branch() {
   git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
   git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Broader git status check narrowed to staged-only (issue #429-434)
+#
+# git status --porcelain is broader than the staged-resolution condition:
+# it also returns output for untracked files (??) and unstaged changes ( M).
+# Neither of those is included by `git commit --no-edit`, so checking them
+# would spuriously trigger a failing commit attempt.
+#
+# Fix: use `! git diff --cached --quiet` instead — checks only the index.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "mid-run-rebase: resolver with untracked files only — skips commit, push succeeds" {
+  # Regression: `git status --porcelain` fires for untracked files (??), but
+  # `git commit --no-edit` won't include them. With the old broad check the commit
+  # would run and fail ("nothing to commit"). With the new index-only check
+  # (`git diff --cached --quiet`) untracked files are invisible to the guard
+  # and the commit is correctly skipped.
+  source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+
+  _setup_conflict_branch
+
+  # Stub: resolver auto-commits resolution AND leaves a stray untracked file.
+  # The stray file makes `git status --porcelain` non-empty (would wrongly trigger
+  # commit with old check), but the index is clean (new check must skip commit).
+  attempt_claude_merge_resolution() {
+    cd "$WORKTREE_PATH" || return 1
+    echo "Feature line" > README.md
+    echo "Main line (conflict)" >> README.md
+    git add README.md
+    git commit -m "chore: resolve via Claude (untracked-file test)" >/dev/null 2>&1
+    # Leave an untracked file — makes git status --porcelain non-empty
+    echo "stray" > untracked-stray.tmp
+    return 0
+  }
+
+  local output exit_code=0
+  output=$(check_and_rebase_against_main \
+    "$WORKTREE_PATH" "$BRANCH_NAME" "429" "458" "unsupervised" 2>&1) || exit_code=$?
+
+  # Must succeed (untracked file must not trigger a spurious commit failure)
+  [ "$exit_code" -eq 0 ]
+
+  # Must NOT contain a commit-failure message
+  ! echo "$output" | grep -q "failed to commit resolved conflicts"
+
+  # Remote must be up to date (push ran)
+  local remote_sha local_sha
+  remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null || true)
+  local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
+  [ "$remote_sha" = "$local_sha" ]
+
+  _cleanup_branch
+}
+
+@test "stale-branch rebase path: resolver with untracked files only — skips commit, push succeeds" {
+  # Same scenario as above, covering the _stale_rebase_onto_main code path.
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+  _setup_conflict_branch
+
+  attempt_claude_merge_resolution() {
+    cd "$WORKTREE_PATH" || return 1
+    echo "Resolved content" > README.md
+    git add README.md
+    git commit -m "chore: resolve (untracked-file test, rebase path)" >/dev/null 2>&1
+    echo "stray" > untracked-stray.tmp
+    return 0
+  }
+
+  local output exit_code=0
+  output=$(_stale_rebase_onto_main \
+    "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "429" "458" 2>&1) || exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+  ! echo "$output" | grep -q "Failed to commit resolved conflicts"
+
+  local remote_sha local_sha
+  remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null || true)
+  local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
+  [ "$remote_sha" = "$local_sha" ]
+
+  _cleanup_branch
+}
+
+@test "stale-branch legacy-merge path: resolver with untracked files only — skips commit, push succeeds" {
+  # Same scenario, covering the _stale_merge_main_legacy code path.
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+  _setup_conflict_branch
+
+  attempt_claude_merge_resolution() {
+    cd "$WORKTREE_PATH" || return 1
+    echo "Resolved content" > README.md
+    git add README.md
+    git commit -m "chore: resolve (untracked-file test, legacy-merge path)" >/dev/null 2>&1
+    echo "stray" > untracked-stray.tmp
+    return 0
+  }
+
+  local output exit_code=0
+  output=$(_stale_merge_main_legacy \
+    "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "429" "458" 2>&1) || exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+  ! echo "$output" | grep -q "Failed to commit resolved conflicts"
+
+  local remote_sha local_sha
+  remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null || true)
+  local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
+  [ "$remote_sha" = "$local_sha" ]
+
+  _cleanup_branch
+}
+
+@test "divergence-handler: resolver with untracked files only — skips commit, falls through to push" {
+  # Same scenario, covering the _do_rebase_and_push code path in divergence-handler.sh.
+  BRANCH_NAME="fix/diverge-untracked-$$"
+
+  git checkout -b "$BRANCH_NAME" main >/dev/null 2>&1
+  echo "# Feature: shared base" > README.md
+  git add README.md
+  git commit -m "Feature: shared base" >/dev/null 2>&1
+  git push -u origin "$BRANCH_NAME" >/dev/null 2>&1
+
+  local tmp_clone="${RITE_TEST_TMPDIR}/tmp-clone-untracked-$$"
+  git clone "$BARE_REMOTE" "$tmp_clone" >/dev/null 2>&1
+  git -C "$tmp_clone" config user.name "Test User"
+  git -C "$tmp_clone" config user.email "test@example.com"
+  git -C "$tmp_clone" checkout "$BRANCH_NAME" >/dev/null 2>&1
+  echo "# Feature: remote-specific" > "$tmp_clone/README.md"
+  git -C "$tmp_clone" add README.md
+  git -C "$tmp_clone" commit -m "Remote conflicting change" >/dev/null 2>&1
+  git -C "$tmp_clone" push origin "$BRANCH_NAME" >/dev/null 2>&1
+
+  echo "# Feature: local-specific" > README.md
+  git add README.md
+  git commit -m "Local conflicting change (not pushed)" >/dev/null 2>&1
+
+  git checkout main >/dev/null 2>&1
+
+  WORKTREE_PATH="$RITE_WORKTREE_DIR/issue-diverge-untracked-$$"
+  git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1
+  cd "$WORKTREE_PATH"
+
+  git fetch origin "$BRANCH_NAME" >/dev/null 2>&1
+
+  source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+
+  # Stub: resolver auto-commits AND leaves a stray untracked file.
+  attempt_claude_merge_resolution() {
+    cd "$WORKTREE_PATH" || return 1
+    echo "# Feature: merged content" > README.md
+    git add README.md
+    git commit -m "chore: resolve divergence (untracked-file test)" >/dev/null 2>&1
+    echo "stray" > untracked-stray.tmp
+    return 0
+  }
+
+  local output exit_code=0
+  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "429" "458" 2>&1) || exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+  ! echo "$output" | grep -q "Failed to commit resolved conflicts"
+
+  local remote_sha local_sha
+  remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null || true)
+  local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || true)
+  [ "$remote_sha" = "$local_sha" ]
+
+  # Cleanup
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
+}

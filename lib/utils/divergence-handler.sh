@@ -512,9 +512,14 @@ _do_rebase_and_push() {
         # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
         # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
         # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
-        # case the working tree is already clean and `git commit --no-edit` would exit non-zero
-        # with "nothing to commit". Only commit if the tree is actually dirty.
-        if [ -n "$(git status --porcelain)" ]; then
+        # case the index is already clean and `git commit --no-edit` would exit non-zero
+        # with "nothing to commit". Only commit if the index has staged changes.
+        #
+        # Use `git diff --cached --quiet` (exits 1 = staged changes present, 0 = index clean)
+        # rather than `git status --porcelain` which is overly broad: it also returns output
+        # for untracked files (??) and unstaged changes — neither of which `git commit` would
+        # include. Checking only the index avoids a spurious commit failure on those states.
+        if ! git diff --cached --quiet 2>/dev/null; then
           if ! git commit --no-edit 2>/dev/null; then
             _div_error "Failed to commit resolved conflicts"
             git merge --abort 2>/dev/null || true
