@@ -1060,3 +1060,69 @@ The `${REVIEW_FILE:-}` expansion is required (not `$REVIEW_FILE`) because `REVIE
 ### Regression Test
 
 `tests/regression/assess-and-resolve-temp-file-isolation.bats` — asserts glob is absent, PID suffix is present, and cleanup does not remove peer files.
+
+---
+
+## Fixes That Don't Fully Fix (Anti-Pattern)
+
+### The Pattern
+
+A bug fix is correct and narrow — it addresses the observed failure mode precisely. An adjacent failure mode exists that shares the same root cause. The fix never considers it. The sibling surfaces as a new bug within hours or days, requiring its own fix cycle.
+
+This is a **development-process failure**, not a detection failure. Sharkrite's review loop caught every one of the regressions below within hours of landing. The regressions kept arising because the fix cycle started with the observed symptom and ended when that symptom was gone, without asking "what is the BUG CLASS this symptom is an instance of?"
+
+### Live Evidence (2026-06-06 through 2026-06-08)
+
+| Bug | Fix PR | Subsequent regression | Why the fix missed |
+|-----|--------|-----------------------|--------------------|
+| #16 (dedup race) | #127 (per-PR lock + retry) | #478 (source-marker variant uncovered) | Retry condition required "recent comment exists" signal that doesn't fire on follow-up-issue creation |
+| #432 (resolver wired but unshipped) | PR #435 (ship + commit-after-resolve) | #457 (unconditional commit fails when tree is clean) | Fix assumed dirty tree post-resolution; missed the noop case |
+| #457 (skip-when-clean) | PR #458 (guarded commit) | Live obs 2026-06-08: CONFLICT_RESOLVER fires 8 times in 8 seconds | Guard prevented one failure; orchestration loop never investigated for sibling races |
+| #448 (move verification out of fix session) | PR #451 | #469 (multi-dev-session leak) + #471 (silent exit between phases) | Parallel orchestration introduced subshell hazards; tests covered happy path, not orchestration boundaries |
+| #462 (targeted test selection) | PR #475 | PR #480 (backfill required) + PR #481 (default-flip required) | "Conservative-default" choice silently defeated the optimization; regression test asserted infrastructure, not outcome |
+
+### Root Causes
+
+**1. Issue scope is too narrow.** Most bug-fix issues read: "Fix the specific failure mode observed in `<log>`." Nobody asks: "What's the bug class this is an instance of? What sibling instances exist?" The narrowness is in the issue, which then produces a narrow fix, which then produces a narrow test.
+
+**2. Regression tests assert the fix, not the absence of the class.** PR #127's test stubbed `gh issue create` to return success and asserted one create. It did not stub `gh issue list` to return stale data (the actual GitHub API lag mode) and assert dedup STILL works. So real GitHub did exactly that — the test passed, production failed.
+
+**3. Review prompt didn't ask "what could this miss?"** The review asked "what's wrong here?" It did not ask "what sibling cases exist that this diff doesn't touch?" or "what assumptions does this fix make about callers?" This was fixed in the review template update that landed with this PR (see `templates/github/claude-code/pr-review-instructions.md` § "Sibling-Failure-Mode Check").
+
+### How This Was Fixed (Process Layers)
+
+**Layer 1 — Issue template requires bug-class enumeration** (`docs/issue-runbook.md` § "Bug Class Analysis"):
+
+Before writing the fix, the issue author must list: the specific failure mode, the general bug class, 2-3 sibling instances, and a scope decision for each sibling (in-scope or explicit out-of-scope with reason). This runs at issue-creation time, before any code is written — the cheapest possible point to catch sibling scope.
+
+**Layer 2 — Review prompt requires sibling-failure-mode check** (`templates/github/claude-code/pr-review-instructions.md` § "Sibling-Failure-Mode Check"):
+
+For every fix in a bug-fix PR diff, the reviewer must answer: What assumptions does this fix make? What failure classes share the root cause? What edge cases are uncovered? If a sibling is found: flag ACTIONABLE_NOW at the parent bug's severity. If no sibling: state explicitly "no siblings found — [reason]."
+
+This is a catch layer for when Layer 1 was skipped (issue filed without Bug Class Analysis) or when the fix session surfaced new information about siblings that wasn't visible at issue-creation time.
+
+**Layer 3 — Test template (deferred):** Standardized test scaffolding that explicitly requires: (1) assert specific bug doesn't happen, (2) assert sibling variant also doesn't happen, (3) assert hostile-environment conditions produce the right outcome. Not implemented in this PR — deferred until Layers 1+2 prove value.
+
+### What "Done" Looks Like for Bug-Fix Issues
+
+A bug-fix issue is complete when:
+1. The specific failure mode is fixed (always done)
+2. The Bug Class Analysis section is filled in (new requirement)
+3. At least one sibling instance was considered, and either fixed or explicitly deferred with a follow-up issue number
+4. The review's sibling-failure-mode check section has an entry — even "no siblings found, here's why" counts
+
+The goal is not to always widen scope. It is to always make the decision consciously.
+
+### Anti-patterns This Replaces
+
+**"The fix is correct" as the only merge criterion.** A fix can be locally correct while leaving the codebase in a class-of-bugs-still-present state. Correctness of the specific fix is necessary but not sufficient.
+
+**Omitting the bug class from the issue title.** "Fix issue in batch cleanup" tells nobody what class the bug is. "Fix unconditional network call in handle_closed_issue (lazy-network-state class)" is searchable, grep-able, and makes future authors aware that the lazy-network-state contract exists.
+
+**Regression tests that only confirm the symptom is gone.** PR #127's test is passing. Issue #478 exists. Both are true simultaneously because the test only confirmed one trigger of the race, not the class.
+
+### Cross-Reference
+
+- Issue template runbook: `docs/issue-runbook.md` § "Bug Class Analysis"
+- Review prompt: `templates/github/claude-code/pr-review-instructions.md` § "Sibling-Failure-Mode Check"
+- Conventions catalog: `docs/architecture/conventions.md` (when populated) will accumulate per-PR convention entries from PRs that exhibit this pattern

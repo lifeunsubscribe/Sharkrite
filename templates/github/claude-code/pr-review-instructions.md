@@ -56,6 +56,36 @@ The diff alone is not sufficient. For any of the following changes, you MUST tra
 
 If you cannot confirm compatibility from the diff alone, flag it. A finding like "renamed `limiter` to `rate_limiter` but `middleware.py` still imports `limiter`" is HIGH or CRITICAL depending on whether it causes a runtime crash. Do not assume that because the diff is internally consistent, the rest of the codebase is compatible.
 
+### 7. 🔁 Sibling-Failure-Mode Check (REQUIRED for bug-fix PRs)
+
+A bug fix that addresses the observed failure mode but leaves sibling instances of the same bug class is the single most common source of regressions in this codebase. For every fix in this diff:
+
+1. **What assumptions does this fix make about its callers, environment, or state?**
+   - Does it assume the caller always provides a value? Always sets a flag? Always runs in a specific order?
+   - Does it assume the environment is in a particular state (clean tree, no concurrent processes, network available)?
+
+2. **What classes of failure share this bug's root cause?**
+   - If the root cause is "guard prevents one code path but not a sibling path," look for the sibling paths.
+   - If the root cause is "noop case not handled," look for other callers of the same function that might also hit the noop.
+   - If the root cause is "race condition between A and B," check whether the same race can occur between A and C.
+   - Does the fix address ALL members of this failure class, or just the observed instance?
+
+3. **What edge cases of the fixed code path are not covered by the diff or tests?**
+   - The "happy path" after the fix: does it work? (often tested)
+   - The "clean/noop" case: what happens when there's nothing to do? (frequently missed)
+   - The concurrent case: what happens when two processes hit this simultaneously?
+   - The error-recovery case: what happens if a downstream call fails mid-fix?
+
+**When you find a sibling case the fix doesn't cover:**
+- Flag it as ACTIONABLE_NOW with severity matching the parent bug (a sibling of a HIGH bug is HIGH)
+- Include: the sibling location (`file:line`), why it shares the same root cause, and what trigger would expose it
+
+**When no siblings exist:**
+- State explicitly: "No sibling instances found — [reason why this code path is unique]"
+- "No siblings found" is a valid and complete answer; the requirement is that it be considered, not that siblings always exist
+
+**This check applies to bug-fix PRs.** For feature PRs, skip this section or note "N/A — feature addition, not a bug fix."
+
 ## Severity Classification
 
 ### 🔴 CRITICAL (Must Fix Before Merge)

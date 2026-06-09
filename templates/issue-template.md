@@ -45,3 +45,12 @@ One sentence. The human reads this and knows whether to stop iterating.
 After: #N
 Blocked by: #N
 None
+
+## Bug Class Analysis
+*(Required for bug-fix issues. Omit for feature/infra/docs issues.)*
+
+1. **Specific failure mode observed:** [what exactly broke, with log evidence or reproduction steps]
+2. **General bug class:** [what pattern is this an instance of?]
+3. **Sibling instances:** [2-3 other places in the codebase where this same pattern exists, or "none — [reason why this code path is unique]"]
+   - `file:line` — [same root cause, different trigger]
+4. **Scope decision:** For each sibling: addressed by this fix (YES/NO)? If NO, why out of scope?
