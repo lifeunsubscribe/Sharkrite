@@ -56,6 +56,7 @@ setup() {
   print_warning() { echo "WARNING: $*" >&2; }
   print_info()    { echo "INFO: $*" >&2; }
   print_success() { echo "SUCCESS: $*" >&2; }
+  print_error()   { echo "ERROR: $*" >&2; }
 
   # Extract _validate_coverage and _dedup_issues from plan-issues.sh.
   # The awk brace-depth tracker pulls each function body in full.
@@ -515,6 +516,156 @@ FIXTURE
   [ "$phantom_count" -eq 0 ] || {
     echo "FAIL: $phantom_count phantom_* reference(s) still present in plan-issues.sh" >&2
     grep -nE 'phantom_prompt|PHANTOM_EOF|phantom_file[^s]|clean_phantom' "$plan_issues_sh" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture G — zero-emission / truncated generation
+#
+# Real incident: finance-glance run 2026-06-09. The model produced a coverage
+# checklist (7 ✅ entries) and a closing summary, then STOPPED before emitting
+# any ---ISSUE--- block. The old reconciler treated all 7 as orphans: it emitted
+# 7 "stripping orphan" warnings and reported "0 issues" with exit 0 — a truncated
+# generation silently reported as success.
+#
+# Fix: when the checklist has ≥1 ✅ entry but ZERO ---ISSUE--- blocks were
+# emitted, _validate_coverage must fail hard (exit non-zero) with a single error,
+# not N orphan warnings. The caller aborts instead of "succeeding" with 0 issues.
+# ---------------------------------------------------------------------------
+
+@test "Fixture G: checklist entries with zero emitted issues — single hard error, non-zero exit" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-g.txt"
+
+  # Coverage checklist with 3 ✅ entries, then NO ---ISSUE--- blocks at all.
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+- ✅ Harden glance parse → Issue "Harden glance parse for live contract"
+- ✅ Due tab → Issue "Implement Due tab rendering"
+- ✅ Worth tab → Issue "Implement Worth tab rendering"
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  # Capture the non-zero return inline so bats doesn't abort the test at this line.
+  local exit_code=0
+  _validate_coverage "$issues_file" 2>"$stderr_out" || exit_code=$?
+
+  # Must fail hard (non-zero) so the caller aborts.
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit on zero-emission, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE error line — NOT one "stripping orphan" warning per entry.
+  local error_count
+  error_count=$(grep -c "^ERROR:" "$stderr_out" || true)
+  [ "$error_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 ERROR line, got $error_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit the per-entry orphan-stripping warnings (the old noisy behavior).
+  local orphan_warnings
+  orphan_warnings=$(grep -c "stripping orphan" "$stderr_out" || true)
+  [ "$orphan_warnings" -eq 0 ] || {
+    echo "FAIL: expected 0 'stripping orphan' warnings, got $orphan_warnings" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture H — all-deferred plan (legitimate zero issues)
+#
+# A plan where every item is deferred (0 ✅ checklist entries) is a legitimate
+# "nothing to create" outcome, NOT a truncation. The zero-emission guard keys on
+# ✅ entries existing, so this must still return 0 (no false hard-fail).
+# ---------------------------------------------------------------------------
+
+@test "Fixture H: all-deferred checklist (no ✅ entries) — returns 0, not a hard-fail" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-h.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+- ⏭️ Multi-institution support → Deferred to Phase 4 (ADR D7)
+- ⏭️ 3D-printed frame → Deferred to Phase 4 (ADR follow-up #7)
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _validate_coverage "$issues_file" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: all-deferred plan should return 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance: generate_issues retries on a truncated generation
+#
+# Guards the auto-retry that recovers from the finance-glance 2026-06-09 failure
+# mode: the provider emits a COVERAGE checklist but 0 ---ISSUE--- blocks. Rather
+# than accept it (the old break-on-non-empty behavior), generate_issues must
+# detect zero issue markers + a COVERAGE checklist and re-issue with an escalated
+# directive. Structural check (the loop embeds a live provider call, so a behavioral
+# test would require a full provider mock + config bootstrap).
+# ---------------------------------------------------------------------------
+
+@test "acceptance: generate_issues retries when a checklist is emitted with 0 issue blocks" {
+  local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
+
+  local fn_body
+  fn_body=$(awk '
+    /^generate_issues\(\)/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print; next
+    }
+  ' "$plan_issues_sh")
+
+  # Must count issue markers and gate the retry on "0 markers AND a COVERAGE checklist".
+  echo "$fn_body" | grep -q 'ISSUE---" "$temp_file"' || {
+    echo "FAIL: generate_issues no longer counts ---ISSUE--- markers for the truncation guard" >&2
+    false
+  }
+  echo "$fn_body" | grep -q '_issue_markers' || {
+    echo "FAIL: generate_issues missing the _issue_markers truncation guard" >&2
+    false
+  }
+  # Must re-issue via the escalation prompt (RETRY directive appended to the base prompt).
+  echo "$fn_body" | grep -q 'RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE' || {
+    echo "FAIL: generate_issues missing the escalation-retry directive" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance: the base prompt's closing directive states the issue blocks are
+# the required deliverable (prompt hardening against treating the checklist as
+# the output).
+# ---------------------------------------------------------------------------
+
+@test "acceptance: prompt directive states issue blocks are the required deliverable" {
+  local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
+
+  grep -q "The issue blocks are the required deliverable" "$plan_issues_sh" || {
+    echo "FAIL: prompt no longer states the issue blocks are the required deliverable" >&2
     false
   }
 }
