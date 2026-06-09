@@ -35,6 +35,7 @@ source "$RITE_LIB_DIR/utils/labels.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
+source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -1397,8 +1398,8 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
     _sentinel_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
     _sentinel_file="${_sentinel_dir}/source-issue-${ISSUE_NUMBER}.created"
     if [ -f "$_sentinel_file" ]; then
-      # macOS-compatible mtime: try BSD stat -f %m, fallback to 0 (always expired)
-      _sentinel_mtime=$(stat -f %m "$_sentinel_file" 2>/dev/null || echo "0")
+      # Portable mtime via portable_stat_mtime (GNU: stat -c "%Y", BSD: stat -f "%m")
+      _sentinel_mtime=$(portable_stat_mtime "$_sentinel_file")
       _sentinel_age=$(( $(date +%s) - _sentinel_mtime ))
       _sentinel_ttl="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
       if [ "$_sentinel_age" -lt "$_sentinel_ttl" ]; then
@@ -1733,8 +1734,19 @@ This approach allows all fixes to be completed together in a focused PR."
       # a fast-spinning waiter could acquire the lock immediately after this
       # process releases it, run the dedup search (which returns empty because
       # the index hasn't caught up), and create a duplicate.
-      # The sentinel (above) provides a secondary guard; the dwell is a belt-and-
-      # suspenders measure for the same consistency window.
+      #
+      # Interaction with acquire_pr_followup_lock's 60s budget:
+      # The dwell extends the critical section by up to RITE_FOLLOWUP_LOCK_DWELL_S
+      # (default 5s), consuming that slice of any waiter's 60s acquire budget.
+      # In practice this is mitigated because any waiter that was blocked long
+      # enough to observe the dwell will find the sentinel file fresh (written
+      # just before the dwell) and short-circuit BEFORE acquiring the lock —
+      # so the dwell never actually eats into the waiter's budget in the common
+      # case.  In the rare case where the sentinel is unavailable (e.g. state dir
+      # on a different filesystem), the worst-case budget reduction is 5s out of
+      # 60s, which remains well within the safe margin for a ~5-10s critical
+      # section.  The sentinel is therefore the primary guard; the dwell is
+      # belt-and-suspenders for the same consistency window.
       _dwell_seconds="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
       if [ "$_dwell_seconds" -gt 0 ] 2>/dev/null; then
         sleep "$_dwell_seconds"

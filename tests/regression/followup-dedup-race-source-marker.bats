@@ -121,6 +121,7 @@ run_sentinel_dedup_create() {
 
   # Re-source utils in subshell
   source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 
   # --- Sentinel pre-check (mirrors assess-and-resolve.sh) ---
   local _sentinel_skipped=false
@@ -129,7 +130,8 @@ run_sentinel_dedup_create() {
     local _sentinel_file="${_sentinel_dir}/source-issue-${source_issue}.created"
     if [ -f "$_sentinel_file" ]; then
       local _sentinel_mtime
-      _sentinel_mtime=$(stat -f %m "$_sentinel_file" 2>/dev/null || echo "0")
+      # Portable mtime via portable_stat_mtime (GNU: stat -c "%Y", BSD: stat -f "%m")
+      _sentinel_mtime=$(portable_stat_mtime "$_sentinel_file")
       local _sentinel_age=$(( $(date +%s) - _sentinel_mtime ))
       local _sentinel_ttl="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
       if [ "$_sentinel_age" -lt "$_sentinel_ttl" ]; then

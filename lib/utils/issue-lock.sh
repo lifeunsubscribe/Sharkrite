@@ -247,6 +247,15 @@ acquire_pr_followup_lock() {
   local lock_attempts=0
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
   # takes ~5-10s in practice; 60s gives ample room while still failing safely.
+  #
+  # The lock holder may also sleep for RITE_FOLLOWUP_LOCK_DWELL_S (default 5s)
+  # after create before releasing (see assess-and-resolve.sh post-create dwell).
+  # This dwell extends the holder's critical section but not the effective wait
+  # for most waiters: a waiter that was queued during the dwell will find the
+  # source-marker sentinel file fresh and short-circuit BEFORE acquiring the lock,
+  # so it never actually spends its budget waiting out the dwell.  In the rare
+  # case where the sentinel is unavailable, the worst-case hold time is
+  # ~10s (critical section) + 5s (dwell) = ~15s, well inside the 60s budget.
   local max_attempts=60
   local _grace_period_consumed=false
 
