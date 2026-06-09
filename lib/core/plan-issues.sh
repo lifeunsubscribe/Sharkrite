@@ -1640,7 +1640,7 @@ _lint_issues_strict() {
         [ -z "$_pt" ] && continue
         # Skip tokens that are clearly not paths (URLs, flags, etc.)
         case "$_pt" in
-          http*|https*|--*|-*|*.*.*.*) continue ;;
+          http*|--*|-*|*.*.*.*) continue ;;
         esac
 
         # Check if path is in Files to Modify for this issue
