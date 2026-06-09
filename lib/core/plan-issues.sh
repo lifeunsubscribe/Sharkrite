@@ -875,26 +875,41 @@ PROMPT_EOF
     if [ -s "$temp_file" ]; then
       print_info "Generated $(wc -l < "$temp_file" | tr -d ' ') lines of output" >&2
 
-      # Truncation guard: a non-empty response that produced a COVERAGE checklist
-      # but ZERO ---ISSUE--- blocks is a truncated generation — the model emitted
-      # the analysis and stopped (finance-glance regression, 2026-06-09). Retry
-      # with an escalated directive instead of accepting it. Count the marker as
-      # an occurrence (not a whole-line match): normalization runs later, so
-      # pre-normalization the marker may be concatenated with surrounding text.
-      local _issue_markers
-      _issue_markers=$(grep -o -- "---ISSUE---" "$temp_file" | wc -l | tr -d ' ' || true)
-      if [ "${_issue_markers:-0}" -eq 0 ] && grep -q "COVERAGE" "$temp_file"; then
+      # Normalize markers now so the checklist-vs-emitted comparison below is
+      # reliable (jq join mode can concatenate markers with surrounding text).
+      _normalize_issue_markers "$temp_file"
+
+      # Completeness guard: the COVERAGE checklist lists N issues; compare against
+      # the ---ISSUE--- blocks actually emitted. Any ✅ entry with no matching block
+      # was dropped — this covers BOTH the M=0 truncation case (model emitted only
+      # the checklist and stopped) AND the partial M<N case (model emitted some
+      # blocks and dropped the rest). Both were finance-glance regressions on
+      # 2026-06-09. Retry with an escalation that NAMES the omitted issues, rather
+      # than accepting a partial slate and silently stripping the remainder.
+      local _missing
+      _missing=$(_coverage_missing_titles "$temp_file" || true)
+      if [ -n "$_missing" ] && grep -q "COVERAGE" "$temp_file"; then
         if [ $attempt -lt $max_attempts ]; then
-          print_warning "Provider emitted a coverage checklist but 0 issue blocks — retrying with an escalated directive..." >&2
+          local _missing_count _missing_list
+          _missing_count=$(printf '%s\n' "$_missing" | grep -c . || true)
+          _missing_list=$(printf '%s\n' "$_missing" | sed 's/^/  - /' || true)
+          print_warning "Provider's checklist listed issues it did not emit ($_missing_count missing block(s)) — retrying with an escalated directive..." >&2
+          # Re-request the FULL slate (the streamed output is overwritten each
+          # attempt, so we cannot append just the missing ones) but call out the
+          # omitted issues by name so the model emits every block this time.
           _active_prompt="${prompt}
 
-**RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE.** You output the COVERAGE checklist (and possibly a closing summary) and then stopped. That is NOT the deliverable. You MUST now emit one complete ---ISSUE--- ... ---END--- block for every ✅ entry in the checklist, using the exact output format specified above. Do not re-output the checklist or any summary. Begin emitting ---ISSUE--- blocks immediately and STOP after the final ---END---."
+**RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE.** Your COVERAGE checklist listed issues for which you never emitted an ---ISSUE--- block. These planned issues are MISSING their block:
+${_missing_list}
+
+You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one complete ---ISSUE--- ... ---END--- block for EVERY ✅ entry — including the missing ones listed above. Do not stop after the checklist or any summary. Emit every issue block, then STOP after the final ---END---."
           sleep 3
           continue
         fi
-        # Final attempt also truncated: fall through. The downstream
-        # _validate_coverage zero-emission guard aborts cleanly with one error.
-        print_warning "Provider still emitted 0 issue blocks after $max_attempts attempts" >&2
+        # Retries exhausted, still incomplete: fall through. If 0 blocks emitted,
+        # _validate_coverage's zero-emission guard aborts with one error; if a
+        # partial slate emitted, it strips + warns loudly per dropped issue.
+        print_warning "Provider still omitted planned issue block(s) after $max_attempts attempts — proceeding with what emitted" >&2
       fi
       break
     fi
@@ -914,21 +929,10 @@ PROMPT_EOF
     return 1
   fi
 
-  # Normalize structural markers before any parsing.
-  # jq -rj (join mode) emits text chunks with no added newlines, so markers can
-  # be concatenated with surrounding text: "...text---ISSUE---TITLE: ..."
-  # Force markers onto their own lines, then clean up any trailing content.
-  local normalized
-  normalized=$(mktemp)
-  sed \
-    -e 's/---ISSUE---/\
----ISSUE---\
-/g' \
-    -e 's/---END---/\
----END---\
-/g' \
-    "$temp_file" > "$normalized"
-  mv "$normalized" "$temp_file"
+  # Structural markers were already forced onto their own lines in-loop via
+  # _normalize_issue_markers (needed there for the completeness comparison), so
+  # the file is normalized by the time we reach here — no second pass (re-running
+  # the split would inject extra blank lines around already-split markers).
 
   # Detect unverified external integrations (deterministic — no LLM calls).
   # Emits WARNING lines to stderr and prepends spike-issue prerequisites for
@@ -1786,6 +1790,68 @@ _lint_issues_strict() {
 }
 
 # =============================================================================
+# Force ---ISSUE--- / ---END--- markers onto their own lines
+# =============================================================================
+# jq -rj (join mode) emits text chunks with no added newlines, so markers can be
+# concatenated with surrounding text ("...text---ISSUE---TITLE: ..."). Every
+# downstream parser keys on whole-line markers, so normalize before any parsing.
+# Idempotent enough for repeated calls is NOT guaranteed (re-splitting adds blank
+# lines), so call exactly once per generated file.
+_normalize_issue_markers() {
+  local _f="$1"
+  local _norm
+  _norm=$(mktemp)
+  sed \
+    -e 's/---ISSUE---/\
+---ISSUE---\
+/g' \
+    -e 's/---END---/\
+---END---\
+/g' \
+    "$_f" > "$_norm"
+  mv "$_norm" "$_f"
+}
+
+# =============================================================================
+# Coverage checklist ↔ emitted issues: which planned titles have no block?
+# =============================================================================
+# Returns the checklist ✅ titles (raw form) that have NO matching ---ISSUE---
+# block, one per line. Canonicalizes (lowercase + trim) for the comparison —
+# same normalization as _dedup_issues / _validate_coverage. Empty output means
+# either no checklist or full coverage. Shared by the generate_issues retry loop
+# (to re-request specifically the omitted issues) and _validate_coverage (residual
+# reconciliation after retries are exhausted). Requires markers already on their
+# own lines (call _normalize_issue_markers first).
+_coverage_missing_titles() {
+  local issues_file="$1"
+
+  local _checklist_titles
+  _checklist_titles=$(sed '/^---ISSUE---$/q' "$issues_file" | \
+    grep "✅" | grep -oE '→ Issue "([^"]+)"' | sed 's/→ Issue "//; s/"$//' | sort -u || true)
+  [ -z "$_checklist_titles" ] && return 0
+
+  # Canonical index of emitted titles (one per line).
+  local _canon_index=""
+  while IFS= read -r _raw_title; do
+    local _canon
+    _canon=$(echo "$_raw_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    [ -n "$_canon" ] && _canon_index="${_canon_index}${_canon}"$'\n'
+  done < <(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
+
+  while IFS= read -r _ref_title; do
+    [ -z "$_ref_title" ] && continue
+    local _ref_canon
+    _ref_canon=$(echo "$_ref_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    [ -z "$_ref_canon" ] && continue
+    # -x (whole-line) match: a checklist title that is a substring of an emitted
+    # title must not be falsely treated as matched.
+    if ! echo "$_canon_index" | grep -qxF "$_ref_canon"; then
+      printf '%s\n' "$_ref_title"
+    fi
+  done <<< "$_checklist_titles"
+}
+
+# =============================================================================
 # Validate coverage checklist against emitted issues
 # =============================================================================
 
@@ -1801,75 +1867,44 @@ _validate_coverage() {
     return 0
   fi
 
-  # Extract actual issue titles from ---ISSUE--- blocks and build a canonical
-  # index (lowercase + whitespace-trimmed) — same normalization as _dedup_issues.
-  # Each canonical title is stored on its own line in _canon_index.
-  local _canon_index=""
-  while IFS= read -r _raw_title; do
-    local _canon
-    _canon=$(echo "$_raw_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
-    if [ -n "$_canon" ]; then
-      _canon_index="${_canon_index}${_canon}"$'\n'
-    fi
-  done < <(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
-
   # Zero-emission guard: the checklist references ≥1 issue but NO ---ISSUE---
-  # blocks were emitted (empty index). This is a truncated generation — the model
-  # produced the coverage analysis and stopped before emitting issue bodies — NOT
-  # a set of orphans to strip. Treating it as orphans emits one cosmetic
-  # "stripping orphan" warning per intended issue and silently reports the empty
-  # result as success (exit 0, 0 issues). Fail hard with a single accurate error.
-  # (A legitimately all-deferred plan has 0 ✅ checklist entries, so checklist_titles
-  # is empty and we returned at the guard above — this branch only fires on truncation.)
-  if [ -z "$_canon_index" ]; then
+  # blocks were emitted. This is a truncated generation — the model produced the
+  # coverage analysis and stopped before emitting issue bodies — NOT a set of
+  # orphans to strip. Treating it as orphans emits one cosmetic warning per
+  # intended issue and silently reports the empty result as success (exit 0, 0
+  # issues). Fail hard with a single accurate error. (A legitimately all-deferred
+  # plan has 0 ✅ checklist entries, so checklist_titles is empty and we returned
+  # at the guard above — this branch only fires on truncation.)
+  local _emitted_count
+  _emitted_count=$(grep -c "^TITLE:" "$issues_file" || true)
+  if [ "${_emitted_count:-0}" -eq 0 ]; then
     local _expected_count
     _expected_count=$(echo "$checklist_titles" | grep -c . || true)
     print_error "plan: coverage checklist references $_expected_count issue(s) but 0 issue blocks were emitted — generation truncated after the checklist. Not creating issues." >&2
     return 1
   fi
 
-  # For each checklist title, canonicalize and look up in the index.
-  # Unmatched titles are orphans — strip them from the checklist and emit a WARNING.
-  local _orphan_count=0
-  local _filtered_file
-  _filtered_file=$(mktemp)
-
-  # Copy full file to filtered; we'll strip orphan checklist lines in-place.
-  cp "$issues_file" "$_filtered_file"
-
-  while IFS= read -r ref_title; do
-    [ -z "$ref_title" ] && continue
-    local _ref_canon
-    _ref_canon=$(echo "$ref_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
-
-    # Skip entries that canonicalize to empty (whitespace/punctuation-only titles):
-    # grep -qxF "" matches every line, so an empty _ref_canon would never be an orphan.
-    [ -z "$_ref_canon" ] && continue
-
-    # Check whether the canonical title is a whole-line match in the index.
-    # -x (whole-line) provides parity with _dedup_issues which uses [ "$seen" = "$current_title" ]
-    # (exact equality). Without -x, a checklist title that is a substring of an emitted
-    # title would be falsely treated as matched, silently swallowing a genuine orphan.
-    if echo "$_canon_index" | grep -qxF "$_ref_canon"; then
-      continue  # Matched — leave the checklist line as-is
-    fi
-
-    # Unmatched: emit WARNING and strip the orphaned ✅ checklist line.
-    print_warning "coverage checklist references \"$ref_title\" — no matching issue emitted; stripping orphan" >&2
-    _orphan_count=$((_orphan_count + 1))
-
-    # Remove the checklist line that references this title from the output file.
-    # grep -vF uses fixed-string (not regex) matching so titles containing /
-    # or other sed regex metacharacters cannot produce syntax errors or delete
-    # the wrong line.
-    local _needle="→ Issue \"$ref_title\""
-    grep -vF "$_needle" "$_filtered_file" > "${_filtered_file}.tmp" && mv "${_filtered_file}.tmp" "$_filtered_file" || true
-  done <<< "$checklist_titles"
-
-  if [ "$_orphan_count" -gt 0 ]; then
+  # Residual reconciliation: any checklist title without a matching block is a
+  # planned issue the generate_issues retry loop already tried (and failed) to
+  # re-request, or a phantom. Strip its checklist line and WARN loudly, naming the
+  # issue — this is NOT silent. The human sees it in the interactive preview and
+  # can add it via the feedback path. (We strip rather than hard-fail so a single
+  # stubborn drop doesn't discard the other good issues in the slate.)
+  local _missing
+  _missing=$(_coverage_missing_titles "$issues_file" || true)
+  if [ -n "$_missing" ]; then
+    local _filtered_file
+    _filtered_file=$(mktemp)
+    cp "$issues_file" "$_filtered_file"
+    while IFS= read -r ref_title; do
+      [ -z "$ref_title" ] && continue
+      print_warning "coverage checklist planned \"$ref_title\" but no matching issue block was emitted — dropping it from this run (the regeneration retry did not produce it; re-run or add it via feedback)" >&2
+      # grep -vF uses fixed-string matching so titles containing / or other sed
+      # regex metacharacters cannot delete the wrong line.
+      local _needle="→ Issue \"$ref_title\""
+      grep -vF "$_needle" "$_filtered_file" > "${_filtered_file}.tmp" && mv "${_filtered_file}.tmp" "$_filtered_file" || true
+    done <<< "$_missing"
     mv "$_filtered_file" "$issues_file"
-  else
-    rm -f "$_filtered_file"
   fi
 
   # _dedup_issues is the single source of truth for deduplication after reconciliation.

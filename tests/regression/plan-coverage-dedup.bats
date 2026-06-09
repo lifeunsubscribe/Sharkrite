@@ -58,18 +58,13 @@ setup() {
   print_success() { echo "SUCCESS: $*" >&2; }
   print_error()   { echo "ERROR: $*" >&2; }
 
-  # Extract _validate_coverage and _dedup_issues from plan-issues.sh.
-  # The awk brace-depth tracker pulls each function body in full.
+  # Extract _validate_coverage, _coverage_missing_titles, and _dedup_issues from
+  # plan-issues.sh. The awk brace-depth tracker pulls each function body in full.
+  # _coverage_missing_titles is a dependency of _validate_coverage (residual
+  # reconciliation), so it must be extracted too.
   eval "$(awk '
     /^_validate_coverage\(\)/ { in_fn=1; depth=0 }
-    in_fn {
-      for (i=1; i<=length($0); i++) {
-        c=substr($0,i,1)
-        if (c=="{") depth++
-        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
-      }
-      print; next
-    }
+    /^_coverage_missing_titles\(\)/ { in_fn=1; depth=0 }
     /^_dedup_issues\(\)/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
@@ -613,6 +608,96 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Fixture I — partial emission (N planned, M<N emitted)
+#
+# Real incident: finance-glance run 2026-06-09 (13:02). The checklist planned 4
+# issues but only 3 ---ISSUE--- blocks emitted; the 4th was silently stripped and
+# the run proceeded with 3 — silently dropping a planned issue.
+#
+# After the generate_issues retry loop fails to recover, _validate_coverage must:
+#   - NOT hard-fail (3 good issues must survive — don't nuke the slate)
+#   - strip ONLY the dropped checklist line
+#   - emit exactly one LOUD warning that names the dropped issue (not silent)
+# ---------------------------------------------------------------------------
+
+@test "Fixture I: partial emission (4 planned, 3 emitted) — one named warning, 3 issues survive, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-i.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+## Coverage Checklist
+
+- ✅ Due tab → Issue "Implement Due tab draw routine"
+- ✅ Worth tab → Issue "Implement Worth tab draw routine"
+- ✅ Goals tab → Issue "Implement Goals tab draw routine"
+- ✅ Hardware validation → Issue "On-hardware end-to-end validation pass"
+
+---ISSUE---
+TITLE: Implement Due tab draw routine
+LABELS: firmware
+TIME: 45min
+BODY:
+Due tab.
+---END---
+---ISSUE---
+TITLE: Implement Worth tab draw routine
+LABELS: firmware
+TIME: 45min
+BODY:
+Worth tab.
+---END---
+---ISSUE---
+TITLE: Implement Goals tab draw routine
+LABELS: firmware
+TIME: 30min
+BODY:
+Goals tab.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _validate_coverage "$issues_file" 2>"$stderr_out" || exit_code=$?
+
+  # Must NOT hard-fail — 3 issues did emit.
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: partial emission should exit 0 (don't nuke the slate), got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Exactly one warning, naming the dropped issue.
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 warning for the dropped issue, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  grep -q "On-hardware end-to-end validation pass" "$stderr_out" || {
+    echo "FAIL: warning does not name the dropped issue" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The 3 emitted issues survive.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 surviving issues, got $issue_count" >&2
+    false
+  }
+
+  # The dropped checklist line is stripped.
+  grep -q "On-hardware end-to-end validation pass" "$issues_file" && {
+    echo "FAIL: dropped checklist line was not stripped" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Acceptance: generate_issues retries on a truncated generation
 #
 # Guards the auto-retry that recovers from the finance-glance 2026-06-09 failure
@@ -623,7 +708,7 @@ FIXTURE
 # test would require a full provider mock + config bootstrap).
 # ---------------------------------------------------------------------------
 
-@test "acceptance: generate_issues retries when a checklist is emitted with 0 issue blocks" {
+@test "acceptance: generate_issues retries when planned issue blocks are missing (M<N and M=0)" {
   local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
 
   local fn_body
@@ -639,18 +724,19 @@ FIXTURE
     }
   ' "$plan_issues_sh")
 
-  # Must count issue markers and gate the retry on "0 markers AND a COVERAGE checklist".
-  echo "$fn_body" | grep -q 'ISSUE---" "$temp_file"' || {
-    echo "FAIL: generate_issues no longer counts ---ISSUE--- markers for the truncation guard" >&2
+  # Must gate the retry on the checklist-vs-emitted comparison (covers both the
+  # partial M<N case and the M=0 truncation case), not a bare marker count.
+  echo "$fn_body" | grep -q '_coverage_missing_titles "$temp_file"' || {
+    echo "FAIL: generate_issues no longer compares checklist titles against emitted blocks" >&2
     false
   }
-  echo "$fn_body" | grep -q '_issue_markers' || {
-    echo "FAIL: generate_issues missing the _issue_markers truncation guard" >&2
-    false
-  }
-  # Must re-issue via the escalation prompt (RETRY directive appended to the base prompt).
+  # Must re-issue via the escalation prompt that NAMES the missing issues.
   echo "$fn_body" | grep -q 'RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE' || {
     echo "FAIL: generate_issues missing the escalation-retry directive" >&2
+    false
+  }
+  echo "$fn_body" | grep -q '_missing_list' || {
+    echo "FAIL: escalation directive no longer lists the specific missing issues" >&2
     false
   }
 }
