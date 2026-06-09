@@ -536,6 +536,31 @@ update_conventions_from_marker() {
   # triple-backtick blocks. Without a fence guard the extractor would ingest the
   # template example as a real convention block.  Track in_fence so that markers
   # inside ``` ... ``` are treated as literal text, not as real extraction triggers.
+  #
+  # Two-level fence tracking (fixes issues #429 / #430 / #433 / #434):
+  #
+  # Bug 1 (column-0 fence inside real block): The original guard applied to ALL
+  # lines including those inside an open convention block.  When a real block's
+  # example field contained a column-0 ````` the guard toggled in_fence and
+  # started silently dropping lines — including the close marker, which caused
+  # the block to be truncated (never emitted).
+  # Fix: Convention block content is accumulated BEFORE the fence guard fires.
+  # When in_block=1, every line (including `````) goes to the accumulator via
+  # `in_block { ...; next }` so the fence guard never sees it.
+  #
+  # Bug 2 (indented / N-backtick fences bypass guard): The original /^```/
+  # pattern required the fence to start at column-0 with exactly 3 backticks
+  # (prefix match — it actually matched 4+ too, but not indented fences).
+  # A 4-backtick outer fence containing an unindented 3-backtick inner fence
+  # would trip the guard at the inner ``` and turn off in_fence prematurely,
+  # potentially allowing a marker inside the outer fence to be extracted.
+  # Fix: Track fence_len (count of opening backticks).  A fence is opened only
+  # when NOT currently in a fence (prevents inner fences from being openers).
+  # A fence is closed only when the closing line has >= fence_len backticks.
+  # This matches the CommonMark rule: a fenced block opened with N backticks
+  # can only be closed by N or more backticks on an otherwise blank line.
+  # Indented fences (up to 3 leading spaces) are also detected as CommonMark
+  # allows up to 3 spaces of indentation on fence markers.
   local _blocks_file
   # Guard: same isolation contract as _body_file — clean up _body_file on failure.
   _blocks_file=$(mktemp 2>/dev/null) || {
@@ -545,20 +570,43 @@ update_conventions_from_marker() {
   }
   awk -v open_marker="<!-- ${RITE_MARKER_CONVENTION} -->" \
       -v close_marker="<!-- /${RITE_MARKER_CONVENTION} -->" '
-    /^```/ { in_fence = !in_fence; next }
-    in_fence { next }
-    $0 == open_marker  { in_block=1; block=""; next }
-    $0 == close_marker {
-      if (in_block) {
-        print block
-        print "---CONVENTION_BLOCK_END---"
-        in_block=0
-      }
+    # Convention block content is processed FIRST (before the fence guard).
+    # This is the fix for Bug 1: when inside a convention block, every line
+    # (including column-0 backtick fences) is accumulated as raw content.
+    # The fence guard rules below never fire for lines consumed here.
+    $0 == open_marker && !in_fence { in_block=1; block=""; next }
+    in_block && $0 == close_marker { print block; print "---CONVENTION_BLOCK_END---"; in_block=0; next }
+    in_block { block = (block == "") ? $0 : block "\n" $0; next }
+
+    # Fence guard (top-level only — in_block lines are consumed above).
+    # Bug 2 fix: track fence_len so that a 4-backtick outer fence is only
+    # closed by 4+ backticks; an inner 3-backtick sequence does not prematurely
+    # close the outer fence and allow enclosed markers to leak through.
+    # Also detect indented fences (up to 3 leading spaces) per CommonMark spec.
+    !in_fence && /^[[:space:]]{0,3}```/ {
+      # Extract the run of backticks after optional leading spaces.
+      # fence_len holds the count for this fence; close requires >= fence_len.
+      fence_str = $0
+      sub(/^[[:space:]]*/, "", fence_str)   # strip leading spaces
+      fence_len = 0
+      while (substr(fence_str, fence_len + 1, 1) == "`") fence_len++
+      in_fence = 1
       next
     }
-    in_block {
-      block = (block == "") ? $0 : block "\n" $0
+    in_fence && /^[[:space:]]{0,3}```/ {
+      # Count backticks on this potential closing line.
+      close_str = $0
+      sub(/^[[:space:]]*/, "", close_str)
+      close_len = 0
+      while (substr(close_str, close_len + 1, 1) == "`") close_len++
+      # Close only when closing fence length >= opening fence length (CommonMark).
+      if (close_len >= fence_len) { in_fence = 0; fence_len = 0 }
+      next
     }
+    in_fence { next }
+
+    # Spurious close marker outside a block (no-op)
+    $0 == close_marker { next }
   ' "$_body_file" > "$_blocks_file"
   rm -f "$_body_file"
 
