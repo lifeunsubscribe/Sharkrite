@@ -185,7 +185,15 @@ assess_internal_changelog() {
     # Date section exists — prepend the new entry directly after the date header.
     # The section is already at the top (inserted there on first entry today),
     # so we just need to inject the entry line after the header.
-    local tmp_file=$(mktemp)
+    #
+    # Guard: mktemp failure (disk full, /tmp missing) must not abort the parent
+    # assess-documentation.sh process — changelog is a nice-to-have.
+    # Return 0 (graceful skip) so downstream assessments still run.
+    local tmp_file
+    tmp_file=$(mktemp 2>/dev/null) || {
+      print_warning "  changelog: mktemp failed — skipping entry for PR #${pr_number} (temp space issue?)"
+      return 0
+    }
     awk -v date="## $today" -v entry="$entry" '
       $0 == date { print; print entry; inserted=1; next }
       { print }
@@ -197,7 +205,14 @@ assess_internal_changelog() {
     # Strategy: emit the new date+entry block right after the title line, then
     # suppress the one blank separator line that follows the title (it will be
     # re-emitted by the new block itself), then continue with the rest of the file.
-    local tmp_file=$(mktemp)
+    #
+    # Guard: same isolation contract as the branch above — skip this entry
+    # gracefully when mktemp fails rather than aborting the parent process.
+    local tmp_file
+    tmp_file=$(mktemp 2>/dev/null) || {
+      print_warning "  changelog: mktemp failed — skipping entry for PR #${pr_number} (temp space issue?)"
+      return 0
+    }
     awk -v date="## $today" -v entry="$entry" '
       $0 == "# Changelog" && !done { print; print ""; print date; print entry; print ""; done=1; skip_blank=1; next }
       skip_blank && /^$/ { skip_blank=0; next }
