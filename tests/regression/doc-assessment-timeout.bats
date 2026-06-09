@@ -1,29 +1,21 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh
-# Regression test: merge-pr.sh RITE_DOC_ASSESSMENT_TIMEOUT watchdog
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/core/workflow-runner.sh
+# Regression test: RITE_DOC_ASSESSMENT_TIMEOUT watchdog around the doc waiter
 # Issue #308
 #
-# Bug: The `wait "$_DOC_PID"` in merge-pr.sh had no upper bound. If the doc
-# assessment subprocess hung (Claude API issue, network drop), the merge tail
-# would hang indefinitely — even after the merge itself + worktree cleanup had
-# already completed.
+# Bug: The wait on the doc assessment PID had no upper bound. If the subprocess
+# hung (Claude API issue, network drop), the merge tail would hang indefinitely
+# — even after the merge itself + worktree cleanup had already completed.
 #
-# Fix: A watchdog subprocess (`( sleep $timeout && kill -TERM $DOC_PID ) &`)
-# kills the assessment after RITE_DOC_ASSESSMENT_TIMEOUT seconds (default 180s).
+# Fix: A watchdog subprocess (`( sleep $timeout && kill -TERM $PID ) &`)
+# kills the assessment after RITE_DOC_ASSESSMENT_TIMEOUT seconds (default 300s).
 #
-# Test strategy:
-# 1. Stub the doc assessment to hang (sleep 200s). Set timeout to 5s.
-#    Assert the wait-and-report block completes within 10s and logs a warning.
-# 2. Stub the doc assessment to succeed quickly. Assert the watchdog does NOT
-#    fire — no spurious warning, and the watchdog process is cleaned up.
-# 3. Static check: assert RITE_DOC_ASSESSMENT_TIMEOUT is referenced in merge-pr.sh.
-# 4. Static check: assert the watchdog kill pattern is present in merge-pr.sh.
-# 5. Static check: assert SIGTERM (143) and SIGKILL (137) are handled in the
-#    timeout branch in merge-pr.sh.
+# Historical note: the waiter lived in merge-pr.sh until doc assessment was
+# moved pre-merge. It now lives in workflow-runner.sh's phase_wait_doc_assessment.
 
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  MERGE_PR_SCRIPT="$PROJECT_ROOT/lib/core/merge-pr.sh"
+  WORKFLOW_RUNNER_SCRIPT="$PROJECT_ROOT/lib/core/workflow-runner.sh"
   export PROJECT_ROOT
 }
 
@@ -116,49 +108,49 @@ _wait_and_report_with_watchdog='
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: Static check — RITE_DOC_ASSESSMENT_TIMEOUT is referenced in merge-pr.sh
+# Test 3: Static check — RITE_DOC_ASSESSMENT_TIMEOUT is referenced in the waiter
+# (now in workflow-runner.sh, previously in merge-pr.sh)
 # ---------------------------------------------------------------------------
 
-@test "merge-pr.sh: RITE_DOC_ASSESSMENT_TIMEOUT env var referenced in source" {
+@test "workflow-runner.sh: RITE_DOC_ASSESSMENT_TIMEOUT env var referenced in source" {
   local count
-  count=$(grep -c 'RITE_DOC_ASSESSMENT_TIMEOUT' "$MERGE_PR_SCRIPT" || true)
+  count=$(grep -c 'RITE_DOC_ASSESSMENT_TIMEOUT' "$WORKFLOW_RUNNER_SCRIPT" || true)
   [ "$count" -ge 1 ]
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: Static check — watchdog kill pattern present in merge-pr.sh
+# Test 4: Static check — watchdog kill pattern present in workflow-runner.sh
 # (ensures the watchdog is launched and cancelled correctly)
 # ---------------------------------------------------------------------------
 
-@test "merge-pr.sh: watchdog kill-TERM pattern present in source" {
-  # The watchdog subshell must be launched
-  local watchdog_launch_count
-  watchdog_launch_count=$(grep -c '_doc_watchdog_pid' "$MERGE_PR_SCRIPT" || true)
-  [ "$watchdog_launch_count" -ge 2 ]   # at least: assignment + cancel
+@test "workflow-runner.sh: watchdog kill-TERM pattern present in source" {
+  local wait_fn
+  wait_fn=$(awk '/^phase_wait_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
+  [ -n "$wait_fn" ]
 
-  # The watchdog must be cancelled after wait (to avoid zombie sleep processes)
-  local cancel_count
-  cancel_count=$(grep -c 'kill.*_doc_watchdog_pid' "$MERGE_PR_SCRIPT" || true)
-  [ "$cancel_count" -ge 1 ]
+  # Watchdog subshell pattern: ( sleep TIMEOUT && kill -TERM PID ) &
+  [[ "$wait_fn" == *"sleep"*"kill -TERM"* ]]
+
+  # Watchdog cancellation: a kill on watchdog_pid after the doc wait
+  [[ "$wait_fn" == *"watchdog_pid"* ]]
+  [[ "$wait_fn" == *"kill -TERM \"\$watchdog_pid\""* ]]
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: Static check — timeout exit codes (143, 137) handled in merge-pr.sh
+# Test 5: Static check — timeout exit codes (143, 137) handled in the waiter
 # ---------------------------------------------------------------------------
 
-@test "merge-pr.sh: SIGTERM (143) and SIGKILL (137) handled in timeout branch" {
-  # Extract the wait-and-report block — anchor on _DOC_PID variable
-  local wait_block
-  wait_block=$(grep -A 25 '_doc_timeout=.*RITE_DOC_ASSESSMENT_TIMEOUT' "$MERGE_PR_SCRIPT" || true)
-
-  [ -n "$wait_block" ]
+@test "workflow-runner.sh: SIGTERM (143) and SIGKILL (137) handled in timeout branch" {
+  local wait_fn
+  wait_fn=$(awk '/^phase_wait_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
+  [ -n "$wait_fn" ]
 
   # Both SIGTERM (143) and SIGKILL (137) must be in the conditional
-  [[ "$wait_block" == *"143"* ]]
-  [[ "$wait_block" == *"137"* ]]
+  [[ "$wait_fn" == *"143"* ]]
+  [[ "$wait_fn" == *"137"* ]]
 
   # The timeout warning message must be present
-  [[ "$wait_block" == *"timed out"* ]]
+  [[ "$wait_fn" == *"timed out"* ]]
 }
 
 # ---------------------------------------------------------------------------

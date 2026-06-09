@@ -1,25 +1,27 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/core/workflow-runner.sh
 # Regression test for: Wait on backgrounded doc assessment, surface failure
 # Issue #19
 #
-# Bug: merge-pr.sh captured _DOC_PID for a background doc-assessment process
+# Bug: the waiter captured a PID for a background doc-assessment process
 # but on failure the warning did not go to stderr and the log tail was not
 # shown as error context. Additionally, assess-documentation.sh's parallel
 # wait loops used `|| true`, masking which individual assessment failed.
 #
 # This test verifies:
-# 1. When DOC_ASSESSMENT_SCRIPT exits non-zero, merge-pr.sh surfaces a warning
+# 1. When DOC_ASSESSMENT_SCRIPT exits non-zero, the waiter surfaces a warning
 #    to stderr (visible even when stdout is piped/redirected).
-# 2. When DOC_ASSESSMENT_SCRIPT exits non-zero, merge-pr.sh shows log tail
+# 2. When DOC_ASSESSMENT_SCRIPT exits non-zero, the waiter shows log tail
 #    to stderr as failure context.
 # 3. When DOC_ASSESSMENT_SCRIPT exits 0, no warning is emitted.
-# 4. The source code in merge-pr.sh explicitly redirects the failure warning
-#    to stderr (>&2).
+# 4. The waiter's source explicitly redirects the failure warning to stderr (>&2).
+#
+# Historical note: the waiter lived in merge-pr.sh until doc assessment was
+# moved pre-merge. It now lives in workflow-runner.sh's phase_wait_doc_assessment.
 
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  MERGE_PR_SCRIPT="$PROJECT_ROOT/lib/core/merge-pr.sh"
+  WORKFLOW_RUNNER_SCRIPT="$PROJECT_ROOT/lib/core/workflow-runner.sh"
 }
 
 # -----------------------------------------------------------------------
@@ -154,23 +156,22 @@ _wait_and_report_inline='
 # Test 4: Static check — merge-pr.sh failure warning explicitly uses >&2
 # -----------------------------------------------------------------------
 
-@test "merge-pr.sh: doc-assessment failure warning explicitly redirects to stderr" {
+@test "workflow-runner.sh: doc-assessment failure warning explicitly redirects to stderr" {
   # Guard against reintroduction of the silent-skip bug where the warning
   # goes to stdout only (invisible in auto/piped mode).
   # The failure branch must use >&2 for both the warning and the log tail.
 
-  # Find the wait-and-report block in the actual source.
-  # Anchor on the stable code token `wait "$_DOC_PID"` rather than a comment
-  # string so the check survives comment rewording without false failures.
-  _wait_block=$(grep -A 15 'wait "\$_DOC_PID"' "$MERGE_PR_SCRIPT" || true)
+  # Find phase_wait_doc_assessment in the actual source (the waiter that used
+  # to live in merge-pr.sh now lives here).
+  _wait_block=$(awk '/^phase_wait_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
 
   [ -n "$_wait_block" ]
 
   # The block must contain >&2 redirects for the failure path
   [[ "$_wait_block" == *">&2"* ]]
 
-  # Must wait on _DOC_PID (not silently skip)
-  [[ "$_wait_block" == *'wait "$_DOC_PID"'* ]]
+  # Must wait on the captured doc PID (not silently skip)
+  [[ "$_wait_block" == *'wait "$pid"'* ]]
 }
 
 # -----------------------------------------------------------------------

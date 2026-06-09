@@ -667,10 +667,10 @@ echo "  • Status checks: ${REQUIRED_CHECKS_COUNT:-0} required (all passed)"
 echo "  • Sharkrite review: $([ "$CLAUDE_REVIEW_FOUND" = true ] && echo "passed" || echo "not required")"
 echo ""
 
-# Documentation assessment runs post-merge (see below) to avoid blocking the merge.
-# Internal docs (.rite/docs/) are gitignored in target projects, and Layer 2 user
-# doc updates commit separately — neither needs to land on the feature branch.
-DOC_ASSESSMENT_SCRIPT="$RITE_LIB_DIR/core/assess-documentation.sh"
+# Documentation assessment runs pre-merge from workflow-runner.sh now (Phase 3).
+# Its Layer 2 commits land on the feature branch and ride the squash merge, so
+# merge-pr.sh no longer spawns or waits for it. See phase_spawn_doc_assessment /
+# phase_wait_doc_assessment in workflow-runner.sh.
 
 # Check for security findings and update guide (part of documentation phase)
 update_security_guide_from_pr "$PR_NUMBER"
@@ -852,17 +852,9 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   # handle errors (e.g., "git branch -D foo 2>/dev/null || true"). Instead, we check
   # exit codes at critical points where a failure genuinely indicates cleanup broke.
 
-  # Start doc assessment in the background (runs concurrently with tech-debt, cleanup)
-  _DOC_PID=""
-  _DOC_LOG=$(mktemp)
-  if [ -f "$DOC_ASSESSMENT_SCRIPT" ]; then
-    if [ "$AUTO_MODE" = true ]; then
-      "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" --auto > "$_DOC_LOG" 2>&1 &
-    else
-      "$DOC_ASSESSMENT_SCRIPT" "$PR_NUMBER" > "$_DOC_LOG" 2>&1 &
-    fi
-    _DOC_PID=$!
-  fi
+  # Doc assessment used to be spawned here, post-merge. It now runs pre-merge from
+  # workflow-runner.sh so Layer 2 commits ride the squash. By the time we get here,
+  # the squash-merged main contains both the code and its doc updates.
 
   # Create tech-debt issues from encountered issues BEFORE clearing scratchpad
   if type create_tech_debt_issues &>/dev/null; then
@@ -1585,70 +1577,9 @@ EOF
     echo "  3. Update project board if using one"
     echo ""
   fi
-  # Wait for background doc assessment and report results.
-  # Bounded by RITE_DOC_ASSESSMENT_TIMEOUT (default 300s): if the assessment
-  # hangs (Claude API outage, network drop), a watchdog kills the background
-  # process and we continue — stale/missing doc updates are not a merge blocker.
-  # Default 300s: with doc_assessment on sonnet, typical wall-clock is ~90-120s
-  # (fan-out ~30s + reconcile ~30s + validate ~30s). 300s gives headroom for
-  # big diffs and slow API responses without firing on normal runs.
-  if [ -n "${_DOC_PID:-}" ]; then
-    _doc_exit=0
-    _doc_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
-
-    # Only show the wait notice if the background job is still running. If it
-    # already finished while cleanup ran, `wait` returns immediately and the
-    # notice would be misleading noise.
-    if kill -0 "$_DOC_PID" 2>/dev/null; then
-      print_status "Waiting on documentation assessment (typical 90-120s, cap ${_doc_timeout}s)..."
-      echo "  Log: $_DOC_LOG"
-    fi
-
-    # Start a watchdog: after the timeout, SIGTERM the doc assessment subprocess.
-    # The watchdog itself is killed when the doc assessment finishes first.
-    ( sleep "$_doc_timeout" && kill -TERM "$_DOC_PID" 2>/dev/null ) &
-    _doc_watchdog_pid=$!
-
-    wait "$_DOC_PID" 2>/dev/null || _doc_exit=$?
-
-    # Cancel the watchdog if the doc assessment finished before the timeout.
-    kill -TERM "$_doc_watchdog_pid" 2>/dev/null || true
-    wait "$_doc_watchdog_pid" 2>/dev/null || true
-
-    if [ "$_doc_exit" -eq 143 ] || [ "$_doc_exit" -eq 137 ]; then
-      # 143 = SIGTERM (128+15), 137 = SIGKILL (128+9) — both mean timed out.
-      # Harvest any sub-assessments that completed before the kill.
-      # Each sub-assessment writes "partial_complete:<name>" to the process
-      # stdout (captured in _DOC_LOG) as soon as it writes its doc update.
-      # Reading _DOC_LOG here gives us a count of what finished vs what was lost.
-      _completed_partials=0
-      if [ -s "${_DOC_LOG:-}" ]; then
-        _completed_partials=$(grep -c "^partial_complete:" "$_DOC_LOG" 2>/dev/null || true)
-      fi
-      if [ "$_completed_partials" -gt 0 ]; then
-        print_warning "Documentation assessment timed out after ${_doc_timeout}s — preserving $_completed_partials completed sub-assessment(s)" >&2
-        # Show which sub-assessments completed (doc files already written to disk)
-        grep "^partial_complete:" "$_DOC_LOG" 2>/dev/null | sed 's/^partial_complete:/  ✓ /' >&2 || true
-      else
-        print_warning "Documentation assessment timed out after ${_doc_timeout}s — no sub-assessments completed before timeout" >&2
-      fi
-    elif [ $_doc_exit -ne 0 ] && [ $_doc_exit -ne 2 ]; then
-      # Surface failure visibly: warning + last 20 lines of log to stderr so
-      # the user sees why the assessment failed even in auto/piped mode.
-      print_warning "Documentation assessment failed (exit $_doc_exit)" >&2
-      if [ -s "${_DOC_LOG:-}" ]; then
-        echo "--- doc-assessment log (last 20 lines) ---" >&2
-        tail -20 "$_DOC_LOG" >&2
-        echo "---" >&2
-      fi
-    elif [ -s "${_DOC_LOG:-}" ]; then
-      # Success: show full summary output (Documentation header + results)
-      # Filter internal partial_complete: protocol markers — they are Layer B
-      # coordination signals and must not surface in user-facing output.
-      grep -v '^partial_complete:' "$_DOC_LOG" || true
-    fi
-  fi
-  rm -f "${_DOC_LOG:-}"
+  # Doc assessment is no longer spawned/waited from here — workflow-runner.sh
+  # ran it pre-merge in Phase 3, and Layer 2 commits already landed via the
+  # squash merge. See phase_wait_doc_assessment in workflow-runner.sh.
 
   echo "PR URL: $PR_URL"
   echo ""
