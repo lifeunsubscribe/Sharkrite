@@ -284,6 +284,24 @@ _assert_double_source() {
   [[ "$output" == "OK" ]]
 }
 
+@test "lib/core/claude-workflow.sh RITE_SOURCE_FUNCTIONS_ONLY=1 exits 0 without running program body" {
+  # Regression test for issue #469: test files that source claude-workflow.sh
+  # without RITE_SOURCE_FUNCTIONS_ONLY=1 inadvertently launch a real Claude Code
+  # session, causing spurious claude_dev_session markers in the Phase 3 test-gate log.
+  # This test verifies that RITE_SOURCE_FUNCTIONS_ONLY=1 stops execution before the
+  # main program body (arg parsing, worktree navigation, provider_run_agentic_session).
+  run bash -c "
+    set -euo pipefail
+    export RITE_SOURCE_FUNCTIONS_ONLY=1
+    source '${RITE_REPO_ROOT}/lib/core/claude-workflow.sh' 2>/dev/null
+    # Function definitions should be available after function-only source
+    declare -f check_dev_session_output >/dev/null 2>&1
+    echo OK
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "OK" ]]
+}
+
 @test "lib/core/create-pr.sh guard exits 0 on re-source" {
   run bash -c "
     set -euo pipefail

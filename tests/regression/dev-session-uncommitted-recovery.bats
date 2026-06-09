@@ -41,8 +41,11 @@ setup() {
   export RITE_ORCHESTRATED=false
   export RITE_DATA_DIR=".rite"
 
-  # Source the function we're testing
-  source "${RITE_LIB_DIR}/core/claude-workflow.sh"
+  # Source the function we're testing.
+  # RITE_SOURCE_FUNCTIONS_ONLY=1 loads only function definitions without executing
+  # the main program body (arg parsing, worktree navigation, Claude dev session).
+  # Without this, sourcing launches a real Claude Code session (issue #469).
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_LIB_DIR}/core/claude-workflow.sh"
 }
 
 teardown() {
