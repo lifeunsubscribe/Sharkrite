@@ -2341,7 +2341,7 @@ ${PHASE_0_INSTRUCTIONS}
      - **STOP - cleanup complete**
    - **If no PR exists:**
      - Inform user: Work is complete but not in a PR yet
-     - Skip to Phase 4 (Testing) to verify everything works
+     - Skip to Phase 4 to add any missing tests and syntax-check the changed files
      - Then continue to PR creation and full workflow
      - **DO NOT skip the workflow - this branch has the completed work**
 3. If work is incomplete, continue with analysis:
@@ -2368,7 +2368,7 @@ ${PHASE_0_INSTRUCTIONS}
 4. Include comments for complex logic
 5. Ensure multi-tenant isolation if applicable
 
-### Phase 4: Testing & Validation
+### Phase 4: Test Authoring & Syntax Check
 1. Write or update unit tests for the code you changed
 2. Syntax-check shell files you touched with \`bash -n <file>\` — zero output means OK
 3. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands — not even a single targeted file, not even in the background. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours.
