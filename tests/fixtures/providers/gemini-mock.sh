@@ -167,8 +167,9 @@ Before starting, plan your work with these phases:
 2. Phase 1: Analysis - Understanding the codebase and requirements
 3. Phase 2: Planning - Designing the implementation approach
 4. Phase 3: Implementation - Writing the code
-5. Phase 4: Testing & Validation - Running tests and verifying correctness
+5. Phase 4: Test Authoring & Syntax Check - Write/update unit tests and bash -n syntax-check only; the rite workflow runs the full test suite after this session — do NOT run it here
 6. Phase 5: Code Comments - Adding inline comments for complex logic
+7. Phase 6: Verify Scope Boundary - Confirm changed files respect the issue's DO/DO NOT list
 EOF
 }
 
@@ -177,7 +178,7 @@ gemini_mock_provider_exit_instructions() {
 
   if [ "$auto_mode" = true ]; then
     cat <<'EOF'
-**Auto Mode**: Complete all phases automatically. After Phase 5:
+**Auto Mode**: Complete all phases automatically. After Phase 6:
 1. Provide a brief summary of what you implemented
 2. Exit immediately — the rite workflow will automatically handle commit, push, and PR creation
 EOF

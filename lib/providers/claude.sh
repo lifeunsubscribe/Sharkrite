@@ -355,22 +355,29 @@ claude_provider_detect_error() {
 # =============================================================================
 
 claude_provider_supports_tool_restrictions() {
-  # Claude CLI supports --disallowedTools, enforced by the CLI even with
-  # --dangerously-skip-permissions. This is the primary safety mechanism
-  # preventing Claude from running git commit/push/gh during dev sessions.
+  # Claude CLI accepts --disallowedTools. NOTE: it is honored only in the default
+  # text output format — it is SILENTLY IGNORED under --output-format stream-json
+  # (CLI 2.0.24), which every real session uses (see claude_provider_run_agentic_session).
+  # So this returns 0 (we still pass the list, and it helps in any text-format path),
+  # but the list is NOT a reliable backstop in production. The real deterministic
+  # control is a PreToolUse hook (enforced under stream-json) + the prompt prohibition.
+  # See: docs/architecture/behavioral-design.md → "Deterministic backstop is broken".
   return 0
 }
 
 claude_provider_build_tool_restrictions() {
-  # Comprehensive tool restrictions for Claude CLI --disallowedTools.
-  # These are the ONLY safeguards when using --dangerously-skip-permissions.
+  # Tool restrictions passed to Claude CLI via --disallowedTools.
+  # ⚠️ Inert under --output-format stream-json (see supports_tool_restrictions above) —
+  # these are best-effort, NOT the safeguard. Treat the prompt + PreToolUse hook as
+  # the enforcement layer.
   #
   # Categories:
   # 1. Git/GitHub workflow (post-workflow handles these)
   # 2. Test/lint runners (workflow runs make check + bats -r tests/ in parallel
   #    with review generation post-session; targeted in-session runs are
-  #    redundant and just burn the timeout budget — the prompt forbids them,
-  #    the tool-level block enforces it deterministically)
+  #    redundant and just burn the timeout budget — the prompt forbids them;
+  #    the tool-level block does NOT enforce this under stream-json, so the
+  #    Phase 4 prompt framing is the active control until the PreToolUse hook lands)
   # 3. Destructive filesystem operations
   # 4. Remote access and network commands
   # 5. Environment/credential exposure
@@ -413,8 +420,9 @@ Before starting, create a todo list with these items:
 2. Phase 1: Analysis - Understanding the codebase and requirements
 3. Phase 2: Planning - Designing the implementation approach
 4. Phase 3: Implementation - Writing the code
-5. Phase 4: Testing & Validation - Running tests and verifying correctness
+5. Phase 4: Test Authoring & Syntax Check - Write/update unit tests and bash -n syntax-check only; the rite workflow runs the full test suite after this session — do NOT run it here
 6. Phase 5: Code Comments - Adding inline comments for complex logic
+7. Phase 6: Verify Scope Boundary - Confirm changed files respect the issue's DO/DO NOT list
 
 Mark each phase as 'in_progress' when you start it, and 'completed' when finished.
 For complex phases, break them into sub-tasks.
@@ -426,7 +434,7 @@ claude_provider_exit_instructions() {
 
   if [ "$auto_mode" = true ]; then
     cat <<'EOF'
-**Auto Mode**: Complete all phases automatically. After Phase 5:
+**Auto Mode**: Complete all phases automatically. After Phase 6:
 1. Provide a brief summary of what you implemented
 2. Exit immediately — the rite workflow will automatically handle commit, push, and PR creation
 EOF

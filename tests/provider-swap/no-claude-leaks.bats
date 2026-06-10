@@ -124,6 +124,11 @@ teardown() {
   # RITE_SOURCE_FUNCTIONS_ONLY=1 loads only function definitions without executing
   # the main program body (arg parsing, worktree navigation, Claude dev session).
   # Without this, sourcing launches a real Claude Code session (issue #469).
+  #
+  # setup_test_tmpdir cd's into a non-git tmpdir, so config.sh's detect_project_root
+  # would return empty and config.sh would `exit 1` ("not inside a git repository"),
+  # killing the source. Pin RITE_PROJECT_ROOT to the repo so config.sh skips detection.
+  export RITE_PROJECT_ROOT="${RITE_REPO_ROOT}"
   if ! RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" 2>/dev/null; then
     echo "Failed to source claude-workflow.sh - cannot test prompt construction" >&2
     return 1
@@ -165,10 +170,17 @@ teardown() {
 
   # Check all files in lib/core/ for /exit token leaks (not just claude-workflow.sh)
   local leaks
-  # Use comprehensive regex to catch /exit with any quoting: "/exit", '/exit', or bare /exit
-  leaks=$(grep -rn -E "(['\"])?/exit(['\"])?" "$lib_core" | grep -v '^[[:space:]]*#' || true)
+  # Match /exit as a slash-command token only. Trailing [^A-Za-z0-9_-] excludes
+  # path substrings like "docs/architecture/exit-codes.md" (the `/exit` in
+  # "...e/exit-codes...") which are not slash-command leaks.
+  #
+  # Comment exclusion must operate on the CONTENT column: `grep -rn` emits
+  # "file:line:content", so a bare `grep -v '^[[:space:]]*#'` matches the
+  # filename, never the comment — strip the "file:line:" prefix first.
+  leaks=$(grep -rnE "/exit([^A-Za-z0-9_-]|$)" "$lib_core" \
+    | sed -E 's/^[^:]+:[0-9]+://' \
+    | grep -vE '^[[:space:]]*#' || true)
 
-  # The leak should be at line 658 (EXIT_INSTRUCTION hardcoded)
   if [ -n "$leaks" ]; then
     echo "Found Claude-specific /exit token leak in lib/core/:"
     echo "$leaks"
