@@ -1378,3 +1378,185 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fixture M — "(can run in parallel with #M, #P)" annotations are NOT edges
+#
+# The generation prompt mandates "After #N (can run in parallel with #M, #P)"
+# for parallel siblings. Those parenthetical mentions are scheduling hints,
+# not dependencies — but the extractor used to harvest every #N on the line,
+# making parallel siblings mutually "depend" on each other. Kahn's algorithm
+# then reported a false cycle and hard-aborted an otherwise valid plan.
+# Live failure: finance-glance `rite plan` run, 2026-06-10.
+# ---------------------------------------------------------------------------
+
+@test "Fixture M: parallel-with annotations do not create cycle edges — exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-m.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Root Schema
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Root issue all siblings depend on.
+
+**Claude Context**:
+Files to Modify:
+- src/schema.py
+
+**Acceptance Criteria**:
+- [ ] Schema works: `python -m pytest tests/test_schema.py`
+
+**Done Definition**: Done when schema works.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Endpoint Alpha
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Depends only on the root schema.
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when alpha works.
+
+**Dependencies**: After #1 (can run in parallel with #3, #4)
+---END---
+---ISSUE---
+TITLE: Endpoint Beta
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Depends only on the root schema.
+
+**Claude Context**:
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `python -m pytest tests/test_beta.py`
+
+**Done Definition**: Done when beta works.
+
+**Dependencies**: After #1 (can run in parallel with #2, #4)
+---END---
+---ISSUE---
+TITLE: Endpoint Gamma
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Depends only on the root schema.
+
+**Claude Context**:
+Files to Modify:
+- src/gamma.py
+
+**Acceptance Criteria**:
+- [ ] Gamma works: `python -m pytest tests/test_gamma.py`
+
+**Done Definition**: Done when gamma works.
+
+**Dependencies**: After #1 (can run in parallel with #2, #3)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 — parallel siblings sharing a root are acyclic
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for parallel siblings, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT report a cycle
+  grep -qi "cycle" "$stderr_out" && {
+    echo "FAIL: false cycle reported for parallel-with annotations" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture N — stripping parallel annotations preserves the real ref
+#
+# "After #9 (can run in parallel with #2)" in a 2-issue batch: the real ref
+# #9 is dangling and must still be harvested (hard error), proving the
+# parenthetical stripping does not eat the dependency before the parens.
+# ---------------------------------------------------------------------------
+
+@test "Fixture N: real ref before parallel annotation still harvested — dangling #9 errors" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-n.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Delta
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+References a dangling dependency plus a parallel annotation.
+
+**Claude Context**:
+Files to Modify:
+- src/delta.py
+
+**Acceptance Criteria**:
+- [ ] Delta works: `python -m pytest tests/test_delta.py`
+
+**Done Definition**: Done when delta works.
+
+**Dependencies**: After #9 (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Feature Epsilon
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Standalone issue.
+
+**Claude Context**:
+Files to Modify:
+- src/epsilon.py
+
+**Acceptance Criteria**:
+- [ ] Epsilon works: `python -m pytest tests/test_epsilon.py`
+
+**Done Definition**: Done when epsilon works.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit non-zero — #9 is dangling and must still be detected
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for dangling #9 before parallel annotation, got 0" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

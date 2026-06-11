@@ -1439,13 +1439,21 @@ _lint_issues_strict() {
           # Start at "**Dependencies**:" or "Dependencies:" header
           if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
             _in_deps=true
+            # Strip "(can run in parallel with #M, #P)" annotations before
+            # harvesting refs. The generation prompt mandates that format for
+            # parallel siblings, but those mentions are scheduling hints, not
+            # dependency edges — harvesting them makes parallel siblings
+            # mutually "depend" on each other and Kahn's algorithm reports a
+            # false cycle (live failure: finance-glance plan, 2026-06-10).
+            local _dline_clean
+            _dline_clean=$(echo "$_dline" | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' || true)
             # Also grab inline refs on the same line as the header
             local _inline_refs
-            _inline_refs=$(echo "$_dline" | grep -oE '#[0-9]+' || true)
+            _inline_refs=$(echo "$_dline_clean" | grep -oE '#[0-9]+' || true)
             [ -n "$_inline_refs" ] && _issue_deps="${_issue_deps}${_inline_refs}"$'\n'
             # Also grab inline title refs: #[Title Text]
             local _inline_title_refs
-            _inline_title_refs=$(echo "$_dline" | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+            _inline_title_refs=$(echo "$_dline_clean" | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
             [ -n "$_inline_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_inline_title_refs}"$'\n'
             continue
           fi
@@ -1454,25 +1462,28 @@ _lint_issues_strict() {
             case "$_dline" in
               "---END---"|"**"*|"##"*) _in_deps=false; continue ;;
             esac
-            # Collect all #N patterns from dependency lines
-            # Matches: After #N, Blocked by: #N, After #N (can run in parallel...), etc.
+            # Collect all #N patterns from dependency lines (parallel-with
+            # annotations stripped — see header-line handling above)
+            # Matches: After #N, Blocked by: #N, etc.
+            local _dline_clean
+            _dline_clean=$(echo "$_dline" | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' || true)
             local _line_refs
-            _line_refs=$(echo "$_dline" | grep -oE '#[0-9]+' || true)
+            _line_refs=$(echo "$_dline_clean" | grep -oE '#[0-9]+' || true)
             [ -n "$_line_refs" ] && _issue_deps="${_issue_deps}${_line_refs}"$'\n'
             # Also collect title refs: #[Title Text] patterns
             local _line_title_refs
-            _line_title_refs=$(echo "$_dline" | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+            _line_title_refs=$(echo "$_dline_clean" | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
             [ -n "$_line_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_line_title_refs}"$'\n'
           fi
         done <<< "$_issue_block"
         # Also scan the full block for explicit "Blocked by: #N" / "After: #N" lines
         # that may appear anywhere in the body (not just under a Dependencies header)
         local _body_refs
-        _body_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#[0-9]+' | grep -oE '#[0-9]+' || true)
+        _body_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#[0-9]+' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#[0-9]+' || true)
         [ -n "$_body_refs" ] && _issue_deps="${_issue_deps}${_body_refs}"$'\n'
         # Also scan for title refs in Blocked by / After lines anywhere in the block
         local _body_title_refs
-        _body_title_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#\[' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+        _body_title_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#\[' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
         [ -n "$_body_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_body_title_refs}"$'\n'
         _deps+=("${_issue_deps}")
         _title_deps+=("${_issue_title_deps}")
