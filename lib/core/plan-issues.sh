@@ -913,14 +913,24 @@ PROMPT_EOF
       fi
 
       if [ -n "$_missing" ] && grep -q "COVERAGE" "$temp_file"; then
+        local _missing_count
+        _missing_count=$(printf '%s\n' "$_missing" | grep -c . || true)
+        if [ "${_emitted_now:-0}" -gt 0 ]; then
+          # Partial slate: do NOT re-roll the full slate. Full re-rolls
+          # reproducibly truncate the same final block (three consecutive
+          # finance-glance runs, six generations, 2026-06-09..11) and a re-roll
+          # can regress content this attempt already emitted. Break out — the
+          # targeted completion pass after the loop requests ONLY the missing
+          # block(s) and appends them, which a short ask reliably survives.
+          print_warning "Provider's checklist listed issues it did not emit ($_missing_count missing block(s)) — deferring to a targeted completion call" >&2
+          break
+        fi
         if [ $attempt -lt $max_attempts ]; then
-          local _missing_count _missing_list
-          _missing_count=$(printf '%s\n' "$_missing" | grep -c . || true)
+          local _missing_list
           _missing_list=$(printf '%s\n' "$_missing" | sed 's/^/  - /' || true)
-          print_warning "Provider's checklist listed issues it did not emit ($_missing_count missing block(s)) — retrying with an escalated directive..." >&2
-          # Re-request the FULL slate (the streamed output is overwritten each
-          # attempt, so we cannot append just the missing ones) but call out the
-          # omitted issues by name so the model emits every block this time.
+          print_warning "Provider emitted the checklist but 0 issue blocks ($_missing_count planned) — retrying with an escalated directive..." >&2
+          # Re-request the FULL slate (nothing usable was emitted) and call out
+          # the omitted issues by name so the model emits every block this time.
           _active_prompt="${prompt}
 
 **RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE.** Your COVERAGE checklist listed issues for which you never emitted an ---ISSUE--- block. These planned issues are MISSING their block:
@@ -930,11 +940,10 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
           sleep 3
           continue
         fi
-        # Retries exhausted, still incomplete: fall through. The best attempt is
-        # restored after the loop. If it had 0 blocks, _validate_coverage's
-        # zero-emission guard aborts with one error; if it was a partial slate,
-        # it keeps those issues and warns loudly per dropped issue.
-        print_warning "Provider still omitted planned issue block(s) after $max_attempts attempts — keeping the most complete attempt ($_best_emitted issue block(s))" >&2
+        # Retries exhausted with 0 blocks: fall through. The best attempt is
+        # restored after the loop; if it also had 0 blocks, _validate_coverage's
+        # zero-emission guard aborts with one accurate error.
+        print_warning "Provider still emitted no issue blocks after $max_attempts attempts" >&2
       fi
       break
     fi
@@ -962,6 +971,14 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
     echo ""
     return 1
   fi
+
+  # Targeted completion: if the kept slate still misses planned block(s),
+  # request ONLY the missing block(s) in a short follow-up call and append
+  # them. A short single-issue ask avoids the long-output truncation failure
+  # mode that reproducibly drops the final block of a full-slate generation.
+  # No-op when the checklist is fully covered or when 0 blocks were emitted
+  # (the zero-emission guard in _validate_coverage owns that case).
+  _request_missing_blocks "$temp_file" "$prompt"
 
   # Structural markers were already forced onto their own lines in-loop via
   # _normalize_issue_markers (needed there for the completeness comparison), so
@@ -1963,6 +1980,99 @@ _coverage_missing_titles() {
       printf '%s\n' "$_ref_title"
     fi
   done <<< "$_checklist_titles"
+}
+
+# =============================================================================
+# Targeted completion: request ONLY the missing issue block(s) and append
+# =============================================================================
+# Full-slate re-rolls reproducibly truncate the same final block (the model
+# stops after ~250 lines of structured output), so when a kept slate has ≥1
+# block but is missing planned ones, ask for just the missing block(s) in a
+# fresh short call and append them. Already-emitted ordinals are listed in the
+# completion prompt so "After #N" references in the appended block(s) resolve
+# against the existing slate. Appended duplicates are handled by the
+# downstream _dedup_issues pass; a residual miss is handled (loud warning +
+# checklist strip) by _validate_coverage. Never fails the run — a failed
+# completion call keeps the partial slate, same as before this pass existed.
+_request_missing_blocks() {
+  local issues_file="$1"
+  local base_prompt="$2"
+
+  local _missing
+  _missing=$(_coverage_missing_titles "$issues_file" || true)
+  [ -z "$_missing" ] && return 0
+
+  # Zero-block truncation is _validate_coverage's hard-error case, not ours:
+  # with no emitted issues there are no ordinals for the completion to
+  # reference, and "complete the missing blocks" degenerates to a full re-roll.
+  local _emitted_titles
+  _emitted_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' | awk '{printf "#%d %s\n", NR, $0}' || true)
+  [ -z "$_emitted_titles" ] && return 0
+
+  local _missing_count _missing_list
+  _missing_count=$(printf '%s\n' "$_missing" | grep -c . || true)
+  _missing_list=$(printf '%s\n' "$_missing" | sed 's/^/  - /' || true)
+  print_status "Requesting the $_missing_count missing issue block(s) in a targeted completion call..." >&2
+
+  local _completion_prompt="${base_prompt}
+
+**TARGETED COMPLETION — EMIT ONLY THE MISSING BLOCK(S).** A previous response already emitted these issue blocks (ordinal references #N refer to these, in this order):
+${_emitted_titles}
+
+The following planned issue(s) from that response's COVERAGE checklist are MISSING their block:
+${_missing_list}
+
+Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue listed above, in the established format. Use the EXACT title text listed above in the TITLE: field. Ordinal dependency references (After #N) refer to the already-emitted issues numbered above. Do NOT re-emit the coverage checklist, any commentary, or any already-emitted issue. Start with ---ISSUE--- and stop after the final ---END---."
+
+  local _completion_file _completion_stderr
+  _completion_file=$(mktemp)
+  _completion_stderr=$(mktemp)
+  if ! provider_run_streaming_prompt "$_completion_prompt" "" 2>"$_completion_stderr" \
+      | tee "$_completion_file" >&2; then
+    print_warning "Targeted completion call failed — keeping the partial slate" >&2
+  fi
+  if [ -s "$_completion_stderr" ]; then
+    print_warning "Provider stderr (targeted completion):" >&2
+    cat "$_completion_stderr" >&2
+  fi
+  rm -f "$_completion_stderr"
+
+  if [ ! -s "$_completion_file" ]; then
+    print_warning "Targeted completion returned no output — keeping the partial slate" >&2
+    rm -f "$_completion_file"
+    return 0
+  fi
+
+  _normalize_issue_markers "$_completion_file"
+
+  # Append ONLY well-formed ---ISSUE---...---END--- blocks — any surrounding
+  # prose or a re-emitted checklist must not leak into the slate.
+  local _blocks
+  _blocks=$(awk '
+    /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue = 0; printf "%s", buf; buf = "" }
+      next
+    }
+  ' "$_completion_file" || true)
+  rm -f "$_completion_file"
+
+  if [ -z "$_blocks" ]; then
+    print_warning "Targeted completion emitted no well-formed issue block — keeping the partial slate" >&2
+    return 0
+  fi
+
+  printf '%s\n' "$_blocks" >> "$issues_file"
+
+  local _still_missing
+  _still_missing=$(_coverage_missing_titles "$issues_file" || true)
+  if [ -z "$_still_missing" ]; then
+    print_success "Targeted completion recovered all $_missing_count missing issue block(s)" >&2
+  else
+    print_warning "Targeted completion still missing $(printf '%s\n' "$_still_missing" | grep -c . || true) block(s) — keeping the partial slate" >&2
+  fi
+  return 0
 }
 
 # =============================================================================
