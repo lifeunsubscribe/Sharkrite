@@ -346,9 +346,17 @@ handle_blocker() {
       # complete remediation guidance (issue #357: head -1 export named only one file).
       # Falls back to the singular SHRINKAGE_BLOCKER_FILE when SHRINKAGE_BLOCKER_FILES
       # is unset (pre-#357 callers or environments where the export did not propagate).
+      # Use the base branch resolved by detect_lib_shrinkage so non-main-base PRs
+      # get correct revert commands (issue #464: hardcoded origin/main was wrong
+      # for PRs targeting develop, release/*, etc.).  Falls back to "main" for
+      # backward compat with environments where the export did not propagate.
+      local _revert_base="origin/${SHRINKAGE_BLOCKER_BASE_BRANCH:-main}"
+      local _first_sf
+      local _sf_count
+      local _sf_label
       if [ -n "${SHRINKAGE_BLOCKER_FILES:-}" ]; then
         while IFS= read -r _sf; do
-          [ -n "$_sf" ] && echo "    git checkout origin/main -- ${_sf}"
+          [ -n "$_sf" ] && echo "    git checkout ${_revert_base} -- ${_sf}"
         done <<< "$SHRINKAGE_BLOCKER_FILES"
         # Build a short label for the commit message (first file, ellipsis if multiple)
         _first_sf=$(echo "$SHRINKAGE_BLOCKER_FILES" | head -1 || true)
@@ -359,7 +367,7 @@ handle_blocker() {
           _sf_label="${_first_sf:-lib/ file}"
         fi
       else
-        echo "    git checkout origin/main -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
+        echo "    git checkout ${_revert_base} -- ${SHRINKAGE_BLOCKER_FILE:-<file>}"
         _sf_label="${SHRINKAGE_BLOCKER_FILE:-lib/ file}"
       fi
       echo "    git commit -m 'revert: restore accidentally deleted ${_sf_label}'"

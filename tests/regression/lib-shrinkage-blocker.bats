@@ -1608,6 +1608,274 @@ _create_lib_file() {
   }
 }
 
+# ===========================================================================
+# TEST 29: SHRINKAGE_BLOCKER_BASE_BRANCH exported with correct value
+#
+# Regression for issue #464: handle_blocker revert guidance hardcoded
+# "origin/main" even though detect_lib_shrinkage resolves the base branch
+# dynamically.  SHRINKAGE_BLOCKER_BASE_BRANCH must be exported so callers
+# can emit "git checkout origin/<base_branch>" with the correct ref.
+# ===========================================================================
+
+@test "detect_lib_shrinkage: exports SHRINKAGE_BLOCKER_BASE_BRANCH when blocker fires (main-base PR)" {
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600  # above absolute threshold
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        echo 'main'
+        return 0
+      fi
+      return 1
+    }
+    export -f gh_safe _make_lib_diff
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+    echo \"BASE_BRANCH=\${SHRINKAGE_BLOCKER_BASE_BRANCH:-UNSET}\"
+  "
+
+  # Blocker must fire
+  [[ "$output" == *"EXIT=1"* ]]
+  # SHRINKAGE_BLOCKER_BASE_BRANCH must be exported as 'main'
+  [[ "$output" == *"BASE_BRANCH=main"* ]]
+}
+
+@test "detect_lib_shrinkage: exports SHRINKAGE_BLOCKER_BASE_BRANCH=develop for non-main-base PR" {
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # PR targets develop, not main
+        echo 'develop'
+        return 0
+      fi
+      return 1
+    }
+    export -f gh_safe _make_lib_diff
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+    echo \"BASE_BRANCH=\${SHRINKAGE_BLOCKER_BASE_BRANCH:-UNSET}\"
+  "
+
+  # Blocker must fire
+  [[ "$output" == *"EXIT=1"* ]]
+  # SHRINKAGE_BLOCKER_BASE_BRANCH must reflect the PR's actual base branch
+  [[ "$output" == *"BASE_BRANCH=develop"* ]]
+}
+
+@test "detect_lib_shrinkage: exports SHRINKAGE_BLOCKER_BASE_BRANCH=main on API failure (fallback)" {
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Simulate API failure — no output, non-zero exit
+        return 1
+      fi
+      return 1
+    }
+    export -f gh_safe _make_lib_diff
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+    echo \"BASE_BRANCH=\${SHRINKAGE_BLOCKER_BASE_BRANCH:-UNSET}\"
+  "
+
+  # Blocker must fire (absolute threshold)
+  [[ "$output" == *"EXIT=1"* ]]
+  # Must fall back to 'main' so revert guidance is not broken when API is unavailable
+  [[ "$output" == *"BASE_BRANCH=main"* ]]
+}
+
+# ===========================================================================
+# TEST 30: handle_blocker revert guidance uses dynamic base branch
+#
+# Regression for issue #464: the two "git checkout origin/main -- <file>"
+# lines in handle_blocker's lib_shrinkage case must use
+# SHRINKAGE_BLOCKER_BASE_BRANCH (set by detect_lib_shrinkage) instead of
+# the hardcoded "main".  This test simulates a non-main-base PR and confirms
+# the guidance mentions "origin/develop", not "origin/main".
+# ===========================================================================
+
+@test "handle_blocker lib_shrinkage: revert guidance uses SHRINKAGE_BLOCKER_BASE_BRANCH (not hardcoded origin/main)" {
+  # Test the lib_shrinkage guidance logic directly by reproducing the relevant
+  # section of handle_blocker in a self-contained bash subprocess.
+  # This exercises the exact string-interpolation logic from workflow-runner.sh
+  # without needing to source the full orchestrator (which has top-level executable
+  # code and many deps).  The test validates that SHRINKAGE_BLOCKER_BASE_BRANCH
+  # is consumed correctly for a non-main-base PR (develop).
+  local target_file="lib/core/assess-review-issues.sh"
+
+  local _target_file="$target_file"
+
+  run bash -c "
+    # Set what detect_lib_shrinkage exports for a non-main-base PR
+    SHRINKAGE_BLOCKER_BASE_BRANCH=develop
+    SHRINKAGE_BLOCKER_FILES='${_target_file}'
+    SHRINKAGE_BLOCKER_FILE='${_target_file}'
+
+    # Reproduce the guidance logic from handle_blocker lib_shrinkage case.
+    # Variables use plain assignment (not local) — this runs in the main script
+    # body of a bash -c subprocess, not inside a function.
+    _revert_base=\"origin/\${SHRINKAGE_BLOCKER_BASE_BRANCH:-main}\"
+    _first_sf=\"\"
+    _sf_count=0
+    _sf_label=\"\"
+    if [ -n \"\${SHRINKAGE_BLOCKER_FILES:-}\" ]; then
+      while IFS= read -r _sf; do
+        [ -n \"\$_sf\" ] && echo \"    git checkout \${_revert_base} -- \${_sf}\"
+      done <<< \"\$SHRINKAGE_BLOCKER_FILES\"
+      _first_sf=\$(echo \"\$SHRINKAGE_BLOCKER_FILES\" | head -1 || true)
+      _sf_count=\$(echo \"\$SHRINKAGE_BLOCKER_FILES\" | grep -c '.' || true)
+      if [ \"\${_sf_count:-1}\" -gt 1 ]; then
+        _sf_label=\"\${_first_sf:-lib/ files} (and \$(( _sf_count - 1 )) more)\"
+      else
+        _sf_label=\"\${_first_sf:-lib/ file}\"
+      fi
+    else
+      echo \"    git checkout \${_revert_base} -- \${SHRINKAGE_BLOCKER_FILE:-<file>}\"
+      _sf_label=\"\${SHRINKAGE_BLOCKER_FILE:-lib/ file}\"
+    fi
+    echo \"    git commit -m 'revert: restore accidentally deleted \${_sf_label}'\"
+  "
+
+  # The guidance must reference origin/develop (not origin/main)
+  [[ "$output" == *"origin/develop"* ]] || {
+    echo "FAIL: revert guidance did not use SHRINKAGE_BLOCKER_BASE_BRANCH=develop"
+    echo "output: $output"
+    return 1
+  }
+
+  # Must NOT reference origin/main (that's the old hardcoded value)
+  [[ "$output" != *"origin/main"* ]] || {
+    echo "FAIL: revert guidance still contains hardcoded 'origin/main'"
+    echo "output: $output"
+    return 1
+  }
+
+  # The target file must appear in the checkout command
+  [[ "$output" == *"$target_file"* ]] || {
+    echo "FAIL: target file not found in guidance output"
+    echo "output: $output"
+    return 1
+  }
+}
+
+@test "handle_blocker lib_shrinkage: revert guidance uses origin/main when base branch is main" {
+  # Positive case: when SHRINKAGE_BLOCKER_BASE_BRANCH=main, guidance uses origin/main.
+  local target_file="lib/utils/blocker-rules.sh"
+  local _target_file="$target_file"
+
+  run bash -c "
+    SHRINKAGE_BLOCKER_BASE_BRANCH=main
+    SHRINKAGE_BLOCKER_FILES='${_target_file}'
+    SHRINKAGE_BLOCKER_FILE='${_target_file}'
+
+    # Plain assignment — running in main script body, not inside a function
+    _revert_base=\"origin/\${SHRINKAGE_BLOCKER_BASE_BRANCH:-main}\"
+    if [ -n \"\${SHRINKAGE_BLOCKER_FILES:-}\" ]; then
+      while IFS= read -r _sf; do
+        [ -n \"\$_sf\" ] && echo \"    git checkout \${_revert_base} -- \${_sf}\"
+      done <<< \"\$SHRINKAGE_BLOCKER_FILES\"
+    else
+      echo \"    git checkout \${_revert_base} -- \${SHRINKAGE_BLOCKER_FILE:-<file>}\"
+    fi
+  "
+
+  # Main-base PR: guidance must use origin/main
+  [[ "$output" == *"origin/main"* ]] || {
+    echo "FAIL: expected origin/main for main-base PR"
+    echo "output: $output"
+    return 1
+  }
+}
+
+@test "handle_blocker lib_shrinkage: revert guidance falls back to origin/main when SHRINKAGE_BLOCKER_BASE_BRANCH unset" {
+  # Backward-compat: when SHRINKAGE_BLOCKER_BASE_BRANCH is not set (pre-#464
+  # callers or environments where the export did not propagate), guidance must
+  # default to origin/main, not crash or use an empty string.
+  local target_file="lib/utils/blocker-rules.sh"
+  local _target_file="$target_file"
+
+  run bash -c "
+    # Do NOT set SHRINKAGE_BLOCKER_BASE_BRANCH (simulate pre-#464 env)
+    unset SHRINKAGE_BLOCKER_BASE_BRANCH
+    SHRINKAGE_BLOCKER_FILES='${_target_file}'
+    SHRINKAGE_BLOCKER_FILE='${_target_file}'
+
+    # Plain assignment — running in main script body, not inside a function
+    _revert_base=\"origin/\${SHRINKAGE_BLOCKER_BASE_BRANCH:-main}\"
+    if [ -n \"\${SHRINKAGE_BLOCKER_FILES:-}\" ]; then
+      while IFS= read -r _sf; do
+        [ -n \"\$_sf\" ] && echo \"    git checkout \${_revert_base} -- \${_sf}\"
+      done <<< \"\$SHRINKAGE_BLOCKER_FILES\"
+    else
+      echo \"    git checkout \${_revert_base} -- \${SHRINKAGE_BLOCKER_FILE:-<file>}\"
+    fi
+  "
+
+  # Must fall back to origin/main (not origin/ with empty branch)
+  [[ "$output" == *"origin/main"* ]] || {
+    echo "FAIL: expected fallback to origin/main when SHRINKAGE_BLOCKER_BASE_BRANCH unset"
+    echo "output: $output"
+    return 1
+  }
+  # Must NOT produce "origin/ --" (empty branch from unset var without default)
+  [[ "$output" != *"origin/ --"* ]] || {
+    echo "FAIL: empty base branch produced — default not applied"
+    echo "output: $output"
+    return 1
+  }
+}
+
 @test "detect_lib_shrinkage: accepts valid non-main base_branch (e.g. develop, release/1.0)" {
   # Ensure the validation does NOT reject valid branch names with slashes and dots.
   local target_file="lib/core/workflow-runner.sh"
