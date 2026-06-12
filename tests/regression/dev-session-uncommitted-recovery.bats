@@ -108,6 +108,17 @@ teardown() {
 }
 
 @test "check_dev_session_output: auto-commit excludes .gitignore changes" {
+  # .gitignore must be TRACKED for the exclusion to be observable — production
+  # scenario is ensure_symlinks_gitignored() appending to a committed .gitignore.
+  # (An untracked .gitignore shows no diff vs HEAD whether it was committed or
+  # excluded, making the assertion below vacuous.)
+  # Amend into the branch-init commit rather than adding a new commit — a
+  # second commit ahead of origin/main makes check_dev_session_output treat
+  # the branch as already having real work and skip the auto-commit entirely.
+  echo "node_modules" > .gitignore
+  git add .gitignore
+  git commit --amend --no-edit --quiet
+
   # Simulate sharkrite's .gitignore modification + real code changes
   echo ".rite" >> .gitignore
   echo "function bar() { return 'test'; }" > utils.js
@@ -121,12 +132,14 @@ teardown() {
   # utils.js should be committed
   git diff --quiet HEAD -- utils.js
 
-  # .gitignore should NOT be in the commit tree.
-  # Use git ls-tree (checks HEAD's actual tree) rather than git diff
-  # (which exits 0 for both "file committed with same content" and
-  # "file untracked" — giving a false pass regardless of outcome).
-  # Pattern matches the worktree-symlink test above.
-  ! git ls-tree HEAD -- .gitignore | grep -q .gitignore
+  # The .gitignore modification must remain uncommitted (decisive because the
+  # file is tracked: a swept-up modification would zero this diff)...
+  ! git diff --quiet HEAD -- .gitignore
+
+  # ...and the auto-commit itself must not contain .gitignore. (Can't use
+  # ls-tree here: .gitignore is legitimately in the tree from the setup
+  # commit; we only care that THIS commit didn't touch it.)
+  ! git log -1 --format= --name-only | grep -qx '.gitignore'
 }
 
 @test "check_dev_session_output: auto-commit excludes worktree symlinks" {

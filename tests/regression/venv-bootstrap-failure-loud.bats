@@ -3,7 +3,21 @@
 # Test suite for issue #12: Gate venv ready message on install success
 #
 # Verifies that when pip install fails (for base or dev requirements), the
-# bootstrap does NOT print "Venv ready ✅" — it should print actionable errors.
+# venv bootstrap in _run_dev_test_gate does NOT print "Venv ready ✅" — it
+# should print actionable errors.
+#
+# DESIGN NOTES (2026-06-12 rewrite):
+# - The bootstrap only fires when NO venv exists ([ ! -f .venv/bin/python ]).
+#   The original tests pre-created a venv and shimmed its pip/python — the
+#   bootstrap therefore skipped entirely and the shims were never invoked;
+#   every test was vacuous. Failures are now triggered NATURALLY: a
+#   requirements file naming a nonexistent package makes the real pip fail.
+# - NEVER write a shim through .venv/bin/python with `cat >`. It is a SYMLINK
+#   to the real interpreter; writing through it overwrites the system python
+#   binary (live incident 2026-06-09: clobbered Homebrew's python3.14
+#   framework binary machine-wide). The natural-failure design removes the
+#   need for shims entirely.
+# - These tests require network access for pip (real installs / real failures).
 
 setup() {
   # Source utils for color codes and print functions
@@ -20,26 +34,32 @@ setup() {
   git config user.email "test@example.com"
   git config user.name "Test User"
 
-  # Create Python project structure
+  # Create Python project structure (requirements are set per-test)
   mkdir -p tests
   touch pytest.ini
-  echo "pytest>=7.0" > requirements.txt
-  echo "pytest-cov>=4.0" > requirements-dev.txt
-
-  # Create initial commit
-  git add .
-  git commit -m "Initial commit" --quiet
 
   # Mock environment variables
   export AUTO_MODE=true
   export RITE_ORCHESTRATED=false
   export RITE_TEST_GATE_SKIP=false
 
-  # Create a temporary bin directory for our shim
-  export SHIM_DIR=$(mktemp -d)
+  # config.sh (sourced above, from the sharkrite repo cwd) loads sharkrite's
+  # own .rite/config, which sets-and-exports RITE_TEST_CMD (a bats command).
+  # _run_dev_test_gate honors RITE_TEST_CMD before auto-detection, which would
+  # bypass the pytest branch — and the venv bootstrap under test — entirely.
+  unset RITE_TEST_CMD
 
-  # Source the script containing run_test_gate (need the whole file for the function)
-  # We'll override PATH in each test to inject our failing pip.
+  # CRITICAL: never let the dev gate spawn a real Claude auto-fix session from
+  # inside the test suite. Bootstrap-failure paths fall through to the pytest
+  # run (deliberately — see "Don't return 1" comment in _run_dev_test_gate),
+  # and a failing pytest in the mock repo would otherwise trigger a live
+  # 30-minute LLM session per test.
+  export RITE_TEST_GATE_AUTOFIX=false
+
+  # Route _diag/_timing to a log file, not stderr (keeps $output assertions clean)
+  unset RITE_VERBOSE
+
+  # Source the function under test (_run_dev_test_gate).
   # RITE_SOURCE_FUNCTIONS_ONLY=1 loads only function definitions without executing
   # the main program body (arg parsing, worktree navigation, Claude dev session).
   # Without this, sourcing launches a real Claude Code session (issue #469).
@@ -49,112 +69,67 @@ setup() {
 teardown() {
   cd /
   rm -rf "$TEST_REPO"
-  rm -rf "${SHIM_DIR:-}"
 }
 
 @test "venv bootstrap: base requirements install failure does NOT print 'Venv ready'" {
-  # First create a real venv so we can mock its pip
-  python3 -m venv .venv
+  # A nonexistent package makes the real pip fail during bootstrap
+  echo "sharkrite-test-nonexistent-package-xyzzy>=1.0" > requirements.txt
 
-  # Replace the venv's pip with a failing shim
-  cat > ".venv/bin/pip" <<'EOF'
-#!/bin/bash
-echo "ERROR: Simulated pip install failure" >&2
-exit 1
-EOF
-  chmod +x ".venv/bin/pip"
+  git add . && git commit -m "Initial commit" --quiet
 
-  # Run the test gate function (which triggers venv bootstrap)
-  # The venv already exists, so bootstrap will skip creation and go straight to pip install
-  run run_test_gate
+  run _run_dev_test_gate
 
   # Should NOT contain "Venv ready ✅"
   ! [[ "$output" =~ "Venv ready" ]]
 
-  # Should contain error messaging
-  [[ "$output" =~ "Venv bootstrap incomplete" ]] || [[ "$output" =~ "failed to install" ]]
+  # Should contain actionable error messaging
+  [[ "$output" =~ "Venv bootstrap incomplete" ]]
+  [[ "$output" =~ "Base requirements" ]]
 }
 
 @test "venv bootstrap: dev requirements install failure does NOT print 'Venv ready'" {
-  # First create a real venv
-  python3 -m venv .venv
+  # Base requirements install fine; dev requirements name a nonexistent package
+  echo "pytest>=7.0" > requirements.txt
+  echo "sharkrite-test-nonexistent-package-xyzzy>=1.0" > requirements-dev.txt
 
-  # Get the real pip path for delegation
-  REAL_PIP=$(which pip3 || which pip)
+  git add . && git commit -m "Initial commit" --quiet
 
-  # Replace the venv's pip with a shim that fails ONLY for requirements-dev.txt
-  cat > ".venv/bin/pip" <<EOF
-#!/bin/bash
-# Fail for dev requirements, succeed for base requirements
-if [[ "\$*" == *"requirements-dev.txt"* ]]; then
-  echo "ERROR: Simulated dev requirements install failure" >&2
-  exit 1
-fi
-# For base requirements, delegate to real pip
-exec "$REAL_PIP" "\$@"
-EOF
-  chmod +x ".venv/bin/pip"
-
-  # Run the test gate (triggers bootstrap)
-  run run_test_gate
+  run _run_dev_test_gate
 
   # Should NOT contain "Venv ready ✅"
   ! [[ "$output" =~ "Venv ready" ]]
 
   # Should contain error about dev requirements
-  [[ "$output" =~ "Dev requirements" ]] || [[ "$output" =~ "requirements-dev.txt" ]] || [[ "$output" =~ "failed to install" ]]
+  [[ "$output" =~ "Dev requirements" ]] || [[ "$output" =~ "requirements-dev.txt" ]]
 }
 
 @test "venv bootstrap: success path DOES print 'Venv ready'" {
-  # This test verifies the positive case — when everything succeeds,
-  # the success message should be printed
+  echo "pytest>=7.0" > requirements.txt
 
-  # Use real python3 and pip (no shims)
-  # Just run the bootstrap
-  run run_test_gate
+  # Give pytest something to collect and pass so the gate as a whole succeeds
+  cat > tests/test_smoke.py <<'EOF'
+def test_smoke():
+    assert True
+EOF
 
-  # Should print success if installs worked
-  # Note: This might fail if pytest isn't actually available, but that's okay —
-  # we're primarily testing the failure paths. Skip the positive assertion if
-  # the bootstrap actually fails due to real environment issues.
-  if [ "$status" -eq 0 ]; then
-    # If test gate succeeded, venv bootstrap should have printed success
-    [[ "$output" =~ "Venv ready" ]] || [[ "$output" =~ "No venv found" ]]
-  fi
-  # If status != 0, that's fine — it means real environment doesn't have pytest,
-  # which is a valid state. The important tests are the failure paths above.
+  git add . && git commit -m "Initial commit" --quiet
+
+  run _run_dev_test_gate
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Venv ready" ]]
+  [[ "$output" =~ "All tests passed" ]]
 }
 
 @test "venv bootstrap: pytest not importable after install prints actionable error" {
-  # Create a scenario where pip succeeds but pytest isn't actually importable
-  # This simulates a broken install state
+  # Installs succeed but pytest is genuinely not among them — the bootstrap's
+  # post-install `import pytest` check must fail loudly. ("six" is a tiny,
+  # dependency-free package that installs fast.)
+  echo "six>=1.0" > requirements.txt
 
-  # First create a real venv
-  python3 -m venv .venv
+  git add . && git commit -m "Initial commit" --quiet
 
-  # Replace the venv's pip with a shim that succeeds but doesn't actually install anything
-  cat > ".venv/bin/pip" <<'EOF'
-#!/bin/bash
-# Pretend to succeed without doing anything
-exit 0
-EOF
-  chmod +x ".venv/bin/pip"
-
-  # Replace the venv's python with a shim that fails pytest imports
-  REAL_PYTHON=$(which python3)
-  cat > ".venv/bin/python" <<EOF
-#!/bin/bash
-# For pytest import check, fail
-if [[ "\$*" == *"import pytest"* ]]; then
-  exit 1
-fi
-
-# Otherwise use real python
-exec "$REAL_PYTHON" "\$@"
-EOF
-  chmod +x ".venv/bin/python"
-
-  run run_test_gate
+  run _run_dev_test_gate
 
   # Should NOT print "Venv ready"
   ! [[ "$output" =~ "Venv ready" ]]

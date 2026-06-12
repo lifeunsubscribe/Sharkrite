@@ -96,6 +96,35 @@ _claude_stream_filter_plain() {
 # Agentic Session
 # =============================================================================
 
+# Resolve the absolute path to the PreToolUse deny hook (ships in lib/hooks/).
+_claude_pretooluse_hook_path() {
+  local _dir
+  if [ -n "${RITE_LIB_DIR:-}" ]; then
+    _dir="$RITE_LIB_DIR"
+  else
+    _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  fi
+  echo "$_dir/hooks/claude-pretooluse-deny.sh"
+}
+
+# Write a temp settings JSON registering the PreToolUse deny hook and echo its
+# path. This is the REAL enforcement layer: --disallowedTools is silently ignored
+# under --output-format stream-json (CLI 2.0.24), but PreToolUse hooks are honored.
+# See: docs/architecture/behavioral-design.md → "Deterministic backstop is broken".
+# Echoes nothing if the hook script is missing (fail open rather than crash).
+_claude_write_hook_settings() {
+  local _hook
+  _hook=$(_claude_pretooluse_hook_path)
+  [ -f "$_hook" ] || return 0
+  local _file
+  _file=$(mktemp)
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $_hook path must be expanded into the JSON
+  cat > "$_file" <<JSON
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$_hook"}]}]}}
+JSON
+  echo "$_file"
+}
+
 claude_provider_run_agentic_session() {
   local prompt="$1"
   local timeout="$2"
@@ -107,6 +136,14 @@ claude_provider_run_agentic_session() {
   _model=$(claude_provider_resolve_model "dev")
   local _restrictions
   _restrictions=$(claude_provider_build_tool_restrictions)
+
+  # PreToolUse deny hook — the enforced backstop under stream-json.
+  local _settings_file
+  _settings_file=$(_claude_write_hook_settings)
+  local _settings_args=()
+  if [ -n "$_settings_file" ]; then
+    _settings_args=(--settings "$_settings_file")
+  fi
 
   local _exit_code=0
 
@@ -124,7 +161,7 @@ claude_provider_run_agentic_session() {
     # --disallowedTools is variadic but positional arg works when it's last.
     run_with_timeout "$timeout" "$_cmd" --model "$_model" \
       --print --verbose --dangerously-skip-permissions \
-      --disallowedTools "$_restrictions" --output-format stream-json \
+      --disallowedTools "$_restrictions" ${_settings_args[@]+"${_settings_args[@]}"} --output-format stream-json \
       "$prompt" 2>"$stderr_file" | \
       tee "$_stdout_capture" | \
       _claude_stream_filter_colored
@@ -137,7 +174,7 @@ claude_provider_run_agentic_session() {
     printf '%s' "$prompt" > "$_prompt_file"
     run_with_timeout "$timeout" "$_cmd" --model "$_model" \
       --print --verbose --dangerously-skip-permissions \
-      --disallowedTools "$_restrictions" --output-format stream-json \
+      --disallowedTools "$_restrictions" ${_settings_args[@]+"${_settings_args[@]}"} --output-format stream-json \
       < "$_prompt_file" 2>"$stderr_file" | \
       tee "$_stdout_capture" | \
       _claude_stream_filter_colored
@@ -159,6 +196,7 @@ claude_provider_run_agentic_session() {
     _exit_code=5
   fi
   rm -f "$_stdout_capture"
+  [ -n "$_settings_file" ] && rm -f "$_settings_file"
 
   return "$_exit_code"
 }
