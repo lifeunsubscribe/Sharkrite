@@ -115,6 +115,7 @@ while [[ $# -gt 0 ]]; do
     --supervised)
       SUPERVISED=true
       export RITE_VERBOSE="${RITE_VERBOSE:-true}"  # supervised implies verbose
+      export RITE_SUPERVISED=true                  # propagated to batch-process-issues.sh via env
       WORKFLOW_FLAGS+=("--supervised")
       shift
       ;;
