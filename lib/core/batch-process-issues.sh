@@ -265,11 +265,32 @@ _extract_dep_issues_from_body() {
 # Numeric-list invocations (`rite N1 N2 N3`) are presumed intentional by
 # the user and skip this check.
 #
+# --state filter scoping: the preflight only makes sense for open issues.
+#   - `--state open`  → run preflight normally (selected issues are all open)
+#   - `--state closed` → skip preflight: closed issues are already resolved;
+#     their dependencies are no longer actionable blockers.
+#   - `--state all`   → skip preflight: the selection mixes open and closed
+#     issues; filtering to open-only would contradict the user's explicit
+#     all-state intent, and analyzing only the open subset without flagging
+#     it as partial overclaims coverage. Defer to the per-issue dep guard.
+#   Design decision (issue #560): scope preflight to open-only selections.
+#   The per-issue dep-skip guard remains the backstop for all state modes.
+#
 # The per-issue dep-skip guard (search for "DEP_ISSUES=" below) is unchanged;
 # it still owns within-batch failures (dep failed mid-run) and acts as the
 # final backstop.
 # ---------------------------------------------------------------------------
 if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
+  # --state filter: only run preflight when the selected state is "open".
+  # Closed-issue selections have no actionable open blockers; all-state
+  # selections mix states in a way that makes partial open-only analysis
+  # misleading. Skip gracefully and let the per-issue guard handle it.
+  if [ "${FILTER_TYPE:-}" = "state" ] && [ "${FILTER_VALUE:-}" != "open" ]; then
+    print_header "🔗 Preflight Dependency Closure Check"
+    print_info "Skipping: preflight checks open-issue dependencies only."
+    print_info "(Selection is --state ${FILTER_VALUE:-?} — per-issue dep guard remains active.)"
+    echo ""
+  else
   print_header "🔗 Preflight Dependency Closure Check"
   print_info "Checking for open dependencies outside the current selection..."
   echo ""
@@ -481,6 +502,7 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
   unset _preflight_bodies_raw _all_candidate_deps _oos_issue_nums
   unset _filtered_oos_issue_nums _all_missing_deps _jq_filter _open_deps_raw
   unset _candidate_array
+  fi  # end: else branch of state-filter skip guard
 fi
 
 # Register a cleanup trap so the per-batch state file is removed on any exit
