@@ -670,11 +670,13 @@ When you add a new bats file, include the header for it to participate in target
 The prompt passed to Claude Code in `claude-workflow.sh` must include:
 
 1. **Sharkrite identity** — Claude doesn't know what tool invoked it. Without explicit context, it hallucinates names like "forge". The prompt must state: "You are running inside a Sharkrite (`rite`) workflow session."
-2. **Git/GH prohibition** — Claude must NOT run `git commit`, `git push`, `gh pr create`, etc. The post-workflow script handles all of this. Enforce via **both** prompt instructions AND `--disallowedTools`. Prompt-only prohibition is insufficient — Claude ignores it. `--disallowedTools` is enforced by the CLI and cannot be bypassed. Both the main dev session and fix-review session must use it.
-3. **Explicit exit instructions** — In supervised mode, Claude runs interactively and will sit idle forever after completing work unless told to `/exit`. Auto mode uses `--print` which auto-exits.
+2. **Git/GH prohibition** — Claude must NOT run `git commit`, `git push`, `gh pr create`, etc. The post-workflow script handles all of this. Enforce via prompt instructions AND `--disallowedTools`. Prompt-only prohibition is insufficient for *some* tools — Claude ignores it when its task invites the action.
+   - ⚠️ **`--disallowedTools` is NOT a reliable backstop in our invocation.** It is silently ignored when `--output-format stream-json` is set (CLI 2.0.24) — which every real dev/fix session uses. The deny list (git/gh/`rm -rf`/`make`/`bats`/network) is therefore inert in production; only prompt compliance is currently holding. A PreToolUse hook IS enforced under stream-json and is the correct backstop. Full repro, root cause, and fix: `docs/architecture/behavioral-design.md` → "Dev-session Phase 4" / "Deterministic backstop is broken".
+3. **Phase 4 is "Test Authoring & Syntax Check," NOT "run the suite"** — the dev/fix session writes tests + `bash -n` only; the post-commit gate runs `make check` + `bats -r tests/`. The phase name, the preamble todo (`claude_provider_dev_session_preamble`), and every cross-reference must avoid "Testing & Validation" / "run tests" framing — a contradicting title overrides the body's prohibition and the model runs the suite (live regression #495). Reword one location → reword all. See `docs/architecture/behavioral-design.md` → "Dev-session Phase 4: framing must match the prohibition".
+4. **Explicit exit instructions** — In supervised mode, Claude runs interactively and will sit idle forever after completing work unless told to `/exit`. Auto mode uses `--print` which auto-exits.
    - Supervised: "When all phases are complete, immediately exit with `/exit`"
    - Auto: `--print` handles exit; prompt says "session will end automatically"
-4. **No "Ready to start?" or open-ended questions at end** — The prompt should end with a directive ("Begin with Phase 0"), not a question that invites Claude to wait for confirmation.
+5. **No "Ready to start?" or open-ended questions at end** — The prompt should end with a directive ("Begin with Phase 0"), not a question that invites Claude to wait for confirmation.
 
 ## Git Commits
 
