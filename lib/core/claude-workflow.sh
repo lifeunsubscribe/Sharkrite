@@ -2885,14 +2885,19 @@ fi
 # Summary
 print_header "🎉 Workflow Complete"
 
+# Summary reports what the BRANCH changes (merge-base diff vs origin/main),
+# not CHANGES_COUNT — that counts files left uncommitted at session end,
+# which is 0 on every healthy run and reads as "branch changed nothing".
 echo "Summary:"
 echo "  Branch: $BRANCH_NAME"
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
   echo "  Commits: $(git rev-list --count origin/main..HEAD 2>/dev/null || echo "1")"
+  _summary_files=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ' || true)
+  echo "  Changes: ${_summary_files:-0} files vs origin/main"
 else
   echo "  Commits: $(git rev-list --count HEAD 2>/dev/null || echo "1")"
+  echo "  Changes: $CHANGES_COUNT files"
 fi
-echo "  Changes: $CHANGES_COUNT files"
 echo ""
 
 # Check if PR was created
