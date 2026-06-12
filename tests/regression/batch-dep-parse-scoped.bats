@@ -29,16 +29,21 @@
 #    11. Section stop: refs after ## header not collected
 #    12. Section stop: refs after --- divider not collected
 #    13. No Dependencies: field at all → empty (no fallback to whole body)
+#    14. Bare #N on header line: "**Dependencies**: #42" → 42 extracted
+#    15. Bare #N on continuation line: "#42" alone → 42 extracted
+#    16. Plain number without # not harvested (format anchor check)
 #
 #   STRUCTURAL (static code inspection):
-#    14. _extract_dep_issues_from_body function defined in batch-process-issues.sh
-#    15. Per-issue DEP_ISSUES= line uses _extract_dep_issues_from_body, not grep -oiE
-#    16. Preflight _dep_refs= line uses _extract_dep_issues_from_body, not grep -oiE
-#    17. Deliberate divergence comment still present (parity contract unchanged)
+#    17. _extract_dep_issues_from_body function defined in batch-process-issues.sh
+#    18. Per-issue DEP_ISSUES= line uses _extract_dep_issues_from_body, not grep -oiE
+#    19. Preflight _dep_refs= line uses _extract_dep_issues_from_body, not grep -oiE
+#    20. Deliberate divergence comment still present (parity contract unchanged)
+#    21. Dead _inline variable is not present (SC2034 fix)
 #
 #   BEHAVIORAL (per-issue guard integration):
-#    18. Body with prose "After #1" but Dependencies: None → issue NOT skipped
-#    19. Body with Dependencies: After #N where N is failed → issue skipped
+#    22. Body with prose "After #1" but Dependencies: None → issue NOT skipped
+#    23. Body with Dependencies: After #N where N is failed → issue skipped
+#    24. Bare #N dep: "Dependencies: #N" where N is failed → issue skipped
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -276,6 +281,61 @@ Depends on #20 being ready first.
   }
 }
 
+@test "unit: bare #N on header line — **Dependencies**: #42 → 42 extracted" {
+  # Covers the silent-drop bug: bare "#N" shorthand (no keyword prefix) in the
+  # Dependencies field was previously ignored because only keyword-anchored refs
+  # (After #N, Blocked by: #N, Depends on #N) were collected from the header line.
+  _load_extract_helper
+
+  _body="**Dependencies**: #42"
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  [ "$_result" = "42" ] || {
+    echo "FAIL: expected '42' for bare '#42' on header line, got: '$_result'" >&2
+    return 1
+  }
+}
+
+@test "unit: bare #N on continuation line — standalone '#42' → 42 extracted" {
+  # Covers the silent-drop bug: bare "#N" on a continuation line under the
+  # Dependencies: header was not harvested — only keyword-anchored refs were.
+  _load_extract_helper
+
+  _body="**Dependencies**:
+#42
+
+**Done Definition**: Tests pass"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  [ "$_result" = "42" ] || {
+    echo "FAIL: expected '42' for bare '#42' continuation line, got: '$_result'" >&2
+    return 1
+  }
+}
+
+@test "unit: plain number without # in Dependencies section NOT harvested (format anchor)" {
+  # Regression guard: the # prefix is a format anchor that prevents plain numeric
+  # words (version numbers, timeouts, counts) from being harvested as issue numbers.
+  # E.g. "**Dependencies**: After #5 (timeout: 300s)" must yield only "5", not "300".
+  _load_extract_helper
+
+  _body="**Dependencies**: After #5 (timeout: 300s, retry: 3 times)"
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  # "5" must be in the result (keyword-anchored ref)
+  echo "$_result" | grep -qw "5" || {
+    echo "FAIL: expected '5' in '$_result'" >&2
+    return 1
+  }
+  # "300" and "3" must NOT be in the result (plain numeric words, no # prefix)
+  ! echo "$_result" | grep -qw "300" || {
+    echo "FAIL: '300' (plain number) must NOT appear in '$_result'" >&2
+    return 1
+  }
+  ! echo "$_result" | grep -qw "3" || {
+    echo "FAIL: '3' (plain number) must NOT appear in '$_result'" >&2
+    return 1
+  }
+}
+
 # =============================================================================
 # STRUCTURAL: static code inspection
 # =============================================================================
@@ -332,6 +392,41 @@ Depends on #20 being ready first.
   # Our change must not remove it.
   grep -q "Deliberate divergence from single-issue mode" "$BATCH_PROCESSOR" || {
     echo "FAIL: 'Deliberate divergence' comment not found — per-issue guard may have been altered" >&2
+    return 1
+  }
+}
+
+@test "structural: dead _inline variable removed (SC2034 fix — no new unused variable)" {
+  # The old _inline variable was assigned but never read, introducing a new SC2034
+  # violation. CLAUDE.md states: "SC2034 is currently disabled with a 49-occurrence
+  # ledger; new violations must be addressed." This test asserts the dead variable
+  # is gone and the replacement (_inline_refs) is the one in use.
+  #
+  # We check that:
+  #   a) "_inline=" (the dead assignment) is NOT in the function
+  #   b) "_inline_refs=" (the replacement) IS in the function
+  _fn_body=$(awk '
+    /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+    in_fn { print }
+    in_fn && /^}$/ { exit }
+  ' "$BATCH_PROCESSOR" || true)
+
+  [ -n "$_fn_body" ] || {
+    echo "FAIL: could not extract _extract_dep_issues_from_body body from $BATCH_PROCESSOR" >&2
+    return 1
+  }
+
+  # Dead variable must be gone (checking for bare assignment, not the name in comments)
+  ! echo "$_fn_body" | grep -qE '^\s+_inline=\$\(' || {
+    echo "FAIL: dead '_inline=\$(...)' assignment still present in _extract_dep_issues_from_body" >&2
+    echo "      This is the SC2034 violation from the old implementation." >&2
+    return 1
+  }
+
+  # Replacement variable must be present
+  echo "$_fn_body" | grep -q '_inline_refs' || {
+    echo "FAIL: '_inline_refs' not found in _extract_dep_issues_from_body" >&2
+    echo "      Expected the replacement variable that fixes SC2034" >&2
     return 1
   }
 }
@@ -470,6 +565,75 @@ SCRIPT_EOF
   }
   echo "$output" | grep -q "SKIPPED: issue 50" || {
     echo "FAIL: issue #50 should be skipped when its dep (#30) failed" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: bare #N dep — Dependencies: #N where N is failed → issue skipped" {
+  # Validates that bare "#N" refs (no keyword prefix) in the Dependencies field
+  # now gate correctly after the silent-drop fix.
+  # Before the fix: "Dependencies: #30" yielded no deps → issue PROCEEDED even
+  # when dep #30 had failed. After the fix: bare #N is harvested → issue SKIPPED.
+
+  _script="$BATS_TEST_TMPDIR/test-bare-dep-gates.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+eval "$(awk '
+  /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
+declare -A ISSUE_STATUS
+ISSUE_STATUS[30]="failed"
+ISSUE_NUM=51
+ISSUE_BODY="## Description
+Implements the next phase.
+
+**Dependencies**: #30
+
+**Done Definition**: Tests pass"
+
+DEP_ISSUES=$(_extract_dep_issues_from_body "$ISSUE_BODY" || true)
+if [ -n "$DEP_ISSUES" ]; then
+  DEP_FAILED=false
+  FAILED_DEP=""
+  for dep_num in $DEP_ISSUES; do
+    dep_status="${ISSUE_STATUS[$dep_num]:-}"
+    if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
+       [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
+      DEP_FAILED=true
+      FAILED_DEP="$dep_num"
+      break
+    fi
+  done
+  if [ "$DEP_FAILED" = true ]; then
+    echo "SKIPPED: issue $ISSUE_NUM (dep $FAILED_DEP failed)"
+    exit 0
+  fi
+fi
+echo "PROCEEDED: issue $ISSUE_NUM"
+SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed with status $status: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "SKIPPED: issue 51" || {
+    echo "FAIL: issue #51 should be skipped when bare dep (#30) failed" >&2
+    echo "      Before fix: 'Dependencies: #30' yielded no deps → issue PROCEEDED" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "PROCEEDED" || {
+    echo "FAIL: issue incorrectly proceeded despite failed bare dep #30" >&2
     echo "Output: $output" >&2
     return 1
   }

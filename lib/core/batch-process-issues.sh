@@ -182,7 +182,10 @@ fi
 #   2. While in dep-collection mode:
 #      a. Strip "(can run in parallel with #N, ...)" annotations — these are
 #         scheduling hints, not dependency edges (see plan-issues.sh:1466-1473).
-#      b. Collect all bare #N numbers from the cleaned line.
+#      b. Collect all #N issue refs from the cleaned line — both keyword-anchored
+#         ("After #5", "Blocked by: #5", "Depends on #5") and bare refs ("#5").
+#         Using the # prefix as a format anchor prevents plain numeric words
+#         (versions, timeouts, counts) from being harvested as issue numbers.
 #      c. Stop at the next markdown section header (lines starting with "**"
 #         or "##") or the "---" horizontal rule used as a section divider.
 #   3. If no Dependencies: header is found → output nothing (no deps).
@@ -207,13 +210,13 @@ _extract_dep_issues_from_body() {
       # Strip parallel-with annotations before harvesting inline refs
       local _clean
       _clean=$(echo "$_bline" | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' || true)
-      local _inline
-      _inline=$(echo "$_clean" | grep -oE '[0-9]+' | grep -v '^0$' || true)
-      # Only collect numbers that follow a dep keyword on the header line
-      # (e.g. "**Dependencies**: After #5" → "5"); skip plain numeric words.
-      local _kw_inline
-      _kw_inline=$(echo "$_clean" | grep -oiE '(After:?\s*#|Depends on\s*#|Blocked by:?\s*#)[0-9]+' | grep -oE '[0-9]+' || true)
-      [ -n "$_kw_inline" ] && _collected="${_collected:+$_collected }$_kw_inline"
+      # Collect all #N issue refs from the header line (bare and keyword-anchored).
+      # The # prefix is a format anchor: it prevents plain numeric words
+      # (versions, timeouts, ordinals) from being harvested as issue numbers.
+      # Covers: "After #5", "Blocked by: #5", "Depends on #5", and bare "#5".
+      local _inline_refs
+      _inline_refs=$(echo "$_clean" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' || true)
+      [ -n "$_inline_refs" ] && _collected="${_collected:+$_collected }$_inline_refs"
       continue
     fi
 
@@ -225,9 +228,11 @@ _extract_dep_issues_from_body() {
       # Strip parallel-with annotations
       local _clean
       _clean=$(echo "$_bline" | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' || true)
-      # Collect dep-keyword-anchored refs: After #N, Depends on #N, Blocked by: #N
+      # Collect all #N issue refs from the continuation line (bare and keyword-anchored).
+      # The # prefix is a format anchor: bare "#42" and "After #42" are both captured;
+      # plain numeric words (versions, timeouts, ordinals) are not.
       local _refs
-      _refs=$(echo "$_clean" | grep -oiE '(After:?\s*#|Depends on\s*#|Blocked by:?\s*#)[0-9]+' | grep -oE '[0-9]+' || true)
+      _refs=$(echo "$_clean" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' || true)
       [ -n "$_refs" ] && _collected="${_collected:+$_collected }$_refs"
     fi
   done <<< "$_body"
