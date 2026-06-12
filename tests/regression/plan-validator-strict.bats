@@ -1560,3 +1560,349 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fixture O — Check 6: same-file issues with different category labels
+#
+# Issue #1 is labeled "backend", Issue #2 is labeled "frontend".
+# Both modify the same file (src/finance_glance.cpp).
+# Validator must emit exactly one terminal WARNING naming both issues,
+# the shared path, and both labels. Exit must be 0 (warning is non-fatal).
+# ---------------------------------------------------------------------------
+
+@test "Fixture O: same-file different-category labels — one WARNING emitted, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-o.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Backend render pass
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Render pass backend changes.
+
+**Claude Context**:
+Files to Modify:
+- src/finance_glance.cpp
+
+**Acceptance Criteria**:
+- [ ] Tests pass: `make test`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Frontend widget draw
+LABELS: frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Frontend widget drawing in the same file.
+
+**Claude Context**:
+Files to Modify:
+- src/finance_glance.cpp
+
+**Acceptance Criteria**:
+- [ ] Widget renders: `make test`
+
+**Done Definition**: Done when widget renders.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (label-consistency warning is non-fatal)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for label-consistency warning, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING mentioning label-consistency
+  grep -q "label-consistency" "$stderr_out" || {
+    echo "FAIL: expected 'label-consistency' in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention the shared file
+  grep -q "src/finance_glance.cpp" "$stderr_out" || {
+    echo "FAIL: expected shared file path in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention both category labels
+  grep -q "backend" "$stderr_out" || {
+    echo "FAIL: expected 'backend' label in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  grep -q "frontend" "$stderr_out" || {
+    echo "FAIL: expected 'frontend' label in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must be exactly one label-consistency warning (one pair → one warning)
+  local warning_count
+  warning_count=$(grep -c "label-consistency" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 label-consistency warning, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture O2 — Check 6: same-file same-category labels → silent
+#
+# Both issues modify the same file but both carry "backend" labels.
+# No label-consistency warning should be emitted. Exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fixture O2: same-file same-category labels — no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-o2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Backend alpha route
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Alpha route implementation.
+
+**Claude Context**:
+Files to Modify:
+- src/router.py
+
+**Acceptance Criteria**:
+- [ ] Tests pass: `make test`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Backend beta route
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Beta route implementation in the same file.
+
+**Claude Context**:
+Files to Modify:
+- src/router.py
+
+**Acceptance Criteria**:
+- [ ] Tests pass: `make test`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: After #1
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for same-category same-file issues, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a label-consistency warning
+  grep -q "label-consistency" "$stderr_out" && {
+    echo "FAIL: unexpected label-consistency warning for same-category issues" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture P — Check 7: parallel-claim + overlapping files → log note only
+#
+# Issue #1 and #2 both modify the same file AND #2 declares itself parallel
+# with #1. This should produce a [plan-lint-diag] log note on stderr but
+# NO print_warning-style warning, and exit 0.
+# The [plan-lint-diag] note is informational — same-file parallelism can be
+# legitimate (disjoint functions), so it should not cause noise.
+# ---------------------------------------------------------------------------
+
+@test "Fixture P: parallel-claim + overlapping files — log note only, no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-p.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Parse loop alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha parse loop in shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/parser.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: `make test`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Parse loop beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta parse loop in the same shared file — different function.
+
+**Claude Context**:
+Files to Modify:
+- src/parser.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: `make test`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: After #1 (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for parallel-claim overlap, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a print_warning-style WARNING for parallel-file-overlap
+  # (i.e. no "WARNING: parallel-file-overlap" or "strict-lint: WARNING: ... parallel")
+  grep -qE "WARNING:.*parallel-file-overlap|strict-lint: WARNING:.*parallel" "$stderr_out" && {
+    echo "FAIL: unexpected terminal WARNING for parallel-file-overlap (should be log-only)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The log note ([plan-lint-diag]) SHOULD appear in stderr
+  grep -q "\[plan-lint-diag\]" "$stderr_out" || {
+    echo "FAIL: expected [plan-lint-diag] log note for parallel file overlap in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The log note must mention the shared file
+  grep -q "src/parser.cpp" "$stderr_out" || {
+    echo "FAIL: expected shared file mentioned in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture P2 — Check 6 + 7 interaction: same-file, different category,
+# AND declared parallel — one WARNING (from label-consistency) plus one
+# [plan-lint-diag] log note (from parallel-file-overlap), exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fixture P2: same-file diff-category + parallel — WARNING from label-consistency, log note from parallel-file-overlap, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-p2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Backend root render
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Backend root renderer.
+
+**Claude Context**:
+Files to Modify:
+- src/finance_glance.cpp
+
+**Acceptance Criteria**:
+- [ ] Render works: `make test`
+
+**Done Definition**: Done when render works.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Frontend overlay draw
+LABELS: frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Frontend overlay — same file, parallel with backend issue.
+
+**Claude Context**:
+Files to Modify:
+- src/finance_glance.cpp
+
+**Acceptance Criteria**:
+- [ ] Overlay works: `make test`
+
+**Done Definition**: Done when overlay works.
+
+**Dependencies**: After #1 (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have a label-consistency WARNING (different categories)
+  grep -q "label-consistency" "$stderr_out" || {
+    echo "FAIL: expected label-consistency WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have a [plan-lint-diag] note (parallel + overlapping files)
+  grep -q "\[plan-lint-diag\]" "$stderr_out" || {
+    echo "FAIL: expected [plan-lint-diag] log note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
