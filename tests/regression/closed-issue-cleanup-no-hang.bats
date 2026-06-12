@@ -268,8 +268,10 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   # Strip the leading number+colon before checking for comments.
   while IFS= read -r line; do
     if echo "$line" | grep -q "git ls-remote"; then
-      # Strip the "LINENO: " prefix added by awk to get the actual content
-      _content=$(echo "$line" | sed 's/^[0-9]*: *//')
+      # Strip the "LINENO: " prefix added by awk to get the actual content.
+      # Use parameter expansion instead of sed to avoid a pipeline inside $()
+      # that could silently kill the test under set -euo pipefail if sed exits non-zero.
+      _content="${line#*: }"
       # Skip comment lines — they may mention git ls-remote as documentation
       if echo "$_content" | grep -qE '^\s*#'; then
         continue
