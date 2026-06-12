@@ -55,25 +55,61 @@ if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
 fi
 
 # ===================================================================
+# INTERNAL: Base branch resolution
+# ===================================================================
+
+# _stale_resolve_base_branch PR_NUMBER
+#
+# Resolves the PR's actual base branch from the GitHub API.
+# Falls back to "main" when the API is unreachable or the PR is not found.
+# Validates the returned name against a safe character set to prevent
+# path-traversal or injection attacks (same pattern as blocker-rules.sh).
+# Sets: _STALE_BASE_BRANCH (callers should copy to a local var)
+_stale_resolve_base_branch() {
+  local pr_number="$1"
+  _STALE_BASE_BRANCH="main"
+
+  if [ -z "${pr_number:-}" ] || [ "$pr_number" = "null" ]; then
+    return 0
+  fi
+
+  local _raw_base
+  _raw_base=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
+  _raw_base="${_raw_base:-main}"
+
+  # Validate: only alphanumeric, '-', '_', '.', '/' are safe git ref characters.
+  # Reject '..' sequences (path traversal) and any shell meta-characters.
+  if ! echo "$_raw_base" | grep -qE '^[a-zA-Z0-9_./-]+$' || echo "$_raw_base" | grep -qF '..'; then
+    _diag "STALE_BASE_BRANCH_INVALID pr=${pr_number} base_branch_raw=${_raw_base} fallback=main"
+    _STALE_BASE_BRANCH="main"
+    return 0
+  fi
+
+  _STALE_BASE_BRANCH="$_raw_base"
+}
+
+# ===================================================================
 # PUBLIC: Detection
 # ===================================================================
 
-# get_commits_behind_main WORKTREE_PATH
+# get_commits_behind_main WORKTREE_PATH BASE_BRANCH
 #
 # Sets: COMMITS_BEHIND_MAIN (integer)
-# Does NOT fetch — caller must ensure origin/main is up to date.
+# Does NOT fetch — caller must ensure the remote base branch ref is up to date.
+# BASE_BRANCH defaults to "main" when omitted.
 get_commits_behind_main() {
   local worktree_path="$1"
+  local base_branch="${2:-main}"
   COMMITS_BEHIND_MAIN=0
 
   local merge_base
-  merge_base=$(git -C "$worktree_path" merge-base HEAD origin/main 2>/dev/null || echo "")
+  merge_base=$(git -C "$worktree_path" merge-base HEAD "origin/$base_branch" 2>/dev/null || echo "")
 
   if [ -z "$merge_base" ]; then
     return 0
   fi
 
-  COMMITS_BEHIND_MAIN=$(git -C "$worktree_path" rev-list --count "${merge_base}..origin/main" 2>/dev/null || echo "0")
+  COMMITS_BEHIND_MAIN=$(git -C "$worktree_path" rev-list --count "${merge_base}..origin/$base_branch" 2>/dev/null || echo "0")
   return 0
 }
 
@@ -104,41 +140,47 @@ check_stale_branch() {
     return 0  # Not on a feature branch
   fi
 
-  # Fetch origin/main to ensure up-to-date count
-  print_status "Checking branch freshness against main..."
-  if ! git -C "$worktree_path" fetch origin main 2>/dev/null; then
-    print_warning "Could not fetch origin/main — skipping stale branch check"
+  # Resolve the PR's actual base branch so stale-branch comparisons use the
+  # correct upstream ref rather than hardcoding "main" (fixes #365/#420 anti-pattern).
+  # Falls back to "main" when PR number is absent or the API call fails.
+  _stale_resolve_base_branch "$pr_number"
+  local base_branch="$_STALE_BASE_BRANCH"
+
+  # Fetch the resolved base branch to ensure up-to-date count
+  print_status "Checking branch freshness against $base_branch..."
+  if ! git -C "$worktree_path" fetch origin "$base_branch" 2>/dev/null; then
+    print_warning "Could not fetch origin/$base_branch — skipping stale branch check"
     return 0
   fi
 
-  get_commits_behind_main "$worktree_path"
+  get_commits_behind_main "$worktree_path" "$base_branch"
   local behind="$COMMITS_BEHIND_MAIN"
 
   if [ "$behind" -eq 0 ]; then
-    print_info "Branch is up to date with main"
+    print_info "Branch is up to date with $base_branch"
     return 0
   fi
 
   local threshold="${RITE_STALE_BRANCH_THRESHOLD:-10}"
 
   if [ "$behind" -lt "$threshold" ]; then
-    # Below threshold: rebase branch onto main (replays branch commits on top of current main)
-    # This avoids false conflicts from merge when main has added new files since branch creation
-    print_info "Branch is $behind commit(s) behind main (threshold: $threshold) — rebasing onto main"
-    _stale_rebase_onto_main "$worktree_path" "$branch_name" "$workflow_mode" "$issue_number" "$pr_number"
+    # Below threshold: rebase branch onto base (replays branch commits on top of current base)
+    # This avoids false conflicts from merge when base has added new files since branch creation
+    print_info "Branch is $behind commit(s) behind $base_branch (threshold: $threshold) — rebasing onto $base_branch"
+    _stale_rebase_onto_main "$worktree_path" "$branch_name" "$workflow_mode" "$issue_number" "$pr_number" "$base_branch"
     return $?
   fi
 
   # At or above threshold
-  print_warning "Branch is $behind commit(s) behind main (threshold: $threshold)"
+  print_warning "Branch is $behind commit(s) behind $base_branch (threshold: $threshold)"
 
   if [ "$workflow_mode" = "supervised" ]; then
-    _stale_supervised_prompt "$worktree_path" "$pr_number" "$issue_number" "$branch_name" "$behind"
+    _stale_supervised_prompt "$worktree_path" "$pr_number" "$issue_number" "$branch_name" "$behind" "$base_branch"
     return $?
   else
     # Auto mode: close and restart
     print_status "Closing stale PR and restarting fresh..."
-    _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind"
+    _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind" "$base_branch"
     # Exit code 11: stale-branch restarted fresh — caller must reset all resume state
     # and fall through to phase 1 (distinct from exit 10 = blocker-detected in batch).
     # See docs/architecture/exit-codes.md for the canonical exit-code table.
@@ -150,17 +192,19 @@ check_stale_branch() {
 # PUBLIC: Close comment formatting
 # ===================================================================
 
-# format_stale_close_comment WORKTREE_PATH COMMITS_BEHIND
+# format_stale_close_comment WORKTREE_PATH COMMITS_BEHIND [BASE_BRANCH]
 # Outputs the PR close comment body to stdout.
+# BASE_BRANCH defaults to "main" when omitted (backward compatible).
 format_stale_close_comment() {
   local worktree_path="$1"
   local behind="$2"
+  local base_branch="${3:-main}"
 
   local commit_messages
-  commit_messages=$(git -C "$worktree_path" log --oneline origin/main..HEAD 2>/dev/null || echo "(none)")
+  commit_messages=$(git -C "$worktree_path" log --oneline "origin/$base_branch..HEAD" 2>/dev/null || echo "(none)")
 
   local changed_files
-  changed_files=$(git -C "$worktree_path" diff --name-only origin/main...HEAD 2>/dev/null || echo "(none)")
+  changed_files=$(git -C "$worktree_path" diff --name-only "origin/$base_branch...HEAD" 2>/dev/null || echo "(none)")
 
   cat <<EOF
 :arrows_counterclockwise: Closing: Branch is ${behind} commits behind main.
@@ -219,7 +263,7 @@ _stale_rebase_and_push_foreign_commits() {
   fi
 }
 
-# _stale_classify_after_push_rejection WORKTREE_PATH BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER] [WORKFLOW_MODE]
+# _stale_classify_after_push_rejection WORKTREE_PATH BRANCH_NAME [ISSUE_NUMBER] [PR_NUMBER] [WORKFLOW_MODE] [BASE_BRANCH]
 #
 # Called when git push --force-with-lease is rejected after a successful rebase.
 # A rejection means another client pushed to the remote branch between our rebase
@@ -227,6 +271,7 @@ _stale_rebase_and_push_foreign_commits() {
 # whether to discard them (TRIVIAL) or trigger a re-review (FOREIGN).
 #
 # WORKTREE_PATH is required for verify_post_merge (test verification after TRIVIAL discard).
+# BASE_BRANCH defaults to "main" when omitted.
 #
 # Exit codes:
 #   0 = no foreign commits after re-fetch (remote was fast-forwarded to ours by another process)
@@ -239,6 +284,7 @@ _stale_classify_after_push_rejection() {
   local issue_number="${3:-}"
   local pr_number="${4:-}"
   local workflow_mode="${5:-auto}"
+  local base_branch="${6:-main}"
 
   # Re-fetch to get the current remote state
   if ! git fetch origin "$branch_name" 2>/dev/null; then
@@ -302,15 +348,15 @@ _stale_classify_after_push_rejection() {
     case "$classification" in
       TRIVIAL)
         # Mainline sync or doc-only changes: safe to discard without re-review.
-        # Rebase onto origin/main (not origin/$branch_name) to ensure the branch
-        # remains up-to-date with main. Because the rebase base is origin/main —
+        # Rebase onto origin/$base_branch (not origin/$branch_name) to ensure the branch
+        # remains up-to-date with the PR's base. Because the rebase base is origin/$base_branch —
         # not origin/$branch_name — the foreign commits on origin/$branch_name are
         # NOT replayed; they are discarded. The branch history is rewritten on top
-        # of main, so the final force-push drops the foreign commits from the remote.
-        print_info "Foreign commits classified as TRIVIAL — discarding and rebasing onto origin/main"
+        # of the base branch, so the final force-push drops the foreign commits from the remote.
+        print_info "Foreign commits classified as TRIVIAL — discarding and rebasing onto origin/$base_branch"
         local _trivial_pre_rebase_head
         _trivial_pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
-        if git rebase origin/main 2>/dev/null; then
+        if git rebase "origin/$base_branch" 2>/dev/null; then
           # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
           if ! verify_post_merge "$worktree_path" "$_trivial_pre_rebase_head"; then
             git rebase --abort 2>/dev/null || true
@@ -318,7 +364,7 @@ _stale_classify_after_push_rejection() {
             return 1
           fi
           if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-            print_success "Branch rebased onto origin/main (TRIVIAL foreign commits discarded)"
+            print_success "Branch rebased onto origin/$base_branch (TRIVIAL foreign commits discarded)"
             return 0
           else
             print_error "Push still rejected after discarding TRIVIAL commits — another race occurred"
@@ -466,31 +512,34 @@ _stale_classify_after_push_rejection() {
 # INTERNAL: Rebase branch onto main
 # ===================================================================
 
-# _stale_rebase_onto_main WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER]
+# _stale_rebase_onto_main WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER] [BASE_BRANCH]
 #
-# Rebases the feature branch onto origin/main. Replays branch commits on top of current main.
-# Requires force-push with --force-with-lease after successful rebase (history is rewritten).
+# Rebases the feature branch onto the PR's base branch (defaults to "main").
+# Replays branch commits on top of the current base. Requires force-push with
+# --force-with-lease after successful rebase (history is rewritten).
 #
 # ISSUE_NUMBER and PR_NUMBER are optional — used to invoke the conflict resolver on conflict.
+# BASE_BRANCH defaults to "main" when omitted.
 _stale_rebase_onto_main() {
   local worktree_path="$1"
   local branch_name="$2"
   local workflow_mode="$3"
   local issue_number="${4:-}"
   local pr_number="${5:-}"
+  local base_branch="${6:-main}"
 
   cd "$worktree_path" || return 1
 
-  # Verify origin/main exists before attempting rebase
-  if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-    print_error "origin/main does not exist — cannot rebase"
-    print_info "Run 'git fetch origin main' or check remote configuration"
+  # Verify the base branch ref exists before attempting rebase
+  if ! git rev-parse --verify "origin/$base_branch" >/dev/null 2>&1; then
+    print_error "origin/$base_branch does not exist — cannot rebase"
+    print_info "Run 'git fetch origin $base_branch' or check remote configuration"
     return 1
   fi
 
   # Count commits to report progress - how many commits will be replayed
   local commits_ahead
-  commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+  commits_ahead=$(git rev-list --count "origin/$base_branch..HEAD" 2>/dev/null || echo "0")
 
   # Save current HEAD before rebase in case we need to roll back after test failures
   local pre_rebase_head
@@ -500,15 +549,15 @@ _stale_rebase_onto_main() {
   local _stashed=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     print_status "Stashing uncommitted changes before rebase..."
-    if create_sharkrite_stash "stale-branch: auto-stash before rebase main"; then
+    if create_sharkrite_stash "stale-branch: auto-stash before rebase $base_branch"; then
       _stashed=true
     fi
   fi
 
-  print_status "Rebasing branch onto origin/main ($commits_ahead commits ahead, replaying onto fresh main)..."
+  print_status "Rebasing branch onto origin/$base_branch ($commits_ahead commits ahead, replaying onto fresh $base_branch)..."
 
   local rebase_output
-  if rebase_output=$(git rebase origin/main 2>&1); then
+  if rebase_output=$(git rebase "origin/$base_branch" 2>&1); then
     # Rebase succeeded — restore stash
     if [ "$_stashed" = true ]; then
       git stash pop 2>/dev/null || {
@@ -522,9 +571,9 @@ _stale_rebase_onto_main() {
       git reset --hard "$pre_rebase_head" 2>/dev/null || true
       if [ "$workflow_mode" = "supervised" ]; then
         echo "" >&2
-        echo "The rebase onto main introduced test failures." >&2
+        echo "The rebase onto $base_branch introduced test failures." >&2
         echo "Options:" >&2
-        echo "  c) Continue without rebasing onto main (keep working on stale branch)" >&2
+        echo "  c) Continue without rebasing onto $base_branch (keep working on stale branch)" >&2
         echo "  d) Abort workflow" >&2
         read -p "Choose [c/d]: " -n 1 -r >&2
         echo >&2
@@ -542,7 +591,7 @@ _stale_rebase_onto_main() {
     # Push with force-with-lease (history was rewritten by rebase)
     # --force-with-lease is safer than --force: only succeeds if remote hasn't changed
     if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-      print_success "Branch rebased onto origin/main"
+      print_success "Branch rebased onto origin/$base_branch"
       return 0
     else
       # Push rejected: another client pushed to the remote branch between our
@@ -550,12 +599,12 @@ _stale_rebase_onto_main() {
       # deciding what to do — silently absorbing unreviewed foreign commits
       # would bypass the review cycle.
       print_warning "Push rejected after rebase (force-with-lease) — re-fetching to classify foreign commits"
-      _stale_classify_after_push_rejection "$worktree_path" "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode"
+      _stale_classify_after_push_rejection "$worktree_path" "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode" "$base_branch"
       return $?
     fi
   else
     # Rebase had conflicts — abort it
-    print_warning "Rebase onto main had conflicts"
+    print_warning "Rebase onto $base_branch had conflicts"
     git rebase --abort 2>/dev/null || true
 
     # Restore stash
@@ -601,7 +650,7 @@ _stale_rebase_onto_main() {
         fi
         # Resolution committed (or already committed inside resolver) and verified — push with force-with-lease
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-          print_success "Branch rebased onto origin/main (with conflict resolution)"
+          print_success "Branch rebased onto origin/$base_branch (with conflict resolution)"
           return 0
         else
           print_error "Push failed after conflict resolution (force-with-lease rejected)"
@@ -626,8 +675,8 @@ _stale_rebase_onto_main() {
 
     if [ "$workflow_mode" = "supervised" ]; then
       echo "" >&2
-      echo "Conflicting with main. Options:" >&2
-      echo "  c) Continue without rebasing onto main (not recommended)" >&2
+      echo "Conflicting with $base_branch. Options:" >&2
+      echo "  c) Continue without rebasing onto $base_branch (not recommended)" >&2
       echo "  d) Abort workflow" >&2
       read -p "Choose [c/d]: " -n 1 -r >&2
       echo >&2
@@ -636,26 +685,28 @@ _stale_rebase_onto_main() {
         *)   return 1 ;;
       esac
     else
-      print_error "Rebase onto main failed (conflicts) — cannot proceed in auto mode"
+      print_error "Rebase onto $base_branch failed (conflicts) — cannot proceed in auto mode"
       print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
       return 1
     fi
   fi
 }
 
-# _stale_merge_main_legacy WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER]
+# _stale_merge_main_legacy WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER] [BASE_BRANCH]
 #
 # Legacy merge-based update (opt-in via supervised mode).
-# Merges origin/main into the feature branch. Same as GitHub "Update branch".
+# Merges the PR's base branch into the feature branch. Same as GitHub "Update branch".
 # No force-push needed — history isn't rewritten, regular git push works.
 #
 # ISSUE_NUMBER and PR_NUMBER are optional — used to invoke the conflict resolver on conflict.
+# BASE_BRANCH defaults to "main" when omitted.
 _stale_merge_main_legacy() {
   local worktree_path="$1"
   local branch_name="$2"
   local workflow_mode="$3"
   local issue_number="${4:-}"
   local pr_number="${5:-}"
+  local base_branch="${6:-main}"
 
   cd "$worktree_path" || return 1
 
@@ -663,13 +714,13 @@ _stale_merge_main_legacy() {
   local _stashed=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     print_status "Stashing uncommitted changes before merge..."
-    if create_sharkrite_stash "stale-branch: auto-stash before merge main"; then
+    if create_sharkrite_stash "stale-branch: auto-stash before merge $base_branch"; then
       _stashed=true
     fi
   fi
 
   local merge_output
-  if merge_output=$(git merge origin/main --no-edit 2>&1); then
+  if merge_output=$(git merge "origin/$base_branch" --no-edit 2>&1); then
     # Merge succeeded — restore stash
     if [ "$_stashed" = true ]; then
       git stash pop 2>/dev/null || {
@@ -683,9 +734,9 @@ _stale_merge_main_legacy() {
       git reset --hard HEAD~1 2>/dev/null || true
       if [ "$workflow_mode" = "supervised" ]; then
         echo "" >&2
-        echo "The merge with main introduced test failures." >&2
+        echo "The merge with $base_branch introduced test failures." >&2
         echo "Options:" >&2
-        echo "  c) Continue without merging main (keep working on stale branch)" >&2
+        echo "  c) Continue without merging $base_branch (keep working on stale branch)" >&2
         echo "  d) Abort workflow" >&2
         read -p "Choose [c/d]: " -n 1 -r >&2
         echo >&2
@@ -702,7 +753,7 @@ _stale_merge_main_legacy() {
 
     # Push the merge commit
     if git push origin "$branch_name" 2>/dev/null; then
-      print_success "Merged main into branch and pushed"
+      print_success "Merged $base_branch into branch and pushed"
       return 0
     else
       print_error "Push failed after merge"
@@ -710,7 +761,7 @@ _stale_merge_main_legacy() {
     fi
   else
     # Merge had conflicts — abort it
-    print_warning "Merge with main had conflicts"
+    print_warning "Merge with $base_branch had conflicts"
     git merge --abort 2>/dev/null || true
 
     # Restore stash
@@ -756,7 +807,7 @@ _stale_merge_main_legacy() {
         fi
         # Resolution committed (or already committed inside resolver) and verified — regular push (merge doesn't rewrite history)
         if git push origin "$branch_name" 2>/dev/null; then
-          print_success "Branch updated with main (conflict resolved)"
+          print_success "Branch updated with $base_branch (conflict resolved)"
           return 0
         else
           print_error "Push failed after conflict resolution"
@@ -780,8 +831,8 @@ _stale_merge_main_legacy() {
 
     if [ "$workflow_mode" = "supervised" ]; then
       echo "" >&2
-      echo "Conflicting with main. Options:" >&2
-      echo "  c) Continue without merging main (not recommended)" >&2
+      echo "Conflicting with $base_branch. Options:" >&2
+      echo "  c) Continue without merging $base_branch (not recommended)" >&2
       echo "  d) Abort workflow" >&2
       read -p "Choose [c/d]: " -n 1 -r >&2
       echo >&2
@@ -790,7 +841,7 @@ _stale_merge_main_legacy() {
         *)   return 1 ;;
       esac
     else
-      print_error "Merge with main failed (conflicts) — cannot proceed in auto mode"
+      print_error "Merge with $base_branch failed (conflicts) — cannot proceed in auto mode"
       print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
       return 1
     fi
@@ -801,23 +852,25 @@ _stale_merge_main_legacy() {
 # INTERNAL: Close PR and cleanup
 # ===================================================================
 
-# _stale_close_and_cleanup PR_NUMBER ISSUE_NUMBER WORKTREE_PATH BRANCH_NAME COMMITS_BEHIND
+# _stale_close_and_cleanup PR_NUMBER ISSUE_NUMBER WORKTREE_PATH BRANCH_NAME COMMITS_BEHIND [BASE_BRANCH]
 #
 # Inline cleanup (does NOT call undo-workflow.sh).
 # Race condition safety: PR close and branch deletion are ordered deliberately.
 # If PR close fails, remote branch deletion is skipped to avoid the inconsistent
 # state where the branch is gone but the PR still appears open on GitHub.
 # If PR close succeeds (or PR is already closed/merged), remote branch deletion proceeds.
+# BASE_BRANCH defaults to "main" when omitted.
 _stale_close_and_cleanup() {
   local pr_number="$1"
   local issue_number="$2"
   local worktree_path="$3"
   local branch_name="$4"
   local behind="$5"
+  local base_branch="${6:-main}"
 
   # 1. Generate and post close comment
   local comment_body
-  comment_body=$(format_stale_close_comment "$worktree_path" "$behind")
+  comment_body=$(format_stale_close_comment "$worktree_path" "$behind" "$base_branch")
 
   # Use temp file to avoid shell metacharacter issues in body
   local comment_file
@@ -907,19 +960,21 @@ _stale_close_and_cleanup() {
 # INTERNAL: Supervised mode prompt
 # ===================================================================
 
-# _stale_supervised_prompt WORKTREE_PATH PR_NUMBER ISSUE_NUMBER BRANCH_NAME COMMITS_BEHIND
+# _stale_supervised_prompt WORKTREE_PATH PR_NUMBER ISSUE_NUMBER BRANCH_NAME COMMITS_BEHIND [BASE_BRANCH]
+# BASE_BRANCH defaults to "main" when omitted.
 _stale_supervised_prompt() {
   local worktree_path="$1"
   local pr_number="$2"
   local issue_number="$3"
   local branch_name="$4"
   local behind="$5"
+  local base_branch="${6:-main}"
 
   # Gather info for report
   local last_commit_date
   last_commit_date=$(git -C "$worktree_path" log -1 --format='%ci' HEAD 2>/dev/null | cut -d' ' -f1)
   local commit_count
-  commit_count=$(git -C "$worktree_path" log --oneline origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
+  commit_count=$(git -C "$worktree_path" log --oneline "origin/$base_branch..HEAD" 2>/dev/null | wc -l | tr -d ' ')
 
   echo ""
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -928,19 +983,19 @@ _stale_supervised_prompt() {
   echo ""
   echo "  Branch:        $branch_name"
   echo "  PR:            #$pr_number"
-  echo "  Behind main:   $behind commits"
+  echo "  Behind $base_branch:   $behind commits"
   echo "  Last activity: $last_commit_date"
   echo "  Branch work:   $commit_count commit(s)"
   echo ""
-  print_warning "This branch is significantly behind main."
+  print_warning "This branch is significantly behind $base_branch."
   echo ""
   echo "  Recommended: Close PR and restart fresh."
   echo "  The final merge is a squash, so merge commits don't pollute history."
   echo ""
   echo "Options:"
   echo "  1) Close PR and restart fresh (recommended)"
-  echo "  2) Rebase branch onto main (recommended update method)"
-  echo "  3) Merge main into branch (legacy, may cause false conflicts)"
+  echo "  2) Rebase branch onto $base_branch (recommended update method)"
+  echo "  3) Merge $base_branch into branch (legacy, may cause false conflicts)"
   echo "  4) Continue without updating (not recommended)"
   echo "  5) Abort"
   echo ""
@@ -950,23 +1005,23 @@ _stale_supervised_prompt() {
   case "$REPLY" in
     1)
       print_status "Closing PR and cleaning up for fresh start..."
-      _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind"
+      _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind" "$base_branch"
       # Exit code 11: stale-branch restarted fresh (supervised path).
       # See docs/architecture/exit-codes.md for the canonical exit-code table.
       return 11
       ;;
     2)
-      print_status "Rebasing branch onto main..."
-      _stale_rebase_onto_main "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number"
+      print_status "Rebasing branch onto $base_branch..."
+      _stale_rebase_onto_main "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number" "$base_branch"
       return $?
       ;;
     3)
-      print_status "Merging main into branch (legacy mode)..."
-      _stale_merge_main_legacy "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number"
+      print_status "Merging $base_branch into branch (legacy mode)..."
+      _stale_merge_main_legacy "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number" "$base_branch"
       return $?
       ;;
     4)
-      print_warning "Continuing without updating — code may be based on stale main"
+      print_warning "Continuing without updating — code may be based on stale $base_branch"
       return 0
       ;;
     5|*)
