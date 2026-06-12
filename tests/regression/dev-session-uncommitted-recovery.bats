@@ -41,6 +41,14 @@ setup() {
   export RITE_ORCHESTRATED=false
   export RITE_DATA_DIR=".rite"
 
+  # Guard: ensure _diag writes to RITE_LOG_FILE (not stderr).
+  # Without this, a caller environment with RITE_VERBOSE=true routes diag
+  # output to stderr (captured by bats 'run' in $output) instead of the
+  # log file, causing the "logs diagnostic on auto-commit" assertion to
+  # fail even though the implementation is correct.  Pattern matches
+  # conflict-resolver-diag.bats, followup-lock-timeout-diag.bats, etc.
+  unset RITE_VERBOSE
+
   # Source the function we're testing.
   # RITE_SOURCE_FUNCTIONS_ONLY=1 loads only function definitions without executing
   # the main program body (arg parsing, worktree navigation, Claude dev session).
@@ -113,8 +121,12 @@ teardown() {
   # utils.js should be committed
   git diff --quiet HEAD -- utils.js
 
-  # .gitignore should NOT be in the commit
-  ! git diff --quiet HEAD -- .gitignore
+  # .gitignore should NOT be in the commit tree.
+  # Use git ls-tree (checks HEAD's actual tree) rather than git diff
+  # (which exits 0 for both "file committed with same content" and
+  # "file untracked" — giving a false pass regardless of outcome).
+  # Pattern matches the worktree-symlink test above.
+  ! git ls-tree HEAD -- .gitignore | grep -q .gitignore
 }
 
 @test "check_dev_session_output: auto-commit excludes worktree symlinks" {
