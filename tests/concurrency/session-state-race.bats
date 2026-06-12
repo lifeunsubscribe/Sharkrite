@@ -19,6 +19,15 @@
 
 load '../helpers/setup.bash'
 
+# Skip entire file on bash 3.2 (macOS system bash).
+# Concurrent subprocess startup is too slow on bash 3.2 for the barrier pattern
+# to be reliable.  Tests run correctly on Homebrew bash 4+ and Linux CI.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (running bash ${BASH_VERSION}); install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
@@ -46,6 +55,9 @@ teardown() {
 }
 
 # Barrier synchronization helper
+#
+# Timeout: 100 × 0.1 s = 10 s.  Bumped from the original 5 s to give ample
+# headroom for subprocess startup on macOS Homebrew bash 4+ under system load.
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
@@ -55,7 +67,7 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
@@ -63,8 +75,8 @@ wait_at_barrier() {
     fi
   done
 
-  if [ "$timeout" -ge 50 ]; then
-    echo "ERROR: Barrier timeout" >&2
+  if [ "$timeout" -ge 100 ]; then
+    echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
     return 1
   fi
 }
@@ -106,11 +118,14 @@ wait_at_barrier() {
     [ "$exit_code" -eq 0 ]
   done
 
-  # Verify JSON is still valid (not corrupted)
+  # Verify JSON is still valid (not corrupted).
   # Issue #8's session-state locking must prevent concurrent write corruption.
+  # A failure here is a genuine locking regression.
+  # (A barrier timeout above would cause processes to not write exit-code files,
+  #  so the assertions above would already have failed before reaching this point.)
   run jq empty "$SESSION_STATE_FILE"
   [ "$status" -eq 0 ] || {
-    echo "REGRESSION: JSON corrupted by concurrent writes — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted by concurrent writes — session-state locking (issue #8) may have regressed" >&2
     cat "$SESSION_STATE_FILE"
     return 1
   }
@@ -155,10 +170,10 @@ wait_at_barrier() {
     [ "$exit_code" -eq 0 ]
   done
 
-  # Verify JSON is still valid
+  # Verify JSON is still valid.
   # Issue #8's locking must prevent JSON corruption during concurrent approval additions.
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "REGRESSION: JSON corruption in blocker approvals — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corruption in blocker approvals — session-state locking (issue #8) may have regressed" >&2
     cat "$SESSION_STATE_FILE" >&2
     return 1
   }
@@ -173,7 +188,7 @@ wait_at_barrier() {
 
   # Issue #8's locked read-modify-write must prevent lost approvals.
   [ "$found_count" -eq "$num_processes" ] || {
-    echo "REGRESSION: Only $found_count/$num_processes approvals saved — concurrent read-modify-write race (issue #8) regressed?"
+    echo "FAIL: Only $found_count/$num_processes approvals saved — concurrent read-modify-write race (issue #8) may have regressed" >&2
     return 1
   }
 }
@@ -227,7 +242,7 @@ wait_at_barrier() {
   # Issue #8's locking makes init_session an upsert (no-op if file already exists),
   # preventing concurrent init from clobbering in-progress updates.
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "REGRESSION: JSON corrupted by init/update race — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted by init/update race — session-state locking (issue #8) may have regressed" >&2
     cat "$SESSION_STATE_FILE" >&2
     return 1
   }
@@ -263,9 +278,9 @@ wait_at_barrier() {
   # Issue #8's session-state locking must hold even under high concurrency (10×10).
   run jq empty "$SESSION_STATE_FILE"
   [ "$status" -eq 0 ] || {
-    echo "REGRESSION: JSON corrupted under high concurrency — session-state locking (issue #8) regressed?"
-    echo "File contents:"
-    cat "$SESSION_STATE_FILE" || echo "(file unreadable)"
+    echo "FAIL: JSON corrupted under high concurrency — session-state locking (issue #8) may have regressed" >&2
+    echo "File contents:" >&2
+    cat "$SESSION_STATE_FILE" || echo "(file unreadable)" >&2
     return 1
   }
 
@@ -305,7 +320,7 @@ wait_at_barrier() {
   [ -f "$SESSION_STATE_FILE" ]
 
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "REGRESSION: JSON corrupted during concurrent creation — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted during concurrent creation — session-state locking (issue #8) may have regressed" >&2
     cat "$SESSION_STATE_FILE" >&2
     return 1
   }

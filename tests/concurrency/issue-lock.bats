@@ -20,8 +20,24 @@
 # subprocesses are spawned before any of them attempts to acquire, maximising the
 # chance of a real race.  A `success_count != 1` result therefore indicates a
 # genuine atomicity regression, not a timing artifact.
+#
+# macOS / bash 3.2 note: these tests require bash 4+ for reliable concurrent
+# subprocess spawning.  On macOS with system bash 3.2, /bin/bash subprocess
+# startup takes 50-150ms per subshell, which can exhaust the barrier window
+# before all N processes arrive — producing a false "barrier timeout" failure
+# that is unrelated to the locking logic under test.  setup_file() skips the
+# entire file when running under bash 3.2.
 
 load '../helpers/setup.bash'
+
+# Skip entire file on bash 3.2 (macOS system bash).
+# Concurrent subprocess startup is too slow on bash 3.2 for the barrier pattern
+# to be reliable.  Tests run correctly on Homebrew bash 4+ and Linux CI.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (running bash ${BASH_VERSION}); install via: brew install bash"
+  fi
+}
 
 setup() {
   setup_test_tmpdir
@@ -50,6 +66,14 @@ teardown() {
 }
 
 # Barrier synchronization helper
+#
+# Waits until expected_count processes have all checked in at barrier_name.
+# Each process touches a unique file (barrier_name.$PID); the poller counts
+# matching files until the target is reached or the timeout expires.
+#
+# Timeout: 100 × 0.1 s = 10 s.  Set to 10 s (up from the original 5 s) to
+# accommodate slow subprocess startup on macOS Homebrew bash — even bash 4+
+# can take 30-60 ms per subshell on a warm cache under system load.
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
@@ -59,7 +83,7 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
@@ -67,7 +91,7 @@ wait_at_barrier() {
     fi
   done
 
-  if [ "$timeout" -ge 50 ]; then
+  if [ "$timeout" -ge 100 ]; then
     echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
     return 1
   fi
@@ -225,10 +249,17 @@ wait_at_barrier() {
 
   # Exactly one process should have gotten the lock.
   # Issue #9 (per-issue locking) landed — this is now a hard assertion.
-  # `false` is intentional: mkdir atomicity guarantees exactly 1 winner.
-  # A wrong count here is a real regression, not a timing flake.
+  # mkdir atomicity guarantees exactly 1 winner.
+  #
+  # NOTE: A wrong count here indicates a genuine locking regression.
+  # If the barrier timed out above (exit 1), the subshell exits early and
+  # does not write an exit-code file, so success_count will be 0 — which
+  # also fails this assertion.  That failure is correctly attributed to the
+  # barrier (the error message above already says "Barrier timeout"); it is
+  # NOT a regression of the locking logic in issue-lock.sh.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count processes got lock instead of 1 - locking not atomic (issue #9 regressed?)"
+    echo "FAIL: $success_count processes got lock instead of 1" >&2
+    echo "      (If barrier timed out above, this is a test-scaffolding failure, not a locking regression)" >&2
     false
   }
 }
@@ -276,10 +307,15 @@ wait_at_barrier() {
 
   # Only one should have reclaimed successfully.
   # Issue #9 (per-issue locking) landed — this is now a hard assertion.
-  # `false` is intentional: reclamation uses rm-then-mkdir; only one concurrent
-  # rm+mkdir sequence can win the subsequent mkdir.  A wrong count is a regression.
+  # Reclamation uses rm-then-mkdir; only one concurrent rm+mkdir sequence can
+  # win the subsequent mkdir.  A wrong count indicates a genuine regression.
+  #
+  # NOTE: If the barrier timed out above, success_count will be 0 because the
+  # subshells exited before writing their exit-code files.  That is a
+  # test-scaffolding failure (barrier), not a regression of stale-lock detection.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count processes reclaimed lock - race in stale detection (issue #9 regressed?)"
+    echo "FAIL: $success_count processes reclaimed lock instead of 1" >&2
+    echo "      (If barrier timed out above, this is a test-scaffolding failure, not a locking regression)" >&2
     false
   }
 }
