@@ -1307,14 +1307,14 @@ echo "Checking for bare config-var references (EMAIL_*, SLACK_*, RITE_EMAIL_*, A
 # so fixture directories injected via that env var are scanned correctly —
 # matching the behavior of all other per-subset rules (e.g. Rule 16 LIB_FILES).
 # The filter matches any path ending in /lib/utils/*.sh (both project tree and fixtures).
-_r23_utils_files=()
+_r24_utils_files=()
 for _f in "${SHELL_FILES[@]}"; do
   if [[ "$_f" == */lib/utils/*.sh ]]; then
-    _r23_utils_files+=("$_f")
+    _r24_utils_files+=("$_f")
   fi
 done
 
-for file in "${_r23_utils_files[@]}"; do
+for file in "${_r24_utils_files[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip full-line comments
     if echo "$line_content" | grep -qE '^\s*#'; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: tools/*-lint.sh
-# Tests for Rule 23: BARE_VAR_REFERENCE
+# Tests for Rule 24: BARE_VAR_REFERENCE
 #
 # Verifies that the lint rule correctly flags bare $VAR references for optional
 # config variables (EMAIL_*, SLACK_*, RITE_EMAIL_*, AWS_*) in lib/utils/*.sh,
@@ -22,7 +22,7 @@ setup() {
   LINT_SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)/tools/sharkrite-lint.sh"
   PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
 
-  # Fixture directory: mimic lib/utils/ structure so Rule 23 fires
+  # Fixture directory: mimic lib/utils/ structure so Rule 24 fires
   FIXTURE_DIR="${BATS_TEST_TMPDIR}/bare-var-ref-fixtures/lib/utils"
   mkdir -p "$FIXTURE_DIR"
   export RITE_LINT_EXTRA_DIRS="${BATS_TEST_TMPDIR}/bare-var-ref-fixtures/lib/utils"
@@ -155,9 +155,9 @@ send_email() {
   fi
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-email-safe"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-email-safe"* ]]
 }
 
 @test "rule passes: \${RITE_EMAIL_FROM:-} safe expansion" {
@@ -174,9 +174,9 @@ send_email() {
   fi
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-rite-email-safe"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-rite-email-safe"* ]]
 }
 
 @test "rule passes: \${AWS_PROFILE:-default} safe expansion with default" {
@@ -190,9 +190,9 @@ do_aws() {
   aws --profile "${AWS_PROFILE:-default}" s3 ls
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-aws-default"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-aws-default"* ]]
 }
 
 @test "rule passes: \${SNS_TOPIC_ARN:-} safe expansion" {
@@ -209,9 +209,9 @@ send_sms() {
   fi
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-sns-topic-arn"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-sns-topic-arn"* ]]
 }
 
 @test "rule passes: suppression comment on bare \$SNS_TOPIC_ARN (module-local alias pattern)" {
@@ -228,9 +228,9 @@ send_sms() {
   aws sns publish --topic-arn "$SNS_TOPIC_ARN" --message "hello"
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-sns-suppressed"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-sns-suppressed"* ]]
 }
 
 @test "rule passes: suppression comment on preceding line" {
@@ -250,9 +250,9 @@ send_slack() {
   fi
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-suppressed"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-suppressed"* ]]
 }
 
 @test "rule passes: comment-only line with var name (full-line comment)" {
@@ -267,29 +267,29 @@ send_email() {
   echo "body"
 }'
 
-  local r23_lines
-  r23_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
-  [[ "$r23_lines" != *"good-comment-only"* ]]
+  local r24_lines
+  r24_lines=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  [[ "$r24_lines" != *"good-comment-only"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# Codebase sweep: notifications.sh after the fix passes Rule 23
+# Codebase sweep: notifications.sh after the fix passes Rule 24
 # ---------------------------------------------------------------------------
 
 @test "codebase: notifications.sh has zero BARE_VAR_REFERENCE violations after fix" {
   # After the fix in issue #313, running lint against the real codebase must
-  # produce zero Rule 23 violations. If this test fails, a bare config-var
+  # produce zero Rule 24 violations. If this test fails, a bare config-var
   # reference was introduced in lib/utils/ without safe expansion.
   unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
 
   run bash "$LINT_SCRIPT"
 
-  local r23_violations
-  r23_violations=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
+  local r24_violations
+  r24_violations=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)
 
-  if [ -n "$r23_violations" ]; then
+  if [ -n "$r24_violations" ]; then
     echo "BARE_VAR_REFERENCE violations found:" >&3
-    echo "$r23_violations" >&3
+    echo "$r24_violations" >&3
     false
   fi
 }
