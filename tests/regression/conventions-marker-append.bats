@@ -23,6 +23,10 @@
 #  21. Bug1 fix: real block with multiple col-0 code fences in example extracts fully
 #  22. Bug2 fix: marker inside 4-backtick fence with inner 3-backtick is NOT extracted
 #  23. Bug2 fix: real block after 4-backtick fence with inner 3-backtick IS extracted
+#  24. Bug3 fix: ```bash line inside fence does NOT close the fence (info string)
+#  25. Bug3 fix: ``` : line (colon preceded by space) does NOT close the fence
+#  26. Bug3 fix: unterminated fence at EOF swallows convention block (not extracted)
+#  27. Bug3 fix: real block after properly closed fence IS still extracted (regression)
 
 load '../helpers/setup.bash'
 
@@ -1302,4 +1306,220 @@ BODY
   # The real convention block (outside the fence) MUST appear
   grep -q "^## real-after-4-backtick-fence$" "$conventions_file"
   grep -q "\*\*References:\*\* #434" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Tests 24-27 (Bug 3 fix): closing fence must have no info string after
+# backticks — a line like "```bash" or "``` :" must NOT close the fence.
+# Issue #520 / PR #515, #524.
+#
+# CommonMark 0.30 §4.5: the closing code fence consists of at least as many
+# backtick characters as the opening fence, followed by ONLY optional
+# whitespace.  An info string (e.g. "bash", ": something") is allowed on the
+# OPENING line but NOT on the closing line.
+#
+# Without the fix, a PR body like:
+#
+#   ```
+#   <!-- sharkrite-convention -->  ← would be extracted (wrong!)
+#   title: spurious
+#   ```bash                        ← old code: closed the fence here
+#   ...real content...
+#   ```
+#   <!-- sharkrite-convention -->  ← real block
+#
+# would incorrectly extract the template inside the fence because "```bash"
+# was accepted as a closer.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 24 (Bug 3 fix): a closing line with an info string (e.g. "```bash")
+# does NOT close the fence — markers inside remain NOT extracted.
+# ---------------------------------------------------------------------------
+
+@test "Bug3: closing line with info string (backtick-backtick-backtick-bash) does not close the fence" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # PR body: a ``` fence opened, then "```bash" which LOOKS like a closer
+  # but has an info string.  The convention marker inside must NOT be extracted.
+  # The real closer is the final bare ```.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+Documentation block with an info-string pseudo-closer inside:
+
+```
+<!-- sharkrite-convention -->
+title: should-not-be-extracted-info-string
+rule: This is inside a fence that uses an info-string pseudo-closer
+why: Info strings on closing lines must not close the fence
+references: #0
+<!-- /sharkrite-convention -->
+```bash
+This line has an info string — old code wrongly closed the fence here.
+The convention marker above was then visible to the extractor and
+would have been spuriously extracted.
+```
+
+Real convention block below — MUST be extracted:
+
+<!-- sharkrite-convention -->
+title: bug3-real-block-info-string
+rule: Real block after a fence with info-string pseudo-closer is extracted
+why: Fence state must correctly persist through info-string closing attempts
+references: #515
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "515" "$pr_body"
+
+  # The template title (inside the fence) must NOT appear
+  run grep "^## should-not-be-extracted-info-string$" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # The real convention (outside the fence) MUST appear
+  grep -q "^## bug3-real-block-info-string$" "$conventions_file"
+  grep -q "\*\*References:\*\* #515" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 25 (Bug 3 fix): a closing line with a colon-preceded-by-space
+# (e.g. "``` :") does NOT close the fence.
+# ---------------------------------------------------------------------------
+
+@test "Bug3: closing line with colon-preceded-by-space does not close the fence" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # PR body: a ``` fence opened, then "``` :" which has trailing non-whitespace.
+  # The convention marker inside must NOT be extracted.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+Block with a colon-preceded-by-space pseudo-closer:
+
+```
+<!-- sharkrite-convention -->
+title: should-not-be-extracted-colon
+rule: This is inside a fence where the pseudo-closer has ``` :
+why: A space-colon suffix after backticks must not close the fence
+references: #0
+<!-- /sharkrite-convention -->
+``` :
+This line has a colon after the backticks — old code wrongly closed here.
+```
+
+Real convention below — MUST be extracted:
+
+<!-- sharkrite-convention -->
+title: bug3-real-block-colon
+rule: Real block after colon-pseudo-closer fence is correctly extracted
+why: Only bare backtick lines (optional trailing whitespace) close fences
+references: #520
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "520" "$pr_body"
+
+  # The template title (inside the fence) must NOT appear
+  run grep "^## should-not-be-extracted-colon$" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # The real convention (outside the fence) MUST appear
+  grep -q "^## bug3-real-block-colon$" "$conventions_file"
+  grep -q "\*\*References:\*\* #520" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 26 (Bug 3 fix): an unterminated fence (no valid close before EOF)
+# causes convention markers inside and after it to NOT be extracted.
+#
+# This models the "silently swallows following real blocks" failure from the
+# issue title: the fence opened with "```" but the only potential closing
+# lines all have info strings, so the fence is never properly closed.
+# Everything after the opener — including a real convention block — is
+# consumed as fenced content and lost.
+# ---------------------------------------------------------------------------
+
+@test "Bug3: convention inside unterminated fence (only pseudo-closers) is not extracted" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # PR body: fence opened with ``` but NO bare ``` closer ever appears —
+  # only ```bash and ``` : lines that the old code would accept as closers.
+  # A real convention block follows; it must NOT be extracted because the
+  # fence was never properly closed.
+  local pr_body
+  pr_body=$(cat <<'BODY'
+This fence is never properly closed — all potential closing lines have info strings:
+
+```
+Content line 1 inside the never-closed fence.
+```bash
+Content line 2 — old code: accepted "```bash" as a closer, exposing markers after.
+``` :
+Content line 3 — old code: accepted "``` :" as a closer.
+Still inside the fence at EOF (no bare ``` close appears).
+
+<!-- sharkrite-convention -->
+title: inside-unterminated-fence
+rule: This block is inside a fence that was never properly closed
+why: Without the Bug3 fix, this would be spuriously extracted
+references: #0
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "524" "$pr_body"
+
+  # The convention block inside the unterminated fence must NOT appear
+  run grep "^## inside-unterminated-fence$" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # conventions.md must be unchanged (only the seed entry)
+  local count
+  count=$(grep -c "^## " "$conventions_file" || true)
+  [ "$count" -eq 1 ]
+  grep -q "^## seed-convention$" "$conventions_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 27 (Bug 3 fix — regression): a properly closed fence (bare ```) still
+# works correctly; real blocks after it ARE extracted.
+#
+# Verifies the fix did not break the standard happy-path fence scenario.
+# ---------------------------------------------------------------------------
+
+@test "Bug3 regression: real block after properly closed fence is still extracted" {
+  local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  local pr_body
+  pr_body=$(cat <<'BODY'
+Fenced example (do not extract):
+
+```
+<!-- sharkrite-convention -->
+title: Template title — inside fence, do not extract
+references: #0
+<!-- /sharkrite-convention -->
+```
+
+Real convention below (bare ``` closed the fence above):
+
+<!-- sharkrite-convention -->
+title: bug3-regression-real-block
+rule: Real block after a properly-bare-closed fence must still be extracted
+why: The close_after whitespace check must not reject valid empty closers
+references: #508
+<!-- /sharkrite-convention -->
+BODY
+)
+
+  update_conventions_from_marker "508" "$pr_body"
+
+  # Template title (inside fence) must NOT appear
+  run grep "^## Template title" "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # Real convention (outside fence) MUST appear
+  grep -q "^## bug3-regression-real-block$" "$conventions_file"
+  grep -q "\*\*References:\*\* #508" "$conventions_file"
 }

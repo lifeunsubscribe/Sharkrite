@@ -599,7 +599,7 @@ update_conventions_from_marker() {
   # template example as a real convention block.  Track in_fence so that markers
   # inside ``` ... ``` are treated as literal text, not as real extraction triggers.
   #
-  # Two-level fence tracking (fixes issues #429 / #430 / #433 / #434):
+  # Three-level fence tracking (fixes issues #429 / #430 / #433 / #434 / #520):
   #
   # Bug 1 (column-0 fence inside real block): The original guard applied to ALL
   # lines including those inside an open convention block.  When a real block's
@@ -623,6 +623,19 @@ update_conventions_from_marker() {
   # can only be closed by N or more backticks on an otherwise blank line.
   # Indented fences (up to 3 leading spaces) are also detected as CommonMark
   # allows up to 3 spaces of indentation on fence markers.
+  #
+  # Bug 3 (info-string on closing line bypasses guard — unterminated fence):
+  # CommonMark 0.30 §4.5: a closing fence must consist ONLY of backticks
+  # followed by optional whitespace — no info string is allowed.  The old
+  # closing check tested only fence_len, so a line like "```bash" or "``` :"
+  # (colon preceded by a space) was accepted as a closing fence when it should
+  # not be.  A fence opened with such a line as the only potential closer would
+  # never actually close, causing everything that follows — including real
+  # convention blocks — to be silently swallowed as fenced content until EOF.
+  # Fix: After counting the closing backticks, extract the remainder of the
+  # line (close_after).  Accept the close only when close_after matches
+  # /^[[:space:]]*$/ (empty or whitespace only).  Lines with an info string
+  # (e.g. "```bash", "``` :") no longer act as spurious closers.
   local _blocks_file
   # Guard: same isolation contract as _body_file — clean up _body_file on failure.
   _blocks_file=$(mktemp 2>/dev/null) || {
@@ -645,6 +658,8 @@ update_conventions_from_marker() {
     # closed by 4+ backticks; an inner 3-backtick sequence does not prematurely
     # close the outer fence and allow enclosed markers to leak through.
     # Also detect indented fences (up to 3 leading spaces) per CommonMark spec.
+    # Bug 3 fix: closing fence must have NO info string after the backticks;
+    # see close_after check below (issue #520).
     !in_fence && /^[[:space:]]{0,3}```/ {
       # Extract the run of backticks after optional leading spaces.
       # fence_len holds the count for this fence; close requires >= fence_len.
@@ -661,8 +676,15 @@ update_conventions_from_marker() {
       sub(/^[[:space:]]*/, "", close_str)
       close_len = 0
       while (substr(close_str, close_len + 1, 1) == "`") close_len++
-      # Close only when closing fence length >= opening fence length (CommonMark).
-      if (close_len >= fence_len) { in_fence = 0; fence_len = 0 }
+      # CommonMark closing fence rule: the closing line must consist of ONLY
+      # the backtick run plus optional trailing whitespace — no info string
+      # (e.g. "```bash" or "``` :" must NOT close the fence).
+      # substr(..., close_len+1) extracts everything after the backticks;
+      # matching /^[[:space:]]*$/ ensures it is empty or whitespace only.
+      close_after = substr(close_str, close_len + 1)
+      if (close_len >= fence_len && close_after ~ /^[[:space:]]*$/) {
+        in_fence = 0; fence_len = 0
+      }
       next
     }
     in_fence { next }
