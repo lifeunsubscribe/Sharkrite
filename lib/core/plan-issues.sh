@@ -1276,9 +1276,9 @@ _lint_provenance_flags() {
                   # conforming output is handled by the first sed. As a robustness
                   # measure against non-conforming LLM output, a second pass strips
                   # after " - " (space-hyphen-space), which is the most common
-                  # hyphen-variant the model emits. Hyphens inside source strings
-                  # (e.g. "my-api.json") are never surrounded by spaces, so the
-                  # second pass does not truncate legitimate source text.
+                  # hyphen-variant the model emits. This is a best-effort heuristic:
+                  # source strings that contain " - " (e.g. "my - api.json") would
+                  # be truncated, but such names are uncommon in practice.
                   local _prov_source
                   _prov_source=$(echo "$_pline" | sed 's/^[^:]*: //' | sed 's/ —.*//' | sed 's/ - .*//' || true)
                   while IFS= read -r _bn; do
