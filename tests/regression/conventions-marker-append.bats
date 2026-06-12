@@ -412,12 +412,13 @@ BODY
   # A 4-backtick fence closer must be present
   grep -q '^\`\`\`\`$' "$conventions_file"
 
-  # No standalone 3-backtick opener for this entry (would indicate early fence break)
-  # Count lines after the heading: the opener must be the 4-backtick one
-  local fence_count
-  fence_count=$(grep -c '^\`\`\`bash$' "$conventions_file" || true)
-  # The seed or normal entries may have ```bash fences, but the new entry must not
-  # add one — it should only have the ````bash opener.
+  # The 3-backtick bash opener must NOT be present.
+  # This entry's example contains ``` sequences; if the fence promotion logic
+  # failed and used a 3-backtick fence, a ```bash opener would appear in the
+  # file and the inner ``` would terminate the fence early.
+  run grep '^\`\`\`bash$' "$conventions_file"
+  [ "$status" -ne 0 ]
+
   # Verify the inner triple-backtick text is present (content not truncated)
   grep -q 'backticks' "$conventions_file"
 }
@@ -475,7 +476,17 @@ BODY
   # The 4-backtick content must be preserved inside the fence (not truncated)
   grep -q 'inline code span' "$conventions_file"
 
-  # No 3-backtick or 4-backtick opener for this entry (both would be too short)
+  # A 3-backtick bash opener must NOT be present — the seed convention has no
+  # example, so any ```bash line in the file came from this entry.  If present,
+  # the fence was under-promoted (3 backticks instead of 5).
+  run grep '^\`\`\`bash$' "$conventions_file"
+  [ "$status" -ne 0 ]
+
+  # A 4-backtick bash opener must NOT be present — the example contains a
+  # 4-backtick run, so a ````bash fence would be terminated by it prematurely.
+  run grep '^\`\`\`\`bash$' "$conventions_file"
+  [ "$status" -ne 0 ]
+
   # The references line must be correct
   grep -q '\*\*References:\*\* #395' "$conventions_file"
 }
