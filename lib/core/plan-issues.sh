@@ -3138,6 +3138,305 @@ display_issues() {
 }
 
 # =============================================================================
+# Post-creation ordinal/title ref rewriting
+# =============================================================================
+
+# _resolve_ordinal_refs_in_body BODY ORDINAL_MAP_FILE TITLE_MAP_FILE
+#
+# Rewrites batch-ordinal refs and title refs in a single issue body string.
+# Returns the rewritten body on stdout.
+#
+# Ordinal map format (ordinal_map_file):  "N=real_issue_number" per line
+#   where N is the 1-based position among non-spike issues in this batch.
+#
+# Title map format (title_map_file): "real_issue_number=Title" per line
+#
+# Patterns rewritten:
+#   - "After #N"            → "After #<real_num>"          (dep context)
+#   - "Blocked by: #N"      → "Blocked by: #<real_num>"    (dep context)
+#   - "Blocked by #N"       → "Blocked by #<real_num>"     (dep context)
+#   - "(can run in parallel with #N, ...)"  → same, with N replaced
+#   - "After #[Title]"      → "After #<real_num>"
+#   - "Blocked by: #[Title]" → "Blocked by: #<real_num>"
+#   - "Blocked by #[Title]" → "Blocked by #<real_num>"
+#
+# Refs that cannot be resolved (ordinal out of range, unmatched title) are
+# left untouched — no destructive guessing.
+#
+# Note: This function rewrites ALL #N occurrences in the body that match
+# known ordinals, not just those in "After/Blocked" prefixes.  The generation
+# prompt only produces ordinal refs in dependency contexts, so this is safe
+# in practice.  If a body happened to contain "#2" in unrelated prose and
+# ordinal 2 maps to issue #501, the prose "#2" would also be rewritten.
+# This is an acceptable trade-off: the alternative (restricting to exact
+# prefix matches) would miss the "(can run in parallel with #N)" annotations
+# and other variant phrasings.
+#
+# Bash 3.2 compatible (no associative arrays, no printf %q).
+_resolve_ordinal_refs_in_body() {
+  local _body="$1"
+  local _ordinal_map_file="$2"
+  local _title_map_file="$3"
+
+  # Preserve trailing-newline state of the original body so that awk processing
+  # does not add a spurious newline (awk's print appends ORS="\n" to every record,
+  # which would turn a non-trailing-newline body into one and trigger a false
+  # gh issue edit on every issue even when no ref was rewritten).
+  # We detect whether the body ends with a newline, run the two awk passes, and
+  # then strip the one trailing newline that awk unconditionally appended when
+  # the original body had none.
+  #
+  # Implementation note: bash $(...) command substitution always strips trailing
+  # newlines.  We therefore restore trailing newlines explicitly using a sentinel
+  # trick: append a known sentinel to the input, do the rewrite, then strip the
+  # sentinel.  This keeps the output byte-for-byte identical to the input when no
+  # refs are present.
+  _body_sentinel="RITE_SENTINEL_EOB"
+
+  # --- Pass 1: rewrite #[Title] refs to real issue numbers ---
+  # Scan each "Blocked by: #[...]" / "After #[...]" / "Blocked by #[...]" occurrence.
+  # Titles may contain spaces, so we must match up to the closing "]".
+  # We process the entire title map in a single awk pass (load all entries first,
+  # then scan each line of the body once) to avoid iterative mutation issues.
+  if [ -s "$_title_map_file" ]; then
+    # Build a temp file containing the title map followed by a separator and the body.
+    # awk reads the map in phase 1 (up to "---MAP-END---"), then rewrites in phase 2.
+    local _p1_input_file
+    _p1_input_file=$(mktemp)
+    cat "$_title_map_file" >> "$_p1_input_file"
+    printf '%s\n' "---MAP-END---" >> "$_p1_input_file"
+    # Append body with sentinel so command substitution preserves trailing newlines.
+    printf '%s\n%s\n' "$_body" "$_body_sentinel" >> "$_p1_input_file"
+
+    _body=$(awk '
+      BEGIN { loading_map = 1 }
+      loading_map {
+        if ($0 == "---MAP-END---") { loading_map = 0; next }
+        # Title map line: "rnum=Title" — split on first "=" only
+        eq = index($0, "=")
+        if (eq > 0) {
+          rnum = substr($0, 1, eq - 1)
+          ttl  = substr($0, eq + 1)
+          if (rnum != "" && ttl != "") {
+            from_arr[length(from_arr)+1] = "#[" ttl "]"
+            to_arr[length(to_arr)+1]     = "#" rnum
+          }
+        }
+        next
+      }
+      {
+        s = $0
+        for (i = 1; i <= length(from_arr); i++) {
+          from = from_arr[i]
+          to   = to_arr[i]
+          out = ""
+          while ((idx = index(s, from)) > 0) {
+            out = out substr(s, 1, idx - 1) to
+            s = substr(s, idx + length(from))
+          }
+          s = out s
+        }
+        print s
+      }
+    ' "$_p1_input_file" || true)
+    rm -f "$_p1_input_file"
+
+    # Strip the sentinel line added above (command substitution also strips trailing
+    # newlines, so the sentinel is the last line of the captured output).
+    _body=$(printf '%s' "$_body" | awk -v sentinel="$_body_sentinel" '
+      { lines[NR] = $0 }
+      END {
+        for (i = 1; i <= NR; i++) {
+          if (i == NR && lines[i] == sentinel) break
+          if (i > 1) printf "\n"
+          printf "%s", lines[i]
+        }
+      }
+    ' || true)
+  fi
+
+  # --- Pass 2: rewrite #N ordinal refs to real issue numbers ---
+  # Only rewrite #N where N matches a known ordinal (1-based position in batch).
+  # We use word-boundary matching: #N must be followed by a non-digit character
+  # (or end-of-string) to prevent "#12" being partially matched by ordinal 1.
+  #
+  # CRITICAL: all ordinal→real mappings are loaded into awk in a single pass.
+  # Processing one ordinal at a time and mutating _body per iteration causes a
+  # double-rewrite collision: if ordinal map has 1=2,2=3 and body has "#1",
+  # iteration 1 rewrites "#1"→"#2", then iteration 2 rewrites the newly
+  # inserted "#2"→"#3", producing "#3" instead of the correct "#2".
+  if [ -s "$_ordinal_map_file" ]; then
+    local _p2_input_file
+    _p2_input_file=$(mktemp)
+    # Write only numeric ordinal→real pairs (guard against corrupt map lines).
+    while IFS='=' read -r _ord _rnum; do
+      [ -z "$_ord" ] && continue
+      [ -z "$_rnum" ] && continue
+      case "$_ord"  in *[!0-9]*) continue ;; esac
+      case "$_rnum" in *[!0-9]*) continue ;; esac
+      printf '%s=%s\n' "$_ord" "$_rnum" >> "$_p2_input_file"
+    done < "$_ordinal_map_file"
+
+    if [ -s "$_p2_input_file" ]; then
+      local _p2_combined_file
+      _p2_combined_file=$(mktemp)
+      cat "$_p2_input_file" >> "$_p2_combined_file"
+      printf '%s\n' "---MAP-END---" >> "$_p2_combined_file"
+      # Append body with sentinel so command substitution preserves trailing newlines.
+      printf '%s\n%s\n' "$_body" "$_body_sentinel" >> "$_p2_combined_file"
+
+      _body=$(awk '
+        BEGIN { loading_map = 1 }
+        loading_map {
+          if ($0 == "---MAP-END---") { loading_map = 0; next }
+          eq = index($0, "=")
+          if (eq > 0) {
+            ord  = substr($0, 1, eq - 1)
+            rnum = substr($0, eq + 1)
+            if (ord != "" && rnum != "") {
+              pat_arr[length(pat_arr)+1]  = "#" ord
+              rnum_arr[length(rnum_arr)+1] = rnum
+              plen_arr[length(plen_arr)+1] = 1 + length(ord)
+            }
+          }
+          next
+        }
+        {
+          # Walk the line once, replacing all ordinal refs in a single scan.
+          # Using a result array of segments and a "protected" flag prevents
+          # the double-rewrite collision: already-emitted replacement text is
+          # never revisited.
+          #
+          # Algorithm: for each character position in s, check if any ordinal
+          # pattern starts here.  If a match is found, emit the replacement and
+          # advance past the match; otherwise emit the current character and advance
+          # by 1.  Because we advance past each replacement, inserted real numbers
+          # are never re-scanned.
+          s = $0
+          out = ""
+          slen = length(s)
+          i = 1
+          while (i <= slen) {
+            matched = 0
+            for (k = 1; k <= length(pat_arr); k++) {
+              pat    = pat_arr[k]
+              patlen = plen_arr[k]
+              if (substr(s, i, patlen) == pat) {
+                # Word-boundary check: next char must be non-digit or end-of-string
+                nextchar = substr(s, i + patlen, 1)
+                if (nextchar !~ /[0-9]/) {
+                  out = out "#" rnum_arr[k]
+                  i += patlen
+                  matched = 1
+                  break
+                }
+              }
+            }
+            if (!matched) {
+              out = out substr(s, i, 1)
+              i++
+            }
+          }
+          print out
+        }
+      ' "$_p2_combined_file" || true)
+      rm -f "$_p2_combined_file"
+
+      # Strip the sentinel line (same as Pass 1).
+      _body=$(printf '%s' "$_body" | awk -v sentinel="$_body_sentinel" '
+        { lines[NR] = $0 }
+        END {
+          for (i = 1; i <= NR; i++) {
+            if (i == NR && lines[i] == sentinel) break
+            if (i > 1) printf "\n"
+            printf "%s", lines[i]
+          }
+        }
+      ' || true)
+    fi
+    rm -f "$_p2_input_file"
+  fi
+
+  printf '%s' "$_body"
+}
+
+# _rewrite_created_issue_bodies ISSUE_NUM... -- ORDINAL_MAP_FILE TITLE_MAP_FILE
+#
+# Post-creation pass: fetch each created issue body, resolve ordinal/title refs,
+# and update the body via "gh issue edit --body-file" only when the body changed.
+#
+# Arguments (positional, "--" separates issue numbers from map file paths):
+#   $1..$N   — created issue numbers (integers)
+#   $N+1     — literal "--"
+#   $N+2     — ordinal_map_file path
+#   $N+3     — title_map_file path
+#
+# Issues whose body does not change (no resolvable refs) are skipped silently.
+_rewrite_created_issue_bodies() {
+  # Collect issue numbers until we see "--"
+  local -a _issue_nums=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+    _issue_nums+=("$1")
+    shift
+  done
+  shift || true  # consume the "--"
+  local _ordinal_map_file="${1:-}"
+  local _title_map_file="${2:-}"
+
+  # Nothing to do if either map is empty (no non-spike issues created)
+  if [ -z "$_ordinal_map_file" ] || [ ! -s "$_ordinal_map_file" ]; then
+    return 0
+  fi
+
+  if [ ${#_issue_nums[@]} -eq 0 ]; then
+    return 0
+  fi
+
+  local _edited_count=0
+  local _body_file
+  _body_file=$(mktemp)
+
+  for _num in "${_issue_nums[@]}"; do
+    [ -z "$_num" ] && continue
+
+    # Fetch the current body for this issue
+    local _current_body
+    _current_body=$(gh_safe issue view "$_num" --json body --jq '.body' 2>/dev/null || true)
+    if [ -z "$_current_body" ]; then
+      continue
+    fi
+
+    # Resolve ordinal and title refs
+    local _rewritten_body
+    _rewritten_body=$(_resolve_ordinal_refs_in_body \
+      "$_current_body" "$_ordinal_map_file" "${_title_map_file:-/dev/null}")
+
+    # Only update if the body actually changed
+    if [ "$_rewritten_body" = "$_current_body" ]; then
+      continue
+    fi
+
+    # Write rewritten body to temp file and update via gh issue edit
+    printf '%s' "$_rewritten_body" > "$_body_file"
+    local _edit_exit=0
+    gh_safe issue edit "$_num" --body-file "$_body_file" < /dev/null &>/dev/null \
+      && _edit_exit=0 || _edit_exit=$?
+    if [ $_edit_exit -eq 0 ]; then
+      _edited_count=$(( _edited_count + 1 ))
+      print_info "Updated #${_num}: resolved ordinal/title dependency refs"
+    else
+      print_warning "Could not update #${_num} body (gh issue edit failed)"
+    fi
+  done
+
+  rm -f "$_body_file"
+
+  if [ "$_edited_count" -gt 0 ]; then
+    print_success "Resolved dependency refs in ${_edited_count} issue(s)"
+  fi
+}
+
+# =============================================================================
 # Create issues in GitHub
 # =============================================================================
 
@@ -3155,6 +3454,18 @@ create_issues() {
   # the spike issue is created.  Bash 3.2 compatible (no associative arrays).
   local spike_map_file
   spike_map_file=$(mktemp)
+  # ordinal_map_file: stores "N=real_issue_number" lines where N is the 1-based
+  # ordinal position among non-spike issues.  Built during creation; used in the
+  # post-creation rewrite pass to resolve "After #N" batch-ordinal refs to the
+  # actual GitHub issue numbers.  Bash 3.2 compatible (no associative arrays).
+  local ordinal_map_file
+  ordinal_map_file=$(mktemp)
+  # title_map_file: stores "real_issue_number=Title" lines for all created issues.
+  # Used in the post-creation rewrite pass to resolve "After #[Title]" refs.
+  local title_map_file
+  title_map_file=$(mktemp)
+  # ordinal_counter: 1-based position counter for non-spike issues.
+  local ordinal_counter=0
 
   print_header "Creating Issues"
 
@@ -3234,6 +3545,10 @@ create_issues() {
           created_numbers+=("$issue_num")
           print_success "Created #$issue_num"
 
+          # Record title → real number for post-creation ref rewriting.
+          # Stored as "real_num=Title" so lookup can scan for matching title.
+          echo "${issue_num}=${current_title}" >> "$title_map_file"
+
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
           # Title format: "spike: capture <name> sample for grounding"
@@ -3248,6 +3563,11 @@ create_issues() {
           else
             # Only non-spike issues advance the #PREV pointer.
             prev_issue_num="$issue_num"
+            # Record ordinal position → real number for post-creation ref rewriting.
+            # ordinal_counter is 1-based; increment before recording so first
+            # non-spike issue gets ordinal 1.
+            ordinal_counter=$(( ordinal_counter + 1 ))
+            echo "${ordinal_counter}=${issue_num}" >> "$ordinal_map_file"
           fi
         else
           print_error "Failed: $issue_url"
@@ -3281,9 +3601,17 @@ create_issues() {
   # would otherwise expand to a bare `rite` against an empty issue list).
   if [ ${#created_numbers[@]} -eq 0 ]; then
     print_warning "No issues created — nothing to process"
-    rm -f "$spike_map_file"
+    rm -f "$spike_map_file" "$ordinal_map_file" "$title_map_file"
     return 0
   fi
+
+  # Post-creation rewrite pass: resolve batch-ordinal refs (#N) and title refs
+  # (#[Title]) in created issue bodies to the real GitHub issue numbers.
+  # This pass runs after all issues have been created so the full ordinal →
+  # real-number map is complete before any body is updated.
+  _rewrite_created_issue_bodies \
+    "${created_numbers[@]+"${created_numbers[@]}"}" \
+    -- "$ordinal_map_file" "$title_map_file"
 
   print_success "Created ${#created_numbers[@]} issues"
   echo ""
@@ -3304,6 +3632,6 @@ create_issues() {
   echo "  rite --status --by-label              # View by label/phase"
   echo ""
 
-  # Cleanup spike map temp file
-  rm -f "$spike_map_file"
+  # Cleanup temp files
+  rm -f "$spike_map_file" "$ordinal_map_file" "$title_map_file"
 }

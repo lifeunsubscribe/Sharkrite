@@ -129,6 +129,13 @@ mock_gh() {
             _gh_mock_state_issue_view "$issue_num" "$@"
             return $?
             ;;
+          edit)
+            # gh issue edit N --body-file F [--title T]
+            local issue_num="${1:-}"
+            shift || true
+            _gh_mock_state_issue_edit "$issue_num" "$@"
+            return $?
+            ;;
         esac
         ;;
       pr)
