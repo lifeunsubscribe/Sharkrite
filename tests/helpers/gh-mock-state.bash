@@ -394,6 +394,78 @@ _gh_mock_state_pr_comment() {
 }
 
 # ---------------------------------------------------------------------------
+# _gh_mock_state_issue_edit
+#
+# Implements: gh issue edit N --body-file F [--title T]
+#
+# Updates the body (and optionally title) of a tracked issue in issues.json.
+# Used by the post-creation ordinal-ref rewrite pass in plan-issues.sh.
+#
+# Returns nothing on success (exit 0).
+# Silently succeeds even if the issue is not in the mock state — this mirrors
+# how gh issue edit behaves on a real repo when the issue doesn't exist
+# (returns an error in practice, but our tests only call it for issues we
+# created in the same session).
+#
+# LOCKING NOTE: Not lock-protected.  Sequential callers (tests) need no lock.
+# ---------------------------------------------------------------------------
+_gh_mock_state_issue_edit() {
+  local _issue_num="${1:-}"
+  shift || true
+
+  local _body_file="" _title=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --body-file) _body_file="$2"; shift 2 ;;
+      --title)     _title="$2";     shift 2 ;;
+      *)           shift ;;
+    esac
+  done
+
+  local _issues_file
+  _issues_file=$(_gh_mock_state_issues_file)
+
+  # If the issue is not tracked, silently succeed (no-op).
+  local _found
+  _found=$(jq --argjson num "${_issue_num:-0}" \
+    '[.[] | select(.number == $num)] | length' \
+    "$_issues_file" 2>/dev/null || echo "0")
+  if [ "${_found:-0}" -eq 0 ]; then
+    return 0
+  fi
+
+  # Read the new body from the file
+  local _body_source="${_body_file:-}"
+  local _tmp_body_file=""
+  if [ -z "$_body_source" ] || [ ! -f "$_body_source" ]; then
+    _tmp_body_file=$(mktemp)
+    # shellcheck disable=SC2064
+    trap "rm -f '${_tmp_body_file}'" RETURN
+    _body_source="$_tmp_body_file"
+    : > "$_body_source"
+  fi
+
+  # Update the issue body (and optionally title) in the JSON state.
+  # Use --rawfile to preserve special characters in the body.
+  if [ -n "$_title" ]; then
+    jq --argjson num "${_issue_num:-0}" \
+       --rawfile newbody "$_body_source" \
+       --arg newtitle "$_title" \
+       '[.[] | if .number == $num then .body = $newbody | .title = $newtitle else . end]' \
+       "$_issues_file" > "${_issues_file}.tmp" \
+    && mv "${_issues_file}.tmp" "$_issues_file"
+  else
+    jq --argjson num "${_issue_num:-0}" \
+       --rawfile newbody "$_body_source" \
+       '[.[] | if .number == $num then .body = $newbody else . end]' \
+       "$_issues_file" > "${_issues_file}.tmp" \
+    && mv "${_issues_file}.tmp" "$_issues_file"
+  fi
+
+  [ -n "$_tmp_body_file" ] && rm -f "$_tmp_body_file" || true
+}
+
+# ---------------------------------------------------------------------------
 # _gh_mock_state_issue_set_state
 #
 # Mutates the `state` field of a tracked issue in issues.json.

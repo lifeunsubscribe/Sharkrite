@@ -281,6 +281,21 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
   exit 0
 fi
 
+# ---- gh issue edit (post-creation ordinal-ref rewrite) ----
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "edit" ]; then
+  _issue_num="${3:-}"
+  shift 3 2>/dev/null || true
+  _edit_args=("$@")
+
+  # Acquire state lock: body update is a read-merge-write on issues.json.
+  _gh_mock_lock
+  trap '_gh_mock_unlock' EXIT
+  _gh_mock_state_issue_edit "$_issue_num" "${_edit_args[@]}"
+  _gh_mock_unlock
+  trap - EXIT
+  exit 0
+fi
+
 # ---- gh label create / list (no-op) ----
 if [ "${1:-}" = "label" ]; then
   exit 0
