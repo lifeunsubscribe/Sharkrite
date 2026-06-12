@@ -79,10 +79,12 @@ teardown() {
   [[ "$output" == *"make lint"* ]]
 }
 
-@test "test-gate.sh references bats -r tests/ for Sharkrite repos" {
-  run grep -n 'bats -r tests/' "${RITE_LIB_DIR}/utils/test-gate.sh"
+@test "test-gate.sh invokes bats with -r tests/ for Sharkrite repos" {
+  # The bats invocation uses _run_bats_with_formatter which receives -r tests/ as args.
+  # Check for the callsite that passes -r tests/ to the helper (issue #484: formatter split).
+  run grep -n '\-r tests/' "${RITE_LIB_DIR}/utils/test-gate.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"bats -r tests/"* ]]
+  [[ "$output" == *"-r tests/"* ]]
 }
 
 # ---------------------------------------------------------------------------

@@ -38,19 +38,23 @@ lint:
 
 # Run tests (if bats is available).
 # When FILTER is set, restrict to tests/$(FILTER)/; otherwise run tests/.
+# Uses --pretty formatter when connected to a terminal (-t 1); TAP otherwise
+# (e.g., CI, piped output). -p (--pretty) and -t (--tap) are universal bats
+# shorthand flags, available in all supported bats versions.
 test:
 	@if command -v bats >/dev/null 2>&1; then \
+		if [ -t 1 ]; then _bats_fmt="-p"; else _bats_fmt="-t"; fi; \
 		if [ -n "$(FILTER)" ]; then \
 			if [ -d "tests/$(FILTER)" ]; then \
 				echo "Running bats tests (filter: $(FILTER))..."; \
-				bats -r "tests/$(FILTER)/"; \
+				bats $$_bats_fmt -r "tests/$(FILTER)/"; \
 			else \
 				echo "ERROR: tests/$(FILTER)/ not found"; \
 				exit 1; \
 			fi; \
 		else \
 			echo "Running bats tests..."; \
-			bats -r tests/; \
+			bats $$_bats_fmt -r tests/; \
 		fi; \
 	else \
 		echo "WARN: bats not installed. Skipping tests. Install with: brew install bats-core"; \

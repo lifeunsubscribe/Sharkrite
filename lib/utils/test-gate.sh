@@ -110,6 +110,19 @@ _parse_lint_line() {
 }
 
 # ---------------------------------------------------------------------------
+# _bats_supports_report_formatter — detect if installed bats has --report-formatter
+#
+# bats --report-formatter was added in bats-core 1.7.0. Older installs only
+# support --formatter / -F. We probe by checking --help output rather than
+# parsing version strings, which are inconsistent across packaging methods.
+#
+# Returns: 0 if supported, 1 if not.
+# ---------------------------------------------------------------------------
+_bats_supports_report_formatter() {
+  bats --help 2>&1 | grep -q -- '--report-formatter'
+}
+
+# ---------------------------------------------------------------------------
 # _parse_bats_failure — convert bats failure output to JSON fragment
 # Input: bats test failure section text
 # Output: JSON objects (one per failure)
@@ -462,6 +475,7 @@ run_test_gate() {
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}"
+        rm -rf "${_bats_tap_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
             printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
@@ -582,14 +596,66 @@ run_test_gate() {
     fi
     _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
 
+    # --- Bats formatter: pretty for terminal, TAP for log/JSON-parser (issue #484) ---
+    # When bats >=1.7.0 supports --report-formatter:
+    #   --formatter pretty    → compact colored output on stdout (captured by FIFO-tee → log)
+    #   --report-formatter tap --output <dir> → TAP report file for the JSON findings parser
+    # Older bats falls back to default TAP on stdout (unchanged behavior).
+    #
+    # The split keeps two contracts intact:
+    #   1. Terminal sees per-test ✓/✗ with filename headers and an inline failure trace.
+    #   2. _tests_raw_file contains TAP lines ("not ok N ...") so _parse_bats_failure_line
+    #      can build structured JSON findings — the parser is byte-compatible because the
+    #      TAP report format is identical to the old default stdout format.
+    local _bats_fmt_args=() _bats_tap_dir=""
+    if _bats_supports_report_formatter; then
+      # PID-scoped temp dir — bats writes "report.tap" inside it.
+      # XXXXXX suffix required: GNU mktemp errors on collision; BSD mktemp behavior
+      # is unreliable without it.  PID in the prefix keeps concurrent runs isolated.
+      _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$_XXXXXX")
+      _bats_fmt_args=(--formatter pretty --report-formatter tap --output "$_bats_tap_dir")
+      echo "[test-gate] bats: pretty formatter for terminal; TAP report for JSON parser"
+    else
+      echo "[test-gate] bats: --report-formatter not available (bats <1.7.0?); falling back to TAP on stdout"
+    fi
+
+    # _run_bats_with_formatter <exit_file> <args...>
+    # Runs bats with the given args, captures exit code, and populates _tests_raw_file.
+    # Pretty output flows to stdout (→ FIFO-tee → log). TAP goes to _tests_raw_file.
+    _run_bats_with_formatter() {
+      local _exit_file="$1"
+      shift
+      if [ -n "$_bats_tap_dir" ]; then
+        # Split mode: pretty to stdout for terminal/log; TAP report to temp dir for JSON.
+        # 2>&1 merges bats stderr (failure traces) into stdout so the FIFO-tee captures
+        # them in the log. The TAP report file is written independently by bats.
+        { (cd "$project_root" && bats "${_bats_fmt_args[@]}" "$@" 2>&1); echo $? > "$_exit_file"; } || true
+        # Copy the TAP report into the JSON parser's input file (bats names it "report.tap").
+        # If the report is missing (bats crash before writing), _tests_raw_file stays empty
+        # and the JSON builder emits [] — safe fail-open, but we emit a diagnostic so the
+        # gate outcome (driven by _tests_exit) still surfaces the real failure.
+        if [ -f "$_bats_tap_dir/report.tap" ]; then
+          cat "$_bats_tap_dir/report.tap" >> "$_tests_raw_file" || true
+        else
+          _bats_raw_exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+          if [ "$_bats_raw_exit" -ne 0 ]; then
+            echo "[test-gate] WARN: bats exited $_bats_raw_exit but report.tap was not written (bats crash or formatter error); structured findings unavailable — gate outcome driven by exit code" >&2
+          fi
+        fi
+      else
+        # Fallback: single TAP stream to stdout and temp file simultaneously (original behavior).
+        { (cd "$project_root" && bats "$@" 2>&1); echo $? > "$_exit_file"; } \
+          | tee "$_tests_raw_file" || true
+      fi
+    }
+
     if [ "$_selection" = "FORCE_FULL" ] || [ -z "$_selection" ]; then
       _selection_mode="full"
       _selected_count="$_total_bats"
       echo "[test-gate] Selection: full suite (${_total_bats} bats files)"
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo "[test-gate] Running bats -r tests/..."
-      { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+      _run_bats_with_formatter "$_bats_exit_file" "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/
     else
       _selected_count=$(echo "$_selection" | grep -c '.' || true)
       _selection_mode="targeted"
@@ -601,12 +667,13 @@ run_test_gate() {
         [ -n "$_bf" ] && _selected_files+=("$_bf")
       done <<< "$_selection"
       echo "[test-gate] Running bats on ${#_selected_files[@]} selected files..."
-      { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+      _run_bats_with_formatter "$_bats_exit_file" "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}"
     fi
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
 
     rm -f "$_sc_exit_file" "$_lint_exit_file" "$_bats_exit_file"
+    rm -rf "${_bats_tap_dir:-}"
+    _bats_tap_dir=""  # Clear so EXIT trap's rm -rf is a no-op
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   else
     # Non-Sharkrite: best-effort detection (npm test / make test / pytest)
