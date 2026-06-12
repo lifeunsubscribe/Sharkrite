@@ -1387,6 +1387,8 @@ _lint_issues_strict() {
   local -a _files_modify=()    # per-issue: newline-separated paths from Files to Modify
   local -a _verif_cmds=()      # per-issue: newline-separated verification command lines
   local -a _suppressions=()    # per-issue: space-separated suppressed rule names
+  local -a _labels=()          # per-issue: raw LABELS value (comma-separated string)
+  local -a _parallel_with=()   # per-issue: newline-separated #N refs from "(can run in parallel with #N)" annotations
 
   local _in_issue=false
   local _issue_block=""
@@ -1415,6 +1417,11 @@ _lint_issues_strict() {
         local _title=""
         _title=$(echo "$_issue_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
         _titles+=("${_title:-}")
+
+        # --- Extract LABELS line ---
+        local _issue_labels=""
+        _issue_labels=$(echo "$_issue_block" | grep "^LABELS: " | head -1 | sed 's/^LABELS: //' || true)
+        _labels+=("${_issue_labels:-}")
 
         # --- Extract suppression rules ---
         # Pattern: <!-- sharkrite-plan-lint disable <rule> - Reason: <text> -->
@@ -1504,6 +1511,16 @@ _lint_issues_strict() {
         [ -n "$_body_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_body_title_refs}"$'\n'
         _deps+=("${_issue_deps}")
         _title_deps+=("${_issue_title_deps}")
+
+        # --- Extract "(can run in parallel with #N, #M)" refs ---
+        # These are scheduling hints stripped from deps above; collect them
+        # separately for the parallel-claim file-overlap check (Check 7).
+        local _issue_parallel_with=""
+        local _pline_parallel_refs
+        _pline_parallel_refs=$(echo "$_issue_block" | grep -iE '\([^)]*[Pp]arallel[^)]*\)' | \
+          grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+        [ -n "$_pline_parallel_refs" ] && _issue_parallel_with="${_pline_parallel_refs}"$'\n'
+        _parallel_with+=("${_issue_parallel_with}")
 
         # --- Extract Files to Modify paths ---
         local _issue_modify=""
@@ -1905,6 +1922,146 @@ _lint_issues_strict() {
       fi
     done <<< "$_deferral_lines"
   fi
+
+  # Check 6: Label consistency — same-file issues with different category labels (WARNING)
+  #
+  # When two issues share at least one path in their Files to Modify but carry
+  # different category labels (e.g. one is "backend", one is "frontend"), they
+  # will be split across `rite --label backend` and `rite --label frontend` batch
+  # runs — potentially breaking a dependency chain that spans both labels.
+  #
+  # Live case: finance-glance Phase 3 run 2026-06-11 — three frontend-labeled
+  # issues all touched finance_glance.cpp, but two sibling issues carried backend
+  # labels, causing the dependency chain to be split across label batches.
+  #
+  # Category labels recognized (from issue runbook): infrastructure, backend,
+  # frontend, database, testing, docs, security, devops.
+  # Priority/phase labels (e.g. "priority-high", "phase-3") are ignored.
+  local _CATEGORY_LABELS="infrastructure backend frontend database testing docs security devops"
+
+  # Extract category label from a comma-separated LABELS string.
+  # Returns the first recognized category label token, or empty string.
+  _extract_category_label() {
+    local _raw_labels="$1"
+    local _lbl
+    # Split on comma; check each token against the known category set
+    while IFS= read -r _lbl; do
+      _lbl=$(echo "$_lbl" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+      [ -z "$_lbl" ] && continue
+      if echo "$_CATEGORY_LABELS" | grep -qw "$_lbl"; then
+        echo "$_lbl"
+        return 0
+      fi
+    done < <(printf '%s' "$_raw_labels" | tr ',' '\n')
+    return 0
+  }
+
+  local _ci=0
+  local _cj=0
+  for _ci in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _ci_title="${_titles[$_ci]}"
+    local _ci_modify="${_files_modify[$_ci]}"
+    local _ci_supps="${_suppressions[$_ci]}"
+    local _ci_cat_label
+    _ci_cat_label=$(_extract_category_label "${_labels[$_ci]}")
+
+    # Skip if category label absent (can't determine conflict) or suppressed
+    [ -z "$_ci_cat_label" ] && continue
+    if echo "$_ci_supps" | grep -qw "label-consistency"; then
+      continue
+    fi
+
+    [ -z "$_ci_modify" ] && continue
+
+    for _cj in $([ $((_ci + 1)) -le $((_issue_count - 1)) ] && seq $((_ci + 1)) $((_issue_count - 1)) || true); do
+      # Bounds-check: skip if _cj is outside the valid index range
+      [ "$_cj" -ge 0 ] && [ "$_cj" -lt "$_issue_count" ] || continue
+      local _cj_title="${_titles[$_cj]}"
+      local _cj_modify="${_files_modify[$_cj]}"
+      local _cj_supps="${_suppressions[$_cj]}"
+      local _cj_cat_label
+      _cj_cat_label=$(_extract_category_label "${_labels[$_cj]}")
+
+      [ -z "$_cj_cat_label" ] && continue
+      if echo "$_cj_supps" | grep -qw "label-consistency"; then
+        continue
+      fi
+      [ -z "$_cj_modify" ] && continue
+
+      # Same label — no conflict
+      [ "$_ci_cat_label" = "$_cj_cat_label" ] && continue
+
+      # Find the first shared path between the two issues
+      local _shared_path=""
+      while IFS= read -r _pA; do
+        [ -z "$_pA" ] && continue
+        if echo "$_cj_modify" | grep -qxF "$_pA"; then
+          _shared_path="$_pA"
+          break
+        fi
+      done <<< "$_ci_modify"
+
+      if [ -n "$_shared_path" ]; then
+        print_warning "strict-lint: WARNING: label-consistency: issue '$_ci_title' (${_ci_cat_label}) and '$_cj_title' (${_cj_cat_label}) both modify '${_shared_path}' — same-file issues with different category labels will be split across rite --label batches" >&2
+        _warning_count=$((_warning_count + 1))
+      fi
+    done
+  done
+
+  # Check 7: Parallel-claim file overlap (LOG ONLY — not a terminal warning)
+  #
+  # Issues that declare themselves parallel via "(can run in parallel with #N)"
+  # annotations AND share files in their Files to Modify are flagged informally.
+  # Same-file-different-function parallelism is legitimate (e.g. three draw
+  # functions in one .cpp), so this is informational only — a terminal warning
+  # here would generate benign-warning noise (explicit user feedback).
+  #
+  # Output goes to stderr with a [plan-lint-diag] prefix (not print_warning)
+  # so it does NOT increment _warning_count and does NOT appear as a "Warning"
+  # in the terminal summary. The prefix makes it greppable in log files.
+  local _pi=0
+  for _pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _pi_title="${_titles[$_pi]}"
+    local _pi_modify="${_files_modify[$_pi]}"
+    local _pi_supps="${_suppressions[$_pi]}"
+    local _pi_parallel="${_parallel_with[$_pi]:-}"
+
+    if echo "$_pi_supps" | grep -qw "parallel-file-overlap"; then
+      continue
+    fi
+
+    [ -z "$_pi_parallel" ] && continue
+    [ -z "$_pi_modify" ] && continue
+
+    while IFS= read -r _pref; do
+      [ -z "$_pref" ] && continue
+      local _prefnum
+      _prefnum=$(echo "$_pref" | sed 's/^#//' || true)
+      [ -z "$_prefnum" ] && continue
+
+      # Only check batch-internal parallel refs (same batch ordinals)
+      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_issue_count" ] 2>/dev/null; then
+        local _pj=$((_prefnum - 1))
+        local _pj_title="${_titles[$_pj]}"
+        local _pj_modify="${_files_modify[$_pj]}"
+        [ -z "$_pj_modify" ] && continue
+
+        # Find first shared path
+        local _par_shared=""
+        while IFS= read -r _ppA; do
+          [ -z "$_ppA" ] && continue
+          if echo "$_pj_modify" | grep -qxF "$_ppA"; then
+            _par_shared="$_ppA"
+            break
+          fi
+        done <<< "$_pi_modify"
+
+        if [ -n "$_par_shared" ]; then
+          echo "[plan-lint-diag] parallel-file-overlap: issue '$_pi_title' is parallel with '#${_prefnum} ${_pj_title}' and both modify '${_par_shared}' — verify these edit disjoint functions (file-level overlap is not a hard conflict)" >&2
+        fi
+      fi
+    done <<< "$_pi_parallel"
+  done
 
   # Summary
   if [ "$_error_count" -gt 0 ]; then
