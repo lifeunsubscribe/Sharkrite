@@ -102,7 +102,7 @@ _source_and_print() {
     local result
     result=$(echo "[{\"body\": \"$body\"}]" | \
       jq --arg issue "42" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length' || true)
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length')
     [ "$result" -gt 0 ] || {
       echo "FAIL: expected match for: $body" >&2
       false
@@ -150,7 +150,7 @@ _source_and_print() {
     local jq_match
     jq_match=$(echo "\"${kw} #42\"" | \
       jq --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-      'test($closing_re + "42\\b")' || true)
+      'test($closing_re + "42\\b")')
     [ "$jq_match" = "true" ] || {
       echo "FAIL: CLOSING_ISSUE_JQ_REGEX did not match keyword '$kw'" >&2
       false
@@ -184,7 +184,7 @@ _source_and_print() {
     local result
     result=$(echo "[{\"body\": \"$body\"}]" | \
       jq --arg issue "42" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
-      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length' || true)
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | length')
     [ "$result" -eq 0 ] || {
       echo "FAIL: unexpected match for non-closing reference: $body" >&2
       false
