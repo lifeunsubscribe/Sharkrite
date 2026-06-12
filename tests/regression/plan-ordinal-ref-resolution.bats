@@ -26,6 +26,15 @@
 #       (spike title "spike: capture X sample for grounding" must not appear in ordinal map)
 #   J — acceptance: _resolve_ordinal_refs_in_body and _rewrite_created_issue_bodies
 #       are present in plan-issues.sh (structural check)
+#   K — title with '=' character in it does not corrupt the title map
+#   L — #PREV and #SPIKE-* refs are not modified by the ordinal rewrite
+#   M — double-rewrite collision: ordinal 1→2 not further rewritten by ordinal 2→3
+#   N — multi-line body without trailing newline: no byte drift on passthrough
+#   O — title bracket match with surrounding whitespace (#[ Title ] resolves) [#571]
+#   P — title map guard: non-numeric rnum lines are skipped [#571]
+#   Q — unresolvable title ref left untouched (emitted byte-for-byte) [#571]
+#   R — unclosed "#[" without closing "]" emitted literally without crash [#571]
+#   S — title map entry with leading/trailing whitespace in stored title [#571]
 
 load '../helpers/setup.bash'
 
@@ -684,6 +693,165 @@ write_title_map() {
     echo "  result bytes:   $(printf '%s' "$result"   | wc -c | tr -d ' ')" >&2
     echo "  expected: $(printf '%s' "$expected" | cat -A)" >&2
     echo "  result:   $(printf '%s' "$result"   | cat -A)" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture O — title bracket match with surrounding whitespace inside brackets
+#
+# Issue #571: "#[ Title ]" (with spaces inside brackets) silently failed to
+# match when the map stored "Title" (no surrounding spaces).  The old
+# index()-based approach compared "#[ Title ]" to "#[Title]" literally,
+# producing no match.
+#
+# The new scanner trims whitespace from the extracted body title before lookup,
+# so "#[ Title ]", "#[Title]", and "#[  Title  ]" all resolve to the same entry.
+# ---------------------------------------------------------------------------
+
+@test "Fixture O: #[ Title ] with surrounding whitespace resolves to the correct issue number" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-o.txt"
+  title_map="$RITE_TEST_TMPDIR/title-o.txt"
+
+  : > "$ordinal_map"
+  write_title_map "$title_map" "500=Database Schema Setup"
+
+  # Body uses whitespace inside brackets — must still resolve
+  local result
+  result=$(_resolve_ordinal_refs_in_body \
+    "Blocked by: #[ Database Schema Setup ]" "$ordinal_map" "$title_map")
+
+  [ "$result" = "Blocked by: #500" ] || {
+    echo "FAIL: expected 'Blocked by: #500', got: '$result'" >&2
+    false
+  }
+}
+
+@test "Fixture O2: #[  Title  ] with multiple leading/trailing spaces resolves correctly" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-o2.txt"
+  title_map="$RITE_TEST_TMPDIR/title-o2.txt"
+
+  : > "$ordinal_map"
+  write_title_map "$title_map" "501=Add CRUD endpoints"
+
+  local result
+  result=$(_resolve_ordinal_refs_in_body \
+    "After #[  Add CRUD endpoints  ]" "$ordinal_map" "$title_map")
+
+  [ "$result" = "After #501" ] || {
+    echo "FAIL: expected 'After #501', got: '$result'" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture P — title map guard: non-numeric rnum lines are skipped
+#
+# The ordinal map already guards against non-numeric ordinals.  Pass 1 now
+# applies the same guard to title map entries: a line whose rnum field is not
+# purely numeric (e.g. a corrupt line or the sentinel "---MAP-END---" leaking
+# into the file) must be silently skipped rather than producing a bad mapping.
+# ---------------------------------------------------------------------------
+
+@test "Fixture P: title map line with non-numeric rnum is skipped — body ref left untouched" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-p.txt"
+  title_map="$RITE_TEST_TMPDIR/title-p.txt"
+
+  : > "$ordinal_map"
+  # Corrupt entry: rnum is "abc" (not numeric)
+  printf 'abc=Corrupt Title\n500=Real Title\n' > "$title_map"
+
+  local result
+  result=$(_resolve_ordinal_refs_in_body \
+    "After #[Corrupt Title] and #[Real Title]" "$ordinal_map" "$title_map")
+
+  # Corrupt entry must NOT produce a replacement; Real Title must be resolved
+  [ "$result" = "After #[Corrupt Title] and #500" ] || {
+    echo "FAIL: expected 'After #[Corrupt Title] and #500', got: '$result'" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Q — unresolvable title ref left untouched
+#
+# A "#[Title]" whose title does not appear in the map must be emitted
+# byte-for-byte identical to the input (no silent failure, no corruption).
+# ---------------------------------------------------------------------------
+
+@test "Fixture Q: #[UnknownTitle] with no matching map entry is left untouched" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-q.txt"
+  title_map="$RITE_TEST_TMPDIR/title-q.txt"
+
+  : > "$ordinal_map"
+  write_title_map "$title_map" "500=Known Title"
+
+  local result
+  result=$(_resolve_ordinal_refs_in_body \
+    "Blocked by: #[Unknown Title]" "$ordinal_map" "$title_map")
+
+  [ "$result" = "Blocked by: #[Unknown Title]" ] || {
+    echo "FAIL: expected unresolvable ref unchanged, got: '$result'" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture R — unclosed "#[" without matching "]" is emitted as-is
+#
+# An unterminated "#[" in the body (e.g. "#[Partial title" with no closing "]")
+# must not crash the awk scanner.  The token is emitted literally.
+# ---------------------------------------------------------------------------
+
+@test "Fixture R: unclosed #[ without closing ] is emitted literally without crashing" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-r.txt"
+  title_map="$RITE_TEST_TMPDIR/title-r.txt"
+
+  : > "$ordinal_map"
+  write_title_map "$title_map" "500=Some Title"
+
+  # Body has an unclosed bracket token — the rest of the line follows
+  local input="Blocked by: #[Partial title without closing bracket"
+  local result
+  result=$(_resolve_ordinal_refs_in_body "$input" "$ordinal_map" "$title_map")
+
+  # Must be emitted byte-for-byte identical (no crash, no corruption)
+  [ "$result" = "$input" ] || {
+    echo "FAIL: expected input unchanged, got: '$result'" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture S — title map entry with leading/trailing whitespace in stored title
+#
+# The map stores titles via echo "${issue_num}=${current_title}".  If the
+# generator emits a title with leading/trailing spaces (unlikely but possible),
+# the stored entry would be "500= Padded Title ".  The new guard trims both
+# the stored title and the body-extracted title, so they still match.
+# ---------------------------------------------------------------------------
+
+@test "Fixture S: title map entry with surrounding whitespace in stored title normalizes to match clean body ref" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-s.txt"
+  title_map="$RITE_TEST_TMPDIR/title-s.txt"
+
+  : > "$ordinal_map"
+  # Title stored with leading/trailing whitespace (unusual but possible)
+  printf '500= Padded Title \n' > "$title_map"
+
+  # Body uses the clean title (no padding)
+  local result
+  result=$(_resolve_ordinal_refs_in_body \
+    "After #[Padded Title]" "$ordinal_map" "$title_map")
+
+  [ "$result" = "After #500" ] || {
+    echo "FAIL: expected 'After #500', got: '$result'" >&2
     false
   }
 }

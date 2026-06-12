@@ -3198,6 +3198,19 @@ _resolve_ordinal_refs_in_body() {
   # Titles may contain spaces, so we must match up to the closing "]".
   # We process the entire title map in a single awk pass (load all entries first,
   # then scan each line of the body once) to avoid iterative mutation issues.
+  #
+  # Whitespace normalization: both the stored title (from the map) and the
+  # extracted title (from the body) are trimmed of leading/trailing whitespace
+  # before comparison.  This means "#[ Title ]" and "#[Title]" both resolve
+  # correctly even if the map stores the title without surrounding spaces.
+  # The body scanner uses a character-scan approach (find "#[", scan to "]",
+  # trim, look up) rather than exact-string index() matching, so whitespace
+  # inside brackets on the body side is handled at match time rather than at
+  # pattern-build time.
+  #
+  # Guard: title map lines where rnum is not purely numeric are skipped (same
+  # defensive pattern the ordinal map uses) to prevent corrupt map entries from
+  # producing mis-rewrites.
   if [ -s "$_title_map_file" ]; then
     # Build a temp file containing the title map followed by a separator and the body.
     # awk reads the map in phase 1 (up to "---MAP-END---"), then rewrites in phase 2.
@@ -3217,26 +3230,61 @@ _resolve_ordinal_refs_in_body() {
         if (eq > 0) {
           rnum = substr($0, 1, eq - 1)
           ttl  = substr($0, eq + 1)
-          if (rnum != "" && ttl != "") {
-            from_arr[length(from_arr)+1] = "#[" ttl "]"
-            to_arr[length(to_arr)+1]     = "#" rnum
-          }
+          # Trim leading/trailing whitespace from both fields.
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", rnum)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", ttl)
+          # Guard: rnum must be purely numeric (rejects corrupt/blank map lines).
+          if (rnum !~ /^[0-9]+$/) next
+          if (ttl == "") next
+          # Store in lookup table keyed by normalized (trimmed) title.
+          title_map[ttl] = rnum
         }
         next
       }
       {
+        # Walk the line once, replacing all #[Title] refs in a single scan.
+        # For each position in the string:
+        #   - If we see "#[", scan forward to find the closing "]".
+        #   - Extract the title between the brackets and trim its whitespace.
+        #   - Look up the trimmed title in the map.
+        #   - If found, emit the replacement "#rnum"; otherwise emit "#[title]" as-is.
+        #   - Advance past the closing "]" in either case.
+        # This approach handles "#[ Title ]" (body whitespace) correctly because
+        # the trim happens at match time, not at pattern-build time.
         s = $0
-        for (i = 1; i <= length(from_arr); i++) {
-          from = from_arr[i]
-          to   = to_arr[i]
-          out = ""
-          while ((idx = index(s, from)) > 0) {
-            out = out substr(s, 1, idx - 1) to
-            s = substr(s, idx + length(from))
+        out = ""
+        slen = length(s)
+        i = 1
+        while (i <= slen) {
+          # Look for the two-character sequence "#["
+          if (i < slen && substr(s, i, 2) == "#[") {
+            # Scan forward for the closing "]"
+            j = i + 2
+            while (j <= slen && substr(s, j, 1) != "]") j++
+            if (j <= slen) {
+              # Found a complete "#[...]" token
+              raw_ttl = substr(s, i + 2, j - i - 2)
+              # Trim leading/trailing whitespace from the extracted title
+              trimmed = raw_ttl
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", trimmed)
+              if (trimmed in title_map) {
+                out = out "#" title_map[trimmed]
+              } else {
+                # No match — emit the original token byte-for-byte
+                out = out "#[" raw_ttl "]"
+              }
+              i = j + 1
+            } else {
+              # No closing "]" found — emit the "#[" literally and advance by 1
+              out = out substr(s, i, 1)
+              i++
+            }
+          } else {
+            out = out substr(s, i, 1)
+            i++
           }
-          s = out s
         }
-        print s
+        print out
       }
     ' "$_p1_input_file" || true)
     rm -f "$_p1_input_file"
