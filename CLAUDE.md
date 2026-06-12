@@ -590,7 +590,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `local` outside function — only works inside functions
 - Test stub committed to production path (`TEST_STUB_IN_LIB`) — files in `lib/core/`, `lib/utils/`, `lib/providers/` must never start with `# Stub `, reference `MOCK_*_FILE` env vars, or contain the literal `STUB ERROR`. These are integration-test fixtures and indicate an accidental wholesale overwrite of real code.
 - `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) — `mapfile`, `readarray`, or `declare -A` in a `#!/bin/bash` script without a `BASH_VERSINFO` re-exec guard. Crashes on macOS system bash 3.2. Add a self-re-exec guard (see `batch-process-issues.sh:69-77`) or replace with a portable while-read loop.
-- `BARE_VAR_REFERENCE` (Rule 23) — bare `$VAR` reference (no braces) for optional config variables (`EMAIL_*`, `SLACK_*`, `RITE_EMAIL_*`, `AWS_*`, `SNS_*`, `RITE_SNS_*`) in `lib/utils/*.sh`. Crashes under `set -u` when the variable is unset. Use `${VAR:-}` or `${VAR:-default}` instead. Suppress with `# sharkrite-lint disable BARE_VAR_REFERENCE - Reason: ...` on the preceding line for module-local aliases that are safely initialized at module load time.
+- `BARE_VAR_REFERENCE` (Rule 24) — bare `$VAR` reference (no braces) for optional config variables (`EMAIL_*`, `SLACK_*`, `RITE_EMAIL_*`, `AWS_*`, `SNS_*`, `RITE_SNS_*`) in `lib/utils/*.sh`. Crashes under `set -u` when the variable is unset. Use `${VAR:-}` or `${VAR:-default}` instead. Suppress with `# sharkrite-lint disable BARE_VAR_REFERENCE - Reason: ...` on the preceding line for module-local aliases that are safely initialized at module load time.
 
 **Suppressing false positives:**
 
