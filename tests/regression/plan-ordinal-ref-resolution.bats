@@ -568,3 +568,122 @@ write_title_map() {
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# Fixture M — double-rewrite collision regression
+#
+# Map: 1=2, 2=3  (real issue numbers fall inside the ordinal range [1..2])
+# Body: "After #1"
+# Expect: "After #2"  (NOT "After #3")
+#
+# The bug: the old per-iteration loop rewrote #1→#2 first, then in the next
+# iteration saw the newly inserted #2 and rewrote it again → #3.
+# The fix: load all ordinal→real pairs into a single awk pass so already-emitted
+# replacement text is never re-scanned.
+# ---------------------------------------------------------------------------
+
+@test "Fixture M: double-rewrite collision — ordinal 1→2 is not further rewritten by ordinal 2→3" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-m.txt"
+  title_map="$RITE_TEST_TMPDIR/title-m.txt"
+
+  # Map whose real numbers fall inside the ordinal range
+  write_ordinal_map "$ordinal_map" "1=2" "2=3"
+  : > "$title_map"
+
+  local input="After #1"
+  local result
+  result=$(_resolve_ordinal_refs_in_body "$input" "$ordinal_map" "$title_map")
+
+  [ "$result" = "After #2" ] || {
+    echo "FAIL: expected 'After #2' (no double-rewrite), got: '$result'" >&2
+    false
+  }
+}
+
+@test "Fixture M2: double-rewrite collision — body with both ordinals, each resolves to the other" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-m2.txt"
+  title_map="$RITE_TEST_TMPDIR/title-m2.txt"
+
+  # Swapping map: ordinal 1 maps to real #3, ordinal 2 maps to real #1
+  # Body has both ordinals; neither replacement should re-trigger the other.
+  write_ordinal_map "$ordinal_map" "1=3" "2=1"
+  : > "$title_map"
+
+  local input="After #1 and after #2"
+  local result
+  result=$(_resolve_ordinal_refs_in_body "$input" "$ordinal_map" "$title_map")
+
+  # #1 → #3 and #2 → #1; the newly inserted #1 must NOT be rewritten to #3
+  [ "$result" = "After #3 and after #1" ] || {
+    echo "FAIL: expected 'After #3 and after #1', got: '$result'" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture N — multi-line body without trailing newline: no trailing-newline drift
+#
+# Issue bodies are multi-line markdown.  If the body does not end with a newline,
+# awk's `print` unconditionally appends one (ORS="\n"), changing the byte content
+# of the body even when no refs were rewritten.  This triggers a false
+# gh issue edit call and silently alters stored body bytes.
+#
+# This fixture asserts that _resolve_ordinal_refs_in_body preserves the exact
+# byte content of a multi-line body that has no trailing newline.
+# ---------------------------------------------------------------------------
+
+@test "Fixture N: multi-line body without trailing newline is returned byte-for-byte identical when no refs match" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-n.txt"
+  title_map="$RITE_TEST_TMPDIR/title-n.txt"
+
+  write_ordinal_map "$ordinal_map" "1=500" "2=501"
+  : > "$title_map"
+
+  # Body has multiple lines but NO trailing newline, and no ordinal refs
+  # (printf without trailing \n ensures no trailing newline in the variable)
+  local input
+  input=$(printf 'Line one\nLine two\nLine three')
+
+  local result
+  result=$(_resolve_ordinal_refs_in_body "$input" "$ordinal_map" "$title_map")
+
+  [ "$result" = "$input" ] || {
+    echo "FAIL: body was mutated even though no refs were rewritten" >&2
+    echo "  input bytes:  $(printf '%s' "$input"  | wc -c | tr -d ' ')" >&2
+    echo "  result bytes: $(printf '%s' "$result" | wc -c | tr -d ' ')" >&2
+    echo "  input:  $(printf '%s' "$input"  | cat -A)" >&2
+    echo "  result: $(printf '%s' "$result" | cat -A)" >&2
+    false
+  }
+}
+
+@test "Fixture N2: multi-line body with ordinal ref and no trailing newline — ref rewritten, no newline added" {
+  local ordinal_map title_map
+  ordinal_map="$RITE_TEST_TMPDIR/ordinal-n2.txt"
+  title_map="$RITE_TEST_TMPDIR/title-n2.txt"
+
+  write_ordinal_map "$ordinal_map" "1=500" "2=501"
+  : > "$title_map"
+
+  # Multi-line body, NO trailing newline, contains an ordinal ref on last line
+  local input
+  input=$(printf 'Line one\nLine two\n**Dependencies**: After #2')
+
+  local expected
+  expected=$(printf 'Line one\nLine two\n**Dependencies**: After #501')
+
+  local result
+  result=$(_resolve_ordinal_refs_in_body "$input" "$ordinal_map" "$title_map")
+
+  [ "$result" = "$expected" ] || {
+    echo "FAIL: unexpected result" >&2
+    echo "  expected bytes: $(printf '%s' "$expected" | wc -c | tr -d ' ')" >&2
+    echo "  result bytes:   $(printf '%s' "$result"   | wc -c | tr -d ' ')" >&2
+    echo "  expected: $(printf '%s' "$expected" | cat -A)" >&2
+    echo "  result:   $(printf '%s' "$result"   | cat -A)" >&2
+    false
+  }
+}
