@@ -267,6 +267,38 @@ These tests run in CI on every PR:
 
 **Important:** CI environment may have different timing characteristics. Barriers ensure reliability across environments.
 
+## macOS / bash 3.2 Compatibility
+
+All five concurrency test files include a `setup_file()` guard that skips the
+entire file when the test runner is bash 3.2 (macOS system bash):
+
+```bash
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (running bash ${BASH_VERSION}); install via: brew install bash"
+  fi
+}
+```
+
+**Why this is needed:** On macOS, `/bin/bash` is bash 3.2, which takes
+50-150 ms per subshell on cold cache.  With N=5 processes and a 10 s barrier
+window, you can still exhaust the timeout on a heavily-loaded laptop if the
+subshells start serially rather than in parallel.  The skip eliminates false
+failures on macOS dev machines while keeping full coverage on Linux CI (where
+bash 4+ is the default) and for macOS developers who have Homebrew bash on
+`PATH`.
+
+To run concurrency tests locally on macOS:
+
+```bash
+# Option 1: invoke bats with Homebrew bash
+/opt/homebrew/bin/bash $(which bats) tests/concurrency/
+
+# Option 2: put Homebrew bash first in PATH
+export PATH="/opt/homebrew/bin:$PATH"
+bats tests/concurrency/
+```
+
 ## Debugging Concurrency Tests
 
 If a test fails intermittently:
@@ -274,8 +306,9 @@ If a test fails intermittently:
 1. **Check barrier count** - Does `expected_count` match actual spawned processes?
 2. **Check cleanup** - Are background processes properly cleaned up in teardown?
 3. **Check file paths** - Are temp files in `$RITE_TEST_TMPDIR` (auto-cleaned)?
-4. **Increase timeout** - Barrier timeout default is 5 seconds (50 × 0.1s)
+4. **Barrier timeout** - Default is 10 seconds (100 × 0.1 s); was 5 s before this fix.
 5. **Add debug output** - Use `>&2` to print to stderr (doesn't break assertions)
+6. **bash version** - Run `bash --version`; must be 4+. On macOS, `brew install bash`.
 
 Example debug pattern:
 

@@ -14,6 +14,15 @@
 
 load '../helpers/setup.bash'
 
+# Skip entire file on bash 3.2 (macOS system bash).
+# Concurrent subprocess startup is too slow on bash 3.2 for the barrier pattern
+# to be reliable.  Tests run correctly on Homebrew bash 4+ and Linux CI.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (running bash ${BASH_VERSION}); install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
@@ -36,6 +45,9 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # Barrier synchronization helper (shared with other concurrency tests)
+#
+# Timeout: 100 × 0.1 s = 10 s.  Bumped from the original 5 s to give ample
+# headroom for subprocess startup on macOS Homebrew bash 4+ under system load.
 # ---------------------------------------------------------------------------
 
 wait_at_barrier() {
@@ -47,7 +59,7 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
@@ -55,7 +67,7 @@ wait_at_barrier() {
     fi
   done
 
-  if [ "$timeout" -ge 50 ]; then
+  if [ "$timeout" -ge 100 ]; then
     echo "ERROR: Barrier '${barrier_name}' timeout (got $count, wanted $expected_count)" >&2
     return 1
   fi

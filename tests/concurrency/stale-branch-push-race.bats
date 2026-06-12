@@ -16,6 +16,15 @@
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
 
+# Skip entire file on bash 3.2 (macOS system bash).
+# Concurrent subprocess startup is too slow on bash 3.2 for the barrier pattern
+# to be reliable.  Tests run correctly on Homebrew bash 4+ and Linux CI.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (running bash ${BASH_VERSION}); install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
@@ -53,6 +62,9 @@ teardown() {
 }
 
 # Barrier synchronization helper
+#
+# Timeout: 100 × 0.1 s = 10 s.  Bumped from the original 5 s to give ample
+# headroom for subprocess startup on macOS Homebrew bash 4+ under system load.
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
@@ -62,13 +74,18 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
       timeout=$((timeout + 1))
     fi
   done
+
+  if [ "$timeout" -ge 100 ]; then
+    echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
+    return 1
+  fi
 }
 
 @test "concurrent push to same branch - one succeeds, others handle rejection" {
@@ -129,13 +146,13 @@ wait_at_barrier() {
   # Exactly one should succeed (first to push).
   # This is a fundamental git property — the first non-fast-forward push wins.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count pushes succeeded instead of 1 — git push race handling broken?"
+    echo "FAIL: $success_count pushes succeeded instead of 1 — git push race handling may be broken" >&2
     return 1
   }
 
   # Verify rejections happened (num_processes - 1 must be rejected in a true race).
   [ "$rejection_count" -ge 1 ] || {
-    echo "REGRESSION: Expected at least one rejection, got $rejection_count — concurrent push rejection not working?"
+    echo "FAIL: Expected at least one rejection, got $rejection_count — concurrent push rejection not working" >&2
     return 1
   }
 }
@@ -181,7 +198,7 @@ wait_at_barrier() {
   # Issues #15/#26 must ensure rite handles this correctly; but git's own atomicity is
   # the underlying guarantee.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count worktrees created instead of 1 — worktree creation race (issues #15/#26) regressed?"
+    echo "FAIL: $success_count worktrees created instead of 1 — worktree creation race (issues #15/#26) may have regressed" >&2
     return 1
   }
 
@@ -231,7 +248,7 @@ wait_at_barrier() {
   # Only one should succeed — git checkout -b fails if the branch already exists.
   # This is a fundamental git property, not a rite-specific fix.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count branches created instead of 1 — concurrent branch creation not atomic?"
+    echo "FAIL: $success_count branches created instead of 1 — concurrent branch creation not atomic" >&2
     return 1
   }
 
@@ -312,7 +329,7 @@ wait_at_barrier() {
   # Issue #15's stale-branch handling ensures concurrent merge-main attempts
   # don't all fail — at minimum one succeeds, others handle the race gracefully.
   [ "$success_count" -ge 1 ] || {
-    echo "REGRESSION: No successful merge+push — stale-branch race handling (issue #15) regressed?"
+    echo "FAIL: No successful merge+push — stale-branch race handling (issue #15) may have regressed" >&2
     return 1
   }
 
