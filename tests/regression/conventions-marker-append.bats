@@ -1337,7 +1337,7 @@ BODY
 # does NOT close the fence — markers inside remain NOT extracted.
 # ---------------------------------------------------------------------------
 
-@test "Bug3: closing line with info string (```bash) does not close the fence" {
+@test "Bug3: closing line with info string (backtick-backtick-backtick-bash) does not close the fence" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   # PR body: a ``` fence opened, then "```bash" which LOOKS like a closer
@@ -1387,7 +1387,7 @@ BODY
 # (e.g. "``` :") does NOT close the fence.
 # ---------------------------------------------------------------------------
 
-@test "Bug3: closing line with colon-preceded-by-space (``` :) does not close the fence" {
+@test "Bug3: closing line with colon-preceded-by-space does not close the fence" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   # PR body: a ``` fence opened, then "``` :" which has trailing non-whitespace.
@@ -1440,7 +1440,7 @@ BODY
 # consumed as fenced content and lost.
 # ---------------------------------------------------------------------------
 
-@test "Bug3: unterminated fence (only info-string closers) swallows following real block" {
+@test "Bug3: convention inside unterminated fence (only pseudo-closers) is not extracted" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
 
   # PR body: fence opened with ``` but NO bare ``` closer ever appears —
