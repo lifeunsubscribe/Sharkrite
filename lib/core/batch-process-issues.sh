@@ -203,16 +203,24 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
     _in_selection["$_sel_num"]=1
   done
 
-  # Step 2: Batch-fetch bodies of all selected issues in ONE gh call.
-  # We fetch all open issues and filter to the selected numbers. Using
-  # jq @base64 on the body avoids multi-line / tab / backslash issues —
-  # each output line is exactly "<number> <base64-encoded-body>".
+  # Step 2: Fetch bodies of all selected issues by number.
+  # We query each selected issue individually to guarantee correctness on
+  # large repos (an issue list capped at --limit N silently drops issues
+  # outside that window, producing a false "no missing deps" result).
+  # The selection is user-supplied and bounded (typically ≤8 per batch
+  # slot), so N individual gh issue view calls are acceptable here.
+  # Using jq @base64 on the body avoids multi-line / tab / backslash
+  # issues — each output line is exactly "<number> <base64-encoded-body>".
   # base64 is available on both macOS and Linux.
-  _preflight_bodies_raw=$(gh_safe issue list \
-    --state open \
-    --json number,body \
-    --limit 200 \
-    --jq '.[] | [(.number | tostring), (.body | @base64)] | join(" ")' 2>/dev/null || true)
+  _preflight_bodies_raw=""
+  for _sel_num in "${ISSUE_LIST[@]}"; do
+    _pf_body_b64_one=$(gh_safe issue view "$_sel_num" \
+      --json number,body \
+      --jq '[(.number | tostring), (.body | @base64)] | join(" ")' 2>/dev/null || true)
+    [ -z "$_pf_body_b64_one" ] && continue
+    _preflight_bodies_raw="${_preflight_bodies_raw:+${_preflight_bodies_raw}
+}${_pf_body_b64_one}"
+  done
 
   # Step 3: Parse bodies and extract all dep refs for selected issues.
   # For each selected issue, record its out-of-selection dep numbers.
@@ -337,6 +345,8 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
     print_info "current selection (${FILTER_TYPE}=${FILTER_VALUE:-*})."
     print_info "Without those dependencies, the affected issues will be skipped"
     print_info "at run time by the per-issue dependency guard."
+    print_info "(Note: this is a single-level check — direct deps only. Transitive"
+    print_info "dependencies are caught per-issue at run time by the dep-skip guard.)"
     echo ""
 
     for _oos_num in $_filtered_oos_issue_nums; do
@@ -356,7 +366,7 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
       echo ""
       # Default yes: pressing Enter includes them
       printf "Include these missing dependencies in this batch? [Y/n] "
-      read -r _include_deps_reply
+      read -r _include_deps_reply || _include_deps_reply=""
       _include_deps_reply="${_include_deps_reply:-y}"
       if [[ "$_include_deps_reply" =~ ^[Yy]$ ]]; then
         _added_deps=""
@@ -367,7 +377,8 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
           _added_deps="${_added_deps:+$_added_deps }$_d"
         done
         # TOTAL_ISSUES is set after this block at line ~412; echo the new count here
-        print_success "Added #${_added_deps} to batch (${#ISSUE_LIST[@]} issues total)"
+        _added_deps_fmt=$(echo "$_added_deps" | sed 's/ /, #/g; s/^/#/' || true)
+        print_success "Added ${_added_deps_fmt} to batch (${#ISSUE_LIST[@]} issues total)"
         echo ""
       else
         print_info "Proceeding without missing dependencies — affected issues will be skipped at run time"
