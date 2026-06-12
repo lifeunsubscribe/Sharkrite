@@ -922,12 +922,20 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
 
             EDIT_BODY_FILE=$(mktemp)
             printf '%s' "$UPDATED_BODY" > "$EDIT_BODY_FILE"
-            gh_safe issue edit "$DUPLICATE_ISSUE" --body-file "$EDIT_BODY_FILE" >/dev/null 2>&1 && \
-              UPDATED_ISSUES="${UPDATED_ISSUES}#${DUPLICATE_ISSUE} "
+            _issue_edit_rc=0
+            gh_safe issue edit "$DUPLICATE_ISSUE" --body-file "$EDIT_BODY_FILE" >/dev/null 2>&1 \
+              || _issue_edit_rc=$?
             rm -f "$EDIT_BODY_FILE"
-            # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
-            if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
-              echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
+            if [ "$_issue_edit_rc" -eq 0 ]; then
+              UPDATED_ISSUES="${UPDATED_ISSUES}#${DUPLICATE_ISSUE} "
+              # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
+              # Only passback on success — a failed edit leaves the duplicate issue body unchanged,
+              # so the finding must not be silently dropped from the batch outcome.
+              if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
+                echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
+              fi
+            else
+              print_warning "Could not update duplicate issue #${DUPLICATE_ISSUE} body (gh issue edit failed with exit ${_issue_edit_rc}); finding will be re-evaluated"
             fi
           fi
         else

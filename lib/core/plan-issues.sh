@@ -3441,6 +3441,7 @@ _rewrite_created_issue_bodies() {
   fi
 
   local _edited_count=0
+  local _fail_count=0
   local _body_file
   _body_file=$(mktemp)
 
@@ -3473,7 +3474,8 @@ _rewrite_created_issue_bodies() {
       _edited_count=$(( _edited_count + 1 ))
       print_info "Updated #${_num}: resolved ordinal/title dependency refs"
     else
-      print_warning "Could not update #${_num} body (gh issue edit failed)"
+      _fail_count=$(( _fail_count + 1 ))
+      print_warning "Could not update #${_num} body (gh issue edit failed with exit ${_edit_exit}); dependency refs remain unresolved"
     fi
   done
 
@@ -3482,6 +3484,15 @@ _rewrite_created_issue_bodies() {
   if [ "$_edited_count" -gt 0 ]; then
     print_success "Resolved dependency refs in ${_edited_count} issue(s)"
   fi
+
+  # Surface edit failures to the caller so the batch outcome reflects the partial
+  # success.  Exit code 1 signals that at least one issue body could not be updated;
+  # the caller should warn the operator rather than reporting unconditional success.
+  if [ "$_fail_count" -gt 0 ]; then
+    print_warning "Dependency ref resolution incomplete: ${_fail_count} issue body update(s) failed — re-run or edit manually to fix"
+    return 1
+  fi
+  return 0
 }
 
 # =============================================================================
@@ -3657,11 +3668,18 @@ create_issues() {
   # (#[Title]) in created issue bodies to the real GitHub issue numbers.
   # This pass runs after all issues have been created so the full ordinal →
   # real-number map is complete before any body is updated.
+  # Capture the exit code: non-zero means at least one gh issue edit failed and
+  # the operator summary must reflect partial success rather than full success.
+  _rewrite_rc=0
   _rewrite_created_issue_bodies \
     "${created_numbers[@]+"${created_numbers[@]}"}" \
-    -- "$ordinal_map_file" "$title_map_file"
+    -- "$ordinal_map_file" "$title_map_file" || _rewrite_rc=$?
 
-  print_success "Created ${#created_numbers[@]} issues"
+  if [ "$_rewrite_rc" -eq 0 ]; then
+    print_success "Created ${#created_numbers[@]} issues"
+  else
+    print_warning "Created ${#created_numbers[@]} issues (some dependency refs could not be resolved — see warnings above)"
+  fi
   echo ""
 
   print_info "Issue numbers:"
