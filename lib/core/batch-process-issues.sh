@@ -164,6 +164,78 @@ if [ ${#ISSUE_LIST[@]} -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# _extract_dep_issues_from_body BODY
+#
+# Scope the dependency-ref extraction to the structured "Dependencies:" field
+# of the issue body, preventing prose/documentation examples (e.g. "After #1"
+# in a description) from being parsed as live dependency edges.
+#
+# Root bug (2026-06-12, issue #556): the old whole-body grep harvested
+# "After #1" from #556's prose explanation of the ordinal-ref bug, found
+# issue #1 open, and skipped #556 with dep_failed — even though its actual
+# Dependencies field said "None". Third instance of the unanchored-marker
+# class (see CLAUDE.md "Unanchored marker grep").
+#
+# Algorithm (mirrors plan-issues.sh strict-lint dep extraction, PR #557):
+#   1. Walk lines; enter dep-collection mode when a line matches
+#      "**Dependencies**:" or "Dependencies:" (case-insensitive header).
+#   2. While in dep-collection mode:
+#      a. Strip "(can run in parallel with #N, ...)" annotations — these are
+#         scheduling hints, not dependency edges (see plan-issues.sh:1466-1473).
+#      b. Collect all bare #N numbers from the cleaned line.
+#      c. Stop at the next markdown section header (lines starting with "**"
+#         or "##") or the "---" horizontal rule used as a section divider.
+#   3. If no Dependencies: header is found → output nothing (no deps).
+#      Rationale: a body lacking the structured field is malformed per the
+#      issue template; any dep-pattern in the prose is unreliable. An
+#      operator running `rite N1 N2` is presumed to have resolved ordering
+#      manually (per the parity contract). Falling back to whole-body parsing
+#      is precisely the bug we are fixing.
+#
+# Outputs: space-separated issue numbers (may be empty), no trailing newline.
+# Caller must use `|| true` — grep exits 1 on no match.
+#
+_extract_dep_issues_from_body() {
+  local _body="$1"
+  local _in_deps=false
+  local _collected=""
+
+  while IFS= read -r _bline; do
+    # Detect the Dependencies: header (with or without ** markdown bold)
+    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
+      _in_deps=true
+      # Strip parallel-with annotations before harvesting inline refs
+      local _clean
+      _clean=$(echo "$_bline" | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' || true)
+      local _inline
+      _inline=$(echo "$_clean" | grep -oE '[0-9]+' | grep -v '^0$' || true)
+      # Only collect numbers that follow a dep keyword on the header line
+      # (e.g. "**Dependencies**: After #5" → "5"); skip plain numeric words.
+      local _kw_inline
+      _kw_inline=$(echo "$_clean" | grep -oiE '(After:?\s*#|Depends on\s*#|Blocked by:?\s*#)[0-9]+' | grep -oE '[0-9]+' || true)
+      [ -n "$_kw_inline" ] && _collected="${_collected:+$_collected }$_kw_inline"
+      continue
+    fi
+
+    # Stop at next section header or horizontal rule
+    if [ "$_in_deps" = true ]; then
+      case "$_bline" in
+        "**"*|"##"*|"---"*) _in_deps=false; continue ;;
+      esac
+      # Strip parallel-with annotations
+      local _clean
+      _clean=$(echo "$_bline" | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' || true)
+      # Collect dep-keyword-anchored refs: After #N, Depends on #N, Blocked by: #N
+      local _refs
+      _refs=$(echo "$_clean" | grep -oiE '(After:?\s*#|Depends on\s*#|Blocked by:?\s*#)[0-9]+' | grep -oE '[0-9]+' || true)
+      [ -n "$_refs" ] && _collected="${_collected:+$_collected }$_refs"
+    fi
+  done <<< "$_body"
+
+  echo -n "$_collected"
+}
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
@@ -243,8 +315,10 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
                  echo "$_pf_body_b64" | base64 -D 2>/dev/null || true)
       [ -z "$_pf_body" ] && continue
 
-      # Same dep-ref pattern as the per-issue guard (DEP_ISSUES= block below)
-      _dep_refs=$(echo "$_pf_body" | grep -oiE '(After:? #|Depends on #|Blocked by:? #)[0-9]+' | grep -oE '[0-9]+' || true)
+      # Scope extraction to the Dependencies: field (same as per-issue guard below).
+      # Whole-body grep causes prose examples like "After #1" in a description to
+      # be harvested as live dep edges (live bug: issue #556, 2026-06-12).
+      _dep_refs=$(_extract_dep_issues_from_body "$_pf_body" || true)
       [ -z "$_dep_refs" ] && continue
 
       _oos_deps_for_this=""
@@ -695,9 +769,12 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     fi
   fi
 
-  # Check if issue depends on another issue that failed/was skipped in this batch
-  # Parses "After: #N", "After #N", "Depends on #N" patterns from issue body
-  DEP_ISSUES=$(echo "$ISSUE_BODY" | grep -oiE '(After:? #|Depends on #|Blocked by:? #)[0-9]+' | grep -oE '[0-9]+' || true)
+  # Check if issue depends on another issue that failed/was skipped in this batch.
+  # Extract only from the structured Dependencies: field — NOT the full body.
+  # Whole-body grep causes prose examples (e.g. "After #1" in a description)
+  # to be harvested as live dep edges. See _extract_dep_issues_from_body() above
+  # and CLAUDE.md "Unanchored marker grep" for the bug class (issue #556).
+  DEP_ISSUES=$(_extract_dep_issues_from_body "$ISSUE_BODY" || true)
   if [ -n "$DEP_ISSUES" ]; then
     DEP_FAILED=false
     FAILED_DEP=""
