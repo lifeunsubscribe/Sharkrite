@@ -10,6 +10,15 @@
 
 load '../helpers/setup.bash'
 
+# Skip entire file on bash 3.2 (macOS system bash).
+# Concurrent subprocess startup is too slow on bash 3.2 for the barrier pattern
+# to be reliable.  Tests run correctly on Homebrew bash 4+ and Linux CI.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (running bash ${BASH_VERSION}); install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 

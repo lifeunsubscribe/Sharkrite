@@ -269,7 +269,7 @@ These tests run in CI on every PR:
 
 ## macOS / bash 3.2 Compatibility
 
-All five concurrency test files include a `setup_file()` guard that skips the
+All six concurrency test files include a `setup_file()` guard that skips the
 entire file when the test runner is bash 3.2 (macOS system bash):
 
 ```bash
