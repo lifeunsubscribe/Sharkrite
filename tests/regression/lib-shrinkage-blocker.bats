@@ -1609,6 +1609,153 @@ _create_lib_file() {
 }
 
 # ===========================================================================
+# TEST 28b: Multi-line base_branch cannot bypass the allowlist
+#
+# Regression for: validation regex permits multi-line base_branch to bypass
+# allowlist.  A crafted baseRefName with an embedded newline (e.g. "main\nevil")
+# causes grep's ^/$ anchors to evaluate each line in isolation — the first line
+# "main" matches the allowlist, the overall grep returns 0, and the evil payload
+# in the second line is never tested.  The fix strips newlines before the
+# allowlist check runs so the entire value is evaluated as one token.
+#
+# Without the fix: base_branch stays as "main\nevil" (or "main\nevil;cmd"),
+# the validation passes, and the multi-line payload is interpolated into
+# "origin/${base_branch}:path" — producing a malformed (and potentially
+# exploitable) git ref argument.
+# With the fix: newlines are stripped first, collapsing "main\nevil" to
+# "mainevil" which fails the allowlist and falls back to "main".
+# ===========================================================================
+
+@test "detect_lib_shrinkage: rejects multi-line base_branch (newline bypass attempt) and falls back to main" {
+  # A crafted baseRefName: "main\nevil;cmd" — the first line passes the
+  # allowlist regex when grep processes lines individually, but the second line
+  # contains forbidden characters.  The fix must collapse this to a single token
+  # before running the allowlist so the entire value is evaluated.
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600  # above absolute threshold — simple blocker case
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Return a branch name with an embedded newline followed by a forbidden token.
+        # Without the fix, grep sees 'main' on line 1 (valid), never checks line 2.
+        printf 'main\nevil;cmd'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        # Record which branch was passed to fetch so we can assert 'main' not 'mainevil'
+        echo \"fetch_branch=\$5\" >&2
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ]; then
+        # Record the ref arg to verify it does NOT contain the evil payload
+        echo \"git_show_ref=\$4\" >&2
+        return 1
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+  "
+
+  # Blocker fires (absolute threshold: 600 > 500)
+  [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # The evil payload must NOT appear in any git ref call — the multi-line value
+  # must have been stripped and fallen back to "main" before reaching git.
+  [[ "$stderr" != *"evil"* ]] || {
+    echo "FAIL: multi-line payload appeared in git call — newline bypass not blocked"
+    echo "stderr: $stderr"
+    return 1
+  }
+}
+
+@test "detect_lib_shrinkage: multi-line base_branch with valid-looking first line is rejected" {
+  # Variant: "develop\n../evil" — first line "develop" passes the allowlist,
+  # second line contains path-traversal.  After stripping newlines the combined
+  # value "develop../evil" contains ".." and must be caught by the '..' check.
+  local target_file="lib/core/workflow-runner.sh"
+  local total_lines=200
+  local deleted_lines=110  # 55% — above ratio threshold; we need ratio-check path
+
+  local _target_file="$target_file"
+  local _deleted_lines="$deleted_lines"
+  local _total_lines="$total_lines"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+
+  run bash -c "
+    cd '$RITE_TEST_TMPDIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_deleted_lines}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # 'develop' is valid; '../evil' contains path traversal.
+        # After newline stripping: 'develop../evil' contains '..' and is rejected.
+        printf 'develop\n../evil'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        echo \"fetch_branch=\$5\" >&2
+        return 0
+      fi
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == origin/*:* ]]; then
+        # Return a valid baseline so the ratio check would fire if base_branch slipped through
+        seq 1 '${_total_lines}'
+        return 0
+      fi
+      command git \"\$@\"
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+  "
+
+  # Blocker fires (ratio: 110/200 = 55%)
+  [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # The path-traversal payload must NOT appear in any git ref call
+  [[ "$stderr" != *"../evil"* ]] || {
+    echo "FAIL: path-traversal in multi-line base_branch reached git call"
+    echo "stderr: $stderr"
+    return 1
+  }
+}
+
+# ===========================================================================
 # TEST 29: SHRINKAGE_BLOCKER_BASE_BRANCH exported with correct value
 #
 # Regression for issue #464: handle_blocker revert guidance hardcoded
