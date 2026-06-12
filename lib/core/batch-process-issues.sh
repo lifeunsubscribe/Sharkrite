@@ -163,6 +163,236 @@ if [ ${#ISSUE_LIST[@]} -eq 0 ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Preflight dependency closure check (label/milestone/state filter mode only)
+#
+# Problem: `rite --label X` selects issues by label only. When a dependency
+# of a selected issue lives outside the label (mislabeled or in a different
+# category), the batch discovers it serially — each dependent hits the
+# per-issue dep-skip guard at lines ~457-499 and is silently skipped. The
+# batch fails safe, but can no-op most of its slate with scattered warnings.
+#
+# Fix: run one upfront pass that:
+#   1. Fetches all selected issue bodies in a single gh call (not per-issue)
+#   2. Extracts dep refs (same patterns as the per-issue guard: After #N /
+#      Depends on #N / Blocked by: #N)
+#   3. Identifies which deps are open AND outside the current selection
+#   4. Emits a single upfront summary listing every affected issue + its
+#      out-of-selection dep — so the user sees the full picture at once
+#   5. In supervised mode (RITE_SUPERVISED=true): prompt to add missing open
+#      deps to ISSUE_LIST (default yes)
+#   6. In auto mode: warn upfront and proceed (per-issue skip guard remains
+#      the backstop)
+#
+# This check runs only when a filter was used (FILTER_TYPE is non-empty).
+# Numeric-list invocations (`rite N1 N2 N3`) are presumed intentional by
+# the user and skip this check.
+#
+# The per-issue dep-skip guard (search for "DEP_ISSUES=" below) is unchanged;
+# it still owns within-batch failures (dep failed mid-run) and acts as the
+# final backstop.
+# ---------------------------------------------------------------------------
+if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
+  print_header "🔗 Preflight Dependency Closure Check"
+  print_info "Checking for open dependencies outside the current selection..."
+  echo ""
+
+  # Step 1: Build a reverse-lookup set: is issue N in ISSUE_LIST?
+  declare -A _in_selection
+  for _sel_num in "${ISSUE_LIST[@]}"; do
+    _in_selection["$_sel_num"]=1
+  done
+
+  # Step 2: Batch-fetch bodies of all selected issues in ONE gh call.
+  # We fetch all open issues and filter to the selected numbers. Using
+  # jq @base64 on the body avoids multi-line / tab / backslash issues —
+  # each output line is exactly "<number> <base64-encoded-body>".
+  # base64 is available on both macOS and Linux.
+  _preflight_bodies_raw=$(gh_safe issue list \
+    --state open \
+    --json number,body \
+    --limit 200 \
+    --jq '.[] | [(.number | tostring), (.body | @base64)] | join(" ")' 2>/dev/null || true)
+
+  # Step 3: Parse bodies and extract all dep refs for selected issues.
+  # For each selected issue, record its out-of-selection dep numbers.
+  # Also accumulate all unique dep numbers that are outside the selection.
+  declare -A _oos_dep_map   # _oos_dep_map["N"] = space-separated dep numbers
+  _oos_issue_nums=""        # space-separated selected issues with oos open deps
+  _all_candidate_deps=""    # all unique dep numbers outside selection (may be open or closed)
+
+  if [ -n "$_preflight_bodies_raw" ]; then
+    while IFS= read -r _pf_line; do
+      _pf_num="${_pf_line%% *}"
+      _pf_body_b64="${_pf_line#* }"
+      # Only process issues that are in our selection
+      [ -n "${_in_selection[$_pf_num]:-}" ] || continue
+      [ -z "$_pf_body_b64" ] && continue
+
+      # Decode body from base64 — macOS uses `-D`, Linux uses `-d`; `--decode`
+      # works on both with GNU coreutils; use the long form for portability.
+      _pf_body=$(echo "$_pf_body_b64" | base64 --decode 2>/dev/null || \
+                 echo "$_pf_body_b64" | base64 -D 2>/dev/null || true)
+      [ -z "$_pf_body" ] && continue
+
+      # Same dep-ref pattern as the per-issue guard (DEP_ISSUES= block below)
+      _dep_refs=$(echo "$_pf_body" | grep -oiE '(After:? #|Depends on #|Blocked by:? #)[0-9]+' | grep -oE '[0-9]+' || true)
+      [ -z "$_dep_refs" ] && continue
+
+      _oos_deps_for_this=""
+      for _dep_num in $_dep_refs; do
+        # Skip if dep is already in the selection
+        [ -n "${_in_selection[$_dep_num]:-}" ] && continue
+
+        # Record this dep as a candidate (we'll batch-check open/closed next)
+        _oos_deps_for_this="${_oos_deps_for_this:+$_oos_deps_for_this }$_dep_num"
+
+        # Accumulate unique candidates for the batch state check
+        case " $_all_candidate_deps " in
+          *" $_dep_num "*) ;;
+          *) _all_candidate_deps="${_all_candidate_deps:+$_all_candidate_deps }$_dep_num" ;;
+        esac
+      done
+
+      if [ -n "$_oos_deps_for_this" ]; then
+        _oos_dep_map["$_pf_num"]="$_oos_deps_for_this"
+        case " $_oos_issue_nums " in
+          *" $_pf_num "*) ;;
+          *) _oos_issue_nums="${_oos_issue_nums:+$_oos_issue_nums }$_pf_num" ;;
+        esac
+      fi
+    done <<< "$_preflight_bodies_raw"
+  fi
+
+  # Step 4: Batch-check which candidate deps are open with ONE gh issue list call.
+  # This is the "prefetch pattern" — we collect all dep numbers first, then
+  # resolve their states in one network round-trip rather than one per dep.
+  # The per-issue dep-skip guard (DEP_ISSUES= block) does one `gh issue view`
+  # per dep at run time; this preflight avoids that for the upfront summary.
+  declare -A _dep_is_open   # _dep_is_open["N"]=1 means dep N is open
+  if [ -n "$_all_candidate_deps" ]; then
+    # Build a jq filter that selects only the dep numbers we care about.
+    # gh issue list returns all open issues; we filter to our candidate set.
+    # Portability: use a bash while-read loop instead of mapfile (bash 3.2 compat).
+    _candidate_array=()
+    for _cd in $_all_candidate_deps; do
+      _candidate_array+=("$_cd")
+    done
+    # jq select filter: .number == N1 or .number == N2 ...
+    _jq_filter='[.[] | select('
+    _first_cd=true
+    for _cd in "${_candidate_array[@]}"; do
+      if [ "$_first_cd" = "true" ]; then
+        _jq_filter="${_jq_filter}.number == ${_cd}"
+        _first_cd=false
+      else
+        _jq_filter="${_jq_filter} or .number == ${_cd}"
+      fi
+    done
+    _jq_filter="${_jq_filter}) | .number] | .[]"
+
+    _open_deps_raw=$(gh_safe issue list \
+      --state open \
+      --json number \
+      --limit 500 \
+      --jq "$_jq_filter" 2>/dev/null || true)
+
+    if [ -n "$_open_deps_raw" ]; then
+      while IFS= read -r _od_num; do
+        [ -n "$_od_num" ] && _dep_is_open["$_od_num"]=1
+      done <<< "$_open_deps_raw"
+    fi
+  fi
+
+  # Step 5: Filter _oos_dep_map down to only open deps.
+  # Remove entries that turned out to be closed — closed deps are fine.
+  _filtered_oos_issue_nums=""
+  declare -A _filtered_oos_dep_map
+  _all_missing_deps=""   # unique open out-of-selection deps across all issues
+
+  for _oos_num in $_oos_issue_nums; do
+    _deps="${_oos_dep_map[$_oos_num]:-}"
+    _open_oos_deps=""
+    for _d in $_deps; do
+      [ -n "${_dep_is_open[$_d]:-}" ] || continue
+      _open_oos_deps="${_open_oos_deps:+$_open_oos_deps }$_d"
+      case " $_all_missing_deps " in
+        *" $_d "*) ;;
+        *) _all_missing_deps="${_all_missing_deps:+$_all_missing_deps }$_d" ;;
+      esac
+    done
+    if [ -n "$_open_oos_deps" ]; then
+      _filtered_oos_dep_map["$_oos_num"]="$_open_oos_deps"
+      _filtered_oos_issue_nums="${_filtered_oos_issue_nums:+$_filtered_oos_issue_nums }$_oos_num"
+    fi
+  done
+
+  # Step 6: Emit upfront summary (single block, not one warning per issue).
+  if [ -n "$_filtered_oos_issue_nums" ]; then
+    print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_warning "Dependency Closure Warning"
+    print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    print_info "The following selected issues have open dependencies OUTSIDE the"
+    print_info "current selection (${FILTER_TYPE}=${FILTER_VALUE:-*})."
+    print_info "Without those dependencies, the affected issues will be skipped"
+    print_info "at run time by the per-issue dependency guard."
+    echo ""
+
+    for _oos_num in $_filtered_oos_issue_nums; do
+      _deps="${_filtered_oos_dep_map[$_oos_num]:-}"
+      # Format dep list as "#N1, #N2, ..." for readability
+      _deps_formatted=$(echo "$_deps" | sed 's/ /, #/g; s/^/#/' || true)
+      echo "  • Issue #${_oos_num}  →  open dep(s) outside selection: ${_deps_formatted}"
+    done
+    echo ""
+    print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    # Step 7: Supervised mode — prompt to pull missing deps into the batch.
+    # Auto mode: warn only, no selection change (deterministic from user's flag).
+    if [ "${RITE_SUPERVISED:-false}" = "true" ]; then
+      print_info "Missing open dependencies: ${_all_missing_deps}"
+      echo ""
+      # Default yes: pressing Enter includes them
+      printf "Include these missing dependencies in this batch? [Y/n] "
+      read -r _include_deps_reply
+      _include_deps_reply="${_include_deps_reply:-y}"
+      if [[ "$_include_deps_reply" =~ ^[Yy]$ ]]; then
+        _added_deps=""
+        for _d in $_all_missing_deps; do
+          # Prepend so deps run before their dependents
+          ISSUE_LIST=("$_d" "${ISSUE_LIST[@]}")
+          _in_selection["$_d"]=1
+          _added_deps="${_added_deps:+$_added_deps }$_d"
+        done
+        # TOTAL_ISSUES is set after this block at line ~412; echo the new count here
+        print_success "Added #${_added_deps} to batch (${#ISSUE_LIST[@]} issues total)"
+        echo ""
+      else
+        print_info "Proceeding without missing dependencies — affected issues will be skipped at run time"
+        echo ""
+      fi
+    else
+      # Auto mode: warn already printed above — no selection change.
+      # The per-issue dep-skip guard (DEP_ISSUES= block) remains the backstop.
+      # DO NOT auto-include: selection must stay deterministic from user's flag.
+      print_info "Auto mode: proceeding with current selection."
+      print_info "Affected issues will be skipped at run time by the dependency guard."
+      echo ""
+    fi
+  else
+    print_success "All dependencies are within the selection (or already closed)"
+    echo ""
+  fi
+
+  # Clean up preflight temporaries (unset associative arrays + scalars)
+  unset _in_selection _oos_dep_map _dep_is_open _filtered_oos_dep_map
+  unset _preflight_bodies_raw _all_candidate_deps _oos_issue_nums
+  unset _filtered_oos_issue_nums _all_missing_deps _jq_filter _open_deps_raw
+  unset _candidate_array
+fi
+
 # Register a cleanup trap so the per-batch state file is removed on any exit
 # (normal, error, kill).  Without this, abnormal exits (break/exit 1/5/10 or
 # SIGTERM) leave orphaned /tmp files that grow unbounded across batch runs.
