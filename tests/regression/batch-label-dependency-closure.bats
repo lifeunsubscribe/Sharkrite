@@ -5,6 +5,7 @@
 # Regression test: preflight dependency closure check for label batch runs.
 #
 # Issue #554 — "Preflight dependency closure for label batch runs"
+# Issue #560 — "--state filter mode preflights against open-only"
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
 # of a selected issue lives outside the label (mislabeled or in another
@@ -18,6 +19,12 @@
 # supervised mode it prompts to include missing deps; in auto mode it warns
 # and defers to the existing per-issue backstop.
 #
+# --state filter scoping (issue #560): preflight only runs when --state open
+# is selected. For --state closed and --state all the preflight is skipped
+# with an informational message — closed issues have no actionable open
+# blockers, and mixed-state selections would produce partial/misleading
+# analysis. The per-issue dep-skip guard remains the backstop for all modes.
+#
 # Tests in this file:
 #   STRUCTURAL (static code inspection):
 #     1. Preflight block exists and is guarded by FILTER_TYPE
@@ -25,19 +32,23 @@
 #     3. Supervised mode prompt exists in the preflight block
 #     4. Auto mode does NOT change ISSUE_LIST (deterministic selection)
 #     5. Per-issue dep-skip guard at lines ~620+ is unchanged
+#     6. --state skip guard exists in production code (issue #560)
 #
 #   BEHAVIORAL (subprocess scripting):
-#     6. dep outside selection → "Dependency Closure Warning" summary present
-#     7. dep inside selection → no summary block emitted
-#     8. dep outside selection but already closed → no summary block emitted
-#     9. multiple selected issues, only some with oos deps → only those listed
-#    10. supervised mode prompt fires when oos open dep found
-#    11. supervised mode: answering Y adds dep to ISSUE_LIST (dep runs first)
-#    12. supervised mode: answering n leaves ISSUE_LIST unchanged
-#    13. auto mode: warning printed, ISSUE_LIST unchanged
+#     7. dep outside selection → "Dependency Closure Warning" summary present
+#     8. dep inside selection → no summary block emitted
+#     9. dep outside selection but already closed → no summary block emitted
+#    10. multiple selected issues, only some with oos deps → only those listed
+#    11. supervised mode prompt fires when oos open dep found
+#    12. supervised mode: answering Y adds dep to ISSUE_LIST (dep runs first)
+#    13. supervised mode: answering n leaves ISSUE_LIST unchanged
+#    14. auto mode: warning printed, ISSUE_LIST unchanged
+#    15. --state closed → preflight skipped with informational message
+#    16. --state all → preflight skipped with informational message
+#    17. --state open → preflight runs normally (same as label mode)
 #
 #   PARITY (per-issue skip guard preserved):
-#    14. per-issue dep skip guard still present at expected location in batch file
+#    18. per-issue dep skip guard still present at expected location in batch file
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -197,6 +208,32 @@ setup() {
   }
 }
 
+@test "structural: --state skip guard exists in production code (issue #560)" {
+  # The preflight block must contain a guard that skips when FILTER_TYPE=state
+  # and FILTER_VALUE != "open". This prevents false-positive coverage claims
+  # when closed or all-state issue selections are run.
+
+  # Verify the state-type check exists
+  grep -qE 'FILTER_TYPE.*=.*state' "$BATCH_PROCESSOR" || {
+    echo "FAIL: state filter type check not found in batch-process-issues.sh" >&2
+    echo "      Expected: [ \"\${FILTER_TYPE:-}\" = \"state\" ] guard in preflight block" >&2
+    return 1
+  }
+
+  # Verify the open-only condition
+  grep -qE 'FILTER_VALUE.*!=.*open' "$BATCH_PROCESSOR" || {
+    echo "FAIL: FILTER_VALUE != open check not found in batch-process-issues.sh" >&2
+    echo "      Expected: [ \"\${FILTER_VALUE:-}\" != \"open\" ] guard in preflight block" >&2
+    return 1
+  }
+
+  # Verify the skip message is present
+  grep -q 'preflight checks open-issue dependencies only' "$BATCH_PROCESSOR" || {
+    echo "FAIL: 'preflight checks open-issue dependencies only' skip message not found" >&2
+    return 1
+  }
+}
+
 # =============================================================================
 # BEHAVIORAL: subprocess scripting
 # =============================================================================
@@ -266,6 +303,13 @@ $([ -n "${reply}" ] && echo "exec < <(echo '${reply}')" || echo "# no reply need
 # ---- Run the preflight closure logic ----
 # (Copy of the preflight block from batch-process-issues.sh, minus external deps)
 if [ -n "\${FILTER_TYPE:-}" ] && [ \${#ISSUE_LIST[@]} -gt 0 ]; then
+  # --state skip guard (issue #560): preflight is only meaningful for open issues.
+  if [ "\${FILTER_TYPE:-}" = "state" ] && [ "\${FILTER_VALUE:-}" != "open" ]; then
+    print_header "Preflight Dependency Closure Check"
+    print_info "Skipping: preflight checks open-issue dependencies only."
+    print_info "(Selection is --state \${FILTER_VALUE:-?} — per-issue dep guard remains active.)"
+    echo ""
+  else
   print_header "Preflight Dependency Closure Check"
 
   declare -A _in_selection
@@ -401,6 +445,7 @@ if [ -n "\${FILTER_TYPE:-}" ] && [ \${#ISSUE_LIST[@]} -gt 0 ]; then
     print_success "All dependencies are within the selection (or already closed)"
     echo "ISSUE_LIST_AFTER: \${ISSUE_LIST[*]}"
   fi
+  fi  # end: else branch of state-filter skip guard
 fi
 
 echo "ISSUE_LIST_FINAL: \${ISSUE_LIST[*]}"
@@ -695,6 +740,118 @@ SCRIPT_EOF
   }
   ! echo "$output" | grep -q "Preflight Dependency Closure" || {
     echo "FAIL: Preflight block must not run when FILTER_TYPE is empty (numeric-list mode)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: --state closed → preflight skipped with informational message" {
+  # Setup: issue 10 selected via --state closed; it has an open dep #5 outside
+  # selection. Expected: preflight block does NOT emit a "Dependency Closure
+  # Warning" — instead it emits the skip message and leaves ISSUE_LIST unchanged.
+
+  _script="$BATS_TEST_TMPDIR/test-state-closed.sh"
+  _create_preflight_test_script \
+    "state" "closed" "10" \
+    '[{"number":10,"body":"**Dependencies**: After #5"}]' \
+    '[{"number":5}]' \
+    "false" "" > "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  # Must NOT emit a warning — closed issues have no actionable open blockers
+  ! echo "$output" | grep -q "Dependency Closure Warning" || {
+    echo "FAIL: Dependency Closure Warning must not fire for --state closed" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # Must emit the skip notification
+  echo "$output" | grep -q "preflight checks open-issue dependencies only" || {
+    echo "FAIL: Expected skip notification for --state closed" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # Must mention the actual state value for clarity
+  echo "$output" | grep -q "closed" || {
+    echo "FAIL: Skip message should mention the state value 'closed'" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # ISSUE_LIST must be unchanged
+  _list_line=$(echo "$output" | grep "ISSUE_LIST_FINAL:" | tail -1)
+  echo "$_list_line" | grep -q "10" || {
+    echo "FAIL: ISSUE_LIST must still contain the original issue #10" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: --state all → preflight skipped with informational message" {
+  # Setup: issues 10 11 selected via --state all; issue 10 has open dep #5.
+  # Expected: preflight skipped — mixed open/closed selection would produce
+  # partial/misleading analysis.
+
+  _script="$BATS_TEST_TMPDIR/test-state-all.sh"
+  _create_preflight_test_script \
+    "state" "all" "10 11" \
+    '[{"number":10,"body":"**Dependencies**: Depends on #5"},{"number":11,"body":"No deps"}]' \
+    '[{"number":5}]' \
+    "false" "" > "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "Dependency Closure Warning" || {
+    echo "FAIL: Dependency Closure Warning must not fire for --state all" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "preflight checks open-issue dependencies only" || {
+    echo "FAIL: Expected skip notification for --state all" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "all" || {
+    echo "FAIL: Skip message should mention the state value 'all'" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: --state open → preflight runs normally (same as label mode)" {
+  # Setup: issue 10 selected via --state open; dep #5 is open and outside selection.
+  # Expected: preflight runs and emits Dependency Closure Warning — same behavior
+  # as --label or --milestone selections.
+
+  _script="$BATS_TEST_TMPDIR/test-state-open.sh"
+  _create_preflight_test_script \
+    "state" "open" "10" \
+    '[{"number":10,"body":"Depends on #5\n\nSome description"}]' \
+    '[{"number":5}]' \
+    "false" "" > "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  # Must NOT emit the skip message — open state runs preflight normally
+  ! echo "$output" | grep -q "preflight checks open-issue dependencies only" || {
+    echo "FAIL: --state open must not trigger the skip guard" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # Must emit the closure warning (dep #5 is open and outside selection)
+  echo "$output" | grep -q "Dependency Closure Warning" || {
+    echo "FAIL: Expected Dependency Closure Warning for --state open with oos open dep" >&2
     echo "Output: $output" >&2
     return 1
   }
