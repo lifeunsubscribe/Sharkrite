@@ -25,8 +25,8 @@
 #     5. batch-process-issues.sh handles EXIT_CODE -eq 13 distinctly
 #     6. exit-codes.md documents exit 13 for workflow-runner.sh
 #   BEHAVIORAL:
-#     7. Simulate all phases stubbed to return 0 with no git artifacts → returns 13
-#     8. Simulate phases stubbed to 0 WITH a PR_NUMBER set → returns 0 (invariant passes)
+#     7. _check_no_work_invariant with no artifacts → returns 13 (real function, not a copy)
+#     8. _check_no_work_invariant with PR_NUMBER set → returns 0 (invariant passes)
 #     9. RITE_WORKFLOW_EXPLICIT_COMPLETE=1 bypasses the invariant check
 #    10. batch loop: exit 13 is recorded as invariant_violated (not completed, not abort)
 
@@ -101,18 +101,18 @@ teardown() {
   ' "$_wfr")
 
   _line_completion=$(echo "$_fn_body" | grep -n "phase_completion" | head -1 | cut -d: -f1)
-  _line_invariant=$(echo "$_fn_body" | grep -n "INVARIANT_VIOLATED" | head -1 | cut -d: -f1)
+  _line_invariant=$(echo "$_fn_body" | grep -n "_check_no_work_invariant" | head -1 | cut -d: -f1)
 
   [ -n "$_line_completion" ] || {
     echo "FAIL: phase_completion call not found in run_workflow() body"
     return 1
   }
   [ -n "$_line_invariant" ] || {
-    echo "FAIL: INVARIANT_VIOLATED not found in run_workflow() body"
+    echo "FAIL: _check_no_work_invariant call not found in run_workflow() body"
     return 1
   }
   [ "$_line_completion" -lt "$_line_invariant" ] || {
-    echo "FAIL: phase_completion (line $_line_completion) must appear before INVARIANT_VIOLATED guard (line $_line_invariant)"
+    echo "FAIL: phase_completion (line $_line_completion) must appear before _check_no_work_invariant call (line $_line_invariant)"
     return 1
   }
 }
@@ -180,279 +180,209 @@ teardown() {
 }
 
 # =============================================================================
-# BEHAVIORAL: simulate phases that return 0 with no git artifacts
+# BEHAVIORAL: exercise the real _check_no_work_invariant function from
+# workflow-runner.sh. These tests source the real file with stubbed dependencies
+# so any change to the invariant predicate is automatically covered here —
+# no inline copy of the predicate logic.
+#
+# Stub pattern mirrors tests/regression/conflict-resolver-exit-5-propagation.bats.
 # =============================================================================
 
-@test "behavioral: workflow returning 0 with no commits and no PR triggers exit 13" {
-  # Simulate the scenario: all phase functions return 0 (no error),
-  # but the issue ends with no commits on branch and no PR.
-  # The invariant check must fire and return 13.
-  _script="$RITE_TEST_TMPDIR/test-no-work-invariant.sh"
-  cat > "$_script" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+# _setup_stub_lib creates a stub RITE_LIB_DIR in RITE_TEST_TMPDIR and populates
+# it with empty stub files for every module sourced by workflow-runner.sh at
+# load time.  Call this helper at the top of each behavioral test.
+_setup_stub_lib() {
+  local _stub_lib="$RITE_TEST_TMPDIR/stub-lib"
+  for _subdir in utils providers core; do
+    mkdir -p "$_stub_lib/$_subdir"
+  done
 
-# Stubs for all dependencies
-GREEN="\033[0;32m"
-NC="\033[0m"
-print_status()  { :; }
-print_info()    { echo "INFO: $*" >&2; }
-print_warning() { :; }
-print_error()   { echo "ERROR: $*" >&2; }
-print_success() { :; }
-print_header()  { :; }
-_diag()         { :; }
-gh_safe()       { echo ""; }
-get_session_summary() { :; }
-_rtk_snapshot() { :; }
-_rtk_summary()  { echo ""; }
-_rtk_phase_delta() { echo "0"; }
-_timer_start()  { :; }
-_timer_end()    { :; }
-send_completion_notification() { :; }
-get_latest_work_commit_time() { LATEST_COMMIT_TIME=""; }
-iso_to_epoch()  { echo "0"; }
+  for _mod in \
+    utils/notifications.sh utils/blocker-rules.sh utils/session-tracker.sh \
+    utils/pr-summary.sh utils/normalize-issue.sh utils/markers.sh \
+    utils/pr-detection.sh utils/date-helpers.sh utils/stash-manager.sh \
+    utils/mid-run-rebase.sh utils/review-helper.sh utils/colors.sh \
+    utils/logging.sh utils/timeout.sh utils/test-gate.sh \
+    providers/provider-interface.sh; do
+    printf '#!/usr/bin/env bash\n# stub\n' > "$_stub_lib/$_mod"
+  done
 
-# Environment
-RITE_PROJECT_ROOT="$(mktemp -d)"
-RITE_DATA_DIR=".rite"
-RITE_MARKER_REVIEW="sharkrite-local-review"
-RITE_MARKER_ASSESSMENT="sharkrite-assessment"
-RITE_MARKER_FOLLOWUP="sharkrite-followup"
-CLOSING_ISSUE_JQ_REGEX="(closes?|fixes?|resolves?) #"
-WORKFLOW_MODE="unsupervised"
-CURRENT_RETRY=0
-RITE_LOG_FILE=""
-export RITE_PROJECT_ROOT RITE_DATA_DIR WORKFLOW_MODE CURRENT_RETRY
+  echo "$_stub_lib"
+}
 
-# Stub phase functions — all succeed with no side effects
-phase_pre_start_checks() { return 0; }
-phase_claude_workflow()   { return 0; }
-phase_create_pr()         { return 0; }
-phase_assess_and_resolve() { return 0; }
-phase_merge_pr()          { return 0; }
-phase_completion()        { return 0; }
+@test "behavioral: _check_no_work_invariant with no commits and no PR returns 13" {
+  # Calls the real _check_no_work_invariant extracted from workflow-runner.sh.
+  # No worktree, no PR → invariant fires and returns 13.
+  _stub_lib=$(_setup_stub_lib)
 
-# Simulate the invariant check logic from run_workflow()
-# (isolated from the full workflow — tests the predicate in the exact form
-# it appears in the source, triggered after all phases return 0)
-issue_number=42
+  _result=0
+  (
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { echo "INFO: $*" >&2; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*" >&2; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
 
-# No worktree (simulates: phases ran but produced no git artifacts)
-WORKTREE_PATH=""
-PR_NUMBER=""
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
-# Replicate the invariant check exactly as it appears in run_workflow():
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
+    # No worktree, no PR → must return 13
+    _check_no_work_invariant "42" "" ""
+  ) || _result=$?
 
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: workflow returned 0 for issue #${issue_number} but produced no commits and no PR"
-    _diag "INVARIANT_VIOLATED issue=${issue_number} commits=0 pr=none worktree=${WORKTREE_PATH:-none}"
-    exit 13
-  fi
-fi
-
-exit 0
-EOF
-  chmod +x "$_script"
-  run bash "$_script"
-
-  # Must fail with exit 13
-  [ "$status" -eq 13 ] || {
-    echo "FAIL: expected exit 13 (invariant violated), got $status"
-    echo "output: $output"
-    return 1
-  }
-
-  # Error output must mention the invariant failure
-  [[ "$output" =~ "no commits and no PR" ]] || [[ "$stderr" =~ "no commits and no PR" ]] || {
-    echo "FAIL: output does not explain the invariant violation"
-    echo "output: $output"
+  [ "$_result" -eq 13 ] || {
+    echo "FAIL: expected exit 13 (invariant violated), got $_result"
     return 1
   }
 }
 
-@test "behavioral: workflow with PR_NUMBER set bypasses invariant (legitimate completion)" {
-  # Scenario: all phases complete, PR was created — invariant must NOT fire.
-  _script="$RITE_TEST_TMPDIR/test-with-pr-invariant.sh"
-  cat > "$_script" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+@test "behavioral: _check_no_work_invariant with PR_NUMBER set returns 0" {
+  # Calls the real _check_no_work_invariant: PR_NUMBER="99" → invariant passes.
+  _stub_lib=$(_setup_stub_lib)
 
-print_error() { echo "ERROR: $*" >&2; }
-print_info()  { echo "INFO: $*" >&2; }
-_diag()       { :; }
+  _result=0
+  (
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*" >&2; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
 
-issue_number=42
-WORKTREE_PATH=""
-PR_NUMBER="99"  # PR exists — invariant must pass
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
+    # PR_NUMBER="99" → invariant must pass (return 0)
+    _check_no_work_invariant "42" "" "99"
+  ) || _result=$?
 
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: invariant violated"
-    exit 13
-  fi
-fi
-
-echo "invariant_passed"
-exit 0
-EOF
-  chmod +x "$_script"
-  run bash "$_script"
-
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: expected exit 0 (PR exists — invariant should pass), got $status"
-    return 1
-  }
-  [[ "$output" =~ "invariant_passed" ]] || {
-    echo "FAIL: expected 'invariant_passed' in output"
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (PR exists — invariant should pass), got $_result"
     return 1
   }
 }
 
-@test "behavioral: workflow with commits on branch bypasses invariant" {
-  # Scenario: worktree has commits ahead of origin/main — invariant must pass.
-  _script="$RITE_TEST_TMPDIR/test-with-commits-invariant.sh"
-  cat > "$_script" <<'OUTER'
-#!/usr/bin/env bash
-set -euo pipefail
+@test "behavioral: _check_no_work_invariant with commits on branch returns 0" {
+  # Calls the real _check_no_work_invariant with a real git repo that has
+  # commits ahead of origin/main. Invariant must pass (return 0).
+  _stub_lib=$(_setup_stub_lib)
 
-print_error() { echo "ERROR: $*" >&2; }
-_diag()       { :; }
+  # Set up a bare "remote" and a local clone with a feature branch ahead of origin/main
+  _remote="$RITE_TEST_TMPDIR/remote.git"
+  git init -q --bare "$_remote"
+  _local="$RITE_TEST_TMPDIR/local"
+  git clone -q "$_remote" "$_local"
+  git -C "$_local" config user.email "test@test.com"
+  git -C "$_local" config user.name "Test"
+  echo "init" > "$_local/file.txt"
+  git -C "$_local" add .
+  git -C "$_local" commit -qm "init"
+  git -C "$_local" push -q origin HEAD:main
+  git -C "$_local" checkout -q -b feature
+  echo "feature work" >> "$_local/file.txt"
+  git -C "$_local" add .
+  git -C "$_local" commit -qm "feat: add feature"
+  # origin/main now points to the init commit; feature branch has 1 commit ahead
 
-# Set up a real git repo with a feature branch ahead of origin/main
-TMPDIR_LOCAL="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_LOCAL"' EXIT
+  _result=0
+  (
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$_local"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*" >&2; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
 
-MAIN_REPO="$TMPDIR_LOCAL/main"
-git init -q "$MAIN_REPO"
-git -C "$MAIN_REPO" config user.email "test@test.com"
-git -C "$MAIN_REPO" config user.name "Test"
-echo "init" > "$MAIN_REPO/file.txt"
-git -C "$MAIN_REPO" add .
-git -C "$MAIN_REPO" commit -qm "init"
-git -C "$MAIN_REPO" branch -M main
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
-WORKTREE_DIR="$TMPDIR_LOCAL/feature"
-git -C "$MAIN_REPO" checkout -q -b feature
-echo "feature work" > "$MAIN_REPO/feature.txt"
-git -C "$MAIN_REPO" add .
-git -C "$MAIN_REPO" commit -qm "feat: add feature"
+    # Worktree has 1 commit ahead of origin/main → invariant must pass (return 0)
+    _check_no_work_invariant "42" "$_local" ""
+  ) || _result=$?
 
-# Simulate origin/main reference (tag it so rev-list can compare)
-git -C "$MAIN_REPO" tag "origin-main" main 2>/dev/null || true
-# Use the init commit as origin/main for rev-list comparison
-ORIGIN_MAIN=$(git -C "$MAIN_REPO" rev-parse main 2>/dev/null || echo "")
-
-WORKTREE_PATH="$MAIN_REPO"
-PR_NUMBER=""
-
-issue_number=42
-
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
-
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    # Use the actual commits-ahead check against the init commit (acting as origin/main)
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "${ORIGIN_MAIN}..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: invariant violated"
-    exit 13
-  fi
-fi
-
-echo "invariant_passed commits=${_inv_commits}"
-exit 0
-OUTER
-  chmod +x "$_script"
-  run bash "$_script"
-
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: expected exit 0 (commits exist — invariant should pass), got $status"
-    echo "output: $output"
-    return 1
-  }
-  [[ "$output" =~ "invariant_passed" ]] || {
-    echo "FAIL: expected 'invariant_passed' in output"
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (commits exist — invariant should pass), got $_result"
     return 1
   }
 }
 
 @test "behavioral: RITE_WORKFLOW_EXPLICIT_COMPLETE=1 bypasses invariant (future no-code paths)" {
-  # Scenario: no commits, no PR, but RITE_WORKFLOW_EXPLICIT_COMPLETE=1 is set.
-  # This bypass is reserved for future "completed without code" workflow paths
-  # (e.g., auto-close when already resolved upstream).
-  _script="$RITE_TEST_TMPDIR/test-explicit-complete-bypass.sh"
-  cat > "$_script" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+  # Calls the real _check_no_work_invariant with no commits and no PR,
+  # but RITE_WORKFLOW_EXPLICIT_COMPLETE=1 set — must return 0 (bypass).
+  _stub_lib=$(_setup_stub_lib)
 
-print_error() { echo "ERROR: $*" >&2; }
-_diag()       { :; }
+  _result=0
+  (
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    export RITE_WORKFLOW_EXPLICIT_COMPLETE=1  # bypass signal
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*" >&2; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
 
-issue_number=42
-WORKTREE_PATH=""
-PR_NUMBER=""
-export RITE_WORKFLOW_EXPLICIT_COMPLETE=1  # bypass signal
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
-if [ "${RITE_WORKFLOW_EXPLICIT_COMPLETE:-}" != "1" ]; then
-  _inv_commits=0
-  _inv_pr=""
+    # No commits, no PR, bypass=1 → must return 0
+    _check_no_work_invariant "42" "" ""
+  ) || _result=$?
 
-  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    _inv_commits=$(git -C "$WORKTREE_PATH" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    _inv_pr="$PR_NUMBER"
-  fi
-
-  if [ "$_inv_commits" -eq 0 ] && [ -z "$_inv_pr" ]; then
-    print_error "BUG: invariant violated"
-    exit 13
-  fi
-fi
-
-echo "bypass_worked"
-exit 0
-EOF
-  chmod +x "$_script"
-  run bash "$_script"
-
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: expected exit 0 (RITE_WORKFLOW_EXPLICIT_COMPLETE=1 should bypass invariant), got $status"
-    return 1
-  }
-  [[ "$output" =~ "bypass_worked" ]] || {
-    echo "FAIL: expected 'bypass_worked' in output"
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (RITE_WORKFLOW_EXPLICIT_COMPLETE=1 should bypass invariant), got $_result"
     return 1
   }
 }
