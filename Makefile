@@ -39,8 +39,8 @@ lint:
 # Run tests (if bats is available).
 # When FILTER is set, restrict to tests/$(FILTER)/; otherwise run tests/.
 # Uses --pretty formatter when connected to a terminal (-t 1); TAP otherwise
-# (e.g., CI, piped output). Requires bats >=1.7.0 for -p/-t shorthand; older
-# bats falls back to default TAP silently (bats ignores unknown short flags).
+# (e.g., CI, piped output). -p (--pretty) and -t (--tap) are universal bats
+# shorthand flags, available in all supported bats versions.
 test:
 	@if command -v bats >/dev/null 2>&1; then \
 		if [ -t 1 ]; then _bats_fmt="-p"; else _bats_fmt="-t"; fi; \

@@ -610,8 +610,9 @@ run_test_gate() {
     local _bats_fmt_args=() _bats_tap_dir=""
     if _bats_supports_report_formatter; then
       # PID-scoped temp dir — bats writes "report.tap" inside it.
-      # Name intentionally avoids the mktemp XXXXXX suffix so we control the path.
-      _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$")
+      # XXXXXX suffix required: GNU mktemp errors on collision; BSD mktemp behavior
+      # is unreliable without it.  PID in the prefix keeps concurrent runs isolated.
+      _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$_XXXXXX")
       _bats_fmt_args=(--formatter pretty --report-formatter tap --output "$_bats_tap_dir")
       echo "[test-gate] bats: pretty formatter for terminal; TAP report for JSON parser"
     else
@@ -631,9 +632,15 @@ run_test_gate() {
         { (cd "$project_root" && bats "${_bats_fmt_args[@]}" "$@" 2>&1); echo $? > "$_exit_file"; } || true
         # Copy the TAP report into the JSON parser's input file (bats names it "report.tap").
         # If the report is missing (bats crash before writing), _tests_raw_file stays empty
-        # and the JSON builder emits [] — safe fail-open.
+        # and the JSON builder emits [] — safe fail-open, but we emit a diagnostic so the
+        # gate outcome (driven by _tests_exit) still surfaces the real failure.
         if [ -f "$_bats_tap_dir/report.tap" ]; then
           cat "$_bats_tap_dir/report.tap" >> "$_tests_raw_file" || true
+        else
+          _bats_raw_exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+          if [ "$_bats_raw_exit" -ne 0 ]; then
+            echo "[test-gate] WARN: bats exited $_bats_raw_exit but report.tap was not written (bats crash or formatter error); structured findings unavailable — gate outcome driven by exit code" >&2
+          fi
         fi
       else
         # Fallback: single TAP stream to stdout and temp file simultaneously (original behavior).

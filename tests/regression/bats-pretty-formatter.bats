@@ -249,3 +249,67 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"size:0"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Functional: real bats --report-formatter tap produces byte-compatible TAP
+# ---------------------------------------------------------------------------
+
+@test "functional: bats --report-formatter tap output is byte-compatible with standard TAP" {
+  # Skip if installed bats does not support --report-formatter (bats <1.7.0).
+  if ! bats --help 2>&1 | grep -q -- '--report-formatter'; then
+    skip "--report-formatter not available in this bats install"
+  fi
+
+  # Create a minimal fixture bats file with one passing and one failing test.
+  _fixture_dir=$(mktemp -d)
+  _tap_dir=$(mktemp -d)
+  cat > "$_fixture_dir/fixture.bats" <<'FIXTURE'
+#!/usr/bin/env bats
+@test "passing test" {
+  true
+}
+@test "failing test" {
+  false
+}
+FIXTURE
+
+  # Run bats with split-mode flags: pretty to stdout, TAP report to _tap_dir.
+  # We discard stdout (pretty output) — only report.tap matters here.
+  run bash -c "bats --formatter pretty --report-formatter tap --output '$_tap_dir' '$_fixture_dir/fixture.bats' >/dev/null 2>&1; true"
+
+  # report.tap must exist after the run.
+  [ -f "$_tap_dir/report.tap" ]
+
+  # The TAP file must contain a plan line ("1..N"), a passing "ok" line, and a
+  # failing "not ok" line — proving the format is standard TAP.
+  _tap_content=$(cat "$_tap_dir/report.tap")
+
+  # Plan line present
+  echo "$_tap_content" | grep -q '^1\.\.'
+
+  # At least one "ok N" line for the passing test
+  echo "$_tap_content" | grep -q '^ok [0-9]'
+
+  # At least one "not ok N" line for the failing test — this is what the JSON
+  # parser reads; byte-compat means _parse_bats_failure_line can process it.
+  echo "$_tap_content" | grep -q '^not ok [0-9]'
+
+  # Verify _parse_bats_failure_line actually processes the "not ok" line from
+  # the real TAP report — proving end-to-end parser byte-compatibility.
+  _not_ok_line=$(echo "$_tap_content" | grep '^not ok ' | head -1 || true)
+  [ -n "$_not_ok_line" ]
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    _diag() { true; }
+    export -f _diag 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    result=\$(_parse_bats_failure_line $(printf '%q' "$_not_ok_line") || true)
+    echo \"\$result\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"test_name"'* ]]
+
+  rm -rf "$_fixture_dir" "$_tap_dir"
+}
