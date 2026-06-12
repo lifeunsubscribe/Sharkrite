@@ -446,12 +446,20 @@ AWKEOF
   #
   # Validation: base_branch must be a safe git ref component — only
   # alphanumeric, '-', '_', '.', '/' characters.  Anything else (path traversal
-  # sequences like "../evil", shell meta-characters, whitespace) is rejected and
-  # falls back to "main" so the interpolation into "origin/${base_branch}:path"
-  # cannot be exploited by a crafted baseRefName from the GitHub API.
+  # sequences like "../evil", shell meta-characters, embedded newlines) is
+  # rejected and falls back to "main" so the interpolation into
+  # "origin/${base_branch}:path" cannot be exploited by a crafted baseRefName
+  # from the GitHub API.  Newlines are stripped first (see inline comment below)
+  # before the regex allowlist runs.
   local base_branch
   base_branch=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
   base_branch="${base_branch:-main}"
+  # Strip newlines before validation: a multi-line value (e.g. "main\nevil;cmd")
+  # would cause grep's ^/$ anchors to match each line independently, letting the
+  # first valid line ("main") satisfy the allowlist while the trailing payload
+  # remains in the string.  Removing all newlines collapses the value to a single
+  # token so the allowlist check covers the entire string.
+  base_branch=$(printf '%s' "$base_branch" | tr -d '\n\r')
   # Reject branch names with unsafe characters or path-traversal sequences.
   # Only alphanumeric, '-', '_', '.', '/' are valid git ref characters.
   # Also explicitly reject '..' sequences (path traversal, e.g. "../evil").
