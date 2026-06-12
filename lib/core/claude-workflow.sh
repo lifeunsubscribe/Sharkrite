@@ -687,9 +687,10 @@ check_dev_session_output() {
   uncommitted_count=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
   if [ "$uncommitted_count" -gt 0 ]; then
-    # Auto-commit path: salvage uncommitted work
-    print_warning "$(provider_name) session ended without committing changes"
-    print_status "Auto-committing $uncommitted_count uncommitted file(s)..."
+    # Auto-commit path: salvage uncommitted work. This is a recoverable,
+    # quasi-expected condition (the session sometimes leaves the commit to
+    # us) — keep the messaging info-level, not warning-level.
+    print_status "Auto-committing $uncommitted_count file(s) left uncommitted by the $(provider_name) session..."
 
     # Log diagnostic
     _diag "AUTO_COMMIT issue=${ISSUE_NUMBER:-?} files=$uncommitted_count reason=dev_session_uncommitted"
@@ -721,10 +722,7 @@ Auto-salvaged to prevent work loss."
 
     git commit -m "$auto_commit_msg" >/dev/null 2>&1
 
-    print_success "Auto-committed changes - workflow proceeding normally"
-    echo ""
-    print_info "Review the auto-commit in PR to verify completeness"
-    echo ""
+    print_success "Auto-committed changes - workflow proceeding normally (verify completeness in PR review)"
 
     return 0
   fi
@@ -2492,29 +2490,30 @@ else
 
   _timer_end "claude_dev_session"
 
-  # Diagnostic output (visible in log, helps debug "no work" situations)
+  # Diagnostic output (log file only — two-channel convention; helps debug
+  # "no work" situations without alarming terminal noise on healthy runs)
   if [ -n "${RITE_LOG_FILE:-}" ]; then
-    echo ""
     _session_mode="dev"
     [ "${FIX_REVIEW_MODE:-false}" = true ] && _session_mode="fix-review"
     _diag "SESSION issue=${ISSUE_NUMBER:-?} mode=${_session_mode} provider=$(provider_name) exit=${CLAUDE_EXIT_CODE}"
-    echo "[DIAG] Provider session exit code: $CLAUDE_EXIT_CODE"
-    echo "[DIAG] Working directory: $(pwd)"
-    echo "[DIAG] Git status (porcelain):"
-    git status --porcelain 2>/dev/null | head -20 || echo "  (none)"
-    echo "[DIAG] File changes vs origin/main:"
+    echo "" >> "$RITE_LOG_FILE"
+    echo "[DIAG] Provider session exit code: $CLAUDE_EXIT_CODE" >> "$RITE_LOG_FILE"
+    echo "[DIAG] Working directory: $(pwd)" >> "$RITE_LOG_FILE"
+    echo "[DIAG] Git status (porcelain):" >> "$RITE_LOG_FILE"
+    git status --porcelain 2>/dev/null | head -20 >> "$RITE_LOG_FILE" || echo "  (none)" >> "$RITE_LOG_FILE"
+    echo "[DIAG] File changes vs origin/main:" >> "$RITE_LOG_FILE"
     if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      git diff --stat origin/main...HEAD 2>/dev/null || echo "  (none)"
+      git diff --stat origin/main...HEAD 2>/dev/null >> "$RITE_LOG_FILE" || echo "  (none)" >> "$RITE_LOG_FILE"
     else
-      echo "  (origin/main not found)"
+      echo "  (origin/main not found)" >> "$RITE_LOG_FILE"
     fi
     if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
-      echo "[DIAG] Provider stderr (last 30 lines):"
-      tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /'
+      echo "[DIAG] Provider stderr (last 30 lines):" >> "$RITE_LOG_FILE"
+      tail -30 "$CLAUDE_STDERR_FILE" | sed 's/^/  /' >> "$RITE_LOG_FILE"
     else
-      echo "[DIAG] Provider stderr: (empty)"
+      echo "[DIAG] Provider stderr: (empty)" >> "$RITE_LOG_FILE"
     fi
-    echo ""
+    echo "" >> "$RITE_LOG_FILE"
   fi
   rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
 

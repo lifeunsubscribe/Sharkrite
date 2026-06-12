@@ -172,10 +172,13 @@ teardown() {
   # Should succeed
   [ "$status" -eq 0 ]
 
-  # Output should inform user about auto-commit
+  # Output should inform user about auto-commit (info-level, single
+  # condensed result line — no warning-level framing for a recovered
+  # condition; see "no loud benign warnings")
   [[ "$output" =~ "Auto-committing" ]]
   [[ "$output" =~ "workflow proceeding normally" ]]
-  [[ "$output" =~ "Review the auto-commit in PR" ]]
+  [[ "$output" =~ "verify completeness in PR review" ]]
+  [[ ! "$output" =~ "ended without committing" ]]
 }
 
 @test "check_dev_session_output: no action when real commits exist" {
