@@ -535,6 +535,12 @@ AWKEOF
   export SHRINKAGE_BLOCKER_FILE="$viol_file"
   export SHRINKAGE_BLOCKER_DELETED="$viol_deleted"
   export SHRINKAGE_BLOCKER_TOTAL="$viol_total"
+  # Export the resolved base branch so handle_blocker's revert guidance can use
+  # "origin/<base_branch>" instead of the hardcoded "origin/main".  This ensures
+  # PRs targeting non-main branches (e.g. develop, release/1.0) get correct revert
+  # commands — checking out from origin/main on a non-main-base PR would restore
+  # the main version of the file, not the target-branch version (issue #464).
+  export SHRINKAGE_BLOCKER_BASE_BRANCH="$base_branch"
 
   # Export all violating file paths (newline-separated) so handle_blocker can
   # generate a revert command for every affected file — not just the first.
