@@ -301,8 +301,17 @@ EOF
 # clears the pending line, an unguarded `)` line closes it, or a 40-line cap.
 # ---------------------------------------------------------------------------
 
+# Fixtures use RITE_LINT_EXTRA_DIRS pointing at a tmp dir OUTSIDE lib/ — the
+# same working pattern as the "guard on line after last trigger" test above.
+# A .sh fixture placed in lib/ would (a) trip Rule 16 MISSING_RESOURCE_GUARD on
+# the fixture itself and (b) be skipped anyway: the default scan excludes
+# */test-fixtures-temp*. (The older lib/test-fixtures-temp tests in this file
+# predate that exclusion and no longer detect — tracked separately.)
+
 @test "Rule 8 multi-line: guard on closing line of awk block — no violation" {
-  cat > "$RITE_LINT_TEST_DIR/multiline-closing-guard.sh" <<'EOF'
+  local _dir="${BATS_TEST_TMPDIR}/r8-closing-guard"
+  mkdir -p "$_dir"
+  cat > "$_dir/multiline-closing-guard.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 _body="x"
@@ -319,7 +328,9 @@ echo "$_body"
 EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   # The planted file must NOT be flagged (guard is on the closing line)
   [[ ! "$output" =~ "multiline-closing-guard.sh" ]] || {
@@ -330,7 +341,9 @@ EOF
 }
 
 @test "Rule 8 multi-line: unguarded closing line of awk block — violation fires" {
-  cat > "$RITE_LINT_TEST_DIR/multiline-unguarded-close.sh" <<'EOF'
+  local _dir="${BATS_TEST_TMPDIR}/r8-unguarded-close"
+  mkdir -p "$_dir"
+  cat > "$_dir/multiline-unguarded-close.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 _body="x"
@@ -346,7 +359,9 @@ echo "$_body"
 EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
@@ -356,7 +371,9 @@ EOF
 @test "Rule 8 single-line: unguarded substitution still resolves immediately" {
   # The forward-scan must not weaken the classic single-line detection: the
   # opener line ends with ')' and is reported at once.
-  cat > "$RITE_LINT_TEST_DIR/single-line-unsafe.sh" <<'EOF'
+  local _dir="${BATS_TEST_TMPDIR}/r8-single-line"
+  mkdir -p "$_dir"
+  cat > "$_dir/single-line-unsafe.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 COUNT=$(echo "abc" | grep -c "z")
@@ -364,7 +381,9 @@ echo "$COUNT"
 EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
