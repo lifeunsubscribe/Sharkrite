@@ -319,9 +319,16 @@ fi
 # and each match triggered 3–4 more greps + 1 sed (for next-line lookahead),
 # totalling ~6000–7000 subprocess calls and 9+ seconds per lint run.
 #
-# AWK strategy: buffer each triggering line, resolve on the NEXT line whether a
-# multiline-safe guard (|| true / || echo / : $?) follows.  BSD AWK compatible:
-# no \s, no + quantifier, no !~ or compound patterns — uses index() and [[:space:]]*.
+# AWK strategy: buffer each triggering line, then scan FORWARD until the
+# command substitution resolves: a guard (|| true / || echo / : $?) clears it;
+# a line ending in ")" closes the substitution unguarded → violation; a 40-line
+# cap reports runaway constructs. The earlier one-line lookahead false-flagged
+# multi-line blocks whose guard sits on the closing line, e.g.
+#   _body=$(printf '%s' "$x" | awk '
+#     ...10 lines of awk program...
+#   ' || true)        <- guard here, invisible to a next-line-only check
+# (live false positive: #568's _resolve_ordinal_refs_in_body, 2026-06-12).
+# BSD AWK compatible: no \s, no + quantifier — uses index() and [[:space:]]*.
 echo "Checking for unsafe VAR=\$(... | grep/awk/sed/head/tail) patterns..."
 _r8_awk=$(mktemp)
 # Output uses tab as field separator (file\tlinenum) so paths containing
@@ -346,7 +353,10 @@ printf '%s\n' \
   '  if (FNR > 1 && pending_line > 0) {' \
   '    if (index($0, "|| true") > 0 || index($0, "|| echo") > 0 || index($0, ": $?") > 0) {' \
   '      pending_line = 0' \
-  '    } else {' \
+  '    } else if ($0 ~ /\)[[:space:]]*$/) {' \
+  '      print pending_fname "\t" pending_line' \
+  '      pending_line = 0' \
+  '    } else if (FNR - pending_line > 40) {' \
   '      print pending_fname "\t" pending_line' \
   '      pending_line = 0' \
   '    }' \
@@ -354,6 +364,7 @@ printf '%s\n' \
   '  if ($0 ~ /^[[:space:]]*#/) next' \
   '  if (index($0, "=$(") > 0 && $0 ~ /\|[^|]*(grep|awk|sed|head|tail)/) {' \
   '    if (index($0, "|| true") > 0 || index($0, "|| echo") > 0 || index($0, ": $?") > 0) next' \
+  '    if ($0 ~ /\)[[:space:]]*$/) { print FILENAME "\t" FNR; next }' \
   '    pending_line = FNR; pending_fname = FILENAME' \
   '  }' \
   '}' \
