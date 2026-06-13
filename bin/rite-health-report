@@ -26,7 +26,9 @@ DATA_DIR="${RITE_DATA_DIR:-.rite}"
 LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
 REPORTS_DIR="$PROJECT_ROOT/$DATA_DIR/reports"
 DISPLAY_MODE=false
-MIN_WORKFLOWS=3
+# Minimum workflow completions in the window before a full report is generated.
+# Override for high- or low-volume projects via RITE_HEALTH_MIN_WORKFLOWS.
+MIN_WORKFLOWS="${RITE_HEALTH_MIN_WORKFLOWS:-3}"
 
 # Parse args
 case "${1:-}" in
@@ -198,6 +200,13 @@ TGS_TARGETED_RUNS=$(echo "$TGS_LINES" | grep -c 'mode=targeted' || true)
 # files lack covers headers and the gate keeps falling back to the full path.
 TGS_SELECTED_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE 'selected=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
 TGS_TOTAL_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE ' total=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+# Pre-compute the avg selection ratio deterministically — arithmetic belongs in
+# bash, not the LLM (same principle as CR_TOP5_ISSUES / CR_MEDIAN_DURATION_S).
+if [ "${TGS_TOTAL_SUM:-0}" -gt 0 ] 2>/dev/null; then
+  TGS_AVG_RATIO_PCT="$(( TGS_SELECTED_SUM * 100 / TGS_TOTAL_SUM ))%"
+else
+  TGS_AVG_RATIO_PCT="N/A"
+fi
 
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
@@ -254,9 +263,14 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 
 ## Report Sections
 
-1. **Summary** — 2-3 sentence overview of the week
-2. **Metrics** — Issues processed, token savings (if rtk active), fix loop iterations, phase durations
-3. **Health Checks** — Flag anything concerning using these absolute thresholds:
+0. **TL;DR** — the FIRST section, written for a 10-second skim by a busy operator with zero knowledge of diag-line internals. Exactly these three bullets, in plain English (no jargon like "diag", "phase3", "TGS"):
+   - **Status:** one of `✅ Healthy`, `⚠️ Needs attention`, or `🔴 Action required` — pick from the worst threshold tripped below.
+   - **The number that matters:** the single most important stat this week, stated like a human would ("Merged 21 of 24 issues cleanly; 2 needed a fix pass" — not "fix_iterations avg=0.2").
+   - **Do this:** the ONE most important action for the operator, or "Nothing — everything's healthy" if no threshold tripped.
+1. **At a Glance** — a compact stat line of the key numbers IF they exist (omit any that are zero/absent): issues merged, fix-loop avg, phase-1 avg, rtk savings %, gate pass rate, CRITICALs. One line, pipe-separated. Skip entirely if there's no data.
+2. **Summary** — 2-3 plain-English sentences expanding the TL;DR. Write for a human reader, not a log parser.
+3. **Metrics** — Issues processed, token savings (if rtk active), fix loop iterations, phase durations
+4. **Health Checks** — Flag anything concerning using these absolute thresholds:
    - Fix iterations avg > 2.0 → WARNING
    - Any phase failing > 30% of the time → WARNING
    - Phase 1 (dev) duration avg > 20 min → WATCH
@@ -264,7 +278,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - Any issue hitting max fix iterations (3) → flag that specific issue
    - Review finding 0 issues consistently → WATCH (review prompt may be too lenient)
    - CRITICAL findings appearing → flag
-4. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
+5. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
    - Show: Total gate runs, outcome breakdown (passed/failed/skipped), lint failures total, bats test failures total
    - Thresholds:
      - gate failure rate > 30% → **WARNING**: "Fix sessions introducing regressions frequently"
@@ -272,19 +286,19 @@ Analyze the provided data and produce a concise markdown health report. Be direc
      - TG_LINT_TOTAL > 0 → flag which fix iterations introduced lint violations
    - If TG_TOTAL is 0, say "No post-commit gate runs recorded this week (feature new or gate not yet active)."
    - **Test Selection** (issue #462) sub-section: report from TGS_* stats provided:
-     - Show: total gate invocations, targeted-vs-full breakdown, average targeted-selection ratio (TGS_SELECTED_SUM / TGS_TOTAL_SUM × 100%)
+     - Show: total gate invocations, targeted-vs-full breakdown, average targeted-selection ratio (use TGS_AVG_RATIO_PCT directly — do not recompute)
      - Threshold: if targeted runs exist and the avg selected/total ratio > 50% → **WATCH**: "Test selection ratio is high — most bats files lack the ${RITE_MARKER_TEST_COVERS}: header; backfill more to realize the optimization."
      - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs fell back to the full suite this week (no diff computable — empty-diff fallback; path triggers were removed 2026-06-12)."
      - If TGS_TOTAL_RUNS is 0 → "No selection data this week."
-5. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
+6. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
    - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (use CR_TOP5_ISSUES directly — do not recompute), median resolution duration (use CR_MEDIAN_DURATION_S directly — do not recompute)
    - Thresholds:
      - `skipped_no_resolver` > 0 → **WARNING**: "Resolver not wired — conflict-resolver.sh may be missing"
      - failure rate > 30% → **WATCH**: "Resolver failing frequently"
    - If CR_TOTAL is 0, say "No conflict resolution attempts this week."
-6. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
-7. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
-8. **Action Items** — Specific, actionable recommendations. Examples:
+7. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
+8. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
+9. **Action Items** — Specific, actionable recommendations. Examples:
    - "Consider adding `gh pr diff` to rtk exclude list — Phase 3 fix iterations up"
    - "Phase 1 duration trending down — rtk compression appears effective"
    - "Review severity skewing toward LOW — tighten review prompt for more meaningful findings"
@@ -340,6 +354,7 @@ $TG_LINES
 - TGS_FULL_RUNS (full suite — no-diff fallback only; path triggers removed 2026-06-12): $TGS_FULL_RUNS
 - TGS_SELECTED_SUM (sum of selected files across targeted runs): $TGS_SELECTED_SUM
 - TGS_TOTAL_SUM (sum of total bats files across targeted runs): $TGS_TOTAL_SUM
+- TGS_AVG_RATIO_PCT (pre-computed avg selected/total ratio): $TGS_AVG_RATIO_PCT
 
 Raw TEST_GATE_SELECTION diag lines:
 $TGS_LINES
