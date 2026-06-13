@@ -1046,7 +1046,7 @@ find_worktree_for_task() {
   # If we found a PR, find the worktree with that branch
   if [ -n "$pr_branch" ] && [ "$pr_branch" != "null" ]; then
     while IFS= read -r worktree_line; do
-      local wt_path=$(echo "$worktree_line" | awk '{print $1}')
+      local wt_path=$(echo "$worktree_line" | awk '{print $1}' || echo "")
       local wt_branch=$(echo "$worktree_line" | grep -oE '\[[^]]+\]' | tr -d '[]' || echo "")
 
       if [ "$wt_branch" = "$pr_branch" ]; then

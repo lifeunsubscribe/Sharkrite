@@ -291,3 +291,101 @@ EOF
   # Test passes if all matches are verified safe
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Rule 8 multi-line tracking (2026-06-12): the original implementation decided
+# at the NEXT line only, so a multi-line command substitution whose || true
+# guard sits on the CLOSING line was falsely flagged. Live false positive:
+# the two awk blocks in plan-issues.sh::_resolve_ordinal_refs_in_body (#568)
+# turned main's `make check` red. The rule now scans forward until a guard
+# clears the pending line, an unguarded `)` line closes it, or a 40-line cap.
+# ---------------------------------------------------------------------------
+
+# Fixtures use RITE_LINT_EXTRA_DIRS pointing at a tmp dir OUTSIDE lib/ — the
+# same working pattern as the "guard on line after last trigger" test above.
+# A .sh fixture placed in lib/ would (a) trip Rule 16 MISSING_RESOURCE_GUARD on
+# the fixture itself and (b) be skipped anyway: the default scan excludes
+# */test-fixtures-temp*. (The older lib/test-fixtures-temp tests in this file
+# predate that exclusion and no longer detect — tracked separately.)
+
+@test "Rule 8 multi-line: guard on closing line of awk block — no violation" {
+  local _dir="${BATS_TEST_TMPDIR}/r8-closing-guard"
+  mkdir -p "$_dir"
+  cat > "$_dir/multiline-closing-guard.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+_body="x"
+_body=$(printf '%s' "$_body" | awk '
+  { lines[NR] = $0 }
+  END {
+    for (i = 1; i <= NR; i++) {
+      if (i > 1) printf "\n"
+      printf "%s", lines[i]
+    }
+  }
+' || true)
+echo "$_body"
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
+  run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
+
+  # The planted file must NOT be flagged (guard is on the closing line)
+  [[ ! "$output" =~ "multiline-closing-guard.sh" ]] || {
+    echo "false positive: closing-line || true not recognized" >&2
+    echo "$output" >&2
+    return 1
+  }
+}
+
+@test "Rule 8 multi-line: unguarded closing line of awk block — violation fires" {
+  local _dir="${BATS_TEST_TMPDIR}/r8-unguarded-close"
+  mkdir -p "$_dir"
+  cat > "$_dir/multiline-unguarded-close.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+_body="x"
+_body=$(printf '%s' "$_body" | awk '
+  { lines[NR] = $0 }
+  END {
+    for (i = 1; i <= NR; i++) {
+      printf "%s", lines[i]
+    }
+  }
+')
+echo "$_body"
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
+  run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
+  [[ "$output" =~ "multiline-unguarded-close.sh" ]]
+}
+
+@test "Rule 8 single-line: unguarded substitution still resolves immediately" {
+  # The forward-scan must not weaken the classic single-line detection: the
+  # opener line ends with ')' and is reported at once.
+  local _dir="${BATS_TEST_TMPDIR}/r8-single-line"
+  mkdir -p "$_dir"
+  cat > "$_dir/single-line-unsafe.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+COUNT=$(echo "abc" | grep -c "z")
+echo "$COUNT"
+EOF
+
+  cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
+  run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
+  [[ "$output" =~ "single-line-unsafe.sh" ]]
+}

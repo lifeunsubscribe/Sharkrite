@@ -175,7 +175,7 @@ send_notification_all() {
 
   # Format message for email (convert markdown to plain text)
   local email_message=$(echo "$message" | sed 's/\*\*//g' | sed 's/`//g' | sed 's/^#\+ //' || true)
-  local email_subject=$(echo "$email_message" | head -1 | cut -c 1-50)
+  local email_subject=$(echo "$email_message" | head -1 | cut -c 1-50 || true)
   send_email "$email_subject" "$email_message" "$urgency" || true
 
   # Only send SMS for urgent notifications
