@@ -349,19 +349,19 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Selection rules** (in `lib/utils/test-gate.sh::_select_tests_by_changed_paths`):
 
-1. **Full-suite triggers** (verifier internals, lint, helpers, fixtures) override path selection — change any of `lib/utils/test-gate.sh`, `tools/*-lint.sh`, `Makefile`, `tests/helpers/*`, `tests/fixtures/*` and the full suite runs. This is the safe-by-default escape for changes that could affect any test.
-2. **Headerless files always run.** A bats file without a `sharkrite-test-covers:` header is included in every gate invocation (conservative fallback during rollout — backfill grows organically).
+1. **No full-suite triggers — selection is always targeted.** The original #462 design escalated to the full suite when the commit touched `lib/utils/test-gate.sh`, `tools/*-lint.sh`, `Makefile`, `tests/helpers/*`, or `tests/fixtures/*`. That trigger list was **removed 2026-06-12**: a full run costs hours per fix-loop iteration, drowns real findings in load-induced flake (live failure: issue #484 died mid-loop to a 165-file gate run), and fired on exactly the issues that maintain the gate/lint tooling. **Accepted trade-off:** changes to `Makefile`/`tests/fixtures/*` currently select zero bats files, and `tests/helpers/*` selects only the few files whose headers name helpers despite helpers being sourced everywhere — this gap is deliberate until a focused mechanism exists (issue #482 tracks the compensating periodic full-suite safety net). Re-adding a trigger list requires consciously deleting the pinning tests in `test-gate-targeted-selection.bats`. The lint-side full-scan triggers (`_LINT_GATE_FULL_SUITE_TRIGGERS`) are NOT removed — a full lint scan costs seconds.
+2. **Headerless files are skipped** (post-#480 backfill flipped the default in #481; the `MISSING_TEST_COVERAGE_HEADER` lint rule enforces headers on new files). A *directly changed* `.bats` file always runs itself regardless of headers.
 3. **Header match.** For files with a header, the comma-separated path list is intersected with the commit's changed-file set via shell case-statement glob matching. Globs (`lib/utils/*.sh`) supported; note `*` doesn't match `/` per standard bash glob rules.
 
-**Empty diff falls back to full suite.** A degenerate case (brand-new branch, no upstream) where we can't compute changes — run everything rather than nothing.
+**Empty diff falls back to full suite.** A degenerate case (brand-new branch, no upstream) where we can't compute changes — run everything rather than nothing. This is the ONE remaining `FORCE_FULL` path, and `post-merge-verify.sh`'s main-broken check exploits it deliberately (`RITE_TEST_GATE_DIFF_BASE=HEAD` → empty diff → full validation of main). **Empty selection** (diff exists, no covered tests) skips bats entirely with `mode=targeted selected=0` — it no longer escalates.
 
-**Diag emission:** every gate run logs `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N`. The health report aggregates these into a "Test Selection" sub-section under Test Gate, with a WATCH threshold at avg selected/total > 50% (indicates header adoption is lagging).
+**Diag emission:** every gate run logs `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N`. Since the trigger removal, `mode=full` means only "no diff computable". The health report aggregates these into a "Test Selection" sub-section under Test Gate, with a WATCH threshold at avg selected/total > 50% (indicates header adoption is lagging).
 
 **Override the diff base** via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
 
 **Glob expansion hazard.** The selection function calls `set -f` (noglob) before splitting comma-separated patterns, then `set +f` after. Without `set -f`, a header like `lib/utils/*.sh` would be expanded against the filesystem at parse time, replacing the pattern with the list of currently-matching files — breaking the case-statement match against changed paths.
 
-**Implementation:** `tests/regression/test-gate-targeted-selection.bats` (18 tests covering parser, file matching, glob handling, full-suite triggers, edge cases).
+**Implementation:** `tests/regression/test-gate-targeted-selection.bats` (parser, file matching, glob handling, targeted-only pinning tests, edge cases).
 
 ### Fix-review prompt: syntax-check before declaring done
 

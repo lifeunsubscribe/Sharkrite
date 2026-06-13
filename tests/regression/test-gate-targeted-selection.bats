@@ -4,11 +4,12 @@
 #
 # Verifies:
 #   1. Bats files declare coverage via `# sharkrite-test-covers: <paths>` header
-#   2. Headerless bats files always run (conservative fallback)
-#   3. Full-suite triggers (test-gate.sh, *-lint.sh, Makefile, tests/helpers/*, tests/fixtures/*)
-#      override path-based selection and force the full suite
+#   2. Headerless bats files are skipped (post-#480 default) unless directly changed
+#   3. Selection is ALWAYS targeted — no path-based full-suite triggers exist
+#      (trigger list removed 2026-06-12; pinning tests below keep it removed)
 #   4. Glob patterns in covers headers work (e.g., lib/utils/*.sh)
-#   5. Empty diff falls back to full suite (degenerate but safe)
+#   5. Empty diff falls back to full suite (the ONE remaining FORCE_FULL path,
+#      depended on by post-merge-verify.sh's main-broken check)
 #   6. _parse_test_coverage_header returns clean path lists
 
 setup() {
@@ -125,41 +126,70 @@ teardown() {
   ! echo "$result" | grep -q "covers-foo.bats"
 }
 
-@test "_select_tests_by_changed_paths: full-suite trigger Makefile" {
-  result=$(_select_tests_by_changed_paths "Makefile" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ]
-}
+# ---------------------------------------------------------------------------
+# Pinning: NO path-based full-suite triggers (removed 2026-06-12).
+# A full run costs hours per fix-loop iteration and drowned real findings in
+# load-induced flake (live: issue #484 died mid-loop to a 165-file gate run).
+# These tests keep the escalation removed — a future PR re-adding a trigger
+# list must consciously delete them. The accepted coverage trade-off is
+# documented in behavioral-design.md → "Test Selection by Changed Paths";
+# issue #482 tracks the compensating periodic full-suite safety net.
+# ---------------------------------------------------------------------------
 
-@test "_select_tests_by_changed_paths: full-suite trigger test-gate.sh" {
+@test "pinning: changed test-gate.sh stays targeted — never FORCE_FULL" {
   result=$(_select_tests_by_changed_paths "lib/utils/test-gate.sh" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ]
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "full-suite escalation re-appeared for test-gate.sh change" >&2
+    return 1
+  }
 }
 
-@test "_select_tests_by_changed_paths: full-suite trigger tests/helpers/*" {
+@test "pinning: changed Makefile yields empty selection, not FORCE_FULL" {
+  result=$(_select_tests_by_changed_paths "Makefile" "$TEST_REPO")
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "full-suite escalation re-appeared for Makefile change" >&2
+    return 1
+  }
+  # No fixture covers Makefile → empty selection (caller skips bats)
+  [ -z "$result" ] || {
+    echo "expected empty selection for Makefile; got: $result" >&2
+    return 1
+  }
+}
+
+@test "pinning: changed tests/helpers file stays targeted — never FORCE_FULL" {
   result=$(_select_tests_by_changed_paths "tests/helpers/foo.bash" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ]
+  [ "$result" != "FORCE_FULL" ]
 }
 
-@test "_select_tests_by_changed_paths: full-suite trigger tests/fixtures/*" {
+@test "pinning: changed tests/fixtures file stays targeted — never FORCE_FULL" {
   result=$(_select_tests_by_changed_paths "tests/fixtures/foo.json" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ]
+  [ "$result" != "FORCE_FULL" ]
 }
 
-@test "_select_tests_by_changed_paths: full-suite trigger *-lint.sh glob" {
-  # The trigger pattern is tools/*-lint.sh (avoids literal sharkrite- marker)
+@test "pinning: changed lint tool stays targeted — never FORCE_FULL" {
   result=$(_select_tests_by_changed_paths "tools/sharkrite-lint.sh" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ]
+  [ "$result" != "FORCE_FULL" ]
 }
 
 @test "_select_tests_by_changed_paths: empty diff returns FORCE_FULL" {
+  # The ONE intentional full-suite path: no diff computable. Depended on by
+  # post-merge-verify.sh's main-broken check (DIFF_BASE=HEAD → empty diff).
   result=$(_select_tests_by_changed_paths "" "$TEST_REPO")
   [ "$result" = "FORCE_FULL" ]
 }
 
-@test "_select_tests_by_changed_paths: multiple changed files, one triggers full" {
+@test "pinning: mixed diff with Makefile stays targeted on the covered file" {
   changed=$(printf 'lib/core/foo.sh\nMakefile\n')
   result=$(_select_tests_by_changed_paths "$changed" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ]
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "Makefile in a mixed diff re-escalated to full suite" >&2
+    return 1
+  }
+  echo "$result" | grep -q "covers-foo.bats" || {
+    echo "expected covers-foo.bats in targeted selection; got: $result" >&2
+    return 1
+  }
 }
 
 @test "_select_tests_by_changed_paths: only unrelated change excludes covers-foo" {
@@ -172,11 +202,12 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # Regression: changed .bats file is included in its own diff (issue surfaced
-# 2026-06-09 — editing a single test fell back to FORCE_FULL because the
-# sharkrite-test-covers headers list SOURCE paths, never test paths, so a
-# changed .bats path matched no header anywhere and the selection emerged
-# empty. The empty → FORCE_FULL fallback in run_test_gate then ran the entire
-# ~1500-test suite for what should have been one file.
+# 2026-06-09 — the sharkrite-test-covers headers list SOURCE paths, never test
+# paths, so a changed .bats path matched no header anywhere and the selection
+# emerged empty. At the time, empty escalated to the full ~1500-test suite;
+# today empty means "skip bats", which would silently skip the very file the
+# commit edited. Either way the shortcut below is what makes a changed test
+# run itself.
 # ---------------------------------------------------------------------------
 
 @test "_select_tests_by_changed_paths: changed .bats file is included verbatim" {
@@ -202,15 +233,16 @@ teardown() {
 }
 
 @test "_select_tests_by_changed_paths: changed .bats does NOT force full suite" {
-  # Pre-fix behavior: result was empty, caller treated as FORCE_FULL.
-  # Post-fix: result contains the changed .bats path, NOT the FORCE_FULL marker.
+  # Pre-fix behavior: result was empty, caller escalated. Post-fix: result
+  # contains the changed .bats path, NOT the FORCE_FULL marker and NOT empty
+  # (empty now means the caller skips bats — the changed test must run).
   result=$(_select_tests_by_changed_paths "tests/regression/covers-foo.bats" "$TEST_REPO")
   [ "$result" != "FORCE_FULL" ] || {
     echo "regression: changed .bats fell back to FORCE_FULL" >&2
     return 1
   }
   [ -n "$result" ] || {
-    echo "regression: changed .bats produced empty selection (caller would fall back to FORCE_FULL)" >&2
+    echo "regression: changed .bats produced empty selection (its own tests would be skipped)" >&2
     return 1
   }
 }
@@ -224,53 +256,19 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Regression: RITE_TEST_GATE_SKIP_TRIGGERS=true bypasses the full-suite
-# trigger list. Used by post-merge-verify.sh — see the comment in
-# test-gate.sh::_select_tests_by_changed_paths for the rationale. Without
-# this, every rebase that pulled in a test-gate.sh / Makefile change from
-# main lit the full bats suite for the feature branch's post-merge run.
+# Note: the RITE_TEST_GATE_SKIP_TRIGGERS bats-bypass tests that lived here
+# were removed with the bats trigger list (2026-06-12) — with no bats
+# triggers, the var has nothing to bypass on this path. The var still
+# suppresses the LINT full-scan triggers; those tests live in
+# tests/regression/lint-targeted-selection.bats.
 # ---------------------------------------------------------------------------
 
-@test "_select_tests_by_changed_paths: RITE_TEST_GATE_SKIP_TRIGGERS bypasses full-suite triggers" {
-  # Pre-fix: changed file 'lib/utils/test-gate.sh' → FORCE_FULL.
-  # Post-fix with the env var set: no triggers apply; falls through to
-  # header-matching; emits empty (no test covers lib/utils/test-gate.sh
-  # in our fixture).
-  RITE_TEST_GATE_SKIP_TRIGGERS=true \
-    result=$(_select_tests_by_changed_paths "lib/utils/test-gate.sh" "$TEST_REPO")
-  [ "$result" != "FORCE_FULL" ] || {
-    echo "regression: env var ignored, still FORCE_FULL" >&2
-    return 1
-  }
-}
-
-@test "_select_tests_by_changed_paths: RITE_TEST_GATE_SKIP_TRIGGERS bypasses Makefile trigger too" {
-  RITE_TEST_GATE_SKIP_TRIGGERS=true \
-    result=$(_select_tests_by_changed_paths "Makefile" "$TEST_REPO")
-  [ "$result" != "FORCE_FULL" ] || {
-    echo "regression: Makefile still forced full suite under env var" >&2
-    return 1
-  }
-}
-
-@test "_select_tests_by_changed_paths: RITE_TEST_GATE_SKIP_TRIGGERS off → triggers still fire" {
-  # Default behavior unchanged: the regular post-commit gate must still
-  # see test-gate.sh as a trigger when the env var is NOT set.
-  result=$(_select_tests_by_changed_paths "lib/utils/test-gate.sh" "$TEST_REPO")
-  [ "$result" = "FORCE_FULL" ] || {
-    echo "regression: trigger NOT firing in default mode" >&2
-    return 1
-  }
-}
-
-@test "_select_tests_by_changed_paths: SKIP_TRIGGERS + source-coverage change → targeted selection" {
-  # Real post-merge scenario: rebase pulled in lib/utils/test-gate.sh
-  # (trigger) AND lib/core/foo.sh (covered by fixture A). With env var
-  # set, the trigger is bypassed and we get a targeted selection covering
-  # the source change.
+@test "pinning: rebase-shaped diff (gate + covered source) stays targeted without any env var" {
+  # Post-merge scenario that used to NEED the SKIP_TRIGGERS bypass: a rebase
+  # pulls in lib/utils/test-gate.sh alongside lib/core/foo.sh. With triggers
+  # gone, selection is targeted by default — no escape hatch required.
   changed=$(printf 'lib/utils/test-gate.sh\nlib/core/foo.sh\n')
-  RITE_TEST_GATE_SKIP_TRIGGERS=true \
-    result=$(_select_tests_by_changed_paths "$changed" "$TEST_REPO")
+  result=$(_select_tests_by_changed_paths "$changed" "$TEST_REPO")
   [ "$result" != "FORCE_FULL" ] || {
     echo "expected targeted, got FORCE_FULL" >&2
     return 1
