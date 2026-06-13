@@ -40,7 +40,7 @@ EOF
 @test "fixture B" { true; }
 EOF
 
-  # Fixture C: bats file WITHOUT header (should always run)
+  # Fixture C: bats file WITHOUT header (skipped unless directly changed, post-#480)
   cat > "$TEST_REPO/tests/regression/headerless.bats" <<'EOF'
 #!/usr/bin/env bats
 @test "fixture C" { true; }

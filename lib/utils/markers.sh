@@ -89,7 +89,8 @@ RITE_MARKER_STASH="sharkrite-managed-stash"
 # Test coverage header — bats files declare which source paths they cover.
 # The test_gate uses this to select a subset of bats files based on changed paths.
 # Format at top of bats file: # sharkrite-test-covers: lib/core/foo.sh, lib/utils/bar.sh
-# Headerless files always run (conservative fallback during rollout).
+# Headerless files are SKIPPED (post-#480 backfill); the MISSING_TEST_COVERAGE_HEADER
+# lint rule enforces a header on new bats files.
 RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
 
 # ---------------------------------------------------------------------------
