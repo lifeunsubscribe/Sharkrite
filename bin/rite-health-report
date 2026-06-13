@@ -274,7 +274,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - **Test Selection** (issue #462) sub-section: report from TGS_* stats provided:
      - Show: total gate invocations, targeted-vs-full breakdown, average targeted-selection ratio (TGS_SELECTED_SUM / TGS_TOTAL_SUM × 100%)
      - Threshold: if targeted runs exist and the avg selected/total ratio > 50% → **WATCH**: "Test selection ratio is high — most bats files lack the ${RITE_MARKER_TEST_COVERS}: header; backfill more to realize the optimization."
-     - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs forced full suite this week (verifier/lint/helpers changed often)."
+     - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs fell back to the full suite this week (no diff computable — empty-diff fallback; path triggers were removed 2026-06-12)."
      - If TGS_TOTAL_RUNS is 0 → "No selection data this week."
 5. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
    - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (use CR_TOP5_ISSUES directly — do not recompute), median resolution duration (use CR_MEDIAN_DURATION_S directly — do not recompute)
@@ -337,7 +337,7 @@ $TG_LINES
 
 - TGS_TOTAL_RUNS (gate invocations that emitted a selection diag): $TGS_TOTAL_RUNS
 - TGS_TARGETED_RUNS (ran a subset based on changed paths): $TGS_TARGETED_RUNS
-- TGS_FULL_RUNS (forced full suite — trigger fired or no diff): $TGS_FULL_RUNS
+- TGS_FULL_RUNS (full suite — no-diff fallback only; path triggers removed 2026-06-12): $TGS_FULL_RUNS
 - TGS_SELECTED_SUM (sum of selected files across targeted runs): $TGS_SELECTED_SUM
 - TGS_TOTAL_SUM (sum of total bats files across targeted runs): $TGS_TOTAL_SUM
 

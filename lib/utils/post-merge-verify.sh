@@ -48,8 +48,9 @@ source "$RITE_LIB_DIR/utils/test-gate.sh"
 #
 # For Sharkrite repos, delegates to run_test_gate so targeted selection
 # applies: only bats files covering changed paths run (not the full 1400+
-# test suite). Full-suite triggers (test-gate.sh, lint rules, Makefile,
-# helpers/fixtures) still force the full suite.
+# test suite). Bats selection is always targeted (the path-based full-suite
+# trigger list was removed 2026-06-12); only the no-diff fallback runs the
+# full suite, which the main-broken check below exploits deliberately.
 #
 # pre_merge_ref (optional, default: HEAD~1):
 #   The commit SHA or ref representing the state BEFORE the merge/rebase.
@@ -110,12 +111,11 @@ verify_post_merge() {
     local _pmv_gate_file
     _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$.json")
     local _pmv_gate_exit=0
-    # RITE_TEST_GATE_SKIP_TRIGGERS=true — disable the bats / lint full-suite
-    # trigger lists for this call. The triggers protect against "you changed
-    # test-gate.sh, so re-validate every test", which is the right safety net
-    # for the regular post-commit gate. Here, the diff includes main commits
-    # the rebase pulled in (the whole point of using pre_merge_ref) — and
-    # those main commits routinely touch trigger files. Main already
+    # RITE_TEST_GATE_SKIP_TRIGGERS=true — disable the LINT full-scan trigger
+    # list for this call (bats triggers no longer exist; since 2026-06-12 the
+    # var affects lint selection only). The diff includes main commits the
+    # rebase pulled in (the whole point of using pre_merge_ref) — and those
+    # main commits routinely touch lint rules or the Makefile. Main already
     # validated them via its own CI; we only need to verify the feature
     # branch's own logic against the post-rebase state.
     RITE_TEST_GATE_DIFF_BASE="$pre_merge_ref" \
@@ -145,9 +145,11 @@ verify_post_merge() {
         _main_gate_file=$(mktemp "/tmp/rite_pmv_main_gate_$$.json")
         _main_gate_exit=0
         # Force full suite for the main-broken check: set diff base to HEAD so
-        # git diff HEAD...HEAD returns empty → _selection is empty → FORCE_FULL.
-        # This ensures the main run is not scoped to a narrow subset that
-        # might produce a false "main passes" when main is actually broken.
+        # git diff HEAD...HEAD returns an empty changed-file list, which hits
+        # the no-diff FORCE_FULL fallback in _select_tests_by_changed_paths —
+        # deliberately the ONE remaining full-suite path after the 2026-06-12
+        # trigger removal. This ensures the main run is not scoped to a narrow
+        # subset that might produce a false "main passes" when main is broken.
         RITE_TEST_GATE_DIFF_BASE="HEAD" run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
         rm -f "${_main_gate_file:-}"
         git -C "$worktree_path" worktree remove --force "$_main_test_dir" 2>/dev/null \

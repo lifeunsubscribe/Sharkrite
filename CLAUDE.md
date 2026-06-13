@@ -651,19 +651,15 @@ Bats files in `tests/regression/` and `tests/lint/` can declare which source pat
 @test "..." { ... }
 ```
 
-The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers and runs only the bats files whose covered paths intersect the commit's changed-file list. Files **without** a header always run (conservative fallback during rollout). Patterns support globs (`lib/utils/*.sh`).
+The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers and runs only the bats files whose covered paths intersect the commit's changed-file list. Files **without** a header are **skipped** (post-#480 backfill; the `MISSING_TEST_COVERAGE_HEADER` lint rule enforces headers on new files). A directly changed `.bats` file always runs itself. Patterns support globs (`lib/utils/*.sh`).
 
-**Full-suite triggers** override path-based selection — change any of these → full bats suite runs:
-- `lib/utils/test-gate.sh` (the verifier itself)
-- `tools/*-lint.sh` (lint rules)
-- `Makefile`
-- `tests/helpers/*`, `tests/fixtures/*`
+**There are NO bats full-suite triggers — selection is always targeted.** The original trigger list (gate/lint/Makefile/helpers/fixtures changes → full 165-file run) was removed 2026-06-12: full runs cost hours per fix-loop iteration and drown findings in load flake. Changes to `Makefile`/`tests/fixtures/*` select zero bats files and `tests/helpers/*` selects only its few covering files — an accepted, documented gap until #482's periodic safety net lands. Do NOT re-add trigger paths; pinning tests in `tests/regression/test-gate-targeted-selection.bats` enforce this. The one remaining full-suite path is the no-diff fallback (exploited deliberately by `post-merge-verify.sh`'s main-broken check). Lint full-scan triggers are unaffected (full lint costs seconds). See `docs/architecture/behavioral-design.md` → "Test Selection by Changed Paths".
 
 **Override the diff base** for the selection via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
 
-**Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N` for health-report aggregation.
+**Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N` for health-report aggregation (`mode=full` now occurs only when no diff is computable).
 
-When you add a new bats file, include the header for it to participate in targeted selection. Until backfill reaches most files, the typical run still falls back to most/all of the suite — incremental adoption is fine.
+When you add a new bats file, include the header — headerless files are skipped by the gate, so a missing header means your tests never run for the code they cover.
 
 ## Claude Session Prompt Design (CRITICAL)
 
