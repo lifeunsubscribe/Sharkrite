@@ -140,31 +140,25 @@ _parse_bats_failure_line() {
 # Bats files declare coverage via a single-line header:
 #   # sharkrite-test-covers: lib/core/foo.sh, lib/utils/bar.sh
 # The gate intersects this with the commit's changed-file list and runs only
-# the matching subset. Files WITHOUT a header are always included (conservative
-# fallback during rollout). Certain "broad-impact" file changes (the gate
-# itself, lint rules, Makefile, test helpers, fixtures) force the full suite.
+# the matching subset. Files WITHOUT a header are SKIPPED (post-#480 backfill;
+# the MISSING_TEST_COVERAGE_HEADER lint rule enforces headers on new files).
+#
+# There are NO bats full-suite trigger paths: selection is always targeted.
+# The trigger list (gate/lint/Makefile/helpers/fixtures changes forced all
+# ~165 files) was removed 2026-06-12 — a full run costs hours per fix-loop
+# iteration and drowned real findings in load-induced flake. The accepted
+# coverage trade-off (helpers/fixtures/Makefile changes select few or zero
+# bats files) is documented in behavioral-design.md → "Test Selection by
+# Changed Paths"; issue #482 tracks the compensating periodic safety net.
+# FORCE_FULL survives only for the no-diff degenerate case below.
 #
 # Override the diff base via RITE_TEST_GATE_DIFF_BASE (default: origin/main).
 # ---------------------------------------------------------------------------
 
-# Files whose change forces the full suite (verifier internals, lint, helpers).
-# Keep this list small and auditable. New entries belong here only when a change
-# to the file plausibly affects test correctness across the whole suite.
-# Patterns are shell case-statement globs.
-_TEST_GATE_FULL_SUITE_TRIGGERS=(
-  "lib/utils/test-gate.sh"
-  # Match any lint tool by glob to avoid embedding the literal sharkrite-lint
-  # filename (would trip the RAW_MARKER_LITERAL rule). This is broader than
-  # needed today but reasonable — every tools/*-lint.sh affects test correctness.
-  "tools/*-lint.sh"
-  "Makefile"
-  "tests/helpers/*"
-  "tests/fixtures/*"
-)
-
-# Files whose change forces a full lint scan. Smaller list than bats triggers:
-# lint behavior over the codebase only depends on the lint rules and the build
-# wrapper. A change to lib/utils/markers.sh is intentionally NOT a trigger —
+# Files whose change forces a full LINT scan (bats selection is never
+# escalated — see above; a full lint scan costs seconds, not hours, so the
+# escalation is kept here). A change to lib/utils/markers.sh is intentionally
+# NOT a trigger —
 # adding/renaming a constant doesn't change which existing files violate
 # RAW_MARKER_LITERAL (literals live in the same files before and after).
 _LINT_GATE_FULL_SUITE_TRIGGERS=(
@@ -189,9 +183,10 @@ _select_lint_by_changed_paths() {
     return 0
   fi
 
-  # Full-suite trigger: lint rule change, Makefile change. Suppressed by
-  # RITE_TEST_GATE_SKIP_TRIGGERS=true (used by post-merge-verify.sh — see the
-  # matching comment in _select_tests_by_changed_paths for the rationale).
+  # Full-scan trigger: lint rule change, Makefile change. Suppressed by
+  # RITE_TEST_GATE_SKIP_TRIGGERS=true (used by post-merge-verify.sh: rebases
+  # past main commits that touched lint rules or the Makefile would otherwise
+  # force a full scan for changes main already validated through its own gate).
   if [ "${RITE_TEST_GATE_SKIP_TRIGGERS:-false}" != "true" ]; then
     local _trigger _changed
     while IFS= read -r _changed; do
@@ -341,43 +336,24 @@ _bats_file_matches_changed() {
 # _select_tests_by_changed_paths — produce the bats invocation plan
 # Args: $1=changed_files (newline-separated), $2=project_root
 # Stdout: one of
-#   FORCE_FULL                              — run full suite (trigger fired or no diff)
+#   FORCE_FULL                              — run full suite (no diff computable ONLY)
 #   <newline-separated list of bats files>  — targeted subset, relative to project_root
+#   (empty)                                 — diff exists but no covered tests; caller skips bats
 # Returns 0 always (caller handles empty/full).
+# There are no path-based full-suite triggers — selection is always targeted
+# (trigger list removed 2026-06-12; see the section header above).
 _select_tests_by_changed_paths() {
   local changed_files="$1"
   local project_root="$2"
 
-  # No diff → run full suite (degenerate but safe; e.g. brand-new branch, no upstream)
+  # No diff → run full suite (degenerate but safe; e.g. brand-new branch, no
+  # upstream). post-merge-verify.sh's main-broken check deliberately exploits
+  # this: it sets RITE_TEST_GATE_DIFF_BASE=HEAD so the diff is empty and the
+  # full suite validates main itself. Do not remove without giving that caller
+  # an explicit force-full mechanism.
   if [ -z "$changed_files" ]; then
     echo "FORCE_FULL"
     return 0
-  fi
-
-  # Full-suite trigger: any change to verifier internals / lint / helpers / fixtures
-  # forces the whole bats suite to run. For most invocations this is the right
-  # safety net — changing the gate or a lint rule could affect test correctness
-  # across the codebase. But post-merge-verify.sh uses run_test_gate with the
-  # diff base set to pre_merge_ref to catch semantic conflicts from main's
-  # rebased-in commits, and those main commits routinely touch trigger files
-  # (e.g. test-gate.sh edits land on main, then every rebase past them lights
-  # this branch). Main already validated those files via its own CI, so the
-  # post-merge run only needs to verify the feature branch's own logic.
-  # RITE_TEST_GATE_SKIP_TRIGGERS=true skips the trigger check for that caller.
-  if [ "${RITE_TEST_GATE_SKIP_TRIGGERS:-false}" != "true" ]; then
-    local _trigger _changed
-    while IFS= read -r _changed; do
-      [ -z "$_changed" ] && continue
-      for _trigger in "${_TEST_GATE_FULL_SUITE_TRIGGERS[@]}"; do
-        # shellcheck disable=SC2254  # glob expansion in case is intentional
-        case "$_changed" in
-          $_trigger)
-            echo "FORCE_FULL"
-            return 0
-            ;;
-        esac
-      done
-    done <<< "$changed_files"
   fi
 
   # Walk every bats file and decide inclusion. Output is relative paths so the
@@ -386,9 +362,8 @@ _select_tests_by_changed_paths() {
   # First rule (obvious-case shortcut): if the file IS itself in the diff, run
   # it. The sharkrite-test-covers header lists SOURCE paths, not test paths —
   # without this check, editing a .bats file would match no header anywhere,
-  # _select_tests_by_changed_paths returns empty, and run_test_gate's empty →
-  # FORCE_FULL fallback runs the whole 1500-test suite for what should have
-  # been a one-file change.
+  # the selection would come back empty, and the edited file's own tests
+  # would never run for the very change that touched them.
   (cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null) \
     | while IFS= read -r _rel; do
         if echo "$changed_files" | grep -Fxq "$_rel"; then
@@ -561,9 +536,11 @@ run_test_gate() {
     # --- Sharkrite: targeted bats selection (issue #462) ---
     # Determine which bats files to run based on the commit's changed paths.
     # Files declare coverage via `# sharkrite-test-covers: <paths>` headers.
-    # Headerless files always run (conservative). Verifier/lint/helper changes
-    # force the full suite. See: _select_tests_by_changed_paths above.
-    local _total_bats _selection _selected_count _selection_mode
+    # Headerless files are skipped. Selection is always targeted — FORCE_FULL
+    # is reachable only when no diff is computable (new branch without an
+    # upstream, or post-merge-verify's deliberate DIFF_BASE=HEAD main check).
+    # See: _select_tests_by_changed_paths above.
+    local _total_bats _selection _selected_count
     _total_bats=$(cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ')
     _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
 
@@ -582,17 +559,26 @@ run_test_gate() {
     fi
     _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
 
-    if [ "$_selection" = "FORCE_FULL" ] || [ -z "$_selection" ]; then
-      _selection_mode="full"
+    if [ "$_selection" = "FORCE_FULL" ]; then
       _selected_count="$_total_bats"
-      echo "[test-gate] Selection: full suite (${_total_bats} bats files)"
+      echo "[test-gate] Selection: full suite (${_total_bats} bats files — no diff computable)"
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo "[test-gate] Running bats -r tests/..."
       { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
         | tee "$_tests_raw_file" || true
+    elif [ -z "$_selection" ]; then
+      # Diff exists but no bats file covers the changed paths. Run nothing —
+      # this replaces the old escalate-to-full fallback (removed 2026-06-12:
+      # a Makefile/fixture tweak forced all ~165 files for hours). Honest and
+      # loud: the diag records selected=0 so the health report can watch for
+      # systematic coverage gaps.
+      _selected_count=0
+      echo "[test-gate] Selection: targeted (0/${_total_bats} bats files — no covered tests for changed paths, skipping bats)"
+      _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=${_total_bats} pr=${PR_NUMBER:-?}"
+      echo 0 > "$_bats_exit_file"
+      : > "$_tests_raw_file"
     else
       _selected_count=$(echo "$_selection" | grep -c '.' || true)
-      _selection_mode="targeted"
       echo "[test-gate] Selection: targeted (${_selected_count}/${_total_bats} bats files based on changed paths)"
       _diag "TEST_GATE_SELECTION mode=targeted selected=${_selected_count} total=${_total_bats} pr=${PR_NUMBER:-?}"
       # Build array of selected files for bats invocation
