@@ -88,6 +88,18 @@ teardown() {
   if ! command -v bats >/dev/null 2>&1; then
     skip "bats not installed"
   fi
+  # Determine expected outcome based on installed bats version.
+  # --report-formatter was introduced in bats-core 1.5.0; any version >= 1.5
+  # must return has_report_formatter, older versions return no_report_formatter.
+  _bats_version=$(bats --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0.0")
+  _bats_major=${_bats_version%%.*}
+  _bats_minor=${_bats_version##*.}
+  if [ "${_bats_major:-0}" -gt 1 ] || \
+     { [ "${_bats_major:-0}" -eq 1 ] && [ "${_bats_minor:-0}" -ge 5 ]; }; then
+    _expected="has_report_formatter"
+  else
+    _expected="no_report_formatter"
+  fi
   run bash -c "
     export RITE_LIB_DIR='${RITE_LIB_DIR}'
     _diag() { true; }
@@ -101,8 +113,8 @@ teardown() {
     fi
   "
   [ "$status" -eq 0 ]
-  # Either outcome is valid — the test confirms the helper runs without crashing.
-  [[ "$output" == "has_report_formatter" || "$output" == "no_report_formatter" ]]
+  # Assert the specific expected outcome — both outcomes accepted masks the detection bug.
+  [ "$output" = "$_expected" ]
 }
 
 # ---------------------------------------------------------------------------

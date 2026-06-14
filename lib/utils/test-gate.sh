@@ -231,17 +231,34 @@ _select_lint_by_changed_paths() {
 # the run log too) and keep TAP in the temp file that `_parse_bats_failure_line`
 # reads for JSON construction.
 #
-# Detection: grep the bats binary for the `--report-formatter` flag string.
-# Avoids a `bats --help` subprocess (which would fail inside tool hooks that
-# deny test-runner invocations) and is stable across any bats version that
-# ships the flag.
+# Detection: grep the bats libexec core binary for the `--report-formatter`
+# flag string.  The entrypoint (e.g. /opt/homebrew/bin/bats) is a thin wrapper
+# that exec-delegates to $BATS_ROOT/libexec/bats-core/bats — the flag string
+# lives only in the core binary.  Avoids a `bats --help` subprocess (which
+# would fail inside tool hooks that deny test-runner invocations) and is stable
+# across any bats version that ships the flag.
 #
 # Returns 0 when pretty+report-formatter is available, 1 otherwise.
 _bats_has_report_formatter() {
-  local _bats_bin
+  local _bats_bin _bats_real _bats_root _bats_core
   _bats_bin=$(command -v bats 2>/dev/null || true)
   [ -z "$_bats_bin" ] && return 1
-  grep -q -- '--report-formatter' "$_bats_bin" 2>/dev/null
+  # The bats entrypoint at e.g. /opt/homebrew/bin/bats is a thin wrapper that
+  # exec-delegates to $BATS_ROOT/libexec/bats-core/bats — only the libexec
+  # binary contains the --report-formatter flag string.  Resolve the real path
+  # of the entrypoint (following symlinks), strip two path components to get
+  # BATS_ROOT (same as bats' own BATS_PATH%/*/* logic), then probe the core
+  # binary.  Fall back to grepping the entrypoint itself for non-standard
+  # installs where the core binary doesn't exist at the expected path.
+  _bats_real=$(readlink -f "$_bats_bin" 2>/dev/null || true)
+  [ -z "$_bats_real" ] && _bats_real="$_bats_bin"
+  _bats_root="${_bats_real%/*/*}"
+  _bats_core="$_bats_root/libexec/bats-core/bats"
+  if [ -f "$_bats_core" ]; then
+    grep -q -- '--report-formatter' "$_bats_core" 2>/dev/null
+  else
+    grep -q -- '--report-formatter' "$_bats_bin" 2>/dev/null
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -595,7 +612,7 @@ run_test_gate() {
     local _bats_tap_dir=""
     if _bats_has_report_formatter; then
       _bats_use_pretty=true
-      _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$")
+      _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$_XXXXXX")
       echo "[test-gate] bats: pretty formatter (terminal) + TAP report (parser)"
     else
       echo "[test-gate] bats: TAP formatter (--report-formatter not available in installed bats)"
