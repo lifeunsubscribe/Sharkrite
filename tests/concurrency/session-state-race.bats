@@ -19,6 +19,19 @@
 
 load '../helpers/setup.bash'
 
+# Skip the entire file on bash 3.2 (macOS system bash).
+# Barrier sync + subshell spawning relies on bash 4+ performance:
+# bash 3.2 startup is 50-150ms per subshell vs ~10ms for bash 4+, so
+# concurrent subshells can't reliably reach the barrier within the timeout
+# on a busy macOS dev machine, producing false failures unrelated to the
+# session-state race behavior under test.
+# On Homebrew bash 4+ (macOS) and Linux CI (bash 4+ default), tests run fully.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (detected bash ${BASH_VERSION}). Install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
@@ -55,7 +68,9 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  # 100 iterations × 0.1s = 10s. Bumped from 5s to give bash 4+ subshells
+  # enough headroom on a loaded macOS dev machine.
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
@@ -63,8 +78,8 @@ wait_at_barrier() {
     fi
   done
 
-  if [ "$timeout" -ge 50 ]; then
-    echo "ERROR: Barrier timeout" >&2
+  if [ "$timeout" -ge 100 ]; then
+    echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
     return 1
   fi
 }
@@ -110,7 +125,7 @@ wait_at_barrier() {
   # Issue #8's session-state locking must prevent concurrent write corruption.
   run jq empty "$SESSION_STATE_FILE"
   [ "$status" -eq 0 ] || {
-    echo "REGRESSION: JSON corrupted by concurrent writes — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted by concurrent writes — session-state locking (issue #8) regressed"
     cat "$SESSION_STATE_FILE"
     return 1
   }
@@ -158,7 +173,7 @@ wait_at_barrier() {
   # Verify JSON is still valid
   # Issue #8's locking must prevent JSON corruption during concurrent approval additions.
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "REGRESSION: JSON corruption in blocker approvals — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corruption in blocker approvals — session-state locking (issue #8) regressed"
     cat "$SESSION_STATE_FILE" >&2
     return 1
   }
@@ -173,7 +188,7 @@ wait_at_barrier() {
 
   # Issue #8's locked read-modify-write must prevent lost approvals.
   [ "$found_count" -eq "$num_processes" ] || {
-    echo "REGRESSION: Only $found_count/$num_processes approvals saved — concurrent read-modify-write race (issue #8) regressed?"
+    echo "FAIL: Only $found_count/$num_processes approvals saved — concurrent read-modify-write race (issue #8) regressed"
     return 1
   }
 }
@@ -227,7 +242,7 @@ wait_at_barrier() {
   # Issue #8's locking makes init_session an upsert (no-op if file already exists),
   # preventing concurrent init from clobbering in-progress updates.
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "REGRESSION: JSON corrupted by init/update race — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted by init/update race — session-state locking (issue #8) regressed"
     cat "$SESSION_STATE_FILE" >&2
     return 1
   }
@@ -263,7 +278,7 @@ wait_at_barrier() {
   # Issue #8's session-state locking must hold even under high concurrency (10×10).
   run jq empty "$SESSION_STATE_FILE"
   [ "$status" -eq 0 ] || {
-    echo "REGRESSION: JSON corrupted under high concurrency — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted under high concurrency — session-state locking (issue #8) regressed"
     echo "File contents:"
     cat "$SESSION_STATE_FILE" || echo "(file unreadable)"
     return 1
@@ -305,7 +320,7 @@ wait_at_barrier() {
   [ -f "$SESSION_STATE_FILE" ]
 
   jq empty "$SESSION_STATE_FILE" 2>/dev/null || {
-    echo "REGRESSION: JSON corrupted during concurrent creation — session-state locking (issue #8) regressed?"
+    echo "FAIL: JSON corrupted during concurrent creation — session-state locking (issue #8) regressed"
     cat "$SESSION_STATE_FILE" >&2
     return 1
   }

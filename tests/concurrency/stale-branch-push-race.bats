@@ -16,6 +16,19 @@
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
 
+# Skip the entire file on bash 3.2 (macOS system bash).
+# Barrier sync + subshell spawning relies on bash 4+ performance:
+# bash 3.2 startup is 50-150ms per subshell vs ~10ms for bash 4+, so
+# concurrent subshells can't reliably reach the barrier within the timeout
+# on a busy macOS dev machine, producing false failures unrelated to the
+# git push race behavior under test.
+# On Homebrew bash 4+ (macOS) and Linux CI (bash 4+ default), tests run fully.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (detected bash ${BASH_VERSION}). Install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
@@ -62,13 +75,20 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  # 100 iterations × 0.1s = 10s. Bumped from 5s to give bash 4+ subshells
+  # enough headroom on a loaded macOS dev machine.
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
       timeout=$((timeout + 1))
     fi
   done
+
+  if [ "$timeout" -ge 100 ]; then
+    echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
+    return 1
+  fi
 }
 
 @test "concurrent push to same branch - one succeeds, others handle rejection" {
@@ -129,13 +149,15 @@ wait_at_barrier() {
   # Exactly one should succeed (first to push).
   # This is a fundamental git property — the first non-fast-forward push wins.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count pushes succeeded instead of 1 — git push race handling broken?"
+    echo "FAIL: $success_count pushes succeeded (expected exactly 1)."
+    echo "  success_count=0 → barrier timed out before subshells started racing (test scaffolding failure)"
+    echo "  success_count>1 → git non-fast-forward rejection not firing (genuine regression)"
     return 1
   }
 
   # Verify rejections happened (num_processes - 1 must be rejected in a true race).
   [ "$rejection_count" -ge 1 ] || {
-    echo "REGRESSION: Expected at least one rejection, got $rejection_count — concurrent push rejection not working?"
+    echo "FAIL: Expected at least one rejection, got $rejection_count — concurrent push rejection not working"
     return 1
   }
 }
@@ -181,7 +203,9 @@ wait_at_barrier() {
   # Issues #15/#26 must ensure rite handles this correctly; but git's own atomicity is
   # the underlying guarantee.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count worktrees created instead of 1 — worktree creation race (issues #15/#26) regressed?"
+    echo "FAIL: $success_count worktrees created (expected exactly 1)."
+    echo "  success_count=0 → barrier timed out (test scaffolding failure)"
+    echo "  success_count>1 → git worktree add is not atomic (genuine regression)"
     return 1
   }
 
@@ -231,7 +255,9 @@ wait_at_barrier() {
   # Only one should succeed — git checkout -b fails if the branch already exists.
   # This is a fundamental git property, not a rite-specific fix.
   [ "$success_count" -eq 1 ] || {
-    echo "REGRESSION: $success_count branches created instead of 1 — concurrent branch creation not atomic?"
+    echo "FAIL: $success_count branches created (expected exactly 1)."
+    echo "  success_count=0 → barrier timed out (test scaffolding failure)"
+    echo "  success_count>1 → concurrent branch creation not atomic (genuine regression)"
     return 1
   }
 
@@ -312,7 +338,7 @@ wait_at_barrier() {
   # Issue #15's stale-branch handling ensures concurrent merge-main attempts
   # don't all fail — at minimum one succeeds, others handle the race gracefully.
   [ "$success_count" -ge 1 ] || {
-    echo "REGRESSION: No successful merge+push — stale-branch race handling (issue #15) regressed?"
+    echo "FAIL: No successful merge+push — stale-branch race handling (issue #15) regressed"
     return 1
   }
 
