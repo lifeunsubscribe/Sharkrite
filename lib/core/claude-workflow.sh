@@ -424,18 +424,21 @@ _run_dev_test_gate() {
         fi
 
         # Install base requirements with error tracking
+        # Cap each pip install to RITE_PIP_INSTALL_TIMEOUT seconds (default 120) so a
+        # wedged/slow install cannot hang the entire gate indefinitely (issue #599).
+        local _pip_timeout="${RITE_PIP_INSTALL_TIMEOUT:-120}"
         local _base_install_ok=true
         local _pip_error_log
         _pip_error_log=$(mktemp)
 
-        if ! .venv/bin/pip install -q -r requirements.txt >"$_pip_error_log" 2>&1; then
+        if ! run_with_timeout "$_pip_timeout" .venv/bin/pip install -q -r requirements.txt >"$_pip_error_log" 2>&1; then
           _base_install_ok=false
           print_warning "Base requirements install failed — attempting system dependency fix"
 
           # Try to install missing system deps and retry
           if _install_system_deps "$_pip_error_log"; then
             print_status "Retrying pip install after system dependency install..."
-            if .venv/bin/pip install -q -r requirements.txt >"$_pip_error_log" 2>&1; then
+            if run_with_timeout "$_pip_timeout" .venv/bin/pip install -q -r requirements.txt >"$_pip_error_log" 2>&1; then
               _base_install_ok=true
             fi
           fi
@@ -444,14 +447,14 @@ _run_dev_test_gate() {
         # Install dev requirements if present
         local _dev_install_ok=true
         if [ -f "requirements-dev.txt" ]; then
-          if ! .venv/bin/pip install -q -r requirements-dev.txt >"$_pip_error_log" 2>&1; then
+          if ! run_with_timeout "$_pip_timeout" .venv/bin/pip install -q -r requirements-dev.txt >"$_pip_error_log" 2>&1; then
             _dev_install_ok=false
             print_warning "Dev requirements install failed — attempting system dependency fix"
 
             # Try system-dep fix and retry
             if _install_system_deps "$_pip_error_log"; then
               print_status "Retrying dev requirements install..."
-              if .venv/bin/pip install -q -r requirements-dev.txt >"$_pip_error_log" 2>&1; then
+              if run_with_timeout "$_pip_timeout" .venv/bin/pip install -q -r requirements-dev.txt >"$_pip_error_log" 2>&1; then
                 _dev_install_ok=true
               fi
             fi

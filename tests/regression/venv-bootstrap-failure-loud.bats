@@ -4,6 +4,9 @@
 #
 # Verifies that when pip install fails (for base or dev requirements), the
 # bootstrap does NOT print "Venv ready ✅" — it should print actionable errors.
+#
+# All pip installs in these tests use shims — no real network access, no
+# unbounded hangs. (issue #599: real pip install hung 78 min in CI)
 
 setup() {
   # Source utils for color codes and print functions
@@ -35,11 +38,13 @@ setup() {
   export RITE_ORCHESTRATED=false
   export RITE_TEST_GATE_SKIP=false
 
-  # Create a temporary bin directory for our shim
+  # Create a temporary bin directory for our shims.
+  # Tests that need to intercept the bootstrap (no pre-existing venv) add
+  # SHIM_DIR to the front of PATH and place a python3 shim here that creates
+  # a fake venv with a controlled pip shim — avoiding any real pip network call.
   export SHIM_DIR=$(mktemp -d)
 
-  # Source the script containing run_test_gate (need the whole file for the function)
-  # We'll override PATH in each test to inject our failing pip.
+  # Source the script containing _run_dev_test_gate (need the whole file for the function).
   # RITE_SOURCE_FUNCTIONS_ONLY=1 loads only function definitions without executing
   # the main program body (arg parsing, worktree navigation, Claude dev session).
   # Without this, sourcing launches a real Claude Code session (issue #469).
@@ -53,50 +58,90 @@ teardown() {
 }
 
 @test "venv bootstrap: base requirements install failure does NOT print 'Venv ready'" {
-  # First create a real venv so we can mock its pip
-  python3 -m venv .venv
+  # Exercise the venv bootstrap path (no pre-existing venv) with a pip shim
+  # that fails immediately — no real network call, no unbounded install (issue #599).
+  #
+  # We intercept `python3 -m venv .venv` via a shim in SHIM_DIR so we can inject
+  # a broken pip into the fake venv before _run_dev_test_gate tries to use it.
+  REAL_PYTHON3=$(which python3)
 
-  # Replace the venv's pip with a failing shim
-  cat > ".venv/bin/pip" <<'EOF'
+  # python3 shim: when called as -m venv, build a fake venv with a broken pip
+  cat > "$SHIM_DIR/python3" <<SHIMEOF
+#!/bin/bash
+if [[ "\$*" == *"-m venv"* ]]; then
+  # Create minimal venv structure expected by the bootstrap
+  mkdir -p .venv/bin
+  # Broken pip: fails immediately — simulates base requirements install failure
+  cat > .venv/bin/pip <<'PIPEOF'
 #!/bin/bash
 echo "ERROR: Simulated pip install failure" >&2
 exit 1
-EOF
-  chmod +x ".venv/bin/pip"
+PIPEOF
+  chmod +x .venv/bin/pip
+  # python shim: fail pytest import, pass everything else to real python
+  cat > .venv/bin/python <<PYEOF
+#!/bin/bash
+if [[ "\\\$*" == *"import pytest"* ]]; then exit 1; fi
+exec "$REAL_PYTHON3" "\\\$@"
+PYEOF
+  chmod +x .venv/bin/python
+  exit 0
+fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$SHIM_DIR/python3"
+  export PATH="$SHIM_DIR:$PATH"
 
-  # Run the test gate function (which triggers venv bootstrap)
-  # The venv already exists, so bootstrap will skip creation and go straight to pip install
-  run run_test_gate
+  # _run_dev_test_gate is the function defined in claude-workflow.sh that runs
+  # tests during Phase 1 dev sessions. It differs from run_test_gate() in
+  # test-gate.sh (no args, no JSON output, has auto-fix loop). We source
+  # claude-workflow.sh above with RITE_SOURCE_FUNCTIONS_ONLY=1 — so
+  # _run_dev_test_gate is in scope here; run_test_gate is not (BW01 fix).
+  run _run_dev_test_gate
 
   # Should NOT contain "Venv ready ✅"
   ! [[ "$output" =~ "Venv ready" ]]
 
-  # Should contain error messaging
+  # Should contain error messaging about the bootstrap failure
   [[ "$output" =~ "Venv bootstrap incomplete" ]] || [[ "$output" =~ "failed to install" ]]
 }
 
 @test "venv bootstrap: dev requirements install failure does NOT print 'Venv ready'" {
-  # First create a real venv
-  python3 -m venv .venv
+  # Exercise the venv bootstrap path with a pip shim that succeeds for base
+  # requirements but fails for dev requirements — no real network call (issue #599).
+  REAL_PYTHON3=$(which python3)
 
-  # Get the real pip path for delegation
-  REAL_PIP=$(which pip3 || which pip)
-
-  # Replace the venv's pip with a shim that fails ONLY for requirements-dev.txt
-  cat > ".venv/bin/pip" <<EOF
+  # python3 shim: build a fake venv with a pip that fails only on requirements-dev.txt
+  cat > "$SHIM_DIR/python3" <<SHIMEOF
 #!/bin/bash
-# Fail for dev requirements, succeed for base requirements
-if [[ "\$*" == *"requirements-dev.txt"* ]]; then
+if [[ "\$*" == *"-m venv"* ]]; then
+  mkdir -p .venv/bin
+  # Pip shim: succeed for base, fail for dev
+  cat > .venv/bin/pip <<'PIPEOF'
+#!/bin/bash
+if [[ "$*" == *"requirements-dev.txt"* ]]; then
   echo "ERROR: Simulated dev requirements install failure" >&2
   exit 1
 fi
-# For base requirements, delegate to real pip
-exec "$REAL_PIP" "\$@"
-EOF
-  chmod +x ".venv/bin/pip"
+exit 0
+PIPEOF
+  chmod +x .venv/bin/pip
+  # python shim: fail pytest import, pass everything else to real python
+  cat > .venv/bin/python <<PYEOF
+#!/bin/bash
+if [[ "\\\$*" == *"import pytest"* ]]; then exit 1; fi
+exec "$REAL_PYTHON3" "\\\$@"
+PYEOF
+  chmod +x .venv/bin/python
+  exit 0
+fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$SHIM_DIR/python3"
+  export PATH="$SHIM_DIR:$PATH"
 
-  # Run the test gate (triggers bootstrap)
-  run run_test_gate
+  # Run the dev test gate (triggers bootstrap — no venv exists yet)
+  run _run_dev_test_gate
 
   # Should NOT contain "Venv ready ✅"
   ! [[ "$output" =~ "Venv ready" ]]
@@ -107,54 +152,76 @@ EOF
 
 @test "venv bootstrap: success path DOES print 'Venv ready'" {
   # This test verifies the positive case — when everything succeeds,
-  # the success message should be printed
+  # the success message should be printed.
+  #
+  # We use a mock pip that succeeds instantly AND a mock python that accepts
+  # "import pytest" so we don't depend on real network access or a real pip install.
+  # Without mocks, a real pip install here could hang indefinitely (issue #599).
+  REAL_PYTHON3=$(which python3)
 
-  # Use real python3 and pip (no shims)
-  # Just run the bootstrap
-  run run_test_gate
+  # python3 shim: build a fake venv with a pip and python that both succeed
+  cat > "$SHIM_DIR/python3" <<SHIMEOF
+#!/bin/bash
+if [[ "\$*" == *"-m venv"* ]]; then
+  mkdir -p .venv/bin
+  # Pip shim: succeeds without doing anything
+  cat > .venv/bin/pip <<'PIPEOF'
+#!/bin/bash
+exit 0
+PIPEOF
+  chmod +x .venv/bin/pip
+  # python shim: accept pytest import check, pass other calls to real python
+  cat > .venv/bin/python <<PYEOF
+#!/bin/bash
+if [[ "\\\$*" == *"import pytest"* ]]; then exit 0; fi
+exec "$REAL_PYTHON3" "\\\$@"
+PYEOF
+  chmod +x .venv/bin/python
+  exit 0
+fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$SHIM_DIR/python3"
+  export PATH="$SHIM_DIR:$PATH"
 
-  # Should print success if installs worked
-  # Note: This might fail if pytest isn't actually available, but that's okay —
-  # we're primarily testing the failure paths. Skip the positive assertion if
-  # the bootstrap actually fails due to real environment issues.
-  if [ "$status" -eq 0 ]; then
-    # If test gate succeeded, venv bootstrap should have printed success
-    [[ "$output" =~ "Venv ready" ]] || [[ "$output" =~ "No venv found" ]]
-  fi
-  # If status != 0, that's fine — it means real environment doesn't have pytest,
-  # which is a valid state. The important tests are the failure paths above.
+  run _run_dev_test_gate
+
+  # Should print success — pip shim and pytest import check both pass
+  [[ "$output" =~ "Venv ready" ]]
 }
 
 @test "venv bootstrap: pytest not importable after install prints actionable error" {
-  # Create a scenario where pip succeeds but pytest isn't actually importable
-  # This simulates a broken install state
+  # Create a scenario where pip succeeds but pytest isn't actually importable.
+  # This simulates a broken install state (pip exited 0 but didn't install pytest).
+  # No real pip network call — all shims (issue #599).
+  REAL_PYTHON3=$(which python3)
 
-  # First create a real venv
-  python3 -m venv .venv
-
-  # Replace the venv's pip with a shim that succeeds but doesn't actually install anything
-  cat > ".venv/bin/pip" <<'EOF'
+  # python3 shim: build a fake venv with succeeding pip but failing pytest import
+  cat > "$SHIM_DIR/python3" <<SHIMEOF
 #!/bin/bash
-# Pretend to succeed without doing anything
+if [[ "\$*" == *"-m venv"* ]]; then
+  mkdir -p .venv/bin
+  # Pip shim: pretends to succeed without installing anything
+  cat > .venv/bin/pip <<'PIPEOF'
+#!/bin/bash
 exit 0
-EOF
-  chmod +x ".venv/bin/pip"
-
-  # Replace the venv's python with a shim that fails pytest imports
-  REAL_PYTHON=$(which python3)
-  cat > ".venv/bin/python" <<EOF
+PIPEOF
+  chmod +x .venv/bin/pip
+  # python shim: fail pytest import check to simulate missing module
+  cat > .venv/bin/python <<PYEOF
 #!/bin/bash
-# For pytest import check, fail
-if [[ "\$*" == *"import pytest"* ]]; then
-  exit 1
+if [[ "\\\$*" == *"import pytest"* ]]; then exit 1; fi
+exec "$REAL_PYTHON3" "\\\$@"
+PYEOF
+  chmod +x .venv/bin/python
+  exit 0
 fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$SHIM_DIR/python3"
+  export PATH="$SHIM_DIR:$PATH"
 
-# Otherwise use real python
-exec "$REAL_PYTHON" "\$@"
-EOF
-  chmod +x ".venv/bin/python"
-
-  run run_test_gate
+  run _run_dev_test_gate
 
   # Should NOT print "Venv ready"
   ! [[ "$output" =~ "Venv ready" ]]
