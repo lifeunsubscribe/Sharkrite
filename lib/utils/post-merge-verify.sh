@@ -37,8 +37,19 @@ if ! declare -f rite_markers_loaded >/dev/null 2>&1; then
   source "$_pmv_self_dir/markers.sh"
 fi
 
-# Source test gate for run_test_gate (targeted selection + structured findings)
-source "$RITE_LIB_DIR/utils/test-gate.sh"
+# Source test gate for run_test_gate (targeted selection + structured findings).
+# Guard matches the pattern used for _diag and rite_markers_loaded above: only
+# source if run_test_gate is not already defined. This keeps the file safe to
+# use inside sandboxed tests that stub run_test_gate directly (tests 1-4 in
+# post-merge-test-exit-propagation.bats) and prevents a "No such file or
+# directory" crash when test-gate.sh is absent from a minimal test sandbox.
+# The intermittent multi-file batched-run pass was caused by an earlier bats
+# file sourcing test-gate.sh and leaving run_test_gate defined in the shared
+# runner process — the unconditional source succeeded via the re-source guard
+# in test-gate.sh:28 without needing the file on disk, masking the solo failure.
+if ! declare -f run_test_gate >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/test-gate.sh"
+fi
 
 # ===================================================================
 # PUBLIC: verify_post_merge [worktree_path] [pre_merge_ref]
