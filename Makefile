@@ -38,19 +38,26 @@ lint:
 
 # Run tests (if bats is available).
 # When FILTER is set, restrict to tests/$(FILTER)/; otherwise run tests/.
+# Uses --formatter pretty when the installed bats supports --report-formatter
+# (bats-core >= 1.5); falls back to plain TAP on older versions.
 test:
 	@if command -v bats >/dev/null 2>&1; then \
+		if grep -q -- '--report-formatter' "$$(command -v bats)" 2>/dev/null; then \
+			_bats_fmt="-F pretty"; \
+		else \
+			_bats_fmt=""; \
+		fi; \
 		if [ -n "$(FILTER)" ]; then \
 			if [ -d "tests/$(FILTER)" ]; then \
 				echo "Running bats tests (filter: $(FILTER))..."; \
-				bats -r "tests/$(FILTER)/"; \
+				bats $$_bats_fmt -r "tests/$(FILTER)/"; \
 			else \
 				echo "ERROR: tests/$(FILTER)/ not found"; \
 				exit 1; \
 			fi; \
 		else \
 			echo "Running bats tests..."; \
-			bats -r tests/; \
+			bats $$_bats_fmt -r tests/; \
 		fi; \
 	else \
 		echo "WARN: bats not installed. Skipping tests. Install with: brew install bats-core"; \

@@ -223,6 +223,28 @@ _select_lint_by_changed_paths() {
 }
 
 # ---------------------------------------------------------------------------
+# Bats pretty-formatter support detection (issue #484)
+# ---------------------------------------------------------------------------
+# bats-core 1.5+ supports `--report-formatter <type>` which writes a TAP
+# stream to a file while rendering the chosen `--formatter` to stdout.  We use
+# this to send pretty output to the terminal (stdout → FIFO-tee captures it in
+# the run log too) and keep TAP in the temp file that `_parse_bats_failure_line`
+# reads for JSON construction.
+#
+# Detection: grep the bats binary for the `--report-formatter` flag string.
+# Avoids a `bats --help` subprocess (which would fail inside tool hooks that
+# deny test-runner invocations) and is stable across any bats version that
+# ships the flag.
+#
+# Returns 0 when pretty+report-formatter is available, 1 otherwise.
+_bats_has_report_formatter() {
+  local _bats_bin
+  _bats_bin=$(command -v bats 2>/dev/null || true)
+  [ -z "$_bats_bin" ] && return 1
+  grep -q -- '--report-formatter' "$_bats_bin" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # Bats parallelism (--jobs N) — opt-in, gated by GNU parallel availability
 # ---------------------------------------------------------------------------
 # bats-core natively supports `--jobs N` for file-level parallelism via GNU
@@ -437,6 +459,7 @@ run_test_gate() {
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}"
+        [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
             printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
@@ -559,13 +582,40 @@ run_test_gate() {
     fi
     _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
 
+    # --- Bats output format: pretty for terminal, TAP for JSON parser ---
+    # When bats supports --report-formatter (bats-core >= 1.5), we run with
+    # `-F pretty` so the terminal gets compact colour output, while TAP is
+    # written to a temp dir via `--report-formatter tap`.  The TAP file
+    # replaces the old tee-to-raw-file pattern so _parse_bats_failure_line
+    # still reads `^not ok N` lines.  Pretty output flows to stdout → the
+    # FIFO-tee in bin/rite captures it in the run log automatically.
+    #
+    # Fallback: older bats without --report-formatter → original TAP-via-tee.
+    local _bats_use_pretty=false
+    local _bats_tap_dir=""
+    if _bats_has_report_formatter; then
+      _bats_use_pretty=true
+      _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$")
+      echo "[test-gate] bats: pretty formatter (terminal) + TAP report (parser)"
+    else
+      echo "[test-gate] bats: TAP formatter (--report-formatter not available in installed bats)"
+    fi
+
     if [ "$_selection" = "FORCE_FULL" ]; then
       _selected_count="$_total_bats"
       echo "[test-gate] Selection: full suite (${_total_bats} bats files — no diff computable)"
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo "[test-gate] Running bats -r tests/..."
-      { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+      if [ "$_bats_use_pretty" = "true" ]; then
+        { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+            bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
+            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/); \
+          echo $? > "$_bats_exit_file"; } || true
+        cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
+      else
+        { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
+          | tee "$_tests_raw_file" || true
+      fi
     elif [ -z "$_selection" ]; then
       # Diff exists but no bats file covers the changed paths. Run nothing —
       # this replaces the old escalate-to-full fallback (removed 2026-06-12:
@@ -587,10 +637,21 @@ run_test_gate() {
         [ -n "$_bf" ] && _selected_files+=("$_bf")
       done <<< "$_selection"
       echo "[test-gate] Running bats on ${#_selected_files[@]} selected files..."
-      { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+      if [ "$_bats_use_pretty" = "true" ]; then
+        { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+            bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
+            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}"); \
+          echo $? > "$_bats_exit_file"; } || true
+        cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
+      else
+        { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
+          | tee "$_tests_raw_file" || true
+      fi
     fi
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+
+    # Clean up tap dir if used (never a glob — scoped to this invocation's pid-named dir)
+    [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
 
     rm -f "$_sc_exit_file" "$_lint_exit_file" "$_bats_exit_file"
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
