@@ -2684,12 +2684,30 @@ main() {
 
       if [ "$_saved_real" = "$_main_real" ]; then
         _worktree_reject_reason="resolves to main repo root (symlink or alias)"
-      elif ! git -C "$RITE_PROJECT_ROOT" worktree list 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -qx "$saved_worktree"; then
-        # Not a linked worktree — might be a stale path or main-repo alias.
-        # Treat as invalid to prevent in-place execution.
-        _worktree_reject_reason="not a linked worktree (not in git worktree list)"
       else
-        _worktree_valid=true
+        # Confirm $_saved_real is among the LINKED worktrees (not the main checkout).
+        # Use --porcelain so paths containing spaces are not truncated (plain list
+        # truncates at the first space via awk '{print $1}').
+        # Resolve each list entry via pwd -P to match $_saved_real (already resolved).
+        # Skip the first entry (the main checkout) via tail -n +2 on the extracted
+        # path list (one path per line after awk).
+        local _linked_match=false
+        local _wt_path
+        while IFS= read -r _wt_path; do
+          local _wt_real
+          _wt_real=$(cd "$_wt_path" 2>/dev/null && pwd -P || echo "$_wt_path")
+          if [ "$_wt_real" = "$_saved_real" ]; then
+            _linked_match=true
+            break
+          fi
+        done < <(git -C "$RITE_PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+                   | awk '/^worktree /{print substr($0,10)}' \
+                   | tail -n +2 || true)
+        if [ "$_linked_match" = true ]; then
+          _worktree_valid=true
+        else
+          _worktree_reject_reason="not a linked worktree (not in git worktree list)"
+        fi
       fi
     fi
 

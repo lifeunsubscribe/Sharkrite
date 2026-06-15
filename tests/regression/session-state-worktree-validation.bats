@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/undo-workflow.sh
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/undo-workflow.sh, lib/utils/session-tracker.sh, lib/core/claude-workflow.sh
 # Regression test for issue #610: Record interrupted session repo as worktree path
 #
 # Live incident 2026-06-14: .rite/session-state-544.json recorded
@@ -11,10 +11,11 @@
 # --undo was unsafe because it would have run `git worktree remove --force`
 # on the primary checkout.
 #
-# Three guards added (issue #610):
+# Four guards added (issue #610):
 #   1. save_session_state_with_phase: never persist main-root or empty path
-#   2. Resume validation: reject saved path that is main-root or not a linked worktree
-#   3. undo-workflow.sh: refuse to remove main repo root as worktree
+#   2. save_session_state (session-tracker.sh): same guard for the SIGINT interrupt path
+#   3. Resume validation: reject saved path that is main-root or not a linked worktree
+#   4. undo-workflow.sh: refuse to remove main repo root as worktree
 #
 # Tests:
 #   STRUCTURAL (guard presence):
@@ -22,17 +23,22 @@
 #     2. Resume validation section contains main-root rejection
 #     3. Resume validation contains linked-worktree check
 #     4. undo-workflow.sh contains main-root guard
-#   BEHAVIORAL (save guard):
-#     5. save_session_state_with_phase writes empty worktree_path when passed main root
-#     6. save_session_state_with_phase writes empty worktree_path when passed empty string
-#     7. save_session_state_with_phase preserves a valid worktree path unchanged
+#     5. save_session_state (session-tracker.sh) contains main-root guard [interrupt path]
+#   BEHAVIORAL (save_session_state_with_phase guard):
+#     6. save_session_state_with_phase writes empty worktree_path when passed main root
+#     7. save_session_state_with_phase writes empty worktree_path when passed empty string
+#     8. save_session_state_with_phase preserves a valid worktree path unchanged
 #   BEHAVIORAL (resume validation — structural, via state file):
-#     8. A state file with worktree_path=<project root> is treated as no-resume (fresh start)
-#     9. A state file with worktree_path="" is treated as no-resume (fresh start)
-#    10. A state file with a valid linked worktree path is accepted for resume
+#     9. A state file with worktree_path=<project root> is treated as no-resume (fresh start)
+#    10. A state file with worktree_path="" is treated as no-resume (fresh start)
+#    11. A state file with a valid linked worktree path is accepted for resume
 #   BEHAVIORAL (undo guard):
-#    11. undo-workflow.sh WORKTREE_PATH is cleared when it matches RITE_PROJECT_ROOT
-#    12. Existing session-state-29.json and session-state-202.json (empty paths) are safe
+#    12. undo-workflow.sh WORKTREE_PATH is cleared when it matches RITE_PROJECT_ROOT
+#    13. Existing session-state-29.json and session-state-202.json (empty paths) are safe
+#   BEHAVIORAL (save_session_state interrupt-path guard — mirrors tests 6-8 for session-tracker.sh):
+#    14. save_session_state writes empty worktree_path when passed main repo root
+#    15. save_session_state writes empty worktree_path when passed empty string
+#    16. save_session_state preserves a valid (non-root) worktree path unchanged
 
 load '../helpers/setup.bash'
 
@@ -104,6 +110,23 @@ teardown() {
   _count=$(grep -c 'WORKTREE_PATH.*RITE_PROJECT_ROOT\|RITE_PROJECT_ROOT.*WORKTREE_PATH' "$_undo" || true)
   [ "$_count" -ge 1 ] || {
     echo "FAIL: undo-workflow.sh does not guard against WORKTREE_PATH == RITE_PROJECT_ROOT"
+    return 1
+  }
+}
+
+@test "structural: save_session_state in session-tracker.sh contains main-root guard [interrupt path]" {
+  # issue #610: save_session_state() is called from claude-workflow.sh cleanup_on_interrupt().
+  # A pre-worktree SIGINT passes current_dir (== main repo root) as worktree_path.
+  # The guard must clear it to "" before writing the state file, identical to
+  # the save_session_state_with_phase() guard in workflow-runner.sh.
+  _st="$RITE_REPO_ROOT/lib/utils/session-tracker.sh"
+  [ -f "$_st" ] || { echo "FAIL: session-tracker.sh not found"; return 1; }
+
+  # Verify the guard pattern: compare worktree_path against RITE_PROJECT_ROOT and clear
+  _count=$(grep -c 'worktree_path.*_main_root\|_main_root.*worktree_path' "$_st" || true)
+  [ "$_count" -ge 1 ] || {
+    echo "FAIL: save_session_state() in session-tracker.sh does not contain a main-root guard"
+    echo "Expected: worktree_path comparison against _main_root / RITE_PROJECT_ROOT"
     return 1
   }
 }
@@ -517,6 +540,137 @@ EOF
   [[ "$_result" == *"empty or null"* ]] || {
     echo "FAIL: expected 'empty or null' rejection reason"
     echo "  result='$_result'"
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: save_session_state() interrupt-path guard (session-tracker.sh)
+#
+# Mirrors the behavioral tests 6-8 for save_session_state_with_phase() but
+# exercises save_session_state() directly — the function called by
+# claude-workflow.sh::cleanup_on_interrupt() when SIGINT fires during the
+# Claude dev session, which may fire before any worktree is created.
+# =============================================================================
+
+@test "behavioral: save_session_state writes empty worktree_path when passed main repo root [interrupt path]" {
+  # The interrupt path: cleanup_on_interrupt() passes current_dir (== main root)
+  # as worktree_path.  The guard must write "" to the state file.
+  mkdir -p "$RITE_TEST_TMPDIR/.rite"
+
+  # Stub SESSION_STATE_FILE with minimal valid JSON (read inside save_session_state)
+  local _session_file="$RITE_TEST_TMPDIR/.rite/session-state.json"
+  printf '{"completions":0,"total_minutes":0}' > "$_session_file"
+
+  local _result=0
+  (
+    set +e
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export SESSION_STATE_FILE="$_session_file"
+    # session-tracker.sh is a pure library — source it directly
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/utils/session-tracker.sh"
+
+    # Call with main repo root as worktree_path (live interrupt scenario)
+    save_session_state "610" "interrupted" "$RITE_TEST_TMPDIR"
+  ) || _result=$?
+
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: save_session_state exited with code $_result (expected 0)"
+    return 1
+  }
+
+  local _state_file="$RITE_TEST_TMPDIR/.rite/session-state-610.json"
+  [ -f "$_state_file" ] || {
+    echo "FAIL: state file was not created at $_state_file"
+    return 1
+  }
+
+  # worktree_path in the JSON must be "" (empty string), NOT the main repo root
+  local _saved_wt
+  _saved_wt=$(jq -r '.worktree_path // empty' "$_state_file" 2>/dev/null || true)
+  [ -z "$_saved_wt" ] || {
+    echo "FAIL: worktree_path should be empty when main root was passed"
+    echo "  Got: '$_saved_wt'"
+    echo "  Expected: '' (empty string)"
+    return 1
+  }
+}
+
+@test "behavioral: save_session_state writes empty worktree_path when passed empty string [interrupt path]" {
+  # Pre-worktree interruption: current_dir may somehow be empty.
+  mkdir -p "$RITE_TEST_TMPDIR/.rite"
+
+  local _session_file="$RITE_TEST_TMPDIR/.rite/session-state.json"
+  printf '{"completions":0,"total_minutes":0}' > "$_session_file"
+
+  local _result=0
+  (
+    set +e
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export SESSION_STATE_FILE="$_session_file"
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/utils/session-tracker.sh"
+
+    save_session_state "99" "interrupted" ""
+  ) || _result=$?
+
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: save_session_state exited with code $_result (expected 0)"
+    return 1
+  }
+
+  local _state_file="$RITE_TEST_TMPDIR/.rite/session-state-99.json"
+  [ -f "$_state_file" ] || { echo "FAIL: state file not created"; return 1; }
+
+  local _saved_wt
+  _saved_wt=$(jq -r '.worktree_path // empty' "$_state_file" 2>/dev/null || true)
+  [ -z "$_saved_wt" ] || {
+    echo "FAIL: worktree_path should be empty when '' was passed; got: '$_saved_wt'"
+    return 1
+  }
+}
+
+@test "behavioral: save_session_state preserves a valid (non-root) worktree path [interrupt path]" {
+  # Post-worktree SIGINT: current_dir is inside a real linked worktree.
+  # The path is different from project root and must be preserved unchanged.
+  mkdir -p "$RITE_TEST_TMPDIR/.rite"
+  local _fake_wt="$RITE_TEST_TMPDIR/../fake-worktree-$$"
+  mkdir -p "$_fake_wt"
+
+  local _session_file="$RITE_TEST_TMPDIR/.rite/session-state.json"
+  printf '{"completions":0,"total_minutes":0}' > "$_session_file"
+
+  local _result=0
+  (
+    set +e
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export SESSION_STATE_FILE="$_session_file"
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/utils/session-tracker.sh"
+
+    save_session_state "42" "interrupted" "$_fake_wt"
+  ) || _result=$?
+
+  rm -rf "$_fake_wt" 2>/dev/null || true
+
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: save_session_state exited with code $_result (expected 0)"
+    return 1
+  }
+
+  local _state_file="$RITE_TEST_TMPDIR/.rite/session-state-42.json"
+  [ -f "$_state_file" ] || { echo "FAIL: state file not created"; return 1; }
+
+  local _saved_wt
+  _saved_wt=$(jq -r '.worktree_path' "$_state_file" 2>/dev/null || true)
+  [ "$_saved_wt" = "$_fake_wt" ] || {
+    echo "FAIL: valid worktree path was unexpectedly modified"
+    echo "  Expected: '$_fake_wt'"
+    echo "  Got:      '$_saved_wt'"
     return 1
   }
 }
