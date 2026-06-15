@@ -435,8 +435,9 @@ repo_wide_status() {
     # Indent flag file content for readability
     sed 's/^/   /' "$_fs_flag"
     echo ""
-    echo -e "${YELLOW}   Fix: update the sharkrite-test-covers header in the failing bats file(s),${NC}"
-    echo -e "${YELLOW}   or fix the underlying test failure, then run 'rite --full-suite' to clear.${NC}"
+    echo -e "${YELLOW}   Fix: update the sharkrite-test-covers header in the failing bats file(s)${NC}"
+    echo -e "${YELLOW}   or fix the underlying test failure. Then run 'rite --full-suite' to verify${NC}"
+    echo -e "${YELLOW}   — the flag is cleared only when the next full-suite run passes cleanly.${NC}"
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
