@@ -23,20 +23,19 @@
 
 load '../helpers/setup.bash'
 
-# Skip the entire file on bash 3.2 (macOS system bash).
-# Barrier sync + subshell spawning relies on bash 4+ performance:
-# bash 3.2 startup is 50-150ms per subshell vs ~10ms for bash 4+, so
-# 5 concurrent subshells can't reach the barrier before a 10s timeout
-# on a busy macOS dev machine, producing false failures unrelated to
-# the locking behavior under test.
-# On Homebrew bash 4+ (macOS) and Linux CI (bash 4+ default), tests run fully.
-setup_file() {
+setup() {
+  # Skip on bash 3.2 (macOS system bash). Moved from setup_file() — skip inside
+  # setup_file() requires bats >=1.5.0; skip inside setup() is universally supported.
+  # Barrier sync + subshell spawning relies on bash 4+ performance:
+  # bash 3.2 startup is 50-150ms per subshell vs ~10ms for bash 4+, so
+  # 5 concurrent subshells can't reach the barrier before a 10s timeout
+  # on a busy macOS dev machine, producing false failures unrelated to
+  # the locking behavior under test.
+  # On Homebrew bash 4+ (macOS) and Linux CI (bash 4+ default), tests run fully.
   if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     skip "Concurrency tests require bash 4+ (detected bash ${BASH_VERSION}). Install via: brew install bash"
   fi
-}
 
-setup() {
   setup_test_tmpdir
 
   # Set up environment for issue locking
@@ -244,7 +243,7 @@ wait_at_barrier() {
   #
   # If you see this failure with success_count=0, the barrier timed out before
   # all subprocesses arrived — that is a test-scaffolding failure (slow machine),
-  # NOT a regression in locking. The bash 4+ guard in setup_file() and the 10s
+  # NOT a regression in locking. The bash 4+ guard in setup() and the 10s
   # barrier timeout are the primary mitigations; if this still fires, check
   # system load rather than the lock implementation.
   [ "$success_count" -eq 1 ] || {
