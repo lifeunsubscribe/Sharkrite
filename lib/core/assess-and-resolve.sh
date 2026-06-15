@@ -205,12 +205,23 @@ _followup_dedup_check() {
     # Either signal triggers a retry.  Lock contention is only used on the first
     # retry iteration (it's a one-time signal from the previous lock holder).
     if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
-      local _jq_followup_count
-      _jq_followup_count="[.comments[].body | select(contains(\"<!-- ${RITE_MARKER_FOLLOWUP}:\"))] | length"
+      # Scope the PR-comment check to the current finding's title so that a
+      # marker comment posted for finding #1 (earlier in this loop) does not
+      # trigger spurious retries for findings #2..N.  The PR comment body
+      # includes the clean title (see comment construction below), so filtering
+      # by title gives finding-level specificity without requiring a separate
+      # per-finding marker.
+      #
+      # Two-stage approach: jq extracts all followup comment bodies, then grep
+      # filters for the current finding's title.  This avoids jq string-injection
+      # issues with arbitrary LLM-derived title text.
+      local _jq_followup_bodies
+      _jq_followup_bodies='.comments[].body | select(contains("<!-- '"${RITE_MARKER_FOLLOWUP}"':"))'
       local _recent_followup_comment
       _recent_followup_comment=$(gh_safe pr view "$PR_NUMBER" \
         --json comments \
-        --jq "$_jq_followup_count")
+        --jq "$_jq_followup_bodies" 2>/dev/null | \
+        grep -cF "${_clean_title}" || true)
       _recent_followup_comment="${_recent_followup_comment:-0}"
       local _retry_reason=""
       if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
@@ -270,9 +281,10 @@ cleanup() {
   rm -f "${_lock_contended_file:-}" 2>/dev/null || true
   # Release follow-up lock on signal (SIGINT/SIGTERM) to avoid leaving it
   # held for the full 60s acquire-loop timeout on the next run.
-  # Pass ISSUE_NUMBER (if set) to release the correct compound lock key.
+  # Use _FOLLOWUP_FINDING_KEY (the per-finding lock key) when set; fall back to
+  # ISSUE_NUMBER for any legacy code paths that don't have a finding key in scope.
   if [ "${_followup_lock_held:-false}" = "true" ] && [ -n "${PR_NUMBER:-}" ]; then
-    release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+    release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
     _followup_lock_held=false
   fi
   exit $exit_code
@@ -1601,12 +1613,22 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       in_block { print }
     ' || true)
 
-    # Extract individual fields from the block
+    # Extract individual fields from the block.
+    # Single-line fields (Severity, Category, Location, Fix Effort, Defer Reason):
+    # use grep -oE to capture the rest of the header line, then strip the label.
+    # Multi-line fields (Reasoning, Context): use awk to capture from the label line
+    # through the next **Field:** header or end of block, preserving all content.
     _f_severity=$(echo "$_finding_block" | grep -oE '\*\*Severity:\*\*.*' | head -1 | sed 's/\*\*Severity:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
     _f_severity="${_f_severity:-MEDIUM}"
     _f_category=$(echo "$_finding_block" | grep -oE '\*\*Category:\*\*.*' | head -1 | sed 's/\*\*Category:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
     _f_category="${_f_category:-}"
-    _f_reasoning=$(echo "$_finding_block" | grep -oE '\*\*Reasoning:\*\*.*' | head -1 | sed 's/\*\*Reasoning:\*\*[[:space:]]*//' | sed 's/^\*\*//; s/\*\*$//' || true)
+    # Reasoning and Context may span multiple lines — use awk to capture the full
+    # content from the field header through the next **Label:** line or end of block.
+    _f_reasoning=$(echo "$_finding_block" | awk '
+      /^\*\*Reasoning:\*\*/ { in_field=1; sub(/^\*\*Reasoning:\*\*[[:space:]]*/, ""); print; next }
+      in_field && /^\*\*[A-Za-z].*:\*\*/ { exit }
+      in_field { print }
+    ' | sed 's/[[:space:]]*$//' | awk 'NF || in_content { in_content=1; print }' || true)
     _f_reasoning="${_f_reasoning:-}"
     _f_location=$(echo "$_finding_block" | grep -oE '\*\*Location:\*\*.*' | head -1 | sed 's/\*\*Location:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
     _f_location="${_f_location:-}"
@@ -1614,7 +1636,11 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _f_fix_effort="${_f_fix_effort:-}"
     _f_defer=$(echo "$_finding_block" | grep -oE '\*\*Defer Reason:\*\*.*' | head -1 | sed 's/\*\*Defer Reason:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
     _f_defer="${_f_defer:-}"
-    _f_context=$(echo "$_finding_block" | grep -oE '\*\*Context:\*\*.*' | head -1 | sed 's/\*\*Context:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_context=$(echo "$_finding_block" | awk '
+      /^\*\*Context:\*\*/ { in_field=1; sub(/^\*\*Context:\*\*[[:space:]]*/, ""); print; next }
+      in_field && /^\*\*[A-Za-z].*:\*\*/ { exit }
+      in_field { print }
+    ' | sed 's/[[:space:]]*$//' | awk 'NF || in_content { in_content=1; print }' || true)
     _f_context="${_f_context:-}"
 
     # Skip LOW severity items — excluded from follow-up issues (same as per-item path)
@@ -1673,10 +1699,10 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       _loc_line=$(echo "$_f_location" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
       if [ -n "$_loc_line" ] && [ -n "$_loc_path" ]; then
         # file:line format — emit a valid sed command pointing at that exact line
-        _verification_cmd="sed -n '${_loc_line}p' ${_loc_path}"
+        _verification_cmd="sed -n '${_loc_line}p' '${_loc_path}'"
       elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
         # Looks like a plain file path (no line number) — use grep to inspect it
-        _verification_cmd="grep -n '' ${_loc_path:-${_f_location}}"
+        _verification_cmd="grep -n '' '${_loc_path:-${_f_location}}'"
       else
         # Location field present but doesn't look like a path — fall back
         _verification_cmd="# TODO: add verification command for: ${_f_location}"
@@ -1752,12 +1778,12 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
 
     # --- Dedup / lock / create --- (mirrors the consolidated path; keyed per-finding)
     #
-    # Lock key uses source-issue (from ISSUE_NUMBER) which is sufficient for the
-    # per-finding case because this process is single-threaded: findings are
-    # processed sequentially within this loop. Concurrent invocations from
-    # DIFFERENT processes are keyed on PR+source-issue and therefore serialised
-    # at the PR level — same guarantee as before, still prevents cross-process
-    # duplicates.
+    # Lock key uses _FOLLOWUP_FINDING_KEY (PR + source-issue + title slug), so
+    # concurrent processes racing on the same finding are serialised at the
+    # finding level.  This closes the cross-process duplicate window for findings
+    # 2..N: previously the lock was keyed on PR+source-issue only, so it was
+    # released between findings, allowing a concurrent same-source-issue process
+    # to race through the dedup check before the GitHub index caught up.
 
     # Sentinel pre-check (TTL-gated local dedup oracle before touching the lock)
     # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so each finding
@@ -1786,12 +1812,12 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     _followup_lock_held=false
     _skip_followup_creation=false
     if [ "${_sentinel_skipped:-false}" != "true" ] && \
-       acquire_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
+       acquire_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null; then
       _followup_lock_held=true
     elif [ "${_sentinel_skipped:-false}" = "true" ]; then
       _skip_followup_creation=true
     else
-      _lock_scope="PR #$PR_NUMBER${ISSUE_NUMBER:+ / issue #$ISSUE_NUMBER}"
+      _lock_scope="PR #$PR_NUMBER${_FOLLOWUP_FINDING_KEY:+ / finding ${_FOLLOWUP_FINDING_KEY}}"
       print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — skipping finding #${_finding_index} to prevent duplicates."
       _diag "FOLLOWUP_LOCK_TIMEOUT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} finding_index=${_finding_index}"
       _skip_followup_creation=true
@@ -1812,7 +1838,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
       _followup_dedup_check
 
       if [ -n "$EXISTING_ISSUE" ]; then
-        [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+        [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
         _followup_lock_held=false
         print_success "📋 Finding already tracked in #$EXISTING_ISSUE (skipping): $_clean_title"
         FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${EXISTING_ISSUE} "
@@ -1868,14 +1894,14 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
               unset _sentinel_write_dir
             fi
 
-            [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+            [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
             _followup_lock_held=false
 
             print_success "  ✅ Created #$_new_issue_num: $_clean_title"
             echo "     URL: $_new_issue_url"
           else
             rm -f "$_finding_body_file"
-            [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+            [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
             _followup_lock_held=false
             print_warning "  Failed to parse issue number from: $_new_issue_url"
             _followup_creation_failed=true
@@ -1896,7 +1922,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             cat "$_finding_body_file" 2>/dev/null || echo "(body file unavailable)"
           } >> "$_orphaned_file" || true
           rm -f "$_finding_body_file"
-          [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+          [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
           _followup_lock_held=false
           print_warning "  Failed to create follow-up for: $_clean_title"
           print_error "  Item NOT tracked. Saved to: $_orphaned_file"
@@ -1906,7 +1932,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     fi  # end _skip_followup_creation guard
 
     # Safety net: release lock if still held via unexpected path (set +e active)
-    [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+    [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
     _followup_lock_held=false
 
   done < <(echo "${FILTERED_CONTENT:-}" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
