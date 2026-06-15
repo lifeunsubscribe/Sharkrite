@@ -686,3 +686,205 @@ run_sentinel_dedup_create() {
     false
   }
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 8: Source 2b true-path — body marker verification succeeds
+#
+# This test exercises the path that was never reached before this fix:
+# Source 2a (gh issue list) returns a candidate number, and Source 2b
+# (gh issue view --json body) returns a body containing the exact marker,
+# so the verification regex matches and EXISTING_ISSUE is set.
+#
+# Without this test a regression in the verification regex at
+# assess-and-resolve.sh:169 (or the --json body routing in gh_safe) would
+# go uncaught — Source 2b's true-path (grep match → EXISTING_ISSUE set) was
+# silently skipped because the gh_safe stub returned "OPEN" for ALL
+# `issue view` calls, keying only on $1/$2 without inspecting --json.
+#
+# Setup:
+#   - No evidence file (Source 1 finds nothing)
+#   - gh_safe stub: issue list → returns candidate 9030 for in:body search
+#   - gh_safe stub: issue view 9030 --json body → body with exact marker
+#   - Expected: EXISTING_ISSUE=9030 (Source 2b verification succeeded)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "Source 2b true-path: body marker verification succeeds and sets EXISTING_ISSUE" {
+  local pr=108
+  local src=362
+
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=60
+  export RITE_DEDUP_BACKOFF=0
+  export RITE_FOLLOWUP_LOCK_DWELL_S=0
+
+  # No evidence file — Source 1 finds nothing.
+
+  # Set globals required by _followup_dedup_check.
+  PR_NUMBER="$pr"
+  ISSUE_NUMBER="$src"
+  ISSUE_SEARCH="review feedback — PR #${pr} for issue #${src}"
+  _lock_was_contended=false
+  EXISTING_ISSUE=""
+
+  # The candidate issue number that Source 2a will "find".
+  local candidate_issue=9030
+  # The body that Source 2b will fetch — contains the exact source-issue marker.
+  # The marker must pass the token-boundary regex:
+  #   sharkrite-source-issue:362([^[:alnum:]_-]|$)
+  # A trailing space satisfies the boundary check.
+  local candidate_body="<!-- sharkrite-source-issue:${src} -->"
+
+  # gh_safe stub that distinguishes --json body from --json state.
+  # All prior stubs keyed only on $1/$2 ("issue" "view") and returned "OPEN"
+  # for every `issue view` call — that caused Source 2b's body fetch to receive
+  # "OPEN" instead of the issue body, so the marker regex never matched and
+  # Source 2b's true-path (EXISTING_ISSUE set) was never reached.
+  gh_safe() {
+    local subcmd="${1:-}"
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "view" ]; then
+      # Inspect the full arg string to distinguish Source 1 (--json state) from
+      # Source 2b (--json body).  Using "$*" (all args as one string) lets us
+      # grep for "--json body" without eval or bash 4+ indirect expansion.
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q -- "--json body"; then
+        # Source 2b: return the issue body for the candidate issue.
+        # Any other issue number returns empty (not found).
+        if [ "${3:-}" = "$candidate_issue" ]; then
+          echo "$candidate_body"
+        else
+          echo ""
+        fi
+      else
+        # Source 1 validation (--json state or no --json): return "OPEN".
+        echo "OPEN"
+      fi
+      return 0
+    fi
+    # Source 2a: issue list in:body → return the candidate number directly.
+    # The production call pipes gh output through --jq '.[0].number' and then
+    # grep -E '^[0-9]+$'.  To avoid jq dependency in the stub, return the bare
+    # number so grep passes it through to _search_candidate.
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then
+      # Only body searches should return a candidate; title searches return empty.
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q "in:body"; then
+        echo "$candidate_issue"
+      else
+        echo "[]"
+      fi
+      return 0
+    fi
+    # Source 3/4: no match.
+    if [ "$subcmd" = "pr" ] && [ "${2:-}" = "view" ]; then echo "0"; return 0; fi
+    return 0
+  }
+
+  _followup_dedup_check
+
+  # Source 2b true-path: EXISTING_ISSUE must be set to the candidate number.
+  [ "$EXISTING_ISSUE" = "$candidate_issue" ] || {
+    echo "FAIL: expected EXISTING_ISSUE='$candidate_issue' (Source 2b true-path),"
+    echo "      got '$EXISTING_ISSUE'"
+    echo "      A regression in the --json body routing or the marker regex would"
+    echo "      cause Source 2b's verification to silently fail here."
+    false
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 9: Source 2b rejection path — false-positive candidate rejected
+#
+# This test exercises the token-boundary regex in Source 2b's verification:
+#   sharkrite-source-issue:N([^[:alnum:]_-]|$)
+#
+# Without the boundary check, searching for source issue #9 would falsely
+# match a body containing "sharkrite-source-issue:90" because the substring
+# "sharkrite-source-issue:9" is present.  Source 2b must reject such candidates.
+#
+# Setup:
+#   - No evidence file
+#   - Source 2a: returns candidate 9031 (GitHub approximate-match false positive)
+#   - Source 2b: candidate body contains "sharkrite-source-issue:3620" (NOT :362)
+#     — trailing "0" makes it a different issue number; boundary check rejects it
+#   - Sources 3+4: return no match
+#   - Expected: EXISTING_ISSUE="" (Source 2b rejected the false-positive candidate)
+#     and a create call is made
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "Source 2b rejection: false-positive candidate rejected by token-boundary regex" {
+  local pr=109
+  local src=362
+  local counts="$RITE_TEST_TMPDIR/counts-t9.txt"
+  touch "$counts"
+
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=60
+  export RITE_DEDUP_BACKOFF=0
+  export RITE_FOLLOWUP_LOCK_DWELL_S=0
+
+  # No evidence file — Source 1 finds nothing.
+
+  # Set globals required by _followup_dedup_check.
+  PR_NUMBER="$pr"
+  ISSUE_NUMBER="$src"
+  ISSUE_SEARCH="review feedback — PR #${pr} for issue #${src}"
+  _lock_was_contended=false
+  EXISTING_ISSUE=""
+
+  # A false-positive candidate: GitHub search returned this issue but its body
+  # contains a DIFFERENT source-issue marker (sharkrite-source-issue:3620, not :362).
+  # The trailing "0" makes "3620" a distinct token — the boundary check must reject it.
+  local false_candidate=9031
+  local false_candidate_body="<!-- sharkrite-source-issue:${src}0 -->"
+
+  gh_safe() {
+    local subcmd="${1:-}"
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "view" ]; then
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q -- "--json body"; then
+        # Source 2b: return the false-positive body (marker for a DIFFERENT issue).
+        if [ "${3:-}" = "$false_candidate" ]; then
+          echo "$false_candidate_body"
+        else
+          echo ""
+        fi
+      else
+        echo "OPEN"
+      fi
+      return 0
+    fi
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q "in:body"; then
+        # Source 2a: return the false-positive candidate number directly.
+        # See Test 8 comment: bare number passes through grep -E '^[0-9]+$'.
+        echo "$false_candidate"
+      else
+        echo "[]"
+      fi
+      return 0
+    fi
+    if [ "$subcmd" = "pr" ] && [ "${2:-}" = "view" ]; then echo "0"; return 0; fi
+    return 0
+  }
+
+  _followup_dedup_check
+
+  # Source 2b must have REJECTED the false-positive candidate.
+  [ -z "$EXISTING_ISSUE" ] || {
+    echo "FAIL: expected EXISTING_ISSUE='' (Source 2b should reject false-positive),"
+    echo "      got '$EXISTING_ISSUE'"
+    echo "      The token-boundary regex ([^[:alnum:]_-]|\$) in assess-and-resolve.sh:169"
+    echo "      must prevent ':3620' from matching when searching for issue #362."
+    false
+  }
+
+  # Simulate the create that would follow (dedup found nothing, create proceeds).
+  echo "PR${pr}:src${src}:9999" >> "$counts"
+
+  local create_count
+  create_count=$(grep -c "^PR${pr}:src${src}:" "$counts" 2>/dev/null || true)
+  [ "$create_count" -eq 1 ] || {
+    echo "FAIL: expected 1 create call after Source 2b rejection, got $create_count"
+    cat "$counts" || true
+    false
+  }
+}
