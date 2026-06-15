@@ -38,6 +38,13 @@ source "$RITE_LIB_DIR/utils/config.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 
+# Force verbose off: when RITE_VERBOSE=true is inherited, _diag() writes to
+# stderr (which is torn down after the tee reader exits) instead of
+# RITE_LOG_FILE — the FULL_SUITE_RUN diag line would be lost.
+# Per the two-channel convention, structured diag lines must land in the log.
+RITE_VERBOSE=false
+export RITE_VERBOSE
+
 # ---------------------------------------------------------------------------
 # Resolve project root and state paths
 # ---------------------------------------------------------------------------
@@ -89,6 +96,14 @@ fi
 _tee_reader_pid=$!
 exec > >(tee "$_tee_fifo") 2>&1
 
+# Register cleanup trap immediately after FIFO + reader are live so that
+# pre-flight failures (tool missing, Makefile check) don't leak the FIFO
+# or orphan the reader process.  _lint_raw/_tests_raw are initialized empty
+# so the rm -f is safe even if the script exits before those files are created.
+_lint_raw=""
+_tests_raw=""
+trap 'rm -f "${_lint_raw:-}" "${_tests_raw:-}"; exec 1>&9 9>&- 2>/dev/null || true; wait "${_tee_reader_pid:-}" 2>/dev/null || true; rm -f "${_tee_fifo:-}"' EXIT
+
 print_header "Sharkrite Full-Suite Safety Net"
 print_info "Project: ${RITE_PROJECT_NAME:-unknown}"
 print_info "Branch:  $_BRANCH"
@@ -122,8 +137,8 @@ _lint_exit=0
 _lint_count=0
 
 print_step "Running make check (full lint scan)..."
-_lint_raw=$(mktemp "/tmp/rite_fs_lint_$$.txt")
-trap 'rm -f "${_lint_raw:-}" "${_tests_raw:-}"' EXIT
+# _lint_raw is assigned here (was pre-initialized empty for the EXIT trap above)
+_lint_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_lint_$$_XXXXXX.txt")
 
 set +e
 (cd "$_PROJECT_ROOT" && make check) 2>&1 | tee "$_lint_raw"
@@ -132,8 +147,18 @@ set -e
 
 if [ "$_lint_exit" -ne 0 ]; then
   print_warning "Lint check failed (exit $_lint_exit)"
-  # Count lines matching known lint output formats
-  _lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:|^[^:]+:[0-9]+:.*\[[A-Z_]+\]' "$_lint_raw" || true)
+  # Count lines matching known lint output formats.
+  # shellcheck typically emits: file:line:col: [SCnnnn] message
+  # sharkrite-lint emits:       file:line: [RULE_NAME] message
+  # Both patterns are covered below. If neither matches (unexpected format),
+  # fall back to a non-zero sentinel (1) so failure-flag detail is still
+  # written — a count of 0 with outcome=failed is a self-contradicting signal.
+  _lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:[[:space:]]*\[SC[0-9]+\]|^[^:]+:[0-9]+:[[:space:]]*\[[A-Z_]+\]' "$_lint_raw" || true)
+  if [ "${_lint_count:-0}" -eq 0 ]; then
+    # No lines matched the structured format; use a sentinel of 1 so the
+    # failure flag records that lint violations exist (exact count unknown).
+    _lint_count=1
+  fi
 else
   print_success "Lint check passed"
 fi
@@ -146,14 +171,23 @@ _tests_exit=0
 _tests_count=0
 
 print_step "Running bats -r tests/ (full suite, no targeted selection)..."
-_tests_raw=$(mktemp "/tmp/rite_fs_tests_$$.txt")
+# _tests_raw is assigned here (was pre-initialized empty for the EXIT trap above)
+_tests_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_tests_$$_XXXXXX.txt")
 
-# Detect bats parallelism (mirrors _compute_bats_jobs from test-gate.sh)
+# Detect bats parallelism (mirrors _compute_bats_jobs from test-gate.sh).
+# RITE_BATS_JOBS must be a positive integer; non-integer values (e.g. "auto")
+# would cause [ ... -gt 1 ] to abort under set -e with "integer expression
+# expected". Apply the same ^[1-9][0-9]*$ sanitization as test-gate.sh does.
 _bats_jobs=1
 if command -v parallel >/dev/null 2>&1 || command -v rush >/dev/null 2>&1; then
   _bats_jobs=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "2")
 fi
-[ -n "${RITE_BATS_JOBS:-}" ] && _bats_jobs="${RITE_BATS_JOBS}"
+if [ -n "${RITE_BATS_JOBS:-}" ]; then
+  if echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
+    _bats_jobs="${RITE_BATS_JOBS}"
+  fi
+  # Non-integer value → fall through to auto-detected _bats_jobs (silent, like test-gate.sh)
+fi
 
 _total_bats=$(cd "$_PROJECT_ROOT" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ' || echo "0")
 print_info "Running $_total_bats bats files (parallel jobs: $_bats_jobs)"
@@ -224,7 +258,7 @@ if [ "$_outcome" = "failed" ]; then
     if [ "$_lint_count" -gt 0 ]; then
       echo ""
       echo "# Lint violations ($_lint_count):"
-      grep -E '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:|^[^:]+:[0-9]+:.*\[[A-Z_]+\]' "$_lint_raw" 2>/dev/null \
+      grep -E '^[^:]+:[0-9]+:[0-9]+:[[:space:]]*\[SC[0-9]+\]|^[^:]+:[0-9]+:[[:space:]]*\[[A-Z_]+\]' "$_lint_raw" 2>/dev/null \
         | head -20 | sed 's/^/  /' || true
     fi
   } > "$_FAILURE_FLAG"
