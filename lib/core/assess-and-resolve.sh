@@ -156,23 +156,41 @@ _followup_dedup_check() {
     # full-text search to treat it as a literal phrase rather than a structured
     # qualifier.  Without quotes, GitHub may tokenize around the colon and fail
     # to match the marker embedded inside an HTML comment.
+    #
+    # IMPORTANT: the source-issue marker is shared by ALL findings from the same
+    # source issue.  A body-marker search returns the FIRST indexed issue, which
+    # may be finding #1's issue when we are looking for finding #2..N.  We
+    # therefore require a title match before accepting a Source 2 candidate.
+    # This prevents finding #2..N from being collapsed into finding #1's issue.
     if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
-      local _search_candidate
-      _search_candidate=$(gh_safe issue list \
+      # Search returns multiple candidates (up to 10); we check each title.
+      local _src2_candidates
+      _src2_candidates=$(gh_safe issue list \
         --state open \
         --search "\"${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}\" in:body" \
-        --json number \
-        --jq '.[0].number' | grep -E '^[0-9]+$' || true)
-      _search_candidate="${_search_candidate:-}"
-      # Verify the marker is actually in the body — GitHub search can return
-      # approximate matches; direct body inspection is the ground truth.
-      if [ -n "$_search_candidate" ]; then
-        local _candidate_body
-        _candidate_body=$(gh_safe issue view "$_search_candidate" --json body --jq '.body' || true)
-        _candidate_body="${_candidate_body:-}"
-        if echo "$_candidate_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
-          EXISTING_ISSUE="$_search_candidate"
-        fi
+        --json number,title \
+        --limit 10 \
+        --jq '.[] | "\(.number) \(.title)"' | grep -E '^[0-9]+' || true)
+      _src2_candidates="${_src2_candidates:-}"
+      if [ -n "$_src2_candidates" ]; then
+        local _s2_num _s2_title
+        while IFS= read -r _s2_line; do
+          [ -z "$_s2_line" ] && continue
+          _s2_num=$(echo "$_s2_line" | awk '{print $1}' || true)
+          _s2_title=$(echo "$_s2_line" | cut -d' ' -f2- || true)
+          # Must match the current finding's title (exact equality via fixed-string grep)
+          if [ -n "$_s2_num" ] && echo "$_s2_title" | grep -qF "$ISSUE_TITLE"; then
+            # Verify the marker is actually in the body — GitHub search can return
+            # approximate matches; direct body inspection is the ground truth.
+            local _candidate_body
+            _candidate_body=$(gh_safe issue view "$_s2_num" --json body --jq '.body' || true)
+            _candidate_body="${_candidate_body:-}"
+            if echo "$_candidate_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+              EXISTING_ISSUE="$_s2_num"
+              break
+            fi
+          fi
+        done <<< "$_src2_candidates"
       fi
       EXISTING_ISSUE="${EXISTING_ISSUE:-}"
     fi
@@ -1676,7 +1694,11 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _finding_slug="${_finding_slug:-finding-${_finding_index}}"
     # _FOLLOWUP_FINDING_KEY is read by _followup_dedup_check and the
     # sentinel/evidence calls below.
-    _FOLLOWUP_FINDING_KEY="${ISSUE_NUMBER:-0}-${_finding_slug}"
+    # Append _finding_index to the slug so two findings whose 40-char truncated
+    # slugs collide (identical first 40 chars of their titles) get independent
+    # keys — preventing the second from being silently skipped as a duplicate
+    # of the first.
+    _FOLLOWUP_FINDING_KEY="${ISSUE_NUMBER:-0}-${_finding_slug}-${_finding_index}"
 
     # --- Derive priority label from per-finding severity ---
     _priority_label="priority-medium"
@@ -1697,12 +1719,24 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       # but not bare paths without a line number.
       _loc_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
       _loc_line=$(echo "$_f_location" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
-      if [ -n "$_loc_line" ] && [ -n "$_loc_path" ]; then
+      # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
+      # break the surrounding single-quoted sed/grep command strings and inject
+      # arbitrary shell text into the generated verification command.
+      # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
+      _loc_path_safe=""
+      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+        _loc_path_safe="$_loc_path"
+      fi
+      if [ -n "$_loc_line" ] && [ -n "$_loc_path_safe" ]; then
         # file:line format — emit a valid sed command pointing at that exact line
-        _verification_cmd="sed -n '${_loc_line}p' '${_loc_path}'"
-      elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
+        _verification_cmd="sed -n '${_loc_line}p' '${_loc_path_safe}'"
+      elif [ -n "$_loc_path_safe" ]; then
         # Looks like a plain file path (no line number) — use grep to inspect it
-        _verification_cmd="grep -n '' '${_loc_path:-${_f_location}}'"
+        _verification_cmd="grep -n '' '${_loc_path_safe}'"
+      elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
+        # Location present but path did not pass sanitization — emit as prose to
+        # avoid injecting unsanitized content into shell command syntax.
+        _verification_cmd="# TODO: add verification command for: ${_f_location}"
       else
         # Location field present but doesn't look like a path — fall back
         _verification_cmd="# TODO: add verification command for: ${_f_location}"
@@ -1820,6 +1854,24 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
       _lock_scope="PR #$PR_NUMBER${_FOLLOWUP_FINDING_KEY:+ / finding ${_FOLLOWUP_FINDING_KEY}}"
       print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — skipping finding #${_finding_index} to prevent duplicates."
       _diag "FOLLOWUP_LOCK_TIMEOUT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} finding_index=${_finding_index}"
+      # Write orphan artifact so the finding is not silently lost: the durable
+      # orphaned-followup-items.md trail is the only evidence that this finding
+      # exists if the lock never becomes available.
+      _lock_timeout_orphan_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+      mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+      {
+        echo "---"
+        echo "# Orphaned Follow-up Item (finding #${_finding_index}) — lock timeout"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# PR: #${PR_NUMBER}"
+        echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+        echo "# Intended title: ${ISSUE_TITLE:-}"
+        echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving lock contention)"
+        echo ""
+        printf '%s\n' "$FOLLOWUP_BODY"
+      } >> "$_lock_timeout_orphan_file" || true
+      print_error "  Item NOT tracked (lock timeout). Saved to: $_lock_timeout_orphan_file"
+      _followup_creation_failed=true
       _skip_followup_creation=true
     fi
 

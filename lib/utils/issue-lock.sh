@@ -297,7 +297,10 @@ acquire_pr_followup_lock() {
     lock_attempts=$((lock_attempts + 1))
     if [ $lock_attempts -ge $max_attempts ]; then
       if [ -n "$source_issue" ]; then
-        echo "❌ Follow-up lock timeout for issue #${source_issue} after ${max_attempts}s" >&2
+        # source_issue is treated as an opaque token (may be a numeric issue number
+        # or a slug like "42-my-finding-slug-1") — omit the '#' prefix that implies
+        # a numeric GitHub issue reference.
+        echo "❌ Follow-up lock timeout for PR #${pr_number} / key ${source_issue} after ${max_attempts}s" >&2
       else
         echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
       fi
