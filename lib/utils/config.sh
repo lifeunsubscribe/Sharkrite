@@ -246,6 +246,26 @@ RITE_CLAUDE_MODEL="${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}"
 # Model for reviews and assessments — opus for quality (must match for consistency)
 RITE_REVIEW_MODEL="${RITE_REVIEW_MODEL:-claude-opus-4-8}"
 
+# --- Review triage gate (cheap haiku router in front of the opus review) ---
+# RITE_REVIEW_TRIAGE: off | shadow | on
+#   off    — no triage (default; behavior identical to pre-triage).
+#   shadow — classify each diff with the triage model and LOG the verdict
+#            alongside the real opus review's findings (opus ALWAYS runs;
+#            nothing is skipped). This is the calibration window — the weekly
+#            health report measures false-skip/false-escalate from the paired
+#            TRIAGE_SHADOW diag lines and recommends thresholds.
+#   on     — enforce: skip the opus review for diffs classified trivial.
+#            (NOT implemented yet — shadow lands first; enforce after the
+#            calibration window proves the rates. See "Triage Gate" in
+#            docs/architecture/behavioral-design.md.)
+RITE_REVIEW_TRIAGE="${RITE_REVIEW_TRIAGE:-off}"
+# Model for the triage classifier (binary trivial/substantive — haiku's job).
+RITE_TRIAGE_MODEL="${RITE_TRIAGE_MODEL:-claude-haiku-4-5}"
+# Deterministic Layer-1 guards: a diff at/above either ceiling is never
+# classified trivial (forced to the full review). Tuned from shadow data.
+RITE_TRIAGE_MAX_LINES="${RITE_TRIAGE_MAX_LINES:-30}"
+RITE_TRIAGE_MAX_FILES="${RITE_TRIAGE_MAX_FILES:-3}"
+
 # Provider selection (per-phase, all default to claude for backward compat)
 # Available providers: claude, gemini
 RITE_DEV_PROVIDER="${RITE_DEV_PROVIDER:-claude}"         # Agentic dev/fix sessions
@@ -365,6 +385,10 @@ export RITE_CLAUDE_TIMEOUT_PROMPT
 export RITE_CLAUDE_TIMEOUT_AGENTIC
 export RITE_CLAUDE_MODEL
 export RITE_REVIEW_MODEL
+export RITE_REVIEW_TRIAGE
+export RITE_TRIAGE_MODEL
+export RITE_TRIAGE_MAX_LINES
+export RITE_TRIAGE_MAX_FILES
 export RITE_DEV_PROVIDER
 export RITE_REVIEW_PROVIDER
 export RITE_UTILITY_PROVIDER
