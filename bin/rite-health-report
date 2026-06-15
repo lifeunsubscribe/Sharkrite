@@ -248,6 +248,77 @@ for prev_file in $prev_files; do
 done
 
 # =============================================================================
+# Deterministic headline metrics + week-over-week trends
+#
+# Arithmetic belongs in bash, not the LLM (same principle as CR_TOP5_ISSUES /
+# CR_MEDIAN_DURATION_S / TGS_AVG_RATIO_PCT). Each report emits a structured
+# <!-- rite-health-metrics {json} --> block (written after generation, below);
+# this stage parses the most recent prior report's block to compute exact
+# week-over-week deltas. Comparing two exact number sets — never parsing the
+# prose — keeps trend detection reliable. Bootstrap: until ≥1 prior report
+# carries the block, trends report "baseline" and become available next run.
+# =============================================================================
+
+# fix-loop average: mean fix_iterations across WORKFLOW_COMPLETE diag lines
+HM_FIXLOOP_AVG=$(echo "$DIAG_LINES" | grep 'WORKFLOW_COMPLETE' | grep -oE 'fix_iterations=[0-9]+' | grep -oE '[0-9]+' \
+  | awk '{s+=$1; n++} END {if (n>0) printf "%.2f", s/n; else print "0"}' || echo "0")
+
+# phase-1 (dev) average duration in seconds, parsed from "END phase1_development (Xh Ym Zs)"
+HM_PHASE1_AVG_S=$(echo "$TIMING_LINES" | grep 'END   phase1_development' | grep -oE '\([0-9hms ]+\)' \
+  | awk '{
+      gsub(/[()]/,""); secs=0
+      for (i=1;i<=NF;i++){ v=$i
+        if (v ~ /h$/){sub(/h/,"",v); secs+=v*3600}
+        else if (v ~ /m$/){sub(/m/,"",v); secs+=v*60}
+        else if (v ~ /s$/){sub(/s/,"",v); secs+=v} }
+      tot+=secs; n++
+    } END {if (n>0) printf "%d", tot/n; else print "0"}' || echo "0")
+
+# rtk average savings percent (from rtk gain json)
+HM_RTK_PCT=$(echo "$RTK_STATS" | jq -r '(.summary.avg_savings_pct // 0)' 2>/dev/null || echo "0")
+
+# total CRITICAL review findings this week (REVIEW diag lines; correct after #594 severity fix)
+HM_CRITICALS=$(echo "$DIAG_LINES" | grep 'REVIEW ' | grep -oE 'critical=[0-9]+' | grep -oE '[0-9]+' \
+  | awk '{s+=$1} END {print s+0}' || echo "0")
+
+# Build this week's structured metrics block (emitted into the report below so
+# future runs can parse it). Marker is rite-health-metrics (NOT a sharkrite-*
+# marker — distinct namespace, parsed only here).
+HEALTH_METRICS_JSON=$(jq -cn \
+  --arg date "$TODAY" \
+  --argjson issues "${WORKFLOW_COUNT:-0}" \
+  --argjson fixloop "${HM_FIXLOOP_AVG:-0}" \
+  --argjson phase1_s "${HM_PHASE1_AVG_S:-0}" \
+  --argjson rtk "${HM_RTK_PCT:-0}" \
+  --argjson criticals "${HM_CRITICALS:-0}" \
+  '{date:$date, issues:$issues, fixloop_avg:$fixloop, phase1_avg_s:$phase1_s, rtk_pct:$rtk, criticals:$criticals}' \
+  2>/dev/null || echo '{}')
+
+# Parse the most-recent prior report carrying a structured metrics block
+PRIOR_METRICS_JSON=""
+for _pf in $(find "$REPORTS_DIR" -name "rite-health-*.md" ! -name "rite-health-${TODAY_COMPACT}.md" 2>/dev/null | sort -r); do
+  _blk=$(sed -n '/<!-- rite-health-metrics/,/-->/p' "$_pf" 2>/dev/null | sed '1d;$d' || true)
+  if [ -n "$_blk" ] && echo "$_blk" | jq -e . >/dev/null 2>&1; then
+    PRIOR_METRICS_JSON="$_blk"
+    break
+  fi
+done
+
+# Compose before→after trend pairs (exact numbers; the prompt characterizes
+# direction since "is up good or bad" differs per metric).
+if [ -n "$PRIOR_METRICS_JSON" ]; then
+  _pd=$(echo "$PRIOR_METRICS_JSON" | jq -r '.date // "?"')
+  TREND_PAIRS="(vs $_pd)
+- issues completed: $(echo "$PRIOR_METRICS_JSON" | jq -r '.issues // "?"') → ${WORKFLOW_COUNT}
+- fix-loop avg: $(echo "$PRIOR_METRICS_JSON" | jq -r '.fixloop_avg // "?"') → ${HM_FIXLOOP_AVG}
+- phase-1 avg (s): $(echo "$PRIOR_METRICS_JSON" | jq -r '.phase1_avg_s // "?"') → ${HM_PHASE1_AVG_S}
+- rtk savings %: $(echo "$PRIOR_METRICS_JSON" | jq -r '.rtk_pct // "?"') → ${HM_RTK_PCT}
+- CRITICAL findings: $(echo "$PRIOR_METRICS_JSON" | jq -r '.criticals // "?"') → ${HM_CRITICALS}"
+else
+  TREND_PAIRS="(no prior structured metrics block found — this is the baseline week; week-over-week trends become available once this report's metrics block is on disk for next run)"
+fi
+
+# =============================================================================
 # Stage 2: Build prompt and invoke Claude
 # =============================================================================
 
@@ -268,9 +339,10 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - **The number that matters:** the single most important stat this week, stated like a human would ("Merged 21 of 24 issues cleanly; 2 needed a fix pass" — not "fix_iterations avg=0.2").
    - **Do this:** the ONE most important action for the operator, or "Nothing — everything's healthy" if no threshold tripped.
 1. **At a Glance** — a compact stat line of the key numbers IF they exist (omit any that are zero/absent): issues merged, fix-loop avg, phase-1 avg, rtk savings %, gate pass rate, CRITICALs. One line, pipe-separated. Skip entirely if there's no data.
-2. **Summary** — 2-3 plain-English sentences expanding the TL;DR. Write for a human reader, not a log parser.
-3. **Metrics** — Issues processed, token savings (if rtk active), fix loop iterations, phase durations
-4. **Health Checks** — Flag anything concerning using these absolute thresholds:
+2. **Trends** (FOREGROUNDED — this is the headline of the report) — use the pre-computed TREND_PAIRS block (exact this-week-vs-prior numbers; do NOT parse the prose of prior reports). For each metric, state the direction and whether it's good or bad FOR THAT METRIC (e.g. fix-loop ↓ = good; CRITICALs ↑ = bad; rtk% ↓ = watch; phase-1 ↑ = watch). One bullet per metric that changed; lead with the most significant movement. Call out velocity, not just level ("fix-loop doubled week-over-week, still under the 2.0 line" is more useful than the absolute alone). If TREND_PAIRS says baseline week, say so in one line and move on — do not fabricate trends. Trends AUGMENT the absolute Health Checks below; they do not replace them.
+3. **Summary** — 2-3 plain-English sentences expanding the TL;DR. Write for a human reader, not a log parser.
+4. **Metrics** — Issues processed, token savings (if rtk active), fix loop iterations, phase durations
+5. **Health Checks** — Absolute thresholds, KEPT alongside the Trends section above (trends catch direction; these catch "bad right now" regardless of direction). Flag anything concerning:
    - Fix iterations avg > 2.0 → WARNING
    - Any phase failing > 30% of the time → WARNING
    - Phase 1 (dev) duration avg > 20 min → WATCH
@@ -278,7 +350,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - Any issue hitting max fix iterations (3) → flag that specific issue
    - Review finding 0 issues consistently → WATCH (review prompt may be too lenient)
    - CRITICAL findings appearing → flag
-5. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
+6. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
    - Show: Total gate runs, outcome breakdown (passed/failed/skipped), lint failures total, bats test failures total
    - Thresholds:
      - gate failure rate > 30% → **WARNING**: "Fix sessions introducing regressions frequently"
@@ -290,15 +362,15 @@ Analyze the provided data and produce a concise markdown health report. Be direc
      - Threshold: if targeted runs exist and the avg selected/total ratio > 50% → **WATCH**: "Test selection ratio is high — most bats files lack the ${RITE_MARKER_TEST_COVERS}: header; backfill more to realize the optimization."
      - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs fell back to the full suite this week (no diff computable — empty-diff fallback; path triggers were removed 2026-06-12)."
      - If TGS_TOTAL_RUNS is 0 → "No selection data this week."
-6. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
+7. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
    - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (use CR_TOP5_ISSUES directly — do not recompute), median resolution duration (use CR_MEDIAN_DURATION_S directly — do not recompute)
    - Thresholds:
      - `skipped_no_resolver` > 0 → **WARNING**: "Resolver not wired — conflict-resolver.sh may be missing"
      - failure rate > 30% → **WATCH**: "Resolver failing frequently"
    - If CR_TOTAL is 0, say "No conflict resolution attempts this week."
-7. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
-8. **Insights** — Patterns, correlations, or observations from the data. Cross-reference with previous reports if provided. Are previously flagged issues improving?
-9. **Action Items** — Specific, actionable recommendations. Examples:
+8. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
+9. **Insights** — Correlate, don't just observe. Explicitly connect the Sharkrite Changes to metric shifts in the Trends section: name the file/subsystem that changed and the metric that moved in the same window, and say whether the change is the likely cause (e.g. "assess-and-resolve.sh changed 2 days ago; fix-loop avg rose 0.2→0.6 the same window — likely related, worth a look" or "Phase-1 up but no dev-path code changed — probably load, not a regression"). Cross-reference previous reports: are previously flagged issues improving or persisting? Prefer a stated causal hypothesis (grounded in the data) over a bare observation.
+10. **Action Items** — Specific, actionable recommendations. Examples:
    - "Consider adding `gh pr diff` to rtk exclude list — Phase 3 fix iterations up"
    - "Phase 1 duration trending down — rtk compression appears effective"
    - "Review severity skewing toward LOW — tighten review prompt for more meaningful findings"
@@ -380,6 +452,13 @@ $RTK_STATS
 
 $SHARKRITE_CHANGES
 
+## Week-over-Week Trends (pre-computed — exact numbers, do NOT parse prior prose)
+
+This week's headline metrics: issues=${WORKFLOW_COUNT} fixloop_avg=${HM_FIXLOOP_AVG} phase1_avg_s=${HM_PHASE1_AVG_S} rtk_pct=${HM_RTK_PCT} criticals=${HM_CRITICALS}
+
+Prior-vs-current pairs for the Trends section:
+$TREND_PAIRS
+
 ## Previous Reports
 
 $PREV_REPORTS
@@ -413,6 +492,16 @@ echo "$REPORT_OUTPUT" > "$REPORT_FILE"
 echo "" >> "$REPORT_FILE"
 echo "---" >> "$REPORT_FILE"
 echo "*Generated by rite-health-report on $(date '+%Y-%m-%d %H:%M:%S')*" >> "$REPORT_FILE"
+# Structured metrics block — machine-readable footer parsed by NEXT week's run
+# to compute exact week-over-week trends (see the trend stage above). Kept out
+# of the prose so it never muddies the human report; HTML-comment so it renders
+# invisibly in markdown viewers.
+{
+  echo ""
+  echo "<!-- rite-health-metrics"
+  echo "$HEALTH_METRICS_JSON"
+  echo "-->"
+} >> "$REPORT_FILE"
 
 echo "Report written to: $REPORT_FILE"
 
