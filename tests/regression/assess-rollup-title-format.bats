@@ -1,25 +1,27 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/assess-and-resolve.sh
-# Regression test for: assess-and-resolve.sh title truncation (defect #1)
-# Issues: #469-#478-#495
+# Regression test for: assess-and-resolve.sh title format (defect #1, #518)
+# Issues: #469-#478-#495-#518
 #
-# Bug: assess-and-resolve.sh built follow-up issue titles from PR_TITLE truncated
-# at character 50 followed by "..." + ": " (colon-space), producing titles like:
-#   "[tech-debt] Extend test 13 in: review feedback from PR #N"
-#   "[tech-debt] Self-documenting PR bodies trigger spurious: review feedback from PR #N"
+# Historical context:
+#   Defect #1 (PR #469): PR_TITLE truncated at 50 chars + ": " produced mid-phrase cuts
+#   Defect #518 (this PR): multi-finding bundling produced "(+N more)" titles with
+#     [tech-debt]/[review-follow-up] prefix instead of one clean issue per finding.
 #
-# Fix: Use the first ACTIONABLE_LATER/NOW item's actual title as the description,
-# capped at 60 chars with graceful truncation (no mid-word cut) and a count suffix.
-# Format: [tech-debt] <first item title> (+N more) — PR #N
-# Example: [tech-debt] Fence guard truncates real blocks (+1 more) — PR #387
+# New behavior (post-#518):
+#   - One issue per ACTIONABLE_(NOW|LATER) finding
+#   - Title = the finding's own text, no [tech-debt] or [review-follow-up] prefix
+#   - No (+N more) bundling
+#   - No mid-phrase "..." truncation
+#   - List markers (^[0-9]+\.) stripped from titles
 #
 # Tests in this file:
 #   1. Static: old "cut -c1-50" + colon pattern no longer present
-#   2. Static: new title uses first-item extraction (grep -m1 ACTIONABLE_)
-#   3. Unit:   single-item assessment produces "[tech-debt] <title> — PR #N"
-#   4. Unit:   multi-item assessment produces "(+N more)" suffix
-#   5. Unit:   title capped at 60 chars with no mid-word truncation
-#   6. Unit:   PR title fallback when no ACTIONABLE items found
+#   2. Static: old single-issue bundling grep -m1 pattern no longer present
+#   3. Static: [tech-debt] prefix NOT hardcoded as ISSUE_TITLE prefix
+#   4. Static: "(+N more)" bundling pattern NOT present in title construction
+#   5. Unit:   per-finding loop strips list markers from titles
+#   6. Unit:   per-finding loop produces clean title without prefix
 
 load '../helpers/setup.bash'
 
@@ -52,179 +54,100 @@ teardown() {
   }
 }
 
-# ─── Test 2: Static — new title uses first-item extraction ────────────────────
+# ─── Test 2: Static — old single-issue bundling grep -m1 pattern is gone ─────
 
-@test "assess-and-resolve.sh: title extraction uses first ACTIONABLE item grep" {
-  # The fix: extract the first ACTIONABLE_(NOW|LATER) header title as description
+@test "assess-and-resolve.sh: old first-item-only extraction (grep -m1) is gone" {
+  # Pre-#518: a single bundled issue was titled from the first item via grep -m1.
+  # Post-#518: a per-finding loop creates one issue per finding; grep -m1 is gone.
+  # If grep -m1.*ACTIONABLE_ reappears, it means bundling was re-introduced.
   run grep -n 'grep -m1.*ACTIONABLE_' "$ASSESS_RESOLVE_SCRIPT"
 
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: Expected 'grep -m1.*ACTIONABLE_' pattern in $ASSESS_RESOLVE_SCRIPT (first-item extraction)"
-    echo "Output: $output"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: 'grep -m1.*ACTIONABLE_' found in $ASSESS_RESOLVE_SCRIPT — bundling re-introduced?"
+    echo "Matches:"
+    echo "$output"
     false
   }
 }
 
-# ─── Test 3: Unit — single-item title format ──────────────────────────────────
+# ─── Test 3: Static — [tech-debt] prefix NOT hardcoded in ISSUE_TITLE ────────
 
-@test "assess-and-resolve.sh: single item produces title without (+N more)" {
-  # Simulate the title-building logic with a single ACTIONABLE_LATER item.
-  # We source a minimal extraction from the script to test the title fragment.
+@test "assess-and-resolve.sh: ISSUE_TITLE does not include [tech-debt] prefix" {
+  # Pre-#518: ISSUE_TITLE="[tech-debt] ${_item_desc}..."
+  # Post-#518: ISSUE_TITLE="${_clean_title}${_src_issue_suffix}" (no prefix)
+  run grep -n 'ISSUE_TITLE="\[tech-debt\]' "$ASSESS_RESOLVE_SCRIPT"
 
-  # Build a mock FILTERED_CONTENT with one item
-  FILTERED_CONTENT="### Fix unquoted conflict-file list word-splits in git diff - ACTIONABLE_LATER
-**Severity:** HIGH
-**Reasoning:** Unquoted expansion splits on whitespace."
-  PR_NUMBER="387"
-  ISSUE_NUMBER=""
-
-  # Inline the same logic from the fixed assess-and-resolve.sh
-  _first_item_title=$(echo "$FILTERED_CONTENT" | grep -m1 -E "^### .* - ACTIONABLE_(NOW|LATER)" | \
-    sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
-  _total_items=$(echo "$FILTERED_CONTENT" | grep -c -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
-  _total_items=${_total_items:-0}
-  _remaining_item_count=0
-  if [ "$_total_items" -gt 1 ]; then
-    _remaining_item_count=$((_total_items - 1))
-  fi
-
-  _item_desc=""
-  if [ -n "$_first_item_title" ]; then
-    if [ "${#_first_item_title}" -gt 60 ]; then
-      _item_desc="${_first_item_title:0:60}"
-      _item_desc=$(echo "$_item_desc" | sed 's/ [^ ]*$//' || true)
-      _item_desc="${_item_desc}..."
-    else
-      _item_desc="$_first_item_title"
-    fi
-    [ "$_remaining_item_count" -gt 0 ] && _item_desc="${_item_desc} (+${_remaining_item_count} more)"
-    _item_desc="${_item_desc} — PR #${PR_NUMBER}"
-  fi
-
-  ISSUE_TITLE="[tech-debt] ${_item_desc}"
-
-  # Assertions
-  [[ "$ISSUE_TITLE" == *"Fix unquoted conflict-file list word-splits in git diff"* ]] || {
-    echo "FAIL: Expected first-item title in ISSUE_TITLE, got: $ISSUE_TITLE"
-    false
-  }
-  [[ "$ISSUE_TITLE" != *"(+0 more)"* ]] || {
-    echo "FAIL: Single item should not produce '(+0 more)', got: $ISSUE_TITLE"
-    false
-  }
-  [[ "$ISSUE_TITLE" != *"(+*)"* ]] || {
-    echo "FAIL: Single item should not produce any '(+N more)', got: $ISSUE_TITLE"
-    false
-  }
-  [[ "$ISSUE_TITLE" == *"— PR #387"* ]] || {
-    echo "FAIL: Expected '— PR #387' suffix, got: $ISSUE_TITLE"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: '[tech-debt]' hardcoded as ISSUE_TITLE prefix in $ASSESS_RESOLVE_SCRIPT"
+    echo "Matches:"
+    echo "$output"
     false
   }
 }
 
-# ─── Test 4: Unit — multi-item title includes (+N more) ───────────────────────
+# ─── Test 4: Static — "(+N more)" bundling pattern gone ──────────────────────
 
-@test "assess-and-resolve.sh: two items produces (+1 more) suffix" {
-  FILTERED_CONTENT="### Fix unquoted conflict-file list - ACTIONABLE_LATER
-**Severity:** HIGH
-**Reasoning:** First finding.
+@test "assess-and-resolve.sh: (+N more) bundling suffix no longer present" {
+  # Pre-#518: multiple findings bundled into one issue with "(+N more)" in title.
+  # Post-#518: each finding gets its own issue; no bundling suffix.
+  run grep -n '(+.*more)' "$ASSESS_RESOLVE_SCRIPT"
 
-### Static guard test under-counts sites - ACTIONABLE_LATER
-**Severity:** MEDIUM
-**Reasoning:** Second finding."
-  PR_NUMBER="392"
-  ISSUE_NUMBER=""
-
-  _first_item_title=$(echo "$FILTERED_CONTENT" | grep -m1 -E "^### .* - ACTIONABLE_(NOW|LATER)" | \
-    sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
-  _total_items=$(echo "$FILTERED_CONTENT" | grep -c -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
-  _total_items=${_total_items:-0}
-  _remaining_item_count=0
-  [ "$_total_items" -gt 1 ] && _remaining_item_count=$((_total_items - 1))
-
-  _item_desc="$_first_item_title"
-  [ "$_remaining_item_count" -gt 0 ] && _item_desc="${_item_desc} (+${_remaining_item_count} more)"
-  _item_desc="${_item_desc} — PR #${PR_NUMBER}"
-  ISSUE_TITLE="[tech-debt] ${_item_desc}"
-
-  [[ "$ISSUE_TITLE" == *"(+1 more)"* ]] || {
-    echo "FAIL: Expected '(+1 more)' for 2-item assessment, got: $ISSUE_TITLE"
-    false
-  }
-  [[ "$ISSUE_TITLE" == *"Fix unquoted conflict-file list"* ]] || {
-    echo "FAIL: Expected first-item title fragment, got: $ISSUE_TITLE"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: '(+N more)' bundling suffix still present in $ASSESS_RESOLVE_SCRIPT"
+    echo "Matches:"
+    echo "$output"
     false
   }
 }
 
-# ─── Test 5: Unit — long titles are capped at 60 chars without mid-word cut ──
+# ─── Test 5: Unit — list marker stripping ─────────────────────────────────────
 
-@test "assess-and-resolve.sh: title exceeding 60 chars truncates at word boundary" {
-  # 64-char title: should truncate to last word boundary before char 60
-  long_title="Extremely long finding title that exceeds sixty characters total here"
-  FILTERED_CONTENT="### ${long_title} - ACTIONABLE_LATER
-**Severity:** MEDIUM"
-  PR_NUMBER="400"
+@test "assess-and-resolve.sh: per-finding title strips leading list marker (1. Foo → Foo)" {
+  # Defect: assessment headers like "### 1. Orphaned…" leaked the "1." prefix.
+  # Fix: sed strips ^[0-9]+\. and ^[-*] before building ISSUE_TITLE.
 
-  _first_item_title=$(echo "$FILTERED_CONTENT" | grep -m1 -E "^### .* - ACTIONABLE_(NOW|LATER)" | \
-    sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
+  _raw_title="1. Orphaned reference in error handler"
+  # Inline the same logic as the fixed code
+  _clean_title=$(echo "$_raw_title" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
+  _clean_title=$(echo "$_clean_title" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)
 
-  _item_desc=""
-  if [ "${#_first_item_title}" -gt 60 ]; then
-    _item_desc="${_first_item_title:0:60}"
-    _item_desc=$(echo "$_item_desc" | sed 's/ [^ ]*$//' || true)
-    _item_desc="${_item_desc}..."
-  else
-    _item_desc="$_first_item_title"
-  fi
-
-  # Must not exceed 63 chars (60 cap + "...")
-  title_len="${#_item_desc}"
-  [ "$title_len" -le 63 ] || {
-    echo "FAIL: Truncated title exceeds 63 chars ($title_len): '$_item_desc'"
+  [[ "$_clean_title" == "Orphaned reference in error handler" ]] || {
+    echo "FAIL: Expected 'Orphaned reference in error handler', got: '$_clean_title'"
     false
   }
-  # Must end with "..."
-  [[ "$_item_desc" == *"..." ]] || {
-    echo "FAIL: Truncated title should end with '...', got: '$_item_desc'"
+  [[ "$_clean_title" != "1."* ]] || {
+    echo "FAIL: List marker '1.' leaked into clean title: '$_clean_title'"
     false
-  }
-  # Must not end with a partial word followed by "..." (no hyphenation, no mid-word)
-  # Check that the char before "..." is a space-terminated word (not a letter sequence ending without space)
-  _without_ellipsis="${_item_desc%...}"
-  [[ "$_without_ellipsis" == *" "* ]] || {
-    echo "WARN: Truncated title may be a single long word — acceptable: '$_item_desc'"
   }
 }
 
-# ─── Test 6: Unit — fallback when no ACTIONABLE items ────────────────────────
+# ─── Test 6: Unit — clean title has no [tag] prefix ─────────────────────────
 
-@test "assess-and-resolve.sh: fallback title when FILTERED_CONTENT is empty" {
-  FILTERED_CONTENT=""
-  PR_NUMBER="410"
+@test "assess-and-resolve.sh: per-finding ISSUE_TITLE has no [tech-debt] or [review-follow-up] prefix" {
+  # Post-#518: title is just the finding's own text (+ optional source-issue suffix).
+  _clean_title="Fix unquoted variable expansion in git diff"
+  ISSUE_NUMBER="602"
 
-  _first_item_title=$(echo "$FILTERED_CONTENT" | grep -m1 -E "^### .* - ACTIONABLE_(NOW|LATER)" | \
-    sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
-  _total_items=$(echo "$FILTERED_CONTENT" | grep -c -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
-  _total_items=${_total_items:-0}
-  _remaining_item_count=0
+  _src_issue_suffix=" for issue #${ISSUE_NUMBER}"
+  ISSUE_TITLE="${_clean_title}${_src_issue_suffix}"
 
-  _item_desc=""
-  if [ -n "$_first_item_title" ]; then
-    _item_desc="$_first_item_title — PR #${PR_NUMBER}"
-  else
-    _item_desc="review feedback — PR #${PR_NUMBER}"
-  fi
-
-  ISSUE_TITLE="[tech-debt] ${_item_desc}"
-
-  [[ "$ISSUE_TITLE" == *"review feedback — PR #410"* ]] || {
-    echo "FAIL: Expected fallback 'review feedback — PR #410', got: $ISSUE_TITLE"
+  # Must not start with [tech-debt] or [review-follow-up]
+  [[ "$ISSUE_TITLE" != "[tech-debt]"* ]] || {
+    echo "FAIL: ISSUE_TITLE starts with '[tech-debt]': '$ISSUE_TITLE'"
     false
   }
-  # Must NOT contain ": " (the old truncation artifact)
-  [[ "$ISSUE_TITLE" != *"PR title"*": "* ]] || {
-    echo "FAIL: Fallback title should not contain old colon artifact: $ISSUE_TITLE"
+  [[ "$ISSUE_TITLE" != "[review-follow-up]"* ]] || {
+    echo "FAIL: ISSUE_TITLE starts with '[review-follow-up]': '$ISSUE_TITLE'"
+    false
+  }
+  # Must contain the clean title
+  [[ "$ISSUE_TITLE" == *"Fix unquoted variable expansion in git diff"* ]] || {
+    echo "FAIL: Clean title not found in ISSUE_TITLE: '$ISSUE_TITLE'"
+    false
+  }
+  # Must contain the source-issue suffix for unique dedup scope
+  [[ "$ISSUE_TITLE" == *"for issue #602"* ]] || {
+    echo "FAIL: Source-issue suffix missing from ISSUE_TITLE: '$ISSUE_TITLE'"
     false
   }
 }
