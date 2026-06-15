@@ -128,14 +128,23 @@ setup() {
   # lib-resource-safety.bats is excluded: it pre-loads _RITE_CLAUDE_WORKFLOW_LOADED=true
   # which fires the re-source guard before execution reaches RITE_SOURCE_FUNCTIONS_ONLY.
   # That test explicitly verifies the re-source guard, not the function-only guard.
+  #
+  # phase3-no-dev-session-leak.bats (this file) is excluded: it is the meta-test and
+  # self-referential by design. Its comments and error-message echo strings contain
+  # "source.*claude-workflow.sh" text, but none of these are actual source calls that
+  # could launch a dev session — they are documentation and diagnostic output.
 
   local failures=0
   local violation_files=""
 
   while IFS=: read -r filepath lineno _; do
     # Skip the resource-safety test (uses the re-source guard path instead)
+    # Skip this test file itself — it is the meta-test and is self-referential by
+    # design: its comments and error-message echo strings contain "source.*claude-workflow.sh"
+    # but are not actual source calls that could launch a dev session.
     case "$filepath" in
       *lib-resource-safety*) continue ;;
+      *phase3-no-dev-session-leak*) continue ;;
     esac
 
     # Check if the source line has an inline RITE_SOURCE_FUNCTIONS_ONLY=1 prefix
