@@ -2023,6 +2023,104 @@ _create_lib_file() {
   }
 }
 
+# ===========================================================================
+# TEST 31: SHRINKAGE_BASE_BRANCH_INVALID diag logs PRE-STRIP raw value
+#
+# Regression for issue #590 follow-up: the `_raw` field in the
+# SHRINKAGE_BASE_BRANCH_INVALID diag line was logging the POST-strip value
+# because `tr -d '\n\r'` ran before the diag was emitted.  The fix captures
+# the raw value before stripping so the original attack payload (embedded
+# newlines, path-traversal sequences) is preserved in the audit trail.
+#
+# For log parseability, literal newlines are visualized as '↵' and carriage
+# returns as '←' rather than embedded as control characters.
+# ===========================================================================
+
+@test "SHRINKAGE_BASE_BRANCH_INVALID diag: logs pre-strip raw value (newline visualized as ↵)" {
+  # A crafted baseRefName with an embedded newline: "main\nevil;cmd".
+  # After stripping newlines the value becomes "mainevil;cmd" which fails the
+  # allowlist and triggers the INVALID diag.  The diag must log the ORIGINAL
+  # "main↵evil;cmd" (pre-strip, newlines visualized), not the stripped
+  # "mainevil;cmd" (post-strip, hides the injection attempt).
+  local target_file="lib/core/workflow-runner.sh"
+  local n_deleted=600  # above absolute threshold — simple blocker case
+
+  local _target_file="$target_file"
+  local _n_deleted="$n_deleted"
+  local _make_lib_diff_fn
+  _make_lib_diff_fn=$(declare -f _make_lib_diff)
+  local log_file="$RITE_TEST_TMPDIR/rite-invalid-branch-raw.log"
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_SHRINKAGE_RATIO_PCT=50
+    export RITE_SHRINKAGE_ABS_LINES=500
+    export RITE_LOG_FILE='$log_file'
+    ${_make_lib_diff_fn}
+    gh_safe() {
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'diff' ]; then
+        _make_lib_diff '${_target_file}' '${_n_deleted}'
+        return 0
+      fi
+      if [ \"\$1\" = 'pr' ] && [ \"\$2\" = 'view' ] && [[ \"\$*\" == *'baseRefName'* ]]; then
+        # Return a branch name with an embedded newline followed by a shell payload.
+        # Without the fix the diag logs the post-strip value 'mainevil;cmd' which
+        # hides the fact that a newline injection was attempted.
+        printf 'main\nevil;cmd'
+        return 0
+      fi
+      return 1
+    }
+    git() {
+      if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
+        return 0
+      fi
+      return 0
+    }
+    export -f gh_safe _make_lib_diff git
+    source '${RITE_LIB_DIR}/utils/blocker-rules.sh'
+    _exit=0
+    detect_lib_shrinkage '99' || _exit=\$?
+    echo \"EXIT=\${_exit}\"
+  "
+
+  # Blocker fires (absolute threshold: 600 > 500)
+  [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
+  [[ "$output" == *"BLOCKER"* ]]
+
+  # The SHRINKAGE_BASE_BRANCH_INVALID diag must have been written
+  [ -f "$log_file" ] || {
+    echo "FAIL: RITE_LOG_FILE was not written"
+    return 1
+  }
+  grep -q "SHRINKAGE_BASE_BRANCH_INVALID" "$log_file" || {
+    echo "FAIL: SHRINKAGE_BASE_BRANCH_INVALID not found in log"
+    cat "$log_file"
+    return 1
+  }
+
+  # The raw value must appear with the newline visualized as '↵', NOT as the
+  # stripped form 'mainevil;cmd' which hides the injection attempt.
+  grep -q "base_branch_raw=main↵evil;cmd" "$log_file" || {
+    echo "FAIL: diag does not contain pre-strip raw value with newline visualized as ↵"
+    echo "Log contents:"
+    cat "$log_file"
+    return 1
+  }
+
+  # The diag line must NOT contain a literal newline (which would break log parsing).
+  # A literal newline would manifest as multiple lines all starting with the
+  # SHRINKAGE_BASE_BRANCH_INVALID prefix — verify there is exactly one such line.
+  local diag_line_count
+  diag_line_count=$(grep -c "SHRINKAGE_BASE_BRANCH_INVALID" "$log_file" || true)
+  [ "$diag_line_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 SHRINKAGE_BASE_BRANCH_INVALID diag line, found $diag_line_count"
+    echo "(likely caused by literal newline embedded in the log line)"
+    cat "$log_file"
+    return 1
+  }
+}
+
 @test "detect_lib_shrinkage: accepts valid non-main base_branch (e.g. develop, release/1.0)" {
   # Ensure the validation does NOT reject valid branch names with slashes and dots.
   local target_file="lib/core/workflow-runner.sh"
