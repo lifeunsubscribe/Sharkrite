@@ -30,6 +30,16 @@ DISPLAY_MODE=false
 # Override for high- or low-volume projects via RITE_HEALTH_MIN_WORKFLOWS.
 MIN_WORKFLOWS="${RITE_HEALTH_MIN_WORKFLOWS:-3}"
 
+# Model for the health-report synthesis — DECOUPLED from RITE_REVIEW_MODEL.
+# The report is not code review: most of it is templating pre-computed stats
+# and applying fixed thresholds, with a thin interpretive tail (Trends, Insights,
+# Analyst's read). That is sonnet's sweet spot, not opus's — and defaulting here
+# stops the report from silently riding the (expensive) code-review model.
+# Override to claude-opus-4-8 if a quality check shows the synthesis needs
+# deeper reasoning. Mirrors the RITE_DOC_ASSESSMENT_MODEL decoupling
+# (see CLAUDE.md → "Model Selection Per Task").
+RITE_HEALTH_MODEL="${RITE_HEALTH_MODEL:-claude-sonnet-4-6}"
+
 # Parse args
 case "${1:-}" in
   --latest)
@@ -477,7 +487,7 @@ source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_UTILITY_PROVIDER:-claude}"
 provider_detect_cli || exit 1
 
-REPORT_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "" true 2>/dev/null) || {
+REPORT_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "$RITE_HEALTH_MODEL" true 2>/dev/null) || {
   echo "Error: Provider analysis failed (exit code $?)"
   exit 1
 }

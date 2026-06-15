@@ -99,6 +99,7 @@ Each task uses the model that fits its nature. Three independent model vars — 
 | Code review | `RITE_REVIEW_MODEL` | `claude-opus-4-8` | Deep reasoning, broad context — catches edge cases that matter |
 | Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
+| Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
 
 **Never pass `""` as the model arg** to `provider_run_prompt_with_timeout` and rely on defaults — use an explicit role via `claude_provider_resolve_model`. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
 
@@ -743,7 +744,9 @@ rtk init --global --hook-only
 
 ### Weekly health report
 
-A launchd job (`com.sharkrite.health-report`) runs every Monday at 9:07 AM and generates `.rite/reports/rite-health-YYYYMMDD.md`. It collects diagnostic log data, rtk stats, recent sharkrite git changes, and previous reports, then pipes everything to Claude for analysis.
+A launchd job (`com.sharkrite.health-report`) runs every Monday at 9:07 AM and generates `.rite/reports/rite-health-YYYYMMDD.md`. It collects diagnostic log data, rtk stats, recent sharkrite git changes, and previous reports, then pipes everything to Claude for analysis. Runs on `RITE_HEALTH_MODEL` (default sonnet — see "Model Selection Per Task").
+
+**launchd PATH requirement (CRITICAL — live failure 2026-06-15):** the plist runs `bin/rite-health-report` with a minimal PATH and does NOT source your shell profile. `claude` is `#!/usr/bin/env node`, and `node` lives under nvm (`~/.nvm/versions/node/<ver>/bin`), which is not on launchd's PATH — so the job dies at exit 127 (`env node` not found) *after* passing the `command -v claude` precheck. Fix: symlink `node` into a stable dir already on the plist PATH — `ln -sf "$(command -v node)" ~/.local/bin/node` (the plist PATH already includes `~/.local/bin`, which is also where `claude` is symlinked). Re-point the symlink if you nvm-uninstall that node version. Verify with: `env -i HOME="$HOME" PATH="<plist PATH>" claude --version`.
 
 The report uses **absolute thresholds** (not before/after comparison):
 - Fix iterations avg > 2.0 → WARNING
