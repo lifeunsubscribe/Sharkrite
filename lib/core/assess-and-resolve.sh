@@ -40,6 +40,206 @@ source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
+# ---------------------------------------------------------------------------
+# _followup_dedup_check — four-source dedup check for follow-up issue creation
+#
+# Checks whether a follow-up issue already exists using four evidence sources
+# in order of reliability and cost:
+#
+#   1. Local evidence file (fastest, no network, survives PR comment failures)
+#   2. Body-marker search scoped to source issue (reliable when indexed)
+#   3. Title search (catches cases where body marker not yet indexed)
+#   4. PR marker comment OR lock-contention signal (guards against index lag)
+#
+# After this function returns, EXISTING_ISSUE is set to the number of the
+# existing issue if one was found, or empty if creation should proceed.
+#
+# Globals read:
+#   PR_NUMBER, ISSUE_NUMBER, ISSUE_SEARCH
+#   RITE_MARKER_SOURCE_ISSUE, RITE_MARKER_FOLLOWUP
+#   RITE_DEDUP_BACKOFF (default 5s)
+# Globals written:
+#   EXISTING_ISSUE — set to existing issue number if found, empty otherwise
+# Globals in/out:
+#   _lock_was_contended — consumed on first contention retry (set to false)
+#
+# Tests source this file with RITE_SOURCE_FUNCTIONS_ONLY=1 and stub gh_safe
+# to exercise this function in isolation without network calls.
+# ---------------------------------------------------------------------------
+_followup_dedup_check() {
+  # Check if issue already exists.  Four evidence sources checked in order of
+  # reliability and cost:
+  #
+  #   1. Local evidence file (fastest, no network, survives PR comment failures)
+  #   2. Body-marker search scoped to source issue (reliable when indexed)
+  #   3. Title search (catches cases where body marker not yet indexed)
+  #   4. PR marker comment (guards against index lag after another process created)
+  #
+  # Source 1 (local evidence) is the fix for the edge case where the GitHub PR
+  # comment write fails (||true silences it) and both the issue body and title
+  # searches miss due to index lag.  The evidence file is written to disk while
+  # the lock is held, so it is guaranteed to be present if any prior holder of
+  # this lock successfully created an issue — even if the comment write failed.
+  EXISTING_ISSUE=""
+  local _dedup_retries=0
+  local _dedup_max_retries=3
+  # _dedup_backoff: seconds to wait between dedup retry iterations.
+  #
+  # TIMING BUDGET NOTE — this directly affects how long the lock is held.
+  # The holder (this process) holds acquire_pr_followup_lock while running the
+  # dedup search loop.  The waiter times out after ~60s (max_attempts in
+  # issue-lock.sh).  Under slow-GitHub conditions the holder can consume:
+  #
+  #   evidence validation gh call  : up to 20s backoff-sleep (gh_safe 3×: 5s+15s);
+  #                                   gh round-trip latency is additional and not included
+  #   dedup search loop (up to 4 gh calls per iteration): up to 80s backoff-sleep
+  #                                   (20s each); gh round-trip latency adds to each call
+  #     - Source 2a: gh issue list  (body-marker search)
+  #     - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
+  #     - Source 3:  gh issue list  (title search; only if still no match)
+  #     - Source 4:  gh pr view     (PR comment check; only if still no match and not last retry)
+  #   this backoff loop (3 retries × _dedup_backoff): _dedup_max_retries × _dedup_backoff
+  #
+  # With defaults (3 retries, 5s backoff): 20 + 80 + 15 = 115s backoff-sleep worst-case,
+  # which exceeds the ~60s waiter budget; actual wall-clock is higher once gh request
+  # latency is included.  In practice the evidence validation short-circuits the loop,
+  # keeping typical holder time under 10s.  But under concurrent slow-GitHub conditions
+  # the waiter may time out and proceed lock-less.
+  #
+  # To reduce worst-case holder time, lower RITE_DEDUP_BACKOFF or RITE_GH_MAX_RETRIES.
+  # See acquire_pr_followup_lock comment in lib/utils/issue-lock.sh for the full analysis.
+  local _dedup_backoff="${RITE_DEDUP_BACKOFF:-5}"  # configurable via env; default 5s
+
+  # Source 1: local evidence file — no API call, survives comment-write failures.
+  # Read and validate once, before the retry loop.  The evidence file is FS-backed
+  # and lock-serialized; it cannot change mid-loop unless this process clears it,
+  # so reading it inside the loop would only give transient gh failures more chances
+  # to wrongly clear it on each backoff iteration.
+  local _evidence_candidate
+  _evidence_candidate=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
+  if [ -n "$_evidence_candidate" ]; then
+    # Validate that the locally-evidenced issue is still open.  The evidence file
+    # persists indefinitely; if the referenced issue was closed or deleted since it
+    # was written, trusting it would permanently suppress recreation of the follow-up.
+    # IMPORTANT: distinguish three outcomes from `gh issue view`:
+    #   - "OPEN"             → confirmed open; trust the evidence
+    #   - "CLOSED"/"MERGED"  → confirmed closed/deleted; clear stale evidence
+    #   - "" (empty/error)   → transient API failure; do NOT clear — preserve the
+    #                          dedup guarantee under the same flakiness conditions
+    #                          this PR is designed to handle
+    local _evidence_issue_state
+    _evidence_issue_state=$(gh_safe issue view "$_evidence_candidate" --json state --jq '.state' || true)
+    if [ "${_evidence_issue_state}" = "OPEN" ]; then
+      # Confirmed open — trust local evidence immediately; no need to enter loop
+      EXISTING_ISSUE="$_evidence_candidate"
+    elif [ -n "$_evidence_issue_state" ]; then
+      # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
+      print_info "Local evidence points to issue #$_evidence_candidate (state: ${_evidence_issue_state}) — removing stale evidence file and continuing dedup check"
+      clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
+    else
+      # Empty result — gh call failed (transient API error or network issue).
+      # Do NOT clear the evidence file; preserve the dedup guarantee.
+      print_info "Could not determine state of evidenced issue #$_evidence_candidate (gh API unavailable) — retaining local evidence to preserve dedup guarantee"
+      EXISTING_ISSUE="$_evidence_candidate"
+    fi
+  fi
+
+  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
+
+    # Source 2: body-marker search scoped to source issue (most reliable when indexed)
+    #
+    # The search term is quoted ("sharkrite-source-issue:N") to force GitHub's
+    # full-text search to treat it as a literal phrase rather than a structured
+    # qualifier.  Without quotes, GitHub may tokenize around the colon and fail
+    # to match the marker embedded inside an HTML comment.
+    if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
+      local _search_candidate
+      _search_candidate=$(gh_safe issue list \
+        --state open \
+        --search "\"${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}\" in:body" \
+        --json number \
+        --jq '.[0].number' | grep -E '^[0-9]+$' || true)
+      _search_candidate="${_search_candidate:-}"
+      # Verify the marker is actually in the body — GitHub search can return
+      # approximate matches; direct body inspection is the ground truth.
+      if [ -n "$_search_candidate" ]; then
+        local _candidate_body
+        _candidate_body=$(gh_safe issue view "$_search_candidate" --json body --jq '.body' || true)
+        _candidate_body="${_candidate_body:-}"
+        if echo "$_candidate_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+          EXISTING_ISSUE="$_search_candidate"
+        fi
+      fi
+      EXISTING_ISSUE="${EXISTING_ISSUE:-}"
+    fi
+
+    # Source 3: title search (catches cases where body marker not yet indexed)
+    if [ -z "$EXISTING_ISSUE" ]; then
+      EXISTING_ISSUE=$(gh_safe issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
+        jq -r '.[] | select(.state == "OPEN") | .number' || true)
+      EXISTING_ISSUE="${EXISTING_ISSUE:-}"
+    fi
+
+    # If found by any source, no need to retry
+    [ -n "$EXISTING_ISSUE" ] && break
+
+    # Source 4: PR marker comment OR lock-contention signal.
+    #
+    # Two independent signals indicate that another process may have just created
+    # a follow-up issue that the GitHub search index hasn't yet caught up with:
+    #
+    #   (a) PR comment with a sharkrite-followup-issue marker — the original
+    #       guard from PR #127; works when the creating process posted a comment.
+    #
+    #   (b) _lock_was_contended=true — the lock was blocked when we acquired it,
+    #       meaning another process just held and released the lock (i.e., just
+    #       completed the dedup-then-create sequence).  This is the fix for Gap 1
+    #       from issue #478: for follow-up *issue* creation there may be no PR
+    #       comment to act as the lag signal, so contention alone is sufficient
+    #       evidence that we should retry rather than proceed to create.
+    #
+    # Either signal triggers a retry.  Lock contention is only used on the first
+    # retry iteration (it's a one-time signal from the previous lock holder).
+    if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
+      local _jq_followup_count
+      _jq_followup_count="[.comments[].body | select(contains(\"<!-- ${RITE_MARKER_FOLLOWUP}:\"))] | length"
+      local _recent_followup_comment
+      _recent_followup_comment=$(gh_safe pr view "$PR_NUMBER" \
+        --json comments \
+        --jq "$_jq_followup_count")
+      _recent_followup_comment="${_recent_followup_comment:-0}"
+      local _retry_reason=""
+      if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
+        _retry_reason="follow-up comment found on PR but issue not yet indexed"
+      elif [ "${_lock_was_contended:-false}" = "true" ] && [ "$_dedup_retries" -eq 0 ]; then
+        # Lock was contended: another process just completed the critical section.
+        # Fire one retry to let the GitHub index catch up before proceeding to create.
+        _retry_reason="lock was contended (another process just finished) — index may lag"
+        _lock_was_contended=false  # consume signal; only retry once for contention alone
+      fi
+      if [ -n "$_retry_reason" ]; then
+        _dedup_retries=$((_dedup_retries + 1))
+        print_info "Dedup retry: ${_retry_reason} (attempt $_dedup_retries/$_dedup_max_retries) — retrying in ${_dedup_backoff}s..."
+        sleep "$_dedup_backoff"
+        continue
+      fi
+    fi
+
+    # No evidence of prior creation — break and proceed to create
+    break
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
+# can load only the function definitions above (e.g. _followup_dedup_check)
+# without executing the script body (which parses args, sets up exec redirects,
+# installs traps, and makes live gh/claude calls).
+# ---------------------------------------------------------------------------
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+
 # Redirect all display output to stderr (stdout reserved for filtered content on exit 2)
 exec 3>&1  # Save original stdout for filtered content output
 exec 1>&2  # Redirect stdout to stderr for all print functions
@@ -1611,161 +1811,10 @@ _Auto-generated follow-up from PR #$PR_NUMBER review_"
 
   if [ "${_skip_followup_creation:-false}" != "true" ]; then
 
-  # Check if issue already exists.  Four evidence sources checked in order of
-  # reliability and cost:
-  #
-  #   1. Local evidence file (fastest, no network, survives PR comment failures)
-  #   2. Body-marker search scoped to source issue (reliable when indexed)
-  #   3. Title search (catches cases where body marker not yet indexed)
-  #   4. PR marker comment (guards against index lag after another process created)
-  #
-  # Source 1 (local evidence) is the fix for the edge case where the GitHub PR
-  # comment write fails (||true silences it) and both the issue body and title
-  # searches miss due to index lag.  The evidence file is written to disk while
-  # the lock is held, so it is guaranteed to be present if any prior holder of
-  # this lock successfully created an issue — even if the comment write failed.
-  EXISTING_ISSUE=""
-  _dedup_retries=0
-  _dedup_max_retries=3
-  # _dedup_backoff: seconds to wait between dedup retry iterations.
-  #
-  # TIMING BUDGET NOTE — this directly affects how long the lock is held.
-  # The holder (this process) holds acquire_pr_followup_lock while running the
-  # dedup search loop.  The waiter times out after ~60s (max_attempts in
-  # issue-lock.sh).  Under slow-GitHub conditions the holder can consume:
-  #
-  #   evidence validation gh call  : up to 20s backoff-sleep (gh_safe 3×: 5s+15s);
-  #                                   gh round-trip latency is additional and not included
-  #   dedup search loop (up to 4 gh calls per iteration): up to 80s backoff-sleep
-  #                                   (20s each); gh round-trip latency adds to each call
-  #     - Source 2a: gh issue list  (body-marker search)
-  #     - Source 2b: gh issue view  (marker verification; only if 2a found a candidate)
-  #     - Source 3:  gh issue list  (title search; only if still no match)
-  #     - Source 4:  gh pr view     (PR comment check; only if still no match and not last retry)
-  #   this backoff loop (3 retries × _dedup_backoff): _dedup_max_retries × _dedup_backoff
-  #
-  # With defaults (3 retries, 5s backoff): 20 + 80 + 15 = 115s backoff-sleep worst-case,
-  # which exceeds the ~60s waiter budget; actual wall-clock is higher once gh request
-  # latency is included.  In practice the evidence validation short-circuits the loop,
-  # keeping typical holder time under 10s.  But under concurrent slow-GitHub conditions
-  # the waiter may time out and proceed lock-less.
-  #
-  # To reduce worst-case holder time, lower RITE_DEDUP_BACKOFF or RITE_GH_MAX_RETRIES.
-  # See acquire_pr_followup_lock comment in lib/utils/issue-lock.sh for the full analysis.
-  _dedup_backoff="${RITE_DEDUP_BACKOFF:-5}"  # configurable via env; default 5s
-
-  # Source 1: local evidence file — no API call, survives comment-write failures.
-  # Read and validate once, before the retry loop.  The evidence file is FS-backed
-  # and lock-serialized; it cannot change mid-loop unless this process clears it,
-  # so reading it inside the loop would only give transient gh failures more chances
-  # to wrongly clear it on each backoff iteration.
-  _evidence_candidate=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
-  if [ -n "$_evidence_candidate" ]; then
-    # Validate that the locally-evidenced issue is still open.  The evidence file
-    # persists indefinitely; if the referenced issue was closed or deleted since it
-    # was written, trusting it would permanently suppress recreation of the follow-up.
-    # IMPORTANT: distinguish three outcomes from `gh issue view`:
-    #   - "OPEN"             → confirmed open; trust the evidence
-    #   - "CLOSED"/"MERGED"  → confirmed closed/deleted; clear stale evidence
-    #   - "" (empty/error)   → transient API failure; do NOT clear — preserve the
-    #                          dedup guarantee under the same flakiness conditions
-    #                          this PR is designed to handle
-    _evidence_issue_state=$(gh_safe issue view "$_evidence_candidate" --json state --jq '.state' || true)
-    if [ "${_evidence_issue_state}" = "OPEN" ]; then
-      # Confirmed open — trust local evidence immediately; no need to enter loop
-      EXISTING_ISSUE="$_evidence_candidate"
-    elif [ -n "$_evidence_issue_state" ]; then
-      # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
-      print_info "Local evidence points to issue #$_evidence_candidate (state: ${_evidence_issue_state}) — removing stale evidence file and continuing dedup check"
-      clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
-    else
-      # Empty result — gh call failed (transient API error or network issue).
-      # Do NOT clear the evidence file; preserve the dedup guarantee.
-      print_info "Could not determine state of evidenced issue #$_evidence_candidate (gh API unavailable) — retaining local evidence to preserve dedup guarantee"
-      EXISTING_ISSUE="$_evidence_candidate"
-    fi
-  fi
-
-  while [ "$_dedup_retries" -le "$_dedup_max_retries" ]; do
-
-    # Source 2: body-marker search scoped to source issue (most reliable when indexed)
-    #
-    # The search term is quoted ("sharkrite-source-issue:N") to force GitHub's
-    # full-text search to treat it as a literal phrase rather than a structured
-    # qualifier.  Without quotes, GitHub may tokenize around the colon and fail
-    # to match the marker embedded inside an HTML comment.
-    if [ -z "$EXISTING_ISSUE" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
-      _search_candidate=$(gh_safe issue list \
-        --state open \
-        --search "\"${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}\" in:body" \
-        --json number \
-        --jq '.[0].number' | grep -E '^[0-9]+$' || true)
-      _search_candidate="${_search_candidate:-}"
-      # Verify the marker is actually in the body — GitHub search can return
-      # approximate matches; direct body inspection is the ground truth.
-      if [ -n "$_search_candidate" ]; then
-        _candidate_body=$(gh_safe issue view "$_search_candidate" --json body --jq '.body' || true)
-        _candidate_body="${_candidate_body:-}"
-        if echo "$_candidate_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
-          EXISTING_ISSUE="$_search_candidate"
-        fi
-      fi
-      EXISTING_ISSUE="${EXISTING_ISSUE:-}"
-    fi
-
-    # Source 3: title search (catches cases where body marker not yet indexed)
-    if [ -z "$EXISTING_ISSUE" ]; then
-      EXISTING_ISSUE=$(gh_safe issue list --search "in:title $ISSUE_SEARCH" --json number,title,state --limit 1 | \
-        jq -r '.[] | select(.state == "OPEN") | .number' || true)
-      EXISTING_ISSUE="${EXISTING_ISSUE:-}"
-    fi
-
-    # If found by any source, no need to retry
-    [ -n "$EXISTING_ISSUE" ] && break
-
-    # Source 4: PR marker comment OR lock-contention signal.
-    #
-    # Two independent signals indicate that another process may have just created
-    # a follow-up issue that the GitHub search index hasn't yet caught up with:
-    #
-    #   (a) PR comment with a sharkrite-followup-issue marker — the original
-    #       guard from PR #127; works when the creating process posted a comment.
-    #
-    #   (b) _lock_was_contended=true — the lock was blocked when we acquired it,
-    #       meaning another process just held and released the lock (i.e., just
-    #       completed the dedup-then-create sequence).  This is the fix for Gap 1
-    #       from issue #478: for follow-up *issue* creation there may be no PR
-    #       comment to act as the lag signal, so contention alone is sufficient
-    #       evidence that we should retry rather than proceed to create.
-    #
-    # Either signal triggers a retry.  Lock contention is only used on the first
-    # retry iteration (it's a one-time signal from the previous lock holder).
-    if [ "$_dedup_retries" -lt "$_dedup_max_retries" ]; then
-      _jq_followup_count="[.comments[].body | select(contains(\"<!-- ${RITE_MARKER_FOLLOWUP}:\"))] | length"
-      _recent_followup_comment=$(gh_safe pr view "$PR_NUMBER" \
-        --json comments \
-        --jq "$_jq_followup_count")
-      _recent_followup_comment="${_recent_followup_comment:-0}"
-      _retry_reason=""
-      if [ "${_recent_followup_comment:-0}" -gt 0 ]; then
-        _retry_reason="follow-up comment found on PR but issue not yet indexed"
-      elif [ "${_lock_was_contended:-false}" = "true" ] && [ "$_dedup_retries" -eq 0 ]; then
-        # Lock was contended: another process just completed the critical section.
-        # Fire one retry to let the GitHub index catch up before proceeding to create.
-        _retry_reason="lock was contended (another process just finished) — index may lag"
-        _lock_was_contended=false  # consume signal; only retry once for contention alone
-      fi
-      if [ -n "$_retry_reason" ]; then
-        _dedup_retries=$((_dedup_retries + 1))
-        print_info "Dedup retry: ${_retry_reason} (attempt $_dedup_retries/$_dedup_max_retries) — retrying in ${_dedup_backoff}s..."
-        sleep "$_dedup_backoff"
-        continue
-      fi
-    fi
-
-    # No evidence of prior creation — break and proceed to create
-    break
-  done
+  # Delegate to _followup_dedup_check() (defined above the RITE_SOURCE_FUNCTIONS_ONLY
+  # guard so tests can source and call it directly with gh_safe stubbed).
+  # Sets EXISTING_ISSUE; reads/modifies _lock_was_contended.
+  _followup_dedup_check
 
   if [ -n "$EXISTING_ISSUE" ]; then
     # Release lock before any output — we won't be creating an issue
