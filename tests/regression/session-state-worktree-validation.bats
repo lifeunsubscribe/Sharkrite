@@ -39,8 +39,15 @@
 #    14. save_session_state writes empty worktree_path when passed main repo root
 #    15. save_session_state writes empty worktree_path when passed empty string
 #    16. save_session_state preserves a valid (non-root) worktree path unchanged
+#   BEHAVIORAL (linked-worktree membership check — real git worktree harness, issue #614):
+#    17. resume validation accepts a path that is a real linked worktree
+#    18. resume validation rejects a directory that exists but is NOT in git worktree list
+#    19. resume validation rejects a path that resolves to main repo root via symlink (pwd -P)
+#    20. resume validation accepts a linked worktree whose path contains spaces
+#    21. resume validation accepts a linked worktree accessed via a symlink (pwd -P canonicalization)
 
 load '../helpers/setup.bash'
+load '../helpers/git-fixtures.bash'
 
 setup() {
   setup_test_tmpdir
@@ -671,6 +678,283 @@ EOF
     echo "FAIL: valid worktree path was unexpectedly modified"
     echo "  Expected: '$_fake_wt'"
     echo "  Got:      '$_saved_wt'"
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: linked-worktree membership check — real git worktree harness
+# (issue #614)
+#
+# The earlier _simulate_resume_validation() helper skipped the git worktree
+# list membership step for simplicity.  These tests exercise the full
+# validation path, including:
+#   - porcelain parsing (awk + tail -n +2 to skip main checkout)
+#   - pwd -P symlink canonicalization for each candidate path
+#   - ACCEPT when saved path is in the linked list
+#   - REJECT when saved path is a real directory but absent from the list
+#   - REJECT when a symlink makes the path resolve to the main repo root
+#   - ACCEPT for paths containing spaces (verifying --porcelain necessity)
+#   - ACCEPT when path is accessed via a symlink (pwd -P handles it)
+# =============================================================================
+
+# _simulate_resume_validation_with_worktree_check mirrors the FULL condition
+# tree from workflow-runner.sh main(), including the git worktree list step.
+# Arguments:
+#   $1  saved_worktree  — path read from the session-state JSON
+#   $2  project_root    — RITE_PROJECT_ROOT equivalent
+# Prints "ACCEPT" or "REJECT:<reason>" to stdout.
+_simulate_resume_validation_with_worktree_check() {
+  local _saved_worktree="$1"
+  local _project_root="$2"
+
+  local _worktree_valid=false
+  local _worktree_reject_reason=""
+
+  # Tier 1: empty / null
+  if [ -z "$_saved_worktree" ] || [ "$_saved_worktree" = "null" ]; then
+    _worktree_reject_reason="empty or null"
+
+  # Tier 2: string-equal to project root (pre-worktree interruption fallback)
+  elif [ "$_saved_worktree" = "$_project_root" ]; then
+    _worktree_reject_reason="equals main repo root (pre-worktree interruption fallback)"
+
+  # Tier 3: directory no longer exists
+  elif [ ! -d "$_saved_worktree" ]; then
+    _worktree_reject_reason="directory no longer exists"
+
+  else
+    # Tier 4: confirm path resolves to something other than main repo root
+    # (catches symlink aliases of the main checkout)
+    local _main_wt
+    _main_wt=$(git -C "$_project_root" rev-parse --show-toplevel 2>/dev/null || true)
+
+    local _saved_real
+    _saved_real=$(cd "$_saved_worktree" 2>/dev/null && pwd -P || echo "$_saved_worktree")
+    local _main_real
+    _main_real=$(cd "${_main_wt:-$_project_root}" 2>/dev/null && pwd -P || echo "${_main_wt:-$_project_root}")
+
+    if [ "$_saved_real" = "$_main_real" ]; then
+      _worktree_reject_reason="resolves to main repo root (symlink or alias)"
+    else
+      # Tier 5: membership — must appear in the LINKED worktree list.
+      # --porcelain preserves paths with spaces; tail -n +2 skips the main
+      # checkout (always the first entry); pwd -P canonicalises each entry.
+      local _linked_match=false
+      local _wt_path
+      while IFS= read -r _wt_path; do
+        local _wt_real
+        _wt_real=$(cd "$_wt_path" 2>/dev/null && pwd -P || echo "$_wt_path")
+        if [ "$_wt_real" = "$_saved_real" ]; then
+          _linked_match=true
+          break
+        fi
+      done < <(git -C "$_project_root" worktree list --porcelain 2>/dev/null \
+                 | awk '/^worktree /{print substr($0,10)}' \
+                 | tail -n +2 || true)
+
+      if [ "$_linked_match" = true ]; then
+        _worktree_valid=true
+      else
+        _worktree_reject_reason="not a linked worktree (not in git worktree list)"
+      fi
+    fi
+  fi
+
+  if [ "$_worktree_valid" = true ]; then
+    echo "ACCEPT"
+  else
+    echo "REJECT:$_worktree_reject_reason"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Shared setup for linked-worktree harness tests: real git repo + worktree.
+# Each test that needs a live repo calls _setup_linked_wt_repo() at its top.
+# We do NOT fold this into the global setup() because most tests in this file
+# do not need a git repo and creating one would slow the suite.
+# ---------------------------------------------------------------------------
+_setup_linked_wt_repo() {
+  # Build a fresh fixture repo with a bare remote inside RITE_TEST_TMPDIR.
+  # create_bare_remote / create_fixture_repo are from helpers/git-fixtures.bash.
+  local _bare
+  _bare=$(create_bare_remote "origin")
+  local _repo
+  _repo=$(create_fixture_repo "$_bare")
+
+  # Create a feature branch and linked worktree
+  cd "$_repo" || return 1
+  local _branch="feat/test-linked-wt-$$"
+  git checkout -b "$_branch" main >/dev/null 2>&1
+  echo "feature" > feature.sh
+  git add feature.sh
+  git commit -m "Add feature" >/dev/null 2>&1
+
+  local _wt_path="${RITE_TEST_TMPDIR}/linked-wt-$$"
+  git worktree add "$_wt_path" "$_branch" >/dev/null 2>&1
+
+  # Resolve canonical path (macOS /var → /private/var symlink)
+  local _wt_real
+  _wt_real=$(cd "$_wt_path" && pwd -P 2>/dev/null || echo "$_wt_path")
+
+  # Return to repo root so callers start in a known CWD
+  cd "$_repo" || return 1
+
+  # Export for caller
+  echo "REPO=$_repo"
+  echo "WT_PATH=$_wt_path"
+  echo "WT_REAL=$_wt_real"
+  echo "BRANCH=$_branch"
+}
+
+@test "behavioral: linked-worktree check — ACCEPT real linked worktree" {
+  # Test 17: the happy path — saved path is in git worktree list → ACCEPT
+  local _setup_out
+  _setup_out=$(_setup_linked_wt_repo)
+
+  local _repo _wt_real
+  _repo=$(echo "$_setup_out" | awk -F= '/^REPO=/{print $2}')
+  _wt_real=$(echo "$_setup_out" | awk -F= '/^WT_REAL=/{print $2}')
+
+  local _result
+  _result=$(_simulate_resume_validation_with_worktree_check "$_wt_real" "$_repo")
+
+  [ "$_result" = "ACCEPT" ] || {
+    echo "FAIL: expected ACCEPT for a real linked worktree"
+    echo "  saved_worktree='$_wt_real'"
+    echo "  project_root='$_repo'"
+    echo "  result='$_result'"
+    # Dump worktree list for diagnosis
+    git -C "$_repo" worktree list --porcelain >&2 || true
+    return 1
+  }
+}
+
+@test "behavioral: linked-worktree check — REJECT directory not in git worktree list" {
+  # Test 18: a real directory that exists but was never registered as a worktree
+  # must be rejected to prevent session state from pointing at random directories.
+  local _setup_out
+  _setup_out=$(_setup_linked_wt_repo)
+
+  local _repo
+  _repo=$(echo "$_setup_out" | awk -F= '/^REPO=/{print $2}')
+
+  # A separate directory that exists on disk but is NOT a registered worktree
+  local _impostor="${RITE_TEST_TMPDIR}/impostor-dir-$$"
+  mkdir -p "$_impostor"
+
+  local _result
+  _result=$(_simulate_resume_validation_with_worktree_check "$_impostor" "$_repo")
+
+  [[ "$_result" == REJECT:* ]] || {
+    echo "FAIL: expected REJECT for directory not in git worktree list"
+    echo "  saved_worktree='$_impostor'"
+    echo "  result='$_result'"
+    return 1
+  }
+  [[ "$_result" == *"not a linked worktree"* ]] || {
+    echo "FAIL: expected 'not a linked worktree' rejection reason"
+    echo "  result='$_result'"
+    return 1
+  }
+  echo "Correctly rejected: $_result"
+}
+
+@test "behavioral: linked-worktree check — REJECT path that resolves to main repo root via symlink (pwd -P)" {
+  # Test 19: a symlink that points at the main checkout must be rejected even
+  # though the symlink path itself is different from RITE_PROJECT_ROOT.
+  # This validates the pwd -P canonicalisation step.
+  local _setup_out
+  _setup_out=$(_setup_linked_wt_repo)
+
+  local _repo
+  _repo=$(echo "$_setup_out" | awk -F= '/^REPO=/{print $2}')
+
+  # Create a symlink to the main repo root
+  local _sym="${RITE_TEST_TMPDIR}/main-alias-$$"
+  ln -s "$_repo" "$_sym"
+
+  local _result
+  _result=$(_simulate_resume_validation_with_worktree_check "$_sym" "$_repo")
+
+  [[ "$_result" == REJECT:* ]] || {
+    echo "FAIL: expected REJECT for symlink to main repo root"
+    echo "  saved_worktree (symlink)='$_sym' → '$_repo'"
+    echo "  result='$_result'"
+    return 1
+  }
+  # Either "equals main repo root" (tier-2 string match) or
+  # "resolves to main repo root" (tier-4 pwd -P match) is acceptable —
+  # both indicate the guard fired correctly.
+  [[ "$_result" == *"main repo root"* ]] || {
+    echo "FAIL: expected a 'main repo root' rejection reason"
+    echo "  result='$_result'"
+    return 1
+  }
+  echo "Correctly rejected: $_result"
+}
+
+@test "behavioral: linked-worktree check — ACCEPT linked worktree whose path contains spaces" {
+  # Test 20: verifies --porcelain is necessary; plain 'git worktree list' truncates
+  # paths at the first space via awk '{print $1}', causing false non-match.
+  local _bare
+  _bare=$(create_bare_remote "origin-spaces")
+  local _repo
+  _repo=$(create_fixture_repo "$_bare")
+
+  cd "$_repo" || return 1
+  local _branch="feat/spaces-test-$$"
+  git checkout -b "$_branch" main >/dev/null 2>&1
+  echo "spaces" > spaces.sh
+  git add spaces.sh
+  git commit -m "Add spaces feature" >/dev/null 2>&1
+
+  # Worktree path with a space in the name
+  local _wt_path="${RITE_TEST_TMPDIR}/linked wt spaces $$"
+  git worktree add "$_wt_path" "$_branch" >/dev/null 2>&1
+
+  local _wt_real
+  _wt_real=$(cd "$_wt_path" && pwd -P 2>/dev/null || echo "$_wt_path")
+
+  local _result
+  _result=$(_simulate_resume_validation_with_worktree_check "$_wt_real" "$_repo")
+
+  [ "$_result" = "ACCEPT" ] || {
+    echo "FAIL: expected ACCEPT for linked worktree with spaces in path"
+    echo "  saved_worktree='$_wt_real'"
+    echo "  project_root='$_repo'"
+    echo "  result='$_result'"
+    git -C "$_repo" worktree list --porcelain >&2 || true
+    return 1
+  }
+}
+
+@test "behavioral: linked-worktree check — ACCEPT linked worktree accessed via symlink (pwd -P canonicalisation)" {
+  # Test 21: a symlink to the linked worktree must be accepted after pwd -P
+  # resolves it to the same canonical path that git worktree list --porcelain
+  # reports.  Both the saved_worktree path and the list entries are resolved
+  # via pwd -P, so the comparison is always canonical-vs-canonical.
+  local _setup_out
+  _setup_out=$(_setup_linked_wt_repo)
+
+  local _repo _wt_real
+  _repo=$(echo "$_setup_out" | awk -F= '/^REPO=/{print $2}')
+  _wt_real=$(echo "$_setup_out" | awk -F= '/^WT_REAL=/{print $2}')
+
+  # Create a symlink to the linked worktree
+  local _sym="${RITE_TEST_TMPDIR}/wt-sym-$$"
+  ln -s "$_wt_real" "$_sym"
+
+  # Pass the symlink as the saved path — pwd -P must resolve it to _wt_real
+  local _result
+  _result=$(_simulate_resume_validation_with_worktree_check "$_sym" "$_repo")
+
+  [ "$_result" = "ACCEPT" ] || {
+    echo "FAIL: expected ACCEPT when saved path is a symlink to a real linked worktree"
+    echo "  symlink='$_sym' → '$_wt_real'"
+    echo "  project_root='$_repo'"
+    echo "  result='$_result'"
+    git -C "$_repo" worktree list --porcelain >&2 || true
     return 1
   }
 }
