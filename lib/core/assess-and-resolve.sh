@@ -1522,42 +1522,10 @@ fi
 
 # Gate: only proceed if we still have items worth tracking after LOW filtering
 if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
-  # Build consolidated issue body
-  ASSESSMENT_NOTE=""
-  if [ "$USE_FILTERED" = true ]; then
-    if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-      ASSESSMENT_NOTE="
+  print_header "📝 Creating Per-Finding Follow-up Issues"
 
-> 🤖 **Three-State Assessment Applied**: Items below are categorized as **ACTIONABLE_LATER** - valid improvements deferred due to scope constraints or time limits.
->
-> - ✅ **DISMISSED**: Style preferences and over-engineering were filtered out
-> - ⏭️  **ACTIONABLE_LATER**: These improvements align with project goals but exceed current PR scope or time constraints
-> - 📋 **Why deferred?**: See 'Defer Reason' in each item for context"
-    else
-      ASSESSMENT_NOTE="
-
-> 🦈 **Smart Assessment Applied**: Issues below have been filtered by Sharkrite's three-state categorization. Only items deemed **ACTIONABLE** are included (either NOW or LATER). Opinionated style preferences have been dismissed."
-    fi
-  fi
-
-  # Determine issue type and title
-  if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    FOLLOWUP_TITLE_PREFIX="Security Debt"
-    FOLLOWUP_DESCRIPTION="This issue tracks valid improvements that were deferred due to scope or time constraints. These are NOT blocking issues, but should be addressed when capacity allows."
-  else
-    FOLLOWUP_TITLE_PREFIX="Review Follow-up"
-    FOLLOWUP_DESCRIPTION="This issue consolidates all review feedback items that should be addressed. Items are grouped by priority."
-  fi
-
-  # Build follow-up issue body using the structure from templates/issue-template.md
-  # and the conventions in docs/issue-runbook.md.
-  # Sections: Description, Claude Context, Acceptance Criteria, Done Definition,
-  # Scope Boundary, Dependencies, Time Estimate.
-
-  # --- Gather data for template sections ---
-
-  # Claude Context: extract changed file paths from the PR
-  CHANGED_FILES=$(gh_safe pr view "$PR_NUMBER" --json files --jq '.files[].path')
+  # Gather PR metadata once — reused across per-finding issue bodies.
+  CHANGED_FILES=$(gh_safe pr view "$PR_NUMBER" --json files --jq '.files[].path' || true)
   CHANGED_FILES="${CHANGED_FILES:-}"
   CLAUDE_CONTEXT=""
   if [ -n "$CHANGED_FILES" ]; then
@@ -1571,468 +1539,364 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   if [ -n "$CHANGED_FILES" ]; then
     SCOPE_DO_BULLETS=$(echo "$CHANGED_FILES" | sed 's/^/- DO: /' || true)
   else
-    SCOPE_DO_BULLETS="- DO: Address the specific review findings listed above"
+    SCOPE_DO_BULLETS="- DO: Address the specific review finding described above"
   fi
 
-  # Acceptance Criteria: extract item titles and severities from assessment headers
-  ACCEPTANCE_ITEMS=""
-  if [ -n "${FILTERED_CONTENT:-}" ]; then
-    # Parse "### Title - ACTIONABLE_NOW" or "### Title - ACTIONABLE_LATER" headers
-    # Use process substitution to avoid subshell variable loss
-    while IFS= read -r _ac_line; do
-      _ac_title=$(echo "$_ac_line" | sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
-      # Look up severity for this item (lines after the header in assessment)
-      _ac_severity=$(echo "$FILTERED_CONTENT" | grep -A 3 -F "$_ac_line" | grep -oE "Severity:.*" | head -1 | sed 's/Severity:[[:space:]]*//' | sed 's/\*//g' || true)
-      _ac_severity=${_ac_severity:-MEDIUM}
-      # Skip LOW items — excluded from follow-up issues
-      if echo "$_ac_severity" | grep -qi "LOW"; then continue; fi
-      ACCEPTANCE_ITEMS="${ACCEPTANCE_ITEMS}
-- [ ] [$_ac_severity] $_ac_title"
-    done < <(echo "$FILTERED_CONTENT" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
-    # Trim leading newline
-    ACCEPTANCE_ITEMS=$(echo "$ACCEPTANCE_ITEMS" | sed '/^$/d' || true)
-  fi
-  # Fallback if no items extracted
-  if [ -z "$ACCEPTANCE_ITEMS" ]; then
-    ACCEPTANCE_ITEMS="- [ ] Address all CRITICAL/HIGH priority issues
-- [ ] Address MEDIUM priority issues
-- [ ] Consider LOW priority suggestions"
-  fi
-
-  # Done Definition: based on severity mix
-  if [ "$CRITICAL_COUNT" -gt 0 ]; then
-    DONE_DEFINITION="All CRITICAL and HIGH items resolved and verified; MEDIUM/LOW addressed or explicitly deferred with justification."
-  elif [ "$HIGH_COUNT" -gt 0 ]; then
-    DONE_DEFINITION="All HIGH items resolved and verified; MEDIUM/LOW addressed or deferred with justification."
-  else
-    DONE_DEFINITION="All MEDIUM items addressed; LOW items considered and deferred if not applicable."
-  fi
-
-  # Time Estimate: aggregate from Fix Effort metadata if available
-  TIME_ESTIMATE=""
-  if [ -n "${FILTERED_CONTENT:-}" ]; then
-    effort_10min=$(echo "$FILTERED_CONTENT" | grep -c "Fix Effort:.*<10min" || true)
-    effort_1hr=$(echo "$FILTERED_CONTENT" | grep -c "Fix Effort:.*<1hr" || true)
-    effort_gt1hr=$(echo "$FILTERED_CONTENT" | grep -c "Fix Effort:.*>1hr" || true)
-    if [ "$effort_gt1hr" -gt 0 ]; then
-      TIME_ESTIMATE="4hr"
-    elif [ "$effort_1hr" -gt 1 ]; then
-      TIME_ESTIMATE="2hr"
-    elif [ "$effort_1hr" -gt 0 ] || [ "$effort_10min" -gt 2 ]; then
-      TIME_ESTIMATE="1hr"
-    elif [ "$effort_10min" -gt 0 ]; then
-      TIME_ESTIMATE="30min"
-    fi
-  fi
-
-  # PR metadata
-  PR_BRANCH_NAME=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+  PR_BRANCH_NAME=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' || true)
   PR_BRANCH_NAME="${PR_BRANCH_NAME:-unknown}"
-  PR_TITLE=$(gh_safe pr view "$PR_NUMBER" --json title --jq '.title')
-  PR_TITLE="${PR_TITLE:-}"
 
-  # --- Build issue body ---
+  # Determine label for all findings in this rollup.
+  # tech-debt for shippable-defer and retry-limit; review-follow-up for CRITICAL.
+  if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
+    _rollup_base_label="tech-debt"
+  else
+    _rollup_base_label="review-follow-up"
+  fi
 
-  SOURCE_ISSUE_MARKER=""
-  [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
-  FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+  # Tracking variables for the per-finding loop.
+  FOLLOWUP_NUMBERS=""
+  _rollup_any_created=false
+  _followup_creation_failed=false   # reset; will be set true on first gh failure
+
+  # Parse each ACTIONABLE_(NOW|LATER) item from FILTERED_CONTENT and create one
+  # issue per finding. Uses the same awk-based extraction already used by
+  # _extract_items_by_state(), but iterates over headers and then extracts the
+  # full block for each one individually.
+  #
+  # For each finding we:
+  #   1. Build a clean title (strip list markers, no [tag] prefix, no truncation)
+  #   2. Build a per-finding body with Description/Claude Context/Acceptance
+  #      Criteria/Verification/Done Definition/Scope Boundary/Dependencies
+  #   3. Derive priority label from per-finding severity
+  #   4. Run the existing dedup/lock/sentinel machinery (lock keyed by
+  #      PR + source-issue; the per-finding ISSUE_SEARCH provides unique
+  #      dedup scope within that key)
+  #   5. Post the PR marker comment after each successful create
+
+  _finding_index=0
+
+  while IFS= read -r _fh_line; do
+    [ -z "$_fh_line" ] && continue
+
+    _finding_index=$((_finding_index + 1))
+
+    # --- Extract per-finding fields from FILTERED_CONTENT ---
+
+    # Raw title from the header (e.g. "1. Foo bar" or "Fix the thing")
+    _raw_title=$(echo "$_fh_line" | sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
+    # Strip leading list markers: "1. ", "2. ", "- ", "* "
+    _clean_title=$(echo "$_raw_title" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
+    # Trim leading/trailing whitespace
+    _clean_title=$(echo "$_clean_title" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)
+
+    # Extract the finding's full block (stop at the next ### header)
+    # sharkrite-lint disable UNSAFE_PIPE_IN_CMDSUB - Reason: || true at end of pipeline
+    _finding_block=$(echo "$FILTERED_CONTENT" | awk -v header="$_fh_line" '
+      $0 == header { in_block=1; print; next }
+      in_block && /^### / { exit }
+      in_block { print }
+    ' || true)
+
+    # Extract individual fields from the block
+    _f_severity=$(echo "$_finding_block" | grep -oE '\*\*Severity:\*\*.*' | head -1 | sed 's/\*\*Severity:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_severity="${_f_severity:-MEDIUM}"
+    _f_category=$(echo "$_finding_block" | grep -oE '\*\*Category:\*\*.*' | head -1 | sed 's/\*\*Category:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_category="${_f_category:-}"
+    _f_reasoning=$(echo "$_finding_block" | grep -oE '\*\*Reasoning:\*\*.*' | head -1 | sed 's/\*\*Reasoning:\*\*[[:space:]]*//' | sed 's/^\*\*//; s/\*\*$//' || true)
+    _f_reasoning="${_f_reasoning:-}"
+    _f_location=$(echo "$_finding_block" | grep -oE '\*\*Location:\*\*.*' | head -1 | sed 's/\*\*Location:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_location="${_f_location:-}"
+    _f_fix_effort=$(echo "$_finding_block" | grep -oE '\*\*Fix Effort:\*\*.*' | head -1 | sed 's/\*\*Fix Effort:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_fix_effort="${_f_fix_effort:-}"
+    _f_defer=$(echo "$_finding_block" | grep -oE '\*\*Defer Reason:\*\*.*' | head -1 | sed 's/\*\*Defer Reason:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_defer="${_f_defer:-}"
+    _f_context=$(echo "$_finding_block" | grep -oE '\*\*Context:\*\*.*' | head -1 | sed 's/\*\*Context:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_context="${_f_context:-}"
+
+    # Skip LOW severity items — excluded from follow-up issues (same as per-item path)
+    if echo "$_f_severity" | grep -qi "LOW"; then
+      print_info "  Skipped (LOW severity): $_clean_title"
+      continue
+    fi
+
+    # --- Build issue title ---
+    # No [tech-debt] or [review-follow-up] prefix — the label classifies.
+    # Source-issue suffix preserves unique dedup scope per PR+source-issue pair.
+    _src_issue_suffix=""
+    [ -n "${ISSUE_NUMBER:-}" ] && _src_issue_suffix=" for issue #${ISSUE_NUMBER}"
+
+    # Fallback title when block parsing yields nothing
+    if [ -z "$_clean_title" ]; then
+      _clean_title="Review finding from PR #${PR_NUMBER}"
+    fi
+
+    ISSUE_TITLE="${_clean_title}${_src_issue_suffix}"
+
+    # ISSUE_SEARCH: used by _followup_dedup_check() Source 3 (title search).
+    # Include PR number and source-issue so it's unique per finding origin.
+    ISSUE_SEARCH="${_clean_title}${_src_issue_suffix}"
+
+    # --- Derive priority label from per-finding severity ---
+    _priority_label="priority-medium"
+    case "${_f_severity}" in
+      CRITICAL|HIGH) _priority_label="priority-high" ;;
+      MEDIUM)        _priority_label="priority-medium" ;;
+      LOW)           _priority_label="priority-low" ;;
+    esac
+    _finding_labels="${_rollup_base_label},${_priority_label}"
+
+    # --- Build per-finding acceptance criterion and verification command ---
+    # Seed from Location (file:line) when available; fall back to the clean title.
+    _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+    if [ -n "$_f_location" ]; then
+      _verification_cmd="grep -n '' ${_f_location}"
+    else
+      # Generic fallback — reviewer must fill in the concrete command
+      _verification_cmd="# TODO: add verification command for this finding"
+    fi
+
+    # Done Definition: severity-appropriate
+    case "${_f_severity}" in
+      CRITICAL) _done_def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
+      HIGH)     _done_def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
+      *)        _done_def="Done when the finding is addressed or explicitly deferred with justification." ;;
+    esac
+
+    # Time Estimate from Fix Effort metadata
+    _time_estimate=""
+    case "${_f_fix_effort:-}" in
+      *\>1hr*) _time_estimate="2hr" ;;
+      *\<1hr*) _time_estimate="1hr" ;;
+      *\<10min*) _time_estimate="30min" ;;
+    esac
+
+    # --- Build issue body ---
+    SOURCE_ISSUE_MARKER=""
+    [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
+
+    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
 ## Description
 
-$FOLLOWUP_DESCRIPTION$ASSESSMENT_NOTE
+${_f_reasoning:-${_clean_title}}
 
-**Source PR:** #$PR_NUMBER$([ -n "$PR_TITLE" ] && echo " — $PR_TITLE")
-**Branch:** $PR_BRANCH_NAME
+**Severity:** ${_f_severity}
+**Category:** ${_f_category:-unspecified}
+**Source PR:** #${PR_NUMBER}
+**Branch:** ${PR_BRANCH_NAME}
 **Review Date:** $(date +%Y-%m-%d)
-
----
-
-### 🚨 CRITICAL Security Issues ($CRITICAL_COUNT)
-
-$(if [ "$CRITICAL_COUNT" -gt 0 ]; then echo "$CRITICAL_ISSUES"; else echo "_No CRITICAL issues_"; fi)
-
----
-
-### 🔴 HIGH Priority Issues ($HIGH_COUNT)
-
-$(if [ "$HIGH_COUNT" -gt 0 ]; then echo "$HIGH_ISSUES"; else echo "_No HIGH priority issues_"; fi)
-
----
-
-### 🟡 MEDIUM Priority Issues ($MEDIUM_COUNT)
-
-$(if [ "$MEDIUM_COUNT" -gt 0 ]; then echo "$MEDIUM_ISSUES"; else echo "_No MEDIUM priority issues_"; fi)
-
----
-
-### 🟢 LOW Priority / Nice-to-Have ($LOW_COUNT)
-
-$(if [ "$LOW_COUNT" -gt 0 ]; then echo "$LOW_ISSUES"; else echo "_No LOW priority issues_"; fi)
+$([ -n "$_f_location" ] && echo "**Location:** ${_f_location}")
+$([ -n "$_f_defer" ] && echo "
+**Defer Reason:** ${_f_defer}")
+$([ -n "$_f_context" ] && echo "
+**Context:** ${_f_context}")
 
 ## Claude Context
 Files to read before starting:
-$CLAUDE_CONTEXT
+${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 
 ## Acceptance Criteria
-$ACCEPTANCE_ITEMS
-- [ ] Verify fixes with tests
-- [ ] Update documentation if applicable
+${_acceptance_criterion}: see Description above for details
+
+## Verification Commands
+\`\`\`bash
+${_verification_cmd}
+\`\`\`
 
 ## Done Definition
-$DONE_DEFINITION
+${_done_def}
 
 ## Scope Boundary
-$SCOPE_DO_BULLETS
+${SCOPE_DO_BULLETS}
 - DO NOT: Refactor surrounding code, add new features, or modify unrelated files
 
 ## Dependencies
-After: #${ISSUE_NUMBER:-$PR_NUMBER}
-$([ -n "${TIME_ESTIMATE:-}" ] && echo "
+After: #${ISSUE_NUMBER:-${PR_NUMBER}}
+$([ -n "${_time_estimate}" ] && echo "
 ## Time Estimate
-$TIME_ESTIMATE" || echo "")
+${_time_estimate}" || echo "")
 
 ---
 
-_Auto-generated follow-up from PR #$PR_NUMBER review_"
+_Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index})_"
 
-  # Determine issue title and search term based on type.
-  # Title format: [tech-debt] <first item description, capped at 60 chars> (+N more) — PR #N
-  # Using the first item's actual title makes issues triageable at a glance.
-  # Old format (PR title truncated at 50 chars + colon) produced mid-phrase truncations
-  # like "[tech-debt] Fence guard truncates real blocks: review feedback from PR #387".
-  _first_item_title=""
-  _remaining_item_count=0
-  if [ -n "${FILTERED_CONTENT:-}" ]; then
-    _first_item_title=$(echo "$FILTERED_CONTENT" | grep -m1 -E "^### .* - ACTIONABLE_(NOW|LATER)" | \
-      sed 's/^### //; s/ - ACTIONABLE_.*//' || true)
-    _total_items=$(echo "$FILTERED_CONTENT" | grep -c -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
-    _total_items=${_total_items:-0}
-    if [ "$_total_items" -gt 1 ]; then
-      _remaining_item_count=$((_total_items - 1))
-    fi
-  fi
+    # --- Dedup / lock / create --- (mirrors the consolidated path; keyed per-finding)
+    #
+    # Lock key uses source-issue (from ISSUE_NUMBER) which is sufficient for the
+    # per-finding case because this process is single-threaded: findings are
+    # processed sequentially within this loop. Concurrent invocations from
+    # DIFFERENT processes are keyed on PR+source-issue and therefore serialised
+    # at the PR level — same guarantee as before, still prevents cross-process
+    # duplicates.
 
-  # Build meaningful description: first item title or PR title as fallback
-  _item_desc=""
-  if [ -n "$_first_item_title" ]; then
-    # Cap at 60 chars without mid-word truncation
-    if [ "${#_first_item_title}" -gt 60 ]; then
-      _item_desc="${_first_item_title:0:60}"
-      # Walk back to last space to avoid mid-word cut
-      _item_desc=$(echo "$_item_desc" | sed 's/ [^ ]*$//' || true)
-      _item_desc="${_item_desc}..."
-    else
-      _item_desc="$_first_item_title"
-    fi
-    [ "$_remaining_item_count" -gt 0 ] && _item_desc="${_item_desc} (+${_remaining_item_count} more)"
-    _item_desc="${_item_desc} — PR #${PR_NUMBER}"
-  else
-    # Fallback: use PR title without truncation artifact (append PR ref cleanly)
-    _item_desc="review feedback — PR #${PR_NUMBER}"
-  fi
-
-  # When a source issue number is known, include it in both the title and the search
-  # key so that two distinct source-issue follow-ups for the same PR get unique titles
-  # and independent dedup scopes.  Without this, a title-search fallback for PR #N
-  # would find the first source-issue's follow-up and incorrectly skip creating the
-  # second source-issue's follow-up (1-PR→multiple-source-issues scenario).
-  _src_issue_suffix=""
-  [ -n "${ISSUE_NUMBER:-}" ] && _src_issue_suffix=" for issue #${ISSUE_NUMBER}"
-
-  if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-    ISSUE_TITLE="[tech-debt] ${_item_desc}${_src_issue_suffix}"
-    ISSUE_SEARCH="review feedback — PR #${PR_NUMBER}${_src_issue_suffix}"
-  else
-    ISSUE_TITLE="[review-follow-up] ${_item_desc}${_src_issue_suffix}"
-    ISSUE_SEARCH="review feedback — PR #${PR_NUMBER}${_src_issue_suffix}"
-  fi
-
-  # Source-marker sentinel pre-check (before lock acquisition).
-  #
-  # The sentinel file is written immediately after gh issue create succeeds and
-  # lives in RITE_STATE_DIR/followup-sentinels/ keyed by source issue number.
-  # It acts as a local-FS dedup oracle that outlives the lock — if a sibling
-  # process created the follow-up within RITE_FOLLOWUP_SENTINEL_TTL_S seconds,
-  # we can skip the entire lock-and-search sequence.  This is the primary guard
-  # against the source-marker dedup race where:
-  #   Process A: acquires lock, creates issue, writes sentinel, releases lock
-  #   Process B: acquires lock (A already released), searches → empty (index lag)
-  #              → would create duplicate without sentinel check
-  # The sentinel check fires BEFORE the lock so it also catches the case where
-  # B's lock acquisition contended against A and A completed during the wait.
-  _sentinel_skipped=false
-  if [ -n "${ISSUE_NUMBER:-}" ]; then
-    _sentinel_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
-    _sentinel_file="${_sentinel_dir}/source-issue-${ISSUE_NUMBER}.created"
-    if [ -f "$_sentinel_file" ]; then
-      # Portable mtime via portable_stat_mtime (GNU: stat -c "%Y", BSD: stat -f "%m")
-      _sentinel_mtime=$(portable_stat_mtime "$_sentinel_file")
-      _sentinel_age=$(( $(date +%s) - _sentinel_mtime ))
-      _sentinel_ttl="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
-      if [ "$_sentinel_age" -lt "$_sentinel_ttl" ]; then
-        print_info "Source-marker sentinel: a follow-up for source-issue #${ISSUE_NUMBER} was created ${_sentinel_age}s ago (TTL ${_sentinel_ttl}s) — skipping duplicate"
-        _sentinel_skipped=true
+    # Sentinel pre-check (TTL-gated local dedup oracle before touching the lock)
+    _sentinel_skipped=false
+    if [ -n "${ISSUE_NUMBER:-}" ]; then
+      _sentinel_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
+      _sentinel_file="${_sentinel_dir}/source-issue-${ISSUE_NUMBER}.created"
+      if [ -f "$_sentinel_file" ]; then
+        _sentinel_mtime=$(portable_stat_mtime "$_sentinel_file")
+        _sentinel_age=$(( $(date +%s) - _sentinel_mtime ))
+        _sentinel_ttl="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
+        if [ "$_sentinel_age" -lt "$_sentinel_ttl" ]; then
+          print_info "  Sentinel active for source-issue #${ISSUE_NUMBER} (${_sentinel_age}s ago) — skipping finding #${_finding_index}"
+          _sentinel_skipped=true
+        fi
       fi
+      unset _sentinel_dir _sentinel_file _sentinel_mtime _sentinel_age _sentinel_ttl
     fi
-    unset _sentinel_dir _sentinel_file _sentinel_mtime _sentinel_age _sentinel_ttl
-  fi
 
-  # Contention signal file: acquire_pr_followup_lock writes "contended" here
-  # when the lock was blocked by another process (lock_attempts > 0).  We pass
-  # this file path via RITE_FOLLOWUP_LOCK_CONTENDED_FILE so we can check it
-  # after acquisition and broaden the dedup retry condition accordingly.
-  # The file is keyed by PR + source issue to avoid cross-invocation collisions
-  # (multiple parallel assessments on different issues use different temp files).
-  # Ensure RITE_LOCK_DIR exists before mktemp so the file lands on the same
-  # filesystem as other lock files (same-FS invariant) and the EXIT trap's
-  # scoped rm -f can always find it.  No /tmp fallback: a /tmp file would
-  # violate the invariant and is outside the EXIT trap's cleanup scope.
-  mkdir -p "$RITE_LOCK_DIR" 2>/dev/null || true
-  _lock_contended_file=$(mktemp "${RITE_LOCK_DIR}/.contended-signal-XXXXXX")
-  export RITE_FOLLOWUP_LOCK_CONTENDED_FILE="$_lock_contended_file"
+    mkdir -p "$RITE_LOCK_DIR" 2>/dev/null || true
+    _lock_contended_file=$(mktemp "${RITE_LOCK_DIR}/.contended-signal-XXXXXX")
+    export RITE_FOLLOWUP_LOCK_CONTENDED_FILE="$_lock_contended_file"
 
-  # Acquire per-PR follow-up lock before the check-then-create sequence.
-  #
-  # Without this lock, two concurrent assess-and-resolve calls on the same PR can
-  # both pass the dedup search (GitHub API eventual consistency means the first
-  # created issue is not yet indexed) and create duplicate follow-up issues.
-  # The lock serialises the critical section.
-  #
-  # Lock timeout (exit 1) means a live process held the lock for 60+ seconds —
-  # this indicates genuine concurrent contention, which is precisely the race we
-  # are preventing.  Proceeding without the lock (fail-open) would defeat the
-  # entire purpose of this PR.  Instead we fail-closed: log and skip creation so
-  # the caller can retry rather than risk a duplicate.
-  # Pass ISSUE_NUMBER as the second arg so the lock is keyed by PR + source issue.
-  # This ensures that two concurrent invocations for DIFFERENT source issues on the
-  # same PR operate on independent locks (no false blocking) and independent dedup
-  # search scopes (no false "already exists" detection).
-  _followup_lock_held=false
-  if [ "${_sentinel_skipped:-false}" != "true" ] && \
-     acquire_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
-    _followup_lock_held=true
-  elif [ "${_sentinel_skipped:-false}" = "true" ]; then
-    # Sentinel blocked — no lock needed; skip creation (sentinel is active)
-    _skip_followup_creation=true
-  else
-    _lock_scope="PR #$PR_NUMBER${ISSUE_NUMBER:+ / issue #$ISSUE_NUMBER}"
-    print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — another process is still in the critical section."
-    print_warning "Skipping follow-up issue creation to prevent duplicates. Re-run assess-and-fix if needed."
-    _diag "FOLLOWUP_LOCK_TIMEOUT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER}"
-    _skip_followup_creation=true
-  fi
+    _followup_lock_held=false
+    _skip_followup_creation=false
+    if [ "${_sentinel_skipped:-false}" != "true" ] && \
+       acquire_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null; then
+      _followup_lock_held=true
+    elif [ "${_sentinel_skipped:-false}" = "true" ]; then
+      _skip_followup_creation=true
+    else
+      _lock_scope="PR #$PR_NUMBER${ISSUE_NUMBER:+ / issue #$ISSUE_NUMBER}"
+      print_warning "Could not acquire follow-up lock for ${_lock_scope} after 60s — skipping finding #${_finding_index} to prevent duplicates."
+      _diag "FOLLOWUP_LOCK_TIMEOUT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} finding_index=${_finding_index}"
+      _skip_followup_creation=true
+    fi
 
-  # Read lock-contention signal (written by acquire_pr_followup_lock when lock
-  # was acquired after blocking).  Used below to broaden the dedup retry condition.
-  _lock_was_contended=false
-  if [ -n "${_lock_contended_file:-}" ] && [ -f "$_lock_contended_file" ]; then
-    _contended_content=$(cat "$_lock_contended_file" 2>/dev/null || true)
-    [ "$_contended_content" = "contended" ] && _lock_was_contended=true
-  fi
-  rm -f "${_lock_contended_file:-}" 2>/dev/null || true
-  unset RITE_FOLLOWUP_LOCK_CONTENDED_FILE
+    _lock_was_contended=false
+    if [ -n "${_lock_contended_file:-}" ] && [ -f "$_lock_contended_file" ]; then
+      _contended_content=$(cat "$_lock_contended_file" 2>/dev/null || true)
+      [ "$_contended_content" = "contended" ] && _lock_was_contended=true
+    fi
+    rm -f "${_lock_contended_file:-}" 2>/dev/null || true
+    unset RITE_FOLLOWUP_LOCK_CONTENDED_FILE
 
-  if [ "${_skip_followup_creation:-false}" != "true" ]; then
+    if [ "${_skip_followup_creation:-false}" != "true" ]; then
 
-  # Delegate to _followup_dedup_check() (defined above the RITE_SOURCE_FUNCTIONS_ONLY
-  # guard so tests can source and call it directly with gh_safe stubbed).
-  # Sets EXISTING_ISSUE; reads/modifies _lock_was_contended.
-  _followup_dedup_check
+      # Dedup check — reads/writes EXISTING_ISSUE; uses ISSUE_SEARCH and ISSUE_NUMBER
+      EXISTING_ISSUE=""
+      _followup_dedup_check
 
-  if [ -n "$EXISTING_ISSUE" ]; then
-    # Release lock before any output — we won't be creating an issue
+      if [ -n "$EXISTING_ISSUE" ]; then
+        [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+        _followup_lock_held=false
+        print_success "📋 Finding already tracked in #$EXISTING_ISSUE (skipping): $_clean_title"
+        FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${EXISTING_ISSUE} "
+        _rollup_any_created=true
+      else
+        # Ensure labels exist and create the per-finding issue
+        ensure_labels_exist "$_finding_labels"
+        _finding_body_file=$(mktemp)
+        printf '%s' "$FOLLOWUP_BODY" > "$_finding_body_file"
+        _new_issue_url=""
+        if _new_issue_url=$(gh_safe issue create \
+            --title "$ISSUE_TITLE" \
+            --body-file "$_finding_body_file" \
+            --label "$_finding_labels"); then
+          rm -f "$_finding_body_file"
+          _new_issue_num=$(echo "$_new_issue_url" | grep -oE '[0-9]+$' || true)
+          _new_issue_num="${_new_issue_num:-}"
+
+          if [ -n "$_new_issue_num" ]; then
+            FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_new_issue_num} "
+            _rollup_any_created=true
+
+            # Durable local evidence (primary dedup guard across processes)
+            if ! write_followup_evidence "$PR_NUMBER" "$_new_issue_num" "${ISSUE_NUMBER:-}"; then
+              print_warning "⚠️  Could not write local evidence file for follow-up #$_new_issue_num — dedup relies solely on GitHub API"
+            fi
+
+            # Machine-readable marker comment on PR (secondary dedup guard)
+            _finding_comment="<!-- ${RITE_MARKER_FOLLOWUP}:${_new_issue_num} -->
+📋 **Follow-up issue created:** #${_new_issue_num} — ${_clean_title}
+
+**Severity:** ${_f_severity} | **Label:** ${_rollup_base_label}"
+            _finding_comment_file=$(mktemp)
+            printf '%s' "$_finding_comment" > "$_finding_comment_file"
+            if ! gh_safe pr comment "$PR_NUMBER" --body-file "$_finding_comment_file" 2>/dev/null; then
+              print_warning "⚠️  PR comment write failed for follow-up #$_new_issue_num — local evidence covers dedup"
+            fi
+            rm -f "$_finding_comment_file"
+
+            # Sentinel: short-lived FS dedup oracle for this source issue
+            if [ -n "${ISSUE_NUMBER:-}" ]; then
+              _sentinel_write_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
+              mkdir -p "$_sentinel_write_dir" 2>/dev/null || true
+              if ! touch "${_sentinel_write_dir}/source-issue-${ISSUE_NUMBER}.created" 2>/dev/null; then
+                _diag "FOLLOWUP_SENTINEL_WRITE_FAILED issue=${ISSUE_NUMBER} dir=${_sentinel_write_dir}"
+                print_warning "⚠️  Could not write follow-up sentinel for issue #${ISSUE_NUMBER} — dedup relies on lock dwell only."
+              fi
+              unset _sentinel_write_dir
+            fi
+
+            # Post-create lock dwell: lets GitHub index catch up before the next
+            # waiter acquires the lock and runs its dedup search.
+            _dwell_seconds="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
+            if [ "$_dwell_seconds" -gt 0 ] 2>/dev/null; then
+              sleep "$_dwell_seconds"
+            fi
+            unset _dwell_seconds
+
+            [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+            _followup_lock_held=false
+
+            print_success "  ✅ Created #$_new_issue_num: $_clean_title"
+            echo "     URL: $_new_issue_url"
+          else
+            rm -f "$_finding_body_file"
+            [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+            _followup_lock_held=false
+            print_warning "  Failed to parse issue number from: $_new_issue_url"
+            _followup_creation_failed=true
+          fi
+        else
+          # gh issue create failed — save orphan artifact
+          _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+          mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+          {
+            echo "---"
+            echo "# Orphaned Follow-up Item (finding #${_finding_index})"
+            echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "# PR: #${PR_NUMBER}"
+            echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+            echo "# Intended title: ${ISSUE_TITLE:-}"
+            echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
+            echo ""
+            cat "$_finding_body_file" 2>/dev/null || echo "(body file unavailable)"
+          } >> "$_orphaned_file" || true
+          rm -f "$_finding_body_file"
+          [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
+          _followup_lock_held=false
+          print_warning "  Failed to create follow-up for: $_clean_title"
+          print_error "  Item NOT tracked. Saved to: $_orphaned_file"
+          _followup_creation_failed=true
+        fi
+      fi
+    fi  # end _skip_followup_creation guard
+
+    # Safety net: release lock if still held via unexpected path (set +e active)
     [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
     _followup_lock_held=false
 
-    echo ""
-    print_success "📋 Follow-up issue already exists: #$EXISTING_ISSUE (skipping duplicate)"
-    issue_url=$(gh_safe issue view "$EXISTING_ISSUE" --json url --jq '.url')
-    issue_url="${issue_url:-}"
-    echo "  URL: $issue_url"
-    echo ""
+  done < <(echo "${FILTERED_CONTENT:-}" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
 
-    # Set FOLLOWUP_NUMBER so caller knows issue exists
-    FOLLOWUP_NUMBER="$EXISTING_ISSUE"
-  else
-    # Determine label type based on context and severity
-    if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
-      ISSUE_LABELS="tech-debt"
-    elif [ "$CRITICAL_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="review-follow-up"
-    else
-      ISSUE_LABELS="tech-debt"
-    fi
+  # Legacy alias: FOLLOWUP_NUMBER for the final summary line (set to first number
+  # if any were created; empty otherwise).
+  FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_NUMBERS" | grep -oE '^[0-9]+' || true)
+  FOLLOWUP_NUMBER="${FOLLOWUP_NUMBER:-}"
 
-    # Add priority labels based on highest severity. Use repo's existing
-    # convention (priority-high/medium/low) — matches what `rite plan` and
-    # 30+ hand-authored issues already use. Prior values "High Priority" /
-    # "Medium Priority" silently failed: ensure_labels_exist's space-stripping
-    # trim created MediumPriority/HighPriority orphans, then gh issue create
-    # looked for the spaced names and 404'd.
-    if [ "$HIGH_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="$ISSUE_LABELS,priority-high"
-    elif [ "$MEDIUM_COUNT" -gt 0 ]; then
-      ISSUE_LABELS="$ISSUE_LABELS,priority-medium"
-    else
-      ISSUE_LABELS="$ISSUE_LABELS,priority-low"
-    fi
-
-    # Ensure all required labels exist (create missing ones rather than failing)
-    ensure_labels_exist "$ISSUE_LABELS"
-
-    # Create consolidated follow-up issue (via temp file to avoid shell metacharacter issues)
-    FOLLOWUP_BODY_FILE=$(mktemp)
-    printf '%s' "$FOLLOWUP_BODY" > "$FOLLOWUP_BODY_FILE"
-    FOLLOWUP_ISSUE=""
-    if FOLLOWUP_ISSUE=$(gh_safe issue create \
-      --title "$ISSUE_TITLE" \
-      --body-file "$FOLLOWUP_BODY_FILE" \
-      --label "$ISSUE_LABELS"); then
-      rm -f "$FOLLOWUP_BODY_FILE"
-      FOLLOWUP_NUMBER=$(echo "$FOLLOWUP_ISSUE" | grep -oE '[0-9]+$' || echo "")
-
-      # Write durable local evidence FIRST — before any network call.
-      # This is the primary fallback when the PR comment write fails (see below).
-      # The evidence file persists in RITE_LOCK_DIR after the lock is released,
-      # so waiters that acquire the lock later can detect the prior creation even
-      # when the GitHub search index and comment API both lag or fail.
-      # Must be called while the lock is held (serialised write).
-      if ! write_followup_evidence "$PR_NUMBER" "$FOLLOWUP_NUMBER" "${ISSUE_NUMBER:-}"; then
-        print_warning "⚠️  Could not write local evidence file for follow-up #$FOLLOWUP_NUMBER (see error above) — dedup relies solely on GitHub API"
-      fi
-
-      # Post the machine-readable marker comment BEFORE releasing the lock.
-      # Waiters use this comment as a secondary evidence source for index-lag
-      # races.  The local evidence file (above) is the primary fallback when
-      # this comment write fails.
-      COMMENT_BODY="<!-- ${RITE_MARKER_FOLLOWUP}:$FOLLOWUP_NUMBER -->
-📋 **Consolidated follow-up issue created:** #$FOLLOWUP_NUMBER
-
-All review feedback has been grouped into a single issue for batch processing:
-- 🔴 HIGH priority: $HIGH_COUNT
-- 🟡 MEDIUM priority: $MEDIUM_COUNT
-- 🟢 LOW priority: $LOW_COUNT
-
-This approach allows all fixes to be completed together in a focused PR."
-
-      COMMENT_BODY_FILE=$(mktemp)
-      printf '%s' "$COMMENT_BODY" > "$COMMENT_BODY_FILE"
-      # Note: comment failure is non-fatal — local evidence (above) covers the
-      # dedup gap.  We still warn so the failure is visible in logs.
-      if ! gh_safe pr comment "$PR_NUMBER" --body-file "$COMMENT_BODY_FILE" 2>/dev/null; then
-        print_warning "⚠️  PR comment write failed for follow-up #$FOLLOWUP_NUMBER — local evidence file will cover dedup"
-      fi
-      rm -f "$COMMENT_BODY_FILE"
-
-      # Write source-marker sentinel file (Change 2: local FS dedup oracle).
-      #
-      # The sentinel is keyed by source issue number and written to
-      # RITE_STATE_DIR/followup-sentinels/.  It persists for
-      # RITE_FOLLOWUP_SENTINEL_TTL_S seconds (default 60s) and acts as a
-      # local-FS dedup oracle for sibling processes that acquire the lock after
-      # this process releases it.  The sentinel is checked BEFORE the lock
-      # acquisition so even fast-spinning sibling processes see it.
-      #
-      # Relationship to the evidence file: the evidence file (RITE_LOCK_DIR)
-      # is the long-lived dedup record keyed by PR + source issue; it is
-      # validated via gh issue view on each read.  The sentinel (RITE_STATE_DIR)
-      # is the short-lived TTL-gated record keyed by source issue alone; it
-      # requires no network call.  Both are written here; they serve different
-      # parts of the dedup guarantee.
-      if [ -n "${ISSUE_NUMBER:-}" ]; then
-        _sentinel_write_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
-        mkdir -p "$_sentinel_write_dir" 2>/dev/null || true
-        if touch "${_sentinel_write_dir}/source-issue-${ISSUE_NUMBER}.created" 2>/dev/null; then
-          : # sentinel written — primary dedup guard active
-        else
-          _diag "FOLLOWUP_SENTINEL_WRITE_FAILED issue=${ISSUE_NUMBER} dir=${_sentinel_write_dir}"
-          print_warning "⚠️  Could not write follow-up sentinel for issue #${ISSUE_NUMBER} — dedup will rely on lock dwell only."
-        fi
-        unset _sentinel_write_dir
-      fi
-
-      # Post-create lock dwell (Gap 2 fix).
-      #
-      # Hold the lock for RITE_FOLLOWUP_LOCK_DWELL_S seconds after the create
-      # so that the GitHub search index has time to catch up before the next
-      # waiter acquires the lock and runs its dedup search.  Without this dwell,
-      # a fast-spinning waiter could acquire the lock immediately after this
-      # process releases it, run the dedup search (which returns empty because
-      # the index hasn't caught up), and create a duplicate.
-      #
-      # Interaction with acquire_pr_followup_lock's 60s budget:
-      # The dwell extends the critical section by up to RITE_FOLLOWUP_LOCK_DWELL_S
-      # (default 5s), consuming that slice of any waiter's 60s acquire budget.
-      # In practice this is mitigated because any waiter that was blocked long
-      # enough to observe the dwell will find the sentinel file fresh (written
-      # just before the dwell) and short-circuit BEFORE acquiring the lock —
-      # so the dwell never actually eats into the waiter's budget in the common
-      # case.  In the rare case where the sentinel is unavailable (e.g. state dir
-      # on a different filesystem), the worst-case budget reduction is 5s out of
-      # 60s, which remains well within the safe margin for a ~5-10s critical
-      # section.  The sentinel is therefore the primary guard; the dwell is
-      # belt-and-suspenders for the same consistency window.
-      _dwell_seconds="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
-      if [ "$_dwell_seconds" -gt 0 ] 2>/dev/null; then
-        sleep "$_dwell_seconds"
-      fi
-      unset _dwell_seconds
-
-      # Release lock only after all evidence writes and the dwell have completed
-      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
-      _followup_lock_held=false
-
-      echo ""
-      print_success "✅ Follow-up issue created: #$FOLLOWUP_NUMBER"
-      echo "  URL: $FOLLOWUP_ISSUE"
-      echo "  Type: ${CREATE_SECURITY_DEBT:+Tech Debt}${CREATE_SECURITY_DEBT:-Review Follow-up}"
-      echo "  Items: NOW=${ACTIONABLE_NOW_COUNT:-0}, LATER=${ACTIONABLE_LATER_COUNT:-0} (total in issue)"
-      echo ""
-    else
-      # gh issue create failed — items are NOT tracked anywhere.
-      # Save the full issue body as a recovery artifact before discarding it,
-      # so the user can manually re-file after resolving the API failure.
-      _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
-      mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
-      {
-        echo "---"
-        echo "# Orphaned Follow-up Items"
-        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "# PR: #${PR_NUMBER}"
-        echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
-        echo "# Intended title: ${ISSUE_TITLE:-}"
-        echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
-        echo ""
-        cat "$FOLLOWUP_BODY_FILE" 2>/dev/null || echo "(body file unavailable)"
-      } >> "$_orphaned_file" || true
-
-      rm -f "$FOLLOWUP_BODY_FILE"
-      # Release lock on failure too — don't leave waiters stuck
-      [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
-      _followup_lock_held=false
-
-      print_warning "Failed to create consolidated follow-up issue"
-      print_error "Items NOT tracked. Saved to: $_orphaned_file"
-      print_error "Re-run: rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after resolving gh API issue)"
-
-      # Signal to the final summary that follow-up creation failed
-      _followup_creation_failed=true
-    fi
+  if [ "${_rollup_any_created:-false}" = "true" ] && [ -n "$FOLLOWUP_NUMBERS" ]; then
+    # Build "#N" reference list from space-separated numbers for display
+    _refs=""
+    for _rn in $FOLLOWUP_NUMBERS; do
+      _refs="${_refs}#${_rn} "
+    done
+    _refs=$(echo "$_refs" | sed 's/[[:space:]]*$//' || true)
+    print_info "Follow-up issues created/found: ${_refs}"
+    print_info "Run \`rite <issue_number>\` for each to address them separately."
+  elif [ "${_followup_creation_failed:-false}" != "true" ]; then
+    print_info "No new follow-up issues needed (all findings already tracked or sentinel active)"
   fi
-
-  # Safety net: ensure lock is released even if we exited the if/else via an
-  # unexpected path (set +e is active in this section so errexit won't catch it)
-  [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
-
-  # Follow-up issues are independent work — don't process them inline.
-  # The exec into batch-process-issues.sh caused state corruption: it would
-  # run the follow-up as a full lifecycle on the same PR, then try to re-process
-  # the original issue in a confused state. Follow-ups should be picked up
-  # by a separate `rite <issue>` invocation.
-  if [ -n "${FOLLOWUP_NUMBER:-}" ]; then
-    print_info "Follow-up issue #$FOLLOWUP_NUMBER created — run \`rite $FOLLOWUP_NUMBER\` separately to address it"
-  fi
-
-  fi  # end _skip_followup_creation guard
 fi
 set -e  # Re-enable errexit after follow-up issue creation
 
@@ -2043,8 +1907,8 @@ set -e  # Re-enable errexit after follow-up issue creation
 print_header "✅ Assessment Complete"
 
 echo "Summary of actions taken:"
-[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -n "${FOLLOWUP_NUMBER:-}" ] && echo "  ✅ Follow-up issue #$FOLLOWUP_NUMBER created for HIGH/MEDIUM items"
-[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ "${_followup_creation_failed:-false}" = true ] && echo "  ⚠️  Follow-up issue creation failed (items NOT tracked — see orphaned-followup-items.md)"
+[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ -n "${FOLLOWUP_NUMBERS:-}" ] && echo "  ✅ Follow-up issues created/tracked: ${FOLLOWUP_NUMBERS}"
+[ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ] && [ "${_followup_creation_failed:-false}" = true ] && echo "  ⚠️  One or more follow-up issues failed to create (items NOT tracked — see orphaned-followup-items.md)"
 [ "${CREATE_LOW_BATCH:-false}" = true ] && [ "${LOW_COUNT:-0}" -gt 0 ] && echo "  ✅ Batched LOW priority items into single issue"
 
 echo ""
