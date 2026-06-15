@@ -285,7 +285,8 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
   # Closed-issue selections have no actionable open blockers; all-state
   # selections mix states in a way that makes partial open-only analysis
   # misleading. Skip gracefully and let the per-issue guard handle it.
-  if [ "${FILTER_TYPE:-}" = "state" ] && [ "${FILTER_VALUE:-}" != "open" ]; then
+  # ${FILTER_VALUE,,} lowercases the value so "Open"/"OPEN" match "open" (issue #590).
+  if [ "${FILTER_TYPE:-}" = "state" ] && [ "${FILTER_VALUE,,}" != "open" ]; then
     print_header "🔗 Preflight Dependency Closure Check"
     print_info "Skipping: preflight checks open-issue dependencies only."
     print_info "(Selection is --state ${FILTER_VALUE:-?} — per-issue dep guard remains active.)"
