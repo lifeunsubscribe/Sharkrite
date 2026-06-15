@@ -1906,3 +1906,299 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fixture L — self-referential title ref creates a one-node "cycle"
+#
+# Issue #1 "Feature Alpha" has a dependency "After #[Feature Alpha]" —
+# it references itself by title. This is a one-node self-referential cycle.
+# Validator must emit a specific ERROR about self-referential dependency
+# and exit non-zero.
+# ---------------------------------------------------------------------------
+
+@test "Fixture L: self-referential title ref — ERROR about self-referential dep, exits non-zero" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-l.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha depends on itself — self-referential cycle.
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when alpha works.
+
+**Dependencies**: After #[Feature Alpha]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit non-zero (self-referential dep is a hard error)
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for self-referential title dep, got 0" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit an error message about self-referential dependency
+  grep -qi "self-referential" "$stderr_out" || {
+    echo "FAIL: expected 'self-referential' in stderr output" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention the issue title
+  grep -q "Feature Alpha" "$stderr_out" || {
+    echo "FAIL: expected issue title 'Feature Alpha' mentioned in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture L2 — self-referential title ref with cycle-check suppression
+#
+# Same self-ref as Fixture L but the issue has a suppression marker for
+# cycle-check. The self-referential check runs in Phase 2b (before Kahn's),
+# so the suppression does NOT apply here — we still catch it early.
+# Suppression is a per-issue cycle-check gate applied in Kahn's, not in
+# the title-resolution phase.
+# ---------------------------------------------------------------------------
+
+@test "Fixture L2: self-referential title ref is caught before cycle-check suppression — ERROR, exits non-zero" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-l2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Beta (self-ref suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta depends on itself but tries to suppress cycle-check.
+
+<!-- sharkrite-plan-lint disable cycle-check - Reason: Intentional self-bootstrap ordering -->
+
+**Claude Context**:
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `python -m pytest tests/test_beta.py`
+
+**Done Definition**: Done when beta works.
+
+**Dependencies**: After #[Feature Beta (self-ref suppressed)]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Self-referential deps are caught in Phase 2b, before Kahn's algorithm.
+  # The cycle-check suppression only applies to Kahn's, not Phase 2b.
+  # So this must still exit non-zero.
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for self-referential dep (cycle-check suppression does not apply to Phase 2b)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  grep -qi "self-referential" "$stderr_out" || {
+    echo "FAIL: expected 'self-referential' in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Q — duplicate title matches silently resolve to first ordinal
+#
+# Two issues share the title "Shared Feature". A third issue has a dependency
+# "After #[Shared Feature]". Validator must emit a WARNING about the ambiguous
+# title ref and exit 0 (warning is non-fatal; it still resolves to first match).
+# ---------------------------------------------------------------------------
+
+@test "Fixture Q: duplicate title matches — WARNING about ambiguous ref, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-q.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Shared Feature
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+First issue with title "Shared Feature".
+
+**Claude Context**:
+Files to Modify:
+- src/shared_a.py
+
+**Acceptance Criteria**:
+- [ ] Works: `python -m pytest tests/test_shared_a.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Shared Feature
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Second issue with the same title "Shared Feature" — duplicate.
+
+**Claude Context**:
+Files to Modify:
+- src/shared_b.py
+
+**Acceptance Criteria**:
+- [ ] Works: `python -m pytest tests/test_shared_b.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Downstream Feature
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**:
+Depends on "Shared Feature" — ambiguous because two issues share that title.
+
+**Claude Context**:
+Files to Modify:
+- src/downstream.py
+
+**Acceptance Criteria**:
+- [ ] Works: `python -m pytest tests/test_downstream.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: After #[Shared Feature]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (ambiguous title match is a warning, not a hard error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for ambiguous title ref (warning only), got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING about ambiguous title ref
+  grep -qi "ambiguous" "$stderr_out" || {
+    echo "FAIL: expected 'ambiguous' in stderr output" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention the duplicate title
+  grep -q "Shared Feature" "$stderr_out" || {
+    echo "FAIL: expected 'Shared Feature' mentioned in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Q2 — unique titles do NOT trigger duplicate warning
+#
+# Three issues all have distinct titles. No ambiguous-title warning should
+# be emitted even if they all have title ref dependencies. Exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Q2: unique titles — no ambiguous-title WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-q2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Alpha Step
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+First step.
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Beta Step
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Second step, depends on Alpha.
+
+**Claude Context**:
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `python -m pytest tests/test_beta.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: After #[Alpha Step]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for unique titles, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit an ambiguous-title warning
+  grep -qi "ambiguous" "$stderr_out" && {
+    echo "FAIL: unexpected ambiguous-title WARNING for unique titles" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

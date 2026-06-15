@@ -1611,6 +1611,28 @@ _lint_issues_strict() {
   # it (since it only checks numeric refs), so we surface it here instead.
   # -----------------------------------------------------------------------
 
+  # Pre-scan: build a set of titles that appear more than once (case-insensitive).
+  # Used below to warn when a #[Title] ref is ambiguous (matches multiple issues).
+  local _dup_titles=""
+  local _dup_scan_a=0
+  for _dup_scan_a in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _ta_lower
+    _ta_lower=$(echo "${_titles[$_dup_scan_a]}" | tr '[:upper:]' '[:lower:]' || true)
+    local _dup_scan_b=0
+    local _match_count=0
+    for _dup_scan_b in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+      local _tb_lower
+      _tb_lower=$(echo "${_titles[$_dup_scan_b]}" | tr '[:upper:]' '[:lower:]' || true)
+      if [ "$_ta_lower" = "$_tb_lower" ]; then
+        _match_count=$((_match_count + 1))
+      fi
+    done
+    if [ "$_match_count" -gt 1 ]; then
+      # Record this (lowercased) title as a known duplicate
+      _dup_titles="${_dup_titles}${_ta_lower}"$'\n'
+    fi
+  done
+
   local _res_i=0
   for _res_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     local _raw_title_deps="${_title_deps[$_res_i]}"
@@ -1623,6 +1645,26 @@ _lint_issues_strict() {
       # Normalize: lowercase for case-insensitive comparison
       local _tref_lower
       _tref_lower=$(echo "$_tref" | tr '[:upper:]' '[:lower:]' || true)
+
+      # Detect self-referential title ref: issue references itself by title.
+      # This is a one-node cycle and is an error — emit a specific message
+      # rather than relying on Kahn's to surface a confusing "cycle detected" report.
+      local _self_title_lower
+      _self_title_lower=$(echo "${_titles[$_res_i]}" | tr '[:upper:]' '[:lower:]' || true)
+      if [ "$_tref_lower" = "$_self_title_lower" ]; then
+        print_warning "strict-lint: ERROR: self-referential dependency: #[${_tref}] in '${_referencing_title}' depends on itself" >&2
+        _error_count=$((_error_count + 1))
+        _strict_exit=1
+        continue
+      fi
+
+      # Warn when the target title matches multiple issues in this batch.
+      # We still resolve to the first match so other checks can proceed,
+      # but the ambiguity is a planarity issue that should be surfaced.
+      if echo "$_dup_titles" | grep -qxF "$_tref_lower"; then
+        print_warning "strict-lint: WARNING: ambiguous title ref: #[${_tref}] in '${_referencing_title}' matches multiple batch issues (resolves to first ordinal match)" >&2
+        _warning_count=$((_warning_count + 1))
+      fi
 
       # Search _titles[] for a case-insensitive match
       local _found_ordinal=0
