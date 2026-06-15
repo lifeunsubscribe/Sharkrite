@@ -1458,11 +1458,20 @@ _lint_issues_strict() {
         # --- Extract Dependencies: lines (collect all #N refs and #[Title] refs) ---
         local _issue_deps=""
         local _issue_title_deps=""
+        # _issue_parallel_with is also populated here (scoped to Dependencies
+        # section only — see Fix 1 below for why block-wide grep is wrong).
+        local _issue_parallel_with=""
         local _in_deps=false
         while IFS= read -r _dline; do
           # Start at "**Dependencies**:" or "Dependencies:" header
           if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
             _in_deps=true
+            # Fix 1: harvest parallel refs from this line BEFORE stripping
+            # parens — scoped to the Dependencies section so prose mentions
+            # elsewhere in the body (e.g. description) are not harvested.
+            local _dp_prefs
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Strip "(can run in parallel with #M, #P)" annotations before
             # harvesting refs. The generation prompt mandates that format for
             # parallel siblings, but those mentions are scheduling hints, not
@@ -1486,6 +1495,10 @@ _lint_issues_strict() {
             case "$_dline" in
               "---END---"|"**"*|"##"*) _in_deps=false; continue ;;
             esac
+            # Fix 1: harvest parallel refs from this body line BEFORE stripping
+            local _dp_prefs
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Collect all #N patterns from dependency lines (parallel-with
             # annotations stripped — see header-line handling above)
             # Matches: After #N, Blocked by: #N, etc.
@@ -1512,14 +1525,9 @@ _lint_issues_strict() {
         _deps+=("${_issue_deps}")
         _title_deps+=("${_issue_title_deps}")
 
-        # --- Extract "(can run in parallel with #N, #M)" refs ---
-        # These are scheduling hints stripped from deps above; collect them
-        # separately for the parallel-claim file-overlap check (Check 7).
-        local _issue_parallel_with=""
-        local _pline_parallel_refs
-        _pline_parallel_refs=$(echo "$_issue_block" | grep -iE '\([^)]*[Pp]arallel[^)]*\)' | \
-          grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
-        [ -n "$_pline_parallel_refs" ] && _issue_parallel_with="${_pline_parallel_refs}"$'\n'
+        # --- Commit parallel-with refs collected in the deps loop above ---
+        # (Fix 1: _issue_parallel_with is now populated section-scoped inside
+        # the Dependencies while loop, not via a block-wide grep here.)
         _parallel_with+=("${_issue_parallel_with}")
 
         # --- Extract Files to Modify paths ---
@@ -2084,6 +2092,15 @@ _lint_issues_strict() {
       # Only check batch-internal parallel refs (same batch ordinals)
       if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_issue_count" ] 2>/dev/null; then
         local _pj=$((_prefnum - 1))
+        # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
+        # annotation that includes its own ordinal would always find a shared
+        # file and emit a spurious self-referential diag note.
+        [ "$_pj" -eq "$_pi" ] && continue
+        # Fix 3: only report each (i,j) pair once — bidirectional annotations
+        # (A parallel with B AND B parallel with A) would otherwise emit two
+        # identical notes for the same overlap.  Report only when _pi < _pj
+        # so the lower-ordinal issue is always the "reporter".
+        [ "$_pi" -lt "$_pj" ] || continue
         local _pj_title="${_titles[$_pj]}"
         local _pj_modify="${_files_modify[$_pj]}"
         [ -z "$_pj_modify" ] && continue

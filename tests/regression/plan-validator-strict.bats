@@ -2202,3 +2202,223 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fix 1 — parallel-ref in prose body (not in Dependencies section) must NOT
+# trigger a [plan-lint-diag] note.
+#
+# Issue #1 has "(can run in parallel with #2)" in its Description body text,
+# NOT in its Dependencies section. Issue #2 has no parallel annotation at all.
+# Check 7 must not fire because the prose mention is not a scheduling hint
+# from the Dependencies section — it's just prose.
+# Both issues modify the same file to make the overlap check relevant.
+# ---------------------------------------------------------------------------
+
+@test "Fix 1: parallel-ref in prose body (not Dependencies) — no [plan-lint-diag] emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix1.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Parser alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha parse loop. Note: this feature (can run in parallel with #2) conceptually
+but is implemented sequentially.
+
+**Claude Context**:
+Files to Modify:
+- src/parser.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: `make test`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Parser beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta parse loop in the same shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/parser.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: `make test`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a [plan-lint-diag] note — the parallel annotation lives in
+  # the Description body, not in the Dependencies section.
+  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
+    echo "FAIL: unexpected [plan-lint-diag] note from prose-body parallel mention" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 2 — self-reference guard: issue declaring itself parallel with its own
+# ordinal must NOT emit a spurious [plan-lint-diag] note.
+#
+# Issue #1 declares "(can run in parallel with #1)" in its Dependencies line —
+# a degenerate annotation. Without the self-reference guard, _pj == _pi == 0,
+# the file-overlap check always finds a shared path (the issue's own files),
+# and emits a false note.
+# ---------------------------------------------------------------------------
+
+@test "Fix 2: self-referential parallel annotation — no [plan-lint-diag] emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Solo feature
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Solo feature with a degenerate self-parallel annotation.
+
+**Claude Context**:
+Files to Modify:
+- src/solo.cpp
+
+**Acceptance Criteria**:
+- [ ] Solo passes: `make test`
+
+**Done Definition**: Done when solo passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for self-referential parallel annotation, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a [plan-lint-diag] note for self-reference
+  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
+    echo "FAIL: unexpected [plan-lint-diag] note from self-referential parallel annotation" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3 — bidirectional parallel declarations produce exactly one diag note.
+#
+# Issue #1 declares "(can run in parallel with #2)" and issue #2 declares
+# "(can run in parallel with #1)". Both modify the same file. Without the
+# ordering guard, Check 7 emits two [plan-lint-diag] notes (one from each
+# side of the pair). With the fix, only the lower-ordinal reporter (#1) emits.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3: bidirectional parallel declarations — exactly one [plan-lint-diag] note, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Draw loop alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha draw loop in shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: `make test`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Draw loop beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta draw loop in the same shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: `make test`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for bidirectional parallel, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note (not two)
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note, got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The one note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' mentioned in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
