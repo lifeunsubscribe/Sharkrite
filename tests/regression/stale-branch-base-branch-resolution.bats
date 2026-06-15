@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/stale-branch.sh
+# sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/branch-preflight.sh
 # tests/regression/stale-branch-base-branch-resolution.bats
 #
-# Regression tests for dynamic base branch resolution in stale-branch.sh.
-# Fixes the anti-pattern from #365/#420 where origin/main was hardcoded —
-# stale-branch operations now use the PR's actual base branch.
+# Regression tests for dynamic base branch resolution in stale-branch.sh and
+# branch-preflight.sh. Fixes the anti-pattern from #365/#420 where origin/main
+# was hardcoded — stale-branch and preflight operations now use the PR's actual
+# base branch.
 #
 # Tests:
 #   1. _stale_resolve_base_branch falls back to "main" when PR number is empty
@@ -14,6 +15,10 @@
 #   5. _stale_resolve_base_branch rejects branch names with shell meta-characters
 #   6. get_commits_behind_main accepts base_branch param (no longer hardcodes main)
 #   7. format_stale_close_comment uses provided base_branch in git commands
+#   8. format_stale_close_comment close-comment text body uses dynamic base_branch
+#   9. classify_branch_health accepts optional base_branch (4th param)
+#  10. classify_branch_health fetch uses base_branch param, not hardcoded 'main'
+#  11. _preflight_has_only_init_commit uses base_branch param, not 'origin/main'
 
 load '../helpers/setup.bash'
 
@@ -177,6 +182,111 @@ teardown() {
   }
   echo "$_src" | grep -qF 'origin/main' && {
     echo "FAIL: format_stale_close_comment still contains hardcoded 'origin/main'"
+    return 1
+  }
+  return 0
+}
+
+@test "format_stale_close_comment: close-comment text body uses dynamic base_branch, not literal 'main'" {
+  # Regression: The git commands used $base_branch but the human-readable text in the
+  # heredoc said "behind main", "from main", "from current main" — producing a misleading
+  # message for non-main base branches (e.g. develop, release/1.x).
+  # This test verifies the comment body text uses the provided base_branch value.
+  #
+  # We create a minimal git repo so format_stale_close_comment can run its git commands.
+  # shellcheck disable=SC1090
+  source "$RITE_REPO_ROOT/lib/utils/stale-branch.sh"
+
+  # Set up a minimal git repo in the test tmpdir
+  local _repo="$RITE_TEST_TMPDIR/repo"
+  mkdir -p "$_repo"
+  git -C "$_repo" init -q
+  git -C "$_repo" config user.email "test@test.com"
+  git -C "$_repo" config user.name "Test"
+  echo "init" > "$_repo/file.txt"
+  git -C "$_repo" add .
+  git -C "$_repo" commit -qm "init"
+  # Simulate origin/develop by creating a local ref
+  git -C "$_repo" checkout -qb develop
+  git -C "$_repo" checkout -q -b feature
+  echo "feature" >> "$_repo/file.txt"
+  git -C "$_repo" add .
+  git -C "$_repo" commit -qm "feat: add feature"
+
+  # Call format_stale_close_comment with base_branch="develop"
+  _comment=$(format_stale_close_comment "$_repo" 5 "develop")
+
+  # The text body must mention "develop" (the actual base branch)
+  echo "$_comment" | grep -q 'develop' || {
+    echo "FAIL: close-comment body does not mention 'develop' (the passed base_branch)"
+    echo "--- comment body ---"
+    echo "$_comment"
+    return 1
+  }
+
+  # The text body must NOT say "behind main" or "from main" with literal "main"
+  # (only check for "main" as a standalone word in the prose, not inside variable names)
+  if echo "$_comment" | grep -qE 'behind main\b|from main\b|from current main\b'; then
+    echo "FAIL: close-comment body still contains hardcoded 'main' in prose"
+    echo "--- comment body ---"
+    echo "$_comment"
+    return 1
+  fi
+  return 0
+}
+
+# =============================================================================
+# Tests for classify_branch_health: accepts base_branch parameter
+# =============================================================================
+
+@test "classify_branch_health: function signature accepts optional base_branch (4th param)" {
+  # Static check: the function must declare base_branch as a local variable
+  # from the 4th positional argument.
+  # shellcheck disable=SC1090
+  source "$RITE_REPO_ROOT/lib/utils/branch-preflight.sh"
+
+  _src=$(declare -f classify_branch_health)
+  echo "$_src" | grep -q 'base_branch' || {
+    echo "FAIL: classify_branch_health does not reference base_branch parameter"
+    return 1
+  }
+  return 0
+}
+
+@test "classify_branch_health: fetch uses base_branch param, not hardcoded 'main'" {
+  # Verify the function body does NOT hard-code 'fetch origin main'.
+  # It must use 'fetch origin "$base_branch"' (or equivalent variable reference).
+  # shellcheck disable=SC1090
+  source "$RITE_REPO_ROOT/lib/utils/branch-preflight.sh"
+
+  _src=$(declare -f classify_branch_health)
+  # Must not have the literal 'fetch origin main'
+  if echo "$_src" | grep -qF 'fetch origin main'; then
+    echo "FAIL: classify_branch_health still has hardcoded 'fetch origin main'"
+    return 1
+  fi
+  # Must reference base_branch in the fetch call
+  echo "$_src" | grep -q 'base_branch' || {
+    echo "FAIL: classify_branch_health does not use base_branch variable"
+    return 1
+  }
+  return 0
+}
+
+@test "_preflight_has_only_init_commit: uses base_branch param, not hardcoded 'origin/main'" {
+  # Verify the helper passes base_branch to the git log call instead of hardcoding origin/main.
+  # shellcheck disable=SC1090
+  source "$RITE_REPO_ROOT/lib/utils/branch-preflight.sh"
+
+  _src=$(declare -f _preflight_has_only_init_commit)
+  # Must not hardcode origin/main
+  if echo "$_src" | grep -qF 'origin/main'; then
+    echo "FAIL: _preflight_has_only_init_commit still contains hardcoded 'origin/main'"
+    return 1
+  fi
+  # Must reference base_branch
+  echo "$_src" | grep -q 'base_branch' || {
+    echo "FAIL: _preflight_has_only_init_commit does not use base_branch variable"
     return 1
   }
   return 0
