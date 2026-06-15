@@ -424,9 +424,14 @@ _run_dev_test_gate() {
         fi
 
         # Install base requirements with error tracking
-        # Cap each pip install to RITE_PIP_INSTALL_TIMEOUT seconds (default 120) so a
-        # wedged/slow install cannot hang the entire gate indefinitely (issue #599).
+        # Cap each pip install to RITE_PIP_INSTALL_TIMEOUT seconds (default 120) when
+        # timeout/gtimeout is available (issue #599).  When neither is present,
+        # RITE_TIMEOUT_CMD is empty and run_with_timeout falls back to running pip
+        # directly with no time bound — see lib/utils/timeout.sh:run_with_timeout.
         local _pip_timeout="${RITE_PIP_INSTALL_TIMEOUT:-120}"
+        if [ -z "${RITE_TIMEOUT_CMD:-}" ]; then
+          print_warning "timeout/gtimeout not found — pip install has no time cap (issue #599). Install coreutils to enable the cap."
+        fi
         local _base_install_ok=true
         local _pip_error_log
         _pip_error_log=$(mktemp)

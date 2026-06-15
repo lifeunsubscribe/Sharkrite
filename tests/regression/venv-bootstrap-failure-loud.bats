@@ -190,6 +190,68 @@ SHIMEOF
   [[ "$output" =~ "Venv ready" ]]
 }
 
+@test "venv bootstrap: hanging pip is killed by timeout and returns promptly" {
+  # Verifies the core fix for issue #599: a wedged pip install cannot hang the
+  # gate indefinitely when timeout/gtimeout is available.
+  #
+  # Strategy: set RITE_PIP_INSTALL_TIMEOUT=1 and inject a pip shim that sleeps
+  # 30 seconds.  run_with_timeout should kill it before it completes.
+  # Skip if neither timeout nor gtimeout is on PATH — the protection is a no-op
+  # without the binary, and that case is covered by the no-timeout-cmd warning test.
+  if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    skip "timeout/gtimeout not available — bounding test requires the binary"
+  fi
+
+  # Ensure timeout.sh has resolved RITE_TIMEOUT_CMD so run_with_timeout uses it.
+  # (The setup() sources config.sh which may or may not source timeout.sh.)
+  source "${RITE_LIB_DIR}/utils/timeout.sh"
+  ensure_timeout_cmd
+  export RITE_TIMEOUT_CMD
+
+  REAL_PYTHON3=$(which python3)
+  export RITE_PIP_INSTALL_TIMEOUT=1
+
+  # python3 shim: build a fake venv whose pip sleeps 30 seconds (simulates wedge)
+  cat > "$SHIM_DIR/python3" <<SHIMEOF
+#!/bin/bash
+if [[ "\$*" == *"-m venv"* ]]; then
+  mkdir -p .venv/bin
+  # Pip shim: sleeps 30 s — far longer than the 1-second cap
+  cat > .venv/bin/pip <<'PIPEOF'
+#!/bin/bash
+sleep 30
+exit 0
+PIPEOF
+  chmod +x .venv/bin/pip
+  cat > .venv/bin/python <<PYEOF
+#!/bin/bash
+if [[ "\\\$*" == *"import pytest"* ]]; then exit 1; fi
+exec "$REAL_PYTHON3" "\\\$@"
+PYEOF
+  chmod +x .venv/bin/python
+  exit 0
+fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$SHIM_DIR/python3"
+  export PATH="$SHIM_DIR:$PATH"
+
+  # Run and measure elapsed time — should return well under 30 seconds
+  _start=$(date +%s)
+  run _run_dev_test_gate
+  _end=$(date +%s)
+  _elapsed=$(( _end - _start ))
+
+  # The gate must return within 10 seconds (generous budget around the 1-second cap)
+  [ "$_elapsed" -lt 10 ] || {
+    echo "FAIL: gate took ${_elapsed}s — expected < 10s (pip shim was not killed)" >&2
+    false
+  }
+
+  # Should NOT claim the venv is ready (timeout exit is a failure)
+  ! [[ "$output" =~ "Venv ready" ]]
+}
+
 @test "venv bootstrap: pytest not importable after install prints actionable error" {
   # Create a scenario where pip succeeds but pytest isn't actually importable.
   # This simulates a broken install state (pip exited 0 but didn't install pytest).
