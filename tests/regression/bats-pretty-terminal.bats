@@ -496,3 +496,182 @@ STUB
   grep -q 'tests/' "$_mk_rec_args_log" \
     || { echo "FAIL: tests/ not passed to bats"; cat "$_mk_rec_args_log"; return 1; }
 }
+
+# ---------------------------------------------------------------------------
+# Parallel jobs (--jobs N) + pretty formatter + TAP pipeline (issue #606)
+# ---------------------------------------------------------------------------
+# These tests verify that enabling --jobs N does NOT break the pretty+TAP
+# pipeline.  The real production path is always: parallel jobs active (when
+# GNU parallel is installed) AND pretty formatter active (bats-core 1.5+).
+# Prior test coverage verified each dimension independently; these tests
+# verify their combination.
+# ---------------------------------------------------------------------------
+
+@test "gate passes --jobs N alongside -F pretty when RITE_BATS_JOBS is set (behavioral)" {
+  # When RITE_BATS_JOBS=2 and bats supports --report-formatter, the gate
+  # must include BOTH --jobs 2 AND -F pretty in the same invocation.
+  # The stub logs all argv so we can assert on the full arg list.
+  _stub_dir="${BATS_TEST_TMPDIR}/bats_jobs_pretty_stub"
+  mkdir -p "$_stub_dir"
+  _args_log="${BATS_TEST_TMPDIR}/bats_jobs_pretty_args.log"
+  cat > "$_stub_dir/bats" <<STUB
+#!/bin/bash
+# Detection string: --report-formatter
+printf '%s\n' "\$@" >> "${_args_log}"
+# Write a minimal passing TAP report to any --output dir provided
+_out_dir=""
+_prev=""
+for _a in "\$@"; do
+  if [ "\$_prev" = "--output" ]; then _out_dir="\$_a"; fi
+  _prev="\$_a"
+done
+if [ -n "\$_out_dir" ]; then
+  mkdir -p "\$_out_dir"
+  printf 'TAP version 13\n1..1\nok 1 stub passing test\n' > "\$_out_dir/report.tap"
+fi
+exit 0
+STUB
+  chmod +x "$_stub_dir/bats"
+
+  _proj=$(_make_stub_project)
+  _gate_out="${BATS_TEST_TMPDIR}/gate_jobs_pretty_out.json"
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export PR_NUMBER='888'
+    export RITE_TEST_GATE_DIFF_BASE='HEAD'
+    export RITE_BATS_JOBS=2
+    _diag() { true; }
+    export -f _diag 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+  "
+  [ "$status" -eq 0 ]
+  [ -f "$_gate_out" ]
+  [ -f "$_args_log" ]
+
+  # Both --jobs and the job count must be present in the logged args
+  grep -q -- '--jobs' "$_args_log" \
+    || { echo "FAIL: --jobs not passed to bats"; cat "$_args_log"; return 1; }
+  grep -q '2' "$_args_log" \
+    || { echo "FAIL: job count '2' not in bats args"; cat "$_args_log"; return 1; }
+
+  # Pretty formatter must also be present — --jobs must not have displaced it
+  grep -q -- '-F' "$_args_log" \
+    || { echo "FAIL: -F pretty not passed to bats alongside --jobs"; cat "$_args_log"; return 1; }
+  grep -q 'pretty' "$_args_log" \
+    || { echo "FAIL: pretty not in bats args when --jobs active"; cat "$_args_log"; return 1; }
+
+  # TAP report-formatter must be present too
+  grep -q -- '--report-formatter' "$_args_log" \
+    || { echo "FAIL: --report-formatter missing when --jobs active"; cat "$_args_log"; return 1; }
+}
+
+@test "gate reads TAP report.tap (not pretty stdout) when --jobs N is active (behavioral)" {
+  # Verifies that the pretty→report.tap→_parse_bats_failure_line pipeline
+  # still reads the TAP file — not stdout — when --jobs N is in effect.
+  # The stub emits a pretty ✗ line to stdout AND writes a TAP failure to
+  # report.tap.  Enabling RITE_BATS_JOBS=2 must not change the parser's
+  # input source: JSON must contain the TAP-sourced failure, not a doubled
+  # or misread entry from pretty stdout.
+  _stub_dir="${BATS_TEST_TMPDIR}/bats_jobs_tap_src_stub"
+  mkdir -p "$_stub_dir"
+  cat > "$_stub_dir/bats" <<'STUBEOF'
+#!/bin/bash
+# Detection string: --report-formatter
+# Parse --output DIR from argv
+_out_dir=""
+_prev=""
+for _a in "$@"; do
+  if [ "$_prev" = "--output" ]; then _out_dir="$_a"; fi
+  _prev="$_a"
+done
+# Pretty output to stdout — must NOT be parsed as a failure
+echo " ✗ parallel tap failing test"
+# TAP report to file — this is what the gate must parse
+if [ -n "$_out_dir" ]; then
+  mkdir -p "$_out_dir"
+  printf 'TAP version 13\n1..1\nnot ok 1 parallel tap failing test\n' > "$_out_dir/report.tap"
+fi
+exit 1
+STUBEOF
+  chmod +x "$_stub_dir/bats"
+
+  _proj=$(_make_stub_project)
+  _gate_out="${BATS_TEST_TMPDIR}/gate_jobs_tap_src_out.json"
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export PR_NUMBER='888'
+    export RITE_TEST_GATE_DIFF_BASE='HEAD'
+    export RITE_BATS_JOBS=2
+    _diag() { true; }
+    export -f _diag 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+  " || true
+  # Gate exits 1 because bats failed; JSON must still be written
+  [ -f "$_gate_out" ]
+
+  # Must have exactly 1 tests entry — the TAP-sourced failure
+  _tests_count=$(grep -o '"test_name"' "$_gate_out" | wc -l | tr -d ' ')
+  [ "$_tests_count" -eq 1 ] \
+    || { echo "FAIL: expected 1 tests entry; got $_tests_count"; cat "$_gate_out"; return 1; }
+  grep -q 'parallel tap failing test' "$_gate_out" \
+    || { echo "FAIL: TAP-sourced failure name not in JSON"; cat "$_gate_out"; return 1; }
+}
+
+@test "gate captures multiple TAP failures from report.tap when --jobs N is active (behavioral)" {
+  # When parallel jobs produce multiple failing tests, the TAP report.tap
+  # aggregates all of them into a single file.  The gate must parse ALL
+  # 'not ok' lines — not just the first — even when --jobs N was in effect.
+  _stub_dir="${BATS_TEST_TMPDIR}/bats_jobs_multi_fail_stub"
+  mkdir -p "$_stub_dir"
+  cat > "$_stub_dir/bats" <<'STUBEOF'
+#!/bin/bash
+# Detection string: --report-formatter
+_out_dir=""
+_prev=""
+for _a in "$@"; do
+  if [ "$_prev" = "--output" ]; then _out_dir="$_a"; fi
+  _prev="$_a"
+done
+# Two pretty ✗ lines to stdout (simulating two failing files under --jobs)
+echo " ✗ parallel job one failure"
+echo " ✗ parallel job two failure"
+# TAP report with both failures — the gate must parse both
+if [ -n "$_out_dir" ]; then
+  mkdir -p "$_out_dir"
+  printf 'TAP version 13\n1..2\nnot ok 1 parallel job one failure\nnot ok 2 parallel job two failure\n' > "$_out_dir/report.tap"
+fi
+exit 1
+STUBEOF
+  chmod +x "$_stub_dir/bats"
+
+  _proj=$(_make_stub_project)
+  _gate_out="${BATS_TEST_TMPDIR}/gate_jobs_multi_fail_out.json"
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export PR_NUMBER='888'
+    export RITE_TEST_GATE_DIFF_BASE='HEAD'
+    export RITE_BATS_JOBS=2
+    _diag() { true; }
+    export -f _diag 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+  " || true
+  [ -f "$_gate_out" ]
+
+  # Both failures must appear in the JSON output
+  _tests_count=$(grep -o '"test_name"' "$_gate_out" | wc -l | tr -d ' ')
+  [ "$_tests_count" -eq 2 ] \
+    || { echo "FAIL: expected 2 tests entries from parallel TAP; got $_tests_count"; cat "$_gate_out"; return 1; }
+  grep -q 'parallel job one failure' "$_gate_out" \
+    || { echo "FAIL: first TAP failure missing from JSON"; cat "$_gate_out"; return 1; }
+  grep -q 'parallel job two failure' "$_gate_out" \
+    || { echo "FAIL: second TAP failure missing from JSON"; cat "$_gate_out"; return 1; }
+}
