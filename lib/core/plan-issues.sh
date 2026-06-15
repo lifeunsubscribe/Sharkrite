@@ -2760,20 +2760,26 @@ _build_grounded_hosts() {
       # fixture layouts (e.g. fixtures/region/api.example.com/) are grounded.
       # find -mindepth 1 skips the root dir itself; || true prevents set -e
       # from firing on "permission denied" or other non-fatal find errors.
-      # Only treat a directory name as a hostname when it contains a dot
-      # (e.g. api.example.com) — intermediate organizational directories like
-      # "region", "prod", or "v1" must NOT be grounded as hostnames.
+      # Only treat a directory name as a hostname when it matches the
+      # hostname-shaped regex — intermediate organizational directories like
+      # "region", "prod", or "v1" (no dot) must NOT be grounded, and dotted
+      # non-hostname names like "v1.2" or "2024.01" (digit-only final label)
+      # must also be excluded.  A valid hostname requires each label to be
+      # alphanumeric-or-hyphen, and the final label (TLD) must be 2+ letters.
       while IFS= read -r _entry; do
         _name=$(basename "$_entry")
-        echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
+        echo "$_name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' \
+          && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 -type d 2>/dev/null || true)
       # Also capture fixture files at any depth like api.example.com.json.
       # -type f -name "*.ext" is portable on BSD and GNU find.
       while IFS= read -r _entry; do
         _name=$(basename "$_entry")
         _name="${_name%.*}"  # strip extension
-        # Only treat it as a hostname if it looks like a domain (contains a dot)
-        echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
+        # Only treat it as a hostname if it matches the hostname-shaped regex
+        # (same criteria as directory names above — TLD must be 2+ letters).
+        echo "$_name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' \
+          && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null || true)
     fi
   done < "$_dirs_tmp"

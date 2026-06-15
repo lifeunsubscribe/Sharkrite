@@ -21,6 +21,9 @@
 #   Fixture G — Downstream issue referencing ungrounded host gets "Blocked by:" added.
 #   Fixture H — Downstream issue with existing Dependencies line gets spike appended.
 #   Fixture I — No LLM calls: structural check via grep on function body.
+#   Fixture Q — Dotless intermediate dir (e.g. "region") does NOT ground as hostname.
+#   Fixture R — Dotted non-hostname dirs (e.g. "v1.2", "2024.01") do NOT ground as hostname.
+#   Fixture S — Real hostname (api.example.com) nested under dotted version dir IS grounded.
 
 load '../helpers/setup.bash'
 
@@ -922,6 +925,119 @@ JSON
   # WARNING must name "region" as ungrounded
   grep -q "region" "$stderr_out" || {
     echo "FAIL: expected a WARNING mentioning 'region' as an ungrounded host" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture R: dotted non-hostname intermediate dirs do NOT become grounded hosts
+#
+# Regression for the residual gap left by Fixture Q's fix: the original
+# dot-heuristic filtered out dotless dirs (e.g. "region") but still allowed
+# any dotted name — including version strings and date segments like "v1.2"
+# or "2024.01" — to enter the grounded-host set.
+#
+# Project has:
+#   fixtures/v1.2/api.example.com/     ("v1.2" is a versioned intermediate dir)
+#   fixtures/2024.01/api.example.com/  ("2024.01" is a date-versioned intermediate dir)
+# Issue body references:
+#   https://v1.2/resource   — version string, NOT a hostname
+#   https://2024.01/events  — date string, NOT a hostname
+# Expected: "v1.2" and "2024.01" are NOT in the grounded set (digit-only
+# final label fails the hostname-shaped regex), so spikes ARE emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture R: dotted version-string intermediate dirs do not ground as hostnames" {
+  # Nest fixtures under versioned intermediate dirs — these contain dots but
+  # are NOT valid hostnames (digit-only final labels).
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/v1.2/api.example.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/v1.2/api.example.com/sample.json"
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/2024.01/api.example.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/2024.01/api.example.com/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-r.txt"
+  write_issues_file "$issues_file" \
+    "Fetch versioned resource" \
+    "Call https://v1.2/resource and https://2024.01/events to load data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Both "v1.2" and "2024.01" have digit-only final labels — they must NOT be
+  # grounded, so a spike must be emitted for each.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (2 spikes + 1 original) because 'v1.2' and '2024.01'" \
+         "are not valid hostnames; got $issue_count" \
+         "(dotted non-hostname dirs were incorrectly grounded)" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # WARNING must name both ungrounded candidates
+  grep -q "v1\.2" "$stderr_out" || {
+    echo "FAIL: expected a WARNING mentioning 'v1.2' as an ungrounded host" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  grep -q "2024\.01" "$stderr_out" || {
+    echo "FAIL: expected a WARNING mentioning '2024.01' as an ungrounded host" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture S: api.example.com is still grounded even when nested under a
+# dotted non-hostname intermediate dir (v1.2/)
+#
+# Ensures the hostname-shaped regex fix doesn't regress the legitimate
+# nested-grounding behaviour: the real hostname api.example.com (nested under
+# the version dir v1.2/) must still be found and grounded.
+# ---------------------------------------------------------------------------
+
+@test "Fixture S: real hostname nested under dotted version dir is still grounded" {
+  # fixtures/v1.2/api.example.com/ — "v1.2" is non-hostname but api.example.com is real.
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/v1.2/api.example.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/v1.2/api.example.com/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-s.txt"
+  write_issues_file "$issues_file" \
+    "Fetch data from API" \
+    "Call https://api.example.com/v1.2/resource to get data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # api.example.com IS a valid hostname and IS grounded — no spike should fire.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike) because api.example.com is grounded;" \
+         "got $issue_count (real hostname nested under version dir was not found)" >&2
+    cat "$issues_file" >&2
     cat "$stderr_out" >&2
     false
   }
