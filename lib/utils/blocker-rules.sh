@@ -454,6 +454,10 @@ AWKEOF
   local base_branch
   base_branch=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
   base_branch="${base_branch:-main}"
+  # Capture the raw (pre-strip) value for diag logging so the original attack
+  # payload (embedded newlines, shell meta-chars) is preserved in the audit trail.
+  # The post-strip value would hide the exact input that triggered the rejection.
+  local base_branch_raw="$base_branch"
   # Strip newlines before validation: a multi-line value (e.g. "main\nevil;cmd")
   # would cause grep's ^/$ anchors to match each line independently, letting the
   # first valid line ("main") satisfy the allowlist while the trailing payload
@@ -464,7 +468,11 @@ AWKEOF
   # Only alphanumeric, '-', '_', '.', '/' are valid git ref characters.
   # Also explicitly reject '..' sequences (path traversal, e.g. "../evil").
   if ! echo "$base_branch" | grep -qE '^[a-zA-Z0-9_./-]+$' || echo "$base_branch" | grep -qF '..'; then
-    echo "[diag] SHRINKAGE_BASE_BRANCH_INVALID pr=$pr_number base_branch_raw=${base_branch} fallback=main" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
+    # Visualize newlines in the raw value so the diag log is parseable as a
+    # single line without embedding literal control characters.
+    local base_branch_raw_vis
+    base_branch_raw_vis=$(printf '%s' "$base_branch_raw" | tr '\n' '↵' | tr '\r' '←' || true)
+    echo "[diag] SHRINKAGE_BASE_BRANCH_INVALID pr=$pr_number base_branch_raw=${base_branch_raw_vis} fallback=main" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
     base_branch="main"
   fi
 
