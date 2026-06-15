@@ -415,7 +415,9 @@ claude_provider_build_tool_restrictions() {
   #    with review generation post-session; targeted in-session runs are
   #    redundant and just burn the timeout budget — the prompt forbids them;
   #    the tool-level block does NOT enforce this under stream-json, so the
-  #    Phase 4 prompt framing is the active control until the PreToolUse hook lands)
+  #    PreToolUse deny hook (lib/hooks/claude-pretooluse-deny.sh, wired via
+  #    --settings below) is the enforced backstop; the Phase 4 prompt framing
+  #    is the secondary layer)
   # 3. Destructive filesystem operations
   # 4. Remote access and network commands
   # 5. Environment/credential exposure
