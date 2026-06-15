@@ -207,7 +207,7 @@ format_stale_close_comment() {
   changed_files=$(git -C "$worktree_path" diff --name-only "origin/$base_branch...HEAD" 2>/dev/null || echo "(none)")
 
   cat <<EOF
-:arrows_counterclockwise: Closing: Branch is ${behind} commits behind main.
+:arrows_counterclockwise: Closing: Branch is ${behind} commits behind ${base_branch}.
 
 **Work summary:**
 \`\`\`
@@ -219,8 +219,8 @@ ${commit_messages}
 ${changed_files}
 \`\`\`
 
-This branch has diverged too far from main for safe integration.
-A fresh implementation will be started from current main.
+This branch has diverged too far from ${base_branch} for safe integration.
+A fresh implementation will be started from current ${base_branch}.
 EOF
 }
 

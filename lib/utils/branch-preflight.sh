@@ -6,9 +6,9 @@
 # Exit codes from classify_branch_health:
 #   0  = HEALTHY (proceed to dev work)
 #   1  = ERROR (worktree missing or internal failure)
-#   2  = STALE (has real work but behind main — route to stale-branch handler)
+#   2  = STALE (has real work but behind base branch — route to stale-branch handler)
 #   3  = EMPTY_INIT (only init commit, clean tree — auto-recover by restart)
-#   4  = DIVERGENT_NO_WORK (behind main + only init commit — auto-recover)
+#   4  = DIVERGENT_NO_WORK (behind base branch + only init commit — auto-recover)
 #   5  = UNCOMMITTED_PRESERVED (uncommitted changes — route to auto-commit handler)
 
 set -euo pipefail
@@ -36,14 +36,16 @@ fi
 # PUBLIC: Main entry point
 # ===================================================================
 
-# classify_branch_health ISSUE_NUMBER BRANCH_NAME WORKTREE_PATH
+# classify_branch_health ISSUE_NUMBER BRANCH_NAME WORKTREE_PATH [BASE_BRANCH]
 #
 # Classifies branch state. Does NOT modify state — caller decides action.
+# BASE_BRANCH defaults to "main" when omitted (backward compatible).
 # Exit codes: 0 (HEALTHY), 2 (STALE), 3 (EMPTY_INIT), 4 (DIVERGENT_NO_WORK), 5 (UNCOMMITTED_PRESERVED)
 classify_branch_health() {
   local issue_number="$1"
   local branch_name="$2"
   local worktree_path="$3"
+  local base_branch="${4:-main}"
 
   # Sanity checks
   if [ ! -d "$worktree_path" ]; then
@@ -60,29 +62,29 @@ classify_branch_health() {
     return 5
   fi
 
-  # Fetch origin/main to ensure accurate behind-count
-  git -C "$worktree_path" fetch origin main 2>/dev/null || true
+  # Fetch the resolved base branch to ensure accurate behind-count
+  git -C "$worktree_path" fetch origin "$base_branch" 2>/dev/null || true
 
   # Check if branch has only init commit
   local has_only_init
-  _preflight_has_only_init_commit "$worktree_path" "$issue_number"
+  _preflight_has_only_init_commit "$worktree_path" "$issue_number" "$base_branch"
   has_only_init=$?
 
-  # Check if branch is behind main (uses get_commits_behind_main from stale-branch.sh)
-  get_commits_behind_main "$worktree_path"
+  # Check if branch is behind base (uses get_commits_behind_main from stale-branch.sh)
+  get_commits_behind_main "$worktree_path" "$base_branch"
   local behind="${COMMITS_BEHIND_MAIN:-0}"
 
   # Classification logic (decision tree):
-  # 1. Only init commit + behind main → DIVERGENT_NO_WORK (4)
+  # 1. Only init commit + behind base → DIVERGENT_NO_WORK (4)
   # 2. Only init commit + up-to-date → EMPTY_INIT (3)
-  # 3. Has real work + behind main → STALE (2)
+  # 3. Has real work + behind base → STALE (2)
   # 4. Has real work + up-to-date → HEALTHY (0)
   # (Uncommitted changes already returned 5 above)
   if [ "$has_only_init" -eq 0 ]; then
     # Only init commit exists
     if [ "$behind" -gt 0 ]; then
-      # Behind main + only init = DIVERGENT_NO_WORK
-      print_warning "Branch has only init commit and is $behind commit(s) behind main"
+      # Behind base + only init = DIVERGENT_NO_WORK
+      print_warning "Branch has only init commit and is $behind commit(s) behind $base_branch"
       return 4
     else
       # Up-to-date but only init commit = EMPTY_INIT
@@ -93,8 +95,8 @@ classify_branch_health() {
 
   # Has real work
   if [ "$behind" -gt 0 ]; then
-    # Real work but behind main = STALE
-    print_info "Branch has real work but is $behind commit(s) behind main"
+    # Real work but behind base = STALE
+    print_info "Branch has real work but is $behind commit(s) behind $base_branch"
     return 2
   fi
 
@@ -106,19 +108,21 @@ classify_branch_health() {
 # INTERNAL: Detection helpers
 # ===================================================================
 
-# _preflight_has_only_init_commit WORKTREE_PATH ISSUE_NUMBER
+# _preflight_has_only_init_commit WORKTREE_PATH ISSUE_NUMBER [BASE_BRANCH]
 #
 # Returns 0 if branch has ONLY a "chore: initialize work on #N" commit, 1 otherwise.
+# BASE_BRANCH defaults to "main" when omitted (backward compatible).
 _preflight_has_only_init_commit() {
   local worktree_path="$1"
   local issue_number="$2"
+  local base_branch="${3:-main}"
 
-  # Get all commits ahead of origin/main
+  # Get all commits ahead of the base branch
   local commits_ahead
-  commits_ahead=$(git -C "$worktree_path" log --oneline origin/main..HEAD 2>/dev/null || echo "")
+  commits_ahead=$(git -C "$worktree_path" log --oneline "origin/$base_branch..HEAD" 2>/dev/null || echo "")
 
   if [ -z "$commits_ahead" ]; then
-    # No commits ahead of main — not even an init commit
+    # No commits ahead of base branch — not even an init commit
     return 1
   fi
 
