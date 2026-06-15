@@ -151,6 +151,17 @@ if [ -f "$STATE_FILE" ]; then
   [ "$WORKTREE_PATH" = "null" ] && WORKTREE_PATH=""
   # Verify it exists
   [ -n "$WORKTREE_PATH" ] && [ ! -d "$WORKTREE_PATH" ] && WORKTREE_PATH=""
+
+  # Safety guard: refuse to operate on the main repo root as a worktree.
+  # A pre-worktree interruption can save the main checkout path as worktree_path
+  # (issue #610).  Treating the main checkout as a worktree would run destructive
+  # operations (git worktree remove --force) on the primary development directory.
+  # Clear the path here — the PR-branch fallback below will discover the real
+  # linked worktree if one exists.
+  if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" = "$RITE_PROJECT_ROOT" ]; then
+    print_warning "--undo: session state contains main repo root as worktree_path — ignoring (no dedicated worktree was created)"
+    WORKTREE_PATH=""
+  fi
 fi
 
 # Fall back to git worktree list

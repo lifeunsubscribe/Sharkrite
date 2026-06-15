@@ -538,6 +538,27 @@ save_session_state() {
   local data_dir="${RITE_DATA_DIR:-.rite}"
   local state_file="${RITE_PROJECT_ROOT:-.}/${data_dir}/session-state-${issue_number}.json"
 
+  # Guard: do NOT persist a worktree_path that is the main repo root or empty.
+  # A pre-worktree interruption (e.g., SIGINT during the claude session before the
+  # worktree is created) must not record a path that would cause resume to run
+  # in-place on the main checkout.  Store empty string so the resume path
+  # recognises "no usable worktree" and starts fresh.  (issue #610)
+  local _main_root="${RITE_PROJECT_ROOT:-}"
+  if [ -z "$worktree_path" ] || [ "$worktree_path" = "$_main_root" ]; then
+    if [ -n "$worktree_path" ] && [ "$worktree_path" = "$_main_root" ]; then
+      echo "⚠️  save_session_state: worktree_path is the main repo root — recording empty (no dedicated worktree yet)" >&2
+    fi
+    worktree_path=""
+  fi
+
+  # Get git status safely (only when a real dedicated worktree exists)
+  local git_status_b64=""
+  local last_commit=""
+  if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
+    git_status_b64=$(cd "$worktree_path" 2>/dev/null && git status --short | base64 || echo "")
+    last_commit=$(cd "$worktree_path" 2>/dev/null && git log -1 --oneline 2>/dev/null || echo "")
+  fi
+
   cat > "$state_file" <<EOF
 {
   "saved_at": $(date +%s),
@@ -546,8 +567,8 @@ save_session_state() {
   "issue_number": "$issue_number",
   "worktree_path": "$worktree_path",
   "session_info": $(cat "$SESSION_STATE_FILE"),
-  "git_status": "$(cd "$worktree_path" 2>/dev/null && git status --short | base64)",
-  "last_commit": "$(cd "$worktree_path" 2>/dev/null && git log -1 --oneline)"
+  "git_status": "$git_status_b64",
+  "last_commit": "$last_commit"
 }
 EOF
 
