@@ -2514,3 +2514,261 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fix 3b — suppression on the canonical (lower-ordinal) reporter must not
+# silence the diag for the whole pair.
+#
+# Issue #1 (ordinal 0) has <!-- sharkrite-plan-lint disable parallel-file-overlap -->
+# and declares "(can run in parallel with #2)". Issue #2 (ordinal 1) is NOT
+# suppressed and also declares "(can run in parallel with #1)". Both modify
+# the same file. Without the fix, _pi=0 hits the suppression early-continue,
+# then _pi=1 defers to the "lower-ordinal canonical reporter" and also
+# continues — no diag is ever emitted. With the fix, _pi=1 detects that
+# _pj=0 is suppressed and steps up as the emitter.
+# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3b: suppression on canonical lower-ordinal reporter — higher-ordinal steps up, one diag emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3b.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Render alpha (suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha renderer with parallel-file-overlap suppression.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: alpha's overlap with beta is intentional -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: \`make test\`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Render beta (not suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta renderer, no suppression — should still receive the diag for the pair.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: \`make test\`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note.
+  # Without the fix: 0 notes (canonical suppressed, higher deferred — silent).
+  # With the fix:    1 note  (higher-ordinal steps up as emitter).
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note (higher-ordinal steps up), got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3b (both suppressed) — when BOTH sides have parallel-file-overlap
+# suppressed, no diag should be emitted.
+#
+# Both issues have the suppression marker. No [plan-lint-diag] note.
+# Exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3b: both sides suppressed — no [plan-lint-diag] emitted, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-both.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Render alpha (suppressed both)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha renderer, suppression on both sides.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: overlap is intentional -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: \`make test\`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Render beta (suppressed both)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta renderer, also suppressed.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: overlap is intentional -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: \`make test\`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit any [plan-lint-diag] note — both sides suppressed
+  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
+    echo "FAIL: unexpected [plan-lint-diag] note when both sides are suppressed" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3b (suppression on higher-ordinal only) — canonical lower-ordinal
+# reporter is NOT suppressed, so it emits normally.
+#
+# Issue #2 (ordinal 1) has suppression, issue #1 (ordinal 0) does NOT.
+# The canonical reporter for bidirectional pairs is the lower-ordinal issue.
+# Since _pi=0 is not suppressed, it emits. _pi=1 is suppressed → skipped.
+# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3b: suppression on higher-ordinal only — canonical lower-ordinal still emits one diag" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-higher.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Render loop one (not suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Lower-ordinal issue without suppression — canonical reporter.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] One passes: \`make test\`
+
+**Done Definition**: Done when one passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Render loop two (suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Higher-ordinal issue with suppression — should not prevent lower-ordinal from emitting.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: overlap with #1 is known -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Two passes: \`make test\`
+
+**Done Definition**: Done when two passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note (from the canonical lower-ordinal)
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note from canonical lower-ordinal, got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

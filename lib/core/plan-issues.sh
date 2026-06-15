@@ -2102,13 +2102,22 @@ _lint_issues_strict() {
         # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
         # with #1 but #1 does not declare parallel with #2), there is no other
         # reporter — suppress only if _pj also lists _pi+1 in its parallel refs.
+        #
+        # Fix 3b: suppression on the canonical (lower-ordinal) reporter.
+        # If _pj (the lower-ordinal issue) has parallel-file-overlap suppressed,
+        # it was already skipped by the suppression guard at the top of the loop,
+        # so it will never emit.  In that case the higher-ordinal side (_pi) must
+        # NOT defer — it is the only possible emitter for this pair.
         if [ "$_pi" -gt "$_pj" ]; then
           local _pj_parallel="${_parallel_with[$_pj]:-}"
-          if echo "$_pj_parallel" | grep -qxF "#$((_pi + 1))"; then
+          local _pj_supps_check="${_suppressions[$_pj]:-}"
+          if echo "$_pj_parallel" | grep -qxF "#$((_pi + 1))" && \
+             ! echo "$_pj_supps_check" | grep -qw "parallel-file-overlap"; then
             # Bidirectional: lower ordinal (_pj) will report this pair — skip here
             continue
           fi
-          # Unidirectional higher→lower: no lower-ordinal reporter exists — emit now
+          # Either unidirectional or _pj is suppressed: no lower-ordinal reporter
+          # will emit, so fall through and emit from here.
         fi
         local _pj_title="${_titles[$_pj]}"
         local _pj_modify="${_files_modify[$_pj]}"
