@@ -1,0 +1,240 @@
+#!/bin/bash
+# bin/rite-full-suite — Full-suite safety net runner
+#
+# Runs the unfiltered test suite (make check + bats -r tests/) against the
+# current branch, bypassing the targeted-selection logic in test-gate.sh.
+# This is the periodic safety net that catches drift between bats covers
+# headers and the code they actually exercise.
+#
+# See: docs/architecture/behavioral-design.md → "Test Selection by Changed Paths"
+# Motivating issue: #482 (periodic full-suite safety net)
+#
+# Usage:
+#   rite --full-suite               # Run via the rite dispatcher
+#   bin/rite-full-suite             # Direct invocation (same effect)
+#
+# Exit codes:
+#   0  — all checks and tests passed
+#   1  — one or more failures (lint or bats)
+#
+# Diag emitted:
+#   [diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N
+#
+# State written on failure:
+#   .rite/state/full-suite-failure.flag  (deleted on next successful run)
+#
+# Log written:
+#   .rite/logs/full-suite-YYYYMMDD.log
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RITE_INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+RITE_LIB_DIR="$RITE_INSTALL_DIR/lib"
+export RITE_INSTALL_DIR RITE_LIB_DIR
+
+# Source config (detects project root, RITE_DATA_DIR, etc.)
+source "$RITE_LIB_DIR/utils/config.sh"
+source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/logging.sh"
+
+# ---------------------------------------------------------------------------
+# Resolve project root and state paths
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(pwd)}"
+_DATA_DIR="${RITE_DATA_DIR:-.rite}"
+_LOGS_DIR="$_PROJECT_ROOT/$_DATA_DIR/logs"
+_STATE_DIR="$_PROJECT_ROOT/$_DATA_DIR/state"
+_FAILURE_FLAG="$_STATE_DIR/full-suite-failure.flag"
+
+mkdir -p "$_LOGS_DIR" "$_STATE_DIR"
+
+# ---------------------------------------------------------------------------
+# Log file setup: append a header + tee output
+# ---------------------------------------------------------------------------
+_TODAY=$(date '+%Y-%m-%d')
+_TODAY_COMPACT=$(date '+%Y%m%d')
+_LOG_FILE="$_LOGS_DIR/full-suite-${_TODAY_COMPACT}.log"
+_HOSTNAME=$(hostname -s 2>/dev/null || echo "unknown")
+_BRANCH=$(git -C "$_PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+{
+  echo "=== Sharkrite Full-Suite Run ==="
+  echo "Date:   $_TODAY $(date '+%H:%M:%S')"
+  echo "Host:   $_HOSTNAME"
+  echo "Branch: $_BRANCH"
+  echo "==="
+  echo ""
+} >> "$_LOG_FILE"
+
+# Set RITE_LOG_FILE so _diag() writes structured lines to the run log.
+export RITE_LOG_FILE="$_LOG_FILE"
+
+# Tee all output (stdout+stderr merged) to the log for full transcript.
+# We use the same FIFO-based tee approach as bin/rite to avoid truncation.
+# The FIFO keeps the strip_ansi reader alive exactly as long as the write end
+# is open. We close the write end by redirecting stdout to /dev/null (or back
+# to the original stdout fd) before waiting — this works in both terminal and
+# non-terminal (cron) contexts, unlike exec >/dev/tty.
+_tee_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_fs_log_XXXXXX")
+mkfifo "$_tee_fifo"
+# Preserve the original stdout fd so we can restore it before waiting.
+exec 9>&1
+# strip_ansi is defined in colors.sh; fall back to cat if unavailable.
+if declare -f strip_ansi >/dev/null 2>&1; then
+  strip_ansi < "$_tee_fifo" >> "$_LOG_FILE" &
+else
+  cat < "$_tee_fifo" >> "$_LOG_FILE" &
+fi
+_tee_reader_pid=$!
+exec > >(tee "$_tee_fifo") 2>&1
+
+print_header "Sharkrite Full-Suite Safety Net"
+print_info "Project: ${RITE_PROJECT_NAME:-unknown}"
+print_info "Branch:  $_BRANCH"
+print_info "Log:     $_LOG_FILE"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Pre-flight: check required tools
+# ---------------------------------------------------------------------------
+if ! command -v make >/dev/null 2>&1; then
+  print_error "make not found — cannot run lint check"
+  exit 1
+fi
+if ! command -v bats >/dev/null 2>&1; then
+  print_error "bats not found — cannot run test suite"
+  exit 1
+fi
+
+# Verify this is a Sharkrite repo (has shellcheck: and lint: Makefile targets).
+if ! (grep -q "^shellcheck:" "$_PROJECT_ROOT/Makefile" 2>/dev/null \
+      && grep -q "^lint:" "$_PROJECT_ROOT/Makefile" 2>/dev/null); then
+  print_warning "Makefile missing shellcheck: or lint: targets — not a Sharkrite repo?"
+  print_info "Proceeding anyway with 'make check' and 'bats -r tests/'"
+fi
+
+# ---------------------------------------------------------------------------
+# Run make check (lint gate — full scan, no targeted selection)
+# ---------------------------------------------------------------------------
+_start=$(date +%s)
+_lint_exit=0
+_lint_count=0
+
+print_step "Running make check (full lint scan)..."
+_lint_raw=$(mktemp "/tmp/rite_fs_lint_$$.txt")
+trap 'rm -f "${_lint_raw:-}" "${_tests_raw:-}"' EXIT
+
+set +e
+(cd "$_PROJECT_ROOT" && make check) 2>&1 | tee "$_lint_raw"
+_lint_exit=${PIPESTATUS[0]}
+set -e
+
+if [ "$_lint_exit" -ne 0 ]; then
+  print_warning "Lint check failed (exit $_lint_exit)"
+  # Count lines matching known lint output formats
+  _lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:|^[^:]+:[0-9]+:.*\[[A-Z_]+\]' "$_lint_raw" || true)
+else
+  print_success "Lint check passed"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# Run bats -r tests/ (full suite — no targeted selection, no FORCE_FULL check)
+# ---------------------------------------------------------------------------
+_tests_exit=0
+_tests_count=0
+
+print_step "Running bats -r tests/ (full suite, no targeted selection)..."
+_tests_raw=$(mktemp "/tmp/rite_fs_tests_$$.txt")
+
+# Detect bats parallelism (mirrors _compute_bats_jobs from test-gate.sh)
+_bats_jobs=1
+if command -v parallel >/dev/null 2>&1 || command -v rush >/dev/null 2>&1; then
+  _bats_jobs=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "2")
+fi
+[ -n "${RITE_BATS_JOBS:-}" ] && _bats_jobs="${RITE_BATS_JOBS}"
+
+_total_bats=$(cd "$_PROJECT_ROOT" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+print_info "Running $_total_bats bats files (parallel jobs: $_bats_jobs)"
+
+set +e
+if [ "${_bats_jobs:-1}" -gt 1 ]; then
+  (cd "$_PROJECT_ROOT" && bats --jobs "$_bats_jobs" -r tests/) 2>&1 | tee "$_tests_raw"
+else
+  (cd "$_PROJECT_ROOT" && bats -r tests/) 2>&1 | tee "$_tests_raw"
+fi
+_tests_exit=${PIPESTATUS[0]}
+set -e
+
+_tests_count=$(grep -c "^not ok " "$_tests_raw" || true)
+
+if [ "$_tests_exit" -ne 0 ]; then
+  print_warning "Test suite failed ($_tests_count test failure(s))"
+else
+  print_success "Test suite passed"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# Cleanup tee FIFO reader
+# ---------------------------------------------------------------------------
+# Restore stdout to the saved fd (fd 9), closing the tee's write end so
+# the FIFO reader drains and exits. Works in both terminal and cron contexts.
+exec 1>&9 9>&-
+wait "$_tee_reader_pid" 2>/dev/null || true
+rm -f "$_tee_fifo"
+
+# ---------------------------------------------------------------------------
+# Determine outcome + emit diag
+# ---------------------------------------------------------------------------
+_end=$(date +%s)
+_duration=$(( _end - _start ))
+_overall_exit=0
+_outcome="passed"
+
+if [ "$_lint_exit" -ne 0 ] || [ "$_tests_exit" -ne 0 ]; then
+  _overall_exit=1
+  _outcome="failed"
+fi
+
+# Emit structured diag for health-report aggregation.
+# Writes directly to RITE_LOG_FILE (two-channel convention — not via stdout).
+_diag "FULL_SUITE_RUN outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration}"
+
+# ---------------------------------------------------------------------------
+# Manage failure flag
+# ---------------------------------------------------------------------------
+if [ "$_outcome" = "failed" ]; then
+  # Write failure flag listing failing tests and lint count
+  {
+    echo "# Sharkrite full-suite failure flag"
+    echo "# Written: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "# Branch:  $_BRANCH"
+    echo "outcome=failed"
+    echo "lint_count=${_lint_count}"
+    echo "test_count=${_tests_count}"
+    echo "duration_s=${_duration}"
+    echo "log=${_LOG_FILE}"
+    if [ "$_tests_count" -gt 0 ]; then
+      echo ""
+      echo "# Failing tests:"
+      grep "^not ok " "$_tests_raw" 2>/dev/null | sed 's/^not ok [0-9]* /  /' || true
+    fi
+    if [ "$_lint_count" -gt 0 ]; then
+      echo ""
+      echo "# Lint violations ($_lint_count):"
+      grep -E '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:|^[^:]+:[0-9]+:.*\[[A-Z_]+\]' "$_lint_raw" 2>/dev/null \
+        | head -20 | sed 's/^/  /' || true
+    fi
+  } > "$_FAILURE_FLAG"
+  print_error "Full suite FAILED — failure flag written: $_FAILURE_FLAG"
+  print_info "Run 'rite --status' to see the failure banner"
+else
+  # Delete the flag on success so the banner clears
+  rm -f "$_FAILURE_FLAG"
+  print_success "Full suite passed in ${_duration}s (lint: 0 violations, tests: $_total_bats files)"
+fi
+
+rm -f "${_lint_raw:-}" "${_tests_raw:-}"
+exit "$_overall_exit"
