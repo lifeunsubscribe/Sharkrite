@@ -2422,3 +2422,95 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fix 3 (unidirectional) — only the higher-ordinal issue declares parallel.
+#
+# Issue #2 declares "(can run in parallel with #1)" but issue #1 does NOT
+# declare parallel with #2.  The dedup guard must NOT suppress the note in
+# this case — there is no lower-ordinal reporter, so #2 is the sole emitter.
+# Exactly one [plan-lint-diag] note must appear.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3 (unidirectional): higher-ordinal parallel declaration — exactly one [plan-lint-diag] note, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3-uni.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Render loop base
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Base render loop in shared file — no parallel annotation here.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Base passes: `make test`
+
+**Done Definition**: Done when base passes.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Render loop overlay
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Overlay render loop in the same shared file — only this side declares parallel.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Overlay passes: `make test`
+
+**Done Definition**: Done when overlay passes.
+
+**Dependencies**: After #1 (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for unidirectional parallel, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a terminal WARNING for parallel-file-overlap
+  grep -qE "WARNING:.*parallel-file-overlap|strict-lint: WARNING:.*parallel" "$stderr_out" && {
+    echo "FAIL: unexpected terminal WARNING for parallel-file-overlap (should be log-only)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note (the higher-ordinal issue #2 is
+  # the sole reporter — the dedup guard must not suppress unidirectional notes)
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note for unidirectional parallel, got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' mentioned in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

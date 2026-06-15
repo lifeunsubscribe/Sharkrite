@@ -2096,11 +2096,20 @@ _lint_issues_strict() {
         # annotation that includes its own ordinal would always find a shared
         # file and emit a spurious self-referential diag note.
         [ "$_pj" -eq "$_pi" ] && continue
-        # Fix 3: only report each (i,j) pair once — bidirectional annotations
-        # (A parallel with B AND B parallel with A) would otherwise emit two
-        # identical notes for the same overlap.  Report only when _pi < _pj
-        # so the lower-ordinal issue is always the "reporter".
-        [ "$_pi" -lt "$_pj" ] || continue
+        # Fix 3: only report each (i,j) pair once for bidirectional annotations.
+        # When BOTH sides declare the parallel (A→B and B→A), the lower-ordinal
+        # issue is the canonical reporter (_pi < _pj).  When only the higher-ordinal
+        # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
+        # with #1 but #1 does not declare parallel with #2), there is no other
+        # reporter — suppress only if _pj also lists _pi+1 in its parallel refs.
+        if [ "$_pi" -gt "$_pj" ]; then
+          local _pj_parallel="${_parallel_with[$_pj]:-}"
+          if echo "$_pj_parallel" | grep -qxF "#$((_pi + 1))"; then
+            # Bidirectional: lower ordinal (_pj) will report this pair — skip here
+            continue
+          fi
+          # Unidirectional higher→lower: no lower-ordinal reporter exists — emit now
+        fi
         local _pj_title="${_titles[$_pj]}"
         local _pj_modify="${_files_modify[$_pj]}"
         [ -z "$_pj_modify" ] && continue
