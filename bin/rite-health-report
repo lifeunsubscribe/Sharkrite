@@ -188,6 +188,42 @@ if [ -n "$CR_LINES" ]; then
   fi
 fi
 
+# --- Pre-parse full-suite run stats (issue #482) ---
+# FULL_SUITE_RUN diag lines live in .rite/logs/full-suite-YYYYMMDD.log files,
+# not in the per-issue rite-*.log files. Collect from both log sources.
+# Format: "FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N"
+FS_DIAG_LINES=""
+if [ -d "$LOGS_DIR" ]; then
+  while IFS= read -r fslogfile; do
+    _fs_date=$(echo "$fslogfile" | grep -oE '[0-9]{8}' | tail -1 || true)
+    if [ -n "$_fs_date" ]; then
+      _fs_epoch=$(date_from_compact "$_fs_date")
+      if [ "${_fs_epoch:-0}" -ge "$WEEK_AGO_EPOCH" ] 2>/dev/null; then
+        FS_DIAG_LINES+=$(grep '\[diag\].*FULL_SUITE_RUN' "$fslogfile" 2>/dev/null || true)
+        FS_DIAG_LINES+=$'\n'
+      fi
+    fi
+  done < <(find "$LOGS_DIR" -name "full-suite-*.log" -type f 2>/dev/null | sort)
+fi
+FS_DIAG_LINES=$(echo "$FS_DIAG_LINES" | sed '/^$/d' || true)
+
+FSR_LINES="$FS_DIAG_LINES"
+FSR_TOTAL=$(echo "$FSR_LINES" | grep -c 'FULL_SUITE_RUN' || true)
+FSR_PASSED=$(echo "$FSR_LINES" | grep -c 'outcome=passed' || true)
+FSR_FAILED=$(echo "$FSR_LINES" | grep -c 'outcome=failed' || true)
+# Sum duration across all full-suite runs for average
+FSR_DURATION_SUM=$(echo "$FSR_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' \
+  | awk '{sum += $1} END {print sum+0}' || echo "0")
+# Pre-compute average duration (arithmetic in bash, not LLM)
+if [ "${FSR_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${FSR_DURATION_SUM:-0}" -gt 0 ] 2>/dev/null; then
+  FSR_AVG_DURATION_S=$(( FSR_DURATION_SUM / FSR_TOTAL ))
+else
+  FSR_AVG_DURATION_S=0
+fi
+# Extract failing test counts (for "top failing tests" section in prompt)
+FSR_TEST_FAILURES=$(echo "$FSR_LINES" | grep 'outcome=failed' | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' \
+  | awk '{sum += $1} END {print sum+0}' || echo "0")
+
 # --- Pre-parse test gate stats for health checks ---
 # TEST_GATE diag format: "TEST_GATE outcome=passed|failed|skipped lint_count=N test_count=N duration_s=N pr=N"
 TG_LINES=$(echo "$DIAG_LINES" | grep 'TEST_GATE ' || true)
@@ -380,7 +416,12 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - If CR_TOTAL is 0, say "No conflict resolution attempts this week."
 8. **Sharkrite Changes** — If tool code changed this week, note which subsystems were modified. Correlate with any metric shifts (e.g., "assess-and-resolve.sh modified 3 days ago; Phase 3 metrics show no degradation — change appears safe"). If no changes, say "No tool changes this week."
 9. **Insights** — Correlate, don't just observe. Explicitly connect the Sharkrite Changes to metric shifts in the Trends section: name the file/subsystem that changed and the metric that moved in the same window, and say whether the change is the likely cause (e.g. "assess-and-resolve.sh changed 2 days ago; fix-loop avg rose 0.2→0.6 the same window — likely related, worth a look" or "Phase-1 up but no dev-path code changed — probably load, not a regression"). Cross-reference previous reports: are previously flagged issues improving or persisting? Prefer a stated causal hypothesis (grounded in the data) over a bare observation.
-10. **Action Items** — Specific, actionable recommendations. Examples:
+10. **Full Suite Runs** (issue #482 — periodic safety net for sharkrite-test-covers drift) — Summarize the periodic full-suite runs using the pre-parsed stats provided:
+   - Show: Total runs in the period, outcome breakdown (passed/failed), average duration (use FSR_AVG_DURATION_S directly — do not recompute), total test failures detected
+   - Threshold: If **any** `outcome=failed` appears in the period → **WARNING**: "Full-suite regression detected — drift in sharkrite-test-covers headers caught that the targeted gate missed. Review the failure flag at `.rite/state/full-suite-failure.flag`."
+   - If FSR_TOTAL is 0, say: "No full-suite runs recorded this period. Scheduler (launchd/systemd) may not be configured — see CLAUDE.md → 'Periodic Full-Suite Safety Net' for install instructions."
+   - Average duration context: < 10 min is normal; > 20 min is a WATCH signal (suite growing large)
+11. **Action Items** — Specific, actionable recommendations. Examples:
    - "Consider adding `gh pr diff` to rtk exclude list — Phase 3 fix iterations up"
    - "Phase 1 duration trending down — rtk compression appears effective"
    - "Review severity skewing toward LOW — tighten review prompt for more meaningful findings"
@@ -388,7 +429,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 
 ## Data Format
 
-- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`
+- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`, `FULL_SUITE_RUN`
 - `[timing]` lines show phase durations: `END phase_name (Xm Xs)`
 - rtk stats are JSON from `rtk gain --format json`
 - Git log shows recent tool changes with file stats
@@ -396,6 +437,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 - Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts); CR_TOP5_ISSUES (formatted string); CR_MEDIAN_DURATION_S (formatted string, e.g. "45s" or "N/A")
 - Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
 - Pre-parsed test gate selection stats: TGS_TOTAL_RUNS, TGS_TARGETED_RUNS, TGS_FULL_RUNS, TGS_SELECTED_SUM, TGS_TOTAL_SUM (counts)
+- Pre-parsed full-suite run stats: FSR_TOTAL, FSR_PASSED, FSR_FAILED (counts); FSR_AVG_DURATION_S (pre-computed integer seconds); FSR_TEST_FAILURES (total test failures across failed runs)
 
 ## Constraints
 
@@ -453,6 +495,17 @@ $TGS_LINES
 
 Raw CONFLICT_RESOLVER diag lines for context:
 $CR_LINES
+
+## Full Suite Run Stats (pre-parsed, past 7 days — issue #482 periodic safety net)
+
+- FSR_TOTAL (total full-suite runs): $FSR_TOTAL
+- FSR_PASSED: $FSR_PASSED
+- FSR_FAILED (any failure here → WARNING): $FSR_FAILED
+- FSR_AVG_DURATION_S (pre-computed average duration in seconds): $FSR_AVG_DURATION_S
+- FSR_TEST_FAILURES (total bats test failures across failed runs): $FSR_TEST_FAILURES
+
+Raw FULL_SUITE_RUN diag lines for per-run details:
+$FSR_LINES
 
 ## rtk Token Stats (cumulative)
 

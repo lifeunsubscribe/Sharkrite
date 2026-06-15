@@ -1,0 +1,326 @@
+#!/bin/bash
+# bin/rite-full-suite — Sharkrite Periodic Full-Suite Safety Net
+#
+# Runs the COMPLETE test suite (make check + bats -r tests/) unconditionally,
+# bypassing the targeted-selection optimization in test-gate.sh. This is the
+# periodic safety net for drift in sharkrite-test-covers headers: a bats file
+# with a wrong header is never selected by the targeted gate, but IS always
+# selected here.
+#
+# Background: after PR #480 (backfill all bats files with covers headers) and
+# PR #481 (flip default so headerless files are skipped), the post-commit gate
+# runs a targeted subset per fix-loop iteration. Headers can drift over time
+# (rename source file, expand test scope without updating header, etc.). The
+# targeted gate never catches the drift. This script is the compensating
+# periodic check — same model as rite-health-report's launchd job.
+#
+# Usage:
+#   rite --full-suite                   # Run via rite dispatcher
+#   bin/rite-full-suite                 # Direct invocation
+#   RITE_PROJECT_ROOT=/path bin/rite-full-suite  # Override project root
+#
+# Exit codes:
+#   0  — all pass
+#   1  — one or more failures (lint or bats); failure flag written
+#
+# Log output:
+#   Appended to .rite/logs/full-suite-YYYYMMDD.log
+#
+# Scheduler (launchd / systemd) should invoke this script directly.
+# See CLAUDE.md → "Periodic Full-Suite Safety Net" for install instructions.
+
+set -euo pipefail
+
+# Bash 4+ self-re-exec guard: bats --jobs N requires GNU parallel (bash 4+ for
+# the jobs computation), and we may use arrays in the runner below. macOS system
+# bash 3.2 doesn't have mapfile but we use while-read loops so this is mainly
+# defensive. Keep the guard for forward compatibility.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: rite-full-suite requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+DATA_DIR="${RITE_DATA_DIR:-.rite}"
+LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
+STATE_DIR="$PROJECT_ROOT/$DATA_DIR/state"
+FAILURE_FLAG="$STATE_DIR/full-suite-failure.flag"
+
+TODAY=$(date +%Y-%m-%d)
+TODAY_COMPACT=$(date +%Y%m%d)
+LOG_FILE="$LOGS_DIR/full-suite-${TODAY_COMPACT}.log"
+
+# ---------------------------------------------------------------------------
+# Pre-flight: ensure required tools are available
+# ---------------------------------------------------------------------------
+
+if ! command -v make >/dev/null 2>&1; then
+  echo "Error: make not found — required for 'make check'" >&2
+  exit 1
+fi
+
+if ! command -v bats >/dev/null 2>&1; then
+  echo "Error: bats not found — required for bats -r tests/" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Logging setup: write to per-day log file, also stream to stdout
+# ---------------------------------------------------------------------------
+
+mkdir -p "$LOGS_DIR" "$STATE_DIR"
+
+# Write header to log (append so multiple runs on the same day accumulate)
+{
+  echo ""
+  echo "=== rite --full-suite ==="
+  echo "Date:    $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "Host:    $(hostname -s 2>/dev/null || echo unknown)"
+  echo "Branch:  $(cd "$PROJECT_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  echo "Project: $PROJECT_ROOT"
+  echo "==="
+  echo ""
+} >> "$LOG_FILE"
+
+# Tee all subsequent output to log file (stdout → log + terminal)
+# Use the same strip_ansi helper that bin/rite uses if available.
+# If colors.sh is not sourced, fall back to a simple cat.
+if [ -f "$SCRIPT_DIR/../lib/utils/colors.sh" ]; then
+  # shellcheck source=../lib/utils/colors.sh
+  source "$SCRIPT_DIR/../lib/utils/colors.sh" 2>/dev/null || true
+fi
+if declare -f strip_ansi >/dev/null 2>&1; then
+  exec > >(tee >(strip_ansi >> "$LOG_FILE"))
+  exec 2>&1
+else
+  exec > >(tee -a "$LOG_FILE")
+  exec 2>&1
+fi
+
+echo "[full-suite] Starting full suite run: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[full-suite] Log: $LOG_FILE"
+
+# ---------------------------------------------------------------------------
+# Set up _diag helper for structured diagnostic emission
+# ---------------------------------------------------------------------------
+# We cannot source test-gate.sh here (it runs run_test_gate which we're bypassing).
+# We only need _diag, so define it inline following the same pattern as logging.sh.
+
+_full_suite_diag() {
+  local msg="$1"
+  local ts
+  ts=$(date '+%H:%M:%S')
+  local line="[diag] $ts | $msg"
+  # Two-channel write convention (mirrors logging.sh::_diag):
+  #   stdout → captured exactly once by the exec tee above → LOG_FILE (human-readable channel)
+  #   >> LOG_FILE → direct structured write for health-report aggregation
+  #
+  # Wait — writing to BOTH would duplicate the line. This script's tee (set up via
+  # exec above) already sends stdout to LOG_FILE. We must write to only ONE channel.
+  #
+  # Choice: write directly to LOG_FILE only (skip stdout), matching the convention in
+  # logging.sh::_diag. The diag line is a structured event, not human-facing output.
+  # The "[full-suite] Done" echo above conveys the same information in human terms.
+  echo "$line" >> "$LOG_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Run: make check (shellcheck + custom lint)
+# ---------------------------------------------------------------------------
+
+_gate_start=$(date +%s)
+
+echo ""
+echo "[full-suite] Phase 1/2: Running make check (full lint scan)..."
+echo ""
+
+_lint_exit=0
+_lint_raw=$(mktemp "/tmp/rite_fullsuite_lint_$$.txt")
+trap 'rm -f "${_lint_raw:-}" "${_bats_exit_file:-}"' EXIT
+
+{ (cd "$PROJECT_ROOT" && make check) > "$_lint_raw" 2>&1; echo $? > "${_lint_raw}.exit"; } || true
+_lint_exit=$(cat "${_lint_raw}.exit" 2>/dev/null || echo 0)
+rm -f "${_lint_raw}.exit"
+
+# Stream lint output to terminal (already captured in log via tee above)
+cat "$_lint_raw"
+
+# Count lint violations from raw output (shellcheck SC lines + custom rule lines)
+_lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:|^[^:]+:[0-9]+:.*\[[A-Z_]+\]' "$_lint_raw" || true)
+
+if [ "$_lint_exit" -eq 0 ]; then
+  echo ""
+  echo "[full-suite] Lint: PASSED (${_lint_count} violations)"
+else
+  echo ""
+  echo "[full-suite] Lint: FAILED (${_lint_count} violations)"
+fi
+
+rm -f "$_lint_raw"
+
+# ---------------------------------------------------------------------------
+# Run: bats -r tests/ (full recursive suite, no selection)
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "[full-suite] Phase 2/2: Running bats -r tests/ (full suite, no targeted selection)..."
+echo ""
+
+# Parallelism: auto-detect GNU parallel; respect RITE_BATS_JOBS override.
+# Mirrors _compute_bats_jobs() in test-gate.sh.
+_bats_jobs=1
+if [ -n "${RITE_BATS_JOBS:-}" ] && echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
+  _bats_jobs="${RITE_BATS_JOBS}"
+elif command -v parallel >/dev/null 2>&1 || command -v rush >/dev/null 2>&1; then
+  _bats_jobs=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)
+fi
+
+_bats_jobs_args=()
+if [ "$_bats_jobs" -gt 1 ]; then
+  _bats_jobs_args=(--jobs "$_bats_jobs")
+  echo "[full-suite] bats: parallel (--jobs ${_bats_jobs})"
+else
+  echo "[full-suite] bats: serial (parallel binary not found; install GNU parallel to enable)"
+fi
+
+# Detect pretty formatter (bats-core >= 1.5), same logic as test-gate.sh
+_bats_has_pretty=false
+_bats_bin=$(command -v bats 2>/dev/null || true)
+if [ -n "$_bats_bin" ]; then
+  _bats_real=$(readlink -f "$_bats_bin" 2>/dev/null || true)
+  [ -z "$_bats_real" ] && _bats_real="$_bats_bin"
+  _bats_root="${_bats_real%/*/*}"
+  _bats_core="$_bats_root/libexec/bats-core/bats"
+  if [ -f "$_bats_core" ]; then
+    grep -q -- '--report-formatter' "$_bats_core" 2>/dev/null && _bats_has_pretty=true || true
+  else
+    grep -q -- '--report-formatter' "$_bats_bin" 2>/dev/null && _bats_has_pretty=true || true
+  fi
+fi
+
+_bats_exit_file=$(mktemp "/tmp/rite_fullsuite_bats_exit_$$.txt")
+_bats_tap_dir=""
+
+_tests_raw_file=$(mktemp "/tmp/rite_fullsuite_bats_raw_$$.txt")
+# Extend trap to clean up bats temp files
+trap 'rm -f "${_tests_raw_file:-}" "${_bats_exit_file:-}"; [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"' EXIT
+
+_tests_exit=0
+
+if [ "$_bats_has_pretty" = "true" ]; then
+  _bats_tap_dir=$(mktemp -d "/tmp/rite_fullsuite_tap_$$_XXXXXX")
+  echo "[full-suite] bats: pretty formatter (terminal) + TAP report (parser)"
+  { (cd "$PROJECT_ROOT" && BATS_REPORT_FILENAME=report.tap \
+      bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
+      "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/); \
+    echo $? > "$_bats_exit_file"; } || true
+  cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
+  [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
+  _bats_tap_dir=""
+else
+  echo "[full-suite] bats: TAP formatter (--report-formatter not available)"
+  { (cd "$PROJECT_ROOT" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); \
+    echo $? > "$_bats_exit_file"; } | tee "$_tests_raw_file" || true
+fi
+
+_tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+
+# Count failing tests
+_tests_failed=$(grep -c "^not ok " "$_tests_raw_file" || true)
+_tests_total=$(grep -cE "^(ok|not ok) " "$_tests_raw_file" || true)
+_tests_passed=$(( _tests_total - _tests_failed ))
+
+# Extract failing test names for the failure flag
+_failing_tests=""
+if [ "$_tests_failed" -gt 0 ]; then
+  _failing_tests=$(grep "^not ok " "$_tests_raw_file" | sed 's/^not ok [0-9]* //' || true)
+fi
+
+rm -f "$_tests_raw_file" "$_bats_exit_file"
+trap - EXIT
+
+if [ "$_tests_exit" -eq 0 ]; then
+  echo ""
+  echo "[full-suite] Tests: PASSED (${_tests_passed}/${_tests_total} passed)"
+else
+  echo ""
+  echo "[full-suite] Tests: FAILED (${_tests_passed}/${_tests_total} passed, ${_tests_failed} failing)"
+fi
+
+# ---------------------------------------------------------------------------
+# Determine overall outcome
+# ---------------------------------------------------------------------------
+
+_gate_end=$(date +%s)
+_duration=$(( _gate_end - _gate_start ))
+
+_overall_exit=0
+_outcome="passed"
+if [ "$_lint_exit" -ne 0 ] || [ "$_tests_exit" -ne 0 ]; then
+  _overall_exit=1
+  _outcome="failed"
+fi
+
+echo ""
+if [ "$_outcome" = "passed" ]; then
+  echo "[full-suite] Result: ALL PASS — lint clean, ${_tests_passed}/${_tests_total} bats tests passed (${_duration}s)"
+else
+  echo "[full-suite] Result: FAILURES DETECTED — see above for details (${_duration}s)"
+fi
+
+# ---------------------------------------------------------------------------
+# Failure flag: write on failure, delete on success
+# ---------------------------------------------------------------------------
+
+if [ "$_outcome" = "failed" ]; then
+  # Write flag file listing failures and context
+  {
+    echo "full-suite run FAILED: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Branch: $(cd "$PROJECT_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    echo "Duration: ${_duration}s"
+    echo ""
+    if [ "$_lint_exit" -ne 0 ]; then
+      echo "Lint failures: ${_lint_count} violation(s)"
+      echo "  Run: make check"
+    fi
+    if [ "$_tests_exit" -ne 0 ]; then
+      echo ""
+      echo "Test failures (${_tests_failed} failing):"
+      echo "$_failing_tests" | while IFS= read -r _t; do
+        echo "  - $_t"
+      done
+      echo ""
+      echo "  Run: bats -r tests/"
+    fi
+    echo ""
+    echo "Log: $LOG_FILE"
+  } > "$FAILURE_FLAG"
+  echo "[full-suite] Failure flag written: $FAILURE_FLAG"
+  echo "[full-suite] Run 'rite --status' to see the failure banner."
+else
+  # Clean run: remove the failure flag if it exists
+  if [ -f "$FAILURE_FLAG" ]; then
+    rm -f "$FAILURE_FLAG"
+    echo "[full-suite] Failure flag cleared (previous failure resolved)."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Structured diagnostic emission for health-report aggregation
+# ---------------------------------------------------------------------------
+# Format mirrors TEST_GATE diag: outcome=passed|failed lint_count=N test_count=N duration_s=N
+# Written directly to log file (two-channel write convention) AND to stdout.
+
+_full_suite_diag "FULL_SUITE_RUN outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_failed} duration_s=${_duration}"
+
+echo ""
+echo "[full-suite] Done: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[full-suite] Log: $LOG_FILE"
+
+exit "$_overall_exit"

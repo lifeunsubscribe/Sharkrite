@@ -422,6 +422,26 @@ repo_wide_status() {
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
+  # --- Full-suite failure banner (issue #482) ---
+  # Surface .rite/state/full-suite-failure.flag if it exists. The flag is written
+  # by rite-full-suite on failure and deleted on the next clean full-suite run.
+  local _fs_flag="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/state/full-suite-failure.flag"
+  if [ -f "$_fs_flag" ]; then
+    echo -e "${RED}⚠️  FULL-SUITE FAILURE DETECTED${NC}"
+    echo -e "${RED}   A periodic full-suite run found regressions that the targeted gate missed.${NC}"
+    echo -e "${RED}   These are likely caused by drift in sharkrite-test-covers headers.${NC}"
+    echo ""
+    echo -e "${RED}   Details:${NC}"
+    # Indent flag file content for readability
+    sed 's/^/   /' "$_fs_flag"
+    echo ""
+    echo -e "${YELLOW}   Fix: update the sharkrite-test-covers header in the failing bats file(s),${NC}"
+    echo -e "${YELLOW}   or fix the underlying test failure, then run 'rite --full-suite' to clear.${NC}"
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+  fi
+
   # --- Worktrees ---
   scan_worktrees
 

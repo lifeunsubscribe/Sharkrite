@@ -104,6 +104,10 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
+    --full-suite)
+      MODE="full-suite"
+      shift
+      ;;
     --health-report|--rtk-report)
       MODE="health-report"
       shift
@@ -215,6 +219,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
+      echo "  rite --full-suite             Run full suite (bypasses targeted selection)"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
       echo "  rite --tags                   Show full tag index"
@@ -278,7 +283,7 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "full-suite" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ]; then
   RITE_LOG_AUTO=false
 fi
 
@@ -288,6 +293,13 @@ if [ "$MODE" = "health-report" ]; then
     exec "$SCRIPT_DIR/rite-health-report" --latest
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
+fi
+
+# Full-suite safety net: dispatch immediately (no issue number needed)
+# Runs make check + bats -r tests/ unconditionally, bypassing targeted selection.
+# rite-full-suite manages its own log in .rite/logs/full-suite-YYYYMMDD.log.
+if [ "$MODE" = "full-suite" ]; then
+  exec "$SCRIPT_DIR/rite-full-suite"
 fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)

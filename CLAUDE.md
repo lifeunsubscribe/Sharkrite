@@ -513,6 +513,7 @@ rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
+rite --full-suite          # Run full suite (bypasses targeted selection; safety net for covers-header drift)
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
@@ -742,6 +743,106 @@ rtk init --global --hook-only
 # Edit ~/.config/rtk/config.toml → [hooks] exclude_commands = ["cat", "head", "tail", "<cmd>"]
 ```
 
+### Periodic Full-Suite Safety Net (issue #482)
+
+`rite --full-suite` runs `make check` + `bats -r tests/` unconditionally, bypassing the targeted-selection optimization in `test-gate.sh`. This is the safety net for drift in `sharkrite-test-covers` headers: a bats file with a wrong or missing source path in its header is never selected by the targeted gate per fix-loop, but IS always run here.
+
+```bash
+rite --full-suite              # Run manually; exit 0 = all pass, non-zero = failures
+```
+
+Failure state is persisted in `.rite/state/full-suite-failure.flag` — `rite --status` surfaces this as a banner on the next invocation. The flag is cleared on the next clean full-suite run.
+
+**Logs**: `.rite/logs/full-suite-YYYYMMDD.log` (multiple runs per day append to the same file).
+
+**Scheduler setup (run weekly):**
+
+*macOS — launchd plist (recommended: Sunday 3 AM):*
+
+```bash
+# 1. Create the plist (substitute your actual paths)
+cat > ~/Library/LaunchAgents/com.sharkrite.full-suite.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/YOUR_USERNAME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>RITE_PROJECT_ROOT</key>
+    <string>/Users/YOUR_USERNAME/Dev/sharkrite</string>
+  </dict>
+  <key>Label</key>
+  <string>com.sharkrite.full-suite</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USERNAME/Dev/sharkrite/bin/rite-full-suite</string>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USERNAME/Dev/sharkrite/.rite/logs/full-suite-launchd.log</string>
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USERNAME/Dev/sharkrite/.rite/logs/full-suite-launchd.log</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+    <key>Weekday</key>
+    <integer>0</integer>
+  </dict>
+</dict>
+</plist>
+EOF
+# 2. Load it
+launchctl load ~/Library/LaunchAgents/com.sharkrite.full-suite.plist
+# 3. Verify
+launchctl list | grep sharkrite
+```
+
+**launchd PATH requirement** (same as `com.sharkrite.health-report`): `claude` requires `node`, which lives under nvm and is NOT on launchd's minimal PATH. Fix: `ln -sf "$(command -v node)" ~/.local/bin/node`. The plist PATH already includes `~/.local/bin`. Verify with: `env -i HOME="$HOME" PATH="/Users/YOUR_USERNAME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" bats --version`.
+
+*Linux — systemd user timer:*
+
+```bash
+# ~/.config/systemd/user/sharkrite-full-suite.service
+[Unit]
+Description=Sharkrite Full-Suite Safety Net
+
+[Service]
+Type=oneshot
+Environment=RITE_PROJECT_ROOT=/home/YOUR_USERNAME/Dev/sharkrite
+ExecStart=/home/YOUR_USERNAME/Dev/sharkrite/bin/rite-full-suite
+StandardOutput=append:/home/YOUR_USERNAME/Dev/sharkrite/.rite/logs/full-suite-launchd.log
+StandardError=append:/home/YOUR_USERNAME/Dev/sharkrite/.rite/logs/full-suite-launchd.log
+
+# ~/.config/systemd/user/sharkrite-full-suite.timer
+[Unit]
+Description=Run Sharkrite full-suite weekly (Sunday 3 AM)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+# Enable
+systemctl --user enable --now sharkrite-full-suite.timer
+# Verify
+systemctl --user list-timers | grep sharkrite
+```
+
+**Cadence trade-offs:**
+- **Weekly (recommended)** — matches the health-report cadence; drift in covers headers is typically slow-moving
+- **Nightly** — tighter feedback loop; ~7-15 min compute per night (use Hour=2, remove Weekday key)
+- **Manual** — run `rite --full-suite` after any major refactor or rename of source files
+
 ### Weekly health report
 
 A launchd job (`com.sharkrite.health-report`) runs every Monday at 9:07 AM and generates `.rite/reports/rite-health-YYYYMMDD.md`. It collects diagnostic log data, rtk stats, recent sharkrite git changes, and previous reports, then pipes everything to Claude for analysis. Runs on `RITE_HEALTH_MODEL` (default sonnet — see "Model Selection Per Task").
@@ -786,5 +887,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `REVIEW` — review severity counts (CRITICAL/HIGH/MEDIUM/LOW)
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
+- `FULL_SUITE_RUN` — outcome=passed|failed lint_count=N test_count=N duration_s=N (emitted by `bin/rite-full-suite`; written to `.rite/logs/full-suite-YYYYMMDD.log`)
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`
