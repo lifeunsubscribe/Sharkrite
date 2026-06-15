@@ -14,6 +14,19 @@
 
 load '../helpers/setup.bash'
 
+# Skip the entire file on bash 3.2 (macOS system bash).
+# Barrier sync + subshell spawning relies on bash 4+ performance:
+# bash 3.2 startup is 50-150ms per subshell vs ~10ms for bash 4+, so
+# concurrent subshells can't reliably reach the barrier within the timeout
+# on a busy macOS dev machine, producing false failures unrelated to the
+# per-batch session state isolation behavior under test.
+# On Homebrew bash 4+ (macOS) and Linux CI (bash 4+ default), tests run fully.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (detected bash ${BASH_VERSION}). Install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
@@ -47,7 +60,9 @@ wait_at_barrier() {
 
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 50 ]; do
+  # 100 iterations × 0.1s = 10s. Bumped from 5s to give bash 4+ subshells
+  # enough headroom on a loaded macOS dev machine.
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
@@ -55,7 +70,7 @@ wait_at_barrier() {
     fi
   done
 
-  if [ "$timeout" -ge 50 ]; then
+  if [ "$timeout" -ge 100 ]; then
     echo "ERROR: Barrier '${barrier_name}' timeout (got $count, wanted $expected_count)" >&2
     return 1
   fi

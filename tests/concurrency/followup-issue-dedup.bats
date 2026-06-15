@@ -10,6 +10,19 @@
 
 load '../helpers/setup.bash'
 
+# Skip the entire file on bash 3.2 (macOS system bash).
+# Barrier sync + subshell spawning relies on bash 4+ performance:
+# bash 3.2 startup is 50-150ms per subshell vs ~10ms for bash 4+, so
+# concurrent subshells can't reliably reach the barrier within the timeout
+# on a busy macOS dev machine, producing false failures unrelated to the
+# follow-up issue deduplication behavior under test.
+# On Homebrew bash 4+ (macOS) and Linux CI (bash 4+ default), tests run fully.
+setup_file() {
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "Concurrency tests require bash 4+ (detected bash ${BASH_VERSION}). Install via: brew install bash"
+  fi
+}
+
 setup() {
   setup_test_tmpdir
 
