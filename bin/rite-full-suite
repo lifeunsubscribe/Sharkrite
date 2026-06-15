@@ -152,6 +152,9 @@ cat "$_lint_raw"
 
 # Count lint violations from raw output (shellcheck SC lines + custom rule lines)
 _lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:|^[^:]+:[0-9]+:.*\[[A-Z_]+\]' "$_lint_raw" || true)
+# Normalize to integer: malformed make check output could produce empty/non-numeric value
+# which would abort the script under set -e when used in [ "$x" -eq 0 ] arithmetic tests.
+_lint_count=$(( ${_lint_count:-0} + 0 ))
 
 if [ "$_lint_exit" -eq 0 ]; then
   echo ""
@@ -237,6 +240,10 @@ _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
 # Count failing tests
 _tests_failed=$(grep -c "^not ok " "$_tests_raw_file" || true)
 _tests_total=$(grep -cE "^(ok|not ok) " "$_tests_raw_file" || true)
+# Normalize to integers: malformed bats output could produce empty/non-numeric values
+# which would abort the script under set -e when used in arithmetic tests/expansions.
+_tests_failed=$(( ${_tests_failed:-0} + 0 ))
+_tests_total=$(( ${_tests_total:-0} + 0 ))
 _tests_passed=$(( _tests_total - _tests_failed ))
 
 # Extract failing test names for the failure flag
