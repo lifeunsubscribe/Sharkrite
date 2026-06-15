@@ -115,8 +115,12 @@ _followup_dedup_check() {
   # and lock-serialized; it cannot change mid-loop unless this process clears it,
   # so reading it inside the loop would only give transient gh failures more chances
   # to wrongly clear it on each backoff iteration.
+  # Use per-finding key (_FOLLOWUP_FINDING_KEY) when available so evidence files
+  # are scoped per finding, not per source-issue.  Falling back to ISSUE_NUMBER
+  # preserves backward-compat for callers that don't set the per-finding key.
+  local _dedup_evidence_key="${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}"
   local _evidence_candidate
-  _evidence_candidate=$(read_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true)
+  _evidence_candidate=$(read_followup_evidence "$PR_NUMBER" "$_dedup_evidence_key" || true)
   if [ -n "$_evidence_candidate" ]; then
     # Validate that the locally-evidenced issue is still open.  The evidence file
     # persists indefinitely; if the referenced issue was closed or deleted since it
@@ -135,7 +139,7 @@ _followup_dedup_check() {
     elif [ -n "$_evidence_issue_state" ]; then
       # Confirmed non-OPEN (e.g. CLOSED) — stale evidence, safe to clear
       print_info "Local evidence points to issue #$_evidence_candidate (state: ${_evidence_issue_state}) — removing stale evidence file and continuing dedup check"
-      clear_followup_evidence "$PR_NUMBER" "${ISSUE_NUMBER:-}"
+      clear_followup_evidence "$PR_NUMBER" "$_dedup_evidence_key"
     else
       # Empty result — gh call failed (transient API error or network issue).
       # Do NOT clear the evidence file; preserve the dedup guarantee.
@@ -1636,6 +1640,18 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Include PR number and source-issue so it's unique per finding origin.
     ISSUE_SEARCH="${_clean_title}${_src_issue_suffix}"
 
+    # Per-finding dedup key: combines source-issue with a title slug so that
+    # evidence files, sentinels, and _followup_dedup_check are scoped per
+    # finding, not per source-issue.  Without this, the sentinel/evidence from
+    # finding #1 suppresses all subsequent findings in the same loop iteration.
+    _finding_slug=$(echo "$_clean_title" | tr '[:upper:]' '[:lower:]' | \
+      sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//; s/-$//' | \
+      cut -c1-40 || true)
+    _finding_slug="${_finding_slug:-finding-${_finding_index}}"
+    # _FOLLOWUP_FINDING_KEY is read by _followup_dedup_check and the
+    # sentinel/evidence calls below.
+    _FOLLOWUP_FINDING_KEY="${ISSUE_NUMBER:-0}-${_finding_slug}"
+
     # --- Derive priority label from per-finding severity ---
     _priority_label="priority-medium"
     case "${_f_severity}" in
@@ -1649,7 +1665,22 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Seed from Location (file:line) when available; fall back to the clean title.
     _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
     if [ -n "$_f_location" ]; then
-      _verification_cmd="grep -n '' ${_f_location}"
+      # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
+      # Strip any trailing description after whitespace; then split on the last colon
+      # that is followed only by digits so we handle paths like lib/core/foo.sh:142
+      # but not bare paths without a line number.
+      _loc_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+      _loc_line=$(echo "$_f_location" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
+      if [ -n "$_loc_line" ] && [ -n "$_loc_path" ]; then
+        # file:line format — emit a valid sed command pointing at that exact line
+        _verification_cmd="sed -n '${_loc_line}p' ${_loc_path}"
+      elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
+        # Looks like a plain file path (no line number) — use grep to inspect it
+        _verification_cmd="grep -n '' ${_loc_path:-${_f_location}}"
+      else
+        # Location field present but doesn't look like a path — fall back
+        _verification_cmd="# TODO: add verification command for: ${_f_location}"
+      fi
     else
       # Generic fallback — reviewer must fill in the concrete command
       _verification_cmd="# TODO: add verification command for this finding"
@@ -1729,16 +1760,19 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     # duplicates.
 
     # Sentinel pre-check (TTL-gated local dedup oracle before touching the lock)
+    # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so each finding
+    # gets its own sentinel.  A key scoped only to source-issue suppresses all
+    # findings after the first one in the same loop iteration.
     _sentinel_skipped=false
-    if [ -n "${ISSUE_NUMBER:-}" ]; then
+    if [ -n "${_FOLLOWUP_FINDING_KEY:-}" ]; then
       _sentinel_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
-      _sentinel_file="${_sentinel_dir}/source-issue-${ISSUE_NUMBER}.created"
+      _sentinel_file="${_sentinel_dir}/finding-${_FOLLOWUP_FINDING_KEY}.created"
       if [ -f "$_sentinel_file" ]; then
         _sentinel_mtime=$(portable_stat_mtime "$_sentinel_file")
         _sentinel_age=$(( $(date +%s) - _sentinel_mtime ))
         _sentinel_ttl="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
         if [ "$_sentinel_age" -lt "$_sentinel_ttl" ]; then
-          print_info "  Sentinel active for source-issue #${ISSUE_NUMBER} (${_sentinel_age}s ago) — skipping finding #${_finding_index}"
+          print_info "  Sentinel active for finding '${_clean_title}' (${_sentinel_age}s ago) — skipping finding #${_finding_index}"
           _sentinel_skipped=true
         fi
       fi
@@ -1802,7 +1836,9 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             _rollup_any_created=true
 
             # Durable local evidence (primary dedup guard across processes)
-            if ! write_followup_evidence "$PR_NUMBER" "$_new_issue_num" "${ISSUE_NUMBER:-}"; then
+            # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so
+            # each finding gets its own evidence file.
+            if ! write_followup_evidence "$PR_NUMBER" "$_new_issue_num" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}"; then
               print_warning "⚠️  Could not write local evidence file for follow-up #$_new_issue_num — dedup relies solely on GitHub API"
             fi
 
@@ -1818,24 +1854,19 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             fi
             rm -f "$_finding_comment_file"
 
-            # Sentinel: short-lived FS dedup oracle for this source issue
-            if [ -n "${ISSUE_NUMBER:-}" ]; then
+            # Sentinel: short-lived FS dedup oracle for this finding.
+            # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so
+            # each finding gets its own sentinel (not one shared by all findings
+            # from the same source issue).
+            if [ -n "${_FOLLOWUP_FINDING_KEY:-}" ]; then
               _sentinel_write_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/followup-sentinels"
               mkdir -p "$_sentinel_write_dir" 2>/dev/null || true
-              if ! touch "${_sentinel_write_dir}/source-issue-${ISSUE_NUMBER}.created" 2>/dev/null; then
-                _diag "FOLLOWUP_SENTINEL_WRITE_FAILED issue=${ISSUE_NUMBER} dir=${_sentinel_write_dir}"
-                print_warning "⚠️  Could not write follow-up sentinel for issue #${ISSUE_NUMBER} — dedup relies on lock dwell only."
+              if ! touch "${_sentinel_write_dir}/finding-${_FOLLOWUP_FINDING_KEY}.created" 2>/dev/null; then
+                _diag "FOLLOWUP_SENTINEL_WRITE_FAILED finding=${_FOLLOWUP_FINDING_KEY} dir=${_sentinel_write_dir}"
+                print_warning "⚠️  Could not write follow-up sentinel for finding '${_clean_title}' — dedup relies on lock dwell only."
               fi
               unset _sentinel_write_dir
             fi
-
-            # Post-create lock dwell: lets GitHub index catch up before the next
-            # waiter acquires the lock and runs its dedup search.
-            _dwell_seconds="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
-            if [ "$_dwell_seconds" -gt 0 ] 2>/dev/null; then
-              sleep "$_dwell_seconds"
-            fi
-            unset _dwell_seconds
 
             [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${ISSUE_NUMBER:-}" 2>/dev/null || true
             _followup_lock_held=false
@@ -1879,6 +1910,18 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     _followup_lock_held=false
 
   done < <(echo "${FILTERED_CONTENT:-}" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
+
+  # Post-loop dwell: lets GitHub index catch up before any subsequent waiter
+  # acquires a lock and runs a dedup search.  Runs once per batch of findings
+  # (not per finding) to avoid multiplying the delay by finding count.
+  # Only fires when at least one issue was created this run.
+  if [ "${_rollup_any_created:-false}" = "true" ]; then
+    _dwell_seconds="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
+    if [ "$_dwell_seconds" -gt 0 ] 2>/dev/null; then
+      sleep "$_dwell_seconds"
+    fi
+    unset _dwell_seconds
+  fi
 
   # Legacy alias: FOLLOWUP_NUMBER for the final summary line (set to first number
   # if any were created; empty otherwise).

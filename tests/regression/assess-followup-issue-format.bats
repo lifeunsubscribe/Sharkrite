@@ -134,7 +134,8 @@ teardown() {
   _f_severity="HIGH"
   _f_location="lib/core/workflow-runner.sh:142"
   _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
-  _verification_cmd="grep -n '' ${_f_location}"
+  # file:line location → sed -n 'Np' file (not grep -n '' file:line which errors)
+  _verification_cmd="sed -n '142p' lib/core/workflow-runner.sh"
 
   # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
   FOLLOWUP_BODY="## Description
@@ -168,9 +169,10 @@ Done when the finding is resolved."
     false
   }
 
-  # Must contain the location-seeded verification command
-  echo "$FOLLOWUP_BODY" | grep -q 'lib/core/workflow-runner.sh:142' || {
-    echo "FAIL: Body missing file:line verification command"
+  # Must contain a valid location-seeded verification command.
+  # file:line format produces "sed -n 'Np' file" (grep -n '' file:line is invalid).
+  echo "$FOLLOWUP_BODY" | grep -q "sed -n '142p' lib/core/workflow-runner.sh" || {
+    echo "FAIL: Body missing valid sed-based file:line verification command"
     echo "Body:"
     echo "$FOLLOWUP_BODY"
     false
@@ -205,20 +207,23 @@ ${_verification_cmd}
 ## Done Definition
 Done when the finding is addressed."
 
-  # Must NOT contain empty-bucket boilerplate
-  echo "$FOLLOWUP_BODY" | grep -q '_No CRITICAL issues_' && {
+  # Must NOT contain empty-bucket boilerplate — negative assertions use
+  # "run grep -q ...; [ $status -ne 0 ]" so the || true cannot swallow a false.
+  run grep -q '_No CRITICAL issues_' <<< "$FOLLOWUP_BODY"
+  [ "$status" -ne 0 ] || {
     echo "FAIL: Body contains empty-bucket boilerplate '_No CRITICAL issues_'"
     echo "Body:"
     echo "$FOLLOWUP_BODY"
     false
-  } || true
+  }
 
-  echo "$FOLLOWUP_BODY" | grep -q '### CRITICAL.*([0-9]*)' && {
+  run grep -q '### CRITICAL.*([0-9]*)' <<< "$FOLLOWUP_BODY"
+  [ "$status" -ne 0 ] || {
     echo "FAIL: Body contains severity-count bucket header"
     echo "Body:"
     echo "$FOLLOWUP_BODY"
     false
-  } || true
+  }
 
   # Verify the body is present and non-empty
   [ -n "$FOLLOWUP_BODY" ] || {
