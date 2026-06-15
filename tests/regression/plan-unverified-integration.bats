@@ -871,6 +871,64 @@ JSON
 # explicit "_strptime)" entry.  The default *) case already handles it.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Fixture Q: intermediate (non-hostname) directory names do NOT become grounded hosts
+#
+# Regression for the false-hostname bug: when the recursive directory walk
+# encounters intermediate organizational directories like "region" or "prod"
+# (which do not contain a dot), those names must NOT be added to the grounded-
+# host set.  If they were, any issue that happened to reference e.g.
+# https://region/... would be silently accepted as grounded (no spike issued),
+# producing a false negative.
+#
+# Project has:
+#   fixtures/region/api.example.com/   (two levels; "region" has no dot)
+# Issue body references https://region/data  (single-label, no dot)
+# Expected: "region" is NOT in the grounded set, so a spike IS emitted.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Q: intermediate directory without dot does not ground a false hostname" {
+  # Nest the fixture: fixtures/region/api.example.com/
+  # "region" is the intermediate dir (no dot) — must NOT be grounded.
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/region/api.example.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/region/api.example.com/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-q.txt"
+  write_issues_file "$issues_file" \
+    "Fetch data from internal region endpoint" \
+    "Call https://region/data to fetch results from the internal network."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # "region" has no dot — it must NOT be grounded, so a spike must be emitted.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original) because 'region' is not a valid hostname;" \
+         "got $issue_count (intermediate dir was incorrectly grounded)" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # WARNING must name "region" as ungrounded
+  grep -q "region" "$stderr_out" || {
+    echo "FAIL: expected a WARNING mentioning 'region' as an ungrounded host" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
   local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
 

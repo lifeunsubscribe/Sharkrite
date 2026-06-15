@@ -2725,9 +2725,12 @@ _build_grounded_hosts() {
       # fixture layouts (e.g. fixtures/region/api.example.com/) are grounded.
       # find -mindepth 1 skips the root dir itself; || true prevents set -e
       # from firing on "permission denied" or other non-fatal find errors.
+      # Only treat a directory name as a hostname when it contains a dot
+      # (e.g. api.example.com) — intermediate organizational directories like
+      # "region", "prod", or "v1" must NOT be grounded as hostnames.
       while IFS= read -r _entry; do
         _name=$(basename "$_entry")
-        echo "$_name" | tr '[:upper:]' '[:lower:]'
+        echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 -type d 2>/dev/null || true)
       # Also capture fixture files at any depth like api.example.com.json.
       # -type f -name "*.ext" is portable on BSD and GNU find.
