@@ -52,7 +52,6 @@ LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
 STATE_DIR="$PROJECT_ROOT/$DATA_DIR/state"
 FAILURE_FLAG="$STATE_DIR/full-suite-failure.flag"
 
-TODAY=$(date +%Y-%m-%d)
 TODAY_COMPACT=$(date +%Y%m%d)
 LOG_FILE="$LOGS_DIR/full-suite-${TODAY_COMPACT}.log"
 
@@ -141,7 +140,7 @@ echo "[full-suite] Phase 1/2: Running make check (full lint scan)..."
 echo ""
 
 _lint_exit=0
-_lint_raw=$(mktemp "/tmp/rite_fullsuite_lint_$$.txt")
+_lint_raw=$(mktemp "/tmp/rite_fullsuite_lint_$$_XXXXXX")
 trap 'rm -f "${_lint_raw:-}" "${_bats_exit_file:-}"' EXIT
 
 { (cd "$PROJECT_ROOT" && make check) > "$_lint_raw" 2>&1; echo $? > "${_lint_raw}.exit"; } || true
@@ -159,7 +158,11 @@ if [ "$_lint_exit" -eq 0 ]; then
   echo "[full-suite] Lint: PASSED (${_lint_count} violations)"
 else
   echo ""
-  echo "[full-suite] Lint: FAILED (${_lint_count} violations)"
+  if [ "$_lint_count" -eq 0 ]; then
+    echo "[full-suite] Lint: FAILED (see log; count unavailable)"
+  else
+    echo "[full-suite] Lint: FAILED (${_lint_count} violations)"
+  fi
 fi
 
 rm -f "$_lint_raw"
@@ -204,10 +207,10 @@ if [ -n "$_bats_bin" ]; then
   fi
 fi
 
-_bats_exit_file=$(mktemp "/tmp/rite_fullsuite_bats_exit_$$.txt")
+_bats_exit_file=$(mktemp "/tmp/rite_fullsuite_bats_exit_$$_XXXXXX")
 _bats_tap_dir=""
 
-_tests_raw_file=$(mktemp "/tmp/rite_fullsuite_bats_raw_$$.txt")
+_tests_raw_file=$(mktemp "/tmp/rite_fullsuite_bats_raw_$$_XXXXXX")
 # Extend trap to clean up bats temp files
 trap 'rm -f "${_tests_raw_file:-}" "${_bats_exit_file:-}"; [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"' EXIT
 
@@ -286,7 +289,11 @@ if [ "$_outcome" = "failed" ]; then
     echo "Duration: ${_duration}s"
     echo ""
     if [ "$_lint_exit" -ne 0 ]; then
-      echo "Lint failures: ${_lint_count} violation(s)"
+      if [ "$_lint_count" -eq 0 ]; then
+        echo "Lint failures: lint failed (see log; count unavailable)"
+      else
+        echo "Lint failures: ${_lint_count} violation(s)"
+      fi
       echo "  Run: make check"
     fi
     if [ "$_tests_exit" -ne 0 ]; then

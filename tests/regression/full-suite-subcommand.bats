@@ -90,10 +90,6 @@ _run_full_suite() {
 
 @test "full-suite: never emits mode=targeted in output" {
   _run_full_suite
-  # Targeted selection diag should never appear in full-suite output
-  echo "$output" | grep -qv 'mode=targeted' || true  # grep -v exits 0 on "found no match" (all lines don't contain it)
-  # Stricter: assert the targeted mode string is absent
-  run echo "$output"
   # No line should contain TEST_GATE_SELECTION mode=targeted
   ! echo "$output" | grep -q 'TEST_GATE_SELECTION mode=targeted'
 }
