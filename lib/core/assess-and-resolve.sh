@@ -1365,13 +1365,35 @@ if [ "${SKIP_ROLLUP_DUE_TO_PER_ITEM:-false}" = "true" ] && [ -n "${PER_ITEM_ISSU
 Each deferred finding has its own prioritized issue — no consolidated rollup needed."
   _summary_file=$(mktemp)
   printf '%s' "$_summary_comment" > "$_summary_file"
-  if gh_safe pr comment "$PR_NUMBER" --body-file "$_summary_file" 2>/dev/null; then
+  _summary_stderr_file=$(mktemp)
+  if gh_safe pr comment "$PR_NUMBER" --body-file "$_summary_file" 2>"$_summary_stderr_file"; then
     print_success "Posted per-item follow-up summary to PR #$PR_NUMBER"
   else
-    print_warning "Could not post summary comment (per-item issues are still filed)"
+    # Comment failed — per-item issues are still filed on GitHub, but the PR
+    # has no machine-readable summary marker linking to them.  Save the comment
+    # body as a recovery artifact so it can be re-posted manually after the
+    # network/API issue is resolved.
+    _summary_stderr=$(cat "$_summary_stderr_file" 2>/dev/null || true)
+    print_warning "Could not post per-item summary comment to PR #$PR_NUMBER (per-item issues are still filed)"
+    [ -n "$_summary_stderr" ] && print_warning "gh error: $_summary_stderr"
+    _orphaned_summary="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-summary-comment-${PR_NUMBER}.md"
+    mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+    {
+      echo "# Orphaned Per-Item Summary Comment"
+      echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "# PR: #${PR_NUMBER}"
+      echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+      echo "# Re-post: gh pr comment ${PR_NUMBER} --body-file <this-file>"
+      echo "# (Re-run 'rite ${ISSUE_NUMBER:-N} --assess-and-fix' to regenerate automatically)"
+      echo ""
+      cat "$_summary_file" 2>/dev/null || echo "(comment body unavailable)"
+    } > "$_orphaned_summary" || true
+    print_warning "Comment body saved to: $_orphaned_summary"
+    _diag "PER_ITEM_SUMMARY_COMMENT_FAILED pr=${PR_NUMBER} issue=${ISSUE_NUMBER:-} orphaned=${_orphaned_summary}"
   fi
-  rm -f "$_summary_file"
-  unset _per_item_refs _per_item_markers _summary_comment _summary_file _num _mnum
+  rm -f "$_summary_file" "$_summary_stderr_file"
+  unset _per_item_refs _per_item_markers _summary_comment _summary_file _num _mnum \
+        _summary_stderr_file _summary_stderr _orphaned_summary
 fi
 
 # Create consolidated follow-up issue if needed
