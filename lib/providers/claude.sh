@@ -497,6 +497,11 @@ claude_provider_resolve_model() {
     # matching and comparison, not the deep reasoning needed for code review.
     # See: docs/architecture/behavioral-design.md → "Model Selection Per Task"
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    # triage classifies a diff as trivial-vs-substantive to route the (expensive)
+    # opus review. It's a narrow binary classification, not deep reasoning —
+    # haiku's job. Decoupled from every other var. See: "Triage Gate" in
+    # docs/architecture/behavioral-design.md.
+    triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;
     *)              echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
 }

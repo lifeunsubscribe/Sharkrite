@@ -17,22 +17,18 @@ setup() {
   # Create temp dir for runtime test scripts
   export RITE_TEST_ROOT="${BATS_TEST_TMPDIR}/rite-test"
   mkdir -p "$RITE_TEST_ROOT"
-
-  # Create temp dir for lint test scripts (inside project lib/)
-  # BATS_TEST_DIRNAME = tests/regression/ — go up two levels to reach project root
-  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  export RITE_LINT_TEST_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
-  mkdir -p "$RITE_LINT_TEST_DIR"
 }
 
 teardown() {
   rm -rf "$RITE_TEST_ROOT"
-  rm -rf "$RITE_LINT_TEST_DIR"
 }
 
 @test "lint rule detects unsafe VAR=\$(... | grep) pattern" {
-  # Create a test script with unsafe pattern in a location the linter scans
-  cat > "$RITE_LINT_TEST_DIR/unsafe.sh" <<'EOF'
+  # Plant fixture in a BATS_TEST_TMPDIR subdir and inject via RITE_LINT_EXTRA_DIRS
+  # (avoids the lib/test-fixtures-temp exclusion and the Rule 16 MISSING_RESOURCE_GUARD check)
+  local _dir="${BATS_TEST_TMPDIR}/detect-unsafe-grep"
+  mkdir -p "$_dir"
+  cat > "$_dir/unsafe.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 # This is unsafe - no || true
@@ -40,9 +36,11 @@ RESULT=$(echo "foo" | grep "bar")
 echo "Result: $RESULT"
 EOF
 
-  # Run the lint rule
+  # Run the lint rule with the fixture dir injected
   cd "$BATS_TEST_DIRNAME/../.."  # Project root (tests/regression/ → project root)
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   # Should fail with violation
   [ "$status" -eq 1 ]
@@ -108,8 +106,10 @@ EOF
 }
 
 @test "lint rule detects multiline unsafe pattern" {
-  # Create a test script with multiline unsafe pattern in a location the linter scans
-  cat > "$RITE_LINT_TEST_DIR/multiline-unsafe.sh" <<'EOF'
+  # Plant fixture in a BATS_TEST_TMPDIR subdir and inject via RITE_LINT_EXTRA_DIRS
+  local _dir="${BATS_TEST_TMPDIR}/detect-multiline-unsafe"
+  mkdir -p "$_dir"
+  cat > "$_dir/multiline-unsafe.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 RESULT=$(git worktree list | \
@@ -117,12 +117,15 @@ RESULT=$(git worktree list | \
 echo "Result: $RESULT"
 EOF
 
-  # Run the lint rule
+  # Run the lint rule with the fixture dir injected
   cd "$BATS_TEST_DIRNAME/../.."  # Project root (tests/regression/ → project root)
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
+  [[ "$output" =~ "multiline-unsafe.sh" ]]
 }
 
 @test "lint rule allows multiline safe pattern" {
@@ -160,7 +163,10 @@ EOF
 @test "Rule 8 boundary: trigger on last line of file fires violation (END block)" {
   # Unsafe pattern on the very last line — no next line to resolve the lookahead.
   # The AWK END block must flush pending_line and fire the violation.
-  cat > "$RITE_LINT_TEST_DIR/r8-last-line-unsafe.sh" <<'EOF'
+  # Plant fixture in a BATS_TEST_TMPDIR subdir and inject via RITE_LINT_EXTRA_DIRS
+  local _dir="${BATS_TEST_TMPDIR}/r8-last-line"
+  mkdir -p "$_dir"
+  cat > "$_dir/r8-last-line-unsafe.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 echo "preamble"
@@ -168,7 +174,9 @@ RESULT=$(echo "data" | grep "pattern")
 EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
@@ -200,12 +208,17 @@ EOF
   # File has exactly one line (the trigger itself).
   # AWK: FNR==1 fires (nothing pending yet), then main block sets pending_line=1.
   # END block must flush and fire the violation.
-  cat > "$RITE_LINT_TEST_DIR/r8-single-line-unsafe.sh" <<'EOF'
+  # Plant fixture in a BATS_TEST_TMPDIR subdir and inject via RITE_LINT_EXTRA_DIRS
+  local _dir="${BATS_TEST_TMPDIR}/r8-single-line-unsafe"
+  mkdir -p "$_dir"
+  cat > "$_dir/r8-single-line-unsafe.sh" <<'EOF'
 RESULT=$(echo "data" | grep "pattern")
 EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
@@ -215,21 +228,26 @@ EOF
 @test "Rule 8 boundary: trigger on last line of first file fires via FNR==1 of next file" {
   # When AWK processes multiple files, a pending trigger from the last line of
   # file N must be flushed at FNR==1 of file N+1 (not silently dropped).
-  # Inject two fixtures; the linter scans both in one AWK pass.
-  cat > "$RITE_LINT_TEST_DIR/r8-multi-file-a.sh" <<'EOF'
+  # Inject two fixtures in the same dir; the linter scans both in one AWK pass.
+  # Plant fixtures in a BATS_TEST_TMPDIR subdir and inject via RITE_LINT_EXTRA_DIRS
+  local _dir="${BATS_TEST_TMPDIR}/r8-multi-file"
+  mkdir -p "$_dir"
+  cat > "$_dir/r8-multi-file-a.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 RESULT=$(echo "data" | grep "pattern")
 EOF
   # Second file is clean — present only to force the multi-file AWK pass
-  cat > "$RITE_LINT_TEST_DIR/r8-multi-file-b.sh" <<'EOF'
+  cat > "$_dir/r8-multi-file-b.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 echo "clean file"
 EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
+  export RITE_LINT_EXTRA_DIRS="$_dir"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
@@ -302,11 +320,11 @@ EOF
 # ---------------------------------------------------------------------------
 
 # Fixtures use RITE_LINT_EXTRA_DIRS pointing at a tmp dir OUTSIDE lib/ — the
-# same working pattern as the "guard on line after last trigger" test above.
+# same working pattern as the detect and boundary tests above.
 # A .sh fixture placed in lib/ would (a) trip Rule 16 MISSING_RESOURCE_GUARD on
 # the fixture itself and (b) be skipped anyway: the default scan excludes
-# */test-fixtures-temp*. (The older lib/test-fixtures-temp tests in this file
-# predate that exclusion and no longer detect — tracked separately.)
+# */test-fixtures-temp*. All tests in this file use the RITE_LINT_EXTRA_DIRS
+# pattern to avoid both of these issues.
 
 @test "Rule 8 multi-line: guard on closing line of awk block — no violation" {
   local _dir="${BATS_TEST_TMPDIR}/r8-closing-guard"

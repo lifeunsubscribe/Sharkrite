@@ -285,7 +285,8 @@ if [ -n "${FILTER_TYPE:-}" ] && [ ${#ISSUE_LIST[@]} -gt 0 ]; then
   # Closed-issue selections have no actionable open blockers; all-state
   # selections mix states in a way that makes partial open-only analysis
   # misleading. Skip gracefully and let the per-issue guard handle it.
-  if [ "${FILTER_TYPE:-}" = "state" ] && [ "${FILTER_VALUE:-}" != "open" ]; then
+  # ${FILTER_VALUE,,} lowercases the value so "Open"/"OPEN" match "open" (issue #590).
+  if [ "${FILTER_TYPE:-}" = "state" ] && [ "${FILTER_VALUE,,}" != "open" ]; then
     print_header "🔗 Preflight Dependency Closure Check"
     print_info "Skipping: preflight checks open-issue dependencies only."
     print_info "(Selection is --state ${FILTER_VALUE:-?} — per-issue dep guard remains active.)"
@@ -999,12 +1000,19 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
-    # Get PR number for this issue (search by body text, most recent first).
-    # jq `// empty` converts null (returned when the array is empty) to no output,
-    # so bash captures "" instead of the literal 4-char string "null".
-    # The bash-level strip below is belt-and-suspenders for any future call path
-    # that may not use `// empty` at the jq layer.
-    PR_NUMBER=$(gh_safe pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number // empty')
+    # Get PR number for this issue (closing-ref in PR body, most recent first).
+    # Use a local jq filter over `pr list`, NOT `--search`: the GitHub search
+    # API is slow and rate-limited (measured ~3min/call vs ~0.5s for this list
+    # path), and it dominated the per-issue gap in batch runs. This mirrors the
+    # de-searched pattern in pr-detection.sh::detect_pr_for_issue and
+    # workflow-runner.sh, but with --state all because the PR is typically
+    # already MERGED by the time we reach this post-completion stat-gathering.
+    # The just-created PR is the newest, so --limit 100 (newest-first) covers it.
+    # jq `// empty` converts null to no output; the bash-level strip below is
+    # belt-and-suspenders for any future call path that may not use `// empty`.
+    PR_NUMBER=$(gh_safe pr list --state all --json number,body --limit 100 | \
+      jq --arg issue "$ISSUE_NUM" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+      '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
     PR_NUMBER="${PR_NUMBER:-}"
     [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 
@@ -1095,8 +1103,13 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       MERGED_CLEANUP_FAILED+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="merged_cleanup_failed"
 
-      # Get PR number so we can show the URL in the summary
-      PR_NUMBER=$(gh_safe pr list --search "fixes #${ISSUE_NUM} OR closes #${ISSUE_NUM} in:body" --state all --json number --jq 'sort_by(.number) | reverse | .[0].number')
+      # Get PR number so we can show the URL in the summary.
+      # Local jq filter over `pr list` (not the slow/rate-limited --search API);
+      # --state all because the merge already happened. See note at the
+      # active-completion site above.
+      PR_NUMBER=$(gh_safe pr list --state all --json number,body --limit 100 | \
+        jq --arg issue "$ISSUE_NUM" --arg closing_re "$CLOSING_ISSUE_JQ_REGEX" -r \
+        '[.[] | select(.body | test($closing_re + $issue + "\\b"))] | sort_by(.number) | last | .number // empty' || true)
       PR_NUMBER="${PR_NUMBER:-}"
       if [ -n "$PR_NUMBER" ]; then
         ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"

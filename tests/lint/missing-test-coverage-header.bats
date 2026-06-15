@@ -24,11 +24,24 @@ teardown() {
   rm -rf "$TEST_REPO"
 }
 
+# Emit a representative bats test line for a fixture file.
+#
+# CRITICAL: the '@test' token is produced via printf, never written literally
+# at the start of a line in THIS file. bats' test discovery scans the source
+# line-by-line for /^[[:space:]]*@test/ and does NOT understand heredocs — so a
+# literal '@test "fixture"' inside a fixture heredoc here gets miscounted as a
+# real test in this suite. The previous version had four such lines, all named
+# "fixture", which made bats abort the entire run with "Duplicate test name(s)"
+# and broke `make test` (regression from #481, 2026-06-08). Building the line
+# with printf keeps the WRITTEN fixture fully representative (it really contains
+# `@test "fixture" { true; }`) while emitting zero phantom tests in this suite.
+_emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
+
 @test "MISSING_TEST_COVERAGE_HEADER: flags a bats file without the header" {
-  cat > "$TEST_REPO/tests/regression/no-header.bats" <<'EOF'
-#!/usr/bin/env bats
-@test "fixture" { true; }
-EOF
+  {
+    echo '#!/usr/bin/env bats'
+    _emit_test_line
+  } > "$TEST_REPO/tests/regression/no-header.bats"
   cd "$TEST_REPO"
   run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER"
@@ -36,46 +49,45 @@ EOF
 }
 
 @test "MISSING_TEST_COVERAGE_HEADER: passes when header is present" {
-  cat > "$TEST_REPO/tests/regression/with-header.bats" <<'EOF'
-#!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/foo.sh
-@test "fixture" { true; }
-EOF
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    _emit_test_line
+  } > "$TEST_REPO/tests/regression/with-header.bats"
   cd "$TEST_REPO"
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*with-header.bats"
 }
 
 @test "MISSING_TEST_COVERAGE_HEADER: skips tests/helpers/ (support files)" {
-  cat > "$TEST_REPO/tests/helpers/helper.bats" <<'EOF'
-#!/usr/bin/env bats
-@test "helper" { true; }
-EOF
+  {
+    echo '#!/usr/bin/env bats'
+    _emit_test_line helper
+  } > "$TEST_REPO/tests/helpers/helper.bats"
   cd "$TEST_REPO"
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*tests/helpers/helper.bats"
 }
 
 @test "MISSING_TEST_COVERAGE_HEADER: skips tests/fixtures/ (support files)" {
-  cat > "$TEST_REPO/tests/fixtures/fixture.bats" <<'EOF'
-#!/usr/bin/env bats
-@test "fixture" { true; }
-EOF
+  {
+    echo '#!/usr/bin/env bats'
+    _emit_test_line
+  } > "$TEST_REPO/tests/fixtures/fixture.bats"
   cd "$TEST_REPO"
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*tests/fixtures/fixture.bats"
 }
 
 @test "MISSING_TEST_COVERAGE_HEADER: accepts header in first 5 lines" {
-  cat > "$TEST_REPO/tests/regression/header-line-4.bats" <<'EOF'
-#!/usr/bin/env bats
-# Some leading comment
-#
-# sharkrite-test-covers: lib/utils/foo.sh
-@test "fixture" { true; }
-EOF
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# Some leading comment'
+    echo '#'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    _emit_test_line
+  } > "$TEST_REPO/tests/regression/header-line-4.bats"
   cd "$TEST_REPO"
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*header-line-4.bats"
 }
-

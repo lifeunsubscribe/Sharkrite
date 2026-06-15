@@ -1906,3 +1906,869 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fixture L — self-referential title ref creates a one-node "cycle"
+#
+# Issue #1 "Feature Alpha" has a dependency "After #[Feature Alpha]" —
+# it references itself by title. This is a one-node self-referential cycle.
+# Validator must emit a specific ERROR about self-referential dependency
+# and exit non-zero.
+# ---------------------------------------------------------------------------
+
+@test "Fixture L: self-referential title ref — ERROR about self-referential dep, exits non-zero" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-l.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha depends on itself — self-referential cycle.
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when alpha works.
+
+**Dependencies**: After #[Feature Alpha]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit non-zero (self-referential dep is a hard error)
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for self-referential title dep, got 0" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit an error message about self-referential dependency
+  grep -qi "self-referential" "$stderr_out" || {
+    echo "FAIL: expected 'self-referential' in stderr output" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention the issue title
+  grep -q "Feature Alpha" "$stderr_out" || {
+    echo "FAIL: expected issue title 'Feature Alpha' mentioned in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture L2 — self-referential title ref with cycle-check suppression
+#
+# Same self-ref as Fixture L but the issue has a suppression marker for
+# cycle-check. The self-referential check runs in Phase 2b (before Kahn's),
+# so the suppression does NOT apply here — we still catch it early.
+# Suppression is a per-issue cycle-check gate applied in Kahn's, not in
+# the title-resolution phase.
+# ---------------------------------------------------------------------------
+
+@test "Fixture L2: self-referential title ref is caught before cycle-check suppression — ERROR, exits non-zero" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-l2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Feature Beta (self-ref suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta depends on itself but tries to suppress cycle-check.
+
+<!-- sharkrite-plan-lint disable cycle-check - Reason: Intentional self-bootstrap ordering -->
+
+**Claude Context**:
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `python -m pytest tests/test_beta.py`
+
+**Done Definition**: Done when beta works.
+
+**Dependencies**: After #[Feature Beta (self-ref suppressed)]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Self-referential deps are caught in Phase 2b, before Kahn's algorithm.
+  # The cycle-check suppression only applies to Kahn's, not Phase 2b.
+  # So this must still exit non-zero.
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for self-referential dep (cycle-check suppression does not apply to Phase 2b)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  grep -qi "self-referential" "$stderr_out" || {
+    echo "FAIL: expected 'self-referential' in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Q — duplicate title matches silently resolve to first ordinal
+#
+# Two issues share the title "Shared Feature". A third issue has a dependency
+# "After #[Shared Feature]". Validator must emit a WARNING about the ambiguous
+# title ref and exit 0 (warning is non-fatal; it still resolves to first match).
+# ---------------------------------------------------------------------------
+
+@test "Fixture Q: duplicate title matches — WARNING about ambiguous ref, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-q.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Shared Feature
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+First issue with title "Shared Feature".
+
+**Claude Context**:
+Files to Modify:
+- src/shared_a.py
+
+**Acceptance Criteria**:
+- [ ] Works: `python -m pytest tests/test_shared_a.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Shared Feature
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Second issue with the same title "Shared Feature" — duplicate.
+
+**Claude Context**:
+Files to Modify:
+- src/shared_b.py
+
+**Acceptance Criteria**:
+- [ ] Works: `python -m pytest tests/test_shared_b.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Downstream Feature
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**:
+Depends on "Shared Feature" — ambiguous because two issues share that title.
+
+**Claude Context**:
+Files to Modify:
+- src/downstream.py
+
+**Acceptance Criteria**:
+- [ ] Works: `python -m pytest tests/test_downstream.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: After #[Shared Feature]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (ambiguous title match is a warning, not a hard error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for ambiguous title ref (warning only), got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING about ambiguous title ref
+  grep -qi "ambiguous" "$stderr_out" || {
+    echo "FAIL: expected 'ambiguous' in stderr output" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention the duplicate title
+  grep -q "Shared Feature" "$stderr_out" || {
+    echo "FAIL: expected 'Shared Feature' mentioned in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Q2 — unique titles do NOT trigger duplicate warning
+#
+# Three issues all have distinct titles. No ambiguous-title warning should
+# be emitted even if they all have title ref dependencies. Exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Q2: unique titles — no ambiguous-title WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-q2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Alpha Step
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+First step.
+
+**Claude Context**:
+Files to Modify:
+- src/alpha.py
+
+**Acceptance Criteria**:
+- [ ] Alpha works: `python -m pytest tests/test_alpha.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Beta Step
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Second step, depends on Alpha.
+
+**Claude Context**:
+Files to Modify:
+- src/beta.py
+
+**Acceptance Criteria**:
+- [ ] Beta works: `python -m pytest tests/test_beta.py`
+
+**Done Definition**: Done when tests pass.
+
+**Dependencies**: After #[Alpha Step]
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for unique titles, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit an ambiguous-title warning
+  grep -qi "ambiguous" "$stderr_out" && {
+    echo "FAIL: unexpected ambiguous-title WARNING for unique titles" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 1 — parallel-ref in prose body (not in Dependencies section) must NOT
+# trigger a [plan-lint-diag] note.
+#
+# Issue #1 has "(can run in parallel with #2)" in its Description body text,
+# NOT in its Dependencies section. Issue #2 has no parallel annotation at all.
+# Check 7 must not fire because the prose mention is not a scheduling hint
+# from the Dependencies section — it's just prose.
+# Both issues modify the same file to make the overlap check relevant.
+# ---------------------------------------------------------------------------
+
+@test "Fix 1: parallel-ref in prose body (not Dependencies) — no [plan-lint-diag] emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix1.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Parser alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha parse loop. Note: this feature (can run in parallel with #2) conceptually
+but is implemented sequentially.
+
+**Claude Context**:
+Files to Modify:
+- src/parser.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: `make test`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Parser beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta parse loop in the same shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/parser.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: `make test`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a [plan-lint-diag] note — the parallel annotation lives in
+  # the Description body, not in the Dependencies section.
+  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
+    echo "FAIL: unexpected [plan-lint-diag] note from prose-body parallel mention" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 2 — self-reference guard: issue declaring itself parallel with its own
+# ordinal must NOT emit a spurious [plan-lint-diag] note.
+#
+# Issue #1 declares "(can run in parallel with #1)" in its Dependencies line —
+# a degenerate annotation. Without the self-reference guard, _pj == _pi == 0,
+# the file-overlap check always finds a shared path (the issue's own files),
+# and emits a false note.
+# ---------------------------------------------------------------------------
+
+@test "Fix 2: self-referential parallel annotation — no [plan-lint-diag] emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Solo feature
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Solo feature with a degenerate self-parallel annotation.
+
+**Claude Context**:
+Files to Modify:
+- src/solo.cpp
+
+**Acceptance Criteria**:
+- [ ] Solo passes: `make test`
+
+**Done Definition**: Done when solo passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for self-referential parallel annotation, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a [plan-lint-diag] note for self-reference
+  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
+    echo "FAIL: unexpected [plan-lint-diag] note from self-referential parallel annotation" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3 — bidirectional parallel declarations produce exactly one diag note.
+#
+# Issue #1 declares "(can run in parallel with #2)" and issue #2 declares
+# "(can run in parallel with #1)". Both modify the same file. Without the
+# ordering guard, Check 7 emits two [plan-lint-diag] notes (one from each
+# side of the pair). With the fix, only the lower-ordinal reporter (#1) emits.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3: bidirectional parallel declarations — exactly one [plan-lint-diag] note, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Draw loop alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha draw loop in shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: `make test`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Draw loop beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta draw loop in the same shared file.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: `make test`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for bidirectional parallel, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note (not two)
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note, got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The one note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' mentioned in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3 (unidirectional) — only the higher-ordinal issue declares parallel.
+#
+# Issue #2 declares "(can run in parallel with #1)" but issue #1 does NOT
+# declare parallel with #2.  The dedup guard must NOT suppress the note in
+# this case — there is no lower-ordinal reporter, so #2 is the sole emitter.
+# Exactly one [plan-lint-diag] note must appear.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3 (unidirectional): higher-ordinal parallel declaration — exactly one [plan-lint-diag] note, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3-uni.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Render loop base
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Base render loop in shared file — no parallel annotation here.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Base passes: `make test`
+
+**Done Definition**: Done when base passes.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Render loop overlay
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Overlay render loop in the same shared file — only this side declares parallel.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Overlay passes: `make test`
+
+**Done Definition**: Done when overlay passes.
+
+**Dependencies**: After #1 (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for unidirectional parallel, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a terminal WARNING for parallel-file-overlap
+  grep -qE "WARNING:.*parallel-file-overlap|strict-lint: WARNING:.*parallel" "$stderr_out" && {
+    echo "FAIL: unexpected terminal WARNING for parallel-file-overlap (should be log-only)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note (the higher-ordinal issue #2 is
+  # the sole reporter — the dedup guard must not suppress unidirectional notes)
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note for unidirectional parallel, got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' mentioned in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3b — suppression on the canonical (lower-ordinal) reporter must not
+# silence the diag for the whole pair.
+#
+# Issue #1 (ordinal 0) has <!-- sharkrite-plan-lint disable parallel-file-overlap -->
+# and declares "(can run in parallel with #2)". Issue #2 (ordinal 1) is NOT
+# suppressed and also declares "(can run in parallel with #1)". Both modify
+# the same file. Without the fix, _pi=0 hits the suppression early-continue,
+# then _pi=1 defers to the "lower-ordinal canonical reporter" and also
+# continues — no diag is ever emitted. With the fix, _pi=1 detects that
+# _pj=0 is suppressed and steps up as the emitter.
+# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3b: suppression on canonical lower-ordinal reporter — higher-ordinal steps up, one diag emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3b.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Render alpha (suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha renderer with parallel-file-overlap suppression.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: alpha's overlap with beta is intentional -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: \`make test\`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Render beta (not suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta renderer, no suppression — should still receive the diag for the pair.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: \`make test\`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (parallel-file-overlap is informational)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note.
+  # Without the fix: 0 notes (canonical suppressed, higher deferred — silent).
+  # With the fix:    1 note  (higher-ordinal steps up as emitter).
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note (higher-ordinal steps up), got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3b (both suppressed) — when BOTH sides have parallel-file-overlap
+# suppressed, no diag should be emitted.
+#
+# Both issues have the suppression marker. No [plan-lint-diag] note.
+# Exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3b: both sides suppressed — no [plan-lint-diag] emitted, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-both.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Render alpha (suppressed both)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha renderer, suppression on both sides.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: overlap is intentional -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: \`make test\`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Render beta (suppressed both)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta renderer, also suppressed.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: overlap is intentional -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: \`make test\`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit any [plan-lint-diag] note — both sides suppressed
+  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
+    echo "FAIL: unexpected [plan-lint-diag] note when both sides are suppressed" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 3b (suppression on higher-ordinal only) — canonical lower-ordinal
+# reporter is NOT suppressed, so it emits normally.
+#
+# Issue #2 (ordinal 1) has suppression, issue #1 (ordinal 0) does NOT.
+# The canonical reporter for bidirectional pairs is the lower-ordinal issue.
+# Since _pi=0 is not suppressed, it emits. _pi=1 is suppressed → skipped.
+# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Fix 3b: suppression on higher-ordinal only — canonical lower-ordinal still emits one diag" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-higher.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Render loop one (not suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Lower-ordinal issue without suppression — canonical reporter.
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] One passes: \`make test\`
+
+**Done Definition**: Done when one passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Render loop two (suppressed)
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Higher-ordinal issue with suppression — should not prevent lower-ordinal from emitting.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable parallel-file-overlap - Reason: overlap with #1 is known -->
+
+**Claude Context**:
+Files to Modify:
+- src/renderer.cpp
+
+**Acceptance Criteria**:
+- [ ] Two passes: \`make test\`
+
+**Done Definition**: Done when two passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE [plan-lint-diag] note (from the canonical lower-ordinal)
+  local diag_count
+  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
+  [ "$diag_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 [plan-lint-diag] note from canonical lower-ordinal, got $diag_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The note must mention the shared file
+  grep -q "src/renderer.cpp" "$stderr_out" || {
+    echo "FAIL: expected 'src/renderer.cpp' in [plan-lint-diag] note" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

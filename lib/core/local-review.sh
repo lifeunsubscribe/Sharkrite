@@ -167,6 +167,102 @@ validate_diff_not_empty() {
 }
 
 # ---------------------------------------------------------------------------
+# _triage_emit_shadow — SHADOW-mode triage classifier + paired logging
+#
+# Runs ONLY when RITE_REVIEW_TRIAGE=shadow. Classifies the diff (deterministic
+# Layer-1 guards, then a cheap triage-model classifier on the cleared
+# remainder) and emits ONE [diag] TRIAGE_SHADOW line pairing the haiku verdict
+# with the REAL opus review's findings (passed in). NOTHING is skipped here —
+# this is pure measurement for the calibration window. The weekly health report
+# parses these lines to compute false-skip / false-escalate rates by category
+# and by pass-type, then recommends thresholds + first-pass policy.
+#
+# Bias: deterministic guards (Layer 1) catch every dangerous category and force
+# "substantive" regardless of the classifier; the classifier (Layer 2) only
+# decides the already-safe remainder, and low confidence escalates. So even a
+# wrong classifier can only ever cause a (cheap) false-escalate in the data,
+# never a (dangerous) false-skip on a guarded category.
+#
+# Args: PR_NUMBER PR_DIFF DIFF_FILES OPUS_CRIT OPUS_HIGH OPUS_MED OPUS_LOW
+# ---------------------------------------------------------------------------
+_triage_emit_shadow() {
+  # All `local` declarations are hoisted to the top, BEFORE the brace-heavy
+  # classifier prompt + regex below. The LOCAL_OUTSIDE_FUNCTION lint rule tracks
+  # braces to decide if a `local` sits inside a function; the JSON `{...}` in the
+  # prompt and the `\{...\}` in the verdict-extraction regex unbalance that
+  # counter, so any `local` after them gets false-flagged. Declaring everything
+  # up front sidesteps it entirely (and is good practice).
+  local _pr="$1" _diff="$2" _files="$3"
+  local _ocrit="${4:-0}" _ohigh="${5:-0}" _omed="${6:-0}" _olow="${7:-0}"
+  local _pass="first" _prior=0
+  local _added _removed _size _paths _category="logic" _guard="" _sens
+  local _verdict="substantive" _conf="1.0" _reason=""
+  local _diff_head _tmodel _tprompt _tresp _tjson
+
+  # --- pass-type: prior review marker present on the PR → fix-review iteration ---
+  # Self-determined (no caller threading). Defensive: gh failure → assume first.
+  _prior=$(gh_safe pr view "$_pr" --json comments \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" 2>/dev/null || echo 0)
+  # A review for THIS run may already be posted by the time we measure, so a
+  # true first pass can show count 1. Treat >=2 as a genuine prior pass.
+  if [ "${_prior:-0}" -ge 2 ] 2>/dev/null; then _pass="fixreview"; fi
+
+  # --- size + category (deterministic, from the diff) ---
+  _added=$(echo "$_diff" | grep -cE '^\+[^+]' || true)
+  _removed=$(echo "$_diff" | grep -cE '^-[^-]' || true)
+  _size=$(( ${_added:-0} + ${_removed:-0} ))
+
+  _paths=$(echo "$_diff" | grep '^diff --git' | sed -E 's|^diff --git a/(.*) b/.*|\1|' || true)
+  if [ -n "$_paths" ]; then
+    if ! echo "$_paths" | grep -qvE '\.md$|^docs/' ; then _category="docs"
+    elif ! echo "$_paths" | grep -qvE '(^|/)tests?/|_test\.|\.test\.|\.bats$' ; then _category="test"
+    elif ! echo "$_paths" | grep -qvE '\.(conf|toml|ya?ml|json)$|(^|/)Makefile$|^\.github/|^\.rite/|lock$' ; then _category="config"
+    fi
+  fi
+
+  # --- Layer 1: deterministic guards (any hit → substantive, classifier skipped) ---
+  if [ "${_files:-0}" -ge "${RITE_TRIAGE_MAX_FILES:-3}" ] 2>/dev/null; then _guard="size_files"; fi
+  if [ -z "$_guard" ] && [ "${_size:-0}" -ge "${RITE_TRIAGE_MAX_LINES:-30}" ] 2>/dev/null; then _guard="size_lines"; fi
+  if [ -z "$_guard" ] && echo "$_diff" | grep -q '^deleted file mode'; then _guard="deletion"; fi
+  if [ -z "$_guard" ] && echo "$_diff" | grep -qE '^\+.*(@pytest\.mark\.(skip|xfail)|\bskip\b|\bxfail\b|\.only\(|\bfit\(|\bfdescribe\()'; then _guard="test_weakening"; fi
+  if [ -z "$_guard" ] && echo "$_paths" | grep -qE '(^|/)(Makefile|\.shellcheckrc)$|package\.json$|requirements.*\.txt$|lock$|^\.github/|^\.rite/config'; then _guard="config"; fi
+  if [ -z "$_guard" ] && echo "$_diff" | grep -qE '^\+.*(\beval\b|\bcurl\b|\bwget\b|subprocess|os\.system|\bexec\b|password|secret|token=|api[_-]?key)'; then _guard="security"; fi
+  if [ -z "$_guard" ] && declare -f detect_sensitivity_areas >/dev/null 2>&1; then
+    _sens=$(detect_sensitivity_areas "$_pr" 2>/dev/null || true)
+    if [ -n "$_sens" ]; then _guard="sensitive"; fi
+  fi
+
+  # --- Layer 2: classifier on the cleared remainder ---
+  if [ -n "$_guard" ]; then
+    _verdict="substantive"; _reason="guard:$_guard"; _conf="1.0"
+  else
+    # Truncate the diff to keep the triage call cheap/fast.
+    _diff_head=$(echo "$_diff" | head -c 6000 || true)
+    _tmodel=$(claude_provider_resolve_model "triage")
+    _tprompt="You are a code-review TRIAGE classifier. Decide if this diff is TRIVIAL (pure comment/docstring/whitespace edits, version-string bumps, log-message wording, mechanical rename with no logic change, or a purely additive test of existing behavior) or SUBSTANTIVE (any logic, control-flow, error-handling, or behavior change — anything you can't confidently call trivial). When unsure, answer substantive. Output ONLY compact JSON: {\"verdict\":\"trivial|substantive\",\"confidence\":0.0-1.0,\"reason\":\"<=8 words\"}.
+
+DIFF:
+$_diff_head"
+    _tresp=$(provider_run_prompt "$_tprompt" "$_tmodel" "true" 2>/dev/null || true)
+    _tjson=$(echo "$_tresp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
+    if [ -n "$_tjson" ] && echo "$_tjson" | jq -e . >/dev/null 2>&1; then
+      _verdict=$(echo "$_tjson" | jq -r '.verdict // "substantive"' 2>/dev/null || echo "substantive")
+      _conf=$(echo "$_tjson" | jq -r '.confidence // 0' 2>/dev/null || echo "0")
+      _reason=$(echo "$_tjson" | jq -r '.reason // "?"' 2>/dev/null | tr ' |' '__' | head -c 40 || echo "?")
+    else
+      # Unparseable classifier output → escalate (fail safe toward substantive).
+      _verdict="substantive"; _conf="0"; _reason="unparseable"
+    fi
+    # Confidence gate: low confidence escalates to substantive.
+    if [ "$_verdict" = "trivial" ] && awk "BEGIN{exit !(${_conf:-0} < 0.8)}" 2>/dev/null; then
+      _verdict="substantive"; _reason="lowconf_${_conf}"
+    fi
+  fi
+
+  _diag "TRIAGE_SHADOW pr=${_pr} pass=${_pass} haiku=${_verdict} conf=${_conf} guard=${_guard:-none} opus_critical=${_ocrit} opus_high=${_ohigh} opus_med=${_omed} opus_low=${_olow} size_lines=${_size} files=${_files} category=${_category} reason=${_reason}"
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above without executing the script body
 # (which sources config, parses args, calls gh/claude, etc.).
@@ -497,17 +593,35 @@ REVIEW_COMMENT="<!-- ${RITE_MARKER_REVIEW} model:${EFFECTIVE_MODEL} timestamp:$(
 $REVIEW_OUTPUT"
 
 if [ "$POST_REVIEW" = true ]; then
-  # Parse review for summary display
-  # Prefer the structured Findings line (e.g. "Findings: [CRITICAL: 0 | HIGH: 1 | ...]")
-  # to avoid matching severity keywords in metadata/reasoning text
-  FINDINGS_LINE=$(echo "$REVIEW_OUTPUT" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+ \| MEDIUM: [0-9]+ \| LOW: [0-9]+" | head -1 || true)
-  if [ -n "$FINDINGS_LINE" ]; then
-    CRITICAL_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: [0-9]+" | grep -oE "[0-9]+" || echo "0")
-    HIGH_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: [0-9]+" | grep -oE "[0-9]+" || echo "0")
-    MEDIUM_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: [0-9]+" | grep -oE "[0-9]+" || echo "0")
-    LOW_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "LOW: [0-9]+" | grep -oE "[0-9]+" || echo "0")
+  # Parse review for summary display.
+  # Priority 1: the embedded sharkrite-review-data JSON — authoritative, and the
+  # exact source assess-and-resolve.sh and the merge gate already parse.
+  # Priority 2: the human Findings line, each severity parsed INDEPENDENTLY.
+  #
+  # The old joined regex required "CRITICAL: N | HIGH: N | ..." with fields
+  # ADJACENT, but the real line carries emoji between them:
+  #   "Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 3 | 🟢 LOW: 3"
+  # so it never matched → execution fell to the header-count fallback, which
+  # counts arbitrary keyword/header lines and emitted numbers unrelated to the
+  # real findings (observed 2026-06-12: issue #42 review MEDIUM:3/LOW:3 logged
+  # as medium=1/low=1; issue #43 CRITICAL:0 logged as critical=1 — phantom
+  # CRITICAL clusters that corrupt every health-report aggregation). The JSON
+  # block is present in all current reviews; the Findings fallback is kept
+  # emoji-tolerant for any review that lacks it.
+  _REVIEW_JSON_BLOCK=$(echo "$REVIEW_OUTPUT" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
+  FINDINGS_LINE=$(echo "$REVIEW_OUTPUT" | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
+  if [ -n "$_REVIEW_JSON_BLOCK" ] && echo "$_REVIEW_JSON_BLOCK" | jq -e '.summary' >/dev/null 2>&1; then
+    CRITICAL_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.critical // 0')
+    HIGH_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.high // 0')
+    MEDIUM_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.medium // 0')
+    LOW_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.low // 0')
+  elif [ -n "$FINDINGS_LINE" ]; then
+    CRITICAL_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
+    HIGH_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
+    MEDIUM_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
+    LOW_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "LOW: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
   else
-    # Fallback: count section headers (less reliable)
+    # Last-resort fallback: count section headers (least reliable).
     CRITICAL_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*critical|❌.*critical" || true)
     HIGH_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*high|⚡.*high priority" || true)
     MEDIUM_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*medium|📋.*medium priority" || true)
@@ -516,6 +630,15 @@ if [ "$POST_REVIEW" = true ]; then
 
   # Diagnostic logging for health reports
   _diag "REVIEW issue=${ISSUE_NUMBER:-?} critical=${CRITICAL_COUNT:-0} high=${HIGH_COUNT:-0} medium=${MEDIUM_COUNT:-0} low=${LOW_COUNT:-0}"
+
+  # Triage gate — SHADOW mode only: classify this diff and log the verdict
+  # paired with the opus findings just computed. The opus review above already
+  # ran; this changes nothing, it only measures (calibration window). See
+  # _triage_emit_shadow + "Triage Gate" in behavioral-design.md.
+  if [ "${RITE_REVIEW_TRIAGE:-off}" = "shadow" ]; then
+    _triage_emit_shadow "$PR_NUMBER" "$PR_DIFF" "${DIFF_FILES:-0}" \
+      "${CRITICAL_COUNT:-0}" "${HIGH_COUNT:-0}" "${MEDIUM_COUNT:-0}" "${LOW_COUNT:-0}" || true
+  fi
 
   # Post as PR comment (via temp file to avoid shell interpretation of
   # backticks and $() in code blocks within the review content)

@@ -538,6 +538,27 @@ save_session_state() {
   local data_dir="${RITE_DATA_DIR:-.rite}"
   local state_file="${RITE_PROJECT_ROOT:-.}/${data_dir}/session-state-${issue_number}.json"
 
+  # Guard: do NOT persist a worktree_path that is the main repo root or empty.
+  # A pre-worktree interruption (e.g., SIGINT during the claude session before the
+  # worktree is created) must not record a path that would cause resume to run
+  # in-place on the main checkout.  Store empty string so the resume path
+  # recognises "no usable worktree" and starts fresh.  (issue #610)
+  local _main_root="${RITE_PROJECT_ROOT:-}"
+  if [ -z "$worktree_path" ] || [ "$worktree_path" = "$_main_root" ]; then
+    if [ -n "$worktree_path" ] && [ "$worktree_path" = "$_main_root" ]; then
+      echo "⚠️  save_session_state: worktree_path is the main repo root — recording empty (no dedicated worktree yet)" >&2
+    fi
+    worktree_path=""
+  fi
+
+  # Get git status safely (only when a real dedicated worktree exists)
+  local git_status_b64=""
+  local last_commit=""
+  if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
+    git_status_b64=$(cd "$worktree_path" 2>/dev/null && git status --short | base64 || echo "")
+    last_commit=$(cd "$worktree_path" 2>/dev/null && git log -1 --oneline 2>/dev/null || echo "")
+  fi
+
   cat > "$state_file" <<EOF
 {
   "saved_at": $(date +%s),
@@ -546,153 +567,12 @@ save_session_state() {
   "issue_number": "$issue_number",
   "worktree_path": "$worktree_path",
   "session_info": $(cat "$SESSION_STATE_FILE"),
-  "git_status": "$(cd "$worktree_path" 2>/dev/null && git status --short | base64)",
-  "last_commit": "$(cd "$worktree_path" 2>/dev/null && git log -1 --oneline)"
+  "git_status": "$git_status_b64",
+  "last_commit": "$last_commit"
 }
 EOF
 
   echo "💾 Session state saved to: $state_file"
-}
-
-# Create resume script
-create_resume_script() {
-  local issue_number="$1"
-  local blocker_type="$2"
-  local blocker_details="$3"
-  local worktree_path="$4"
-  local pr_number="${5:-}"
-
-  local timestamp=$(date +%Y%m%d-%H%M%S)
-  local data_dir="${RITE_DATA_DIR:-.rite}"
-  local resume_script="${RITE_PROJECT_ROOT:-.}/${data_dir}/resume-${issue_number}-${timestamp}.sh"
-
-  cat > "$resume_script" <<EOF
-#!/bin/bash
-# Auto-generated resume script
-# Created: $(date '+%Y-%m-%d %H:%M:%S')
-# Issue: #${issue_number}
-# Blocker: ${blocker_type}
-
-# ===================================================================
-# STATE SNAPSHOT
-# ===================================================================
-
-ISSUE_NUMBER=${issue_number}
-WORKTREE_PATH="${worktree_path}"
-PR_NUMBER="${pr_number}"
-BLOCKER_TYPE="${blocker_type}"
-
-# ===================================================================
-# BLOCKER DETAILS
-# ===================================================================
-
-cat <<'BLOCKER_EOF'
-${blocker_details}
-BLOCKER_EOF
-
-echo ""
-echo "=========================================="
-echo "🔄 Resume Workflow for Issue #${issue_number}"
-echo "=========================================="
-echo ""
-
-# Show current state
-if [ -f "${data_dir}/session-state-${issue_number}.json" ]; then
-  echo "📊 Saved Session State:"
-  cat "${data_dir}/session-state-${issue_number}.json" | jq .
-  echo ""
-fi
-
-# Show git status if worktree exists
-if [ -d "\$WORKTREE_PATH" ]; then
-  echo "📂 Worktree Status:"
-  cd "\$WORKTREE_PATH"
-  git status --short
-  echo ""
-  echo "📝 Last Commit:"
-  git log -1 --oneline
-  echo ""
-else
-  echo "⚠️  Worktree not found at: \$WORKTREE_PATH"
-  echo ""
-fi
-
-# ===================================================================
-# BLOCKER-SPECIFIC INSTRUCTIONS
-# ===================================================================
-
-case "\$BLOCKER_TYPE" in
-  infrastructure|database_migration)
-    echo "⚠️  Manual Review Required"
-    echo ""
-    echo "This blocker requires you to review and approve changes:"
-    echo "1. Review the changes above"
-    echo "2. Test locally if needed"
-    echo "3. Confirm it's safe to proceed"
-    echo ""
-    ;;
-
-  session_limit|token_limit)
-    echo "ℹ️  Session Limit Reached"
-    echo ""
-    echo "Work was saved automatically. Ready to continue in fresh session."
-    echo ""
-    ;;
-
-  credentials_expired)
-    echo "🔑 AWS Credentials Expired"
-    echo ""
-    echo "Run: aws sso login --profile \${RITE_AWS_PROFILE:-default}"
-    echo "Then continue with this script."
-    echo ""
-    ;;
-esac
-
-# ===================================================================
-# RESUME PROMPT
-# ===================================================================
-
-read -p "Ready to continue workflow? (y/n) " -n 1 -r
-echo
-echo
-
-if [[ ! \$REPLY =~ ^[Yy]$ ]]; then
-  echo "❌ Cancelled."
-  echo ""
-  echo "To manually work on this issue:"
-  echo "  cd \$WORKTREE_PATH"
-  echo "  claude-code"
-  exit 0
-fi
-
-# ===================================================================
-# RESUME WORKFLOW
-# ===================================================================
-
-echo "✅ Resuming workflow..."
-echo ""
-
-# Navigate to worktree
-cd "\$WORKTREE_PATH" || exit 1
-
-# Re-export environment
-export WORKFLOW_MODE="\${WORKFLOW_MODE:-supervised}"
-export RITE_NOTIFICATIONS="${RITE_NOTIFICATIONS:-false}"
-export EMAIL_NOTIFICATION_ADDRESS="${EMAIL_NOTIFICATION_ADDRESS:-}"
-export SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"
-export ISSUE_NUMBER=\$ISSUE_NUMBER
-
-# Call rite to continue
-rite \$ISSUE_NUMBER --resume
-
-EOF
-
-  chmod +x "$resume_script"
-
-  echo "📄 Resume script created: $resume_script"
-  echo ""
-  echo "To resume later, run:"
-  echo "  $resume_script"
 }
 
 # Get session summary
@@ -1236,7 +1116,6 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
   export -f set_current_worktree
   export -f should_save_and_exit
   export -f save_session_state
-  export -f create_resume_script
   export -f get_session_summary
   export -f add_approved_blocker
   export -f has_approved_blocker

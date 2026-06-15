@@ -1458,11 +1458,20 @@ _lint_issues_strict() {
         # --- Extract Dependencies: lines (collect all #N refs and #[Title] refs) ---
         local _issue_deps=""
         local _issue_title_deps=""
+        # _issue_parallel_with is also populated here (scoped to Dependencies
+        # section only — see Fix 1 below for why block-wide grep is wrong).
+        local _issue_parallel_with=""
         local _in_deps=false
         while IFS= read -r _dline; do
           # Start at "**Dependencies**:" or "Dependencies:" header
           if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
             _in_deps=true
+            # Fix 1: harvest parallel refs from this line BEFORE stripping
+            # parens — scoped to the Dependencies section so prose mentions
+            # elsewhere in the body (e.g. description) are not harvested.
+            local _dp_prefs
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Strip "(can run in parallel with #M, #P)" annotations before
             # harvesting refs. The generation prompt mandates that format for
             # parallel siblings, but those mentions are scheduling hints, not
@@ -1486,6 +1495,10 @@ _lint_issues_strict() {
             case "$_dline" in
               "---END---"|"**"*|"##"*) _in_deps=false; continue ;;
             esac
+            # Fix 1: harvest parallel refs from this body line BEFORE stripping
+            local _dp_prefs
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Collect all #N patterns from dependency lines (parallel-with
             # annotations stripped — see header-line handling above)
             # Matches: After #N, Blocked by: #N, etc.
@@ -1512,14 +1525,9 @@ _lint_issues_strict() {
         _deps+=("${_issue_deps}")
         _title_deps+=("${_issue_title_deps}")
 
-        # --- Extract "(can run in parallel with #N, #M)" refs ---
-        # These are scheduling hints stripped from deps above; collect them
-        # separately for the parallel-claim file-overlap check (Check 7).
-        local _issue_parallel_with=""
-        local _pline_parallel_refs
-        _pline_parallel_refs=$(echo "$_issue_block" | grep -iE '\([^)]*[Pp]arallel[^)]*\)' | \
-          grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
-        [ -n "$_pline_parallel_refs" ] && _issue_parallel_with="${_pline_parallel_refs}"$'\n'
+        # --- Commit parallel-with refs collected in the deps loop above ---
+        # (Fix 1: _issue_parallel_with is now populated section-scoped inside
+        # the Dependencies while loop, not via a block-wide grep here.)
         _parallel_with+=("${_issue_parallel_with}")
 
         # --- Extract Files to Modify paths ---
@@ -1611,6 +1619,28 @@ _lint_issues_strict() {
   # it (since it only checks numeric refs), so we surface it here instead.
   # -----------------------------------------------------------------------
 
+  # Pre-scan: build a set of titles that appear more than once (case-insensitive).
+  # Used below to warn when a #[Title] ref is ambiguous (matches multiple issues).
+  local _dup_titles=""
+  local _dup_scan_a=0
+  for _dup_scan_a in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _ta_lower
+    _ta_lower=$(echo "${_titles[$_dup_scan_a]}" | tr '[:upper:]' '[:lower:]' || true)
+    local _dup_scan_b=0
+    local _match_count=0
+    for _dup_scan_b in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+      local _tb_lower
+      _tb_lower=$(echo "${_titles[$_dup_scan_b]}" | tr '[:upper:]' '[:lower:]' || true)
+      if [ "$_ta_lower" = "$_tb_lower" ]; then
+        _match_count=$((_match_count + 1))
+      fi
+    done
+    if [ "$_match_count" -gt 1 ]; then
+      # Record this (lowercased) title as a known duplicate
+      _dup_titles="${_dup_titles}${_ta_lower}"$'\n'
+    fi
+  done
+
   local _res_i=0
   for _res_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     local _raw_title_deps="${_title_deps[$_res_i]}"
@@ -1623,6 +1653,26 @@ _lint_issues_strict() {
       # Normalize: lowercase for case-insensitive comparison
       local _tref_lower
       _tref_lower=$(echo "$_tref" | tr '[:upper:]' '[:lower:]' || true)
+
+      # Detect self-referential title ref: issue references itself by title.
+      # This is a one-node cycle and is an error — emit a specific message
+      # rather than relying on Kahn's to surface a confusing "cycle detected" report.
+      local _self_title_lower
+      _self_title_lower=$(echo "${_titles[$_res_i]}" | tr '[:upper:]' '[:lower:]' || true)
+      if [ "$_tref_lower" = "$_self_title_lower" ]; then
+        print_warning "strict-lint: ERROR: self-referential dependency: #[${_tref}] in '${_referencing_title}' depends on itself" >&2
+        _error_count=$((_error_count + 1))
+        _strict_exit=1
+        continue
+      fi
+
+      # Warn when the target title matches multiple issues in this batch.
+      # We still resolve to the first match so other checks can proceed,
+      # but the ambiguity is a planarity issue that should be surfaced.
+      if echo "$_dup_titles" | grep -qxF "$_tref_lower"; then
+        print_warning "strict-lint: WARNING: ambiguous title ref: #[${_tref}] in '${_referencing_title}' matches multiple batch issues (resolves to first ordinal match)" >&2
+        _warning_count=$((_warning_count + 1))
+      fi
 
       # Search _titles[] for a case-insensitive match
       local _found_ordinal=0
@@ -2042,6 +2092,33 @@ _lint_issues_strict() {
       # Only check batch-internal parallel refs (same batch ordinals)
       if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_issue_count" ] 2>/dev/null; then
         local _pj=$((_prefnum - 1))
+        # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
+        # annotation that includes its own ordinal would always find a shared
+        # file and emit a spurious self-referential diag note.
+        [ "$_pj" -eq "$_pi" ] && continue
+        # Fix 3: only report each (i,j) pair once for bidirectional annotations.
+        # When BOTH sides declare the parallel (A→B and B→A), the lower-ordinal
+        # issue is the canonical reporter (_pi < _pj).  When only the higher-ordinal
+        # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
+        # with #1 but #1 does not declare parallel with #2), there is no other
+        # reporter — suppress only if _pj also lists _pi+1 in its parallel refs.
+        #
+        # Fix 3b: suppression on the canonical (lower-ordinal) reporter.
+        # If _pj (the lower-ordinal issue) has parallel-file-overlap suppressed,
+        # it was already skipped by the suppression guard at the top of the loop,
+        # so it will never emit.  In that case the higher-ordinal side (_pi) must
+        # NOT defer — it is the only possible emitter for this pair.
+        if [ "$_pi" -gt "$_pj" ]; then
+          local _pj_parallel="${_parallel_with[$_pj]:-}"
+          local _pj_supps_check="${_suppressions[$_pj]:-}"
+          if echo "$_pj_parallel" | grep -qxF "#$((_pi + 1))" && \
+             ! echo "$_pj_supps_check" | grep -qw "parallel-file-overlap"; then
+            # Bidirectional: lower ordinal (_pj) will report this pair — skip here
+            continue
+          fi
+          # Either unidirectional or _pj is suppressed: no lower-ordinal reporter
+          # will emit, so fall through and emit from here.
+        fi
         local _pj_title="${_titles[$_pj]}"
         local _pj_modify="${_files_modify[$_pj]}"
         [ -z "$_pj_modify" ] && continue
@@ -2683,17 +2760,26 @@ _build_grounded_hosts() {
       # fixture layouts (e.g. fixtures/region/api.example.com/) are grounded.
       # find -mindepth 1 skips the root dir itself; || true prevents set -e
       # from firing on "permission denied" or other non-fatal find errors.
+      # Only treat a directory name as a hostname when it matches the
+      # hostname-shaped regex — intermediate organizational directories like
+      # "region", "prod", or "v1" (no dot) must NOT be grounded, and dotted
+      # non-hostname names like "v1.2" or "2024.01" (digit-only final label)
+      # must also be excluded.  A valid hostname requires each label to be
+      # alphanumeric-or-hyphen, and the final label (TLD) must be 2+ letters.
       while IFS= read -r _entry; do
         _name=$(basename "$_entry")
-        echo "$_name" | tr '[:upper:]' '[:lower:]'
+        echo "$_name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' \
+          && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 -type d 2>/dev/null || true)
       # Also capture fixture files at any depth like api.example.com.json.
       # -type f -name "*.ext" is portable on BSD and GNU find.
       while IFS= read -r _entry; do
         _name=$(basename "$_entry")
         _name="${_name%.*}"  # strip extension
-        # Only treat it as a hostname if it looks like a domain (contains a dot)
-        echo "$_name" | grep -q '\.' && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
+        # Only treat it as a hostname if it matches the hostname-shaped regex
+        # (same criteria as directory names above — TLD must be 2+ letters).
+        echo "$_name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' \
+          && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null || true)
     fi
   done < "$_dirs_tmp"

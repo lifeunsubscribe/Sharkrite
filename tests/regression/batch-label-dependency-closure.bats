@@ -220,10 +220,10 @@ setup() {
     return 1
   }
 
-  # Verify the open-only condition
+  # Verify the open-only condition (case-insensitive: uses ${FILTER_VALUE,,} lowercase expansion)
   grep -qE 'FILTER_VALUE.*!=.*open' "$BATCH_PROCESSOR" || {
     echo "FAIL: FILTER_VALUE != open check not found in batch-process-issues.sh" >&2
-    echo "      Expected: [ \"\${FILTER_VALUE:-}\" != \"open\" ] guard in preflight block" >&2
+    echo "      Expected: [ \"\${FILTER_VALUE,,}\" != \"open\" ] guard in preflight block" >&2
     return 1
   }
 
@@ -304,7 +304,8 @@ $([ -n "${reply}" ] && echo "exec < <(echo '${reply}')" || echo "# no reply need
 # (Copy of the preflight block from batch-process-issues.sh, minus external deps)
 if [ -n "\${FILTER_TYPE:-}" ] && [ \${#ISSUE_LIST[@]} -gt 0 ]; then
   # --state skip guard (issue #560): preflight is only meaningful for open issues.
-  if [ "\${FILTER_TYPE:-}" = "state" ] && [ "\${FILTER_VALUE:-}" != "open" ]; then
+  # \${FILTER_VALUE,,} lowercases the value for case-insensitive comparison (issue #590).
+  if [ "\${FILTER_TYPE:-}" = "state" ] && [ "\${FILTER_VALUE,,}" != "open" ]; then
     print_header "Preflight Dependency Closure Check"
     print_info "Skipping: preflight checks open-issue dependencies only."
     print_info "(Selection is --state \${FILTER_VALUE:-?} — per-issue dep guard remains active.)"
@@ -852,6 +853,98 @@ SCRIPT_EOF
   # Must emit the closure warning (dep #5 is open and outside selection)
   echo "$output" | grep -q "Dependency Closure Warning" || {
     echo "FAIL: Expected Dependency Closure Warning for --state open with oos open dep" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: --state Open (mixed-case) → preflight skipped (case-insensitive guard)" {
+  # Verifies that the skip guard is case-insensitive: "Open" (Title Case) must
+  # behave identically to "open" for the preflight skip logic. GitHub CLI may
+  # return state values in different casing depending on context.
+
+  _script="$BATS_TEST_TMPDIR/test-state-open-titlecase.sh"
+  _create_preflight_test_script \
+    "state" "Open" "10" \
+    '[{"number":10,"body":"**Dependencies**: After #5"}]' \
+    '[{"number":5}]' \
+    "false" "" > "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  # "Open" (Title Case) must run the preflight — NOT trigger the skip guard
+  ! echo "$output" | grep -q "preflight checks open-issue dependencies only" || {
+    echo "FAIL: --state Open must not trigger the skip guard (case-insensitive match)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # Preflight must run and emit the closure warning (dep #5 is open and outside selection)
+  echo "$output" | grep -q "Dependency Closure Warning" || {
+    echo "FAIL: Expected Dependency Closure Warning for --state Open with oos open dep" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: --state OPEN (uppercase) → preflight skipped (case-insensitive guard)" {
+  # Verifies that the skip guard is case-insensitive: "OPEN" (all caps) must
+  # behave identically to "open" for the preflight skip logic.
+
+  _script="$BATS_TEST_TMPDIR/test-state-open-uppercase.sh"
+  _create_preflight_test_script \
+    "state" "OPEN" "10" \
+    '[{"number":10,"body":"**Dependencies**: After #5"}]' \
+    '[{"number":5}]' \
+    "false" "" > "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  # "OPEN" (uppercase) must run the preflight — NOT trigger the skip guard
+  ! echo "$output" | grep -q "preflight checks open-issue dependencies only" || {
+    echo "FAIL: --state OPEN must not trigger the skip guard (case-insensitive match)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # Preflight must run and emit the closure warning
+  echo "$output" | grep -q "Dependency Closure Warning" || {
+    echo "FAIL: Expected Dependency Closure Warning for --state OPEN with oos open dep" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: --state Closed (mixed-case) → preflight skipped (case-insensitive guard)" {
+  # Verifies that "Closed" (Title Case) triggers the skip guard just like "closed".
+
+  _script="$BATS_TEST_TMPDIR/test-state-closed-titlecase.sh"
+  _create_preflight_test_script \
+    "state" "Closed" "10" \
+    '[{"number":10,"body":"**Dependencies**: After #5"}]' \
+    '[{"number":5}]' \
+    "false" "" > "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  # Must emit skip message — not run the preflight
+  echo "$output" | grep -q "preflight checks open-issue dependencies only" || {
+    echo "FAIL: Expected skip notification for --state Closed (case-insensitive)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "Dependency Closure Warning" || {
+    echo "FAIL: Dependency Closure Warning must not fire for --state Closed" >&2
     echo "Output: $output" >&2
     return 1
   }

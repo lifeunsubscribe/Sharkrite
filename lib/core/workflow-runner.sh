@@ -168,10 +168,23 @@ save_session_state_with_phase() {
   # Ensure data directory exists
   mkdir -p "${RITE_PROJECT_ROOT:-.}/${data_dir}"
 
-  # Get git status safely
+  # Guard: do NOT persist a worktree_path that is the main repo root or empty.
+  # A pre-worktree interruption (e.g., blocker fires before the worktree is
+  # created) must not record a path that would cause resume to run in-place on
+  # the main checkout.  Store empty string so the resume path recognises "no
+  # usable worktree" and starts fresh.  (issue #610 — live incident 2026-06-14)
+  local _main_root="${RITE_PROJECT_ROOT:-}"
+  if [ -z "$worktree_path" ] || [ "$worktree_path" = "$_main_root" ]; then
+    if [ -n "$worktree_path" ] && [ "$worktree_path" = "$_main_root" ]; then
+      print_warning "save_session_state: worktree_path is the main repo root — recording empty (no dedicated worktree yet)"
+    fi
+    worktree_path=""
+  fi
+
+  # Get git status safely (only when a real dedicated worktree exists)
   local git_status_b64=""
   local last_commit=""
-  if [ -d "$worktree_path" ]; then
+  if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
     git_status_b64=$(cd "$worktree_path" 2>/dev/null && git status --short | base64 || echo "")
     last_commit=$(cd "$worktree_path" 2>/dev/null && git log -1 --oneline 2>/dev/null || echo "")
   fi
@@ -2636,8 +2649,69 @@ main() {
 
     print_info "Found saved session state (reason: $saved_reason, phase: ${saved_phase:-unknown})"
 
-    # Use saved worktree path if it still exists
-    if [ -n "$saved_worktree" ] && [ "$saved_worktree" != "null" ] && [ -d "$saved_worktree" ]; then
+    # Validate saved worktree before accepting it for resume.
+    # Three conditions must all be true:
+    #   1. Non-empty and not the literal string "null"
+    #   2. Directory exists on disk
+    #   3. Not the main repo root (a pre-worktree interruption fallback — issue #610)
+    #   4. Is a linked worktree (appears in `git worktree list` as non-main entry)
+    # If any check fails we discard the saved path and start fresh, which is safe
+    # because the normal phase-detection logic re-discovers any real worktree via
+    # the PR branch lookup inside run_workflow().
+    local _worktree_valid=false
+    local _worktree_reject_reason=""
+    if [ -z "$saved_worktree" ] || [ "$saved_worktree" = "null" ]; then
+      _worktree_reject_reason="empty or null"
+    elif [ "$saved_worktree" = "${RITE_PROJECT_ROOT:-}" ]; then
+      # Saved path is the main checkout — a pre-worktree interruption wrote this.
+      # Running in-place on the main checkout would corrupt it (issue #610).
+      _worktree_reject_reason="equals main repo root (pre-worktree interruption fallback)"
+    elif [ ! -d "$saved_worktree" ]; then
+      _worktree_reject_reason="directory no longer exists"
+    else
+      # Confirm path is a linked worktree entry (not the main checkout discovered
+      # via a different path alias).  `git worktree list` output for linked trees:
+      #   /path/to/wt  <sha>  [branch]
+      # The main checkout is always the FIRST line (no [branch] in some git versions,
+      # or marked as "(bare)").  We compare against the resolved main worktree path.
+      local _main_wt
+      _main_wt=$(git -C "$RITE_PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+      # Resolve symlinks so the comparison is canonical even for .rite symlink worktrees
+      local _saved_real
+      _saved_real=$(cd "$saved_worktree" 2>/dev/null && pwd -P || echo "$saved_worktree")
+      local _main_real
+      _main_real=$(cd "${_main_wt:-$RITE_PROJECT_ROOT}" 2>/dev/null && pwd -P || echo "${_main_wt:-$RITE_PROJECT_ROOT}")
+
+      if [ "$_saved_real" = "$_main_real" ]; then
+        _worktree_reject_reason="resolves to main repo root (symlink or alias)"
+      else
+        # Confirm $_saved_real is among the LINKED worktrees (not the main checkout).
+        # Use --porcelain so paths containing spaces are not truncated (plain list
+        # truncates at the first space via awk '{print $1}').
+        # Resolve each list entry via pwd -P to match $_saved_real (already resolved).
+        # Skip the first entry (the main checkout) via tail -n +2 on the extracted
+        # path list (one path per line after awk).
+        local _linked_match=false
+        local _wt_path
+        while IFS= read -r _wt_path; do
+          local _wt_real
+          _wt_real=$(cd "$_wt_path" 2>/dev/null && pwd -P || echo "$_wt_path")
+          if [ "$_wt_real" = "$_saved_real" ]; then
+            _linked_match=true
+            break
+          fi
+        done < <(git -C "$RITE_PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+                   | awk '/^worktree /{print substr($0,10)}' \
+                   | tail -n +2 || true)
+        if [ "$_linked_match" = true ]; then
+          _worktree_valid=true
+        else
+          _worktree_reject_reason="not a linked worktree (not in git worktree list)"
+        fi
+      fi
+    fi
+
+    if [ "$_worktree_valid" = true ]; then
       WORKTREE_PATH="$saved_worktree"
       export WORKTREE_PATH
       RESUME_MODE=true
@@ -2661,7 +2735,7 @@ main() {
       [ -n "$CURRENT_PR" ] && print_status "PR: #$CURRENT_PR"
       [ "$RESUME_RETRY" -gt 0 ] && print_status "Retry: $RESUME_RETRY/3"
     else
-      print_warning "Saved worktree no longer exists - starting fresh"
+      print_warning "Saved worktree invalid (${_worktree_reject_reason}) — discarding stale state, starting fresh"
       saved_reason=""
     fi
   fi
