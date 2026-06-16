@@ -178,6 +178,14 @@ setup_issue_lock_if_needed() {
 }
 
 # Parse arguments - Two-pass to detect flags before processing issue number
+#
+# Skipped under RITE_SOURCE_FUNCTIONS_ONLY=1: these top-level assignments
+# tramples test-provided env (AUTO_MODE, ISSUE_NUMBER, ...) when the file is
+# sourced for function definitions only. Tests set those vars themselves.
+# (The main functions-only guard lives further down, after the fix-review
+# block — it can't sit this early or the function defs below would be skipped.)
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" != "1" ]; then
+
 AUTO_MODE=false
 FIX_REVIEW_MODE=false
 ISSUE_NUMBER=""
@@ -273,6 +281,8 @@ done
 
 # Acquire per-issue lock if issue number is known (prevent concurrent rite invocations on same issue)
 setup_issue_lock_if_needed
+
+fi  # end RITE_SOURCE_FUNCTIONS_ONLY != 1 (arg parsing + lock acquisition)
 
 # Colors for output
 RED='\033[0;31m'
@@ -566,8 +576,11 @@ _run_dev_test_gate() {
   else
     print_warning "Tests failed (exit $_test_exit)"
     if [ "$AUTO_MODE" = true ]; then
-      # Auto-fix: run a quick Claude session to fix test failures
-      if [ "${_test_fix_attempted:-false}" != "true" ]; then
+      # Auto-fix: run a quick Claude session to fix test failures.
+      # RITE_TEST_GATE_AUTOFIX=false disables the LLM fix session (used by the
+      # bats suite, which would otherwise spawn a real 30-min Claude session
+      # when the mock repo's pytest run fails; also an operator escape hatch).
+      if [ "${RITE_TEST_GATE_AUTOFIX:-true}" = "true" ] && [ "${_test_fix_attempted:-false}" != "true" ]; then
         _test_fix_attempted=true
         print_status "Running auto-fix session for test failures..."
 
@@ -757,7 +770,7 @@ Auto-salvaged to prevent work loss."
 # EARLY EXIT FOR FIX-REVIEW MODE
 # Must run before any worktree navigation to preserve stdin
 # ===================================================================
-if [ "$FIX_REVIEW_MODE" = true ]; then
+if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   # Jump directly to fix-review logic (defined later in file)
   # Provider already loaded at top of file
   provider_detect_cli || exit 1
