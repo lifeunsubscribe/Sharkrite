@@ -232,6 +232,71 @@ Done when the finding is addressed."
   }
 }
 
+# ─── Test 9: Static — severity normalization line present ─────────────────────
+
+@test "assess-and-resolve.sh: _f_severity is normalized to leading token (trailing-text guard)" {
+  # Issue #650: exact-match case arms silently downgrade when _f_severity has
+  # trailing LLM annotations like "HIGH (word-split risk)".
+  # The fix: normalize via awk '{print $1}' + tr immediately after capture.
+  # This static test asserts the normalization is present in the script.
+  run grep -n "awk '{print \$1}'" "$ASSESS_RESOLVE_SCRIPT"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: Severity normalization (awk '{print \$1}') not found in $ASSESS_RESOLVE_SCRIPT"
+    echo "Expected: _f_severity=\$(echo \"\$_f_severity\" | awk '{print \$1}' | tr ...)"
+    false
+  }
+}
+
+# ─── Test 10: Unit — trailing severity annotation produces correct priority label ─
+
+@test "assess-and-resolve.sh: severity with trailing text resolves to correct priority label" {
+  # Regression for issue #650: "HIGH (word-split risk)" must yield priority-high,
+  # not the default priority-medium that an unmatched case arm falls through to.
+
+  # Inline the normalization and case logic, same as the fixed code.
+  _raw_severity="HIGH (word-split risk)"
+  _f_severity=$(echo "$_raw_severity" | awk '{print $1}' | tr '[:lower:]' '[:upper:]' || true)
+  _f_severity="${_f_severity:-MEDIUM}"
+
+  _priority_label="priority-medium"
+  case "${_f_severity}" in
+    CRITICAL|HIGH) _priority_label="priority-high" ;;
+    MEDIUM)        _priority_label="priority-medium" ;;
+    LOW)           _priority_label="priority-low" ;;
+  esac
+
+  [ "$_priority_label" = "priority-high" ] || {
+    echo "FAIL: Expected priority-high for severity '$_raw_severity', got: '$_priority_label'"
+    echo "(normalized _f_severity: '$_f_severity')"
+    false
+  }
+}
+
+# ─── Test 11: Unit — CRITICAL with trailing annotation resolves to correct done def ─
+
+@test "assess-and-resolve.sh: CRITICAL severity with annotation produces CRITICAL done definition" {
+  # Regression for issue #650: "CRITICAL: confirmed" must yield the CRITICAL done
+  # definition, not the wildcard fallback.
+
+  _raw_severity="CRITICAL: confirmed"
+  _f_severity=$(echo "$_raw_severity" | awk '{print $1}' | tr '[:lower:]' '[:upper:]' || true)
+  _f_severity="${_f_severity:-MEDIUM}"
+
+  _done_def=""
+  case "${_f_severity}" in
+    CRITICAL) _done_def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
+    HIGH)     _done_def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
+    *)        _done_def="Done when the finding is addressed or explicitly deferred with justification." ;;
+  esac
+
+  [[ "$_done_def" == *"CRITICAL finding"* ]] || {
+    echo "FAIL: Expected CRITICAL done definition for severity '$_raw_severity', got: '$_done_def'"
+    echo "(normalized _f_severity: '$_f_severity')"
+    false
+  }
+}
+
 # ─── Test 8: Unit — label via --label, not in title ──────────────────────────
 
 @test "assess-and-resolve.sh: [tech-debt] label applied via --label, not embedded in title" {
