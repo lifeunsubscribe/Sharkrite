@@ -137,7 +137,9 @@ teardown() {
   # All resume-state variables must be cleared
   echo "$_out" | grep -q "pr:EMPTY"
   echo "$_out" | grep -q "worktree:EMPTY"
-  echo "$_out" | grep -q "resume:EMPTY"
+  # RESUME_MODE is reset to the boolean `false` (workflow-runner.sh:2271), not
+  # unset — so the value is "false", not EMPTY. (PR/worktree/skip are strings → "".)
+  echo "$_out" | grep -q "resume:false"
   echo "$_out" | grep -q "skip:EMPTY"
 }
 
