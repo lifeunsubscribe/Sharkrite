@@ -78,11 +78,15 @@ SCRIPT
   # it, simulating the race between worktree removal and the subprocess.
   rm -rf "$_FAKE_WORKTREE"
 
-  # Wait for the subprocess to finish.
-  run wait "$_pid"
+  # Wait for the subprocess to finish. Use a DIRECT `wait` (not `run wait`):
+  # `run` executes in a subshell where $_pid is not a child, so `wait` returns
+  # 127 immediately — wrong status, and $_log would be read before the process
+  # finishes writing it.
+  _rc=0
+  wait "$_pid" || _rc=$?
 
   # The script should exit 0 (git call succeeded after cd to project root).
-  [ "$status" -eq 0 ]
+  [ "$_rc" -eq 0 ]
 
   # The git rev-parse output should be the project root.
   [[ "$(cat "$_log")" == *"$RITE_PROJECT_ROOT"* ]]
@@ -121,12 +125,13 @@ SCRIPT2
   rm -rf "$_FAKE_WORKTREE"
   touch "$_signal_file"
 
-  # Wait — expect failure.
-  run wait "$_pid"
+  # Wait — expect failure. Direct `wait` (not `run wait`; see Test 1).
+  _rc=0
+  wait "$_pid" || _rc=$?
 
   # The git call should fail because the cwd is gone.
   # Exit code non-zero and the fatal message present.
-  [ "$status" -ne 0 ]
+  [ "$_rc" -ne 0 ]
   [[ "$(cat "$_log")" == *"Unable to read current working directory"* ]] || \
     [[ "$(cat "$_log")" == *"No such file or directory"* ]]
 }

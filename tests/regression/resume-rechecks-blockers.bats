@@ -72,6 +72,14 @@ has_sent_notification() { return 1; }
 add_sent_notification() { :; }
 STUB
 
+  # blocker-rules.sh also sources gh-retry.sh (unless gh_safe is already defined).
+  # Provide a no-op stub so the source succeeds in the isolated stub lib — the
+  # pre-start gate under test does not exercise real gh calls.
+  cat > "$stub_lib_dir/utils/gh-retry.sh" <<'STUB'
+# stub: no-op gh wrapper for test isolation
+gh_safe() { :; }
+STUB
+
   bash <<EOF
 set -euo pipefail
 
