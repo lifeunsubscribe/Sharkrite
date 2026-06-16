@@ -53,6 +53,12 @@ RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
 # Format in issue body: <!-- sharkrite-source-issue:N -->
 RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
 
+# Trivial-fix fast-path opt-in marker (#531) — when present in an issue body
+# alongside a fenced ```diff block, the workflow may apply the patch directly
+# (skipping the dev session + full review) if triage + the gate both pass.
+# Pure presence marker (no value). Format in issue body: <!-- sharkrite-fastpath -->
+RITE_MARKER_FASTPATH="sharkrite-fastpath"
+
 # Structured review data marker — wraps the JSON block embedded in review comments.
 # Format in comment: <!-- sharkrite-review-data ... -->
 RITE_MARKER_REVIEW_DATA="sharkrite-review-data"

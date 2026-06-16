@@ -299,6 +299,27 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# #531 Change 1: initial Phase 2/3 parallelism. The INITIAL pass must also fire
+# the gate in the background concurrent with the first review (today the gate ran
+# only inside the fix loop, so the first assessment never saw [GATE] findings).
+# ---------------------------------------------------------------------------
+@test "#531: initial Phase 2 fires the gate in background (_init_gate_pid)" {
+  run grep -nE '_init_gate_pid=\$!' "${RITE_LIB_DIR}/core/workflow-runner.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "#531: initial-pass gate uses a bounded wait (wait_pid_with_timeout)" {
+  # The initial gate wait must reuse the #654 bounded-wait backstop, not a bare wait.
+  run grep -nE 'wait_pid_with_timeout "\$_init_gate_pid"' "${RITE_LIB_DIR}/core/workflow-runner.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "#531: initial-pass gate kills its tree on timeout (kill_process_tree)" {
+  run grep -nE 'kill_process_tree "\$_init_gate_pid"' "${RITE_LIB_DIR}/core/workflow-runner.sh"
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Naming collision fix: claude-workflow.sh must use _run_dev_test_gate (not run_test_gate)
 # run_test_gate is reserved for the structured JSON gate in test-gate.sh
 # ---------------------------------------------------------------------------
