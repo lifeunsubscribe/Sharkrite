@@ -24,7 +24,7 @@ set -euo pipefail
 CR_LINES="${CR_LINES:-}"
 CR_TOP5_ISSUES="N/A"
 if [ -n "$CR_LINES" ]; then
-  _cr_top5_raw=$(echo "$CR_LINES" | grep -oE 'issue=[0-9]+' | grep -oE '[0-9]+' | sort | uniq -c | sort -rn | head -5 || true)
+  _cr_top5_raw=$(echo "$CR_LINES" | grep -oE 'issue=[0-9]+' | grep -oE '[0-9]+' | sort | uniq -c | sort -k1,1rn -k2,2n | head -5 || true)
   if [ -n "$_cr_top5_raw" ]; then
     _cr_top5_parts=""
     while IFS= read -r _cr_line; do
@@ -46,14 +46,14 @@ EOF
   chmod +x "$RITE_TEST_TMPDIR/compute_top5.sh"
 
   # Write a helper script for CR_MEDIAN_DURATION_S computation.
-  # Mirrors bin/rite-health-report lines 158-176 exactly.
+  # Mirrors bin/rite-health-report lines 168-195 exactly.
   cat > "$RITE_TEST_TMPDIR/compute_median.sh" << 'EOF'
 #!/bin/bash
 set -euo pipefail
 CR_LINES="${CR_LINES:-}"
 CR_MEDIAN_DURATION_S="N/A"
 if [ -n "$CR_LINES" ]; then
-  _cr_durations=$(echo "$CR_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | sort -n || true)
+  _cr_durations=$(echo "$CR_LINES" | grep -v 'outcome=skipped_no_resolver' | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | sort -n || true)
   if [ -n "$_cr_durations" ]; then
     _cr_dur_count=$(echo "$_cr_durations" | wc -l | tr -d ' ' || true)
     if [ "${_cr_dur_count:-0}" -gt 0 ] 2>/dev/null; then
@@ -153,6 +153,21 @@ teardown() {
   [ "$output" = "$_first" ]
 }
 
+@test "CR_TOP5_ISSUES: tie-breaking — equal-count issues ordered by issue number ascending" {
+  # Issues 7, 42, 99 all appear exactly 2x.  With a non-deterministic secondary
+  # sort the order would vary by platform; the fix (-k2,2n) must yield 7 < 42 < 99.
+  _lines="[diag] CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=99 pr=100 duration_s=10
+[diag] CONFLICT_RESOLVER context=divergence outcome=failed issue=42 pr=50 duration_s=40
+[diag] CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=7 pr=8 duration_s=20
+[diag] CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=42 pr=50 duration_s=30
+[diag] CONFLICT_RESOLVER context=divergence outcome=failed issue=99 pr=100 duration_s=50
+[diag] CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=7 pr=8 duration_s=60"
+  run env CR_LINES="$_lines" "$RITE_TEST_TMPDIR/compute_top5.sh"
+  [ "$status" -eq 0 ]
+  # All three issues have count=2; lowest issue number must come first
+  [[ "$output" == "#7 (2x), #42 (2x), #99 (2x)" ]]
+}
+
 # ---------------------------------------------------------------------------
 # CR_MEDIAN_DURATION_S tests
 # ---------------------------------------------------------------------------
@@ -235,4 +250,17 @@ teardown() {
   run env CR_LINES="$_lines" "$RITE_TEST_TMPDIR/compute_median.sh"
   [ "$status" -eq 0 ]
   [ "$output" = "2700s" ]
+}
+
+@test "CR_MEDIAN_DURATION_S: skipped_no_resolver lines are excluded by outcome even if they carry duration_s" {
+  # Robustness test for future log-format changes: a skipped_no_resolver line that
+  # hypothetically gains a duration_s=0 field must still be excluded (by the
+  # grep -v 'outcome=skipped_no_resolver' filter, not merely by field absence).
+  # Remaining durations: 20, 40 — median is (20+40)/2 = 30, not (0+20+40)/3.
+  _lines="[diag] CONFLICT_RESOLVER context=stale_rebase outcome=skipped_no_resolver issue=1 pr=1 duration_s=0
+[diag] CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=2 pr=2 duration_s=40
+[diag] CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=3 pr=3 duration_s=20"
+  run env CR_LINES="$_lines" "$RITE_TEST_TMPDIR/compute_median.sh"
+  [ "$status" -eq 0 ]
+  [ "$output" = "30s" ]
 }

@@ -142,9 +142,11 @@ CR_SKIPPED=$(echo "$CR_LINES" | grep -c 'outcome=skipped_no_resolver' || true)
 # Bare-marker guard: require digits after "issue=" to avoid matching placeholder text.
 # Counts per issue number, sorts descending, takes top 5, formats as "#N (Kx), ...".
 # Uses a portable while-read loop (bash 3.2 compatible — no mapfile/declare -A).
+# Tie-breaking: issues with equal counts are sorted by issue number ascending
+# (secondary key: -k2,2n) so the output is deterministic regardless of input order.
 CR_TOP5_ISSUES="N/A"
 if [ -n "$CR_LINES" ]; then
-  _cr_top5_raw=$(echo "$CR_LINES" | grep -oE 'issue=[0-9]+' | grep -oE '[0-9]+' | sort | uniq -c | sort -rn | head -5 || true)
+  _cr_top5_raw=$(echo "$CR_LINES" | grep -oE 'issue=[0-9]+' | grep -oE '[0-9]+' | sort | uniq -c | sort -k1,1rn -k2,2n | head -5 || true)
   if [ -n "$_cr_top5_raw" ]; then
     _cr_top5_parts=""
     while IFS= read -r _cr_line; do
@@ -164,12 +166,16 @@ if [ -n "$CR_LINES" ]; then
 fi
 
 # --- Pre-compute median resolution duration from CR_LINES ---
-# Only lines with duration_s=N (skipped_no_resolver lines have no duration field).
+# Include only outcomes where the resolver actually ran: resolved, failed, cap_hit.
+# Explicitly exclude skipped_no_resolver lines — those represent "resolver not wired"
+# and carry no duration_s field. Filtering by outcome (not by field presence) makes
+# the semantic intent clear and robust against future log-format changes that might
+# add duration_s=0 to skipped lines.
 # Median: middle value for odd count; integer average of two middle values for even count.
 # Uses a portable while-read sort+count approach (bash 3.2 compatible).
 CR_MEDIAN_DURATION_S="N/A"
 if [ -n "$CR_LINES" ]; then
-  _cr_durations=$(echo "$CR_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | sort -n || true)
+  _cr_durations=$(echo "$CR_LINES" | grep -v 'outcome=skipped_no_resolver' | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | sort -n || true)
   if [ -n "$_cr_durations" ]; then
     _cr_dur_count=$(echo "$_cr_durations" | wc -l | tr -d ' ' || true)
     if [ "${_cr_dur_count:-0}" -gt 0 ] 2>/dev/null; then
