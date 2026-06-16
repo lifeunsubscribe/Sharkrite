@@ -19,10 +19,13 @@ if [ "${_RITE_REVIEW_HELPER_LOADED:-}" = "true" ]; then
 fi
 _RITE_REVIEW_HELPER_LOADED=true
 
-# Ensure config is loaded
+# Source config if not already loaded (sets RITE_LIB_DIR). Canonical bootstrap
+# so this file is sourceable standalone (re-source safety test) — matches the
+# pattern in stale-branch.sh / tag-index.sh / validate-setup.sh. In production
+# config.sh is always loaded first, so this branch is a no-op there.
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  echo "ERROR: review-helper.sh must be sourced after config.sh" >&2
-  return 1 2>/dev/null || exit 1
+  _review_helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_review_helper_dir/config.sh"
 fi
 
 # Source dependencies needed by the shared helpers defined below.
