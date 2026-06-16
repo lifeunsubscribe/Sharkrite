@@ -35,8 +35,7 @@ lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides ac
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
-lib/providers/claude.sh           # Claude Code CLI provider (primary)
-lib/providers/gemini.sh           # Gemini CLI provider (skeleton)
+lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
 lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
@@ -50,10 +49,12 @@ lib/utils/test-gate.sh           # Post-commit verification gate (make check + b
 
 ### Workflow Phases
 
+0. **Trivial-fix fast-path (#531)** — Before Phase 1, if the issue body carries a concrete patch (a fenced ` ```diff ` block under a `<!-- sharkrite-fastpath -->` marker), `try_trivial_fix_fastpath` (`lib/utils/trivial-fix-fastpath.sh`) applies it deterministically (`git apply`) and merges it **only if** the cheap haiku triage classifier returns `trivial` AND the post-commit gate passes — skipping the dev session + full review. All checks run before any commit/push/PR, so any failure (or an ineligible issue) is a side-effect-free fall-through to Phase 1. Inert until issues adopt the marker. See `behavioral-design.md` → "Trivial-Fix Fast-Path + Initial Phase 2/3 Parallelism".
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
    - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit
+   - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
    - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session
@@ -513,6 +514,7 @@ rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
+rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
@@ -761,6 +763,48 @@ rite --health-report              # Generate and display now
 rite --health-report --latest     # Show most recent without regenerating
 ```
 
+### Full-Suite Safety Net (`rite --full-suite`)
+
+Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypassing the targeted-selection logic that the post-commit gate uses. This catches drift between bats `sharkrite-test-covers` headers and the code they actually exercise (see issue #482).
+
+**Motivating gap:** After PRs #480/#481, the post-commit gate only runs 3-20 of ~165 bats files per fix iteration. A mismatched header means changes to a file silently skip the tests that would have caught regressions. The periodic full-suite run is the backstop.
+
+**What it writes:**
+- Full transcript to `.rite/logs/full-suite-YYYYMMDD.log` (header with date/host/branch; one log per day, appended)
+- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
+- `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
+
+**Scheduling (recommended: weekly Sunday 3 AM):**
+
+macOS (launchd):
+```bash
+# Copy and edit the template (replace PLACEHOLDER values)
+cp config/com.sharkrite.full-suite.plist ~/Library/LaunchAgents/
+# Edit: set RITE_PROJECT_ROOT and ProgramArguments path
+nano ~/Library/LaunchAgents/com.sharkrite.full-suite.plist
+launchctl load ~/Library/LaunchAgents/com.sharkrite.full-suite.plist
+launchctl list | grep sharkrite   # verify
+```
+
+Linux (systemd timer):
+```bash
+# See the plist file's comment block for the full systemd unit definition.
+# Quick summary:
+systemctl --user enable --now sharkrite-full-suite.timer
+systemctl --user list-timers | grep sharkrite
+```
+
+**Configuration:**
+- `RITE_BATS_JOBS=N` — parallelism override (auto-detects via GNU parallel by default)
+- Parallelism: auto-detected (uses `nproc`/`sysctl hw.ncpu` when GNU parallel is installed)
+
+**Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
+
+```bash
+rite --full-suite                 # Run now (manual or cron invocation)
+cat .rite/state/full-suite-failure.flag   # See current failure details if any
+```
+
 ### Log files
 
 `.rite/logs/rite-<issue>-<timestamp>.log` is the **full transcript** of the run — everything you would have seen in the terminal, including subprocess output (Claude tool calls with `⚡` indicators, bats per-test output, make check / lint output). Use `tail -f` to watch a running workflow in real time.
@@ -786,5 +830,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `REVIEW` — review severity counts (CRITICAL/HIGH/MEDIUM/LOW)
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
+- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

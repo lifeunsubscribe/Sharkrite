@@ -108,3 +108,48 @@ run_with_timeout() {
     "$@"
   fi
 }
+
+# Recursively terminate a process and ALL its descendants, children first.
+# Portable: uses `pgrep -P` (present on macOS and Linux) — no setsid/`pkill -g`
+# dependency, no reliance on the target being a process-group leader.
+# Note: a descendant that already re-parented to init (orphan) is no longer
+# reachable via pgrep -P and will survive — that's acceptable here, because the
+# point is to free the WAITER (kill the gate + its still-attached tee/bats so
+# the orchestrator stops waiting); a stray orphan no longer blocks anything.
+# Usage: kill_process_tree PID [SIGNAL]   (SIGNAL default: TERM)
+kill_process_tree() {
+  local _pid="${1:-}"
+  local _sig="${2:-TERM}"
+  [ -n "$_pid" ] || return 0
+  local _child
+  for _child in $(pgrep -P "$_pid" 2>/dev/null || true); do
+    kill_process_tree "$_child" "$_sig"
+  done
+  kill "-${_sig}" "$_pid" 2>/dev/null || true
+}
+
+# Wait for a background PID up to TIMEOUT_SECS. If it exits in time, reap it and
+# return its real exit code. If it does not, return 124 (the caller decides how
+# to kill it — typically kill_process_tree). Poll-based because we are waiting on
+# a PID we backgrounded ourselves, where `gtimeout` (a command wrapper) does not
+# apply. Exists to bound the post-commit gate wait: a leaked test subprocess can
+# hold the gate's stdout pipe so `tee` never sees EOF and the gate PID never
+# exits — without this bound that hangs the whole workflow for hours (issue #654).
+# Usage: wait_pid_with_timeout PID TIMEOUT_SECS
+wait_pid_with_timeout() {
+  local _pid="${1:-}"
+  local _timeout="${2:-1800}"
+  [ -n "$_pid" ] || return 0
+  local _waited=0
+  while kill -0 "$_pid" 2>/dev/null; do
+    if [ "$_waited" -ge "$_timeout" ]; then
+      return 124
+    fi
+    sleep 1
+    _waited=$((_waited + 1))
+  done
+  # Process is gone — reap it (it's our direct child) and surface its exit code.
+  local _rc=0
+  wait "$_pid" 2>/dev/null || _rc=$?
+  return "$_rc"
+}

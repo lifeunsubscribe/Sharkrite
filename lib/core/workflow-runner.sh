@@ -37,6 +37,14 @@ source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 # test-gate.sh: post-commit structured verification (make check + bats -r tests/)
 source "$RITE_LIB_DIR/utils/test-gate.sh"
+# trivial-fix-fastpath.sh: deterministic-patch fast-path (#531) — skips dev
+# session + full review for issues carrying a concrete patch (gate + triage gated).
+# Guarded source: a new lib file may be absent if RITE_LIB_DIR lags this checkout
+# (live-lib-lag in worktrees). The dispatch guards on `declare -f`, so absence
+# disables the fast-path rather than crashing the orchestrator.
+if [ -f "$RITE_LIB_DIR/utils/trivial-fix-fastpath.sh" ]; then
+  source "$RITE_LIB_DIR/utils/trivial-fix-fastpath.sh"
+fi
 
 # Workflow mode: supervised (requires confirmations) or unsupervised (fully automated)
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
@@ -1373,9 +1381,11 @@ phase_assess_and_resolve() {
     # Phase 2 (push + review generation) runs in foreground
     if ! phase_create_pr "$issue_number" --loop; then
       print_error "Failed to push fixes and regenerate review"
-      # Gate is still running — kill it and clean up before returning
-      kill "$_gate_pid" 2>/dev/null || true
-      wait "$_gate_pid" 2>/dev/null || true
+      # Gate is still running — kill its whole process tree (a bare kill leaves
+      # leaked bats/tee children that can keep the pipe open) and reap, bounded
+      # so a wedged gate can't hang this error path either (issue #654).
+      kill_process_tree "$_gate_pid"
+      wait_pid_with_timeout "$_gate_pid" 15 >/dev/null 2>&1 || true
       rm -f "${_gate_output_file:-}"
       # Doc assessment may also still be running — kill it so it doesn't
       # outlive the workflow as a zombie writing to .rite/docs/ after we fail.
@@ -1383,9 +1393,24 @@ phase_assess_and_resolve() {
       return 1
     fi
 
-    # Wait for gate to complete (review is done; gate may still be running)
+    # Wait for gate to complete (review is done; gate may still be running).
+    # BOUNDED wait — a leaked test subprocess can inherit the gate's stdout pipe
+    # so `tee` never sees EOF and the gate PID never exits; an unbounded wait then
+    # hangs the whole workflow for hours with no diagnostic (issue #654, live:
+    # `rite 482` wedged ~2.5h). On timeout we kill the gate's process tree, record
+    # a skipped-gate sentinel, log [diag] GATE_TIMEOUT, and proceed — the gate
+    # contributed no signal this round, but the workflow does not hang.
     local _gate_exit=0
-    wait "$_gate_pid" || _gate_exit=$?
+    wait_pid_with_timeout "$_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _gate_exit=$?
+    if [ "$_gate_exit" -eq 124 ]; then
+      _diag "GATE_TIMEOUT pr=${pr_number:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s"
+      print_warning "⚠️  Post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — likely a leaked subprocess holding the gate pipe. Killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
+      kill_process_tree "$_gate_pid"
+      # Write a valid skipped-gate sentinel so assess-and-resolve.sh's jq does not
+      # choke on a partial/empty findings file from the killed gate.
+      printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_timeout"}\n' > "$_gate_output_file" 2>/dev/null || true
+      _gate_exit=0
+    fi
 
     # Persist gate findings for assess-and-resolve.sh via RITE_GATE_FINDINGS env var.
     # Fallback path (.rite/state/gate-findings-N.json) is used when env var is not set.
@@ -2411,6 +2436,25 @@ run_workflow() {
     fi
   fi
 
+  # --- #531: trivial-fix fast-path -----------------------------------------
+  # Before the Phase-1 Claude dev session, check whether the issue carries a
+  # concrete, deterministic patch (a fenced ```diff under a sharkrite-fastpath
+  # marker). If so AND it passes the cheap haiku triage classifier + the
+  # post-commit gate, the fast-path applies it, opens a PR, and validates it —
+  # then we skip straight to Phase 4 (merge), reusing the normal merge +
+  # completion path. Ineligible or ANY validation failure → try_trivial_fix_fastpath
+  # returns 1 with no side effects, and we fall through to the normal Phase 1→4
+  # flow. Skipped on resume (work already underway) and when only skipping to a
+  # later phase. See: docs/architecture/behavioral-design.md → "Trivial-Fix Fast-Path".
+  if [ -z "$skip_to_phase" ] && [ "${RESUME_MODE:-false}" != true ] \
+     && declare -f try_trivial_fix_fastpath >/dev/null 2>&1; then
+    if try_trivial_fix_fastpath "$issue_number"; then
+      CURRENT_PR="$PR_NUMBER"
+      _diag "PHASE_TRANSITION issue=${issue_number} from=pre-start to=fastpath skip_to=merge"
+      skip_to_phase="merge"   # reuse Phase 4 (merge) + Phase 5 (completion)
+    fi
+  fi
+
   # Phase 1: Claude workflow (development)
   if [ -z "$skip_to_phase" ] || [ "$skip_to_phase" = "claude-workflow" ]; then
     _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=claude-workflow"
@@ -2435,10 +2479,36 @@ run_workflow() {
     CURRENT_PHASE="create-pr"
     skip_to_phase=""
     _timer_start "phase2_push_review"
+
+    # --- #531: initial Phase 2/3 parallelism ---
+    # Fire the post-commit gate (make check + bats -r tests/) in the BACKGROUND,
+    # concurrent with the foreground review generation in phase_create_pr. This
+    # mirrors the fix-loop's parallel pattern (which already overlaps gate+review)
+    # and applies it to the INITIAL pass, where today the gate does not run at all
+    # before the first assessment — so the first assessment never sees [GATE]
+    # findings (a latent gap this also closes). Wall-clock for a no-fix-loop run
+    # drops by min(gate_duration, review_duration). The bounded wait + process-tree
+    # kill on timeout reuse the #654 backstop verbatim.
+    local _init_gate_file="" _init_gate_pid=""
+    if declare -f run_test_gate >/dev/null 2>&1 \
+       && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
+      _init_gate_file="$(mktemp "/tmp/rite_gate_init_${issue_number}_$$.json")"
+      print_info "Starting post-commit gate in background (parallel with review)..."
+      run_test_gate "$_init_gate_file" "$WORKTREE_PATH" &
+      _init_gate_pid=$!
+    fi
+
     phase_create_pr "$issue_number" || {
       local _create_pr_rc=$?
       _timer_end "phase2_push_review"
       _diag "PHASE_FAILED issue=${issue_number} phase=create-pr exit=${_create_pr_rc}"
+      # Reap the parallel gate (bounded) before bailing so a wedged gate can't
+      # hang this error path either (issue #654).
+      if [ -n "$_init_gate_pid" ]; then
+        kill_process_tree "$_init_gate_pid" 2>/dev/null || true
+        wait_pid_with_timeout "$_init_gate_pid" 15 >/dev/null 2>&1 || true
+        rm -f "${_init_gate_file:-}"
+      fi
       if [ $_create_pr_rc -eq 5 ]; then
         print_warning "Usage cap reached during PR phase — aborting batch"
         return 5
@@ -2447,6 +2517,31 @@ run_workflow() {
       return 1
     }
     _timer_end "phase2_push_review"
+
+    # Wait for the parallel gate (bounded), then persist its findings to the
+    # PR-numbered fallback path and export RITE_GATE_FINDINGS so the upcoming
+    # phase_assess_and_resolve consumes them (it reads RITE_GATE_FINDINGS and
+    # deletes the file after — no double-fire with the in-fix-loop gate, which
+    # runs only on subsequent retries).
+    if [ -n "$_init_gate_pid" ]; then
+      local _init_gate_exit=0
+      wait_pid_with_timeout "$_init_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _init_gate_exit=$?
+      if [ "$_init_gate_exit" -eq 124 ]; then
+        _diag "GATE_TIMEOUT pr=${PR_NUMBER:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s phase=initial"
+        print_warning "⚠️  Initial post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
+        kill_process_tree "$_init_gate_pid"
+        printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_timeout"}\n' > "$_init_gate_file" 2>/dev/null || true
+      fi
+      if [ -n "${PR_NUMBER:-}" ] && [ -f "${_init_gate_file:-}" ]; then
+        local _init_gate_state_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+        mkdir -p "$_init_gate_state_dir" 2>/dev/null || true
+        local _init_gate_fallback="$_init_gate_state_dir/gate-findings-${PR_NUMBER}.json"
+        cp "$_init_gate_file" "$_init_gate_fallback" 2>/dev/null || true
+        export RITE_GATE_FINDINGS="$_init_gate_fallback"
+        print_info "Post-commit gate finished — findings available for assessment"
+      fi
+      rm -f "${_init_gate_file:-}"
+    fi
   fi
 
   # Phase 3: Assess review and resolve issues (auto-fix loop)

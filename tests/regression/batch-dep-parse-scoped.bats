@@ -348,8 +348,11 @@ Depends on #20 being ready first.
 }
 
 @test "structural: per-issue DEP_ISSUES= uses _extract_dep_issues_from_body, not whole-body grep" {
-  # The per-issue guard must call the helper, not the old grep -oiE pattern
-  _dep_issues_line=$(grep 'DEP_ISSUES=' "$BATCH_PROCESSOR" | head -1 || true)
+  # The per-issue guard must call the helper, not the old grep -oiE pattern.
+  # Anchor to ^[[:space:]]* so comments that reference "DEP_ISSUES=" are not
+  # matched before the actual assignment line (e.g. line 279 in batch-process-issues.sh
+  # is a comment: "# The per-issue dep-skip guard (search for "DEP_ISSUES=" below)").
+  _dep_issues_line=$(grep -E '^[[:space:]]*DEP_ISSUES=' "$BATCH_PROCESSOR" | head -1 || true)
   [ -n "$_dep_issues_line" ] || {
     echo "FAIL: DEP_ISSUES= assignment not found in $BATCH_PROCESSOR" >&2
     return 1
@@ -369,8 +372,10 @@ Depends on #20 being ready first.
 }
 
 @test "structural: preflight _dep_refs= uses _extract_dep_issues_from_body, not whole-body grep" {
-  # The preflight dep extraction must also call the helper
-  _dep_refs_line=$(grep '_dep_refs=' "$BATCH_PROCESSOR" | head -1 || true)
+  # The preflight dep extraction must also call the helper.
+  # Anchor to ^[[:space:]]* to skip any comments that mention _dep_refs= before
+  # reaching the actual assignment line.
+  _dep_refs_line=$(grep -E '^[[:space:]]*_dep_refs=' "$BATCH_PROCESSOR" | head -1 || true)
   [ -n "$_dep_refs_line" ] || {
     echo "FAIL: _dep_refs= assignment not found in $BATCH_PROCESSOR" >&2
     return 1

@@ -16,6 +16,15 @@ if [ "${_RITE_SCRATCHPAD_MANAGER_LOADED:-}" = "true" ]; then
 fi
 _RITE_SCRATCHPAD_MANAGER_LOADED=true
 
+# Source config if not already loaded (sets RITE_PROJECT_ROOT, RITE_DATA_DIR,
+# SCRATCHPAD_FILE, RITE_INSTALL_DIR). Canonical bootstrap so this file is
+# sourceable standalone (re-source safety test); in production config.sh is
+# always loaded first, making this a no-op.
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  _SCRATCHPAD_MANAGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_SCRATCHPAD_MANAGER_DIR/config.sh"
+fi
+
 # Use configured scratchpad path (set by config.sh)
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
 

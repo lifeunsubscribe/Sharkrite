@@ -1154,3 +1154,83 @@ The goal is not to always widen scope. It is to always make the decision conscio
 - Issue template runbook: `docs/issue-runbook.md` § "Bug Class Analysis"
 - Review prompt: `templates/github/claude-code/pr-review-instructions.md` § "Sibling-Failure-Mode Check"
 - Conventions catalog: `docs/architecture/conventions.md` (when populated) will accumulate per-PR convention entries from PRs that exhibit this pattern
+
+## Trivial-Fix Fast-Path + Initial Phase 2/3 Parallelism (issue #531)
+
+Two complementary changes to cut the per-issue runtime floor (~7–8 min, ~95% of
+it orchestration overhead for surgical fixes).
+
+### Change 1 — Initial Phase 2/3 parallelism (`workflow-runner.sh`)
+
+The fix loop already overlaps the post-commit gate with review generation. The
+**initial** Phase 2→3 transition did not: `phase_create_pr` (foreground LLM
+review) ran, *then* `phase_assess_and_resolve` ran — and the gate fired only
+*inside* the fix loop, so the first assessment never saw `[GATE]` findings at
+all (a latent gap).
+
+`run_workflow`'s Phase 2 block now fires `run_test_gate` in the background
+concurrent with the initial `phase_create_pr`, then does a **bounded** wait
+(`wait_pid_with_timeout` + `kill_process_tree` on timeout — the #654 backstop,
+verbatim), persists findings to `gate-findings-<PR>.json`, and exports
+`RITE_GATE_FINDINGS`. `phase_assess_and_resolve` consumes + deletes that file as
+it already does, so there is **no double-fire**: the initial gate runs once in
+`run_workflow`; the in-fix-loop gate runs once per retry. Wall-clock for a
+no-fix-loop run drops by `min(gate_duration, review_duration)`. On a resume
+(`skip_to_phase` set), Phase 2 is skipped and so is the parallel gate — same as
+before. Pinned by `tests/regression/test-gate-parallel.bats` (`#531:` tests).
+
+### Change 2 — Trivial-fix fast-path (`lib/utils/trivial-fix-fastpath.sh`)
+
+For issues that carry a **concrete, deterministic patch**, skip the Phase-1
+Claude dev session AND the full opus review entirely.
+
+**Why a deterministic applier (not an LLM):** a natural-language fix ("add a
+`${VAR:-}` guard") can't be applied without an LLM — the very cost the fast-path
+exists to avoid. So eligibility requires the issue body to carry a fenced
+` ```diff ` block under a `<!-- sharkrite-fastpath -->` marker (`RITE_MARKER_FASTPATH`).
+`git apply --check` is the applier: it handles multi-line edits, verifies the
+patch applies exactly once, and **fails safely** (→ fall back) if the file has
+drifted. Issues without the marker/patch are ineligible and fall through with
+zero side effects — so the fast-path is **inert until issues adopt the format**.
+
+**Safety model (chosen: "gate + cheap triage review"):** four checks, ALL run on
+the worktree **before any commit/push/PR**, so any failure is a side-effect-free
+fall-back to the normal Phase 1→4 flow:
+1. `git apply --check` + apply — patch must apply cleanly.
+2. `bash -n` — touched shell files must parse.
+3. `triage_classify_diff` — Layer-1 deterministic guards + cheap haiku
+   classifier; must return `trivial` (Layer 1 forces `substantive` on any
+   dangerous category, so a wrong classifier can only false-escalate, never
+   false-skip).
+4. `run_test_gate` — `make check` + `bats -r tests/` must pass.
+
+Only when all four pass does the fast-path commit, push, open a PR, and signal
+the caller (via `try_trivial_fix_fastpath` returning 0 + setting `PR_NUMBER`/
+`WORKTREE_PATH`). The dispatcher in `run_workflow` then sets `skip_to_phase=merge`,
+reusing the normal Phase 4 (merge) + Phase 5 (completion) path — no duplicated
+merge/cleanup orchestration. `merge-pr.sh` treats the Sharkrite review as "not
+required", so a fast-path PR with no review merges cleanly.
+
+**Triage factored into `lib/utils/triage-classify.sh`:** the classifier
+(`triage_classify_diff`) is now shared by `_triage_emit_shadow` (the #651
+calibration logging) and the fast-path gate. `local-review.sh` sources it via a
+`BASH_SOURCE`-derived path (defined before the `FUNCTIONS_ONLY` guard so the
+shadow test loads it). The fast-path module sources same-checkout siblings via a
+`BASH_SOURCE`-derived path too — `config.sh` sets `RITE_LIB_DIR` to the
+*installed* tree, which can lag a worktree, so a brand-new sibling would not be
+found there.
+
+**No env-var gate:** per the issue, eligible issues always take the fast-path
+and ineligible ones always fall through — there is no on/off flag. The eligibility
+marker is the opt-in. `workflow-runner.sh`'s source of the new module is guarded
+with `[ -f ]` (live-lib-lag): if absent, the dispatch's `declare -f` guard simply
+disables the fast-path rather than crashing the orchestrator.
+
+Pinned by `tests/regression/trivial-fix-fastpath.bats` — the acceptance contract
+is "an eligible issue runs ZERO dev sessions and exactly ONE gate", plus
+side-effect-free fall-back on every failure mode.
+
+**Validation note:** the live end-to-end path (worktree → apply → push → PR →
+merge) was validated by unit tests with stubbed git/gh/gate/triage; a supervised
+`rite <N>` run against a crafted fast-path-eligible issue should confirm the real
+path before relying on it in unsupervised batches.

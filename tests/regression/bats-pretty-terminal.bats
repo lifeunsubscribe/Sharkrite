@@ -211,11 +211,19 @@ STUB
 }
 
 @test "gate parses failures from TAP report.tap not from pretty stdout (behavioral)" {
-  # Verifies the pretty→report.tap→_parse_bats_failure_line pipeline:
+  # Adversarially verifies the pretty→report.tap→_parse_bats_failure_line pipeline:
   #   - bats emits pretty output (✗ lines) to stdout  [must NOT be parsed]
   #   - bats writes TAP to report.tap                 [must be the parser input]
-  # The stub has 1 TAP failure; if the gate mistakenly parsed pretty stdout
-  # it would see 0 (pretty ✗ lines don't match ^not ok) or parse incorrectly.
+  #
+  # ADVERSARIAL DESIGN: the stub uses DISTINCT names for the pretty-stdout line
+  # vs the TAP report line.  A buggy gate that reads pretty stdout would record
+  # "pretty-stdout-only-failure" in the JSON; a correct gate reads report.tap
+  # and records "tap-sourced-failure".  Identical names (the old pattern) masked
+  # this distinction — you could not tell which source the JSON came from.
+  #
+  # Regression this catches: if the gate is ever changed to parse bats stdout
+  # instead of report.tap, the assertion on "tap-sourced-failure" fails and the
+  # negative assertion on "pretty-stdout-only-failure" would catch leakage.
   _stub_dir="${BATS_TEST_TMPDIR}/bats_tap_pipe_stub"
   mkdir -p "$_stub_dir"
   cat > "$_stub_dir/bats" <<'STUBEOF'
@@ -229,12 +237,16 @@ for _a in "$@"; do
   if [ "$_prev" = "--output" ]; then _out_dir="$_a"; fi
   _prev="$_a"
 done
-# Emit pretty-format output to stdout (what terminal sees via FIFO-tee)
-echo " ✗ failing test name"
-# Write TAP to report.tap — this is what _parse_bats_failure_line must read
+# Emit pretty-format output to stdout (what terminal sees via FIFO-tee).
+# Use a name that does NOT appear in the TAP report — any correct gate
+# must NOT pick up this line as a test failure.
+echo " ✗ pretty-stdout-only-failure"
+# Write TAP to report.tap — this is what _parse_bats_failure_line must read.
+# The name here differs from the pretty line so the assertion can distinguish
+# which source the gate actually consumed.
 if [ -n "$_out_dir" ]; then
   mkdir -p "$_out_dir"
-  printf 'TAP version 13\n1..1\nnot ok 1 failing test name\n' > "$_out_dir/report.tap"
+  printf 'TAP version 13\n1..1\nnot ok 1 tap-sourced-failure\n' > "$_out_dir/report.tap"
 fi
 exit 1
 STUBEOF
@@ -256,12 +268,19 @@ STUBEOF
   # Gate exits 1 because bats failed; JSON must still be written
   [ -f "$_gate_out" ]
 
-  # JSON must have exactly 1 tests entry with the TAP-sourced name
+  # JSON must have exactly 1 tests entry — sourced from report.tap, not stdout
   _tests_count=$(grep -o '"test_name"' "$_gate_out" | wc -l | tr -d ' ')
   [ "$_tests_count" -eq 1 ] \
     || { echo "FAIL: expected 1 tests entry; got $_tests_count"; cat "$_gate_out"; return 1; }
-  grep -q 'failing test name' "$_gate_out" \
-    || { echo "FAIL: test_name from TAP not in JSON"; cat "$_gate_out"; return 1; }
+
+  # The TAP-sourced name must appear — this is the positive assertion
+  grep -q 'tap-sourced-failure' "$_gate_out" \
+    || { echo "FAIL: TAP test_name 'tap-sourced-failure' not in JSON (gate may have read wrong source)"; cat "$_gate_out"; return 1; }
+
+  # The pretty-stdout name must NOT appear — this is the adversarial assertion
+  # If this fails, the gate is reading pretty stdout instead of report.tap
+  grep -qv 'pretty-stdout-only-failure' "$_gate_out" \
+    || { echo "FAIL: pretty-stdout name leaked into JSON — gate is reading stdout, not report.tap"; cat "$_gate_out"; return 1; }
 }
 
 @test "gate falls back to tee-captured TAP output when pretty not supported (behavioral)" {
@@ -497,6 +516,104 @@ STUB
     || { echo "FAIL: tests/ not passed to bats"; cat "$_mk_rec_args_log"; return 1; }
 }
 
+@test "Makefile test target discovers nested .bats files via -r (end-to-end recursive discovery)" {
+  # END-TO-END RECURSIVE DISCOVERY — closes the flag-presence gap in the test above.
+  #
+  # The previous test only checked that '-r' and 'tests/' appeared somewhere in
+  # the bats argument log.  That assertion passes even if the Makefile passed
+  # 'tests/' as a literal path argument without -r, or if bats was invoked once
+  # per .bats file instead of recursively.
+  #
+  # This test uses a *discovery-echoing* stub: when bats receives '-r <dir>' it
+  # walks the directory for *.bats files and writes each discovered path to a
+  # separate "discovered" log — proving the Makefile's -r invocation actually
+  # hands bats a directory, not a flat glob, and that the stub sees a nested
+  # structure it can traverse.  A flat-file invocation (bats tests/a.bats
+  # tests/b.bats) would log each file as a positional arg, not as discovered
+  # paths — the two output logs are structurally different, letting the
+  # assertions distinguish the recursive call from a flat-glob call.
+  #
+  # ADVERSARIAL DESIGN: the fixture trees a .bats file TWO levels deep
+  # (tests/regression/deep.bats) so any shallow glob that doesn't recurse
+  # past one directory level would miss it, and the discovered-log assertion
+  # would fail.  A flat glob (tests/*.bats) produces zero hits on nested
+  # files; only `bats -r tests/` discovers them.
+
+  _stub_dir="${BATS_TEST_TMPDIR}/mk_disc_bats"
+  mkdir -p "$_stub_dir"
+  _mk_disc_args_log="${BATS_TEST_TMPDIR}/mk_disc_bats_args.log"
+  _mk_disc_found_log="${BATS_TEST_TMPDIR}/mk_disc_discovered.log"
+
+  # Discovery-echoing stub: logs argv AND, when -r is present, walks any
+  # directory arg for *.bats files and writes each path to the discovered log.
+  # This stub does NOT need '--report-formatter' in its body; we test the
+  # no-pretty fallback path so the test is isolated from formatter detection.
+  cat > "$_stub_dir/bats" <<STUB
+#!/bin/bash
+# Older bats — no report-formatter (omitted intentionally so detection fails
+# and the Makefile uses the plain fallback path with no -F pretty).
+printf '%s\n' "\$@" >> "${_mk_disc_args_log}"
+# When -r is among the args, walk every remaining directory arg for *.bats.
+_saw_r=0
+for _a in "\$@"; do
+  if [ "\$_a" = "-r" ]; then _saw_r=1; fi
+done
+if [ "\$_saw_r" = "1" ]; then
+  for _a in "\$@"; do
+    if [ -d "\$_a" ]; then
+      find "\$_a" -name "*.bats" >> "${_mk_disc_found_log}"
+    fi
+  done
+fi
+exit 0
+STUB
+  chmod +x "$_stub_dir/bats"
+
+  # Build a fixture project with .bats files nested TWO levels deep.
+  # tests/top-level.bats       — one level deep (would be found by a shallow glob)
+  # tests/regression/deep.bats — two levels deep (only found by true recursion)
+  _mk_dir="${BATS_TEST_TMPDIR}/mk_disc_proj"
+  mkdir -p "$_mk_dir/tests/regression"
+  # Minimal valid bats content so the stub's find picks them up by name
+  printf '#!/usr/bin/env bats\n@test "stub top" { true; }\n' \
+    > "$_mk_dir/tests/top-level.bats"
+  printf '#!/usr/bin/env bats\n@test "stub deep" { true; }\n' \
+    > "$_mk_dir/tests/regression/deep.bats"
+  cp "${BATS_TEST_DIRNAME}/../../Makefile" "$_mk_dir/Makefile"
+
+  run env -i HOME="$HOME" PATH="${_stub_dir}:/usr/bin:/bin" \
+    make -C "$_mk_dir" test
+  [ "$status" -eq 0 ]
+
+  # Bats must have been invoked
+  [ -f "$_mk_disc_args_log" ] \
+    || { echo "FAIL: bats was never invoked (no args log)"; return 1; }
+
+  # -r must appear as a standalone arg (recursive flag present)
+  grep -qx '\-r' "$_mk_disc_args_log" \
+    || { echo "FAIL: -r not passed as standalone arg to bats"; cat "$_mk_disc_args_log"; return 1; }
+
+  # tests/ must appear as a standalone arg (directory, not glob)
+  grep -qx 'tests/' "$_mk_disc_args_log" \
+    || { echo "FAIL: tests/ not passed as standalone directory arg to bats"; cat "$_mk_disc_args_log"; return 1; }
+
+  # Discovery log must exist — stub only writes it when -r fires
+  [ -f "$_mk_disc_found_log" ] \
+    || { echo "FAIL: discovery log not written — stub did not receive -r <dir>"; return 1; }
+
+  # The top-level .bats file must be discovered
+  grep -q 'top-level.bats' "$_mk_disc_found_log" \
+    || { echo "FAIL: tests/top-level.bats not discovered (shallow glob might explain)"; \
+         echo "Discovered:"; cat "$_mk_disc_found_log"; return 1; }
+
+  # The deeply nested .bats file must ALSO be discovered — this is the key
+  # adversarial assertion.  A flat 'tests/*.bats' glob would not find it.
+  # Only 'bats -r tests/' discovers files in tests/regression/.
+  grep -q 'regression/deep.bats' "$_mk_disc_found_log" \
+    || { echo "FAIL: tests/regression/deep.bats not discovered — Makefile may not be using true -r recursion"; \
+         echo "Discovered:"; cat "$_mk_disc_found_log"; return 1; }
+}
+
 # ---------------------------------------------------------------------------
 # Parallel jobs (--jobs N) + pretty formatter + TAP pipeline (issue #606)
 # ---------------------------------------------------------------------------
@@ -554,8 +671,8 @@ STUB
   # Both --jobs and the job count must be present in the logged args
   grep -q -- '--jobs' "$_args_log" \
     || { echo "FAIL: --jobs not passed to bats"; cat "$_args_log"; return 1; }
-  grep -q '2' "$_args_log" \
-    || { echo "FAIL: job count '2' not in bats args"; cat "$_args_log"; return 1; }
+  grep -A1 -- '--jobs' "$_args_log" | grep -qx '2' \
+    || { echo "FAIL: job count '2' not the operand immediately after --jobs in bats args"; cat "$_args_log"; return 1; }
 
   # Pretty formatter must also be present — --jobs must not have displaced it
   grep -q -- '-F' "$_args_log" \
@@ -569,12 +686,18 @@ STUB
 }
 
 @test "gate reads TAP report.tap (not pretty stdout) when --jobs N is active (behavioral)" {
-  # Verifies that the pretty→report.tap→_parse_bats_failure_line pipeline
-  # still reads the TAP file — not stdout — when --jobs N is in effect.
-  # The stub emits a pretty ✗ line to stdout AND writes a TAP failure to
-  # report.tap.  Enabling RITE_BATS_JOBS=2 must not change the parser's
-  # input source: JSON must contain the TAP-sourced failure, not a doubled
-  # or misread entry from pretty stdout.
+  # Adversarially verifies that the pretty→report.tap→_parse_bats_failure_line
+  # pipeline still reads the TAP file — not stdout — when --jobs N is in effect.
+  #
+  # ADVERSARIAL DESIGN: like the single-job TAP-pipe test above, the stub uses
+  # DISTINCT names for the pretty-stdout line vs the TAP report line.  Identical
+  # names (the old pattern) masked which source the gate actually read — a buggy
+  # gate reading pretty stdout would produce the same JSON content and the test
+  # would pass incorrectly.
+  #
+  # Regression this catches: if --jobs N ever causes the gate to switch from
+  # report.tap to stdout as the failure source, "jobs-pretty-stdout-only-failure"
+  # appears in JSON and "jobs-tap-sourced-failure" does not — both assertions fail.
   _stub_dir="${BATS_TEST_TMPDIR}/bats_jobs_tap_src_stub"
   mkdir -p "$_stub_dir"
   cat > "$_stub_dir/bats" <<'STUBEOF'
@@ -587,12 +710,14 @@ for _a in "$@"; do
   if [ "$_prev" = "--output" ]; then _out_dir="$_a"; fi
   _prev="$_a"
 done
-# Pretty output to stdout — must NOT be parsed as a failure
-echo " ✗ parallel tap failing test"
-# TAP report to file — this is what the gate must parse
+# Pretty output to stdout — must NOT be parsed as a failure.
+# Distinct name so we can detect if the gate ever reads stdout instead of TAP.
+echo " ✗ jobs-pretty-stdout-only-failure"
+# TAP report to file — this is what the gate must parse.
+# Name differs from the pretty line so assertions can prove source attribution.
 if [ -n "$_out_dir" ]; then
   mkdir -p "$_out_dir"
-  printf 'TAP version 13\n1..1\nnot ok 1 parallel tap failing test\n' > "$_out_dir/report.tap"
+  printf 'TAP version 13\n1..1\nnot ok 1 jobs-tap-sourced-failure\n' > "$_out_dir/report.tap"
 fi
 exit 1
 STUBEOF
@@ -619,8 +744,15 @@ STUBEOF
   _tests_count=$(grep -o '"test_name"' "$_gate_out" | wc -l | tr -d ' ')
   [ "$_tests_count" -eq 1 ] \
     || { echo "FAIL: expected 1 tests entry; got $_tests_count"; cat "$_gate_out"; return 1; }
-  grep -q 'parallel tap failing test' "$_gate_out" \
-    || { echo "FAIL: TAP-sourced failure name not in JSON"; cat "$_gate_out"; return 1; }
+
+  # The TAP-sourced name must appear — positive assertion
+  grep -q 'jobs-tap-sourced-failure' "$_gate_out" \
+    || { echo "FAIL: TAP test_name 'jobs-tap-sourced-failure' not in JSON (gate may have read stdout)"; cat "$_gate_out"; return 1; }
+
+  # The pretty-stdout name must NOT appear — adversarial assertion
+  # If this fails, --jobs N caused the gate to switch from report.tap to stdout
+  grep -qv 'jobs-pretty-stdout-only-failure' "$_gate_out" \
+    || { echo "FAIL: pretty-stdout name leaked into JSON under --jobs — gate reading stdout, not report.tap"; cat "$_gate_out"; return 1; }
 }
 
 @test "gate captures multiple TAP failures from report.tap when --jobs N is active (behavioral)" {

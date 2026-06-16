@@ -15,6 +15,7 @@
 #   rite plan [doc] [instructions] Generate issues from architectural docs
 #   rite --init                   Initialize .rite/ in current project
 #   rite --backfill-locks         Backfill issue lock files for legacy worktrees
+#   rite --full-suite             Run unfiltered make check + bats -r tests/
 #   rite --dry-run <...>          Print execution plan without running
 
 set -euo pipefail
@@ -106,6 +107,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --health-report|--rtk-report)
       MODE="health-report"
+      shift
+      ;;
+    --full-suite)
+      MODE="full-suite"
       shift
       ;;
     --refresh-encountered-issues)
@@ -217,6 +222,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
+      echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
       echo "  rite --tags --orphans         Show catalog entries with no tag pointers"
@@ -278,7 +284,8 @@ done
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ]; then
+  # full-suite manages its own log file (per-run to .rite/logs/full-suite-YYYYMMDD.log)
   RITE_LOG_AUTO=false
 fi
 
@@ -288,6 +295,12 @@ if [ "$MODE" = "health-report" ]; then
     exec "$SCRIPT_DIR/rite-health-report" --latest
   fi
   exec "$SCRIPT_DIR/rite-health-report" --display
+fi
+
+# Full-suite safety net: run unfiltered make check + bats -r tests/
+# Bypasses targeted-selection logic; manages its own per-run log file.
+if [ "$MODE" = "full-suite" ]; then
+  exec "$SCRIPT_DIR/rite-full-suite"
 fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)

@@ -1638,6 +1638,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # through the next **Field:** header or end of block, preserving all content.
     _f_severity=$(echo "$_finding_block" | grep -oE '\*\*Severity:\*\*.*' | head -1 | sed 's/\*\*Severity:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
     _f_severity="${_f_severity:-MEDIUM}"
+    # Normalize to the leading severity token so trailing LLM annotations like
+    # "HIGH (word-split risk)" or "CRITICAL: confirmed" don't fall through the
+    # exact-match case arms below.  awk '{print $1}' takes the first whitespace-
+    # delimited word; tr converts to uppercase for uniform matching.
+    _f_severity=$(echo "$_f_severity" | awk '{print $1}' | tr '[:lower:]' '[:upper:]' || true)
+    _f_severity="${_f_severity:-MEDIUM}"
     _f_category=$(echo "$_finding_block" | grep -oE '\*\*Category:\*\*.*' | head -1 | sed 's/\*\*Category:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
     _f_category="${_f_category:-}"
     # Reasoning and Context may span multiple lines — use awk to capture the full
