@@ -150,6 +150,7 @@ setup() {
 
     # Set up the variables the loop reads
     MAX_REVIEW_ATTEMPTS=2
+    RITE_REVIEW_RETRY_BACKOFF=0   # no real sleep between retries in tests
     REVIEW_ATTEMPT=0
     REVIEW_OUTPUT=''
     CLAUDE_ERROR=''
@@ -174,6 +175,74 @@ setup() {
   [[ "$status" -eq 1 || "$status" -eq 0 ]]
   [[ "$output" != *"local: can only be used in a function"* ]]
   [[ "$output" != *"FAIL:"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Review retry on transient HARD failure (issues #482/#649/#631, 2026-06-16).
+# Before the fix, a non-zero provider exit (a momentary 429/5xx/overloaded that
+# fast-fails in ~14s) aborted the whole phase with `exit 1` and NO retry —
+# throwing away an otherwise-complete run (dev session done, commits pushed).
+# The loop now retries hard errors with backoff, same as empty output.
+# RITE_REVIEW_RETRY_BACKOFF=0 keeps these tests fast (no real sleep).
+# ---------------------------------------------------------------------------
+
+# Run the real extracted retry loop with a stubbed provider. $1 = stub body.
+# Echoes the loop's own output; the caller asserts on status + a call counter.
+_run_review_loop() {
+  local stub_body="$1"
+  local script="$PROJECT_ROOT/lib/core/local-review.sh"
+  local loop_code
+  loop_code=$(sed -n '/# sharkrite-extract: provider-retry-loop-start/,/# sharkrite-extract: provider-retry-loop-end/p' "$script")
+  [ -n "$loop_code" ] || { echo "FAIL: empty loop extraction" >&2; return 1; }
+  [[ "$loop_code" == *"provider_run_prompt"* ]] || { echo "FAIL: loop missing provider call" >&2; return 1; }
+
+  run bash -c "
+    set -euo pipefail
+    print_error()   { echo \"[ERROR] \$*\" >&2; }
+    print_warning() { echo \"[WARNING] \$*\" >&2; }
+    export -f print_error print_warning
+    ${stub_body}
+    export -f provider_run_prompt
+    MAX_REVIEW_ATTEMPTS=3
+    RITE_REVIEW_RETRY_BACKOFF=0
+    REVIEW_ATTEMPT=0
+    REVIEW_OUTPUT=''
+    CLAUDE_ERROR=''
+    REVIEW_EXIT=0
+    REVIEW_PROMPT='x'; EFFECTIVE_MODEL='m'; AUTO_MODE='true'
+    CLAUDE_STDERR=\$(mktemp)
+    ${loop_code}
+    # Reached only if the loop did NOT exit (i.e. a review was captured).
+    [ -n \"\$REVIEW_OUTPUT\" ] && echo 'REVIEW_CAPTURED'
+  "
+}
+
+@test "review retry: transient hard failure then success returns the review" {
+  CALLF="$BATS_TEST_TMPDIR/calls-a"; echo 0 > "$CALLF"
+  _run_review_loop "
+    provider_run_prompt() {
+      _n=\$(cat '$CALLF'); _n=\$((_n+1)); echo \$_n > '$CALLF'
+      if [ \$_n -lt 2 ]; then echo 'overloaded' >&2; return 1; fi
+      echo '## Review'; echo 'Findings: [CRITICAL: 0 | HIGH: 0]'
+    }
+  "
+  [ "$status" -eq 0 ] || { echo "expected exit 0 (recovered), got $status: $output" >&2; false; }
+  [[ "$output" == *"REVIEW_CAPTURED"* ]]
+  [ "$(cat "$CALLF")" -eq 2 ]   # failed once, succeeded on the retry
+}
+
+@test "review retry: persistent hard failure exits 1 after MAX attempts (no early abort)" {
+  CALLF="$BATS_TEST_TMPDIR/calls-b"; echo 0 > "$CALLF"
+  _run_review_loop "
+    provider_run_prompt() {
+      _n=\$(cat '$CALLF'); _n=\$((_n+1)); echo \$_n > '$CALLF'
+      echo 'rate limit exceeded' >&2; return 1
+    }
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"REVIEW_CAPTURED"* ]]
+  [ "$(cat "$CALLF")" -eq 3 ]   # retried to the cap, not aborted on the first failure
+  [[ "$output" == *"after 3 attempts"* ]]
 }
 
 @test "provider failure in retry loop: crashes with 'local' keyword (demonstrates original bug)" {
