@@ -49,10 +49,12 @@ lib/utils/test-gate.sh           # Post-commit verification gate (make check + b
 
 ### Workflow Phases
 
+0. **Trivial-fix fast-path (#531)** — Before Phase 1, if the issue body carries a concrete patch (a fenced ` ```diff ` block under a `<!-- sharkrite-fastpath -->` marker), `try_trivial_fix_fastpath` (`lib/utils/trivial-fix-fastpath.sh`) applies it deterministically (`git apply`) and merges it **only if** the cheap haiku triage classifier returns `trivial` AND the post-commit gate passes — skipping the dev session + full review. All checks run before any commit/push/PR, so any failure (or an ineligible issue) is a side-effect-free fall-through to Phase 1. Inert until issues adopt the marker. See `behavioral-design.md` → "Trivial-Fix Fast-Path + Initial Phase 2/3 Parallelism".
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
    - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit
+   - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
    - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session

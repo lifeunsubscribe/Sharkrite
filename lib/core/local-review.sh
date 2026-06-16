@@ -30,6 +30,13 @@ if declare -f fetch_pr_diff >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
+# Shared triage classifier (triage_classify_diff). Sourced via a BASH_SOURCE-
+# derived path so it loads in every mode (RITE_SOURCE_FUNCTIONS_ONLY, sourced by
+# the orchestrator, and standalone-script) — RITE_LIB_DIR is not yet guaranteed
+# set this early. Defined here (before the FUNCTIONS_ONLY guard) so the shadow
+# test can load it. Also used by the trivial-fix fast-path (#531).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../utils/triage-classify.sh"
+
 # ---------------------------------------------------------------------------
 # fetch_pr_diff: fetch PR diff with retry and local git fallback
 #
@@ -186,18 +193,10 @@ validate_diff_not_empty() {
 # Args: PR_NUMBER PR_DIFF DIFF_FILES OPUS_CRIT OPUS_HIGH OPUS_MED OPUS_LOW
 # ---------------------------------------------------------------------------
 _triage_emit_shadow() {
-  # All `local` declarations are hoisted to the top, BEFORE the brace-heavy
-  # classifier prompt + regex below. The LOCAL_OUTSIDE_FUNCTION lint rule tracks
-  # braces to decide if a `local` sits inside a function; the JSON `{...}` in the
-  # prompt and the `\{...\}` in the verdict-extraction regex unbalance that
-  # counter, so any `local` after them gets false-flagged. Declaring everything
-  # up front sidesteps it entirely (and is good practice).
   local _pr="$1" _diff="$2" _files="$3"
   local _ocrit="${4:-0}" _ohigh="${5:-0}" _omed="${6:-0}" _olow="${7:-0}"
   local _pass="first" _prior=0
-  local _added _removed _size _paths _category="logic" _guard="" _sens
-  local _verdict="substantive" _conf="1.0" _reason=""
-  local _diff_head _tmodel _tprompt _tresp _tjson
+  local _cls _verdict _conf _guard _reason _size _category
 
   # --- pass-type: prior review marker present on the PR → fix-review iteration ---
   # Self-determined (no caller threading). Defensive: gh failure → assume first.
@@ -207,57 +206,9 @@ _triage_emit_shadow() {
   # true first pass can show count 1. Treat >=2 as a genuine prior pass.
   if [ "${_prior:-0}" -ge 2 ] 2>/dev/null; then _pass="fixreview"; fi
 
-  # --- size + category (deterministic, from the diff) ---
-  _added=$(echo "$_diff" | grep -cE '^\+[^+]' || true)
-  _removed=$(echo "$_diff" | grep -cE '^-[^-]' || true)
-  _size=$(( ${_added:-0} + ${_removed:-0} ))
-
-  _paths=$(echo "$_diff" | grep '^diff --git' | sed -E 's|^diff --git a/(.*) b/.*|\1|' || true)
-  if [ -n "$_paths" ]; then
-    if ! echo "$_paths" | grep -qvE '\.md$|^docs/' ; then _category="docs"
-    elif ! echo "$_paths" | grep -qvE '(^|/)tests?/|_test\.|\.test\.|\.bats$' ; then _category="test"
-    elif ! echo "$_paths" | grep -qvE '\.(conf|toml|ya?ml|json)$|(^|/)Makefile$|^\.github/|^\.rite/|lock$' ; then _category="config"
-    fi
-  fi
-
-  # --- Layer 1: deterministic guards (any hit → substantive, classifier skipped) ---
-  if [ "${_files:-0}" -ge "${RITE_TRIAGE_MAX_FILES:-3}" ] 2>/dev/null; then _guard="size_files"; fi
-  if [ -z "$_guard" ] && [ "${_size:-0}" -ge "${RITE_TRIAGE_MAX_LINES:-30}" ] 2>/dev/null; then _guard="size_lines"; fi
-  if [ -z "$_guard" ] && echo "$_diff" | grep -q '^deleted file mode'; then _guard="deletion"; fi
-  if [ -z "$_guard" ] && echo "$_diff" | grep -qE '^\+.*(@pytest\.mark\.(skip|xfail)|\bskip\b|\bxfail\b|\.only\(|\bfit\(|\bfdescribe\()'; then _guard="test_weakening"; fi
-  if [ -z "$_guard" ] && echo "$_paths" | grep -qE '(^|/)(Makefile|\.shellcheckrc)$|package\.json$|requirements.*\.txt$|lock$|^\.github/|^\.rite/config'; then _guard="config"; fi
-  if [ -z "$_guard" ] && echo "$_diff" | grep -qE '^\+.*(\beval\b|\bcurl\b|\bwget\b|subprocess|os\.system|\bexec\b|password|secret|token=|api[_-]?key)'; then _guard="security"; fi
-  if [ -z "$_guard" ] && declare -f detect_sensitivity_areas >/dev/null 2>&1; then
-    _sens=$(detect_sensitivity_areas "$_pr" 2>/dev/null || true)
-    if [ -n "$_sens" ]; then _guard="sensitive"; fi
-  fi
-
-  # --- Layer 2: classifier on the cleared remainder ---
-  if [ -n "$_guard" ]; then
-    _verdict="substantive"; _reason="guard:$_guard"; _conf="1.0"
-  else
-    # Truncate the diff to keep the triage call cheap/fast.
-    _diff_head=$(echo "$_diff" | head -c 6000 || true)
-    _tmodel=$(claude_provider_resolve_model "triage")
-    _tprompt="You are a code-review TRIAGE classifier. Decide if this diff is TRIVIAL (pure comment/docstring/whitespace edits, version-string bumps, log-message wording, mechanical rename with no logic change, or a purely additive test of existing behavior) or SUBSTANTIVE (any logic, control-flow, error-handling, or behavior change — anything you can't confidently call trivial). When unsure, answer substantive. Output ONLY compact JSON: {\"verdict\":\"trivial|substantive\",\"confidence\":0.0-1.0,\"reason\":\"<=8 words\"}.
-
-DIFF:
-$_diff_head"
-    _tresp=$(provider_run_prompt "$_tprompt" "$_tmodel" "true" 2>/dev/null || true)
-    _tjson=$(echo "$_tresp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
-    if [ -n "$_tjson" ] && echo "$_tjson" | jq -e . >/dev/null 2>&1; then
-      _verdict=$(echo "$_tjson" | jq -r '.verdict // "substantive"' 2>/dev/null || echo "substantive")
-      _conf=$(echo "$_tjson" | jq -r '.confidence // 0' 2>/dev/null || echo "0")
-      _reason=$(echo "$_tjson" | jq -r '.reason // "?"' 2>/dev/null | tr ' |' '__' | head -c 40 || echo "?")
-    else
-      # Unparseable classifier output → escalate (fail safe toward substantive).
-      _verdict="substantive"; _conf="0"; _reason="unparseable"
-    fi
-    # Confidence gate: low confidence escalates to substantive.
-    if [ "$_verdict" = "trivial" ] && awk "BEGIN{exit !(${_conf:-0} < 0.8)}" 2>/dev/null; then
-      _verdict="substantive"; _reason="lowconf_${_conf}"
-    fi
-  fi
+  # Classification (Layer 1 guards + Layer 2 haiku) is shared with the fast-path.
+  _cls=$(triage_classify_diff "$_pr" "$_diff" "$_files")
+  IFS='|' read -r _verdict _conf _guard _reason _size _category <<<"$_cls"
 
   _diag "TRIAGE_SHADOW pr=${_pr} pass=${_pass} haiku=${_verdict} conf=${_conf} guard=${_guard:-none} opus_critical=${_ocrit} opus_high=${_ohigh} opus_med=${_omed} opus_low=${_olow} size_lines=${_size} files=${_files} category=${_category} reason=${_reason}"
 }
