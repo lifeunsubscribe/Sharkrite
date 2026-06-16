@@ -1373,9 +1373,11 @@ phase_assess_and_resolve() {
     # Phase 2 (push + review generation) runs in foreground
     if ! phase_create_pr "$issue_number" --loop; then
       print_error "Failed to push fixes and regenerate review"
-      # Gate is still running — kill it and clean up before returning
-      kill "$_gate_pid" 2>/dev/null || true
-      wait "$_gate_pid" 2>/dev/null || true
+      # Gate is still running — kill its whole process tree (a bare kill leaves
+      # leaked bats/tee children that can keep the pipe open) and reap, bounded
+      # so a wedged gate can't hang this error path either (issue #654).
+      kill_process_tree "$_gate_pid"
+      wait_pid_with_timeout "$_gate_pid" 15 >/dev/null 2>&1 || true
       rm -f "${_gate_output_file:-}"
       # Doc assessment may also still be running — kill it so it doesn't
       # outlive the workflow as a zombie writing to .rite/docs/ after we fail.
@@ -1383,9 +1385,24 @@ phase_assess_and_resolve() {
       return 1
     fi
 
-    # Wait for gate to complete (review is done; gate may still be running)
+    # Wait for gate to complete (review is done; gate may still be running).
+    # BOUNDED wait — a leaked test subprocess can inherit the gate's stdout pipe
+    # so `tee` never sees EOF and the gate PID never exits; an unbounded wait then
+    # hangs the whole workflow for hours with no diagnostic (issue #654, live:
+    # `rite 482` wedged ~2.5h). On timeout we kill the gate's process tree, record
+    # a skipped-gate sentinel, log [diag] GATE_TIMEOUT, and proceed — the gate
+    # contributed no signal this round, but the workflow does not hang.
     local _gate_exit=0
-    wait "$_gate_pid" || _gate_exit=$?
+    wait_pid_with_timeout "$_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _gate_exit=$?
+    if [ "$_gate_exit" -eq 124 ]; then
+      _diag "GATE_TIMEOUT pr=${pr_number:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s"
+      print_warning "⚠️  Post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — likely a leaked subprocess holding the gate pipe. Killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
+      kill_process_tree "$_gate_pid"
+      # Write a valid skipped-gate sentinel so assess-and-resolve.sh's jq does not
+      # choke on a partial/empty findings file from the killed gate.
+      printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_timeout"}\n' > "$_gate_output_file" 2>/dev/null || true
+      _gate_exit=0
+    fi
 
     # Persist gate findings for assess-and-resolve.sh via RITE_GATE_FINDINGS env var.
     # Fallback path (.rite/state/gate-findings-N.json) is used when env var is not set.
