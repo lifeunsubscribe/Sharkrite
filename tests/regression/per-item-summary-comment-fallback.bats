@@ -24,6 +24,7 @@
 #   5. Static: gh_safe call no longer silences stderr with 2>/dev/null
 #   6. Static: orphaned-summary-comment file write is present in source
 #   7. Static: _diag line emitted on failure
+#   8. Static: orphaned-summary path has intentional non-PID-scoped comment (#345 deviation)
 
 load '../helpers/setup.bash'
 
@@ -86,6 +87,11 @@ Each deferred finding has its own prioritized issue — no consolidated rollup n
     _summary_stderr=$(cat "$_summary_stderr_file" 2>/dev/null || true)
     print_warning "Could not post per-item summary comment to PR #$PR_NUMBER (per-item issues are still filed)"
     [ -n "$_summary_stderr" ] && print_warning "gh error: $_summary_stderr"
+    # Intentionally NOT PID-scoped (deviation from #345 convention).
+    # This is a persistent recovery artifact in .rite/, not a /tmp/ temp file.
+    # Per-PR naming (no $$) is correct: content is idempotent per PR (safe to
+    # overwrite), and a single well-known path makes manual recovery straightforward
+    # — multiple PID-suffixed files would make the recovery file hard to discover.
     _orphaned_summary="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-summary-comment-${PR_NUMBER}.md"
     mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
     {
@@ -256,6 +262,24 @@ Each deferred finding has its own prioritized issue — no consolidated rollup n
 
   [ -n "$_diag_line" ] || {
     echo "FAIL: PER_ITEM_SUMMARY_COMMENT_FAILED diag line not found in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+}
+
+# ─── Test 8: static check — non-PID-scoped deviation comment present ─────────
+
+@test "assess-and-resolve.sh: orphaned-summary path has intentional non-PID-scoped comment" {
+  # The #345 convention requires PID-suffixed temp files to prevent concurrent-run
+  # clobbering.  The orphaned-summary-comment file deliberately deviates: it is a
+  # persistent recovery artifact (in .rite/, not /tmp/) and per-PR naming is
+  # intentional (idempotent content; single well-known path aids manual recovery).
+  # This test asserts the deviation is documented with an inline comment so future
+  # readers (and reviewers) understand the intentional choice.
+  _comment=$(grep -n 'NOT PID-scoped' "$ASSESS_RESOLVE_SCRIPT" || true)
+
+  [ -n "$_comment" ] || {
+    echo "FAIL: intentional non-PID-scoped deviation comment not found near _orphaned_summary in $ASSESS_RESOLVE_SCRIPT"
+    echo "Expected a comment explaining why orphaned-summary-comment-\${PR_NUMBER}.md is not PID-scoped"
     false
   }
 }
