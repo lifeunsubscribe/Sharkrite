@@ -24,6 +24,10 @@
 #   2. The full divergence flow preserves foreign commits on origin/$branch_name
 #      when the resolver uses the correct merge target.
 #      (semantic invariant — exercises the behavior the arg guards against breaking).
+#
+#   3. Wrong-target failure path: foreign commit is NOT an ancestor when the
+#      resolver uses origin/main (the shared ancestor) instead of origin/$branch_name.
+#      (counterpart to Test 2 — proves the ancestry assertion is non-vacuous).
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -236,6 +240,76 @@ _setup_diverging_branch() {
   local is_ancestor=0
   git -C "$WORKTREE_PATH" merge-base --is-ancestor "$FOREIGN_COMMIT_SHA" "origin/$BRANCH_NAME" || is_ancestor=$?
   [ "$is_ancestor" -eq 0 ]
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Test 3: Wrong-target failure path — foreign commit is NOT an ancestor
+# when the resolver uses the wrong merge target (origin/main).
+#
+# This is the counterpart to Test 2. It demonstrates that Test 2's
+# ancestry assertion is non-vacuous: using origin/main (the shared
+# ancestor, not the branch-specific remote) does NOT preserve the
+# foreign commit. The two tests together form a proof-by-contrast:
+#   - Correct target  → foreign commit IS ancestor (Test 2)
+#   - Wrong target    → foreign commit is NOT ancestor (Test 3)
+#
+# Mechanism: stub attempt_claude_merge_resolution to unconditionally
+# merge origin/main (ignoring the --merge-target argument), simulating
+# the pre-fix buggy call site. After _do_rebase_and_push force-pushes
+# the wrong-merged branch, origin/$BRANCH_NAME is overwritten and the
+# foreign commit is not reachable from the new tip.
+# ───────────────────────────────────────────────────────────────────
+@test "divergence merge-target: foreign commit is NOT ancestor when resolver uses wrong target (origin/main)" {
+  _setup_diverging_branch
+
+  # Stub attempt_claude_merge_resolution to simulate the pre-fix bug:
+  # ignore --merge-target and always merge origin/main (the shared ancestor).
+  # The stub resolves the conflict file so _do_rebase_and_push can complete —
+  # we need a push to happen so we can verify origin/$BRANCH_NAME afterward.
+  attempt_claude_merge_resolution() {
+    # Intentionally ignore all arguments (including --merge-target) and
+    # merge the wrong target — this is the buggy behavior under test.
+    git merge --abort 2>/dev/null || true
+    if git merge origin/main --no-edit 2>/dev/null; then
+      # Fast-forward: no conflicts, but foreign commit not incorporated
+      return 0
+    fi
+    # Merge with conflicts: resolve and stage (wrong target, but still succeeds)
+    local _conflicted
+    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      echo "# Wrong-target merged content" > "$_f"
+      git add "$_f"
+    done <<< "$_conflicted"
+    return 0
+  }
+
+  # Run _do_rebase_and_push — the stub above will use origin/main (wrong target)
+  local exit_code=0
+  _do_rebase_and_push "$BRANCH_NAME" "true" "450" "435" 2>/dev/null || exit_code=$?
+
+  # The push must succeed (exit 0) — we need origin/$BRANCH_NAME to be updated
+  # so we can verify the foreign commit is absent from the pushed result.
+  [ "$exit_code" -eq 0 ]
+
+  # Fetch updated remote state
+  git fetch origin "$BRANCH_NAME" >/dev/null 2>&1
+
+  # The foreign commit must NOT be an ancestor of origin/$BRANCH_NAME.
+  # Using origin/main as the merge target brought in main's history but
+  # not origin/$BRANCH_NAME's foreign commit — so the pushed branch tip
+  # has main as a parent, not the foreign commit.
+  # git merge-base --is-ancestor exits 0 if ancestor, 1 if not.
+  local is_ancestor=0
+  git -C "$WORKTREE_PATH" merge-base --is-ancestor "$FOREIGN_COMMIT_SHA" "origin/$BRANCH_NAME" || is_ancestor=$?
+  [ "$is_ancestor" -ne 0 ]
 
   # Clean up
   cd "$FIXTURE_REPO"

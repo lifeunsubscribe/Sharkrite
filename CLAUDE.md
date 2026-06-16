@@ -35,8 +35,7 @@ lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides ac
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
-lib/providers/claude.sh           # Claude Code CLI provider (primary)
-lib/providers/gemini.sh           # Gemini CLI provider (skeleton)
+lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
 lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables

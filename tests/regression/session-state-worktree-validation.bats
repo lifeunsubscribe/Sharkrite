@@ -45,6 +45,8 @@
 #    19. resume validation rejects a path that resolves to main repo root via symlink (pwd -P)
 #    20. resume validation accepts a linked worktree whose path contains spaces
 #    21. resume validation accepts a linked worktree accessed via a symlink (pwd -P canonicalization)
+#   STRUCTURAL (pipeline drift pin — simulation fidelity guard, issue #643):
+#    22. resume validation uses exact worktree list pipeline (porcelain | awk | tail -n +2)
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -134,6 +136,49 @@ teardown() {
   [ "$_count" -ge 1 ] || {
     echo "FAIL: save_session_state() in session-tracker.sh does not contain a main-root guard"
     echo "Expected: worktree_path comparison against _main_root / RITE_PROJECT_ROOT"
+    return 1
+  }
+}
+
+@test "structural: resume validation uses exact worktree list pipeline (drift pin)" {
+  # issue #643 — simulation fidelity guard.
+  #
+  # _simulate_resume_validation_with_worktree_check() re-implements the linked-
+  # worktree membership branch from workflow-runner.sh.  If the production
+  # pipeline changes (e.g. the awk pattern or the tail -n +2 skip), the
+  # simulation silently diverges and tests 17-21 stop catching real regressions.
+  #
+  # This structural pin asserts that workflow-runner.sh still uses the three-
+  # component pipeline the simulation mirrors:
+  #   worktree list --porcelain  →  awk '/^worktree /'  →  tail -n +2
+  #
+  # If any component changes, update BOTH the production code AND the
+  # _simulate_resume_validation_with_worktree_check() helper above.
+  _wfr="$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+  [ -f "$_wfr" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
+
+  # Pin 1: --porcelain flag (preserves paths with spaces; plain list truncates)
+  _count=$(grep -c 'worktree list --porcelain' "$_wfr" || true)
+  [ "$_count" -ge 1 ] || {
+    echo "FAIL: workflow-runner.sh no longer uses 'worktree list --porcelain'"
+    echo "Update _simulate_resume_validation_with_worktree_check() to match the new pipeline."
+    return 1
+  }
+
+  # Pin 2: awk extraction pattern (pulls path after 'worktree ' prefix)
+  # Use grep -F (fixed-string) so the single-quote and caret are treated literally.
+  _count=$(grep -cF "awk '/^worktree /" "$_wfr" || true)
+  [ "$_count" -ge 1 ] || {
+    echo "FAIL: workflow-runner.sh no longer uses awk '/^worktree /' to extract paths"
+    echo "Update _simulate_resume_validation_with_worktree_check() to match the new pipeline."
+    return 1
+  }
+
+  # Pin 3: tail -n +2 skip (discards the main checkout, the first entry)
+  _count=$(grep -c 'tail -n +2' "$_wfr" || true)
+  [ "$_count" -ge 1 ] || {
+    echo "FAIL: workflow-runner.sh no longer uses 'tail -n +2' to skip the main checkout"
+    echo "Update _simulate_resume_validation_with_worktree_check() to match the new pipeline."
     return 1
   }
 }
