@@ -42,7 +42,9 @@ setup() {
   # provider_detect_cli is the first heavy call (requires the provider CLI to be installed).
   # The guard must be BEFORE this line to prevent launching a Claude Code session.
   local guard_line provider_line
-  guard_line=$(grep -n 'RITE_SOURCE_FUNCTIONS_ONLY' "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" | head -1 | cut -d: -f1)
+  # Match the STOP guard (`= "1"` → return), not any RITE_SOURCE_FUNCTIONS_ONLY
+  # mention — an earlier `!= "1"` block exists that would mislead a first-match grep.
+  guard_line=$(grep -n 'RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1"' "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" | head -1 | cut -d: -f1)
   provider_line=$(grep -n '^provider_detect_cli' "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" | head -1 | cut -d: -f1)
   [ -n "$guard_line" ]
   [ -n "$provider_line" ]
@@ -54,7 +56,11 @@ setup() {
   # Function definitions must come BEFORE the guard (otherwise they won't be
   # available to callers that use RITE_SOURCE_FUNCTIONS_ONLY=1).
   local guard_line fn_line
-  guard_line=$(grep -n 'RITE_SOURCE_FUNCTIONS_ONLY' "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" | head -1 | cut -d: -f1)
+  # Match the STOP guard specifically (`= "1"` → return), not any
+  # RITE_SOURCE_FUNCTIONS_ONLY mention. Other references exist earlier (e.g. an
+  # `!= "1"` block that skips top-level arg-parsing), so a first-occurrence grep
+  # would grab the wrong line.
+  guard_line=$(grep -n 'RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1"' "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" | head -1 | cut -d: -f1)
   fn_line=$(grep -n '^check_dev_session_output()' "${RITE_REPO_ROOT}/lib/core/claude-workflow.sh" | head -1 | cut -d: -f1)
   [ -n "$guard_line" ]
   [ -n "$fn_line" ]
