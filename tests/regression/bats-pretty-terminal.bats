@@ -516,6 +516,104 @@ STUB
     || { echo "FAIL: tests/ not passed to bats"; cat "$_mk_rec_args_log"; return 1; }
 }
 
+@test "Makefile test target discovers nested .bats files via -r (end-to-end recursive discovery)" {
+  # END-TO-END RECURSIVE DISCOVERY — closes the flag-presence gap in the test above.
+  #
+  # The previous test only checked that '-r' and 'tests/' appeared somewhere in
+  # the bats argument log.  That assertion passes even if the Makefile passed
+  # 'tests/' as a literal path argument without -r, or if bats was invoked once
+  # per .bats file instead of recursively.
+  #
+  # This test uses a *discovery-echoing* stub: when bats receives '-r <dir>' it
+  # walks the directory for *.bats files and writes each discovered path to a
+  # separate "discovered" log — proving the Makefile's -r invocation actually
+  # hands bats a directory, not a flat glob, and that the stub sees a nested
+  # structure it can traverse.  A flat-file invocation (bats tests/a.bats
+  # tests/b.bats) would log each file as a positional arg, not as discovered
+  # paths — the two output logs are structurally different, letting the
+  # assertions distinguish the recursive call from a flat-glob call.
+  #
+  # ADVERSARIAL DESIGN: the fixture trees a .bats file TWO levels deep
+  # (tests/regression/deep.bats) so any shallow glob that doesn't recurse
+  # past one directory level would miss it, and the discovered-log assertion
+  # would fail.  A flat glob (tests/*.bats) produces zero hits on nested
+  # files; only `bats -r tests/` discovers them.
+
+  _stub_dir="${BATS_TEST_TMPDIR}/mk_disc_bats"
+  mkdir -p "$_stub_dir"
+  _mk_disc_args_log="${BATS_TEST_TMPDIR}/mk_disc_bats_args.log"
+  _mk_disc_found_log="${BATS_TEST_TMPDIR}/mk_disc_discovered.log"
+
+  # Discovery-echoing stub: logs argv AND, when -r is present, walks any
+  # directory arg for *.bats files and writes each path to the discovered log.
+  # This stub does NOT need '--report-formatter' in its body; we test the
+  # no-pretty fallback path so the test is isolated from formatter detection.
+  cat > "$_stub_dir/bats" <<STUB
+#!/bin/bash
+# Older bats — no report-formatter (omitted intentionally so detection fails
+# and the Makefile uses the plain fallback path with no -F pretty).
+printf '%s\n' "\$@" >> "${_mk_disc_args_log}"
+# When -r is among the args, walk every remaining directory arg for *.bats.
+_saw_r=0
+for _a in "\$@"; do
+  if [ "\$_a" = "-r" ]; then _saw_r=1; fi
+done
+if [ "\$_saw_r" = "1" ]; then
+  for _a in "\$@"; do
+    if [ -d "\$_a" ]; then
+      find "\$_a" -name "*.bats" >> "${_mk_disc_found_log}"
+    fi
+  done
+fi
+exit 0
+STUB
+  chmod +x "$_stub_dir/bats"
+
+  # Build a fixture project with .bats files nested TWO levels deep.
+  # tests/top-level.bats       — one level deep (would be found by a shallow glob)
+  # tests/regression/deep.bats — two levels deep (only found by true recursion)
+  _mk_dir="${BATS_TEST_TMPDIR}/mk_disc_proj"
+  mkdir -p "$_mk_dir/tests/regression"
+  # Minimal valid bats content so the stub's find picks them up by name
+  printf '#!/usr/bin/env bats\n@test "stub top" { true; }\n' \
+    > "$_mk_dir/tests/top-level.bats"
+  printf '#!/usr/bin/env bats\n@test "stub deep" { true; }\n' \
+    > "$_mk_dir/tests/regression/deep.bats"
+  cp "${BATS_TEST_DIRNAME}/../../Makefile" "$_mk_dir/Makefile"
+
+  run env -i HOME="$HOME" PATH="${_stub_dir}:/usr/bin:/bin" \
+    make -C "$_mk_dir" test
+  [ "$status" -eq 0 ]
+
+  # Bats must have been invoked
+  [ -f "$_mk_disc_args_log" ] \
+    || { echo "FAIL: bats was never invoked (no args log)"; return 1; }
+
+  # -r must appear as a standalone arg (recursive flag present)
+  grep -qx '\-r' "$_mk_disc_args_log" \
+    || { echo "FAIL: -r not passed as standalone arg to bats"; cat "$_mk_disc_args_log"; return 1; }
+
+  # tests/ must appear as a standalone arg (directory, not glob)
+  grep -qx 'tests/' "$_mk_disc_args_log" \
+    || { echo "FAIL: tests/ not passed as standalone directory arg to bats"; cat "$_mk_disc_args_log"; return 1; }
+
+  # Discovery log must exist — stub only writes it when -r fires
+  [ -f "$_mk_disc_found_log" ] \
+    || { echo "FAIL: discovery log not written — stub did not receive -r <dir>"; return 1; }
+
+  # The top-level .bats file must be discovered
+  grep -q 'top-level.bats' "$_mk_disc_found_log" \
+    || { echo "FAIL: tests/top-level.bats not discovered (shallow glob might explain)"; \
+         echo "Discovered:"; cat "$_mk_disc_found_log"; return 1; }
+
+  # The deeply nested .bats file must ALSO be discovered — this is the key
+  # adversarial assertion.  A flat 'tests/*.bats' glob would not find it.
+  # Only 'bats -r tests/' discovers files in tests/regression/.
+  grep -q 'regression/deep.bats' "$_mk_disc_found_log" \
+    || { echo "FAIL: tests/regression/deep.bats not discovered — Makefile may not be using true -r recursion"; \
+         echo "Discovered:"; cat "$_mk_disc_found_log"; return 1; }
+}
+
 # ---------------------------------------------------------------------------
 # Parallel jobs (--jobs N) + pretty formatter + TAP pipeline (issue #606)
 # ---------------------------------------------------------------------------
