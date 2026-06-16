@@ -211,11 +211,19 @@ STUB
 }
 
 @test "gate parses failures from TAP report.tap not from pretty stdout (behavioral)" {
-  # Verifies the pretty→report.tap→_parse_bats_failure_line pipeline:
+  # Adversarially verifies the pretty→report.tap→_parse_bats_failure_line pipeline:
   #   - bats emits pretty output (✗ lines) to stdout  [must NOT be parsed]
   #   - bats writes TAP to report.tap                 [must be the parser input]
-  # The stub has 1 TAP failure; if the gate mistakenly parsed pretty stdout
-  # it would see 0 (pretty ✗ lines don't match ^not ok) or parse incorrectly.
+  #
+  # ADVERSARIAL DESIGN: the stub uses DISTINCT names for the pretty-stdout line
+  # vs the TAP report line.  A buggy gate that reads pretty stdout would record
+  # "pretty-stdout-only-failure" in the JSON; a correct gate reads report.tap
+  # and records "tap-sourced-failure".  Identical names (the old pattern) masked
+  # this distinction — you could not tell which source the JSON came from.
+  #
+  # Regression this catches: if the gate is ever changed to parse bats stdout
+  # instead of report.tap, the assertion on "tap-sourced-failure" fails and the
+  # negative assertion on "pretty-stdout-only-failure" would catch leakage.
   _stub_dir="${BATS_TEST_TMPDIR}/bats_tap_pipe_stub"
   mkdir -p "$_stub_dir"
   cat > "$_stub_dir/bats" <<'STUBEOF'
@@ -229,12 +237,16 @@ for _a in "$@"; do
   if [ "$_prev" = "--output" ]; then _out_dir="$_a"; fi
   _prev="$_a"
 done
-# Emit pretty-format output to stdout (what terminal sees via FIFO-tee)
-echo " ✗ failing test name"
-# Write TAP to report.tap — this is what _parse_bats_failure_line must read
+# Emit pretty-format output to stdout (what terminal sees via FIFO-tee).
+# Use a name that does NOT appear in the TAP report — any correct gate
+# must NOT pick up this line as a test failure.
+echo " ✗ pretty-stdout-only-failure"
+# Write TAP to report.tap — this is what _parse_bats_failure_line must read.
+# The name here differs from the pretty line so the assertion can distinguish
+# which source the gate actually consumed.
 if [ -n "$_out_dir" ]; then
   mkdir -p "$_out_dir"
-  printf 'TAP version 13\n1..1\nnot ok 1 failing test name\n' > "$_out_dir/report.tap"
+  printf 'TAP version 13\n1..1\nnot ok 1 tap-sourced-failure\n' > "$_out_dir/report.tap"
 fi
 exit 1
 STUBEOF
@@ -256,12 +268,19 @@ STUBEOF
   # Gate exits 1 because bats failed; JSON must still be written
   [ -f "$_gate_out" ]
 
-  # JSON must have exactly 1 tests entry with the TAP-sourced name
+  # JSON must have exactly 1 tests entry — sourced from report.tap, not stdout
   _tests_count=$(grep -o '"test_name"' "$_gate_out" | wc -l | tr -d ' ')
   [ "$_tests_count" -eq 1 ] \
     || { echo "FAIL: expected 1 tests entry; got $_tests_count"; cat "$_gate_out"; return 1; }
-  grep -q 'failing test name' "$_gate_out" \
-    || { echo "FAIL: test_name from TAP not in JSON"; cat "$_gate_out"; return 1; }
+
+  # The TAP-sourced name must appear — this is the positive assertion
+  grep -q 'tap-sourced-failure' "$_gate_out" \
+    || { echo "FAIL: TAP test_name 'tap-sourced-failure' not in JSON (gate may have read wrong source)"; cat "$_gate_out"; return 1; }
+
+  # The pretty-stdout name must NOT appear — this is the adversarial assertion
+  # If this fails, the gate is reading pretty stdout instead of report.tap
+  grep -qv 'pretty-stdout-only-failure' "$_gate_out" \
+    || { echo "FAIL: pretty-stdout name leaked into JSON — gate is reading stdout, not report.tap"; cat "$_gate_out"; return 1; }
 }
 
 @test "gate falls back to tee-captured TAP output when pretty not supported (behavioral)" {
@@ -569,12 +588,18 @@ STUB
 }
 
 @test "gate reads TAP report.tap (not pretty stdout) when --jobs N is active (behavioral)" {
-  # Verifies that the pretty→report.tap→_parse_bats_failure_line pipeline
-  # still reads the TAP file — not stdout — when --jobs N is in effect.
-  # The stub emits a pretty ✗ line to stdout AND writes a TAP failure to
-  # report.tap.  Enabling RITE_BATS_JOBS=2 must not change the parser's
-  # input source: JSON must contain the TAP-sourced failure, not a doubled
-  # or misread entry from pretty stdout.
+  # Adversarially verifies that the pretty→report.tap→_parse_bats_failure_line
+  # pipeline still reads the TAP file — not stdout — when --jobs N is in effect.
+  #
+  # ADVERSARIAL DESIGN: like the single-job TAP-pipe test above, the stub uses
+  # DISTINCT names for the pretty-stdout line vs the TAP report line.  Identical
+  # names (the old pattern) masked which source the gate actually read — a buggy
+  # gate reading pretty stdout would produce the same JSON content and the test
+  # would pass incorrectly.
+  #
+  # Regression this catches: if --jobs N ever causes the gate to switch from
+  # report.tap to stdout as the failure source, "jobs-pretty-stdout-only-failure"
+  # appears in JSON and "jobs-tap-sourced-failure" does not — both assertions fail.
   _stub_dir="${BATS_TEST_TMPDIR}/bats_jobs_tap_src_stub"
   mkdir -p "$_stub_dir"
   cat > "$_stub_dir/bats" <<'STUBEOF'
@@ -587,12 +612,14 @@ for _a in "$@"; do
   if [ "$_prev" = "--output" ]; then _out_dir="$_a"; fi
   _prev="$_a"
 done
-# Pretty output to stdout — must NOT be parsed as a failure
-echo " ✗ parallel tap failing test"
-# TAP report to file — this is what the gate must parse
+# Pretty output to stdout — must NOT be parsed as a failure.
+# Distinct name so we can detect if the gate ever reads stdout instead of TAP.
+echo " ✗ jobs-pretty-stdout-only-failure"
+# TAP report to file — this is what the gate must parse.
+# Name differs from the pretty line so assertions can prove source attribution.
 if [ -n "$_out_dir" ]; then
   mkdir -p "$_out_dir"
-  printf 'TAP version 13\n1..1\nnot ok 1 parallel tap failing test\n' > "$_out_dir/report.tap"
+  printf 'TAP version 13\n1..1\nnot ok 1 jobs-tap-sourced-failure\n' > "$_out_dir/report.tap"
 fi
 exit 1
 STUBEOF
@@ -619,8 +646,15 @@ STUBEOF
   _tests_count=$(grep -o '"test_name"' "$_gate_out" | wc -l | tr -d ' ')
   [ "$_tests_count" -eq 1 ] \
     || { echo "FAIL: expected 1 tests entry; got $_tests_count"; cat "$_gate_out"; return 1; }
-  grep -q 'parallel tap failing test' "$_gate_out" \
-    || { echo "FAIL: TAP-sourced failure name not in JSON"; cat "$_gate_out"; return 1; }
+
+  # The TAP-sourced name must appear — positive assertion
+  grep -q 'jobs-tap-sourced-failure' "$_gate_out" \
+    || { echo "FAIL: TAP test_name 'jobs-tap-sourced-failure' not in JSON (gate may have read stdout)"; cat "$_gate_out"; return 1; }
+
+  # The pretty-stdout name must NOT appear — adversarial assertion
+  # If this fails, --jobs N caused the gate to switch from report.tap to stdout
+  grep -qv 'jobs-pretty-stdout-only-failure' "$_gate_out" \
+    || { echo "FAIL: pretty-stdout name leaked into JSON under --jobs — gate reading stdout, not report.tap"; cat "$_gate_out"; return 1; }
 }
 
 @test "gate captures multiple TAP failures from report.tap when --jobs N is active (behavioral)" {
