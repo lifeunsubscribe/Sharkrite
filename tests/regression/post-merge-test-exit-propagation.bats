@@ -48,6 +48,11 @@ LOG_EOF
   # Copy real markers.sh — needed by test-gate.sh for RITE_MARKER_TEST_COVERS
   cp "${REAL_RITE_ROOT}/lib/utils/markers.sh" "$RITE_LIB_DIR/utils/"
 
+  # Copy test-gate.sh — post-merge-verify.sh sources it at load time, so every
+  # test that sources post-merge-verify.sh needs it present (not just the few
+  # that copy it explicitly). Without this, tests 1-3 fail at the source line.
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
   # Copy actual post-merge-verify.sh from the real repo
   cp "${REAL_RITE_ROOT}/lib/utils/post-merge-verify.sh" "$RITE_LIB_DIR/utils/"
 }
