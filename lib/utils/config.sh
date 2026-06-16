@@ -272,15 +272,12 @@ RITE_TRIAGE_MODEL="${RITE_TRIAGE_MODEL:-claude-haiku-4-5}"
 RITE_TRIAGE_MAX_LINES="${RITE_TRIAGE_MAX_LINES:-30}"
 RITE_TRIAGE_MAX_FILES="${RITE_TRIAGE_MAX_FILES:-3}"
 
-# Provider selection (per-phase, all default to claude for backward compat)
-# Available providers: claude, gemini
+# Provider selection (per-phase). claude is the only shipped provider; the vars
+# remain so the codebase stays provider-neutral (the abstraction is exercised by
+# tests/provider-swap with a mock provider).
 RITE_DEV_PROVIDER="${RITE_DEV_PROVIDER:-claude}"         # Agentic dev/fix sessions
 RITE_REVIEW_PROVIDER="${RITE_REVIEW_PROVIDER:-claude}"    # Reviews, assessments, planning
 RITE_UTILITY_PROVIDER="${RITE_UTILITY_PROVIDER:-claude}"  # Classify, normalize, health
-
-# Gemini models (only used when a RITE_*_PROVIDER is set to "gemini")
-RITE_GEMINI_DEV_MODEL="${RITE_GEMINI_DEV_MODEL:-gemini-2.5-pro}"
-RITE_GEMINI_REVIEW_MODEL="${RITE_GEMINI_REVIEW_MODEL:-gemini-2.5-pro}"
 
 # Plan command: default architectural doc(s) to reference (space-separated, project-relative)
 RITE_PLAN_DOCS="${RITE_PLAN_DOCS:-}"
@@ -399,8 +396,6 @@ export RITE_TRIAGE_MAX_FILES
 export RITE_DEV_PROVIDER
 export RITE_REVIEW_PROVIDER
 export RITE_UTILITY_PROVIDER
-export RITE_GEMINI_DEV_MODEL
-export RITE_GEMINI_REVIEW_MODEL
 export RITE_PLAN_DOCS
 export RITE_PLAN_MAX_ESTIMATE
 export RITE_PLAN_DOC_BYTE_CAP

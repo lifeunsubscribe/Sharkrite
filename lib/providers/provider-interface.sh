@@ -1,9 +1,11 @@
 #!/bin/bash
 # lib/providers/provider-interface.sh — Provider abstraction dispatcher
 #
-# Loads a named provider (e.g., "claude", "gemini") and aliases its functions
-# to a generic provider_* namespace so callers don't need to know which
-# provider is active.
+# Loads a named provider (claude is the only shipped provider) and aliases its
+# functions to a generic provider_* namespace so callers don't need to know which
+# provider is active. The abstraction is kept so the codebase stays provider-
+# neutral (enforced by the provider-agnosticism lint + tests/provider-swap, which
+# swap in a mock provider).
 #
 # Usage:
 #   source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -99,7 +101,7 @@ fi
 #   Returns the model name on stdout.
 #
 # provider_name()
-#   Return the provider display name on stdout (e.g., "claude", "gemini").
+#   Return the provider display name on stdout (e.g., "claude").
 
 # =============================================================================
 # Dispatcher
@@ -119,7 +121,7 @@ load_provider() {
 
   if [ ! -f "$provider_file" ]; then
     echo "Unknown provider: $provider_name" >&2
-    echo "Available providers: claude, gemini" >&2
+    echo "Available providers: claude" >&2
     exit 1
   fi
 
