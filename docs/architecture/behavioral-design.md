@@ -264,6 +264,38 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
 
+### Follow-up Issue Creation Cap (RITE_MAX_FOLLOWUP_ISSUES)
+
+The one-issue-per-finding design in `assess-and-resolve.sh` runs full dedup machinery plus `gh issue create` / PR marker comment / lock per finding, scaling **N× with finding count**. This is intentional — each finding gets its own searchable, assignable issue — but it makes the per-assessment API cost unbounded on noisy reviews.
+
+**The cost per finding (approximate):**
+- 1 sentinel pre-check (local FS)
+- 1 `acquire_pr_followup_lock` call (up to 60s wait, ~5–10s typical)
+- 1–3 dedup search round-trips (`gh issue list` + `gh issue view` + `gh pr view`)
+- 1 `gh issue create` call
+- 1 `gh pr comment` call (PR marker)
+- 1 sentinel write (local FS)
+- `RITE_FOLLOWUP_LOCK_DWELL_S` seconds of lock dwell (default 5s, post-loop)
+
+At 10 findings: up to ~50 API calls plus 50s+ of lock dwell. At 25 findings: ~125 calls, 125s+ dwell.
+
+**The cap** (`RITE_MAX_FOLLOWUP_ISSUES`, default 20) limits how many issues are *created* per assessment run. Findings beyond the cap are saved to `.rite/orphaned-followup-items.md` (same durable trail as lock-timeout and gh-failure orphans) — nothing is silently lost. Recovery: triage the orphan file, optionally raise the cap, then `rite N --assess-and-fix`.
+
+**Disabling the cap:** `RITE_MAX_FOLLOWUP_ISSUES=0` restores the original unbounded behaviour.
+
+**What the cap does NOT do:**
+- It does not affect dedup checks for already-tracked findings (those are skipped before the cap counter is consulted).
+- It does not affect sentinel-skipped findings (same — they never reach the cap check).
+- It does not cap consolidated rollup issues (the single tech-debt issue created for ACTIONABLE_LATER batches uses a separate path and is not counted).
+
+**Diag emission:** The post-loop block emits `[diag] FOLLOWUP_CAP_HIT issue=N pr=N cap=N created=N skipped=N` when the cap is hit in a given run. Skipped individual findings emit `[diag] FOLLOWUP_CAP_SKIPPED` per-finding. Health report aggregation of these events is tracked in issue #649.
+
+**Implementation:** `lib/core/assess-and-resolve.sh` — `_followup_created_count` counter initialized before the per-finding loop, incremented on successful `gh issue create`, checked at the top of each iteration against `RITE_MAX_FOLLOWUP_ISSUES`.
+
+**Configuration:** `lib/utils/config.sh` (default), `.rite/config` (per-project override), `config/project.conf.example` (template).
+
+---
+
 ### Fix-loop policy: defer non-critical findings on shippable PRs
 
 `assess-and-resolve.sh` enters the fix loop (exit 2 → claude-workflow fixes → re-review) only when **at least one ACTIONABLE_NOW finding has Severity CRITICAL or HIGH**. If every NOW item is MEDIUM/LOW, the PR is considered shippable: the NOW items are reclassified into a single tech-debt follow-up issue (via the existing `CREATE_SECURITY_DEBT` path + a new `SHIPPABLE_DEFER` flag that extends the tech-debt extractor to include ACTIONABLE_NOW headers, not just LATER ones) and the workflow proceeds to merge with exit 0.

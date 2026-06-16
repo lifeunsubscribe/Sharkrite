@@ -71,6 +71,15 @@
 # reduces worst-case holder time.  See timing budget in lib/utils/issue-lock.sh.
 # RITE_DEDUP_BACKOFF=5
 
+# Maximum number of follow-up issues created per assess-and-resolve run (default: 20).
+# The one-issue-per-finding design scales N× with finding count — each finding
+# runs full dedup + gh issue create + lock round-trips.  This cap bounds the
+# worst-case cost on noisy reviews (10+ findings).  Remaining findings beyond
+# the cap are saved to .rite/orphaned-followup-items.md for manual triage;
+# re-run `rite N --assess-and-fix` after triaging.
+# Set to 0 to disable the cap (original unbounded behaviour).
+# RITE_MAX_FOLLOWUP_ISSUES=20
+
 # =============================================================================
 # Plan Command (rite plan)
 # =============================================================================

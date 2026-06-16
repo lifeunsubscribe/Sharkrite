@@ -196,6 +196,23 @@ RITE_FOLLOWUP_SENTINEL_TTL_S="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
 # secondary guard for longer lag periods.
 RITE_FOLLOWUP_LOCK_DWELL_S="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
 
+# Maximum number of follow-up issues to create per assess-and-resolve run.
+#
+# The one-issue-per-finding design runs full dedup machinery (issue list +
+# issue view + pr view + up to 3 backoff sleeps) plus create/comment/lock
+# per finding, scaling N× with finding count.  Under a noisy review (10+
+# findings) this can burn several minutes of gh API round-trips and lock-hold
+# time before any issue is usable.
+#
+# When the cap is reached, remaining findings are written to the durable
+# orphaned-followup-items.md trail (same path as lock-timeout orphans) so
+# nothing is silently lost.  Re-run `rite N --assess-and-fix` after
+# triaging the orphan file.
+#
+# Default: 20 (generous for real-world reviews; prevents unbounded API chains).
+# Set to 0 to disable the cap entirely (original unbounded behaviour).
+RITE_MAX_FOLLOWUP_ISSUES="${RITE_MAX_FOLLOWUP_ISSUES:-20}"
+
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 

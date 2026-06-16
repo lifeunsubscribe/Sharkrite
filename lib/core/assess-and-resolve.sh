@@ -1608,11 +1608,40 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   #   5. Post the PR marker comment after each successful create
 
   _finding_index=0
+  # Tracks how many follow-up issues were actually created this run (not counting
+  # deduplicated/skipped findings).  Checked against RITE_MAX_FOLLOWUP_ISSUES to
+  # bound the N× API cost of the one-issue-per-finding design.
+  _followup_created_count=0
 
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
 
     _finding_index=$((_finding_index + 1))
+
+    # --- Cap check: skip creation once RITE_MAX_FOLLOWUP_ISSUES is reached ---
+    # RITE_MAX_FOLLOWUP_ISSUES=0 disables the cap (original unbounded behaviour).
+    _followup_cap="${RITE_MAX_FOLLOWUP_ISSUES:-20}"
+    if [ "$_followup_cap" -gt 0 ] 2>/dev/null && [ "$_followup_created_count" -ge "$_followup_cap" ] 2>/dev/null; then
+      print_warning "⚠️  Follow-up cap reached ($_followup_cap issues created) — skipping finding #${_finding_index}"
+      print_info "   Remaining findings saved to orphaned-followup-items.md"
+      print_info "   Re-run: rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after raising RITE_MAX_FOLLOWUP_ISSUES or triaging the orphan file)"
+      _diag "FOLLOWUP_CAP_SKIPPED issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} finding_index=${_finding_index} cap=${_followup_cap} created=${_followup_created_count}"
+      _orphan_cap_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+      mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+      {
+        echo "---"
+        echo "# Orphaned Follow-up Item (finding #${_finding_index}) — cap reached (RITE_MAX_FOLLOWUP_ISSUES=${_followup_cap})"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# PR: #${PR_NUMBER}"
+        echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+        echo "# Finding header: ${_fh_line:-}"
+        echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after raising RITE_MAX_FOLLOWUP_ISSUES or triaging above)"
+        echo ""
+      } >> "$_orphan_cap_file" || true
+      unset _followup_cap _orphan_cap_file
+      continue
+    fi
+    unset _followup_cap
 
     # --- Extract per-finding fields from FILTERED_CONTENT ---
 
@@ -1918,6 +1947,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
           if [ -n "$_new_issue_num" ]; then
             FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_new_issue_num} "
             _rollup_any_created=true
+            _followup_created_count=$((_followup_created_count + 1))
 
             # Durable local evidence (primary dedup guard across processes)
             # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so
@@ -2006,6 +2036,18 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     fi
     unset _dwell_seconds
   fi
+
+  # Emit a post-loop diagnostic so health reports can surface cap-hit events.
+  _followup_cap_final="${RITE_MAX_FOLLOWUP_ISSUES:-20}"
+  if [ "$_followup_cap_final" -gt 0 ] 2>/dev/null && [ "$_followup_created_count" -ge "$_followup_cap_final" ] 2>/dev/null; then
+    _skipped_count=$((_finding_index - _followup_created_count))
+    if [ "$_skipped_count" -gt 0 ] 2>/dev/null; then
+      print_warning "⚠️  Follow-up cap (RITE_MAX_FOLLOWUP_ISSUES=${_followup_cap_final}) was reached: ${_followup_created_count} created, ${_skipped_count} skipped"
+      print_info "   Skipped items saved to .rite/orphaned-followup-items.md — raise RITE_MAX_FOLLOWUP_ISSUES or triage and re-run"
+    fi
+    _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} cap=${_followup_cap_final} created=${_followup_created_count} skipped=${_skipped_count:-0}"
+  fi
+  unset _followup_cap_final
 
   # Legacy alias: FOLLOWUP_NUMBER for the final summary line (set to first number
   # if any were created; empty otherwise).
