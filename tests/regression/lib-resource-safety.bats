@@ -223,10 +223,6 @@ _assert_double_source() {
   _assert_double_source "lib/providers/claude.sh"
 }
 
-@test "lib/providers/gemini.sh sources twice without error" {
-  _assert_double_source "lib/providers/gemini.sh"
-}
-
 @test "lib/providers/provider-interface.sh sources twice without error" {
   _assert_double_source "lib/providers/provider-interface.sh"
 }

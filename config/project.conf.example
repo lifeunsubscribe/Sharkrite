@@ -47,8 +47,9 @@
 # Provider Selection (per-phase, overrides global config)
 # =============================================================================
 
-# Mix providers per phase. E.g., use Gemini for dev but Claude for review:
-# RITE_DEV_PROVIDER="gemini"
+# claude is the only shipped provider; these default to "claude". The per-phase
+# vars exist so the codebase stays provider-neutral.
+# RITE_DEV_PROVIDER="claude"
 # RITE_REVIEW_PROVIDER="claude"
 # RITE_UTILITY_PROVIDER="claude"
 
