@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.sharkrite.full-suite.plist — launchd job template for the periodic full-suite safety net
+  Issue #482: Periodic full-suite test run as safety net
+
+  INSTALLATION (macOS):
+    1. Copy this file to ~/Library/LaunchAgents/com.sharkrite.full-suite.plist
+    2. Edit the two PLACEHOLDER values:
+         RITE_PROJECT_ROOT → absolute path to your sharkrite install dir
+                             (same value used in com.sharkrite.health-report.plist)
+         ProgramArguments path → same path with /bin/rite-full-suite appended
+    3. Load it:
+         launchctl load ~/Library/LaunchAgents/com.sharkrite.full-suite.plist
+    4. Verify:
+         launchctl list | grep sharkrite
+
+  SCHEDULE: default is Sunday 3 AM (Weekday=0, Hour=3, Minute=0).
+  Change Hour/Minute/Weekday to taste. Omit StartCalendarInterval entirely
+  to run at login instead (useful for high-drift environments).
+
+  OUTPUT: appended to .rite/logs/full-suite-YYYYMMDD.log (managed by bin/rite-full-suite).
+  The StandardOutPath/StandardErrorPath here capture launchd startup errors only;
+  the run transcript goes to the per-date log file.
+
+  NOTE: launchd does NOT source your shell profile. The PATH must include:
+    - /opt/homebrew/bin (for bash 4+, bats, make, parallel)
+    - ~/.local/bin      (for claude and node symlinks — see CLAUDE.md "launchd PATH requirement")
+    - /usr/local/bin /usr/bin /bin (system tools)
+  If any tool is missing at runtime, the job exits 127 with no output. Verify
+  with: env -i HOME="$HOME" PATH="<plist PATH>" <tool> --version
+
+  LINUX / SYSTEMD:
+  See docs/architecture/behavioral-design.md → "Full Suite Safety Net — Scheduler Setup"
+  for the equivalent systemd timer unit (com.sharkrite.full-suite.service +
+  com.sharkrite.full-suite.timer). Summary:
+
+    # /etc/systemd/user/sharkrite-full-suite.service
+    [Unit]
+    Description=Sharkrite Full-Suite Safety Net
+    [Service]
+    Type=oneshot
+    Environment=RITE_PROJECT_ROOT=/path/to/sharkrite
+    ExecStart=/path/to/sharkrite/bin/rite-full-suite
+
+    # /etc/systemd/user/sharkrite-full-suite.timer
+    [Unit]
+    Description=Sharkrite Full-Suite Weekly Timer
+    [Timer]
+    OnCalendar=Sun *-*-* 03:00:00
+    Persistent=true
+    [Install]
+    WantedBy=timers.target
+
+    systemctl --user enable --now sharkrite-full-suite.timer
+    systemctl --user list-timers | grep sharkrite
+-->
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/PLACEHOLDER/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>RITE_PROJECT_ROOT</key>
+		<string>/path/to/PLACEHOLDER/sharkrite</string>
+	</dict>
+	<key>Label</key>
+	<string>com.sharkrite.full-suite</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/path/to/PLACEHOLDER/sharkrite/bin/rite-full-suite</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/sharkrite-full-suite-launchd.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/sharkrite-full-suite-launchd.log</string>
+	<!-- Default: Sunday at 3:00 AM. Weekday 0=Sunday, 1=Monday, ..., 6=Saturday -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>0</integer>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+</dict>
+</plist>

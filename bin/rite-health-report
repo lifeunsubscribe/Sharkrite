@@ -218,6 +218,65 @@ else
   TGS_AVG_RATIO_PCT="N/A"
 fi
 
+# --- Pre-parse full-suite safety net stats (issue #482) ---
+# FULL_SUITE_RUN diag format: "FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N"
+# These diags are written directly to .rite/logs/full-suite-YYYYMMDD.log by bin/rite-full-suite.
+# To capture them, scan ALL log files (including full-suite-*.log), not just rite-*.log.
+FSR_DIAG_LINES=""
+if [ -d "$LOGS_DIR" ]; then
+  while IFS= read -r logfile; do
+    _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}' | tail -1 || true)
+    if [ -n "$_log_date" ]; then
+      _log_epoch=$(date_from_compact "$_log_date")
+      if [ "${_log_epoch:-0}" -ge "$WEEK_AGO_EPOCH" ] 2>/dev/null; then
+        FSR_DIAG_LINES+=$(grep '\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
+        FSR_DIAG_LINES+=$'\n'
+      fi
+    fi
+  done < <(find "$LOGS_DIR" -name "*.log" -type f 2>/dev/null | sort)
+fi
+FSR_DIAG_LINES=$(echo "$FSR_DIAG_LINES" | sed '/^$/d' || true)
+
+FSR_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -c 'FULL_SUITE_RUN ' || true)
+FSR_PASSED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=passed' || true)
+FSR_FAILED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=failed' || true)
+# Aggregate lint + test failure counts across all full-suite runs this period
+FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+# Average duration in seconds across all runs (arithmetic in bash, not LLM)
+FSR_AVG_DURATION_S="N/A"
+if [ "$FSR_TOTAL" -gt 0 ] 2>/dev/null; then
+  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+  FSR_AVG_DURATION_S="$(( _fsr_dur_sum / FSR_TOTAL ))s"
+fi
+# Collect names of failing test cases from full-suite runs (from raw log files, not diag lines)
+FSR_FAILING_TESTS=""
+if [ "$FSR_FAILED" -gt 0 ] && [ -d "$LOGS_DIR" ]; then
+  while IFS= read -r logfile; do
+    _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}' | tail -1 || true)
+    if [ -n "$_log_date" ]; then
+      _log_epoch=$(date_from_compact "$_log_date")
+      if [ "${_log_epoch:-0}" -ge "$WEEK_AGO_EPOCH" ] 2>/dev/null; then
+        _failing=$(grep "^not ok " "$logfile" 2>/dev/null | sed 's/^not ok [0-9]* //' | head -10 || true)
+        if [ -n "$_failing" ]; then
+          FSR_FAILING_TESTS+="$(basename "$logfile"):"$'\n'"$_failing"$'\n'
+        fi
+      fi
+    fi
+  done < <(find "$LOGS_DIR" -name "full-suite-*.log" -type f 2>/dev/null | sort)
+fi
+FSR_FAILING_TESTS=$(echo "$FSR_FAILING_TESTS" | sed '/^$/d' || true)
+
+# Check for the current failure flag (written by bin/rite-full-suite on failure,
+# deleted on next successful run). Surface as a WARNING in the report.
+FSR_FAILURE_FLAG_EXISTS=false
+FSR_FAILURE_FLAG_CONTENT=""
+_fsr_flag="${PROJECT_ROOT}/${DATA_DIR}/state/full-suite-failure.flag"
+if [ -f "$_fsr_flag" ]; then
+  FSR_FAILURE_FLAG_EXISTS=true
+  FSR_FAILURE_FLAG_CONTENT=$(cat "$_fsr_flag" 2>/dev/null || true)
+fi
+
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
 
@@ -372,7 +431,14 @@ Analyze the provided data and produce a concise markdown health report. Be direc
      - Threshold: if targeted runs exist and the avg selected/total ratio > 50% → **WATCH**: "Test selection ratio is high — most bats files lack the ${RITE_MARKER_TEST_COVERS}: header; backfill more to realize the optimization."
      - If TGS_TARGETED_RUNS is 0 but TGS_FULL_RUNS > 0 → "All gate runs fell back to the full suite this week (no diff computable — empty-diff fallback; path triggers were removed 2026-06-12)."
      - If TGS_TOTAL_RUNS is 0 → "No selection data this week."
-7. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
+7. **Full Suite Runs** (issue #482) — Periodic safety net: runs the unfiltered bats suite to catch drift between covers headers and actual test coverage. Use the pre-parsed FSR_* stats provided:
+   - Show: Total full-suite runs this period, outcome breakdown (passed/failed), aggregate lint violations and test failures, average duration
+   - **Threshold: any `outcome=failed` in the period → WARNING**: "Full-suite safety net caught a drift regression — see failing test list"
+   - If FSR_FAILURE_FLAG_EXISTS is true → **WARNING**: "Last full-suite run is still unresolved (failure flag present); re-run `rite --full-suite` to clear"
+   - If FSR_FAILED > 0: list the failing tests from FSR_FAILING_TESTS (up to 10 per run) so the operator knows exactly what to fix
+   - Duration watch: if FSR_AVG_DURATION_S exceeds 900s (15 min) → **WATCH**: "Full suite taking over 15 min — consider parallelism (RITE_BATS_JOBS=N)"
+   - If FSR_TOTAL is 0 → "No full-suite runs recorded this period. Schedule via `rite --full-suite` or the launchd/systemd job in config/."
+8. **Conflict Resolver** — Summarize conflict resolution attempts using the pre-parsed stats provided:
    - Show: Total invocations, outcome breakdown (resolved/failed/cap_hit/skipped_no_resolver), most affected issues (use CR_TOP5_ISSUES directly — do not recompute), median resolution duration (use CR_MEDIAN_DURATION_S directly — do not recompute)
    - Thresholds:
      - `skipped_no_resolver` > 0 → **WARNING**: "Resolver not wired — conflict-resolver.sh may be missing"
@@ -389,7 +455,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 
 ## Data Format
 
-- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`
+- `[diag]` lines are structured: `WORKFLOW_COMPLETE`, `ASSESSMENT`, `REVIEW`, `PHASE_FAILED`, `SESSION`, `CONFLICT_RESOLVER`, `TEST_GATE`, `FULL_SUITE_RUN`
 - `[timing]` lines show phase durations: `END phase_name (Xm Xs)`
 - rtk stats are JSON from `rtk gain --format json`
 - Git log shows recent tool changes with file stats
@@ -397,6 +463,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 - Pre-parsed conflict resolver stats: CR_TOTAL, CR_RESOLVED, CR_FAILED, CR_CAP_HIT, CR_SKIPPED (counts); CR_TOP5_ISSUES (formatted string); CR_MEDIAN_DURATION_S (formatted string, e.g. "45s" or "N/A")
 - Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
 - Pre-parsed test gate selection stats: TGS_TOTAL_RUNS, TGS_TARGETED_RUNS, TGS_FULL_RUNS, TGS_SELECTED_SUM, TGS_TOTAL_SUM (counts)
+- Pre-parsed full-suite run stats: FSR_TOTAL, FSR_PASSED, FSR_FAILED (counts); FSR_LINT_TOTAL, FSR_TEST_TOTAL (aggregate failures); FSR_AVG_DURATION_S (formatted string); FSR_FAILURE_FLAG_EXISTS (true/false); FSR_FAILING_TESTS (raw text)
 
 ## Constraints
 
@@ -441,6 +508,25 @@ $TG_LINES
 
 Raw TEST_GATE_SELECTION diag lines:
 $TGS_LINES
+
+## Full Suite Safety Net Stats (pre-parsed, past 7 days)
+
+- FSR_TOTAL (total full-suite runs): $FSR_TOTAL
+- FSR_PASSED: $FSR_PASSED
+- FSR_FAILED: $FSR_FAILED
+- FSR_LINT_TOTAL (aggregate lint violations across failed runs): $FSR_LINT_TOTAL
+- FSR_TEST_TOTAL (aggregate bats test failures across failed runs): $FSR_TEST_TOTAL
+- FSR_AVG_DURATION_S (pre-computed avg run duration): $FSR_AVG_DURATION_S
+- FSR_FAILURE_FLAG_EXISTS (unresolved failure flag on disk): $FSR_FAILURE_FLAG_EXISTS
+
+Failure flag content (if present):
+$FSR_FAILURE_FLAG_CONTENT
+
+Failing tests in the period (from full-suite-*.log files):
+$FSR_FAILING_TESTS
+
+Raw FULL_SUITE_RUN diag lines:
+$FSR_DIAG_LINES
 
 ## Conflict Resolver Stats (pre-parsed, past 7 days)
 
