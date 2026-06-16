@@ -554,8 +554,8 @@ STUB
   # Both --jobs and the job count must be present in the logged args
   grep -q -- '--jobs' "$_args_log" \
     || { echo "FAIL: --jobs not passed to bats"; cat "$_args_log"; return 1; }
-  grep -q '2' "$_args_log" \
-    || { echo "FAIL: job count '2' not in bats args"; cat "$_args_log"; return 1; }
+  grep -A1 -- '--jobs' "$_args_log" | grep -qx '2' \
+    || { echo "FAIL: job count '2' not the operand immediately after --jobs in bats args"; cat "$_args_log"; return 1; }
 
   # Pretty formatter must also be present — --jobs must not have displaced it
   grep -q -- '-F' "$_args_log" \
