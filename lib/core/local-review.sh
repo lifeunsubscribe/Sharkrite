@@ -476,7 +476,7 @@ echo ""
 
 provider_detect_cli || exit 1
 
-MAX_REVIEW_ATTEMPTS=2
+MAX_REVIEW_ATTEMPTS=3
 REVIEW_ATTEMPT=0
 REVIEW_OUTPUT=""
 CLAUDE_ERROR=""
@@ -495,13 +495,27 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
 
+  # Timeout: the full per-call timeout already elapsed, so retrying would just
+  # double the wall-clock for no benefit. Abort.
   if [ "${REVIEW_EXIT:-0}" -eq 124 ]; then
-    print_warning "Claude call timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — aborting"
+    print_warning "Claude review timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — aborting"
     exit 124
   fi
 
+  # Hard error (non-zero, non-timeout): a transient API/network/rate-limit blip
+  # fast-fails here in seconds (live: PR reviews exit-1'd in ~14s, aborting an
+  # otherwise-complete run — issues #482, #649, #631). These are retryable: a
+  # momentary 429/5xx/overloaded clears in seconds. Back off and retry rather
+  # than throw away the dev work; only give up after exhausting attempts.
   if [ "${REVIEW_EXIT:-0}" -ne 0 ]; then
-    print_error "Review failed (exit code: $REVIEW_EXIT)"
+    if [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]; then
+      _review_backoff=$(( ${RITE_REVIEW_RETRY_BACKOFF:-3} * REVIEW_ATTEMPT ))
+      print_warning "Review provider failed (exit $REVIEW_EXIT, attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS)${CLAUDE_ERROR:+: $CLAUDE_ERROR} — retrying in ${_review_backoff}s..."
+      REVIEW_OUTPUT=""
+      sleep "$_review_backoff"
+      continue
+    fi
+    print_error "Review failed (exit code: $REVIEW_EXIT) after $MAX_REVIEW_ATTEMPTS attempts"
     if [ -n "$CLAUDE_ERROR" ]; then
       echo "Error output:"
       echo "$CLAUDE_ERROR"
@@ -509,9 +523,11 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     exit 1
   fi
 
+  # Empty output (exit 0 but no review text): also a transient provider hiccup.
   if [ -z "$REVIEW_OUTPUT" ] && [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]; then
-    print_warning "Provider returned empty review (attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS) — retrying in 3s..."
-    sleep 3
+    _review_backoff=$(( ${RITE_REVIEW_RETRY_BACKOFF:-3} * REVIEW_ATTEMPT ))
+    print_warning "Provider returned empty review (attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS) — retrying in ${_review_backoff}s..."
+    sleep "$_review_backoff"
   fi
 done
 # sharkrite-extract: provider-retry-loop-end
