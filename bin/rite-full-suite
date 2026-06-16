@@ -77,32 +77,23 @@ _BRANCH=$(git -C "$_PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || ech
 # Set RITE_LOG_FILE so _diag() writes structured lines to the run log.
 export RITE_LOG_FILE="$_LOG_FILE"
 
-# Tee all output (stdout+stderr merged) to the log for full transcript.
-# We use the same FIFO-based tee approach as bin/rite to avoid truncation.
-# The FIFO keeps the strip_ansi reader alive exactly as long as the write end
-# is open. We close the write end by redirecting stdout to /dev/null (or back
-# to the original stdout fd) before waiting — this works in both terminal and
-# non-terminal (cron) contexts, unlike exec >/dev/tty.
-_tee_fifo=$(mktemp -u "${TMPDIR:-/tmp}/rite_fs_log_XXXXXX")
-mkfifo "$_tee_fifo"
-# Preserve the original stdout fd so we can restore it before waiting.
-exec 9>&1
-# strip_ansi is defined in colors.sh; fall back to cat if unavailable.
-if declare -f strip_ansi >/dev/null 2>&1; then
-  strip_ansi < "$_tee_fifo" >> "$_LOG_FILE" &
-else
-  cat < "$_tee_fifo" >> "$_LOG_FILE" &
-fi
-_tee_reader_pid=$!
-exec > >(tee "$_tee_fifo") 2>&1
-
-# Register cleanup trap immediately after FIFO + reader are live so that
-# pre-flight failures (tool missing, Makefile check) don't leak the FIFO
-# or orphan the reader process.  _lint_raw/_tests_raw are initialized empty
-# so the rm -f is safe even if the script exits before those files are created.
+# Tee all output (stdout+stderr merged) to the log for a full transcript, using
+# the same pattern as bin/rite (lib/.. → bin/rite:446). strip_ansi strips color
+# codes so the on-disk transcript is plain text.
+#
+# Do NOT reintroduce a named FIFO + a pre-exit `wait` on the reader here. That
+# deadlocks: with `exec > >(tee fifo)` bash keeps the process-substitution write
+# fd open until the shell *exits*, so the reader never sees EOF and a `wait`
+# placed before exit hangs forever — in every context, including the weekly cron
+# run (and it hangs bats' `run`/`$()` output capture). The structured
+# FULL_SUITE_RUN diag and the failure flag are written directly to the log/state
+# via `>>`, so they are immune to any tee-flush truncation at exit.
 _lint_raw=""
 _tests_raw=""
-trap 'rm -f "${_lint_raw:-}" "${_tests_raw:-}"; exec 1>&9 9>&- 2>/dev/null || true; wait "${_tee_reader_pid:-}" 2>/dev/null || true; rm -f "${_tee_fifo:-}"' EXIT
+trap 'rm -f "${_lint_raw:-}" "${_tests_raw:-}"' EXIT
+
+exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
+exec 2>&1
 
 print_header "Sharkrite Full-Suite Safety Net"
 print_info "Project: ${RITE_PROJECT_NAME:-unknown}"
@@ -148,8 +139,9 @@ set -e
 if [ "$_lint_exit" -ne 0 ]; then
   print_warning "Lint check failed (exit $_lint_exit)"
   # Count lines matching known lint output formats.
-  # shellcheck typically emits: file:line:col: [SCnnnn] message
-  # sharkrite-lint emits:       file:line: [RULE_NAME] message
+  # Lines from the linters look like:
+  #   from shellcheck:     file:line:col: [SCnnnn] message
+  #   from sharkrite-lint: file:line: [RULE_NAME] message
   # Both patterns are covered below. If neither matches (unexpected format),
   # fall back to a non-zero sentinel (1) so failure-flag detail is still
   # written — a count of 0 with outcome=failed is a self-contradicting signal.
@@ -209,15 +201,6 @@ else
   print_success "Test suite passed"
 fi
 echo ""
-
-# ---------------------------------------------------------------------------
-# Cleanup tee FIFO reader
-# ---------------------------------------------------------------------------
-# Restore stdout to the saved fd (fd 9), closing the tee's write end so
-# the FIFO reader drains and exits. Works in both terminal and cron contexts.
-exec 1>&9 9>&-
-wait "$_tee_reader_pid" 2>/dev/null || true
-rm -f "$_tee_fifo"
 
 # ---------------------------------------------------------------------------
 # Determine outcome + emit diag

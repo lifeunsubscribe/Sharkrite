@@ -437,6 +437,50 @@ HELPEREOF
 # ---------------------------------------------------------------------------
 # Test: rite --full-suite dispatch in bin/rite reaches rite-full-suite
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Regression: the script must NOT deadlock when its output is captured.
+#
+# bin/rite-full-suite once tee'd its transcript through a named FIFO and then
+# `wait`ed on the reader *before* exiting. That deadlocks: `exec > >(tee fifo)`
+# keeps the process-substitution write fd open until the shell exits, so the
+# reader never sees EOF and the pre-exit `wait` hangs forever — in every
+# context, including the weekly cron run and any pipe/`$()` capture (which is
+# exactly what bats' `run` does). This test bounds the runtime with a real
+# timeout so a reintroduced FIFO+wait pattern fails LOUDLY (exit 124) instead
+# of silently hanging the entire gate.
+# ---------------------------------------------------------------------------
+@test "full-suite: completes under output capture without deadlocking" {
+  if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    skip "timeout/gtimeout not available — bounded no-deadlock test requires the binary"
+  fi
+  local _to; _to=$(command -v gtimeout || command -v timeout)
+
+  _write_lib_stubs
+  mkdir -p "$_FAKE_PROJECT/bin" "$_FAKE_PROJECT/tests"
+  printf '#!/bin/bash\nexit 0\n' > "$_FAKE_PROJECT/bin/make"
+  printf '#!/bin/bash\nexit 0\n' > "$_FAKE_PROJECT/bin/bats"
+  chmod +x "$_FAKE_PROJECT/bin/make" "$_FAKE_PROJECT/bin/bats"
+
+  # Capture the script's stdout via $() (the same mechanism bats `run` uses).
+  # If the FIFO/wait deadlock is reintroduced, $() never sees EOF and the
+  # timeout fires with exit 124.
+  run "$_to" 15 bash -c '
+    out=$(env \
+      PATH="'"$_FAKE_PROJECT"'/bin:$PATH" \
+      RITE_INSTALL_DIR="'"$_FAKE_PROJECT"'" \
+      RITE_LIB_DIR="'"$_FAKE_PROJECT"'/lib" \
+      RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'" \
+      RITE_DATA_DIR=".rite" \
+      bash "'"$_FULL_SUITE_SCRIPT"'" 2>&1)
+    echo "captured ${#out} bytes"
+  '
+
+  # Must NOT have timed out (124) — must complete normally.
+  [ "$status" -ne 124 ]
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "captured "
+}
+
 @test "bin/rite --full-suite dispatches to rite-full-suite" {
   # Write a stub rite-full-suite next to bin/rite that records it was called
   local _bin_dir="$RITE_REPO_ROOT/bin"
