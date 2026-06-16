@@ -49,6 +49,12 @@ setup() {
   print_info()    { echo "[INFO] $*"; }
   export -f print_status print_error print_warning print_success print_info
 
+  # validate_diff_not_empty() queries GitHub via gh_safe (not loaded in
+  # functions-only mode). Forward it to the gh binary so the per-test PATH mock
+  # of `gh` (changedFiles count) is what answers.
+  gh_safe() { gh "$@"; }
+  export -f gh_safe
+
   # Source local-review.sh in functions-only mode to load validate_diff_not_empty()
   # and fetch_pr_diff() without executing the script body (which needs config,
   # providers, a real PR number, etc.).
