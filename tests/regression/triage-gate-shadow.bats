@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/local-review.sh
+# sharkrite-test-covers: lib/core/local-review.sh, lib/utils/triage-classify.sh
 #
 # Triage gate — SHADOW mode (_triage_emit_shadow). PR-1 lands shadow-only:
 # classify the diff and emit a paired TRIAGE_SHADOW diag alongside the real
@@ -103,4 +103,38 @@ _run_shadow() { # $1=diff $2=files
   [[ "$output" == *"opus_high=3"* ]]
   [[ "$output" == *"opus_med=4"* ]]
   [[ "$output" == *"opus_low=5"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# #531: path-based sensitive guard when there is NO PR (the fast-path runs
+# pre-commit). Calling detect_sensitivity_areas with an empty PR is a bug —
+# `gh pr view ""` resolves to the current branch's PR and flags unrelated files.
+# triage_classify_diff must instead check the diff's own paths. detect_sensitivity_areas
+# is intentionally NOT defined in this harness, so the empty-PR path-based branch runs.
+# ---------------------------------------------------------------------------
+_classify() { triage_classify_diff "" "$1" "${2:-1}"; }
+_mk_diff() { printf 'diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n+# a comment\n' "$1" "$1" "$1" "$1"; }
+
+@test "#531 no-PR: protected script path → sensitive guard" {
+  export TRIAGE_STUB_VERDICT=trivial TRIAGE_STUB_CONF=0.95
+  run _classify "$(_mk_diff lib/core/workflow-runner.sh)"
+  [[ "$output" == substantive\|*\|sensitive\|* ]]
+}
+
+@test "#531 no-PR: auth path → sensitive guard" {
+  run _classify "$(_mk_diff src/auth/login.sh)"
+  [[ "$output" == substantive\|*\|sensitive\|* ]]
+}
+
+@test "#531 no-PR: ordinary source file → NOT sensitive (classifier decides)" {
+  export TRIAGE_STUB_VERDICT=trivial TRIAGE_STUB_CONF=0.95
+  run _classify "$(_mk_diff lib/utils/colors.sh)"
+  [[ "$output" == trivial\|* ]]
+  [[ "$output" != *"|sensitive|"* ]]
+}
+
+@test "#531 no-PR: docs are NOT treated as sensitive (fast-path's main use case)" {
+  export TRIAGE_STUB_VERDICT=trivial TRIAGE_STUB_CONF=0.95
+  run _classify "$(_mk_diff docs/architecture/foo.md)"
+  [[ "$output" != *"|sensitive|"* ]]
 }

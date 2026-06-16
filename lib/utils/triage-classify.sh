@@ -40,7 +40,7 @@ triage_classify_diff() {
   # `local` declarations hoisted above the brace-heavy classifier prompt/regex so
   # the LOCAL_OUTSIDE_FUNCTION lint rule's brace counter is not unbalanced.
   local _pr="$1" _diff="$2" _files="$3"
-  local _added _removed _size _paths _category="logic" _guard="" _sens
+  local _added _removed _size _paths _category="logic" _guard="" _sens _sens_pat
   local _verdict="substantive" _conf="1.0" _reason=""
   local _diff_head _tmodel _tprompt _tresp _tjson
 
@@ -64,9 +64,27 @@ triage_classify_diff() {
   if [ -z "$_guard" ] && echo "$_diff" | grep -qE '^\+.*(@pytest\.mark\.(skip|xfail)|\bskip\b|\bxfail\b|\.only\(|\bfit\(|\bfdescribe\()'; then _guard="test_weakening"; fi
   if [ -z "$_guard" ] && echo "$_paths" | grep -qE '(^|/)(Makefile|\.shellcheckrc)$|package\.json$|requirements.*\.txt$|lock$|^\.github/|^\.rite/config'; then _guard="config"; fi
   if [ -z "$_guard" ] && echo "$_diff" | grep -qE '^\+.*(\beval\b|\bcurl\b|\bwget\b|subprocess|os\.system|\bexec\b|password|secret|token=|api[_-]?key)'; then _guard="security"; fi
-  if [ -z "$_guard" ] && declare -f detect_sensitivity_areas >/dev/null 2>&1; then
-    _sens=$(detect_sensitivity_areas "$_pr" 2>/dev/null || true)
-    if [ -n "$_sens" ]; then _guard="sensitive"; fi
+  # Sensitive-path guard. With a real PR (shadow mode), use the accurate PR-based
+  # detector. Without a PR (fast-path runs pre-commit, no PR yet), do a PATH-based
+  # check on the diff's own paths — calling detect_sensitivity_areas with an empty
+  # PR is a bug: `gh pr view ""` resolves to the CURRENT branch's PR and flags
+  # unrelated files (live: every fast-path run escalated on the dev branch's
+  # workflow-runner.sh). The path check covers the genuinely DANGEROUS categories
+  # (infra / migration / auth / protected scripts via paths; expensive services
+  # via diff content). Docs is deliberately NOT dangerous here — it is a review-
+  # FOCUS hint, not a safety risk for a verbatim patch, and doc/comment fixes are
+  # the fast-path's primary use case (#531).
+  if [ -z "$_guard" ]; then
+    if [ -n "$_pr" ] && declare -f detect_sensitivity_areas >/dev/null 2>&1; then
+      _sens=$(detect_sensitivity_areas "$_pr" 2>/dev/null || true)
+      [ -n "$_sens" ] && _guard="sensitive"
+    elif [ -n "$_paths" ]; then
+      _sens_pat="${BLOCKER_INFRASTRUCTURE_PATHS:-infrastructure/|cdk/|terraform/|cloudformation/|\.github/workflows/|\.claude/}|${BLOCKER_MIGRATION_PATHS:-prisma/migrations/|migrations/|db/migrate/|alembic/}|${BLOCKER_AUTH_PATHS:-auth/|Auth|authentication|authorization|cognito|oauth}|${BLOCKER_PROTECTED_SCRIPTS:-workflow-runner.sh|claude-workflow.sh|merge-pr.sh|create-pr.sh|batch-process-issues.sh}"
+      if echo "$_paths" | grep -iqE "$_sens_pat" \
+         || echo "$_diff" | grep -qiE "${BLOCKER_EXPENSIVE_SERVICES:-\brds\b|\baurora\b|\bnatgateway\b|\bec2\b|\bfargate\b|\bsagemaker\b|\bredshift\b}"; then
+        _guard="sensitive"
+      fi
+    fi
   fi
 
   # --- Layer 2: classifier on the cleared remainder ---
