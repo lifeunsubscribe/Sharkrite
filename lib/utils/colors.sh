@@ -46,3 +46,5 @@ strip_ansi() {
 # Export for use in subshells
 export RED GREEN YELLOW BLUE MAGENTA CYAN BOLD DIM NC
 export -f print_header print_success print_error print_warning print_info print_status print_step strip_ansi 2>/dev/null || true
+
+# fast-path validation marker (#531) — safe to remove
