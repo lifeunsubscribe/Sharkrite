@@ -70,12 +70,6 @@ fi
 # Store the absolute path to THIS script for re-execution
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-# Early output to confirm script is running (skip on re-entry from worktree navigation)
-if [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
-  echo "🦈 Initializing Sharkrite workflow..."
-  echo ""
-fi
-
 # Trap handler for safe exit on interrupt
 cleanup_on_interrupt() {
   local exit_code=$?
@@ -1086,6 +1080,14 @@ find_worktree_for_task() {
 # ---------------------------------------------------------------------------
 if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || true
+fi
+
+# Early output to confirm script is running (skip on re-entry from worktree
+# navigation). Lives below the FUNCTIONS_ONLY guard so a functions-only source
+# (tests) produces no banner side effect — see lib-resource-safety.bats.
+if [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
+  echo "🦈 Initializing Sharkrite workflow..."
+  echo ""
 fi
 
 # Check dependencies

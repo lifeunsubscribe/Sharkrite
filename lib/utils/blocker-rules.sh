@@ -37,6 +37,14 @@ if [ "${_RITE_BLOCKER_RULES_LOADED:-}" = "true" ]; then
 fi
 _RITE_BLOCKER_RULES_LOADED=true
 
+# Source config if not already loaded (sets RITE_LIB_DIR + BLOCKER_* patterns).
+# Canonical bootstrap so this file is sourceable standalone (re-source safety
+# test); in production config.sh is always loaded first, making this a no-op.
+if [ -z "${RITE_LIB_DIR:-}" ]; then
+  _BLOCKER_RULES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_BLOCKER_RULES_DIR/config.sh"
+fi
+
 # Source notifications library
 source "$RITE_LIB_DIR/utils/notifications.sh"
 
