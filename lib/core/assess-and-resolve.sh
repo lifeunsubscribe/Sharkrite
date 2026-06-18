@@ -1410,6 +1410,11 @@ Each deferred finding has its own prioritized issue — no consolidated rollup n
     _summary_stderr=$(cat "$_summary_stderr_file" 2>/dev/null || true)
     print_warning "Could not post per-item summary comment to PR #$PR_NUMBER (per-item issues are still filed)"
     [ -n "$_summary_stderr" ] && print_warning "gh error: $_summary_stderr"
+    # Intentionally NOT PID-scoped (deviation from #345 convention).
+    # This is a persistent recovery artifact in .rite/, not a /tmp/ temp file.
+    # Per-PR naming (no $$) is correct: content is idempotent per PR (safe to
+    # overwrite), and a single well-known path makes manual recovery straightforward
+    # — multiple PID-suffixed files would make the recovery file hard to discover.
     _orphaned_summary="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-summary-comment-${PR_NUMBER}.md"
     mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
     {
