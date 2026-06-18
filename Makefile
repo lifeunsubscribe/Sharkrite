@@ -1,5 +1,5 @@
 # Sharkrite - Makefile for linting and testing
-.PHONY: check shellcheck lint test help
+.PHONY: check shellcheck lint fix test help
 
 # Optional subdirectory filter for the test target.
 # Usage: make test FILTER=concurrency   → runs tests/concurrency/
@@ -15,6 +15,8 @@ help:
 	@echo "  make check               - Run all linters (shellcheck + custom rules)"
 	@echo "  make shellcheck          - Run shellcheck on all shell scripts"
 	@echo "  make lint                - Run custom lint rules"
+	@echo "  make fix                 - Auto-fix the safe/mechanical lint trips (changed files)"
+	@echo "  make fix FILES=\"a.sh b.sh\" - Auto-fix specific files"
 	@echo "  make test                - Run all bats tests (if available)"
 	@echo "  make test FILTER=<name>  - Run tests under tests/<name>/ only"
 	@echo "  make help                - Show this help message"
@@ -35,6 +37,15 @@ shellcheck:
 lint:
 	@echo "Running custom lint rules..."
 	@./tools/sharkrite-lint.sh
+
+# Auto-fix the SAFE/mechanical lint trips (behavior-preserving, idempotent).
+# Default: changed shell files vs origin/main. Override with FILES="a.sh b.sh".
+fix:
+	@if [ -n "$(FILES)" ]; then \
+		./tools/lint-autofix.sh $(FILES); \
+	else \
+		./tools/lint-autofix.sh --changed origin/main; \
+	fi
 
 # Run tests (if bats is available).
 # When FILTER is set, restrict to tests/$(FILTER)/; otherwise run tests/.
