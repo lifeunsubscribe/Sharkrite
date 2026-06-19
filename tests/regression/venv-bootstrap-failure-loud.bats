@@ -196,8 +196,10 @@ SHIMEOF
   #
   # Strategy: set RITE_PIP_INSTALL_TIMEOUT=1 and inject a pip shim that sleeps
   # 30 seconds.  run_with_timeout should kill it before it completes.
-  # Skip if neither timeout nor gtimeout is on PATH — the protection is a no-op
-  # without the binary, and that case is covered by the no-timeout-cmd warning test.
+  # Skip if neither timeout nor gtimeout is on PATH — the bounding protection is a
+  # no-op without the binary (the gate runs pip directly). The behavior on a
+  # coreutils-less host is covered by the separate
+  # "venv bootstrap: no timeout command prints 'no time cap' warning" test below.
   if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
     skip "timeout/gtimeout not available — bounding test requires the binary"
   fi
@@ -290,4 +292,52 @@ SHIMEOF
 
   # Should mention pytest is not importable
   [[ "$output" =~ "pytest" ]] && [[ "$output" =~ "importable" ]]
+}
+
+@test "venv bootstrap: no timeout command prints 'no time cap' warning" {
+  # Verifies that when RITE_TIMEOUT_CMD is empty (no timeout/gtimeout binary),
+  # the bootstrap emits a clear warning that pip has no time cap (issue #599).
+  #
+  # This is the counterpart to the "hanging pip is killed by timeout" test above:
+  # that test verifies the bounding behavior when the binary IS available;
+  # this test verifies the warning behavior when it IS NOT.
+  #
+  # We use a fast-succeeding pip shim so the bootstrap completes quickly —
+  # we only care that the warning fires, not whether the venv is usable.
+  REAL_PYTHON3=$(which python3)
+
+  # Force RITE_TIMEOUT_CMD to empty to simulate a coreutils-less host.
+  # Reset the session sentinel so this test is isolated from prior runs.
+  export RITE_TIMEOUT_CMD=""
+  _RITE_PIP_TIMEOUT_WARNED=false
+
+  # python3 shim: build a fake venv with a succeeding pip shim
+  cat > "$SHIM_DIR/python3" <<SHIMEOF
+#!/bin/bash
+if [[ "\$*" == *"-m venv"* ]]; then
+  mkdir -p .venv/bin
+  # Pip shim: exits 0 immediately — no network, no hang
+  cat > .venv/bin/pip <<'PIPEOF'
+#!/bin/bash
+exit 0
+PIPEOF
+  chmod +x .venv/bin/pip
+  # python shim: accept pytest import so bootstrap completes
+  cat > .venv/bin/python <<PYEOF
+#!/bin/bash
+if [[ "\\\$*" == *"import pytest"* ]]; then exit 0; fi
+exec "$REAL_PYTHON3" "\\\$@"
+PYEOF
+  chmod +x .venv/bin/python
+  exit 0
+fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$SHIM_DIR/python3"
+  export PATH="$SHIM_DIR:$PATH"
+
+  run _run_dev_test_gate
+
+  # Must contain the no-time-cap warning introduced for issue #599
+  [[ "$output" =~ "no time cap" ]]
 }

@@ -309,6 +309,11 @@ print_step() { echo -e "${CYAN}▶  $1${NC}"; }
 # Verbose-aware output (requires RITE_VERBOSE=true or --supervised)
 source "$RITE_LIB_DIR/utils/logging.sh"
 
+# Session sentinel: track whether the no-timeout-cmd warning has already been
+# printed this session. Declared at script scope so it persists across repeated
+# _run_dev_test_gate calls (fix-loop retries, multiple commits in one session).
+_RITE_PIP_TIMEOUT_WARNED=false
+
 # ===================================================================
 # _run_dev_test_gate — dev/initial-commit test runner (NOT the structured gate)
 #
@@ -433,8 +438,9 @@ _run_dev_test_gate() {
         # RITE_TIMEOUT_CMD is empty and run_with_timeout falls back to running pip
         # directly with no time bound — see lib/utils/timeout.sh:run_with_timeout.
         local _pip_timeout="${RITE_PIP_INSTALL_TIMEOUT:-120}"
-        if [ -z "${RITE_TIMEOUT_CMD:-}" ]; then
+        if [ -z "${RITE_TIMEOUT_CMD:-}" ] && [ "${_RITE_PIP_TIMEOUT_WARNED:-false}" != "true" ]; then
           print_warning "timeout/gtimeout not found — pip install has no time cap (issue #599). Install coreutils to enable the cap."
+          _RITE_PIP_TIMEOUT_WARNED=true
         fi
         local _base_install_ok=true
         local _pip_error_log
