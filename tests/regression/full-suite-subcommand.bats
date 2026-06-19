@@ -481,6 +481,63 @@ HELPEREOF
   echo "$output" | grep -q "captured "
 }
 
+# ---------------------------------------------------------------------------
+# Test: ANSI codes in make check output are stripped before counting
+#
+# Regression for issue #637. shellcheck (and make check) may emit ANSI color
+# escape sequences when stdout is a terminal or --color=always is set.
+# The \x1b[...m prefix on each line breaks the ^[^:]+:[0-9]+: anchors used
+# to count lint violations. The fix strips ANSI before running grep.
+# ---------------------------------------------------------------------------
+@test "full-suite: counts lint violations correctly when make check output contains ANSI color codes" {
+  _write_lib_stubs
+
+  mkdir -p "$_FAKE_PROJECT/bin" "$_FAKE_PROJECT/tests"
+
+  # Stub make check: emits two violations with ANSI color prefixes that would
+  # break the ^[^:]+ file-path anchors used for counting without the fix.
+  # Line 1 is shellcheck-style (file:line:col: [SCnnnn] message).
+  # Line 2 is sharkrite-lint-style (file:line: [RULE_NAME] message).
+  # Both use \x1b[31m (red) before the path, which a terminal-aware make or
+  # a linter invoked with --color=always might emit.
+  cat > "$_FAKE_PROJECT/bin/make" << 'EOF'
+#!/bin/bash
+printf '\x1b[31mlib/utils/foo.sh:12:3:\x1b[0m [SC2086] Double quote to prevent globbing and word splitting.\n'
+printf '\x1b[31mlib/utils/bar.sh:88:\x1b[0m [BARE_MARKER_GREP] Unanchored marker grep detected.\n'
+exit 1
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/make"
+
+  printf '#!/bin/bash\nexit 0\n' > "$_FAKE_PROJECT/bin/bats"
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT"
+
+  # Script exits non-zero (lint failed)
+  [ "$status" -ne 0 ]
+
+  # Failure flag must exist and report lint_count=2 (not 0 or 1 sentinel)
+  [ -f "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag" ]
+  grep -q 'lint_count=2' "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
+
+  # Diag line in log must also show lint_count=2
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  grep -q 'lint_count=2' "$_log"
+
+  # The failure flag violation detail section must list the plain-text file paths
+  # (no ANSI escape bytes) — verifies the stripped copy is used for extraction too.
+  grep -q 'lib/utils/foo.sh' "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
+  grep -q 'lib/utils/bar.sh' "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
+}
+
 @test "bin/rite --full-suite dispatches to rite-full-suite" {
   # Write a stub rite-full-suite next to bin/rite that records it was called
   local _bin_dir="$RITE_REPO_ROOT/bin"

@@ -89,8 +89,9 @@ export RITE_LOG_FILE="$_LOG_FILE"
 # FULL_SUITE_RUN diag and the failure flag are written directly to the log/state
 # via `>>`, so they are immune to any tee-flush truncation at exit.
 _lint_raw=""
+_lint_raw_stripped=""
 _tests_raw=""
-trap 'rm -f "${_lint_raw:-}" "${_tests_raw:-}"' EXIT
+trap 'rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}"' EXIT
 
 exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
 exec 2>&1
@@ -138,6 +139,22 @@ set -e
 
 if [ "$_lint_exit" -ne 0 ]; then
   print_warning "Lint check failed (exit $_lint_exit)"
+
+  # Strip ANSI escape sequences before counting. make check may emit colorized
+  # output (e.g. shellcheck with --color=always or a terminal-aware make), which
+  # would prepend \x1b[...m bytes to lines and break the ^[^:]+ file-path
+  # anchors below. Use perl (not sed) — BSD sed on macOS does not support \x1b
+  # or hex character ranges like [\x01-\x08], causing "RE error: invalid
+  # character range" and producing an empty stripped file under || true. perl
+  # ships on all target platforms (macOS system perl, all Linux distros) and
+  # handles \x.. escapes consistently. Three passes: (1) CSI sequences
+  # \e[...m, (2) bare ESC bytes, (3) remaining C0 control bytes (tab \x09
+  # is left intact). The stripped copy is used for both count and failure-flag
+  # extraction so the transformation runs exactly once.
+  _lint_raw_stripped=$(mktemp "${TMPDIR:-/tmp}/rite_fs_lint_stripped_$$_XXXXXX.txt")
+  perl -pe 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
+    "$_lint_raw" > "$_lint_raw_stripped" || true
+
   # Count lines matching known lint output formats.
   # Lines from the linters look like:
   #   from shellcheck:     file:line:col: [SCnnnn] message
@@ -145,7 +162,7 @@ if [ "$_lint_exit" -ne 0 ]; then
   # Both patterns are covered below. If neither matches (unexpected format),
   # fall back to a non-zero sentinel (1) so failure-flag detail is still
   # written — a count of 0 with outcome=failed is a self-contradicting signal.
-  _lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:[[:space:]]*\[SC[0-9]+\]|^[^:]+:[0-9]+:[[:space:]]*\[[A-Z_]+\]' "$_lint_raw" || true)
+  _lint_count=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:[[:space:]]*\[SC[0-9]+\]|^[^:]+:[0-9]+:[[:space:]]*\[[A-Z_]+\]' "$_lint_raw_stripped" || true)
   if [ "${_lint_count:-0}" -eq 0 ]; then
     # No lines matched the structured format; use a sentinel of 1 so the
     # failure flag records that lint violations exist (exact count unknown).
@@ -241,7 +258,8 @@ if [ "$_outcome" = "failed" ]; then
     if [ "$_lint_count" -gt 0 ]; then
       echo ""
       echo "# Lint violations ($_lint_count):"
-      grep -E '^[^:]+:[0-9]+:[0-9]+:[[:space:]]*\[SC[0-9]+\]|^[^:]+:[0-9]+:[[:space:]]*\[[A-Z_]+\]' "$_lint_raw" 2>/dev/null \
+      # Use the ANSI-stripped copy so violation lines in the flag are plain text.
+      grep -E '^[^:]+:[0-9]+:[0-9]+:[[:space:]]*\[SC[0-9]+\]|^[^:]+:[0-9]+:[[:space:]]*\[[A-Z_]+\]' "${_lint_raw_stripped:-$_lint_raw}" 2>/dev/null \
         | head -20 | sed 's/^/  /' || true
     fi
   } > "$_FAILURE_FLAG"
