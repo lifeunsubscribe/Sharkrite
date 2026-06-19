@@ -1364,8 +1364,22 @@ If the changes are unrelated work, answer UNRELATED."
       exit 1
     fi
 
+    # Resolve the PR's actual base branch so the preflight check compares against
+    # the correct upstream ref (not always "main"). PR_NUMBER may already be set
+    # from the existing-PR detection above; if not, try a lightweight gh lookup.
+    # _stale_resolve_base_branch is loaded transitively by branch-preflight.sh
+    # (which sources stale-branch.sh). Falls back to "main" on any failure.
+    if [ -z "${PR_NUMBER:-}" ]; then
+      _preflight_pr=$(gh_safe pr list --head "$BRANCH_NAME" --state open \
+        --json number --jq '.[0].number // empty' 2>/dev/null || true)
+      _stale_resolve_base_branch "${_preflight_pr:-}"
+    else
+      _stale_resolve_base_branch "$PR_NUMBER"
+    fi
+    _preflight_base_branch="$_STALE_BASE_BRANCH"
+
     set +e
-    classify_branch_health "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH"
+    classify_branch_health "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH" "$_preflight_base_branch"
     HEALTH_CODE=$?
     set -e
 
