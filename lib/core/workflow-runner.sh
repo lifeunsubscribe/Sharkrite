@@ -2471,6 +2471,28 @@ run_workflow() {
     fi
     _timer_end "phase1_development"
     _rtk_snapshot "phase1_end"
+
+    # --- pre-gate lint auto-fix (deterministic, bounded, silent) ---
+    # Correct the SAFE/mechanical recurring lint trips on the dev session's
+    # commit BEFORE the gate evaluates, so they don't cost a gate→fix→gate
+    # round-trip. Only behavior-preserving, idempotent rewrites (see
+    # tools/lint-autofix.sh + lint-autofix.bats). HARD-bounded by
+    # run_with_timeout so it can never hang; on timeout/absence it is a silent
+    # no-op and the gate still catches anything missed. Targeted to the branch's
+    # changed shell files (no full-repo scan), no LLM, no network.
+    _autofix_script="$RITE_LIB_DIR/../tools/lint-autofix.sh"
+    if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ] \
+       && [ -f "$_autofix_script" ] && declare -f run_with_timeout >/dev/null 2>&1; then
+      ( cd "$WORKTREE_PATH" \
+          && run_with_timeout 60 bash "$_autofix_script" --changed "${RITE_TEST_GATE_DIFF_BASE:-origin/main}" ) \
+          >/dev/null 2>&1 || true
+      # Commit any fixes the prepass made (quiet; nothing staged → no commit).
+      if [ -n "$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || true)" ]; then
+        git -C "$WORKTREE_PATH" add -A 2>/dev/null || true
+        git -C "$WORKTREE_PATH" commit -q -m "chore: auto-fix mechanical lint (pre-gate prepass)" 2>/dev/null || true
+        _diag "LINT_AUTOFIX_COMMIT issue=${issue_number}"
+      fi
+    fi
   fi
 
   # Phase 2: Push work and wait for review
