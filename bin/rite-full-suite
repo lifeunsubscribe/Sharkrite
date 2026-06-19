@@ -143,12 +143,16 @@ if [ "$_lint_exit" -ne 0 ]; then
   # Strip ANSI escape sequences before counting. make check may emit colorized
   # output (e.g. shellcheck with --color=always or a terminal-aware make), which
   # would prepend \x1b[...m bytes to lines and break the ^[^:]+ file-path
-  # anchors below. Mirror the same sed expression used by _parse_lint_line in
-  # lib/utils/test-gate.sh: CSI sequences, bare ESC bytes, and other C0 control
-  # bytes (tab is left intact). The stripped copy is used for both count and
-  # failure-flag extraction so the transformation runs exactly once.
+  # anchors below. Use perl (not sed) — BSD sed on macOS does not support \x1b
+  # or hex character ranges like [\x01-\x08], causing "RE error: invalid
+  # character range" and producing an empty stripped file under || true. perl
+  # ships on all target platforms (macOS system perl, all Linux distros) and
+  # handles \x.. escapes consistently. Three passes: (1) CSI sequences
+  # \e[...m, (2) bare ESC bytes, (3) remaining C0 control bytes (tab \x09
+  # is left intact). The stripped copy is used for both count and failure-flag
+  # extraction so the transformation runs exactly once.
   _lint_raw_stripped=$(mktemp "${TMPDIR:-/tmp}/rite_fs_lint_stripped_$$_XXXXXX.txt")
-  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
+  perl -pe 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
     "$_lint_raw" > "$_lint_raw_stripped" || true
 
   # Count lines matching known lint output formats.
