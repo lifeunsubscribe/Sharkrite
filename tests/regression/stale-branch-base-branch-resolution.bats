@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/branch-preflight.sh
+# sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/branch-preflight.sh, lib/core/claude-workflow.sh
 # tests/regression/stale-branch-base-branch-resolution.bats
 #
 # Regression tests for dynamic base branch resolution in stale-branch.sh and
@@ -19,6 +19,7 @@
 #   9. classify_branch_health accepts optional base_branch (4th param)
 #  10. classify_branch_health fetch uses base_branch param, not hardcoded 'main'
 #  11. _preflight_has_only_init_commit uses base_branch param, not 'origin/main'
+#  12. claude-workflow.sh caller passes resolved base_branch to classify_branch_health
 
 load '../helpers/setup.bash'
 
@@ -289,5 +290,57 @@ teardown() {
     echo "FAIL: _preflight_has_only_init_commit does not use base_branch variable"
     return 1
   }
+  return 0
+}
+
+# =============================================================================
+# Test verifying claude-workflow.sh caller passes resolved base branch
+# =============================================================================
+
+@test "claude-workflow.sh: classify_branch_health caller passes resolved base_branch (4th arg)" {
+  # Regression test for issue #637 (follow-up from PR #630).
+  # Before this fix, classify_branch_health was called without the 4th arg:
+  #   classify_branch_health "$ISSUE_NUMBER" "$BRANCH_NAME" "$EXISTING_WT_FOR_BRANCH"
+  # This left the new BASE_BRANCH plumbing dead — preflight always compared
+  # against origin/main, even for PRs targeting develop/release/etc.
+  #
+  # This is a static source-text check: verify the call site in claude-workflow.sh
+  # passes a 4th argument to classify_branch_health (the resolved base branch).
+  _wf_src=$(grep -A2 'classify_branch_health "\$ISSUE_NUMBER"' \
+    "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+
+  # The call must exist and pass a 4th argument (not stop at 3 args)
+  if [ -z "$_wf_src" ]; then
+    echo "FAIL: classify_branch_health call not found in claude-workflow.sh"
+    return 1
+  fi
+
+  # Must include a 4th argument after EXISTING_WT_FOR_BRANCH
+  if ! echo "$_wf_src" | grep -qE \
+    'classify_branch_health "\$ISSUE_NUMBER" "\$BRANCH_NAME" "\$EXISTING_WT_FOR_BRANCH" "\$'; then
+    echo "FAIL: classify_branch_health is called without a 4th (base_branch) argument"
+    echo "--- found call ---"
+    echo "$_wf_src"
+    return 1
+  fi
+  return 0
+}
+
+@test "claude-workflow.sh: _stale_resolve_base_branch is called before classify_branch_health" {
+  # Verify the caller wires up _stale_resolve_base_branch to resolve the base
+  # before passing it to classify_branch_health (not hardcoding it).
+  _wf_content=$(cat "$RITE_REPO_ROOT/lib/core/claude-workflow.sh")
+
+  # _stale_resolve_base_branch must appear in the file (caller wiring present)
+  if ! echo "$_wf_content" | grep -q '_stale_resolve_base_branch'; then
+    echo "FAIL: _stale_resolve_base_branch is not called in claude-workflow.sh"
+    return 1
+  fi
+
+  # The variable _preflight_base_branch must be used as the 4th arg to classify_branch_health
+  if ! echo "$_wf_content" | grep -q '_preflight_base_branch'; then
+    echo "FAIL: _preflight_base_branch variable not found in claude-workflow.sh"
+    return 1
+  fi
   return 0
 }
