@@ -276,6 +276,12 @@ _setup_diverging_branch() {
 @test "divergence merge-target: foreign commit is NOT ancestor when resolver uses wrong target (origin/main)" {
   _setup_diverging_branch
 
+  # Sentinel: tracks whether the stub was actually called.
+  # Without this, the test could pass green if the resolver is never invoked
+  # (e.g. because _do_rebase_and_push short-circuits via a force-push path
+  # that bypasses the resolver entirely). Mirrors Test 1's _captured_merge_target pattern.
+  _resolver_invoked="false"
+
   # Stub attempt_claude_merge_resolution to simulate the pre-fix bug:
   # ignore --merge-target and resolve conflicts without incorporating the
   # foreign commit. The stub writes local-only content and commits directly
@@ -284,6 +290,7 @@ _setup_diverging_branch() {
   # (shared ancestor) instead of origin/$BRANCH_NAME: the push will
   # overwrite the remote with a history that never includes the foreign commit.
   attempt_claude_merge_resolution() {
+    _resolver_invoked="true"
     # Intentionally ignore all arguments (including --merge-target).
     # Resolve conflict files by writing local-only content and staging them.
     # Do NOT attempt git merge — origin/main is the fixture's shared ancestor
@@ -313,6 +320,10 @@ _setup_diverging_branch() {
   # The push must succeed (exit 0) — we need origin/$BRANCH_NAME to be updated
   # so we can verify the foreign commit is absent from the pushed result.
   [ "$exit_code" -eq 0 ]
+
+  # The resolver stub must have been called — guards against silent regression-value
+  # loss where the test passes green without ever exercising the resolver path.
+  [ "$_resolver_invoked" = "true" ]
 
   # Fetch updated remote state
   git fetch origin "$BRANCH_NAME" >/dev/null 2>&1
