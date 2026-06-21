@@ -259,39 +259,54 @@ _setup_diverging_branch() {
 #   - Correct target  → foreign commit IS ancestor (Test 2)
 #   - Wrong target    → foreign commit is NOT ancestor (Test 3)
 #
-# Mechanism: stub attempt_claude_merge_resolution to unconditionally
-# merge origin/main (ignoring the --merge-target argument), simulating
-# the pre-fix buggy call site. After _do_rebase_and_push force-pushes
-# the wrong-merged branch, origin/$BRANCH_NAME is overwritten and the
-# foreign commit is not reachable from the new tip.
+# Mechanism: stub attempt_claude_merge_resolution to resolve conflicts
+# without incorporating the foreign commit (simulating the pre-fix buggy
+# call site that merged against origin/main instead of origin/$BRANCH_NAME).
+# The stub resolves the conflict file and commits directly on top of the
+# un-rebased local HEAD — leaving the foreign commit unreachable.
+# After _do_rebase_and_push force-pushes this result, origin/$BRANCH_NAME
+# is overwritten with a tip that has no path to the foreign commit.
+#
+# Note: _do_rebase_and_push uses --force-with-lease push when the resolver
+# commits (i.e. _resolver_rewrote_history=true). The foreign commit is absent
+# from the pushed tip because the stub committed without incorporating it —
+# the force-push is the mechanism that overwrites origin/$BRANCH_NAME with
+# that resolver-produced (foreign-commit-free) result.
 # ───────────────────────────────────────────────────────────────────
 @test "divergence merge-target: foreign commit is NOT ancestor when resolver uses wrong target (origin/main)" {
   _setup_diverging_branch
 
   # Stub attempt_claude_merge_resolution to simulate the pre-fix bug:
-  # ignore --merge-target and always merge origin/main (the shared ancestor).
-  # The stub resolves the conflict file so _do_rebase_and_push can complete —
-  # we need a push to happen so we can verify origin/$BRANCH_NAME afterward.
+  # ignore --merge-target and resolve conflicts without incorporating the
+  # foreign commit. The stub writes local-only content and commits directly
+  # on top of un-rebased HEAD, leaving no path to the foreign commit.
+  # This produces the same outcome as a resolver that merged origin/main
+  # (shared ancestor) instead of origin/$BRANCH_NAME: the push will
+  # overwrite the remote with a history that never includes the foreign commit.
   attempt_claude_merge_resolution() {
-    # Intentionally ignore all arguments (including --merge-target) and
-    # merge the wrong target — this is the buggy behavior under test.
-    git merge --abort 2>/dev/null || true
-    if git merge origin/main --no-edit 2>/dev/null; then
-      # Fast-forward: no conflicts, but foreign commit not incorporated
-      return 0
-    fi
-    # Merge with conflicts: resolve and stage (wrong target, but still succeeds)
+    # Intentionally ignore all arguments (including --merge-target).
+    # Resolve conflict files by writing local-only content and staging them.
+    # Do NOT attempt git merge — origin/main is the fixture's shared ancestor
+    # and merging it would be a no-op (no new commits on main since branch creation),
+    # producing no staged changes and therefore no resolver commit. Instead, directly
+    # overwrite the conflicting file with local-only content, matching what a
+    # wrong-target resolver would have produced (local content, no foreign commit).
     local _conflicted
     _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
     while IFS= read -r _f; do
       [ -z "$_f" ] && continue
-      echo "# Wrong-target merged content" > "$_f"
+      echo "# Wrong-target resolved content (local only, foreign commit not incorporated)" > "$_f"
       git add "$_f"
     done <<< "$_conflicted"
+    # Commit the resolution — _do_rebase_and_push checks git diff --cached and only
+    # commits if staged changes exist. Committing here is also valid: the resolver
+    # contract allows it, and it ensures _resolver_rewrote_history=true triggers the
+    # force-with-lease push path regardless of the cached-diff check.
+    git commit -m "chore: wrong-target resolution (test stub, no foreign commit)" >/dev/null 2>&1
     return 0
   }
 
-  # Run _do_rebase_and_push — the stub above will use origin/main (wrong target)
+  # Run _do_rebase_and_push — the stub above resolves without the foreign commit
   local exit_code=0
   _do_rebase_and_push "$BRANCH_NAME" "true" "450" "435" 2>/dev/null || exit_code=$?
 
@@ -303,9 +318,10 @@ _setup_diverging_branch() {
   git fetch origin "$BRANCH_NAME" >/dev/null 2>&1
 
   # The foreign commit must NOT be an ancestor of origin/$BRANCH_NAME.
-  # Using origin/main as the merge target brought in main's history but
-  # not origin/$BRANCH_NAME's foreign commit — so the pushed branch tip
-  # has main as a parent, not the foreign commit.
+  # The stub committed on top of local (un-rebased) HEAD without incorporating
+  # the foreign commit. _do_rebase_and_push then force-pushed this result,
+  # overwriting origin/$BRANCH_NAME with a tip whose history never includes
+  # the foreign commit.
   # git merge-base --is-ancestor exits 0 if ancestor, 1 if not.
   local is_ancestor=0
   git -C "$WORKTREE_PATH" merge-base --is-ancestor "$FOREIGN_COMMIT_SHA" "origin/$BRANCH_NAME" || is_ancestor=$?
