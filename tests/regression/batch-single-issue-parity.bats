@@ -83,7 +83,7 @@ teardown() {
   # without a divergence comment above it. The simplest assertion: any remaining
   # CLOSED reference must NOT have `already_closed` as the status (that was the
   # old skip path). The new code has a comment block instead.
-  echo "$_bare_closed" | grep -qv "already_closed" || {
+  ! echo "$_bare_closed" | grep -q "already_closed" || {
     echo "FAIL: batch still contains CLOSED/already_closed skip pattern"
     echo "$_bare_closed"
     return 1
