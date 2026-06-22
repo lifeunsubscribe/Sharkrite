@@ -279,7 +279,9 @@ STUBEOF
 
   # The pretty-stdout name must NOT appear — this is the adversarial assertion
   # If this fails, the gate is reading pretty stdout instead of report.tap
-  grep -qv 'pretty-stdout-only-failure' "$_gate_out" \
+  # Use ! grep -q (file-level absence) not grep -qv (line-level negation).
+  # grep -qv passes if ANY line lacks the pattern — always true in multi-line output.
+  ! grep -q 'pretty-stdout-only-failure' "$_gate_out" \
     || { echo "FAIL: pretty-stdout name leaked into JSON — gate is reading stdout, not report.tap"; cat "$_gate_out"; return 1; }
 }
 
@@ -751,7 +753,9 @@ STUBEOF
 
   # The pretty-stdout name must NOT appear — adversarial assertion
   # If this fails, --jobs N caused the gate to switch from report.tap to stdout
-  grep -qv 'jobs-pretty-stdout-only-failure' "$_gate_out" \
+  # Use ! grep -q (file-level absence) not grep -qv (line-level negation).
+  # grep -qv passes if ANY line lacks the pattern — always true in multi-line output.
+  ! grep -q 'jobs-pretty-stdout-only-failure' "$_gate_out" \
     || { echo "FAIL: pretty-stdout name leaked into JSON under --jobs — gate reading stdout, not report.tap"; cat "$_gate_out"; return 1; }
 }
 

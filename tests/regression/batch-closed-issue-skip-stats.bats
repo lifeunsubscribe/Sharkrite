@@ -215,14 +215,11 @@ setup() {
   # otherwise it falls through to the `else` branch and becomes exit 1.
 
   # The exit-12 handling must exist outside of any function (in the top-level executable body)
-  grep -n "exit 12" "$WORKFLOW_RUNNER" | grep -qv "^[0-9]*:#" || {
-    # Check that there's at least one non-comment `exit 12` line
-    _exit12_lines=$(grep -n "exit 12" "$WORKFLOW_RUNNER" | grep -v "^[0-9]*:.*#" || true)
-    [ -n "$_exit12_lines" ] || {
-      echo "FAIL: No 'exit 12' found in workflow-runner.sh" >&2
-      echo "      The top-level executor must propagate exit 12 so batch sees the sentinel" >&2
-      return 1
-    }
+  _exit12_lines=$(grep -n "exit 12" "$WORKFLOW_RUNNER" | grep -v "^[0-9]*:[[:space:]]*#" || true)
+  [ -n "$_exit12_lines" ] || {
+    echo "FAIL: No non-comment 'exit 12' found in workflow-runner.sh" >&2
+    echo "      The top-level executor must propagate exit 12 so batch sees the sentinel" >&2
+    return 1
   }
 
   # Specifically, there must be an elif/if block checking workflow_exit -eq 12
