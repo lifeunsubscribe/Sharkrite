@@ -518,28 +518,35 @@ STUB
     || { echo "FAIL: tests/ not passed to bats"; cat "$_mk_rec_args_log"; return 1; }
 }
 
-@test "Makefile test target discovers nested .bats files via -r (end-to-end recursive discovery)" {
-  # END-TO-END RECURSIVE DISCOVERY — closes the flag-presence gap in the test above.
+@test "Makefile test target passes -r and directory arg; stub fixture validates flag-passing not Makefile recursion" {
+  # STUB-FIXTURE FLAG-PASSING VERIFICATION — validates the Makefile passes the
+  # correct flags; does NOT prove real bats performs recursion end-to-end.
   #
   # The previous test only checked that '-r' and 'tests/' appeared somewhere in
   # the bats argument log.  That assertion passes even if the Makefile passed
   # 'tests/' as a literal path argument without -r, or if bats was invoked once
   # per .bats file instead of recursively.
   #
-  # This test uses a *discovery-echoing* stub: when bats receives '-r <dir>' it
-  # walks the directory for *.bats files and writes each discovered path to a
-  # separate "discovered" log — proving the Makefile's -r invocation actually
-  # hands bats a directory, not a flat glob, and that the stub sees a nested
-  # structure it can traverse.  A flat-file invocation (bats tests/a.bats
-  # tests/b.bats) would log each file as a positional arg, not as discovered
-  # paths — the two output logs are structurally different, letting the
-  # assertions distinguish the recursive call from a flat-glob call.
+  # This test uses a *discovery-echoing* stub: when the stub receives '-r <dir>'
+  # it walks the directory for *.bats files (via its own internal `find`) and
+  # writes each discovered path to a separate "discovered" log.  This confirms
+  # the Makefile hands the stub a directory arg alongside -r rather than
+  # expanding to a flat file list before invocation.  A flat-file invocation
+  # (bats tests/a.bats tests/b.bats) would log each file as a positional arg,
+  # not as discovered paths — the two output logs are structurally different,
+  # letting the assertions distinguish the recursive call from a flat-glob call.
+  #
+  # NOTE: The recursion is performed by the stub's own `find` command, not by
+  # the real bats binary.  This test validates that the Makefile passes `-r`
+  # and a directory argument correctly; it does not verify that real bats
+  # performs recursive discovery.
   #
   # ADVERSARIAL DESIGN: the fixture trees a .bats file TWO levels deep
-  # (tests/regression/deep.bats) so any shallow glob that doesn't recurse
-  # past one directory level would miss it, and the discovered-log assertion
-  # would fail.  A flat glob (tests/*.bats) produces zero hits on nested
-  # files; only `bats -r tests/` discovers them.
+  # (tests/regression/deep.bats) so a Makefile that expands a shallow glob
+  # (tests/*.bats) and passes individual file paths would miss it — the stub
+  # would never receive a directory arg and the discovered-log assertion would
+  # fail.  A flat glob (tests/*.bats) produces zero hits on nested files; only
+  # passing `-r tests/` as flags causes the stub to find them.
 
   _stub_dir="${BATS_TEST_TMPDIR}/mk_disc_bats"
   mkdir -p "$_stub_dir"
@@ -608,11 +615,14 @@ STUB
     || { echo "FAIL: tests/top-level.bats not discovered (shallow glob might explain)"; \
          echo "Discovered:"; cat "$_mk_disc_found_log"; return 1; }
 
-  # The deeply nested .bats file must ALSO be discovered — this is the key
-  # adversarial assertion.  A flat 'tests/*.bats' glob would not find it.
-  # Only 'bats -r tests/' discovers files in tests/regression/.
+  # The deeply nested .bats file must ALSO be in the discovered log — this is
+  # the key adversarial assertion.  A flat 'tests/*.bats' glob expansion would
+  # not include it; only passing `-r tests/` causes the stub's internal find
+  # to recurse and add it.  (Note: the recursion here is the stub's own `find`,
+  # not real bats; the assertion validates that the Makefile passed a directory
+  # arg, not that the real bats binary performs recursion.)
   grep -q 'regression/deep.bats' "$_mk_disc_found_log" \
-    || { echo "FAIL: tests/regression/deep.bats not discovered — Makefile may not be using true -r recursion"; \
+    || { echo "FAIL: tests/regression/deep.bats not in discovered log — Makefile may be passing flat file list instead of -r <dir>"; \
          echo "Discovered:"; cat "$_mk_disc_found_log"; return 1; }
 }
 
