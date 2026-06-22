@@ -264,10 +264,53 @@ _followup_dedup_check() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_priority_label — map a normalized severity token to a priority label
+#
+# Args: $1 = severity token (CRITICAL, HIGH, MEDIUM, LOW — already normalized)
+# Output: priority-high | priority-medium | priority-low (echoed to stdout)
+#
+# Extracted from the per-finding loop so tests can source this file with
+# RITE_SOURCE_FUNCTIONS_ONLY=1 and call this function directly, ensuring
+# any change to the case arms is caught by the regression tests.
+# ---------------------------------------------------------------------------
+_resolve_priority_label() {
+  local _sev="${1:-MEDIUM}"
+  local _label="priority-medium"
+  case "${_sev}" in
+    CRITICAL|HIGH) _label="priority-high" ;;
+    MEDIUM)        _label="priority-medium" ;;
+    LOW)           _label="priority-low" ;;
+  esac
+  echo "$_label"
+}
+
+# ---------------------------------------------------------------------------
+# _resolve_done_def — map a normalized severity token to a done definition
+#
+# Args: $1 = severity token (CRITICAL, HIGH, MEDIUM, LOW — already normalized)
+# Output: done-definition string (echoed to stdout)
+#
+# Extracted from the per-finding loop for the same reason as
+# _resolve_priority_label above: tests can call the real function instead of
+# inlining a copy of the case arms.
+# ---------------------------------------------------------------------------
+_resolve_done_def() {
+  local _sev="${1:-MEDIUM}"
+  local _def=""
+  case "${_sev}" in
+    CRITICAL) _def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
+    HIGH)     _def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
+    *)        _def="Done when the finding is addressed or explicitly deferred with justification." ;;
+  esac
+  echo "$_def"
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
-# can load only the function definitions above (e.g. _followup_dedup_check)
-# without executing the script body (which parses args, sets up exec redirects,
-# installs traps, and makes live gh/claude calls).
+# can load only the function definitions above (_followup_dedup_check,
+# _resolve_priority_label, _resolve_done_def) without executing the script body
+# (which parses args, sets up exec redirects, installs traps, and makes live
+# gh/claude calls).
 # ---------------------------------------------------------------------------
 if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || true
@@ -1712,12 +1755,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _FOLLOWUP_FINDING_KEY="${ISSUE_NUMBER:-0}-${_finding_slug}-${_finding_index}"
 
     # --- Derive priority label from per-finding severity ---
-    _priority_label="priority-medium"
-    case "${_f_severity}" in
-      CRITICAL|HIGH) _priority_label="priority-high" ;;
-      MEDIUM)        _priority_label="priority-medium" ;;
-      LOW)           _priority_label="priority-low" ;;
-    esac
+    _priority_label=$(_resolve_priority_label "${_f_severity}")
     _finding_labels="${_rollup_base_label},${_priority_label}"
 
     # --- Build per-finding acceptance criterion and verification command ---
@@ -1758,11 +1796,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     fi
 
     # Done Definition: severity-appropriate
-    case "${_f_severity}" in
-      CRITICAL) _done_def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
-      HIGH)     _done_def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
-      *)        _done_def="Done when the finding is addressed or explicitly deferred with justification." ;;
-    esac
+    _done_def=$(_resolve_done_def "${_f_severity}")
 
     # Time Estimate from Fix Effort metadata
     _time_estimate=""
