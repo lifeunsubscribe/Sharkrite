@@ -27,6 +27,11 @@
 #   6. Unit:   body contains acceptance criterion and verification section
 #   7. Unit:   empty severity buckets ("_No CRITICAL issues_") not in body
 #   8. Unit:   label applied via --label flag, NOT embedded in ISSUE_TITLE
+#   9. Static: severity normalization line present (_f_severity awk/tr guard)
+#  10. Unit:   trailing severity annotation resolves to correct priority label
+#              (calls real _resolve_priority_label from assess-and-resolve.sh)
+#  11. Unit:   CRITICAL severity with annotation produces CRITICAL done definition
+#              (calls real _resolve_done_def from assess-and-resolve.sh)
 
 load '../helpers/setup.bash'
 
@@ -253,22 +258,38 @@ Done when the finding is addressed."
 @test "assess-and-resolve.sh: severity with trailing text resolves to correct priority label" {
   # Regression for issue #650: "HIGH (word-split risk)" must yield priority-high,
   # not the default priority-medium that an unmatched case arm falls through to.
+  #
+  # This test calls the real _resolve_priority_label() from assess-and-resolve.sh
+  # (sourced via RITE_SOURCE_FUNCTIONS_ONLY=1) so that any future change to the
+  # case arms in the script breaks this test rather than passing silently.
 
-  # Inline the normalization and case logic, same as the fixed code.
-  _raw_severity="HIGH (word-split risk)"
-  _f_severity=$(echo "$_raw_severity" | awk '{print $1}' | tr '[:lower:]' '[:upper:]' || true)
-  _f_severity="${_f_severity:-MEDIUM}"
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    # Stub print functions consumed by sourced dependencies
+    print_info()    { :; }
+    print_warning() { :; }
+    print_success() { :; }
+    print_error()   { :; }
+    verbose_info()  { :; }
+    _diag()         { :; }
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh'
+    # Normalize: same awk/tr pipeline used in the per-finding loop
+    _raw_severity='HIGH (word-split risk)'
+    _f_severity=\$(echo \"\$_raw_severity\" | awk '{print \$1}' | tr '[:lower:]' '[:upper:]' || true)
+    _f_severity=\"\${_f_severity:-MEDIUM}\"
+    # Call the real helper — not an inline copy of the case arms
+    _priority_label=\$(_resolve_priority_label \"\$_f_severity\")
+    echo \"\$_priority_label\"
+  "
 
-  _priority_label="priority-medium"
-  case "${_f_severity}" in
-    CRITICAL|HIGH) _priority_label="priority-high" ;;
-    MEDIUM)        _priority_label="priority-medium" ;;
-    LOW)           _priority_label="priority-low" ;;
-  esac
-
-  [ "$_priority_label" = "priority-high" ] || {
-    echo "FAIL: Expected priority-high for severity '$_raw_severity', got: '$_priority_label'"
-    echo "(normalized _f_severity: '$_f_severity')"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status)"
+    echo "Output: $output"
+    false
+  }
+  [ "$output" = "priority-high" ] || {
+    echo "FAIL: Expected 'priority-high' for severity 'HIGH (word-split risk)', got: '$output'"
     false
   }
 }
@@ -278,21 +299,38 @@ Done when the finding is addressed."
 @test "assess-and-resolve.sh: CRITICAL severity with annotation produces CRITICAL done definition" {
   # Regression for issue #650: "CRITICAL: confirmed" must yield the CRITICAL done
   # definition, not the wildcard fallback.
+  #
+  # This test calls the real _resolve_done_def() from assess-and-resolve.sh
+  # (sourced via RITE_SOURCE_FUNCTIONS_ONLY=1) so that any future change to the
+  # case arms in the script breaks this test rather than passing silently.
 
-  _raw_severity="CRITICAL: confirmed"
-  _f_severity=$(echo "$_raw_severity" | awk '{print $1}' | tr '[:lower:]' '[:upper:]' || true)
-  _f_severity="${_f_severity:-MEDIUM}"
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    # Stub print functions consumed by sourced dependencies
+    print_info()    { :; }
+    print_warning() { :; }
+    print_success() { :; }
+    print_error()   { :; }
+    verbose_info()  { :; }
+    _diag()         { :; }
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh'
+    # Normalize: same awk/tr pipeline used in the per-finding loop
+    _raw_severity='CRITICAL: confirmed'
+    _f_severity=\$(echo \"\$_raw_severity\" | awk '{print \$1}' | tr '[:lower:]' '[:upper:]' || true)
+    _f_severity=\"\${_f_severity:-MEDIUM}\"
+    # Call the real helper — not an inline copy of the case arms
+    _done_def=\$(_resolve_done_def \"\$_f_severity\")
+    echo \"\$_done_def\"
+  "
 
-  _done_def=""
-  case "${_f_severity}" in
-    CRITICAL) _done_def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
-    HIGH)     _done_def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
-    *)        _done_def="Done when the finding is addressed or explicitly deferred with justification." ;;
-  esac
-
-  [[ "$_done_def" == *"CRITICAL finding"* ]] || {
-    echo "FAIL: Expected CRITICAL done definition for severity '$_raw_severity', got: '$_done_def'"
-    echo "(normalized _f_severity: '$_f_severity')"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status)"
+    echo "Output: $output"
+    false
+  }
+  [[ "$output" == *"CRITICAL finding"* ]] || {
+    echo "FAIL: Expected CRITICAL done definition for severity 'CRITICAL: confirmed', got: '$output'"
     false
   }
 }
