@@ -51,7 +51,11 @@ teardown() {
 # marker was detected), non-zero otherwise.
 # ---------------------------------------------------------------------------
 _has_conflict_marker() {
-  grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])' "$1" 2>/dev/null
+  # Mirrors conflict-resolver.sh Check 2 exactly, including the CR-strip (#533):
+  # a CRLF separator ends the line with "=======\r", which the anchored
+  # "=======$" misses — stripping CR first catches it without relaxing the anchor
+  # (so the trailing-space / setext false-positive guards below still hold).
+  tr -d '\r' < "$1" 2>/dev/null | grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])'
 }
 
 # ===========================================================================
@@ -93,6 +97,20 @@ _has_conflict_marker() {
 
 @test "conflict-marker check: detects full diff3 conflict block" {
   printf '<<<<<<< HEAD\nours\n||||||| base\nbase content\n=======\ntheirs\n>>>>>>> feature/x\n' > test_file.txt
+  _has_conflict_marker test_file.txt
+}
+
+# --- #533: CRLF (Windows) line endings ---
+
+@test "conflict-marker check (#533): detects CRLF separator '=======\\r'" {
+  # A conflict file written with CRLF endings ends the separator line with a CR.
+  # The bare "=======$" anchor misses it → a bad resolution would be accepted.
+  printf '=======\r\n' > test_file.txt
+  _has_conflict_marker test_file.txt
+}
+
+@test "conflict-marker check (#533): detects full CRLF conflict block" {
+  printf '<<<<<<< HEAD\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> feature/x\r\n' > test_file.txt
   _has_conflict_marker test_file.txt
 }
 

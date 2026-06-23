@@ -307,10 +307,17 @@ Resolve every conflict, then stage each file with git add."
   #   >>>>>>>[[:space:]] — conflict close-marker always followed by a space + branch name
   #   |||||||[[:space:]] — diff3/zdiff3 base-version marker always followed by a space;
   #                        produced by merge.conflictstyle=diff3 or zdiff3
+  #
+  # CR-strip (tr -d '\r') before matching: a CRLF-line-ending file ends the
+  # separator line with "=======\r", which the anchored "=======$" misses, so a
+  # Windows-line-ending conflict file would slip the check and a bad resolution
+  # would be accepted (#533). Stripping CR keeps the regex exactly as documented
+  # (no relaxed anchor → no trailing-space false positives) and is portable —
+  # unlike '\r?', which GNU grep -E treats as a literal 'r'.
   local _cr_marker_found=false
   while IFS= read -r _cr_f; do
     [ -z "$_cr_f" ] && continue
-    if grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])' "$_cr_f" 2>/dev/null; then
+    if tr -d '\r' < "$_cr_f" 2>/dev/null | grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])'; then
       _cr_error "Conflict markers remain in: $_cr_f"
       _cr_marker_found=true
     fi
