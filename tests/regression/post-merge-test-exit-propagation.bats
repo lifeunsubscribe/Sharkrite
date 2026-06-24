@@ -442,19 +442,28 @@ CONFIG
 
   # Run the real run_test_gate in a subshell, capturing all output.
   # RITE_TEST_GATE_DIFF_BASE=<pre_merge_sha> → diff shows only lib/some-feature.sh
-  # RITE_LOG_FILE=/dev/null → suppress [diag] direct-write path (avoid RITE_LOG_FILE dep)
-  local _gate_out _gate_json _gate_exit
+  # RITE_LOG_FILE → a real file: the gate routes raw bats output there (not to
+  # stdout) so failing-test transcripts stay out of concurrent phases. The
+  # which-file-ran signal this test checks (some-feature vs other-thing) lives in
+  # that raw output, so we assert against stdout+log combined. The [test-gate]
+  # selection lines (targeted, 1/2) remain on stdout.
+  local _gate_out _gate_json _gate_exit _gate_log _gate_all
   _gate_json="${BATS_TEST_TMPDIR}/gate-real-$$.json"
+  _gate_log="${BATS_TEST_TMPDIR}/gate-real-$$.log"
 
   _gate_out=$(
     export RITE_LIB_DIR="${REAL_RITE_ROOT}/lib"
     export RITE_PROJECT_ROOT="${_fixture_repo}"
-    export RITE_LOG_FILE="/dev/null"
+    export RITE_LOG_FILE="${_gate_log}"
     export RITE_TEST_GATE_DIFF_BASE="${_pre_merge_sha}"
     unset run_test_gate 2>/dev/null || true  # ensure real function loads
     source "${REAL_RITE_ROOT}/lib/utils/test-gate.sh"
     run_test_gate "${_gate_json}" "${_fixture_repo}" 2>&1
   ) || _gate_exit=$?
+
+  # stdout + the run log, where the raw bats output (naming the file that ran) goes.
+  _gate_all="${_gate_out}
+$(cat "${_gate_log}" 2>/dev/null || true)"
 
   # Verify targeted mode was selected (not full suite)
   [[ "$_gate_out" == *"targeted"* ]] || {
@@ -472,16 +481,16 @@ CONFIG
   }
 
   # Verify some-feature.bats was run (its covered path changed)
-  [[ "$_gate_out" == *"some-feature"* ]] || {
+  [[ "$_gate_all" == *"some-feature"* ]] || {
     echo "Expected some-feature.bats to be selected, got:" >&2
-    echo "$_gate_out" >&2
+    echo "$_gate_all" >&2
     return 1
   }
 
   # Verify other-thing.bats was NOT run (its covered path did not change)
-  [[ "$_gate_out" != *"other-thing"* ]] || {
+  [[ "$_gate_all" != *"other-thing"* ]] || {
     echo "other-thing.bats should NOT have been selected (its covered path unchanged), got:" >&2
-    echo "$_gate_out" >&2
+    echo "$_gate_all" >&2
     return 1
   }
 

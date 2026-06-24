@@ -174,6 +174,27 @@ _stub_baseline() {
 # End-to-end: real detached-worktree baseline run (no stub)
 # ---------------------------------------------------------------------------
 
+@test "classify: probe-size cap → skip probe + flag-all (no near-full second suite)" {
+  # 13 selected files, each with its own failing test → _to_probe(13) > cap(12).
+  # The probe must be skipped (no near-full re-run) and fail-safe to flag-all.
+  local _sel="" _i _name
+  : > "$TEST_REPO/branch13.tap"
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+    _name="capfail-$_i"
+    _write_fixture "$TEST_REPO/tests/regression/cap$_i.bats" "$_name" false
+    _sel="${_sel}tests/regression/cap$_i.bats"$'\n'
+    printf 'not ok %s %s\n' "$_i" "$_name" >> "$TEST_REPO/branch13.tap"
+  done
+  (cd "$TEST_REPO" && git add -A && git commit -qm cap) >/dev/null 2>&1
+  export STUB_REDS="capfail-1"   # would suppress one IF the probe ran — but the cap skips it
+  _stub_baseline
+  RITE_GATE_BASELINE_MAX_PROBE_FILES=12 \
+    _classify_test_failures "$TEST_REPO/branch13.tap" "$_sel" "$TEST_REPO" "HEAD" "$OUT"
+  [ "$_GATE_BASELINE_MODE" = "capped" ]
+  [ "$_GATE_NEW_FAIL" -eq 13 ]     # all flagged new (fail-safe over-block), none suppressed
+  [ ! -f "$STUB_MARKER" ]          # probe never ran → no near-full re-run, no deadlock risk
+}
+
 @test "integration: real baseline run separates new regression from pre-existing red" {
   # Base commit: alpha PASSES, preexist FAILS.
   _write_fixture "$TEST_REPO/tests/regression/sample.bats" \

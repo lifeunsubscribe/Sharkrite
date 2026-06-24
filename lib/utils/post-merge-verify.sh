@@ -182,13 +182,15 @@ verify_post_merge() {
         local _main_gate_file _main_gate_exit
         _main_gate_file=$(mktemp "/tmp/rite_pmv_main_gate_$$.json")
         _main_gate_exit=0
-        # Force full suite for the main-broken check: set diff base to HEAD so
-        # git diff HEAD...HEAD returns an empty changed-file list, which hits
-        # the no-diff FORCE_FULL fallback in _select_tests_by_changed_paths —
-        # deliberately the ONE remaining full-suite path after the 2026-06-12
-        # trigger removal. This ensures the main run is not scoped to a narrow
-        # subset that might produce a false "main passes" when main is broken.
-        RITE_TEST_GATE_DIFF_BASE="HEAD" run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
+        # Force the full suite for the main-broken check via the EXPLICIT opt-in
+        # RITE_GATE_FORCE_FULL=1 — this is the single intentional full-suite
+        # caller. (Previously this relied on DIFF_BASE=HEAD → empty diff → the
+        # implicit no-diff FORCE_FULL fallback; that fallback was removed so a
+        # transient empty diff on a NORMAL run can no longer silently escalate to
+        # all ~181 files. The opt-in keeps this caller's full run intact.) The
+        # main run must not be scoped to a narrow subset that could falsely report
+        # "main passes" when main is broken.
+        RITE_GATE_FORCE_FULL=1 run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
         rm -f "${_main_gate_file:-}"
         git -C "$worktree_path" worktree remove --force "$_main_test_dir" 2>/dev/null \
           || rm -rf "$_main_test_dir"
