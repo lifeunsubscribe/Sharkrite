@@ -260,14 +260,15 @@ MF_EOF
   [[ "$output" == *"Post-merge verification FAILED"* ]]
 }
 
-@test "verify_post_merge returns 0 when run_test_gate fails but main is also broken" {
-  # If both the feature branch AND main fail the gate, the failure is a
-  # pre-existing main problem — not a semantic conflict from this merge.
-  # verify_post_merge should return 0 (allow workflow to proceed).
+@test "verify_post_merge returns 1 on gate failure WITHOUT a full-suite main-broken re-run" {
+  # The full-suite "is main broken?" check was removed: baseline-diff already
+  # classifies failures as new (the merge's own) vs pre-existing, so the gate
+  # fails ONLY on new failures → the merge is at fault → return 1. The gate must
+  # run exactly ONCE (no second full-suite pass on origin/main — that was the
+  # last full-suite run in the lifecycle and the source of a flake cascade).
   REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
   cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
 
-  # Sharkrite Makefile
   cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
 shellcheck:
 	@true
@@ -277,36 +278,22 @@ MF_EOF
 
   source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
 
-  # Stub run_test_gate to always fail (both feature branch and main checks)
+  # Count gate invocations; the stub always fails.
+  _gate_calls="${BATS_TEST_TMPDIR}/gate-calls"; : > "$_gate_calls"
+  export _gate_calls
   run_test_gate() {
-    local _out_file="$1"
-    printf '{"lint":[],"tests":[{"file":"bats","test_name":"broken","reason":"assertion failed"}],"exit_code":1}' > "$_out_file"
+    echo x >> "$_gate_calls"
+    printf '{"lint":[],"tests":[{"file":"bats","test_name":"broken","reason":"assertion failed"}],"exit_code":1}' > "$1"
     return 1
   }
   export -f run_test_gate
 
-  # Stub git worktree add to succeed (so main-broken check runs)
-  local _fake_main_dir="${BATS_TEST_TMPDIR}/fake-main"
-  mkdir -p "$_fake_main_dir"
-  export _FAKE_MAIN_DIR="$_fake_main_dir"
-  git() {
-    if [[ "$*" == *"worktree add"* ]]; then
-      # Succeed: copy the fake dir path from the args
-      # The actual temp dir was created above; just return 0
-      return 0
-    fi
-    if [[ "$*" == *"worktree remove"* ]]; then
-      return 0
-    fi
-    command git "$@"
-  }
-  export -f git
-
   run verify_post_merge "$TEST_WORKTREE"
 
-  # Should return 0: main is broken too, so this branch isn't at fault
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"main branch is broken"* ]]
+  [ "$status" -eq 1 ]                                  # gate failed → fail (the merge's doing)
+  [[ "$output" != *"main branch is broken"* ]]         # no main-broken verdict
+  [[ "$output" != *"checking if main"* ]]              # no full-suite main-broken pass
+  [ "$(grep -c x "$_gate_calls")" -eq 1 ]              # gate ran exactly once
 }
 
 @test "verify_post_merge emits targeted-gate banner for Sharkrite repos" {

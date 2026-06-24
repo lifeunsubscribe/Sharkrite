@@ -162,59 +162,21 @@ verify_post_merge() {
     rm -f "${_pmv_gate_file:-}"
 
     if [ "$_pmv_gate_exit" -ne 0 ]; then
-      # Before blaming the merge, check if main itself is broken.
-      # A broken main will poison every feature branch that merges it.
-      # Distinguish so callers block on real semantic conflicts, not
-      # pre-existing failures in main.
+      # The targeted gate failed on NEW failures only — baseline-diff (#699)
+      # already classifies each failure as new (since pre_merge_ref, i.e. the
+      # merge's own) vs pre-existing on the diff base, and the gate's
+      # outcome=failed fires ONLY when new>0. So a failure here IS the merge's
+      # doing, full stop.
       #
-      # Main-broken check: run the full bats suite on origin/main (no targeted
-      # selection — main has no merge commit, so a diff-base would select a
-      # different subset than the feature-branch run). Full suite ensures both
-      # runs are comparable: if main passes full but feature fails targeted,
-      # the merge is the cause; if main fails full, main itself is broken.
-      echo "⚠️  Post-merge tests failed — checking if main is the cause..." >&2
-
-      local _main_broken=false
-      local _main_test_dir
-      _main_test_dir=$(mktemp -d)
-
-      if git -C "$worktree_path" worktree add --quiet "$_main_test_dir" origin/main 2>/dev/null; then
-        local _main_gate_file _main_gate_exit
-        _main_gate_file=$(mktemp "/tmp/rite_pmv_main_gate_$$.json")
-        _main_gate_exit=0
-        # Force the full suite for the main-broken check via the EXPLICIT opt-in
-        # RITE_GATE_FORCE_FULL=1 — this is the single intentional full-suite
-        # caller. (Previously this relied on DIFF_BASE=HEAD → empty diff → the
-        # implicit no-diff FORCE_FULL fallback; that fallback was removed so a
-        # transient empty diff on a NORMAL run can no longer silently escalate to
-        # all ~181 files. The opt-in keeps this caller's full run intact.) The
-        # main run must not be scoped to a narrow subset that could falsely report
-        # "main passes" when main is broken.
-        RITE_GATE_FORCE_FULL=1 run_test_gate "$_main_gate_file" "$_main_test_dir" >/dev/null 2>&1 || _main_gate_exit=$?
-        rm -f "${_main_gate_file:-}"
-        git -C "$worktree_path" worktree remove --force "$_main_test_dir" 2>/dev/null \
-          || rm -rf "$_main_test_dir"
-
-        if [ "$_main_gate_exit" -ne 0 ]; then
-          _main_broken=true
-        fi
-      else
-        # Can't create worktree (maybe origin/main not fetched) — skip the check
-        rm -rf "$_main_test_dir"
-      fi
-
-      if [ "$_main_broken" = true ]; then
-        echo "🔴 Tests fail on main too — main branch is broken (not a merge conflict)" >&2
-        echo "Fix main first, then retry. Allowing workflow to proceed." >&2
-        # Return success: the failure isn't from this branch's merge.
-        # Callers would otherwise revert the merge and block the workflow,
-        # but the feature branch isn't at fault.
-        return 0
-      fi
-
+      # We deliberately do NOT re-run the full suite on origin/main to ask "is
+      # main broken?" anymore. That check is redundant (baseline-diff answers it
+      # per-failure) and was the LAST full-suite run in the issue lifecycle — and
+      # the source of a flake cascade (a load-flaky concurrency test failed the
+      # gate → triggered a silent full-suite main-broken run). The only full-suite
+      # run now is the deliberate, scheduled `rite --full-suite` safety net.
       echo "⚠️  Post-merge verification FAILED (exit $_pmv_gate_exit)" >&2
-      echo "The merge/rebase succeeded at the git level but tests now fail." >&2
-      echo "This likely indicates a silent semantic conflict." >&2
+      echo "The merge/rebase succeeded at the git level but introduced new test failures" >&2
+      echo "(baseline-diff already excluded pre-existing reds). Likely a silent semantic conflict." >&2
       return 1
     fi
 
