@@ -71,6 +71,19 @@ fi
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # Trap handler for safe exit on interrupt
+# _wip_commit_allowed <branch> — may the interrupt handler auto-commit/push WIP
+# onto this branch? WIP preservation is for feature-branch worktrees ONLY. Never
+# main/master or a detached HEAD: pushing unfinished work to a shared default
+# branch is destructive (live incident 2026-06-24 — a test sourcing this file was
+# killed while on `main`, and the trap committed+pushed WIP to origin/main).
+# Returns 0 = allowed, 1 = not.
+_wip_commit_allowed() {
+  case "${1:-}" in
+    ""|main|master) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 cleanup_on_interrupt() {
   local exit_code=$?
 
@@ -90,10 +103,16 @@ cleanup_on_interrupt() {
     if [ "$uncommitted" -gt 0 ]; then
       echo -e "\033[0;34mℹ️  Found $uncommitted uncommitted change(s)\033[0m"
 
-      if [ "$AUTO_MODE" = true ]; then
-        # In auto mode, always commit WIP
-        local branch_name
-        branch_name=$(git branch --show-current)
+      local branch_name
+      branch_name=$(git branch --show-current 2>/dev/null || true)
+
+      if ! _wip_commit_allowed "$branch_name"; then
+        # main/master/detached HEAD: leave changes uncommitted (preserved in the
+        # working tree). Auto-committing+pushing unfinished work to a shared
+        # default branch is destructive — see _wip_commit_allowed.
+        echo -e "\033[1;33m⚠️  On '${branch_name:-detached HEAD}' — leaving $uncommitted change(s) uncommitted (WIP auto-commit is for feature branches only)\033[0m"
+      elif [ "$AUTO_MODE" = true ]; then
+        # In auto mode, always commit WIP (feature branch only, per the guard above)
         local commit_msg="WIP: interrupted work on ${branch_name}"
 
         git add -A
@@ -108,8 +127,6 @@ cleanup_on_interrupt() {
         echo
 
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-          local branch_name
-          branch_name=$(git branch --show-current)
           local commit_msg="WIP: interrupted work on ${branch_name}"
 
           git add -A
@@ -155,7 +172,14 @@ cleanup_on_interrupt() {
   exit ${exit_code}
 }
 
-trap cleanup_on_interrupt INT TERM HUP
+# Arm the interrupt trap only for real execution — NOT when the file is sourced
+# for its functions (e.g. tests under RITE_SOURCE_FUNCTIONS_ONLY=1). A sourced
+# process that is later killed must not trigger WIP commit/push side effects
+# (live incident 2026-06-24: a functions-only test source was killed and the
+# armed trap committed+pushed WIP to origin/main).
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" != "1" ]; then
+  trap cleanup_on_interrupt INT TERM HUP
+fi
 
 # Helper function to acquire per-issue lock and set up EXIT trap
 # Usage: setup_issue_lock_if_needed
@@ -333,6 +357,21 @@ _RITE_PIP_TIMEOUT_WARNED=false
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
 # ===================================================================
 _run_dev_test_gate() {
+  # Orchestrated runs (rite <issue> via workflow-runner, RITE_ORCHESTRATED=true)
+  # verify POST-COMMIT through the structured gate (run_test_gate, Phase 2/3):
+  # targeted selection, baseline-diff (new-failures-only), a bounded wait, and a
+  # single fix loop. Running the FULL suite here too is redundant and actively
+  # harmful: it is untargeted (parallel barrier-timeout load flake), UNBOUNDED
+  # (a test that blocks on stdin hangs the whole run — live: issue 649's dev
+  # session wedged 78m on a tty-stdin deadlock in the lint suite), and it spawns
+  # a SECOND auto-fix session that churns on phantom failures. Verification is
+  # the orchestrator's job. Standalone claude-workflow.sh runs (no orchestrator)
+  # keep this as their only pre-commit verification.
+  if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
+    _diag "DEV_TEST_GATE skipped=orchestrated"
+    return 0
+  fi
+
   local _should_run=false
   if [ "$AUTO_MODE" = true ]; then
     if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
