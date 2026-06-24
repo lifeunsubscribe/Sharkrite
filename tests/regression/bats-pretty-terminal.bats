@@ -32,40 +32,45 @@ teardown() {
 # _bats_has_report_formatter detection
 # ---------------------------------------------------------------------------
 
+# NOTE: the fake bats MUST be named `bats` and live in its own dir prepended to
+# PATH — the detection function resolves the binary via `command -v bats`, so a
+# randomly-named mktemp file is ignored and the REAL installed bats is probed
+# instead (which silently inverted tests 1-3). Also: sourcing test-gate.sh turns
+# on `set -e` in this shell, so the function's non-zero return must be captured
+# with `|| _ret=$?` — a bare `cmd; _ret=$?` aborts the script before $? is read.
+
 @test "_bats_has_report_formatter: returns 0 when bats binary contains --report-formatter" {
+  _fake_dir="${BATS_TEST_TMPDIR}/has_rf"
+  mkdir -p "$_fake_dir"
+  printf '#!/bin/bash\n# --report-formatter\n' > "$_fake_dir/bats"
+  chmod +x "$_fake_dir/bats"
   run bash -c "
     export RITE_LIB_DIR='${RITE_LIB_DIR}'
     _diag() { true; }
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    # Create a fake bats binary that contains the --report-formatter string
-    _fake_bats=\$(mktemp)
-    printf '#!/bin/bash\necho --report-formatter\n' > \"\$_fake_bats\"
-    chmod +x \"\$_fake_bats\"
-    PATH=\"\$(dirname \"\$_fake_bats\"):\$PATH\" _bats_has_report_formatter
-    _ret=\$?
-    rm -f \"\$_fake_bats\"
+    _ret=0
+    PATH=\"${_fake_dir}:\$PATH\" _bats_has_report_formatter || _ret=\$?
     exit \$_ret
   "
   [ "$status" -eq 0 ]
 }
 
 @test "_bats_has_report_formatter: returns 1 when bats binary lacks --report-formatter" {
+  _fake_dir="${BATS_TEST_TMPDIR}/no_rf"
+  mkdir -p "$_fake_dir"
+  printf '#!/bin/bash\necho -t --tap\n' > "$_fake_dir/bats"
+  chmod +x "$_fake_dir/bats"
   run bash -c "
     export RITE_LIB_DIR='${RITE_LIB_DIR}'
     _diag() { true; }
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    # Create a fake bats binary WITHOUT --report-formatter
-    _fake_bats=\$(mktemp)
-    printf '#!/bin/bash\necho -t --tap\n' > \"\$_fake_bats\"
-    chmod +x \"\$_fake_bats\"
-    PATH=\"\$(dirname \"\$_fake_bats\"):\$PATH\" _bats_has_report_formatter
-    _ret=\$?
-    rm -f \"\$_fake_bats\"
-    # Must be non-zero (not found)
+    _ret=0
+    PATH=\"${_fake_dir}:\$PATH\" _bats_has_report_formatter || _ret=\$?
+    # Must be non-zero (no --report-formatter in the fake binary)
     [ \"\$_ret\" -ne 0 ]
   "
   [ "$status" -eq 0 ]
@@ -79,8 +84,8 @@ teardown() {
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
     # Run in an empty PATH so bats cannot be found
-    PATH=/nonexistent _bats_has_report_formatter
-    _ret=\$?
+    _ret=0
+    PATH=/nonexistent _bats_has_report_formatter || _ret=\$?
     [ \"\$_ret\" -ne 0 ]
   "
   [ "$status" -eq 0 ]
@@ -191,7 +196,7 @@ STUB
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+    PATH="${_stub_dir}:\$PATH" run_test_gate '${_gate_out}' '${_proj}'
   "
   # Gate must exit 0 (all pass) and produce valid JSON
   [ "$status" -eq 0 ]
@@ -263,7 +268,7 @@ STUBEOF
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+    PATH="${_stub_dir}:\$PATH" run_test_gate '${_gate_out}' '${_proj}'
   " || true
   # Gate exits 1 because bats failed; JSON must still be written
   [ -f "$_gate_out" ]
@@ -317,7 +322,7 @@ STUBEOF
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+    PATH="${_stub_dir}:\$PATH" run_test_gate '${_gate_out}' '${_proj}'
   " || true
   # Gate exits 1; JSON still written
   [ -f "$_gate_out" ]
@@ -674,7 +679,7 @@ STUB
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+    PATH="${_stub_dir}:\$PATH" run_test_gate '${_gate_out}' '${_proj}'
   "
   [ "$status" -eq 0 ]
   [ -f "$_gate_out" ]
@@ -747,7 +752,7 @@ STUBEOF
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+    PATH="${_stub_dir}:\$PATH" run_test_gate '${_gate_out}' '${_proj}'
   " || true
   # Gate exits 1 because bats failed; JSON must still be written
   [ -f "$_gate_out" ]
@@ -808,7 +813,7 @@ STUBEOF
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    PATH='${_stub_dir}:\$PATH' run_test_gate '${_gate_out}' '${_proj}'
+    PATH="${_stub_dir}:\$PATH" run_test_gate '${_gate_out}' '${_proj}'
   " || true
   [ -f "$_gate_out" ]
 

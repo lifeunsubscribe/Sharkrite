@@ -389,6 +389,25 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Enforcement:** `tests/regression/gate-baseline-diff.bats` — classifier (all-new / all-pre-existing / mixed), fail-safe fallback, operator valve, per-base-SHA cache hit, and a real detached-worktree end-to-end run. Fixtures build the `@test` token at runtime (`'@'"test"`) because bats preprocesses every literal `@test` line in a file, even inside a heredoc.
 
+### Gate Output Routing: raw to log, digest to terminal
+
+**2026-06-24.** The post-commit gate's raw output (concurrent `make shellcheck` + `make lint`, plus bats `-F pretty`) is voluminous and was streaming straight to the terminal. Two failure modes drove the change: (1) the review-loop gate runs **backgrounded, concurrent with review generation** (`workflow-runner.sh` Phase 2/3), so its live stream interleaved mid-phase with unrelated output; (2) a single failing bats test replays its **entire captured stdout** — for tests that exercise a whole rite session (e.g. `tests/smoke/source-all-libs.bats`) that's a nested-transcript wall. The noise peaked exactly where it was least relevant: a run with 14 pre-existing reds + 3 new dumped all 17 transcripts before announcing only 3 mattered.
+
+**Behavior:** raw bats/lint output is routed to the **run log only** via `_gate_raw_sink` (`"${RITE_LOG_FILE:-/dev/stdout}"`), mirroring the established two-channel convention (direct `>>` to `$RITE_LOG_FILE`, same as `[diag]` lines). The terminal instead gets a **compact digest** emitted just before `_gate_write_json`:
+- `[test-gate] bats: N passed, M failed → X new (blocking), Y pre-existing (suppressed)` (the split only when baseline-diff applied)
+- the **names** of the blocking (new) failures, one per line, plus `Full bats output: <log>`
+- lint finding count when non-zero; a one-line green confirmation when all pass
+
+**Why log-only is safe:** the JSON findings the assessment consumes are parsed from the TAP report file (`report.tap` → `_tests_raw_file`), never from the terminal stream — so removing the stream from stdout loses nothing the workflow depends on. The digest's blocking-failure names come from `_baseline_new_names` (baseline path) or `_extract_tap_failure_names` (FORCE_FULL / no-diff path).
+
+**Fallback:** when `RITE_LOG_FILE` is unset (unlogged runs, sandboxed tests), `_gate_raw_sink` is `/dev/stdout` — raw output keeps its old destination so nothing is lost.
+
+**TERM must be set for the pretty formatter (exit-code honesty).** `bats -F pretty` shells out to `tput`; with `TERM` **unset** (launchd, cron, non-TTY CI) tput errors and bats exits **non-zero even when every test passes** — the gate would read that as a failing suite and spuriously block the merge / fail `post-merge-verify`. The gate defaults `export TERM="${TERM:-dumb}"` before invoking bats so the run is exit-code-honest in every environment (directly relevant to the headless launchd jobs — health-report, full-suite). Tests that drive the real gate must NOT use the `cmd; _exit=$?` idiom to capture the gate's exit: sourcing `test-gate.sh` enables `set -e`, so a non-zero gate aborts the script before `$?` is read — use `cmd || _exit=$?`.
+
+**Enforcement:** `tests/regression/test-gate-output-routing.bats` — asserts raw output lands in the log (not stdout), the digest + named blocking failure appear on stdout, and the no-log fallback preserves raw output on stdout.
+
+**Portability landmine in the JSON parsers (do not revert):** `_parse_lint_line` and `_parse_bats_failure_line` sanitize finding text via `_sanitize_json_value`, which strips C0 control bytes with **`tr -d '\001-\010\013\014\016-\037\177'`**, NOT a sed `[\x01-\x08…\x7f]` hex-range character class. BSD `/usr/bin/sed` (every stock macOS) rejects that range with `RE error: invalid character range`; under the callers' `|| true` the whole sed silently returns **empty**, so every `[GATE]` finding fed to the assessment carried an empty `test_name`/`message` on macOS (the bug was masked because GNU sed on Linux CI accepts the range). The ANSI-escape strip (`s/\x1b…//`) stays in sed — BSD sed handles single `\x1b` fine; only hex *ranges* break. Regression guard: `bats-pretty-terminal.bats` test 11 + the behavioral pipeline tests assert non-empty parsed names on the host's own sed.
+
 ### Fix-review prompt: syntax-check before declaring done
 
 Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt now requires Claude to run `bash -n <file>` on every shell file it touched before declaring done. This is a fast, in-session check that catches broken syntax before commit. Full lint and test verification runs post-commit via the parallel gate (see "Verification Out of Fix Session" above).

@@ -59,6 +59,24 @@ _gate_write_json() {
 }
 
 # ---------------------------------------------------------------------------
+# _sanitize_json_value — make an arbitrary string safe inside a JSON string,
+# portably across GNU and BSD tooling.
+#   1. strip ANSI CSI sequences + lone ESC bytes (sed; \x1b works on both seds)
+#   2. delete the C0 control bytes that break JSON parsers — via `tr` octal
+#      ranges, NOT a sed `[\x01-\x08...]` hex character class. BSD /usr/bin/sed
+#      rejects that range with "RE error: invalid character range" and, under
+#      the callers' `|| true`, silently returns EMPTY — which emptied every
+#      bats/lint finding name on macOS (the gate's [GATE] findings carried no
+#      test name). Tab(011)/LF(012)/CR(015) are preserved by the range gaps.
+#   3. escape backslashes then double-quotes for valid JSON.
+_sanitize_json_value() {
+  printf '%s' "$1" \
+    | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' \
+    | tr -d '\001-\010\013\014\016-\037\177' \
+    | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# ---------------------------------------------------------------------------
 # _parse_shellcheck_line — convert shellcheck/make-check output to JSON fragment
 # Input: one output line from make check / shellcheck
 # Output: JSON object {"file":"...","line":"...","rule":"...","message":"..."} or ""
@@ -72,14 +90,8 @@ _parse_lint_line() {
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
     rule=$(echo "$raw_line" | grep -oE 'SC[0-9]+' | head -1 || true)
-    # Strip ANSI escape sequences and control chars, then escape for JSON.
-    # sed: (1) remove ANSI CSI sequences (\x1b[...m and similar), (2) remove
-    # remaining ESC bytes, (3) remove other C0 control bytes (tabs OK → keep \t
-    # literal, but CR/BEL/BS etc. break JSON parsers).
-    # Then escape backslashes and double-quotes for valid JSON.
-    message=$(printf '%s' "$raw_line" \
-      | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
-      | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    # Strip ANSI/control bytes, then escape for JSON (portable — see helper).
+    message=$(_sanitize_json_value "$raw_line" || true)
     # JSON-escape file and line the same way as message to handle unusual paths
     # (backslashes, quotes) that would produce malformed JSON and cause jq to
     # silently yield zero gate items via || true in assess-and-resolve.sh.
@@ -96,9 +108,7 @@ _parse_lint_line() {
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
     rule=$(echo "$raw_line" | grep -oE '\[[A-Z_]+\]' | head -1 | tr -d '[]' || true)
-    message=$(printf '%s' "$raw_line" \
-      | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g' \
-      | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    message=$(_sanitize_json_value "$raw_line" || true)
     # JSON-escape file and line the same way as message (same fail-open risk)
     file=$(printf '%s' "$file" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     line=$(printf '%s' "$line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
@@ -119,15 +129,11 @@ _parse_bats_failure_line() {
   # bats failure format: "not ok N test description"
   if echo "$raw_line" | grep -qE '^not ok [0-9]+ '; then
     local test_name _stripped
-    # Strip "not ok N " prefix, then ANSI/control bytes, then JSON-escape.
-    # Each transformation is a separate variable to satisfy the || true rule:
-    # a pipeline inside $() that exits non-zero silently kills the script.
+    # Strip the "not ok N " prefix, then ANSI/control bytes + JSON-escape via the
+    # shared helper (portable across BSD/GNU sed — the old inline hex-range sed
+    # errored on macOS and emptied the name).
     _stripped=$(echo "$raw_line" | sed 's/^not ok [0-9]* //' || true)
-    _stripped=$(printf '%s' "$_stripped" \
-      | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' || true)
-    # sharkrite-lint disable UNSAFE_PIPE_IN_CMDSUB - Reason: || true on next line; single-sed, no grep/awk
-    test_name=$(printf '%s' "$_stripped" \
-      | sed 's/[\x01-\x08\x0b-\x0c\x0e-\x1f\x7f]//g; s/\\/\\\\/g; s/"/\\"/g' || true)
+    test_name=$(_sanitize_json_value "$_stripped" || true)
     printf '{"file":"bats","test_name":"%s","reason":"assertion failed"}' "$test_name"
     return 0
   fi
@@ -718,6 +724,17 @@ run_test_gate() {
   local _GATE_BASELINE_MODE="" _GATE_BASE_SHA=""
   local _GATE_TOTAL_FAIL=0 _GATE_NEW_FAIL=0 _GATE_PREEXISTING_FAIL=0
 
+  # Raw gate output (concurrent shellcheck+lint + bats pretty) is voluminous and
+  # interleaves badly with other phases — the backgrounded review-loop gate
+  # streams it concurrent with review generation, and a single failing test can
+  # replay a whole nested rite transcript (e.g. source-all-libs.bats). Route it
+  # to the run log only; the terminal gets a compact digest at the end (see the
+  # summary block before _gate_write_json). This mirrors the established
+  # two-channel convention (direct >> "$RITE_LOG_FILE", like [diag] lines). Fall
+  # back to stdout when no log is configured (unlogged runs, sandboxed tests) so
+  # output is never lost.
+  local _gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"
+
   if [ "$_is_sharkrite" = "true" ]; then
     # --- Sharkrite: shellcheck + custom lint (run independently so both run even if shellcheck fails) ---
     # Running as two separate invocations ensures custom-lint findings are never masked
@@ -761,8 +778,8 @@ run_test_gate() {
     # temp file (PID-scoped, never globbed) and we merge into _lint_raw_file
     # after wait so the JSON parser sees clean input. Live progress during the
     # gate's shellcheck+lint phase is sacrificed in exchange for the speedup —
-    # both finish within a few seconds and the merged output is then streamed
-    # to stdout (which the parent FIFO-tee captures for the run log).
+    # both finish within a few seconds and the merged output is then written to
+    # the run log only (_gate_raw_sink), not the terminal.
     local _sc_raw_individual _lint_raw_individual
     _sc_raw_individual=$(mktemp "/tmp/rite_gate_sc_raw_${PR_NUMBER:-0}_$$.txt")
     _lint_raw_individual=$(mktemp "/tmp/rite_gate_lint_raw_${PR_NUMBER:-0}_$$.txt")
@@ -789,13 +806,13 @@ run_test_gate() {
     _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 0)
     _lint_tool_exit=$(cat "$_lint_exit_file" 2>/dev/null || echo 0)
 
-    # Merge into the JSON parser's input AND stream to stdout for the run log.
-    # Order: shellcheck first, then lint (matches the previous sequential output
-    # layout that downstream readers may pattern-match on).
+    # Merge into the JSON parser's input AND append to the run log (not the
+    # terminal). Order: shellcheck first, then lint (matches the previous
+    # sequential output layout that downstream readers may pattern-match on).
     {
       [ -s "$_sc_raw_individual" ] && cat "$_sc_raw_individual"
       [ -s "$_lint_raw_individual" ] && cat "$_lint_raw_individual"
-    } | tee -a "$_lint_raw_file" || true
+    } | tee -a "$_lint_raw_file" >> "$_gate_raw_sink" || true
     rm -f "$_sc_raw_individual" "$_lint_raw_individual"
 
     [ "$_shellcheck_exit" -ne 0 ] && _lint_exit=1
@@ -828,15 +845,27 @@ run_test_gate() {
     fi
     _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
 
-    # --- Bats output format: pretty for terminal, TAP for JSON parser ---
+    # bats' pretty formatter shells out to `tput`; with TERM unset (launchd,
+    # cron, non-TTY CI) tput errors and bats exits NON-ZERO even when every test
+    # passes — the gate would then read that as a failing suite and spuriously
+    # block the merge / fail post-merge-verify. Default TERM to a safe value so
+    # the run is exit-code-honest in every environment. (Live trigger: any
+    # headless invocation — the health-report and full-suite launchd jobs run
+    # with no TERM.)
+    export TERM="${TERM:-dumb}"
+
+    # --- Bats output format: pretty for the run log, TAP for JSON parser ---
     # When bats supports --report-formatter (bats-core >= 1.5), we run with
-    # `-F pretty` so the terminal gets compact colour output, while TAP is
-    # written to a temp dir via `--report-formatter tap`.  The TAP file
-    # replaces the old tee-to-raw-file pattern so _parse_bats_failure_line
-    # still reads `^not ok N` lines.  Pretty output flows to stdout → the
-    # FIFO-tee in bin/rite captures it in the run log automatically.
+    # `-F pretty` for readable output, while TAP is written to a temp dir via
+    # `--report-formatter tap`.  The TAP file replaces the old tee-to-raw-file
+    # pattern so _parse_bats_failure_line still reads `^not ok N` lines.  The
+    # pretty stream is routed to the run log only (_gate_raw_sink), NOT the
+    # terminal — the terminal gets the compact digest emitted before
+    # _gate_write_json.  This keeps failing-test transcripts out of concurrent
+    # phase output.
     #
-    # Fallback: older bats without --report-formatter → original TAP-via-tee.
+    # Fallback: older bats without --report-formatter → original TAP-via-tee,
+    # also routed to the run log via _gate_raw_sink.
     local _bats_use_pretty=false
     local _bats_tap_dir=""
     if _bats_has_report_formatter; then
@@ -855,12 +884,12 @@ run_test_gate() {
       if [ "$_bats_use_pretty" = "true" ]; then
         { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
             bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
-            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/); \
+            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/) >> "$_gate_raw_sink" 2>&1; \
           echo $? > "$_bats_exit_file"; } || true
         cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
       else
         { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
-          | tee "$_tests_raw_file" || true
+          | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       fi
     elif [ -z "$_selection" ]; then
       # Diff exists but no bats file covers the changed paths. Run nothing —
@@ -886,12 +915,12 @@ run_test_gate() {
       if [ "$_bats_use_pretty" = "true" ]; then
         { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
             bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
-            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}"); \
+            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}") >> "$_gate_raw_sink" 2>&1; \
           echo $? > "$_bats_exit_file"; } || true
         cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
       else
         { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
-          | tee "$_tests_raw_file" || true
+          | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       fi
     fi
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
@@ -996,6 +1025,22 @@ run_test_gate() {
   done < "$_tests_raw_file"
   _tests_items+="]"
 
+  # --- Capture terminal-digest inputs before the raw TAP file is removed ---
+  # _bats_pass/_bats_fail_total come from the TAP report; _summary_names are the
+  # blocking (new) failures to name on the terminal. With baseline-diff applied
+  # the blocking set is _baseline_new_names; otherwise (FORCE_FULL / no diff)
+  # every failure blocks, so name them all.
+  local _bats_pass=0 _bats_fail_total=0 _summary_names=""
+  if [ "$_is_sharkrite" = "true" ]; then
+    _bats_pass=$(grep -c "^ok " "$_tests_raw_file" 2>/dev/null || true)
+    _bats_fail_total=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
+    if [ "$_baseline_applied" = "true" ]; then
+      _summary_names="$_baseline_new_names"
+    elif [ "$_bats_fail_total" -gt 0 ]; then
+      _summary_names=$(_extract_tap_failure_names "$_tests_raw_file")
+    fi
+  fi
+
   rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}"
   trap - EXIT
 
@@ -1021,6 +1066,34 @@ run_test_gate() {
   local _duration=$(( _gate_end - _gate_start ))
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
+
+  # --- Compact terminal digest (Sharkrite bats path) ---
+  # The raw bats/lint output went to the run log only (_gate_raw_sink); surface
+  # just the high-signal result here so concurrent phases aren't drowned. New
+  # (blocking) failures are named; pre-existing/suppressed ones stay in the log.
+  if [ "$_is_sharkrite" = "true" ]; then
+    if [ "$_lint_count" -gt 0 ]; then
+      echo "[test-gate] lint: ${_lint_count} finding(s) blocking — full output in run log"
+    fi
+    if [ "$_bats_fail_total" -gt 0 ]; then
+      if [ "$_baseline_applied" = "true" ] && [ "${_GATE_PREEXISTING_FAIL:-0}" -gt 0 ]; then
+        echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_fail_total} failed → ${_GATE_NEW_FAIL:-0} new (blocking), ${_GATE_PREEXISTING_FAIL} pre-existing (suppressed)"
+      else
+        echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_fail_total} failed (blocking)"
+      fi
+      if [ -n "$_summary_names" ]; then
+        local _ncount
+        _ncount=$(printf '%s\n' "$_summary_names" | grep -c '.' || true)
+        echo "⚠️  ${_ncount} new test failure(s) blocking the gate:"
+        printf '%s\n' "$_summary_names" | while IFS= read -r _n; do
+          [ -n "$_n" ] && echo "   • ${_n}"
+        done
+        [ -n "${RITE_LOG_FILE:-}" ] && echo "   Full bats output: ${RITE_LOG_FILE}"
+      fi
+    elif [ "$_bats_pass" -gt 0 ]; then
+      echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+    fi
+  fi
 
   _gate_write_json "$output_file" "$_lint_items" "$_tests_items" "$_overall_exit"
   return "$_overall_exit"
