@@ -363,6 +363,32 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Implementation:** `tests/regression/test-gate-targeted-selection.bats` (parser, file matching, glob handling, targeted-only pinning tests, edge cases).
 
+### Gate Baseline-Diff: block on NEW failures only (CRITICAL)
+
+**2026-06-23.** The post-commit gate now classifies each bats failure as **new** (introduced by this change) or **pre-existing** (already red on the diff base) and blocks/feeds the fix loop on the **new** ones only. This is what makes the gate block-worthy.
+
+**The problem it fixes (the "gate-green gap"):** ~30 tests were red on `main`. The gate ran them, reported `outcome=failed`, but the fix loop only engages when the assessment finds `ACTIONABLE_NOW` items — and with every failure looking identical (new vs accumulated-pre-existing was indistinguishable), runs either merged red anyway or churned the fix loop on breakage the change never caused. A change that turned 4 red tests into 12 still merged. Targeted selection (above) narrows *which* tests run; baseline-diff decides *which failures count*.
+
+**Why not just "block on any failure":** with ~30 pre-existing reds, that walls off every PR touching a covered file forever (chicken-and-egg). You must block on *newly-introduced* failures, not on the existence of failures.
+
+**Mechanism** (`lib/utils/test-gate.sh::_classify_test_failures`, called from `run_test_gate` only on a failing **targeted** run):
+1. Extract the branch's failing test names from the gate's TAP (`_extract_tap_failure_names` → `_tap_failure_name`, the single canonicalizer both sides use).
+2. Attribute failures to selected files (one grep pass) — only files that actually contain a failing test get probed.
+3. Re-run those files at the diff base in a **throwaway detached worktree** (`_compute_baseline_red_names`), collect baseline-red names.
+4. `NEW = branch_failures − baseline_reds`. Only NEW names go into the findings JSON `tests[]`; `exit_code`/`outcome` are driven by the NEW count, so **`outcome=passed ⟺ zero new failures`** even when pre-existing reds remain.
+
+**Cost model (matters — "no serious lag"):** GREEN runs pay **zero** (no failures → no baseline work). A failing run probes only the failing-containing files, and results are cached per base SHA in `.rite/state/gate-baseline-reds-<sha>.json` (`{probed_files, red_names}`, atomic write), so fix-loop retries and later issues against the same `origin/main` reuse them. Once the suite is green, baseline cost disappears entirely.
+
+**Fail-safe (CRITICAL):** any error — `jq`/`git` missing, unresolvable base (uses `git rev-parse --verify <base>^{commit}`, since `git rev-parse <bad-ref>` otherwise echoes the literal arg and exits non-zero), worktree-add failure, or baseline-run timeout (`RITE_GATE_BASELINE_TIMEOUT`, default 600s) — falls back to flagging **all** failures (pre-baseline behavior). It never silently suppresses. Operator valve `RITE_GATE_BASELINE_DIFF=false` disables it globally.
+
+**Diag:** `[diag] TEST_GATE_BASELINE base=<sha> mode=computed|cached|fallback|disabled|none total_fail=N new=N pre_existing=N pr=N`, plus a human-readable `[test-gate] Baseline-diff: …` line when any pre-existing red is suppressed. `TEST_GATE`'s `test_count` is the *blocking* (new) count so it stays consistent with `outcome`; the total/split lives in `TEST_GATE_BASELINE`.
+
+**Gotchas (cost two debug cycles, pinned by tests):**
+- `_tap_failure_name` must `printf '%s\n'` (not `'%s'`) — BSD `sed` preserves the absence of a trailing newline, so a newline-less line yields a name with no newline and a loop concatenates adjacent names.
+- `_classify_test_failures` sets `_GATE_*` globals as side effects AND returns names — so it MUST be called directly, never in `$()` (a subshell discards the globals; in production `_overall_exit` would then always see `new=0` and never block). Names come back via an out-file arg precisely to avoid the subshell.
+
+**Enforcement:** `tests/regression/gate-baseline-diff.bats` — classifier (all-new / all-pre-existing / mixed), fail-safe fallback, operator valve, per-base-SHA cache hit, and a real detached-worktree end-to-end run. Fixtures build the `@test` token at runtime (`'@'"test"`) because bats preprocesses every literal `@test` line in a file, even inside a heredoc.
+
 ### Fix-review prompt: syntax-check before declaring done
 
 Step 5 of the [claude-workflow.sh](../../lib/core/claude-workflow.sh) fix-review prompt now requires Claude to run `bash -n <file>` on every shell file it touched before declaring done. This is a fast, in-session check that catches broken syntax before commit. Full lint and test verification runs post-commit via the parallel gate (see "Verification Out of Fix Session" above).
