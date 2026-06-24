@@ -411,6 +411,16 @@ _select_tests_by_changed_paths() {
   # would never run for the very change that touched them.
   (cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null) \
     | while IFS= read -r _rel; do
+        # Exclude concurrency tests from the (parallel) gate. They spawn processes
+        # that rendezvous at file-based barriers; under `bats --jobs` the box is
+        # oversubscribed and the barriers throw false timeouts (verified: the suite
+        # passes serially, exit 0, but produces ~77 "Barrier timeout" failures under
+        # --jobs 8). They give the parallel gate NO reliable signal — and a flaky
+        # failure here cascades: it fails the gate → triggers the post-merge
+        # main-broken FULL-suite check → which flakes again. Real coverage of these
+        # race tests comes from a serial context (the full-suite safety net /
+        # running `bats tests/concurrency/` directly), not the parallel gate.
+        case "$_rel" in tests/concurrency/*) continue ;; esac
         if echo "$changed_files" | grep -Fxq "$_rel"; then
           echo "$_rel"
           continue

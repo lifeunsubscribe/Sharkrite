@@ -278,3 +278,23 @@ teardown() {
     return 1
   }
 }
+
+@test "selection EXCLUDES tests/concurrency/* (flaky under the parallel gate)" {
+  # Concurrency tests rendezvous at file-based barriers that throw false timeouts
+  # under `bats --jobs`; they must never be selected by the (parallel) gate, even
+  # when a source they cover changes. Real coverage is the serial safety net.
+  mkdir -p "$TEST_REPO/tests/concurrency"
+  cat > "$TEST_REPO/tests/concurrency/race.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh
+@test "race" { true; }
+EOF
+  run _select_tests_by_changed_paths "lib/core/foo.sh" "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  # The regression test covering foo.sh IS selected...
+  echo "$output" | grep -q 'tests/regression/covers-foo.bats' \
+    || { echo "FAIL: covers-foo.bats not selected; got: $output"; return 1; }
+  # ...but the concurrency test covering the same source is NOT.
+  ! echo "$output" | grep -q 'tests/concurrency/race.bats' \
+    || { echo "FAIL: concurrency test leaked into the parallel gate selection"; echo "$output"; return 1; }
+}
