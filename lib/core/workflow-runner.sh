@@ -1367,7 +1367,9 @@ phase_assess_and_resolve() {
     export PR_NUMBER="$pr_number"
 
     print_info "Starting post-commit gate in background (make check + bats -r tests/)..."
-    run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
+    # RITE_GATE_BACKGROUND=1: runs concurrent with review generation → route raw
+    # output to the log (not the terminal) so it can't interleave with the review.
+    RITE_GATE_BACKGROUND=1 run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
     _gate_pid=$!
 
     # Spawn doc assessment in parallel with the gate + review regeneration.
@@ -2516,7 +2518,9 @@ run_workflow() {
        && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
       _init_gate_file="$(mktemp "/tmp/rite_gate_init_${issue_number}_$$.json")"
       print_info "Starting post-commit gate in background (parallel with review)..."
-      run_test_gate "$_init_gate_file" "$WORKTREE_PATH" &
+      # RITE_GATE_BACKGROUND=1: parallel with review generation → route raw output
+      # to the log (not the terminal) so it can't interleave with the review.
+      RITE_GATE_BACKGROUND=1 run_test_gate "$_init_gate_file" "$WORKTREE_PATH" &
       _init_gate_pid=$!
     fi
 

@@ -405,11 +405,18 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 **Enforcement:** `tests/regression/gate-force-full-optin.bats` (real mock-gate: empty `origin/main` diff → NOT full; `RITE_GATE_FORCE_FULL=1` and `DIFF_BASE=HEAD` → full) and `gate-baseline-diff.bats` probe-size-cap test (13 failing files > cap → `mode=capped`, probe skipped, flag-all).
 
-### Gate Output Routing: raw to log, digest to terminal
+### Gate Output Routing: live in foreground, log-only when concurrent (CRITICAL)
 
-**2026-06-24.** The post-commit gate's raw output (concurrent `make shellcheck` + `make lint`, plus bats `-F pretty`) is voluminous and was streaming straight to the terminal. Two failure modes drove the change: (1) the review-loop gate runs **backgrounded, concurrent with review generation** (`workflow-runner.sh` Phase 2/3), so its live stream interleaved mid-phase with unrelated output; (2) a single failing bats test replays its **entire captured stdout** — for tests that exercise a whole rite session (e.g. `tests/smoke/source-all-libs.bats`) that's a nested-transcript wall. The noise peaked exactly where it was least relevant: a run with 14 pre-existing reds + 3 new dumped all 17 transcripts before announcing only 3 mattered.
+**2026-06-24.** The post-commit gate's raw output (concurrent `make shellcheck` + `make lint`, plus bats `-F pretty`) is voluminous. Two failure modes argued for routing it off the terminal: (1) the review-loop gate runs **backgrounded, concurrent with review generation** (`workflow-runner.sh` Phase 2/3), so its live stream interleaved mid-phase with unrelated output; (2) a single failing bats test replays its **entire captured stdout** — for whole-session tests (e.g. `tests/smoke/source-all-libs.bats`) that's a nested-transcript wall.
 
-**Behavior:** raw bats/lint output is routed to the **run log only** via `_gate_raw_sink` (`"${RITE_LOG_FILE:-/dev/stdout}"`), mirroring the established two-channel convention (direct `>>` to `$RITE_LOG_FILE`, same as `[diag]` lines). The terminal instead gets a **compact digest** emitted just before `_gate_write_json`:
+**But routing it to the log UNCONDITIONALLY made foreground gates look like a hang** (live regression — user report 2026-06-24): a foreground gate (post-merge-verify, fastpath, standalone) running a multi-minute bats suite with NOTHING else printing reads as a freeze. With no concurrent output to protect, a silent gap is strictly worse than the "test spam" it avoids. So routing is now **conditional**:
+
+- **`RITE_GATE_BACKGROUND=1`** (set by the two concurrent `run_test_gate &` launches in `workflow-runner.sh` Phase 2/3) → `_gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"`: raw to the log only, terminal gets the digest. No interleave with the concurrent review stream.
+- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite FIFO-tee still captures it into the log). The digest still prints as a recap.
+
+The rule: **only suppress the live stream when something else is competing for the terminal.** Any new `run_test_gate` caller that runs concurrent with other terminal output must set `RITE_GATE_BACKGROUND=1`; foreground callers must not.
+
+**Digest (both modes):** a **compact digest** is emitted just before `_gate_write_json`:
 - `[test-gate] bats: N passed, M failed → X new (blocking), Y pre-existing (suppressed)` (the split only when baseline-diff applied)
 - the **names** of the blocking (new) failures, one per line, plus `Full bats output: <log>`
 - lint finding count when non-zero; a one-line green confirmation when all pass

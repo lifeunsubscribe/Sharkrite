@@ -747,16 +747,32 @@ run_test_gate() {
   local _GATE_BASELINE_MODE="" _GATE_BASE_SHA=""
   local _GATE_TOTAL_FAIL=0 _GATE_NEW_FAIL=0 _GATE_PREEXISTING_FAIL=0
 
-  # Raw gate output (concurrent shellcheck+lint + bats pretty) is voluminous and
-  # interleaves badly with other phases — the backgrounded review-loop gate
-  # streams it concurrent with review generation, and a single failing test can
-  # replay a whole nested rite transcript (e.g. source-all-libs.bats). Route it
-  # to the run log only; the terminal gets a compact digest at the end (see the
-  # summary block before _gate_write_json). This mirrors the established
-  # two-channel convention (direct >> "$RITE_LOG_FILE", like [diag] lines). Fall
-  # back to stdout when no log is configured (unlogged runs, sandboxed tests) so
-  # output is never lost.
-  local _gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"
+  # Raw gate output routing depends on whether this gate runs CONCURRENTLY:
+  #
+  #   - BACKGROUND gate (RITE_GATE_BACKGROUND=1) — the review-loop gate runs in
+  #     parallel with review generation (workflow-runner Phase 2/3). Streaming its
+  #     voluminous output (concurrent shellcheck+lint + bats pretty, plus a single
+  #     failing whole-session test replaying its transcript) onto the terminal
+  #     interleaves with the review stream. Route it to the run log only; the
+  #     terminal gets a compact digest at the end. Mirrors the two-channel
+  #     convention (direct >> "$RITE_LOG_FILE", like [diag] lines).
+  #
+  #   - FOREGROUND gate (default — post-merge-verify, fastpath, standalone) — there
+  #     is NO concurrent output to protect, so routing the stream to the log makes
+  #     a multi-minute bats run look like a HANG (a silent gap with nothing
+  #     printing). Stream live to the terminal instead so progress is visible; the
+  #     bin/rite FIFO-tee still captures it into the log. (The digest still prints
+  #     as a recap.) Live "test spam" beats a phantom hang when nothing else is
+  #     competing for the terminal.
+  #
+  # Background routing falls back to /dev/stdout when no log is configured
+  # (unlogged/sandboxed runs) so output is never lost.
+  local _gate_raw_sink
+  if [ "${RITE_GATE_BACKGROUND:-}" = "1" ]; then
+    _gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"
+  else
+    _gate_raw_sink="/dev/stdout"
+  fi
 
   if [ "$_is_sharkrite" = "true" ]; then
     # --- Sharkrite: shellcheck + custom lint (run independently so both run even if shellcheck fails) ---
