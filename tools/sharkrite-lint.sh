@@ -301,7 +301,7 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   if (depth == 0 && $0 ~ /^[[:space:]]*local[[:space:]]/) {
     print FILENAME "\t" FNR
   }
-}' "${SHELL_FILES[@]}" 2>/dev/null || true)
+}' "${SHELL_FILES[@]}" </dev/null 2>/dev/null || true)
 
 if [ -n "$_r7_hits" ]; then
   while IFS= read -r _hit; do
@@ -371,7 +371,7 @@ printf '%s\n' \
   'END { if (pending_line > 0) print pending_fname "\t" pending_line }' \
   > "$_r8_awk"
 
-_r8_hits=$(awk -f "$_r8_awk" "${SHELL_FILES[@]}" 2>/dev/null || true)
+_r8_hits=$(awk -f "$_r8_awk" "${SHELL_FILES[@]}" </dev/null 2>/dev/null || true)
 rm -f "$_r8_awk"
 _r8_awk=""
 
@@ -420,7 +420,7 @@ FNR == 1 { in_heredoc = 0; hd_marker = "" }
   if (index($0, "tool_use") > 0) print FILENAME "\t" FNR "\tTOOL_USE"
   if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude CLI") > 0) print FILENAME "\t" FNR "\tHCPROVIDER"
   if ($0 ~ /print_(status|info|error|warning)/ && index($0, "Claude session") > 0) print FILENAME "\t" FNR "\tHCPROVIDER"
-}' "${CORE_FILES[@]}" 2>/dev/null || true)
+}' "${CORE_FILES[@]}" </dev/null 2>/dev/null || true)
 
 if [ -n "$_r9_hits" ]; then
   while IFS= read -r _hit; do
