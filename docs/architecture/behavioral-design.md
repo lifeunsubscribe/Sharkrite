@@ -413,6 +413,27 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 **Fix direction (confirmed working):** a **PreToolUse hook** (passed via `--settings`) *is* enforced under stream-json — verified: a hook returning `permissionDecision: deny` for `make`/`bats`/`pytest` blocks the command in the same stream-json invocation where `--disallowedTools` fails. Migrating the deny list to a sharkrite-managed PreToolUse hook restores a real deterministic backstop. The Phase 4 prompt-framing fix above removes the *invitation* to run the suite; the hook would restore *enforcement*. Until the hook lands, treat the prompt framing as the only active control.
 
+### Dev test gate is skipped under orchestration (CRITICAL)
+
+**2026-06-24.** `_run_dev_test_gate` in [claude-workflow.sh](../../lib/core/claude-workflow.sh) — the dev/initial-commit test runner — now returns immediately when `RITE_ORCHESTRATED=true`.
+
+**The bug it fixes (live: issue 649 dev session wedged 78 minutes):** `_run_dev_test_gate` was called unconditionally before the orchestrated-skip block lower in the file, so on every `rite <issue>` run (always orchestrated — workflow-runner sets `RITE_ORCHESTRATED=true` at all call sites) the dev session ran the **full** test suite (`bats -r tests/` for sharkrite) and, on failure, spawned a **second** auto-fix Claude session. That is wrong on three axes: (1) **redundant** — the post-commit structured gate (`run_test_gate`, Phase 2/3) is the designated verification, with targeted selection + baseline-diff + a bounded wait + a single fix loop; (2) **untargeted** — the full parallel suite produces load-induced flake (e.g. `Barrier timeout waiting for N processes`) that the duplicate fix session then churns on as if real; (3) **unbounded** — `_run_dev_test_gate` has no per-test timeout, so a test that blocks on stdin hangs the whole run (issue 649: the lint suite's `sharkrite-lint.sh` deadlocked on a tty stdin read, fd 0 = `/dev/ttys003`, 65 min and counting).
+
+**Contract:** verification in orchestrated runs is the orchestrator's job (post-commit structured gate), never the dev session. Standalone `claude-workflow.sh` runs (no orchestrator) keep `_run_dev_test_gate` as their only pre-commit verification. History: #454 ("Move verification out of fix session") moved it out of the *fix* session but left the *dev* gate ungated.
+
+**Enforcement:** `tests/regression/dev-gate-skip-when-orchestrated.bats` — `_run_dev_test_gate` runs no test command under `RITE_ORCHESTRATED=true` (probe: `RITE_TEST_CMD="touch <sentinel>"`), and the guard structurally precedes the `eval "$_test_cmd"`.
+
+### Interrupt handler never auto-pushes WIP to a shared branch (CRITICAL)
+
+**2026-06-24.** `cleanup_on_interrupt` (the `INT`/`TERM`/`HUP` trap in [claude-workflow.sh](../../lib/core/claude-workflow.sh)) auto-commits and pushes work-in-progress when a run is interrupted. Two guards now bound it:
+
+1. **Feature branches only — never `main`/`master`/detached HEAD.** `_wip_commit_allowed <branch>` gates the commit+push; on a default branch the handler leaves changes *uncommitted* (preserved in the working tree) and says so. WIP preservation is for feature-branch worktrees; pushing unfinished work to a shared default branch is destructive.
+2. **The trap is armed only for real execution**, inside a `RITE_SOURCE_FUNCTIONS_ONLY != 1` guard. A process that merely *sources* the file for its functions (tests) must not get a commit/push side effect when it is later killed.
+
+**Live incident (what drove both guards):** a regression test sourced `claude-workflow.sh` under `RITE_SOURCE_FUNCTIONS_ONLY=1`; the trap armed unconditionally (it sat above the functions-only guard); `gtimeout` then killed the hung subshell while cwd was the primary checkout on `main`; the trap ran `git add -A && git commit -m "WIP: interrupted work on main" && git push -u origin main` — pushing unfinished work (and unrelated in-flight files) straight to `origin/main`. Either guard alone prevents recurrence; both together are defense-in-depth.
+
+**Enforcement:** `tests/regression/interrupt-trap-wip-safety.bats` — `_wip_commit_allowed` denies `main`/`master`/empty and allows feature branches; the trap is not armed when sourced functions-only; and `cleanup_on_interrupt` checks `_wip_commit_allowed` before any `git commit`.
+
 ### Spend-cap detection in the dev session aborts the whole batch
 
 When `claude --print` hits the user's spending cap mid-session, it emits a message like `Spending cap reached resets 11:20pm` (variations: `usage limit reached`, `[N]-hour limit reached`) and exits non-zero. Sharkrite's claude provider ([lib/providers/claude.sh](../../lib/providers/claude.sh)) `tee`s stdout to a temp file and greps both stdout and stderr after the session exits. If the cap pattern matches, the provider returns exit code 5 — which propagates through [claude-workflow.sh](../../lib/core/claude-workflow.sh) (both dev and fix paths) → workflow-runner.sh → batch-process-issues.sh's exit-5 handler → batch aborts.
