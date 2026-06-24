@@ -498,8 +498,10 @@ _compute_baseline_red_names() {
     return 1
   fi
 
-  # Bound the baseline run; on timeout we get partial/empty TAP → fewer
-  # suppressions (fail-safe), never a hang.
+  # Time bound when timeout/gtimeout exists (absent on stock macOS — the caller's
+  # probed-file cap is the primary bound, and the outer gate wait
+  # RITE_GATE_WAIT_TIMEOUT is the final backstop). On timeout we get partial TAP
+  # → fewer suppressions (fail-safe), never a hang.
   local _to_cmd=()
   if command -v timeout >/dev/null 2>&1; then
     _to_cmd=(timeout "${RITE_GATE_BASELINE_TIMEOUT:-600}")
@@ -507,8 +509,15 @@ _compute_baseline_red_names() {
     _to_cmd=(gtimeout "${RITE_GATE_BASELINE_TIMEOUT:-600}")
   fi
 
+  # Parallelize to match the branch run (a serial probe of many files was a
+  # near-full second suite). </dev/null so a probed test that reads stdin
+  # (e.g. the lint suite's awk) can never deadlock the probe on an inherited tty.
+  local _probe_jobs _probe_jobs_args=()
+  _probe_jobs=$(_compute_bats_jobs)
+  [ "$_probe_jobs" -gt 1 ] && _probe_jobs_args=(--jobs "$_probe_jobs")
+
   local _tap
-  _tap=$( (cd "$_wt" && "${_to_cmd[@]+"${_to_cmd[@]}"}" bats --formatter tap "${_existing[@]}" 2>/dev/null) || true )
+  _tap=$( (cd "$_wt" && "${_to_cmd[@]+"${_to_cmd[@]}"}" bats "${_probe_jobs_args[@]+"${_probe_jobs_args[@]}"}" --formatter tap "${_existing[@]}" </dev/null 2>/dev/null) || true )
 
   (cd "$_project_root" && git worktree remove --force "$_wt" 2>/dev/null) || rm -rf "$_wt" 2>/dev/null || true
   (cd "$_project_root" && git worktree prune 2>/dev/null) || true
@@ -599,6 +608,20 @@ _classify_test_failures() {
     fi
   done <<< "$_files_with_fails"
   _to_probe=$(printf '%s' "$_to_probe" | sed '/^$/d' || true)
+
+  # Probe-size cap (the bound that prevents a near-full second suite): the cost
+  # model assumes the probe touches only the few files that actually failed. If a
+  # change reds out many files — or many pre-existing reds land in one selection —
+  # re-running a large set at origin/main IS the near-full run we must avoid.
+  # Above the cap, skip the probe and fail-safe to flag-all (over-report new
+  # failures rather than balloon/hang). Once main is green this never trips.
+  local _probe_count
+  _probe_count=$(printf '%s\n' "$_to_probe" | grep -c . || true)
+  if [ "$_probe_count" -gt "${RITE_GATE_BASELINE_MAX_PROBE_FILES:-12}" ]; then
+    _GATE_BASELINE_MODE="capped"; _GATE_NEW_FAIL="$_GATE_TOTAL_FAIL"
+    printf '%s\n' "$_branch_fails" > "$_out_file"
+    return 0
+  fi
 
   local _newly_reds=""
   if [ -n "$_to_probe" ]; then
@@ -822,13 +845,34 @@ run_test_gate() {
     # --- Sharkrite: targeted bats selection (issue #462) ---
     # Determine which bats files to run based on the commit's changed paths.
     # Files declare coverage via `# sharkrite-test-covers: <paths>` headers.
-    # Headerless files are skipped. Selection is always targeted — FORCE_FULL
-    # is reachable only when no diff is computable (new branch without an
-    # upstream, or post-merge-verify's deliberate DIFF_BASE=HEAD main check).
+    # Headerless files are skipped. Selection is always targeted; FORCE_FULL (the
+    # whole ~181-file suite) is OPT-IN ONLY (see the dispatch below).
     # See: _select_tests_by_changed_paths above.
     local _total_bats _selection _selected_count
     _total_bats=$(cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ')
-    _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
+
+    # FORCE_FULL gate: an empty changed-file set conflates several causes — no
+    # commits yet, a git-diff error laundered to "" by `2>/dev/null || true`, or a
+    # deliberate DIFF_BASE=HEAD — and silently mapping ALL of them to "run
+    # everything" was the recurring full-suite regression. Decide explicitly so a
+    # transient empty diff can never escalate a normal run to all ~181 files:
+    if [ "${RITE_GATE_FORCE_FULL:-}" = "1" ] || [ "$_diff_base" = "HEAD" ]; then
+      # Explicit full-suite signals only: the opt-in env var, or a deliberately
+      # HEAD diff base (post-merge-verify's main-broken check; full-run tests). A
+      # normal run never sets either — it defaults to origin/main — so a transient
+      # empty/errored origin/main diff can no longer escalate to the full suite.
+      _selection="FORCE_FULL"
+    elif ! (cd "$project_root" && git rev-parse --verify "${_diff_base}^{commit}" >/dev/null 2>&1); then
+      # Base unresolvable → skip bats with a loud diag, never a silent full run.
+      # A normal run never hits this (worktree creation hard-fetches origin/main).
+      echo "[test-gate] diff base '${_diff_base}' unresolvable — skipping bats (set RITE_GATE_FORCE_FULL=1 to force a full run)" >> "$_gate_raw_sink"
+      _diag "TEST_GATE_SELECTION mode=skipped reason=unresolvable_diff_base base=${_diff_base} pr=${PR_NUMBER:-?}"
+      _selection=""
+    elif [ -z "$_changed_files" ]; then
+      _selection=""                                 # base resolves, zero changed files → run ZERO bats, not 181
+    else
+      _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
+    fi
 
     # --- Bats parallelism (--jobs N) ---
     # Auto-detect: use GNU parallel if installed (capped at 4 procs); serial
@@ -878,7 +922,7 @@ run_test_gate() {
 
     if [ "$_selection" = "FORCE_FULL" ]; then
       _selected_count="$_total_bats"
-      echo "[test-gate] Selection: full suite (${_total_bats} bats files — no diff computable)"
+      echo "[test-gate] Selection: full suite (${_total_bats} bats files — RITE_GATE_FORCE_FULL opt-in)"
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo "[test-gate] Running bats -r tests/..."
       if [ "$_bats_use_pretty" = "true" ]; then
