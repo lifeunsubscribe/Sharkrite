@@ -345,11 +345,12 @@ run_assess_and_resolve() {
     false
   }
 
-  # Stateful mock must have recorded exactly one new issue
+  # Stateful mock must have recorded one new issue per finding (#647: per-finding
+  # follow-up model — the 2-finding assessment yields 2 issues).
   local _count
   _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count" -eq 1 ] || {
-    echo "FAIL: expected 1 created issue, got $_count"
+  [ "$_count" -eq 2 ] || {
+    echo "FAIL: expected 2 created issues (one per finding), got $_count"
     jq '.' "$GH_MOCK_STATE_DIR/issues.json"
     false
   }
@@ -364,15 +365,26 @@ run_assess_and_resolve() {
   }
 }
 
-@test "integration: follow-up issue title includes PR number" {
+@test "integration: follow-up issue body references PR number" {
+  # #647: per-finding titles carry NO 'PR #N' prefix (matches the 'No Tag Prefix
+  # in Issue Titles' convention). PR traceability now lives in the body marker
+  # sharkrite-parent-pr:43; the title carries the source-issue suffix.
   run_assess_and_resolve 43 11
 
   [ "$status" -eq 0 ]
 
+  local _body
+  _body=$(jq -r '.[0].body' "$GH_MOCK_STATE_DIR/issues.json")
+  echo "$_body" | grep -q "sharkrite-parent-pr:43" || {
+    echo "FAIL: issue body missing sharkrite-parent-pr:43 marker"
+    echo "Body: ${_body:0:300}"
+    false
+  }
+
   local _title
   _title=$(jq -r '.[0].title' "$GH_MOCK_STATE_DIR/issues.json")
-  echo "$_title" | grep -q "PR #43" || {
-    echo "FAIL: issue title '$_title' does not contain 'PR #43'"
+  echo "$_title" | grep -q "for issue #11" || {
+    echo "FAIL: issue title '$_title' does not contain 'for issue #11'"
     false
   }
 }
@@ -409,18 +421,24 @@ run_assess_and_resolve() {
 # ---------------------------------------------------------------------------
 
 @test "integration: second run with same PR+issue skips follow-up creation via body-marker search" {
+  # #647: disable the per-finding TTL sentinel so the second run falls through to
+  # the body-marker search (Source 2) this test is meant to verify, rather than
+  # being short-circuited by the local sentinel oracle.
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=0
+
   # First run: creates issue
   run_assess_and_resolve 45 13
   [ "$status" -eq 0 ]
 
+  # #647: first run creates one issue per finding (2 findings → 2 issues).
   local _count_first
   _count_first=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count_first" -eq 1 ] || {
-    echo "FAIL: expected 1 issue after first run, got $_count_first"
+  [ "$_count_first" -eq 2 ] || {
+    echo "FAIL: expected 2 issues after first run (one per finding), got $_count_first"
     false
   }
 
-  # Second run: body-marker search (Source 2) should find the existing issue
+  # Second run: body-marker search (Source 2) should find the existing issues
   run_assess_and_resolve 45 13
   [ "$status" -eq 0 ] || {
     echo "FAIL: second run exited $status (expected 0)"
@@ -428,18 +446,19 @@ run_assess_and_resolve() {
     false
   }
 
-  # Issue count must NOT increase — dedup worked
+  # Issue count must NOT increase — dedup worked (still 2, not 4)
   local _count_second
   _count_second=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count_second" -eq 1 ] || {
-    echo "FAIL: second run created a duplicate (count=$_count_second, expected 1)"
+  [ "$_count_second" -eq 2 ] || {
+    echo "FAIL: second run created a duplicate (count=$_count_second, expected 2)"
     jq '.' "$GH_MOCK_STATE_DIR/issues.json"
     false
   }
 
   # Output must mention skipping the duplicate (match specific phrases emitted by
-  # the dedup path, not the bare token 'skip' which could match unrelated output)
-  echo "$output" | grep -qi "already exists\|skipping assessment\|skipping follow-up\|follow-up already" || {
+  # the dedup path, not the bare token 'skip' which could match unrelated output).
+  # #647: the per-finding dedup path emits "Finding already tracked in #N (skipping)".
+  echo "$output" | grep -qi "already tracked\|already exists\|skipping assessment\|skipping follow-up\|follow-up already" || {
     echo "FAIL: second run output does not mention skipping duplicate"
     echo "Output snippet: ${output:0:500}"
     false
@@ -455,10 +474,12 @@ run_assess_and_resolve() {
   run_assess_and_resolve 46 15
   [ "$status" -eq 0 ]
 
+  # #647: each source issue yields one follow-up per finding (2 findings each),
+  # so 2 source issues produce 4 follow-up issues total.
   local _count
   _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count" -eq 2 ] || {
-    echo "FAIL: expected 2 follow-up issues (one per source issue), got $_count"
+  [ "$_count" -eq 4 ] || {
+    echo "FAIL: expected 4 follow-up issues (2 findings x 2 source issues), got $_count"
     jq '.' "$GH_MOCK_STATE_DIR/issues.json"
     false
   }
@@ -483,10 +504,11 @@ run_assess_and_resolve() {
   run_assess_and_resolve 55 23
   [ "$status" -eq 0 ]
 
+  # #647: first run creates one issue per finding (2); runs 2-3 dedup (no growth).
   local _count
   _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count" -eq 1 ] || {
-    echo "FAIL: expected 1 issue after 3 runs (dedup), got $_count"
+  [ "$_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues after 3 runs (2 findings, dedup holds), got $_count"
     false
   }
 }
@@ -496,33 +518,40 @@ run_assess_and_resolve() {
 # ---------------------------------------------------------------------------
 
 @test "integration: title-search fallback prevents duplicate when body search misses" {
-  # Pre-seed state with an issue that has the right title but NO body marker
-  # (simulating an older follow-up created before body-marker embedding).
-  # Source 3 (title search) should find it and prevent re-creation.
+  # Pre-seed state with issues that have the right per-finding titles but NO body
+  # marker (simulating older follow-ups created before body-marker embedding).
+  # #647: dedup is per-finding, so the ISSUE_SEARCH title search (Source 3) uses
+  # each finding's exact title ('<clean title> for issue #N') — seed one issue per
+  # finding so both findings dedup via title search and no new issue is created.
   local _pr=47
   local _issue=16
-  local _title="[tech-debt] Test PR: review feedback from PR #${_pr} for issue #${_issue}"
+  local _title_a="Input Not Validated for issue #${_issue}"
+  local _title_b="Missing Docs for issue #${_issue}"
   local _body_file="$RITE_TEST_TMPDIR/title-only-body.md"
   printf 'Review feedback without body marker.' > "$_body_file"
 
-  # Issue number 9999 is intentionally out-of-band with respect to the mock gh
-  # issue-create generator, which assigns numbers as (_seq + 1000) starting at
-  # 1000. A typical test run creates at most a handful of issues, so the
-  # generator stays in the low-1000s range — 9999 cannot collide with any
-  # generated number unless the test suite creates ~9000 issues.  If the
-  # generator base ever changes (see _gh_mock_state_issue_create in gh-mock-state.bash), this seed
-  # must be updated to remain safely above it.
-  local _seed_num=9999
-  jq --argjson num "$_seed_num" \
-     --arg title "$_title" \
+  # Seed numbers 9998/9999 are intentionally out-of-band with respect to the mock
+  # gh issue-create generator, which assigns numbers as (_seq + 1000) starting at
+  # 1000. A typical test run creates at most a handful of issues, so the generator
+  # stays in the low-1000s range — these seeds cannot collide with any generated
+  # number unless the test suite creates ~9000 issues. If the generator base ever
+  # changes (see _gh_mock_state_issue_create in gh-mock-state.bash), update these.
+  local _seed_a=9998
+  local _seed_b=9999
+  jq --argjson na "$_seed_a" \
+     --argjson nb "$_seed_b" \
+     --arg ta "$_title_a" \
+     --arg tb "$_title_b" \
      --rawfile body "$_body_file" \
      --arg label "tech-debt" \
      --arg state "OPEN" \
-     ". += [{\"number\": \$num, \"title\": \$title, \"body\": \$body, \"label\": \$label, \"state\": \$state, \"url\": \"https://github.com/mock/repo/issues/${_seed_num}\"}]" \
+     '. += [{"number": $na, "title": $ta, "body": $body, "label": $label, "state": $state, "url": "https://github.com/mock/repo/issues/9998"},
+            {"number": $nb, "title": $tb, "body": $body, "label": $label, "state": $state, "url": "https://github.com/mock/repo/issues/9999"}]' \
      "$GH_MOCK_STATE_DIR/issues.json" > "$GH_MOCK_STATE_DIR/issues.json.tmp" \
   && mv "$GH_MOCK_STATE_DIR/issues.json.tmp" "$GH_MOCK_STATE_DIR/issues.json"
 
-  # Run: Source 2 (body search) misses (no marker), Source 3 (title search) finds $_seed_num
+  # Run: Source 2 (body search) misses (no marker), Source 3 (title search) finds
+  # the matching seeded issue for each finding.
   run_assess_and_resolve "$_pr" "$_issue"
 
   [ "$status" -eq 0 ] || {
@@ -531,31 +560,21 @@ run_assess_and_resolve() {
     false
   }
 
-  # Total must still be 1 — no new issue created
+  # Total must still be 2 — no new issue created (both findings deduped via title).
   local _total
   _total=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_total" -eq 1 ] || {
-    echo "FAIL: expected 1 issue (title-search dedup), got $_total"
+  [ "$_total" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (title-search dedup, no new issues), got $_total"
     jq '.[].title' "$GH_MOCK_STATE_DIR/issues.json"
     false
   }
 
-  # Identity assertion: the surviving issue must be the seeded one (number and
-  # title), not a newly-created duplicate that pushed total back to 1 via
-  # collision or replacement.  A count-only assertion cannot catch a false pass
-  # where the seeded issue was missed and a new issue with the same count was
-  # created instead.
-  local _surviving_num _surviving_title
-  _surviving_num=$(jq '.[0].number' "$GH_MOCK_STATE_DIR/issues.json")
-  _surviving_title=$(jq -r '.[0].title' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_surviving_num" -eq "$_seed_num" ] || {
-    echo "FAIL: surviving issue number is $_surviving_num, expected $_seed_num (seeded issue)"
-    false
-  }
-  [ "$_surviving_title" = "$_title" ] || {
-    echo "FAIL: surviving issue title does not match seeded title"
-    echo "  expected: $_title"
-    echo "  got:      $_surviving_title"
+  # Identity assertion: the surviving issues must be the seeded ones, not
+  # newly-created duplicates. A freshly generated issue would have number >= 1000;
+  # both seeds are >= 9998, so assert no surviving number is in the generated range.
+  jq -e '[.[].number] | map(. == 9998 or . == 9999) | all' "$GH_MOCK_STATE_DIR/issues.json" >/dev/null || {
+    echo "FAIL: a non-seeded (newly created) issue survived — dedup failed"
+    jq '[.[] | {number, title}]' "$GH_MOCK_STATE_DIR/issues.json"
     false
   }
 }
@@ -569,10 +588,12 @@ run_assess_and_resolve() {
 
   [ "$status" -eq 0 ]
 
-  # Evidence file must exist in RITE_LOCK_DIR
-  local _evidence_file="$RITE_LOCK_DIR/pr-48-src-17-followup-created.txt"
-  [ -f "$_evidence_file" ] || {
-    echo "FAIL: local evidence file not found at $_evidence_file"
+  # Evidence file must exist in RITE_LOCK_DIR. #647: evidence is keyed per finding
+  # (pr-<PR>-src-<ISSUE>-<finding-slug>-<index>-followup-created.txt), so match by glob.
+  local _evidence_file
+  _evidence_file=$(ls "$RITE_LOCK_DIR"/pr-48-src-17-*-followup-created.txt 2>/dev/null | head -1 || true)
+  [ -n "$_evidence_file" ] && [ -f "$_evidence_file" ] || {
+    echo "FAIL: no per-finding local evidence file found for pr-48-src-17"
     ls "$RITE_LOCK_DIR/" || true
     false
   }
@@ -591,8 +612,10 @@ run_assess_and_resolve() {
   run_assess_and_resolve 49 18
   [ "$status" -eq 0 ]
 
-  local _evidence_file="$RITE_LOCK_DIR/pr-49-src-18-followup-created.txt"
-  [ -f "$_evidence_file" ] || {
+  # #647: evidence is keyed per finding — match by glob.
+  local _evidence_file
+  _evidence_file=$(ls "$RITE_LOCK_DIR"/pr-49-src-18-*-followup-created.txt 2>/dev/null | head -1 || true)
+  [ -n "$_evidence_file" ] || {
     echo "FAIL: local evidence not written by first run"
     false
   }
@@ -601,15 +624,15 @@ run_assess_and_resolve() {
   echo "2" > "$GH_MOCK_STATE_DIR/search-lag.txt"
 
   # Second run: Sources 2/3 miss (lag), Source 1 (local evidence) should detect
-  # the existing issue and skip creation.
+  # the existing issues and skip creation.
   run_assess_and_resolve 49 18
   [ "$status" -eq 0 ]
 
-  # Issue count must still be 1
+  # Issue count must still be 2 (one per finding) — local-evidence dedup holds.
   local _total
   _total=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_total" -eq 1 ] || {
-    echo "FAIL: expected 1 issue (local evidence dedup under index lag), got $_total"
+  [ "$_total" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (local evidence dedup under index lag), got $_total"
     false
   }
 }
@@ -682,12 +705,12 @@ run_assess_and_resolve() {
     false
   }
 
-  # A single tech-debt follow-up issue should have been created with the
-  # deferred items, since CREATE_SECURITY_DEBT=true was set.
+  # #647: per-finding follow-up model — the 2 deferred MEDIUM NOW items become
+  # one tech-debt follow-up issue EACH (CREATE_SECURITY_DEBT=true).
   local _count
   _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count" -eq 1 ] || {
-    echo "FAIL: expected 1 follow-up issue from deferred MEDIUM items, got $_count"
+  [ "$_count" -eq 2 ] || {
+    echo "FAIL: expected 2 per-finding follow-up issues from deferred MEDIUM items, got $_count"
     false
   }
 }
@@ -739,6 +762,11 @@ run_assess_and_resolve() {
   #   PR comment marker, triggers a retry; lag=0 on retry so Sources 2/3 find it.
   #   No duplicate should be created.
 
+  # #647: disable the per-finding TTL sentinel so the second run reaches the
+  # retry loop and the Source 4 PR-comment guard this test verifies, rather than
+  # being short-circuited by the local sentinel oracle before any search runs.
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=0
+
   run_assess_and_resolve 52 21
   [ "$status" -eq 0 ]
 
@@ -752,8 +780,9 @@ run_assess_and_resolve() {
     false
   }
 
-  # Remove local evidence to force Source 4 path on second run
-  rm -f "$RITE_LOCK_DIR/pr-52-src-21-followup-created.txt"
+  # Remove per-finding local evidence to force Source 4 path on second run.
+  # #647: evidence is keyed per finding — glob-remove all of them.
+  rm -f "$RITE_LOCK_DIR"/pr-52-src-21-*-followup-created.txt
 
   # Set search-index lag = 1 (first body/title search returns empty)
   echo "1" > "$GH_MOCK_STATE_DIR/search-lag.txt"
@@ -762,11 +791,11 @@ run_assess_and_resolve() {
   run_assess_and_resolve 52 21
   [ "$status" -eq 0 ]
 
-  # No duplicate
+  # No duplicate — count stays at the finding count (2), no doubling.
   local _total
   _total=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_total" -eq 1 ] || {
-    echo "FAIL: expected 1 issue (PR comment guard dedup under lag), got $_total"
+  [ "$_total" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (PR comment guard dedup under lag, no doubling), got $_total"
     false
   }
 }
@@ -836,8 +865,28 @@ run_assess_and_resolve() {
   rm -f "$RITE_LOCK_DIR"/* 2>/dev/null || true
   setup_gh_mock_state
 
+  # #647: disable the per-finding TTL sentinel for this test. The sentinel is a
+  # local TTL oracle that short-circuits a same-finding re-run within 60s — it
+  # would suppress the second run before Source 1's CLOSED-evidence branch could
+  # fire. This test intentionally re-runs the same finding to exercise the
+  # stale-evidence-clear + recreate path, so the sentinel must not pre-empt it.
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=0
+
   local _pr=60
   local _issue=30
+
+  # #647: dedup is per-finding, so a multi-finding assessment yields one evidence
+  # file per finding and baseline+N math. Use a SINGLE-finding assessment so this
+  # CLOSED-clear test produces exactly one issue + one evidence file, keeping the
+  # baseline+2 arithmetic (1 CLOSED + 1 new) and the deterministic evidence path.
+  printf '%s' '### Input Not Validated - ACTIONABLE_LATER
+
+**Severity:** HIGH
+**Category:** Security
+**Reasoning:** Valid improvement but out of scope for this PR.
+**Defer Reason:** Too broad for this PR; defer to tech-debt.
+**Fix Effort:** <1hr
+' > "$MOCK_ASSESSMENT_FILE"
 
   # Capture baseline issue count before this test creates anything.
   # Asserting baseline+2 (not a fixed 2) guards against non-clean mock state
@@ -845,7 +894,7 @@ run_assess_and_resolve() {
   local _baseline_count
   _baseline_count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
 
-  # First run: creates a follow-up issue (number 1000) and writes evidence.
+  # First run: creates a single follow-up issue and writes evidence.
   run_assess_and_resolve "$_pr" "$_issue"
   [ "$status" -eq 0 ] || {
     echo "FAIL: first run exited $status (expected 0)"
@@ -853,8 +902,9 @@ run_assess_and_resolve() {
     false
   }
 
-  # Evidence file must exist after the first run.
-  local _evidence_file="$RITE_LOCK_DIR/pr-${_pr}-src-${_issue}-followup-created.txt"
+  # Evidence file must exist after the first run. #647: keyed per finding
+  # (slug 'input-not-validated', index 1).
+  local _evidence_file="$RITE_LOCK_DIR/pr-${_pr}-src-${_issue}-input-not-validated-1-followup-created.txt"
   [ -f "$_evidence_file" ] || {
     echo "FAIL: local evidence file not found at $_evidence_file after first run"
     ls "$RITE_LOCK_DIR/" || true
@@ -949,8 +999,25 @@ run_assess_and_resolve() {
   rm -f "$RITE_LOCK_DIR"/* 2>/dev/null || true
   setup_gh_mock_state
 
+  # #647: disable the per-finding TTL sentinel (see CLOSED-clear test above) so
+  # the second run reaches Source 1's CLOSED-evidence branch and emits the
+  # stale-evidence message instead of being short-circuited by the sentinel.
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=0
+
   local _pr=61
   local _issue=31
+
+  # #647: use a SINGLE-finding assessment so exactly one issue + one evidence file
+  # is produced, giving a deterministic per-finding evidence path for the CLOSED
+  # branch to clear.
+  printf '%s' '### Input Not Validated - ACTIONABLE_LATER
+
+**Severity:** HIGH
+**Category:** Security
+**Reasoning:** Valid improvement but out of scope for this PR.
+**Defer Reason:** Too broad for this PR; defer to tech-debt.
+**Fix Effort:** <1hr
+' > "$MOCK_ASSESSMENT_FILE"
 
   # Explicit mock data setup for PR 61 / issue 31.
   # gh-mock-binary.sh serves GH_MOCK_PR_VIEW_FILE for any pr view call — the mock
@@ -962,7 +1029,8 @@ run_assess_and_resolve() {
   run_assess_and_resolve "$_pr" "$_issue"
   [ "$status" -eq 0 ]
 
-  local _evidence_file="$RITE_LOCK_DIR/pr-${_pr}-src-${_issue}-followup-created.txt"
+  # #647: evidence keyed per finding (slug 'input-not-validated', index 1).
+  local _evidence_file="$RITE_LOCK_DIR/pr-${_pr}-src-${_issue}-input-not-validated-1-followup-created.txt"
   local _evidenced_num
   _evidenced_num=$(cat "$_evidence_file" 2>/dev/null || echo "")
   [[ "$_evidenced_num" =~ ^[0-9]+$ ]] || {

@@ -26,10 +26,13 @@ setup() {
   export RITE_TEST_ROOT="${BATS_TEST_TMPDIR}/rite-test"
   mkdir -p "$RITE_TEST_ROOT"
 
-  # Fixture for lint tests — placed inside lib/ so the linter scans it
+  # Fixture for lint tests — placed OUTSIDE lib/ and injected via RITE_LINT_EXTRA_DIRS.
+  # Planting inside lib/test-fixtures-temp would be excluded from the main SHELL_FILES
+  # scan (Rule 15 never sees it) and would spuriously trip Rule 16 (MISSING_RESOURCE_GUARD),
+  # masking the real BARE_MARKER_GREP assertion. See RITE_LINT_EXTRA_DIRS contract (#307).
   PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   export PROJECT_ROOT
-  export RITE_LINT_TEST_DIR="$PROJECT_ROOT/lib/test-fixtures-temp"
+  export RITE_LINT_TEST_DIR="${BATS_TEST_TMPDIR}/lint-fixtures"
   mkdir -p "$RITE_LINT_TEST_DIR"
 }
 
@@ -175,7 +178,9 @@ fi
 EOF
 
   cd "$PROJECT_ROOT"
+  export RITE_LINT_EXTRA_DIRS="$RITE_LINT_TEST_DIR"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "BARE_MARKER_GREP" ]]
@@ -197,7 +202,9 @@ fi
 EOF
 
   cd "$PROJECT_ROOT"
+  export RITE_LINT_EXTRA_DIRS="$RITE_LINT_TEST_DIR"
   run tools/sharkrite-lint.sh
+  unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "BARE_MARKER_GREP" ]]

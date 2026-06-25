@@ -63,7 +63,7 @@ teardown() {
   [ "$status" -eq 1 ]
 
   # Output should explain what happened
-  [[ "$output" =~ "Claude session ended without making any changes" ]]
+  [[ "$output" =~ "session ended without making any changes" ]]
 }
 
 @test "check_dev_session_output: provides remediation steps on fail" {

@@ -36,11 +36,11 @@ create_test_script() {
 }
 
 @test "detects grep -c with || echo '0'" {
-  create_test_script "bad-grep.sh" 'COUNT=$(grep -c "pattern" file.txt || echo "0")'
+  printf '%s\n' '#!/usr/bin/env bash' 'COUNT=$(grep -c "pattern" file.txt || echo "0")' > "$LINT_FIXTURE_DIR/bad-grep.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
-  cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
@@ -56,11 +56,11 @@ create_test_script() {
 }
 
 @test "detects git push without refspec" {
-  create_test_script "bad-push.sh" 'git push'
+  printf '%s\n' '#!/usr/bin/env bash' 'git push' > "$LINT_FIXTURE_DIR/bad-push.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
-  cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
 }
@@ -76,21 +76,26 @@ create_test_script() {
 }
 
 @test "warns on eval with GitHub data" {
-  create_test_script "eval-github.sh" 'eval "$GH_API_RESPONSE"'
+  printf '%s\n' '#!/usr/bin/env bash' 'eval "$GH_API_RESPONSE"' > "$LINT_FIXTURE_DIR/eval-github.sh"
 
-  # Should warn (not fail, just warn)
-  cd "$TEST_DIR/.." && "$LINT_SCRIPT" 2>&1 | grep -q "EVAL_UNTRUSTED_DATA"
+  # Should warn (not fail, just warn) — assert on output, not exit status
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
+  [[ "$output" =~ "EVAL_UNTRUSTED_DATA" ]]
 }
 
 @test "detects unquoted heredoc in command substitution" {
-  create_test_script "bad-heredoc.sh" 'OUTPUT=$(cat <<EOF
+  cat > "$LINT_FIXTURE_DIR/bad-heredoc.sh" <<'FIX'
+#!/usr/bin/env bash
+OUTPUT=$(cat <<EOF
 some content
 EOF
-)'
+)
+FIX
 
   # Should fail (lint script exits non-zero and output contains error)
-  cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "UNQUOTED_HEREDOC_CMDSUB" ]]
 }
@@ -109,13 +114,15 @@ EOF
 }
 
 @test "detects BSD sed without GNU fallback" {
-  create_test_script "bad-sed.sh" "sed -i '' 's/foo/bar/' file.txt"
+  # For a generic file (not portable-cmds.sh) Rule 10 (BARE_BSD_SED_I) supersedes
+  # Rule 5 (BSD_SED_NO_FALLBACK), so assert the rule that actually fires.
+  printf '%s\n' '#!/usr/bin/env bash' "sed -i '' 's/foo/bar/' file.txt" > "$LINT_FIXTURE_DIR/bad-sed.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
-  cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
-  [[ "$output" =~ "BSD_SED_NO_FALLBACK" ]]
+  [[ "$output" =~ "BARE_BSD_SED_I" ]]
 }
 
 @test "accepts BSD sed with GNU fallback check" {
@@ -133,12 +140,11 @@ fi'
 }
 
 @test "detects PIPESTATUS after || true" {
-  create_test_script "bad-pipestatus.sh" 'cmd1 | cmd2 || true
-EXIT_CODE=${PIPESTATUS[0]}'
+  printf '%s\n' '#!/usr/bin/env bash' 'cmd1 | cmd2 || true' 'EXIT_CODE=${PIPESTATUS[0]}' > "$LINT_FIXTURE_DIR/bad-pipestatus.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
-  cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "PIPESTATUS_AFTER_OR_TRUE" ]]
 }
@@ -154,12 +160,11 @@ EXIT_CODE=${PIPESTATUS[0]}'
 }
 
 @test "detects local outside function" {
-  create_test_script "bad-local.sh" 'local foo="bar"
-echo "$foo"'
+  printf '%s\n' '#!/usr/bin/env bash' 'local foo="bar"' 'echo "$foo"' > "$LINT_FIXTURE_DIR/bad-local.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
-  cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  cd "$PROJECT_ROOT"
+  run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }

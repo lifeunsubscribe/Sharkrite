@@ -93,8 +93,10 @@ setup() {
 @test "inject_command_hang causes timeout for gh" {
   inject_command_hang "gh"
 
-  # Use timeout wrapper to prevent infinite hang
-  run timeout 1 mock_gh pr list
+  # The external `timeout` binary cannot invoke a bash function directly, so
+  # export the function and run it through a child shell.
+  export -f mock_gh
+  run timeout 1 bash -c 'mock_gh pr list'
   # timeout exits with 124 when command times out
   [ "$status" -eq 124 ]
 }
@@ -102,8 +104,11 @@ setup() {
 @test "inject_command_hang with duration hangs for specified time" {
   inject_command_hang "claude" 2
 
+  # The external `timeout` binary cannot invoke a bash function directly, so
+  # export the function and run it through a child shell.
+  export -f mock_claude
   start_time=$(date +%s)
-  run timeout 3 mock_claude --print "task"
+  run timeout 3 bash -c 'mock_claude --print "task"'
   end_time=$(date +%s)
 
   duration=$((end_time - start_time))
@@ -169,8 +174,10 @@ setup() {
   run mock_claude --print "test"
   [ "$status" -eq 0 ]
 
-  # Verify no hang
-  run timeout 1 mock_gh issue list
+  # Verify no hang — route through a child shell so the external `timeout`
+  # binary can reach the exported bash function.
+  export -f mock_gh
+  run timeout 1 bash -c 'mock_gh issue list'
   [ "$status" -eq 0 ]
 }
 

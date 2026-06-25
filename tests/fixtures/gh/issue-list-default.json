@@ -1,0 +1,14 @@
+[
+  {
+    "number": 1,
+    "title": "First issue",
+    "state": "OPEN",
+    "labels": [{"name": "bug"}]
+  },
+  {
+    "number": 2,
+    "title": "Second issue",
+    "state": "CLOSED",
+    "labels": [{"name": "tech-debt"}]
+  }
+]

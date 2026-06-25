@@ -182,19 +182,22 @@ wait_at_barrier() {
 # Test: Session-limit check is per-batch (parallel batches don't trip each other)
 # ---------------------------------------------------------------------------
 
-@test "session limit check fires only on own completions, not sibling batches" {
-  # Set a low limit so we can exercise it within the test
-  export RITE_MAX_ISSUES_PER_SESSION="3"
+@test "session limit check fires only on own work, not sibling batches" {
+  # Retargeted to the CUMULATIVE-HOURS session cap (RITE_MAX_SESSION_HOURS).
+  # The old issue-count "token_limit" cap was removed from session-tracker.sh
+  # (should_save_and_exit now returns only "time_limit" or "continue"; the
+  # issue-count gate is gone — see the comment at session-tracker.sh:518-521).
+  # This test still verifies the per-batch ISOLATION property: each batch has its
+  # own SESSION_STATE_FILE (keyed by RITE_BATCH_ID), so one batch crossing its
+  # cumulative-work budget must not make a sibling batch appear over budget.
 
-  # Batch A: will complete 3 issues (hits its own limit)
-  # Batch B: will complete 2 issues (should NOT be at limit)
-  # Both share the same RITE_PROJECT_NAME. Before this fix they'd share one file
-  # and A's limit would appear hit for B as well.
+  # 1h budget; batch A will accumulate > 1h of work, batch B < 1h.
+  export RITE_MAX_SESSION_HOURS="1"
 
   local results_dir="$RITE_TEST_TMPDIR/results"
   mkdir -p "$results_dir"
 
-  # Batch A — reaches the limit
+  # Batch A — accumulates 2h of work (crosses its own 1h budget)
   (
     export RITE_BATCH_ID="batch-A-$(date +%s)-$$-${RANDOM}"
     export SESSION_STATE_FILE="/tmp/rite-session-state-${RITE_PROJECT_NAME}-${RITE_BATCH_ID}.json"
@@ -203,18 +206,22 @@ wait_at_barrier() {
 
     wait_at_barrier "limit_test_init" "2" || exit 1
 
-    increment_completed  # 1
-    increment_completed  # 2
-    increment_completed  # 3 — at limit
+    # Seed cumulative_work_seconds to 2h directly (avoids sleeping in the test).
+    # This is the real signal should_save_and_exit reads (get_cumulative_work_seconds).
+    _tmp_a=$(mktemp)
+    jq '.cumulative_work_seconds = 7200' "$SESSION_STATE_FILE" > "$_tmp_a"
+    mv "$_tmp_a" "$SESSION_STATE_FILE"
 
-    # should_save_and_exit returns "token_limit" when at/above limit
+    # should_save_and_exit returns "time_limit" (exit 0) when at/above the cap,
+    # and "continue" (exit 1) otherwise. Capture must tolerate the exit-1
+    # "continue" verdict under the inherited set -e from session-tracker.sh.
     local verdict
-    verdict=$(should_save_and_exit)
+    verdict=$(should_save_and_exit) || true
     echo "$verdict" > "$results_dir/batch_A.verdict"
     rm -f "$SESSION_STATE_FILE"
   ) &
 
-  # Batch B — below the limit
+  # Batch B — accumulates only ~3min of work (well under the 1h budget)
   (
     export RITE_BATCH_ID="batch-B-$(date +%s)-$$-${RANDOM}"
     export SESSION_STATE_FILE="/tmp/rite-session-state-${RITE_PROJECT_NAME}-${RITE_BATCH_ID}.json"
@@ -223,11 +230,12 @@ wait_at_barrier() {
 
     wait_at_barrier "limit_test_init" "2" || exit 1
 
-    increment_completed  # 1
-    increment_completed  # 2 — below limit
+    _tmp_b=$(mktemp)
+    jq '.cumulative_work_seconds = 180' "$SESSION_STATE_FILE" > "$_tmp_b"
+    mv "$_tmp_b" "$SESSION_STATE_FILE"
 
     local verdict
-    verdict=$(should_save_and_exit)
+    verdict=$(should_save_and_exit) || true
     echo "$verdict" > "$results_dir/batch_B.verdict"
     rm -f "$SESSION_STATE_FILE"
   ) &
@@ -241,15 +249,16 @@ wait_at_barrier() {
   verdict_A=$(cat "$results_dir/batch_A.verdict")
   verdict_B=$(cat "$results_dir/batch_B.verdict")
 
-  # Batch A must have hit its limit
-  [ "$verdict_A" = "token_limit" ] || {
-    echo "FAIL: batch A verdict='$verdict_A', expected 'token_limit'"
+  # Batch A must have hit its own cumulative-hours budget
+  [ "$verdict_A" = "time_limit" ] || {
+    echo "FAIL: batch A verdict='$verdict_A', expected 'time_limit'"
     return 1
   }
 
-  # Batch B must still be clear to continue
+  # Batch B must still be clear to continue — A's accumulated work lives in A's
+  # own SESSION_STATE_FILE and must not leak into B's verdict.
   [ "$verdict_B" = "continue" ] || {
-    echo "FAIL: batch B verdict='$verdict_B', expected 'continue' (parallel batch A's completions must not affect B)"
+    echo "FAIL: batch B verdict='$verdict_B', expected 'continue' (parallel batch A's work must not affect B)"
     return 1
   }
 }

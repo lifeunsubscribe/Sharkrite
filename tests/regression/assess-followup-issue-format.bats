@@ -54,7 +54,7 @@ teardown() {
 @test "assess-and-resolve.sh: per-finding while loop reads ACTIONABLE_ headers" {
   # The per-finding loop must grep for ACTIONABLE_(NOW|LATER) headers and
   # iterate with a while-read loop (not a single grep -m1 extraction).
-  run grep -n 'ACTIONABLE_(NOW|LATER).*grep' "$ASSESS_RESOLVE_SCRIPT"
+  run grep -n 'grep.*ACTIONABLE_(NOW|LATER)' "$ASSESS_RESOLVE_SCRIPT"
 
   [ "$status" -eq 0 ] || {
     echo "FAIL: No per-finding ACTIONABLE_ grep found in $ASSESS_RESOLVE_SCRIPT"
@@ -82,7 +82,7 @@ teardown() {
 
 @test "assess-and-resolve.sh: per-finding body includes acceptance criterion (- [ ])" {
   # Each generated body must include at least one - [ ] checkbox.
-  run grep -n '- \[ \]' "$ASSESS_RESOLVE_SCRIPT"
+  run grep -n -- '- \[ \]' "$ASSESS_RESOLVE_SCRIPT"
 
   [ "$status" -eq 0 ] || {
     echo "FAIL: No '- [ ]' acceptance criterion found in $ASSESS_RESOLVE_SCRIPT body builder"
@@ -266,6 +266,7 @@ Done when the finding is addressed."
   run bash -c "
     set -euo pipefail
     export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    export RITE_PROJECT_ROOT='${RITE_REPO_ROOT}'
     # Stub print functions consumed by sourced dependencies
     print_info()    { :; }
     print_warning() { :; }
@@ -297,7 +298,7 @@ Done when the finding is addressed."
 # ─── Test 11: Unit — CRITICAL with trailing annotation resolves to correct done def ─
 
 @test "assess-and-resolve.sh: CRITICAL severity with annotation produces CRITICAL done definition" {
-  # Regression for issue #650: "CRITICAL: confirmed" must yield the CRITICAL done
+  # Regression for issue #650: "CRITICAL (confirmed)" must yield the CRITICAL done
   # definition, not the wildcard fallback.
   #
   # This test calls the real _resolve_done_def() from assess-and-resolve.sh
@@ -307,6 +308,7 @@ Done when the finding is addressed."
   run bash -c "
     set -euo pipefail
     export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    export RITE_PROJECT_ROOT='${RITE_REPO_ROOT}'
     # Stub print functions consumed by sourced dependencies
     print_info()    { :; }
     print_warning() { :; }
@@ -316,7 +318,7 @@ Done when the finding is addressed."
     _diag()         { :; }
     RITE_SOURCE_FUNCTIONS_ONLY=1 source '${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh'
     # Normalize: same awk/tr pipeline used in the per-finding loop
-    _raw_severity='CRITICAL: confirmed'
+    _raw_severity='CRITICAL (confirmed)'
     _f_severity=\$(echo \"\$_raw_severity\" | awk '{print \$1}' | tr '[:lower:]' '[:upper:]' || true)
     _f_severity=\"\${_f_severity:-MEDIUM}\"
     # Call the real helper — not an inline copy of the case arms
@@ -330,7 +332,7 @@ Done when the finding is addressed."
     false
   }
   [[ "$output" == *"CRITICAL finding"* ]] || {
-    echo "FAIL: Expected CRITICAL done definition for severity 'CRITICAL: confirmed', got: '$output'"
+    echo "FAIL: Expected CRITICAL done definition for severity 'CRITICAL (confirmed)', got: '$output'"
     false
   }
 }

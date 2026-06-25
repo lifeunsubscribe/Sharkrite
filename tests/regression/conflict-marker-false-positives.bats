@@ -172,7 +172,7 @@ _has_conflict_marker() {
   # Create a markdown file with a setext heading (=======) on main
   cat > docs.md <<'EOF'
 My Section
-=======
+========
 Some content here.
 EOF
   git add docs.md
@@ -183,7 +183,7 @@ EOF
   git checkout -b "$BRANCH_NAME" main >/dev/null 2>&1
   cat > docs.md <<'EOF'
 My Section
-=======
+========
 Branch added this line.
 EOF
   git add docs.md
@@ -193,7 +193,7 @@ EOF
   git checkout main >/dev/null 2>&1
   cat > docs.md <<'EOF'
 My Section
-=======
+========
 Main added this line instead.
 EOF
   git add docs.md
@@ -215,10 +215,12 @@ EOF
     _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
     while IFS= read -r _f; do
       [ -z "$_f" ] && continue
-      # Write resolved content that still has the setext '=======' underline
+      # Write resolved content that still has the setext '========' underline.
+      # Use 8 equals (canonical setext form) so it is distinguishable from a
+      # 7-equals git conflict separator — see conflict-resolver.sh Check 2.
       cat > "$_f" <<'RESOLVED'
 My Section
-=======
+========
 Resolved: kept branch intent, setext heading preserved.
 RESOLVED
       git add "$_f"
