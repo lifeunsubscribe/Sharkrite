@@ -65,7 +65,7 @@ teardown() {
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
-  local pid_file="$BARRIER_DIR/${barrier_name}.$$"
+  local pid_file="$BARRIER_DIR/${barrier_name}.$BASHPID"
 
   touch "$pid_file"
 
