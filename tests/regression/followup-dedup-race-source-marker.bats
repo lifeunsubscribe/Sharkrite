@@ -724,6 +724,12 @@ run_sentinel_dedup_create() {
   ISSUE_SEARCH="review feedback — PR #${pr} for issue #${src}"
   _lock_was_contended=false
   EXISTING_ISSUE=""
+  # #647 (one-finding-per-issue) gated Source 2b on a title-equality match and
+  # added bare reads of $ISSUE_TITLE (assess-and-resolve.sh:182) and
+  # $_clean_title (line 242, Source 4). Both are unconditionally set on the
+  # production call path; set them here so the direct call doesn't crash under set -u.
+  ISSUE_TITLE="review feedback — PR #${pr} for issue #${src}"
+  _clean_title="$ISSUE_TITLE"
 
   # The candidate issue number that Source 2a will "find".
   local candidate_issue=9030
@@ -767,7 +773,10 @@ run_sentinel_dedup_create() {
       # Only body searches should return a candidate; title searches return empty.
       local _args_str="$*"
       if echo "$_args_str" | grep -q "in:body"; then
-        echo "$candidate_issue"
+        # #647 Source 2a now requests --json number,title and pipes through
+        # '\(.number) \(.title)'; return number + a title containing ISSUE_TITLE
+        # so the title-equality gate at assess-and-resolve.sh:182 passes.
+        echo "$candidate_issue $ISSUE_TITLE"
       else
         echo "[]"
       fi
@@ -828,6 +837,11 @@ run_sentinel_dedup_create() {
   ISSUE_SEARCH="review feedback — PR #${pr} for issue #${src}"
   _lock_was_contended=false
   EXISTING_ISSUE=""
+  # #647 added bare reads of $ISSUE_TITLE (line 182, Source 2b title gate) and
+  # $_clean_title (line 242, Source 4). This test reaches Source 4 after the
+  # body-boundary rejection, so BOTH globals are mandatory here under set -u.
+  ISSUE_TITLE="review feedback — PR #${pr} for issue #${src}"
+  _clean_title="$ISSUE_TITLE"
 
   # A false-positive candidate: GitHub search returned this issue but its body
   # contains a DIFFERENT source-issue marker (sharkrite-source-issue:3620, not :362).
@@ -854,9 +868,11 @@ run_sentinel_dedup_create() {
     if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then
       local _args_str="$*"
       if echo "$_args_str" | grep -q "in:body"; then
-        # Source 2a: return the false-positive candidate number directly.
-        # See Test 8 comment: bare number passes through grep -E '^[0-9]+$'.
-        echo "$false_candidate"
+        # #647 Source 2a requests --json number,title; return number + a title
+        # containing ISSUE_TITLE so the title gate at line 182 passes and the
+        # rejection is exercised at the BODY boundary regex (line 188), where
+        # the ':3620' marker must fail the ([^[:alnum:]_-]|$) check for #362.
+        echo "$false_candidate $ISSUE_TITLE"
       else
         echo "[]"
       fi

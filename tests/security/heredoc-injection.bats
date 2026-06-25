@@ -138,8 +138,25 @@ ${CHANGES_SUMMARY}
   # - [a-zA-Z_][a-zA-Z0-9_]*  : matches any valid shell word (delimiter)
   # - Not followed by single quote (the grep -v below handles quoted delimiters)
 
-  # Find all unquoted heredoc-in-command-substitution patterns
-  local matches=$(grep -rnE '\$\(cat <<-?[a-zA-Z_][a-zA-Z0-9_]*' lib/ | grep -v "cat > " | grep -v "<<'" || true)
+  # Find all unquoted heredoc-in-command-substitution patterns.
+  # Collect raw candidate hits, then drop any whose preceding line carries the
+  # '# sharkrite-lint disable UNQUOTED_HEREDOC' suppression comment -- matching the
+  # canonical Rule 4 behavior in tools/sharkrite-lint.sh:181-185 (which honors that
+  # comment). This keeps the test as a guard against NEW un-suppressed heredocs while
+  # accepting the already-reviewed, intentionally variable-expanding ones.
+  local raw_hits
+  raw_hits=$(grep -rnE '\$\(cat <<-?[a-zA-Z_][a-zA-Z0-9_]*' lib/ | grep -v "cat > " | grep -v "<<'" || true)
+  local matches=""
+  while IFS= read -r hit; do
+    [ -z "$hit" ] && continue
+    local hit_file=$(echo "$hit" | cut -d: -f1)
+    local hit_line=$(echo "$hit" | cut -d: -f2)
+    local prev_line=$(sed -n "$((hit_line - 1))p" "$hit_file" 2>/dev/null || true)
+    if echo "$prev_line" | grep -qE '#.*sharkrite-lint.*disable.*UNQUOTED_HEREDOC'; then
+      continue   # intentional + reviewed; the canonical lint rule allows it
+    fi
+    matches="${matches}${hit}\n"
+  done <<< "$raw_hits"
 
   # Debugging: show what we found
   if [ -n "$matches" ]; then

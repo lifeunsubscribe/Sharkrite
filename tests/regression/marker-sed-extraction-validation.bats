@@ -409,7 +409,7 @@ EOF
     while IFS= read -r f; do
       [ -z "$f" ] && continue
       # Extract unique marker names from this file (strip -start/-end suffix)
-      names=$(grep -oE "sharkrite-extract: [a-z0-9_-]+" "$f" 2>/dev/null \
+      names=$(grep -oE "sharkrite-extract: [a-z0-9_-]+-(start|end)" "$f" 2>/dev/null \
         | sed "s/sharkrite-extract: //" \
         | sed "s/-start$//" \
         | sed "s/-end$//" \

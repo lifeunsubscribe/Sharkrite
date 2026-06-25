@@ -201,9 +201,9 @@ $ACTIONABLE_NOW_ITEMS
 # Test 9: Centralization - no other files use dangerously-skip-permissions
 @test "only lib/providers/claude.sh uses dangerously-skip-permissions" {
   # This test enforces that the security mechanism is centralized
-  matches=$(grep -r "dangerously-skip-permissions" "$RITE_LIB_DIR" | grep -v "lib/providers/claude.sh" | grep -v "^[^:]*:#" || true)
+  matches=$(grep -r "dangerously-skip-permissions" "$RITE_LIB_DIR" | grep -v "lib/providers/claude.sh" | grep -vE ':[[:space:]]*#' || true)
 
-  # Filter out comment-only lines (already done by grep -v ":#")
+  # Filter out comment-only lines (column-0 AND indented comments: path:<optional-ws>#...)
   # If any non-comment usage exists outside claude.sh, this should fail
   [ -z "$matches" ]
 }

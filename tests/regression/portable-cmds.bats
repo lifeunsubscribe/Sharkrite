@@ -90,7 +90,7 @@ teardown() {
 @test "Rule 10 pattern matches bare sed -i '' lines" {
   # Verify the regex used by Rule 10 matches the bad pattern
   local bad_line="  sed -i '' \"s|foo|bar|\" file.txt"
-  run bash -c "echo '$bad_line' | grep -qE \"sed\s+-i\s+''\""
+  run grep -qE "sed[[:space:]]+-i[[:space:]]+''" <<< "$bad_line"
   [ "$status" -eq 0 ]
 }
 
@@ -169,7 +169,7 @@ teardown() {
   # Rule 5's regex: sed\s+-i\s+''
   # Must still fire if portable-cmds.sh somehow loses its --version guard
   local bad_line="  sed -i '' \"\$@\""
-  run bash -c "echo '$bad_line' | grep -qE \"sed\s+-i\s+''\""
+  run grep -qE "sed[[:space:]]+-i[[:space:]]+''" <<< "$bad_line"
   [ "$status" -eq 0 ]
 }
 
@@ -178,7 +178,7 @@ teardown() {
   run bash -c '
     grep -rn "stat -f" "'"$PROJECT_ROOT"'/lib" "'"$PROJECT_ROOT"'/bin" 2>/dev/null \
       | grep -v "portable-cmds.sh" \
-      | grep -v "^\s*#" \
+      | grep -vE ":[0-9]+:[[:space:]]*#" \
       || true
   '
   [ "$status" -eq 0 ]
@@ -190,7 +190,7 @@ teardown() {
   run bash -c "
     grep -rn \"sed -i ''\" '$PROJECT_ROOT/lib' '$PROJECT_ROOT/bin' 2>/dev/null \
       | grep -v 'portable-cmds.sh' \
-      | grep -v '^\s*#' \
+      | grep -vE ':[0-9]+:[[:space:]]*#' \
       || true
   "
   [ "$status" -eq 0 ]

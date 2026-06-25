@@ -57,22 +57,19 @@
 }
 
 @test "lint rule JQ_DEFAULT_BRACE flags the buggy pattern" {
-  tmpfile=$(mktemp "${BATS_TEST_TMPDIR}/lint-test.XXXXXX.sh")
-  cat > "$tmpfile" <<'SH'
+  # Inject the fixture via the supported RITE_LINT_EXTRA_DIRS mechanism and run
+  # the real lint script in place. sharkrite-lint.sh recomputes PROJECT_ROOT from
+  # BASH_SOURCE[0] (mirrors the Makefile anchors), so a PROJECT_ROOT env override
+  # has no effect — RITE_LINT_EXTRA_DIRS is the documented injection path.
+  fixture_dir="${BATS_TEST_TMPDIR}/jq-fixture"
+  mkdir -p "$fixture_dir"
+  cat > "$fixture_dir/buggy.sh" <<'SH'
 #!/usr/bin/env bash
 VAR=$(some_command)
 VAR="${VAR:-{}}"
 SH
 
-  # Copy lint script to a writable temp location so we can point it at our fixture
-  cp "${BATS_TEST_DIRNAME}/../../tools/sharkrite-lint.sh" "${BATS_TEST_TMPDIR}/lint-copy.sh"
-
-  # Run lint against the fixture by setting up a fake project layout
-  fake_root="${BATS_TEST_TMPDIR}/fake-project"
-  mkdir -p "$fake_root/bin" "$fake_root/lib" "$fake_root/tools"
-  cp "$tmpfile" "$fake_root/lib/buggy.sh"
-
-  run env PROJECT_ROOT="$fake_root" bash "${BATS_TEST_TMPDIR}/lint-copy.sh"
+  run env RITE_LINT_EXTRA_DIRS="$fixture_dir" bash "${BATS_TEST_DIRNAME}/../../tools/sharkrite-lint.sh"
   [[ "$output" == *"JQ_DEFAULT_BRACE"* ]]
 }
 

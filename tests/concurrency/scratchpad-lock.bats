@@ -192,16 +192,13 @@ wait_at_barrier() {
   local holder_pid_file="$RITE_TEST_TMPDIR/holder_pid"
   local reclaim_result_file="$RITE_TEST_TMPDIR/reclaim_result"
 
-  # Spawn a process that acquires the lock and holds it indefinitely
-  (
-    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
-    acquire_scratchpad_lock
-    # Signal that we have the lock
-    echo $$ > "$holder_pid_file"
-    touch "$lock_acquired_file"
-    # Hold the lock until SIGKILLed
-    sleep 60
-  ) &
+  # Spawn a process that acquires the lock and holds it indefinitely.
+  # IMPORTANT: spawn as an independent child process (not a ( ) & subshell) so
+  # that $$ inside the holder equals its real PID and equals the PID the source
+  # records in the lock dir. Inside a ( ) & subshell, $$ is the BATS test-process
+  # PID, so `echo $$ > holder_pid_file` would record the bats PID and
+  # `kill -KILL` would SIGKILL the bats runner itself.
+  "${BASH}" -c 'set -uo pipefail; source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"; acquire_scratchpad_lock; echo $$ > "'"$holder_pid_file"'"; touch "'"$lock_acquired_file"'"; sleep 60' &
   local holder_bgpid=$!
 
   # Wait up to 5s for the holder to acquire the lock
@@ -716,18 +713,16 @@ GHEOF
 
   # Spawn a holder that acquires the lock via the mkdir path and holds it.
   # It writes its PID to a file and signals readiness, then sleeps until killed.
-  (
-    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
-    acquire_scratchpad_lock
-    # Verify that the mkdir strategy was actually used (precondition check)
-    [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
-      echo "FAIL: holder did not use mkdir strategy (got '${_SCRATCHPAD_LOCK_STRATEGY}')" >&2
-      exit 1
-    }
-    echo $$ > "$holder_pid_file"
-    touch "$lock_acquired_file"
-    sleep 60  # Hold the lock until SIGKILLed
-  ) &
+  #
+  # IMPORTANT: spawn as an independent child process (not a ( ) & subshell) so
+  # that $$ inside the holder equals its real PID and equals the PID the source
+  # records in the lock dir's pid file. Inside a ( ) & subshell, $$ is the BATS
+  # test-process PID, so `echo $$ > holder_pid_file` would record the bats PID,
+  # `kill -KILL` would SIGKILL the bats runner itself, and the lock-dir pid would
+  # point at a still-alive process so the waiter's kill -0 reclaim never fires.
+  # RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir is already exported above so the child
+  # inherits it; the explicit re-export inside -c is belt-and-suspenders.
+  "${BASH}" -c 'set -uo pipefail; export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir; source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"; acquire_scratchpad_lock; [ "$_SCRATCHPAD_LOCK_STRATEGY" = mkdir ] || { echo "FAIL: holder did not use mkdir strategy (got $_SCRATCHPAD_LOCK_STRATEGY)" >&2; exit 1; }; echo $$ > "'"$holder_pid_file"'"; touch "'"$lock_acquired_file"'"; sleep 60' &
   local holder_bgpid=$!
 
   # Wait up to 5s for the holder to acquire the lock and signal readiness

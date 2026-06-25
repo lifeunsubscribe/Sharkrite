@@ -79,6 +79,11 @@ _setup_non_conflicting_divergence() {
   git -C "$tmp_clone" commit -m "Remote: add remote-only.txt" >/dev/null 2>&1
   git -C "$tmp_clone" push origin "$BRANCH_NAME" >/dev/null 2>&1
 
+  # Switch the fixture repo's main working tree off $BRANCH_NAME so git worktree
+  # add can check it out into the worktree (git refuses a branch already checked
+  # out in the main working tree).
+  git checkout main >/dev/null 2>&1
+
   # Create worktree at the pre-fetch local HEAD
   WORKTREE_PATH="$RITE_WORKTREE_DIR/issue-rollback-$$"
   git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1

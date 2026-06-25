@@ -81,7 +81,7 @@ teardown() {
   [ -f "$_wfr" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
 
   # The guard compares worktree_path against RITE_PROJECT_ROOT and clears it
-  _count=$(grep -c 'worktree_path.*RITE_PROJECT_ROOT\|RITE_PROJECT_ROOT.*worktree_path' "$_wfr" || true)
+  _count=$(grep -c 'worktree_path.*_main_root\|_main_root.*worktree_path\|worktree_path.*RITE_PROJECT_ROOT\|RITE_PROJECT_ROOT.*worktree_path' "$_wfr" || true)
   [ "$_count" -ge 1 ] || {
     echo "FAIL: save_session_state_with_phase does not contain a main-root guard"
     echo "Expected pattern: worktree_path compared against RITE_PROJECT_ROOT"
@@ -827,16 +827,17 @@ _setup_linked_wt_repo() {
   local _repo
   _repo=$(create_fixture_repo "$_bare")
 
-  # Create a feature branch and linked worktree
+  # Create a feature branch and linked worktree.
+  # IMPORTANT: create branch + worktree atomically with `git worktree add -b`
+  # (no in-repo `git checkout -b`). Checking the branch out in the main repo
+  # first makes the subsequent `git worktree add` fail with exit 128
+  # ('already checked out'), leaving no worktree on disk. The commit is made
+  # INSIDE the new worktree instead.
   cd "$_repo" || return 1
   local _branch="feat/test-linked-wt-$$"
-  git checkout -b "$_branch" main >/dev/null 2>&1
-  echo "feature" > feature.sh
-  git add feature.sh
-  git commit -m "Add feature" >/dev/null 2>&1
-
   local _wt_path="${RITE_TEST_TMPDIR}/linked-wt-$$"
-  git worktree add "$_wt_path" "$_branch" >/dev/null 2>&1
+  git worktree add -b "$_branch" "$_wt_path" main >/dev/null 2>&1 || return 1
+  ( cd "$_wt_path" && echo "feature" > feature.sh && git add feature.sh && git commit -m "Add feature" >/dev/null 2>&1 ) || return 1
 
   # Resolve canonical path (macOS /var → /private/var symlink)
   local _wt_real
@@ -949,14 +950,12 @@ _setup_linked_wt_repo() {
 
   cd "$_repo" || return 1
   local _branch="feat/spaces-test-$$"
-  git checkout -b "$_branch" main >/dev/null 2>&1
-  echo "spaces" > spaces.sh
-  git add spaces.sh
-  git commit -m "Add spaces feature" >/dev/null 2>&1
-
-  # Worktree path with a space in the name
+  # Worktree path with a space in the name. Create branch + worktree atomically
+  # with `git worktree add -b` (no in-repo checkout, which would fail the add
+  # with exit 128) and commit INSIDE the new worktree.
   local _wt_path="${RITE_TEST_TMPDIR}/linked wt spaces $$"
-  git worktree add "$_wt_path" "$_branch" >/dev/null 2>&1
+  git worktree add -b "$_branch" "$_wt_path" main >/dev/null 2>&1
+  ( cd "$_wt_path" && echo "spaces" > spaces.sh && git add spaces.sh && git commit -m "Add spaces feature" >/dev/null 2>&1 )
 
   local _wt_real
   _wt_real=$(cd "$_wt_path" && pwd -P 2>/dev/null || echo "$_wt_path")

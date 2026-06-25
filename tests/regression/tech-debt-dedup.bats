@@ -20,6 +20,13 @@
 
 load '../helpers/setup.bash'
 
+# create_tech_debt_issues() emits diagnostic lines to stderr (e.g.
+# "Created tech-debt issue: ...", "Tech-debt issue already exists ...") and the
+# clean issue count to stdout. The exact-output assertions below ([ "$output" = "1" ])
+# care only about stdout, so the run calls use `run --separate-stderr` to keep
+# stderr out of $output. That flag requires bats 1.5.0+.
+bats_require_minimum_version 1.5.0
+
 # ---------------------------------------------------------------------------
 # Test setup: mock gh + scratchpad fixture
 # ---------------------------------------------------------------------------
@@ -173,7 +180,7 @@ SCRATCHEOF
   write_scratchpad "$entry"
 
   # First run: should create one issue
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "1" ]
 
@@ -183,7 +190,7 @@ SCRATCHEOF
   [ "$count" -eq 1 ]
 
   # Second run with same scratchpad: should skip (dedup match)
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "0" ]
 
@@ -202,7 +209,7 @@ SCRATCHEOF
   write_scratchpad "$entry1" "$entry2"
 
   # First run: should create two issues
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "2" ]
 
@@ -211,7 +218,7 @@ SCRATCHEOF
   [ "$count" -eq 2 ]
 
   # Second run: should skip both (each has its own marker)
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "0" ]
 
@@ -227,7 +234,7 @@ SCRATCHEOF
   local entry="- **2026-05-31** | \`lib/baz.sh:7\` | test-failure | Missing bats assertion | Affects: CI reliability | Fix: Add assert | Done: Tests pass"
   write_scratchpad "$entry"
 
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "1" ]
 
@@ -246,7 +253,7 @@ SCRATCHEOF
   local entry="- **2026-05-31** | \`lib/qux.sh:15\` | deprecation | Old API call | Affects: future compatibility | Fix: Update to new API | Done: Tests pass"
   write_scratchpad "$entry"
 
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "1" ]
 
@@ -267,7 +274,7 @@ SCRATCHEOF
   # No Encountered Issues section
   echo "# Scratchpad" > "$SCRATCHPAD_FILE"
 
-  run create_tech_debt_issues ""
+  run --separate-stderr create_tech_debt_issues ""
   [ "$status" -eq 0 ]
   [ "$output" = "0" ]
 

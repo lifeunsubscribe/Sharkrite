@@ -331,9 +331,29 @@ BATCHEOF
   attempt_claude_merge_resolution() { return 5; }
   export -f attempt_claude_merge_resolution
 
-  # Stub detect_divergence to say "diverged" without needing a real remote
-  detect_divergence() { return 0; }
+  # Stub detect_divergence to say "diverged" without needing a real remote.
+  # The REAL detect_divergence always exports these DIVERGENCE_* vars before
+  # returning 0 (divergence-handler.sh:127-133); handle_push_divergence
+  # dereferences DIVERGENCE_COMMIT_COUNT/COMMITS at line 286 under `set -u`,
+  # so the stub must set them or it crashes before the resolver runs.
+  detect_divergence() {
+    export DIVERGENCE_COMMIT_COUNT=1
+    export DIVERGENCE_COMMITS="deadbeef foreign commit"
+    export DIVERGENCE_LOCAL_HEAD="$(git rev-parse HEAD)"
+    export DIVERGENCE_REMOTE_HEAD="$(git rev-parse HEAD)"
+    export DIVERGENCE_DIFF_STAT=""
+    return 0
+  }
   export -f detect_divergence
+
+  # Stub classify_foreign_commits to TRIVIAL so handle_push_divergence routes
+  # to _do_rebase_and_push (the resolver path). The fixture is a local-only repo
+  # (LOCAL_HEAD == REMOTE_HEAD, no origin/main), so the real classifier's foreign
+  # range is empty and it would fall to the Claude slow-path / auto-mode UNRELATED
+  # fallback (-> _handle_unrelated -> return 1), never reaching the resolver. This
+  # test exercises exit-5 propagation through the resolver, not the classifier.
+  classify_foreign_commits() { export DIVERGENCE_CLASS="TRIVIAL"; return 0; }
+  export -f classify_foreign_commits
 
   # Stub _do_rebase to simulate rebase failure (triggering resolver invocation)
   _do_rebase() { return 1; }

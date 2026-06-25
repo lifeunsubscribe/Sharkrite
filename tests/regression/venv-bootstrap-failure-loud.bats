@@ -13,6 +13,10 @@ setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   source "${RITE_LIB_DIR}/utils/config.sh"
   source "${RITE_LIB_DIR}/utils/logging.sh"
+  # Isolate from the developer's local (gitignored) .rite/config, which sets
+  # RITE_TEST_CMD to a bats wrapper. Without this, _run_dev_test_gate uses that
+  # override and never enters the venv-bootstrap path these tests exercise.
+  unset RITE_TEST_CMD
 
   # Create a mock Python project
   export TEST_REPO=$(mktemp -d)
@@ -119,7 +123,7 @@ if [[ "\$*" == *"-m venv"* ]]; then
   # Pip shim: succeed for base, fail for dev
   cat > .venv/bin/pip <<'PIPEOF'
 #!/bin/bash
-if [[ "$*" == *"requirements-dev.txt"* ]]; then
+if [[ "\$*" == *"requirements-dev.txt"* ]]; then
   echo "ERROR: Simulated dev requirements install failure" >&2
   exit 1
 fi

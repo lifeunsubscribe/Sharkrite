@@ -1545,9 +1545,9 @@ _create_lib_file() {
 
   # The invalid base_branch must NOT appear in git ref calls.
   # stderr captures the git calls; "../evil-ref" must not appear there.
-  [[ "$stderr" != *"../evil-ref"* ]] || {
+  [[ "$output" != *"../evil-ref"* ]] || {
     echo "FAIL: path-traversal base_branch was used in a git ref call"
-    echo "stderr: $stderr"
+    echo "output: $output"
     return 1
   }
 }
@@ -1602,7 +1602,7 @@ _create_lib_file() {
   [[ "$output" == *"BLOCKER"* ]]
 
   # The invalid base_branch with shell meta-chars must not appear in git calls
-  [[ "$stderr" != *"touch /tmp/pwned"* ]] || {
+  [[ "$output" != *"touch /tmp/pwned"* ]] || {
     echo "FAIL: shell-metachar base_branch was used in a git call"
     return 1
   }
@@ -1683,9 +1683,9 @@ _create_lib_file() {
 
   # The evil payload must NOT appear in any git ref call — the multi-line value
   # must have been stripped and fallen back to "main" before reaching git.
-  [[ "$stderr" != *"evil"* ]] || {
+  [[ "$output" != *"evil"* ]] || {
     echo "FAIL: multi-line payload appeared in git call — newline bypass not blocked"
-    echo "stderr: $stderr"
+    echo "output: $output"
     return 1
   }
 }
@@ -1748,9 +1748,9 @@ _create_lib_file() {
   [[ "$output" == *"BLOCKER"* ]]
 
   # The path-traversal payload must NOT appear in any git ref call
-  [[ "$stderr" != *"../evil"* ]] || {
+  [[ "$output" != *"../evil"* ]] || {
     echo "FAIL: path-traversal in multi-line base_branch reached git call"
-    echo "stderr: $stderr"
+    echo "output: $output"
     return 1
   }
 }
@@ -2133,6 +2133,11 @@ _create_lib_file() {
   local _make_lib_diff_fn
   _make_lib_diff_fn=$(declare -f _make_lib_diff)
 
+  # Capture the fetch branch via a temp state file (the source 2>/dev/null's
+  # the git mock's stderr, so it never reaches $output or $stderr — same idiom
+  # as test 22 "fetches base branch ref").
+  local fetch_state_file="$RITE_TEST_TMPDIR/fetch-state-$$.txt"
+
   # Test with "release/1.0" — contains slash and dot, both valid
   run bash -c "
     cd '$RITE_TEST_TMPDIR'
@@ -2154,7 +2159,7 @@ _create_lib_file() {
     }
     git() {
       if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'fetch' ]; then
-        echo \"fetch_branch=\$5\" >&2
+        echo \"fetch_branch=\$5\" > '${fetch_state_file}'
         return 0
       fi
       # Return correct line count for origin/release/1.0
@@ -2163,7 +2168,7 @@ _create_lib_file() {
         return 0
       fi
       if [ \"\$1\" = '-C' ] && [ \"\$3\" = 'show' ] && [[ \"\$4\" == 'origin/main:'* ]]; then
-        echo 'ERROR: used main instead of release/1.0' >&2
+        echo 'ERROR=used_main' > '${fetch_state_file}'
         return 1
       fi
       command git \"\$@\"
@@ -2179,15 +2184,22 @@ _create_lib_file() {
   [[ "$output" == *"EXIT=1"* ]] || [ "$status" -eq 1 ]
   [[ "$output" == *"BLOCKER"* ]]
 
-  # Must not have fallen back to main (fetch uses release/1.0)
-  [[ "$stderr" != *"ERROR: used main"* ]] || {
-    echo "FAIL: valid release/1.0 branch was rejected and fell back to main"
+  # The git mock's stderr is swallowed by the source's 2>/dev/null, so we assert
+  # on the temp state file instead (see fetch_state_file note above).
+  [ -f "$fetch_state_file" ] || {
+    echo "FAIL: fetch was never called (state file not written)"
     return 1
   }
   # Fetch must have been called with the right branch
-  [[ "$stderr" == *"fetch_branch=release/1.0"* ]] || {
+  grep -q "fetch_branch=release/1.0" "$fetch_state_file" || {
     echo "FAIL: fetch_branch does not show release/1.0"
-    echo "stderr: $stderr"
+    cat "$fetch_state_file"
+    return 1
+  }
+  # Must not have fallen back to main
+  ! grep -q "ERROR=used_main" "$fetch_state_file" || {
+    echo "FAIL: valid release/1.0 branch was rejected and fell back to main"
+    cat "$fetch_state_file"
     return 1
   }
 }

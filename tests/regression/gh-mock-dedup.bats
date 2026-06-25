@@ -302,7 +302,7 @@ teardown() {
     --search "in:title review feedback from PR #55 for issue #20" \
     --json number,title,state \
     --limit 1 \
-    --jq '.[] | select(.state == "open") | .number'
+    --jq '.[] | select(.state == "OPEN") | .number'
 
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^[0-9]+$ ]]
@@ -313,7 +313,7 @@ teardown() {
     --search "in:title review feedback from PR #999 for issue #88" \
     --json number,title,state \
     --limit 1 \
-    --jq '.[] | select(.state == "open") | .number'
+    --jq '.[] | select(.state == "OPEN") | .number'
 
   [ "$status" -eq 0 ]
   # No match — output should be empty (jq selects nothing from empty array)
@@ -332,7 +332,7 @@ teardown() {
     --search "in:title review feedback from PR #11 for issue #5" \
     --json number,title,state \
     --limit 1 \
-    --jq '.[] | select(.state == "open") | .number'
+    --jq '.[] | select(.state == "OPEN") | .number'
 
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -535,21 +535,23 @@ teardown() {
 # 10. Fallthrough to fixture mode preserves subcommand
 #
 # Regression: when stateful mode is active and a subcommand is not handled
-# (e.g. `issue edit`, `pr merge`), the inner case shifts the subcommand off
+# (e.g. `issue lock`, `pr merge`), the inner case shifts the subcommand off
 # $@ before the match fails.  The fallthrough reconstruction at the end of the
 # stateful block must re-insert the subcommand so the fixture lookup sees
-# $1="edit" (not $1="") and builds the correct fixture name.
+# $1="lock" (not $1="") and builds the correct fixture name.
 #
 # Without the fix: fixture_name="issue--42"  → no file → exit 1
-# With the fix:    fixture_name="issue-edit-42" → file found → exit 0
+# With the fix:    fixture_name="issue-lock-42" → file found → exit 0
 # ---------------------------------------------------------------------------
 
 @test "stateful: unhandled issue subcommand falls through to fixture lookup with correct subcommand" {
-  # issue-edit-42.json is a real fixture file.  If the subcommand is dropped,
+  # issue-lock-42.json is a real fixture file.  If the subcommand is dropped,
   # mock_gh looks for issue--42.json (which doesn't exist) and returns exit 1.
+  # `lock` is chosen because the stateful issue case handles only
+  # list/create/view/edit — `lock` is still unhandled and falls through.
   export GH_MOCK_FIXTURE_DIR="${RITE_REPO_ROOT}/tests/fixtures/gh"
 
-  run mock_gh issue edit 42
+  run mock_gh issue lock 42
   [ "$status" -eq 0 ]
   [[ "$output" == *"42"* ]]
 }
@@ -566,16 +568,17 @@ teardown() {
 
 @test "stateful: unhandled issue subcommand fixture lookup produces correct fixture name" {
   # Verify that the fixture name derived from the fallthrough path is
-  # "issue-edit-42", not "issue--42" (subcommand dropped) or "issue-42" (no
+  # "issue-lock-42", not "issue--42" (subcommand dropped) or "issue-42" (no
   # subcommand slot).  We use a fixture-override to control what gets served.
+  # `lock` is still unhandled by the stateful issue case (list/create/view/edit).
   export GH_MOCK_FIXTURE_DIR="${RITE_REPO_ROOT}/tests/fixtures/gh"
 
-  # The fixture for issue-edit-42 must be found and its content returned.
+  # The fixture for issue-lock-42 must be found and its content returned.
   # If the subcommand were dropped, mock_gh would try issue--42.json (no match),
   # then issue-default.json (no match), and ultimately return exit 1.
-  run mock_gh issue edit 42
+  run mock_gh issue lock 42
   [ "$status" -eq 0 ]
-  # Content check: issue-edit-42.json has "number": 42
+  # Content check: issue-lock-42.json has "number": 42
   [[ "$output" == *'"number": 42'* ]] || [[ "$output" == *'"number":42'* ]]
 }
 

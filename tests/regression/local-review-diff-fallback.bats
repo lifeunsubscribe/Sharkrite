@@ -76,6 +76,14 @@ setup() {
   # Source local-review.sh in functions-only mode to load fetch_pr_diff()
   # without executing the script body (which needs config, providers, etc.).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_REPO_ROOT}/lib/core/local-review.sh"
+
+  # fetch_pr_diff delegates transient 5xx/429 retries to gh_safe (lib/utils/gh-retry.sh).
+  # The functions-only guard in local-review.sh returns before that file is sourced, so
+  # load it here explicitly — otherwise gh_safe is undefined and the gh() mocks below
+  # are never exercised (the call would be 'command not found' and fall straight through).
+  # RITE_GH_RETRY_MAX_SLEEP=0 keeps the retry path instant in tests.
+  export RITE_GH_RETRY_MAX_SLEEP=0
+  source "${RITE_REPO_ROOT}/lib/utils/gh-retry.sh"
 }
 
 teardown() {
@@ -162,7 +170,10 @@ teardown() {
       echo "$_gh_call_count" > "$_gh_count_file"
 
       if [ $_gh_call_count -eq 1 ]; then
-        echo "HTTP 503: Service Temporarily Unavailable" >&2
+        # No colon after the status code: gh_safe's retry regex deliberately
+        # excludes "NNN:" forms (avoids false positives like "config line 503:"),
+        # so the message must read "HTTP 503 ..." for the transient-retry path to fire.
+        echo "HTTP 503 Service Temporarily Unavailable" >&2
         return 1
       else
         # Return a valid diff
@@ -189,8 +200,11 @@ teardown() {
   # Should use GitHub diff (not fall back to git)
   [[ "$output" == *"diff --git a/fix.txt b/fix.txt"* ]]
 
-  # Should have logged the retry
-  [[ "$output" == *"GitHub diff API error (attempt 1/3)"* ]]
+  # Retry is delegated to gh_safe: it retried the transient 503 and gh was
+  # called twice (fail-then-succeed), so the GitHub diff is returned without
+  # the local fallback ever running.
+  _n=$(cat "$_gh_count_file")
+  [ "$_n" -eq 2 ]
 
   # Should NOT have fallen back to local git
   [[ "$output" != *"falling back to local git diff"* ]]
@@ -235,19 +249,22 @@ teardown() {
   rm -f "$_gh_count_file"
 }
 
-@test "actual local-review.sh contains retry and fallback logic" {
+@test "local-review.sh delegates retry to gh_safe and keeps local git fallback" {
   SCRIPT_PATH="$BATS_TEST_DIRNAME/../../lib/core/local-review.sh"
 
-  # Verify retry loop exists (inside fetch_pr_diff function)
-  RETRY_LOOP=$(grep -c "while \[ \$DIFF_ATTEMPT -lt \$MAX_DIFF_ATTEMPTS \]" "$SCRIPT_PATH" || true)
-  [ "$RETRY_LOOP" -ge 1 ]
+  # Retry of transient 5xx/429 is now delegated to gh_safe (lib/utils/gh-retry.sh);
+  # fetch_pr_diff no longer owns an in-function retry loop. Verify the delegation.
+  GH_SAFE_CALL=$(grep -c "gh_safe pr diff" "$SCRIPT_PATH" || true)
+  [ "$GH_SAFE_CALL" -ge 1 ]
 
   # Verify git diff fallback exists
   GIT_FALLBACK=$(grep -c "git diff.*origin/\$PR_BASE.*origin/\$PR_HEAD" "$SCRIPT_PATH" || true)
   [ "$GIT_FALLBACK" -ge 1 ]
 
-  # Verify transient error detection (5xx, 429)
-  TRANSIENT_CHECK=$(grep -c "500|502|503|504|429" "$SCRIPT_PATH" || true)
+  # Verify transient error detection (5xx, 429) lives in the gh_safe wrapper,
+  # which is where retry classification moved when fetch_pr_diff was refactored.
+  GH_RETRY_PATH="$BATS_TEST_DIRNAME/../../lib/utils/gh-retry.sh"
+  TRANSIENT_CHECK=$(grep -c "429\|5\[0-9\]\[0-9\]" "$GH_RETRY_PATH" || true)
   [ "$TRANSIENT_CHECK" -ge 1 ]
 
   # Verify fallback warning message

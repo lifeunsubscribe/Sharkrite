@@ -170,7 +170,7 @@ setup() {
     # No guard found — this file will launch a real Claude Code session when sourced
     failures=$((failures + 1))
     violation_files="${violation_files}\n  ${filepath}:${lineno}"
-  done < <(grep -rn 'source.*claude-workflow\.sh' "${RITE_REPO_ROOT}/tests" 2>/dev/null || true)
+  done < <(grep -rnE "(^|[[:space:];&|({'\"])(source|\.)[[:space:]]+[\"'\$]?[^#]*claude-workflow\.sh" "${RITE_REPO_ROOT}/tests" 2>/dev/null || true)
 
   if [ "$failures" -gt 0 ]; then
     echo "ERROR: The following test files source claude-workflow.sh without RITE_SOURCE_FUNCTIONS_ONLY=1:"
