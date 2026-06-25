@@ -499,8 +499,8 @@ EOF
     local body_file
     body_file=$(mktemp)
     printf '%s' "$issue_body" > "$body_file"
-    ensure_labels_exist "tech-debt,automated"
-    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated"; then
+    ensure_labels_exist "tech-debt,automated" >/dev/null
+    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated" >/dev/null; then
       created=$((created + 1))
       echo "Created tech-debt issue: ${issue_title}" >&2
     else

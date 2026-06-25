@@ -418,9 +418,12 @@ _stale_classify_after_push_rejection() {
           _prompt_opts="[$([ "$classification" = "RELATED" ] && echo "a/b/c/d" || echo "c/d")]"
           printf "Choose %s: " "$_prompt_opts" >&2
           local _choice
-          read -n 1 -r _choice </dev/tty
-          # Drain the trailing newline left in the input buffer by read -n 1
-          read -r -t 0.1 _drain </dev/tty 2>/dev/null || true
+          # Read the choice from stdin — consistent with every other supervised
+          # prompt in this file (the `read -p ... -n 1 -r` blocks below). Reading
+          # from /dev/tty is incorrect here: it diverges from the rest of the
+          # codebase and fails ("Device not configured") in non-interactive
+          # contexts (bats harness, piped stdin) where stdin is the input source.
+          read -n 1 -r _choice
           echo >&2
 
           case "$_choice" in

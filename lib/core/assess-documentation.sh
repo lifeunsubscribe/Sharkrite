@@ -155,7 +155,7 @@ _diff_filtered_file=$(mktemp 2>/dev/null) || _diff_filtered_file="$_diff_raw_fil
 if [ "$_diff_filtered_file" != "$_diff_raw_file" ]; then
   awk '
     /^diff --git a\/(\.rite\/docs|docs)\// { skip=1; next }
-    /^diff --git a\/[^/]+\.md / { skip=1; next }
+    /^diff --git a\/[^\/]+\.md / { skip=1; next }
     /^diff --git / { skip=0 }
     !skip { print }
   ' "$_diff_raw_file" > "$_diff_filtered_file"
