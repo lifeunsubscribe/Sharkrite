@@ -733,8 +733,22 @@ check_dev_session_output() {
       has_real_work=true   # One real commit (not init)
     fi
   else
-    # Multiple commits: even if one is init, another must be real work
-    has_real_work=true
+    # Multiple commits. With an origin/main baseline, commits_ahead already
+    # excludes the base, so 2+ means real work beyond init. WITHOUT a baseline,
+    # commits_ahead counts the repo's base commit too, so "base + chore-init"
+    # is NOT real work — detect that by counting commits that aren't the
+    # init placeholder (base alone leaves 1; real work leaves >1).
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      has_real_work=true   # 2+ commits ahead of origin/main => real work
+    else
+      local non_init_count
+      non_init_count=$(git log --oneline HEAD 2>/dev/null | grep -vc "chore: initialize work" || true)
+      if [ "${non_init_count:-0}" -gt 1 ]; then
+        has_real_work=true   # more than just the base commit beyond init
+      else
+        has_real_work=false  # only base + init placeholder => no real work
+      fi
+    fi
   fi
 
   # If real work exists, we're good - no action needed

@@ -199,8 +199,8 @@ init_scratchpad() {
   # while we were waiting.
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
     # Copy from template if available, otherwise create minimal structure
-    if [ -f "$RITE_INSTALL_DIR/templates/scratchpad.md" ]; then
-      cp "$RITE_INSTALL_DIR/templates/scratchpad.md" "$SCRATCHPAD_FILE"
+    if [ -f "${RITE_INSTALL_DIR:-}/templates/scratchpad.md" ]; then
+      cp "${RITE_INSTALL_DIR:-}/templates/scratchpad.md" "$SCRATCHPAD_FILE"
     else
       # Minimal fallback if template not found
       cat > "$SCRATCHPAD_FILE" <<'EOF'
