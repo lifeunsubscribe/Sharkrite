@@ -32,6 +32,17 @@ jobs:
           git clone --depth 1 --branch v1.13.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
           sudo /tmp/bats-core/install.sh /usr/local
 
+      - name: Set up ~/.rite (replicate dev install env)
+        if: success() || failure()
+        run: |
+          # Tests source libs via RITE_LIB_DIR=~/.rite/lib (the dev install path).
+          # CI has no install step, so replicate the documented dev symlink
+          # (ln -s $(pwd)/lib ~/.rite/lib) + templates so RITE_INSTALL_DIR resolves.
+          # Validated locally: this clears the lib-sourcing failures (e.g. pr-detection).
+          mkdir -p "$HOME/.rite"
+          ln -sf "$GITHUB_WORKSPACE/lib" "$HOME/.rite/lib"
+          ln -sf "$GITHUB_WORKSPACE/templates" "$HOME/.rite/templates"
+
       - name: Run all tests
         if: success() || failure()
         run: make test
