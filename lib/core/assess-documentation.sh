@@ -1144,8 +1144,10 @@ for _marker in "$_MARKER_DIR"/*; do
   [ -f "$_marker" ] || continue
   _name="$(basename "$_marker")"
   # Skip if already in array
+  # Empty-array safe idiom (bash 3.2 / set -u): "${arr[@]+"${arr[@]}"}" expands
+  # to nothing when the array is empty, avoiding "unbound variable" under set -u.
   _found=false
-  for _existing in "${INTERNAL_UPDATED[@]}"; do
+  for _existing in "${INTERNAL_UPDATED[@]+"${INTERNAL_UPDATED[@]}"}"; do
     [ "$_existing" = "$_name" ] && { _found=true; break; }
   done
   [ "$_found" = false ] && INTERNAL_UPDATED+=("$_name")
@@ -1256,7 +1258,9 @@ FIX_EOF
 # Only run cross-doc validation when a reconciliation actually happened
 # (indicated by "(reconciled)" in INTERNAL_UPDATED)
 RECONCILED=false
-for item in "${INTERNAL_UPDATED[@]}"; do
+# Empty-array safe idiom (bash 3.2 / set -u): "${arr[@]+"${arr[@]}"}" expands
+# to nothing when the array is empty, avoiding "unbound variable" under set -u.
+for item in "${INTERNAL_UPDATED[@]+"${INTERNAL_UPDATED[@]}"}"; do
   if echo "$item" | grep -q "reconciled"; then
     RECONCILED=true
     break
@@ -1282,7 +1286,9 @@ for _marker in "$_MARKER_DIR"/*; do
   [ -f "$_marker" ] || continue
   _name="$(basename "$_marker")"
   _found=false
-  for _existing in "${INTERNAL_UPDATED[@]}"; do
+  # Empty-array safe idiom (bash 3.2 / set -u): "${arr[@]+"${arr[@]}"}" expands
+  # to nothing when the array is empty, avoiding "unbound variable" under set -u.
+  for _existing in "${INTERNAL_UPDATED[@]+"${INTERNAL_UPDATED[@]}"}"; do
     [ "$_existing" = "$_name" ] && { _found=true; break; }
   done
   [ "$_found" = false ] && INTERNAL_UPDATED+=("$_name")
