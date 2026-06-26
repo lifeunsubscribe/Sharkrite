@@ -388,6 +388,8 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Enforcement:** `tests/regression/gate-block-on-any.bats` — a failing test in the targeted selection fails the gate (exit 1, reported in `tests[]`, not suppressed) + the `_tap_failure_name` canonicalizer. The selection logic (FORCE_FULL opt-in, targeted-by-changed-paths) is pinned separately by `gate-force-full-optin.bats` and `test-gate-targeted-selection.bats`.
 
+**Merge boundary (#718).** Block-on-any now extends to the **merge boundary** as well as the fix loop. Gate findings are injected into the assessment as `### [GATE] … - ACTIONABLE_NOW` items (structured header prefix). At the 3/3 retry cap, `assess-and-resolve.sh` distinguishes `[GATE]`-tagged items (objective test/lint failures) from LLM-severity HIGH review findings: gate-origin items that survive all retries are treated as non-deferrable — they block the merge (`exit 1`, same path as CRITICAL) rather than being filed as tech-debt and merged. Non-gate HIGH review findings continue to follow the existing retry-cap defer+tech-debt path. Live regression: issue #649 — 2 gate failures, loop hit 3/3, HIGH `[GATE]` deferred to #714, PR #712 merged red.
+
 ### Full-suite is OPT-IN; the probe is capped (CRITICAL — the "full suite every time" fix)
 
 **2026-06-24.** A 10-agent audit traced the recurring "the full/near-full bats suite runs every time" complaint to **two independent escalations**, both now bounded. The recurrence pattern was always the same: a fix closed one path, a *different* path stayed open, so it "regressed."

@@ -1224,23 +1224,40 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
           CREATE_CRITICAL_FOLLOWUP=true
           FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
         else
-          # Final-retry shoe-horn fix (defect #5): only HIGH findings are worth
-          # filing at retry limit. MEDIUM/LOW findings that the fix loop couldn't
-          # address in 3 cycles are nice-to-haves — filing them clutters the backlog
-          # without adding triage value (they were already low-priority and couldn't
-          # be auto-fixed). Drop them with a log message.
-          if [ "$HIGH_NOW_COUNT" -gt 0 ]; then
-            print_success "No CRITICAL items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
-            print_status "Creating tech-debt issue for HIGH items (dropping MEDIUM/LOW)..."
+          # Gate-origin findings are non-deferrable: a known-red test must never
+          # reach main, even at the retry cap.  Distinguish [GATE] items (objective
+          # test/lint failures) from LLM-severity HIGH review findings so that only
+          # the former block the merge.  Non-gate HIGH review findings continue to
+          # follow the defer+tech-debt path below.
+          # "### [GATE]" is the structured header prefix injected at lines 1004/1023.
+          GATE_NOW_COUNT_REMAINING=$(echo "$ASSESSMENT_RESULT" | grep -c "^### \[GATE\].*- ACTIONABLE_NOW" || true)
+
+          if [ "${GATE_NOW_COUNT_REMAINING:-0}" -gt 0 ]; then
+            # [GATE] items are objective failures — block the merge, same as CRITICAL.
+            print_critical "$GATE_NOW_COUNT_REMAINING [GATE] item(s) remain at retry limit (objective test/lint failure)"
+            print_error "Cannot merge — gate-origin failures are non-deferrable (known-red test must not reach main)"
+            print_info "Will create follow-up issue and exit with code 1"
+            CREATE_CRITICAL_FOLLOWUP=true
+            FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
           else
-            print_success "No CRITICAL/HIGH items remain at retry limit — all remaining are MEDIUM/LOW"
-            print_info "Dropping MEDIUM/LOW findings (not worth follow-up backlog space at retry limit)"
+            # Final-retry shoe-horn fix (defect #5): only HIGH findings are worth
+            # filing at retry limit. MEDIUM/LOW findings that the fix loop couldn't
+            # address in 3 cycles are nice-to-haves — filing them clutters the backlog
+            # without adding triage value (they were already low-priority and couldn't
+            # be auto-fixed). Drop them with a log message.
+            if [ "$HIGH_NOW_COUNT" -gt 0 ]; then
+              print_success "No CRITICAL/[GATE] items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
+              print_status "Creating tech-debt issue for HIGH items (dropping MEDIUM/LOW)..."
+            else
+              print_success "No CRITICAL/HIGH/[GATE] items remain at retry limit — all remaining are MEDIUM/LOW"
+              print_info "Dropping MEDIUM/LOW findings (not worth follow-up backlog space at retry limit)"
+            fi
+            # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit.
+            # MEDIUM/LOW will be filtered out by the extraction step (DROP_RETRY_MEDIUM_LOW=true).
+            CREATE_SECURITY_DEBT=true
+            FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
+            DROP_RETRY_MEDIUM_LOW=true
           fi
-          # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit.
-          # MEDIUM/LOW will be filtered out by the extraction step (DROP_RETRY_MEDIUM_LOW=true).
-          CREATE_SECURITY_DEBT=true
-          FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
-          DROP_RETRY_MEDIUM_LOW=true
         fi
 
         # Also handle ACTIONABLE_LATER items if they exist
