@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/issue-lock.sh, lib/utils/scratchpad-lock.sh
+# sharkrite-test-covers: lib/utils/issue-lock.sh, lib/utils/scratchpad-lock.sh, lib/utils/session-tracker.sh, lib/utils/lock.sh
 # Regression test for: Use consistent lock paths across all processes
 # Issue #148: Lock strategy (flock vs mkdir) was re-detected independently at
 # acquire and release time via `command -v flock`.  In mixed-capability
@@ -235,29 +235,27 @@ teardown() {
 # session-tracker.sh: strategy is persisted across acquire/release
 # ---------------------------------------------------------------------------
 
-@test "session-lock: _SESSION_LOCK_STRATEGY is cleared after release" {
-  # After release, _SESSION_LOCK_STRATEGY must be empty so a subsequent acquire
-  # picks the fresh strategy for the current environment.
+@test "session-lock: lock file is removed after release (lock.sh primitive)" {
+  # session-tracker now uses the shared lock.sh primitive (#706) — there is no
+  # per-strategy state to clear (the flock/mkdir mismatch #148 guarded against
+  # cannot occur with a single primitive). The post-release invariant is simply
+  # that the lock file is gone, so a subsequent acquire can re-link it.
   run bash -c "
     export SESSION_STATE_FILE='${RITE_TEST_TMPDIR}/test-session.json'
     source '${RITE_LIB_DIR}/utils/session-tracker.sh'
 
     _acquire_session_lock
-
-    # Strategy must be set after acquire
-    [ -n \"\${_SESSION_LOCK_STRATEGY:-}\" ] || { echo 'FAIL: strategy unset after acquire'; exit 1; }
+    [ -e \"\${SESSION_STATE_FILE}.lock\" ] || { echo 'FAIL: lock file missing after acquire'; exit 1; }
 
     _release_session_lock
-
-    # Strategy must be cleared after release
-    if [ -n \"\${_SESSION_LOCK_STRATEGY:-}\" ]; then
-      echo \"FAIL: strategy still set after release: '\${_SESSION_LOCK_STRATEGY}'\"
+    if [ -e \"\${SESSION_STATE_FILE}.lock\" ]; then
+      echo 'FAIL: lock file still present after release'
       exit 1
     fi
-    echo 'PASS: strategy cleared after release'
+    echo 'PASS: lock file removed after release'
   "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS: strategy cleared after release"* ]]
+  [[ "$output" == *"PASS: lock file removed after release"* ]]
 }
 
 @test "session-lock: _SESSION_LOCK_HELD is false after release" {
