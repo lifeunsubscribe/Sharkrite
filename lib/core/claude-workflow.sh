@@ -359,7 +359,7 @@ _RITE_PIP_TIMEOUT_WARNED=false
 _run_dev_test_gate() {
   # Orchestrated runs (rite <issue> via workflow-runner, RITE_ORCHESTRATED=true)
   # verify POST-COMMIT through the structured gate (run_test_gate, Phase 2/3):
-  # targeted selection, baseline-diff (new-failures-only), a bounded wait, and a
+  # targeted selection, block-on-any, a bounded wait, and a
   # single fix loop. Running the FULL suite here too is redundant and actively
   # harmful: it is untargeted (parallel barrier-timeout load flake), UNBOUNDED
   # (a test that blocks on stdin hangs the whole run — live: issue 649's dev

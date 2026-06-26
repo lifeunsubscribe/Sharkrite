@@ -6,8 +6,8 @@
 # `awk '...' "${ARR[@]}"`; when the file-array is EMPTY (zero file args), awk
 # falls back to reading STDIN. The gate runs the linter (directly or via a bats
 # test like fix-review-push-refspec.bats) with stdin inherited from the tty, so
-# awk blocked on the terminal forever and wedged the whole run (78 min, and
-# again inside the baseline-diff probe). Rule 18 already guarded its awk with
+# awk blocked on the terminal forever and wedged the whole run (78 min).
+# Rule 18 already guarded its awk with
 # `[ "${#SHELL_FILES[@]}" -gt 0 ]`; Rules 7/8/9 were missed and now redirect
 # `</dev/null` so an empty array can never reach the tty.
 

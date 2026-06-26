@@ -432,25 +432,8 @@ _select_tests_by_changed_paths() {
 }
 
 # ---------------------------------------------------------------------------
-# Baseline-diff: new failures vs pre-existing red baseline
+# TAP failure-name helpers — extract canonical test names for the gate digest.
 # ---------------------------------------------------------------------------
-# Classifies each bats failure as NEW (introduced by this change) or
-# PRE-EXISTING (already red on the diff base). Only NEW failures block the gate
-# and reach the fix loop; pre-existing reds are reported via [diag] but
-# suppressed from tests[], so the fix loop never churns on breakage this change
-# did not cause. This is what makes the gate block-worthy: without it, ~30
-# accumulated red tests on main made every failure look the same, so failing
-# tests merged (the "gate-green gap").
-#
-# Cost model:
-#   - GREEN runs pay ZERO (no failures → no baseline work at all).
-#   - A FAILING run re-runs only the SELECTED files that actually contain a
-#     failing test, at the diff base, in a throwaway detached worktree.
-#   - Results are cached per base SHA, so fix-loop retries and later issues
-#     against the same origin/main reuse them (no repeat probe).
-# Fail-safe: any error (jq/git missing, unresolvable base, worktree failure,
-# timeout) falls back to flagging ALL failures — never silently suppresses.
-# Operator valve: RITE_GATE_BASELINE_DIFF=false disables it (flag all, as before).
 
 # _tap_failure_name — canonical test name from a TAP "not ok N <name>" line.
 # Strips the prefix, ANSI sequences, and trailing whitespace/CR. The branch
@@ -473,206 +456,6 @@ _extract_tap_failure_names() {
       "not ok "*) _tap_failure_name "$_line" ;;
     esac
   done < "$_tap_file"
-}
-
-# _json_array_from_lines — newline list (stdin) → JSON string array; drops blanks.
-_json_array_from_lines() {
-  jq -R . | jq -s 'map(select(length>0))' || echo "[]"
-}
-
-# _compute_baseline_red_names — run the given bats files (relpaths, newline) at
-# <base_sha> in a throwaway detached worktree; stdout = canonical names of tests
-# that are RED at baseline. Returns nonzero on setup failure (caller falls back).
-# Overridable in tests (redefine before calling _classify_test_failures).
-_compute_baseline_red_names() {
-  local _project_root="$1" _base_sha="$2" _files="$3"
-  [ -z "$_files" ] && return 0
-
-  # Probe only files that EXIST at the base commit. A file new on the branch has
-  # no baseline, so its failures are inherently new — the caller's membership
-  # test classifies a name absent from baseline reds as new.
-  local _existing=() _f
-  while IFS= read -r _f; do
-    [ -z "$_f" ] && continue
-    if (cd "$_project_root" && git cat-file -e "${_base_sha}:${_f}" 2>/dev/null); then
-      _existing+=("$_f")
-    fi
-  done <<< "$_files"
-  [ "${#_existing[@]}" -eq 0 ] && return 0
-
-  local _wt
-  _wt=$(mktemp -d "/tmp/rite_gate_baseline_${PR_NUMBER:-0}_$$_XXXXXX") || return 1
-  rm -rf "$_wt"   # `git worktree add` requires a non-existent path
-  if ! (cd "$_project_root" && git worktree add --detach --quiet "$_wt" "$_base_sha" 2>/dev/null); then
-    rm -rf "$_wt" 2>/dev/null || true
-    return 1
-  fi
-
-  # Time bound when timeout/gtimeout exists (absent on stock macOS — the caller's
-  # probed-file cap is the primary bound, and the outer gate wait
-  # RITE_GATE_WAIT_TIMEOUT is the final backstop). On timeout we get partial TAP
-  # → fewer suppressions (fail-safe), never a hang.
-  local _to_cmd=()
-  if command -v timeout >/dev/null 2>&1; then
-    _to_cmd=(timeout "${RITE_GATE_BASELINE_TIMEOUT:-600}")
-  elif command -v gtimeout >/dev/null 2>&1; then
-    _to_cmd=(gtimeout "${RITE_GATE_BASELINE_TIMEOUT:-600}")
-  fi
-
-  # Parallelize to match the branch run (a serial probe of many files was a
-  # near-full second suite). </dev/null so a probed test that reads stdin
-  # (e.g. the lint suite's awk) can never deadlock the probe on an inherited tty.
-  local _probe_jobs _probe_jobs_args=()
-  _probe_jobs=$(_compute_bats_jobs)
-  [ "$_probe_jobs" -gt 1 ] && _probe_jobs_args=(--jobs "$_probe_jobs")
-
-  local _tap
-  _tap=$( (cd "$_wt" && "${_to_cmd[@]+"${_to_cmd[@]}"}" bats "${_probe_jobs_args[@]+"${_probe_jobs_args[@]}"}" --formatter tap "${_existing[@]}" </dev/null 2>/dev/null) || true )
-
-  (cd "$_project_root" && git worktree remove --force "$_wt" 2>/dev/null) || rm -rf "$_wt" 2>/dev/null || true
-  (cd "$_project_root" && git worktree prune 2>/dev/null) || true
-
-  local _l
-  while IFS= read -r _l; do
-    case "$_l" in
-      "not ok "*) _tap_failure_name "$_l" ;;
-    esac
-  done <<< "$_tap"
-  return 0
-}
-
-# _classify_test_failures — split branch failures into new vs pre-existing.
-# Args: $1=branch_tap_file $2=selected_files(newline relpaths)
-#       $3=project_root $4=diff_base $5=out_file (NEW failing names written here)
-# MUST be called directly (NOT in $()) — it sets the _GATE_* globals below as
-# side effects, which a command-substitution subshell would discard. NEW names
-# are returned via the out_file, not stdout, precisely so the caller can read
-# them without a subshell.
-# Sets (caller declares as local so dynamic scope captures them):
-#   _GATE_BASELINE_MODE _GATE_BASE_SHA _GATE_TOTAL_FAIL _GATE_NEW_FAIL _GATE_PREEXISTING_FAIL
-_classify_test_failures() {
-  local _branch_tap="$1" _selected="$2" _project_root="$3" _diff_base="$4" _out_file="$5"
-  _GATE_BASELINE_MODE="none"; _GATE_BASE_SHA=""
-  _GATE_TOTAL_FAIL=0; _GATE_NEW_FAIL=0; _GATE_PREEXISTING_FAIL=0
-  : > "$_out_file"
-
-  local _branch_fails
-  _branch_fails=$(_extract_tap_failure_names "$_branch_tap")
-  _branch_fails=$(printf '%s\n' "$_branch_fails" | sed '/^$/d' | sort -u || true)
-  [ -z "$_branch_fails" ] && return 0
-  _GATE_TOTAL_FAIL=$(printf '%s\n' "$_branch_fails" | grep -c . || true)
-
-  # Operator valve: disabled → flag everything (pre-baseline behavior).
-  if [ "${RITE_GATE_BASELINE_DIFF:-true}" != "true" ]; then
-    _GATE_BASELINE_MODE="disabled"; _GATE_NEW_FAIL="$_GATE_TOTAL_FAIL"
-    printf '%s\n' "$_branch_fails" > "$_out_file"; return 0
-  fi
-  # Tooling missing → cannot diff → fail-safe flag-all.
-  if ! command -v jq >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
-    _GATE_BASELINE_MODE="fallback"; _GATE_NEW_FAIL="$_GATE_TOTAL_FAIL"
-    printf '%s\n' "$_branch_fails" > "$_out_file"; return 0
-  fi
-
-  # --verify + ^{commit}: `git rev-parse <bad-ref>` otherwise echoes the literal
-  # arg to stdout and exits non-zero, which a non-empty check would wrongly accept.
-  _GATE_BASE_SHA=$(cd "$_project_root" && git rev-parse --verify "${_diff_base}^{commit}" 2>/dev/null || true)
-  if [ -z "$_GATE_BASE_SHA" ]; then
-    _GATE_BASELINE_MODE="fallback"; _GATE_NEW_FAIL="$_GATE_TOTAL_FAIL"
-    printf '%s\n' "$_branch_fails" > "$_out_file"; return 0
-  fi
-
-  # Attribute failures to files in ONE grep pass: which selected files contain a
-  # failing test name. Only those need a baseline probe. Over-attribution (a name
-  # also appearing in a comment) only over-probes — it never affects correctness.
-  local _sel_arr=() _sf
-  while IFS= read -r _sf; do
-    [ -n "$_sf" ] && _sel_arr+=("$_project_root/$_sf")
-  done <<< "$_selected"
-  local _files_with_fails="" _names_tmp _abs
-  if [ "${#_sel_arr[@]}" -gt 0 ]; then
-    _names_tmp=$(mktemp "/tmp/rite_gate_names_${PR_NUMBER:-0}_$$.txt")
-    printf '%s\n' "$_branch_fails" > "$_names_tmp"
-    while IFS= read -r _abs; do
-      [ -z "$_abs" ] && continue
-      _files_with_fails+="${_abs#"$_project_root/"}"$'\n'
-    done < <(grep -lF -f "$_names_tmp" -- "${_sel_arr[@]}" 2>/dev/null || true)
-    rm -f "$_names_tmp"
-  fi
-  _files_with_fails=$(printf '%s' "$_files_with_fails" | sed '/^$/d' | sort -u || true)
-
-  # Load per-base-SHA cache.
-  local _cache_dir="${RITE_STATE_DIR:-$_project_root/.rite/state}"
-  local _cache_file="$_cache_dir/gate-baseline-reds-${_GATE_BASE_SHA}.json"
-  local _cached_probed="" _cached_reds=""
-  if [ -f "$_cache_file" ]; then
-    _cached_probed=$(jq -r '.probed_files[]?' "$_cache_file" 2>/dev/null || true)
-    _cached_reds=$(jq -r '.red_names[]?' "$_cache_file" 2>/dev/null || true)
-  fi
-
-  # Files still needing a probe (not already cached for this base SHA).
-  local _to_probe="" _f
-  while IFS= read -r _f; do
-    [ -z "$_f" ] && continue
-    if ! printf '%s\n' "$_cached_probed" | grep -Fxq -- "$_f"; then
-      _to_probe+="$_f"$'\n'
-    fi
-  done <<< "$_files_with_fails"
-  _to_probe=$(printf '%s' "$_to_probe" | sed '/^$/d' || true)
-
-  # Probe-size cap (the bound that prevents a near-full second suite): the cost
-  # model assumes the probe touches only the few files that actually failed. If a
-  # change reds out many files — or many pre-existing reds land in one selection —
-  # re-running a large set at origin/main IS the near-full run we must avoid.
-  # Above the cap, skip the probe and fail-safe to flag-all (over-report new
-  # failures rather than balloon/hang). Once main is green this never trips.
-  local _probe_count
-  _probe_count=$(printf '%s\n' "$_to_probe" | grep -c . || true)
-  if [ "$_probe_count" -gt "${RITE_GATE_BASELINE_MAX_PROBE_FILES:-12}" ]; then
-    _GATE_BASELINE_MODE="capped"; _GATE_NEW_FAIL="$_GATE_TOTAL_FAIL"
-    printf '%s\n' "$_branch_fails" > "$_out_file"
-    return 0
-  fi
-
-  local _newly_reds=""
-  if [ -n "$_to_probe" ]; then
-    _newly_reds=$(_compute_baseline_red_names "$_project_root" "$_GATE_BASE_SHA" "$_to_probe" || true)
-    _newly_reds=$(printf '%s\n' "$_newly_reds" | sed '/^$/d' | sort -u || true)
-    _GATE_BASELINE_MODE="computed"
-    # Persist merged cache atomically (rename on same fs). Concurrent batch
-    # writers tolerate this: a corrupt/missing read just triggers a recompute.
-    mkdir -p "$_cache_dir" 2>/dev/null || true
-    local _merged_probed _merged_reds _cache_tmp
-    _merged_probed=$(printf '%s\n%s\n' "$_cached_probed" "$_to_probe" | sed '/^$/d' | sort -u | _json_array_from_lines || echo "[]")
-    _merged_reds=$(printf '%s\n%s\n' "$_cached_reds" "$_newly_reds" | sed '/^$/d' | sort -u | _json_array_from_lines || echo "[]")
-    _cache_tmp=$(mktemp "${_cache_dir}/.gate-baseline.XXXXXX" 2>/dev/null || true)
-    if [ -n "$_cache_tmp" ]; then
-      if jq -n --argjson p "$_merged_probed" --argjson r "$_merged_reds" '{probed_files:$p, red_names:$r}' > "$_cache_tmp" 2>/dev/null; then
-        mv -f "$_cache_tmp" "$_cache_file" 2>/dev/null || rm -f "$_cache_tmp"
-      else
-        rm -f "$_cache_tmp"
-      fi
-    fi
-  else
-    _GATE_BASELINE_MODE="cached"
-  fi
-
-  # Full baseline-red name set = cached ∪ newly probed.
-  local _all_reds
-  _all_reds=$(printf '%s\n%s\n' "$_cached_reds" "$_newly_reds" | sed '/^$/d' | sort -u || true)
-
-  # NEW = branch failures NOT red at baseline.
-  local _new_names="" _name
-  while IFS= read -r _name; do
-    [ -z "$_name" ] && continue
-    if printf '%s\n' "$_all_reds" | grep -Fxq -- "$_name"; then
-      _GATE_PREEXISTING_FAIL=$(( _GATE_PREEXISTING_FAIL + 1 ))
-    else
-      _new_names+="$_name"$'\n'
-      _GATE_NEW_FAIL=$(( _GATE_NEW_FAIL + 1 ))
-    fi
-  done <<< "$_branch_fails"
-  printf '%s' "$_new_names" | sed '/^$/d' > "$_out_file" || true
-  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -748,14 +531,6 @@ run_test_gate() {
   local _tests_exit=0
   local _lint_count=0
   local _tests_count=0
-
-  # Baseline-diff state (populated by _classify_test_failures on a failing
-  # targeted run). _baseline_applied gates the new-vs-pre-existing filtering in
-  # the JSON builder and the overall-exit decision below.
-  local _baseline_applied=false
-  local _baseline_new_names=""
-  local _GATE_BASELINE_MODE="" _GATE_BASE_SHA=""
-  local _GATE_TOTAL_FAIL=0 _GATE_NEW_FAIL=0 _GATE_PREEXISTING_FAIL=0
 
   # Raw gate output routing depends on whether this gate runs CONCURRENTLY:
   #
@@ -1000,28 +775,6 @@ run_test_gate() {
 
     rm -f "$_sc_exit_file" "$_lint_exit_file" "$_bats_exit_file"
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
-
-    # --- Baseline-diff: classify failures as new vs pre-existing (gate-green gap) ---
-    # Only the targeted path with a real selection has a diff base to compare
-    # against; FORCE_FULL/no-diff (new branch, post-merge HEAD check) cannot be
-    # baselined, so they keep the all-failures-block behavior.
-    if [ "$_tests_exit" -ne 0 ] && [ "$_selection" != "FORCE_FULL" ] && [ -n "$_selection" ]; then
-      # Direct call (NOT in $()) so _classify's _GATE_* globals survive; NEW
-      # names come back via the out-file, not stdout.
-      local _new_names_file
-      _new_names_file=$(mktemp "/tmp/rite_gate_newnames_${PR_NUMBER:-0}_$$.txt")
-      _classify_test_failures "$_tests_raw_file" "$_selection" "$project_root" "$_diff_base" "$_new_names_file"
-      _baseline_new_names=$(cat "$_new_names_file" 2>/dev/null || true)
-      rm -f "$_new_names_file"
-      _baseline_applied=true
-      _diag "TEST_GATE_BASELINE base=${_GATE_BASE_SHA:-?} mode=${_GATE_BASELINE_MODE:-?} total_fail=${_GATE_TOTAL_FAIL:-0} new=${_GATE_NEW_FAIL:-0} pre_existing=${_GATE_PREEXISTING_FAIL:-0} pr=${PR_NUMBER:-?}"
-      if [ "${_GATE_PREEXISTING_FAIL:-0}" -gt 0 ]; then
-        echo "[test-gate] Baseline-diff: ${_GATE_TOTAL_FAIL} failing test(s) → ${_GATE_NEW_FAIL} new (this change), ${_GATE_PREEXISTING_FAIL} pre-existing on ${_diff_base} (suppressed; mode=${_GATE_BASELINE_MODE})"
-      fi
-      # test_count tracks the BLOCKING count so outcome=passed ⟺ test_count=0.
-      # The total/split is preserved in the TEST_GATE_BASELINE diag above.
-      _tests_count="${_GATE_NEW_FAIL:-0}"
-    fi
   else
     # Non-Sharkrite: best-effort detection (npm test / make test / pytest)
     # For non-Sharkrite repos the gate runs whatever make test does (unchanged behavior)
@@ -1071,21 +824,7 @@ run_test_gate() {
 
   local _tests_items="["
   local _first_test=true
-  local _rawname=""
   while IFS= read -r _raw; do
-    # Baseline-diff: when applied, keep only NEW failures (this change's). A
-    # "not ok" whose canonical name is not in _baseline_new_names is a
-    # pre-existing red on the diff base — suppress it from tests[].
-    if [ "$_baseline_applied" = "true" ]; then
-      case "$_raw" in
-        "not ok "*)
-          _rawname=$(_tap_failure_name "$_raw")
-          if ! printf '%s\n' "$_baseline_new_names" | grep -Fxq -- "$_rawname"; then
-            continue
-          fi
-          ;;
-      esac
-    fi
     _item=$(_parse_bats_failure_line "$_raw" 2>/dev/null || true)
     if [ -n "$_item" ]; then
       [ "$_first_test" = "true" ] || _tests_items+=","
@@ -1096,17 +835,12 @@ run_test_gate() {
   _tests_items+="]"
 
   # --- Capture terminal-digest inputs before the raw TAP file is removed ---
-  # _bats_pass/_bats_fail_total come from the TAP report; _summary_names are the
-  # blocking (new) failures to name on the terminal. With baseline-diff applied
-  # the blocking set is _baseline_new_names; otherwise (FORCE_FULL / no diff)
-  # every failure blocks, so name them all.
+  # Block-on-any: every failure blocks, so name them all.
   local _bats_pass=0 _bats_fail_total=0 _summary_names=""
   if [ "$_is_sharkrite" = "true" ]; then
     _bats_pass=$(grep -c "^ok " "$_tests_raw_file" 2>/dev/null || true)
     _bats_fail_total=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
-    if [ "$_baseline_applied" = "true" ]; then
-      _summary_names="$_baseline_new_names"
-    elif [ "$_bats_fail_total" -gt 0 ]; then
+    if [ "$_bats_fail_total" -gt 0 ]; then
       _summary_names=$(_extract_tap_failure_names "$_tests_raw_file")
     fi
   fi
@@ -1115,17 +849,13 @@ run_test_gate() {
   trap - EXIT
 
   # --- Determine overall exit code and outcome ---
-  # When baseline-diff applied, tests block only on NEW failures (this change's);
-  # pre-existing reds on the diff base do not fail the gate. Otherwise (non-
-  # sharkrite, FORCE_FULL, no diff) any test failure blocks, as before.
+  # Block-on-any: the targeted suite is green on main, so ANY failure in the
+  # selection is this change's to fix. (FORCE_FULL / no-diff always blocked on
+  # any failure; the targeted path now matches — no new-vs-pre-existing split.)
   local _overall_exit=0
   local _outcome="passed"
   local _tests_blocking=0
-  if [ "$_baseline_applied" = "true" ]; then
-    [ "${_GATE_NEW_FAIL:-0}" -gt 0 ] && _tests_blocking=1
-  else
-    [ "$_tests_exit" -ne 0 ] && _tests_blocking=1
-  fi
+  [ "$_tests_exit" -ne 0 ] && _tests_blocking=1
   if [ "$_lint_exit" -ne 0 ] || [ "$_tests_blocking" -ne 0 ]; then
     _overall_exit=1
     _outcome="failed"
@@ -1146,15 +876,11 @@ run_test_gate() {
       echo "[test-gate] lint: ${_lint_count} finding(s) blocking — full output in run log"
     fi
     if [ "$_bats_fail_total" -gt 0 ]; then
-      if [ "$_baseline_applied" = "true" ] && [ "${_GATE_PREEXISTING_FAIL:-0}" -gt 0 ]; then
-        echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_fail_total} failed → ${_GATE_NEW_FAIL:-0} new (blocking), ${_GATE_PREEXISTING_FAIL} pre-existing (suppressed)"
-      else
-        echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_fail_total} failed (blocking)"
-      fi
+      echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_fail_total} failed (blocking)"
       if [ -n "$_summary_names" ]; then
         local _ncount
         _ncount=$(printf '%s\n' "$_summary_names" | grep -c '.' || true)
-        echo "⚠️  ${_ncount} new test failure(s) blocking the gate:"
+        echo "⚠️  ${_ncount} test failure(s) blocking the gate:"
         printf '%s\n' "$_summary_names" | while IFS= read -r _n; do
           [ -n "$_n" ] && echo "   • ${_n}"
         done

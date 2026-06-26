@@ -162,21 +162,19 @@ verify_post_merge() {
     rm -f "${_pmv_gate_file:-}"
 
     if [ "$_pmv_gate_exit" -ne 0 ]; then
-      # The targeted gate failed on NEW failures only — baseline-diff (#699)
-      # already classifies each failure as new (since pre_merge_ref, i.e. the
-      # merge's own) vs pre-existing on the diff base, and the gate's
-      # outcome=failed fires ONLY when new>0. So a failure here IS the merge's
-      # doing, full stop.
+      # main is kept green (block-on-any gate, Phase 3), so a targeted-gate
+      # failure here IS the merge's doing, full stop.
       #
       # We deliberately do NOT re-run the full suite on origin/main to ask "is
-      # main broken?" anymore. That check is redundant (baseline-diff answers it
-      # per-failure) and was the LAST full-suite run in the issue lifecycle — and
-      # the source of a flake cascade (a load-flaky concurrency test failed the
-      # gate → triggered a silent full-suite main-broken run). The only full-suite
-      # run now is the deliberate, scheduled `rite --full-suite` safety net.
+      # main broken?" anymore. That check is redundant (green main means any
+      # post-merge failure is the merge's) and was the LAST full-suite run in the
+      # issue lifecycle — and the source of a flake cascade (a load-flaky
+      # concurrency test failed the gate → triggered a silent full-suite
+      # main-broken run). The only full-suite run now is the deliberate,
+      # scheduled `rite --full-suite` safety net.
       echo "⚠️  Post-merge verification FAILED (exit $_pmv_gate_exit)" >&2
-      echo "The merge/rebase succeeded at the git level but introduced new test failures" >&2
-      echo "(baseline-diff already excluded pre-existing reds). Likely a silent semantic conflict." >&2
+      echo "The merge/rebase succeeded at the git level but introduced test failures" >&2
+      echo "(main was green before the merge). Likely a silent semantic conflict." >&2
       return 1
     fi
 
