@@ -363,6 +363,16 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Implementation:** `tests/regression/test-gate-targeted-selection.bats` (parser, file matching, glob handling, targeted-only pinning tests, edge cases).
 
+### Fix-Loop Gate: Incremental Selection (#724)
+
+**2026-06-26.** During the Phase-3 fix loop, the post-fix gate selects bats files against the **pre-fix HEAD**, not `origin/main` — so each iteration re-runs only the tests covering what *that* fix changed, not the full cumulative targeted set.
+
+**The waste it fixes:** the cumulative `origin/main...HEAD` diff always includes the issue's main change, so the gate re-selected and re-ran the *same* targeted set (including the slow `lib-resource-safety.bats`, which covers `lib/**/*.sh`) on **every** iteration — even when a fix only touched docs. Live: #724 ran the identical 17-file gate **4 times** (~17 min) finding the same 3 failures. With incremental selection a doc-only fix selects ~0 bats and the gate is near-instant.
+
+**Mechanism** (`workflow-runner.sh::run_workflow`): capture `_pre_fix_head=$(git rev-parse HEAD)` before the fix session, then run the loop gate with `RITE_TEST_GATE_DIFF_BASE="$_pre_fix_head"`. The initial Phase-2 gate still runs full (against `origin/main`); only the per-iteration re-runs are incremental.
+
+**Correctness:** each change is gated when introduced (its own coverage), relying on accurate `sharkrite-test-covers` headers (the green-main Phase-2 tightening + the `MISSING_TEST_COVERAGE_HEADER` lint). `post-merge-verify` re-runs the gate on the merged state as the cumulative backstop. **Enforcement:** `tests/regression/gate-incremental-fix-loop-selection.bats`.
+
 ### Gate Block-on-Any (CRITICAL)
 
 **2026-06-25 (Phase 3).** The post-commit gate blocks/feeds the fix loop on **any** test failure in the targeted selection: **`outcome=passed ⟺ zero failures`**. There is no new-vs-pre-existing classification — a failure in a selected file fails the gate, full stop.
