@@ -96,6 +96,11 @@
 #   RITE_TEST_COMMAND="bundle exec rspec"          # Ruby
 #   RITE_TEST_COMMAND="mvn test -q"                # Maven
 #
+# Shell flavor: the command runs under `sh -c`, not bash. Avoid bashisms
+# (arrays, [[ ]], bash-specific builtins). If your runner script uses bash
+# features, invoke bash explicitly:
+#   RITE_TEST_COMMAND="bash ./run-tests.sh"
+#
 # Without this set, the gate skips (and warns if the PR touched source files).
 # RITE_TEST_COMMAND=""
 

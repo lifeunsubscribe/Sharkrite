@@ -513,7 +513,19 @@ run_test_gate() {
     local _nonsr_exit_file_cmd _tests_raw_file_cmd
     _nonsr_exit_file_cmd=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$.txt")
     _tests_raw_file_cmd=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$.txt")
-    trap 'rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"' EXIT
+    # Register crash-sentinel trap: if this branch exits non-zero before
+    # _gate_write_json runs, write a valid-JSON sentinel (skipped:true) so
+    # assess-and-resolve.sh never reads an empty/absent file as zero findings
+    # (fail-open). Mirrors the sentinel logic on the main path (lines 565–573).
+    # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
+    trap '_gate_exit_status=$?
+          rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"
+          if [ "$_gate_exit_status" -ne 0 ]; then
+            if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
+              printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
+              echo "[test-gate] WARNING: gate crashed (exit $_gate_exit_status) — wrote sentinel JSON to prevent fail-open" >&2
+            fi
+          fi' EXIT
     # Use sh -c to support multi-word commands (e.g. "cargo test --features integration")
     # without eval. RITE_TEST_COMMAND is operator-configured in .rite/config, not
     # derived from external input.
@@ -522,7 +534,7 @@ run_test_gate() {
     local _cmd_tests_exit
     _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo "0")
     local _cmd_tests_count
-    _cmd_tests_count=$(grep -c "^not ok \|FAILED\|ERROR\|FAIL" "$_tests_raw_file_cmd" || true)
+    _cmd_tests_count=$(grep -c "^not ok " "$_tests_raw_file_cmd" || true)
     local _cmd_overall_exit=0
     [ "$_cmd_tests_exit" -ne 0 ] && _cmd_overall_exit=1
     local _gate_end_cmd _duration_cmd
@@ -949,7 +961,7 @@ run_test_gate() {
       return 0
     fi
     rm -f "${_nonsr_exit_file:-}"
-    _tests_count=$(grep -c "^not ok \|FAILED\|ERROR" "$_tests_raw_file" || true)
+    _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   fi
 
   # --- Build JSON arrays from raw output ---
