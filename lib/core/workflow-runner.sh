@@ -1313,6 +1313,18 @@ phase_assess_and_resolve() {
     # clean state and HEAD reflects the cumulative branch progress.
     phase_wait_doc_assessment
 
+    # Capture HEAD before THIS iteration's fix so the post-fix gate (below) selects
+    # tests INCREMENTALLY — only those covering what this fix changed — instead of
+    # re-running the full origin/main targeted set on every iteration. The cumulative
+    # diff always includes the issue's main change, so the old behavior re-ran the
+    # same heavy set (incl. the slow lib-resource-safety) every loop, finding the
+    # same failures repeatedly (live waste: #724 — 4 full gate runs, ~17 min, same 3
+    # failures). With incremental selection a doc-only fix selects ~0 bats and the
+    # gate is near-instant. Correctness holds: each change is gated when introduced,
+    # and post-merge-verify re-runs the cumulative gate as a backstop.
+    local _pre_fix_head
+    _pre_fix_head=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || echo "")
+
     if [ -n "$review_content" ]; then
       # Assessment is already posted as a PR comment (<!-- sharkrite-assessment --> marker).
       # Pass PR number so claude-workflow.sh can fetch the latest assessment directly.
@@ -1369,7 +1381,10 @@ phase_assess_and_resolve() {
     print_info "Starting post-commit gate in background (make check + bats -r tests/)..."
     # RITE_GATE_BACKGROUND=1: runs concurrent with review generation → route raw
     # output to the log (not the terminal) so it can't interleave with the review.
-    RITE_GATE_BACKGROUND=1 run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
+    # Incremental selection: diff against the pre-fix HEAD (not origin/main) so the
+    # gate re-runs only tests covering THIS fix's changes — not the full targeted
+    # set every iteration (#724). Falls back to origin/main if HEAD was unreadable.
+    RITE_GATE_BACKGROUND=1 RITE_TEST_GATE_DIFF_BASE="${_pre_fix_head:-origin/main}" run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
     _gate_pid=$!
 
     # Spawn doc assessment in parallel with the gate + review regeneration.
