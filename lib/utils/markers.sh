@@ -99,6 +99,16 @@ RITE_MARKER_STASH="sharkrite-managed-stash"
 # lint rule enforces a header on new bats files.
 RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
 
+# Serial gate hint — bats files that are load-sensitive (mass-source, subprocess-heavy,
+# or otherwise flaky under `bats --jobs N`) declare this to run serially while other
+# selected files still run in parallel.
+# Format at top of bats file (after sharkrite-test-covers): # sharkrite-gate-serial
+# The test_gate splits selected files into a parallel batch and a serial batch; both
+# must pass for the gate to succeed. The hint never excludes a file from selection —
+# it only changes the job count for that file's invocation.
+# See: lib/utils/test-gate.sh::_bats_file_is_serial, behavioral-design.md → "Serial Gate Hint".
+RITE_MARKER_GATE_SERIAL="sharkrite-gate-serial"
+
 # ---------------------------------------------------------------------------
 # Planning markers
 # ---------------------------------------------------------------------------

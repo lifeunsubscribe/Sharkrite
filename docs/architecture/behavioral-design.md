@@ -405,6 +405,27 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 **Enforcement:** `tests/regression/gate-force-full-optin.bats` (real mock-gate: empty `origin/main` diff → NOT full; `RITE_GATE_FORCE_FULL=1` and `DIFF_BASE=HEAD` → full).
 
+### Serial Gate Hint (`sharkrite-gate-serial`) (#724)
+
+**2026-06-26.** Some bats files are load-sensitive — they spawn many subprocesses, mass-source the full lib tree, or are otherwise flaky when other bats workers are running concurrently under `bats --jobs N`. Under block-on-any, a single spurious flake from such a file blocks the gate and feeds the fix loop, burning retry iterations on a phantom failure (#649: `lib-resource-safety.bats` reported 2 `MISSING_RESOURCE_GUARD` tests as `not ok` under `--jobs 8`; both passed cleanly in isolation).
+
+**Why not exclusion?** Concurrency tests (`tests/concurrency/*`) are **excluded** from the gate entirely because their failure mode (file-based barrier timeouts) is inherent to parallelism and provides no useful signal under `bats --jobs`. `lib-resource-safety.bats` is different: the tests are sound, the coverage is necessary (every lib-touching issue selects it via `lib/**/*.sh`), and the failures are load-induced rather than semantically parallel. Excluding it would silently drop valid coverage from the targeted gate.
+
+**The fix: per-file serial hint.** A bats file that declares `# sharkrite-gate-serial` in its first 15 lines runs without `--jobs` (serial) while the rest of the selected files still run in parallel. The hint never affects selection — the file is still included whenever its covers header matches changed paths. It only changes the job-level of the invocation.
+
+**Mechanism (`lib/utils/test-gate.sh::run_test_gate`):**
+1. `_bats_file_is_serial <path>` — reads first 15 lines, returns 0 if `# sharkrite-gate-serial` is present.
+2. After selection, the targeted path splits `_selection` into `_parallel_files[]` and `_serial_files[]` arrays.
+3. Parallel batch runs with `_bats_jobs_args` (`--jobs N`) as before; serial batch runs without `--jobs` (sequential).
+4. Both runs append TAP output to `_tests_raw_file`; exit codes are OR'd — any failure in either batch blocks the gate (block-on-any preserved).
+5. A `BATS_SERIAL_SPLIT parallel=N serial=M pr=P` diag line is emitted when serial files are present.
+
+**Marker constant:** `RITE_MARKER_GATE_SERIAL="sharkrite-gate-serial"` in `lib/utils/markers.sh`.
+
+**Files with the hint:** `tests/regression/lib-resource-safety.bats` (sources every lib file twice; parallel-unsafe under load).
+
+**Enforcement:** `tests/regression/test-gate-targeted-selection.bats` — serial-hinted file is split from parallel batch; non-serial file is not affected; block-on-any is preserved across both batches.
+
 ### Gate Output Routing: live in foreground, log-only when concurrent (CRITICAL)
 
 **2026-06-24.** The post-commit gate's raw output (concurrent `make shellcheck` + `make lint`, plus bats `-F pretty`) is voluminous. Two failure modes argued for routing it off the terminal: (1) the review-loop gate runs **backgrounded, concurrent with review generation** (`workflow-runner.sh` Phase 2/3), so its live stream interleaved mid-phase with unrelated output; (2) a single failing bats test replays its **entire captured stdout** — for whole-session tests (e.g. `tests/smoke/source-all-libs.bats`) that's a nested-transcript wall.

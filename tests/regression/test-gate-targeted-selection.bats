@@ -298,3 +298,84 @@ EOF
   ! echo "$output" | grep -q 'tests/concurrency/race.bats' \
     || { echo "FAIL: concurrency test leaked into the parallel gate selection"; echo "$output"; return 1; }
 }
+
+# ---------------------------------------------------------------------------
+# Serial gate hint (sharkrite-gate-serial) — #724
+# Tests verify _bats_file_is_serial detection and the selection contract:
+# serial-hinted files are INCLUDED in selection but flagged for serial execution.
+# The split itself (parallel_files / serial_files arrays) lives in run_test_gate,
+# not in _select_tests_by_changed_paths — these tests validate the helper that
+# run_test_gate uses to perform the split.
+# ---------------------------------------------------------------------------
+
+@test "_bats_file_is_serial: returns 0 for file with sharkrite-gate-serial hint" {
+  local serial_bats="$TEST_REPO/tests/regression/serial-hinted.bats"
+  cat > "$serial_bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh
+# sharkrite-gate-serial
+@test "load sensitive" { true; }
+EOF
+  run _bats_file_is_serial "$serial_bats"
+  [ "$status" -eq 0 ]
+}
+
+@test "_bats_file_is_serial: returns 1 for file without hint" {
+  run _bats_file_is_serial "$TEST_REPO/tests/regression/covers-foo.bats"
+  [ "$status" -eq 1 ]
+}
+
+@test "_bats_file_is_serial: returns 1 for headerless file" {
+  run _bats_file_is_serial "$TEST_REPO/tests/regression/headerless.bats"
+  [ "$status" -eq 1 ]
+}
+
+@test "_bats_file_is_serial: returns 1 for nonexistent file" {
+  run _bats_file_is_serial "$TEST_REPO/tests/regression/does-not-exist.bats"
+  [ "$status" -eq 1 ]
+}
+
+@test "_bats_file_is_serial: hint must be in first 15 lines (not beyond)" {
+  # A hint on line 17 is NOT detected — hint must be near the top.
+  local late_hint="$TEST_REPO/tests/regression/late-hint.bats"
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/core/foo.sh'
+    for i in 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+      echo "# line $i"
+    done
+    echo '# sharkrite-gate-serial'
+    echo '@test "dummy" { true; }'
+  } > "$late_hint"
+  run _bats_file_is_serial "$late_hint"
+  # Line 17 is beyond the 15-line window — hint is not detected
+  [ "$status" -eq 1 ]
+}
+
+@test "selection INCLUDES serial-hinted files (hint is not an exclusion)" {
+  # sharkrite-gate-serial is a scheduling hint, not an exclusion filter.
+  # The file must still appear in _select_tests_by_changed_paths output.
+  cat > "$TEST_REPO/tests/regression/serial-hinted.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh
+# sharkrite-gate-serial
+@test "load sensitive" { true; }
+EOF
+  result=$(_select_tests_by_changed_paths "lib/core/foo.sh" "$TEST_REPO")
+  echo "$result" | grep -q "serial-hinted.bats" || {
+    echo "FAIL: serial-hinted.bats missing from selection; got: $result" >&2
+    return 1
+  }
+}
+
+@test "lib-resource-safety.bats carries the sharkrite-gate-serial hint" {
+  # Pinning test: this file is the canonical example of a serial-hinted test
+  # (sources every lib file twice; flaky under --jobs). Any PR that removes
+  # the hint must consciously delete this assertion.
+  local _lib_resource_safety="${RITE_REPO_ROOT}/tests/regression/lib-resource-safety.bats"
+  run _bats_file_is_serial "$_lib_resource_safety"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: lib-resource-safety.bats lost its sharkrite-gate-serial hint" >&2
+    return 1
+  }
+}

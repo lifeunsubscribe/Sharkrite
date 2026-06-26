@@ -329,6 +329,17 @@ _parse_test_coverage_header() {
   echo "$_header" | sed -E "s/^# ${RITE_MARKER_TEST_COVERS}:[[:space:]]*//; s/[[:space:]]*$//" || true
 }
 
+# _bats_file_is_serial — return 0 if the file carries the sharkrite-gate-serial hint
+# Looks in the first 15 lines for `# sharkrite-gate-serial` (no value, presence-only).
+# Files with this hint run without --jobs (sequential) while the rest of the selection
+# runs in parallel. Hint is a scheduling signal, not an exclusion — selected files always run.
+# Returns: 0 (serial hint present) or 1 (run in parallel / no hint)
+_bats_file_is_serial() {
+  local bats_file="$1"
+  head -15 "$bats_file" 2>/dev/null \
+    | grep -qE "^# ${RITE_MARKER_GATE_SERIAL}([[:space:]]|$)"
+}
+
 # _bats_file_matches_changed — decide if a single bats file should run
 # Args: $1=bats_file_path, $2=changed_files (newline-separated)
 # Returns: 0 (include) or 1 (skip)
@@ -751,21 +762,78 @@ run_test_gate() {
       _selected_count=$(echo "$_selection" | grep -c '.' || true)
       echo "[test-gate] Selection: targeted (${_selected_count}/${_total_bats} bats files based on changed paths)"
       _diag "TEST_GATE_SELECTION mode=targeted selected=${_selected_count} total=${_total_bats} pr=${PR_NUMBER:-?}"
-      # Build array of selected files for bats invocation
-      local _selected_files=()
+      # Split selected files into parallel and serial groups.
+      # Files carrying the sharkrite-gate-serial hint (load-sensitive or subprocess-heavy
+      # tests that flake under bats --jobs N) are collected into _serial_files[].
+      # All others go into _parallel_files[]. Both groups must pass — exit codes are OR'd.
+      # This preserves the block-on-any guarantee: any failure in either group blocks.
+      local _parallel_files=()
+      local _serial_files=()
       while IFS= read -r _bf; do
-        [ -n "$_bf" ] && _selected_files+=("$_bf")
+        [ -z "$_bf" ] && continue
+        if _bats_file_is_serial "$project_root/$_bf"; then
+          _serial_files+=("$_bf")
+        else
+          _parallel_files+=("$_bf")
+        fi
       done <<< "$_selection"
-      echo "[test-gate] Running bats on ${#_selected_files[@]} selected files..."
-      if [ "$_bats_use_pretty" = "true" ]; then
-        { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
-            bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
-            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}") >> "$_gate_raw_sink" 2>&1; \
-          echo $? > "$_bats_exit_file"; } || true
-        cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
+
+      local _serial_count=${#_serial_files[@]}
+      local _parallel_count=${#_parallel_files[@]}
+      if [ "$_serial_count" -gt 0 ]; then
+        echo "[test-gate] bats split: ${_parallel_count} parallel, ${_serial_count} serial (load-sensitive)"
+        _diag "BATS_SERIAL_SPLIT parallel=${_parallel_count} serial=${_serial_count} pr=${PR_NUMBER:-?}"
+      fi
+
+      # Run parallel batch (if any)
+      local _par_exit=0
+      if [ "$_parallel_count" -gt 0 ]; then
+        echo "[test-gate] Running bats on ${_parallel_count} parallel file(s)..."
+        if [ "$_bats_use_pretty" = "true" ]; then
+          local _par_tap_dir
+          _par_tap_dir=$(mktemp -d "/tmp/rite_gate_par_tap_${PR_NUMBER:-0}_$$_XXXXXX")
+          { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+              bats -F pretty --report-formatter tap --output "$_par_tap_dir" \
+              "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}") >> "$_gate_raw_sink" 2>&1; \
+            echo $? > "$_bats_exit_file"; } || true
+          cat "$_par_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
+          rm -rf "$_par_tap_dir"
+        else
+          { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
+            | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
+        fi
+        _par_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+        echo 0 > "$_bats_exit_file"
+      fi
+
+      # Run serial batch after parallel batch completes, regardless of parallel outcome.
+      # No --jobs flag: runs each file's tests sequentially. Ensures load-sensitive tests
+      # are not starved of CPU/IO by other concurrent bats workers. bats does not require
+      # GNU parallel for single-file sequential execution.
+      local _ser_exit=0
+      if [ "$_serial_count" -gt 0 ]; then
+        echo "[test-gate] Running bats on ${_serial_count} serial file(s) (no --jobs, load-sensitive)..."
+        if [ "$_bats_use_pretty" = "true" ]; then
+          local _ser_tap_dir
+          _ser_tap_dir=$(mktemp -d "/tmp/rite_gate_ser_tap_${PR_NUMBER:-0}_$$_XXXXXX")
+          { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+              bats -F pretty --report-formatter tap --output "$_ser_tap_dir" \
+              "${_serial_files[@]}") >> "$_gate_raw_sink" 2>&1; \
+            echo $? > "$_bats_exit_file"; } || true
+          cat "$_ser_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
+          rm -rf "$_ser_tap_dir"
+        else
+          { (cd "$project_root" && bats "${_serial_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
+            | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
+        fi
+        _ser_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+      fi
+
+      # Merge exit codes: any non-zero fails the gate (block-on-any preserved)
+      if [ "$_par_exit" -ne 0 ] || [ "$_ser_exit" -ne 0 ]; then
+        echo 1 > "$_bats_exit_file"
       else
-        { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_selected_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
-          | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
+        echo 0 > "$_bats_exit_file"
       fi
     fi
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
