@@ -102,6 +102,57 @@ _is_path_shaped() {
 }
 
 # ---------------------------------------------------------------------------
+# _is_test_path FILE
+#
+# Returns 0 if FILE looks like a test file that should be implicitly allowed
+# during scope-boundary checks.  Authoring tests is an expected part of Phase 4
+# (Test Authoring & Syntax Check), so test files written alongside a source
+# change must not generate false-positive scope warnings.
+#
+# Matched patterns (case-insensitive, after lowercasing):
+#   tests/...          — any file under a top-level or nested tests/ directory
+#   test_*.*           — test-prefixed files (test_fetch.ino, test_util.py)
+#   *_test.*           — test-suffixed files (foo_test.go, bar_test.py)
+#   *.test.*           — test mid-extension files (foo.test.sh, bar.test.ts)
+#   *test*/*.ino       — .ino files inside any directory whose name contains "test"
+#
+# NOTE: This whitelist applies ONLY to the "file must match a DO bullet" check.
+# Explicit DO NOT bullets still override it — if an issue says
+# "DO NOT: tests/regression/secret.bats", that file is still flagged even if
+# it matches a test-path pattern.
+# ---------------------------------------------------------------------------
+_is_test_path() {
+  local file="$1"
+  local _f
+  _f=$(echo "$file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
+
+  # tests/ directory prefix (e.g. tests/regression/foo.bats)
+  if [[ "$_f" == tests/* ]]; then return 0; fi
+  # Nested tests/ directory anywhere in the path (e.g. src/tests/foo.sh)
+  if [[ "$_f" == */tests/* ]]; then return 0; fi
+
+  # Extract just the filename (last component after final /)
+  local _basename="${_f##*/}"
+
+  # test_*.* — test-prefixed files (test_fetch.ino, test_util.py)
+  if [[ "$_basename" == test_*.* ]]; then return 0; fi
+
+  # *_test.* — test-suffixed files (foo_test.go, bar_test.py)
+  if [[ "$_basename" == *_test.* ]]; then return 0; fi
+
+  # *.test.* — test mid-extension (foo.test.sh, bar.test.ts)
+  if [[ "$_basename" == *.test.* ]]; then return 0; fi
+
+  # *test*/*.ino — .ino files inside a directory whose name contains "test"
+  # Extract the parent directory name (second-to-last component)
+  local _dir="${_f%/*}"
+  local _dirname="${_dir##*/}"
+  if [[ "$_dirname" == *test* ]] && [[ "$_basename" == *.ino ]]; then return 0; fi
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # _file_matches_pattern FILE PATTERN
 #
 # Returns 0 if FILE (lowercased) starts with or equals PATTERN (lowercased).
@@ -279,13 +330,23 @@ check_scope_boundary() {
       continue
     fi
 
-    # If DO patterns exist, the file must match at least one.
-    # A DO bullet may contain prose mixed with paths (e.g. "tweak the regex
-    # in lib/core/foo.sh").  When the full bullet text contains spaces, split
-    # it on whitespace and test only the path-shaped tokens — this prevents
-    # prose words from being used as path prefixes (which would never match)
-    # and ensures real path mentions inside prose DO bullets are honoured.
+    # If DO patterns exist, the file must match at least one — UNLESS it is a
+    # test file.  Authoring tests is expected Phase 4 behaviour; test files
+    # written alongside a source change should not produce false-positive scope
+    # warnings simply because the issue's DO bullets list only source paths.
+    # Explicit DO NOT bullets still win (checked above) — the test-path
+    # whitelist only suppresses the "not covered by any DO bullet" violation.
     if [ "${#_do_patterns[@]}" -gt 0 ]; then
+      # Silently allow recognised test paths without requiring a DO bullet.
+      if _is_test_path "$_file_norm"; then
+        continue
+      fi
+
+      # A DO bullet may contain prose mixed with paths (e.g. "tweak the regex
+      # in lib/core/foo.sh").  When the full bullet text contains spaces, split
+      # it on whitespace and test only the path-shaped tokens — this prevents
+      # prose words from being used as path prefixes (which would never match)
+      # and ensures real path mentions inside prose DO bullets are honoured.
       local _do_match=false
       for _pat in "${_do_patterns[@]}"; do
         [ -z "$_pat" ] && continue
