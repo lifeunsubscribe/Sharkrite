@@ -156,7 +156,7 @@ STUBEOF
   # foreground callers (post-merge-verify, fastpath) must not.
   local _wr="${RITE_LIB_DIR}/core/workflow-runner.sh"
   local _flagged _backgrounded
-  _flagged=$(grep -cE 'RITE_GATE_BACKGROUND=1 run_test_gate .*&' "$_wr" || true)
+  _flagged=$(grep -cE 'RITE_GATE_BACKGROUND=1 .*run_test_gate .*&' "$_wr" || true)
   _backgrounded=$(grep -cE 'run_test_gate "\$_(gate_output|init_gate)_file" "\$WORKTREE_PATH" &' "$_wr" || true)
   [ "$_backgrounded" -eq 2 ]   # the two known backgrounded launches
   [ "$_flagged" -eq 2 ]        # both carry RITE_GATE_BACKGROUND=1
