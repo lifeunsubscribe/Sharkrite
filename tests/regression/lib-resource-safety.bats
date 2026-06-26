@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/**/*.sh
+# sharkrite-gate-serial
 # Regression test: lib file re-source safety
 #
 # Every file in lib/ must be safe to source multiple times under
