@@ -261,9 +261,9 @@ MF_EOF
 }
 
 @test "verify_post_merge returns 1 on gate failure WITHOUT a full-suite main-broken re-run" {
-  # The full-suite "is main broken?" check was removed: baseline-diff already
-  # classifies failures as new (the merge's own) vs pre-existing, so the gate
-  # fails ONLY on new failures → the merge is at fault → return 1. The gate must
+  # The full-suite "is main broken?" check was removed: main is kept green
+  # (block-on-any gate), so a post-merge gate failure is the merge's fault →
+  # return 1. The gate must
   # run exactly ONCE (no second full-suite pass on origin/main — that was the
   # last full-suite run in the lifecycle and the source of a flake cascade).
   REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"

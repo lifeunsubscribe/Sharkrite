@@ -6,7 +6,7 @@
 # Bug (live 2026-06-24, issue 649 dev session): _run_dev_test_gate ran the FULL
 # `bats -r tests/` suite during the dev phase even when workflow-runner drove the
 # run (RITE_ORCHESTRATED=true). That is redundant with the post-commit structured
-# gate (run_test_gate, Phase 2/3 — targeted + baseline-diff + bounded), and it is
+# gate (run_test_gate, Phase 2/3 — targeted + block-on-any + bounded), and it is
 # untargeted (parallel barrier-timeout load flake), unbounded (a tty-stdin
 # deadlock in the lint suite wedged the run for 78 minutes), and spawned a second
 # auto-fix session churning on phantom failures. Fix: skip when orchestrated.
