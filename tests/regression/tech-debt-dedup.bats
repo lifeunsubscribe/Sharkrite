@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/create-followup-issues.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/create-followup-issues.sh, lib/utils/scratchpad-manager.sh
 # tests/regression/tech-debt-dedup.bats
 #
 # Regression test for tech-debt issue deduplication bug.
