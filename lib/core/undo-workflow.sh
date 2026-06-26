@@ -320,12 +320,21 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
   fi
 elif [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "CLOSED" ]; then
   print_info "Issue #$ISSUE_NUMBER's PR already closed"
-  # Delete orphaned remote branch if it still exists
+  # Delete orphaned remote branch if it still exists. Verify the result instead of
+  # swallowing errors: `git push --delete` can fail transiently, and reporting
+  # "already deleted" while the branch survives is exactly how an orphan slips
+  # through undo (live: #649). Re-check existence and warn loudly if it lingers.
   if [ -n "$BRANCH_NAME" ]; then
-    if git push origin --delete "$BRANCH_NAME" 2>/dev/null; then
+    _undo_del_out=$(git push origin --delete "$BRANCH_NAME" 2>&1) && _undo_del_ok=true || _undo_del_ok=false
+    if [ "$_undo_del_ok" = true ]; then
       print_success "Deleted orphaned remote branch: $BRANCH_NAME"
+    elif ! git ls-remote --heads origin "$BRANCH_NAME" 2>/dev/null | grep -q .; then
+      print_info "Remote branch already deleted: $BRANCH_NAME"
     else
-      print_info "Remote branch already deleted or not found"
+      print_warning "Failed to delete remote branch '$BRANCH_NAME' — it still exists."
+      print_warning "  Remove it manually: git push origin --delete $BRANCH_NAME"
+      print_warning "  (git: ${_undo_del_out})"
+      UNDO_ERRORS=$((UNDO_ERRORS + 1))
     fi
   fi
 else
@@ -440,16 +449,29 @@ if [ "$LOCAL_BRANCH_EXISTS" = true ] && [ -n "$BRANCH_NAME" ]; then
   fi
 fi
 
-# --- 3.6: Remove local state files ---
+# --- 3.6: Remove local state files + the per-issue lock ---
+# The issue lock (issue-lock.sh artifact) is part of the workflow's local state.
+# It must be cleaned UNCONDITIONALLY — independent of SESSION_STATE_EXISTS —
+# because a run that died early can leave the lock dir with no session-state file
+# (live: #649, where undo cleaned the worktree/branch but left issue-649.lock).
 
-if [ "$SESSION_STATE_EXISTS" = true ]; then
+_undo_lock_dir="${RITE_LOCK_DIR:-$RITE_PROJECT_ROOT/${RITE_DATA_DIR:-.rite}/locks}/issue-${ISSUE_NUMBER}.lock"
+
+if [ "$SESSION_STATE_EXISTS" = true ] || [ -d "$_undo_lock_dir" ]; then
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "🗑️  State Cleanup"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  rm -f "$STATE_FILE"
-  print_success "Removed session state"
+  if [ "$SESSION_STATE_EXISTS" = true ]; then
+    rm -f "$STATE_FILE"
+    print_success "Removed session state"
+  fi
+
+  if [ -d "$_undo_lock_dir" ]; then
+    rm -rf "$_undo_lock_dir"
+    print_success "Removed issue lock"
+  fi
 fi
 
 # --- 3.7: Clear scratchpad ---
