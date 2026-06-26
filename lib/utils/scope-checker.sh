@@ -102,6 +102,57 @@ _is_path_shaped() {
 }
 
 # ---------------------------------------------------------------------------
+# _is_test_path FILE
+#
+# Returns 0 if FILE looks like a test file that should be implicitly allowed
+# during scope-boundary checks.  Authoring tests is an expected part of Phase 4
+# (Test Authoring & Syntax Check), so test files written alongside a source
+# change must not generate false-positive scope warnings.
+#
+# Matched patterns (case-insensitive, after lowercasing):
+#   tests/...          — any file under a top-level or nested tests/ directory
+#   test_*.*           — test-prefixed files (test_fetch.ino, test_util.py)
+#   *_test.*           — test-suffixed files (foo_test.go, bar_test.py)
+#   *.test.*           — test mid-extension files (foo.test.sh, bar.test.ts)
+#   *test*/*.ino       — .ino files inside any directory whose name contains "test"
+#
+# NOTE: This whitelist applies ONLY to the "file must match a DO bullet" check.
+# Explicit DO NOT bullets still override it — if an issue says
+# "DO NOT: tests/regression/secret.bats", that file is still flagged even if
+# it matches a test-path pattern.
+# ---------------------------------------------------------------------------
+_is_test_path() {
+  local file="$1"
+  local _f
+  _f=$(echo "$file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
+
+  # tests/ directory prefix (e.g. tests/regression/foo.bats)
+  if [[ "$_f" == tests/* ]]; then return 0; fi
+  # Nested tests/ directory anywhere in the path (e.g. src/tests/foo.sh)
+  if [[ "$_f" == */tests/* ]]; then return 0; fi
+
+  # Extract just the filename (last component after final /)
+  local _basename="${_f##*/}"
+
+  # test_*.* — test-prefixed files (test_fetch.ino, test_util.py)
+  if [[ "$_basename" == test_*.* ]]; then return 0; fi
+
+  # *_test.* — test-suffixed files (foo_test.go, bar_test.py)
+  if [[ "$_basename" == *_test.* ]]; then return 0; fi
+
+  # *.test.* — test mid-extension (foo.test.sh, bar.test.ts)
+  if [[ "$_basename" == *.test.* ]]; then return 0; fi
+
+  # *test*/*.ino — .ino files inside a directory whose name contains "test"
+  # Extract the parent directory name (second-to-last component)
+  local _dir="${_f%/*}"
+  local _dirname="${_dir##*/}"
+  if [[ "$_dirname" == *test* ]] && [[ "$_basename" == *.ino ]]; then return 0; fi
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # _file_matches_pattern FILE PATTERN
 #
 # Returns 0 if FILE (lowercased) starts with or equals PATTERN (lowercased).
@@ -198,28 +249,73 @@ check_scope_boundary() {
     return 0
   fi
 
-  # Collect changed files vs origin/main (or all staged/modified if no origin/main)
+  # Collect changed files vs origin/main (or all staged/modified if no origin/main).
+  # Use --name-status to capture per-file status codes (A=added, D=deleted, M=modified,
+  # R=renamed, etc.) so the test-path whitelist can be restricted to added files only.
   local _changed_files=()
-  local _git_diff_files
+  # _added_files_set is a newline-separated list of paths that are newly added (A status).
+  # Only added test files are implicitly whitelisted; deleted/modified test files are not.
+  local _added_files_set=""
+  local _git_diff_status
   if git -C "$worktree_path" rev-parse --verify origin/main >/dev/null 2>&1; then
-    _git_diff_files=$(git -C "$worktree_path" diff --name-only origin/main...HEAD 2>/dev/null || true)
+    _git_diff_status=$(git -C "$worktree_path" diff --name-status origin/main...HEAD 2>/dev/null || true)
   else
-    _git_diff_files=$(git -C "$worktree_path" diff --name-only HEAD 2>/dev/null || true)
+    _git_diff_status=$(git -C "$worktree_path" diff --name-status HEAD 2>/dev/null || true)
   fi
 
-  # Also include uncommitted changes (files staged or modified but not yet committed)
-  local _uncommitted
-  _uncommitted=$(git -C "$worktree_path" status --porcelain 2>/dev/null | \
-    grep -v '^??' | sed 's/^...//' | sed 's/ -> .*//' || true)
+  # Parse name-status output: each line is "<STATUS>\t<path>" (or for renames:
+  # "R<score>\t<old>\t<new>").  Extract the file path and record added files.
+  while IFS=$'\t' read -r _status _path1 _path2; do
+    [ -z "$_status" ] && continue
+    # For renames the "new" name is in _path2; for everything else it is in _path1.
+    local _fpath
+    case "$_status" in
+      R*) _fpath="${_path2:-}" ;;
+      *)  _fpath="${_path1:-}" ;;
+    esac
+    [ -z "$_fpath" ] && continue
+    _changed_files+=("$_fpath")
+    # Track added files for the test-path whitelist
+    case "$_status" in
+      A*) _added_files_set="${_added_files_set}${_fpath}"$'\n' ;;
+    esac
+  done <<< "$_git_diff_status"
 
-  # Merge and deduplicate
-  local _all_files_raw
-  _all_files_raw=$(printf '%s\n%s\n' "$_git_diff_files" "$_uncommitted" | \
-    grep -v '^$' | sort -u || true)
+  # Also include uncommitted changes (files staged or modified but not yet committed).
+  # git status --porcelain format: "XY path" where X=index status, Y=worktree status.
+  local _uncommitted_status
+  _uncommitted_status=$(git -C "$worktree_path" status --porcelain 2>/dev/null | \
+    grep -v '^??' || true)
+  while IFS= read -r _pline; do
+    [ -z "$_pline" ] && continue
+    # First two chars are status codes; rest (after the space at col 3) is path.
+    # Rename format: "R  old -> new" — take the name after " -> ".
+    local _xy="${_pline:0:2}"
+    local _pfile="${_pline:3}"
+    # Handle rename format: "old -> new"
+    if [[ "$_pfile" == *" -> "* ]]; then
+      _pfile="${_pfile##* -> }"
+    fi
+    [ -z "$_pfile" ] && continue
+    _changed_files+=("$_pfile")
+    # Track staged additions for the whitelist (index status is first char)
+    local _idx_status="${_xy:0:1}"
+    case "$_idx_status" in
+      A) _added_files_set="${_added_files_set}${_pfile}"$'\n' ;;
+    esac
+  done <<< "$_uncommitted_status"
 
-  while IFS= read -r _f; do
-    [ -n "$_f" ] && _changed_files+=("$_f")
-  done <<< "$_all_files_raw"
+  # Deduplicate _changed_files while preserving order (bash 3.2-compatible loop).
+  local _seen=""
+  local _deduped_files=()
+  for _f in "${_changed_files[@]+"${_changed_files[@]}"}"; do
+    [ -z "$_f" ] && continue
+    if [[ "$_seen" != *$'\n'"${_f}"$'\n'* ]]; then
+      _seen="${_seen}"$'\n'"${_f}"$'\n'
+      _deduped_files+=("$_f")
+    fi
+  done
+  _changed_files=("${_deduped_files[@]+"${_deduped_files[@]}"}")
 
   if [ "${#_changed_files[@]}" -eq 0 ]; then
     return 0
@@ -279,13 +375,32 @@ check_scope_boundary() {
       continue
     fi
 
-    # If DO patterns exist, the file must match at least one.
-    # A DO bullet may contain prose mixed with paths (e.g. "tweak the regex
-    # in lib/core/foo.sh").  When the full bullet text contains spaces, split
-    # it on whitespace and test only the path-shaped tokens — this prevents
-    # prose words from being used as path prefixes (which would never match)
-    # and ensures real path mentions inside prose DO bullets are honoured.
+    # If DO patterns exist, the file must match at least one — UNLESS it is a
+    # newly-added test file.  Authoring tests is expected Phase 4 behaviour;
+    # test files ADDED alongside a source change should not produce false-positive
+    # scope warnings simply because the issue's DO bullets list only source paths.
+    #
+    # CRITICAL: the whitelist applies ONLY to added (A-status) paths.  Deleted or
+    # modified test files must still be evaluated — deleting an unrelated test is
+    # exactly the bug class this subsystem was built to catch (issue #49/PR #121).
+    # Restricting to added paths prevents the whitelist from silently allowing
+    # deletions of test files that were never meant to be touched.
+    #
+    # Explicit DO NOT bullets still win (checked above) — the test-path whitelist
+    # only suppresses the "not covered by any DO bullet" violation for new tests.
     if [ "${#_do_patterns[@]}" -gt 0 ]; then
+      # Silently allow recognised test paths that are ADDED (not deleted/modified).
+      if _is_test_path "$_file_norm" && \
+         [[ "$_added_files_set" == *$'\n'"${_file}"$'\n'* || \
+            "$_added_files_set" == "${_file}"$'\n'* ]]; then
+        continue
+      fi
+
+      # A DO bullet may contain prose mixed with paths (e.g. "tweak the regex
+      # in lib/core/foo.sh").  When the full bullet text contains spaces, split
+      # it on whitespace and test only the path-shaped tokens — this prevents
+      # prose words from being used as path prefixes (which would never match)
+      # and ensures real path mentions inside prose DO bullets are honoured.
       local _do_match=false
       for _pat in "${_do_patterns[@]}"; do
         [ -z "$_pat" ] && continue

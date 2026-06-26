@@ -400,6 +400,204 @@ EOF
 #   - Prose patterns (no slash, no extension):
 #       matched via word-substring against the file path (_is_path_shaped=false)
 # ---------------------------------------------------------------------------
+
+# ===========================================================================
+# Tests for test-path whitelist (issue #722)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: test file under tests/ is NOT flagged as a violation when DO only
+# lists source paths.  This is the primary false-positive case from #722:
+# a developer fixes lib/utils/blocker-rules.sh and also writes
+# tests/regression/blocker-rules-test.bats — the test file is implicitly
+# in-scope and should not trigger a scope warning.
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: tests/ file not flagged when DO covers only source paths" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+  git checkout -q -b feature/testpath-tests-dir
+
+  # Simulate: source change + new test file authored during Phase 4
+  printf "# blocker rules\n" > lib/core/foo.sh
+  mkdir -p tests/regression
+  printf "# new test\n" > tests/regression/foo-new.bats
+  git add -A
+  git commit -q -m "fix: update foo + author companion test"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath1.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/foo.sh
+EOF
+
+  _run_scope_check_file "$body_file"
+
+  # tests/regression/foo-new.bats is a test path — no violation
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# Test: test_*.* prefixed file is NOT flagged (e.g. firmware/test_fetch/test_fetch.ino
+# is the concrete example from the issue report)
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: test_*.ino style file not flagged when DO covers source only" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+  git checkout -q -b feature/testpath-test-prefix
+
+  printf "# source file\n" > lib/core/foo.sh
+  mkdir -p firmware/test_fetch
+  printf "// Arduino test\n" > firmware/test_fetch/test_fetch.ino
+  git add -A
+  git commit -q -m "fix: source + firmware test file"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath2.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/foo.sh
+EOF
+
+  _run_scope_check_file "$body_file"
+
+  # firmware/test_fetch/test_fetch.ino matches test_*.* — no violation
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# Test: *_test.* suffixed file is NOT flagged
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: *_test.* suffixed file not flagged" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+  git checkout -q -b feature/testpath-test-suffix
+
+  printf "# source file\n" > lib/core/foo.sh
+  printf "// go test\n" > lib/core/foo_test.go
+  git add -A
+  git commit -q -m "fix: source + _test.go companion"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath3.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/foo.sh
+EOF
+
+  _run_scope_check_file "$body_file"
+
+  # lib/core/foo_test.go matches *_test.* — no violation
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# Test: *.test.* file is NOT flagged (e.g. foo.test.ts, foo.test.sh)
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: *.test.* file not flagged when DO covers source only" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+  git checkout -q -b feature/testpath-test-dot-ext
+
+  printf "# source file\n" > lib/core/foo.sh
+  mkdir -p src
+  printf "// jest test\n" > src/foo.test.ts
+  git add -A
+  git commit -q -m "fix: source + .test.ts companion"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath-dot.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/foo.sh
+EOF
+
+  _run_scope_check_file "$body_file"
+
+  # src/foo.test.ts matches *.test.* — no violation
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# Test: explicit DO NOT on a test file overrides the test-path whitelist.
+# If the issue says "DO NOT: tests/regression/secret.bats", that file is
+# still flagged even though it matches a test-path pattern.
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: explicit DO NOT on test file still flags violation" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+
+  # Add the secret test file on main so we can later modify it
+  mkdir -p tests/regression
+  printf "# secret test\n" > tests/regression/secret.bats
+  git add -A
+  git commit -q -m "add secret.bats"
+
+  git checkout -q -b feature/testpath-donot-override
+  printf "# modified secret\n" > tests/regression/secret.bats
+  git add -A
+  git commit -q -m "modify secret.bats (should be flagged)"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+  git update-ref refs/remotes/origin/main "$(git rev-parse main)" 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath4.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/
+- DO NOT: tests/regression/secret.bats
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # DO NOT overrides the test-path whitelist — secret.bats is still a violation
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"VIOLATION:"* ]]
+  [[ "$output" == *"secret.bats"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test: _is_test_path helper recognises all whitelisted patterns
+# ---------------------------------------------------------------------------
+@test "_is_test_path: recognises all test-path patterns" {
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    _is_test_path 'tests/regression/foo.bats'          || { echo 'FAIL tests/'; exit 1; }
+    _is_test_path 'src/tests/unit/bar.py'              || { echo 'FAIL nested tests/'; exit 1; }
+    _is_test_path 'firmware/test_fetch/test_fetch.ino' || { echo 'FAIL test_.ino'; exit 1; }
+    _is_test_path 'lib/core/foo_test.go'               || { echo 'FAIL _test.go'; exit 1; }
+    _is_test_path 'src/foo.test.ts'                    || { echo 'FAIL .test.ts'; exit 1; }
+    echo 'all_matched'
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all_matched"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test: _is_test_path does NOT match regular source files
+# ---------------------------------------------------------------------------
+@test "_is_test_path: does not match non-test source files" {
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    _is_test_path 'lib/core/foo.sh'             && { echo 'FAIL lib/core/foo.sh'; exit 1; }
+    _is_test_path 'lib/utils/blocker-rules.sh'  && { echo 'FAIL blocker-rules.sh'; exit 1; }
+    _is_test_path 'firmware/src/main.ino'       && { echo 'FAIL main.ino'; exit 1; }
+    echo 'none_matched'
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"none_matched"* ]]
+}
+
+# ---------------------------------------------------------------------------
 @test "literal-path DO NOT: file inside DO directory but in DO NOT list is flagged" {
   cd "$TEST_REPO_DIR"
   git checkout -q main
