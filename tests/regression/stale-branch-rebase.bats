@@ -102,6 +102,13 @@ teardown() {
   # Test: Branch modifies same file as main, rebase has conflicts
   # Expected: Rebase aborts cleanly, no leftover rebase state, function returns non-zero
 
+  # Stub attempt_claude_merge_resolution to return 1 so this test deterministically
+  # exercises the plain auto-bail path (print_error + return 1). Without the stub,
+  # stale-branch.sh sources conflict-resolver.sh (present in lib/utils/), the resolver
+  # is defined, and the auto-mode conflict path runs a real Claude session whose result
+  # is non-deterministic (PR #103 wired this in after this test was written in PR #86).
+  attempt_claude_merge_resolution() { return 1; }
+
   # Create feature branch that modifies README.md
   local branch_name="fix/conflicting-test"
   git checkout -b "$branch_name" main >/dev/null 2>&1
@@ -121,12 +128,14 @@ teardown() {
   local worktree_path="$RITE_WORKTREE_DIR/issue-conflict"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
-  # Run rebase function (should fail)
-  _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
-  local exit_code=$?
+  # Run rebase function (should fail). Use `run` so the expected non-zero return is
+  # captured in $status rather than tripping bats' errexit on the bare command (the
+  # auto-mode conflict bail returns 1 from stale-branch.sh — see the sibling test in
+  # stale-branch-dirty-worktree.bats which uses the same pattern).
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
 
   # Should return non-zero (failure)
-  [ "$exit_code" -ne 0 ]
+  [ "$status" -ne 0 ]
 
   # Verify no leftover rebase state
   [ ! -d "$worktree_path/.git/rebase-merge" ]

@@ -479,7 +479,8 @@ AWKEOF
     # Visualize newlines in the raw value so the diag log is parseable as a
     # single line without embedding literal control characters.
     local base_branch_raw_vis
-    base_branch_raw_vis=$(printf '%s' "$base_branch_raw" | tr '\n' '↵' | tr '\r' '←' || true)
+    base_branch_raw_vis="${base_branch_raw//$'\n'/↵}"
+    base_branch_raw_vis="${base_branch_raw_vis//$'\r'/←}"
     echo "[diag] SHRINKAGE_BASE_BRANCH_INVALID pr=$pr_number base_branch_raw=${base_branch_raw_vis} fallback=main" >> "${RITE_LOG_FILE:-/dev/null}" 2>/dev/null || true
     base_branch="main"
   fi

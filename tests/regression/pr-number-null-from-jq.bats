@@ -80,11 +80,11 @@ setup() {
 # =============================================================================
 
 @test "structural: batch-process-issues.sh PR_NUMBER jq filter ends with '// empty'" {
-  # The primary bug call site: `sort_by(.number) | reverse | .[0].number`
+  # The primary bug call site: `sort_by(.number) | last | .number`
   # must end with `// empty` to prevent literal "null" capture.
-  grep -qE "sort_by\(.number\) \| reverse \| \.\[0\]\.number // empty" "$BATCH_PROCESSOR" || {
+  grep -qE "sort_by\(.number\) \| last \| \.number // empty" "$BATCH_PROCESSOR" || {
     echo "FAIL: PR_NUMBER jq filter in batch-process-issues.sh does not end with '// empty'" >&2
-    echo "      Expected pattern: sort_by(.number) | reverse | .[0].number // empty" >&2
+    echo "      Expected pattern: sort_by(.number) | last | .number // empty" >&2
     echo "      Without // empty, jq returns literal string \"null\" when no PRs match." >&2
     return 1
   }
@@ -94,7 +94,7 @@ setup() {
   # Belt-and-suspenders: the line `[ "$PR_NUMBER" = "null" ] && PR_NUMBER=""`
   # must appear after the PR_NUMBER capture assignment.
   # Extract the block around the PR_NUMBER capture to verify ordering.
-  _pr_capture_line=$(grep -n "sort_by(.number) | reverse" "$BATCH_PROCESSOR" | head -1 | cut -d: -f1)
+  _pr_capture_line=$(grep -n "sort_by(.number) | last" "$BATCH_PROCESSOR" | head -1 | cut -d: -f1)
   [ -n "$_pr_capture_line" ] || {
     echo "FAIL: Could not find PR_NUMBER capture line in batch-process-issues.sh" >&2
     return 1

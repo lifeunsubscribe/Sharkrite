@@ -30,6 +30,14 @@ _source_generate_adr_for_ref() {
   # check, so anything that exists by this name will be invoked on success.
   _mark_updated() { touch "$_MARKER_DIR/$1"; }
   export -f _mark_updated
+
+  # Stub claude_provider_resolve_model — adr-generator.sh calls it to pick the
+  # doc-assessment model, but claude.sh (which defines it in production) is not
+  # sourced here. Without this stub the call errors with
+  # "claude_provider_resolve_model: command not found"; bats merges that stderr
+  # line into $output, breaking the [ -f "$output" ]/[ -z "$output" ] assertions.
+  claude_provider_resolve_model() { echo "claude-sonnet-4-6"; }
+  export -f claude_provider_resolve_model
 }
 
 setup() {
@@ -90,7 +98,7 @@ ADRDOC
   run generate_adr_for_ref "commit" "abc1234" \
     "refactor: switch to provider abstraction" \
     "Refactored all provider calls through a unified interface." \
-    "$(printf '--- a/lib/providers/provider-interface.sh\n+++ b/lib/providers/provider-interface.sh\n@@ -0,0 +1,5 @@\n+#!/bin/bash\n+load_provider() { source "$1"; }')" \
+    "$(printf '%s' '--- a/lib/providers/provider-interface.sh\n+++ b/lib/providers/provider-interface.sh\n@@ -0,0 +1,5 @@\n+#!/bin/bash\n+load_provider() { source "$1"; }')" \
     "lib/providers/provider-interface.sh"$'\n'"lib/providers/claude.sh"
 
   [ "$status" -eq 0 ]

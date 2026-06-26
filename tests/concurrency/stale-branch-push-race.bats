@@ -68,7 +68,7 @@ teardown() {
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
-  local pid_file="$BARRIER_DIR/${barrier_name}.$$"
+  local pid_file="$BARRIER_DIR/${barrier_name}.$BASHPID"
 
   touch "$pid_file"
 
@@ -102,9 +102,14 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      # Each process gets its own worktree
+      # Each process gets its own worktree on its OWN local branch, all rooted at
+      # the same fix/test-issue-42 tip. git refuses `git worktree add <branch>` for
+      # a branch already checked out in another worktree, so three worktrees cannot
+      # all check out fix/test-issue-42 directly — give each a distinct local branch
+      # (-b race-push-N) at that commit instead. They all push HEAD to the SAME
+      # remote branch, which is what produces the non-fast-forward race.
       local worktree_path="$RITE_WORKTREE_DIR/process-${i}"
-      git worktree add "$worktree_path" fix/test-issue-42 >/dev/null 2>&1
+      git worktree add -b "race-push-${i}" "$worktree_path" fix/test-issue-42 >/dev/null 2>&1
 
       cd "$worktree_path"
 
@@ -115,9 +120,15 @@ wait_at_barrier() {
       git add test.txt
       git commit -m "Work from process $i" >/dev/null 2>&1
 
-      # Try to push (will race)
-      local push_output=$(git push origin fix/test-issue-42 2>&1)
-      local push_exit=$?
+      # Try to push HEAD to the shared remote branch (will race).
+      # Capture the REAL exit code without the SC2155 trap (a bare
+      # `local x=$(cmd)` reports the `local` builtin's status, always 0) AND
+      # without letting errexit kill this subshell on a rejected push: a bare
+      # `push_output=$(failing push)` under bats's inherited `set -e` aborts the
+      # subshell before push_exit is read. The `&& ... || push_exit=$?` form
+      # captures git push's status and keeps the compound command's status 0.
+      local push_output push_exit
+      push_output=$(git push origin "HEAD:fix/test-issue-42" 2>&1) && push_exit=0 || push_exit=$?
 
       echo "$push_exit" > "$exit_codes_dir/process_${i}.exit"
       echo "$push_output" > "$output_dir/process_${i}.output"
@@ -176,9 +187,16 @@ wait_at_barrier() {
     (
       wait_at_barrier "worktree_race_test" "$num_processes" || exit 1
 
-      # All processes try to create the same worktree
-      local output=$(git worktree add "$worktree_path" -b "$branch_name" main 2>&1)
-      local result=$?
+      # All processes try to create the same worktree.
+      # Capture the REAL exit code without the SC2155 trap (`local x=$(cmd)`
+      # reports the builtin's status, always 0) AND without errexit killing this
+      # subshell on a losing worktree-add: a bare `output=$(failing add)` under
+      # bats's inherited `set -e` would abort before result is read, so losers
+      # would write no exit file at all. The `&& ... || result=$?` form captures
+      # git worktree add's status and keeps the compound command's status 0, so
+      # every contender records its real result.
+      local output result
+      output=$(git worktree add "$worktree_path" -b "$branch_name" main 2>&1) && result=0 || result=$?
 
       echo "$result" > "$exit_codes_dir/process_${i}.exit"
       echo "$output" > "$exit_codes_dir/process_${i}.output"
@@ -454,7 +472,12 @@ wait_at_barrier() {
   git add main-27.txt
   git commit -m "Main divergence for issue #27 test" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
-  git checkout "$branch_name" >/dev/null 2>&1
+  # Stay on main: the dedicated worktree below checks out "$branch_name", and
+  # git refuses `git worktree add` for a branch already checked out elsewhere
+  # (fatal: "'<branch>' is already checked out", status 128). Leaving the main
+  # worktree on the feature branch here made the worktree add fail before the
+  # function under test was ever reached. (universal git behaviour, not BSD)
+  git checkout main >/dev/null 2>&1
 
   # Create a worktree on the feature branch
   local worktree_path="$RITE_WORKTREE_DIR/issue-race-27"
@@ -489,10 +512,32 @@ wait_at_barrier() {
   # CRITICAL: must return exit 2, not 0 (silent absorb) or 1 (generic failure)
   [ "$status" -eq 2 ]
 
-  # The concurrent commit must still be on remote — it was NOT overwritten
-  local remote_tip_after
-  remote_tip_after=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
-  [ "$remote_tip_before" = "$remote_tip_after" ]
+  # The foreign commit must NOT be silently discarded. The exit-2 (RELATED/UNRELATED)
+  # path INTEGRATES the foreign commit — it rebases local HEAD onto
+  # origin/$branch_name (absorbing the foreign commit) and force-pushes the combined
+  # history, then returns 2 so the caller re-enters Phase 2→3 for review
+  # (stale-branch.sh:474-480). The remote tip therefore legitimately ADVANCES to the
+  # integrated HEAD; asserting tip-equality would encode the wrong contract. What
+  # matters is that the foreign work survives in the remote history (preserved for
+  # the re-review), not overwritten/lost.
+  local _insp="$RITE_TEST_TMPDIR/inspect-27"
+  git clone "$BARE_REMOTE" "$_insp" >/dev/null 2>&1
+  git -C "$_insp" checkout "$branch_name" >/dev/null 2>&1
+
+  # The foreign commit's file must be present in the remote branch tree.
+  [ -f "$_insp/foreign-27.txt" ] || {
+    echo "FAIL: foreign-27.txt missing from remote $branch_name — foreign commit was silently discarded, not integrated"
+    git -C "$_insp" log --oneline | head -10
+    return 1
+  }
+
+  # And the foreign commit must be reachable in the remote branch history.
+  run git -C "$_insp" log --oneline "$branch_name"
+  [[ "$output" == *"unrelated change from another issue"* ]] || {
+    echo "FAIL: foreign commit not found in remote history — it was overwritten rather than integrated"
+    echo "$output"
+    return 1
+  }
 
   # Clean up
   cd "$FIXTURE_REPO"
@@ -534,7 +579,10 @@ wait_at_barrier() {
   git add main-trivial.txt
   git commit -m "Main divergence (trivial test)" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
-  git checkout "$branch_name" >/dev/null 2>&1
+  # Stay on main so `git worktree add "$branch_name"` below does not hit
+  # fatal: "'<branch>' is already checked out" (status 128). Same fix as the
+  # UNRELATED-commit test. (universal git behaviour, not BSD)
+  git checkout main >/dev/null 2>&1
 
   local worktree_path="$RITE_WORKTREE_DIR/issue-trivial-27"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1

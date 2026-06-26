@@ -488,8 +488,10 @@ write_title_map() {
   # Simplest assertion: "ordinal_counter" and "spike:" both appear, and the
   # spike check line number comes before the ordinal_counter line in the fn body.
   local spike_line ordinal_line
-  spike_line=$(echo "$fn_body" | grep -n "^spike:" | head -1 | cut -d: -f1 || true)
-  ordinal_line=$(echo "$fn_body" | grep -n "ordinal_counter" | head -1 | cut -d: -f1 || true)
+  # The spike-title check is a bash [[ =~ ^spike: ]] condition, not a line starting with 'spike:'.
+  spike_line=$(echo "$fn_body" | grep -n '=~ \^spike:' | head -1 | cut -d: -f1 || true)
+  # Anchor on the actual increment, not the comment/declaration of ordinal_counter.
+  ordinal_line=$(echo "$fn_body" | grep -n 'ordinal_counter=$(( ordinal_counter' | head -1 | cut -d: -f1 || true)
 
   [ -n "$spike_line" ] || {
     echo "FAIL: spike title check not found in create_issues" >&2

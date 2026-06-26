@@ -83,11 +83,13 @@ teardown() {
   TEST_FILE="$TEST_DIR/bad-push.sh"
   cat > "$TEST_FILE" <<'EOF'
 #!/usr/bin/env bash
-git add -A
-git commit -m "fix"
-if ! git push; then
-  echo "Push failed"
-fi
+# Re-source guard
+if declare -f _bad_push_fn >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+_bad_push_fn() {
+  git add -A
+  git commit -m "fix"
+  git push
+}
 EOF
 
   # Create a minimal sharkrite structure for the linter
@@ -113,12 +115,14 @@ EOF
   TEST_FILE="$TEST_DIR/good-push.sh"
   cat > "$TEST_FILE" <<'EOF'
 #!/usr/bin/env bash
-_fix_branch=$(git branch --show-current)
-git add -A
-git commit -m "fix"
-if ! git push origin "$_fix_branch"; then
-  echo "Push failed"
-fi
+# Re-source guard
+if declare -f _good_push_fn >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+_good_push_fn() {
+  _fix_branch=$(git branch --show-current)
+  git add -A
+  git commit -m "fix"
+  git push origin "$_fix_branch"
+}
 EOF
 
   # Create a minimal sharkrite structure for the linter

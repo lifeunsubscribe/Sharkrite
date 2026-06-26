@@ -61,8 +61,28 @@ mock_gh() {
   local command="$1"
   shift
 
-  # Increment call counter
-  _GH_MOCK_CALL_COUNT=$((_GH_MOCK_CALL_COUNT + 1))
+  # Capture a --jq / -q filter if present so the fixture path below can honor it
+  # like real gh does. Without this the fixture branch cats the whole JSON object,
+  # so e.g. `pr view N --json headRefName --jq .headRefName` returns the full
+  # object instead of the extracted branch string. (Stateful-mode handlers do
+  # their own filtering and return before reaching the fixture path.)
+  local _mock_jq_filter="" _mock_jq_prev="" _mock_jq_arg
+  for _mock_jq_arg in "$@"; do
+    if [ "$_mock_jq_prev" = "--jq" ] || [ "$_mock_jq_prev" = "-q" ]; then
+      _mock_jq_filter="$_mock_jq_arg"; break
+    fi
+    _mock_jq_prev="$_mock_jq_arg"
+  done
+
+  # Increment call counter.  File-backed so the count survives bats `run`/`$()`
+  # subshells (an in-memory variable would reset to 0 on every subshell call,
+  # so Nth>1 fault injection could never fire).
+  local _gh_cf="${GH_MOCK_CALL_COUNT_FILE:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/.gh_mock_call_count}"
+  local _gh_n
+  _gh_n=$(cat "$_gh_cf" 2>/dev/null || echo 0)
+  _gh_n=$((_gh_n + 1))
+  echo "$_gh_n" > "$_gh_cf"
+  _GH_MOCK_CALL_COUNT=$_gh_n
 
   # Fault injection: fail on Nth call
   if [ -n "${GH_MOCK_FAIL_NTH:-}" ] && [ "$_GH_MOCK_CALL_COUNT" -eq "$GH_MOCK_FAIL_NTH" ]; then
@@ -71,6 +91,14 @@ mock_gh() {
     else
       echo "gh: mock failure (call #${_GH_MOCK_CALL_COUNT})" >&2
     fi
+    return "${GH_MOCK_FAIL_EXIT_CODE:-${GH_MOCK_EXIT_CODE:-1}}"
+  fi
+
+  # Fault injection: standalone stderr failure (no Nth-call gating).
+  # Placed AFTER the Nth-call branch so the Nth-call form takes precedence
+  # when both are configured.
+  if [ -n "${GH_MOCK_STDERR:-}" ]; then
+    echo "$GH_MOCK_STDERR" >&2
     return "${GH_MOCK_EXIT_CODE:-1}"
   fi
 
@@ -85,7 +113,9 @@ mock_gh() {
   # Fault injection: hang
   if [ -n "${MOCK_HANG_COMMAND:-}" ] && [ "$MOCK_HANG_COMMAND" = "gh" ]; then
     if [ "${MOCK_HANG_DURATION:-infinity}" = "infinity" ]; then
-      sleep infinity
+      # Portable "forever" sleep: BSD /bin/sleep (macOS) rejects `sleep infinity`,
+      # so use a large finite value (~68 years) that both GNU and BSD accept.
+      sleep 2147483647
     else
       sleep "${MOCK_HANG_DURATION}"
     fi
@@ -177,12 +207,18 @@ mock_gh() {
   case "$command" in
     pr)
       local subcommand="$1"
-      local identifier="${2:-default}"
+      # Resolve identifier, skipping a leading-dash flag (e.g. `pr create --title`)
+      # so it falls back to "default" instead of building "pr-create---title".
+      local identifier="default"
+      if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then identifier="$2"; fi
       fixture_name="pr-${subcommand}-${identifier}"
       ;;
     issue)
       local subcommand="$1"
-      local identifier="${2:-default}"
+      # Resolve identifier, skipping a leading-dash flag (e.g. `issue list --state`)
+      # so it falls back to "default" instead of building "issue-list---state".
+      local identifier="default"
+      if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then identifier="$2"; fi
       fixture_name="issue-${subcommand}-${identifier}"
       ;;
     api)
@@ -206,7 +242,11 @@ mock_gh() {
   fi
 
   if [ -f "$fixture_file" ]; then
-    cat "$fixture_file"
+    if [ -n "$_mock_jq_filter" ]; then
+      jq -r "$_mock_jq_filter" "$fixture_file"
+    else
+      cat "$fixture_file"
+    fi
   else
     echo "gh mock: no fixture found for '${fixture_name}' or '${command}-default'" >&2
     echo "Searched in: ${fixture_dir}" >&2
@@ -288,8 +328,13 @@ gh_mock_pr_comment_body() {
 # Reset mock state (call in test setup)
 reset_gh_mock() {
   _GH_MOCK_CALL_COUNT=0
+  # Reset the file-backed call counter too (it is the source of truth across
+  # bats `run`/`$()` subshells; the in-memory var alone is insufficient).
+  local _gh_cf="${GH_MOCK_CALL_COUNT_FILE:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/.gh_mock_call_count}"
+  printf 0 > "$_gh_cf" 2>/dev/null || true
   unset GH_MOCK_FAIL_NTH
   unset GH_MOCK_EXIT_CODE
+  unset GH_MOCK_FAIL_EXIT_CODE
   unset GH_MOCK_FIXTURE_OVERRIDE
   unset GH_MOCK_STDERR
   unset GH_MOCK_RATE_LIMIT

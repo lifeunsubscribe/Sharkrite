@@ -69,6 +69,9 @@ fi
 exec "$(which git)" "\$@"
 EOF
   chmod +x "$SHIM_DIR/git"
+  # Bash caches command locations; setup()/test-body git calls hashed git->/usr/bin/git.
+  # Without this, the freshly-installed PATH shim is bypassed (real git runs, shim never fires).
+  hash -r
 }
 
 # ---------------------------------------------------------------------------
@@ -122,6 +125,7 @@ if [[ "$*" == *"fetch"* ]]; then
 fi
 SHIM
   chmod +x "$SHIM_DIR/git"
+  hash -r  # clear bash command-hash cache so the PATH shim is resolved
 
   run git_fetch_safe origin main
   [ "$status" -ne 0 ]
@@ -136,6 +140,7 @@ if [[ "$*" == *"fetch"* ]]; then
 fi
 SHIM
   chmod +x "$SHIM_DIR/git"
+  hash -r  # clear bash command-hash cache so the PATH shim is resolved
 
   run git_fetch_safe origin main
   [ "$status" -ne 0 ]
@@ -155,6 +160,7 @@ if [[ "$*" == *"fetch"* ]]; then
 fi
 SHIM
   chmod +x "$SHIM_DIR/git"
+  hash -r  # clear bash command-hash cache so the PATH shim is resolved
 
   run git_fetch_safe origin main
   [ "$status" -ne 0 ]

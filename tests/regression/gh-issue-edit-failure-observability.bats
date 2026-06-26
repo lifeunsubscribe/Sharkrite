@@ -261,8 +261,8 @@ write_ordinal_map() {
     esac
   }
 
-  _output=$( _rewrite_created_issue_bodies 500 501 -- "$ordinal_map" "$title_map" 2>&1 )
-  _rc=$?
+  _rc=0
+  _output=$( _rewrite_created_issue_bodies 500 501 -- "$ordinal_map" "$title_map" 2>&1 ) || _rc=$?
 
   # Must exit 1 (at least one failure)
   [ "$_rc" -eq 1 ] || {

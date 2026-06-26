@@ -58,7 +58,9 @@ teardown() {
   git commit -m "Feature commit" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree on the feature branch
+  # Create worktree on the feature branch (fixture repo must NOT have the
+  # branch checked out, or `git worktree add` errors with 'already checked out')
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-dirty-tracked"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
@@ -127,7 +129,8 @@ teardown() {
   git commit -m "Initial feature commit" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree
+  # Create worktree (fixture repo must be off the feature branch first)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-dirty-staged"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
@@ -202,7 +205,8 @@ teardown() {
   git commit -m "Feature modifies shared.txt" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree
+  # Create worktree (fixture repo must be off the feature branch first)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-dirty-conflict"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
@@ -216,12 +220,13 @@ teardown() {
   git commit -m "Main modifies shared.txt" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
-  # Run rebase — should fail due to conflict
-  _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
-  local exit_code=$?
+  # Run rebase — should fail due to conflict. Use `run` so the expected non-zero
+  # return is captured in $status rather than tripping bats' errexit on the bare
+  # command (the auto-mode conflict bail returns 1 from stale-branch.sh).
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
 
   # Must return non-zero (rebase conflict path)
-  [ "$exit_code" -ne 0 ]
+  [ "$status" -ne 0 ]
 
   # No leftover rebase state (abort was clean)
   [ ! -d "$worktree_path/.git/rebase-merge" ]
@@ -263,12 +268,20 @@ teardown() {
   #   5. _stale_rebase_onto_main calls `git push --force-with-lease`.
   #      The lease check compares the local tracking ref (original SHA) against
   #      the actual remote tip (concurrent SHA) — they differ → push rejected.
-  #   6. Function must return non-zero (exit 1 from the rejection branch at
-  #      stale-branch.sh:246).
+  #   6. The rejection routes into _stale_classify_after_push_rejection. In auto
+  #      mode the foreign (concurrent) commit is classified UNRELATED, INTEGRATED
+  #      (rebased onto origin/<branch>) and re-pushed with --force-with-lease, so
+  #      the function returns 2 (re-enter Phase 2→3 for review). The remote tip is
+  #      rewritten to a combined history that still CONTAINS the concurrent commit
+  #      (integrated, not overwritten/lost).
   #
   # Without --force-with-lease (plain --force), the concurrent push would be
   # silently overwritten. Catching a regression to --force is the entire point
   # of this test.
+
+  # Force a deterministic UNRELATED classification without a real Claude call —
+  # otherwise this test makes an unstubbed provider_run_classify network call.
+  classify_foreign_commits() { export DIVERGENCE_CLASS="UNRELATED"; return 0; }
 
   local branch_name="fix/force-lease-reject-test"
   git checkout -b "$branch_name" main >/dev/null 2>&1
@@ -322,7 +335,9 @@ teardown() {
   #   2. Attempt git push --force-with-lease origin <branch>
   #   3. Lease fails: local tracking ref = original_remote_sha,
   #      remote tip = concurrent_remote_sha → git rejects the push
-  #   4. Function returns 1 (stale-branch.sh:246 rejection branch)
+  #   4. Rejection routes into _stale_classify_after_push_rejection; auto mode
+  #      classifies UNRELATED, integrates the foreign commit and re-pushes,
+  #      returning 2 (re-enter Phase 2→3 for review)
   run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
 
   # Confirm the rebase step actually ran before the push attempt:
@@ -336,13 +351,14 @@ teardown() {
   [ "$pre_rebase_head" != "$post_rebase_head" ]  # rebase rewrote HEAD
   [ -f "$worktree_path/main-lease.txt" ]           # main's commit was applied
 
-  # Must return non-zero — the force-with-lease rejection path was hit
-  [ "$status" -ne 0 ]
+  # force-with-lease was rejected; auto mode integrated the foreign commit and
+  # re-pushed → exit 2 (re-enter Phase 2→3 for review), tip is rewritten.
+  [ "$status" -eq 2 ]
 
-  # The concurrent commit must still exist on remote (not overwritten)
-  local remote_tip_after
-  remote_tip_after=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
-  [ "$concurrent_remote_sha" = "$remote_tip_after" ]
+  # The concurrent commit must still be REACHABLE on the remote (integrated, not lost)
+  git fetch "$BARE_REMOTE" "refs/heads/$branch_name" >/dev/null 2>&1
+  run git merge-base --is-ancestor "$concurrent_remote_sha" FETCH_HEAD
+  [ "$status" -eq 0 ]   # concurrent commit is an ancestor of the new remote tip
 
   # Clean up
   cd "$FIXTURE_REPO"
@@ -367,7 +383,8 @@ teardown() {
   git commit -m "Feature commit" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree — clean state
+  # Create worktree — clean state (fixture repo must be off the feature branch first)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-clean-no-stash"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 

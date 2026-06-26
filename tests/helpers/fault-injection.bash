@@ -21,7 +21,9 @@ inject_gh_failure_nth() {
   local exit_code="${2:-1}"
 
   export GH_MOCK_FAIL_NTH="$call_number"
-  export GH_MOCK_EXIT_CODE="$exit_code"
+  # Dedicated Nth-call exit-code var: keeps the selective failure from polluting
+  # the success-path return of non-Nth calls.
+  export GH_MOCK_FAIL_EXIT_CODE="$exit_code"
 }
 
 # Inject claude failure on Nth call
@@ -32,7 +34,10 @@ inject_claude_failure_nth() {
   local exit_code="${2:-1}"
 
   export CLAUDE_MOCK_FAIL_NTH="$call_number"
-  export CLAUDE_MOCK_EXIT_CODE="$exit_code"
+  # Dedicated Nth-call exit-code var: keeps the selective failure from polluting
+  # the trailing stream-success return of non-Nth calls (which stays keyed on
+  # CLAUDE_MOCK_EXIT_CODE so inject_claude_timeout still works).
+  export CLAUDE_MOCK_FAIL_EXIT_CODE="$exit_code"
 }
 
 # Make claude return empty output
@@ -106,6 +111,7 @@ reset_fault_injection() {
   # gh mock state
   unset GH_MOCK_FAIL_NTH
   unset GH_MOCK_EXIT_CODE
+  unset GH_MOCK_FAIL_EXIT_CODE
   unset GH_MOCK_RATE_LIMIT
   unset GH_MOCK_FIXTURE_OVERRIDE
   unset GH_MOCK_STDERR
@@ -113,6 +119,7 @@ reset_fault_injection() {
   # claude mock state
   unset CLAUDE_MOCK_FAIL_NTH
   unset CLAUDE_MOCK_EXIT_CODE
+  unset CLAUDE_MOCK_FAIL_EXIT_CODE
   unset CLAUDE_MOCK_SCENARIO
   unset CLAUDE_MOCK_FIXTURE_OVERRIDE
   unset CLAUDE_MOCK_STDERR
@@ -128,6 +135,13 @@ reset_fault_injection() {
   if declare -p _CLAUDE_MOCK_CALL_COUNT &>/dev/null; then
     _CLAUDE_MOCK_CALL_COUNT=0
   fi
+
+  # Reset the file-backed call counters (the source of truth across bats
+  # `run`/`$()` subshells; the in-memory vars above alone are insufficient).
+  local _gh_cf="${GH_MOCK_CALL_COUNT_FILE:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/.gh_mock_call_count}"
+  local _cl_cf="${CLAUDE_MOCK_CALL_COUNT_FILE:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/.claude_mock_call_count}"
+  printf 0 > "$_gh_cf" 2>/dev/null || true
+  printf 0 > "$_cl_cf" 2>/dev/null || true
 }
 
 # Verify fault injection is working

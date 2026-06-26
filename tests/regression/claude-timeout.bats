@@ -134,6 +134,9 @@ teardown() {
 @test "RITE_CLAUDE_TIMEOUT_PROMPT default is 600" {
   # Source a fresh shell without env overrides to check the default
   run bash -c "
+    unset RITE_CLAUDE_TIMEOUT_PROMPT RITE_CLAUDE_TIMEOUT_AGENTIC
+    export RITE_PROJECT_ROOT=\"\$(mktemp -d)\"
+    export RITE_GLOBAL_CONFIG=/dev/null
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     echo \"\${RITE_CLAUDE_TIMEOUT_PROMPT:-unset}\"
   "
@@ -142,6 +145,9 @@ teardown() {
 
 @test "RITE_CLAUDE_TIMEOUT_AGENTIC default is 1800" {
   run bash -c "
+    unset RITE_CLAUDE_TIMEOUT_PROMPT RITE_CLAUDE_TIMEOUT_AGENTIC
+    export RITE_PROJECT_ROOT=\"\$(mktemp -d)\"
+    export RITE_GLOBAL_CONFIG=/dev/null
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     echo \"\${RITE_CLAUDE_TIMEOUT_AGENTIC:-unset}\"
   "

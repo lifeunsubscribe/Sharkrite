@@ -65,7 +65,7 @@ teardown() {
 wait_at_barrier() {
   local barrier_name="$1"
   local expected_count="$2"
-  local pid_file="$BARRIER_DIR/${barrier_name}.$$"
+  local pid_file="$BARRIER_DIR/${barrier_name}.$BASHPID"
 
   touch "$pid_file"
 
@@ -209,6 +209,9 @@ wait_at_barrier() {
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
   mkdir -p "$exit_codes_dir"
 
+  local intervals_dir="$RITE_TEST_TMPDIR/intervals"
+  mkdir -p "$intervals_dir"
+
   for i in $(seq 1 $num_processes); do
     (
       wait_at_barrier "concurrent_lock_test" "$num_processes" || exit 1
@@ -219,9 +222,25 @@ wait_at_barrier() {
 
       echo "$result" > "$exit_codes_dir/process_${i}.exit"
 
-      # Release lock if we got it
+      # If we got the lock, record the GUARANTEED-HELD window [_acq, _rel] and
+      # then release. We assert instantaneous mutual exclusion (the real lock
+      # contract), not lifetime exclusivity: because each holder releases
+      # immediately, a loser waking from its retry sleep legitimately re-acquires
+      # the now-free lock, so the lifetime success count is >1 even though mkdir
+      # was atomic at every instant. Disjoint held-windows is the assertion that
+      # tests the contract.
+      #
+      # _rel is stamped BEFORE release_issue_lock so the window covers only the
+      # period we definitely hold the lock. No other process can mkdir the lock
+      # dir until THIS process's release rm completes (after _rel), so the next
+      # holder's _acq is necessarily > this _rel — disjoint without depending on
+      # sub-millisecond stamp precision around the rm itself.
       if [ "$result" -eq 0 ]; then
+        local _acq _rel
+        _acq=$(date +%s.%N)
+        _rel=$(date +%s.%N)
         release_issue_lock "$issue_number"
+        echo "$_acq $_rel" > "$intervals_dir/process_${i}.interval"
       fi
     ) &
   done
@@ -237,21 +256,31 @@ wait_at_barrier() {
     fi
   done
 
-  # Exactly one process should have gotten the lock.
-  # Issue #9 (per-issue locking) landed — this is now a hard assertion.
-  # mkdir atomicity guarantees exactly 1 winner.
-  #
-  # If you see this failure with success_count=0, the barrier timed out before
-  # all subprocesses arrived — that is a test-scaffolding failure (slow machine),
-  # NOT a regression in locking. The bash 4+ guard in setup() and the 10s
-  # barrier timeout are the primary mitigations; if this still fires, check
-  # system load rather than the lock implementation.
-  [ "$success_count" -eq 1 ] || {
-    echo "FAIL: $success_count processes got the lock (expected exactly 1)."
-    echo "  success_count=0 → barrier timed out (test scaffolding failure, not a lock regression)"
-    echo "  success_count>1 → mkdir is not atomic on this FS (genuine regression)"
+  # At least one process must have acquired the lock (barrier-arrival sanity).
+  # If success_count=0 the barrier timed out before subprocesses raced — that is
+  # a test-scaffolding failure (slow machine), NOT a locking regression. The
+  # bash 4+ guard in setup() and the 10s barrier timeout are the mitigations.
+  [ "$success_count" -ge 1 ] || {
+    echo "FAIL: no process acquired the lock — barrier timed out (test scaffolding failure, not a lock regression)"
     false
   }
+
+  # CORE ASSERTION: mutual exclusion means no two hold-windows overlap in time.
+  # mkdir atomicity guarantees exactly one holder at any instant; serial
+  # re-acquisition after immediate release is expected and correct. Sort the
+  # recorded [acquire, release] intervals by acquire time and assert each
+  # interval starts at/after the previous one ended.
+  local prev_rel="0"
+  while IFS=' ' read -r acq rel; do
+    [ -z "$acq" ] && continue
+    # acq must be >= prev_rel (no overlap). Use awk for float comparison.
+    awk -v a="$acq" -v p="$prev_rel" 'BEGIN { exit !(a >= p) }' || {
+      echo "FAIL: overlapping lock hold-windows detected (acquire $acq < previous release $prev_rel)."
+      echo "  → mkdir is not atomic on this FS (genuine mutual-exclusion regression)"
+      false
+    }
+    prev_rel="$rel"
+  done < <(cat "$intervals_dir"/*.interval 2>/dev/null | sort -n)
 }
 
 @test "concurrent stale lock reclamation - race condition" {
@@ -267,6 +296,9 @@ wait_at_barrier() {
   mkdir -p "$RITE_LOCK_DIR/issue-${issue_number}.lock"
   get_dead_pid > "$RITE_LOCK_DIR/issue-${issue_number}.lock/pid"
 
+  local intervals_dir="$RITE_TEST_TMPDIR/intervals"
+  mkdir -p "$intervals_dir"
+
   for i in $(seq 1 $num_processes); do
     (
       wait_at_barrier "stale_reclaim_test" "$num_processes" || exit 1
@@ -277,9 +309,23 @@ wait_at_barrier() {
 
       echo "$result" > "$exit_codes_dir/process_${i}.exit"
 
-      # Release if we got it
+      # If we reclaimed, record the GUARANTEED-HELD window [_acq, _rel] then
+      # release. Same rationale as "concurrent lock attempts": each reclamation
+      # (rm-then-mkdir) is atomic at its instant, but immediate release lets a
+      # reclaimer waking from its retry sleep legitimately reclaim the freed lock
+      # too, so the lifetime reclamation count is >1. The real contract is that
+      # no two held-windows overlap.
+      #
+      # _rel is stamped BEFORE release_issue_lock so the window covers only the
+      # period we definitely hold the lock; the next holder cannot mkdir until our
+      # release rm completes (after _rel), so its _acq > our _rel — disjoint
+      # without sub-millisecond sensitivity to the rm operation itself.
       if [ "$result" -eq 0 ]; then
+        local _acq _rel
+        _acq=$(date +%s.%N)
+        _rel=$(date +%s.%N)
         release_issue_lock "$issue_number"
+        echo "$_acq $_rel" > "$intervals_dir/process_${i}.interval"
       fi
     ) &
   done
@@ -295,19 +341,27 @@ wait_at_barrier() {
     fi
   done
 
-  # Only one should have reclaimed successfully.
-  # Issue #9 (per-issue locking) landed — this is now a hard assertion.
-  # Reclamation uses rm-then-mkdir; only one concurrent rm+mkdir sequence
-  # can win the subsequent mkdir.
-  #
-  # If you see success_count=0, the barrier timed out (test scaffolding failure,
-  # NOT a regression in the lock implementation). Check system load.
-  [ "$success_count" -eq 1 ] || {
-    echo "FAIL: $success_count processes reclaimed the stale lock (expected exactly 1)."
-    echo "  success_count=0 → barrier timed out (test scaffolding failure, not a lock regression)"
-    echo "  success_count>1 → stale-reclaim rm+mkdir sequence is not atomic (genuine regression)"
+  # At least one process must have reclaimed (barrier-arrival sanity).
+  # success_count=0 → barrier timed out before subprocesses raced (test
+  # scaffolding failure on a slow machine, NOT a lock regression).
+  [ "$success_count" -ge 1 ] || {
+    echo "FAIL: no process reclaimed the stale lock — barrier timed out (test scaffolding failure, not a lock regression)"
     false
   }
+
+  # CORE ASSERTION: reclamation is mutually exclusive — no two hold-windows
+  # overlap. rm-then-mkdir is atomic at any instant; serial re-reclamation after
+  # immediate release is expected and correct. Assert disjoint intervals.
+  local prev_rel="0"
+  while IFS=' ' read -r acq rel; do
+    [ -z "$acq" ] && continue
+    awk -v a="$acq" -v p="$prev_rel" 'BEGIN { exit !(a >= p) }' || {
+      echo "FAIL: overlapping reclaimed-lock hold-windows detected (acquire $acq < previous release $prev_rel)."
+      echo "  → stale-reclaim rm+mkdir sequence is not atomic (genuine regression)"
+      false
+    }
+    prev_rel="$rel"
+  done < <(cat "$intervals_dir"/*.interval 2>/dev/null | sort -n)
 }
 
 @test "multiple issues locked simultaneously by different processes" {

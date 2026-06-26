@@ -57,6 +57,39 @@ if [ -z "${RITE_LOCK_DIR:-}" ]; then
   source "$_SCRIPT_DIR/config.sh"
 fi
 
+# Atomically claim ownership of a stale lock directory before removing it.
+#
+# WHY: the previous reclaim path was `rm -rf "$lock_dir"; continue` followed by a
+# loop-back to `mkdir "$lock_dir"`. That is two non-atomic steps. Under
+# concurrent reclamation of the SAME stale lock, two processes could each read
+# the dead PID, then process A reclaims (rm + mkdir + writes its live PID) while
+# process B — having already decided to reclaim based on its now-stale dead-PID
+# read — runs `rm -rf "$lock_dir"`, DELETING A's freshly-acquired live lock, then
+# `mkdir`s its own. Result: A and B both believe they hold the lock (live
+# double-hold, reproduced ~6% of concurrent-reclaim trials).
+#
+# FIX: rename (mv) is atomic on POSIX and serialises the steal. Only the process
+# whose `mv "$lock_dir" "$unique"` succeeds owns the steal; concurrent callers'
+# mv fails because the source no longer exists. The winner removes the renamed
+# dir; the next `mkdir "$lock_dir"` (the existing atomic gate) then admits exactly
+# one acquirer. A caller whose mv fails simply re-loops and re-evaluates the lock,
+# which by then is either free (mkdir wins) or held by the steal winner.
+#
+# Args: lock_dir
+# Returns: 0 if this process won the steal (dir removed), 1 if it lost the race.
+_atomic_steal_stale_lock() {
+  local lock_dir="$1"
+  # Unique per-process, per-call destination so concurrent steals never collide.
+  local steal_dst="${lock_dir}.stale.$$.${RANDOM}"
+  if mv "$lock_dir" "$steal_dst" 2>/dev/null; then
+    rm -rf "$steal_dst" 2>/dev/null || true
+    return 0
+  fi
+  # Lost the rename race (another reclaimer already moved/removed it, or a fresh
+  # holder mkdir'd a new dir at this path). Nothing to remove.
+  return 1
+}
+
 # Acquire per-issue lock with PID-based liveness checking
 # Args: issue_number
 # Returns: 0 on success, 1 if locked by another live process
@@ -80,9 +113,12 @@ acquire_issue_lock() {
       # kill -0: same-host assumption — only valid within a single PID namespace.
       # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
       if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        # Holding process is dead — reclaim stale lock
+        # Holding process is dead — atomically steal the stale lock, then re-loop.
+        # Whether the steal won or lost the race, re-evaluate the lock on the next
+        # iteration: it is now either free (our mkdir wins) or freshly held by the
+        # steal winner (its live PID blocks us). Never blindly mkdir after a steal.
         echo "⚠️  Reclaiming stale lock from dead process (PID $lock_pid)" >&2
-        rm -rf "$lock_dir" 2>/dev/null
+        _atomic_steal_stale_lock "$lock_dir"
         continue
       fi
 
@@ -94,7 +130,7 @@ acquire_issue_lock() {
       # Live failure: issue #343 batch run 2026-06-06.
       if [ -n "$lock_pid" ] && [ "$lock_pid" = "$$" ]; then
         echo "⚠️  Reclaiming self-held lock (post-exec restart) for issue #${issue_number}" >&2
-        rm -rf "$lock_dir" 2>/dev/null
+        _atomic_steal_stale_lock "$lock_dir"
         continue
       fi
 
@@ -119,7 +155,7 @@ acquire_issue_lock() {
       fi
       if [ ! -f "$lock_dir/pid" ]; then
         echo "⚠️  Reclaiming stale lock (no PID file after grace period)" >&2
-        rm -rf "$lock_dir" 2>/dev/null || true
+        _atomic_steal_stale_lock "$lock_dir"
         continue
       fi
     fi

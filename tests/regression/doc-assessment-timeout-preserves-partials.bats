@@ -39,13 +39,37 @@ setup() {
   cat > "$_watchdog_helper" << 'WATCHDOG_EOF'
 #!/bin/bash
 set -euo pipefail
-# Args: <doc_pid> <doc_log> <timeout>
-_DOC_PID="$1"
-_DOC_LOG="$2"
-export RITE_DOC_ASSESSMENT_TIMEOUT="$3"
+# Args: <doc_log> <timeout> <mode>
+#   <mode> = N            -> spawn a child that writes N partial_complete: lines
+#                            then hangs (sleep 200) so the watchdog times it out.
+#   <mode> = normal:N     -> spawn a child that writes N partial_complete: lines
+#                            plus an "Internal:" line then exits 0 (success path).
+# The child MUST be spawned by this helper process so that `wait "$_DOC_PID"`
+# operates on a real child (cross-process wait fails on bash 5.x — see triage
+# for issue #341). This mirrors production: phase_spawn_doc_assessment and
+# phase_wait_doc_assessment both run in the same shell.
+_DOC_LOG="$1"
+export RITE_DOC_ASSESSMENT_TIMEOUT="$2"
+_MODE="$3"
 
 _doc_exit=0
 _doc_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+
+if [ "${_MODE#normal:}" != "$_MODE" ]; then
+  # normal:N -> success path: write N partials + an Internal: line, then exit 0.
+  _N="${_MODE#normal:}"
+  ( i=0; while [ "$i" -lt "$_N" ]; do printf 'partial_complete:item%d\n' "$i"; i=$((i+1)); done
+    echo 'Internal: security checkmark  api checkmark'
+  ) > "$_DOC_LOG" 2>&1 &
+  _DOC_PID=$!
+else
+  # N -> timeout path: write N partials then hang so the watchdog kills it.
+  _N="$_MODE"
+  ( i=0; while [ "$i" -lt "$_N" ]; do printf 'partial_complete:item%d\n' "$i"; i=$((i+1)); done
+    sleep 200
+  ) > "$_DOC_LOG" 2>&1 &
+  _DOC_PID=$!
+fi
 
 ( sleep "$_doc_timeout" && kill -TERM "$_DOC_PID" 2>/dev/null ) &
 _doc_watchdog_pid=$!
@@ -88,15 +112,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "merge-pr: timeout with 2 completed partials reports 2 preserved" {
-  # Start a subprocess that writes 2 partial_complete: lines then hangs
-  local _DOC_LOG
-  _DOC_LOG=$(mktemp)
-  ( printf 'partial_complete:security\npartial_complete:architecture\n'
-    sleep 200
-  ) > "$_DOC_LOG" 2>&1 &
-  local _DOC_PID=$!
-
-  run bash "$_watchdog_helper" "$_DOC_PID" "$_DOC_LOG" "3"
+  # Helper spawns a child that writes 2 partial_complete: lines then hangs,
+  # so the 3s watchdog times it out -> 2 preserved.
+  run bash "$_watchdog_helper" "$(mktemp)" "3" "2"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"timed out"* ]]
@@ -109,13 +127,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "merge-pr: timeout with 0 completed partials reports no progress" {
-  local _DOC_LOG
-  _DOC_LOG=$(mktemp)
-  # Subprocess hangs immediately (no partials written)
-  sleep 200 > "$_DOC_LOG" 2>&1 &
-  local _DOC_PID=$!
-
-  run bash "$_watchdog_helper" "$_DOC_PID" "$_DOC_LOG" "3"
+  # Helper spawns a child that writes 0 partials then hangs, so the 3s
+  # watchdog times it out -> no sub-assessments completed.
+  run bash "$_watchdog_helper" "$(mktemp)" "3" "0"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"timed out"* ]]
@@ -129,14 +143,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "merge-pr: timeout with 4 completed partials reports 4 preserved" {
-  local _DOC_LOG
-  _DOC_LOG=$(mktemp)
-  ( printf 'partial_complete:security\npartial_complete:architecture\npartial_complete:api\npartial_complete:adr\n'
-    sleep 200
-  ) > "$_DOC_LOG" 2>&1 &
-  local _DOC_PID=$!
-
-  run bash "$_watchdog_helper" "$_DOC_PID" "$_DOC_LOG" "3"
+  # Helper spawns a child that writes 4 partial_complete: lines then hangs,
+  # so the 3s watchdog times it out -> 4 preserved.
+  run bash "$_watchdog_helper" "$(mktemp)" "3" "4"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"timed out"* ]]
@@ -149,14 +158,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "merge-pr: normal completion with partial_complete lines in log works fine" {
-  local _DOC_LOG
-  _DOC_LOG=$(mktemp)
-  ( printf 'partial_complete:security\npartial_complete:api\n'
-    echo 'Internal: security checkmark  api checkmark'
-  ) > "$_DOC_LOG" 2>&1 &
-  local _DOC_PID=$!
-
-  run bash "$_watchdog_helper" "$_DOC_PID" "$_DOC_LOG" "30"
+  # normal:2 -> helper spawns a child that writes 2 partials + an Internal:
+  # line then exits 0. With a 30s timeout the watchdog never fires.
+  run bash "$_watchdog_helper" "$(mktemp)" "30" "normal:2"
 
   [ "$status" -eq 0 ]
   # No timeout warning should be emitted

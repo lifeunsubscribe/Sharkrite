@@ -30,9 +30,12 @@ iso_to_epoch() {
     # GNU date (Linux) - supports -d flag
     date -d "$iso_timestamp" "+%s" 2>/dev/null || echo "0"
   else
-    # BSD date (macOS) - requires -j (don't set) and -f (input format)
+    # BSD date (macOS) - requires -u (interpret input as UTC), -j (don't set),
+    # and -f (input format). Without -u the trailing Z is a literal and the
+    # timestamp is parsed in local time, skewing the epoch by the local offset
+    # (epoch_to_iso already uses -u; this keeps the pair symmetric).
     # Expected format: YYYY-MM-DDTHH:MM:SSZ
-    date -jf "%Y-%m-%dT%H:%M:%SZ" "$iso_timestamp" "+%s" 2>/dev/null || echo "0"
+    date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$iso_timestamp" "+%s" 2>/dev/null || echo "0"
   fi
 }
 

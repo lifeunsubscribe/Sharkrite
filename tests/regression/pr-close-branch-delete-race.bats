@@ -57,9 +57,9 @@ _setup_stale_empty_branch() {
   git push -u origin "$BRANCH_NAME" >/dev/null 2>&1
 
   WORKTREE_PATH="$RITE_WORKTREE_DIR/issue-${issue_number}"
-  git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1
 
   git checkout main >/dev/null 2>&1
+  git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1
 }
 
 # ───────────────────────────────────────────────────────────────────

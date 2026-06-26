@@ -759,6 +759,20 @@ All three lock implementations use `kill -0 $PID` to decide whether a lock-holdi
 - `lib/utils/scratchpad-lock.sh` — portable mkdir path only (the `flock` fast-path on Linux does not use `kill -0`)
 - `lib/utils/session-tracker.sh` — `_acquire_session_lock` portable path
 
+### The mkdir-then-deferred-pid Reclaim Race (issue #706)
+
+All three locks share a second race, **distinct from the same-host assumption above**: acquisition is non-atomic. Each wins exclusion with `mkdir "$lock_dir"`, then writes its PID in a *separate, later* step. Between the mkdir and the PID write there is a window where the lock directory exists with **no `pid` file**. A concurrent acquirer whose "no-PID grace period" expires inside that window runs `rm -rf "$lock_dir"` to reclaim what looks like an abandoned lock — **deleting the live holder's freshly-acquired lock**. Both processes then run the critical section concurrently:
+
+- **issue-lock.sh** — double-hold: two processes each believe they hold the lock (~6% of concurrent-reclaim trials, reproduced deterministically).
+- **scratchpad-lock.sh** — data loss: the read-file → write-temp → mv critical section in `log_encountered_issue` drops an entry (~5/25 trials).
+- **session-tracker.sh** — lost increments / JSON corruption in the session-completion counter under heavy concurrent load (~5/10 trials).
+
+**Status:**
+- `issue-lock.sh` **fixed inline** (commit `0deefb8`) via `_atomic_steal_stale_lock`: reclaim by renaming (`mv`) the stale dir to a unique per-process path before removing it — only one racer's `mv` succeeds, serialising the steal; the existing `mkdir` gate then admits exactly one acquirer. 0/200 overlaps post-fix.
+- `scratchpad-lock.sh` and `session-tracker.sh` have the same class but are **deferred to #706** rather than accreting three different ad-hoc patches. Their two data-loss tests are concurrency (gate-excluded), so they don't block the gate.
+
+**Do NOT "fix" the deferred two with another bespoke patch** — that's the trap #706 exists to avoid. The correct fix is to **unify all three locks onto one primitive** (flock where available, or a `noclobber` single-syscall file lock) and migrate together.
+
 ### PR Follow-up Lock: Timing Budget
 
 The `acquire_pr_followup_lock` waiter times out after **~60s** (60 × 1s sleeps plus per-iteration overhead — actual wall-clock slightly exceeds 60s). Under slow-GitHub conditions the holder can consume significantly more time inside the critical section than the ~5–10s typical case:
@@ -890,6 +904,12 @@ The `STASHED_UNRELATED_WORK` branch inside `phase_merge_pr` cd's into `$WORKTREE
 
 ## Decisions Log
 
+### gh_safe transient-retry regex: under-retry > over-retry (green-main cleanup)
+
+The bare-code arm of the transient-retry regex in `gh-retry.sh` retries on a bare HTTP status code followed by a space (e.g. "503 Service Temporarily Unavailable", "curl: ... error: 503") — raw gh/curl output that frames codes without "HTTP" or parens. A green-main test (`gh-safe-adoption.bats` test 17) wanted it to NOT retry on a coincidental "Processed 500 records". These are structurally identical (code + space + word); a trailing-char/phrase anchor cannot distinguish them.
+
+**Decision (kept the original regex; fixed the test):** under-retry is worse than over-retry — a missed transient turns into a spurious workflow failure, whereas a wasted retry on a coincidental number just burns a little budget and then surfaces the real error. Bare-code transient coverage is preserved; test 17 is a documented `skip` recording the accepted space-form false-positive. Re-enable if `gh-retry.sh` gains phrase-vs-word-count disambiguation. (An adversarial review confirmed the irreducibility; recorded here so it isn't re-litigated.)
+
 ### Removed: Plan Directives System
 
 Directives were persistent per-project rules injected into the plan prompt (e.g., "always use service layer"). Removed because the user preferred fixing sharkrite's generic behavior over per-project config. Replaced by: feedback persistence, service layer filesystem lint, and stronger prompt instructions.
@@ -979,6 +999,21 @@ The existing seed entries (e.g., `**References:** 206f2be, #34, #74, #90, #92`) 
 **Regression tests:** `tests/regression/conventions-marker-append.bats` — Tests 6 and 7 cover the accumulate-in-place path and its idempotency.
 
 ---
+
+## macOS/BSD Portability Bug Class (CI Can't Catch)
+
+CI runs on GNU/Linux; Sharkrite RUNS on the developer's macOS (BSD userland). A whole class of bugs passes CI but fails locally because BSD tools differ from GNU — and **CI structurally cannot catch them.** The green-main sweep found 9 such bugs; the durable defense is deterministic lint rules (the local `make check` gate sees them) plus conventions-catalog entries for patterns too context-dependent to lint without false positives.
+
+**Shipped as lint rules (zero false positives validated against the whole tree):**
+- **Rule 26 SLEEP_INFINITY_NOT_PORTABLE** — `sleep infinity`/`sleep inf`; BSD /bin/sleep rejects non-numeric durations and exits immediately (never sleeps).
+- **Rule 27 TR_MULTIBYTE_REPLACEMENT** — `tr` maps bytes, not UTF-8 chars; a multibyte replacement emits only its first byte (garbage). Quote/heredoc/pipeline-aware awk to stay FP-free.
+- **Rule 28 BSD_DATE_PARSE_Z_WITHOUT_U** — BSD `date -jf "...Z" +%s` without `-u` parses local time, skewing the epoch by the local UTC offset.
+
+**Routed to conventions-only (FP-prone — NOT shipped as rules):**
+- Unescaped `/` in an awk regex character class (`[^/]`) — needs awk-literal context a line-grep can't establish (3 FPs on the tree).
+- Bare `$RITE_INSTALL_DIR` and similar unguarded core RITE_* path vars under `set -u` — too broad to enforce cleanly (17 FPs).
+
+**Principle:** validate behavior in the environment the gate actually runs in (macOS/BSD), not just CI. A green CI is necessary but not sufficient. These rules are "Deterministic over Model-Policing-Model" in action — checkable invariants pushed into the linter, not advisory docs.
 
 ## macOS bash 3.2 Compatibility
 

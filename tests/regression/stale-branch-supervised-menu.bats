@@ -76,7 +76,6 @@ _setup_push_race_scenario() {
   git add main-165.txt
   git commit -m "Main divergence for supervised menu test" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
-  git checkout "$BRANCH_NAME" >/dev/null 2>&1
 
   # Create worktree
   WORKTREE_PATH="$RITE_WORKTREE_DIR/issue-165-supervised-$$"
@@ -125,11 +124,12 @@ _run_rebase_with_input() {
   local classification="$3"
   export STUB_CLASSIFICATION="$classification"
 
-  # Pipe choice as stdin to the subshell so read captures it.
-  # Redirect stderr to stdout so bats captures menu output in $output.
-  echo "$choice" | bash -s -- \
-    "$RITE_LIB_DIR" "$STUB_DIR" "$WORKTREE_PATH" "$BRANCH_NAME" "$workflow_mode" \
-    <<'RUNNER_EOF' 2>&1
+  # The runner script must be a FILE, not a heredoc on stdin: `bash -s <<EOF`
+  # consumes stdin for the script body, which would clobber the piped choice and
+  # leave the supervised `read` with EOF. Writing the script to a file frees
+  # stdin so `echo "$choice" |` reaches the menu's `read`.
+  local runner_script="$RITE_TEST_TMPDIR/rebase-runner-$$.sh"
+  cat > "$runner_script" <<'RUNNER_EOF'
   RITE_LIB_DIR="$1"
   STUB_DIR="$2"
   WORKTREE_PATH="$3"
@@ -144,6 +144,11 @@ _run_rebase_with_input() {
 
   _stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "$WORKFLOW_MODE" "165" "99"
 RUNNER_EOF
+
+  # Pipe choice as stdin to the subshell so the supervised menu `read` captures it.
+  # Redirect stderr to stdout so bats captures menu output in $output.
+  echo "$choice" | bash "$runner_script" \
+    "$RITE_LIB_DIR" "$STUB_DIR" "$WORKTREE_PATH" "$BRANCH_NAME" "$workflow_mode" 2>&1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

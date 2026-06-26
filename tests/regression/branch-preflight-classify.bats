@@ -48,6 +48,8 @@ teardown() {
   git commit -m "Add feature implementation" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
+  # Free the feature branch from the main working tree so it can be checked out in a worktree
+  git checkout main >/dev/null 2>&1
   # Create worktree
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
@@ -74,6 +76,8 @@ teardown() {
   git commit --allow-empty -m "chore: initialize work on #${issue_number}" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
+  # Free the feature branch from the main working tree so it can be checked out in a worktree
+  git checkout main >/dev/null 2>&1
   # Create worktree
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
@@ -174,6 +178,8 @@ teardown() {
   git commit -m "Add feature implementation" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
+  # Free the feature branch from the main working tree so it can be checked out in a worktree
+  git checkout main >/dev/null 2>&1
   # Create worktree
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1

@@ -46,7 +46,9 @@ teardown() {
   git commit --allow-empty -m "chore: initialize work on #${issue_number}" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree
+  # Create worktree (return primary repo to main first — the branch is
+  # still checked out by `git checkout -b`, which blocks `git worktree add`)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
@@ -87,7 +89,8 @@ teardown() {
   git commit --allow-empty -m "chore: initialize work on #${issue_number}" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree
+  # Create worktree (return primary repo to main first)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
@@ -120,7 +123,8 @@ teardown() {
   git commit --allow-empty -m "chore: initialize work on #${issue_number}" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree
+  # Create worktree (return primary repo to main first)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
@@ -193,7 +197,8 @@ teardown() {
   git commit -m "Add important feature" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Create worktree
+  # Create worktree (return primary repo to main first)
+  git checkout main >/dev/null 2>&1
   local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number}"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 

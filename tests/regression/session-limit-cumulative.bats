@@ -24,7 +24,6 @@ setup() {
   # Pin session limits explicitly so tests are deterministic regardless of what
   # the parent environment or .rite/config sets (issue #283).
   export RITE_MAX_SESSION_HOURS=12
-  export RITE_MAX_ISSUES_PER_SESSION=8
 
   source "${RITE_LIB_DIR}/utils/session-tracker.sh"
   source "${RITE_LIB_DIR}/utils/blocker-rules.sh"
@@ -79,10 +78,11 @@ _set_cumulative() {
   [ "$status" -eq 1 ]
 }
 
-@test "detect_session_limit: fires on issue count cap regardless of hours" {
+@test "detect_session_limit: issue count alone does NOT fire the cap (count cap removed, issue #283)" {
+  # The issue-count/'token limit' cap was deliberately removed (blocker-rules.sh:235-237,
+  # config.sh:157-158). Only cumulative_work_hours gates the session now.
   run detect_session_limit "8" "0"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"token limit"* ]] || [[ "$output" == *"Approaching token limit"* ]]
+  [ "$status" -eq 0 ]
 }
 
 @test "get_cumulative_work_seconds: returns 0 for fresh session" {

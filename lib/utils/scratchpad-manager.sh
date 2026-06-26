@@ -199,8 +199,8 @@ init_scratchpad() {
   # while we were waiting.
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
     # Copy from template if available, otherwise create minimal structure
-    if [ -f "$RITE_INSTALL_DIR/templates/scratchpad.md" ]; then
-      cp "$RITE_INSTALL_DIR/templates/scratchpad.md" "$SCRATCHPAD_FILE"
+    if [ -f "${RITE_INSTALL_DIR:-}/templates/scratchpad.md" ]; then
+      cp "${RITE_INSTALL_DIR:-}/templates/scratchpad.md" "$SCRATCHPAD_FILE"
     else
       # Minimal fallback if template not found
       cat > "$SCRATCHPAD_FILE" <<'EOF'
@@ -499,8 +499,8 @@ EOF
     local body_file
     body_file=$(mktemp)
     printf '%s' "$issue_body" > "$body_file"
-    ensure_labels_exist "tech-debt,automated"
-    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated"; then
+    ensure_labels_exist "tech-debt,automated" >/dev/null
+    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated" >/dev/null; then
       created=$((created + 1))
       echo "Created tech-debt issue: ${issue_title}" >&2
     else

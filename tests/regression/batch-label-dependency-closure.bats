@@ -91,13 +91,16 @@ setup() {
   # 'After:? #', 'Depends on #', 'Blocked by:? #'
   # If they diverge, some deps would be caught by one but not the other.
 
-  # Count occurrences of the canonical dep-ref pattern
-  _pattern_count=$(grep -c "(After:? #|Depends on #|Blocked by:? #)" "$BATCH_PROCESSOR" || true)
+  # Both the preflight and the per-issue guard must extract deps via the SAME
+  # shared helper (single source of truth). Refactored from a duplicated inline
+  # regex to _extract_dep_issues_from_body() under issue #556 (prose 'After #1'
+  # examples were being harvested as real dep edges). Count its call sites.
+  _pattern_count=$(grep -c '_extract_dep_issues_from_body' "$BATCH_PROCESSOR" || true)
 
   # Must appear at least twice: once in preflight, once in per-issue guard
   [ "$_pattern_count" -ge 2 ] || {
-    echo "FAIL: dep-ref pattern found $_pattern_count times, expected at least 2" >&2
-    echo "      Both preflight closure and per-issue guard must use the same pattern" >&2
+    echo "FAIL: _extract_dep_issues_from_body call sites found $_pattern_count times, expected at least 2" >&2
+    echo "      Both preflight closure and per-issue guard must use the same shared helper" >&2
     return 1
   }
 }
@@ -279,7 +282,7 @@ gh_safe() {
   if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "list" ]; then
     # Check if this is the body-fetch call (has --json number,body)
     _args="\$*"
-    if echo "\$_args" | grep -q '"number,body"'; then
+    if echo "\$_args" | grep -q 'number,body'; then
       # Return bodies JSON — jq processes to base64 format
       echo '${bodies_json}' | jq -r '.[] | [(.number | tostring), (.body | @base64)] | join(" ")'
     else

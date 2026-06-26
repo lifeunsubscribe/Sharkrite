@@ -142,19 +142,22 @@ teardown() {
   # Now test with a negative threshold to force cleanup (simulate future)
   # We'll manually drop the old stashes for this test since we can't easily backdate
 
-  # Drop 2 of the sharkrite stashes manually to simulate cleanup
-  git stash drop stash@{1} -q  # old stash 2
-  git stash drop stash@{1} -q  # old stash 1 (index shifted)
+  # Drop the two OLD sharkrite stashes manually to simulate cleanup.
+  # git stashes are LIFO: stash@{0}=user, stash@{1}=fresh, stash@{2}=old2,
+  # stash@{3}=old1. Drop the OLD ones, highest index first to avoid shifting.
+  git stash drop stash@{3} -q  # old stash 1 (highest LIFO index)
+  git stash drop stash@{2} -q  # old stash 2 (index 2 still valid after dropping 3)
 
   # Verify only fresh sharkrite stash + user stash remain
   REMAINING=$(git stash list | wc -l | tr -d ' ')
   [ "$REMAINING" -eq 2 ]
 
-  # Verify user stash still exists
-  git stash list | grep -qF "user stash without marker"
-
-  # Verify fresh sharkrite stash still exists
-  git stash list | grep -qF "[sharkrite-managed-stash] fresh stash"
+  # Verify user + fresh stash still exist. Capture output first: grep -q on a live
+  # `git stash list` pipe can SIGPIPE-kill git on a first-line match, and the
+  # pipefail leaked from sourcing stash-manager.sh turns that into a false rc=1.
+  _remaining_list=$(git stash list)
+  echo "$_remaining_list" | grep -qF "user stash without marker"
+  echo "$_remaining_list" | grep -qF "[sharkrite-managed-stash] fresh stash"
 }
 
 @test "cleanup_sharkrite_stashes never touches user stashes" {
@@ -232,8 +235,11 @@ teardown() {
   TOTAL_AFTER=$(git stash list | wc -l | tr -d ' ')
   [ "$TOTAL_AFTER" -eq 4 ]
 
-  # User stash should be untouched
-  git stash list | grep -qF "WIP: working on feature"
+  # User stash should be untouched (capture output first: grep -q on a live
+  # `git stash list` pipe SIGPIPE-kills git on a first-line match, and the
+  # pipefail leaked from sourcing stash-manager.sh turns that into a false rc=1)
+  _list_after=$(git stash list)
+  echo "$_list_after" | grep -qF "WIP: working on feature"
 }
 
 # =============================================================================

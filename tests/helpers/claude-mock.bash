@@ -30,23 +30,41 @@ _CLAUDE_MOCK_CALL_COUNT=0
 # Mock claude CLI command
 # Reads JSONL fixtures and streams them line by line
 mock_claude() {
-  # Increment call counter
-  _CLAUDE_MOCK_CALL_COUNT=$((_CLAUDE_MOCK_CALL_COUNT + 1))
+  # Increment call counter.  File-backed so the count survives bats `run`/`$()`
+  # subshells (same rationale as gh-mock.bash).
+  local _cl_cf="${CLAUDE_MOCK_CALL_COUNT_FILE:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/.claude_mock_call_count}"
+  local _cl_n
+  _cl_n=$(cat "$_cl_cf" 2>/dev/null || echo 0)
+  _cl_n=$((_cl_n + 1))
+  echo "$_cl_n" > "$_cl_cf"
+  _CLAUDE_MOCK_CALL_COUNT=$_cl_n
 
-  # Fault injection: fail on Nth call
+  # Fault injection: fail on Nth call.  Uses a DEDICATED exit-code var so the
+  # Nth-call failure does NOT pollute the trailing return of non-Nth calls
+  # (which is keyed on CLAUDE_MOCK_EXIT_CODE for inject_claude_timeout).
   if [ -n "${CLAUDE_MOCK_FAIL_NTH:-}" ] && [ "$_CLAUDE_MOCK_CALL_COUNT" -eq "$CLAUDE_MOCK_FAIL_NTH" ]; then
     if [ -n "${CLAUDE_MOCK_STDERR:-}" ]; then
       echo "$CLAUDE_MOCK_STDERR" >&2
     else
       echo "claude: mock failure (call #${_CLAUDE_MOCK_CALL_COUNT})" >&2
     fi
+    return "${CLAUDE_MOCK_FAIL_EXIT_CODE:-1}"
+  fi
+
+  # Fault injection: standalone stderr failure (no Nth-call gating).
+  # Placed AFTER the Nth-call branch so the Nth-call form takes precedence
+  # when both are configured.
+  if [ -n "${CLAUDE_MOCK_STDERR:-}" ]; then
+    echo "$CLAUDE_MOCK_STDERR" >&2
     return "${CLAUDE_MOCK_EXIT_CODE:-1}"
   fi
 
   # Fault injection: hang
   if [ -n "${MOCK_HANG_COMMAND:-}" ] && [ "$MOCK_HANG_COMMAND" = "claude" ]; then
     if [ "${MOCK_HANG_DURATION:-infinity}" = "infinity" ]; then
-      sleep infinity
+      # Portable "forever" sleep: BSD /bin/sleep (macOS) rejects `sleep infinity`,
+      # so use a large finite value (~68 years) that both GNU and BSD accept.
+      sleep 2147483647
     else
       sleep "${MOCK_HANG_DURATION}"
     fi
@@ -145,7 +163,11 @@ create_claude_fixture() {
 # Reset mock state
 reset_claude_mock() {
   _CLAUDE_MOCK_CALL_COUNT=0
+  # Reset the file-backed call counter too (source of truth across subshells).
+  local _cl_cf="${CLAUDE_MOCK_CALL_COUNT_FILE:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/.claude_mock_call_count}"
+  printf 0 > "$_cl_cf" 2>/dev/null || true
   unset CLAUDE_MOCK_EXIT_CODE
+  unset CLAUDE_MOCK_FAIL_EXIT_CODE
   unset CLAUDE_MOCK_DELAY
   unset CLAUDE_MOCK_FAIL_NTH
   unset CLAUDE_MOCK_SCENARIO
