@@ -196,6 +196,21 @@ RITE_FOLLOWUP_SENTINEL_TTL_S="${RITE_FOLLOWUP_SENTINEL_TTL_S:-60}"
 # secondary guard for longer lag periods.
 RITE_FOLLOWUP_LOCK_DWELL_S="${RITE_FOLLOWUP_LOCK_DWELL_S:-5}"
 
+# Per-finding follow-up issue cap (maximum number of GitHub issues created per assess run).
+#
+# The one-issue-per-finding loop runs full dedup machinery (issue list + issue view +
+# pr view + up to 3 backoff sleeps) plus create/comment/lock per finding — an N× scaling
+# cost with no upper bound.  This cap limits the blast radius of reviews with many
+# ACTIONABLE_LATER items (e.g. a large security scan diff producing 50+ findings).
+#
+# When the cap is reached, remaining findings are skipped with a warning and a
+# [diag] FOLLOWUP_CAP_HIT line is written to RITE_LOG_FILE for health-report
+# aggregation.  The count of skipped findings is logged so nothing is silently lost.
+#
+# Default: 20 (generous for typical PRs with 5-10 findings; protects against runaway
+# scan results).  Set to 0 to disable the cap entirely (unbounded — original behavior).
+RITE_MAX_FINDINGS_PER_RUN="${RITE_MAX_FINDINGS_PER_RUN:-20}"
+
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
@@ -408,6 +423,7 @@ export RITE_TEST_CMD
 export RITE_DEDUP_BACKOFF
 export RITE_FOLLOWUP_SENTINEL_TTL_S
 export RITE_FOLLOWUP_LOCK_DWELL_S
+export RITE_MAX_FINDINGS_PER_RUN
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS

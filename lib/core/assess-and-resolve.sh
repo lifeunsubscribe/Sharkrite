@@ -1639,6 +1639,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   FOLLOWUP_NUMBERS=""
   _rollup_any_created=false
   _followup_creation_failed=false   # reset; will be set true on first gh failure
+  _findings_skipped_by_cap=0        # count of findings skipped after cap was hit
 
   # Parse each ACTIONABLE_(NOW|LATER) item from FILTERED_CONTENT and create one
   # issue per finding. Uses the same awk-based extraction already used by
@@ -1661,6 +1662,17 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     [ -z "$_fh_line" ] && continue
 
     _finding_index=$((_finding_index + 1))
+
+    # --- Per-finding cap guard ---
+    # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.
+    # The dedup machinery runs N× (issue list + issue view + pr view + backoff sleeps),
+    # so an unbounded loop on a scan-heavy PR can exhaust GitHub secondary rate limits.
+    # Set to 0 to disable the cap (original unbounded behavior).
+    _findings_cap="${RITE_MAX_FINDINGS_PER_RUN:-20}"
+    if [ "$_findings_cap" -gt 0 ] 2>/dev/null && [ "$_finding_index" -gt "$_findings_cap" ]; then
+      _findings_skipped_by_cap=$((_findings_skipped_by_cap + 1))
+      continue
+    fi
 
     # --- Extract per-finding fields from FILTERED_CONTENT ---
 
@@ -2033,6 +2045,18 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     _followup_lock_held=false
 
   done < <(echo "${FILTERED_CONTENT:-}" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
+
+  # Post-loop cap report: emit diag + warning when the cap was hit so nightly
+  # health reports can surface the truncation event.  The orphan count is logged
+  # so no finding is silently lost — operators can re-run with a higher cap or
+  # disable it (RITE_MAX_FINDINGS_PER_RUN=0) to process all findings.
+  if [ "${_findings_skipped_by_cap:-0}" -gt 0 ]; then
+    _processed_count=$((_finding_index - _findings_skipped_by_cap))
+    print_warning "⚠️  Per-finding cap hit: processed ${_processed_count} of ${_finding_index} findings (cap=${RITE_MAX_FINDINGS_PER_RUN:-20}, skipped=${_findings_skipped_by_cap})."
+    print_info "  To process all findings: set RITE_MAX_FINDINGS_PER_RUN=0 (or raise the cap) in .rite/config"
+    _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} processed=${_processed_count} skipped=${_findings_skipped_by_cap} cap=${RITE_MAX_FINDINGS_PER_RUN:-20}"
+    unset _processed_count
+  fi
 
   # Post-loop dwell: lets GitHub index catch up before any subsequent waiter
   # acquires a lock and runs a dedup search.  Runs once per batch of findings
