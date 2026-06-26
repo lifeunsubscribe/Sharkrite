@@ -71,6 +71,15 @@
 # reduces worst-case holder time.  See timing budget in lib/utils/issue-lock.sh.
 # RITE_DEDUP_BACKOFF=5
 
+# Per-finding follow-up issue cap (default: 20).
+# Limits the number of GitHub issues created per assess run to prevent unbounded
+# API usage on reviews with many findings.  Each finding triggers full dedup
+# machinery (issue list + issue view + pr view + backoff sleeps), scaling N×.
+# When the cap is reached, a [diag] FOLLOWUP_CAP_HIT line is emitted and a
+# warning is printed with the count of skipped findings.
+# Set to 0 to disable the cap entirely (unbounded — original behavior).
+# RITE_MAX_FINDINGS_PER_RUN=20
+
 # =============================================================================
 # Plan Command (rite plan)
 # =============================================================================

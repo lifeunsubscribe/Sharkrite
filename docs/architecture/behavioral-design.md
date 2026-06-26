@@ -800,6 +800,39 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 - `RITE_GH_MAX_RETRIES` (default: 3) — reduce to shorten gh backoff windows
 - To increase the waiter budget: edit `max_attempts` in `acquire_pr_followup_lock` (not currently configurable via env)
 
+---
+
+### Per-Finding GitHub API Call Cap
+
+**Problem:** The one-issue-per-finding loop in `assess-and-resolve.sh` runs full dedup machinery per finding — `gh issue list` (body-marker search) + `gh issue view` (marker verification) + `gh issue list` (title search) + `gh pr view` (PR comment check) + up to 3 retry iterations with backoff sleeps — plus `gh issue create` + `gh pr comment` per new creation. This scales **N×** with no upper bound. A review with 50 ACTIONABLE_LATER findings produces 50 full dedup cycles — potentially hundreds of GitHub API calls — which can exhaust GitHub secondary rate limits and extend lock hold times well beyond the 60s waiter budget.
+
+**Solution:** `RITE_MAX_FINDINGS_PER_RUN` (default: 20) caps the number of findings processed per assess run. When the cap is hit:
+
+1. Remaining findings are skipped (via `continue` in the per-finding loop)
+2. A `print_warning` is emitted to stderr with the processed/skipped/cap counts
+3. A `[diag] FOLLOWUP_CAP_HIT` line is written to `RITE_LOG_FILE` for health-report aggregation
+
+**Why skip (not abort):** Processing findings 1..N before hitting the cap is better than aborting the whole batch. Findings are iterated in document order (no severity sort is applied here); lower-priority items at the end of the review are more likely to hit the cap, but ordering is not enforced. Operators can re-run `rite N --assess-and-fix` with a higher cap to process the rest — the dedup machinery prevents duplicates.
+
+**Disable the cap:** Set `RITE_MAX_FINDINGS_PER_RUN=0` in `.rite/config` to restore the original unbounded behavior. This is appropriate for one-off full-scan reviews where completeness matters more than API budget.
+
+**Why 20 as the default:** Typical PRs produce 3-10 ACTIONABLE_LATER items. 20 is generous enough not to surprise users in normal usage while bounding the worst case (scan-heavy PR with 100+ findings) to ~40-80 API calls for dedup + ~20 for creation — well within GitHub's rate limits.
+
+**API cost model (for tuning):**
+- Per finding (dedup only, best case — all cached): 1 API call
+- Per finding (dedup, typical): 2-3 API calls (list + title search)
+- Per finding (dedup, worst case — index lag + retries): up to 13 API calls (3 retries × 4 sources + 1 initial)
+- Per finding (creation): 2 API calls (issue create + PR comment)
+- **Total at cap=20, typical:** ~100 API calls per assess run
+
+**Observability:** `[diag] FOLLOWUP_CAP_HIT issue=N pr=N processed=N skipped=N cap=N` in `RITE_LOG_FILE`. The health report surfaces any `FOLLOWUP_CAP_HIT` event as a WATCH item with the skip count.
+
+**Implementation:** `lib/core/assess-and-resolve.sh` — LOW-severity findings are skipped before `_finding_index` is incremented and before the cap guard runs. This means `_finding_index` counts only API-eligible (non-LOW) findings, and the cap only fires against findings that would actually make GitHub API calls. The post-loop report shows processed vs. total API-eligible findings.
+
+**Coverage:** `tests/regression/followup-finding-cap.bats`
+
+---
+
 ### Lock Release Before exec (CRITICAL)
 
 **Contract:** Any code path that calls `exec` to restart the script (replacing the process image) MUST release any lock acquired via `trap "release_issue_lock ..." EXIT` **before** the `exec` call.

@@ -1639,6 +1639,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   FOLLOWUP_NUMBERS=""
   _rollup_any_created=false
   _followup_creation_failed=false   # reset; will be set true on first gh failure
+  _findings_skipped_by_cap=0        # count of findings skipped after cap was hit
 
   # Parse each ACTIONABLE_(NOW|LATER) item from FILTERED_CONTENT and create one
   # issue per finding. Uses the same awk-based extraction already used by
@@ -1657,10 +1658,21 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
 
   _finding_index=0
 
+  # Validate RITE_MAX_FINDINGS_PER_RUN is a non-negative integer before the loop.
+  # A non-numeric value (typo, trailing whitespace) makes the arithmetic test
+  # inside the loop silently error and short-circuit to false, reverting to
+  # unbounded behavior — the exact failure mode this cap exists to prevent.
+  # Validate once here and fall back to default 20 with a warning.
+  _findings_cap_raw="${RITE_MAX_FINDINGS_PER_RUN:-20}"
+  if ! printf '%s' "$_findings_cap_raw" | grep -qE '^[0-9]+$'; then
+    print_warning "⚠️  RITE_MAX_FINDINGS_PER_RUN='${_findings_cap_raw}' is not a non-negative integer — falling back to default 20."
+    _findings_cap_validated=20
+  else
+    _findings_cap_validated="$_findings_cap_raw"
+  fi
+
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
-
-    _finding_index=$((_finding_index + 1))
 
     # --- Extract per-finding fields from FILTERED_CONTENT ---
 
@@ -1715,9 +1727,45 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     ' | sed 's/[[:space:]]*$//' | awk 'NF || in_content { in_content=1; print }' || true)
     _f_context="${_f_context:-}"
 
-    # Skip LOW severity items — excluded from follow-up issues (same as per-item path)
+    # Skip LOW severity items — excluded from follow-up issues (same as per-item path).
+    # This check runs before the cap guard so LOW findings do not consume API budget.
     if echo "$_f_severity" | grep -qi "LOW"; then
       print_info "  Skipped (LOW severity): $_clean_title"
+      continue
+    fi
+
+    _finding_index=$((_finding_index + 1))
+
+    # --- Per-finding cap guard ---
+    # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.
+    # The dedup machinery runs N× (issue list + issue view + pr view + backoff sleeps),
+    # so an unbounded loop on a scan-heavy PR can exhaust GitHub secondary rate limits.
+    # Placed after the LOW-severity skip so LOW findings (which make zero API calls)
+    # do not count against the cap — only API-eligible findings are counted.
+    # Set to 0 to disable the cap (original unbounded behavior).
+    # _findings_cap_validated is set before the loop (numeric-validated, never empty).
+    if [ "$_findings_cap_validated" -gt 0 ] && [ "$_finding_index" -gt "$_findings_cap_validated" ]; then
+      _findings_skipped_by_cap=$((_findings_skipped_by_cap + 1))
+      # Persist the capped finding to the orphaned-followup file so no finding is
+      # silently lost — mirrors the creation-failure path at the bottom of the loop.
+      # (_finding_slug and _FOLLOWUP_FINDING_KEY are not yet computed at this point,
+      # so use _finding_index as the unique identifier here.)
+      _orphaned_file="${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+      mkdir -p "${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}" 2>/dev/null || true
+      {
+        echo "---"
+        echo "# Orphaned Follow-up Item (capped — finding #${_finding_index})"
+        echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# PR: #${PR_NUMBER}"
+        echo "# Source issue: #${ISSUE_NUMBER:-unknown}"
+        echo "# Intended title: ${_clean_title:-}"
+        echo "# Reason: per-finding cap (RITE_MAX_FINDINGS_PER_RUN=${_findings_cap_validated}) was reached"
+        echo "# Re-run:  rite ${ISSUE_NUMBER:-N} --assess-and-fix  (after raising or disabling the cap)"
+        echo ""
+        echo "Finding block:"
+        echo "$_finding_block"
+      } >> "$_orphaned_file" || true
+      print_info "  Capped (API budget): $_clean_title — saved to orphaned-followup-items.md"
       continue
     fi
 
@@ -2033,6 +2081,20 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
     _followup_lock_held=false
 
   done < <(echo "${FILTERED_CONTENT:-}" | grep -E "^### .* - ACTIONABLE_(NOW|LATER)" || true)
+
+  # Post-loop cap report: emit diag + warning when the cap was hit so nightly
+  # health reports can surface the truncation event.  Capped findings are written
+  # to orphaned-followup-items.md (same as creation-failure path) so no finding
+  # is silently lost — operators can re-run with a higher cap or disable it
+  # (RITE_MAX_FINDINGS_PER_RUN=0) to process all findings.
+  if [ "${_findings_skipped_by_cap:-0}" -gt 0 ]; then
+    _processed_count=$((_finding_index - _findings_skipped_by_cap))
+    print_warning "⚠️  Per-finding cap hit: processed ${_processed_count} of ${_finding_index} API-eligible (non-LOW) findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
+    print_info "  Capped findings saved to: ${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
+    print_info "  To process all findings: set RITE_MAX_FINDINGS_PER_RUN=0 (or raise the cap) in .rite/config"
+    _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} processed=${_processed_count} skipped=${_findings_skipped_by_cap} cap=${_findings_cap_validated}"
+    unset _processed_count
+  fi
 
   # Post-loop dwell: lets GitHub index catch up before any subsequent waiter
   # acquires a lock and runs a dedup search.  Runs once per batch of findings
