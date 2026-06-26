@@ -2055,7 +2055,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
   # disable it (RITE_MAX_FINDINGS_PER_RUN=0) to process all findings.
   if [ "${_findings_skipped_by_cap:-0}" -gt 0 ]; then
     _processed_count=$((_finding_index - _findings_skipped_by_cap))
-    print_warning "⚠️  Per-finding cap hit: processed ${_processed_count} of ${_finding_index} findings (cap=${RITE_MAX_FINDINGS_PER_RUN:-20}, skipped=${_findings_skipped_by_cap})."
+    print_warning "⚠️  Per-finding cap hit: processed ${_processed_count} of ${_finding_index} API-eligible (non-LOW) findings (cap=${RITE_MAX_FINDINGS_PER_RUN:-20}, skipped=${_findings_skipped_by_cap})."
     print_info "  To process all findings: set RITE_MAX_FINDINGS_PER_RUN=0 (or raise the cap) in .rite/config"
     _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} processed=${_processed_count} skipped=${_findings_skipped_by_cap} cap=${RITE_MAX_FINDINGS_PER_RUN:-20}"
     unset _processed_count
