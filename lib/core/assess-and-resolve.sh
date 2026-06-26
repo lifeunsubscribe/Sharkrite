@@ -1201,38 +1201,19 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # Will post comment or create issue below, then exit 0
 
     elif [ "$ACTIONABLE_NOW_COUNT" -gt 0 ]; then
-      # ACTIONABLE_NOW items exist - need to fix them OR defer if PR is
-      # already shippable (no CRITICAL/HIGH severity items).
+      # ACTIONABLE_NOW items exist — always service them in the fix loop.
+      # NOW is a scope judgment (in-scope + completable in this PR), not a
+      # severity filter. An item classified NOW is fixed before merge; anything
+      # deferrable must be classified ACTIONABLE_LATER or DISMISSED instead.
+      # See: docs/architecture/behavioral-design.md →
+      # "Fix-loop policy: NOW means fixed, LATER means deferred".
       #
       # Severity breakdown — computed once, reused below.
       CRITICAL_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*CRITICAL" || true)
       HIGH_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*HIGH" || true)
 
-      # Shippable-PR defer: if all NOW items are MEDIUM/LOW, the PR is
-      # functionally ready. Convert the NOW items to LATER (file a single
-      # tech-debt follow-up issue) and proceed to merge instead of looping.
-      #
-      # Why: each fix-loop cycle is ~5min of LLM time. Real-world data from
-      # the 2026-06-04 batch (issues #313, #319) showed 4-7 cycles burning
-      # 28-29min in Phase 3 on PRs that were shippable from cycle 1. The
-      # findings were real and worth filing — just not worth blocking a
-      # merge over. See: docs/architecture/behavioral-design.md →
-      # "Fix-loop policy: defer non-critical findings on shippable PRs".
-      if [ "$CRITICAL_NOW_COUNT" -eq 0 ] && [ "$HIGH_NOW_COUNT" -eq 0 ]; then
-        print_success "No CRITICAL/HIGH findings — PR is shippable"
-        print_status "Deferring $ACTIONABLE_NOW_COUNT MEDIUM/LOW NOW item(s) to a follow-up issue and merging..."
-        CREATE_SECURITY_DEBT=true
-        FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
-        # SHIPPABLE_DEFER signals the downstream tech-debt extractor that
-        # ACTIONABLE_NOW items (not just ACTIONABLE_LATER) should be rolled
-        # into the follow-up issue. Without this, the extractor (line ~1010)
-        # only pulls from ACTIONABLE_LATER headers and our NOW items would
-        # be silently dropped from the follow-up — defeating the whole
-        # point of the deferral.
-        SHIPPABLE_DEFER=true
-        # Fall through to follow-up-issue creation below.
       # Check retry limit for ACTIONABLE_NOW items
-      elif [ "$RETRY_COUNT" -ge 3 ]; then
+      if [ "$RETRY_COUNT" -ge 3 ]; then
         print_warning "At retry limit ($RETRY_COUNT/3) with $ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items remaining"
 
         if [ "$CRITICAL_NOW_COUNT" -gt 0 ]; then
@@ -1532,12 +1513,10 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       MEDIUM_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*MEDIUM")
       LOW_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*LOW")
 
-      # Include ACTIONABLE_NOW items in the tech-debt follow-up when either:
-      # (a) retry limit reached — couldn't fix the NOW items in the loop
-      # (b) shippable-defer fired — NOW items were all MEDIUM/LOW so we
-      #     skipped the loop entirely (see the SHIPPABLE_DEFER assignment
-      #     in the assessment decision tree)
-      if [ "$RETRY_COUNT" -ge 3 ] || [ "${SHIPPABLE_DEFER:-false}" = "true" ]; then
+      # Include ACTIONABLE_NOW items in the tech-debt follow-up when the
+      # retry limit was reached — these are items the fix loop could not
+      # resolve within 3 cycles.
+      if [ "$RETRY_COUNT" -ge 3 ]; then
         print_status "Also including unresolved ACTIONABLE_NOW items..."
         CRITICAL_ISSUES="$CRITICAL_ISSUES
 $(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*CRITICAL")"
@@ -1628,7 +1607,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   PR_BRANCH_NAME="${PR_BRANCH_NAME:-unknown}"
 
   # Determine label for all findings in this rollup.
-  # tech-debt for shippable-defer and retry-limit; review-follow-up for CRITICAL.
+  # tech-debt for retry-limit deferrals; review-follow-up for CRITICAL findings.
   if [ "${CREATE_SECURITY_DEBT:-false}" = "true" ]; then
     _rollup_base_label="tech-debt"
   else
