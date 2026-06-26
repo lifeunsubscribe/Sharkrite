@@ -638,7 +638,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       BLOCKER_TYPE=$(echo "$BLOCKER_CHECK" | grep -o "BLOCKER:.*" | head -1 || echo "Unknown blocker")
       PREFLIGHT_BLOCKERS+=("$ISSUE_NUM")
       PREFLIGHT_BLOCKER_MSGS+=("$BLOCKER_TYPE")
-      print_warning "⚠️  Issue #$ISSUE_NUM: $BLOCKER_TYPE"
+      print_warning "Issue #$ISSUE_NUM: $BLOCKER_TYPE"
     }
   fi
 done
@@ -770,7 +770,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         done
 
         if [ "$PARENT_IN_QUEUE" = true ]; then
-          print_success "✅ Parent issue #$PARENT_ISSUE is in queue - this is a follow-up pair"
+          print_success "Parent issue #$PARENT_ISSUE is in queue - this is a follow-up pair"
           print_info "Follow-up work will update parent issue #$PARENT_ISSUE's PR before merging parent"
         else
           # Deliberate divergence from single-issue mode: batch skips follow-up
@@ -784,7 +784,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           # the user invoking `rite N` is presumed to know the ordering constraint.
           # Regression test: tests/regression/batch-single-issue-parity.bats
           #   @test "parent-PR-deferred divergence: documented and intentional"
-          print_warning "⏸️  Parent issue #$PARENT_ISSUE is still open - deferring issue #$ISSUE_NUM"
+          print_info "Parent issue #$PARENT_ISSUE is still open - deferring issue #$ISSUE_NUM"
           print_info "This follow-up issue will be processed after parent issue merges"
           SKIPPED_ISSUES+=("$ISSUE_NUM")
           ISSUE_STATUS["$ISSUE_NUM"]="waiting_for_parent"
@@ -792,7 +792,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           continue
         fi
       elif [ "$PARENT_PR_STATE" = "MERGED" ]; then
-        print_success "✅ Parent issue #$PARENT_ISSUE is merged - proceeding with follow-up"
+        print_success "Parent issue #$PARENT_ISSUE is merged - proceeding with follow-up"
       fi
     fi
   fi
@@ -916,19 +916,19 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           NEW_REVIEW_TIME="${NEW_REVIEW_TIME:-}"
 
           if [ -n "$NEW_REVIEW_TIME" ] && [[ "$NEW_REVIEW_TIME" > "$PR_UPDATED" ]]; then
-            print_success "✅ New review detected! Continuing with merge workflow..."
+            print_success "New review detected! Continuing with merge workflow..."
             echo ""
             break
           fi
 
           ELAPSED=$(($(date +%s) - WAIT_START))
           if [ $ELAPSED -ge $MAX_WAIT ]; then
-            print_warning "⏱️  Timeout: No review after 15 minutes"
+            print_warning "Timeout: No review after 15 minutes"
 
             # Send Slack notification
             send_notification "⏱️ Manual Intervention Needed" "Issue #$ISSUE_NUM: PR #$EXISTING_PR timeout waiting for review. Run: \`rite $ISSUE_NUM\`" "warning"
 
-            print_info "📱 Slack notification sent"
+            print_info "Slack notification sent"
             print_info "Manual run needed: rite $ISSUE_NUM"
             echo ""
 
@@ -1144,7 +1144,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
       print_info "Duration: ${ISSUE_DURATION}s"
       echo ""
-      print_warning "⏸️  Blocker detected - deferring issue #$ISSUE_NUM"
+      print_warning "Blocker detected - deferring issue #$ISSUE_NUM"
       BLOCKED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="blocked"
 

@@ -271,7 +271,7 @@ _mid_run_rebase_onto_main() {
     fi
 
     echo "" >&2
-    print_warning "⚠️  Mid-run rebase conflict: cannot auto-rebase ${branch_name} onto origin/main"
+    print_warning "Mid-run rebase conflict: cannot auto-rebase ${branch_name} onto origin/main"
     echo "" >&2
     echo "  Conflicting files need manual resolution before the review can proceed." >&2
     echo "" >&2

@@ -1180,7 +1180,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         exit 2
       fi
       # Only ACTIONABLE_LATER items.
-      print_info "✅ No immediate fixes needed"
+      print_success "No immediate fixes needed"
 
       # Dual-filing fix (defect #2): assess-review-issues.sh already created per-item
       # issues for each ACTIONABLE_LATER finding. Skip the consolidated rollup and post
@@ -1219,7 +1219,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # merge over. See: docs/architecture/behavioral-design.md →
       # "Fix-loop policy: defer non-critical findings on shippable PRs".
       if [ "$CRITICAL_NOW_COUNT" -eq 0 ] && [ "$HIGH_NOW_COUNT" -eq 0 ]; then
-        print_info "✅ No CRITICAL/HIGH findings — PR is shippable"
+        print_success "No CRITICAL/HIGH findings — PR is shippable"
         print_status "Deferring $ACTIONABLE_NOW_COUNT MEDIUM/LOW NOW item(s) to a follow-up issue and merging..."
         CREATE_SECURITY_DEBT=true
         FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
@@ -1233,10 +1233,10 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         # Fall through to follow-up-issue creation below.
       # Check retry limit for ACTIONABLE_NOW items
       elif [ "$RETRY_COUNT" -ge 3 ]; then
-        print_warning "⚠️  At retry limit ($RETRY_COUNT/3) with $ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items remaining"
+        print_warning "At retry limit ($RETRY_COUNT/3) with $ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items remaining"
 
         if [ "$CRITICAL_NOW_COUNT" -gt 0 ]; then
-          print_critical "🚨 $CRITICAL_NOW_COUNT CRITICAL items remain at retry limit"
+          print_critical "$CRITICAL_NOW_COUNT CRITICAL items remain at retry limit"
           print_error "Cannot merge - blocking issues require manual intervention"
           print_info "Will create follow-up issue and exit with code 1"
           # Set flag to create CRITICAL follow-up issue, then exit 1
@@ -1249,10 +1249,10 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
           # without adding triage value (they were already low-priority and couldn't
           # be auto-fixed). Drop them with a log message.
           if [ "$HIGH_NOW_COUNT" -gt 0 ]; then
-            print_info "✅ No CRITICAL items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
+            print_success "No CRITICAL items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
             print_status "Creating tech-debt issue for HIGH items (dropping MEDIUM/LOW)..."
           else
-            print_info "✅ No CRITICAL/HIGH items remain at retry limit — all remaining are MEDIUM/LOW"
+            print_success "No CRITICAL/HIGH items remain at retry limit — all remaining are MEDIUM/LOW"
             print_info "Dropping MEDIUM/LOW findings (not worth follow-up backlog space at retry limit)"
           fi
           # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit.
@@ -1286,7 +1286,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
 
       else
         # Normal loop: ACTIONABLE_NOW items exist, retry count < 3
-        print_info "🔄 $ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items found - will loop to fix" >&2
+        print_info "$ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items found - will loop to fix" >&2
 
         if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           print_info "Note: $ACTIONABLE_LATER_COUNT ACTIONABLE_LATER items will be deferred until fixes complete" >&2
@@ -1665,7 +1665,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   # Validate once here and fall back to default 20 with a warning.
   _findings_cap_raw="${RITE_MAX_FINDINGS_PER_RUN:-20}"
   if ! printf '%s' "$_findings_cap_raw" | grep -qE '^[0-9]+$'; then
-    print_warning "⚠️  RITE_MAX_FINDINGS_PER_RUN='${_findings_cap_raw}' is not a non-negative integer — falling back to default 20."
+    print_warning "RITE_MAX_FINDINGS_PER_RUN='${_findings_cap_raw}' is not a non-negative integer — falling back to default 20."
     _findings_cap_validated=20
   else
     _findings_cap_validated="$_findings_cap_raw"
@@ -1985,7 +1985,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
       if [ -n "$EXISTING_ISSUE" ]; then
         [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
         _followup_lock_held=false
-        print_success "📋 Finding already tracked in #$EXISTING_ISSUE (skipping): $_clean_title"
+        print_info "Finding already tracked in #$EXISTING_ISSUE (skipping): $_clean_title"
         FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${EXISTING_ISSUE} "
         _rollup_any_created=true
       else
@@ -2010,7 +2010,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so
             # each finding gets its own evidence file.
             if ! write_followup_evidence "$PR_NUMBER" "$_new_issue_num" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}"; then
-              print_warning "⚠️  Could not write local evidence file for follow-up #$_new_issue_num — dedup relies solely on GitHub API"
+              print_warning "Could not write local evidence file for follow-up #$_new_issue_num — dedup relies solely on GitHub API"
             fi
 
             # Machine-readable marker comment on PR (secondary dedup guard)
@@ -2021,7 +2021,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             _finding_comment_file=$(mktemp)
             printf '%s' "$_finding_comment" > "$_finding_comment_file"
             if ! gh_safe pr comment "$PR_NUMBER" --body-file "$_finding_comment_file" 2>/dev/null; then
-              print_warning "⚠️  PR comment write failed for follow-up #$_new_issue_num — local evidence covers dedup"
+              print_warning "PR comment write failed for follow-up #$_new_issue_num — local evidence covers dedup"
             fi
             rm -f "$_finding_comment_file"
 
@@ -2034,7 +2034,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
               mkdir -p "$_sentinel_write_dir" 2>/dev/null || true
               if ! touch "${_sentinel_write_dir}/finding-${_FOLLOWUP_FINDING_KEY}.created" 2>/dev/null; then
                 _diag "FOLLOWUP_SENTINEL_WRITE_FAILED finding=${_FOLLOWUP_FINDING_KEY} dir=${_sentinel_write_dir}"
-                print_warning "⚠️  Could not write follow-up sentinel for finding '${_clean_title}' — dedup relies on lock dwell only."
+                print_warning "Could not write follow-up sentinel for finding '${_clean_title}' — dedup relies on lock dwell only."
               fi
               unset _sentinel_write_dir
             fi
@@ -2042,7 +2042,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             [ "$_followup_lock_held" = "true" ] && release_pr_followup_lock "$PR_NUMBER" "${_FOLLOWUP_FINDING_KEY:-${ISSUE_NUMBER:-}}" 2>/dev/null || true
             _followup_lock_held=false
 
-            print_success "  ✅ Created #$_new_issue_num: $_clean_title"
+            print_success "  Created #$_new_issue_num: $_clean_title"
             echo "     URL: $_new_issue_url"
           else
             rm -f "$_finding_body_file"
@@ -2089,7 +2089,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
   # (RITE_MAX_FINDINGS_PER_RUN=0) to process all findings.
   if [ "${_findings_skipped_by_cap:-0}" -gt 0 ]; then
     _processed_count=$((_finding_index - _findings_skipped_by_cap))
-    print_warning "⚠️  Per-finding cap hit: processed ${_processed_count} of ${_finding_index} API-eligible (non-LOW) findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
+    print_warning "Per-finding cap hit: processed ${_processed_count} of ${_finding_index} API-eligible (non-LOW) findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
     print_info "  Capped findings saved to: ${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
     print_info "  To process all findings: set RITE_MAX_FINDINGS_PER_RUN=0 (or raise the cap) in .rite/config"
     _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} processed=${_processed_count} skipped=${_findings_skipped_by_cap} cap=${_findings_cap_validated}"
