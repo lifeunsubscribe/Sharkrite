@@ -21,9 +21,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # (prevents leaks if the script is killed before reaching the inline rm -f calls)
 _r8_awk=""
 _r13_awk=""
+_r27_awk=""
 _cleanup_awk_tmpfiles() {
   [ -n "$_r8_awk"  ] && rm -f "$_r8_awk"
   [ -n "$_r13_awk" ] && rm -f "$_r13_awk"
+  [ -n "$_r27_awk" ] && rm -f "$_r27_awk"
   # Always return 0 — the trap fires on EXIT and a non-zero return here would
   # override the script's intended exit code (e.g. exit 0 → exit 1 when both
   # tmpfile vars are empty and the last `[ -n "" ]` test returns 1).
@@ -1408,6 +1410,197 @@ while IFS= read -r bats_file; do
       "bats file missing 'sharkrite-test-covers:' header — required so test_gate's targeted selection (#462) can decide when to run this test. Add a comment on line 2: '# sharkrite-test-covers: lib/path/to/source.sh' listing the source files this test exercises."
   fi
 done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+
+# Rule 26: Non-portable 'sleep infinity' / 'sleep inf' (BSD/macOS /bin/sleep rejects)
+#
+# GNU coreutils `sleep` accepts the keywords `infinity` and `inf` ("sleep
+# forever"), but BSD/macOS /bin/sleep accepts ONLY a numeric duration. Given
+# `sleep infinity`, BSD sleep prints `usage: sleep number[unit]` and exits
+# immediately (exit 1) — it never sleeps. Any code relying on it to block the
+# process forever (mock servers, hang simulators, hold-open patterns) silently
+# fails to wait on macOS, producing flaky/wrong behavior with no error trail.
+#
+# Live fix (this session): tests/helpers/gh-mock.bash + claude-mock.bash used
+# `sleep infinity` to simulate a hung subprocess; on macOS they returned
+# instantly, defeating the hang. Fixed to a large finite value.
+#
+# Portable fix: a large finite value that both GNU and BSD accept, e.g.
+#   sleep 2147483647   # ~68 years
+#
+# Same low-FP class as Rule 10 (BARE_BSD_SED_I) / Rule 11 (BARE_BSD_STAT_F):
+# a fixed non-portable literal token, not a heuristic.
+#
+# Suppression: add on the line immediately before the flagged code:
+#   # sharkrite-lint disable SLEEP_INFINITY_NOT_PORTABLE - reason: <text>
+echo "Checking for non-portable 'sleep infinity' / 'sleep inf' (BSD/macOS rejects)..."
+for file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r line_num line_content; do
+    # Skip full-line comments (documentation mentions of the pattern are fine)
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
+      continue
+    fi
+    # Check for suppression comment on the preceding line
+    prev_line_num=$((line_num - 1))
+    prev_line=$(sed -n "${prev_line_num}p" "$file" 2>/dev/null || echo "")
+    if echo "$prev_line" | grep -qE '#.*sharkrite-lint.*disable.*SLEEP_INFINITY_NOT_PORTABLE'; then
+      continue
+    fi
+    print_violation "$file" "$line_num" "SLEEP_INFINITY_NOT_PORTABLE" \
+      "'sleep infinity'/'sleep inf' is rejected by BSD/macOS /bin/sleep (exits immediately, never sleeps) — use a large finite value like 'sleep 2147483647'"
+  done < <(grep -nE '\bsleep[[:space:]]+(-[a-z]+[[:space:]]+)*(inf|infinity)\b' "$file" 2>/dev/null || true)
+done
+
+# Rule 27: tr with a multibyte UTF-8 replacement/delete char (byte-oriented tr garbles it)
+#
+# `tr` maps BYTES, not characters. When a tr SET argument contains a multibyte
+# UTF-8 character (e.g. '↵', '→', 'é'), tr replaces matched input with only the
+# FIRST BYTE of that character — producing mojibake. ASCII-only SETs are fine.
+#
+# Live bug (fixed): lib/utils/blocker-rules.sh used `tr '\n' '↵'` to visualize
+# newlines in a diag log; tr emitted 0xE2 (the first byte of ↵) instead of the
+# full glyph. Fix: bash parameter expansion `${var//$'\n'/↵}` (UTF-8-safe).
+#
+# Detection is QUOTE-AWARE to stay false-positive-free: for each `tr` command
+# word on a line, the parser walks forward ONLY through tr's own quoted SET
+# operands (stopping at the next unquoted | ; & or )) and flags a non-ASCII byte
+# only when it sits inside one of those quoted SETs. This deliberately does NOT
+# flag a multibyte byte that appears in:
+#   - a trailing comment           (echo $x | tr '\n' ',' # join ≈ x)
+#   - an upstream pipeline stage   (echo "café" | tr '[:upper:]' '[:lower:]')
+#   - a downstream pipeline stage  (tr '[:upper:]' '[:lower:]' | sed 's/x/→/')
+# all three of which are harmless and would otherwise block legitimate code.
+#
+# Heredoc-aware (mirrors Rules 7/8/9/13): bodies documenting the bug pattern are
+# skipped. Runs under LC_ALL=C so awk treats input as raw bytes (required for
+# [\200-\377] byte-range matching). BSD-awk compatible: index()/substr()/match()
+# only — no \s, no +, no \b, no compound rules.
+#
+# Suppression: place on the line immediately before the flagged code:
+#   # sharkrite-lint disable TR_MULTIBYTE_REPLACEMENT - Reason: <text>
+echo "Checking for tr with a multibyte UTF-8 replacement/delete char..."
+_r27_awk=$(mktemp)
+printf '%s\n' \
+  'function check_tr_args(s,   i, c, q, n, mb) {' \
+  '  mb = 0; i = 1; n = length(s)' \
+  '  while (i <= n) {' \
+  '    c = substr(s, i, 1)' \
+  '    if (c == "|" || c == ";" || c == "&" || c == ")") break' \
+  '    if (c == "\047" || c == "\042") {' \
+  '      q = c; i++' \
+  '      while (i <= n) { c = substr(s, i, 1); if (c == q) { i++; break }; if (c ~ /[\200-\377]/) mb = 1; i++ }' \
+  '      continue' \
+  '    }' \
+  '    i++' \
+  '  }' \
+  '  return mb' \
+  '}' \
+  'FNR == 1 { in_heredoc = 0; hd_marker = "" }' \
+  '{' \
+  '  if (in_heredoc) {' \
+  '    _close = $0; sub(/^[[:space:]]*/, "", _close)' \
+  '    if (_close == hd_marker) in_heredoc = 0' \
+  '    next' \
+  '  }' \
+  '  if (index($0, "<<") > 0) {' \
+  '    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)' \
+  '    gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")' \
+  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }' \
+  '  }' \
+  '  if ($0 ~ /^[[:space:]]*#/) next' \
+  '  if ($0 !~ /(^|[ \t|(;&])tr[ \t]/) next' \
+  '  rest = $0; found = 0' \
+  '  while (match(rest, /(^|[ \t|(;&])tr[ \t]/)) {' \
+  '    after = substr(rest, RSTART + RLENGTH)' \
+  '    if (check_tr_args(after)) { found = 1; break }' \
+  '    rest = after' \
+  '  }' \
+  '  if (found) print FILENAME "\t" FNR' \
+  '}' \
+  > "$_r27_awk"
+
+# LC_ALL=C: treat bytes literally so [\200-\377] reliably matches UTF-8 lead/
+# continuation bytes regardless of the ambient locale.
+_r26_hits=$(LC_ALL=C awk -f "$_r27_awk" "${SHELL_FILES[@]}" </dev/null 2>/dev/null || true)
+rm -f "$_r27_awk"
+_r27_awk=""
+
+if [ -n "$_r26_hits" ]; then
+  while IFS= read -r _hit; do
+    # Tab-separated: file<TAB>linenum — safe for paths containing colons
+    _hit_file=$(echo "$_hit" | cut -f1)
+    _hit_line=$(echo "$_hit" | cut -f2)
+    # Suppression: comment on the immediately preceding line
+    _prev_line=$(sed -n "$((_hit_line - 1))p" "$_hit_file" 2>/dev/null || true)
+    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*TR_MULTIBYTE_REPLACEMENT'; then
+      continue
+    fi
+    print_violation "$_hit_file" "$_hit_line" "TR_MULTIBYTE_REPLACEMENT" \
+      "tr maps bytes, not UTF-8 chars — a multibyte replacement/delete char emits only its first byte (garbage); use bash parameter expansion \${var//search/replace} instead"
+  done <<< "$_r26_hits"
+fi
+
+
+# Rule 28: BSD `date -jf` parsing a Z/UTC timestamp to epoch WITHOUT `-u`
+#
+# BSD date (macOS) needs `-u` to interpret the input as UTC. When the input
+# format ends in a literal `Z` (the ISO-8601 UTC zone marker) but `-u` is
+# missing, BSD date parses the timestamp in the machine's LOCAL timezone and
+# the resulting epoch is skewed by the local UTC offset (e.g. -6h in MT).
+# The trailing `Z` is treated as a literal, not as "this is UTC".
+#
+# Live fix (wave 1, this session): lib/utils/date-helpers.sh:35 iso_to_epoch()
+# was missing `-u` on its BSD branch. Correct form: `date -u -jf ... +%s`.
+# epoch_to_iso() already used `-u`; this keeps the round-trip pair symmetric.
+#
+# Detection (per `date` invocation segment, split on | ; & so a sibling command
+# in a `||` chain cannot mask or falsely trigger this one):
+#   FLAGGED when the segment has an -f flag char (input format) AND a -j flag
+#   char (BSD no-set parse mode) in ANY clustering/order, a quoted format string
+#   containing a literal uppercase `Z`, and `+%s` (epoch) output, and NO -u flag.
+#
+# Intentionally NOT flagged:
+#   - any segment containing `-u` (correct UTC parse) — e.g. -u -jf / -juf / -ujf
+#   - `%z` numeric-offset formats (lowercase z; the offset is parsed explicitly)
+#   - date-only / no-Z formats (no time-of-day → no local-offset skew possible)
+#   - non-epoch output (`+%b ...` display conversions, e.g. deliberate UTC->local)
+#
+# Suppression: add on the line immediately before the flagged code:
+#   # sharkrite-lint disable BSD_DATE_PARSE_Z_WITHOUT_U - Reason: <text>
+echo "Checking for BSD 'date -jf' parsing a Z/UTC timestamp to epoch without -u..."
+for file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r line_num line_content; do
+    # Skip full-line comments
+    if echo "$line_content" | grep -qE '^\s*#'; then
+      continue
+    fi
+    # Check for suppression comment on the preceding line
+    prev_line_num=$((line_num - 1))
+    prev_line=$(sed -n "${prev_line_num}p" "$file" 2>/dev/null || echo "")
+    if echo "$prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BSD_DATE_PARSE_Z_WITHOUT_U'; then
+      continue
+    fi
+    # Examine each `date ...` invocation segment independently (terminated at
+    # | ; & or EOL) so a -u on a sibling command in a || chain cannot mask a
+    # bad invocation, and a good sibling cannot be flagged by a bad one.
+    while IFS= read -r seg; do
+      [ -n "$seg" ] || continue
+      # (a) an -f flag char (input format) somewhere in a dash-flag cluster
+      echo "$seg" | grep -qE '(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)' || continue
+      # (b) a -j flag char (BSD no-set parse mode) somewhere in a dash-flag cluster
+      echo "$seg" | grep -qE '(^|[[:space:]])-[a-zA-Z]*j[a-zA-Z]*([[:space:]]|$)' || continue
+      # (c) a quoted format string containing a literal uppercase Z (UTC marker)
+      echo "$seg" | grep -qE '"[^"]*Z[^"]*"|'"'"'[^'"'"']*Z[^'"'"']*'"'" || continue
+      # (d) epoch output
+      echo "$seg" | grep -qE '\+%s' || continue
+      # Safe iff a flag cluster contains -u (interpret input as UTC)
+      if echo "$seg" | grep -qE '(^|[[:space:]])-[a-zA-Z]*u[a-zA-Z]*([[:space:]]|$)'; then
+        continue
+      fi
+      print_violation "$file" "$line_num" "BSD_DATE_PARSE_Z_WITHOUT_U" \
+        "BSD 'date -jf' parsing a Z/UTC timestamp to epoch without -u parses in local time, skewing the epoch by the local offset — use 'date -u -jf ...'"
+    done < <(echo "$line_content" | grep -oE 'date[^|;&]*' || true)
+  done < <(grep -nE 'date[^|;&]*-[a-zA-Z]*j' "$file" 2>/dev/null || true)
+done
 
 echo ""
 echo "----------------------------------------"
