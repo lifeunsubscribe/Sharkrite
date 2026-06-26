@@ -756,6 +756,17 @@ run_test_gate() {
     # with no TERM.)
     export TERM="${TERM:-dumb}"
 
+    # Per-test timeout: a single hung test must not stall the whole gate until the
+    # outer backstop (RITE_GATE_WAIT_TIMEOUT, ~30 min) fires. bats' BATS_TEST_TIMEOUT
+    # kills any test exceeding it via a pkill/ps countdown — no GNU `timeout` command
+    # needed, so it works on macOS too. Exported here so all three bats invocations
+    # below (full / parallel / serial) inherit it in their subshells.
+    # Live trigger (2026-06-26): a self-exec'ing python3 wrapper made
+    # venv-bootstrap-failure-loud.bats hang, stalling the gate ~30 min on a single
+    # test. Default 120s/test (ample for load-sensitive serial tests); override via
+    # RITE_BATS_TEST_TIMEOUT.
+    export BATS_TEST_TIMEOUT="${RITE_BATS_TEST_TIMEOUT:-120}"
+
     # --- Bats output format: pretty for the run log, TAP for JSON parser ---
     # When bats supports --report-formatter (bats-core >= 1.5), we run with
     # `-F pretty` for readable output, while TAP is written to a temp dir via

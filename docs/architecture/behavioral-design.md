@@ -437,6 +437,18 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 **Enforcement:** `tests/regression/test-gate-targeted-selection.bats` — serial-hinted file is split from parallel batch; non-serial file is not affected; block-on-any is preserved across both batches.
 
+### Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)
+
+**2026-06-26.** The gate had only an *outer* timeout — `RITE_GATE_WAIT_TIMEOUT` (#654), ~30 min for the whole run. A single hung test therefore stalled the entire gate until that backstop fired. Live trigger: a developer machine's `python3` was a self-exec'ing wrapper (infinite loop); `venv-bootstrap-failure-loud.bats` invoked it and hung, wedging the gate for 30 min on one test.
+
+**The fix:** `run_test_gate` exports `BATS_TEST_TIMEOUT="${RITE_BATS_TEST_TIMEOUT:-120}"` once, before the full/parallel/serial bats invocations (right after `export TERM`), so all three subshells inherit it. bats kills any test exceeding the limit and emits `not ok N # timeout after Ns` — which block-on-any then treats as a failure (correct: a hung test *is* a failure). A wedged test now costs ≤120s, not 30 min.
+
+**Why this works on macOS:** bats' per-test timeout uses a `pkill`/`ps` countdown (`bats-exec-test::bats_start_timeout_countdown`), **not** the GNU `timeout` command — so no coreutils shim is needed. Verified against bats-core 1.13.0.
+
+**Layering:** this is per-*test*; `RITE_GATE_WAIT_TIMEOUT` remains the per-*run* backstop for pathologies bats can't self-interrupt (e.g. a wedged `make check`). The two are complementary, not redundant.
+
+**Enforcement:** `tests/regression/gate-per-test-timeout.bats` — asserts the export exists with the RITE override, precedes the first bats invocation, and that bats actually honors the timeout on this host.
+
 ### Gate Output Routing: live in foreground, log-only when concurrent (CRITICAL)
 
 **2026-06-24.** The post-commit gate's raw output (concurrent `make shellcheck` + `make lint`, plus bats `-F pretty`) is voluminous. Two failure modes argued for routing it off the terminal: (1) the review-loop gate runs **backgrounded, concurrent with review generation** (`workflow-runner.sh` Phase 2/3), so its live stream interleaved mid-phase with unrelated output; (2) a single failing bats test replays its **entire captured stdout** — for whole-session tests (e.g. `tests/smoke/source-all-libs.bats`) that's a nested-transcript wall.
