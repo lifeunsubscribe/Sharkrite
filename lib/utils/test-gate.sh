@@ -503,6 +503,40 @@ run_test_gate() {
     return 0
   fi
 
+  # --- RITE_TEST_COMMAND override ---
+  # When set, use this command verbatim as the test runner for non-Sharkrite repos
+  # instead of manifest detection. Checked before the manifest ladder so projects
+  # can name any runner (e.g. RITE_TEST_COMMAND="./run-tests.sh").
+  # Sharkrite repos always use make shellcheck + make lint + bats (ignore override).
+  if [ -n "${RITE_TEST_COMMAND:-}" ] && [ "$_is_sharkrite" = "false" ]; then
+    echo "[test-gate] Using RITE_TEST_COMMAND: ${RITE_TEST_COMMAND}"
+    local _nonsr_exit_file_cmd _tests_raw_file_cmd
+    _nonsr_exit_file_cmd=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$.txt")
+    _tests_raw_file_cmd=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$.txt")
+    trap 'rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"' EXIT
+    # Use sh -c to support multi-word commands (e.g. "cargo test --features integration")
+    # without eval. RITE_TEST_COMMAND is operator-configured in .rite/config, not
+    # derived from external input.
+    { (cd "$project_root" && sh -c "${RITE_TEST_COMMAND}" 2>&1); echo $? > "$_nonsr_exit_file_cmd"; } \
+      | tee "$_tests_raw_file_cmd" || true
+    local _cmd_tests_exit
+    _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo "0")
+    local _cmd_tests_count
+    _cmd_tests_count=$(grep -c "^not ok \|FAILED\|ERROR\|FAIL" "$_tests_raw_file_cmd" || true)
+    local _cmd_overall_exit=0
+    [ "$_cmd_tests_exit" -ne 0 ] && _cmd_overall_exit=1
+    local _gate_end_cmd _duration_cmd
+    _gate_end_cmd=$(date +%s)
+    _duration_cmd=$(( _gate_end_cmd - _gate_start ))
+    local _outcome_cmd="passed"
+    [ "$_cmd_overall_exit" -ne 0 ] && _outcome_cmd="failed"
+    _diag "TEST_GATE outcome=${_outcome_cmd} lint_count=0 test_count=${_cmd_tests_count} duration_s=${_duration_cmd} pr=${PR_NUMBER:-?}"
+    _gate_write_json "$output_file" "[]" "[]" "$_cmd_overall_exit"
+    rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"
+    trap - EXIT
+    return "$_cmd_overall_exit"
+  fi
+
   # --- Missing-runner check ---
   if [ "$_is_sharkrite" = "true" ]; then
     if ! command -v make >/dev/null 2>&1; then
@@ -844,10 +878,26 @@ run_test_gate() {
     rm -f "$_sc_exit_file" "$_lint_exit_file" "$_bats_exit_file"
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   else
-    # Non-Sharkrite: best-effort detection (npm test / make test / pytest)
-    # For non-Sharkrite repos the gate runs whatever make test does (unchanged behavior)
+    # Non-Sharkrite: best-effort detection (npm test / make test / pytest / cargo / go)
+    # For non-Sharkrite repos the gate runs whatever the manifest implies.
     local _nonsr_exit_file
     _nonsr_exit_file=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$.txt")
+
+    # Detect whether this PR touched source files for use in loud-skip below.
+    # Source = any non-docs/non-config change. A simple heuristic: any changed
+    # path that isn't docs/, README, LICENSE, *.md, *.txt, *.conf, .gitignore.
+    local _nonsr_diff_base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
+    local _nonsr_changed_files _nonsr_source_touched=false
+    _nonsr_changed_files=$(cd "$project_root" && git diff --name-only "$_nonsr_diff_base"...HEAD 2>/dev/null || true)
+    if [ -n "$_nonsr_changed_files" ]; then
+      # If any changed file does not match docs/*, *.md, *.txt, *.conf, README*, LICENSE*
+      # then source was touched. Use grep -v to filter out non-source paths.
+      local _nonsr_src
+      _nonsr_src=$(printf '%s\n' "$_nonsr_changed_files" \
+        | grep -vE '(^docs/|\.md$|\.txt$|\.conf$|^README|^LICENSE|\.(gitignore|yml|yaml)$)' || true)
+      [ -n "$_nonsr_src" ] && _nonsr_source_touched=true
+    fi
+
     if [ -f "$project_root/Makefile" ] && grep -q "^test:" "$project_root/Makefile" 2>/dev/null; then
       echo "[test-gate] Running make test..."
       # tee to stdout for full-transcript log capture; temp file for JSON findings
@@ -864,10 +914,36 @@ run_test_gate() {
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
-    else
-      # No recognizable test runner — skip gracefully
+    elif [ -f "$project_root/Cargo.toml" ]; then
+      echo "[test-gate] Running cargo test..."
+      { (cd "$project_root" && cargo test 2>&1); echo $? > "$_nonsr_exit_file"; } \
+        | tee "$_tests_raw_file" || true
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+    elif [ -f "$project_root/go.mod" ]; then
+      echo "[test-gate] Running go test ./..."
+      { (cd "$project_root" && go test ./... 2>&1); echo $? > "$_nonsr_exit_file"; } \
+        | tee "$_tests_raw_file" || true
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+    elif (cd "$project_root" && ls ./*.ino 2>/dev/null | grep -q '\.ino$'); then
+      # Arduino sketch detected — arduino-cli/pio requires board config; skip with hint.
+      # This is a loud skip: we know source exists but cannot run verification
+      # without target board configuration. Set RITE_TEST_COMMAND to use pio/arduino-cli.
+      echo "[test-gate] WARNING: Arduino sketch detected (.ino) but no test runner configured." >&2
+      echo "[test-gate] Set RITE_TEST_COMMAND=\"pio test\" or RITE_TEST_COMMAND=\"arduino-cli compile --fqbn <board>\" to enable verification." >&2
       _diag "TEST_GATE outcome=skipped reason=missing_runner pr=${PR_NUMBER:-?}"
-      rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}"
+      rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+      trap - EXIT
+      _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_runner"
+      return 0
+    else
+      # No recognizable test runner — skip, but warn loudly if source was touched.
+      _diag "TEST_GATE outcome=skipped reason=missing_runner pr=${PR_NUMBER:-?}"
+      if [ "$_nonsr_source_touched" = "true" ]; then
+        echo "[test-gate] WARNING: No test runner detected and this PR touches source files." >&2
+        echo "[test-gate] Set RITE_TEST_COMMAND in .rite/config (e.g. RITE_TEST_COMMAND=\"./run-tests.sh\") to enable verification." >&2
+        echo "[test-gate] Gate skipped — merge proceeds with review findings only. This is a fake-green." >&2
+      fi
+      rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
       trap - EXIT
       _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_runner"
       return 0

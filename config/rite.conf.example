@@ -77,3 +77,28 @@
 # Claude models
 # RITE_CLAUDE_MODEL="claude-sonnet-4-5"
 # RITE_REVIEW_MODEL="claude-opus-4-5"
+
+# =============================================================================
+# Test Gate
+# =============================================================================
+
+# Override the test runner for non-Sharkrite repos.
+# When set, this command is run verbatim instead of the auto-detected runner
+# (Makefile test:, npm test, pytest, cargo test, go test ./...).
+# Sharkrite repos (detected by shellcheck: + lint: Makefile targets) always
+# use make shellcheck + make lint + bats; this override is ignored for them.
+#
+# Use this for repos whose test runner is not in the auto-detection table:
+#   RITE_TEST_COMMAND="./run-tests.sh"
+#   RITE_TEST_COMMAND="cargo test --features integration"
+#   RITE_TEST_COMMAND="pio test"                   # PlatformIO (Arduino)
+#   RITE_TEST_COMMAND="arduino-cli compile --fqbn arduino:avr:uno ."
+#   RITE_TEST_COMMAND="bundle exec rspec"          # Ruby
+#   RITE_TEST_COMMAND="mvn test -q"                # Maven
+#
+# Without this set, the gate skips (and warns if the PR touched source files).
+# RITE_TEST_COMMAND=""
+
+# Override the git diff base used by the test gate for targeted test selection.
+# Default is origin/main. Override for non-standard branch setups or CI.
+# RITE_TEST_GATE_DIFF_BASE="origin/main"
