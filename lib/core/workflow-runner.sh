@@ -255,7 +255,7 @@ handle_blocker() {
 
   # Early exit if already approved in supervised mode - skip the whole wall
   if [ "$WORKFLOW_MODE" = "supervised" ] && has_approved_blocker "$issue_number" "$blocker_type"; then
-    print_info "ℹ️  Blocker $blocker_type (previously approved — continuing)"
+    print_info "Blocker $blocker_type (previously approved — continuing)"
     return 0
   fi
 
@@ -419,7 +419,7 @@ handle_blocker() {
 
   # Supervised mode: user is watching — prompt before bypassing
   if [ "$WORKFLOW_MODE" = "supervised" ]; then
-    print_warning "⚠️  BLOCKER: $blocker_type"
+    print_warning "BLOCKER: $blocker_type"
     echo ""
     read -p "Review the above. Continue anyway? (y/n) " -n 1 -r
     echo
@@ -1172,11 +1172,11 @@ phase_assess_and_resolve() {
     followup_state=$(gh_safe issue view "$followup_issue_num" --json state --jq '.state')
 
     if [ "$followup_state" = "CLOSED" ]; then
-      print_success "✅ Follow-up issue #$followup_issue_num has been resolved"
+      print_success "Follow-up issue #$followup_issue_num has been resolved"
       print_info "Skipping assessment loop - proceeding to merge"
       return 0
     elif [ -n "$followup_state" ]; then
-      print_info "📋 Follow-up issue #$followup_issue_num exists (state: $followup_state)"
+      print_info "Follow-up issue #$followup_issue_num exists (state: $followup_state)"
       print_info "Workflow will continue assessment to check if PR is ready to merge"
     fi
   fi
@@ -1421,7 +1421,7 @@ phase_assess_and_resolve() {
     wait_pid_with_timeout "$_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _gate_exit=$?
     if [ "$_gate_exit" -eq 124 ]; then
       _diag "GATE_TIMEOUT pr=${pr_number:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s"
-      print_warning "⚠️  Post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — likely a leaked subprocess holding the gate pipe. Killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
+      print_warning "Post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — likely a leaked subprocess holding the gate pipe. Killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
       kill_process_tree "$_gate_pid"
       # Write a valid skipped-gate sentinel so assess-and-resolve.sh's jq does not
       # choke on a partial/empty findings file from the killed gate.
@@ -2569,7 +2569,7 @@ run_workflow() {
       wait_pid_with_timeout "$_init_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _init_gate_exit=$?
       if [ "$_init_gate_exit" -eq 124 ]; then
         _diag "GATE_TIMEOUT pr=${PR_NUMBER:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s phase=initial"
-        print_warning "⚠️  Initial post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
+        print_warning "Initial post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
         kill_process_tree "$_init_gate_pid"
         printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_timeout"}\n' > "$_init_gate_file" 2>/dev/null || true
       fi

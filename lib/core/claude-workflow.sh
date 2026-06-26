@@ -523,7 +523,7 @@ _run_dev_test_gate() {
 
         # Print status based on what actually succeeded
         if [ "$_base_install_ok" = true ] && [ "$_dev_install_ok" = true ] && [ "$_pytest_ok" = true ]; then
-          print_success "Venv ready ✅"
+          print_success "Venv ready"
         else
           # Actionable error message with specific failures
           print_error "Venv bootstrap incomplete:"
@@ -1250,7 +1250,7 @@ if [ -z "$ISSUE_NUMBER" ]; then
     PR_STATE=$(echo "$PR_JSON" | jq -r '.state')
 
     if [ "$PR_STATE" = "MERGED" ]; then
-      print_success "✅ Work already completed!"
+      print_success "Work already completed!"
       echo "  Issue #${ISSUE_NUMBER:-?} (PR #$PR_NUMBER): $PR_TITLE"
       echo "  Status: MERGED"
       echo "  URL: $PR_URL"
@@ -2636,7 +2636,7 @@ else
 
       if [ -n "$_scope_violations" ]; then
         echo ""
-        print_warning "⚠️  Scope boundary violation detected"
+        print_warning "Scope boundary violation detected"
         echo ""
         echo "The following file(s) appear to be outside the issue's Scope Boundary:"
         echo "$_scope_violations" | grep "^VIOLATION:" | sed 's/^VIOLATION: /  • /'
