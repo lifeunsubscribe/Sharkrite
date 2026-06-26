@@ -905,6 +905,16 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
               echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
             fi
+            # Post a per-finding PR comment so assess-and-resolve.sh _followup_dedup_check
+            # Source 4 can detect this finding by title match on a re-run (dedup cross-path
+            # guard — same rationale as the new-issue path below).
+            _dup_comment_file=$(mktemp)
+            printf '<!-- %s:%s -->\n**Finding:** %s' \
+              "$RITE_MARKER_FOLLOWUP" "$DUPLICATE_ISSUE" "$ITEM_TITLE" \
+              > "$_dup_comment_file"
+            gh_safe pr comment "$PR_NUMBER" --body-file "$_dup_comment_file" \
+              >/dev/null 2>&1 || true
+            rm -f "$_dup_comment_file"
           else
             print_info "  Updating #$DUPLICATE_ISSUE with new content: $ITEM_TITLE"
             UPDATED_BODY="${EXISTING_BODY}
@@ -934,6 +944,15 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
               if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
                 echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
               fi
+              # Post a per-finding PR comment so assess-and-resolve.sh _followup_dedup_check
+              # Source 4 can detect this finding by title match on a re-run.
+              _upd_comment_file=$(mktemp)
+              printf '<!-- %s:%s -->\n**Finding:** %s' \
+                "$RITE_MARKER_FOLLOWUP" "$DUPLICATE_ISSUE" "$ITEM_TITLE" \
+                > "$_upd_comment_file"
+              gh_safe pr comment "$PR_NUMBER" --body-file "$_upd_comment_file" \
+                >/dev/null 2>&1 || true
+              rm -f "$_upd_comment_file"
             else
               print_warning "Could not update duplicate issue #${DUPLICATE_ISSUE} body (gh issue edit failed with exit ${_issue_edit_rc}); finding will be re-evaluated"
             fi
@@ -992,6 +1011,20 @@ _Parent PR: #${PR_NUMBER}_"
               if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
                 echo "$NEW_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
               fi
+              # Post a per-finding PR comment with the marker + item title so that
+              # assess-and-resolve.sh's _followup_dedup_check Source 4 can detect
+              # this issue by title match on a later re-run (e.g. merge-phase re-entry
+              # after a network glitch on the initial summary comment).  Without this
+              # comment, Source 4 falls through and the per-finding loop creates a
+              # duplicate (live case: finance-glance #60 filed #69 here and #71 in
+              # the per-finding loop on re-run — issues #720/721/722).
+              _pfinding_comment_file=$(mktemp)
+              printf '<!-- %s:%s -->\n**Finding:** %s' \
+                "$RITE_MARKER_FOLLOWUP" "$NEW_ISSUE" "$ITEM_TITLE" \
+                > "$_pfinding_comment_file"
+              gh_safe pr comment "$PR_NUMBER" --body-file "$_pfinding_comment_file" \
+                >/dev/null 2>&1 || true
+              rm -f "$_pfinding_comment_file"
             fi
           else
             print_warning "  Failed to create issue: $ITEM_TITLE"
