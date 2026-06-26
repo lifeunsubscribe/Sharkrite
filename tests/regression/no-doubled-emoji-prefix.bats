@@ -40,18 +40,23 @@ LIB_FILES=(
 )
 
 # Pattern: print_HELPER "<emoji>..." where the helper would add a prefix emoji.
-# Matches any leading emoji after the opening quote.
-DOUBLED_PREFIX_PATTERN='print_(success|warning|info|error|step|critical|high|medium|low)[[:space:]]+["\x27][✅⚠️❌ℹ️▶⏸️⏱️📱📋🚨⚡💡]'
+# Matches any leading Unicode emoji/symbol after the opening quote.
+# Unicode ranges covered:
+#   \x{1F000}-\x{1FAFF}  — Emoji (emoticons, symbols, pictographs, transport, etc.)
+#   \x{2600}-\x{27BF}    — Misc symbols, dingbats (▶ ⚡ ⚠ etc.)
+#   \x{FE0F}             — Variation Selector-16 (emoji presentation, rarely leads)
+# Using perl instead of grep -P for BSD/macOS portability (grep -P is GNU-only).
+DOUBLED_PREFIX_PATTERN='print_(success|warning|info|error|step|critical|high|medium|low)\s+["\x27][\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{FE0F}]'
 
 @test "no print_* call sites pass a leading emoji in the string argument" {
   local violations=()
   for f in "${LIB_FILES[@]}"; do
     [ -f "$f" ] || continue
-    # Use grep -n to capture file+line for useful failure messages.
-    # grep -P handles multi-byte emoji characters correctly.
+    # Use perl for BSD/macOS portability; grep -P is GNU-only and exits 2 on BSD,
+    # which is swallowed by || true — making the guard a silent no-op on macOS.
     while IFS= read -r match; do
       violations+=("$match")
-    done < <(grep -nP "$DOUBLED_PREFIX_PATTERN" "$f" 2>/dev/null || true)
+    done < <(perl -ne "print \"$f:\$.: \$_\" if /$DOUBLED_PREFIX_PATTERN/u" "$f" 2>/dev/null || true)
   done
 
   if [ "${#violations[@]}" -gt 0 ]; then
@@ -72,9 +77,10 @@ DOUBLED_PREFIX_PATTERN='print_(success|warning|info|error|step|critical|high|med
   local violations=()
   for f in "${LIB_FILES[@]}"; do
     [ -f "$f" ] || continue
+    # Use perl for BSD/macOS portability (grep -P is GNU-only).
     while IFS= read -r match; do
       violations+=("$match")
-    done < <(grep -nP 'print_success\s+["\x27].*✅\s*["\x27]' "$f" 2>/dev/null || true)
+    done < <(perl -ne "print \"$f:\$.: \$_\" if /print_success\s+[\"'][^\"']*\x{2705}\s*[\"']/u" "$f" 2>/dev/null || true)
   done
 
   if [ "${#violations[@]}" -gt 0 ]; then

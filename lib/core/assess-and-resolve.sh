@@ -1286,7 +1286,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
 
       else
         # Normal loop: ACTIONABLE_NOW items exist, retry count < 3
-        print_info "🔄 $ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items found - will loop to fix" >&2
+        print_info "$ACTIONABLE_NOW_COUNT ACTIONABLE_NOW items found - will loop to fix" >&2
 
         if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           print_info "Note: $ACTIONABLE_LATER_COUNT ACTIONABLE_LATER items will be deferred until fixes complete" >&2
