@@ -20,22 +20,21 @@ _RITE_SESSION_TRACKER_LOADED=true
 # ---------------------------------------------------------------------------
 # Session-state lock
 #
-# All functions that read-modify-write SESSION_STATE_FILE must hold this lock.
-# The lock is derived from SESSION_STATE_FILE (same path + ".lock") and uses
-# the same dual-path strategy as scratchpad-lock.sh:
-#   - Fast path: flock(1) when available (Linux / Homebrew util-linux on macOS)
-#   - Portable path: mkdir-based advisory lock with atomic PID write via mv
-#
-# Internal state (set by _acquire_session_lock, read by _release_session_lock)
+# All functions that read-modify-write SESSION_STATE_FILE must hold this lock,
+# derived from SESSION_STATE_FILE (same path + ".lock"). It uses the shared
+# atomic primitive in lock.sh (issue #706) — the single correct lock used across
+# the codebase. (Previously a dual flock/mkdir strategy whose mkdir fallback lost
+# increments under load; the ln+token primitive in lock.sh has no such window.)
 # ---------------------------------------------------------------------------
-_SESSION_LOCK_FD=201          # File descriptor used for flock fast-path
+if ! declare -f lock_acquire >/dev/null 2>&1; then
+  _st_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=/dev/null
+  source "$_st_dir/lock.sh"
+fi
+
+# Internal state (set by _acquire_session_lock, read by _release_session_lock)
 _SESSION_LOCK_HELD=false      # True once lock is successfully acquired
 _SESSION_LOCKFILE=""          # Set to actual lock path on acquire
-# Strategy used at acquire time: "flock" or "mkdir".
-# Persisted so that release always uses the same path type as acquire, regardless
-# of whether PATH changes between the two calls or whether another process on a
-# shared filesystem chose a different strategy for the same lock path.
-_SESSION_LOCK_STRATEGY=""     # "flock" or "mkdir" — set by acquire, read by release
 
 # _acquire_session_lock
 #
@@ -50,82 +49,18 @@ _acquire_session_lock() {
 
   local lockfile="${state_file}.lock"
   _SESSION_LOCKFILE="$lockfile"
-
   local max_attempts="${RITE_SESSION_LOCK_TIMEOUT:-30}"
 
-  # Fast path: flock is available
-  if command -v flock >/dev/null 2>&1; then
-    # Clean up any leftover mkdir-style lock directory from a previous run where
-    # flock was not available.  The directory would block flock from creating its
-    # plain-file lock at the same path (open(2) fails if a directory is in the way).
-    if [ -d "$lockfile" ]; then
-      local _stale_pid
-      _stale_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
-      if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
-        echo "session-lock: removing leftover mkdir-style lock dir before flock acquire" >&2
-        rm -rf "$lockfile" 2>/dev/null || true
-      fi
-    fi
-    # shellcheck disable=SC1083
-    eval "exec ${_SESSION_LOCK_FD}>\"$lockfile\""
-    if ! flock -w "$max_attempts" "$_SESSION_LOCK_FD" 2>/dev/null; then
-      echo "ERROR: Could not acquire session-state lock within ${max_attempts}s." >&2
-      echo "       If a previous run crashed, remove: rm -f \"$lockfile\"" >&2
-      exit 1
-    fi
-    _SESSION_LOCK_HELD=true
-    _SESSION_LOCK_STRATEGY="flock"
-    return 0
+  # Shared atomic lock (lock.sh, #706). Replaces the old flock/mkdir dual path
+  # whose mkdir fallback lost session increments under heavy concurrent load
+  # (the create→PID-write window let a waiter reclaim a live lock). lock.sh's
+  # ln+token primitive has no such window.
+  if ! lock_acquire "$lockfile" "$max_attempts"; then
+    echo "ERROR: Could not acquire session-state lock within ${max_attempts}s." >&2
+    echo "       If a previous run crashed, remove: rm -f \"$lockfile\"" >&2
+    exit 1
   fi
-
-  # Portable path: mkdir-based lock with atomic PID write
-  # Clean up any leftover plain-file lock from a previous flock run
-  if [ -f "$lockfile" ] && [ ! -d "$lockfile" ]; then
-    rm -f "$lockfile"
-  fi
-
-  local lock_attempts=0
-  local pid_tmp
-
-  while ! mkdir "$lockfile" 2>/dev/null; do
-    if [ -f "$lockfile/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
-      # kill -0: same-host assumption — only valid within a single PID namespace.
-      # SESSION_STATE_FILE (and its lockfile) must not be on shared/network storage;
-      # kill -0 checks the local process table only and will give false "dead process"
-      # results for PIDs held by processes on other hosts or in isolated PID namespaces.
-      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        echo "session-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
-        rm -rf "$lockfile" 2>/dev/null || true
-        continue
-      fi
-    else
-      # Lock dir exists but no PID file — give it a grace period before reclaiming
-      sleep 1
-      if [ ! -f "$lockfile/pid" ]; then
-        echo "session-lock: reclaiming lock dir with no PID after grace period" >&2
-        rm -rf "$lockfile" 2>/dev/null || true
-        continue
-      fi
-    fi
-
-    lock_attempts=$((lock_attempts + 1))
-    if [ "$lock_attempts" -ge "$max_attempts" ]; then
-      echo "ERROR: Session-state lock timeout after ${max_attempts}s." >&2
-      echo "       To recover, remove: rm -rf \"$lockfile\"" >&2
-      exit 1
-    fi
-    sleep 1
-  done
-
-  # Write PID atomically via temp+rename so waiters never see an empty lock dir
-  pid_tmp=$(mktemp "${lockfile}/pid.XXXXXX")
-  echo $$ > "$pid_tmp"
-  mv "$pid_tmp" "${lockfile}/pid"
-
   _SESSION_LOCK_HELD=true
-  _SESSION_LOCK_STRATEGY="mkdir"
   return 0
 }
 
@@ -136,30 +71,8 @@ _release_session_lock() {
   if [ "$_SESSION_LOCK_HELD" != "true" ]; then
     return 0
   fi
-
-  local lockfile="${_SESSION_LOCKFILE:-${SESSION_STATE_FILE:-}.lock}"
-
-  # Use the strategy recorded at acquire time, not a fresh command -v check.
-  # Re-checking command -v flock here would cause a mismatch if PATH changed
-  # between acquire and release, or if two processes on a shared filesystem
-  # chose different strategies for the same lock path.
-  if [ "${_SESSION_LOCK_STRATEGY:-}" = "flock" ]; then
-    # Release flock by closing the fd (do NOT rm — see scratchpad-lock.sh comment)
-    flock -u "$_SESSION_LOCK_FD" 2>/dev/null || true
-    eval "exec ${_SESSION_LOCK_FD}>&-" 2>/dev/null || true
-  else
-    # mkdir-style: verify PID before removing
-    if [ -d "$lockfile" ] && [ -f "$lockfile/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
-      if [ "$lock_pid" = "$$" ]; then
-        rm -rf "$lockfile" 2>/dev/null || true
-      fi
-    fi
-  fi
-
+  lock_release "${_SESSION_LOCKFILE:-${SESSION_STATE_FILE:-}.lock}"
   _SESSION_LOCK_HELD=false
-  _SESSION_LOCK_STRATEGY=""
 }
 
 # Initialize session tracking
