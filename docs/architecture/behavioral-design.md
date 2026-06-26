@@ -800,7 +800,7 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 2. A `print_warning` is emitted to stderr with the processed/skipped/cap counts
 3. A `[diag] FOLLOWUP_CAP_HIT` line is written to `RITE_LOG_FILE` for health-report aggregation
 
-**Why skip (not abort):** Processing findings 1..N before hitting the cap is better than aborting the whole batch. High-severity findings are typically assessed first; lower-priority ones hit the cap. Operators can re-run `rite N --assess-and-fix` with a higher cap to process the rest — the dedup machinery prevents duplicates.
+**Why skip (not abort):** Processing findings 1..N before hitting the cap is better than aborting the whole batch. Findings are iterated in document order (no severity sort is applied here); lower-priority items at the end of the review are more likely to hit the cap, but ordering is not enforced. Operators can re-run `rite N --assess-and-fix` with a higher cap to process the rest — the dedup machinery prevents duplicates.
 
 **Disable the cap:** Set `RITE_MAX_FINDINGS_PER_RUN=0` in `.rite/config` to restore the original unbounded behavior. This is appropriate for one-off full-scan reviews where completeness matters more than API budget.
 
@@ -815,7 +815,7 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 
 **Observability:** `[diag] FOLLOWUP_CAP_HIT issue=N pr=N processed=N skipped=N cap=N` in `RITE_LOG_FILE`. The health report surfaces any `FOLLOWUP_CAP_HIT` event as a WATCH item with the skip count.
 
-**Implementation:** `lib/core/assess-and-resolve.sh` — cap check is the first statement after `_finding_index` increment, so `_finding_index` still counts all findings (not just processed ones) and the post-loop report can show total vs. processed.
+**Implementation:** `lib/core/assess-and-resolve.sh` — LOW-severity findings are skipped before `_finding_index` is incremented and before the cap guard runs. This means `_finding_index` counts only API-eligible (non-LOW) findings, and the cap only fires against findings that would actually make GitHub API calls. The post-loop report shows processed vs. total API-eligible findings.
 
 **Coverage:** `tests/regression/followup-finding-cap.bats`
 

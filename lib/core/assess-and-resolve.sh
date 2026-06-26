@@ -1661,19 +1661,6 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
 
-    _finding_index=$((_finding_index + 1))
-
-    # --- Per-finding cap guard ---
-    # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.
-    # The dedup machinery runs N× (issue list + issue view + pr view + backoff sleeps),
-    # so an unbounded loop on a scan-heavy PR can exhaust GitHub secondary rate limits.
-    # Set to 0 to disable the cap (original unbounded behavior).
-    _findings_cap="${RITE_MAX_FINDINGS_PER_RUN:-20}"
-    if [ "$_findings_cap" -gt 0 ] 2>/dev/null && [ "$_finding_index" -gt "$_findings_cap" ]; then
-      _findings_skipped_by_cap=$((_findings_skipped_by_cap + 1))
-      continue
-    fi
-
     # --- Extract per-finding fields from FILTERED_CONTENT ---
 
     # Raw title from the header (e.g. "1. Foo bar" or "Fix the thing")
@@ -1727,9 +1714,25 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     ' | sed 's/[[:space:]]*$//' | awk 'NF || in_content { in_content=1; print }' || true)
     _f_context="${_f_context:-}"
 
-    # Skip LOW severity items — excluded from follow-up issues (same as per-item path)
+    # Skip LOW severity items — excluded from follow-up issues (same as per-item path).
+    # This check runs before the cap guard so LOW findings do not consume API budget.
     if echo "$_f_severity" | grep -qi "LOW"; then
       print_info "  Skipped (LOW severity): $_clean_title"
+      continue
+    fi
+
+    _finding_index=$((_finding_index + 1))
+
+    # --- Per-finding cap guard ---
+    # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.
+    # The dedup machinery runs N× (issue list + issue view + pr view + backoff sleeps),
+    # so an unbounded loop on a scan-heavy PR can exhaust GitHub secondary rate limits.
+    # Placed after the LOW-severity skip so LOW findings (which make zero API calls)
+    # do not count against the cap — only API-eligible findings are counted.
+    # Set to 0 to disable the cap (original unbounded behavior).
+    _findings_cap="${RITE_MAX_FINDINGS_PER_RUN:-20}"
+    if [ "$_findings_cap" -gt 0 ] 2>/dev/null && [ "$_finding_index" -gt "$_findings_cap" ]; then
+      _findings_skipped_by_cap=$((_findings_skipped_by_cap + 1))
       continue
     fi
 
