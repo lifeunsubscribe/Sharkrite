@@ -264,22 +264,21 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
 
-### Fix-loop policy: defer non-critical findings on shippable PRs
+### Fix-loop policy: NOW means fixed, LATER means deferred
 
-`assess-and-resolve.sh` enters the fix loop (exit 2 → claude-workflow fixes → re-review) only when **at least one ACTIONABLE_NOW finding has Severity CRITICAL or HIGH**. If every NOW item is MEDIUM/LOW, the PR is considered shippable: the NOW items are reclassified into a single tech-debt follow-up issue (via the existing `CREATE_SECURITY_DEBT` path + a new `SHIPPABLE_DEFER` flag that extends the tech-debt extractor to include ACTIONABLE_NOW headers, not just LATER ones) and the workflow proceeds to merge with exit 0.
+**Honest-classification contract (introduced #717, 2026-06):** `ACTIONABLE_NOW` is a *scope* judgment, not a severity filter. The assessor labels a finding NOW only when it (a) logically completes the issue's work, or (b) falls within the issue's scope/diff and is completable in this PR. Anything deferrable must be classified `ACTIONABLE_LATER` or `DISMISSED` by the assessor. A finding that reaches `assess-and-resolve.sh` with a NOW label is always serviced in the fix loop — there is no post-classification "skip the loop and defer" path.
 
-**Why this rule exists — 2026-06-04 finance-glance batch:** Issues #313 and #319 each spent 28–29 minutes in Phase 3 fix-looping on MEDIUM-only findings. Each fix-loop cycle is ~5 minutes of LLM time:
+**Routing:**
+- `ACTIONABLE_NOW` present, retry count < 3 → exit 2 (fix loop, regardless of severity)
+- `ACTIONABLE_NOW` present, retry count ≥ 3 → retry-cap handling (see below)
+- Only `ACTIONABLE_LATER` items → exit 0, create tech-debt follow-up issues
+- Only `DISMISSED` items → exit 0, no follow-up
 
-- #313: 4 cycles → 0/1/0 → 1/0/0 → 2/0/0 → stale-review trip → **2,776s (46m), 0 merges**
-- #319: 1 cycle → 0/1/1 → mid-run rebase conflict (main moved during the 28-min Phase 3) → **2,946s (49m), 0 merges**
+**Why the previous "defer-when-shippable" rule was removed:** The old rule entered the fix loop only when at least one NOW item had Severity CRITICAL or HIGH; MEDIUM/LOW NOW items were reclassified to a follow-up and merged with `fix_iterations=0`. This caused observed regressions: finance-glance #60 (1px overlap introduced by the PR) and #63 (NaN passthrough to `(int)(NaN*100)`, UB) were both labeled MEDIUM, both deferred+merged, both regressions introduced by the PR itself. sharkrite #649 showed the opposite failure: doc-consistency NOW items churned through 3 fix iterations before hitting the cap. The root fix is honest assessment: out-of-scope or low-priority items must be classified LATER/DISMISSED by the assessor, not classified NOW and silently deferred by the resolver.
 
-The findings themselves were real and worth filing — just not worth blocking a merge over. Both PRs were shippable from cycle 1; the loop was burning tokens to fix code quality items that could have been deferred.
+**Implementation:** [assess-and-resolve.sh](../../lib/core/assess-and-resolve.sh) — the `ACTIONABLE_NOW_COUNT > 0` branch dispatches: retry count ≥ 3 → retry-cap handling; otherwise → Normal loop (echo assessment to fd 3, exit 2).
 
-**Rule of thumb:** the fix loop is for *correctness-blocking* findings. MEDIUM and LOW findings should ship as-is and get filed as follow-ups. If the reviewer is consistently producing CRITICAL/HIGH findings on shippable PRs, that's a review-prompt problem (loosen the severity threshold), not a fix-loop problem.
-
-**Implementation:** [assess-and-resolve.sh](../../lib/core/assess-and-resolve.sh) — the `ACTIONABLE_NOW_COUNT > 0` branch first computes `CRITICAL_NOW_COUNT` and `HIGH_NOW_COUNT` from the assessment text, then dispatches: zero CRITICAL+HIGH → defer-and-merge; otherwise → existing retry-limit or fix-loop path.
-
-**Coverage:** `tests/integration/assess-and-resolve-dedup.bats` — "ACTIONABLE_NOW with only MEDIUM severity defers to follow-up and exits 0" asserts both the exit code AND that a single follow-up issue is created via the gh mock.
+**Coverage:** `tests/regression/assess-and-resolve-shippable-defer.bats` — asserts MEDIUM/LOW ACTIONABLE_NOW items route to exit 2; `tests/integration/assess-and-resolve-dedup.bats` test 5 asserts exit 2 for a HIGH-severity NOW item.
 
 ### Verification Out of Fix Session
 

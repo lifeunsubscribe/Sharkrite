@@ -104,9 +104,9 @@ _ASSESSMENT_NOW_ITEMS='### Input Not Validated - ACTIONABLE_NOW
 '
 
 # Assessment with ACTIONABLE_NOW items but ONLY at MEDIUM severity. Under the
-# "defer-when-shippable" rule, this should NOT trigger a fix loop — the PR is
-# functionally shippable (no CRITICAL/HIGH findings) so the MEDIUM items get
-# deferred to a follow-up issue and the workflow proceeds to merge.
+# honest-classification contract (#717), NOW items always enter the fix loop
+# regardless of severity — a MEDIUM NOW item is fixed before merge, not deferred.
+# (If an item is truly deferrable, the assessor must classify it ACTIONABLE_LATER.)
 _ASSESSMENT_NOW_MEDIUM_ONLY='### Code Quality Polish - ACTIONABLE_NOW
 
 **Severity:** MEDIUM
@@ -675,42 +675,32 @@ run_assess_and_resolve() {
 }
 
 # ---------------------------------------------------------------------------
-# Defer-when-shippable rule (introduced after the 2026-06-04 finance-glance batch
-# burned 28+ minutes of LLM time fix-looping on MEDIUM-only findings in #313, #319):
+# Honest-classification contract (#717, 2026-06): NOW means the fix loop runs.
 #
-# ACTIONABLE_NOW items at MEDIUM/LOW severity (no CRITICAL/HIGH) → workflow does
-# NOT enter the fix loop. The items are reclassified into a single tech-debt
-# follow-up issue and the workflow exits 0 so the orchestrator can proceed to
-# merge. CRITICAL/HIGH NOW items still trigger the fix loop (covered by test 10
-# above with the HIGH-severity fixture).
+# ACTIONABLE_NOW items at any severity (CRITICAL, HIGH, MEDIUM, LOW) always
+# trigger the fix loop (exit 2). The "defer-when-shippable" path that previously
+# short-circuited MEDIUM/LOW NOW items to a follow-up and merged (exit 0) has
+# been removed. If an item is truly deferrable, the assessor must classify it
+# ACTIONABLE_LATER or DISMISSED — not NOW.
 # ---------------------------------------------------------------------------
 
-@test "integration: ACTIONABLE_NOW with only MEDIUM severity defers to follow-up and exits 0" {
+@test "integration: ACTIONABLE_NOW with only MEDIUM severity enters fix loop (exit 2)" {
   printf '%s' "$_ASSESSMENT_NOW_MEDIUM_ONLY" > "$MOCK_ASSESSMENT_FILE"
 
   run_assess_and_resolve 52 21
 
-  # Exit 0: PR is shippable, no fix loop needed
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: expected exit 0 (MEDIUM-only NOW defers to follow-up), got $status"
+  # Exit 2: fix loop must run — NOW items are always serviced regardless of severity.
+  [ "$status" -eq 2 ] || {
+    echo "FAIL: expected exit 2 (MEDIUM NOW enters fix loop), got $status"
     echo "Output: ${output:0:800}"
     false
   }
 
-  # Display message names the new behavior explicitly so a future contributor
-  # who breaks the deferral path will see this test surface the regression.
-  echo "$output" | grep -q "PR is shippable" || {
-    echo "FAIL: expected 'PR is shippable' message in output"
-    echo "Output: ${output:0:800}"
-    false
-  }
-
-  # #647: per-finding follow-up model — the 2 deferred MEDIUM NOW items become
-  # one tech-debt follow-up issue EACH (CREATE_SECURITY_DEBT=true).
+  # No follow-up issues created — the fix loop handles NOW items inline.
   local _count
   _count=$(jq 'length' "$GH_MOCK_STATE_DIR/issues.json")
-  [ "$_count" -eq 2 ] || {
-    echo "FAIL: expected 2 per-finding follow-up issues from deferred MEDIUM items, got $_count"
+  [ "$_count" -eq 0 ] || {
+    echo "FAIL: expected 0 issues (NOW items go to fix loop, not follow-up), got $_count"
     false
   }
 }
