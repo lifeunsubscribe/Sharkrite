@@ -495,6 +495,34 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Test: *.test.* file is NOT flagged (e.g. foo.test.ts, foo.test.sh)
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: *.test.* file not flagged when DO covers source only" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+  git checkout -q -b feature/testpath-test-dot-ext
+
+  printf "# source file\n" > lib/core/foo.sh
+  mkdir -p src
+  printf "// jest test\n" > src/foo.test.ts
+  git add -A
+  git commit -q -m "fix: source + .test.ts companion"
+  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath-dot.txt"
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/foo.sh
+EOF
+
+  _run_scope_check_file "$body_file"
+
+  # src/foo.test.ts matches *.test.* — no violation
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+# ---------------------------------------------------------------------------
 # Test: explicit DO NOT on a test file overrides the test-path whitelist.
 # If the issue says "DO NOT: tests/regression/secret.bats", that file is
 # still flagged even though it matches a test-path pattern.
