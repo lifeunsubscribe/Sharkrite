@@ -356,6 +356,26 @@ _RITE_PIP_TIMEOUT_WARNED=false
 # Supervised mode: prompt the user.
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
 # ===================================================================
+# resolve_working_python — echo the first python interpreter that runs a trivial
+# program (empty output + return 1 if none works). The system `python3` can be a
+# broken or self-exec'ing wrapper that HANGS rather than errors (live 2026-06-26: a
+# "fail pytest import" shim that exec'd itself forever, wedging `python3 -m venv`).
+# Probing under run_with_timeout bounds the check when timeout/gtimeout is present,
+# so a hanging interpreter is skipped instead of stalling bootstrap. RITE_PYTHON, if
+# set, is an explicit operator override and is tried first.
+resolve_working_python() {
+  local _cand
+  for _cand in "${RITE_PYTHON:-}" python3 python3.13 python3.12 python3.11 python3.10 /usr/bin/python3; do
+    [ -z "$_cand" ] && continue
+    command -v "$_cand" >/dev/null 2>&1 || continue
+    if run_with_timeout 5 "$_cand" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
+      echo "$_cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
 _run_dev_test_gate() {
   # Orchestrated runs (rite <issue> via workflow-runner, RITE_ORCHESTRATED=true)
   # verify POST-COMMIT through the structured gate (run_test_gate, Phase 2/3):
@@ -465,22 +485,34 @@ _run_dev_test_gate() {
       if [ ! -f ".venv/bin/python" ] && [ ! -f "venv/bin/python" ] && [ ! -f "env/bin/python" ] && [ -f "requirements.txt" ]; then
         print_status "No venv found — creating .venv and installing requirements..."
 
-        # Create venv
-        if ! python3 -m venv .venv 2>/dev/null; then
-          print_error "Failed to create .venv"
+        # Cap each python/pip step to RITE_PIP_INSTALL_TIMEOUT seconds (default 120)
+        # when timeout/gtimeout is available (issue #599). When neither is present,
+        # RITE_TIMEOUT_CMD is empty and run_with_timeout falls back to running the
+        # command directly with no time bound — see lib/utils/timeout.sh.
+        local _pip_timeout="${RITE_PIP_INSTALL_TIMEOUT:-120}"
+        if [ -z "${RITE_TIMEOUT_CMD:-}" ] && [ "${_RITE_PIP_TIMEOUT_WARNED:-false}" != "true" ]; then
+          print_warning "timeout/gtimeout not found — python/pip steps have no time cap (issue #599). Install coreutils to enable the cap."
+          _RITE_PIP_TIMEOUT_WARNED=true
+        fi
+
+        # Resolve a working interpreter — the system python3 can be a broken or
+        # self-exec'ing wrapper that hangs (live: a "fail pytest import" shim that
+        # looped forever). Route venv bootstrap to a healthy python so `python3 -m
+        # venv` never wedges the session; run_with_timeout is the second line of defense.
+        local _venv_py
+        _venv_py=$(resolve_working_python || true)
+        if [ -z "$_venv_py" ]; then
+          print_error "No working python3 found (tried python3, python3.13/.12/.11/.10, /usr/bin/python3) — cannot create .venv"
+          return 1
+        fi
+
+        # Create venv with the resolved interpreter (bounded)
+        if ! run_with_timeout "$_pip_timeout" "$_venv_py" -m venv .venv 2>/dev/null; then
+          print_error "Failed to create .venv with $_venv_py"
           return 1
         fi
 
         # Install base requirements with error tracking
-        # Cap each pip install to RITE_PIP_INSTALL_TIMEOUT seconds (default 120) when
-        # timeout/gtimeout is available (issue #599).  When neither is present,
-        # RITE_TIMEOUT_CMD is empty and run_with_timeout falls back to running pip
-        # directly with no time bound — see lib/utils/timeout.sh:run_with_timeout.
-        local _pip_timeout="${RITE_PIP_INSTALL_TIMEOUT:-120}"
-        if [ -z "${RITE_TIMEOUT_CMD:-}" ] && [ "${_RITE_PIP_TIMEOUT_WARNED:-false}" != "true" ]; then
-          print_warning "timeout/gtimeout not found — pip install has no time cap (issue #599). Install coreutils to enable the cap."
-          _RITE_PIP_TIMEOUT_WARNED=true
-        fi
         local _base_install_ok=true
         local _pip_error_log
         _pip_error_log=$(mktemp)
@@ -554,8 +586,8 @@ _run_dev_test_gate() {
         _test_cmd="env/bin/python -m pytest"
       elif [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "$RITE_PROJECT_ROOT/.venv/bin/python" ]; then
         _test_cmd="$RITE_PROJECT_ROOT/.venv/bin/python -m pytest"
-      elif command -v python3 >/dev/null 2>&1; then
-        _test_cmd="python3 -m pytest"
+      elif _sys_py=$(resolve_working_python) && [ -n "$_sys_py" ]; then
+        _test_cmd="$_sys_py -m pytest"
       else
         _test_cmd="python -m pytest"
       fi
