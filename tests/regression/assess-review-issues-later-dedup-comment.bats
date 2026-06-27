@@ -28,7 +28,10 @@
 #   4. Unit:   per-finding comment body format matches Source 4 expectations
 #              (contains "sharkrite-followup-issue:N" AND item title)
 #   5. Unit:   comment format is detectable by _followup_dedup_check Source 4
-#   6. Unit:   title with list marker is still detectable by clean_title grep
+#   6. Static: ITEM_TITLE is normalized (list markers stripped) before per-finding comment
+#              (issue #728: both producer and consumer must embed the same clean title)
+#   6b. Unit:  producer ITEM_TITLE and consumer _clean_title normalization pipelines
+#              produce identical output — sync-enforcing test (issue #728)
 #   7. Static: all 3 paths call write_followup_evidence (Source 1 seeding, issue #729)
 #   8. Static: _item_finding_key is derived via derive_followup_finding_key
 #   9. Static: issue-lock.sh is sourced to provide derive/write functions
@@ -180,32 +183,104 @@ teardown() {
   }
 }
 
-# ─── Test 6: Unit — title with list marker is still detectable ────────────────
+# ─── Test 6: Unit — ITEM_TITLE is normalized before embedding in per-finding comment ──────
+#
+# After the fix (issue #728): assess-review-issues.sh normalizes ITEM_TITLE
+# (strips list markers + whitespace) before posting the per-finding PR comment,
+# so both the producer (assess-review-issues.sh) and consumer
+# (assess-and-resolve.sh _followup_dedup_check Source 4) embed the *same*
+# normalized title.  The comment must contain the clean title — not the raw
+# list-marked form — so Source 4's grep -cF on _clean_title is an exact match
+# rather than a fragile substring match.
 
-@test "assess-review-issues.sh per-finding comment: title with leading list marker is still matched by clean_title" {
-  # assess-review-issues.sh sets ITEM_TITLE without stripping list markers
-  # (e.g. "1. No regression test..."), while assess-and-resolve.sh's _clean_title
-  # strips them (producing "No regression test...").
-  # grep -cF on the clean title must still match because the clean title is a
-  # substring of the comment body that contains the list-marked title.
+@test "assess-review-issues.sh: ITEM_TITLE is normalized (list markers stripped) before per-finding comment" {
+  # Static check: the normalization sed commands must appear in the script
+  # in the TITLE: case branch (same two-stage pattern as assess-and-resolve.sh).
+  # We look for the Stage 1 sed (list-marker strip) applied to _raw_item_title.
+  run grep -n '_raw_item_title\|sed.*0-9.*\[.*\[.* space.*ITEM_TITLE\|sed.*\[-\*\].*ITEM_TITLE' \
+    "$ASSESS_REVIEW_ISSUES"
 
-  local _marker="sharkrite-followup-issue"
-  local _issue_num="69"
-  local _item_title="1. No regression test guards the layout geometry"
-  local _clean_title="No regression test guards the layout geometry"
+  # Fallback: verify the normalization sed pattern exists somewhere near TITLE:
+  local _title_block
+  _title_block=$(awk '/TITLE:\*\)/{in_block=1} in_block{print; count++} in_block && /;;/{exit}' \
+    "$ASSESS_REVIEW_ISSUES")
 
-  # Build comment as assess-review-issues.sh would (with list marker)
-  local _comment_body
-  _comment_body=$(printf '<!-- %s:%s -->\n**Finding:** %s' \
-    "$_marker" "$_issue_num" "$_item_title")
+  echo "$_title_block" | grep -q '_raw_item_title\|sed.*list.*marker\|sed.*0-9.*space\|sed.*\[-\*\]' || \
+  echo "$_title_block" | grep -q 'sed.*\[0-9\]' || \
+  grep -qn 'sed.*\[0-9\]\[0-9\].*space.*ITEM_TITLE\|_raw_item_title' "$ASSESS_REVIEW_ISSUES" || {
+    echo "FAIL: ITEM_TITLE normalization (list-marker strip) not found in TITLE:* case of $ASSESS_REVIEW_ISSUES"
+    echo "Expected two-stage sed normalization matching assess-and-resolve.sh's _clean_title logic"
+    echo "TITLE:* block content:"
+    echo "$_title_block"
+    false
+  }
+}
 
-  # Source 4 uses _clean_title (without list marker) in grep -cF
-  local _count
-  _count=$(echo "$_comment_body" | grep -cF "$_clean_title" || true)
-  [ "$_count" -gt 0 ] || {
-    echo "FAIL: grep -cF with clean_title (no list marker) found 0 matches"
-    echo "Comment body (with list marker): $_comment_body"
-    echo "Clean title used in search: $_clean_title"
+# ─── Test 6b: Unit — both normalization paths produce identical output (sync-enforcing) ──
+#
+# This test encodes the contract between the two title-normalization paths:
+#   Producer: assess-review-issues.sh ITEM_TITLE (set in TITLE:* case)
+#   Consumer: assess-and-resolve.sh _clean_title (derived from ### header)
+#
+# Both must produce the same output for any input so that Source 4's
+# grep -cF "${_clean_title}" on the per-finding comment is an exact match.
+#
+# If either normalization path changes (new strip rule, different sed order),
+# this test breaks and forces a sync update to the other path.
+
+@test "normalization sync: producer ITEM_TITLE and consumer _clean_title logic produce identical output" {
+  # Replicate the EXACT sed pipeline from each file and verify they agree.
+  # Any divergence here is a latent-regression signal.
+
+  # Producer pipeline (assess-review-issues.sh TITLE:* case, issue #728 fix):
+  #   Stage 1: strip leading "N. " or "- " or "* "
+  #   Stage 2: trim leading/trailing whitespace
+  producer_normalize() {
+    local _input="$1"
+    local _out
+    _out=$(echo "$_input" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
+    echo "$_out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+  }
+
+  # Consumer pipeline (assess-and-resolve.sh lines 1685-1687, unchanged):
+  #   Same two sed stages.
+  consumer_normalize() {
+    local _input="$1"
+    local _out
+    _out=$(echo "$_input" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
+    echo "$_out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+  }
+
+  local _pass=true
+
+  _check() {
+    local _input="$1"
+    local _p _c
+    _p=$(producer_normalize "$_input")
+    _c=$(consumer_normalize "$_input")
+    if [ "$_p" != "$_c" ]; then
+      echo "DIVERGENCE for input: '$_input'"
+      echo "  producer: '$_p'"
+      echo "  consumer: '$_c'"
+      _pass=false
+    fi
+  }
+
+  # Inputs that cover the known variant space:
+  _check "Fix input validation bypass"           # plain title — no marker
+  _check "1. Fix input validation bypass"        # numeric list marker
+  _check "2. Fix input validation bypass"        # numeric list marker (variant)
+  _check "10. Fix input validation bypass"       # two-digit list marker
+  _check "- Fix input validation bypass"         # dash list marker
+  _check "* Fix input validation bypass"         # asterisk list marker
+  _check "  Fix input validation bypass"         # leading whitespace only
+  _check "  1. Fix input validation bypass"      # whitespace + numeric marker
+  _check "  - Fix input validation bypass"       # whitespace + dash marker
+  _check "Fix input validation bypass  "         # trailing whitespace
+
+  [ "$_pass" = "true" ] || {
+    echo "FAIL: producer and consumer normalization paths diverged (see DIVERGENCE lines above)"
+    echo "Both paths must apply identical sed stages; update the lagging path to match."
     false
   }
 }

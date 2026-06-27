@@ -826,7 +826,19 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   while read -r line; do
     case "$line" in
       TITLE:*)
-        ITEM_TITLE="${line#TITLE:}"
+        # Normalize ITEM_TITLE using the same two-stage stripping as
+        # assess-and-resolve.sh's _clean_title so both paths embed an
+        # identical title in per-finding PR comments.  Without this,
+        # _followup_dedup_check Source 4 (grep -cF "${_clean_title}")
+        # relies on clean_title being a substring of a list-marked title
+        # — a coupling that silently breaks if either normalization path
+        # diverges.  The two stages mirror lines 1685-1687 of
+        # assess-and-resolve.sh exactly; keep them in sync.
+        _raw_item_title="${line#TITLE:}"
+        # Stage 1: strip leading list markers ("1. ", "2. ", "- ", "* ")
+        ITEM_TITLE=$(echo "$_raw_item_title" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
+        # Stage 2: trim leading/trailing whitespace
+        ITEM_TITLE=$(echo "$ITEM_TITLE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)
         ITEM_SEVERITY=""
         ITEM_CATEGORY=""
         ITEM_REASONING=""
@@ -1057,13 +1069,17 @@ _Parent PR: #${PR_NUMBER}_"
               # idempotent (overwriting with same value on a re-run is safe).
               write_followup_evidence "$PR_NUMBER" "$NEW_ISSUE" "${_item_finding_key:-}" \
                 2>/dev/null || true
-              # Post a per-finding PR comment with the marker + item title so that
-              # assess-and-resolve.sh's _followup_dedup_check Source 4 can detect
-              # this issue by title match on a later re-run (e.g. merge-phase re-entry
-              # after a network glitch on the initial summary comment).  Without this
-              # comment, Source 4 falls through and the per-finding loop creates a
-              # duplicate (live case: finance-glance #60 filed #69 here and #71 in
-              # the per-finding loop on re-run — issues #720/721/722).
+              # Post a per-finding PR comment with the marker + normalized item title
+              # so that assess-and-resolve.sh's _followup_dedup_check Source 4 can
+              # detect this issue by title match on a later re-run (e.g. merge-phase
+              # re-entry after a network glitch on the initial summary comment).
+              # ITEM_TITLE is already normalized (list markers stripped, whitespace
+              # trimmed — see TITLE:* case above) to match _clean_title in
+              # assess-and-resolve.sh; Source 4's grep -cF on _clean_title is therefore
+              # an exact match rather than a fragile substring match (issue #728).
+              # Without this comment, Source 4 falls through and the per-finding loop
+              # creates a duplicate (live case: finance-glance #60 filed #69 here and
+              # #71 in the per-finding loop on re-run — issues #720/721/722).
               _pfinding_comment_file=$(mktemp)
               printf '<!-- %s:%s -->\n**Finding:** %s' \
                 "$RITE_MARKER_FOLLOWUP" "$NEW_ISSUE" "$ITEM_TITLE" \
