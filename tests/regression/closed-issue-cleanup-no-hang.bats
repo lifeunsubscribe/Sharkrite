@@ -46,7 +46,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   # The fix must check pr_state == MERGED before calling git ls-remote.
   # Extract the handle_closed_issue function body (between its definition and closing brace).
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER")
@@ -87,7 +87,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   # git ls-remote must NOT appear bare (unwrapped) in handle_closed_issue.
   # It must be preceded by run_with_timeout on the same logical line.
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
@@ -110,7 +110,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
@@ -213,7 +213,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
@@ -238,7 +238,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
@@ -258,7 +258,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER")
@@ -299,7 +299,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
@@ -316,7 +316,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER")
@@ -348,7 +348,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER")
@@ -385,7 +385,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
   [ -f "$WORKFLOW_RUNNER" ]
 
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER")

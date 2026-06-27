@@ -40,7 +40,7 @@ setup() {
   # We extract _mark_updated() and assess_internal_changelog() via awk so
   # the script's top-level code (which calls `gh pr view`, etc.) never runs.
   eval "$(awk '
-    /^_mark_updated\(\)/ { in_fn=1; depth=0 }
+    /^_mark_updated[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -49,7 +49,7 @@ setup() {
       }
       print; next
     }
-    /^assess_internal_changelog\(\)/ { in_fn=1; depth=0 }
+    /^assess_internal_changelog[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)

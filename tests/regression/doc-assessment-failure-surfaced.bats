@@ -163,7 +163,7 @@ _wait_and_report_inline='
 
   # Find phase_wait_doc_assessment in the actual source (the waiter that used
   # to live in merge-pr.sh now lives here).
-  _wait_block=$(awk '/^phase_wait_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
+  _wait_block=$(awk '/^phase_wait_doc_assessment[(][)]/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
 
   [ -n "$_wait_block" ]
 

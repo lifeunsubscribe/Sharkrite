@@ -66,7 +66,7 @@ setup() {
   # Extract _mark_updated() and update_conventions_from_marker() from
   # assess-documentation.sh via awk, same pattern as changelog-ordering.bats.
   eval "$(awk '
-    /^_mark_updated\(\)/ { in_fn=1; depth=0 }
+    /^_mark_updated[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -75,7 +75,7 @@ setup() {
       }
       print; next
     }
-    /^update_conventions_from_marker\(\)/ { in_fn=1; depth=0 }
+    /^update_conventions_from_marker[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)

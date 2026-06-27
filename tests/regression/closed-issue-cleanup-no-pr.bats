@@ -44,7 +44,7 @@ BEHAVIORAL_DESIGN="$SCRIPT_DIR/docs/architecture/behavioral-design.md"
 # ---------------------------------------------------------------------------
 _get_func_body_with_lines() {
   awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER"
@@ -52,7 +52,7 @@ _get_func_body_with_lines() {
 
 _get_func_body() {
   awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER"

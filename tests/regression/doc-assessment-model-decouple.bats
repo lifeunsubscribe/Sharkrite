@@ -39,7 +39,7 @@ setup() {
 set -euo pipefail
 # Source just the resolver function by extracting it with awk, then eval it.
 _fn=$(awk '
-  /^claude_provider_resolve_model\(\)/ { in_fn=1; depth=0 }
+  /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
   in_fn && /\}/ { depth--; if (depth==0) { in_fn=0 } }
@@ -88,7 +88,7 @@ teardown() {
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
-  /^claude_provider_resolve_model\(\)/ { in_fn=1; depth=0 }
+  /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
   in_fn && /\}/ { depth--; if (depth==0) { in_fn=0 } }
@@ -119,7 +119,7 @@ TWO_ROLE_EOF
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
-  /^claude_provider_resolve_model\(\)/ { in_fn=1; depth=0 }
+  /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
   in_fn && /\}/ { depth--; if (depth==0) { in_fn=0 } }

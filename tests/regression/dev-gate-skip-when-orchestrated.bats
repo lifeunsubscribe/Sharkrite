@@ -44,7 +44,7 @@ _call_dev_gate() {
 @test "structural: the orchestrated skip precedes the test execution (eval)" {
   # The guard must sit at the top of the function, before `eval "$_test_cmd"`,
   # so it short-circuits the whole detection+run+auto-fix body.
-  _fn=$(awk '/^_run_dev_test_gate\(\) \{/{f=1} f{print} f&&/^}/{exit}' "$WORKFLOW_FILE")
+  _fn=$(awk '/^_run_dev_test_gate[(][)] \{/{f=1} f{print} f&&/^}/{exit}' "$WORKFLOW_FILE")
   _guard_line=$(printf '%s\n' "$_fn" | grep -n 'RITE_ORCHESTRATED' | head -1 | cut -d: -f1)
   _eval_line=$(printf '%s\n' "$_fn" | grep -n 'eval "\$_test_cmd"' | head -1 | cut -d: -f1)
   [ -n "$_guard_line" ]

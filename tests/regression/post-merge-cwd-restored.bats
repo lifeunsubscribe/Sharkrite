@@ -64,7 +64,7 @@ teardown() {
   # awk strategy: start printing at "^phase_merge_pr()", stop at the next
   # top-level "^}" (brace at column 0 followed by end-of-line).
   _fn_body=$(awk '
-    /^phase_merge_pr\(\)/ { in_fn=1; depth=0 }
+    /^phase_merge_pr[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       # count brace depth
       for (i=1; i<=length($0); i++) {
@@ -96,7 +96,7 @@ teardown() {
 
   # Extract the body of phase_completion.
   _fn_body=$(awk '
-    /^phase_completion\(\)/ { in_fn=1; depth=0 }
+    /^phase_completion[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c = substr($0,i,1)
@@ -137,7 +137,7 @@ teardown() {
   # Strategy: within phase_merge_pr's body, locate STASHED_UNRELATED_WORK and
   # the cd-restore, then compare positions.
   _fn_body=$(awk '
-    /^phase_merge_pr\(\)/ { in_fn=1; depth=0; lineno=0 }
+    /^phase_merge_pr[(][)]/ { in_fn=1; depth=0; lineno=0 }
     in_fn {
       lineno++
       for (i=1; i<=length($0); i++) {

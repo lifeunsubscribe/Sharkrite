@@ -169,7 +169,7 @@ teardown() {
   # closing } and accidentally pick up a rm -f from a later function.
   # head -1 so we get only the rm line, not the lock-release boilerplate.
   _cleanup_rm_file="$_tmpdir/cleanup_rm.sh"
-  awk '/^cleanup\(\)/{inside=1} inside && /^\}/{inside=0; next} inside && /rm -f /{print; exit}' \
+  awk '/^cleanup[(][)]/{inside=1} inside && /^\}/{inside=0; next} inside && /rm -f /{print; exit}' \
     "$ASSESS_RESOLVE_SCRIPT" > "$_cleanup_rm_file"
   [ -s "$_cleanup_rm_file" ] || {
     echo "FAIL: could not extract rm -f line from cleanup() in $ASSESS_RESOLVE_SCRIPT"

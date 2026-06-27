@@ -59,7 +59,7 @@ setup() {
 
   # Extract _lint_issues_strict from plan-issues.sh.
   eval "$(awk '
-    /^_lint_issues_strict\(\)/ { in_fn=1; depth=0 }
+    /^_lint_issues_strict[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -661,7 +661,7 @@ FIXTURE
 
   local fn_body
   fn_body=$(awk '
-    /^_lint_issues_strict\(\)/ { in_fn=1; depth=0 }
+    /^_lint_issues_strict[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -691,7 +691,7 @@ FIXTURE
 
   local gen_fn_body
   gen_fn_body=$(awk '
-    /^generate_issues\(\)/ { in_fn=1; depth=0 }
+    /^generate_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -717,7 +717,7 @@ FIXTURE
 
   local fn_body
   fn_body=$(awk '
-    /^_lint_issues_strict\(\)/ { in_fn=1; depth=0 }
+    /^_lint_issues_strict[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
