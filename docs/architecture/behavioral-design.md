@@ -848,7 +848,7 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 
 ### Per-Finding GitHub API Call Cap
 
-**Problem:** The one-issue-per-finding loop in `assess-and-resolve.sh` runs full dedup machinery per finding — `gh issue list` (body-marker search) + `gh issue view` (marker verification) + `gh issue list` (title search) + `gh pr view` (PR comment check) + up to 3 retry iterations with backoff sleeps — plus `gh issue create` + `gh pr comment` per new creation. This scales **N×** with no upper bound. A review with 50 ACTIONABLE_LATER findings produces 50 full dedup cycles — potentially hundreds of GitHub API calls — which can exhaust GitHub secondary rate limits and extend lock hold times well beyond the 60s waiter budget.
+**Problem:** The one-issue-per-finding loop in `assess-and-resolve.sh` runs full dedup machinery per finding — `gh issue list` (body-marker search) + `gh issue view` (marker verification) + `gh issue list` (title search) + `gh pr view` (PR comment check) + up to 3 retry iterations with backoff sleeps — plus `gh issue create` + `gh pr comment` per new creation. This scales **N×** with no upper bound. A review with 50 ACTIONABLE_NOW or ACTIONABLE_LATER findings produces 50 full dedup cycles — potentially hundreds of GitHub API calls — which can exhaust GitHub secondary rate limits and extend lock hold times well beyond the 60s waiter budget.
 
 **Solution:** `RITE_MAX_FINDINGS_PER_RUN` (default: 20) caps the number of findings processed per assess run. When the cap is hit:
 
@@ -871,7 +871,7 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 
 **Observability:** `[diag] FOLLOWUP_CAP_HIT issue=N pr=N processed=N skipped=N cap=N` in `RITE_LOG_FILE`. The health report surfaces any `FOLLOWUP_CAP_HIT` event as a WATCH item with the skip count.
 
-**Implementation:** `lib/core/assess-and-resolve.sh` — LOW-severity findings are skipped before `_finding_index` is incremented and before the cap guard runs. This means `_finding_index` counts only API-eligible (non-LOW) findings, and the cap only fires against findings that would actually make GitHub API calls. The post-loop report shows processed vs. total API-eligible findings.
+**Implementation:** `lib/core/assess-and-resolve.sh` — LOW-severity findings are skipped before `_finding_index` is incremented and before the cap guard runs. `_finding_index` counts **all non-LOW findings including ACTIONABLE_NOW** (not ACTIONABLE_LATER only) — the loop iterates over `^### .* - ACTIONABLE_(NOW|LATER)` headers (line 2079), so ACTIONABLE_NOW findings consume cap budget on the same footing as ACTIONABLE_LATER. The increment fires at line 1733 (`_finding_index=$((_finding_index + 1))`); the cap check fires at line 1743 (`[ "$_finding_index" -gt "$_findings_cap_validated" ]`). This means the cap only fires against findings that would actually make GitHub API calls. The post-loop report shows processed vs. total API-eligible findings.
 
 **Coverage:** `tests/regression/followup-finding-cap.bats`
 
