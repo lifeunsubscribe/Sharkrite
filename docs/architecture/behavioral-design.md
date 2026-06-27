@@ -860,7 +860,7 @@ The skip-on-timeout is conservative — the follow-up may already have been crea
 
 **Disable the cap:** Set `RITE_MAX_FINDINGS_PER_RUN=0` in `.rite/config` to restore the original unbounded behavior. This is appropriate for one-off full-scan reviews where completeness matters more than API budget.
 
-**Why 20 as the default:** Typical PRs produce 3-10 ACTIONABLE_LATER items. 20 is generous enough not to surprise users in normal usage while bounding the worst case (scan-heavy PR with 100+ findings) to ~40-80 API calls for dedup + ~20 for creation — well within GitHub's rate limits.
+**Why 20 as the default:** Typical PRs produce 3-10 ACTIONABLE_NOW and ACTIONABLE_LATER items combined. 20 is generous enough not to surprise users in normal usage while bounding the worst case (scan-heavy PR with 100+ findings) to ~40-80 API calls for dedup + ~20 for creation — well within GitHub's rate limits.
 
 **API cost model (for tuning):**
 - Per finding (dedup only, best case — all cached): 1 API call
