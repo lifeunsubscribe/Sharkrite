@@ -936,7 +936,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             # below fails (network glitch, || true silences it).
             # No lock needed here — we are not in the create critical section; the
             # evidence file is idempotent (overwriting with same value is safe).
-            write_followup_evidence "$PR_NUMBER" "$DUPLICATE_ISSUE" "$_item_finding_key" \
+            write_followup_evidence "$PR_NUMBER" "$DUPLICATE_ISSUE" "${_item_finding_key:-}" \
               2>/dev/null || true
             # Post a per-finding PR comment so assess-and-resolve.sh _followup_dedup_check
             # Source 4 can detect this finding by title match on a re-run (dedup cross-path
@@ -979,7 +979,7 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
               fi
               # Source 1 (local evidence): seed the FS oracle (same rationale as the
               # "already tracked" and "new issue" paths above/below).
-              write_followup_evidence "$PR_NUMBER" "$DUPLICATE_ISSUE" "$_item_finding_key" \
+              write_followup_evidence "$PR_NUMBER" "$DUPLICATE_ISSUE" "${_item_finding_key:-}" \
                 2>/dev/null || true
               # Post a per-finding PR comment so assess-and-resolve.sh _followup_dedup_check
               # Source 4 can detect this finding by title match on a re-run.
@@ -1055,7 +1055,7 @@ _Parent PR: #${PR_NUMBER}_"
               # No lock needed here — we are not racing another process for creation
               # (issue was just created by this process); the evidence file is
               # idempotent (overwriting with same value on a re-run is safe).
-              write_followup_evidence "$PR_NUMBER" "$NEW_ISSUE" "$_item_finding_key" \
+              write_followup_evidence "$PR_NUMBER" "$NEW_ISSUE" "${_item_finding_key:-}" \
                 2>/dev/null || true
               # Post a per-finding PR comment with the marker + item title so that
               # assess-and-resolve.sh's _followup_dedup_check Source 4 can detect
