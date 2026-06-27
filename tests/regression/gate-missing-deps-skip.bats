@@ -209,8 +209,9 @@ tests/test_foo.py::test_three PASSED
 # ---------------------------------------------------------------------------
 @test "skipped:missing_deps branch emits WARNING to stderr" {
   local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
-  # The branch must contain both a WARNING stderr echo and _gate_write_json ... "true" "missing_deps"
-  run grep -n "WARNING.*pytest.*missing dep\|ModuleNotFoundError" "$_script"
+  # Match the literal emitted stderr string, not comments or docstrings.
+  # The branch must echo "[test-gate] WARNING: pytest detected missing dependencies" to >&2.
+  run grep -n '\[test-gate\] WARNING: pytest detected missing dependencies' "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: no WARNING stderr echo for missing_deps path found in test-gate.sh"
     echo "      The loud-skip must print an actionable WARNING (mirrors missing_runner)."
@@ -220,7 +221,9 @@ tests/test_foo.py::test_three PASSED
 
 @test "skipped:no_tests branch emits WARNING to stderr" {
   local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
-  run grep -n "WARNING.*pytest.*no tests\|collected no tests" "$_script"
+  # Match the literal emitted stderr string, not comments or docstrings.
+  # The branch must echo "[test-gate] WARNING: pytest collected no tests" to >&2.
+  run grep -n '\[test-gate\] WARNING: pytest collected no tests' "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: no WARNING stderr echo for no_tests path found in test-gate.sh"
     echo "      The loud-skip must print an actionable WARNING (mirrors missing_runner)."

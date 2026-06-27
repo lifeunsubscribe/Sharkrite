@@ -48,6 +48,20 @@ When sharkrite detects pytest as the test runner:
 
 Applied in both `run_test_gate()` (claude-workflow.sh) and `verify_post_merge()` (post-merge-verify.sh).
 
+### Pytest Loud-Skip on Missing Dependencies (#744)
+
+**2026-06-27.** When `pytest` is the test runner and the environment is missing the runner itself (or a direct project dependency), the gate previously silently passed with `outcome=skipped`. This masked genuine env issues in worktrees with stale venvs — the fix loop never fired because the gate never reported a problem.
+
+**The fix:** `_classify_pytest_outcome` in `lib/utils/test-gate.sh` detects the missing-dep signature and routes to `skipped:missing_deps` rather than `passed`. `run_test_gate` then emits a `[test-gate] WARNING: pytest detected missing dependencies` message to stderr and includes an actionable hint (check/rebuild venv), mirrors the existing `missing_runner` loud-skip for cargo/go. JSON outcome is `skipped:true` with `reason=missing_deps`. The gate does **not** block (the env issue is not this PR's failure); the warning ensures the problem is visible rather than silent.
+
+**Detection signature (`_classify_pytest_outcome` step 4):** `^E[[:space:]]+(ModuleNotFoundError|.*No module named)` — requires the `^E` pytest error-line prefix (column 0, E, then whitespace), which pytest emits for exception lines. This anchor excludes `ModuleNotFoundError` that appears in docstrings, log messages, or arbitrary text reproduced in tracebacks.
+
+**Accepted limitation — runner vs. code-under-test conflation:** The `^E\s+` anchor correctly catches the missing-runner case (`E  ModuleNotFoundError: No module named 'pytest'`), but it also catches a runtime import error in the code under test (e.g. `E  ModuleNotFoundError: No module named 'mymodule'` when the code-under-test has a broken import). In the latter case the PR introduced the import error, so the gate should block — but `_classify_pytest_outcome` routes it to `skipped:missing_deps` instead. This is a residual false-skip and is why the issue scope boundary explicitly says "DO NOT grep ModuleNotFoundError unanchored / anywhere" (the v1 rejection). The `^E\s+` anchor is narrower than bare grep but still conflates these two cases because both produce identically-prefixed output lines.
+
+**Why accepted:** Distinguishing the two cases requires knowing whether the missing module is a declared project dependency (code-under-test error → should block) or the test runner itself (env issue → skip). That distinction requires parsing requirements/pyproject metadata and is significantly more complex. The current approach is correct for the primary use case (missing pytest/missing top-level dep stale-venv scenario) and the false-skip is bounded: it only fires when the code under test has an un-FAILED/un-AssertionError import error in an `E`-prefixed line — a narrow signature. The conservative default (step 5: unknown non-zero → `failed`) catches everything else. If the conflation causes a live false-skip, restrict the `missing_deps` path to `No module named 'pytest'` (runner-only) as the stricter fix.
+
+**Enforcement:** `tests/regression/gate-missing-deps-skip.bats` — five tests covering the functional skip path, the WARNING stderr emission, the JSON output, and the no-test-collection path.
+
 ### Post-Merge Dependency Reinstall
 
 When merging main into a feature branch, `verify_post_merge()` checks if dependency manifests (requirements.txt, package.json, etc.) changed in the merge diff. If so, it reinstalls dependencies before running tests.
