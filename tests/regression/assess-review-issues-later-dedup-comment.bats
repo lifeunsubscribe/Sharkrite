@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-review-issues.sh
+# sharkrite-test-covers: lib/core/assess-review-issues.sh, lib/utils/issue-lock.sh
 # Regression test for: assess-review-issues.sh must post per-finding PR
 # comments so assess-and-resolve.sh _followup_dedup_check Source 4 can
 # detect issues created here on a later re-run (issues #720/721/722).
@@ -27,6 +27,12 @@
 #   3. Static: update-duplicate path posts gh pr comment with followup marker + title
 #   4. Unit:   per-finding comment body format matches Source 4 expectations
 #              (contains "sharkrite-followup-issue:N" AND item title)
+#   5. Unit:   comment format is detectable by _followup_dedup_check Source 4
+#   6. Unit:   title with list marker is still detectable by clean_title grep
+#   7. Static: all 3 paths call write_followup_evidence (Source 1 seeding, issue #729)
+#   8. Static: _item_finding_key is derived via derive_followup_finding_key
+#   9. Static: issue-lock.sh is sourced to provide derive/write functions
+#   10. Static: _item_index counter is initialised and incremented correctly
 
 load '../helpers/setup.bash'
 
@@ -200,6 +206,87 @@ teardown() {
     echo "FAIL: grep -cF with clean_title (no list marker) found 0 matches"
     echo "Comment body (with list marker): $_comment_body"
     echo "Clean title used in search: $_clean_title"
+    false
+  }
+}
+
+# ─── Tests 7-9: Source 1 evidence seeding (issue #729) ───────────────────────
+#
+# PR #727 added Source 4 (PR comment) to assess-review-issues.sh but not
+# Source 1 (local evidence file).  Issue #729 closes this gap: all three
+# issue-tracking paths must now call write_followup_evidence so that
+# _followup_dedup_check Source 1 can short-circuit on a re-run even when
+# the Source 4 PR comment write failed silently.
+
+@test "assess-review-issues.sh: new-issue path calls write_followup_evidence (Source 1 seeding)" {
+  # Static check: after the NEW_ISSUE passback to RITE_PER_ITEM_ISSUES_FILE,
+  # assess-review-issues.sh must call write_followup_evidence before the
+  # gh pr comment that seeds Source 4.
+  run grep -n 'write_followup_evidence' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: No write_followup_evidence call found in $ASSESS_REVIEW_ISSUES"
+    echo "Expected at least one write_followup_evidence call (new-issue, skip-dup, update-dup paths)"
+    false
+  }
+
+  # Must appear in all three creation paths; verify there are at least 3 calls.
+  local _call_count
+  _call_count=$(grep -c 'write_followup_evidence' "$ASSESS_REVIEW_ISSUES" || true)
+  [ "$_call_count" -ge 3 ] || {
+    echo "FAIL: expected at least 3 write_followup_evidence calls (one per path), got $_call_count"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: _item_finding_key is derived via derive_followup_finding_key" {
+  # The key passed to write_followup_evidence must be _item_finding_key, which
+  # is produced by derive_followup_finding_key — the shared function that
+  # assess-and-resolve.sh also uses.  This ensures both paths produce the same
+  # key for the same finding, so evidence written here is found by Source 1 there.
+  run grep -n 'derive_followup_finding_key' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: No derive_followup_finding_key call found in $ASSESS_REVIEW_ISSUES"
+    echo "Expected a call to derive the per-finding key before write_followup_evidence"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: issue-lock.sh is sourced (provides derive_followup_finding_key)" {
+  # assess-review-issues.sh must source issue-lock.sh so that
+  # derive_followup_finding_key and write_followup_evidence are available.
+  run grep -n 'issue-lock.sh' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: issue-lock.sh is not sourced in $ASSESS_REVIEW_ISSUES"
+    echo "It must be sourced to make derive_followup_finding_key and write_followup_evidence available"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: _item_index counter is initialised and incremented" {
+  # The _item_index counter must be initialised to 0 before the while loop and
+  # incremented for each non-LOW item, matching assess-and-resolve.sh's
+  # _finding_index so that derive_followup_finding_key produces the same key.
+  run grep -n '_item_index' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: No _item_index variable found in $ASSESS_REVIEW_ISSUES"
+    false
+  }
+
+  # Must be initialised
+  run grep -n '_item_index=0' "$ASSESS_REVIEW_ISSUES"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _item_index is not initialised to 0 in $ASSESS_REVIEW_ISSUES"
+    false
+  }
+
+  # Must be incremented
+  run grep -n '_item_index=\$((_item_index + 1))' "$ASSESS_REVIEW_ISSUES"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _item_index is not incremented in the loop body of $ASSESS_REVIEW_ISSUES"
     false
   }
 }

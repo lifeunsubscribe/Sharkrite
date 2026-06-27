@@ -35,6 +35,9 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
+# issue-lock.sh: provides derive_followup_finding_key and write_followup_evidence
+# used to seed the local-evidence oracle (Source 1) for each ACTIONABLE_LATER finding.
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -806,6 +809,11 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
+  # _item_index mirrors assess-and-resolve.sh's _finding_index so that
+  # derive_followup_finding_key produces the same key from both paths.
+  # LOW-severity items do NOT increment the counter (same skip gate as
+  # assess-and-resolve.sh line 1728-1731 / line 1733).
+  _item_index=0
 
   # Extract ACTIONABLE_LATER sections from assessment (process substitution avoids subshell variable loss)
   while read -r line; do
@@ -840,6 +848,16 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           print_info "  Skipped (LOW severity): $ITEM_TITLE" >&2
           continue
         fi
+
+        # Increment after LOW-severity skip so the counter matches
+        # assess-and-resolve.sh's _finding_index (same gate, same order).
+        _item_index=$((_item_index + 1))
+
+        # Derive the per-finding key (same algorithm as assess-and-resolve.sh's
+        # _FOLLOWUP_FINDING_KEY) so evidence written here is found by
+        # _followup_dedup_check Source 1 on any cross-path re-run.
+        _item_finding_key=$(derive_followup_finding_key \
+          "${RITE_ISSUE_NUMBER:-0}" "$ITEM_TITLE" "$_item_index")
 
         # Stage 1: fuzzy title match against cached issue list (both tech-debt and review-follow-up)
         DUPLICATE_ISSUE=""
@@ -905,6 +923,13 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
               echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
             fi
+            # Source 1 (local evidence): seed the FS oracle so _followup_dedup_check
+            # can short-circuit on re-runs even when the Source 4 PR comment write
+            # below fails (network glitch, || true silences it).
+            # No lock needed here — we are not in the create critical section; the
+            # evidence file is idempotent (overwriting with same value is safe).
+            write_followup_evidence "$PR_NUMBER" "$DUPLICATE_ISSUE" "$_item_finding_key" \
+              2>/dev/null || true
             # Post a per-finding PR comment so assess-and-resolve.sh _followup_dedup_check
             # Source 4 can detect this finding by title match on a re-run (dedup cross-path
             # guard — same rationale as the new-issue path below).
@@ -944,6 +969,10 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
               if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
                 echo "$DUPLICATE_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
               fi
+              # Source 1 (local evidence): seed the FS oracle (same rationale as the
+              # "already tracked" and "new issue" paths above/below).
+              write_followup_evidence "$PR_NUMBER" "$DUPLICATE_ISSUE" "$_item_finding_key" \
+                2>/dev/null || true
               # Post a per-finding PR comment so assess-and-resolve.sh _followup_dedup_check
               # Source 4 can detect this finding by title match on a re-run.
               _upd_comment_file=$(mktemp)
@@ -1011,6 +1040,15 @@ _Parent PR: #${PR_NUMBER}_"
               if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
                 echo "$NEW_ISSUE" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
               fi
+              # Source 1 (local evidence): seed the FS oracle so _followup_dedup_check
+              # can short-circuit on re-runs even when the Source 4 PR comment write
+              # below fails (network glitch, || true silences it).  This is the gap
+              # identified in issue #729: PR #727 added Source 4 here but not Source 1.
+              # No lock needed here — we are not racing another process for creation
+              # (issue was just created by this process); the evidence file is
+              # idempotent (overwriting with same value on a re-run is safe).
+              write_followup_evidence "$PR_NUMBER" "$NEW_ISSUE" "$_item_finding_key" \
+                2>/dev/null || true
               # Post a per-finding PR comment with the marker + item title so that
               # assess-and-resolve.sh's _followup_dedup_check Source 4 can detect
               # this issue by title match on a later re-run (e.g. merge-phase re-entry
