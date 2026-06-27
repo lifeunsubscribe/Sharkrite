@@ -93,7 +93,7 @@ teardown() { rm -rf "${TEST_REPO:-}"; }
 # must block the merge (same path as CRITICAL), not defer+merge via tech-debt.
 #
 # Static approach (grep-based) matches the pattern in
-# assess-and-resolve-shippable-defer.bats — no subprocess harness needed because
+# assess-and-resolve-now-always-loops.bats — no subprocess harness needed because
 # the contract is structural: specific variable assignments in specific branches.
 
 @test "merge-boundary: GATE_NOW_COUNT_REMAINING computed at retry cap" {

@@ -278,7 +278,7 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 **Implementation:** [assess-and-resolve.sh](../../lib/core/assess-and-resolve.sh) — the `ACTIONABLE_NOW_COUNT > 0` branch dispatches: retry count ≥ 3 → retry-cap handling; otherwise → Normal loop (echo assessment to fd 3, exit 2).
 
-**Coverage:** `tests/regression/assess-and-resolve-shippable-defer.bats` — asserts MEDIUM/LOW ACTIONABLE_NOW items route to exit 2; `tests/integration/assess-and-resolve-dedup.bats` test 5 asserts exit 2 for a HIGH-severity NOW item.
+**Coverage:** `tests/regression/assess-and-resolve-now-always-loops.bats` — five static grep checks: no `SHIPPABLE_DEFER` references remain in `lib/`, no "Deferring.*NOW item" or "PR is shippable" messages in `assess-and-resolve.sh`, the "Normal loop" comment (the surviving fix-loop else branch) is present, and `CRITICAL_NOW_COUNT`/`HIGH_NOW_COUNT` are still computed. Runtime exit-2 routing is asserted by `tests/integration/assess-and-resolve-dedup.bats` test 5 (HIGH-severity NOW item enters fix loop).
 
 ### Verification Out of Fix Session
 
