@@ -696,10 +696,16 @@ tag_index_log_history() {
   local log_file="${log_dir}/tag-index-history.log"
 
   if [ -d "$log_dir" ] || mkdir -p "$log_dir" 2>/dev/null; then
-    # Idempotency guard: skip the append when the exact line already exists.
-    # This ensures re-running reconciliation on the same PR produces no duplicates
-    # for any of the three action branches (justified, merged, added).
-    if grep -qxF "$audit_line" "$log_file" 2>/dev/null; then
+    # Idempotency guard: skip the append when the same (action, tag, detail, PR)
+    # tuple already exists in any entry, regardless of the date stamp.
+    # Keying on the full audit_line (which includes the date) would only dedup
+    # within a single calendar day; a re-run across midnight would append a
+    # near-duplicate entry, violating the per-action dedup contract (#765).
+    # Strip the leading "YYYY-MM-DD | " prefix from the line to build a
+    # date-independent match key.
+    local dedup_key
+    dedup_key=$(printf '%s\n' "$audit_line" | sed 's/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] | //' || true)
+    if grep -qF "$dedup_key" "$log_file" 2>/dev/null; then
       return 0
     fi
     printf '%s\n' "$audit_line" >> "$log_file" 2>/dev/null || true
