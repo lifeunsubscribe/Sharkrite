@@ -936,7 +936,7 @@ run_test_gate() {
       { (cd "$project_root" && go test ./... 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
-    elif (cd "$project_root" && ls ./*.ino 2>/dev/null | grep -q '\.ino$'); then
+    elif (cd "$project_root" && _has_ino=false; for _f in ./*.ino; do [ -e "$_f" ] && { _has_ino=true; break; }; done; [ "$_has_ino" = true ]); then
       # Arduino sketch detected — arduino-cli/pio requires board config; skip with hint.
       # This is a loud skip: we know source exists but cannot run verification
       # without target board configuration. Set RITE_TEST_COMMAND to use pio/arduino-cli.
