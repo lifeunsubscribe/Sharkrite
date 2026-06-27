@@ -129,7 +129,7 @@ STUB
   }
 }
 
-@test "pytest: exit 5 (no tests collected) → outcome=skipped reason=missing_deps" {
+@test "pytest: exit 5 (no tests collected) → outcome=skipped reason=no_tests_collected" {
   # pytest exit 5 = "no tests were collected" — treated as an env/config gap.
   printf '[pytest]\n' > "$TEST_REPO/pytest.ini"
 
@@ -158,8 +158,8 @@ STUB
     false
   }
 
-  grep -q '"reason":"missing_deps"' "$TEST_REPO/gate.json" || {
-    echo "FAIL: expected reason:missing_deps for pytest exit 5"
+  grep -q '"reason":"no_tests_collected"' "$TEST_REPO/gate.json" || {
+    echo "FAIL: expected reason:no_tests_collected for pytest exit 5"
     echo "JSON: $(cat "$TEST_REPO/gate.json")"
     false
   }
