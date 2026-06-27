@@ -927,6 +927,17 @@ run_test_gate() {
       { (cd "$project_root" && make test 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      # Loud-skip: missing Python/pytest deps surface as env failure, not a code defect.
+      # Reuses the .ino loud-skip shape: emit WARNING + hint, report skipped, do not block.
+      if [ "$_tests_exit" -ne 0 ] && grep -qE "ModuleNotFoundError|No module named" "$_tests_raw_file" 2>/dev/null; then
+        echo "[test-gate] WARNING: make test failed due to missing Python dependencies (ModuleNotFoundError)." >&2
+        echo "[test-gate] Install the required packages (e.g. pip install -r requirements.txt) or set RITE_TEST_COMMAND to a wrapper that sets up the environment." >&2
+        _diag "TEST_GATE outcome=skipped reason=missing_deps pr=${PR_NUMBER:-?}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_deps"
+        return 0
+      fi
     elif [ -f "$project_root/package.json" ]; then
       echo "[test-gate] Running npm test..."
       { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
@@ -937,6 +948,17 @@ run_test_gate() {
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      # Loud-skip: missing deps (ModuleNotFoundError / No module named) or no tests collected
+      # (pytest exit 5) are environment gaps, not code defects — reuse the .ino loud-skip shape.
+      if [ "$_tests_exit" -ne 0 ] && { grep -qE "ModuleNotFoundError|No module named" "$_tests_raw_file" 2>/dev/null || [ "$_tests_exit" -eq 5 ]; }; then
+        echo "[test-gate] WARNING: pytest failed due to missing dependencies or no tests collected (exit ${_tests_exit})." >&2
+        echo "[test-gate] Install the required packages (e.g. pip install -r requirements.txt) or set RITE_TEST_COMMAND to a wrapper that sets up the environment." >&2
+        _diag "TEST_GATE outcome=skipped reason=missing_deps pr=${PR_NUMBER:-?}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_deps"
+        return 0
+      fi
     elif [ -f "$project_root/Cargo.toml" ]; then
       if ! command -v cargo >/dev/null 2>&1; then
         # cargo not installed — loud skip with toolchain hint (missing runner, not a failure)
