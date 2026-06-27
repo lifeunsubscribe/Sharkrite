@@ -699,7 +699,7 @@ tag_index_log_history() {
     # Idempotency guard: skip the append when the exact line already exists.
     # This ensures re-running reconciliation on the same PR produces no duplicates
     # for any of the three action branches (justified, merged, added).
-    if grep -qF "$audit_line" "$log_file" 2>/dev/null; then
+    if grep -qxF "$audit_line" "$log_file" 2>/dev/null; then
       return 0
     fi
     printf '%s\n' "$audit_line" >> "$log_file" 2>/dev/null || true
