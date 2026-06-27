@@ -86,7 +86,7 @@ teardown() {
   # Extract run_workflow() body and verify ordering:
   # phase_completion call must appear BEFORE the INVARIANT_VIOLATED guard
   _fn_body=$(awk '
-    /^run_workflow\(\)/ { in_fn=1; depth=0 }
+    /^run_workflow[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c = substr($0,i,1)

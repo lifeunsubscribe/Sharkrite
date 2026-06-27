@@ -69,7 +69,7 @@ _load_extract_helper() {
   #
   # Extract the function from the batch file and define it in this subshell.
   eval "$(awk '
-    /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+    /_extract_dep_issues_from_body[(][)]/ { in_fn=1 }
     in_fn { print }
     in_fn && /^}$/ { exit }
   ' "$BATCH_PROCESSOR")"
@@ -411,7 +411,7 @@ Depends on #20 being ready first.
   #   a) "_inline=" (the dead assignment) is NOT in the function
   #   b) "_inline_refs=" (the replacement) IS in the function
   _fn_body=$(awk '
-    /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+    /_extract_dep_issues_from_body[(][)]/ { in_fn=1 }
     in_fn { print }
     in_fn && /^}$/ { exit }
   ' "$BATCH_PROCESSOR" || true)
@@ -451,7 +451,7 @@ set -euo pipefail
 
 # ---- Source _extract_dep_issues_from_body from the real batch file ----
 eval "$(awk '
-  /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+  /_extract_dep_issues_from_body[(][)]/ { in_fn=1 }
   in_fn { print }
   in_fn && /^}$/ { exit }
 ' "BATCH_PROCESSOR_PATH")"
@@ -524,7 +524,7 @@ SCRIPT_EOF
 set -euo pipefail
 
 eval "$(awk '
-  /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+  /_extract_dep_issues_from_body[(][)]/ { in_fn=1 }
   in_fn { print }
   in_fn && /^}$/ { exit }
 ' "BATCH_PROCESSOR_PATH")"
@@ -587,7 +587,7 @@ SCRIPT_EOF
 set -euo pipefail
 
 eval "$(awk '
-  /_extract_dep_issues_from_body\(\)/ { in_fn=1 }
+  /_extract_dep_issues_from_body[(][)]/ { in_fn=1 }
   in_fn { print }
   in_fn && /^}$/ { exit }
 ' "BATCH_PROCESSOR_PATH")"

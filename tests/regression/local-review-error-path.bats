@@ -47,7 +47,7 @@ setup() {
       line_num=$((line_num + 1))
 
       # Track function definitions
-      if echo "$line" | grep -qE '"'"'^\s*(function\s+\w+|\w+\s*\(\))'"'"'; then
+      if echo "$line" | grep -qE '"'"'^\s*(function\s+\w+|\w+\s*[(][)])'"'"'; then
         in_function=1
       fi
 
@@ -300,7 +300,7 @@ _run_review_loop() {
     while IFS= read -r line; do
       line_num=$((line_num + 1))
 
-      if echo "$line" | grep -qE '"'"'^\s*(function\s+\w+|\w+\s*\(\))'"'"'; then
+      if echo "$line" | grep -qE '"'"'^\s*(function\s+\w+|\w+\s*[(][)])'"'"'; then
         in_function=1
       fi
 

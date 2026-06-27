@@ -63,9 +63,9 @@ setup() {
   # _coverage_missing_titles is a dependency of _validate_coverage (residual
   # reconciliation), so it must be extracted too.
   eval "$(awk '
-    /^_validate_coverage\(\)/ { in_fn=1; depth=0 }
-    /^_coverage_missing_titles\(\)/ { in_fn=1; depth=0 }
-    /^_dedup_issues\(\)/ { in_fn=1; depth=0 }
+    /^_validate_coverage[(][)]/ { in_fn=1; depth=0 }
+    /^_coverage_missing_titles[(][)]/ { in_fn=1; depth=0 }
+    /^_dedup_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -476,7 +476,7 @@ FIXTURE
   # Extract just the _validate_coverage function body using awk
   local fn_body
   fn_body=$(awk '
-    /^_validate_coverage\(\)/ { in_fn=1; depth=0 }
+    /^_validate_coverage[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -713,7 +713,7 @@ FIXTURE
 
   local fn_body
   fn_body=$(awk '
-    /^generate_issues\(\)/ { in_fn=1; depth=0 }
+    /^generate_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -758,7 +758,7 @@ FIXTURE
 
   local fn_body
   fn_body=$(awk '
-    /^generate_issues\(\)/ { in_fn=1; depth=0 }
+    /^generate_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)

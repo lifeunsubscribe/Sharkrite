@@ -74,7 +74,7 @@ setup() {
   # Extract only _collect_auto_docs and generate_issues from plan-issues.sh
   # to avoid running the plan_issues() interactive body (reads from stdin).
   eval "$(awk '
-    /^_collect_auto_docs\(\)/ { in_fn=1; depth=0 }
+    /^_collect_auto_docs[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -83,7 +83,7 @@ setup() {
       }
       print; next
     }
-    /^generate_issues\(\)/ { in_fn=1; depth=0 }
+    /^generate_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)

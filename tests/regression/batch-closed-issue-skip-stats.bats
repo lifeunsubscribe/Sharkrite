@@ -85,7 +85,7 @@ setup() {
 @test "structural: handle_closed_issue() returns 12, not 0" {
   # Extract handle_closed_issue function body
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
@@ -108,7 +108,7 @@ setup() {
   # must be replaced with `return 12`. A bare `return 0` at the end would mean
   # the sentinel never fires.
   _func_body=$(awk '
-    /^handle_closed_issue\(\)/ { in_func=1; next }
+    /^handle_closed_issue[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print NR": "$0 }
   ' "$WORKFLOW_RUNNER")
@@ -149,7 +149,7 @@ setup() {
 
   # Extract run_workflow function body
   _func_body=$(awk '
-    /^run_workflow\(\)/ { in_func=1; next }
+    /^run_workflow[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")

@@ -97,22 +97,22 @@ setup() {
 # -----------------------------------------------------------------------
 
 @test "workflow-runner.sh: defines phase_spawn_doc_assessment" {
-  grep -qE '^phase_spawn_doc_assessment\(\)' "$WORKFLOW_RUNNER"
+  grep -qE '^phase_spawn_doc_assessment[(][)]' "$WORKFLOW_RUNNER"
 }
 
 @test "workflow-runner.sh: defines phase_wait_doc_assessment" {
-  grep -qE '^phase_wait_doc_assessment\(\)' "$WORKFLOW_RUNNER"
+  grep -qE '^phase_wait_doc_assessment[(][)]' "$WORKFLOW_RUNNER"
 }
 
 @test "workflow-runner.sh: defines phase_kill_doc_assessment for interrupt path" {
-  grep -qE '^phase_kill_doc_assessment\(\)' "$WORKFLOW_RUNNER"
+  grep -qE '^phase_kill_doc_assessment[(][)]' "$WORKFLOW_RUNNER"
 }
 
 @test "workflow-runner.sh: spawn helper passes --worktree to assess-documentation.sh" {
   # The spawn helper must invoke assess-documentation.sh with --worktree so the
   # script cd's into the feature worktree and commits land on the feature branch.
   # We assert this by extracting the helper body and confirming --worktree appears.
-  _helper_body=$(awk '/^phase_spawn_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER")
+  _helper_body=$(awk '/^phase_spawn_doc_assessment[(][)]/,/^}/' "$WORKFLOW_RUNNER")
   [[ "$_helper_body" == *"--worktree"* ]]
 }
 
@@ -120,7 +120,7 @@ setup() {
   # Verify the call site exists in phase_assess_and_resolve, after the gate
   # spawn but before phase_create_pr. We look for the spawn call inside the
   # function body that runs run_test_gate.
-  _fn_body=$(awk '/^phase_assess_and_resolve\(\)/,/^}/' "$WORKFLOW_RUNNER")
+  _fn_body=$(awk '/^phase_assess_and_resolve[(][)]/,/^}/' "$WORKFLOW_RUNNER")
   [[ "$_fn_body" == *"phase_spawn_doc_assessment"* ]]
   [[ "$_fn_body" == *"run_test_gate"* ]]
 }
@@ -130,7 +130,7 @@ setup() {
   # top of phase_merge_pr) so doc work runs in parallel with the pre-merge gate
   # — changes summary fetch, check_blockers, verify_pr_head, divergence handling.
   # Placing it at the entry collapses parallelism to ~zero in the no-fix-loop case.
-  _fn_body=$(awk '/^phase_merge_pr\(\)/,/^phase_completion\(\)/' "$WORKFLOW_RUNNER")
+  _fn_body=$(awk '/^phase_merge_pr[(][)]/,/^phase_completion[(][)]/' "$WORKFLOW_RUNNER")
   [[ "$_fn_body" == *"phase_wait_doc_assessment"* ]]
 
   # The wait must appear AFTER the pre-merge gate (check_blockers, verify_pr_head)
@@ -152,7 +152,7 @@ setup() {
   # The wait must come BEFORE the fix-review LLM session — the LLM needs a clean
   # worktree (doc subprocess commits must land first). We extract the function
   # body and verify wait appears before --fix-review.
-  _fn_body=$(awk '/^phase_assess_and_resolve\(\)/,/^}/' "$WORKFLOW_RUNNER")
+  _fn_body=$(awk '/^phase_assess_and_resolve[(][)]/,/^}/' "$WORKFLOW_RUNNER")
   _wait_line=$(echo "$_fn_body" | grep -n 'phase_wait_doc_assessment' | head -1 | cut -d: -f1)
   _fix_line=$(echo "$_fn_body" | grep -n -- '--fix-review' | head -1 | cut -d: -f1)
   [ -n "$_wait_line" ]

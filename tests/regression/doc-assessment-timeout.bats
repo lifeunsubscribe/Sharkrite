@@ -125,7 +125,7 @@ _wait_and_report_with_watchdog='
 
 @test "workflow-runner.sh: watchdog kill-TERM pattern present in source" {
   local wait_fn
-  wait_fn=$(awk '/^phase_wait_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
+  wait_fn=$(awk '/^phase_wait_doc_assessment[(][)]/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
   [ -n "$wait_fn" ]
 
   # Watchdog subshell pattern: ( sleep TIMEOUT && kill -TERM PID ) &
@@ -142,7 +142,7 @@ _wait_and_report_with_watchdog='
 
 @test "workflow-runner.sh: SIGTERM (143) and SIGKILL (137) handled in timeout branch" {
   local wait_fn
-  wait_fn=$(awk '/^phase_wait_doc_assessment\(\)/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
+  wait_fn=$(awk '/^phase_wait_doc_assessment[(][)]/,/^}/' "$WORKFLOW_RUNNER_SCRIPT")
   [ -n "$wait_fn" ]
 
   # Both SIGTERM (143) and SIGKILL (137) must be in the conditional

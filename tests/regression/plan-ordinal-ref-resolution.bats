@@ -465,7 +465,7 @@ write_title_map() {
   # Extract the create_issues function body
   local fn_body
   fn_body=$(awk '
-    /^create_issues\(\)/ { in_fn=1; depth=0 }
+    /^create_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)

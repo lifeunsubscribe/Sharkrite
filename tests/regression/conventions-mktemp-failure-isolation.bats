@@ -59,7 +59,7 @@ setup() {
   # assess_internal_changelog() — same awk extraction pattern used in
   # conventions-marker-append.bats.
   eval "$(awk '
-    /^_mark_updated\(\)/ { in_fn=1; depth=0 }
+    /^_mark_updated[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -68,7 +68,7 @@ setup() {
       }
       print; next
     }
-    /^update_conventions_from_marker\(\)/ { in_fn=1; depth=0 }
+    /^update_conventions_from_marker[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -77,7 +77,7 @@ setup() {
       }
       print; next
     }
-    /^assess_internal_changelog\(\)/ { in_fn=1; depth=0 }
+    /^assess_internal_changelog[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -193,7 +193,7 @@ BODY
   # outside the function.
   local _fn_body
   _fn_body="$(awk '
-    /^update_conventions_from_marker\(\)/ { in_fn=1; depth=0 }
+    /^update_conventions_from_marker[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -297,7 +297,7 @@ BODY
   # outside the function.
   local _fn_body
   _fn_body="$(awk '
-    /^assess_internal_changelog\(\)/ { in_fn=1; depth=0 }
+    /^assess_internal_changelog[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)

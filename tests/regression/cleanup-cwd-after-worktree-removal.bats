@@ -149,7 +149,7 @@ SCRIPT2
   # since it must run at the top-level startup path).
   # We look for the exact pattern at top-level (before the first function definition).
   _top_level_section=$(awk '
-    /^[a-z_]+\(\)/ { exit }   # stop at first function definition
+    /^[a-z_]+[(][)]/ { exit }   # stop at first function definition
     { print }
   ' "$_assess_doc")
 
@@ -202,8 +202,8 @@ SCRIPT2
   # top-level function definition (lines starting with `phase_...() {` or
   # `run_workflow() {` etc).
   _body=$(awk '
-    /^phase_merge_pr\(\)/ { in_func=1 }
-    in_func && /^[a-z_]+\(\) \{/ && !/^phase_merge_pr/ { exit }
+    /^phase_merge_pr[(][)]/ { in_func=1 }
+    in_func && /^[a-z_]+[(][)] \{/ && !/^phase_merge_pr/ { exit }
     in_func { print }
   ' "$_wfr")
 

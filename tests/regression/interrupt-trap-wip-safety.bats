@@ -79,7 +79,7 @@ _in_wf() {
 # ---------------------------------------------------------------------------
 
 @test "structural: cleanup_on_interrupt checks _wip_commit_allowed before committing" {
-  _fn=$(awk '/^cleanup_on_interrupt\(\) \{/{f=1} f{print} f&&/^}/{exit}' "$WF")
+  _fn=$(awk '/^cleanup_on_interrupt[(][)] \{/{f=1} f{print} f&&/^}/{exit}' "$WF")
   _guard_line=$(printf '%s\n' "$_fn" | grep -n '_wip_commit_allowed' | head -1 | cut -d: -f1)
   _commit_line=$(printf '%s\n' "$_fn" | grep -n 'git commit -m' | head -1 | cut -d: -f1)
   [ -n "$_guard_line" ]
