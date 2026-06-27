@@ -270,11 +270,14 @@ while [[ $# -gt 0 ]]; do
           ISSUE_NUMBER="$1"
           echo "▶  Fetching issue #$ISSUE_NUMBER from GitHub..."
           # Fetch issue details from GitHub
-          ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,state || true)
+          ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,state,labels || true)
           if [ -n "$ISSUE_JSON" ] && [ "$ISSUE_JSON" != "null" ]; then
             ISSUE_DESC=$(echo "$ISSUE_JSON" | jq -r '.title')
             ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
             ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
+            # Pre-fetch labels here so build_relevant_prior_art (Path B) reuses
+            # this response instead of making a second gh API call.
+            ISSUE_LABELS_CSV=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | join(",")' 2>/dev/null || true)
 
             # Validate issue has meaningful content
             if [ -z "$ISSUE_DESC" ] || [ "$ISSUE_DESC" = "null" ]; then
@@ -1189,8 +1192,9 @@ find_worktree_for_task() {
 #
 # Arguments:
 #   $1 — issue body text (may be empty or "null")
-#   $2 — issue number (used for GitHub label fetch)
+#   $2 — issue number (used as a fallback label-fetch key; see Path B)
 #   $3 — project root directory (default: RITE_PROJECT_ROOT or pwd)
+#   $4 — pre-fetched labels CSV (optional; avoids a second gh API round-trip)
 #
 # Output: the "Relevant prior art" block to stdout, or empty string.
 # Never fails — all errors are silently swallowed.
@@ -1198,6 +1202,7 @@ build_relevant_prior_art() {
   local issue_body="${1:-}"
   local issue_number="${2:-}"
   local project_root="${3:-${RITE_PROJECT_ROOT:-$(pwd)}}"
+  local prefetched_labels_csv="${4:-}"
 
   # Sanitize: treat literal "null" from jq as empty
   [ "$issue_body" = "null" ] && issue_body=""
@@ -1235,7 +1240,13 @@ build_relevant_prior_art() {
   # Path B: derive from GitHub labels (only when no explicit tags found)
   if [ -z "$resolved_tags" ] && [ -n "$issue_number" ] && [ "$_has_index" = true ]; then
     local _label_json
-    _label_json=$(gh_safe issue view "$issue_number" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+    # Prefer the pre-fetched CSV passed by the caller to avoid a second gh API
+    # round-trip on every untagged dev run (network-lazy convention, issue #201).
+    if [ -n "$prefetched_labels_csv" ] && [ "$prefetched_labels_csv" != "null" ]; then
+      _label_json="$prefetched_labels_csv"
+    else
+      _label_json=$(gh_safe issue view "$issue_number" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+    fi
     if [ -n "$_label_json" ] && [ "$_label_json" != "null" ]; then
       # Filter labels to only those that appear as headings in tag-index.md
       local _candidate_tags=""
@@ -1243,9 +1254,11 @@ build_relevant_prior_art() {
       while IFS= read -r _lbl; do
         [ -z "$_lbl" ] && continue
         # Check if this label has a corresponding ## heading in tag-index.md
-        local _lbl_lc
+        local _lbl_lc _lbl_escaped
         _lbl_lc=$(echo "$_lbl" | tr '[:upper:]' '[:lower:]')
-        if grep -qiE "^## ${_lbl_lc}[[:space:]]*$" "$tag_index_file" 2>/dev/null; then
+        # Escape ERE metacharacters in the label before interpolating into the regex
+        _lbl_escaped=$(printf '%s' "$_lbl_lc" | sed 's/[.+*?^${}()|[\\]/\\&/g' || true)
+        if grep -qiE "^## ${_lbl_escaped}[[:space:]]*$" "$tag_index_file" 2>/dev/null; then
           if [ -z "$_candidate_tags" ]; then
             _candidate_tags="$_lbl"
           else
@@ -1271,8 +1284,12 @@ build_relevant_prior_art() {
       _heading="${_heading%"${_heading##*[![:space:]]}"}"  # rtrim
       [ -z "$_heading" ] && continue
       _heading_lc=$(echo "$_heading" | tr '[:upper:]' '[:lower:]')
-      # Check if the lowercase heading appears in issue body or title
-      if echo "$issue_body" | tr '[:upper:]' '[:lower:]' | grep -qF "$_heading_lc" 2>/dev/null; then
+      # Check if the lowercase heading appears as a whole word in issue body or title.
+      # Escape ERE metacharacters first; wrap in \b word-boundary anchors so short
+      # headings like "auth" don't match mid-word in "authentication".
+      local _heading_escaped
+      _heading_escaped=$(printf '%s' "$_heading_lc" | sed 's/[.+*?^${}()|[\\]/\\&/g' || true)
+      if echo "$issue_body" | tr '[:upper:]' '[:lower:]' | grep -qE "(^|[^a-z0-9_])${_heading_escaped}([^a-z0-9_]|$)" 2>/dev/null; then
         if [ -z "$_keyword_tags" ]; then
           _keyword_tags="$_heading"
         else
@@ -2598,7 +2615,8 @@ print_status "Loading relevant prior art from tag-index..."
 RELEVANT_PRIOR_ART_BLOCK=$(build_relevant_prior_art \
   "${ISSUE_BODY:-}" \
   "${ISSUE_NUMBER:-}" \
-  "${RITE_PROJECT_ROOT:-$(pwd)}" || true)
+  "${RITE_PROJECT_ROOT:-$(pwd)}" \
+  "${ISSUE_LABELS_CSV:-}" || true)
 if [ -n "$RELEVANT_PRIOR_ART_BLOCK" ]; then
   print_success "Loaded relevant prior art"
 else

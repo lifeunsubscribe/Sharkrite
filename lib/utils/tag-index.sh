@@ -811,9 +811,11 @@ slice_section() {
     local anchor
     anchor=$(echo "$heading" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
 
-    # Truncate at MAX_BYTES using dd (portable, avoids head -c which is not POSIX)
+    # Truncate at MAX_BYTES.  Use LC_ALL=C so the byte count is not confused by
+    # multibyte UTF-8 sequences (the → arrow used in pointer lines is 3 bytes).
+    # head -c is available on both BSD (macOS) and GNU coreutils.
     local truncated
-    truncated=$(printf '%s' "$section_text" | dd bs=1 count="$max_bytes" 2>/dev/null || true)
+    truncated=$(printf '%s' "$section_text" | LC_ALL=C head -c "$max_bytes" || true)
     printf '%s\n...\n→ see full: %s#%s\n' "$truncated" "$catalog_file" "$anchor"
   fi
 }

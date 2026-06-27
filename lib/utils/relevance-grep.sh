@@ -29,15 +29,6 @@ fi
 # Internal helpers
 # =============================================================================
 
-# _rg_cmd — emit the grep command to use (rg preferred, grep -rn fallback)
-_rg_cmd() {
-  if command -v rg >/dev/null 2>&1; then
-    echo "rg"
-  else
-    echo "grep_fallback"
-  fi
-}
-
 # _grep_symbol SYMBOL SEARCH_DIRS...
 #
 # Greps for SYMBOL under SEARCH_DIRS and returns at most 3 matching lines
@@ -83,8 +74,10 @@ _grep_symbol() {
 # Outputs one match per line.
 _extract_file_paths() {
   local text="$1"
-  # grep -oE extracts all non-overlapping matches; || true handles no-match exit
-  printf '%s' "$text" | grep -oE '[a-z_/][a-z_/-]*\.(sh|md|conf|bats)' || true
+  # grep -oE extracts all non-overlapping matches; || true handles no-match exit.
+  # Include digits (0-9) and uppercase (A-Z) so paths like adr-001.md and
+  # foo2bar.sh are not silently missed.
+  printf '%s' "$text" | grep -oE '[a-zA-Z0-9_/][a-zA-Z0-9_/-]*\.(sh|md|conf|bats)' || true
 }
 
 # _extract_backtick_symbols ISSUE_TEXT
