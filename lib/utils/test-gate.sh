@@ -948,16 +948,38 @@ run_test_gate() {
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
-      # Loud-skip: missing deps (ModuleNotFoundError / No module named) or no tests collected
-      # (pytest exit 5) are environment gaps, not code defects — reuse the .ino loud-skip shape.
-      if [ "$_tests_exit" -ne 0 ] && { grep -qE "ModuleNotFoundError|No module named" "$_tests_raw_file" 2>/dev/null || [ "$_tests_exit" -eq 5 ]; }; then
-        echo "[test-gate] WARNING: pytest failed due to missing dependencies or no tests collected (exit ${_tests_exit})." >&2
+      # Loud-skip: missing deps (ModuleNotFoundError / No module named) are environment gaps,
+      # not code defects — reuse the .ino loud-skip shape.
+      if [ "$_tests_exit" -ne 0 ] && grep -qE "ModuleNotFoundError|No module named" "$_tests_raw_file" 2>/dev/null; then
+        echo "[test-gate] WARNING: pytest failed due to missing Python dependencies (ModuleNotFoundError)." >&2
         echo "[test-gate] Install the required packages (e.g. pip install -r requirements.txt) or set RITE_TEST_COMMAND to a wrapper that sets up the environment." >&2
         _diag "TEST_GATE outcome=skipped reason=missing_deps pr=${PR_NUMBER:-?}"
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
         trap - EXIT
         _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_deps"
         return 0
+      fi
+      # pytest exit 5 = "no tests collected". This is benign ONLY when no test files exist
+      # in the repo (environment gap). If test_*.py / *_test.py files are present, exit 5
+      # indicates a collection-breaking regression (import error in conftest, renamed test
+      # file, etc.) — DO NOT fold into missing_deps; let it fall through to outcome=failed.
+      # This preserves the block-on-any contract from the Done Definition.
+      if [ "$_tests_exit" -eq 5 ]; then
+        local _pytest_test_files
+        _pytest_test_files=$(find "$project_root" -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 || true)
+        if [ -z "$_pytest_test_files" ]; then
+          # No test files exist — genuine empty suite (environment gap, not a code defect).
+          echo "[test-gate] WARNING: pytest found no tests to collect (exit 5) and no test_*.py/*_test.py files exist." >&2
+          echo "[test-gate] Add tests or set RITE_TEST_COMMAND to a wrapper that targets the correct paths." >&2
+          _diag "TEST_GATE outcome=skipped reason=no_tests_collected pr=${PR_NUMBER:-?}"
+          rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+          trap - EXIT
+          _gate_write_json "$output_file" "[]" "[]" "0" "true" "no_tests_collected"
+          return 0
+        fi
+        # Test files exist but nothing was collected — collection-breaking regression.
+        # Fall through to outcome=failed so the gate blocks the merge.
+        echo "[test-gate] pytest exit 5 (no tests collected) but test files are present — likely a collection-breaking regression." >&2
       fi
     elif [ -f "$project_root/Cargo.toml" ]; then
       if ! command -v cargo >/dev/null 2>&1; then
