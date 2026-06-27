@@ -194,13 +194,7 @@ teardown() {
 # rather than a fragile substring match.
 
 @test "assess-review-issues.sh: ITEM_TITLE is normalized (list markers stripped) before per-finding comment" {
-  # Static check: the normalization sed commands must appear in the script
-  # in the TITLE: case branch (same two-stage pattern as assess-and-resolve.sh).
-  # We look for the Stage 1 sed (list-marker strip) applied to _raw_item_title.
-  run grep -n '_raw_item_title\|sed.*0-9.*\[.*\[.* space.*ITEM_TITLE\|sed.*\[-\*\].*ITEM_TITLE' \
-    "$ASSESS_REVIEW_ISSUES"
-
-  # Fallback: verify the normalization sed pattern exists somewhere near TITLE:
+  # Static check: verify the normalization sed pattern exists somewhere near TITLE:
   local _title_block
   _title_block=$(awk '/TITLE:\*\)/{in_block=1} in_block{print; count++} in_block && /;;/{exit}' \
     "$ASSESS_REVIEW_ISSUES")
