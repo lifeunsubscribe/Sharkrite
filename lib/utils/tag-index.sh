@@ -627,41 +627,81 @@ ${_ntag}"
 # Justification audit log (Stage 3 foundation)
 # =============================================================================
 
-# tag_index_log_history TAG JUSTIFICATION PR_NUMBER
+# tag_index_log_history ACTION TAG DETAIL PR_NUMBER
 #
-# Appends a timestamped justification audit line for a new tag introduced by
-# a PR's `new-tags:` block.  Called once per new tag during reconcile_tag_index
-# in assess-documentation.sh.
+# Appends a timestamped history line to .rite/tag-index-history.log.
+# All three action branches are idempotent: a line is only appended when it
+# does not already exist in the log (grep -qF dedup), so re-running
+# reconciliation on the same PR never produces duplicate entries.
 #
-# Output format (appended to .rite/tag-index-history.log):
-#   YYYY-MM-DD | PR #N | tag: TAGNAME | JUSTIFICATION
+# ACTION determines the line format and the meaning of DETAIL:
 #
-# The log file location defaults to the .rite/ state dir alongside the project
-# root.  If the dir is not writable, the audit line is emitted to stderr only
-# (graceful degradation — never aborts the caller).
+#   justified  — new tag introduced with a justification:
+#                DETAIL = justification text (one line)
+#                Format: YYYY-MM-DD | PR #N | tag: TAG | DETAIL
+#
+#   merged     — existing tag merged into another (similarity check result):
+#                DETAIL = "into EXISTING_TAG"
+#                Format: YYYY-MM-DD | PR #N | merged: TAG DETAIL
+#
+#   added      — missing pointer auto-added (coverage check result):
+#                DETAIL = "FILE → HEADING"  (canonical file → heading separator)
+#                Format: YYYY-MM-DD | PR #N | added: TAG → DETAIL
+#
+# The log file defaults to .rite/tag-index-history.log.  If the directory is
+# not writable, the audit line is emitted to stderr only (graceful degradation
+# — never aborts the caller).
 #
 # Arguments:
-#   $1 — tag name
-#   $2 — justification text (one line)
-#   $3 — PR number (for provenance)
+#   $1 — action: "justified" | "merged" | "added"
+#   $2 — tag name
+#   $3 — detail text (meaning varies by action — see above)
+#   $4 — PR number (for provenance)
 tag_index_log_history() {
-  local tag="$1"
-  local justification="$2"
-  local pr_number="$3"
+  local action="$1"
+  local tag="$2"
+  local detail="$3"
+  local pr_number="$4"
 
   local timestamp
   timestamp=$(date +%Y-%m-%d 2>/dev/null || echo "unknown-date")
 
-  local audit_line="${timestamp} | PR #${pr_number} | tag: ${tag} | ${justification}"
+  # Build the action-specific audit line.
+  local audit_line
+  case "$action" in
+    justified)
+      # DETAIL is the one-line justification text for the new tag.
+      audit_line="${timestamp} | PR #${pr_number} | tag: ${tag} | ${detail}"
+      ;;
+    merged)
+      # DETAIL is the "into EXISTING_TAG" merge target string.
+      audit_line="${timestamp} | PR #${pr_number} | merged: ${tag} ${detail}"
+      ;;
+    added)
+      # DETAIL is "FILE → HEADING" using the canonical → separator (not file#heading).
+      audit_line="${timestamp} | PR #${pr_number} | added: ${tag} → ${detail}"
+      ;;
+    *)
+      # Unknown action — log a warning to stderr and skip.
+      echo "tag_index_log_history: unknown action '${action}' — skipping" >&2
+      return 0
+      ;;
+  esac
 
   # Emit via verbose_info so the doc-assessment pass displays it in real time.
-  verbose_info "  tag-index: new-tag audit: ${audit_line}"
+  verbose_info "  tag-index: ${action}: ${audit_line}"
 
   # Persist to the history log file (best-effort — failure does not propagate).
   local log_dir="${RITE_PROJECT_ROOT:-}/.rite"
   local log_file="${log_dir}/tag-index-history.log"
 
   if [ -d "$log_dir" ] || mkdir -p "$log_dir" 2>/dev/null; then
+    # Idempotency guard: skip the append when the exact line already exists.
+    # This ensures re-running reconciliation on the same PR produces no duplicates
+    # for any of the three action branches (justified, merged, added).
+    if grep -qF "$audit_line" "$log_file" 2>/dev/null; then
+      return 0
+    fi
     printf '%s\n' "$audit_line" >> "$log_file" 2>/dev/null || true
   fi
 }

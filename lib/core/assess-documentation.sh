@@ -1107,7 +1107,7 @@ reconcile_tag_index() {
     # Two separate checks avoid shell operator precedence ambiguity with || + &&.
     [ -z "$_tag" ] && continue
     [ -z "$_justif" ] && continue
-    tag_index_log_history "$_tag" "$_justif" "$pr_number"
+    tag_index_log_history "justified" "$_tag" "$_justif" "$pr_number"
   done <<< "$_new_tag_pairs"
 
   # --- Similarity check (stub — filled in by sub-issue #766) ---

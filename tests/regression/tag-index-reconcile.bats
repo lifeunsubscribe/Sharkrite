@@ -418,9 +418,112 @@ BODY
   rm -rf "${RITE_TEST_TMPDIR}/.rite"
   [ ! -d "${RITE_TEST_TMPDIR}/.rite" ]
 
-  tag_index_log_history "new-tag" "Some justification" "42"
+  tag_index_log_history "justified" "new-tag" "Some justification" "42"
 
   local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
   [ -f "$log_file" ]
   grep -q "tag: new-tag" "$log_file"
+}
+
+# ---------------------------------------------------------------------------
+# AC: Per-action dedup — justified branch is idempotent on re-run (#765)
+# ---------------------------------------------------------------------------
+
+@test "AC-dedup-justified: calling justified twice does not produce a duplicate line" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history "justified" "dedup-tag" "Dedup justification" "200"
+  tag_index_log_history "justified" "dedup-tag" "Dedup justification" "200"
+
+  local count
+  count=$(grep -c "tag: dedup-tag" "$log_file" || true)
+  [ "$count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# AC: Per-action dedup — added branch is idempotent on re-run (absorbs #761)
+# ---------------------------------------------------------------------------
+
+@test "AC-dedup-added: calling added twice does not produce a duplicate line" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history "added" "my-tag" "conventions.md → grep -c pattern" "300"
+  tag_index_log_history "added" "my-tag" "conventions.md → grep -c pattern" "300"
+
+  local count
+  count=$(grep -c "added: my-tag" "$log_file" || true)
+  [ "$count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# AC: Per-action dedup — merged branch is idempotent on re-run (#765)
+# ---------------------------------------------------------------------------
+
+@test "AC-dedup-merged: calling merged twice does not produce a duplicate line" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history "merged" "new-tag" "into existing-tag" "400"
+  tag_index_log_history "merged" "new-tag" "into existing-tag" "400"
+
+  local count
+  count=$(grep -c "merged: new-tag" "$log_file" || true)
+  [ "$count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# AC: added entry uses file → heading separator, not file#heading (absorbs #762)
+# ---------------------------------------------------------------------------
+
+@test "AC-separator-added: added entry uses canonical file → heading separator" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history "added" "sep-tag" "conventions.md → Silent death" "500"
+
+  # Must contain → separator (canonical pointer form)
+  grep -q "conventions.md → Silent death" "$log_file"
+
+  # Must NOT contain raw file#heading form
+  ! grep -q "conventions.md#" "$log_file"
+}
+
+# ---------------------------------------------------------------------------
+# AC: Multiple distinct entries accumulate without overwriting one another
+# ---------------------------------------------------------------------------
+
+@test "AC-accumulate: multiple distinct entries for the same tag accumulate" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history "justified" "accum-tag" "First justification" "600"
+  tag_index_log_history "added"     "accum-tag" "conventions.md → Some heading" "601"
+  tag_index_log_history "merged"    "accum-tag" "into base-tag" "602"
+
+  # All three distinct lines must be present
+  grep -q "tag: accum-tag" "$log_file"
+  grep -q "added: accum-tag" "$log_file"
+  grep -q "merged: accum-tag" "$log_file"
+
+  # Total lines for accum-tag must be exactly 3
+  local count
+  count=$(grep -c "accum-tag" "$log_file" || true)
+  [ "$count" -eq 3 ]
+}
+
+@test "AC-accumulate: two different tags for same PR each get their own line" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history "justified" "tag-alpha" "Alpha justification" "700"
+  tag_index_log_history "justified" "tag-beta"  "Beta justification"  "700"
+
+  grep -q "tag: tag-alpha" "$log_file"
+  grep -q "tag: tag-beta"  "$log_file"
+
+  local count
+  count=$(grep -c "PR #700" "$log_file" || true)
+  [ "$count" -eq 2 ]
 }
