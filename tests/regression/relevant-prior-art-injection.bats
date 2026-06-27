@@ -328,12 +328,18 @@ EOCONV
 # ===========================================================================
 
 @test "relevance_grep: extracts and greps for file paths in issue body" {
-  # Plant a file in lib/ that relevance_grep will find
+  # Plant two files: sample.sh (the target) and loader.sh (which references sample.sh).
+  # relevance_grep does a content-grep for the path string, so loader.sh provides the hit.
   mkdir -p "$RITE_TEST_TMPDIR/lib/utils"
   cat > "$RITE_TEST_TMPDIR/lib/utils/sample.sh" <<'EOSH'
 #!/bin/bash
 # sample.sh — used for grep testing
 sample_function() { echo "sample"; }
+EOSH
+  cat > "$RITE_TEST_TMPDIR/lib/utils/loader.sh" <<'EOSH'
+#!/bin/bash
+# loader.sh — sources lib/utils/sample.sh for test fixture
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/utils/sample.sh"
 EOSH
 
   run bash -c "
