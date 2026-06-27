@@ -627,3 +627,53 @@ EOF
   [[ "$output" == *"VIOLATION:"* ]]
   [[ "$output" == *"secret.sh"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Test: deleted tests/ file is flagged even when DO lists only source paths
+#   and there is NO DO NOT bullet.
+#
+# This is the safety boundary of the test-path whitelist introduced in #722:
+# the whitelist suppresses false-positives only for ADDED test files.
+# A DELETED test file must still be evaluated against the DO patterns so that
+# the #49/#121 deletion-detection guarantee is preserved.
+#
+# Scenario: developer's issue touches lib/core/foo.sh.  During the dev
+# session tests/regression/existing-test.bats is accidentally deleted.
+# The scope boundary has no DO NOT bullet — only source-path DO entries.
+# The deleted file must still surface as a VIOLATION.
+# ---------------------------------------------------------------------------
+@test "test-path whitelist: deleted tests/ file flagged even with only source-path DO bullets" {
+  cd "$TEST_REPO_DIR"
+  git checkout -q main
+
+  # Ensure the test file exists on main so it can be deleted on the feature branch
+  mkdir -p tests/regression
+  printf "# existing test file that will be deleted\n" > tests/regression/existing-test.bats
+  git add -A
+  git commit -q -m "add existing-test.bats"
+
+  git checkout -q -b feature/testpath-deleted-not-whitelisted
+
+  # Simulate: source change + accidental deletion of an existing test file
+  printf "# foo modified\n" > lib/core/foo.sh
+  rm tests/regression/existing-test.bats
+  git add -A
+  git commit -q -m "fix: update foo.sh (accidentally deleted existing test)"
+  # origin/main must point at the commit BEFORE the feature branch diverged
+  git update-ref refs/remotes/origin/main "$(git rev-parse main)" 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/body-testpath-deleted.txt"
+  # DO covers only source paths; no DO NOT bullet present
+  cat > "$body_file" <<'EOF'
+## Scope Boundary:
+- DO: lib/core/foo.sh
+EOF
+
+  _run_scope_check_file "$body_file"
+
+  # The deleted test file is NOT added (D-status), so the test-path whitelist
+  # does NOT apply.  It must appear as a VIOLATION.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"VIOLATION:"* ]]
+  [[ "$output" == *"existing-test.bats"* ]]
+}
