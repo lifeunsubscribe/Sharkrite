@@ -27,7 +27,7 @@
 #      (still used by retry-cap branch for CRITICAL follow-up logic)
 #
 # Verification command:
-#   bats tests/regression/assess-and-resolve-shippable-defer.bats
+#   bats tests/regression/assess-and-resolve-now-always-loops.bats
 
 load '../helpers/setup.bash'
 

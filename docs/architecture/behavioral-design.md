@@ -278,7 +278,7 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 **Implementation:** [assess-and-resolve.sh](../../lib/core/assess-and-resolve.sh) — the `ACTIONABLE_NOW_COUNT > 0` branch dispatches: retry count ≥ 3 → retry-cap handling; otherwise → Normal loop (echo assessment to fd 3, exit 2).
 
-**Coverage:** `tests/regression/assess-and-resolve-shippable-defer.bats` — asserts MEDIUM/LOW ACTIONABLE_NOW items route to exit 2; `tests/integration/assess-and-resolve-dedup.bats` test 5 asserts exit 2 for a HIGH-severity NOW item.
+**Coverage:** `tests/regression/assess-and-resolve-now-always-loops.bats` — asserts MEDIUM/LOW ACTIONABLE_NOW items route to exit 2; `tests/integration/assess-and-resolve-dedup.bats` test 5 asserts exit 2 for a HIGH-severity NOW item.
 
 ### Verification Out of Fix Session
 
