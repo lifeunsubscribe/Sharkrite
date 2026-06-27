@@ -449,8 +449,14 @@ derive_followup_finding_key() {
 # The file contains a single line: the follow-up issue number.  Waiters read it
 # with read_followup_evidence before the dedup search-then-create sequence.
 #
-# MUST be called while the pr_followup_lock is held, so the write is serialised
-# against concurrent processes attempting the same check-then-create.
+# Two caller classes:
+#   (a) Lock-held callers (assess-and-resolve.sh): called while pr_followup_lock
+#       is held, so the write is serialised against concurrent check-then-create.
+#   (b) Lock-free idempotent-seeding callers (assess-review-issues.sh): called
+#       outside the lock after a successful gh issue create, to pre-populate the
+#       oracle so Source 1 can short-circuit on the next run.  These calls are
+#       safe without the lock because the issue number is already committed — a
+#       concurrent writer would write the same value.
 #
 # Evidence file naming mirrors the lock key:
 #   With source_issue:  pr-${pr}-src-${src}-followup-created.txt

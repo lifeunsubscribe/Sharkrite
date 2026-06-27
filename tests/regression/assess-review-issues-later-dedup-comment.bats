@@ -290,3 +290,58 @@ teardown() {
     false
   }
 }
+
+# ─── Test 11: Behavioral round-trip — Source-1 seeding write→read ─────────────
+#
+# This is the core behavioral test for issue #729: assess-review-issues.sh
+# seeds write_followup_evidence so that _followup_dedup_check Source 1 can
+# short-circuit on a re-run even when the Source 4 PR comment write failed.
+#
+# The round-trip: write_followup_evidence (seeded by assess-review-issues.sh new-issue
+# path, using the same derive_followup_finding_key that assess-and-resolve.sh uses) →
+# read_followup_evidence (Source 1 in _followup_dedup_check) returns the issue number.
+#
+# An argument swap (e.g. pr_number and source_issue transposed) would produce a file
+# under the wrong key, making read_followup_evidence return empty — this test catches it.
+
+@test "Source-1 seeding: write_followup_evidence → read_followup_evidence round-trip returns seeded issue number" {
+  # Set up an isolated lock dir for this test so we never touch the real .rite/locks.
+  local _lock_dir="${RITE_TEST_TMPDIR}/locks"
+  mkdir -p "$_lock_dir"
+  export RITE_LOCK_DIR="$_lock_dir"
+
+  # Source issue-lock.sh directly to get the three functions under test.
+  # We must unset the re-source guard (acquire_issue_lock) in case a previous test
+  # already loaded it; re-source is safe here because the guard is function-based.
+  # Use load_lib rather than direct sourcing so RITE_REPO_ROOT resolves correctly.
+  load_lib utils/issue-lock.sh
+
+  # Simulate the values assess-review-issues.sh would use after a successful
+  # gh issue create in the new-issue path:
+  local _pr="42"
+  local _source_issue="15"     # RITE_ISSUE_NUMBER in the script
+  local _item_title="Fix input validation bypass in login handler"
+  local _item_index="1"        # _item_index counter for the first non-LOW item
+  local _new_issue="88"        # the issue number returned by gh issue create
+
+  # Derive the per-finding key exactly as assess-review-issues.sh does.
+  local _finding_key
+  _finding_key=$(derive_followup_finding_key "$_source_issue" "$_item_title" "$_item_index")
+
+  # Seed Source 1 — this is what the new-issue path in assess-review-issues.sh does.
+  write_followup_evidence "$_pr" "$_new_issue" "$_finding_key"
+
+  # Now read back via Source 1 — this is what _followup_dedup_check does.
+  # _dedup_evidence_key = _FOLLOWUP_FINDING_KEY (which equals _finding_key above).
+  local _read_back
+  _read_back=$(read_followup_evidence "$_pr" "$_finding_key")
+
+  [ "$_read_back" = "$_new_issue" ] || {
+    echo "FAIL: read_followup_evidence returned '$_read_back', expected '$_new_issue'"
+    echo "  write_followup_evidence args: pr=$_pr issue=$_new_issue key=$_finding_key"
+    echo "  read_followup_evidence  args: pr=$_pr key=$_finding_key"
+    echo "  lock dir contents:"
+    ls -la "$_lock_dir" || true
+    false
+  }
+}
