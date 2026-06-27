@@ -470,6 +470,82 @@ _extract_tap_failure_names() {
 }
 
 # ---------------------------------------------------------------------------
+# _classify_pytest_outcome — classify a pytest run into one of four outcomes.
+#
+# Args: $1=exit_code  $2=raw_output (the captured stdout+stderr of the run)
+# Stdout: one of
+#   passed             — exit 0, tests ran and all passed
+#   failed             — real failure: a test failed, assertion error, or collection error
+#   skipped:no_tests   — exit 5 with no collection-error signature
+#   skipped:missing_deps — anchored ModuleNotFoundError with no FAILED/AssertionError
+#
+# Precedence (guards stated explicitly to prevent the v1 false-skip bug):
+#   1. Collection errors → failed  (exit 2 OR error-signature in output)
+#      A collection-breaking regression must never be silenced.
+#   2. Real test failure present → failed
+#      A traceback that mentions ModuleNotFoundError is still a real failure if
+#      FAILED/AssertionError appears anywhere — the loose-grep bug from v1.
+#   3. Anchored missing-dep signature AND no FAILED/AssertionError → skipped:missing_deps
+#      `python3 -m pytest` with pytest uninstalled exits 1 and prints:
+#        "E  ModuleNotFoundError: No module named 'pytest'"
+#      The `^E\s+` anchor matches only pytest's error-line prefix (column 0
+#      followed by E and whitespace), not arbitrary body text.
+#   4. Exit 5 (no tests collected) → skipped:no_tests
+#   5. Default → failed  (conservative: unknown non-zero exit is a real problem)
+# ---------------------------------------------------------------------------
+_classify_pytest_outcome() {
+  local _exit_code="$1"
+  local _output="$2"
+
+  # 1. Passed cleanly.
+  if [ "$_exit_code" -eq 0 ]; then
+    echo "passed"
+    return 0
+  fi
+
+  # 2. Collection-breaking error: exit 2 OR output signature.
+  # Exit 2 = "interrupted / collection error" in pytest's exit-code table.
+  # The output signature covers cases where pytest prints the collection error
+  # but exits with a code other than 2 (e.g. some plugin wrappers).
+  if [ "$_exit_code" -eq 2 ] \
+     || echo "$_output" | grep -qE '(errors during collection|ERROR collecting)'; then
+    echo "failed"
+    return 0
+  fi
+
+  # 3. Real test failure present (FAILED line or AssertionError).
+  # Must be checked BEFORE the missing-dep check: a traceback that mentions
+  # ModuleNotFoundError inside a test that also raises AssertionError is still
+  # a real failure and must NOT be silently skipped (the v1 false-skip bug).
+  if echo "$_output" | grep -qE '(^FAILED |AssertionError)'; then
+    echo "failed"
+    return 0
+  fi
+
+  # 4. Missing-dep signature — narrowly anchored.
+  # `^E\s+` matches only pytest's error-prefix column (pytest prints error lines
+  # as "E  <exception>").  This excludes ModuleNotFoundError buried in arbitrary
+  # body text (docstrings, logging, comments reproduced in tracebacks).
+  # "No module named" on a pytest error line covers both:
+  #   E  ModuleNotFoundError: No module named 'pytest'
+  #   E  ImportError: No module named 'mymodule'
+  if echo "$_output" | grep -qE '^E[[:space:]]+(ModuleNotFoundError|.*No module named)'; then
+    echo "skipped:missing_deps"
+    return 0
+  fi
+
+  # 5. No tests collected — pytest exit code 5.
+  if [ "$_exit_code" -eq 5 ]; then
+    echo "skipped:no_tests"
+    return 0
+  fi
+
+  # Default: conservative — treat unknown non-zero exit as a real failure so
+  # we never silently hide an unrecognised problem.
+  echo "failed"
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -937,6 +1013,31 @@ run_test_gate() {
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      # Classify the pytest run to distinguish env failures from real failures.
+      # A missing dep or no-tests-collected result is a loud skip, not a failure.
+      # Real failures (including ones whose tracebacks mention ModuleNotFoundError)
+      # leave _tests_exit non-zero so the gate blocks as normal.
+      local _pytest_raw _pytest_outcome
+      _pytest_raw=$(cat "$_tests_raw_file" 2>/dev/null || true)
+      _pytest_outcome=$(_classify_pytest_outcome "$_tests_exit" "$_pytest_raw")
+      if [ "$_pytest_outcome" = "skipped:missing_deps" ]; then
+        echo "[test-gate] WARNING: pytest detected missing dependencies (ModuleNotFoundError)." >&2
+        echo "[test-gate] Install the project's test dependencies (e.g. pip install -r requirements-dev.txt) or set RITE_TEST_COMMAND to a wrapper that activates the venv." >&2
+        _diag "TEST_GATE outcome=skipped reason=missing_deps pr=${PR_NUMBER:-?}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_deps"
+        return 0
+      elif [ "$_pytest_outcome" = "skipped:no_tests" ]; then
+        echo "[test-gate] WARNING: pytest collected no tests (exit 5)." >&2
+        echo "[test-gate] Add test files or set RITE_TEST_COMMAND to skip this check." >&2
+        _diag "TEST_GATE outcome=skipped reason=no_tests pr=${PR_NUMBER:-?}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "no_tests"
+        return 0
+      fi
+      # outcome=passed or outcome=failed — leave _tests_exit as captured above.
     elif [ -f "$project_root/Cargo.toml" ]; then
       if ! command -v cargo >/dev/null 2>&1; then
         # cargo not installed — loud skip with toolchain hint (missing runner, not a failure)
