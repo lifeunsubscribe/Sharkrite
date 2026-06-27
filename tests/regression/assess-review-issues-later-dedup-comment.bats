@@ -223,26 +223,92 @@ teardown() {
 # this test breaks and forces a sync update to the other path.
 
 @test "normalization sync: producer ITEM_TITLE and consumer _clean_title logic produce identical output" {
-  # Replicate the EXACT sed pipeline from each file and verify they agree.
-  # Any divergence here is a latent-regression signal.
+  # Extract the REAL sed pipeline from each source file at test time and apply it.
+  # This test is sync-enforcing: if either source file changes its normalization
+  # logic, the extracted pipeline changes too, and the test catches the divergence.
+  # (A test that inlines both pipelines as identical literals only proves the
+  #  in-test copies agree — it never detects drift in the real source files.)
 
-  # Producer pipeline (assess-review-issues.sh TITLE:* case, issue #728 fix):
-  #   Stage 1: strip leading "N. " or "- " or "* "
-  #   Stage 2: trim leading/trailing whitespace
+  local _ari="${RITE_REPO_ROOT}/lib/core/assess-review-issues.sh"
+  local _aar="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
+
+  [ -f "$_ari" ] || { echo "FAIL: $_ari not found"; false; }
+  [ -f "$_aar" ] || { echo "FAIL: $_aar not found"; false; }
+
+  # Extract Stage-1 sed expression from assess-review-issues.sh (TITLE:* block).
+  # The line looks like:
+  #   ITEM_TITLE=$(echo "$_raw_item_title" | sed 'EXPR1' | sed 'EXPR2' || true)
+  # We extract EXPR1 and EXPR2 separately.
+  local _ari_stage1_line _ari_stage2_line
+  _ari_stage1_line=$(grep "_raw_item_title.*sed.*\[0-9\]" "$_ari" | head -1 || true)
+  _ari_stage2_line=$(grep "ITEM_TITLE=\$(echo.*ITEM_TITLE.*sed.*\[:space:\]" "$_ari" | head -1 || true)
+
+  [ -n "$_ari_stage1_line" ] || {
+    echo "FAIL: could not find Stage-1 sed line in $_ari"
+    echo "Expected a line matching: _raw_item_title.*sed.*[0-9]"
+    false
+  }
+  [ -n "$_ari_stage2_line" ] || {
+    echo "FAIL: could not find Stage-2 sed line in $_ari"
+    echo "Expected a line matching: ITEM_TITLE=\$(echo.*ITEM_TITLE.*sed.*[:space:]"
+    false
+  }
+
+  # Extract Stage-1 sed expression from assess-and-resolve.sh (_clean_title block).
+  # The line looks like:
+  #   _clean_title=$(echo "$_raw_title" | sed 'EXPR1' | sed 'EXPR2' || true)
+  local _aar_stage1_line _aar_stage2_line
+  _aar_stage1_line=$(grep "_raw_title.*sed.*\[0-9\]" "$_aar" | head -1 || true)
+  _aar_stage2_line=$(grep "_clean_title=\$(echo.*_clean_title.*sed.*\[:space:\]" "$_aar" | head -1 || true)
+
+  [ -n "$_aar_stage1_line" ] || {
+    echo "FAIL: could not find Stage-1 sed line in $_aar"
+    echo "Expected a line matching: _raw_title.*sed.*[0-9]"
+    false
+  }
+  [ -n "$_aar_stage2_line" ] || {
+    echo "FAIL: could not find Stage-2 sed line in $_aar"
+    echo "Expected a line matching: _clean_title=\$(echo.*_clean_title.*sed.*[:space:]"
+    false
+  }
+
+  # Extract the two sed expressions from the producer (assess-review-issues.sh) line.
+  # Line format: ... | sed 'EXPR1' | sed 'EXPR2' || true
+  local _ari_expr1 _ari_expr2
+  _ari_expr1=$(echo "$_ari_stage1_line" | grep -oE "sed 's[^']*'" | head -1 | sed "s/^sed '//; s/'$//" || true)
+  _ari_expr2=$(echo "$_ari_stage1_line" | grep -oE "sed 's[^']*'" | tail -1 | sed "s/^sed '//; s/'$//" || true)
+  local _ari_expr3
+  _ari_expr3=$(echo "$_ari_stage2_line" | grep -oE "sed 's[^']*'" | head -1 | sed "s/^sed '//; s/'$//" || true)
+
+  # Extract the two sed expressions from the consumer (assess-and-resolve.sh) line.
+  local _aar_expr1 _aar_expr2
+  _aar_expr1=$(echo "$_aar_stage1_line" | grep -oE "sed 's[^']*'" | head -1 | sed "s/^sed '//; s/'$//" || true)
+  _aar_expr2=$(echo "$_aar_stage1_line" | grep -oE "sed 's[^']*'" | tail -1 | sed "s/^sed '//; s/'$//" || true)
+  local _aar_expr3
+  _aar_expr3=$(echo "$_aar_stage2_line" | grep -oE "sed 's[^']*'" | head -1 | sed "s/^sed '//; s/'$//" || true)
+
+  for _expr_name in _ari_expr1 _ari_expr2 _ari_expr3 _aar_expr1 _aar_expr2 _aar_expr3; do
+    eval "_v=\$$_expr_name"
+    [ -n "$_v" ] || {
+      echo "FAIL: could not extract sed expression for $_expr_name"
+      false
+    }
+  done
+
+  # Apply the real producer pipeline (assess-review-issues.sh stages 1+2).
   producer_normalize() {
     local _input="$1"
     local _out
-    _out=$(echo "$_input" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
-    echo "$_out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+    _out=$(echo "$_input" | sed "$_ari_expr1" | sed "$_ari_expr2" || true)
+    echo "$_out" | sed "$_ari_expr3" || true
   }
 
-  # Consumer pipeline (assess-and-resolve.sh lines 1685-1687, unchanged):
-  #   Same two sed stages.
+  # Apply the real consumer pipeline (assess-and-resolve.sh stages 1+2).
   consumer_normalize() {
     local _input="$1"
     local _out
-    _out=$(echo "$_input" | sed 's/^[0-9][0-9]*\.[[:space:]]*//' | sed 's/^[-*][[:space:]]*//' || true)
-    echo "$_out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+    _out=$(echo "$_input" | sed "$_aar_expr1" | sed "$_aar_expr2" || true)
+    echo "$_out" | sed "$_aar_expr3" || true
   }
 
   local _pass=true
@@ -254,8 +320,8 @@ teardown() {
     _c=$(consumer_normalize "$_input")
     if [ "$_p" != "$_c" ]; then
       echo "DIVERGENCE for input: '$_input'"
-      echo "  producer: '$_p'"
-      echo "  consumer: '$_c'"
+      echo "  producer (assess-review-issues.sh): '$_p'"
+      echo "  consumer (assess-and-resolve.sh):   '$_c'"
       _pass=false
     fi
   }
@@ -275,6 +341,28 @@ teardown() {
   [ "$_pass" = "true" ] || {
     echo "FAIL: producer and consumer normalization paths diverged (see DIVERGENCE lines above)"
     echo "Both paths must apply identical sed stages; update the lagging path to match."
+    false
+  }
+
+  # Pin the expected output for the leading-whitespace-before-marker case ("  1. Fix...").
+  # This documents intentional behavior: Stage 1 strips "^N. " but requires the
+  # digit to be at position 0 — it cannot match through leading whitespace.
+  # Stage 2 then trims the leading spaces, leaving the "1." intact.
+  # Net result: "  1. Fix input validation bypass" → "1. Fix input validation bypass"
+  # (NOT "Fix input validation bypass").
+  # Pinning this prevents a future "fix" that moves Stage 2 before Stage 1 from
+  # silently changing the surviving-marker semantics.
+  local _ws_marker_input="  1. Fix input validation bypass"
+  local _ws_marker_expected="1. Fix input validation bypass"
+  local _ws_marker_actual
+  _ws_marker_actual=$(producer_normalize "$_ws_marker_input")
+  [ "$_ws_marker_actual" = "$_ws_marker_expected" ] || {
+    echo "FAIL: leading-whitespace-before-marker case produced unexpected output"
+    echo "  Input:    '$_ws_marker_input'"
+    echo "  Expected: '$_ws_marker_expected'"
+    echo "  Got:      '$_ws_marker_actual'"
+    echo "The surviving-marker semantics changed — update this assertion if intentional,"
+    echo "and update _followup_dedup_check Source 4 grep to match the new output form."
     false
   }
 }
