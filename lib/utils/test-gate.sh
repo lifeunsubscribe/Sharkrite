@@ -485,11 +485,13 @@ _extract_tap_failure_names() {
 #   2. Real test failure present → failed
 #      A traceback that mentions ModuleNotFoundError is still a real failure if
 #      FAILED/AssertionError appears anywhere — the loose-grep bug from v1.
-#   3. Anchored missing-dep signature AND no FAILED/AssertionError → skipped:missing_deps
-#      `python3 -m pytest` with pytest uninstalled exits 1 and prints:
-#        "E  ModuleNotFoundError: No module named 'pytest'"
-#      The `^E\s+` anchor matches only pytest's error-line prefix (column 0
-#      followed by E and whitespace), not arbitrary body text.
+#   3. Missing-dep signature AND no FAILED/AssertionError → skipped:missing_deps
+#      Two sub-cases (both must be absent of FAILED/AssertionError to reach here):
+#      3a. Pytest-formatted error: `^E\s+` prefix — e.g. "E  ModuleNotFoundError: No module named 'mymodule'"
+#          The anchor matches only pytest's error-line prefix, not arbitrary body text.
+#      3b. Python-interpreter error — `python3 -m pytest` with pytest uninstalled exits 1 and prints:
+#            "/usr/bin/python3: No module named pytest"
+#          No `^E` prefix. Matched by bare "No module named '?pytest'?" pattern.
 #   4. Exit 5 (no tests collected) → skipped:no_tests
 #   5. Default → failed  (conservative: unknown non-zero exit is a real problem)
 # ---------------------------------------------------------------------------
@@ -522,7 +524,9 @@ _classify_pytest_outcome() {
     return 0
   fi
 
-  # 4. Missing-dep signature — narrowly anchored.
+  # 4. Missing-dep signature — two sub-cases.
+  #
+  # 4a. Pytest-formatted error lines (`^E\s+` prefix).
   # `^E\s+` matches only pytest's error-prefix column (pytest prints error lines
   # as "E  <exception>").  This excludes ModuleNotFoundError buried in arbitrary
   # body text (docstrings, logging, comments reproduced in tracebacks).
@@ -530,6 +534,21 @@ _classify_pytest_outcome() {
   #   E  ModuleNotFoundError: No module named 'pytest'
   #   E  ImportError: No module named 'mymodule'
   if echo "$_output" | grep -qE '^E[[:space:]]+(ModuleNotFoundError|.*No module named)'; then
+    echo "skipped:missing_deps"
+    return 0
+  fi
+
+  # 4b. Python-interpreter "no module named pytest" — missing-runner case.
+  # When pytest itself is not installed, `python3 -m pytest` never reaches pytest
+  # and the interpreter prints a bare line (no ^E prefix):
+  #   /usr/bin/python3: No module named pytest
+  # This is NOT formatted by pytest, so 4a's ^E anchor never matches.
+  # The pattern is: a line of the form "<word>: No module named '?pytest'?"
+  # We anchor on "No module named" followed by optional-quote "pytest" optional-quote
+  # (covers both `pytest` and `pytest.__main__` variants).  The preceding checks
+  # (collection-error, FAILED, AssertionError) guarantee we only reach here when
+  # there is no real test failure — so matching this narrow pattern is safe.
+  if echo "$_output" | grep -qE "No module named '?pytest'?"; then
     echo "skipped:missing_deps"
     return 0
   fi

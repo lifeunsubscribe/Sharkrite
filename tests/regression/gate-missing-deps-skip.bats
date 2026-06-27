@@ -129,27 +129,64 @@ SyntaxError: invalid syntax"
 # Case 4 (missing dependency):
 # Anchored ModuleNotFoundError, no FAILED/AssertionError → outcome=skipped:missing_deps
 #
-# `python3 -m pytest` with pytest uninstalled exits 1 and prints:
-#   E  ModuleNotFoundError: No module named 'pytest'
-# The `^E\s+` anchor ensures only pytest's error-prefix column is matched,
-# not arbitrary body text that mentions the module name.
+# Two sub-cases:
+# 4a. Pytest-formatted error line with ^E prefix (test dep missing, pytest still runs):
+#       E  ModuleNotFoundError: No module named 'mymodule'
+# 4b. Python-interpreter error line WITHOUT ^E prefix (pytest itself not installed):
+#       /usr/bin/python3: No module named pytest
+#     The ^E anchor in 4a never fires for this output — requires a separate branch.
 # ---------------------------------------------------------------------------
 @test "missing dependency (anchored ModuleNotFoundError, no FAILED) → outcome=skipped:missing_deps" {
-  # Exact output of `python3 -m pytest` when pytest is not installed.
+  # 4a: pytest-formatted error line (^E prefix). pytest is installed, a project dep is missing.
   local _output
-  _output="/usr/bin/python3: No module named pytest.__main__; 'pytest' is a package and cannot be directly executed
-Traceback (most recent call last):
-  File \"<frozen runpy>\", line 198, in _run_module_as_main
-  File \"<frozen runpy>\", line 88, in _run_code
-  File \"/usr/local/lib/python3.11/dist-packages/pytest/__main__.py\", line 5, in <module>
-E   ModuleNotFoundError: No module named 'pytest'"
+  _output="ImportError while importing test module
+tests/test_mymodule.py:1: in <module>
+    import mymodule
+E   ModuleNotFoundError: No module named 'mymodule'
+
+======================== 1 error in 0.08s ========================"
 
   run _classify_pytest_outcome 1 "$_output"
   [ "$status" -eq 0 ]
   [ "$output" = "skipped:missing_deps" ] || {
     echo "FAIL: expected 'skipped:missing_deps', got '$output'"
-    echo "      A missing pytest installation should yield a loud skip with hint,"
-    echo "      not a gate failure — the dep is missing, not the code broken."
+    echo "      A missing project dependency (^E prefix, no FAILED) must yield loud skip."
+    false
+  }
+}
+
+@test "missing runner — python3 -m pytest with pytest uninstalled → outcome=skipped:missing_deps" {
+  # 4b: Headline scenario. pytest itself is NOT installed. The Python interpreter
+  # prints its own error message — NO ^E prefix, NO pytest output formatting.
+  # Real output from: python3 -m pytest  (pytest not in the active venv/env)
+  #   /usr/bin/python3: No module named pytest
+  # The ^E-anchored branch (4a) never matches this — requires the separate
+  # missing-runner branch added in the issue #744 fix.
+  local _output
+  _output="/usr/bin/python3: No module named pytest"
+
+  run _classify_pytest_outcome 1 "$_output"
+  [ "$status" -eq 0 ]
+  [ "$output" = "skipped:missing_deps" ] || {
+    echo "FAIL: expected 'skipped:missing_deps', got '$output'"
+    echo "      When pytest itself is not installed, python3 -m pytest emits:"
+    echo "        /usr/bin/python3: No module named pytest"
+    echo "      (no ^E prefix — the Python interpreter, not pytest, prints this)."
+    echo "      This is the headline scenario of issue #744 and must loud-skip."
+    false
+  }
+}
+
+@test "missing runner — python3: No module named pytest (short form) → outcome=skipped:missing_deps" {
+  # Variant: some Python builds emit the shorter form without the full path.
+  local _output
+  _output="python3: No module named pytest"
+
+  run _classify_pytest_outcome 1 "$_output"
+  [ "$status" -eq 0 ]
+  [ "$output" = "skipped:missing_deps" ] || {
+    echo "FAIL: expected 'skipped:missing_deps', got '$output'"
+    echo "      Short-form interpreter error must also loud-skip."
     false
   }
 }
