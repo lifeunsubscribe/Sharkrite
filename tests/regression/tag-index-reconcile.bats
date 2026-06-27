@@ -270,6 +270,68 @@ BODY
   ! grep -q "fenced-decoy" "$log_file"
 }
 
+@test "AC4: fence guard works under BSD awk (/usr/bin/awk) — portability check" {
+  # Skip when /usr/bin/awk is not available or is actually gawk.
+  if [ ! -x /usr/bin/awk ]; then
+    skip "/usr/bin/awk not available on this platform"
+  fi
+  if /usr/bin/awk --version 2>&1 | grep -qi gawk; then
+    skip "/usr/bin/awk is gawk on this system — BSD-awk test not applicable"
+  fi
+
+  # Run the portable fence-counting awk inline under /usr/bin/awk and assert
+  # it produces empty output for fenced-only content — verifies the fix for
+  # the gawk-only 3-arg match() that was replaced with substr-counting.
+  local body_file
+  body_file="$(mktemp "${BATS_TEST_TMPDIR}/bsd-awk-test.XXXXXX")"
+  printf '%s\n' \
+    "This PR documents the new-tags format." \
+    "" \
+    '```' \
+    "new-tags:" \
+    "  - bsd-fenced-tag: This is inside a fence and must not be extracted" \
+    '```' \
+    "" \
+    "No real new-tags: section here." \
+    "" \
+    "Closes #99" > "$body_file"
+
+  local result
+  result=$(/usr/bin/awk '
+    BEGIN { in_fence=0; fence_len=0 }
+    /^(`{3,})/ {
+      run_len = 0
+      while (substr($0, run_len + 1, 1) == "`") run_len++
+      if (!in_fence) {
+        in_fence  = 1
+        fence_len = run_len
+        next
+      } else if (run_len >= fence_len) {
+        in_fence  = 0
+        fence_len = 0
+        next
+      }
+    }
+    in_fence { next }
+    /^[[:space:]]*-[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+/, "", line)
+      colon_pos = index(line, ":")
+      if (colon_pos > 0) {
+        tag    = substr(line, 1, colon_pos - 1)
+        justif = substr(line, colon_pos + 1)
+        sub(/^[[:space:]]+/, "", justif)
+        if (tag != "" && justif != "") print tag "\t" justif
+      }
+    }
+  ' "$body_file" || true)
+
+  rm -f "$body_file"
+
+  # Under BSD awk the fence guard must suppress the fenced tag.
+  [ -z "$result" ]
+}
+
 # ---------------------------------------------------------------------------
 # AC5: Audit line logged via tag_index_log_history() for each real new tag
 # ---------------------------------------------------------------------------

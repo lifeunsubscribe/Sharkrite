@@ -1050,8 +1050,9 @@ reconcile_tag_index() {
 
     # Detect opening/closing fences (col-0 backtick runs of 3+)
     /^(`{3,})/ {
-      match($0, /^(`+)/, arr)
-      run_len = length(arr[1])
+      # Count leading backticks portably (avoid gawk-only 3-arg match).
+      run_len = 0
+      while (substr($0, run_len + 1, 1) == "`") run_len++
       if (!in_fence) {
         in_fence   = 1
         fence_len  = run_len
