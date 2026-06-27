@@ -243,6 +243,106 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# 2b. Cargo/Go missing-toolchain loud-skip (command -v guard)
+# ---------------------------------------------------------------------------
+
+@test "manifest: Cargo.toml present but cargo not installed — loud-skip with WARNING" {
+  printf '[package]\nname = "test"\nversion = "0.1.0"\n' > "$TEST_REPO/Cargo.toml"
+
+  # Run with an empty PATH so cargo is not found by command -v.
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=999
+    _diag() { true; }; export -f _diag 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    PATH=/dev/null run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
+  " </dev/null
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must have skipped (cargo binary missing)
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should loud-skip when Cargo.toml present but cargo not installed"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+
+  # WARNING about missing cargo must appear
+  [[ "$output" == *"WARNING"* ]] && [[ "$output" == *"cargo"* ]] || {
+    echo "FAIL: expected WARNING mentioning 'cargo' in loud-skip output"
+    echo "Gate output: $output"
+    false
+  }
+
+  # Hint to install Rust toolchain or set RITE_TEST_COMMAND must appear
+  [[ "$output" == *"rustup"* ]] || [[ "$output" == *"RITE_TEST_COMMAND"* ]] || {
+    echo "FAIL: expected install hint or RITE_TEST_COMMAND hint for missing cargo"
+    echo "Gate output: $output"
+    false
+  }
+}
+
+@test "manifest: go.mod present but go not installed — loud-skip with WARNING" {
+  printf 'module example.com/test\n\ngo 1.21\n' > "$TEST_REPO/go.mod"
+
+  # Run with an empty PATH so go is not found by command -v.
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=999
+    _diag() { true; }; export -f _diag 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    PATH=/dev/null run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
+  " </dev/null
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must have skipped (go binary missing)
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should loud-skip when go.mod present but go not installed"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+
+  # WARNING about missing go must appear
+  [[ "$output" == *"WARNING"* ]] && [[ "$output" == *"go"* ]] || {
+    echo "FAIL: expected WARNING mentioning 'go' in loud-skip output"
+    echo "Gate output: $output"
+    false
+  }
+
+  # Hint to install Go toolchain or set RITE_TEST_COMMAND must appear
+  [[ "$output" == *"go.dev"* ]] || [[ "$output" == *"RITE_TEST_COMMAND"* ]] || {
+    echo "FAIL: expected install hint or RITE_TEST_COMMAND hint for missing go"
+    echo "Gate output: $output"
+    false
+  }
+}
+
+@test "static: Cargo.toml branch has command -v cargo guard in source" {
+  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
+  # The cargo branch must guard against missing binary (loud-skip, not hard-block)
+  grep -q 'command -v cargo' "$_script" || {
+    echo "FAIL: 'command -v cargo' guard not found in test-gate.sh"
+    echo "      Cargo.toml branch must check for cargo binary before running it."
+    false
+  }
+}
+
+@test "static: go.mod branch has command -v go guard in source" {
+  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
+  # The go branch must guard against missing binary (loud-skip, not hard-block)
+  grep -q 'command -v go' "$_script" || {
+    echo "FAIL: 'command -v go' guard not found in test-gate.sh"
+    echo "      go.mod branch must check for go binary before running it."
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
 # 3. Loud skip when PR touches source files (no runner at all)
 # ---------------------------------------------------------------------------
 

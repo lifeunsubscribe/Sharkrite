@@ -938,11 +938,31 @@ run_test_gate() {
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     elif [ -f "$project_root/Cargo.toml" ]; then
+      if ! command -v cargo >/dev/null 2>&1; then
+        # cargo not installed — loud skip with toolchain hint (missing runner, not a failure)
+        echo "[test-gate] WARNING: Cargo.toml detected but 'cargo' is not installed." >&2
+        echo "[test-gate] Install the Rust toolchain (https://rustup.rs) or set RITE_TEST_COMMAND to a wrapper script." >&2
+        _diag "TEST_GATE outcome=skipped reason=missing_runner pr=${PR_NUMBER:-?}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_runner"
+        return 0
+      fi
       echo "[test-gate] Running cargo test..."
       { (cd "$project_root" && cargo test 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     elif [ -f "$project_root/go.mod" ]; then
+      if ! command -v go >/dev/null 2>&1; then
+        # go not installed — loud skip with toolchain hint (missing runner, not a failure)
+        echo "[test-gate] WARNING: go.mod detected but 'go' is not installed." >&2
+        echo "[test-gate] Install the Go toolchain (https://go.dev/dl) or set RITE_TEST_COMMAND to a wrapper script." >&2
+        _diag "TEST_GATE outcome=skipped reason=missing_runner pr=${PR_NUMBER:-?}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_runner"
+        return 0
+      fi
       echo "[test-gate] Running go test ./..."
       { (cd "$project_root" && go test ./... 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
