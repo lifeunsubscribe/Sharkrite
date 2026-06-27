@@ -809,10 +809,17 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
-  # _item_index mirrors assess-and-resolve.sh's _finding_index so that
-  # derive_followup_finding_key produces the same key from both paths.
-  # LOW-severity items do NOT increment the counter (same skip gate as
-  # assess-and-resolve.sh line 1728-1731 / line 1733).
+  # _item_index is the per-finding counter used to derive the followup key
+  # via derive_followup_finding_key.  It does NOT mirror assess-and-resolve.sh's
+  # _finding_index: the two loops iterate different populations (this loop sees
+  # only ACTIONABLE_LATER; assess-and-resolve.sh sees ACTIONABLE_NOW + ACTIONABLE_LATER
+  # and also has a per-finding cap that consumes _finding_index slots without
+  # emitting issues).  Keys produced here will therefore diverge from those
+  # produced by the assess-and-resolve path when the cap fires or when
+  # ACTIONABLE_NOW items precede ACTIONABLE_LATER items in the assessment output.
+  # Source 1 dedup (evidence-file lookup) is best-effort across paths; Sources
+  # 2 and 3 (sentinel + title search) are the reliable dedup gates.
+  # LOW-severity items do NOT increment the counter.
   _item_index=0
 
   # Extract ACTIONABLE_LATER sections from assessment (process substitution avoids subshell variable loss)
@@ -849,8 +856,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           continue
         fi
 
-        # Increment after LOW-severity skip so the counter matches
-        # assess-and-resolve.sh's _finding_index (same gate, same order).
+        # Increment after LOW-severity skip (same gate as assess-and-resolve.sh).
+        # Note: the index will diverge from assess-and-resolve.sh's _finding_index
+        # when the cap or ACTIONABLE_NOW items are in play — see comment above.
         _item_index=$((_item_index + 1))
 
         # Derive the per-finding key (same algorithm as assess-and-resolve.sh's

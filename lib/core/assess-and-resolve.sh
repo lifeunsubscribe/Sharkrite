@@ -1795,8 +1795,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # finding #1 suppresses all subsequent findings in the same loop iteration.
     #
     # derive_followup_finding_key is the shared canonical function (issue-lock.sh)
-    # — assess-review-issues.sh uses the same function so evidence files written
-    # by either path are readable by the other's dedup check.
+    # — assess-review-issues.sh uses the same function, but the two loops iterate
+    # different populations (this loop: ACTIONABLE_NOW + ACTIONABLE_LATER; that
+    # loop: ACTIONABLE_LATER only) and this loop has a per-finding cap that
+    # consumes _finding_index slots without emitting issues.  Evidence-file keys
+    # can therefore diverge across paths; Source 1 dedup is best-effort.
+    # Sources 2 (sentinel) and 3 (title search) are the reliable dedup gates.
     # _FOLLOWUP_FINDING_KEY is read by _followup_dedup_check and the
     # sentinel/evidence calls below.
     _FOLLOWUP_FINDING_KEY=$(derive_followup_finding_key "${ISSUE_NUMBER:-0}" "$_clean_title" "$_finding_index")
