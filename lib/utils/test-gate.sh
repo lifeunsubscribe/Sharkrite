@@ -966,7 +966,7 @@ run_test_gate() {
       # This preserves the block-on-any contract from the Done Definition.
       if [ "$_tests_exit" -eq 5 ]; then
         local _pytest_test_files
-        _pytest_test_files=$(find "$project_root" -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 || true)
+        _pytest_test_files=$(find "$project_root" \( -name "node_modules" -o -name ".git" -o -name ".venv" -o -name "venv" -o -name "site-packages" \) -prune -o \( -name "test_*.py" -o -name "*_test.py" \) -print 2>/dev/null | head -1 || true)
         if [ -z "$_pytest_test_files" ]; then
           # No test files exist — genuine empty suite (environment gap, not a code defect).
           echo "[test-gate] WARNING: pytest found no tests to collect (exit 5) and no test_*.py/*_test.py files exist." >&2
