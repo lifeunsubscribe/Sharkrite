@@ -3,7 +3,7 @@
 # Verifies that the pytest loud-skip logic (issue #744) correctly distinguishes
 # missing-dep/no-tests env failures from real test failures.
 #
-# All five cases are REQUIRED by the acceptance criteria — each guards a specific
+# All 13 tests are REQUIRED by the acceptance criteria — each guards a specific
 # failure mode that the v1 implementation (PR #749) would have handled wrongly.
 #
 # Uses _classify_pytest_outcome directly (unit-style) rather than the full

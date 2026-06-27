@@ -60,7 +60,9 @@ Applied in both `run_test_gate()` (claude-workflow.sh) and `verify_post_merge()`
 
 **Why accepted:** Distinguishing the two cases requires knowing whether the missing module is a declared project dependency (code-under-test error → should block) or the test runner itself (env issue → skip). That distinction requires parsing requirements/pyproject metadata and is significantly more complex. The current approach is correct for the primary use case (missing pytest/missing top-level dep stale-venv scenario) and the false-skip is bounded: it only fires when the code under test has an un-FAILED/un-AssertionError import error in an `E`-prefixed line — a narrow signature. The conservative default (step 5: unknown non-zero → `failed`) catches everything else. If the conflation causes a live false-skip, restrict the `missing_deps` path to `No module named 'pytest'` (runner-only) as the stricter fix.
 
-**Enforcement:** `tests/regression/gate-missing-deps-skip.bats` — five tests covering the functional skip path, the WARNING stderr emission, the JSON output, and the no-test-collection path.
+**`skipped:no_tests` outcome (reason=no_tests):** When pytest exits with code 5 (no tests collected) and no collection-error signature is present, `_classify_pytest_outcome` returns `skipped:no_tests`. `run_test_gate` emits `[test-gate] WARNING: pytest collected no tests` to stderr with an actionable hint (check test path / pytest configuration) and writes JSON with `skipped:true, reason=no_tests`. This is non-blocking — a missing test suite is an env/config issue, not a PR regression. Mirrors the `missing_deps` loud-skip shape.
+
+**Enforcement:** `tests/regression/gate-missing-deps-skip.bats` — 13 tests covering the functional skip paths, WARNING stderr emission, JSON output, collection-error blocking, clean-pass regression guard, and the no-test-collection path.
 
 ### Post-Merge Dependency Reinstall
 
