@@ -772,7 +772,7 @@ slice_section() {
   local found=0
   local section_text=""
   local _line
-  while IFS= read -r _line; do
+  while IFS= read -r _line || [ -n "$_line" ]; do
     if [[ "$_line" =~ ^##[[:space:]]+(.+)$ ]]; then
       local this_heading="${BASH_REMATCH[1]}"
       this_heading="${this_heading%"${this_heading##*[![:space:]]}"}"  # rtrim

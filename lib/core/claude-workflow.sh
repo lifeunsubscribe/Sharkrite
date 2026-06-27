@@ -1195,6 +1195,7 @@ find_worktree_for_task() {
 #   $2 — issue number (used as a fallback label-fetch key; see Path B)
 #   $3 — project root directory (default: RITE_PROJECT_ROOT or pwd)
 #   $4 — pre-fetched labels CSV (optional; avoids a second gh API round-trip)
+#   $5 — issue title text (optional; included in Path C keyword grep)
 #
 # Output: the "Relevant prior art" block to stdout, or empty string.
 # Never fails — all errors are silently swallowed.
@@ -1203,9 +1204,11 @@ build_relevant_prior_art() {
   local issue_number="${2:-}"
   local project_root="${3:-${RITE_PROJECT_ROOT:-$(pwd)}}"
   local prefetched_labels_csv="${4:-}"
+  local issue_title="${5:-}"
 
   # Sanitize: treat literal "null" from jq as empty
   [ "$issue_body" = "null" ] && issue_body=""
+  [ "$issue_title" = "null" ] && issue_title=""
 
   local tag_index_file="${project_root}/docs/architecture/tag-index.md"
   local conventions_file="${project_root}/docs/architecture/conventions.md"
@@ -1275,6 +1278,11 @@ build_relevant_prior_art() {
 
   # Path C: keyword-grep of issue title+body against tag-index headings
   if [ -z "$resolved_tags" ] && [ "$_has_index" = true ]; then
+    # Combine title and body for keyword matching (title first, separated by a newline
+    # so word-boundary anchors work correctly across the join point).
+    local _grep_input
+    _grep_input="${issue_title}
+${issue_body}"
     # Collect all heading names from tag-index.md
     local _keyword_tags=""
     local _heading _heading_lc
@@ -1284,12 +1292,12 @@ build_relevant_prior_art() {
       _heading="${_heading%"${_heading##*[![:space:]]}"}"  # rtrim
       [ -z "$_heading" ] && continue
       _heading_lc=$(echo "$_heading" | tr '[:upper:]' '[:lower:]')
-      # Check if the lowercase heading appears as a whole word in issue body or title.
+      # Check if the lowercase heading appears as a whole word in issue title or body.
       # Escape ERE metacharacters first; wrap in \b word-boundary anchors so short
       # headings like "auth" don't match mid-word in "authentication".
       local _heading_escaped
       _heading_escaped=$(printf '%s' "$_heading_lc" | sed 's/[.+*?^${}()|[\\]/\\&/g' || true)
-      if echo "$issue_body" | tr '[:upper:]' '[:lower:]' | grep -qE "(^|[^a-z0-9_])${_heading_escaped}([^a-z0-9_]|$)" 2>/dev/null; then
+      if echo "$_grep_input" | tr '[:upper:]' '[:lower:]' | grep -qE "(^|[^a-z0-9_])${_heading_escaped}([^a-z0-9_]|$)" 2>/dev/null; then
         if [ -z "$_keyword_tags" ]; then
           _keyword_tags="$_heading"
         else
@@ -2616,7 +2624,8 @@ RELEVANT_PRIOR_ART_BLOCK=$(build_relevant_prior_art \
   "${ISSUE_BODY:-}" \
   "${ISSUE_NUMBER:-}" \
   "${RITE_PROJECT_ROOT:-$(pwd)}" \
-  "${ISSUE_LABELS_CSV:-}" || true)
+  "${ISSUE_LABELS_CSV:-}" \
+  "${ISSUE_DESC:-}" || true)
 if [ -n "$RELEVANT_PRIOR_ART_BLOCK" ]; then
   print_success "Loaded relevant prior art"
 else
