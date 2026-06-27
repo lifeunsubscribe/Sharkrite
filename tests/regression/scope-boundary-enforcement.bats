@@ -659,7 +659,6 @@ EOF
   rm tests/regression/existing-test.bats
   git add -A
   git commit -q -m "fix: update foo.sh (accidentally deleted existing test)"
-  git update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
   # origin/main must point at the commit BEFORE the feature branch diverged
   git update-ref refs/remotes/origin/main "$(git rev-parse main)" 2>/dev/null || true
 
