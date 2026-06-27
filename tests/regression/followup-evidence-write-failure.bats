@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/create-followup-issues.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/create-followup-issues.sh, lib/utils/issue-lock.sh, lib/core/assess-review-issues.sh
 # tests/regression/followup-evidence-write-failure.bats
 #
 # Regression test for the evidence write failure gap in the follow-up issue
@@ -304,6 +304,105 @@ run_waiter_with_evidence_check() {
 
   [ -z "$result" ] || {
     echo "FAIL: expected empty for malformed file, got '$result'"
+    false
+  }
+}
+
+# ─── derive_followup_finding_key — canonical per-finding key (issue #729) ──────
+#
+# These tests verify that derive_followup_finding_key produces a stable, consistent
+# key from (source_issue, title, finding_index) so that evidence written by
+# assess-review-issues.sh is readable by _followup_dedup_check Source 1 in
+# assess-and-resolve.sh (and vice versa).
+
+@test "derive_followup_finding_key produces consistent key for same inputs" {
+  local key1 key2
+  key1=$(derive_followup_finding_key 42 "Fix the flaky test harness" 1)
+  key2=$(derive_followup_finding_key 42 "Fix the flaky test harness" 1)
+  [ "$key1" = "$key2" ] || {
+    echo "FAIL: same inputs produced different keys: '$key1' vs '$key2'"
+    false
+  }
+}
+
+@test "derive_followup_finding_key embeds source issue number in key" {
+  local key
+  key=$(derive_followup_finding_key 99 "Some title" 1)
+  echo "$key" | grep -q "^99-" || {
+    echo "FAIL: key '$key' does not start with source issue '99-'"
+    false
+  }
+}
+
+@test "derive_followup_finding_key embeds finding_index in key" {
+  local key1 key2
+  key1=$(derive_followup_finding_key 10 "Identical title" 1)
+  key2=$(derive_followup_finding_key 10 "Identical title" 2)
+  [ "$key1" != "$key2" ] || {
+    echo "FAIL: different indices produced same key '$key1' — index collision not disambiguated"
+    false
+  }
+  echo "$key1" | grep -q "\-1$" || {
+    echo "FAIL: key '$key1' does not end with '-1' (finding_index 1)"
+    false
+  }
+  echo "$key2" | grep -q "\-2$" || {
+    echo "FAIL: key '$key2' does not end with '-2' (finding_index 2)"
+    false
+  }
+}
+
+@test "derive_followup_finding_key slugifies title (lowercases and replaces non-alnum)" {
+  local key
+  key=$(derive_followup_finding_key 5 "Fix: Foo Bar / Baz (2026)" 1)
+  # Key format: "<src>-<slug>-<idx>"; slug must be lowercase alnum+dash only
+  local slug
+  slug=$(echo "$key" | sed 's/^5-//; s/-[0-9]*$//')
+  echo "$slug" | grep -qE '^[a-z0-9-]+$' || {
+    echo "FAIL: slug '$slug' contains non-alnum/dash chars"
+    false
+  }
+  # Must not contain uppercase
+  echo "$slug" | grep -q '[A-Z]' && {
+    echo "FAIL: slug '$slug' contains uppercase chars"
+    false
+  }
+  true
+}
+
+@test "derive_followup_finding_key truncates slug to 40 chars" {
+  local long_title="This is a very long finding title that exceeds forty characters by quite a margin"
+  local key
+  key=$(derive_followup_finding_key 7 "$long_title" 1)
+  local slug
+  slug=$(echo "$key" | sed 's/^7-//; s/-[0-9]*$//')
+  local slug_len=${#slug}
+  [ "$slug_len" -le 40 ] || {
+    echo "FAIL: slug length $slug_len exceeds 40 chars: '$slug'"
+    false
+  }
+}
+
+@test "derive_followup_finding_key falls back to 'finding-N' when title produces empty slug" {
+  # A title consisting entirely of non-alnum chars (e.g. "---") produces an empty slug.
+  # The function must fall back to "finding-<idx>" to avoid a degenerate "0--1" key.
+  local key
+  key=$(derive_followup_finding_key 3 "---" 2)
+  echo "$key" | grep -q "finding-2" || {
+    echo "FAIL: key '$key' does not contain 'finding-2' fallback"
+    false
+  }
+}
+
+@test "derive_followup_finding_key keys match between source-issue 0 and empty source" {
+  # Callers may pass empty string or "0" for unknown source issue — both must
+  # produce the same key so assess-and-resolve.sh (_FOLLOWUP_FINDING_KEY default
+  # ISSUE_NUMBER:-0) and assess-review-issues.sh (RITE_ISSUE_NUMBER:-0) agree.
+  local key_zero key_empty
+  key_zero=$(derive_followup_finding_key 0 "Test title" 1)
+  key_empty=$(derive_followup_finding_key "" "Test title" 1)
+  [ "$key_zero" = "$key_empty" ] || {
+    echo "FAIL: source_issue '0' and '' produce different keys: '$key_zero' vs '$key_empty'"
     false
   }
 }

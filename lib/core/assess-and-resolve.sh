@@ -58,6 +58,13 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 #   PR_NUMBER, ISSUE_NUMBER, ISSUE_SEARCH
 #   RITE_MARKER_SOURCE_ISSUE, RITE_MARKER_FOLLOWUP
 #   RITE_DEDUP_BACKOFF (default 5s)
+#   _FOLLOWUP_FINDING_KEY — per-finding evidence/lock key (source_issue-slug-index);
+#                           set by caller before invoking this function.  Falls back
+#                           to ISSUE_NUMBER when not set.  Key must match the value
+#                           written by write_followup_evidence (either from
+#                           assess-and-resolve.sh or assess-review-issues.sh).
+#   _clean_title — the current finding's display title; used by Source 4 to
+#                  scope the PR-comment scan to the current finding.
 # Globals written:
 #   EXISTING_ISSUE — set to existing issue number if found, empty otherwise
 # Globals in/out:
@@ -1786,17 +1793,17 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # evidence files, sentinels, and _followup_dedup_check are scoped per
     # finding, not per source-issue.  Without this, the sentinel/evidence from
     # finding #1 suppresses all subsequent findings in the same loop iteration.
-    _finding_slug=$(echo "$_clean_title" | tr '[:upper:]' '[:lower:]' | \
-      sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//; s/-$//' | \
-      cut -c1-40 || true)
-    _finding_slug="${_finding_slug:-finding-${_finding_index}}"
+    #
+    # derive_followup_finding_key is the shared canonical function (issue-lock.sh)
+    # — assess-review-issues.sh uses the same function, but the two loops iterate
+    # different populations (this loop: ACTIONABLE_NOW + ACTIONABLE_LATER; that
+    # loop: ACTIONABLE_LATER only) and this loop has a per-finding cap that
+    # consumes _finding_index slots without emitting issues.  Evidence-file keys
+    # can therefore diverge across paths; Source 1 dedup is best-effort.
+    # Sources 2 (sentinel) and 3 (title search) are the reliable dedup gates.
     # _FOLLOWUP_FINDING_KEY is read by _followup_dedup_check and the
     # sentinel/evidence calls below.
-    # Append _finding_index to the slug so two findings whose 40-char truncated
-    # slugs collide (identical first 40 chars of their titles) get independent
-    # keys — preventing the second from being silently skipped as a duplicate
-    # of the first.
-    _FOLLOWUP_FINDING_KEY="${ISSUE_NUMBER:-0}-${_finding_slug}-${_finding_index}"
+    _FOLLOWUP_FINDING_KEY=$(derive_followup_finding_key "${ISSUE_NUMBER:-0}" "$_clean_title" "$_finding_index")
 
     # --- Derive priority label from per-finding severity ---
     _priority_label=$(_resolve_priority_label "${_f_severity}")

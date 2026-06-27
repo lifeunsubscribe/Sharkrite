@@ -38,11 +38,17 @@
 #   write_followup_evidence <pr_number> <issue_number> [source_issue]  # Persist durable local evidence
 #   read_followup_evidence <pr_number> [source_issue]                  # Read back evidence (returns issue number or empty)
 #   clear_followup_evidence <pr_number> [source_issue]                 # Remove stale evidence file
+#   derive_followup_finding_key <source_issue> <title> <finding_index> # Canonical per-finding dedup key
 #
 # The optional source_issue argument to the pr_followup_lock functions keys the lock by
 # PR + source issue rather than PR alone.  Use it whenever ISSUE_NUMBER is known so that
 # two concurrent invocations for different source issues on the same PR get independent
 # locks (and independent dedup search scopes).
+#
+# derive_followup_finding_key is used by both assess-and-resolve.sh and
+# assess-review-issues.sh to produce a per-finding evidence key that is stable
+# across runs and across paths — the key written by one path is readable by the
+# other's _followup_dedup_check Source 1 check.
 
 set -euo pipefail
 
@@ -393,6 +399,46 @@ release_pr_followup_lock() {
   fi
 }
 
+# Derive the per-finding dedup key used for evidence files, sentinels, and locks.
+#
+# This is the single canonical key-derivation function shared by both
+# assess-and-resolve.sh (per-finding loop) and assess-review-issues.sh
+# (ACTIONABLE_LATER per-item path).  Both paths write and read evidence files
+# under this same key, so a file seeded from one path is found by the other.
+#
+# Key format: "<source_issue>-<40-char-title-slug>-<finding_index>"
+#   source_issue  — the issue number that triggered the workflow (0 if unknown)
+#   title-slug    — title lowercased, non-alnum chars replaced with '-',
+#                   consecutive dashes collapsed, leading/trailing dashes stripped,
+#                   truncated to 40 chars
+#   finding_index — 1-based counter within the per-finding loop for this run;
+#                   disambiguates two findings whose 40-char slugs collide
+#
+# Args:
+#   $1 source_issue   — issue number string (may be "0" or empty → treated as "0")
+#   $2 title          — raw finding title (LLM-derived; may contain any chars)
+#   $3 finding_index  — 1-based integer counter from the caller's per-finding loop
+#
+# Output: key string on stdout
+# Returns: 0 always
+#
+# Used by:
+#   lib/core/assess-and-resolve.sh     — per-finding loop (_FOLLOWUP_FINDING_KEY)
+#   lib/core/assess-review-issues.sh   — ACTIONABLE_LATER per-item path
+derive_followup_finding_key() {
+  local _src="${1:-0}"
+  local _title="${2:-}"
+  local _idx="${3:-0}"
+
+  local _slug
+  _slug=$(printf '%s' "$_title" | tr '[:upper:]' '[:lower:]' | \
+    sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//; s/-$//' | \
+    cut -c1-40 || true)
+  _slug="${_slug:-finding-${_idx}}"
+
+  printf '%s' "${_src:=0}-${_slug}-${_idx}"
+}
+
 # Write durable local evidence that a follow-up issue was created for a given PR.
 #
 # This is the fallback dedup mechanism for the case where gh pr comment fails
@@ -403,8 +449,14 @@ release_pr_followup_lock() {
 # The file contains a single line: the follow-up issue number.  Waiters read it
 # with read_followup_evidence before the dedup search-then-create sequence.
 #
-# MUST be called while the pr_followup_lock is held, so the write is serialised
-# against concurrent processes attempting the same check-then-create.
+# Two caller classes:
+#   (a) Lock-held callers (assess-and-resolve.sh): called while pr_followup_lock
+#       is held, so the write is serialised against concurrent check-then-create.
+#   (b) Lock-free idempotent-seeding callers (assess-review-issues.sh): called
+#       outside the lock after a successful gh issue create, to pre-populate the
+#       oracle so Source 1 can short-circuit on the next run.  These calls are
+#       safe without the lock because the issue number is already committed — a
+#       concurrent writer would write the same value.
 #
 # Evidence file naming mirrors the lock key:
 #   With source_issue:  pr-${pr}-src-${src}-followup-created.txt

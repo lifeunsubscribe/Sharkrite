@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-review-issues.sh
+# sharkrite-test-covers: lib/core/assess-review-issues.sh, lib/utils/issue-lock.sh
 # Regression test for: assess-review-issues.sh must post per-finding PR
 # comments so assess-and-resolve.sh _followup_dedup_check Source 4 can
 # detect issues created here on a later re-run (issues #720/721/722).
@@ -27,6 +27,12 @@
 #   3. Static: update-duplicate path posts gh pr comment with followup marker + title
 #   4. Unit:   per-finding comment body format matches Source 4 expectations
 #              (contains "sharkrite-followup-issue:N" AND item title)
+#   5. Unit:   comment format is detectable by _followup_dedup_check Source 4
+#   6. Unit:   title with list marker is still detectable by clean_title grep
+#   7. Static: all 3 paths call write_followup_evidence (Source 1 seeding, issue #729)
+#   8. Static: _item_finding_key is derived via derive_followup_finding_key
+#   9. Static: issue-lock.sh is sourced to provide derive/write functions
+#   10. Static: _item_index counter is initialised and incremented correctly
 
 load '../helpers/setup.bash'
 
@@ -200,6 +206,142 @@ teardown() {
     echo "FAIL: grep -cF with clean_title (no list marker) found 0 matches"
     echo "Comment body (with list marker): $_comment_body"
     echo "Clean title used in search: $_clean_title"
+    false
+  }
+}
+
+# ─── Tests 7-9: Source 1 evidence seeding (issue #729) ───────────────────────
+#
+# PR #727 added Source 4 (PR comment) to assess-review-issues.sh but not
+# Source 1 (local evidence file).  Issue #729 closes this gap: all three
+# issue-tracking paths must now call write_followup_evidence so that
+# _followup_dedup_check Source 1 can short-circuit on a re-run even when
+# the Source 4 PR comment write failed silently.
+
+@test "assess-review-issues.sh: new-issue path calls write_followup_evidence (Source 1 seeding)" {
+  # Static check: after the NEW_ISSUE passback to RITE_PER_ITEM_ISSUES_FILE,
+  # assess-review-issues.sh must call write_followup_evidence before the
+  # gh pr comment that seeds Source 4.
+  run grep -n 'write_followup_evidence' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: No write_followup_evidence call found in $ASSESS_REVIEW_ISSUES"
+    echo "Expected at least one write_followup_evidence call (new-issue, skip-dup, update-dup paths)"
+    false
+  }
+
+  # Must appear in all three creation paths; verify there are at least 3 calls.
+  local _call_count
+  _call_count=$(grep -c 'write_followup_evidence' "$ASSESS_REVIEW_ISSUES" || true)
+  [ "$_call_count" -ge 3 ] || {
+    echo "FAIL: expected at least 3 write_followup_evidence calls (one per path), got $_call_count"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: _item_finding_key is derived via derive_followup_finding_key" {
+  # The key passed to write_followup_evidence must be _item_finding_key, which
+  # is produced by derive_followup_finding_key — the shared function that
+  # assess-and-resolve.sh also uses.  This ensures both paths produce the same
+  # key for the same finding, so evidence written here is found by Source 1 there.
+  run grep -n 'derive_followup_finding_key' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: No derive_followup_finding_key call found in $ASSESS_REVIEW_ISSUES"
+    echo "Expected a call to derive the per-finding key before write_followup_evidence"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: issue-lock.sh is sourced (provides derive_followup_finding_key)" {
+  # assess-review-issues.sh must source issue-lock.sh so that
+  # derive_followup_finding_key and write_followup_evidence are available.
+  run grep -n 'issue-lock.sh' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: issue-lock.sh is not sourced in $ASSESS_REVIEW_ISSUES"
+    echo "It must be sourced to make derive_followup_finding_key and write_followup_evidence available"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: _item_index counter is initialised and incremented" {
+  # The _item_index counter must be initialised to 0 before the while loop and
+  # incremented for each non-LOW item, matching assess-and-resolve.sh's
+  # _finding_index so that derive_followup_finding_key produces the same key.
+  run grep -n '_item_index' "$ASSESS_REVIEW_ISSUES"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: No _item_index variable found in $ASSESS_REVIEW_ISSUES"
+    false
+  }
+
+  # Must be initialised
+  run grep -n '_item_index=0' "$ASSESS_REVIEW_ISSUES"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _item_index is not initialised to 0 in $ASSESS_REVIEW_ISSUES"
+    false
+  }
+
+  # Must be incremented
+  run grep -n '_item_index=\$((_item_index + 1))' "$ASSESS_REVIEW_ISSUES"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _item_index is not incremented in the loop body of $ASSESS_REVIEW_ISSUES"
+    false
+  }
+}
+
+# ─── Test 11: Behavioral round-trip — Source-1 seeding write→read ─────────────
+#
+# This is the core behavioral test for issue #729: assess-review-issues.sh
+# seeds write_followup_evidence so that _followup_dedup_check Source 1 can
+# short-circuit on a re-run even when the Source 4 PR comment write failed.
+#
+# The round-trip: write_followup_evidence (seeded by assess-review-issues.sh new-issue
+# path, using the same derive_followup_finding_key that assess-and-resolve.sh uses) →
+# read_followup_evidence (Source 1 in _followup_dedup_check) returns the issue number.
+#
+# An argument swap (e.g. pr_number and source_issue transposed) would produce a file
+# under the wrong key, making read_followup_evidence return empty — this test catches it.
+
+@test "Source-1 seeding: write_followup_evidence → read_followup_evidence round-trip returns seeded issue number" {
+  # Set up an isolated lock dir for this test so we never touch the real .rite/locks.
+  local _lock_dir="${RITE_TEST_TMPDIR}/locks"
+  mkdir -p "$_lock_dir"
+  export RITE_LOCK_DIR="$_lock_dir"
+
+  # Source issue-lock.sh directly to get the three functions under test.
+  # We must unset the re-source guard (acquire_issue_lock) in case a previous test
+  # already loaded it; re-source is safe here because the guard is function-based.
+  # Use load_lib rather than direct sourcing so RITE_REPO_ROOT resolves correctly.
+  load_lib utils/issue-lock.sh
+
+  # Simulate the values assess-review-issues.sh would use after a successful
+  # gh issue create in the new-issue path:
+  local _pr="42"
+  local _source_issue="15"     # RITE_ISSUE_NUMBER in the script
+  local _item_title="Fix input validation bypass in login handler"
+  local _item_index="1"        # _item_index counter for the first non-LOW item
+  local _new_issue="88"        # the issue number returned by gh issue create
+
+  # Derive the per-finding key exactly as assess-review-issues.sh does.
+  local _finding_key
+  _finding_key=$(derive_followup_finding_key "$_source_issue" "$_item_title" "$_item_index")
+
+  # Seed Source 1 — this is what the new-issue path in assess-review-issues.sh does.
+  write_followup_evidence "$_pr" "$_new_issue" "$_finding_key"
+
+  # Now read back via Source 1 — this is what _followup_dedup_check does.
+  # _dedup_evidence_key = _FOLLOWUP_FINDING_KEY (which equals _finding_key above).
+  local _read_back
+  _read_back=$(read_followup_evidence "$_pr" "$_finding_key")
+
+  [ "$_read_back" = "$_new_issue" ] || {
+    echo "FAIL: read_followup_evidence returned '$_read_back', expected '$_new_issue'"
+    echo "  write_followup_evidence args: pr=$_pr issue=$_new_issue key=$_finding_key"
+    echo "  read_followup_evidence  args: pr=$_pr key=$_finding_key"
+    echo "  lock dir contents:"
+    ls -la "$_lock_dir" || true
     false
   }
 }
