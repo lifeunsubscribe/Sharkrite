@@ -705,7 +705,13 @@ tag_index_log_history() {
     # date-independent match key.
     local dedup_key
     dedup_key=$(printf '%s\n' "$audit_line" | sed 's/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] | //' || true)
-    if grep -qF "$dedup_key" "$log_file" 2>/dev/null; then
+    # Match against the date-stripped view of the log so that:
+    #   (a) cross-midnight re-runs (different date prefix, same key) are still
+    #       detected as duplicates, and
+    #   (b) whole-line (-x) anchoring prevents a shorter key from falsely
+    #       matching a longer superset line for the same tag/PR/action.
+    if sed 's/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] | //' "$log_file" 2>/dev/null \
+         | grep -qxF "$dedup_key"; then
       return 0
     fi
     printf '%s\n' "$audit_line" >> "$log_file" 2>/dev/null || true

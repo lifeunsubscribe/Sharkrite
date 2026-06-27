@@ -527,3 +527,64 @@ BODY
   count=$(grep -c "PR #700" "$log_file" || true)
   [ "$count" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# AC: Dedup uses whole-line (anchored) match — shorter key not suppressed by
+#     a longer superset line already in the log (guards finding #1 fix)
+# ---------------------------------------------------------------------------
+
+@test "AC-dedup-wholeline: shorter detail not suppressed when log has longer superset line" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  # Pre-seed the log with a LONGER detail line for the same tag+PR.
+  # Format: YYYY-MM-DD | PR #<N> | tag: <name> | <detail>
+  # The date-stripped form of this line is:  "PR #800 | tag: short-tag | Longer justification text here"
+  # That is a superset of the shorter entry's date-stripped form:
+  #   "PR #800 | tag: short-tag | Short just"
+  # A substring grep (-qF) would falsely match "Short just" inside the longer line
+  # if the detail appeared there, but even without that, the tag+PR fragment
+  # "PR #800 | tag: short-tag" appears in the superset line.
+  printf '%s\n' "2026-06-01 | PR #800 | tag: short-tag | Longer justification text here" \
+    > "$log_file"
+
+  # Now log a distinct (shorter-detail) entry for the same tag+PR.
+  # A substring match would falsely treat the dedup_key
+  # "PR #800 | tag: short-tag | Short just" as already present because
+  # grep -qF scans line contents and "PR #800 | tag: short-tag" is a substring
+  # of the pre-seeded line.  A whole-line (-x) match must NOT suppress it.
+  tag_index_log_history "justified" "short-tag" "Short just" "800"
+
+  # Both the pre-seeded and newly-added lines must be present.
+  local count
+  count=$(grep -c "short-tag" "$log_file" || true)
+  [ "$count" -eq 2 ]
+
+  grep -q "Longer justification text here" "$log_file"
+  grep -q "Short just" "$log_file"
+}
+
+# ---------------------------------------------------------------------------
+# AC: Dedup is date-independent — cross-midnight re-run does not append duplicate
+# ---------------------------------------------------------------------------
+
+@test "AC-dedup-crossmidnight: same tuple logged on a prior date is still recognised as duplicate" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  # Pre-seed the log with an entry from a prior date (different date prefix).
+  # Format matches what tag_index_log_history writes for the "justified" action:
+  #   YYYY-MM-DD | PR #<N> | tag: <name> | <detail>
+  printf '%s\n' "2025-12-31 | PR #900 | tag: midnight-tag | Midnight justification" \
+    > "$log_file"
+
+  # Call log_history with the same (action, tag, detail, PR) tuple "today".
+  # The dedup_key (date-stripped) is identical to the pre-seeded line's stripped form.
+  # The guard must detect the match and skip append, even though the date differs.
+  tag_index_log_history "justified" "midnight-tag" "Midnight justification" "900"
+
+  # Only the original entry must be present — no duplicate.
+  local count
+  count=$(grep -c "midnight-tag" "$log_file" || true)
+  [ "$count" -eq 1 ]
+}
