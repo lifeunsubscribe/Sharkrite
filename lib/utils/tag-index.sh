@@ -624,6 +624,49 @@ ${_ntag}"
 }
 
 # =============================================================================
+# Justification audit log (Stage 3 foundation)
+# =============================================================================
+
+# tag_index_log_history TAG JUSTIFICATION PR_NUMBER
+#
+# Appends a timestamped justification audit line for a new tag introduced by
+# a PR's `new-tags:` block.  Called once per new tag during reconcile_tag_index
+# in assess-documentation.sh.
+#
+# Output format (appended to .rite/tag-index-history.log):
+#   YYYY-MM-DD | PR #N | tag: TAGNAME | JUSTIFICATION
+#
+# The log file location defaults to the .rite/ state dir alongside the project
+# root.  If the dir is not writable, the audit line is emitted to stderr only
+# (graceful degradation — never aborts the caller).
+#
+# Arguments:
+#   $1 — tag name
+#   $2 — justification text (one line)
+#   $3 — PR number (for provenance)
+tag_index_log_history() {
+  local tag="$1"
+  local justification="$2"
+  local pr_number="$3"
+
+  local timestamp
+  timestamp=$(date +%Y-%m-%d 2>/dev/null || echo "unknown-date")
+
+  local audit_line="${timestamp} | PR #${pr_number} | tag: ${tag} | ${justification}"
+
+  # Emit via verbose_info so the doc-assessment pass displays it in real time.
+  verbose_info "  tag-index: new-tag audit: ${audit_line}"
+
+  # Persist to the history log file (best-effort — failure does not propagate).
+  local log_dir="${RITE_PROJECT_ROOT:-}/.rite"
+  local log_file="${log_dir}/tag-index-history.log"
+
+  if [ -d "$log_dir" ] || mkdir -p "$log_dir" 2>/dev/null; then
+    printf '%s\n' "$audit_line" >> "$log_file" 2>/dev/null || true
+  fi
+}
+
+# =============================================================================
 # Top-level dispatcher
 # =============================================================================
 

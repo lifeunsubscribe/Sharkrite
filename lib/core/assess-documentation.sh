@@ -995,10 +995,144 @@ ${_line}"
   rm -f "$_blocks_file"
 }
 
+# reconcile_tag_index PR_BODY PR_NUMBER
+#
+# Stage 3 drift reconciliation skeleton — triggered after update_conventions_from_marker
+# adds any new tags from the PR's convention block.  Parses the PR body for unfenced
+# `new-tags:` name/justification pairs and logs a per-tag audit line via
+# tag_index_log_history().
+#
+# This function is the foundation for Stage 3; the two sonnet passes (similarity
+# check and coverage check) are stubbed as no-ops here and will be filled in by
+# later sub-issues (#766, #767).
+#
+# Graceful-degradation contract (absorbs #764):
+#   - A non-zero return must NEVER abort the doc-assessment pass.
+#   - All call sites must use `reconcile_tag_index ... || true`.
+#   - All error paths inside this function return 0 (no abort signal).
+#
+# Fence-guard awk: new-tags: content inside triple-backtick code fences is NOT
+# extracted (mirrors the fence-guard in update_conventions_from_marker).
+#
+# Arguments:
+#   $1 — PR body text
+#   $2 — PR number (for audit lines)
+reconcile_tag_index() {
+  local pr_body="$1"
+  local pr_number="$2"
+
+  # No-op when body is empty — nothing to parse.
+  if [ -z "$pr_body" ]; then
+    return 0
+  fi
+
+  # Write PR body to a temp file so awk can read it without subshell/pipefail
+  # complications.  mktemp failure is non-fatal — skip with a warning.
+  local _body_file
+  _body_file=$(mktemp 2>/dev/null) || {
+    print_warning "  tag-index reconcile: mktemp failed — skipping (temp space issue?)"
+    return 0
+  }
+  printf '%s' "$pr_body" > "$_body_file"
+
+  # Extract unfenced new-tags: lines via fence-guarded awk.
+  #
+  # The sharkrite-convention block format for new-tags is:
+  #   new-tags:
+  #     - tagname: One-line justification
+  #
+  # Strategy: track fence depth (in_fence) using the same col-0 backtick logic
+  # as update_conventions_from_marker.  Only emit lines when not inside a fence.
+  # Output format: one "TAGNAME\tJUSTIFICATION" line per new-tags entry.
+  local _new_tag_pairs
+  _new_tag_pairs=$(awk '
+    BEGIN { in_fence=0; fence_len=0 }
+
+    # Detect opening/closing fences (col-0 backtick runs of 3+)
+    /^(`{3,})/ {
+      match($0, /^(`+)/, arr)
+      run_len = length(arr[1])
+      if (!in_fence) {
+        in_fence   = 1
+        fence_len  = run_len
+        next
+      } else if (run_len >= fence_len) {
+        in_fence  = 0
+        fence_len = 0
+        next
+      }
+    }
+
+    # Skip all lines inside a fence
+    in_fence { next }
+
+    # Match "  - tagname: justification" pattern (new-tags: list items)
+    /^[[:space:]]*-[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]/ {
+      # Strip leading "  - " prefix
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+/, "", line)
+      # Split on first colon to get tag and justification
+      colon_pos = index(line, ":")
+      if (colon_pos > 0) {
+        tag   = substr(line, 1, colon_pos - 1)
+        justif = substr(line, colon_pos + 1)
+        # Trim leading whitespace from justification
+        sub(/^[[:space:]]+/, "", justif)
+        if (tag != "" && justif != "") {
+          print tag "\t" justif
+        }
+      }
+    }
+  ' "$_body_file" || true)
+  rm -f "$_body_file"
+
+  # No new-tags: entries found — nothing to audit.
+  if [ -z "$_new_tag_pairs" ]; then
+    return 0
+  fi
+
+  # Log one audit line per new tag via tag_index_log_history().
+  local _pair _tag _justif
+  while IFS= read -r _pair; do
+    [ -z "$_pair" ] && continue
+    _tag="${_pair%%	*}"
+    _justif="${_pair#*	}"
+    # Trim and validate both fields before logging.
+    _tag="${_tag#"${_tag%%[![:space:]]*}"}"
+    _tag="${_tag%"${_tag##*[![:space:]]}"}"
+    _justif="${_justif#"${_justif%%[![:space:]]*}"}"
+    _justif="${_justif%"${_justif##*[![:space:]]}"}"
+    # Skip if either field is empty after trimming (malformed entry).
+    # Two separate checks avoid shell operator precedence ambiguity with || + &&.
+    [ -z "$_tag" ] && continue
+    [ -z "$_justif" ] && continue
+    tag_index_log_history "$_tag" "$_justif" "$pr_number"
+  done <<< "$_new_tag_pairs"
+
+  # --- Similarity check (stub — filled in by sub-issue #766) ---
+  # When implemented: calls sonnet to ask "are any of the new tags semantically
+  # equivalent to an existing tag?" and auto-applies merges at confidence >= 0.85.
+  # Returns empty for now (graceful no-op).
+  local _similarity_result=""
+
+  # --- Coverage check (stub — filled in by sub-issue #767) ---
+  # When implemented: calls sonnet to ask "for each new tag, are there existing
+  # catalog headings that should be pointed at but aren't?" and adds missing
+  # pointers to tag-index.md.
+  # Returns empty for now (graceful no-op).
+  local _coverage_result=""
+
+  return 0
+}
+
 # --- Run internal doc assessments ---
 
 # Conventions marker extraction is instant (no Claude call) — run inline
 update_conventions_from_marker "$PR_NUMBER" "$PR_BODY"
+# Tag-index reconcile: parse PR body for new-tags: justifications and log audit
+# lines.  The || true backstop (#764) ensures a non-zero return never aborts the
+# doc-assessment pass under set -euo pipefail.
+reconcile_tag_index "$PR_BODY" "$PR_NUMBER" || true
 
 # Changelog is instant (no Claude call) — run inline
 assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"
