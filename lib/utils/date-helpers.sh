@@ -25,6 +25,11 @@ fi
 iso_to_epoch() {
   local iso_timestamp="$1"
 
+  # Empty input → 0, deterministically. GNU `date -d ""` and BSD `date -jf` diverge
+  # on empty input, so guard explicitly rather than relying on the `|| echo "0"`
+  # fallback to behave identically across platforms.
+  [ -z "$iso_timestamp" ] && { echo "0"; return 0; }
+
   # Detect GNU vs BSD date
   if date --version >/dev/null 2>&1; then
     # GNU date (Linux) - supports -d flag

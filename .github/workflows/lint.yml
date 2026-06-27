@@ -43,6 +43,15 @@ jobs:
           ln -sf "$GITHUB_WORKSPACE/lib" "$HOME/.rite/lib"
           ln -sf "$GITHUB_WORKSPACE/templates" "$HOME/.rite/templates"
 
+      - name: Configure git identity (tests git init/commit)
+        if: success() || failure()
+        run: |
+          # Many bats tests `git init` a temp repo and `git commit`; CI has no
+          # global identity → "Author identity unknown" (status 128). Set a
+          # throwaway identity so those setups succeed (mirrors the dev env).
+          git config --global user.email "ci@sharkrite.test"
+          git config --global user.name "Sharkrite CI"
+
       - name: Run all tests
         if: success() || failure()
         run: make test
