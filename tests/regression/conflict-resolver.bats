@@ -305,3 +305,173 @@ _setup_conflict_scenario() {
   # if word-splitting had occurred, it would appear as two separate tokens ("my" and "feature.md")
   echo "$captured_prompt" | grep -qF "my feature.md"
 }
+
+# ===========================================================================
+# REGRESSION (issue #783): same-path add/add collision
+#
+# Two branches independently CREATE different files at the SAME path. The
+# stale-branch stash → rebase → stash-pop flow leaves the colliding branch
+# file in a preserved (un-popped) stash with ZERO unmerged entries — git
+# refused to overwrite the now-tracked file ("already exists, no checkout").
+# The resolver must DETECT this collision, name the path, and route it to the
+# content-merge session — NOT fall through to the generic
+# "Merge failed but no unmerged files found — unexpected state" bail.
+# ===========================================================================
+
+# Reproduce the exact stale-branch state the resolver is invoked from:
+#   - branch already rebased onto main (clean tree)
+#   - a preserved stash holding an UNTRACKED file at a path main now TRACKS
+# Sets BRANCH_NAME. Leaves FIXTURE_REPO checked out on the feature branch.
+_setup_addadd_collision_scenario() {
+  BRANCH_NAME="fix/addadd-collision-$$"
+
+  # Feature branch: create an UNTRACKED file at the colliding path, then stash it
+  # (this is what stale-branch.sh does: auto-stash dirty/untracked work pre-rebase).
+  git checkout -b "$BRANCH_NAME" main >/dev/null 2>&1
+  printf 'wip suite added by branch\n' > error-handler.test.ts
+  git stash push -u -m "stale-branch: auto-stash before rebase" >/dev/null 2>&1
+
+  # Advance origin/main: create a DIFFERENT file at the SAME path (now tracked).
+  git checkout main >/dev/null 2>&1
+  printf 'main suite added independently\n' > error-handler.test.ts
+  git add error-handler.test.ts
+  git commit -m "Main adds error-handler.test.ts" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  # Back on the feature branch, rebase onto main: this SUCCEEDS (the branch had
+  # no committed change), but the preserved stash now collides with the tracked
+  # file — exactly the LeadFlow overnight failure.
+  git checkout "$BRANCH_NAME" >/dev/null 2>&1
+  git rebase main >/dev/null 2>&1 || true
+}
+
+@test "resolver: detects same-path add/add collision and routes to content merge (not unexpected-state bail)" {
+  _setup_addadd_collision_scenario
+
+  # Sanity: clean tree (zero unmerged), but a stash holds the colliding file.
+  local unmerged
+  unmerged=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ')
+  [ "$unmerged" -eq 0 ]
+  git stash list | grep -q "auto-stash before rebase"
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+
+  # Stub provider: resolve whatever the resolver presents as a conflict.
+  # The resolver materializes the add/add collision into an in-file 3-way
+  # conflict and lists the path in $_cr_conflict_files, so the stub finds it
+  # either via --diff-filter=U or by scanning for conflict markers. The stub
+  # echoes the files it sees to STDERR (the resolver runs inside a command
+  # substitution here, so a stub-local variable would not survive — stderr does).
+  provider_run_agentic_session() {
+    local c
+    c=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    if [ -z "$c" ]; then
+      c=$(grep -rl '<<<<<<< HEAD' . 2>/dev/null || true)
+    fi
+    echo "PROVIDER_SAW: $c" >&2
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      echo "merged: both suites combined" > "$f"
+      git add "$f"
+    done <<< "$c"
+    return 0
+  }
+  load_provider() { return 0; }
+
+  local result=0
+  local stderr_out
+  stderr_out=$(attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>&1) || result=$?
+
+  # MUST NOT emit the generic unexpected-state bail for this case.
+  echo "$stderr_out" | grep -q "unexpected state" \
+    && { echo "FAIL: emitted unexpected-state bail for an add/add collision" >&2; echo "$stderr_out" >&2; return 1; }
+
+  # MUST detect + name the colliding path.
+  echo "$stderr_out" | grep -q "add/add collision"
+  echo "$stderr_out" | grep -q "error-handler.test.ts"
+
+  # MUST route to the content-merge session (provider saw the colliding file).
+  echo "$stderr_out" | grep -q "PROVIDER_SAW:.*error-handler.test.ts"
+
+  # Resolver completes successfully (resolution staged, no markers remain).
+  [ "$result" -eq 0 ]
+}
+
+@test "resolver: surfaces both versions when add/add collision cannot be content-merged" {
+  # Same collision is DETECTED, but the content-merge materialization fails
+  # (e.g. a side cannot be reconstructed). The resolver must then surface both
+  # versions with an actionable, path-naming message — NOT the generic bail.
+  _setup_addadd_collision_scenario
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  load_provider() { return 0; }
+  provider_run_agentic_session() { return 0; }
+
+  # Force materialization to fail so the resolver takes the surface-both-versions
+  # path. Detection (the stash-collision check) still fires normally.
+  _cr_materialize_addadd_conflict() { return 1; }
+
+  local result=0
+  local stderr_out
+  stderr_out=$(attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>&1) || result=$?
+
+  # Must NOT be the generic bail.
+  ! echo "$stderr_out" | grep -q "unexpected state"
+  # Must have detected the collision and named the colliding path.
+  echo "$stderr_out" | grep -q "add/add collision"
+  echo "$stderr_out" | grep -q "error-handler.test.ts"
+  # Must explain a content merge is required (surfacing both versions).
+  echo "$stderr_out" | grep -qiE "content merge"
+  # Returns failure (1) — couldn't auto-resolve, surfaced for manual merge.
+  [ "$result" -eq 1 ]
+}
+
+# ===========================================================================
+# GUARD (issue #783): a GENUINE unexpected state (merge failed, zero unmerged
+# entries, NO colliding stash) must STILL hit the original bail — the new
+# detection must not produce a false collision for non-collision cases.
+# ===========================================================================
+
+@test "resolver: genuine unexpected state (no collision) still bails as before" {
+  _setup_conflict_scenario
+
+  # Enter from clean tree (production pattern).
+  git merge origin/main --no-edit 2>/dev/null || true
+  git merge --abort 2>/dev/null || true
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  load_provider() { return 0; }
+  provider_run_agentic_session() { return 0; }
+
+  # Force a "merge failed, zero unmerged entries" state with NO colliding stash:
+  # stub git merge to fail without producing unmerged entries, and ensure there
+  # is no stash. This is the true unexpected-state path the guard protects.
+  git() {
+    if [ "$1" = "merge" ] && [ "$2" != "--abort" ]; then
+      # Simulate a failed merge that leaves zero unmerged entries and no
+      # recognizable overwrite-collision output.
+      echo "fatal: simulated merge failure (no unmerged entries)" >&2
+      return 1
+    fi
+    command git "$@"
+  }
+
+  # Make sure there is no stash at all (no false collision signal).
+  command git stash clear 2>/dev/null || true
+
+  local result=0
+  local stderr_out
+  stderr_out=$(attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>&1) || result=$?
+
+  unset -f git
+
+  # The original generic bail MUST still fire (no false collision detection).
+  echo "$stderr_out" | grep -q "Merge failed but no unmerged files found — unexpected state"
+  [ "$result" -eq 1 ]
+}
