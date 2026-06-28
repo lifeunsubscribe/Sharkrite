@@ -196,26 +196,26 @@ BODY
 
   # This body documents the new-tags: format inside a code fence.
   # The fence guard must prevent it from being treated as a real new-tags entry.
+  # Built via printf with literal backticks (avoids bats test-body parse issues
+  # with bare ``` heredoc lines — same pattern as the sibling AC4 test below).
   local body
-  body="$(cat <<'BODY'
-This PR documents the convention format.
-
-Example usage:
-```
-new-tags:
-  - fenced-tag: This justification is inside a fence and must not be extracted
-```
-
-Closes #42
-BODY
-)"
+  body="$(printf '%s\n' \
+    "This PR documents the convention format." \
+    "" \
+    "Example usage:" \
+    '```' \
+    "new-tags:" \
+    "  - fenced-tag: This justification is inside a fence and must not be extracted" \
+    '```' \
+    "" \
+    "Closes #42")"
 
   reconcile_tag_index "$body" "42"
 
   [ ! -f "$log_file" ] || [ ! -s "$log_file" ]
 }
 
-@test "AC4: new-tags: inside a backtick-info fence (e.g. ```yaml) is not extracted" {
+@test "AC4: new-tags: inside a backtick-info fence (e.g. yaml) is not extracted" {
   local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
   mkdir -p "${RITE_TEST_TMPDIR}/.rite"
 
@@ -418,9 +418,80 @@ BODY
   rm -rf "${RITE_TEST_TMPDIR}/.rite"
   [ ! -d "${RITE_TEST_TMPDIR}/.rite" ]
 
-  tag_index_log_history "new-tag" "Some justification" "42"
+  tag_index_log_history justified "42" "new-tag" "Some justification"
 
   local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
   [ -f "$log_file" ]
   grep -q "tag: new-tag" "$log_file"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 3 (#765): action-aware history — dedup (#761) + → separator (#762)
+# ---------------------------------------------------------------------------
+
+@test "added action is deduped — two identical calls produce one line (#761)" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history added 5 foo docs/x.md "Heading"
+  tag_index_log_history added 5 foo docs/x.md "Heading"
+
+  [ -f "$log_file" ]
+  local count
+  count=$(grep -c "added foo" "$log_file" || true)
+  [ "$count" -eq 1 ]
+}
+
+@test "merged action is idempotent — two identical calls produce one line (#761)" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history merged 5 foo bar
+  tag_index_log_history merged 5 foo bar
+
+  [ -f "$log_file" ]
+  local count
+  count=$(grep -c "merged foo into bar" "$log_file" || true)
+  [ "$count" -eq 1 ]
+}
+
+@test "added action uses the → separator matching the index (#762)" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history added 5 foo docs/x.md "Heading"
+
+  [ -f "$log_file" ]
+  grep -q "→ docs/x.md → Heading" "$log_file"
+}
+
+@test "distinct actions accumulate as separate lines — no overwrite" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history justified 5 alpha "Some justification"
+  tag_index_log_history added 5 beta docs/y.md "Beta Heading"
+  tag_index_log_history merged 5 gamma delta
+
+  [ -f "$log_file" ]
+  grep -q "tag: alpha | Some justification" "$log_file"
+  grep -q "added beta → docs/y.md → Beta Heading" "$log_file"
+  grep -q "merged gamma into delta" "$log_file"
+
+  local count
+  count=$(grep -c "PR #5" "$log_file" || true)
+  [ "$count" -eq 3 ]
+}
+
+@test "justified action is deduped — two identical calls produce one line (#761)" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite"
+
+  tag_index_log_history justified 5 mytag "because reasons"
+  tag_index_log_history justified 5 mytag "because reasons"
+
+  [ -f "$log_file" ]
+  local count
+  count=$(grep -c "tag: mytag | because reasons" "$log_file" || true)
+  [ "$count" -eq 1 ]
 }
