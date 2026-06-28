@@ -383,10 +383,11 @@ Given identical input, you MUST produce identical output.
 Rules:
 - Do NOT use probabilistic language (\"might\", \"could\", \"possibly\")
 - Make DEFINITIVE decisions for each item
-- When genuinely uncertain between two classifications, ALWAYS choose
-  the more conservative option:
-    * ACTIONABLE_NOW over ACTIONABLE_LATER
-    * ACTIONABLE_LATER over DISMISSED
+- When genuinely uncertain between two classifications:
+    * ACTIONABLE_NOW over ACTIONABLE_LATER (do not defer real, in-scope work)
+    * DISMISSED over ACTIONABLE_LATER for cosmetic / stylistic / nice-to-have /
+      speculative \"could improve\" findings — file a follow-up ONLY when deferring
+      is genuinely necessary (see the ACTIONABLE_LATER bar below)
 - Apply the same reasoning pattern to similar issues
 - Do NOT introduce randomness in your decision-making
 
@@ -435,6 +436,15 @@ ACTIONABLE_NOW - Fix in this PR cycle:
   - Changes in the SAME file/module that are directly related
 
 ACTIONABLE_LATER - Valid concern, create follow-up issue:
+  NECESSITY BAR: ACTIONABLE_LATER is for genuinely necessary future work ONLY: a
+  real defect, a correctness or security risk, or a broken contract that MUST be
+  tracked. To classify a finding ACTIONABLE_LATER you MUST state, in one phrase,
+  what concretely breaks or regresses if it is never done. If you cannot, it is
+  NOT ACTIONABLE_LATER. The following are DISMISSED, not deferred: cosmetic
+  issues, style/naming preferences, speculative \"could improve\" / \"might be
+  nice\", redundant-but-harmless code, and nice-to-have test coverage with no
+  concrete regression risk.
+
   - Functional inconsistencies across the codebase (e.g., different validation
     rules for the same concept in different files)
   - Security-relevant findings that are out of scope but real and verifiable
