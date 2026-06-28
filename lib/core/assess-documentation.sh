@@ -1110,11 +1110,120 @@ reconcile_tag_index() {
     tag_index_log_history justified "$pr_number" "$_tag" "$_justif"
   done <<< "$_new_tag_pairs"
 
-  # --- Similarity check (stub — filled in by sub-issue #766) ---
-  # When implemented: calls sonnet to ask "are any of the new tags semantically
-  # equivalent to an existing tag?" and auto-applies merges at confidence >= 0.85.
-  # Returns empty for now (graceful no-op).
+  # --- Similarity check (#766) + non-numeric confidence guard (#763) ---
+  # Ask sonnet whether any of the NEW tags are semantic duplicates of an
+  # EXISTING tag; auto-apply a merge only when the model's confidence is a valid
+  # number <= 1.0 AND >= 0.85.  Graceful: any provider/JSON failure skips all
+  # merges and preserves the new tags (never aborts).
   local _similarity_result=""
+
+  # Build the list of existing tag names from the index.
+  local _existing_tags=""
+  if parse_tag_index 2>/dev/null; then
+    local _et
+    for _et in "${TAG_NAMES[@]+"${TAG_NAMES[@]}"}"; do
+      [ -z "$_et" ] && continue
+      if [ -z "$_existing_tags" ]; then
+        _existing_tags="$_et"
+      else
+        _existing_tags="${_existing_tags}
+${_et}"
+      fi
+    done
+  fi
+
+  # Build the list of new tag NAMES from _new_tag_pairs (tag<TAB>justification).
+  local _new_tags=""
+  local _sim_pair _sim_tag
+  while IFS= read -r _sim_pair; do
+    [ -z "$_sim_pair" ] && continue
+    _sim_tag="${_sim_pair%%	*}"
+    _sim_tag="${_sim_tag#"${_sim_tag%%[![:space:]]*}"}"
+    _sim_tag="${_sim_tag%"${_sim_tag##*[![:space:]]}"}"
+    [ -z "$_sim_tag" ] && continue
+    if [ -z "$_new_tags" ]; then
+      _new_tags="$_sim_tag"
+    else
+      _new_tags="${_new_tags}
+${_sim_tag}"
+    fi
+  done <<< "$_new_tag_pairs"
+
+  # Skip entirely when either side is empty — no possible merges.
+  if [ -n "$_existing_tags" ] && [ -n "$_new_tags" ]; then
+    local _sim_prompt
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: ${_new_tags}/${_existing_tags} must be expanded into the prompt
+    _sim_prompt="$(cat <<SIMILARITY_EOF
+Output ONLY a single JSON object. No prose before or after.
+
+You are deduplicating a tag catalog. Below are NEW tags being added and the
+EXISTING tags already in the catalog. Identify which NEW tags are semantic
+duplicates of an EXISTING tag (same concept, different wording).
+
+Return JSON of the form:
+{"merges":[{"from":"<new tag name>","into":"<existing tag name>","confidence":<number 0..1>}]}
+
+Rules:
+- Propose a merge ONLY when you are confident (confidence >= 0.85).
+- "from" MUST be one of the NEW tags; "into" MUST be one of the EXISTING tags.
+- If there are no duplicates, return {"merges":[]}.
+- confidence MUST be a plain decimal number between 0 and 1.
+
+NEW tags:
+${_new_tags}
+
+EXISTING tags:
+${_existing_tags}
+SIMILARITY_EOF
+)"
+
+    # Use the doc_assessment model (sonnet): structured semantic comparison.
+    _similarity_result=$(provider_run_prompt_with_timeout "$_sim_prompt" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+
+    if [ -n "$_similarity_result" ]; then
+      # Parse merge entries as compact JSON objects (one per line). jq guarded
+      # with || true so malformed/empty JSON degrades to zero merges.
+      local _merges
+      _merges=$(printf '%s' "$_similarity_result" | jq -c '.merges[]?' 2>/dev/null || true)
+
+      if [ -n "$_merges" ]; then
+        local _merge_obj _from_tag _into_tag _conf
+        while IFS= read -r _merge_obj; do
+          [ -z "$_merge_obj" ] && continue
+          _from_tag=$(printf '%s' "$_merge_obj" | jq -r '.from // empty' 2>/dev/null || true)
+          _into_tag=$(printf '%s' "$_merge_obj" | jq -r '.into // empty' 2>/dev/null || true)
+          # Extract confidence as a raw string so we can validate it ourselves
+          # rather than letting jq silently coerce a non-numeric value (#763).
+          _conf=$(printf '%s' "$_merge_obj" | jq -r '.confidence // empty | tostring' 2>/dev/null || true)
+
+          [ -z "$_from_tag" ] && continue
+          [ -z "$_into_tag" ] && continue
+
+          # Confidence guard (#763): accept ONLY a plain number that is <= 1.0.
+          # Reject (skip, do not coerce) anything else: "0.9x", "abc", "1.5", "".
+          case "$_conf" in
+            *[!0-9.]* | "" ) continue ;;        # non-numeric chars or empty
+          esac
+          # Must match ^[0-9]+(\.[0-9]+)?$ (single optional decimal point).
+          if ! printf '%s' "$_conf" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+            continue
+          fi
+          # Numerically <= 1.0 (awk handles the decimal comparison portably).
+          if [ "$(awk -v c="$_conf" 'BEGIN { print (c <= 1.0) ? 1 : 0 }')" != "1" ]; then
+            continue
+          fi
+          # Apply only at confidence >= 0.85.
+          if [ "$(awk -v c="$_conf" 'BEGIN { print (c >= 0.85) ? 1 : 0 }')" != "1" ]; then
+            continue
+          fi
+
+          if tag_index_merge_tag "$_from_tag" "$_into_tag"; then
+            tag_index_log_history merged "$pr_number" "$_from_tag" "$_into_tag"
+          fi
+        done <<< "$_merges"
+      fi
+    fi
+  fi
 
   # --- Coverage check (stub — filled in by sub-issue #767) ---
   # When implemented: calls sonnet to ask "for each new tag, are there existing

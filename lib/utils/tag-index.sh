@@ -537,6 +537,83 @@ tag_index_add_pointer() {
   fi
 }
 
+# tag_index_merge_tag FROM_TAG INTO_TAG
+#
+# Merges the FROM_TAG section into the INTO_TAG section: every pointer under
+# `## FROM_TAG` is re-added under `## INTO_TAG` (via tag_index_add_pointer, which
+# dedups + places section-safely), then the `## FROM_TAG` heading and its whole
+# section (up to the next `## ` heading or EOF) is deleted.
+#
+# Returns non-zero (without modifying the file) when:
+#   - tag-index.md is missing, OR
+#   - the `## FROM_TAG` heading is absent, OR
+#   - the `## INTO_TAG` heading is absent.
+#
+# Section matching uses literal awk comparisons (`$0 == "## TAG"`) — mirrors
+# tag_index_add_pointer so special characters in tag names are safe. Verified
+# under macOS /usr/bin/awk.
+#
+# Arguments:
+#   $1 — source tag name (the heading text after "## "; will be removed)
+#   $2 — destination tag name (must already exist)
+tag_index_merge_tag() {
+  local from_tag="$1"
+  local into_tag="$2"
+
+  if [ ! -f "$TAG_INDEX_FILE" ]; then
+    return 1
+  fi
+
+  # Both headings must exist.  Use literal fixed-string whole-line match (-xF)
+  # so special characters in tag names are not interpreted as regex.
+  if ! grep -qxF -- "## ${from_tag}" "$TAG_INDEX_FILE" 2>/dev/null; then
+    return 1
+  fi
+  if ! grep -qxF -- "## ${into_tag}" "$TAG_INDEX_FILE" 2>/dev/null; then
+    return 1
+  fi
+
+  # Extract each pointer line under ## FROM_TAG (between that heading and the
+  # next ## heading or EOF).  Literal awk section match, as in add_pointer.
+  local _from_pointers
+  _from_pointers=$(awk -v tag="## ${from_tag}" '
+    $0 == tag      { in_tag=1; next }
+    in_tag && /^## / { in_tag=0 }
+    in_tag && /^- / { print }
+  ' "$TAG_INDEX_FILE" || true)
+
+  # Re-add each pointer under INTO_TAG.  Pointer format: "- <file> → <heading>".
+  # Parse on the literal " → " separator used by tag_index_add_pointer.
+  if [ -n "$_from_pointers" ]; then
+    local _ptr _rest _file _heading
+    while IFS= read -r _ptr; do
+      [ -z "$_ptr" ] && continue
+      _rest="${_ptr#- }"            # strip leading "- "
+      _file="${_rest%% → *}"        # text before the first " → "
+      _heading="${_rest#* → }"      # text after the first " → "
+      # Skip malformed pointers (no separator found -> file == rest == heading).
+      [ "$_file" = "$_rest" ] && continue
+      tag_index_add_pointer "$into_tag" "$_file" "$_heading" || true
+    done <<< "$_from_pointers"
+  fi
+
+  # Delete the ## FROM_TAG heading and its section (up to next ## or EOF).
+  local _tmp
+  _tmp=$(mktemp)
+  awk -v tag="## ${from_tag}" '
+    $0 == tag        { skip=1; next }
+    skip && /^## /   { skip=0 }
+    skip             { next }
+    { print }
+  ' "$TAG_INDEX_FILE" > "$_tmp" || true
+
+  if [ -s "$_tmp" ]; then
+    mv "$_tmp" "$TAG_INDEX_FILE"
+  else
+    rm -f "$_tmp"
+  fi
+}
+
 # update_tag_index_from_block TAG_LINE NEW_TAGS_BLOCK SOURCE_CATALOG SOURCE_HEADING PR_NUMBER
 #
 # Called from update_conventions_from_marker after a convention block is
