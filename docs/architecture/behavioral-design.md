@@ -634,6 +634,10 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 LOW findings only become ACTIONABLE_LATER if they represent a real functional or security concern. "Consider doing X" and style suggestions are DISMISSED. Added after 5 of 7 tech-debt issues were closed as noise (code aesthetics, hypothetical optimizations, intentional patterns flagged as problems).
 
+### Follow-up Defer Filter: Necessity Bar
+
+The assessment prompt's old tie-break biased uncertain findings toward `ACTIONABLE_LATER` over `DISMISSED`, which generated nitpick follow-up issues (a recent run produced ~6 follow-ups, several pure cosmetic). The prompt in `lib/core/assess-review-issues.sh` now flips that bias for non-essential findings and adds a necessity bar: `ACTIONABLE_LATER` requires the assessor to state, in one phrase, what concretely breaks or regresses if the work is never done — a real defect, correctness/security risk, or broken contract. If no concrete regression can be stated, the finding is `DISMISSED`, not deferred. Cosmetic/style/naming preferences, speculative "could improve" / "might be nice", redundant-but-harmless code, and nice-to-have test coverage with no concrete regression risk are explicitly DISMISSED.
+
 ---
 
 ## Doc Assessment Fan-out / Fan-in (assess-documentation.sh, merge-pr.sh)
