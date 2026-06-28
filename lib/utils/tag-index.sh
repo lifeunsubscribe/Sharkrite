@@ -537,6 +537,39 @@ tag_index_add_pointer() {
   fi
 }
 
+# tag_index_add_coverage_pointer TAG TARGET
+#
+# Convenience wrapper used by the coverage (drift) check.  Parses a TARGET of the
+# form "file.md#heading" — splitting on the FIRST "#" only so a heading that
+# itself contains "#" (e.g. "grep -c#variant") is preserved intact — then
+# delegates to tag_index_add_pointer (which is section-safe + dedups).
+#
+# Returns non-zero (no-op) when TARGET does not parse into both a non-empty file
+# and a non-empty heading.  Otherwise returns tag_index_add_pointer's status.
+#
+# Arguments:
+#   $1 — tag name (must be an existing heading — call tag_index_ensure_heading first)
+#   $2 — target of the form "file.md#heading"
+tag_index_add_coverage_pointer() {
+  local tag="$1"
+  local target="$2"
+  local file="${target%%#*}"   # text before the FIRST "#"
+  local heading="${target#*#}" # text after the FIRST "#"
+
+  # No-op when either side is empty (no "#" present -> file == heading == target,
+  # but a missing "#" leaves heading == target, so guard both explicitly).
+  if [ -z "$file" ] || [ -z "$heading" ]; then
+    return 1
+  fi
+  # When TARGET has no "#" at all, file==target and heading==target — that is a
+  # malformed target (no separator), so reject it too.
+  if [ "$file" = "$target" ] && [ "$heading" = "$target" ]; then
+    return 1
+  fi
+
+  tag_index_add_pointer "$tag" "$file" "$heading"
+}
+
 # tag_index_merge_tag FROM_TAG INTO_TAG
 #
 # Merges the FROM_TAG section into the INTO_TAG section: every pointer under
