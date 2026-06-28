@@ -1,7 +1,18 @@
 #!/bin/bash
 # lib/utils/format-review.sh
-# Formats PR review markdown into compact, readable format
+# Pretty-print a Sharkrite PR review for terminal display.
 # Usage: format-review.sh <review_file>
+#
+# Renders a clean, colorized terminal view of a review comment body:
+#   - a summary banner (findings counts + verdict) read from the authoritative
+#     review-data JSON block via jq, falling back to the markdown Findings line
+#     when the JSON is absent
+#   - severity-grouped findings rendered from the markdown body, with fenced
+#     code/fix blocks PRESERVED (indented + dimmed)
+#
+# It strips the review marker line, the model's pre-review preamble, all
+# HTML-comment markers (including <!-- item:N --> delimiters), and the trailing
+# JSON data block — none of which belong on screen.
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then
@@ -17,210 +28,165 @@ fi
 
 set -euo pipefail
 
-# State machine variables
-IN_CODE_BLOCK=false
-IN_LIST=false
-LIST_BUFFER=()
-CURRENT_SECTION=""
-PENDING_SUBHEADER=""
+# Reuse the shared color palette and the canonical marker constants (never
+# hardcode marker strings — see lib/utils/markers.sh).
+source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
 
-# Extract just the key phrase from a list item (first few words before colon or dash)
-extract_key_phrase() {
-  local item="$1"
-  # Remove markdown formatting
-  item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' | sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
-  # Extract key phrase (text before : or - or first sentence)
-  if [[ "$item" =~ ^([^:—-]+)[:\—-] ]]; then
-    echo "${BASH_REMATCH[1]}"
-  else
-    # Take first 5 words max
-    echo "$item" | cut -d' ' -f1-5
-  fi
+# ---------------------------------------------------------------------------
+# _fr_render_banner: print the summary banner from the embedded JSON block.
+# Arg 1: the raw JSON (contents of the review-data block, markers stripped).
+# Returns 0 if a banner was rendered, 1 if the JSON is missing/unparseable
+# (caller then falls back to the markdown Findings line).
+# ---------------------------------------------------------------------------
+_fr_render_banner() {
+  local json="$1"
+  [ -n "$json" ] || return 1
+  echo "$json" | jq -e '.summary' >/dev/null 2>&1 || return 1
+
+  local crit high med low verdict files vcolor vlabel
+  crit=$(echo "$json" | jq -r '.summary.critical // 0')
+  high=$(echo "$json" | jq -r '.summary.high // 0')
+  med=$(echo "$json" | jq -r '.summary.medium // 0')
+  low=$(echo "$json" | jq -r '.summary.low // 0')
+  verdict=$(echo "$json" | jq -r '.summary.verdict // ""')
+  files=$(echo "$json" | jq -r '.metadata.files_analyzed // empty')
+
+  [ -n "$files" ] && printf '%bFiles analyzed:%b %s\n' "$BOLD" "$NC" "$files"
+  printf '%bFindings:%b  %bCRITICAL: %s%b  |  %bHIGH: %s%b  |  %bMEDIUM: %s%b  |  %bLOW: %s%b\n' \
+    "$BOLD" "$NC" \
+    "$RED" "$crit" "$NC" \
+    "$YELLOW" "$high" "$NC" \
+    "$CYAN" "$med" "$NC" \
+    "$DIM" "$low" "$NC"
+
+  case "$verdict" in
+    BLOCK_MERGE)           vcolor="$RED";    vlabel="🚫 BLOCK MERGE" ;;
+    NEEDS_WORK)            vcolor="$YELLOW"; vlabel="⚠️  NEEDS WORK" ;;
+    APPROVE_WITH_COMMENTS) vcolor="$CYAN";   vlabel="💬 APPROVE WITH COMMENTS" ;;
+    APPROVED)              vcolor="$GREEN";  vlabel="✅ APPROVED" ;;
+    *)                     vcolor="$NC";     vlabel="$verdict" ;;
+  esac
+  [ -n "$verdict" ] && printf '%bVerdict:%b  %b%s%b\n' "$BOLD" "$NC" "$vcolor" "$vlabel" "$NC"
+  return 0
 }
 
-process_line() {
-  local line="$1"
-
-  # Handle code blocks - just skip them entirely
-  if [[ "$line" =~ ^'```' ]]; then
-    flush_list
-    if [ "$IN_CODE_BLOCK" = false ]; then
-      IN_CODE_BLOCK=true
-    else
-      IN_CODE_BLOCK=false
+# ---------------------------------------------------------------------------
+# _fr_render_body: render the markdown body (read on stdin).
+# The caller has already removed the preamble (everything before the first
+# `## ` heading), the `## ` title line itself, and the trailing JSON block.
+# ---------------------------------------------------------------------------
+_fr_render_body() {
+  local in_code=false prev_blank=true seen=false line clean payload color hdr nl
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Code-fence toggle — preserve everything between fences verbatim.
+    if [[ "$line" =~ ^[[:space:]]*'```' ]]; then
+      if [ "$in_code" = false ]; then in_code=true; else in_code=false; fi
+      prev_blank=false
+      continue
     fi
-    return
-  fi
-
-  # Skip lines inside code blocks
-  if [ "$IN_CODE_BLOCK" = true ]; then
-    return
-  fi
-
-  # Skip horizontal rules
-  if [[ "$line" =~ ^-{3,}$ ]] || [[ "$line" =~ ^={3,}$ ]] || [[ "$line" =~ ^━{3,}$ ]]; then
-    return
-  fi
-
-  # Handle main headers (## Title) - skip them (already shown in assess-and-resolve header)
-  if [[ "$line" =~ ^##[[:space:]](.+)$ ]]; then
-    flush_list
-    local title="${BASH_REMATCH[1]}"
-
-    # First header (usually "Code Review - PR #XX") - skip it (shown in header)
-    if [ -z "$CURRENT_SECTION" ]; then
-      CURRENT_SECTION="title"
-      return
+    if [ "$in_code" = true ]; then
+      # %s keeps backslashes (regexes, escapes) intact; only the color is %b.
+      printf '    %b%s%b\n' "$DIM" "$line" "$NC"
+      prev_blank=false
+      continue
     fi
 
-    # Subsequent headers - don't convert, they're handled by ### headers
-    return
-  fi
+    # Drop HTML-comment lines (review marker, <!-- item:N --> delimiters, etc.).
+    [[ "$line" =~ ^[[:space:]]*'<!--' ]] && continue
+    # Drop horizontal rules.
+    [[ "$line" =~ ^[[:space:]]*-{3,}[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*={3,}[[:space:]]*$ ]] && continue
 
-  # Handle subheaders (### or ####)
-  if [[ "$line" =~ ^###[#]*[[:space:]](.+)$ ]]; then
-    flush_list
-    local subtitle="${BASH_REMATCH[1]}"
+    # Leading newline before a header — suppressed for the very first block so
+    # the body sits snug under the banner.
+    nl=$'\n'
+    [ "$seen" = false ] && nl=""
 
-    # Remove bold/italic and clean
-    subtitle=$(echo "$subtitle" | sed -E 's/\*\*//g' | sed -E 's/__//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
-
-    # Extract emoji if present
-    local emoji=""
-    if [[ "$subtitle" =~ ^([[:space:]]*[^[:alnum:][:space:]]+)[[:space:]]*(.+)$ ]]; then
-      emoji="${BASH_REMATCH[1]} "
-      subtitle="${BASH_REMATCH[2]}"
+    # Item title: #### N. Title
+    if [[ "$line" =~ ^####[[:space:]]+(.+)$ ]]; then
+      payload=$(printf '%s' "${BASH_REMATCH[1]}" | sed -E 's/\*\*//g; s/`//g' || true)
+      printf '%s%b%s%b\n' "$nl" "$BOLD" "$payload" "$NC"
+      prev_blank=false; seen=true
+      continue
     fi
 
-    # Map sections to emojis and set current section
-    echo ""  # Blank line before section
-    case "$subtitle" in
-      *Summary*|*SUMMARY*)
-        echo "✏️ Summary:"
-        CURRENT_SECTION="summary"
-        ;;
-      *Strength*|*STRENGTHS*)
-        echo "💪 Strengths:"
-        CURRENT_SECTION="strengths"
-        ;;
-      *Code*Quality*|*CODE*QUALITY*)
-        echo "📋 Code Quality Assessment:"
-        CURRENT_SECTION="code_quality"
-        ;;
-      *Detail*Review*|*DETAILED*REVIEW*)
-        echo "🔍 Detailed Review:"
-        CURRENT_SECTION="detailed"
-        ;;
-      *Suggestion*|*SUGGESTIONS*)
-        echo "💡 Minor Suggestions:"
-        CURRENT_SECTION="suggestions"
-        ;;
-      *Security*|*SECURITY*)
-        echo "🔒 Security Review:"
-        CURRENT_SECTION="security"
-        ;;
-      *Test*|*TESTING*|*TEST*COVERAGE*)
-        echo "🧪 Test Coverage:"
-        CURRENT_SECTION="tests"
-        ;;
-      *Performance*|*PERFORMANCE*)
-        echo "📊 Performance:"
-        CURRENT_SECTION="performance"
-        ;;
-      *Alignment*|*CLAUDE.md*)
-        echo "🎯 Alignment with project guidelines:"
-        CURRENT_SECTION="alignment"
-        ;;
-      *CRITICAL*|*Critical*)
-        echo "🚨 CRITICAL Issues:"
-        CURRENT_SECTION="critical"
-        ;;
-      *HIGH*|*High*)
-        echo "⚡ HIGH Priority Issues:"
-        CURRENT_SECTION="high"
-        ;;
-      *MEDIUM*|*Medium*)
-        echo "📋 MEDIUM Priority Issues:"
-        CURRENT_SECTION="medium"
-        ;;
-      *LOW*|*Low*)
-        echo "💡 LOW Priority Issues:"
-        CURRENT_SECTION="low"
-        ;;
+    # Severity / section header: ### <emoji> CRITICAL Issues, ### What Looks Good …
+    if [[ "$line" =~ ^###[[:space:]]+(.+)$ ]]; then
+      hdr=$(printf '%s' "${BASH_REMATCH[1]}" | sed -E 's/\*\*//g' || true)
+      case "$hdr" in
+        *CRITICAL*|*Critical*) color="$RED" ;;
+        *HIGH*|*High*)         color="$YELLOW" ;;
+        *MEDIUM*|*Medium*)     color="$CYAN" ;;
+        *LOW*|*Low*)           color="$DIM" ;;
+        *Good*|*LGTM*)         color="$GREEN" ;;
+        *)                     color="$BLUE" ;;
+      esac
+      printf '%s%b%s%b\n' "$nl" "${BOLD}${color}" "$hdr" "$NC"
+      prev_blank=false; seen=true
+      continue
+    fi
+
+    # Any other heading level (e.g. a stray ## ) — drop the marker, keep text.
+    if [[ "$line" =~ ^#+[[:space:]]+(.+)$ ]]; then
+      payload=$(printf '%s' "${BASH_REMATCH[1]}" | sed -E 's/\*\*//g; s/`//g' || true)
+      printf '%b%s%b\n' "$BOLD" "$payload" "$NC"
+      prev_blank=false; seen=true
+      continue
+    fi
+
+    # Collapse runs of blank lines to one.
+    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+      [ "$prev_blank" = true ] && continue
+      prev_blank=true
+      echo ""
+      continue
+    fi
+    prev_blank=false
+
+    # Strip markdown emphasis + inline code backticks from prose.
+    clean=$(printf '%s' "$line" | sed -E 's/\*\*//g; s/__//g; s/`//g' || true)
+
+    # Skip the counts lines — the JSON banner already shows them.
+    case "$clean" in
+      "Files Analyzed:"*|"Findings:"*) continue ;;
+    esac
+
+    # Bullets / checklist items.
+    if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+(.+)$ ]]; then
+      payload=$(printf '%s' "${BASH_REMATCH[1]}" | sed -E 's/\*\*//g; s/__//g; s/`//g; s/^\[[ xX]\][[:space:]]*//' || true)
+      printf '  • %s\n' "$payload"
+      seen=true
+      continue
+    fi
+
+    # Known field labels get a color accent; everything else is plain prose.
+    case "$clean" in
+      File:*|Category:*|Problem:*|Impact:*|Fix:*|Code:*|Recommendation:*|"Next Steps:"*|Verdict:*)
+        printf '%b%s%b\n' "$CYAN" "$clean" "$NC" ;;
       *)
-        # Store subheader for later (might be a parenthetical note)
-        PENDING_SUBHEADER="$subtitle"
-        ;;
+        printf '%s\n' "$clean" ;;
     esac
-    return
-  fi
-
-  # Handle bullet/numbered lists
-  if [[ "$line" =~ ^[[:space:]]*[-*•][[:space:]]+(.+)$ ]] || [[ "$line" =~ ^[[:space:]]*[0-9]+\.[[:space:]]+(.+)$ ]]; then
-    local item="${BASH_REMATCH[1]}"
-
-    case "$CURRENT_SECTION" in
-      strengths)
-        # Extract just key phrase for strengths
-        local key=$(extract_key_phrase "$item")
-        LIST_BUFFER+=("$key")
-        IN_LIST=true
-        ;;
-      alignment)
-        # Remove markdown
-        item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' || true)
-        echo "— $item"
-        ;;
-      *)
-        # Other lists: keep compact
-        item=$(echo "$item" | sed -E 's/\*\*//g' | sed -E 's/__//g' || true)
-        echo "  • $item"
-        ;;
-    esac
-    return
-  fi
-
-  # Handle regular text
-  if [[ -n "$line" ]]; then
-    flush_list
-
-    # Print pending subheader if exists
-    if [ -n "$PENDING_SUBHEADER" ]; then
-      echo "($PENDING_SUBHEADER) $line"
-      PENDING_SUBHEADER=""
-      return
-    fi
-
-    # Remove markdown formatting
-    local clean_line=$(echo "$line" | sed -E 's/\*\*//g' | sed -E 's/__//g' || true)
-
-    # Skip pure whitespace
-    if [[ "$clean_line" =~ ^[[:space:]]*$ ]]; then
-      return
-    fi
-
-    echo "$clean_line"
-  fi
+    seen=true
+  done
 }
 
-flush_list() {
-  if [ "$IN_LIST" = true ] && [ ${#LIST_BUFFER[@]} -gt 0 ]; then
-    case "$CURRENT_SECTION" in
-      strengths)
-        # Join with comma-space separator
-        printf "%s" "${LIST_BUFFER[0]}"
-        for i in "${LIST_BUFFER[@]:1}"; do
-          printf ", %s" "$i"
-        done
-        echo ""
-        ;;
-    esac
-    LIST_BUFFER=()
-    IN_LIST=false
-  fi
+# ---------------------------------------------------------------------------
+# _fr_fallback_clean: last-resort renderer for a review with no `## ` heading
+# (malformed / pre-template). Strips the JSON block and all HTML-comment lines
+# so raw markers never reach the screen; prints everything else verbatim.
+# ---------------------------------------------------------------------------
+_fr_fallback_clean() {
+  local file="$1"
+  awk -v marker="<!-- $RITE_MARKER_REVIEW_DATA" '
+    index($0, marker) == 1 { injson = 1 }
+    injson { if ($0 ~ /-->/) injson = 0; next }
+    /^[[:space:]]*<!--/ { next }
+    { print }
+  ' "$file"
 }
 
-# Run main logic only when executed directly (not sourced)
+# Run main logic only when executed directly (not sourced).
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   REVIEW_FILE="${1:-}"
   if [ ! -f "${REVIEW_FILE:-}" ]; then
@@ -228,11 +194,27 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     exit 1
   fi
 
-  # Read and process file
-  while IFS= read -r line || [ -n "$line" ]; do
-    process_line "$line"
-  done < "$REVIEW_FILE"
+  # 1. Summary banner from the authoritative JSON block (markers stripped via
+  #    1d;$d, matching the extraction idiom in local-review.sh). Fall back to the
+  #    markdown Findings line when no parseable JSON is present.
+  _JSON_BLOCK=$(sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" "$REVIEW_FILE" | sed '1d;$d' || true)
+  if ! _fr_render_banner "$_JSON_BLOCK"; then
+    _FINDINGS=$(grep -m1 -E "Findings:.*CRITICAL" "$REVIEW_FILE" | sed -E 's/\*\*//g' || true)
+    [ -n "$_FINDINGS" ] && printf '%b%s%b\n' "$BOLD" "$_FINDINGS" "$NC"
+  fi
+  echo ""
 
-  # Final flush
-  flush_list
+  # 2. Body: lines after the first `## ` heading and before the JSON block.
+  #    Everything before the heading (model preamble + review marker) is dropped.
+  _BODY=$(awk -v marker="<!-- $RITE_MARKER_REVIEW_DATA" '
+    index($0, marker) == 1 { exit }
+    !started && /^## / { started = 1; next }
+    started { print }
+  ' "$REVIEW_FILE" || true)
+
+  if [ -z "$_BODY" ]; then
+    _fr_fallback_clean "$REVIEW_FILE"
+  else
+    printf '%s\n' "$_BODY" | _fr_render_body
+  fi
 fi
