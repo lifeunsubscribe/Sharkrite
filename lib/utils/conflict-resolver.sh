@@ -52,6 +52,95 @@ _cr_error()   { echo "❌ $1" >&2; }
 _cr_status()  { echo "$1" >&2; }
 
 # ===================================================================
+# ADD/ADD OVERWRITE-COLLISION DETECTION (issue #783)
+# ===================================================================
+#
+# When two branches independently CREATE different files at the SAME path,
+# the stash → rebase → stash-pop flow (stale-branch.sh) fails with ZERO
+# unmerged entries: git refuses to overwrite the now-tracked file with the
+# stashed/untracked version ("already exists, no checkout" / "would be
+# overwritten by merge"). This is NOT a 3-way content conflict, so the
+# `--diff-filter=U` signal the resolver keys off is empty. Without explicit
+# detection the resolver mistakes this for either "merge succeeded" or the
+# generic "unexpected state" bail — surfacing nothing actionable.
+#
+# Detection has two independent signals (either is sufficient):
+#   1. git output matches the overwrite/untracked-collision signatures
+#   2. a preserved stash holds an untracked file at a path that the current
+#      tree now TRACKS (the realistic stale-branch case: the colliding stash
+#      is left un-popped, so the resolver's own `git merge` reports
+#      "Already up to date" and there is no git error text to inspect).
+
+# _cr_output_signals_overwrite_collision OUTPUT
+# Returns 0 if the captured git output text matches a known overwrite/untracked
+# collision signature, 1 otherwise.
+_cr_output_signals_overwrite_collision() {
+  local _out="${1:-}"
+  [ -z "$_out" ] && return 1
+  echo "$_out" | grep -qiE 'already exists, no checkout|would be overwritten by (merge|checkout)|untracked working tree files would be overwritten'
+}
+
+# _cr_stash_untracked_collision_paths
+# Prints (newline-delimited) the paths held as UNTRACKED files in the most
+# recent stash that ALSO already exist (tracked or present) in the current
+# working tree — i.e. a same-path add/add collision that blocked a stash pop.
+# Prints nothing when there is no stash, or no colliding untracked path.
+# Conservative: only files git records as untracked-in-stash are considered.
+_cr_stash_untracked_collision_paths() {
+  git rev-parse --verify --quiet refs/stash >/dev/null 2>&1 || return 0
+  local _untracked
+  # `stash show --include-untracked --name-only` lists ALL files in the stash
+  # (tracked + untracked); we only want the untracked ones, which are the only
+  # ones that produce the "already exists, no checkout" pop failure. Diff the
+  # untracked-only commit (stash@{0}^3) against its parent to get exactly the
+  # untracked set. Falls back to empty when the stash has no untracked part.
+  _untracked=$(git show --name-only --pretty=format: 'stash@{0}^3' 2>/dev/null || true)
+  while IFS= read -r _p; do
+    [ -z "$_p" ] && continue
+    # Colliding only if the path now exists in the working tree (it would be
+    # clobbered by the pop). A tracked-and-present file is the add/add case.
+    if [ -e "$_p" ]; then
+      printf '%s\n' "$_p"
+    fi
+  done <<< "$_untracked"
+}
+
+# _cr_materialize_addadd_conflict PATH
+# Turns a detected same-path add/add collision into a real in-file 3-way
+# conflict so the existing LLM resolution flow (Step 4-6) can content-merge it.
+# The current on-disk version (main/HEAD's file) becomes the HEAD side; the
+# stashed untracked version becomes the incoming side. The file is left with
+# standard conflict markers and recorded as unmerged in the index, exactly as
+# `git merge` would for a tracked add/add conflict — so the downstream verify
+# checks (Check 1 + Check 2) validate the LLM's resolution identically.
+# Returns 0 on success (an unmerged conflict now exists), 1 if it could not
+# reconstruct both sides (caller should fall back to surfacing both versions).
+_cr_materialize_addadd_conflict() {
+  local _path="$1"
+  [ -z "$_path" ] && return 1
+  # The incoming (branch) version lives in the untracked part of the stash.
+  local _incoming
+  _incoming=$(git show "stash@{0}^3:$_path" 2>/dev/null || true)
+  # The current (main/HEAD) version is on disk now.
+  [ -f "$_path" ] || return 1
+  local _ours
+  _ours=$(cat "$_path" 2>/dev/null || true)
+  # Reconstruct standard conflict markers (HEAD = current/main, incoming = branch).
+  {
+    printf '<<<<<<< HEAD\n'
+    printf '%s\n' "$_ours"
+    printf '=======\n'
+    printf '%s\n' "$_incoming"
+    printf '>>>>>>> stash (branch %s)\n' "${_cr_branch_name:-incoming}"
+  } > "$_path" || return 1
+  # Mark the path unmerged in the index so the standard verify path applies.
+  # Best-effort: if the index update fails, the in-file markers still let the
+  # LLM resolve, and Check 2 (marker scan) will validate.
+  git rm --cached --quiet "$_path" 2>/dev/null || true
+  return 0
+}
+
+# ===================================================================
 # PUBLIC: attempt_claude_merge_resolution
 # ===================================================================
 
@@ -178,19 +267,93 @@ attempt_claude_merge_resolution() {
   fi
 
   # ── Step 3: Re-start merge so Claude sees conflict markers ──
-  if git merge "$_cr_merge_target" --no-edit 2>/dev/null; then
-    # Merge succeeded — no conflicts to resolve
-    _cr_info "Merge succeeded — no conflict resolution needed"
-    return 0
-  fi
+  # Capture merge output (stdout+stderr) so we can distinguish a genuine
+  # success from an overwrite/untracked add/add collision (issue #783).
+  local _cr_merge_output _cr_merge_exit=0
+  _cr_merge_output=$(git merge "$_cr_merge_target" --no-edit 2>&1) || _cr_merge_exit=$?
 
-  # Refresh conflict files from the live merge state (covers the case where Step 1
-  # found none because the caller had already aborted before invoking us).
-  _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
-  if [ -z "$_cr_conflict_files" ]; then
-    _cr_error "Merge failed but no unmerged files found — unexpected state"
-    git merge --abort 2>/dev/null || true
-    return 1
+  if [ "$_cr_merge_exit" -eq 0 ]; then
+    # git reports success — but a same-path add/add collision can hide here:
+    # in the stale-branch flow the branch is already rebased onto main, so this
+    # merge is "Already up to date" while the colliding branch file sits
+    # un-popped in the stash. Detect and convert it to a resolvable conflict.
+    local _cr_addadd_paths
+    _cr_addadd_paths=$(_cr_stash_untracked_collision_paths || true)
+    if [ -n "$_cr_addadd_paths" ]; then
+      _cr_warning "Same-path add/add collision detected (stashed branch file overwrites a now-tracked path)"
+      echo "$_cr_addadd_paths" | sed 's/^/  /' >&2
+      local _cr_materialized=false
+      while IFS= read -r _cr_ap; do
+        [ -z "$_cr_ap" ] && continue
+        if _cr_materialize_addadd_conflict "$_cr_ap"; then
+          _cr_materialized=true
+        fi
+      done <<< "$_cr_addadd_paths"
+      if [ "$_cr_materialized" = true ]; then
+        _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+        # Materialized files are removed-from-index (git rm --cached); pick them
+        # up via the working-tree path list when --diff-filter=U is empty.
+        if [ -z "$_cr_conflict_files" ]; then
+          _cr_conflict_files="$_cr_addadd_paths"
+        fi
+        _cr_info "Routing same-path add/add collision to content merge"
+      else
+        # Could not reconstruct both sides — surface them clearly instead of bailing.
+        _cr_error "Same-path add/add collision at: $(echo "$_cr_addadd_paths" | tr '\n' ' ')"
+        _cr_error "Two independently-created versions exist at the same path; a content merge is required (run 'git stash show -p' to inspect the branch version)."
+        return 1
+      fi
+    else
+      # Genuine success — no conflicts to resolve
+      _cr_info "Merge succeeded — no conflict resolution needed"
+      return 0
+    fi
+  else
+    # Merge reported failure. Refresh conflict files from the live merge state
+    # (covers the case where Step 1 found none because the caller aborted before
+    # invoking us).
+    _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    if [ -z "$_cr_conflict_files" ]; then
+      # Zero unmerged entries but the merge failed: this is the add/add
+      # overwrite collision class (issue #783), NOT a true unexpected state.
+      # The authoritative signal is a stash holding an untracked file that now
+      # collides with a tracked path; the git output signature corroborates it.
+      local _cr_addadd_paths=""
+      _cr_addadd_paths=$(_cr_stash_untracked_collision_paths || true)
+      if [ -z "$_cr_addadd_paths" ] && _cr_output_signals_overwrite_collision "$_cr_merge_output"; then
+        # Output names a collision but no colliding stash was found — surface it.
+        _cr_error "Overwrite/untracked collision during merge; could not identify a stashed colliding path. Inspect manually (git status; git stash list)."
+        git merge --abort 2>/dev/null || true
+        return 1
+      fi
+      if [ -n "$_cr_addadd_paths" ]; then
+        _cr_warning "Same-path add/add collision detected (overwrite blocked, zero unmerged entries)"
+        echo "$_cr_addadd_paths" | sed 's/^/  /' >&2
+        git merge --abort 2>/dev/null || true
+        local _cr_materialized=false
+        while IFS= read -r _cr_ap; do
+          [ -z "$_cr_ap" ] && continue
+          if _cr_materialize_addadd_conflict "$_cr_ap"; then
+            _cr_materialized=true
+          fi
+        done <<< "$_cr_addadd_paths"
+        if [ "$_cr_materialized" = true ]; then
+          _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+          if [ -z "$_cr_conflict_files" ]; then
+            _cr_conflict_files="$_cr_addadd_paths"
+          fi
+          _cr_info "Routing same-path add/add collision to content merge"
+        else
+          _cr_error "Same-path add/add collision at: $(echo "$_cr_addadd_paths" | tr '\n' ' ')"
+          _cr_error "Two independently-created versions exist at the same path; a content merge is required (run 'git stash show -p' to inspect the branch version)."
+          return 1
+        fi
+      else
+        _cr_error "Merge failed but no unmerged files found — unexpected state"
+        git merge --abort 2>/dev/null || true
+        return 1
+      fi
+    fi
   fi
 
   _cr_status "Conflicts to resolve via Claude:" >&2
