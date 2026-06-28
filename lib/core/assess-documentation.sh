@@ -1225,12 +1225,105 @@ SIMILARITY_EOF
     fi
   fi
 
-  # --- Coverage check (stub — filled in by sub-issue #767) ---
-  # When implemented: calls sonnet to ask "for each new tag, are there existing
-  # catalog headings that should be pointed at but aren't?" and adds missing
-  # pointers to tag-index.md.
-  # Returns empty for now (graceful no-op).
+  # --- Coverage check (drift) (#767) ---
+  # Ask sonnet, for each NEW tag, which existing catalog headings (in
+  # conventions.md / encountered-issues.md / behavioral-design.md) describe the
+  # same subject but are NOT yet pointed at by tag-index.md → that tag, then add
+  # the missing pointers (section-safe via tag_index_add_coverage_pointer).
+  # Graceful: any provider/JSON failure adds zero pointers and never aborts.
+  # Anti-hallucination: a returned pointer is applied ONLY when its tag is one
+  # of THIS PR's new tags (_new_tags, built above for the similarity check).
   local _coverage_result=""
+
+  if [ -n "$_new_tags" ]; then
+    # Gather catalog content best-effort — skip any file that is absent.
+    local _catalog_content=""
+    local _cat_file
+    for _cat_file in \
+      "${RITE_PROJECT_ROOT}/docs/architecture/conventions.md" \
+      "${RITE_PROJECT_ROOT}/docs/architecture/encountered-issues.md" \
+      "${RITE_PROJECT_ROOT}/docs/architecture/behavioral-design.md"; do
+      [ -f "$_cat_file" ] || continue
+      _catalog_content="${_catalog_content}
+--- $(basename "$_cat_file") ---
+$(cat "$_cat_file" 2>/dev/null || true)"
+    done
+
+    # Only call the model when we actually have catalog content to scan against.
+    if [ -n "$_catalog_content" ]; then
+      local _coverage_prompt
+      # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: ${_new_tags}/${_catalog_content} must be expanded into the prompt
+      _coverage_prompt="$(cat <<COVERAGE_EOF
+Output ONLY a single JSON object. No prose before or after.
+
+You maintain a tag index that routes tags to headings in catalog docs. Below are
+NEW tags being added and the catalog documents (each headed by its filename).
+For each NEW tag, identify existing catalog headings whose subject matter matches
+that tag but which are NOT obviously already pointed at — these are missing
+pointers the index should gain.
+
+Return JSON of the form:
+{"missing_pointers":[{"tag":"<new tag name>","target":"file.md#heading"}]}
+
+Rules:
+- "tag" MUST be one of the NEW tags listed below.
+- "target" MUST be "<filename>#<exact heading text>" using a heading that
+  literally appears in that file.
+- Propose a pointer ONLY when the heading clearly concerns the tag's subject.
+- If there are no missing pointers, return {"missing_pointers":[]}.
+
+NEW tags:
+${_new_tags}
+
+Catalog documents:
+${_catalog_content}
+COVERAGE_EOF
+)"
+
+      # Use the doc_assessment model (sonnet): structured heading matching.
+      _coverage_result=$(provider_run_prompt_with_timeout "$_coverage_prompt" "$(claude_provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
+
+      if [ -n "$_coverage_result" ]; then
+        # Parse pointer entries as compact JSON objects (one per line). jq guarded
+        # with || true so malformed/empty JSON degrades to zero pointers.
+        local _pointers
+        _pointers=$(printf '%s' "$_coverage_result" | jq -c '.missing_pointers[]?' 2>/dev/null || true)
+
+        if [ -n "$_pointers" ]; then
+          local _ptr_obj _cov_tag _cov_target _cov_file _cov_heading _is_new_tag
+          while IFS= read -r _ptr_obj; do
+            [ -z "$_ptr_obj" ] && continue
+            _cov_tag=$(printf '%s' "$_ptr_obj" | jq -r '.tag // empty' 2>/dev/null || true)
+            _cov_target=$(printf '%s' "$_ptr_obj" | jq -r '.target // empty' 2>/dev/null || true)
+
+            [ -z "$_cov_tag" ] && continue
+            [ -z "$_cov_target" ] && continue
+
+            # Anti-hallucination guard: the tag MUST be one of THIS PR's new tags.
+            # _new_tags is newline-separated; match a whole line exactly.
+            _is_new_tag=$(printf '%s\n' "$_new_tags" | grep -qxF "$_cov_tag" && echo "yes" || true)
+            if [ "$_is_new_tag" != "yes" ]; then
+              print_warning "  tag-index: skipping coverage pointer for unknown tag '${_cov_tag}' (not a new tag in this PR)" >&2
+              continue
+            fi
+
+            # Derive file/heading the same way the helper does (split on FIRST #).
+            _cov_file="${_cov_target%%#*}"
+            _cov_heading="${_cov_target#*#}"
+
+            # Ensure the tag's section exists so the section-safe insert has an
+            # anchor (mirrors update_tag_index_from_block). No-op if present.
+            tag_index_ensure_file
+            tag_index_ensure_heading "$_cov_tag"
+
+            if tag_index_add_coverage_pointer "$_cov_tag" "$_cov_target"; then
+              tag_index_log_history added "$pr_number" "$_cov_tag" "$_cov_file" "$_cov_heading"
+            fi
+          done <<< "$_pointers"
+        fi
+      fi
+    fi
+  fi
 
   return 0
 }

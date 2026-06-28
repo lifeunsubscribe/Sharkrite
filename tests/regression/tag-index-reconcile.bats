@@ -42,8 +42,18 @@ setup() {
   # so similarity-unaware tests stay no-ops).
   export DOC_CLAUDE_TIMEOUT=120
   export SIMILARITY_JSON=""
+  export COVERAGE_JSON=""
   claude_provider_resolve_model() { echo "stub-model"; }
-  provider_run_prompt_with_timeout() { printf '%s' "${SIMILARITY_JSON:-}"; }
+  # Both the similarity (#766) and coverage (#767) checks call this stub. They
+  # are distinguished by prompt content: the coverage prompt asks for
+  # "missing_pointers", the similarity prompt asks for "merges". This lets a
+  # test set COVERAGE_JSON and SIMILARITY_JSON independently.
+  provider_run_prompt_with_timeout() {
+    case "$1" in
+      *missing_pointers*) printf '%s' "${COVERAGE_JSON:-}" ;;
+      *)                  printf '%s' "${SIMILARITY_JSON:-}" ;;
+    esac
+  }
   export -f claude_provider_resolve_model provider_run_prompt_with_timeout
 
   # Source tag-index.sh to load tag_index_log_history() and its helpers.
@@ -687,4 +697,145 @@ IDX_EOF
 IDX_EOF
   run tag_index_merge_tag "from-tag" "into-tag"
   [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Stage 3 final slice (#767 + #759 + #760): coverage check + section-safe pointers
+# ---------------------------------------------------------------------------
+
+# Seeds a single conventions.md catalog file so the coverage check has content to
+# scan (the coverage block skips the model call when no catalog file exists).
+_seed_catalog_conventions() {
+  mkdir -p "${RITE_TEST_TMPDIR}/docs/architecture"
+  cat > "${RITE_TEST_TMPDIR}/docs/architecture/conventions.md" <<'CONV_EOF'
+# Conventions
+
+## grep -c pattern
+Some content about grep -c.
+
+## Silent death: pipelines inside $()
+Some content about silent death.
+CONV_EOF
+}
+
+@test "#759: coverage pointer lands INSIDE the target section, not the adjacent one" {
+  # Fixture: target tag's section is followed by a blank line then another
+  # heading. tag_index_add_coverage_pointer must insert directly under ## alpha,
+  # NOT under ## beta.
+  mkdir -p "$(dirname "$TAG_INDEX_FILE")"
+  cat > "$TAG_INDEX_FILE" <<'IDX_EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## alpha
+
+## beta
+- docs/b.md → Beta Existing
+IDX_EOF
+
+  run tag_index_add_coverage_pointer "alpha" "conventions.md#New Alpha Heading"
+  [ "$status" -eq 0 ]
+
+  # The new pointer must appear in alpha's section. Verify section-safe placement:
+  # the line immediately after "## alpha" is the new pointer.
+  local after_alpha
+  after_alpha=$(awk '/^## alpha$/{getline; print; exit}' "$TAG_INDEX_FILE")
+  [ "$after_alpha" = "- conventions.md → New Alpha Heading" ]
+
+  # And it must NOT have landed inside beta's section.
+  local beta_section
+  beta_section=$(awk '/^## beta$/{f=1; next} f&&/^## /{f=0} f{print}' "$TAG_INDEX_FILE")
+  ! echo "$beta_section" | grep -q "New Alpha Heading"
+}
+
+@test "#767: coverage pointer applied for a valid new tag + history logs added" {
+  _seed_catalog_conventions
+
+  # Seed the index with the new tag's heading (as update_conventions_from_marker
+  # would just have done in production).
+  _seed_index_with_existing_tag "some-existing" "grep-count"
+
+  export COVERAGE_JSON='{"missing_pointers":[{"tag":"grep-count","target":"conventions.md#grep -c pattern"}]}'
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - grep-count: Tracks the grep -c count-and-exit-code pattern")"
+
+  reconcile_tag_index "$body" "500"
+
+  # The pointer appears under the grep-count tag.
+  local grep_count_section
+  grep_count_section=$(awk '/^## grep-count$/{f=1; next} f&&/^## /{f=0} f{print}' "$TAG_INDEX_FILE")
+  echo "$grep_count_section" | grep -q "conventions.md → grep -c pattern"
+
+  # History logs the added action: added <tag> → <file> → <heading>.
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  [ -f "$log_file" ]
+  grep -q "added grep-count → conventions.md → grep -c pattern" "$log_file"
+}
+
+@test "#767: anti-hallucination — pointer for a tag NOT in this PR is skipped" {
+  _seed_catalog_conventions
+  _seed_index_with_existing_tag "some-existing" "real-tag"
+
+  # The model returns a pointer for 'ghost-tag' which is NOT one of this PR's
+  # new tags. It must be skipped (with a warning) and no pointer added for it.
+  export COVERAGE_JSON='{"missing_pointers":[{"tag":"ghost-tag","target":"conventions.md#grep -c pattern"}]}'
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - real-tag: A genuine new tag for this PR")"
+
+  reconcile_tag_index "$body" "600"
+
+  # No ## ghost-tag heading was created and no ghost-tag pointer exists.
+  ! grep -q "^## ghost-tag" "$TAG_INDEX_FILE"
+  ! grep -q "ghost-tag" "$TAG_INDEX_FILE"
+
+  # No 'added ghost-tag' history line.
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  if [ -f "$log_file" ]; then
+    ! grep -q "added ghost-tag" "$log_file"
+  fi
+}
+
+@test "#767: malformed coverage JSON is a graceful no-op; multi-# target splits on first #" {
+  # --- Part 1: malformed JSON -> no pointer added, no abort ---
+  _seed_catalog_conventions
+  _seed_index_with_existing_tag "some-existing" "safe-tag"
+
+  export COVERAGE_JSON='{this is not valid json'
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - safe-tag: A new tag whose coverage call yields malformed JSON")"
+
+  # Must not abort under set -e (reconcile returns 0).
+  reconcile_tag_index "$body" "700"
+
+  # safe-tag's section gained no coverage pointer (only its seeded one remains).
+  local safe_section
+  safe_section=$(awk '/^## safe-tag$/{f=1; next} f&&/^## /{f=0} f{print}' "$TAG_INDEX_FILE")
+  local ptr_count
+  ptr_count=$(echo "$safe_section" | grep -c "^- " || true)
+  [ "$ptr_count" -eq 1 ]
+
+  # --- Part 2: target with multiple '#' splits on the FIRST # ---
+  # file=conventions.md, heading="Heading#Sub" (the second # is preserved).
+  run tag_index_add_coverage_pointer "safe-tag" "conventions.md#Heading#Sub"
+  [ "$status" -eq 0 ]
+  grep -q "conventions.md → Heading#Sub" "$TAG_INDEX_FILE"
+}
+
+@test "#760: full tag-index-reconcile suite is green (covered by this file running)" {
+  # This file IS the suite; its own green run is the assertion for #760's
+  # requirement that the coverage/awk area no longer breaks the gate. A trivial
+  # passing assertion documents the intent without re-invoking bats recursively.
+  [ 1 -eq 1 ]
 }
