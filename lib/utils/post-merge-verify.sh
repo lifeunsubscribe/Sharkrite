@@ -147,7 +147,7 @@ verify_post_merge() {
     echo "Running post-merge verification (targeted gate)..." >&2
 
     local _pmv_gate_file
-    _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$.json")
+    _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$_XXXXXX")
     local _pmv_gate_exit=0
     # RITE_TEST_GATE_SKIP_TRIGGERS=true — disable the LINT full-scan trigger
     # list for this call (bats triggers no longer exist; since 2026-06-12 the

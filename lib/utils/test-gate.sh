@@ -606,8 +606,8 @@ run_test_gate() {
   if [ -n "${RITE_TEST_COMMAND:-}" ] && [ "$_is_sharkrite" = "false" ]; then
     echo "[test-gate] Using RITE_TEST_COMMAND: ${RITE_TEST_COMMAND}"
     local _nonsr_exit_file_cmd _tests_raw_file_cmd
-    _nonsr_exit_file_cmd=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$.txt")
-    _tests_raw_file_cmd=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$.txt")
+    _nonsr_exit_file_cmd=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+    _tests_raw_file_cmd=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$_XXXXXX")
     # Register crash-sentinel trap: if this branch exits non-zero before
     # _gate_write_json runs, write a valid-JSON sentinel (skipped:true) so
     # assess-and-resolve.sh never reads an empty/absent file as zero findings
@@ -660,8 +660,8 @@ run_test_gate() {
 
   # Temp files for capturing raw output (PID-scoped to prevent glob collision)
   local _lint_raw_file _tests_raw_file
-  _lint_raw_file=$(mktemp "/tmp/rite_gate_lint_${PR_NUMBER:-0}_$$.txt")
-  _tests_raw_file=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$.txt")
+  _lint_raw_file=$(mktemp "/tmp/rite_gate_lint_${PR_NUMBER:-0}_$$_XXXXXX")
+  _tests_raw_file=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$_XXXXXX")
   # Register cleanup for this invocation's specific files (never a glob).
   # Also write a valid-JSON crash sentinel if the function exits non-zero before
   # _gate_write_json runs — an empty/absent output_file causes jq to silently
@@ -719,9 +719,9 @@ run_test_gate() {
     local _lint_tool_exit=0
     # Exit-code capture temp files (PID-scoped; one per invocation to prevent glob collision)
     local _sc_exit_file _lint_exit_file _bats_exit_file
-    _sc_exit_file=$(mktemp "/tmp/rite_gate_sc_exit_${PR_NUMBER:-0}_$$.txt")
-    _lint_exit_file=$(mktemp "/tmp/rite_gate_lint_exit_${PR_NUMBER:-0}_$$.txt")
-    _bats_exit_file=$(mktemp "/tmp/rite_gate_bats_exit_${PR_NUMBER:-0}_$$.txt")
+    _sc_exit_file=$(mktemp "/tmp/rite_gate_sc_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+    _lint_exit_file=$(mktemp "/tmp/rite_gate_lint_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+    _bats_exit_file=$(mktemp "/tmp/rite_gate_bats_exit_${PR_NUMBER:-0}_$$_XXXXXX")
 
     # --- Compute changed-file set once for both lint and bats selection ---
     local _diff_base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
@@ -757,8 +757,8 @@ run_test_gate() {
     # both finish within a few seconds and the merged output is then written to
     # the run log only (_gate_raw_sink), not the terminal.
     local _sc_raw_individual _lint_raw_individual
-    _sc_raw_individual=$(mktemp "/tmp/rite_gate_sc_raw_${PR_NUMBER:-0}_$$.txt")
-    _lint_raw_individual=$(mktemp "/tmp/rite_gate_lint_raw_${PR_NUMBER:-0}_$$.txt")
+    _sc_raw_individual=$(mktemp "/tmp/rite_gate_sc_raw_${PR_NUMBER:-0}_$$_XXXXXX")
+    _lint_raw_individual=$(mktemp "/tmp/rite_gate_lint_raw_${PR_NUMBER:-0}_$$_XXXXXX")
 
     echo "[test-gate] Running make shellcheck + make lint (concurrent)..."
     { (cd "$project_root" && make shellcheck) > "$_sc_raw_individual" 2>&1; echo $? > "$_sc_exit_file"; } &
@@ -999,7 +999,7 @@ run_test_gate() {
     # Non-Sharkrite: best-effort detection (npm test / make test / pytest / cargo / go)
     # For non-Sharkrite repos the gate runs whatever the manifest implies.
     local _nonsr_exit_file
-    _nonsr_exit_file=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$.txt")
+    _nonsr_exit_file=$(mktemp "/tmp/rite_gate_nonsr_exit_${PR_NUMBER:-0}_$$_XXXXXX")
 
     # Detect whether this PR touched source files for use in loud-skip below.
     # Source = any non-docs/non-config change. A simple heuristic: any changed

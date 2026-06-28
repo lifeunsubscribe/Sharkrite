@@ -139,7 +139,7 @@ try_trivial_fix_fastpath() {
 
   # --- 3. Apply the patch (deterministic; fails safely on drift) ----------
   local _patch_file
-  _patch_file="$(mktemp "/tmp/rite_fastpath_${issue_number}_$$.patch")"
+  _patch_file="$(mktemp "/tmp/rite_fastpath_${issue_number}_$$_XXXXXX")"
   printf '%s\n' "$FASTPATH_DIFF" > "$_patch_file"
 
   if ! git -C "$_worktree" apply --check "$_patch_file" 2>/dev/null; then
@@ -192,7 +192,7 @@ try_trivial_fix_fastpath() {
 
   # --- 6. Post-commit gate (make check + bats -r tests/) ------------------
   local _gate_file _gate_exit=0
-  _gate_file="$(mktemp "/tmp/rite_fastpath_gate_${issue_number}_$$.json")"
+  _gate_file="$(mktemp "/tmp/rite_fastpath_gate_${issue_number}_$$_XXXXXX")"
   print_step "Running post-commit gate (make check + bats -r tests/)..."
   run_test_gate "$_gate_file" "$_worktree" || true
   if command -v jq >/dev/null 2>&1 && [ -f "$_gate_file" ]; then

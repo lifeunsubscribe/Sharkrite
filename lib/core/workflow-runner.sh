@@ -1372,7 +1372,7 @@ phase_assess_and_resolve() {
     # Both complete before the next assessment so gate findings are available.
     # See: docs/architecture/behavioral-design.md → "Verification Out of Fix Session".
     local _gate_output_file
-    _gate_output_file="$(mktemp "/tmp/rite_gate_${pr_number}_$$.json")"
+    _gate_output_file="$(mktemp "/tmp/rite_gate_${pr_number}_$$_XXXXXX")"
     local _gate_pid=""
 
     # Export PR_NUMBER so run_test_gate can include it in the [diag] line
@@ -2531,7 +2531,7 @@ run_workflow() {
     local _init_gate_file="" _init_gate_pid=""
     if declare -f run_test_gate >/dev/null 2>&1 \
        && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-      _init_gate_file="$(mktemp "/tmp/rite_gate_init_${issue_number}_$$.json")"
+      _init_gate_file="$(mktemp "/tmp/rite_gate_init_${issue_number}_$$_XXXXXX")"
       print_info "Starting post-commit gate in background (parallel with review)..."
       # RITE_GATE_BACKGROUND=1: parallel with review generation → route raw output
       # to the log (not the terminal) so it can't interleave with the review.
