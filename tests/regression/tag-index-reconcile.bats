@@ -35,6 +35,17 @@ setup() {
   verbose_info()  { :; }
   export -f print_warning print_info verbose_info
 
+  # Stubs for the sonnet similarity wiring (#766). DOC_CLAUDE_TIMEOUT and
+  # claude_provider_resolve_model are normally provided by assess-documentation.sh's
+  # top-level body, which we deliberately do not execute. provider_run_prompt_with_timeout
+  # echoes whatever canned JSON a test places in SIMILARITY_JSON (empty by default,
+  # so similarity-unaware tests stay no-ops).
+  export DOC_CLAUDE_TIMEOUT=120
+  export SIMILARITY_JSON=""
+  claude_provider_resolve_model() { echo "stub-model"; }
+  provider_run_prompt_with_timeout() { printf '%s' "${SIMILARITY_JSON:-}"; }
+  export -f claude_provider_resolve_model provider_run_prompt_with_timeout
+
   # Source tag-index.sh to load tag_index_log_history() and its helpers.
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
 
@@ -494,4 +505,186 @@ BODY
   local count
   count=$(grep -c "tag: mytag | because reasons" "$log_file" || true)
   [ "$count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Stage 3 slice 3 (#766 + #763): similarity merge + confidence guard
+# ---------------------------------------------------------------------------
+
+# Writes a tag-index.md fixture with one EXISTING tag (merge target) and one
+# NEW tag heading (merge source). In production update_conventions_from_marker
+# creates the new tag's heading+pointer before reconcile_tag_index runs the
+# similarity check, so a merge moves that pointer under the existing tag.
+# When $2 is omitted, only the existing heading is written.
+_seed_index_with_existing_tag() {
+  local existing="$1"
+  local newtag="${2:-}"
+  mkdir -p "$(dirname "$TAG_INDEX_FILE")"
+  cat > "$TAG_INDEX_FILE" <<SEED_EOF
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## ${existing}
+- docs/x.md → Existing Heading
+SEED_EOF
+  if [ -n "$newtag" ]; then
+    cat >> "$TAG_INDEX_FILE" <<SEED2_EOF
+
+## ${newtag}
+- docs/new.md → New Heading
+SEED2_EOF
+  fi
+}
+
+@test "#766: merge applied at confidence 0.92, NOT applied at 0.60" {
+  # Seed both the existing target AND the new tag's heading (as
+  # update_conventions_from_marker would have just done in production).
+  _seed_index_with_existing_tag "set-e" "strict-mode"
+
+  # High confidence -> merge new-tag 'strict-mode' into existing 'set-e'.
+  export SIMILARITY_JSON='{"merges":[{"from":"strict-mode","into":"set-e","confidence":0.92}]}'
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - strict-mode: Tracks strict shell mode usage")"
+
+  reconcile_tag_index "$body" "200"
+
+  # FROM heading is gone; the new tag's pointer is now folded under INTO.
+  ! grep -q "^## strict-mode" "$TAG_INDEX_FILE"
+  grep -q "^## set-e" "$TAG_INDEX_FILE"
+  grep -q "docs/new.md → New Heading" "$TAG_INDEX_FILE"
+
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  grep -q "merged strict-mode into set-e" "$log_file"
+
+  # --- Low confidence: no merge ---
+  _seed_index_with_existing_tag "set-e" "strict-mode"
+  rm -f "$log_file"
+  export SIMILARITY_JSON='{"merges":[{"from":"strict-mode","into":"set-e","confidence":0.60}]}'
+
+  reconcile_tag_index "$body" "201"
+
+  # At 0.60 both headings survive and no merge is logged.
+  grep -q "^## strict-mode" "$TAG_INDEX_FILE"
+  grep -q "^## set-e" "$TAG_INDEX_FILE"
+  ! grep -q "merged strict-mode into set-e" "$log_file" 2>/dev/null || false
+}
+
+@test "#763: non-numeric/out-of-range confidence is SKIPPED (not coerced)" {
+  local conf
+  for conf in '"0.9x"' '"abc"' '1.5'; do
+    # Seed BOTH headings so a merge COULD happen if the guard were absent —
+    # that makes the "both still present" assertion a real signal of the skip.
+    _seed_index_with_existing_tag "set-e" "strict-mode"
+    local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+    rm -f "$log_file"
+    export SIMILARITY_JSON="{\"merges\":[{\"from\":\"strict-mode\",\"into\":\"set-e\",\"confidence\":${conf}}]}"
+
+    local body
+    body="$(printf '%s\n' \
+      "new-tags:" \
+      "  - strict-mode: Tracks strict shell mode usage")"
+
+    reconcile_tag_index "$body" "300"
+
+    # Both headings still present — the invalid confidence was skipped, not coerced.
+    grep -q "^## set-e" "$TAG_INDEX_FILE"
+    grep -q "^## strict-mode" "$TAG_INDEX_FILE"
+    ! grep -q "merged strict-mode into set-e" "$log_file" 2>/dev/null || false
+  done
+}
+
+@test "#766: empty / malformed similarity JSON -> no merges, new tag preserved" {
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - lonely-tag: A tag with no semantic duplicate")"
+
+  # Case A: empty response.
+  _seed_index_with_existing_tag "set-e"
+  rm -f "$log_file"
+  export SIMILARITY_JSON=""
+  reconcile_tag_index "$body" "400"
+  grep -q "tag: lonely-tag" "$log_file"          # new tag preserved (justified)
+  ! grep -q "^merged\|merged lonely-tag" "$log_file" 2>/dev/null || false
+
+  # Case B: malformed JSON.
+  _seed_index_with_existing_tag "set-e"
+  rm -f "$log_file"
+  export SIMILARITY_JSON='{this is not valid json'
+  reconcile_tag_index "$body" "401"
+  grep -q "tag: lonely-tag" "$log_file"
+  grep -q "^## set-e" "$TAG_INDEX_FILE"
+}
+
+@test "tag_index_merge_tag moves FROM pointer under INTO, removes FROM, dedups" {
+  mkdir -p "$(dirname "$TAG_INDEX_FILE")"
+  cat > "$TAG_INDEX_FILE" <<'IDX_EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## from-tag
+- docs/a.md → Alpha Heading
+- docs/shared.md → Shared Heading
+
+## into-tag
+- docs/b.md → Beta Heading
+- docs/shared.md → Shared Heading
+IDX_EOF
+
+  run tag_index_merge_tag "from-tag" "into-tag"
+  [ "$status" -eq 0 ]
+
+  # FROM heading removed entirely.
+  ! grep -q "^## from-tag" "$TAG_INDEX_FILE"
+
+  # FROM's unique pointer now lives under INTO.
+  grep -q "docs/a.md → Alpha Heading" "$TAG_INDEX_FILE"
+
+  # The shared pointer is NOT duplicated under INTO (it was already present).
+  local count
+  count=$(grep -c "docs/shared.md → Shared Heading" "$TAG_INDEX_FILE" || true)
+  [ "$count" -eq 1 ]
+}
+
+@test "tag_index_merge_tag returns non-zero on missing file or absent heading" {
+  # Missing index file.
+  rm -f "$TAG_INDEX_FILE"
+  run tag_index_merge_tag "from-tag" "into-tag"
+  [ "$status" -ne 0 ]
+
+  # FROM heading absent.
+  mkdir -p "$(dirname "$TAG_INDEX_FILE")"
+  cat > "$TAG_INDEX_FILE" <<'IDX_EOF'
+# Tag Index
+
+---
+
+## into-tag
+- docs/b.md → Beta Heading
+IDX_EOF
+  run tag_index_merge_tag "from-tag" "into-tag"
+  [ "$status" -ne 0 ]
+
+  # INTO heading absent.
+  cat > "$TAG_INDEX_FILE" <<'IDX_EOF'
+# Tag Index
+
+---
+
+## from-tag
+- docs/a.md → Alpha Heading
+IDX_EOF
+  run tag_index_merge_tag "from-tag" "into-tag"
+  [ "$status" -ne 0 ]
 }
