@@ -1023,6 +1023,22 @@ run_test_gate() {
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     elif [ -f "$project_root/package.json" ]; then
+      # node_modules bootstrap (issue #784): rite worktrees never get node_modules
+      # (untracked, not part of the checkout). Without it `npm test` invokes a
+      # missing jest/mocha and exits 127 — which the gate would otherwise record
+      # as a real test failure for tests that never ran. Bootstrap deps first,
+      # mirroring post-merge-verify.sh's npm ci/install pattern. Best-effort
+      # (|| true): a bootstrap FAILURE is caught by the 127 hard-block below,
+      # not by aborting here. Output goes to the run log (_gate_raw_sink), not
+      # the findings file — it is not a test result.
+      if [ ! -d "$project_root/node_modules" ]; then
+        echo "[test-gate] node_modules absent — bootstrapping dependencies before npm test..." >> "$_gate_raw_sink"
+        if [ -f "$project_root/package-lock.json" ]; then
+          (cd "$project_root" && npm ci --silent) >> "$_gate_raw_sink" 2>&1 || true
+        else
+          (cd "$project_root" && npm install --silent) >> "$_gate_raw_sink" 2>&1 || true
+        fi
+      fi
       echo "[test-gate] Running npm test..."
       { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
@@ -1112,6 +1128,24 @@ run_test_gate() {
       return 0
     fi
     rm -f "${_nonsr_exit_file:-}"
+
+    # --- 127 = runner-unavailable HARD BLOCK (issue #784) ---
+    # Shared guard for the non-Sharkrite runner branches that actually ran a
+    # command (make/npm/cargo/go/pytest fall through to here; the skip branches
+    # above all return 0 first). Exit 127 — or a "command not found" signature
+    # in the captured output — means the test runner itself was unavailable
+    # (e.g. node_modules bootstrap failed and jest is missing). The gate could
+    # NOT verify, so this MUST BLOCK the merge — never a skip, never a pass.
+    # A skip-that-passes ships breaks (Pilot's correction on #784). Force
+    # _tests_exit non-zero so block-on-any blocks downstream.
+    if [ "${_tests_exit:-0}" -eq 127 ] \
+       || grep -qE '(command not found|: not found)' "$_tests_raw_file" 2>/dev/null; then
+      echo "[test-gate] ERROR: node test runner unavailable (exit ${_tests_exit:-127}) after node_modules bootstrap — the gate could NOT verify; blocking the merge" >&2
+      _diag "TEST_GATE outcome=failed reason=runner_unavailable pr=${PR_NUMBER:-?}"
+      # Ensure a non-zero exit so the block-on-any logic below blocks.
+      [ "${_tests_exit:-0}" -eq 0 ] && _tests_exit=127
+    fi
+
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   fi
 
