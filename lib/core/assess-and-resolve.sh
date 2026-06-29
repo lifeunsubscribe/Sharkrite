@@ -185,8 +185,23 @@ _followup_dedup_check() {
           [ -z "$_s2_line" ] && continue
           _s2_num=$(echo "$_s2_line" | awk '{print $1}' || true)
           _s2_title=$(echo "$_s2_line" | cut -d' ' -f2- || true)
-          # Must match the current finding's title (exact equality via fixed-string grep)
-          if [ -n "$_s2_num" ] && echo "$_s2_title" | grep -qF "$ISSUE_TITLE"; then
+          # Must match the current finding's title.  Compare against the BARE
+          # _clean_title (the discriminating prefix), NOT the suffixed ISSUE_TITLE
+          # ("${_clean_title} for issue #N").  Two emit paths file follow-ups for
+          # the same deferred finding with DIFFERENT title formats:
+          #   - assess-and-resolve.sh (this NEW path): titled "${_clean_title} for issue #N"
+          #   - assess-review-issues.sh (the OLD per-item path): titled bare "${_clean_title}"
+          # Matching on the suffixed ISSUE_TITLE silently fails against an
+          # OLD-path issue (bare title), so the source-issue-scoped dedup misses
+          # its own twin and BOTH issues get filed (live: LeadFlow #369/#371,
+          # #381/#383 — issue #790).  The bare _clean_title is the part that
+          # distinguishes finding #1 from #2..N (the suffix is identical for all
+          # findings of one source issue and adds no discrimination), and it is a
+          # substring of both title formats — so grep -qF on it matches OLD and
+          # NEW issues alike while preserving finding-level specificity.  This
+          # mirrors Source 4 (line ~249), which already keys on _clean_title.
+          if [ -n "$_s2_num" ] && [ -n "${_clean_title:-}" ] && \
+             echo "$_s2_title" | grep -qF "$_clean_title"; then
             # Verify the marker is actually in the body — GitHub search can return
             # approximate matches; direct body inspection is the ground truth.
             local _candidate_body

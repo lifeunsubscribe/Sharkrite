@@ -904,3 +904,175 @@ run_sentinel_dedup_create() {
     false
   }
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 10: Cross-path twin dedup — Source 2 matches an OLD-format (bare-titled)
+#          follow-up filed by assess-review-issues.sh (issue #790).
+#
+# Two emit paths file a follow-up for the SAME deferred finding with DIFFERENT
+# title formats:
+#   - assess-and-resolve.sh (NEW path): title = "${_clean_title} for issue #N"
+#   - assess-review-issues.sh (OLD path): title = bare "${_clean_title}"
+# Both bodies carry the same "sharkrite-source-issue:N" marker.
+#
+# Before the fix, Source 2's title gate matched the SUFFIXED ISSUE_TITLE, so an
+# OLD-format issue (bare title) was never recognized as the twin — the NEW path
+# filed a duplicate (live: LeadFlow #369/#371, #381/#383).  After the fix,
+# Source 2 matches on the bare _clean_title (a substring of both formats), so
+# the OLD twin is found and EXISTING_ISSUE is set → no duplicate create.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "cross-path twin: Source 2 matches OLD-format bare-titled twin (no duplicate)" {
+  local pr=110
+  local src=363
+
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=60
+  export RITE_DEDUP_BACKOFF=0
+  export RITE_FOLLOWUP_LOCK_DWELL_S=0
+
+  # No evidence file — Source 1 finds nothing (mirrors the cross-path index-key
+  # divergence that makes Source 1 miss its twin; Source 2 must catch it).
+
+  PR_NUMBER="$pr"
+  ISSUE_NUMBER="$src"
+  # NEW-path title carries the " for issue #N" suffix; the OLD twin does NOT.
+  _clean_title="Inert SMS alarm never fires"
+  ISSUE_TITLE="${_clean_title} for issue #${src}"
+  ISSUE_SEARCH="$ISSUE_TITLE"
+  _lock_was_contended=false
+  EXISTING_ISSUE=""
+
+  # The OLD-format twin: filed by assess-review-issues.sh with a BARE title and
+  # the source-issue marker in its body.
+  local twin_issue=9040
+  local twin_bare_title="$_clean_title"
+  local twin_body="<!-- sharkrite-source-issue:${src} -->## From PR #${pr} Assessment"
+
+  gh_safe() {
+    local subcmd="${1:-}"
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "view" ]; then
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q -- "--json body"; then
+        # Source 2b: return the twin's body (carries the source-issue marker).
+        if [ "${3:-}" = "$twin_issue" ]; then
+          echo "$twin_body"
+        else
+          echo ""
+        fi
+      else
+        echo "OPEN"
+      fi
+      return 0
+    fi
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q "in:body"; then
+        # Source 2a: the body-marker search surfaces the OLD twin, whose title
+        # is BARE (no " for issue #N" suffix) — exactly the format that the
+        # pre-fix suffixed-title gate failed to match.
+        echo "$twin_issue $twin_bare_title"
+      else
+        echo "[]"
+      fi
+      return 0
+    fi
+    if [ "$subcmd" = "pr" ] && [ "${2:-}" = "view" ]; then echo "0"; return 0; fi
+    return 0
+  }
+
+  _followup_dedup_check
+
+  [ "$EXISTING_ISSUE" = "$twin_issue" ] || {
+    echo "FAIL: expected EXISTING_ISSUE='$twin_issue' (OLD-format bare-titled twin),"
+    echo "      got '$EXISTING_ISSUE'."
+    echo "      Source 2's title gate must match the bare _clean_title so a"
+    echo "      follow-up filed by the OLD path (assess-review-issues.sh) is"
+    echo "      recognized as the twin and NOT re-filed (issue #790)."
+    false
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 11: Distinct finding is NOT collapsed — different _clean_title, same
+#          source-issue marker → must NOT match (each finding gets its own issue).
+#
+# Guards against the bare-title match over-collapsing: a different deferred
+# finding from the same source issue (same sharkrite-source-issue:N marker, but
+# a DIFFERENT title) must not be treated as the twin.  Source 2's title gate
+# must still discriminate on _clean_title, so EXISTING_ISSUE stays empty and the
+# distinct finding proceeds to create its own follow-up.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "distinct finding not collapsed: different title under same source marker creates its own issue" {
+  local pr=111
+  local src=364
+  local counts="$RITE_TEST_TMPDIR/counts-t11.txt"
+  touch "$counts"
+
+  export RITE_FOLLOWUP_SENTINEL_TTL_S=60
+  export RITE_DEDUP_BACKOFF=0
+  export RITE_FOLLOWUP_LOCK_DWELL_S=0
+
+  PR_NUMBER="$pr"
+  ISSUE_NUMBER="$src"
+  # Current finding's title.
+  _clean_title="useTenant edit-loss race"
+  ISSUE_TITLE="${_clean_title} for issue #${src}"
+  ISSUE_SEARCH="$ISSUE_TITLE"
+  _lock_was_contended=false
+  EXISTING_ISSUE=""
+
+  # An existing follow-up for a DIFFERENT finding of the same source issue.
+  local other_issue=9050
+  local other_title="Inert SMS alarm never fires"
+  local other_body="<!-- sharkrite-source-issue:${src} -->## Description"
+
+  gh_safe() {
+    local subcmd="${1:-}"
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "view" ]; then
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q -- "--json body"; then
+        if [ "${3:-}" = "$other_issue" ]; then
+          echo "$other_body"
+        else
+          echo ""
+        fi
+      else
+        echo "OPEN"
+      fi
+      return 0
+    fi
+    if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then
+      local _args_str="$*"
+      if echo "$_args_str" | grep -q "in:body"; then
+        # Body-marker search surfaces the OTHER finding (same source marker, but
+        # a different title) — Source 2's title gate must reject it.
+        echo "$other_issue $other_title"
+      else
+        echo "[]"
+      fi
+      return 0
+    fi
+    if [ "$subcmd" = "pr" ] && [ "${2:-}" = "view" ]; then echo "0"; return 0; fi
+    return 0
+  }
+
+  _followup_dedup_check
+
+  [ -z "$EXISTING_ISSUE" ] || {
+    echo "FAIL: expected EXISTING_ISSUE='' (distinct finding must not collapse),"
+    echo "      got '$EXISTING_ISSUE'. Source 2's title gate over-matched a"
+    echo "      different finding sharing the same source-issue marker."
+    false
+  }
+
+  # Distinct finding proceeds to create its own follow-up.
+  echo "PR${pr}:src${src}:9999" >> "$counts"
+  local create_count
+  create_count=$(grep -c "^PR${pr}:src${src}:" "$counts" 2>/dev/null || true)
+  [ "$create_count" -eq 1 ] || {
+    echo "FAIL: expected 1 create call for the distinct finding, got $create_count"
+    cat "$counts" || true
+    false
+  }
+}
