@@ -461,6 +461,19 @@ ACTIONABLE_LATER - Valid concern, create follow-up issue:
   a follow-up issue. If it's a real, verifiable problem (not opinion), it
   belongs in ACTIONABLE_LATER even if the fix is small.
 
+  SCOPE BAR (the issue's OWN acceptance criteria are never deferrable):
+  Compare every finding against the ORIGINAL ISSUE SCOPE section above. A
+  finding that identifies an UNMET acceptance criterion or core deliverable
+  of the issue CURRENTLY UNDER ASSESSMENT is ACTIONABLE_NOW and MUST NOT be
+  deferred to ACTIONABLE_LATER — it is the work the issue exists to do.
+  Only findings OUTSIDE the issue's stated scope are eligible for
+  ACTIONABLE_LATER. Concretely: if a feature's own deliverable is incomplete
+  — the event/token it must emit is never emitted, a subscription or wiring
+  the feature requires is missing, or an artifact the issue advertises (an
+  alarm, an endpoint, a config key) does not exist — that is ACTIONABLE_NOW,
+  not ACTIONABLE_LATER. Deferring a feature's own core functionality ships it
+  non-functional.
+
 DISMISSED - Not worth tracking:
   - Pure style/formatting preferences (no functional impact)
   - \"Could also do X instead of Y\" where both approaches are valid
