@@ -202,6 +202,104 @@ EOBODY
 }
 
 # ===========================================================================
+# Path B — tags derived from GitHub issue labels matching ## headings (#777)
+#
+# Two label sources are covered, distinguished by the 'using label-derived tags'
+# stderr line (so a Path-B pass can never be mistaken for Path A/C/D):
+#   Test 1 — pre-fetched CSV (arg 4): the STANDALONE path's network-lazy reuse.
+#   Test 2 — orchestrated fetch: arg 4 EMPTY, gh_safe stubbed to return the labels;
+#            proves Path B works when the CSV was never prefetched (the #777 gap —
+#            PR #771's bats only ever called the function with 3 args).
+# ===========================================================================
+
+@test "Path B: pre-fetched labels CSV (arg 4) → label-derived section + 'using label-derived tags' on stderr" {
+  _seed_tag_index
+  _seed_conventions
+  _seed_encountered_issues
+
+  # Body has NO explicit tag block and NO keyword that matches a heading
+  # (avoids 'subshell'/'set-e'/'gh-cli'), so Path A and Path C cannot fire.
+  # The labels CSV carries 'gh-cli', which matches the '## gh-cli' heading and
+  # resolves to 'conventions.md → CWD after worktree removal'.
+  local issue_body="Adjust an unrelated configuration knob with none of those words."
+
+  _run_build_prior_art "$issue_body" "gh-cli"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Relevant prior art" ]]
+  # The sliced section body proves the label-derived pointer was loaded.
+  [[ "$output" =~ "CWD after worktree removal" ]]
+  [[ "$output" =~ "removes the feature-branch worktree" ]]
+  # Distinguishing stderr line — Path B, not A/C/D.
+  [[ "$output" =~ "using label-derived tags" ]]
+  # Negative: the other paths' diagnostics must NOT appear.
+  [[ ! "$output" =~ "using explicit issue tags" ]]
+  [[ ! "$output" =~ "using keyword-matched tags" ]]
+}
+
+@test "Path B: empty CSV + non-empty issue number → gh_safe-fetched labels still resolve (orchestrated path, #777)" {
+  _seed_tag_index
+  _seed_conventions
+  _seed_encountered_issues
+
+  # arg 4 EMPTY (as the orchestrated `rite N` path passes it). gh_safe is STUBBED
+  # to return the labels CSV that the real `gh issue view --json labels --jq ...`
+  # would emit. With the CSV empty, the ONLY way label-derived resolution can
+  # occur is via the orchestrated fetch — so the section + diagnostic prove it
+  # fired. A file sentinel additionally proves the STUB itself was consulted: the
+  # function wraps the gh_safe call in `2>/dev/null`, so a stderr sentinel would be
+  # swallowed; a touched file survives.
+  # Body has no tag block and no keyword match so only the FETCH can drive Path B.
+  local fetch_sentinel="$RITE_TEST_TMPDIR/gh_safe_called"
+
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    export RITE_SOURCE_FUNCTIONS_ONLY=1
+
+    print_info()    { echo \"\$*\" >&2; }
+    print_status()  { echo \"\$*\" >&2; }
+    print_success() { echo \"\$*\" >&2; }
+    print_warning() { echo \"\$*\" >&2; }
+
+    source '$RITE_LIB_DIR/utils/markers.sh'
+    source '$RITE_LIB_DIR/utils/tag-index.sh'
+    source '$RITE_LIB_DIR/utils/relevance-grep.sh'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_LIB_DIR/core/claude-workflow.sh'
+
+    # Orchestrated-fetch stub: the function calls
+    #   gh_safe issue view N --json labels --jq '[.labels[].name]|join(\",\")'
+    # and captures stdout as the labels CSV. Return what jq would have produced,
+    # and touch a file to PROVE the fetch branch consulted this stub (the call is
+    # wrapped in 2>/dev/null inside the function, so a stderr marker is swallowed).
+    # NOTE: defined AFTER sourcing claude-workflow.sh — that file sources
+    # gh-retry.sh (the real gh_safe), which would otherwise override an earlier stub.
+    gh_safe() {
+      touch '$fetch_sentinel'
+      echo 'gh-cli'
+    }
+
+    build_relevant_prior_art \
+      'Adjust an unrelated configuration knob with none of those words.' \
+      '4242' \
+      '$RITE_TEST_TMPDIR' \
+      '' \
+      ''
+  "
+
+  [ "$status" -eq 0 ]
+  # The fetch branch was reached — the stub was consulted (file sentinel).
+  [ -f "$fetch_sentinel" ]
+  # Path B resolved the fetched label → its catalog section is in stdout.
+  [[ "$output" =~ "Relevant prior art" ]]
+  [[ "$output" =~ "CWD after worktree removal" ]]
+  # Distinguishing stderr line fires for the fetched case too.
+  [[ "$output" =~ "using label-derived tags" ]]
+}
+
+# ===========================================================================
 # Path C — keyword grep of title/body against tag-index headings
 # ===========================================================================
 
