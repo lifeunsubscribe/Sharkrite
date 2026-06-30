@@ -536,6 +536,7 @@ FAILED_ISSUES=()                 # Exit 1: genuine failure (dev or merge)
 BLOCKED_ISSUES=()                # Exit 2: blocker
 SKIPPED_ISSUES=()                # Various skip reasons (all counted together for stats)
 ALREADY_CLOSED_AT_START_ISSUES=() # Exit 12: already closed when batch started, no new work
+IN_PROGRESS_ELSEWHERE_ISSUES=()  # Exit 14: locked by another live session, not a failure
 
 # Per-issue tracking (associative arrays, requires bash 4+)
 declare -A ISSUE_STATUS
@@ -1085,6 +1086,28 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     ALREADY_CLOSED_AT_START_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="already_closed_at_start"
+
+  elif [ $_WF_EXIT -eq 14 ]; then
+    # Issue locked by another live session: acquire_issue_lock() rejected this
+    # issue because another rite process holds the lock. This is an expected
+    # concurrency condition — NOT a failure. No dev session ran.
+    # Record as in_progress_elsewhere (SKIPPED class) so the batch summary shows
+    # a clear "already being processed" line, not a spurious failed entry.
+    # The "Issue #N is already being processed by PID X" message was already
+    # printed to stderr by acquire_issue_lock() before exit 14 was emitted.
+    # See: docs/architecture/exit-codes.md — exit code 14
+    end_issue_tracking "$ISSUE_NUM"
+    ISSUE_END_TIME=$(date +%s)
+    ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
+    ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
+
+    print_info "⏭️  Issue #$ISSUE_NUM skipped — already being processed by another session"
+    print_info "Duration: ${ISSUE_DURATION}s"
+    echo ""
+
+    SKIPPED_ISSUES+=("$ISSUE_NUM")
+    IN_PROGRESS_ELSEWHERE_ISSUES+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="in_progress_elsewhere"
 
   else
     EXIT_CODE=$_WF_EXIT

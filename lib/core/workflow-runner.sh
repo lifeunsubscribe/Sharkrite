@@ -2479,10 +2479,18 @@ run_workflow() {
     skip_to_phase=""  # Clear skip flag after reaching target
     _rtk_snapshot "phase1_start"
     _timer_start "phase1_development"
-    if ! phase_claude_workflow "$issue_number"; then
+    _phase1_exit=0
+    phase_claude_workflow "$issue_number" || _phase1_exit=$?
+    if [ $_phase1_exit -ne 0 ]; then
       _timer_end "phase1_development"
       _rtk_snapshot "phase1_end"
       _diag "PHASE_FAILED issue=${issue_number} phase=claude-workflow"
+      # Preserve exit 14 (lock held by another session) so run_workflow's
+      # main() can route it to the in_progress_elsewhere path instead of
+      # misclassifying it as a generic failure (exit 1).
+      if [ $_phase1_exit -eq 14 ]; then
+        return 14
+      fi
       print_error "Workflow phase failed"
       return 1
     fi
@@ -2934,6 +2942,13 @@ main() {
     # rather than silently logging it as a phantom completion.
     # See exit-codes.md in docs/architecture.
     exit 13
+  elif [ $workflow_exit -eq 14 ]; then
+    # Issue locked by another live session — propagate exit 14 so batch can
+    # record this as in_progress_elsewhere (SKIPPED class, not FAILED).
+    # The "already being processed by PID X" message was already printed by
+    # acquire_issue_lock() via claude-workflow.sh::setup_issue_lock_if_needed().
+    # See: docs/architecture/exit-codes.md
+    exit 14
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6

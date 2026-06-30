@@ -33,11 +33,13 @@ _batch_compute_totals() {
 # ---------------------------------------------------------------------------
 # _batch_print_stats
 # Emit the "Overall Statistics" block, the "Already Closed at Start" detail
-# section, and the generic "Skipped Issues" detail section to stdout.
+# section, the "In Progress Elsewhere" detail section, and the generic
+# "Skipped Issues" detail section to stdout.
 #
 # Reads:  TOTAL_ISSUES, TOTAL_PROCESSED, COMPLETED_ISSUES, MERGED_CLEANUP_FAILED,
 #         FAILED_ISSUES, BLOCKED_ISSUES, SKIPPED_ISSUES, ISSUE_STATUS,
 #         ALREADY_CLOSED_AT_START_ISSUES (optional, defaults to empty),
+#         IN_PROGRESS_ELSEWHERE_ISSUES (optional, defaults to empty),
 #         TOTAL_DURATION (optional)
 # ---------------------------------------------------------------------------
 _batch_print_stats() {
@@ -50,6 +52,14 @@ _batch_print_stats() {
     _closed_at_start_count=${#ALREADY_CLOSED_AT_START_ISSUES[@]}
   else
     _closed_at_start_count=0
+  fi
+
+  # IN_PROGRESS_ELSEWHERE_ISSUES may not be declared in older test fixtures.
+  local _in_progress_elsewhere_count
+  if declare -p IN_PROGRESS_ELSEWHERE_ISSUES >/dev/null 2>&1; then
+    _in_progress_elsewhere_count=${#IN_PROGRESS_ELSEWHERE_ISSUES[@]}
+  else
+    _in_progress_elsewhere_count=0
   fi
 
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -86,13 +96,28 @@ _batch_print_stats() {
     echo ""
   fi
 
-  # Generic skipped section: excludes already_closed_at_start issues (they have
-  # their own section above) — show only the remaining skip reasons.
+  # In-progress-elsewhere issues get their own section — expected concurrency,
+  # not a failure. Another live rite session holds the lock.
+  # Remediation: wait for the other session to finish, then re-run if needed.
+  if [ "${_in_progress_elsewhere_count:-0}" -gt 0 ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "In Progress Elsewhere (skipped — already being handled)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local _prog_num
+    for _prog_num in "${IN_PROGRESS_ELSEWHERE_ISSUES[@]+"${IN_PROGRESS_ELSEWHERE_ISSUES[@]}"}"; do
+      echo "  ⏭️  Issue #$_prog_num (already being processed by another session)"
+    done
+    echo ""
+  fi
+
+  # Generic skipped section: excludes already_closed_at_start and
+  # in_progress_elsewhere issues (they have their own sections above) —
+  # show only the remaining skip reasons.
   local _other_skipped=()
   local _skip_num _skip_reason
   for _skip_num in "${SKIPPED_ISSUES[@]+"${SKIPPED_ISSUES[@]}"}"; do
     _skip_reason=${ISSUE_STATUS[$_skip_num]:-"unknown"}
-    if [ "$_skip_reason" != "already_closed_at_start" ]; then
+    if [ "$_skip_reason" != "already_closed_at_start" ] && [ "$_skip_reason" != "in_progress_elsewhere" ]; then
       _other_skipped+=("$_skip_num")
     fi
   done
