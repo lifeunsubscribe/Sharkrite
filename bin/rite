@@ -275,6 +275,50 @@ while [[ $# -gt 0 ]]; do
       print_error "Unknown flag: $1"
       exit 1
       ;;
+    # Bare-word aliases for flag-subcommand words: e.g. `rite status` → `rite --status`.
+    # Without these, the `*)` catch-all below would add the word to ARGS and, with
+    # MODE="full", route it to issue-generation — burning an LLM call and potentially
+    # creating a junk issue from a typo.  Map every recognised subcommand word to its
+    # MODE here, mirroring the --flag cases above.  `plan` already has its own bare
+    # case higher up.
+    status)
+      MODE="status"
+      shift
+      ;;
+    health-report|rtk-report)
+      MODE="health-report"
+      shift
+      ;;
+    init)
+      MODE="init"
+      shift
+      ;;
+    tags)
+      MODE="tags"
+      shift
+      # Collect the optional sub-arg: <tag>, --orphans, or --history
+      # (mirrors the --tags case above)
+      TAGS_SUBARG=""
+      if [ "${1:-}" = "--orphans" ] || [ "${1:-}" = "--history" ]; then
+        TAGS_SUBARG="$1"
+        shift
+      elif [ -n "${1:-}" ] && [[ "$1" != -* ]]; then
+        TAGS_SUBARG="$1"
+        shift
+      fi
+      ;;
+    full-suite)
+      MODE="full-suite"
+      shift
+      ;;
+    backfill-locks)
+      MODE="backfill-locks"
+      shift
+      ;;
+    refresh-encountered-issues)
+      MODE="refresh-encountered-issues"
+      shift
+      ;;
     *)
       ARGS+=("$1")
       shift
