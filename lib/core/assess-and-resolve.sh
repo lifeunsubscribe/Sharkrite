@@ -1056,6 +1056,37 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       fi
     done < <(jq -c '.tests[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
 
+    # --- Synthetic block for empty-findings gate failures ---
+    # When the gate exit code is non-zero but both loops above produced zero
+    # items (e.g. the test runner was unavailable — exit 127 — so no TAP
+    # "not ok" lines were emitted, and no lint output was parseable), the
+    # non-zero exit_code is authoritative proof that verification failed.
+    # Without this synthesis the failure is silently swallowed: GATE_NOW_COUNT
+    # stays 0, the assessment sees no [GATE] items, and the PR merges unverified.
+    #
+    # This was the live failure mode for LeadFlow PR #400 (issue #331,
+    # 2026-06-30): jest 127 × 3 retries → empty arrays → "ready to merge".
+    # The same hole opens for any non-bats runner (pytest/cargo/go) on a plain
+    # non-TAP exit-1. (Issue #799)
+    if [ "$GATE_NOW_COUNT" -eq 0 ]; then
+      # Read the reason field from the gate JSON if present (e.g. "runner_unavailable").
+      # Falls back to a generic description naming the raw exit code.
+      _gate_reason_field=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
+      if [ -n "$_gate_reason_field" ]; then
+        _gate_failure_desc="gate failure: ${_gate_reason_field} (exit_code=${_gate_exit_code})"
+      else
+        _gate_failure_desc="gate failure: non-zero exit (exit_code=${_gate_exit_code}) with no parseable findings"
+      fi
+      GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Gate failure (objective — no LLM categorization needed)
+**Fix Effort:** Medium (investigate why the test runner produced no parseable output)
+**Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging.
+
+"
+      GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+    fi
+
     if [ "$GATE_NOW_COUNT" -gt 0 ]; then
       print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
     fi

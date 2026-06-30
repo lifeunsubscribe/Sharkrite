@@ -42,6 +42,12 @@ source "$RITE_LIB_DIR/utils/markers.sh"
 # _gate_write_json — emit structured gate result JSON
 # Args: $1=output_file $2=lint_json_array $3=tests_json_array $4=exit_code
 #       $5=skipped(true|false) $6=reason(optional)
+#
+# When skipped=true the reason explains why (e.g. "missing_runner").
+# When skipped=false and reason is non-empty (e.g. "runner_unavailable") the
+# reason field is included in the non-skipped JSON so assess-and-resolve.sh
+# can name the cause when synthesizing a blocking [GATE] item for a failure
+# that produced no parseable lint/test array entries.
 # ---------------------------------------------------------------------------
 _gate_write_json() {
   local output_file="$1"
@@ -53,6 +59,12 @@ _gate_write_json() {
 
   if [ "$skipped" = "true" ]; then
     printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"%s"}\n' "$reason" > "$output_file"
+  elif [ -n "$reason" ]; then
+    # Non-skipped failure with a named reason (e.g. runner_unavailable).
+    # Include the reason field so assess-and-resolve.sh can synthesize a
+    # descriptive blocking [GATE] item even when lint[] and tests[] are empty.
+    printf '{"lint":%s,"tests":%s,"exit_code":%s,"reason":"%s"}\n' \
+      "$lint_json" "$tests_json" "$exit_code" "$reason" > "$output_file"
   else
     printf '{"lint":%s,"tests":%s,"exit_code":%s}\n' "$lint_json" "$tests_json" "$exit_code" > "$output_file"
   fi
@@ -683,6 +695,11 @@ run_test_gate() {
   local _tests_exit=0
   local _lint_count=0
   local _tests_count=0
+  # Reason for a non-skipped gate failure that produces no parseable items
+  # (e.g. runner_unavailable when the test runner binary is missing).
+  # Propagated to the gate JSON so assess-and-resolve.sh can name the cause
+  # in its synthetic blocking [GATE] item.  Empty string = no named reason.
+  local _gate_reason=""
 
   # Raw gate output routing depends on whether this gate runs CONCURRENTLY:
   #
@@ -1144,6 +1161,10 @@ run_test_gate() {
       _diag "TEST_GATE outcome=failed reason=runner_unavailable pr=${PR_NUMBER:-?}"
       # Ensure a non-zero exit so the block-on-any logic below blocks.
       [ "${_tests_exit:-0}" -eq 0 ] && _tests_exit=127
+      # Record the named reason so the gate JSON includes it; assess-and-resolve.sh
+      # uses this to synthesize a descriptive [GATE] blocking item when the TAP
+      # parser yields an empty tests[] array (no ^not ok lines to parse).
+      _gate_reason="runner_unavailable"
     fi
 
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
@@ -1232,6 +1253,8 @@ run_test_gate() {
     fi
   fi
 
-  _gate_write_json "$output_file" "$_lint_items" "$_tests_items" "$_overall_exit"
+  # Pass _gate_reason (may be empty) so _gate_write_json can include it in the
+  # JSON when a named failure reason was recorded (e.g. runner_unavailable).
+  _gate_write_json "$output_file" "$_lint_items" "$_tests_items" "$_overall_exit" "false" "$_gate_reason"
   return "$_overall_exit"
 }
