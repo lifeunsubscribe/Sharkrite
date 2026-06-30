@@ -344,10 +344,18 @@ validate_diff_not_empty "$PR_NUMBER" "$PR_DIFF" "$DIFF_FILES"
 REPO_TEMPLATE="$RITE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md"
 RITE_TEMPLATE="$RITE_INSTALL_DIR/templates/github/claude-code/pr-review-instructions.md"
 
+# sharkrite-extract: template-tier1-start
 if [ -f "$REPO_TEMPLATE" ]; then
   REVIEW_TEMPLATE="$REPO_TEMPLATE"
   TEMPLATE_LINES=$(wc -l < "$REPO_TEMPLATE" | tr -d ' ')
   print_status "Using repo-specific review instructions ($TEMPLATE_LINES lines)"
+  # Warn if the file exists locally but is not tracked by git — it will be
+  # absent on fresh checkouts and in CI, where rite silently falls back to
+  # the generic default instead of the repo-specific instructions.
+  if ! git -C "$RITE_PROJECT_ROOT" ls-files --error-unmatch \
+      ".github/claude-code/pr-review-instructions.md" >/dev/null 2>&1; then
+    print_warning "Using repo-specific review instructions, but the file is untracked — commit it so the same review runs on fresh checkouts / in CI"
+  fi
 elif [ -f "$RITE_TEMPLATE" ]; then
   REVIEW_TEMPLATE="$RITE_TEMPLATE"
   print_status "Using Sharkrite default review instructions"
@@ -356,6 +364,7 @@ else
   print_warning "No review template found"
   print_status "Using embedded review instructions"
 fi
+# sharkrite-extract: template-tier1-end
 
 if [ -z "$REVIEW_TEMPLATE" ]; then
   REVIEW_INSTRUCTIONS="You are a senior engineer conducting a thorough code review.
