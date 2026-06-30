@@ -577,6 +577,101 @@ _classify_pytest_outcome() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_node_test_runner — extract the test runner binary name (issue #807)
+# Args: $1=project_root
+# Echoes the first executable token of package.json's .scripts.test, resolving
+# one level of `npm run <X>` / `npm test` delegation. Echoes "" when no runner
+# name can be extracted (caller then falls back to the .bin-non-empty heuristic).
+#
+# Examples:
+#   "jest --ci"            -> jest
+#   "mocha tests/"         -> mocha
+#   "vitest run"           -> vitest
+#   "npm run test:unit"    -> (resolves .scripts."test:unit"'s first token)
+#   "node ./run.js && jest"-> node   (first token; conservative)
+# ---------------------------------------------------------------------------
+_resolve_node_test_runner() {
+  local _pr="$1"
+  local _pkg="$_pr/package.json"
+  [ -f "$_pkg" ] || { echo ""; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo ""; return 0; }
+
+  local _script
+  _script=$(jq -r '.scripts.test // ""' "$_pkg" 2>/dev/null || echo "")
+  [ -n "$_script" ] || { echo ""; return 0; }
+
+  # First whitespace-delimited token of the test script.
+  local _first
+  _first=$(printf '%s\n' "$_script" | awk '{print $1}' || echo "")
+  [ -n "$_first" ] || { echo ""; return 0; }
+
+  # Delegation: `npm run <X>` / `npm test` / `npm run-script <X>` — resolve one
+  # level by reading the delegated script's first token. Cheap, single-pass; if
+  # it delegates again we just return that token (no deeper recursion).
+  if [ "$_first" = "npm" ]; then
+    local _second _target _delegated _dtok
+    _second=$(printf '%s\n' "$_script" | awk '{print $2}' || echo "")
+    if [ "$_second" = "test" ]; then
+      # `npm test` inside the test script — recursion would loop; bail to heuristic.
+      echo ""
+      return 0
+    fi
+    if [ "$_second" = "run" ] || [ "$_second" = "run-script" ]; then
+      _target=$(printf '%s\n' "$_script" | awk '{print $3}' || echo "")
+    else
+      _target="$_second"
+    fi
+    if [ -n "$_target" ]; then
+      _delegated=$(jq -r --arg k "$_target" '.scripts[$k] // ""' "$_pkg" 2>/dev/null || echo "")
+      _dtok=$(printf '%s\n' "$_delegated" | awk '{print $1}' || echo "")
+      # Avoid re-emitting another npm delegation token (keep it cheap / one-level).
+      if [ -n "$_dtok" ] && [ "$_dtok" != "npm" ]; then
+        echo "$_dtok"
+        return 0
+      fi
+    fi
+    # Could not cheaply resolve the delegation — fall back to heuristic.
+    echo ""
+    return 0
+  fi
+
+  echo "$_first"
+}
+
+# ---------------------------------------------------------------------------
+# _node_runner_resolvable — is the node test runner present? (issue #807)
+# Args: $1=project_root $2=runner_name (may be empty)
+# Returns 0 (resolvable) / 1 (not resolvable).
+#
+# Resolvable when:
+#   - runner_name is known AND ( node_modules/.bin/<runner> is executable
+#     OR `command -v <runner>` succeeds on PATH ); OR
+#   - runner_name is unknown (extraction failed) AND node_modules/.bin exists
+#     and is non-empty (heuristic fallback).
+# ---------------------------------------------------------------------------
+_node_runner_resolvable() {
+  local _pr="$1"
+  local _runner="${2:-}"
+  local _bindir="$_pr/node_modules/.bin"
+
+  if [ -n "$_runner" ]; then
+    if [ -x "$_bindir/$_runner" ]; then
+      return 0
+    fi
+    if command -v "$_runner" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+
+  # Unknown runner — heuristic: .bin exists and is non-empty.
+  if [ -d "$_bindir" ] && [ -n "$(ls -A "$_bindir" 2>/dev/null || true)" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1040,20 +1135,38 @@ run_test_gate() {
         | tee "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
     elif [ -f "$project_root/package.json" ]; then
-      # node_modules bootstrap (issue #784): rite worktrees never get node_modules
-      # (untracked, not part of the checkout). Without it `npm test` invokes a
-      # missing jest/mocha and exits 127 — which the gate would otherwise record
+      # node_modules bootstrap (issue #784, #807): rite worktrees never get a real
+      # node_modules of their own — claude-workflow.sh symlinks the worktree's
+      # node_modules to main's. Without the test runner present, `npm test` invokes
+      # a missing jest/mocha and exits 127 — which the gate would otherwise record
       # as a real test failure for tests that never ran. Bootstrap deps first,
-      # mirroring post-merge-verify.sh's npm ci/install pattern. Best-effort
-      # (|| true): a bootstrap FAILURE is caught by the 127 hard-block below,
-      # not by aborting here. Output goes to the run log (_gate_raw_sink), not
-      # the findings file — it is not a test result.
-      if [ ! -d "$project_root/node_modules" ]; then
-        echo "[test-gate] node_modules absent — bootstrapping dependencies before npm test..." >> "$_gate_raw_sink"
+      # mirroring post-merge-verify.sh's npm ci/install pattern.
+      #
+      # #807: gate the bootstrap on RUNNER RESOLVABILITY, not node_modules
+      # existence. The old `[ ! -d node_modules ]` guard was satisfied by the
+      # worktree→main symlink (it follows the link), so the bootstrap SKIPPED even
+      # when main's node_modules lacked the devDep runner — flooding the gate with
+      # runner_unavailable (exit 127) on every node issue. Install when the runner
+      # is NOT resolvable, even if node_modules "exists" (symlink); skip when it
+      # already resolves (no redundant work).
+      #
+      # Best-effort (|| true): a bootstrap FAILURE is caught by the 127 hard-block
+      # below, not by aborting here. Output goes to the run log (_gate_raw_sink),
+      # not the findings file — it is not a test result.
+      local _node_runner
+      _node_runner=$(_resolve_node_test_runner "$project_root")
+      if ! _node_runner_resolvable "$project_root" "$_node_runner"; then
+        echo "[test-gate] test runner '${_node_runner:-unknown}' not resolvable — bootstrapping dependencies before npm test..." >> "$_gate_raw_sink"
         if [ -f "$project_root/package-lock.json" ]; then
           (cd "$project_root" && npm ci --silent) >> "$_gate_raw_sink" 2>&1 || true
         else
           (cd "$project_root" && npm install --silent) >> "$_gate_raw_sink" 2>&1 || true
+        fi
+        # Re-check after the bootstrap (informational). If still unresolvable we do
+        # nothing special here — `npm test` runs below and the existing 127
+        # hard-block fires, blocking the merge. No new block path is added.
+        if ! _node_runner_resolvable "$project_root" "$_node_runner"; then
+          echo "[test-gate] test runner '${_node_runner:-unknown}' still not resolvable after bootstrap — npm test will run and the 127 hard-block will fire if it is genuinely missing" >> "$_gate_raw_sink"
         fi
       fi
       echo "[test-gate] Running npm test..."
