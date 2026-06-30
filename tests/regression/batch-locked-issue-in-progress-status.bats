@@ -475,6 +475,152 @@ setup() {
   echo "$output" | grep -q "TOTAL_PROCESSED=2"
 }
 
+# =============================================================================
+# INTEGRATION: exit-14 propagation through run_workflow (producer-side)
+# =============================================================================
+
+@test "integration: run_workflow returns 14 when phase_claude_workflow returns 14" {
+  # Verify that exit 14 produced by phase_claude_workflow (lock-held scenario)
+  # is preserved by run_workflow's phase-1 dispatch — not collapsed to exit 1.
+  #
+  # This test exercises the real run_workflow code path with minimal stubs:
+  # - gh_safe is overridden to return an OPEN issue (so the closed-issue check passes)
+  # - phase_pre_start_checks is overridden to return 0 (skip credential/session checks)
+  # - phase_claude_workflow is overridden to return 14 (simulate lock-held)
+  # All other phases are never reached, so no additional stubs are needed.
+  #
+  # Before the fix in PR #797, run_workflow did:
+  #   if ! phase_claude_workflow "$issue_number"; then return 1; fi
+  # which collapsed return 14 to return 1, making the exit-14 branch in main()
+  # unreachable.  After the fix the return code is forwarded as-is (14).
+
+  _RUNNER="${REPO_ROOT}/lib/core/workflow-runner.sh"
+  [ -f "$_RUNNER" ] || {
+    echo "FATAL: $_RUNNER not found" >&2
+    return 1
+  }
+
+  # Build the harness script in a temp dir to avoid any working-dir coupling.
+  _tmpdir=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$_tmpdir'" EXIT
+
+  cat > "$_tmpdir/harness.sh" <<'HARNESS_EOF'
+#!/bin/bash
+# Minimal harness to verify exit-14 propagation through run_workflow.
+# Stubs are defined before sourcing workflow-runner.sh.
+# After source, overrides replace the real phase functions.
+
+set -uo pipefail
+# Note: not -e here so we can capture non-zero returns from run_workflow.
+
+RITE_LIB_DIR="${1:?RITE_LIB_DIR required}"
+export RITE_LIB_DIR
+
+# ── Minimal stubs for workflow-runner.sh's source-time dependencies ──
+
+# Stub out config.sh by pre-setting RITE_LIB_DIR so its guard fires.
+# Also set variables that config.sh would normally set.
+export RITE_PROJECT_ROOT="${TMPDIR:-/tmp}/rw-exit14-test-$$"
+export RITE_DATA_DIR=".rite"
+export RITE_LOCK_DIR="${RITE_PROJECT_ROOT}/.rite/locks"
+export RITE_STATE_DIR="${RITE_PROJECT_ROOT}/.rite/state"
+export RITE_LOG_FILE="/dev/null"
+export WORKFLOW_MODE="unsupervised"
+export RESUME_MODE=false
+export BATCH_MODE=false
+export SESSION_STATE_FILE="/dev/null"
+export CLOSING_ISSUE_JQ_REGEX="Closes "
+export RITE_MARKER_REVIEW="sharkrite-local-review"
+export RITE_MARKER_ASSESSMENT="sharkrite-assessment"
+export RITE_MARKER_FOLLOWUP="sharkrite-followup"
+export NORMALIZED_SUBJECT="test issue"
+export WORK_DESCRIPTION="test"
+export ISSUE_BODY=""
+
+# gh_safe stub: return OPEN issue, empty PR list
+gh_safe() {
+  case "${1:-}" in
+    issue)
+      # gh_safe issue view N --json state,...
+      echo '{"state":"OPEN","title":"Test issue","closedAt":null,"closedByPullRequestsReferences":[]}'
+      ;;
+    pr)
+      # gh_safe pr list ... → empty, so PR_NUMBER stays unset
+      echo '[]'
+      ;;
+    *)
+      echo '{}' ;;
+  esac
+}
+export -f gh_safe
+
+# Stub out functions called at source time or early in run_workflow
+normalize_existing_issue() { :; }
+export -f normalize_existing_issue
+
+set_current_worktree() { :; }
+export -f set_current_worktree
+
+set_current_issue() { :; }
+export -f set_current_issue
+
+_diag() { :; }
+export -f _diag
+
+_rtk_snapshot() { :; }
+export -f _rtk_snapshot
+
+_timer_start() { :; }
+export -f _timer_start
+
+_timer_end() { :; }
+export -f _timer_end
+
+# ── Source workflow-runner.sh to get run_workflow() definition ──
+# The BASH_SOURCE guard ensures main() does NOT execute on source.
+# The _RITE_WORKFLOW_RUNNER_LOADED guard makes it idempotent.
+source "${RITE_LIB_DIR}/core/workflow-runner.sh" 2>/dev/null || true
+
+# ── Override phase functions after source (so our stubs win) ──
+
+# phase_pre_start_checks: skip credential/session checks
+phase_pre_start_checks() { return 0; }
+
+# phase_claude_workflow: simulate lock-held — exit 14
+phase_claude_workflow() { return 14; }
+
+# ── Exercise run_workflow and capture its return code ──
+_exit=0
+run_workflow 797 >/dev/null 2>&1 || _exit=$?
+echo "RW_EXIT=${_exit}"
+HARNESS_EOF
+
+  chmod +x "$_tmpdir/harness.sh"
+
+  # Run the harness; pass RITE_LIB_DIR as argument
+  run bash "$_tmpdir/harness.sh" "${REPO_ROOT}/lib"
+
+  # The harness must complete without a script-level crash
+  # (set -u with unbound vars would cause exit 1 before the echo; exit 2 = nounset)
+  echo "$output" | grep -q "RW_EXIT=" || {
+    echo "FAIL: harness did not emit RW_EXIT — likely crashed during setup" >&2
+    echo "harness output:" >&2
+    echo "$output" >&2
+    return 1
+  }
+
+  # Extract the captured exit code
+  _rw_exit=$(echo "$output" | grep "^RW_EXIT=" | cut -d= -f2)
+
+  [ "$_rw_exit" = "14" ] || {
+    echo "FAIL: run_workflow returned ${_rw_exit}, expected 14" >&2
+    echo "      This means phase_claude_workflow's return 14 was collapsed to ${_rw_exit}." >&2
+    echo "      Check the 'if ! phase_claude_workflow' → 'return 1' pattern in run_workflow." >&2
+    return 1
+  }
+}
+
 @test "behavioral: exit-14 branch does not add to FAILED_ISSUES" {
   # Structural: search for any FAILED_ISSUES+= in the exit-14 branch.
   # No failed assignment must appear there.

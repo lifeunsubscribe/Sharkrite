@@ -2479,10 +2479,18 @@ run_workflow() {
     skip_to_phase=""  # Clear skip flag after reaching target
     _rtk_snapshot "phase1_start"
     _timer_start "phase1_development"
-    if ! phase_claude_workflow "$issue_number"; then
+    _phase1_exit=0
+    phase_claude_workflow "$issue_number" || _phase1_exit=$?
+    if [ $_phase1_exit -ne 0 ]; then
       _timer_end "phase1_development"
       _rtk_snapshot "phase1_end"
       _diag "PHASE_FAILED issue=${issue_number} phase=claude-workflow"
+      # Preserve exit 14 (lock held by another session) so run_workflow's
+      # main() can route it to the in_progress_elsewhere path instead of
+      # misclassifying it as a generic failure (exit 1).
+      if [ $_phase1_exit -eq 14 ]; then
+        return 14
+      fi
       print_error "Workflow phase failed"
       return 1
     fi
