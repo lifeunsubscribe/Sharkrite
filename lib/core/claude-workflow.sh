@@ -1296,7 +1296,7 @@ find_worktree_for_task() {
 #
 # Arguments:
 #   $1 — issue body text (may be empty or "null")
-#   $2 — issue number (reserved for Path B's own label fetch in S4-5)
+#   $2 — issue number (used by Path B's own label fetch when arg 4 is empty)
 #   $3 — project root directory (default: RITE_PROJECT_ROOT or pwd)
 #   $4 — pre-fetched labels CSV (optional; avoids a second gh API round-trip)
 #   $5 — issue title text (optional; included in Path C keyword grep)
@@ -1377,11 +1377,24 @@ build_relevant_prior_art() {
   fi
 
   # Path B: derive tags from GitHub issue labels matching ## headings in the index.
-  # S4-5 (#777) extends this with its own label fetch when arg 4 is empty; for now
-  # it consumes only the pre-fetched CSV (network-lazy, issue #201) and is inert in
-  # the orchestrated path where no CSV is prefetched.
+  #
+  # Two label sources (S4-5, #777):
+  #   1. Pre-fetched CSV (arg 4) — supplied by the STANDALONE path, which already
+  #      knows the labels (network-lazy reuse, issue #201).
+  #   2. Orchestrated fetch — the real `rite N` (orchestrated) path passes the CSV
+  #      EMPTY, so without this Path B was inert there. When the CSV is empty AND we
+  #      have an issue number, fetch the labels ourselves via gh_safe. This is the
+  #      ONLY network call in the fallback; the standalone path's non-empty CSV skips
+  #      it (no double round-trip). Guarded `|| true` + `${VAR:-}` so a failed/empty
+  #      fetch leaves Path B gracefully inert and falls through to Path C.
+  local _b_labels_csv="$prefetched_labels_csv"
+  if [ -z "$_b_labels_csv" ] && [ "$_has_index" = true ] && [ -n "$issue_number" ]; then
+    _b_labels_csv=$(gh_safe issue view "$issue_number" \
+      --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null || true)
+    _b_labels_csv="${_b_labels_csv:-}"
+  fi
   if [ -z "$resolved_pointers" ] && [ "$_has_index" = true ] \
-     && [ -n "$prefetched_labels_csv" ] && [ "$prefetched_labels_csv" != "null" ]; then
+     && [ -n "$_b_labels_csv" ] && [ "$_b_labels_csv" != "null" ]; then
     local _candidate_tags=""
     local _lbl
     while IFS= read -r _lbl; do
@@ -1396,7 +1409,7 @@ build_relevant_prior_art() {
           _candidate_tags="${_candidate_tags},${_lbl}"
         fi
       fi
-    done < <(tr ',' '\n' <<< "$prefetched_labels_csv" || true)
+    done < <(tr ',' '\n' <<< "$_b_labels_csv" || true)
     if [ -n "$_candidate_tags" ]; then
       local _b_pointers
       _b_pointers=$(_resolve_pointers "$_candidate_tags")
@@ -2731,8 +2744,9 @@ fi
 # RELEVANT_PRIOR_ART_PROMPT stays empty and the prompt is byte-identical to its
 # pre-#403 form (the existing full-catalog behavior is preserved).
 # Main-body code: plain _-prefixed vars (no `local` outside a function), ${VAR:-}
-# under set -u. In the orchestrated path no labels are prefetched (Path B is inert;
-# S4-5 covers its own fetch).
+# under set -u. In the orchestrated path ISSUE_LABELS_CSV is empty, so Path B
+# fetches the issue's labels itself via gh_safe (S4-5, #777) — the standalone path
+# passes a non-empty CSV and skips that fetch.
 RELEVANT_PRIOR_ART_PROMPT=""
 _relevant_prior_art_block=$(build_relevant_prior_art \
   "${ISSUE_BODY:-}" \
