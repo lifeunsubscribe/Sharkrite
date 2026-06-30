@@ -1498,7 +1498,7 @@ EOF
 🌳 *Worktrees*
 • Removed ($REMOVED_COUNT):
 ${REMOVED_WORKTREES_LIST}
-• Active ($(echo "$ACTIVE_WORKTREES_LIST" | grep -c '◦' || echo 0)):
+• Active ($(echo "$ACTIVE_WORKTREES_LIST" | grep -c '◦' || true)):
 ${ACTIVE_WORKTREES_LIST}
 📦 *Backups*
 • Scratchpad backup: $(basename "$SCRATCHPAD_BACKUP")
