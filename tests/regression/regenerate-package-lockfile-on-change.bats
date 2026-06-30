@@ -179,6 +179,15 @@ _run_regen() {
     printf '%s\n' "${lines[@]}"
     false
   }
+
+  # No-stale-stage contract (AC #4): package-lock.json must NOT be staged after
+  # a failed npm run — the caller must not be able to silently commit a stale lock.
+  _staged=$(cd "$TEST_REPO" && git diff --cached --name-only 2>/dev/null || true)
+  if echo "$_staged" | grep -q 'package-lock.json'; then
+    echo "FAIL: package-lock.json was staged despite npm failure — stale lock would be committed"
+    echo "Staged files: $_staged"
+    false
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -226,12 +235,21 @@ _run_regen() {
 # (e) npm not on PATH → warning printed, function exits 0 (graceful degradation)
 # ---------------------------------------------------------------------------
 @test "(e) npm missing from PATH → warning, exits 0 (graceful degradation)" {
-  # Do NOT write an npm stub — use a PATH with no npm.
+  # Do NOT write an npm stub — git must remain on PATH but npm must be absent.
+  # Using PATH='/nonexistent' removes git too, causing an early-return at the
+  # no-staged-package.json branch before the npm-missing check is reached.
+  # Instead, create a stub dir that forwards git (via a wrapper) but has no npm,
+  # so the function sees staged package.json files but finds no npm binary.
+  local _git_stub_dir
+  _git_stub_dir="$(mktemp -d)"
+  # Symlink the real git into the stub dir; npm is intentionally absent.
+  ln -sf "$(command -v git)" "$_git_stub_dir/git"
+
   (cd "$TEST_REPO" \
     && printf '{"name":"app","version":"3.0.0"}\n' > package.json \
     && git add package.json) >/dev/null 2>&1
 
-  # Run with an empty PATH (no npm available).
+  # Run with a PATH that has git but no npm.
   run bash -c "
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export ISSUE_NUMBER='804'
@@ -242,8 +260,9 @@ _run_regen() {
     export -f print_status print_success print_warning print_error
     source '$RITE_LIB_DIR/core/claude-workflow.sh'
     cd '$TEST_REPO'
-    PATH='/nonexistent' regenerate_package_lockfiles
+    PATH='$_git_stub_dir' regenerate_package_lockfiles
   " </dev/null
+  rm -rf "$_git_stub_dir"
 
   [ "$status" -eq 0 ] || {
     echo "FAIL: missing npm should warn but not fail (exit 0), got $status"
@@ -251,7 +270,7 @@ _run_regen() {
     false
   }
 
-  # Must emit a warning.
+  # Must emit a warning mentioning npm.
   printf '%s\n' "${lines[@]}" | grep -qi 'warn\|not found\|npm' || {
     echo "FAIL: expected warning message when npm is missing"
     printf '%s\n' "${lines[@]}"

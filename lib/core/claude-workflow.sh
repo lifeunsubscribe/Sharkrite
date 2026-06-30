@@ -825,7 +825,9 @@ check_dev_session_output() {
     git reset HEAD .gitignore 2>/dev/null || true
 
     # Regenerate package-lock.json when package.json was staged (issue #804).
-    regenerate_package_lockfiles
+    # In the salvage path the priority is preserving dev work — a lockfile drift
+    # is a CI concern, not a work-loss concern. Warn but continue to commit.
+    regenerate_package_lockfiles || print_warning "package-lock.json regeneration failed — lockfile may be stale (CI will catch this)"
 
     # Create auto-commit
     local auto_commit_msg="chore: auto-commit dev session output for issue #${ISSUE_NUMBER:-unknown}
@@ -890,7 +892,7 @@ regenerate_package_lockfiles() {
   # `git diff --cached --name-only` lists only what is currently staged.
   # Filter to package.json files (not package-lock.json itself).
   local _pkg_dirs _pkg_json_path _pkg_dir _lock_path _npm_exit
-  _pkg_dirs=$(git diff --cached --name-only 2>/dev/null \
+  _pkg_dirs=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null \
     | grep -E '(^|/)package\.json$' \
     | sed 's|/package\.json$||; s|^package\.json$|.|' \
     | sort -u || true)
@@ -925,7 +927,7 @@ regenerate_package_lockfiles() {
       print_error "npm install --package-lock-only failed (exit $_npm_exit) for ${_pkg_json_path}"
       print_error "Cannot commit: stale package-lock.json would break npm ci in CI."
       print_info "Fix the npm error above and re-run rite ${ISSUE_NUMBER:-}"
-      exit 1
+      return 1
     fi
 
     # Stage the regenerated lockfile if it was updated (or created).
@@ -1105,7 +1107,8 @@ $EXIT_INSTRUCTION"
   git add -A
 
   # Regenerate package-lock.json if a fix also touched package.json (issue #804).
-  regenerate_package_lockfiles
+  # Fail loudly on npm error — a stale lockfile would break CI.
+  regenerate_package_lockfiles || return 1
 
   # Generate commit message based on review content summary
   COMMIT_MSG="fix: address review findings from PR automated review
@@ -3021,7 +3024,8 @@ git reset HEAD .gitignore 2>/dev/null || true
 # Regenerate package-lock.json when package.json was staged (issue #804).
 # Must run after git add -A so the staged list is accurate, and before git commit
 # so the regenerated lockfile lands in the same commit as the manifest change.
-regenerate_package_lockfiles
+# Fail loudly on npm error — a stale lockfile would break CI.
+regenerate_package_lockfiles || exit 1
 
 git commit -m "$COMMIT_MSG" > /dev/null
 
