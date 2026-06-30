@@ -824,6 +824,9 @@ check_dev_session_output() {
     # Exclude .gitignore (modified by sharkrite's symlink pattern repair)
     git reset HEAD .gitignore 2>/dev/null || true
 
+    # Regenerate package-lock.json when package.json was staged (issue #804).
+    regenerate_package_lockfiles
+
     # Create auto-commit
     local auto_commit_msg="chore: auto-commit dev session output for issue #${ISSUE_NUMBER:-unknown}
 
@@ -859,6 +862,80 @@ Auto-salvaged to prevent work loss."
   else
     exit 1
   fi
+}
+
+# Regenerate package-lock.json when package.json was staged (issue #804).
+#
+# When a dev session edits package.json, the lockfile is no longer in sync with
+# the manifest. The next strict `npm ci` (CI + the #784 node bootstrap in
+# test-gate.sh) will EUSAGE-fail before any test runs, turning every
+# dependency-changing PR red.
+#
+# This function runs after `git add -A` and symlink-cleanup but BEFORE
+# `git commit`. It:
+#   1. Detects all staged package.json files (any path — monorepo-aware).
+#   2. For each one, runs `npm install --package-lock-only` in its directory.
+#      --package-lock-only regenerates the lockfile without installing to
+#      node_modules (fast, no network round-trip for each package).
+#   3. Stages the resulting package-lock.json alongside the package.json change.
+#   4. Fails loudly if `npm install` returns non-zero — a stale/partial lock
+#      is worse than no lock.
+#   5. Is a strict no-op when no package.json is staged (no spurious lockfile
+#      churn on unrelated commits).
+#
+# Scope: package-lock.json only. poetry.lock, Cargo.lock etc. are a separate
+# pattern — do not expand here.
+regenerate_package_lockfiles() {
+  # Collect unique directories of staged package.json files.
+  # `git diff --cached --name-only` lists only what is currently staged.
+  # Filter to package.json files (not package-lock.json itself).
+  local _pkg_dirs _pkg_json_path _pkg_dir _lock_path _npm_exit
+  _pkg_dirs=$(git diff --cached --name-only 2>/dev/null \
+    | grep -E '(^|/)package\.json$' \
+    | sed 's|/package\.json$||; s|^package\.json$|.|' \
+    | sort -u || true)
+
+  if [ -z "$_pkg_dirs" ]; then
+    # No staged package.json — nothing to do.
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    print_warning "npm not found on PATH — skipping package-lock.json regeneration"
+    print_warning "Install Node.js to keep package-lock.json in sync with package.json"
+    return 0
+  fi
+
+  while IFS= read -r _pkg_dir; do
+    [ -z "$_pkg_dir" ] && continue
+
+    _pkg_json_path="${_pkg_dir}/package.json"
+    # Normalise the root-level case ("." → "./package.json" → "package.json")
+    [ "$_pkg_dir" = "." ] && _pkg_json_path="package.json"
+
+    _lock_path="${_pkg_dir}/package-lock.json"
+    [ "$_pkg_dir" = "." ] && _lock_path="package-lock.json"
+
+    print_status "Regenerating package-lock.json for ${_pkg_json_path}..."
+
+    _npm_exit=0
+    (cd "$_pkg_dir" && npm install --package-lock-only --silent 2>&1) || _npm_exit=$?
+
+    if [ "$_npm_exit" -ne 0 ]; then
+      print_error "npm install --package-lock-only failed (exit $_npm_exit) for ${_pkg_json_path}"
+      print_error "Cannot commit: stale package-lock.json would break npm ci in CI."
+      print_info "Fix the npm error above and re-run rite ${ISSUE_NUMBER:-}"
+      exit 1
+    fi
+
+    # Stage the regenerated lockfile if it was updated (or created).
+    if [ -f "$_lock_path" ]; then
+      git add "$_lock_path"
+      print_success "Staged regenerated lockfile: ${_lock_path}"
+    else
+      print_warning "npm install --package-lock-only ran but ${_lock_path} not found — skipping stage"
+    fi
+  done <<< "$_pkg_dirs"
 }
 
 # ===================================================================
@@ -1026,6 +1103,9 @@ $EXIT_INSTRUCTION"
   # Commit and push the fixes
   print_status "Committing fixes..."
   git add -A
+
+  # Regenerate package-lock.json if a fix also touched package.json (issue #804).
+  regenerate_package_lockfiles
 
   # Generate commit message based on review content summary
   COMMIT_MSG="fix: address review findings from PR automated review
@@ -2937,6 +3017,11 @@ fi
 # patterns (.rite, .claude, node_modules) but these shouldn't be committed to
 # the target repo. The working tree copy stays modified (needed for ignore rules).
 git reset HEAD .gitignore 2>/dev/null || true
+
+# Regenerate package-lock.json when package.json was staged (issue #804).
+# Must run after git add -A so the staged list is accurate, and before git commit
+# so the regenerated lockfile lands in the same commit as the manifest change.
+regenerate_package_lockfiles
 
 git commit -m "$COMMIT_MSG" > /dev/null
 
