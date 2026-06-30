@@ -931,9 +931,14 @@ regenerate_package_lockfiles() {
     fi
 
     # Stage the regenerated lockfile if it was updated (or created).
+    # Also re-stage package.json: npm install --package-lock-only can normalize/
+    # rewrite the manifest on disk.  Committing only the lockfile would let the
+    # manifest and lockfile disagree — reintroducing the exact drift this
+    # function exists to eliminate.
     if [ -f "$_lock_path" ]; then
       git add "$_lock_path"
-      print_success "Staged regenerated lockfile: ${_lock_path}"
+      git add "$_pkg_json_path"
+      print_success "Staged regenerated lockfile and manifest: ${_lock_path}, ${_pkg_json_path}"
     else
       print_warning "npm install --package-lock-only ran but ${_lock_path} not found — skipping stage"
     fi
