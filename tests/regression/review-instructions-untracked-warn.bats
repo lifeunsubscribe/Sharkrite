@@ -102,6 +102,10 @@ _run_template_check() {
 
     RITE_PROJECT_ROOT='${test_dir}'
     REPO_TEMPLATE='${test_dir}/.github/claude-code/pr-review-instructions.md'
+    # Set RITE_TEMPLATE to a guaranteed-nonexistent path so set -u is satisfied
+    # and the elif branch is skipped (falls through to else), exercising the
+    # real fallback path rather than dying silently on an unbound variable.
+    RITE_TEMPLATE='/nonexistent/rite-template-for-test'
     REVIEW_TEMPLATE=''
 
     ${extracted_code}
@@ -152,6 +156,14 @@ _run_template_check() {
 
 @test "absent review instructions: no warning (tier-1 branch not entered)" {
   _run_template_check absent
+
+  # Verify the subprocess actually ran to completion (not a vacuous pass from
+  # set -u dying on unbound RITE_TEMPLATE — that would also produce empty output
+  # but $status would be non-zero).
+  [ "$status" -eq 0 ] || {
+    echo "Expected subprocess to exit 0 for absent case but got status=$status; output: $output" >&2
+    false
+  }
 
   # The tier-1 branch is not entered when the file is absent, so no warning.
   [[ "$output" != *"untracked"* ]] || {
