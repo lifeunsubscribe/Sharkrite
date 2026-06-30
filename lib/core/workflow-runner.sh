@@ -2934,6 +2934,13 @@ main() {
     # rather than silently logging it as a phantom completion.
     # See exit-codes.md in docs/architecture.
     exit 13
+  elif [ $workflow_exit -eq 14 ]; then
+    # Issue locked by another live session — propagate exit 14 so batch can
+    # record this as in_progress_elsewhere (SKIPPED class, not FAILED).
+    # The "already being processed by PID X" message was already printed by
+    # acquire_issue_lock() via claude-workflow.sh::setup_issue_lock_if_needed().
+    # See: docs/architecture/exit-codes.md
+    exit 14
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6

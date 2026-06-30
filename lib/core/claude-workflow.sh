@@ -191,7 +191,11 @@ fi
 setup_issue_lock_if_needed() {
   if [ -n "${ISSUE_NUMBER:-}" ] && [ "${FIX_REVIEW_MODE:-false}" != true ] && [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
     if ! acquire_issue_lock "$ISSUE_NUMBER"; then
-      exit 1
+      # Exit 14: issue locked by another live session — distinct from a real failure (exit 1).
+      # batch-process-issues.sh maps exit 14 → in_progress_elsewhere (SKIPPED class, not FAILED).
+      # Single-issue mode: exit 14 lets callers distinguish lock-held from a dev failure.
+      # See: docs/architecture/exit-codes.md
+      exit 14
     fi
     # Add EXIT trap to release lock on normal completion (cleanup_on_interrupt also releases it)
     # Early expansion of ISSUE_NUMBER is intentional — we want to release THIS
