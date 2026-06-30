@@ -53,6 +53,11 @@ RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
 # Format in issue body: <!-- sharkrite-source-issue:N -->
 RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
 
+# Issue tags marker (tag-index read-path, #403) — wraps the tags: block in an
+# issue body so the read-path can extract candidate tags for context loading.
+# Format in issue body: <!-- sharkrite-issue-tags --> tags: ... <!-- /sharkrite-issue-tags -->
+RITE_MARKER_ISSUE_TAGS="sharkrite-issue-tags"
+
 # Trivial-fix fast-path opt-in marker (#531) — when present in an issue body
 # alongside a fenced ```diff block, the workflow may apply the patch directly
 # (skipping the dev session + full review) if triage + the gate both pass.
