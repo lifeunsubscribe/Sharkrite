@@ -1179,14 +1179,36 @@ EOF
 
         # Check if deep clean is needed (shared sections)
         SCRATCHPAD_SIZE=$(wc -c < "$SCRATCHPAD_FILE" 2>/dev/null || echo "0")
-        LAST_DEEP_CLEAN=$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\+\).*/\1/p' "$SCRATCHPAD_FILE" 2>/dev/null | head -1 || echo "1970-01-01")
-        DAYS_SINCE_CLEAN=$(( ( $(date +%s) - $(date -d "$LAST_DEEP_CLEAN" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_DEEP_CLEAN" +%s 2>/dev/null || echo 0) ) / 86400 ))
+        # Extract the last_deep_clean date from the scratchpad marker.
+        # Note: the sed|head pipeline exits 0 even when no match is found (empty
+        # output), so "|| echo 1970-01-01" never fires on an absent marker —
+        # LAST_DEEP_CLEAN would be empty, causing date to fall back to epoch 0
+        # and producing a bogus ~56-year age.  The empty-string check below handles
+        # the absent-marker case explicitly instead.
+        LAST_DEEP_CLEAN=$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\+\).*/\1/p' "$SCRATCHPAD_FILE" 2>/dev/null | head -1 || true)
 
         SHOULD_DEEP_CLEAN=false
         DEEP_CLEAN_REASON=""
 
         # Check if there have been commits in last 2 weeks
         RECENT_COMMITS=$(git log --since="14 days ago" --oneline 2>/dev/null | wc -l)
+
+        if [ -z "${LAST_DEEP_CLEAN:-}" ]; then
+          # Marker is absent (first run for this scratchpad).  Initialize it to
+          # today so the days-based trigger is time-gated from now on, and skip
+          # the days check — there is no prior baseline to measure elapsed time
+          # against.  Size-based trigger still applies.
+          INIT_TODAY=$(date +%Y-%m-%d)
+          # Prepend the marker line to the scratchpad so future runs see it.
+          INIT_TEMP=$(mktemp)
+          echo "<!-- last_deep_clean=${INIT_TODAY} -->" > "$INIT_TEMP"
+          cat "$SCRATCHPAD_FILE" >> "$INIT_TEMP"
+          mv "$INIT_TEMP" "$SCRATCHPAD_FILE"
+          LAST_DEEP_CLEAN="$INIT_TODAY"
+          DAYS_SINCE_CLEAN=0
+        else
+          DAYS_SINCE_CLEAN=$(( ( $(date +%s) - $(date -d "$LAST_DEEP_CLEAN" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_DEEP_CLEAN" +%s 2>/dev/null || echo 0) ) / 86400 ))
+        fi
 
         # Check conditions for deep clean
         if [ "$SCRATCHPAD_SIZE" -gt 51200 ]; then  # >50KB
@@ -1476,7 +1498,7 @@ EOF
 🌳 *Worktrees*
 • Removed ($REMOVED_COUNT):
 ${REMOVED_WORKTREES_LIST}
-• Active ($(echo "$ACTIVE_WORKTREES_LIST" | grep -c '◦' || echo 0)):
+• Active ($(echo "$ACTIVE_WORKTREES_LIST" | grep -c '◦' || true)):
 ${ACTIVE_WORKTREES_LIST}
 📦 *Backups*
 • Scratchpad backup: $(basename "$SCRATCHPAD_BACKUP")
