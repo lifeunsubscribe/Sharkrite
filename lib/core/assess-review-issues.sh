@@ -1224,20 +1224,28 @@ _Parent PR: #${PR_NUMBER}_"
         ;;
     esac
   done < <(echo "$ASSESSMENT_OUTPUT" | awk '
-    /^### .* - ACTIONABLE_LATER$/ {
-      in_later = 1
-      title = $0
-      gsub(/^### /, "", title)
-      gsub(/ - ACTIONABLE_LATER$/, "", title)
-      print "TITLE:" title
+    /^### / {
+      # Structural block boundary: close any open ACTIONABLE_LATER block before
+      # processing the new header. Block termination is deterministic (header/EOF),
+      # not dependent on the LLM emitting **Defer Reason:** — so a finding that
+      # omits Defer Reason is never silently dropped. (#796)
+      if (in_later) { print "---END---"; in_later = 0 }
+      if ($0 ~ /^### .* - ACTIONABLE_LATER$/) {
+        in_later = 1
+        title = $0
+        gsub(/^### /, "", title)
+        gsub(/ - ACTIONABLE_LATER$/, "", title)
+        print "TITLE:" title
+      }
+      next
     }
     in_later && /^\*\*Severity:\*\*/ { print $0 }
     in_later && /^\*\*Category:\*\*/ { print $0 }
     in_later && /^\*\*Reasoning:\*\*/ { print $0 }
     in_later && /^\*\*Context:\*\*/ { print $0 }
     in_later && /^\*\*Location:\*\*/ { print $0 }
-    in_later && /^\*\*Defer Reason:\*\*/ { print $0; print "---END---"; in_later = 0 }
-    in_later && /^### / && !/ACTIONABLE_LATER/ { print "---END---"; in_later = 0 }
+    in_later && /^\*\*Defer Reason:\*\*/ { print $0 }
+    END { if (in_later) print "---END---" }
   ')
 
   # Update PR body with follow-up issue links
