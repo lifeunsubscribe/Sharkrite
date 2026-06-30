@@ -1113,7 +1113,7 @@ $EXIT_INSTRUCTION"
 
   # Regenerate package-lock.json if a fix also touched package.json (issue #804).
   # Fail loudly on npm error — a stale lockfile would break CI.
-  regenerate_package_lockfiles || return 1
+  regenerate_package_lockfiles || exit 1
 
   # Generate commit message based on review content summary
   COMMIT_MSG="fix: address review findings from PR automated review
