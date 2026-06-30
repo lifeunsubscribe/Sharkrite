@@ -57,6 +57,15 @@ source "$RITE_LIB_DIR/utils/gh-retry.sh"
 # Source pr-detection for CLOSING_ISSUE_JQ_REGEX / CLOSING_ISSUE_GREP_REGEX constants
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
+# Source tag-index read-path helpers (lookup_tag_pointers, slice_section) and the
+# codebase relevance grep, used by build_relevant_prior_art (#403 Stage 4). These
+# are guarded so a missing optional lib does NOT abort the functions-only contract
+# (a test that sources this file under RITE_SOURCE_FUNCTIONS_ONLY=1 must still load
+# even if these helpers are absent) — build_relevant_prior_art swallows all errors
+# and the caller keeps its full-catalog fallback if the functions are undefined.
+[ -f "$RITE_LIB_DIR/utils/tag-index.sh" ] && source "$RITE_LIB_DIR/utils/tag-index.sh"
+[ -f "$RITE_LIB_DIR/utils/relevance-grep.sh" ] && source "$RITE_LIB_DIR/utils/relevance-grep.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_DEV_PROVIDER:-claude}"
@@ -267,12 +276,15 @@ while [[ $# -gt 0 ]]; do
           fi
           ISSUE_NUMBER="$1"
           echo "▶  Fetching issue #$ISSUE_NUMBER from GitHub..."
-          # Fetch issue details from GitHub
-          ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,state || true)
+          # Fetch issue details from GitHub. Pull labels in this same call so
+          # build_relevant_prior_art (Path B) reuses the response instead of a
+          # second gh round-trip (network-lazy single call, issue #201 convention).
+          ISSUE_JSON=$(gh_safe issue view "$ISSUE_NUMBER" --json title,body,state,labels || true)
           if [ -n "$ISSUE_JSON" ] && [ "$ISSUE_JSON" != "null" ]; then
             ISSUE_DESC=$(echo "$ISSUE_JSON" | jq -r '.title')
             ISSUE_BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
             ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
+            ISSUE_LABELS_CSV=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | join(",")' 2>/dev/null || true)
 
             # Validate issue has meaningful content
             if [ -z "$ISSUE_DESC" ] || [ "$ISSUE_DESC" = "null" ]; then
@@ -1255,6 +1267,244 @@ find_worktree_for_task() {
   fi
 
   echo "$result"
+}
+
+# ---------------------------------------------------------------------------
+# build_relevant_prior_art — assemble a "Relevant prior art" block for the prompt
+# ---------------------------------------------------------------------------
+#
+# Pre-Phase-1 step (tag-index read path, #403 Stage 4): builds a markdown block
+# of relevant catalog sections + codebase grep hits for injection into the Claude
+# dev prompt, narrowing the context the model loads instead of the full catalog.
+#
+# Tag resolution fallback chain (Path A → B → C → D):
+#   A. Explicit <!-- sharkrite-issue-tags --> block in the issue body
+#   B. Tags derived from GitHub issue labels that match tag-index.md headings
+#   C. Keyword-grep of issue title+body against tag-index.md headings
+#   D. Nothing resolves → return empty (caller keeps full-catalog fallback)
+#
+# #773 — explicit tags are NOT authoritative when they resolve to zero pointers.
+# A typo'd or unknown tag in an explicit tag block must NOT short-circuit straight
+# to "no prior art": each path commits ONLY when lookup_tag_pointers yields >=1
+# pointer. So Path A gates the short-circuit on RESOLVED POINTERS, not on the tag
+# STRING — when the explicit tags resolve to nothing we FALL THROUGH to B then C.
+#
+# This function runs inside $() at the call site, so stdout carries ONLY the
+# assembled block; ALL progress/diagnostic logging goes to stderr. It never fails:
+# every error is swallowed and an empty block is emitted, so the caller's existing
+# full-catalog fallback always takes over cleanly.
+#
+# Arguments:
+#   $1 — issue body text (may be empty or "null")
+#   $2 — issue number (reserved for Path B's own label fetch in S4-5)
+#   $3 — project root directory (default: RITE_PROJECT_ROOT or pwd)
+#   $4 — pre-fetched labels CSV (optional; avoids a second gh API round-trip)
+#   $5 — issue title text (optional; included in Path C keyword grep)
+#
+# Output: the "## Relevant prior art" block to stdout, or empty string.
+build_relevant_prior_art() {
+  local issue_body="${1:-}"
+  local issue_number="${2:-}"
+  local project_root="${3:-${RITE_PROJECT_ROOT:-$(pwd)}}"
+  local prefetched_labels_csv="${4:-}"
+  local issue_title="${5:-}"
+
+  # Sanitize: treat literal "null" (jq's empty-body rendering) as empty.
+  [ "$issue_body" = "null" ] && issue_body=""
+  [ "$issue_title" = "null" ] && issue_title=""
+
+  # Bail safely if the read-path helpers weren't sourced (optional libs absent).
+  if ! declare -f lookup_tag_pointers >/dev/null 2>&1 \
+     || ! declare -f slice_section >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local tag_index_file="${project_root}/docs/architecture/tag-index.md"
+  local conventions_file="${project_root}/docs/architecture/conventions.md"
+  local encountered_file="${project_root}/docs/architecture/encountered-issues.md"
+  local behavioral_file="${project_root}/docs/architecture/behavioral-design.md"
+
+  # The tag index is auto-created on the first tagged PR; until it exists, tag
+  # resolution (Paths A-C) yields nothing, but the codebase grep still runs.
+  local _has_index=false
+  [ -f "$tag_index_file" ] && _has_index=true
+
+  # ── Step 1: resolve tags → pointers (Path A → B → C → D) ───────────────────
+  #
+  # _resolve_pointers <tags_csv> — helper closure: returns sorted pointers for a
+  # CSV of tags, or empty. Each path calls this and only commits when it returns
+  # a non-empty result (the #773 gate: pointers, not the tag string).
+  _resolve_pointers() {
+    local _csv="$1"
+    [ -z "$_csv" ] && return 0
+    [ "$_has_index" = true ] || return 0
+    lookup_tag_pointers "$_csv" "$tag_index_file" 2>/dev/null || true
+  }
+
+  local resolved_pointers=""
+
+  # Path A: explicit tag block in the issue body.
+  # Markers built from the RITE_MARKER_ISSUE_TAGS constant (never the raw literal —
+  # RAW_MARKER_LITERAL lint, #775). Block format:
+  #   <!-- sharkrite-issue-tags -->
+  #   tags: tag1, tag2
+  #   <!-- /sharkrite-issue-tags -->
+  # markers.sh (sourced at top-of-file) defines RITE_MARKER_ISSUE_TAGS; ${VAR:-}
+  # keeps set -u happy if it is somehow unset, in which case Path A is skipped
+  # (an empty marker name would make grep -F match everything) and B/C still run.
+  local _marker_name="${RITE_MARKER_ISSUE_TAGS:-}"
+  local _open_marker="<!-- ${_marker_name} -->"
+  local _close_marker="<!-- /${_marker_name} -->"
+  if [ -n "$_marker_name" ] && [ -n "$issue_body" ] && echo "$issue_body" | grep -qF "$_open_marker"; then
+    local _raw_tags
+    _raw_tags=$(echo "$issue_body" \
+      | sed -n "\|${_open_marker}|,\|${_close_marker}|p" \
+      | grep '^tags:' \
+      | sed 's/^tags:[[:space:]]*//' || true)
+    if [ -n "$_raw_tags" ]; then
+      local _a_pointers
+      _a_pointers=$(_resolve_pointers "$_raw_tags")
+      if [ -n "$_a_pointers" ]; then
+        resolved_pointers="$_a_pointers"
+        echo "tag-index: using explicit issue tags: ${_raw_tags}" >&2
+      else
+        # #773: explicit tags are not authoritative when they resolve to nothing
+        # (typo'd / unknown tag). Do NOT degrade to "no prior art" — fall through
+        # to Path B then Path C below.
+        echo "tag-index: explicit tags '${_raw_tags}' resolved to 0 pointers — falling through to labels/keywords" >&2
+      fi
+    fi
+  fi
+
+  # Path B: derive tags from GitHub issue labels matching ## headings in the index.
+  # S4-5 (#777) extends this with its own label fetch when arg 4 is empty; for now
+  # it consumes only the pre-fetched CSV (network-lazy, issue #201) and is inert in
+  # the orchestrated path where no CSV is prefetched.
+  if [ -z "$resolved_pointers" ] && [ "$_has_index" = true ] \
+     && [ -n "$prefetched_labels_csv" ] && [ "$prefetched_labels_csv" != "null" ]; then
+    local _candidate_tags=""
+    local _lbl
+    while IFS= read -r _lbl; do
+      [ -z "$_lbl" ] && continue
+      local _lbl_lc _lbl_escaped
+      _lbl_lc=$(echo "$_lbl" | tr '[:upper:]' '[:lower:]')
+      _lbl_escaped=$(printf '%s' "$_lbl_lc" | sed 's/[.[\*^$()+?{|]/\\&/g' || true)
+      if grep -qiE "^## ${_lbl_escaped}[[:space:]]*$" "$tag_index_file" 2>/dev/null; then
+        if [ -z "$_candidate_tags" ]; then
+          _candidate_tags="$_lbl"
+        else
+          _candidate_tags="${_candidate_tags},${_lbl}"
+        fi
+      fi
+    done < <(tr ',' '\n' <<< "$prefetched_labels_csv" || true)
+    if [ -n "$_candidate_tags" ]; then
+      local _b_pointers
+      _b_pointers=$(_resolve_pointers "$_candidate_tags")
+      if [ -n "$_b_pointers" ]; then
+        resolved_pointers="$_b_pointers"
+        echo "tag-index: using label-derived tags: ${_candidate_tags}" >&2
+      fi
+    fi
+  fi
+
+  # Path C: keyword-grep issue title+body against ## headings (word-boundary anchored
+  # so short headings like "auth" don't match inside "authentication").
+  if [ -z "$resolved_pointers" ] && [ "$_has_index" = true ]; then
+    local _grep_input
+    _grep_input="${issue_title}
+${issue_body}"
+    local _grep_input_lc
+    _grep_input_lc=$(echo "$_grep_input" | tr '[:upper:]' '[:lower:]')
+    local _keyword_tags=""
+    local _heading _heading_lc _heading_escaped
+    while IFS= read -r _heading; do
+      _heading="${_heading#\#\# }"
+      _heading="${_heading%"${_heading##*[![:space:]]}"}"  # rtrim
+      [ -z "$_heading" ] && continue
+      _heading_lc=$(echo "$_heading" | tr '[:upper:]' '[:lower:]')
+      _heading_escaped=$(printf '%s' "$_heading_lc" | sed 's/[.[\*^$()+?{|]/\\&/g' || true)
+      if echo "$_grep_input_lc" | grep -qE "(^|[^a-z0-9_])${_heading_escaped}([^a-z0-9_]|$)" 2>/dev/null; then
+        if [ -z "$_keyword_tags" ]; then
+          _keyword_tags="$_heading"
+        else
+          _keyword_tags="${_keyword_tags},${_heading}"
+        fi
+      fi
+    done < <(grep -E '^## ' "$tag_index_file" 2>/dev/null || true)
+    if [ -n "$_keyword_tags" ]; then
+      local _c_pointers
+      _c_pointers=$(_resolve_pointers "$_keyword_tags")
+      if [ -n "$_c_pointers" ]; then
+        resolved_pointers="$_c_pointers"
+        echo "tag-index: using keyword-matched tags: ${_keyword_tags}" >&2
+      fi
+    fi
+  fi
+  # Path D is implicit: resolved_pointers stays empty → no catalog sections below.
+
+  # ── Step 2: slice the resolved pointers' catalog sections ─────────────────
+  local prior_art_sections=""
+  if [ -n "$resolved_pointers" ]; then
+    # ASCII-arrow regex stored in a variable: bash parses a literal ">" inside
+    # [[ =~ ]] as a redirect, so the pattern must come from a var (same idiom as
+    # _TI_ASCII_ARROW_RE in lib/utils/tag-index.sh).
+    local _ascii_arrow_re="(.+)[[:space:]]->[[:space:]](.+)$"
+    local _ptr _ptr_file _ptr_heading
+    while IFS= read -r _ptr; do
+      [ -z "$_ptr" ] && continue
+      # Pointer format: "<file>.md → <Heading>" (unicode or ASCII arrow).
+      if [[ "$_ptr" =~ (.+)[[:space:]]→[[:space:]](.+)$ ]]; then
+        _ptr_file="${BASH_REMATCH[1]}"
+        _ptr_heading="${BASH_REMATCH[2]}"
+      elif [[ "$_ptr" =~ $_ascii_arrow_re ]]; then
+        _ptr_file="${BASH_REMATCH[1]}"
+        _ptr_heading="${BASH_REMATCH[2]}"
+      else
+        continue
+      fi
+      _ptr_file="${_ptr_file%"${_ptr_file##*[![:space:]]}"}"        # rtrim
+      _ptr_heading="${_ptr_heading%"${_ptr_heading##*[![:space:]]}"}"  # rtrim
+
+      # Resolve the catalog file name to a full path.
+      local _full_catalog_path
+      case "$_ptr_file" in
+        conventions.md)        _full_catalog_path="$conventions_file" ;;
+        encountered-issues.md) _full_catalog_path="$encountered_file" ;;
+        behavioral-design.md)  _full_catalog_path="$behavioral_file" ;;
+        *)                     _full_catalog_path="${project_root}/docs/architecture/${_ptr_file}" ;;
+      esac
+      [ -f "$_full_catalog_path" ] || continue
+
+      local _section
+      _section=$(slice_section "$_full_catalog_path" "$_ptr_heading" 5120 2>/dev/null || true)
+      [ -z "$_section" ] && continue
+
+      prior_art_sections="${prior_art_sections}### From ${_ptr_file} → ${_ptr_heading}"$'\n\n'"${_section}"$'\n\n'
+    done <<< "$resolved_pointers"
+  fi
+
+  # ── Step 3: codebase grep (prior-art hardening layer) ─────────────────────
+  local grep_hits=""
+  if [ -n "$issue_body" ] && declare -f relevance_grep >/dev/null 2>&1; then
+    grep_hits=$(relevance_grep "$issue_body" "$project_root" 2>/dev/null || true)
+  fi
+
+  # ── Step 4: assemble and return (Path D fallback: empty → caller's fallback) ─
+  if [ -z "$prior_art_sections" ] && [ -z "$grep_hits" ]; then
+    return 0
+  fi
+
+  local block="## Relevant prior art"$'\n\n'
+  block="${block}_Loaded by the tag-index system from issue tags, labels, and codebase grep._"$'\n\n'
+  if [ -n "$prior_art_sections" ]; then
+    block="${block}${prior_art_sections}"
+  fi
+  if [ -n "$grep_hits" ]; then
+    block="${block}### Codebase grep hits"$'\n\n'"${grep_hits}"$'\n'
+  fi
+  block="${block}"$'\n---\n'
+
+  printf '%s' "$block"
 }
 
 # ---------------------------------------------------------------------------
@@ -2474,6 +2724,28 @@ $SECURITY_CONTEXT
 "
 fi
 
+# Build "Relevant prior art" block (tag-index read path, #403 Stage 4).
+# Runs before the prompt is assembled so the narrowed catalog sections + codebase
+# grep hits can be injected. build_relevant_prior_art never fails — it emits an
+# empty string when tag-index.md is absent or nothing matches, in which case
+# RELEVANT_PRIOR_ART_PROMPT stays empty and the prompt is byte-identical to its
+# pre-#403 form (the existing full-catalog behavior is preserved).
+# Main-body code: plain _-prefixed vars (no `local` outside a function), ${VAR:-}
+# under set -u. In the orchestrated path no labels are prefetched (Path B is inert;
+# S4-5 covers its own fetch).
+RELEVANT_PRIOR_ART_PROMPT=""
+_relevant_prior_art_block=$(build_relevant_prior_art \
+  "${ISSUE_BODY:-}" \
+  "${ISSUE_NUMBER:-}" \
+  "${RITE_PROJECT_ROOT:-$(pwd)}" \
+  "${ISSUE_LABELS_CSV:-}" \
+  "${ISSUE_DESC:-}" 2>/dev/null || true)
+if [ -n "${_relevant_prior_art_block:-}" ]; then
+  RELEVANT_PRIOR_ART_PROMPT="
+
+${_relevant_prior_art_block}"
+fi
+
 ENCOUNTERED_ISSUES_PROMPT="
 
 ## Encountered Issues Protocol
@@ -2535,7 +2807,7 @@ _PROVIDER_PREAMBLE=$(provider_dev_session_preamble "$AUTO_MODE" "${WORK_DESCRIPT
 _PROVIDER_EXIT_NOTE=$(provider_exit_instructions "$AUTO_MODE")
 
 CLAUDE_PROMPT="${_PROVIDER_PREAMBLE}
-${SECURITY_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
+${SECURITY_PROMPT}${RELEVANT_PRIOR_ART_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
 ## Workflow Instructions
 
 Please follow this structured workflow:
