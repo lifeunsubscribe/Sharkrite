@@ -61,7 +61,14 @@ _TI_ASCII_ARROW_RE="->[[:space:]]*(.+)$"
 #   TAG_TOTAL_COUNT    — number of unique tags
 #   TAG_TOTAL_POINTERS — total number of pointer entries
 #
-# Returns 0 on success, 1 if tag-index.md doesn't exist.
+# Accepts an optional file-path argument so callers can parse an arbitrary index
+# file WITHOUT mutating the global TAG_INDEX_FILE (issue #772). When omitted,
+# defaults to TAG_INDEX_FILE (the existing --tags render callers rely on this).
+#
+# Arguments:
+#   $1 — optional path to a tag-index.md file (defaults to $TAG_INDEX_FILE)
+#
+# Returns 0 on success, 1 if the index file doesn't exist.
 TAG_NAMES=()
 TAG_POINTER_COUNTS=()
 TAG_POINTERS=()
@@ -70,6 +77,8 @@ TAG_TOTAL_COUNT=0
 TAG_TOTAL_POINTERS=0
 
 parse_tag_index() {
+  local index_file="${1:-$TAG_INDEX_FILE}"
+
   TAG_NAMES=()
   TAG_POINTER_COUNTS=()
   TAG_POINTERS=()
@@ -77,7 +86,7 @@ parse_tag_index() {
   TAG_TOTAL_COUNT=0
   TAG_TOTAL_POINTERS=0
 
-  if [ ! -f "$TAG_INDEX_FILE" ]; then
+  if [ ! -f "$index_file" ]; then
     return 1
   fi
 
@@ -116,7 +125,7 @@ parse_tag_index() {
         TAG_TOTAL_POINTERS=$((TAG_TOTAL_POINTERS + 1))
       fi
     fi
-  done < "$TAG_INDEX_FILE"
+  done < "$index_file"
 
   # Save last tag's count
   if [ -n "$current_tag" ]; then
@@ -410,6 +419,167 @@ render_tag_index_history() {
   echo "Tag index history: no history yet"
   echo "  (populated in Stage 3 when doc-assessment runs drift reconciliation)"
   echo ""
+}
+
+# =============================================================================
+# Read-path helpers (Stage 4 — "Relevant prior art" injection at `rite N` start)
+# =============================================================================
+
+# lookup_tag_pointers TAGS_CSV [INDEX_FILE]
+#
+# Given a comma-separated list of tag names, emits the matching pointer lines
+# (one per line), sorted and deduplicated.
+#
+# Format of each emitted line:
+#   <catalog-file>.md → <Heading Text>
+#
+# Arguments:
+#   $1 — comma-separated tag names (e.g. "subshell,set-e")
+#   $2 — optional path to a tag-index.md file (defaults to $TAG_INDEX_FILE)
+#
+# Output: one pointer per line to stdout.  Empty (exit 0) when no tags match,
+# the CSV is empty, or the index file is missing/unparseable.  Never hard-errors
+# — graceful degradation for the prompt-injection path.
+#
+# Issue #772: this function MUST NOT mutate the global TAG_INDEX_FILE. It passes
+# INDEX_FILE through to the parameterized parse_tag_index instead of the
+# (forbidden) save/override/restore pattern from PR #771.
+lookup_tag_pointers() {
+  local tags_csv="$1"
+  local index_file="${2:-$TAG_INDEX_FILE}"
+
+  [ -z "$tags_csv" ] && return 0
+  [ -f "$index_file" ] || return 0
+
+  # Parse the explicit index file WITHOUT touching the global TAG_INDEX_FILE.
+  parse_tag_index "$index_file" || return 0
+
+  [ "$TAG_TOTAL_COUNT" -eq 0 ] && return 0
+
+  # For each requested tag, collect its pointers.  Case-insensitive match against
+  # TAG_NAMES — mirrors render_tag_index_single's lowercased comparison loop.
+  local _req_tag _req_lc _collected=""
+  while IFS= read -r _req_tag; do
+    _req_tag="${_req_tag#"${_req_tag%%[![:space:]]*}"}"  # ltrim
+    _req_tag="${_req_tag%"${_req_tag##*[![:space:]]}"}"  # rtrim
+    [ -z "$_req_tag" ] && continue
+    _req_lc=$(echo "$_req_tag" | tr '[:upper:]' '[:lower:]')
+
+    local i
+    for i in "${!TAG_NAMES[@]}"; do
+      local tag_lc
+      tag_lc=$(echo "${TAG_NAMES[$i]}" | tr '[:upper:]' '[:lower:]')
+      if [ "$tag_lc" = "$_req_lc" ]; then
+        local count="${TAG_POINTER_COUNTS[$i]}"
+        local offset="${TAG_POINTER_OFFSETS[$i]}"
+        local j
+        for (( j=offset; j<offset+count; j++ )); do
+          local ptr="${TAG_POINTERS[$j]}"
+          if [ -n "$ptr" ]; then
+            _collected="${_collected}${ptr}
+"
+          fi
+        done
+        break
+      fi
+    done
+  done < <(tr ',' '\n' <<< "$tags_csv" || true)
+
+  # Deduplicate, sort, and emit.
+  if [ -n "$_collected" ]; then
+    printf '%s' "$_collected" | sort -u || true
+  fi
+}
+
+# slice_section CATALOG_FILE HEADING [MAX_BYTES]
+#
+# Reads CATALOG_FILE, finds the H2 section whose heading text matches HEADING
+# (case-insensitive, spaces/dashes normalised), and outputs the section body
+# (including the heading line itself), up to the next H2 heading or EOF.
+#
+# Truncation: when the section exceeds MAX_BYTES (default 5120), the output is
+# cut at MAX_BYTES bytes (byte cap via wc -c / LC_ALL=C head -c) and a truncation
+# notice is appended:
+#
+#   ...
+#   → see full: <CATALOG_FILE>#<anchor>
+#
+# The anchor is the heading slug: lowercase, spaces→hyphens, stripped to
+# [a-z0-9-].
+#
+# Arguments:
+#   $1 — path to the catalog file
+#   $2 — heading text to find (matched modulo normalisation)
+#   $3 — maximum bytes to emit (default: 5120)
+#
+# Output: section text to stdout.  Empty (exit 0) when the file is missing, the
+# heading is not found, or args are empty.  Never hard-errors.
+#
+# Salvaged near-verbatim from PR #771 (7 passing tests); H2 scan and the
+# `tr -s ' -' ' '` normalisation mirror the module's existing orphan helpers.
+slice_section() {
+  local catalog_file="$1"
+  local heading="$2"
+  local max_bytes="${3:-5120}"
+
+  [ -z "$catalog_file" ] && return 0
+  [ -z "$heading" ]      && return 0
+  [ -f "$catalog_file" ] || return 0
+
+  # Normalise target heading for comparison (lowercase, collapse spaces/dashes).
+  local norm_target
+  norm_target=$(echo "$heading" | tr '[:upper:]' '[:lower:]' | tr -s ' -' ' ')
+
+  # Walk the file: find the target H2 heading, then collect lines until the next
+  # H2 heading or EOF.
+  local found=0
+  local section_text=""
+  local _line
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    if [[ "$_line" =~ ^##[[:space:]]+(.+)$ ]]; then
+      local this_heading="${BASH_REMATCH[1]}"
+      this_heading="${this_heading%"${this_heading##*[![:space:]]}"}"  # rtrim
+      local norm_this
+      norm_this=$(echo "$this_heading" | tr '[:upper:]' '[:lower:]' | tr -s ' -' ' ')
+
+      if [ "$found" -eq 1 ]; then
+        # Hit the NEXT H2 section — stop collecting.
+        break
+      elif [ "$norm_this" = "$norm_target" ]; then
+        found=1
+        section_text="${_line}
+"
+        continue
+      fi
+    elif [ "$found" -eq 1 ]; then
+      section_text="${section_text}${_line}
+"
+    fi
+  done < "$catalog_file"
+
+  [ "$found" -eq 0 ] && return 0
+  [ -z "$section_text" ] && return 0
+
+  # Trim trailing newline (keep the body; we re-add a single newline on output).
+  section_text="${section_text%$'\n'}"
+
+  # Byte cap (bytes, not chars — the → arrow is 3 UTF-8 bytes).
+  local byte_count
+  byte_count=$(printf '%s' "$section_text" | wc -c | tr -d ' ')
+
+  if [ "$byte_count" -le "$max_bytes" ]; then
+    printf '%s\n' "$section_text"
+  else
+    # Anchor: lowercase, spaces→hyphens, strip to [a-z0-9-].
+    local anchor
+    anchor=$(echo "$heading" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
+
+    # Truncate at MAX_BYTES.  LC_ALL=C keeps the count in bytes regardless of
+    # multibyte UTF-8; head -c works on both BSD (macOS) and GNU coreutils.
+    local truncated
+    truncated=$(printf '%s' "$section_text" | LC_ALL=C head -c "$max_bytes" || true)
+    printf '%s\n...\n→ see full: %s#%s\n' "$truncated" "$catalog_file" "$anchor"
+  fi
 }
 
 # =============================================================================
