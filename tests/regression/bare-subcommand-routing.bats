@@ -128,7 +128,6 @@ STUB
     bash "$_FAKE_BIN/rite" status 2>&1 || true
 
   # Issue-generation must NOT appear in output regardless of success/failure.
-  echo "$output" | grep -qv "Generating structured issue" || true
   ! echo "$output" | grep -q "Generating structured issue"
 
   # normalize_and_resolve would print "Generating structured issue from description..."
