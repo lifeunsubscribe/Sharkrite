@@ -46,6 +46,17 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
+# Reuse (don't duplicate) _resolve_done_def from assess-and-resolve.sh so the
+# surviving ACTIONABLE_LATER follow-up bodies use the same runbook-compliant
+# done-definition wording as the per-finding loop.  Functions-only source: the
+# RITE_SOURCE_FUNCTIONS_ONLY=1 guard in assess-and-resolve.sh returns before its
+# program body (no arg parsing, no exec redirects, no live gh/claude calls); its
+# pre-guard sources are utils + pr-detection only — no source cycle back here.
+# The declare -f guard makes this a no-op if the function is already loaded.
+if ! declare -f _resolve_done_def >/dev/null 2>&1; then
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
+fi
+
 # =============================================================================
 # FRESHNESS CHECK: Skip assessment if no commits since last assessment
 # =============================================================================
@@ -829,6 +840,27 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   # Also check for issues already linked to this PR
   PR_LINKED_ISSUES=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | grep -oE "Follow-up.*#[0-9]+" | grep -oE "#[0-9]+" || true)
 
+  # One-time PR metadata fetch — reused across all per-finding follow-up bodies
+  # below (Claude Context + Scope Boundary DO bullets + Branch line). Mirrors
+  # assess-and-resolve.sh:1627-1646. Fetched ONCE here before the while-read loop;
+  # never inside it. Combined into a single gh call to halve the network cost.
+  # NOTE: main-script-body scope — plain assignment only (no `local`); every
+  # $()-pipeline ends `|| true` (UNSAFE_PIPE_IN_CMDSUB rule).
+  _pr_meta=$(gh_safe pr view "$PR_NUMBER" --json files,headRefName 2>/dev/null || true)
+  CHANGED_FILES=$(echo "$_pr_meta" | jq -r '.files[].path' 2>/dev/null || true)
+  CHANGED_FILES="${CHANGED_FILES:-}"
+  PR_BRANCH_NAME=$(echo "$_pr_meta" | jq -r '.headRefName' 2>/dev/null || true)
+  PR_BRANCH_NAME="${PR_BRANCH_NAME:-unknown}"
+  CLAUDE_CONTEXT=""
+  if [ -n "$CHANGED_FILES" ]; then
+    CLAUDE_CONTEXT=$(echo "$CHANGED_FILES" | sed 's/^/- `/' | sed 's/$/`/' || true)
+  fi
+  if [ -n "$CHANGED_FILES" ]; then
+    SCOPE_DO_BULLETS=$(echo "$CHANGED_FILES" | sed 's/^/- DO: /' || true)
+  else
+    SCOPE_DO_BULLETS="- DO: Address the specific review finding described above"
+  fi
+
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
@@ -867,6 +899,8 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_REASONING=""
         ITEM_CONTEXT=""
         ITEM_DEFER=""
+        # Reset Location so a finding without one can't inherit the prior finding's.
+        ITEM_LOCATION=""
         ;;
       \*\*Severity:\*\**)
         ITEM_SEVERITY="${line#\*\*Severity:\*\* }"
@@ -879,6 +913,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ;;
       \*\*Context:\*\**)
         ITEM_CONTEXT="${line#\*\*Context:\*\* }"
+        ;;
+      \*\*Location:\*\**)
+        ITEM_LOCATION="${line#\*\*Location:\*\* }"
         ;;
       \*\*Defer\ Reason:\*\**)
         ITEM_DEFER="${line#\*\*Defer Reason:\*\* }"
@@ -1034,23 +1071,6 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           print_info "  Creating issue: $ITEM_TITLE"
           SOURCE_ISSUE_MARKER=""
           [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER} -->"
-          ISSUE_BODY="${SOURCE_ISSUE_MARKER}## From PR #${PR_NUMBER} Assessment
-
-**Severity:** ${ITEM_SEVERITY}
-**Category:** ${ITEM_CATEGORY}
-
-## Issue
-${ITEM_REASONING}
-
-## Context
-${ITEM_CONTEXT}
-
-## Defer Reason
-${ITEM_DEFER}
-
----
-_Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
-_Parent PR: #${PR_NUMBER}_"
 
           # Priority label fix (defect #4): derive priority from the item's severity
           # so HIGH findings are distinguishable from cosmetic items in triage.
@@ -1061,6 +1081,92 @@ _Parent PR: #${PR_NUMBER}_"
             LOW)           _priority_label="priority-low" ;;
             *)             _priority_label="priority-medium" ;;
           esac
+
+          # --- Synthesize runbook-compliant body fields (mirrors assess-and-resolve.sh:1829-1865) ---
+          # The surviving ACTIONABLE_LATER follow-up uses the SAME rich body shape
+          # as the per-finding loop: acceptance criterion + concrete verification
+          # command derived from Location + severity-appropriate done definition.
+          _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
+          if [ -n "${ITEM_LOCATION:-}" ]; then
+            # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
+            # Strip any trailing description after whitespace; then split on the last colon
+            # that is followed only by digits so we handle paths like lib/core/foo.sh:142
+            # but not bare paths without a line number.
+            _loc_path=$(echo "${ITEM_LOCATION:-}" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+            _loc_line=$(echo "${ITEM_LOCATION:-}" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
+            # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
+            # break the surrounding single-quoted sed/grep command strings and inject
+            # arbitrary shell text into the generated verification command.
+            # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
+            _loc_path_safe=""
+            if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+              _loc_path_safe="$_loc_path"
+            fi
+            if [ -n "$_loc_line" ] && [ -n "$_loc_path_safe" ]; then
+              # file:line format — emit a valid sed command pointing at that exact line
+              _verification_cmd="sed -n '${_loc_line}p' '${_loc_path_safe}'"
+            elif [ -n "$_loc_path_safe" ]; then
+              # Looks like a plain file path (no line number) — use grep to inspect it
+              _verification_cmd="grep -n '' '${_loc_path_safe}'"
+            elif echo "${ITEM_LOCATION:-}" | grep -qE '^[a-zA-Z/._-]'; then
+              # Location present but path did not pass sanitization — emit as prose to
+              # avoid injecting unsanitized content into shell command syntax.
+              _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
+            else
+              # Location field present but doesn't look like a path — fall back
+              _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
+            fi
+          else
+            # Generic fallback — reviewer must fill in the concrete command
+            _verification_cmd="# TODO: add verification command for this finding"
+          fi
+
+          # Done Definition: severity-appropriate (reused function from assess-and-resolve.sh)
+          _done_def=$(_resolve_done_def "${ITEM_SEVERITY:-MEDIUM}")
+
+          # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh:1879-1922) ---
+          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+## Description
+
+${ITEM_REASONING:-$ITEM_TITLE}
+
+**Severity:** ${ITEM_SEVERITY:-MEDIUM}
+**Category:** ${ITEM_CATEGORY:-unspecified}
+**Source PR:** #${PR_NUMBER}
+**Branch:** ${PR_BRANCH_NAME}
+**Review Date:** $(date +%Y-%m-%d)
+$([ -n "${ITEM_LOCATION:-}" ] && echo "**Location:** ${ITEM_LOCATION:-}" || echo "")
+$([ -n "${ITEM_DEFER:-}" ] && echo "
+**Defer Reason:** ${ITEM_DEFER:-}" || echo "")
+$([ -n "${ITEM_CONTEXT:-}" ] && echo "
+**Context:** ${ITEM_CONTEXT:-}" || echo "")
+
+## Claude Context
+Files to read before starting:
+${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+## Acceptance Criteria
+${_acceptance_criterion}
+
+## Verification Commands
+\`\`\`bash
+${_verification_cmd}
+\`\`\`
+
+## Done Definition
+${_done_def}
+
+## Scope Boundary
+${SCOPE_DO_BULLETS}
+- DO NOT: Refactor surrounding code, add new features, or modify unrelated files
+
+## Dependencies
+After: #${RITE_ISSUE_NUMBER:-${PR_NUMBER}}
+
+---
+_Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
+_Parent PR: #${PR_NUMBER}_"
+
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
           ensure_labels_exist "tech-debt,from-review,${_priority_label}"
@@ -1129,6 +1235,7 @@ _Parent PR: #${PR_NUMBER}_"
     in_later && /^\*\*Category:\*\*/ { print $0 }
     in_later && /^\*\*Reasoning:\*\*/ { print $0 }
     in_later && /^\*\*Context:\*\*/ { print $0 }
+    in_later && /^\*\*Location:\*\*/ { print $0 }
     in_later && /^\*\*Defer Reason:\*\*/ { print $0; print "---END---"; in_later = 0 }
     in_later && /^### / && !/ACTIONABLE_LATER/ { print "---END---"; in_later = 0 }
   ')
