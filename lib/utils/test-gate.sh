@@ -672,6 +672,126 @@ _node_runner_resolvable() {
 }
 
 # ---------------------------------------------------------------------------
+# _node_is_workspaces_monorepo — is this an npm-workspaces monorepo? (issue #818)
+# Args: $1=project_root
+# Returns 0 (yes) / 1 (no).
+#
+# Detection (either signal is sufficient):
+#   - root package.json has a non-empty `.workspaces` (array OR {packages:[...]}
+#     object form) via jq; OR
+#   - the root `.scripts.test` contains `--workspaces` (e.g.
+#     `npm run test --workspaces --if-present`).
+#
+# Conservative: with no jq or no package.json it returns 1 (not a workspaces
+# monorepo) so the single-package #807 path is preserved unchanged.
+# ---------------------------------------------------------------------------
+_node_is_workspaces_monorepo() {
+  local _pr="$1"
+  local _pkg="$_pr/package.json"
+  [ -f "$_pkg" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  # Non-empty .workspaces — accept both the array form and the object form
+  # ({"packages":[...]}). `values` normalises both to a list; length>0 confirms.
+  local _ws_count
+  _ws_count=$(jq -r '
+    (.workspaces // empty) as $w
+    | if ($w | type) == "array" then ($w | length)
+      elif ($w | type) == "object" then (($w.packages // []) | length)
+      else 0 end
+  ' "$_pkg" 2>/dev/null || echo 0)
+  [ -n "$_ws_count" ] || _ws_count=0
+  if [ "$_ws_count" -gt 0 ] 2>/dev/null; then
+    return 0
+  fi
+
+  # Fallback signal: the root test script delegates across workspaces.
+  local _script
+  _script=$(jq -r '.scripts.test // ""' "$_pkg" 2>/dev/null || echo "")
+  case "$_script" in
+    *--workspaces*) return 0 ;;
+  esac
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# _node_workspace_runners_resolvable — do ALL workspace test runners resolve?
+# Args: $1=project_root  (issue #818)
+# Returns 0 (every workspace runner resolves) / 1 (at least one is unresolvable,
+# OR we could not positively confirm — bootstrap when in doubt).
+#
+# For each workspace directory (expanded from the root .workspaces globs) that
+# has a package.json with a .scripts.test runner, the runner is considered
+# resolvable when it is executable in ANY of:
+#   - the workspace's own node_modules/.bin/<runner>
+#   - the hoisted root node_modules/.bin/<runner>  (npm hoists shared bins)
+#   - on PATH (`command -v <runner>`)
+#
+# Deliberately strict: a workspace whose runner cannot be positively confirmed
+# makes the whole set unresolvable → caller bootstraps (correctness over a
+# redundant install). Object-form `.workspaces` ({"packages":[...]}) is
+# supported. If no workspace globs or no jq, returns 1 (bootstrap).
+# ---------------------------------------------------------------------------
+_node_workspace_runners_resolvable() {
+  local _pr="$1"
+  local _root_pkg="$_pr/package.json"
+  [ -f "$_root_pkg" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  local _root_bin="$_pr/node_modules/.bin"
+
+  # Expand the workspace glob patterns to concrete directories. jq emits one
+  # pattern per line (array or object form); the shell expands each glob.
+  local _patterns
+  _patterns=$(jq -r '
+    (.workspaces // empty) as $w
+    | if ($w | type) == "array" then $w[]
+      elif ($w | type) == "object" then (($w.packages // [])[])
+      else empty end
+  ' "$_root_pkg" 2>/dev/null || echo "")
+  [ -n "$_patterns" ] || return 1
+
+  local _saw_any_ws=false
+  local _pattern _dir _pkg _runner _ws_bin
+  while IFS= read -r _pattern; do
+    [ -n "$_pattern" ] || continue
+    # Expand the glob relative to the project root. `set -f` is NOT used here;
+    # patterns like `packages/*` must expand. A non-matching glob yields the
+    # literal pattern, which we filter out with the `-d` test below.
+    for _dir in "$_pr/"$_pattern; do
+      [ -d "$_dir" ] || continue
+      _pkg="$_dir/package.json"
+      [ -f "$_pkg" ] || continue
+      _saw_any_ws=true
+      _runner=$(_resolve_node_test_runner "$_dir")
+      # Unknown workspace runner (no test script, or unresolvable extraction) —
+      # we cannot positively confirm it. Treat as unresolvable → bootstrap.
+      [ -n "$_runner" ] || return 1
+      _ws_bin="$_dir/node_modules/.bin"
+      if [ -x "$_ws_bin/$_runner" ]; then
+        continue
+      fi
+      if [ -x "$_root_bin/$_runner" ]; then
+        continue
+      fi
+      if command -v "$_runner" >/dev/null 2>&1; then
+        continue
+      fi
+      # This workspace's runner is not resolvable anywhere → bootstrap.
+      return 1
+    done
+  done <<EOF
+$_patterns
+EOF
+
+  # If no workspace package.json was found at all, we cannot confirm anything —
+  # bootstrap rather than assume (correctness over a redundant install).
+  [ "$_saw_any_ws" = "true" ] || return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1153,10 +1273,33 @@ run_test_gate() {
       # Best-effort (|| true): a bootstrap FAILURE is caught by the 127 hard-block
       # below, not by aborting here. Output goes to the run log (_gate_raw_sink),
       # not the findings file — it is not a test result.
-      local _node_runner
+      #
+      # #818: the root-runner resolvability check above is WRONG-GRANULARITY for
+      # an npm-WORKSPACES monorepo. Its root test script is a delegator
+      # (`npm run test --workspaces --if-present`), so _resolve_node_test_runner
+      # yields `npm`/bails and _node_runner_resolvable falls to the "root .bin
+      # non-empty → resolvable" heuristic — SKIPPING the bootstrap while the
+      # WORKSPACE packages' runners (jest/vitest per sub-package) are never
+      # installed → `jest: command not found` (127). For a workspaces monorepo we
+      # do NOT trust the root-.bin heuristic: we bootstrap unless we can
+      # positively confirm every workspace runner already resolves. `npm ci`
+      # installs all workspace devDeps and hoists shared bins to root/.bin, which
+      # is what the per-workspace test scripts need.
+      local _node_runner _node_needs_bootstrap=false
       _node_runner=$(_resolve_node_test_runner "$project_root")
-      if ! _node_runner_resolvable "$project_root" "$_node_runner"; then
+      if _node_is_workspaces_monorepo "$project_root"; then
+        if _node_workspace_runners_resolvable "$project_root"; then
+          echo "[test-gate] workspaces monorepo: all workspace runners already resolvable — skipping bootstrap" >> "$_gate_raw_sink"
+        else
+          echo "[test-gate] workspaces monorepo: a workspace test runner is not resolvable (or could not be confirmed) — bootstrapping all workspace dependencies before npm test..." >> "$_gate_raw_sink"
+          _node_needs_bootstrap=true
+        fi
+      elif ! _node_runner_resolvable "$project_root" "$_node_runner"; then
+        # Single-package #807 path — unchanged.
         echo "[test-gate] test runner '${_node_runner:-unknown}' not resolvable — bootstrapping dependencies before npm test..." >> "$_gate_raw_sink"
+        _node_needs_bootstrap=true
+      fi
+      if [ "$_node_needs_bootstrap" = "true" ]; then
         if [ -f "$project_root/package-lock.json" ]; then
           (cd "$project_root" && npm ci --silent) >> "$_gate_raw_sink" 2>&1 || true
         else
@@ -1164,8 +1307,14 @@ run_test_gate() {
         fi
         # Re-check after the bootstrap (informational). If still unresolvable we do
         # nothing special here — `npm test` runs below and the existing 127
-        # hard-block fires, blocking the merge. No new block path is added.
-        if ! _node_runner_resolvable "$project_root" "$_node_runner"; then
+        # hard-block fires, blocking the merge. No new block path is added. For a
+        # workspaces monorepo the per-workspace re-check is the meaningful one; the
+        # root-runner re-check is retained only for the single-package path.
+        if _node_is_workspaces_monorepo "$project_root"; then
+          if ! _node_workspace_runners_resolvable "$project_root"; then
+            echo "[test-gate] a workspace test runner is still not resolvable after bootstrap — npm test will run and the 127 hard-block will fire if it is genuinely missing" >> "$_gate_raw_sink"
+          fi
+        elif ! _node_runner_resolvable "$project_root" "$_node_runner"; then
           echo "[test-gate] test runner '${_node_runner:-unknown}' still not resolvable after bootstrap — npm test will run and the 127 hard-block will fire if it is genuinely missing" >> "$_gate_raw_sink"
         fi
       fi
