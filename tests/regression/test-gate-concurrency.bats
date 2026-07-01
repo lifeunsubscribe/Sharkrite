@@ -150,9 +150,9 @@ EOF
 @test "raw output files use PID suffix (collision-safe under concurrent gates)" {
   # Per-invocation temp files MUST include $$ so two simultaneous gate runs
   # (e.g. dev session + post-commit gate) don't write to the same file.
-  grep -q 'rite_gate_sc_raw_.*_\$\$\.txt' "$PROJECT_ROOT/lib/utils/test-gate.sh" \
+  grep -q 'rite_gate_sc_raw_.*_\$\$' "$PROJECT_ROOT/lib/utils/test-gate.sh" \
     || { echo "shellcheck raw temp file missing \$\$ suffix" >&2; return 1; }
-  grep -q 'rite_gate_lint_raw_.*_\$\$\.txt' "$PROJECT_ROOT/lib/utils/test-gate.sh" \
+  grep -q 'rite_gate_lint_raw_.*_\$\$' "$PROJECT_ROOT/lib/utils/test-gate.sh" \
     || { echo "lint raw temp file missing \$\$ suffix" >&2; return 1; }
 }
 
@@ -176,9 +176,9 @@ EOF
   # (bats -r tests/) and the targeted-list invocation. Empty-array-safe
   # idiom: ${arr[@]+"${arr[@]}"}
   _full_hit=$(grep -c 'bats "${_bats_jobs_args\[@\]+"${_bats_jobs_args\[@\]}"}" -r tests/' "$PROJECT_ROOT/lib/utils/test-gate.sh" || true)
-  _targ_hit=$(grep -c 'bats "${_bats_jobs_args\[@\]+"${_bats_jobs_args\[@\]}"}" "${_selected_files\[@\]}"' "$PROJECT_ROOT/lib/utils/test-gate.sh" || true)
+  _targ_hit=$(grep -c 'bats "${_bats_jobs_args\[@\]+"${_bats_jobs_args\[@\]}"}" "${_parallel_files\[@\]}"' "$PROJECT_ROOT/lib/utils/test-gate.sh" || true)
   [ "$_full_hit" -ge 1 ] || { echo "full-suite bats invocation missing --jobs expansion" >&2; return 1; }
-  [ "$_targ_hit" -ge 1 ] || { echo "targeted bats invocation missing --jobs expansion" >&2; return 1; }
+  [ "$_targ_hit" -ge 1 ] || { echo "parallel-group bats invocation missing --jobs expansion" >&2; return 1; }
 }
 
 @test "_compute_bats_jobs is called before constructing _bats_jobs_args" {
