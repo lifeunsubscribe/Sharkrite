@@ -67,12 +67,12 @@ STUBEOF
 #   Runs bin/rite with $_FAKE_BIN on PATH and RITE_LIB_DIR pointing at the
 #   real lib so config.sh / colors.sh / etc. are loadable.
 _run_rite() {
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" "$@"
+    bash "$_FAKE_BIN/rite" "$@" < /dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -120,12 +120,12 @@ STUB
   # is fine — we care about routing, not completion).
   _stub_command "gh" 1 ""
 
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" status 2>&1 || true
+    bash "$_FAKE_BIN/rite" status < /dev/null 2>&1 || true
 
   # Issue-generation must NOT appear in output regardless of success/failure.
   ! echo "$output" | grep -q "Generating structured issue"
@@ -184,12 +184,12 @@ STUB
   _stub_command "gh" 0 ""
   _stub_command "claude" 0 ""
 
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" init 2>&1 || true
+    bash "$_FAKE_BIN/rite" init < /dev/null 2>&1 || true
 
   # Init mode prints "Initializing Sharkrite" — confirm that fires.
   echo "$output" | grep -qi "Initializing Sharkrite"
@@ -208,12 +208,12 @@ STUB
   # the "Backfilling" info line appears (or the script errors on missing git,
   # which is still not issue-generation).
 
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" backfill-locks 2>&1 || true
+    bash "$_FAKE_BIN/rite" backfill-locks < /dev/null 2>&1 || true
 
   ! echo "$output" | grep -q "Generating structured issue"
   # backfill-locks prints "Backfilling lock files..." via print_info
@@ -225,12 +225,12 @@ STUB
 #         issue-generation.
 # ---------------------------------------------------------------------------
 @test "rite tags (bare word) enters tags mode, not issue-generation" {
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" tags 2>&1 || true
+    bash "$_FAKE_BIN/rite" tags < /dev/null 2>&1 || true
 
   # Issue-generation must not appear regardless of exit code.
   ! echo "$output" | grep -q "Generating structured issue"
@@ -253,12 +253,12 @@ STUB
   # Also stub gh so pre-flight checks pass (gh auth status etc.)
   _stub_command "gh" 0 ""
 
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" "Fix the login button to work on mobile" 2>&1 || true
+    bash "$_FAKE_BIN/rite" "Fix the login button to work on mobile" < /dev/null 2>&1 || true
 
   # The issue-generation path must have been entered — even if it ultimately
   # fails (claude stub exits 1), the entry message appears first.
@@ -281,23 +281,23 @@ STUB
   chmod +x "$_FAKE_BIN/rite-health-report"
 
   # Bare-word form
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" health-report
+    bash "$_FAKE_BIN/rite" health-report < /dev/null
 
   local _bare_status="$status"
   local _bare_output="$output"
 
   # Flag form
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" --health-report
+    bash "$_FAKE_BIN/rite" --health-report < /dev/null
 
   # Both should have called the same stub
   echo "$_bare_output" | grep -q "HEALTH_REPORT_STUB_CALLED"
@@ -318,23 +318,23 @@ STUB
   chmod +x "$_FAKE_BIN/rite-full-suite"
 
   # Bare-word form
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" full-suite
+    bash "$_FAKE_BIN/rite" full-suite < /dev/null
 
   local _bare_status="$status"
   local _bare_output="$output"
 
   # Flag form
-  run env \
+  run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
-    bash "$_FAKE_BIN/rite" --full-suite
+    bash "$_FAKE_BIN/rite" --full-suite < /dev/null
 
   echo "$_bare_output" | grep -q "FULL_SUITE_STUB_CALLED"
   echo "$output"       | grep -q "FULL_SUITE_STUB_CALLED"

@@ -1094,6 +1094,39 @@ run_test_gate() {
     # RITE_BATS_TEST_TIMEOUT.
     export BATS_TEST_TIMEOUT="${RITE_BATS_TEST_TIMEOUT:-120}"
 
+    # --- Bats sandbox: stdin, env scrub, whole-run watchdog ---
+    # Live freeze (2026-07-01, rite 804): the gate's bats run inherited the
+    # workflow's terminal stdin and live environment. A regression test executed
+    # the real bin/rite, which (a) appended its log header and diag lines to the
+    # REAL run log via inherited RITE_LOG_FILE, (b) spawned lib/core/create-pr.sh
+    # carrying the real PR_NUMBER — that orphan ran a second full gate and real
+    # review generations against the live PR — and (c) read from the tty as a
+    # background job → SIGTTIN stopped the whole bats process group, including
+    # bats' own per-test-timeout watchdogs (BATS_TEST_TIMEOUT cannot fire from
+    # inside a stopped group). The gate hung ~3.5h until manually killed.
+    #
+    # Three independent defenses, applied to every bats invocation below:
+    #   1. stdin < /dev/null — no test child can ever read the workflow's tty.
+    #   2. env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER — tests must not
+    #      inherit the live workflow's identity; anything they spawn cannot
+    #      mistake itself for the real run or write to its log.
+    #   3. Whole-run watchdog (gtimeout/timeout when available) as the
+    #      last-resort bound — unlike BATS_TEST_TIMEOUT it lives OUTSIDE the
+    #      bats process group, so even a stopped group gets killed. Default
+    #      1800s; override via RITE_GATE_BATS_TIMEOUT (0 disables). Detection
+    #      is deliberately prompt-free: never call ensure_timeout_cmd here —
+    #      its supervised-mode install prompt would itself read stdin mid-gate.
+    local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER)
+    local _bats_watchdog=()
+    local _gate_bats_timeout="${RITE_GATE_BATS_TIMEOUT:-1800}"
+    if [ "$_gate_bats_timeout" != "0" ]; then
+      if command -v gtimeout >/dev/null 2>&1; then
+        _bats_watchdog=(gtimeout -k 30 "$_gate_bats_timeout")
+      elif command -v timeout >/dev/null 2>&1; then
+        _bats_watchdog=(timeout -k 30 "$_gate_bats_timeout")
+      fi
+    fi
+
     # --- Bats output format: pretty for the run log, TAP for JSON parser ---
     # When bats supports --report-formatter (bats-core >= 1.5), we run with
     # `-F pretty` for readable output, while TAP is written to a temp dir via
@@ -1123,12 +1156,15 @@ run_test_gate() {
       echo "[test-gate] Running bats -r tests/..."
       if [ "$_bats_use_pretty" = "true" ]; then
         { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+            "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
             bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
-            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/) >> "$_gate_raw_sink" 2>&1; \
+            "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/) \
+            < /dev/null >> "$_gate_raw_sink" 2>&1; \
           echo $? > "$_bats_exit_file"; } || true
         cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
       else
-        { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ 2>&1); echo $? > "$_bats_exit_file"; } \
+        { (cd "$project_root" && "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
+            bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/ < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
           | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       fi
     elif [ -z "$_selection" ]; then
@@ -1177,16 +1213,23 @@ run_test_gate() {
           local _par_tap_dir
           _par_tap_dir=$(mktemp -d "/tmp/rite_gate_par_tap_${PR_NUMBER:-0}_$$_XXXXXX")
           { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+              "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats -F pretty --report-formatter tap --output "$_par_tap_dir" \
-              "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}") >> "$_gate_raw_sink" 2>&1; \
+              "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}") \
+              < /dev/null >> "$_gate_raw_sink" 2>&1; \
             echo $? > "$_bats_exit_file"; } || true
           cat "$_par_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
           rm -rf "$_par_tap_dir"
         else
-          { (cd "$project_root" && bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
+          { (cd "$project_root" && "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
+              bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
             | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
         fi
         _par_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+        if [ "$_par_exit" = "124" ] || [ "$_par_exit" = "137" ]; then
+          echo "[test-gate] bats (parallel group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
+          _diag "TEST_GATE_WATCHDOG_KILL group=parallel timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+        fi
         echo 0 > "$_bats_exit_file"
       fi
 
@@ -1201,16 +1244,23 @@ run_test_gate() {
           local _ser_tap_dir
           _ser_tap_dir=$(mktemp -d "/tmp/rite_gate_ser_tap_${PR_NUMBER:-0}_$$_XXXXXX")
           { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
+              "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats -F pretty --report-formatter tap --output "$_ser_tap_dir" \
-              "${_serial_files[@]}") >> "$_gate_raw_sink" 2>&1; \
+              "${_serial_files[@]}") \
+              < /dev/null >> "$_gate_raw_sink" 2>&1; \
             echo $? > "$_bats_exit_file"; } || true
           cat "$_ser_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
           rm -rf "$_ser_tap_dir"
         else
-          { (cd "$project_root" && bats "${_serial_files[@]}" 2>&1); echo $? > "$_bats_exit_file"; } \
+          { (cd "$project_root" && "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
+              bats "${_serial_files[@]}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
             | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
         fi
         _ser_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+        if [ "$_ser_exit" = "124" ] || [ "$_ser_exit" = "137" ]; then
+          echo "[test-gate] bats (serial group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
+          _diag "TEST_GATE_WATCHDOG_KILL group=serial timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+        fi
       fi
 
       # Merge exit codes: any non-zero fails the gate (block-on-any preserved)
@@ -1221,6 +1271,12 @@ run_test_gate() {
       fi
     fi
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+    # Watchdog kill on the full-suite path (par/ser groups note it above and
+    # merge their exits to 0/1, so 124/137 here can only come from full-suite).
+    if [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; then
+      echo "[test-gate] bats (full suite) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
+      _diag "TEST_GATE_WATCHDOG_KILL group=full timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+    fi
 
     # Clean up tap dir if used (never a glob — scoped to this invocation's pid-named dir)
     [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
