@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh
+# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/claude-workflow.sh
 # Regression test for: batch skip-running check false-positives on PID column
 #
 # Bug history:
@@ -164,5 +164,30 @@ PROCS
 @test "skip warning prints the matching process line for diagnosis" {
   local batch="${RITE_REPO_ROOT}/lib/core/batch-process-issues.sh"
   run grep -F 'matched:' "$batch"
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix 2: hide test command compound from normal output (#471)
+# _run_dev_test_gate used to print "Running tests ($_test_cmd)..." which
+# dumped the full shell compound for sharkrite's bats-based RITE_TEST_CMD.
+# Fixed: print_status shows only "Running tests...", the actual command is
+# moved to verbose_info so it only appears with RITE_VERBOSE=true.
+# ---------------------------------------------------------------------------
+
+@test "claude-workflow uses print_status for 'Running tests...' without embedding test command" {
+  local wf="${RITE_REPO_ROOT}/lib/core/claude-workflow.sh"
+  # Must have the clean status line (no shell compound embedded)
+  run grep -F 'print_status "Running tests..."' "$wf"
+  [ "$status" -eq 0 ]
+  # Must NOT have the old form that embeds the command in the status line
+  run grep -F 'print_status "Running tests (' "$wf"
+  [ "$status" -ne 0 ]
+}
+
+@test "claude-workflow moves test command to verbose_info" {
+  local wf="${RITE_REPO_ROOT}/lib/core/claude-workflow.sh"
+  # The command string is logged at verbose level, not at status level
+  run grep -F 'verbose_info "Test command:' "$wf"
   [ "$status" -eq 0 ]
 }
