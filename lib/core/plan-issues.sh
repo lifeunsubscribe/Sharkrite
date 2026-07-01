@@ -43,9 +43,16 @@ if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f gh_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
-# Source marker constants (RITE_MARKER_PLAN_LINT, etc.)
+# Source marker constants (RITE_MARKER_PLAN_LINT, RITE_MARKER_ISSUE_TAGS, etc.)
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/utils/markers.sh"
+fi
+
+# Source tag-index read helpers (parse_tag_index) for the "Available tags"
+# prompt context (tag-index Stage 5, #404). Guarded so a missing file never
+# breaks generation — the tag block is simply omitted (clean degrade).
+if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f parse_tag_index >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/tag-index.sh"
 fi
 
 # =============================================================================
@@ -515,6 +522,65 @@ ${feedback}"
 }
 
 # =============================================================================
+# _build_available_tags_context: compact "Available tags" block for the prompt
+#
+# Reads docs/architecture/tag-index.md and emits, one tag per line, the tag
+# heading plus its FIRST pointer (as a hint for what the tag covers):
+#
+#   - subshell — conventions.md → Subshell variable loss
+#   - set-e — conventions.md → grep -c pattern
+#
+# This closes the loop with the tag-index read-path (build_relevant_prior_art
+# extracts the emitted <!-- ${RITE_MARKER_ISSUE_TAGS} --> block). It is used ONLY
+# to give Claude the vocabulary of existing tags so it selects from them where
+# they fit rather than inventing near-duplicates.
+#
+# Degrades cleanly: emits NOTHING (empty stdout, exit 0) when the index file is
+# missing, empty, or unparseable, or when parse_tag_index is unavailable. A
+# missing index therefore never instructs Claude to fabricate tags — the caller
+# omits the whole tag section (see generate_issues).
+#
+# Usage: _build_available_tags_context  (reads $RITE_PROJECT_ROOT/docs/architecture/tag-index.md)
+# =============================================================================
+
+_build_available_tags_context() {
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+  local index_file="${project_root}/docs/architecture/tag-index.md"
+
+  # Missing/empty index → no context (clean degrade — never fabricate tags).
+  [ -s "$index_file" ] || return 0
+
+  # Read helpers absent (optional lib not sourced) → degrade to no context.
+  declare -f parse_tag_index >/dev/null 2>&1 || return 0
+
+  # Parse the explicit index file. parse_tag_index returns non-zero when the
+  # file is missing (already guarded above) — treat any failure as "no tags".
+  parse_tag_index "$index_file" || return 0
+  [ "${TAG_TOTAL_COUNT:-0}" -eq 0 ] && return 0
+
+  local out="" i
+  for i in "${!TAG_NAMES[@]}"; do
+    local tag="${TAG_NAMES[$i]}"
+    local count="${TAG_POINTER_COUNTS[$i]}"
+    local offset="${TAG_POINTER_OFFSETS[$i]}"
+    # First pointer for this tag (if any) is a one-line hint at what it covers.
+    local first_ptr=""
+    if [ "${count:-0}" -gt 0 ]; then
+      first_ptr="${TAG_POINTERS[$offset]:-}"
+    fi
+    if [ -n "$first_ptr" ]; then
+      out="${out}- ${tag} — ${first_ptr}
+"
+    else
+      out="${out}- ${tag}
+"
+    fi
+  done
+
+  printf '%s' "$out"
+}
+
+# =============================================================================
 # Generate issues using Claude
 # =============================================================================
 
@@ -534,6 +600,15 @@ generate_issues() {
   temp_file=$(mktemp)
 
   print_status "Generating issue definitions with Claude..." >&2
+
+  # Tag-index context (tag-index Stage 5, #404): when docs/architecture/tag-index.md
+  # exists and is non-empty, build a compact "Available tags" block so Claude can
+  # SELECT from existing tags where they fit and emit a <!-- ${RITE_MARKER_ISSUE_TAGS} -->
+  # block in each issue body — closing the loop with the read-path
+  # (build_relevant_prior_art). Empty when the index is missing/empty → the whole
+  # tag section is OMITTED from the prompt below (clean degrade, never fabricated).
+  local available_tags=""
+  available_tags=$(_build_available_tags_context || true)
 
   local prompt
   # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
@@ -760,6 +835,33 @@ For any issue that produces or transforms structured data, scan the output field
 
 Do not include provenance entries for fields whose source is a local file already listed in the issue's "Files to Read" section — those are obvious-source fields and a table of obvious fields will be rejected as low-signal noise. A provenance section that only documents local-file-sourced fields defeats the purpose of the section. When in doubt about whether a field source is obvious: if its origin requires no explanation beyond "it's in the input file," omit it.
 
+$(if [ -n "$available_tags" ]; then
+echo "**Q. Relevance tags (emit a \`${RITE_MARKER_ISSUE_TAGS}\` block per issue).**"
+echo "This project maintains a tag index that routes relevant prior art (conventions, encountered-issues, design notes) into the development prompt when an issue is later worked on. Each generated issue MUST end its BODY with a tag block so it flows into that routing system:"
+echo ""
+echo "\`\`\`"
+echo "<!-- ${RITE_MARKER_ISSUE_TAGS} -->"
+echo "tags: <comma-separated tags>"
+echo "<!-- /${RITE_MARKER_ISSUE_TAGS} -->"
+echo "\`\`\`"
+echo ""
+echo "**Available tags** (each shown with its first pointer as a hint at what it covers) — SELECT from these where they fit the issue's subject matter; prefer an existing tag over inventing a near-duplicate:"
+echo ""
+echo "$available_tags"
+echo "- The \`tags:\` line must start at the beginning of a line (no leading spaces) and list 1-4 comma-separated tags."
+echo "- Choose tags by the issue's SUBJECT MATTER (the failure modes / subsystems it touches), not its phase or category labels."
+echo "- If a genuinely new tag is needed (no existing tag fits), you MAY propose it in the \`tags:\` line AND add a \`new-tags:\` line immediately below the tag block with a one-line justification per new tag:"
+echo ""
+echo "\`\`\`"
+echo "<!-- ${RITE_MARKER_ISSUE_TAGS} -->"
+echo "tags: subshell, retry-loop"
+echo "<!-- /${RITE_MARKER_ISSUE_TAGS} -->"
+echo "new-tags: retry-loop — introduces the first bounded-retry helper; no existing tag covers retry/backoff behavior"
+echo "\`\`\`"
+echo ""
+echo "- Only add a \`new-tags:\` line for tags NOT present in the Available tags list above. Reusing an existing tag needs no justification. Do NOT propose new tags gratuitously — reuse is strongly preferred."
+echo ""
+fi)
 **Output format (follow EXACTLY — coverage checklist first, then issues):**
 
 First output the COVERAGE checklist (see Step 1).
@@ -800,6 +902,12 @@ command to verify
 - DO NOT: specific actions out of scope (with deferral target when known, e.g., "Phase 2 / Issue title")
 
 **Dependencies**: After #N / After #N (can run in parallel with #M, #P) / None
+$(if [ -n "$available_tags" ]; then
+echo ""
+echo "<!-- ${RITE_MARKER_ISSUE_TAGS} -->"
+echo "tags: <comma-separated tags selected from the Available tags list — see rule Q>"
+echo "<!-- /${RITE_MARKER_ISSUE_TAGS} -->"
+fi)
 ---END---
 
 Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---.
