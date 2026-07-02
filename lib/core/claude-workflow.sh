@@ -818,10 +818,10 @@ regenerate_lockfiles_if_needed() {
     # Use --package-lock-only to avoid installing into node_modules (faster,
     # and node_modules is untracked/gitignored in worktrees anyway).
     local _npm_exit=0
-    (cd "$_pkg_json_dir" && npm install --package-lock-only --silent 2>&1) || _npm_exit=$?
+    (cd "$_pkg_json_dir" && npm install --package-lock-only --ignore-scripts --silent 2>&1) || _npm_exit=$?
 
     if [ "$_npm_exit" -ne 0 ]; then
-      print_error "npm install --package-lock-only failed in ${_pkg_json_dir} (exit ${_npm_exit})"
+      print_error "npm install --package-lock-only --ignore-scripts failed in ${_pkg_json_dir} (exit ${_npm_exit})"
       print_error "Cannot regenerate package-lock.json — aborting to prevent committing a stale lockfile."
       print_info  "Fix the npm error above and re-run: rite ${ISSUE_NUMBER:-<N>}"
       return 1
