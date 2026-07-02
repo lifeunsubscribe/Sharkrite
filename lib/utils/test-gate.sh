@@ -306,7 +306,8 @@ _node_flavored_test_context() {
   local ctx_root="$1"
   local ctx_cmd="${2:-}"
   case "$ctx_cmd" in
-    *npm*|*npx*|*yarn*|*pnpm*|*jest*|*vitest*|*node*) return 0 ;;
+    # *npm* also covers pnpm; *node* also covers nodemon
+    *npm*|*npx*|*yarn*|*jest*|*vitest*|*node*) return 0 ;;
   esac
   [ -f "$ctx_root/package.json" ]
 }
