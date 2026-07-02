@@ -748,6 +748,96 @@ $_fail_summary
   fi
 }
 
+# Regenerate package-lock.json when a package.json was changed.
+# Must be called AFTER `git commit` and BEFORE the subsequent `git push`, so
+# the lockfile regen appears as a follow-on commit on the same branch.
+#
+# Behaviour:
+#   - Finds all package.json files that differ from origin/main on this branch.
+#   - For each directory containing a changed package.json, runs `npm install`
+#     to regenerate the sibling package-lock.json.
+#   - Stages any resulting package-lock.json changes and commits them as a
+#     separate "chore: regenerate package-lock.json" commit.
+#   - If NO package.json changed, exits silently (no spurious lockfile churn).
+#   - If `npm install` fails for any directory, prints a clear error and returns
+#     non-zero so the caller can abort — never silently commits a stale lockfile.
+#
+# Monorepo support: all changed package.json paths are handled, including
+# sub-packages (e.g. api/package.json → runs npm install in api/).
+#
+# Scope: only touches package-lock.json files; does NOT install/change
+# node_modules in the committed tree (node_modules is in .gitignore).
+regenerate_lockfiles_if_needed() {
+  # Only act when npm is available (projects without Node skip silently)
+  if ! command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Collect package.json files that changed on this branch vs origin/main.
+  # Fall back to HEAD~1 if origin/main is not reachable (e.g., initial commit).
+  local _diff_base _changed_pkg_jsons
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    _diff_base="origin/main"
+  else
+    _diff_base="HEAD~1"
+  fi
+
+  _changed_pkg_jsons=$(git diff --name-only "$_diff_base"...HEAD -- '*/package.json' 'package.json' 2>/dev/null || true)
+
+  if [ -z "$_changed_pkg_jsons" ]; then
+    # No package.json changed → nothing to do
+    return 0
+  fi
+
+  local _lockfile_staged=false
+  local _pkg_json_dir _lockfile
+
+  while IFS= read -r _pkg_json_path; do
+    [ -z "$_pkg_json_path" ] && continue
+
+    # Determine the directory that owns this package.json
+    _pkg_json_dir="$(dirname "$_pkg_json_path")"
+    [ "$_pkg_json_dir" = "." ] && _pkg_json_dir="$(pwd)"
+
+    _lockfile="${_pkg_json_dir}/package-lock.json"
+
+    print_status "package.json changed in ${_pkg_json_dir} — regenerating package-lock.json..."
+
+    # Run npm install to regenerate the lockfile.
+    # Use --package-lock-only to avoid installing into node_modules (faster,
+    # and node_modules is untracked/gitignored in worktrees anyway).
+    local _npm_exit=0
+    (cd "$_pkg_json_dir" && npm install --package-lock-only --silent 2>&1) || _npm_exit=$?
+
+    if [ "$_npm_exit" -ne 0 ]; then
+      print_error "npm install --package-lock-only failed in ${_pkg_json_dir} (exit ${_npm_exit})"
+      print_error "Cannot regenerate package-lock.json — aborting to prevent committing a stale lockfile."
+      print_info  "Fix the npm error above and re-run: rite ${ISSUE_NUMBER:-<N>}"
+      return 1
+    fi
+
+    # Stage the regenerated lockfile if it changed
+    if [ -f "$_lockfile" ] && ! git diff --quiet -- "$_lockfile" 2>/dev/null; then
+      git add "$_lockfile"
+      _lockfile_staged=true
+      print_success "Staged regenerated package-lock.json in ${_pkg_json_dir}"
+    elif ! git diff --cached --quiet -- "$_lockfile" 2>/dev/null; then
+      # Already staged by a prior iteration (unlikely but harmless guard)
+      _lockfile_staged=true
+    fi
+  done <<< "$_changed_pkg_jsons"
+
+  if [ "$_lockfile_staged" = "true" ]; then
+    git commit -m "chore: regenerate package-lock.json after dependency changes
+
+package.json was modified by the dev session; lockfile regenerated via
+'npm install --package-lock-only' to keep \`npm ci\` in sync." > /dev/null
+    print_success "Committed regenerated package-lock.json"
+  fi
+
+  return 0
+}
+
 # Guard: ensure Claude dev session produced committed work or fail loud
 # Called after Claude session ends, before PR creation workflow
 check_dev_session_output() {
@@ -845,6 +935,9 @@ Auto-salvaged to prevent work loss."
     git commit -m "$auto_commit_msg" >/dev/null 2>&1
 
     print_success "Auto-committed changes - workflow proceeding normally (verify completeness in PR review)"
+
+    # Regenerate package-lock.json if any package.json was changed (#804).
+    regenerate_lockfiles_if_needed || return 1
 
     return 0
   fi
@@ -1062,6 +1155,9 @@ Changes made via automated workflow (rite --fix-review mode)."
     # Don't exit with error - let workflow continue to request new review
     # The new review will see current state and assess fresh
   }
+
+  # Regenerate package-lock.json if the fix session touched any package.json (#804).
+  regenerate_lockfiles_if_needed || exit 1
 
   print_status "Pushing fixes to remote..."
   _fix_branch=$(git branch --show-current)
@@ -3231,6 +3327,13 @@ if [ "$AUTO_MODE" = true ]; then
 else
   print_success "Commit created"
   echo ""
+fi
+
+# Regenerate package-lock.json if any package.json was changed (#804).
+# Runs after the dev-session commit so the lockfile regen is a clean follow-on
+# commit, keeping the PR history readable. Fails loud on npm error.
+if ! regenerate_lockfiles_if_needed; then
+  exit 1
 fi
 
 # Push workflow
