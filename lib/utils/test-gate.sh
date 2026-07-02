@@ -887,7 +887,6 @@ _node_build_workspace_packages() {
   ' "$_root_pkg" 2>/dev/null || echo "")
   [ -n "$_patterns" ] || return 0
 
-  local _any_built=false
   local _any_failed=false
   local _pattern _dir _pkg _entry _build_script _pkg_name _entry_exports
   while IFS= read -r _pattern; do
@@ -934,7 +933,6 @@ _node_build_workspace_packages() {
       fi
 
       echo "[test-gate] Building workspace package '$_pkg_name' (entry point missing: ${_entry:-$_entry_exports})..." >> "$_sink"
-      _any_built=true
       local _build_exit_file _build_exit
       _build_exit_file=$(mktemp "/tmp/rite_gate_build_exit_${PR_NUMBER:-0}_$$_XXXXXX")
       { (cd "$_pr" && npm run build -w "$_pkg_name" 2>&1); echo $? > "$_build_exit_file"; } >> "$_sink" || true
@@ -1696,7 +1694,9 @@ run_test_gate() {
       # Record the named reason so the gate JSON includes it; assess-and-resolve.sh
       # uses this to synthesize a descriptive [GATE] blocking item when the TAP
       # parser yields an empty tests[] array (no ^not ok lines to parse).
-      _gate_reason="runner_unavailable"
+      # Only set reason if not already classified (e.g. workspace_build_failed
+      # set it above; a "not found" in npm output must not clobber that label).
+      [ -n "${_gate_reason:-}" ] || _gate_reason="runner_unavailable"
     fi
 
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
