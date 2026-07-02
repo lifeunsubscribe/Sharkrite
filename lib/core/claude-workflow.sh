@@ -801,6 +801,14 @@ regenerate_lockfiles_if_needed() {
 
     _lockfile="${_pkg_json_dir}/package-lock.json"
 
+    # Skip directories that don't already have a package-lock.json (Yarn/pnpm repos).
+    # Without this guard, npm install would CREATE a package-lock.json in a repo that
+    # intentionally uses a different lock format — spurious lockfile churn (#804).
+    if [ ! -f "$_lockfile" ]; then
+      print_status "Skipping ${_pkg_json_dir} — no package-lock.json present (Yarn/pnpm repo?)"
+      continue
+    fi
+
     print_status "package.json changed in ${_pkg_json_dir} — regenerating package-lock.json..."
 
     # Run npm install to regenerate the lockfile.
@@ -828,10 +836,15 @@ regenerate_lockfiles_if_needed() {
   done <<< "$_changed_pkg_jsons"
 
   if [ "$_lockfile_staged" = "true" ]; then
+    local _commit_exit=0
     git commit -m "chore: regenerate package-lock.json after dependency changes
 
 package.json was modified by the dev session; lockfile regenerated via
-'npm install --package-lock-only' to keep \`npm ci\` in sync." > /dev/null
+'npm install --package-lock-only' to keep \`npm ci\` in sync." > /dev/null || _commit_exit=$?
+    if [ "$_commit_exit" -ne 0 ]; then
+      print_error "git commit for package-lock.json failed (exit ${_commit_exit})"
+      return 1
+    fi
     print_success "Committed regenerated package-lock.json"
   fi
 

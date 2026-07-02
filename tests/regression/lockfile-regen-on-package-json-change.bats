@@ -255,3 +255,54 @@ _run_regen() {
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# Structural assertions: the three call sites in claude-workflow.sh must all
+# propagate a non-zero return from regenerate_lockfiles_if_needed so that an
+# npm failure causes the workflow to surface the error (not silently proceed).
+#
+# Pattern follows cleanup-cwd-after-worktree-removal.bats: grep for the
+# specific wiring lines rather than running the full execution paths (which
+# require heavy orchestration setup).
+# ---------------------------------------------------------------------------
+_WORKFLOW_FILE="$RITE_LIB_DIR/core/claude-workflow.sh"
+
+@test "(e) auto-commit call site propagates non-zero (|| return 1 wiring)" {
+  # The auto-commit path (check_dev_session_output) must chain with || return 1
+  # so that an npm failure bubbles out of the function and aborts the caller.
+  run grep -n "regenerate_lockfiles_if_needed || return 1" "$_WORKFLOW_FILE"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: auto-commit call site does not have '|| return 1' propagation"
+    echo "Expected: regenerate_lockfiles_if_needed || return 1"
+    false
+  }
+}
+
+@test "(f) fix-session call site propagates non-zero (|| exit 1 wiring)" {
+  # The fix-session path (run_fix_session) must chain with || exit 1 so that
+  # an npm failure terminates the fix subprocess rather than silently continuing.
+  run grep -n "regenerate_lockfiles_if_needed || exit 1" "$_WORKFLOW_FILE"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: fix-session call site does not have '|| exit 1' propagation"
+    echo "Expected: regenerate_lockfiles_if_needed || exit 1"
+    false
+  }
+}
+
+@test "(g) main dev-session call site propagates non-zero (if ! ... exit 1 wiring)" {
+  # The main dev-session body uses 'if ! regenerate_lockfiles_if_needed; then exit 1; fi'
+  # which must be present to ensure npm failures abort the workflow.
+  run grep -n "if ! regenerate_lockfiles_if_needed" "$_WORKFLOW_FILE"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: main dev-session call site does not have 'if ! regenerate_lockfiles_if_needed' propagation"
+    echo "Expected: if ! regenerate_lockfiles_if_needed; then"
+    false
+  }
+  # Also verify the exit 1 inside the if block immediately follows
+  run grep -A2 "if ! regenerate_lockfiles_if_needed" "$_WORKFLOW_FILE"
+  echo "$output" | grep -q "exit 1" || {
+    echo "FAIL: 'if ! regenerate_lockfiles_if_needed' block does not contain 'exit 1'"
+    echo "--- context ---"; echo "$output"
+    false
+  }
+}
