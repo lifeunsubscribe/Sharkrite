@@ -91,6 +91,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `0`  | All issues completed (or no issues run) |
 | `1`  | All issues failed, none completed |
 | `10` | Batch completed with at least one blocker-deferred issue |
+| `15` | Gate circuit breaker tripped — `RITE_BATCH_GATE_TRIP` (default: 3) consecutive issues produced identical gate failure signatures, indicating an environmental cause (broken bootstrap, red main) rather than per-issue failures. The trip message names the shared signature and remediation steps. Set `RITE_BATCH_GATE_TRIP=0` to disable. |
 
 ### `stale-branch.sh` (`check_stale_branch` return)
 

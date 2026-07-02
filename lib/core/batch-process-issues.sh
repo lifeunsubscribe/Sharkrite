@@ -241,6 +241,58 @@ _extract_dep_issues_from_body() {
 }
 
 # ---------------------------------------------------------------------------
+# _gate_compute_failure_sig — derive a stable failure signature from a
+# gate-findings JSON file (issue #823 circuit breaker).
+#
+# Signature = pipe-joined sorted set of unique file names from tests[].file
+# and lint[].file that are NOT "bats" (the bats sentinel file name is not a
+# real path; the test_name field carries the meaningful identity there, so we
+# include test_name for bats entries instead).
+#
+# Args:    $1 = path to gate-findings-N.json  (must exist and be non-empty)
+# Stdout:  signature string, e.g. "tests/regression/foo.bats|tests/regression/bar.bats"
+#          Empty string when the file is absent, skipped, or has zero failures.
+# Returns: 0 always (caller branches on stdout).
+# ---------------------------------------------------------------------------
+_gate_compute_failure_sig() {
+  local _findings_file="${1:-}"
+  if [ -z "$_findings_file" ] || [ ! -f "$_findings_file" ]; then
+    echo ""
+    return 0
+  fi
+
+  # Skipped gate (missing runner, timeout, etc.) carries no failure signal.
+  local _skipped
+  _skipped=$(jq -r '.skipped // false' "$_findings_file" 2>/dev/null || true)
+  if [ "$_skipped" = "true" ]; then
+    echo ""
+    return 0
+  fi
+
+  # Exit code 0 means the gate passed — no failures to fingerprint.
+  local _exit_code
+  _exit_code=$(jq -r '.exit_code // 0' "$_findings_file" 2>/dev/null || true)
+  if [ "${_exit_code:-0}" -eq 0 ]; then
+    echo ""
+    return 0
+  fi
+
+  # Collect failing file identifiers:
+  #   - For non-bats entries (lint, node tests, etc.): use tests[].file and lint[].file
+  #   - For bats entries (file=="bats"): use tests[].test_name (the TAP description)
+  # Sort + unique + join with | for a stable string.
+  local _sig
+  _sig=$(jq -r '
+    [
+      (.tests[]? | if .file == "bats" then .test_name else .file end),
+      (.lint[]? | .file)
+    ] | map(select(. != null and . != "")) | sort | unique | join("|")
+  ' "$_findings_file" 2>/dev/null || true)
+
+  echo "${_sig:-}"
+}
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
@@ -544,6 +596,18 @@ declare -A ISSUE_TIME
 declare -A ISSUE_PR
 declare -A ISSUE_BRANCH
 declare -A PR_CHANGES
+
+# Gate failure circuit breaker state (issue #823)
+# When RITE_BATCH_GATE_TRIP consecutive issues produce identical gate failure
+# signatures, the cause is environmental (broken bootstrap, red main) rather
+# than per-issue — halt the batch before dispatching more issues into doomed
+# fix loops.  Signature = sorted set of failing file names from gate-findings
+# JSON (tests[].file + lint[].file), joined with '|'.
+# Config: RITE_BATCH_GATE_TRIP=3 (default); set to 0 to disable.
+# Exit code: 15 on trip (see docs/architecture/exit-codes.md).
+_GATE_TRIP_THRESHOLD="${RITE_BATCH_GATE_TRIP:-3}"
+_gate_trip_consecutive=0
+_gate_trip_last_sig=""
 
 # Summary arrays
 SECURITY_UPDATES=()
@@ -1057,6 +1121,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     COMPLETED_ISSUES=$((COMPLETED_ISSUES + 1))
     ISSUE_STATUS["$ISSUE_NUM"]="completed"
 
+    # Successful completion clears any gate-failure streak (issue #823).
+    _gate_trip_consecutive=0
+    _gate_trip_last_sig=""
+
     # Send success notification if smart-wait was used (means auto-merge happened)
     if [ "$SMART_WAIT" = true ] && [ -n "$PR_NUMBER" ]; then
       send_notification "✅ Auto-Merge Success!" "Issue #$ISSUE_NUM completed and PR #$PR_NUMBER merged automatically! Duration: $((ISSUE_DURATION / 60))m" "success"
@@ -1087,6 +1155,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ALREADY_CLOSED_AT_START_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="already_closed_at_start"
 
+    # No dev work → no gate ran → clear any gate-failure streak (issue #823).
+    _gate_trip_consecutive=0
+    _gate_trip_last_sig=""
+
   elif [ $_WF_EXIT -eq 14 ]; then
     # Issue locked by another live session: acquire_issue_lock() rejected this
     # issue because another rite process holds the lock. This is an expected
@@ -1108,6 +1180,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     IN_PROGRESS_ELSEWHERE_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="in_progress_elsewhere"
+
+    # No dev work → no gate ran → clear any gate-failure streak (issue #823).
+    _gate_trip_consecutive=0
+    _gate_trip_last_sig=""
 
   else
     EXIT_CODE=$_WF_EXIT
@@ -1138,6 +1214,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"
       fi
 
+      # Merge succeeded → not a gate failure → clear streak (issue #823).
+      _gate_trip_consecutive=0
+      _gate_trip_last_sig=""
+
     elif [ $EXIT_CODE -eq 13 ]; then
       # Invariant violated: workflow completed all phases but produced no commits
       # and no PR — this is a bug in the workflow logic or a sourcing side-effect.
@@ -1152,6 +1232,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+
+      # Invariant failure is not a gate failure — clear streak (issue #823).
+      _gate_trip_consecutive=0
+      _gate_trip_last_sig=""
 
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort the entire batch to avoid hammering the API
@@ -1178,6 +1262,10 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       echo ""
       # Continue with next issue instead of breaking
 
+      # Blocker is not a gate failure — clear streak (issue #823).
+      _gate_trip_consecutive=0
+      _gate_trip_last_sig=""
+
     else
       # Other failure (dev or merge actually failed)
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
@@ -1185,6 +1273,72 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
+
+      # Gate failure circuit breaker (issue #823):
+      # Check if this failure was caused by a repeated gate signature.  The
+      # gate-findings file is written by workflow-runner.sh to
+      # $RITE_STATE_DIR/gate-findings-<PR>.json.  Since the batch is serial we
+      # can safely take the most-recently-modified file in that dir.
+      # If RITE_BATCH_GATE_TRIP=0 the breaker is disabled.
+      if [ "${_GATE_TRIP_THRESHOLD}" -gt 0 ] 2>/dev/null; then
+        _gate_state_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+        # Find most recently modified gate-findings file (batch runs serially,
+        # so this is always the file for the just-completed issue).
+        _latest_gate_file=$(ls -t "$_gate_state_dir"/gate-findings-*.json 2>/dev/null | head -1 || true)
+        _current_sig=$(_gate_compute_failure_sig "${_latest_gate_file:-}" || true)
+
+        if [ -n "$_current_sig" ]; then
+          # Gate failure: compare against previous signature.
+          if [ "$_current_sig" = "$_gate_trip_last_sig" ]; then
+            _gate_trip_consecutive=$(( _gate_trip_consecutive + 1 ))
+          else
+            # Different signature — reset streak but start a new one.
+            _gate_trip_consecutive=1
+            _gate_trip_last_sig="$_current_sig"
+          fi
+        else
+          # No gate signal (gate skipped, passed, or findings absent) — reset.
+          _gate_trip_consecutive=0
+          _gate_trip_last_sig=""
+        fi
+      fi
+    fi
+
+    # Gate circuit breaker trip check: halt before dispatching the next issue
+    # when the consecutive identical-signature count has reached the threshold.
+    # Placed outside the exit-code branches so the check fires regardless of
+    # which branch classified the failure above.
+    if [ "${_GATE_TRIP_THRESHOLD}" -gt 0 ] 2>/dev/null && \
+       [ "$_gate_trip_consecutive" -ge "$_GATE_TRIP_THRESHOLD" ]; then
+      echo ""
+      print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      print_error "🔴 Gate circuit breaker tripped"
+      print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      print_error "${_gate_trip_consecutive} consecutive issue(s) failed the gate with the same signature:"
+      echo ""
+      # Pretty-print the signature (one entry per line)
+      printf '%s\n' "$_gate_trip_last_sig" | tr '|' '\n' | while IFS= read -r _sig_entry; do
+        [ -n "$_sig_entry" ] && print_error "  • $_sig_entry"
+      done
+      echo ""
+      print_warning "This pattern indicates an environmental cause (broken bootstrap, red main),"
+      print_warning "not a per-issue failure.  Halting to avoid grinding remaining issues through"
+      print_warning "doomed fix loops."
+      echo ""
+      print_info "Remediation:"
+      print_info "  1. Run 'rite --full-suite' to confirm the failure is repo-wide."
+      print_info "  2. If main is broken, fix the failing tests on main first."
+      print_info "  3. If the bootstrap is broken, check worktree setup / package install steps."
+      print_info "  4. Re-run the batch after the environment is green."
+      echo ""
+      print_info "Set RITE_BATCH_GATE_TRIP=0 to disable this circuit breaker."
+      echo ""
+      # Emit structured diag for health-report aggregation.
+      if declare -f _diag >/dev/null 2>&1; then
+        _diag "GATE_CIRCUIT_BREAKER_TRIP consecutive=${_gate_trip_consecutive} sig=${_gate_trip_last_sig}"
+      fi
+      # Exit 15: gate circuit breaker trip (see docs/architecture/exit-codes.md)
+      exit 15
     fi
   fi
 
