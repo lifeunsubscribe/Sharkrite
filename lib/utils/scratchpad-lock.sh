@@ -9,7 +9,11 @@
 #   - Atomic PID write: temp file + mv, so a waiting process never sees a window
 #     where the lock dir exists but has no PID file (the old TOCTOU).
 #   - Stale-lock reclaim: dead holder's lock is removed and the waiter retries.
-#   - Timeout is a hard failure (exit 1) — never proceeds without the lock.
+#   - Timeout is a soft failure (return 1) — never proceeds without the lock,
+#     but never kills the caller either. All scratchpad writes are advisory;
+#     callers must skip the write on acquire failure, not abort. (The old
+#     `exit 1` here terminated merge-pr.sh straight through `|| true`,
+#     converting successfully merged issues into batch failures.)
 #   - Trap-based release: _setup_scratchpad_lock_trap installs EXIT/INT/TERM handlers.
 #   - flock fast-path on Linux: where flock(1) is available, use it (faster + avoids
 #     the directory-based machinery entirely for the common case).
@@ -20,7 +24,7 @@
 # Usage (from scripts that write the scratchpad):
 #
 #   source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
-#   acquire_scratchpad_lock        # exits 1 on timeout
+#   acquire_scratchpad_lock || return 0   # returns 1 on timeout — skip the write
 #   _setup_scratchpad_lock_trap    # release lock on EXIT/INT/TERM
 #   ... modify SCRATCHPAD_FILE ...
 #   release_scratchpad_lock        # explicit release (trap also fires on exit)
@@ -63,8 +67,12 @@ _SCRATCHPAD_LOCK_DEPTH=0         # 0 = not held; >0 = held (value = nesting dept
 # acquire_scratchpad_lock
 #
 # Acquires the scratchpad lock. On success returns 0 and sets
-# _SCRATCHPAD_LOCK_HELD=true. On timeout exits the calling process with
-# code 1 and an actionable message — NEVER proceeds without holding the lock.
+# _SCRATCHPAD_LOCK_HELD=true. On timeout returns 1 with lock state reset
+# (HELD=false, DEPTH=0; flock fd closed) — NEVER proceeds without holding
+# the lock, and NEVER exits the caller. Callers must treat acquire failure
+# as "skip this advisory write": `exit` from a same-shell function is not
+# catchable by `|| true`, and a lost advisory write must never fail the
+# workflow that attempted it.
 #
 # Re-entrant: safe to call while already holding the lock (same shell/process).
 # Nested calls increment _SCRATCHPAD_LOCK_DEPTH and return 0 immediately;
@@ -123,12 +131,13 @@ acquire_scratchpad_lock() {
     # shellcheck disable=SC1083
     eval "exec ${_SCRATCHPAD_LOCK_FD}>\"$lockfile\""
     if ! flock -w "$max_attempts" "$_SCRATCHPAD_LOCK_FD" 2>/dev/null; then
-      echo "ERROR: Could not acquire scratchpad lock within ${max_attempts}s." >&2
-      echo "       If a previous run crashed, remove the lock file:" >&2
-      echo "       rm -f \"$lockfile\"" >&2
+      echo "WARNING: scratchpad lock busy after ${max_attempts}s — caller will skip this advisory write." >&2
+      echo "         If a previous run crashed, remove the lock file: rm -f \"$lockfile\"" >&2
+      # Close the fd opened for this failed acquire so it doesn't leak.
+      eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
       _SCRATCHPAD_LOCK_HELD=false
       _SCRATCHPAD_LOCK_DEPTH=0
-      exit 1
+      return 1
     fi
     _SCRATCHPAD_LOCK_HELD=true
     _SCRATCHPAD_LOCK_STRATEGY="flock"
@@ -197,14 +206,13 @@ acquire_scratchpad_lock() {
 
     lock_attempts=$((lock_attempts + 1))
     if [ "$lock_attempts" -ge "$max_attempts" ]; then
-      # Hard failure — never proceed without holding the lock
-      echo "ERROR: Scratchpad lock timeout after ${max_attempts}s." >&2
-      echo "       Another process may be stuck, or the lock may be stale." >&2
-      echo "       To recover, remove the lock directory:" >&2
-      echo "       rm -rf \"$lockfile\"" >&2
+      # Soft failure — never proceed without holding the lock, but return
+      # (not exit) so the caller can skip its advisory write and continue.
+      echo "WARNING: scratchpad lock busy after ${max_attempts}s — caller will skip this advisory write." >&2
+      echo "         If the lock is stale, remove it: rm -rf \"$lockfile\"" >&2
       _SCRATCHPAD_LOCK_HELD=false
       _SCRATCHPAD_LOCK_DEPTH=0
-      exit 1
+      return 1
     fi
     sleep 1
   done
