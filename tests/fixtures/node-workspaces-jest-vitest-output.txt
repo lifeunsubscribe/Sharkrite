@@ -1,0 +1,243 @@
+
+> leadflow@0.1.0 test
+> npm run test --workspaces --if-present
+
+✅ No lib/ shrinkage detected
+
+
+> leadflow-dashboard@0.1.0 test
+> vitest run --silent=passed-only
+
+
+
+
+
+6:32:26 PM [vite] warning: `esbuild` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `oxc` instead.
+6:32:26 PM [vite] warning: `optimizeDeps.esbuildOptions` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `optimizeDeps.rolldownOptions` instead.
+Both esbuild and oxc options were set. oxc options will be used and esbuild options will be ignored. The following esbuild options were set: `{ jsx: 'automatic', jsxImportSource: undefined }`
+
+ RUN  v4.1.7 /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/dashboard
+
+
+ ❯ src/services/auth.test.ts (0 test)
+
+ ❯ src/pages/AutomationBuilder.test.tsx (0 test)
+ ❯ src/pages/Login.test.tsx (0 test)
+ ❯ src/hooks/useLeads.test.ts (0 test)
+ ❯ src/components/MessageThread.test.tsx (0 test)
+ ❯ src/hooks/useRealtimeFeed.test.ts (0 test)
+ ❯ src/services/auth.session.test.ts (8 tests | 8 failed) 1245ms
+     × getSessionReadyPromise() returns a Promise 82ms
+     × getSessionReadyPromise() resolves after getCurrentUser() when no Cognito user exists 12ms
+     × getSessionReadyPromise() resolves after getCurrentUser() when session is invalid 15ms
+     × getSessionReadyPromise() resolves after getCurrentUser() when session is valid and user is returned 304ms
+     × getSessionReadyPromise() resolves even when getUserAttributes fails (token is stored but email lookup fails) 166ms
+     × already-resolved promise settles without hitting the timeout on subsequent awaits 49ms
+     × a suspended caller awaiting getSessionReadyPromise() is released when getCurrentUser() completes (real wiring) 261ms
+     × getSessionReadyPromise() resolves even when extractUserFromSession() throws (missing custom:tenantId) 353ms
+Error: Test render error
+    at ThrowingChild (/Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/dashboard/src/components/ModuleErrorBoundary.test.tsx:15:9)
+    at renderWithHooks (/Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/node_modules/react-dom/cjs/react-dom.development.js:15486:18)
+    at mountIndeterminateComponent (/Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/node_modules/react-dom/cjs/react-dom.development.js:20103:13)
+    at beginWork (/Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/node_modules/react-dom/cjs/react-dom.development.js:21626:16)
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 17 ⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/MessageThread.test.tsx [ src/components/MessageThread.test.tsx ]
+ FAIL  src/hooks/useLeads.test.ts [ src/hooks/useLeads.test.ts ]
+ FAIL  src/hooks/useRealtimeFeed.test.ts [ src/hooks/useRealtimeFeed.test.ts ]
+ FAIL  src/services/auth.test.ts [ src/services/auth.test.ts ]
+Error: Failed to resolve import "@leadflow/shared" from "src/services/auth.ts". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/dashboard/src/services/auth.ts:7:38
+  1  |  import { CognitoUserPool, CognitoUser, AuthenticationDetails } from "amazon-cognito-identity-js";
+  2  |  import { VALID_ROLES } from "@leadflow/shared";
+     |                               ^
+  3  |  // ---------------------------------------------------------------------------
+  4  |  // Demo mode (backend-less preview)
+ ❯ TransformPluginContext._formatLog ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:30584:39
+ ❯ TransformPluginContext.error ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:30581:14
+ ❯ normalizeUrl ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:27824:18
+ ❯ ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:27887:30
+ ❯ TransformPluginContext.transform ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:27855:4
+ ❯ EnvironmentPluginContainer.transform ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:30369:14
+ ❯ loadAndTransform ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:24628:26
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/31]⎯
+
+ FAIL  src/hooks/useAutomations.test.ts [ src/hooks/useAutomations.test.ts ]
+ FAIL  src/hooks/useCampaigns.test.ts [ src/hooks/useCampaigns.test.ts ]
+ FAIL  src/hooks/useDashboard.test.ts [ src/hooks/useDashboard.test.ts ]
+ FAIL  src/hooks/useMessages.test.ts [ src/hooks/useMessages.test.ts ]
+ FAIL  src/hooks/useTenant.test.ts [ src/hooks/useTenant.test.ts ]
+ FAIL  src/pages/Dashboard.test.tsx [ src/pages/Dashboard.test.tsx ]
+ FAIL  src/pages/LeadDetail.test.tsx [ src/pages/LeadDetail.test.tsx ]
+ FAIL  src/pages/Pipeline.test.tsx [ src/pages/Pipeline.test.tsx ]
+ FAIL  src/pages/Settings.test.tsx [ src/pages/Settings.test.tsx ]
+Error: Failed to resolve import "@leadflow/shared" from "src/services/auth.ts". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/dashboard/src/services/auth.ts:7:38
+  1  |  import { CognitoUserPool, CognitoUser, AuthenticationDetails } from "amazon-cognito-identity-js";
+  2  |  import { VALID_ROLES } from "@leadflow/shared";
+     |                               ^
+  3  |  // ---------------------------------------------------------------------------
+  4  |  // Demo mode (backend-less preview)
+ ❯ TransformPluginContext._formatLog ../node_modules/vitest/node_modules/vite/dist/node/chunks/node.js:30584:39
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 14 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/AutomationFlow.test.tsx > AutomationFlow add step > calls onAddStep with "wait" when the Wait add button is clicked
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'wait' ]
+
+Number of calls: 0
+
+ ❯ src/components/AutomationFlow.test.tsx:110:36
+    108|     // The add-step row has a Wait button - click it (could be the one…
+    109|     fireEvent.click(waitButtons[waitButtons.length - 1]);
+    110|     expect(defaultProps.onAddStep).toHaveBeenCalledWith('wait');
+       |                                    ^
+    111|   });
+    112|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/31]⎯
+
+ FAIL  src/components/AutomationFlow.test.tsx > AutomationFlow add step > calls onAddStep with "condition" when Condition button is clicked
+TestingLibraryElementError: Unable to find an element with the text: Condition. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      style="display: flex; flex-direction: column; align-items: center; gap: 0px;"
+
+ Test Files  21 failed | 7 passed (28)
+      Tests  14 failed | 116 passed (130)
+   Start at  18:32:26
+   Duration  9.78s (transform 3.01s, setup 2.94s, import 2.65s, tests 7.75s, environment 33.12s)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/dashboard
+npm error workspace leadflow-dashboard@0.1.0
+npm error location /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/dashboard
+npm error command failed
+npm error command sh -c vitest run --silent=passed-only
+
+
+> leadflow-cdk@0.1.0 test
+> jest --silent
+
+FAIL lib/monitoring-stack.test.ts
+  ● Test suite failed to run
+
+    lib/monitoring-stack.test.ts:514:9 - error TS2554: Expected 1 arguments, but got 2.
+
+    514         `Alarm ${logicalId} has no AlarmActions — it will fire silently`
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    lib/monitoring-stack.test.ts:518:9 - error TS2554: Expected 1 arguments, but got 2.
+
+    518         `Alarm ${logicalId} has an empty AlarmActions array`
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PASS lib/pre-token-lambda.test.ts (24.767 s)
+FAIL lib/api-stack.test.ts (25.043 s)
+  ● ApiStack — Twilio inbound Lambda SES permissions › grants ses:SendEmail on SES identity resources to the twilioInboundFunction execution role
+
+    «TableArnOrNameConflict» Only one of tableArn or tableName can be provided
+        ...Function.fromTableAttributes in aws-cdk-lib...
+
+      431 |
+      432 |     // Import DynamoDB table for granting permissions
+    > 433 |     const table = dynamodb.Table.fromTableAttributes(this, 'MainTable', {
+          |                                  ^
+      434 |       tableArn: tableArn,
+      435 |       tableName: tableName,
+      436 |     });
+
+      at new ApiStack (lib/api-stack.ts:433:34)
+      at buildTemplate (lib/api-stack.test.ts:40:17)
+PASS lib/auth-stack.test.ts (40.3 s)
+A worker process has failed to exit gracefully and has been force exited. This is likely caused by tests leaking due to improper teardown. Try running with --detectOpenHandles to find leaks. Active timers can also cause this, ensure that .unref() was called on them.
+
+Test Suites: 3 failed, 9 passed, 12 total
+Tests:       40 failed, 211 passed, 251 total
+Snapshots:   0 total
+Time:        41.682 s
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/infrastructure/cdk
+npm error workspace leadflow-cdk@0.1.0
+npm error location /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/infrastructure/cdk
+npm error command failed
+npm error command sh -c jest --silent
+
+
+> leadflow-scripts@1.0.0 test
+> jest --silent --config jest.config.js
+
+(node:49805) PromiseRejectionHandledWarning: Promise rejection was handled asynchronously (rejection id: 10)
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:49805) PromiseRejectionHandledWarning: Promise rejection was handled asynchronously (rejection id: 12)
+(node:49805) PromiseRejectionHandledWarning: Promise rejection was handled asynchronously (rejection id: 14)
+(node:49805) PromiseRejectionHandledWarning: Promise rejection was handled asynchronously (rejection id: 16)
+(node:49805) PromiseRejectionHandledWarning: Promise rejection was handled asynchronously (rejection id: 23)
+(node:49805) PromiseRejectionHandledWarning: Promise rejection was handled asynchronously (rejection id: 39)
+FAIL ./backfill-lead-gsi-keys.test.ts (7.449 s)
+  ● scanPageWithRetry › exhausts all retries and throws the last error
+
+    ProvisionedThroughputExceededException: ProvisionedThroughputExceededException
+
+      403 |
+      404 |   it('exhausts all retries and throws the last error', async () => {
+    > 405 |     const transientErr = Object.assign(new Error('ProvisionedThroughputExceededException'), {
+          |                                        ^
+      406 |       name: 'ProvisionedThroughputExceededException',
+      407 |     });
+      408 |     // Fail on every attempt (maxRetries=2 means 3 total attempts: 0, 1, 2)
+
+      at Object.<anonymous> (backfill-lead-gsi-keys.test.ts:405:40)
+
+  ● scanPageWithRetry › does NOT retry AccessDeniedException (non-retryable)
+
+    AccessDeniedException: Access denied
+
+      420 |
+      421 |   it('does NOT retry AccessDeniedException (non-retryable)', async () => {
+    > 422 |     const accessErr = Object.assign(new Error('Access denied'), {
+          |                                     ^
+      423 |       name: 'AccessDeniedException',
+      424 |     });
+      425 |     mockDocClientSend.mockRejectedValueOnce(accessErr);
+
+      at Object.<anonymous> (backfill-lead-gsi-keys.test.ts:422:37)
+
+  ● scanPageWithRetry › does NOT retry ResourceNotFoundException (non-retryable)
+
+    ResourceNotFoundException: Table not found
+
+      434 |
+      435 |   it('does NOT retry ResourceNotFoundException (non-retryable)', async () => {
+    > 436 |     const notFoundErr = Object.assign(new Error('Table not found'), {
+          |                                       ^
+      437 |       name: 'ResourceNotFoundException',
+      438 |     });
+      439 |     mockDocClientSend.mockRejectedValueOnce(notFoundErr);
+
+      at Object.<anonymous> (backfill-lead-gsi-keys.test.ts:436:39)
+
+  ● scanPageWithRetry › does NOT retry ValidationException (non-retryable)
+
+    ValidationException: Invalid expression
+
+
+Test Suites: 3 failed, 3 total
+Tests:       13 failed, 157 passed, 170 total
+Snapshots:   0 total
+Time:        9.575 s
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/infrastructure/scripts
+npm error workspace leadflow-scripts@1.0.0
+npm error location /Users/sarahtime/Dev/rite-wt/LeFl-wt/fx-map_b490-489-467-466/infrastructure/scripts
+npm error command failed
+npm error command sh -c jest --silent --config jest.config.js
