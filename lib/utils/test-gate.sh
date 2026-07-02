@@ -792,6 +792,177 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# _node_workspace_has_missing_entry_points — does any workspace package have a
+# compiled entry point that does not yet exist on disk? (issue #822)
+# Args: $1=project_root
+# Returns 0 (at least one package has a missing entry point AND a build script)
+#         1 (all entry points present, or no buildable packages found)
+#
+# Checks the `main` and `exports` (string form) fields of each workspace
+# package.json.  If the resolved path does not exist on disk AND the package
+# defines a `.scripts.build`, the workspace needs a build step before tests.
+#
+# This is the root cause of the LeadFlow 2026-06-30→07-01 outage:
+#   shared/package.json → "main": "./dist/index.js"
+#   shared/dist/ is gitignored and was never built in the worktree
+#   → every test that imports @leadflow/shared failed with "Failed to resolve import"
+# ---------------------------------------------------------------------------
+_node_workspace_has_missing_entry_points() {
+  local _pr="$1"
+  local _root_pkg="$_pr/package.json"
+  [ -f "$_root_pkg" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  local _patterns
+  _patterns=$(jq -r '
+    (.workspaces // empty) as $w
+    | if ($w | type) == "array" then $w[]
+      elif ($w | type) == "object" then (($w.packages // [])[])
+      else empty end
+  ' "$_root_pkg" 2>/dev/null || echo "")
+  [ -n "$_patterns" ] || return 1
+
+  local _found_missing=false
+  local _pattern _dir _pkg _entry _build_script
+  while IFS= read -r _pattern; do
+    [ -n "$_pattern" ] || continue
+    for _dir in "$_pr/"$_pattern; do
+      [ -d "$_dir" ] || continue
+      _pkg="$_dir/package.json"
+      [ -f "$_pkg" ] || continue
+
+      # Only care about packages that define a build script.
+      _build_script=$(jq -r '.scripts.build // ""' "$_pkg" 2>/dev/null || echo "")
+      [ -n "$_build_script" ] || continue
+
+      # Check main field first.
+      _entry=$(jq -r '.main // ""' "$_pkg" 2>/dev/null || echo "")
+      if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
+        _found_missing=true
+        break 2
+      fi
+
+      # Check exports field (string form only — object/array forms are more
+      # complex; treat them as "unknown" and skip rather than mis-parse).
+      _entry=$(jq -r 'if (.exports | type) == "string" then .exports else "" end' "$_pkg" 2>/dev/null || echo "")
+      if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
+        _found_missing=true
+        break 2
+      fi
+    done
+  done <<EOF
+$_patterns
+EOF
+
+  [ "$_found_missing" = "true" ] || return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _node_build_workspace_packages — build workspace packages whose compiled
+# entry points are missing.  (issue #822)
+# Args: $1=project_root  $2=gate_raw_sink (log file path)
+# Returns 0 (all needed builds succeeded or nothing to build)
+#         1 (at least one build failed — caller must surface as blocking)
+#
+# For each workspace package whose entry point is absent:
+#   1. Remove stale tsconfig.tsbuildinfo (incremental state can make `tsc
+#      --build` a no-op when dist/ is deleted but the buildinfo remains).
+#   2. Run `npm run build -w <pkg-name>` so only the affected package is built.
+#      Output goes to the gate raw sink; failures are loud (non-zero return).
+# ---------------------------------------------------------------------------
+_node_build_workspace_packages() {
+  local _pr="$1"
+  local _sink="${2:-/dev/stdout}"
+  local _root_pkg="$_pr/package.json"
+  [ -f "$_root_pkg" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local _patterns
+  _patterns=$(jq -r '
+    (.workspaces // empty) as $w
+    | if ($w | type) == "array" then $w[]
+      elif ($w | type) == "object" then (($w.packages // [])[])
+      else empty end
+  ' "$_root_pkg" 2>/dev/null || echo "")
+  [ -n "$_patterns" ] || return 0
+
+  local _any_failed=false
+  local _pattern _dir _pkg _entry _build_script _pkg_name _entry_exports
+  while IFS= read -r _pattern; do
+    [ -n "$_pattern" ] || continue
+    for _dir in "$_pr/"$_pattern; do
+      [ -d "$_dir" ] || continue
+      _pkg="$_dir/package.json"
+      [ -f "$_pkg" ] || continue
+
+      _build_script=$(jq -r '.scripts.build // ""' "$_pkg" 2>/dev/null || echo "")
+      [ -n "$_build_script" ] || continue
+
+      _entry=$(jq -r '.main // ""' "$_pkg" 2>/dev/null || echo "")
+      _entry_exports=$(jq -r 'if (.exports | type) == "string" then .exports else "" end' "$_pkg" 2>/dev/null || echo "")
+
+      # Determine if this package needs a build: either the main or string-form
+      # exports entry point is absent.
+      local _needs_build=false
+      if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
+        _needs_build=true
+      elif [ -n "$_entry_exports" ] && [ ! -e "$_dir/$_entry_exports" ]; then
+        _needs_build=true
+      fi
+      [ "$_needs_build" = "true" ] || continue
+
+      _pkg_name=$(jq -r '.name // ""' "$_pkg" 2>/dev/null || echo "")
+      if [ -z "$_pkg_name" ]; then
+        echo "[test-gate] WARNING: workspace package at '$_dir' has no 'name' field — cannot run targeted build; skipping" >> "$_sink"
+        continue
+      fi
+
+      # Remove stale tsconfig.tsbuildinfo to prevent tsc --build from treating
+      # a deleted dist/ as "already up to date" and producing a no-op build.
+      local _buildinfo="$_dir/tsconfig.tsbuildinfo"
+      if [ -f "$_buildinfo" ]; then
+        echo "[test-gate] Removing stale $(_dir_rel "$_pr" "$_buildinfo") to prevent tsc --build no-op" >> "$_sink"
+        rm -f "$_buildinfo" || true
+      fi
+      # Also remove root-level tsconfig.tsbuildinfo that may reference the package.
+      local _root_buildinfo="$_pr/tsconfig.tsbuildinfo"
+      if [ -f "$_root_buildinfo" ]; then
+        echo "[test-gate] Removing stale root tsconfig.tsbuildinfo to prevent tsc --build no-op" >> "$_sink"
+        rm -f "$_root_buildinfo" || true
+      fi
+
+      echo "[test-gate] Building workspace package '$_pkg_name' (entry point missing: ${_entry:-$_entry_exports})..." >> "$_sink"
+      local _build_exit_file _build_exit
+      _build_exit_file=$(mktemp "/tmp/rite_gate_build_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+      { (cd "$_pr" && npm run build -w "$_pkg_name" 2>&1); echo $? > "$_build_exit_file"; } >> "$_sink" || true
+      _build_exit=$(cat "$_build_exit_file" 2>/dev/null || echo "1")
+      rm -f "$_build_exit_file"
+      if [ "$_build_exit" -ne 0 ]; then
+        echo "[test-gate] ERROR: build of workspace package '$_pkg_name' failed (exit $_build_exit)" >> "$_sink"
+        _any_failed=true
+      else
+        echo "[test-gate] workspace package '$_pkg_name' built successfully" >> "$_sink"
+      fi
+    done
+  done <<EOF
+$_patterns
+EOF
+
+  [ "$_any_failed" = "false" ] || return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _dir_rel — emit a path relative to a base, or the original if outside base.
+# Used for terse log messages.
+# ---------------------------------------------------------------------------
+_dir_rel() {
+  local _base="$1" _path="$2"
+  echo "${_path#"$_base/"}"
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1344,10 +1515,22 @@ run_test_gate() {
       local _node_runner _node_needs_bootstrap=false
       _node_runner=$(_resolve_node_test_runner "$project_root")
       if _node_is_workspaces_monorepo "$project_root"; then
-        if _node_workspace_runners_resolvable "$project_root"; then
-          echo "[test-gate] workspaces monorepo: all workspace runners already resolvable — skipping bootstrap" >> "$_gate_raw_sink"
-        else
+        # #818: bootstrap when workspace runners are not resolvable.
+        # #822: ALSO bootstrap when runners resolve but a workspace package's
+        # compiled entry point (main/exports → dist/) is absent — the runner
+        # existing does not prove that imports resolve (one level deeper proxy).
+        # This was the false-negative that let stale worktrees skip bootstrap
+        # forever: node_modules/.bin/jest ✓, @leadflow/shared/dist/ ✗.
+        if _node_workspace_runners_resolvable "$project_root" \
+           && ! _node_workspace_has_missing_entry_points "$project_root"; then
+          echo "[test-gate] workspaces monorepo: all workspace runners resolvable and entry points present — skipping bootstrap" >> "$_gate_raw_sink"
+        elif ! _node_workspace_runners_resolvable "$project_root"; then
           echo "[test-gate] workspaces monorepo: a workspace test runner is not resolvable (or could not be confirmed) — bootstrapping all workspace dependencies before npm test..." >> "$_gate_raw_sink"
+          _node_needs_bootstrap=true
+        else
+          # Runners resolvable but a compiled entry point is missing — need
+          # install + build, not install alone (build step follows below).
+          echo "[test-gate] workspaces monorepo: workspace runners resolvable but a compiled entry point is missing — bootstrapping and building before npm test..." >> "$_gate_raw_sink"
           _node_needs_bootstrap=true
         fi
       elif ! _node_runner_resolvable "$project_root" "$_node_runner"; then
@@ -1374,10 +1557,39 @@ run_test_gate() {
           echo "[test-gate] test runner '${_node_runner:-unknown}' still not resolvable after bootstrap — npm test will run and the 127 hard-block will fire if it is genuinely missing" >> "$_gate_raw_sink"
         fi
       fi
+      # #822: after install (or even without it, when runners were already
+      # resolvable but entry points were missing), build any workspace package
+      # whose compiled entry point is still absent.  This is the fix for the
+      # LeadFlow outage: dist/ must exist before `npm test` delegates to the
+      # per-workspace test scripts that import compiled artifacts.
+      #
+      # Build failures are loud and blocking — surfaced as a [GATE] finding
+      # so assess-and-resolve.sh creates an ACTIONABLE_NOW item.  Never a
+      # silent fall-through.
+      if _node_is_workspaces_monorepo "$project_root" \
+         && _node_workspace_has_missing_entry_points "$project_root"; then
+        echo "[test-gate] workspaces monorepo: building workspace packages with missing compiled entry points..." >> "$_gate_raw_sink"
+        if ! _node_build_workspace_packages "$project_root" "$_gate_raw_sink"; then
+          echo "[test-gate] ERROR: one or more workspace package builds failed — blocking gate" >&2
+          _diag "TEST_GATE outcome=failed reason=workspace_build_failed pr=${PR_NUMBER:-?}"
+          # Emit a TAP not-ok line so the JSON tests[] array carries the item
+          # and assess-and-resolve.sh synthesises an ACTIONABLE_NOW finding.
+          printf 'not ok 1 - workspace package build failed (entry point missing after build)\n' \
+            >> "$_tests_raw_file"
+          _tests_exit=1
+          _gate_reason="workspace_build_failed"
+        else
+          echo "[test-gate] workspaces monorepo: all workspace builds succeeded" >> "$_gate_raw_sink"
+        fi
+      fi
       echo "[test-gate] Running npm test..."
+      # Preserve any non-zero _tests_exit from the workspace build step above:
+      # merge rather than overwrite so both build failures and test failures block.
+      local _npm_test_prior_exit="$_tests_exit"
       { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+        | tee -a "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
@@ -1482,7 +1694,9 @@ run_test_gate() {
       # Record the named reason so the gate JSON includes it; assess-and-resolve.sh
       # uses this to synthesize a descriptive [GATE] blocking item when the TAP
       # parser yields an empty tests[] array (no ^not ok lines to parse).
-      _gate_reason="runner_unavailable"
+      # Only set reason if not already classified (e.g. workspace_build_failed
+      # set it above; a "not found" in npm output must not clobber that label).
+      [ -n "${_gate_reason:-}" ] || _gate_reason="runner_unavailable"
     fi
 
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
