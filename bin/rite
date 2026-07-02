@@ -326,6 +326,188 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# --- resolve_dispatch_plan (pure) --------------------------------------------
+# Maps the dispatch tuple (MODE, batch filter, PR input, issue args) to the
+# target the dispatch chain below would execute. Routing is decided by the
+# whole tuple, not MODE alone — MODE stays "full" for single-issue, multi-issue
+# batch, --label batch, and --pr flows.
+#
+# Consumed ONLY by the dry-run printer for now. Follow-up: rewire the real
+# dispatch chain through this function so the plan can never drift from the
+# actual routing.
+#
+# Usage:  resolve_dispatch_plan MODE BATCH_FILTER PR_INPUT [ISSUE_ARGS...]
+# Output: plan lines on stdout. No side effects, no network, no filesystem
+#         writes. Display detail comes from parser globals (TAGS_SUBARG,
+#         PLAN_ARGS, LABEL_FILTER, SUPERVISED, WORKFLOW_FLAGS) when present,
+#         with safe defaults so the function is callable standalone.
+# Return: 0 = recognized tuple (plan printed)
+#         2 = no target specified
+#         1 = unrecognized tuple (caller must refuse)
+resolve_dispatch_plan() {
+  local _mode="$1" _batch_filter="$2" _pr_input="$3"
+  shift 3
+  local _argc=$#
+
+  # Early-dispatch modes: these fire before logging setup and smart routing,
+  # so they take precedence over any batch filter / PR input in the tuple.
+  case "$_mode" in
+    health-report)
+      if [ "${1:-}" = "--latest" ]; then
+        echo "rite-health-report --latest  (display most recent report, read-only)"
+      else
+        echo "rite-health-report --display  (generate health report via claude)"
+      fi
+      return 0
+      ;;
+    full-suite)
+      echo "rite-full-suite  (unfiltered make check + bats -r tests/)"
+      return 0
+      ;;
+    refresh-encountered-issues)
+      echo "render_encountered_issues  (fetch closed recurring-pattern issues via gh, rewrite docs/architecture/encountered-issues.md)"
+      return 0
+      ;;
+    tags)
+      echo "show_tag_index ${TAGS_SUBARG:-}  (read-only tag index display)"
+      return 0
+      ;;
+    backfill-locks)
+      echo "backfill_worktree_locks  (write lock dirs for legacy worktrees)"
+      return 0
+      ;;
+    reset-approval)
+      if [ $_argc -ge 1 ]; then
+        echo "clear saved blocker approvals for issue #${1}"
+      else
+        echo "clear ALL saved blocker approvals (global reset)"
+      fi
+      return 0
+      ;;
+    init)
+      echo "initialize .rite/ in ${RITE_PROJECT_ROOT:-<project-root>}  (create config/templates, GitHub setup)"
+      return 0
+      ;;
+    plan)
+      echo "plan-issues.sh::plan_issues ${PLAN_ARGS[*]:-}  (generate GitHub issues via claude)"
+      return 0
+      ;;
+    full|dev-and-pr|review-latest|assess-and-fix|status|undo)
+      # Smart-routing modes — tuple-based routing below.
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  # Mirrors the smart-routing precedence of the dispatch chain below:
+  # status-no-args → batch filter → --pr resolution → argc-based routing.
+  if [ "$_mode" = "status" ] && [ $_argc -eq 0 ]; then
+    echo "repo_wide_status ${LABEL_FILTER:-}  (read-only repo overview)"
+    return 0
+  fi
+
+  if [ -n "$_batch_filter" ]; then
+    if [ $_argc -gt 0 ]; then
+      echo "batch-process-issues.sh $_batch_filter $* --auto  (batch via filter)"
+    else
+      echo "batch-process-issues.sh $_batch_filter --auto  (batch via filter)"
+    fi
+    return 0
+  fi
+
+  if [ -n "$_pr_input" ]; then
+    echo "resolve PR #$_pr_input to its linked issue via gh  (orphan PR: creates a tracking issue, may close the PR if stale)"
+    echo "then dispatch the resolved issue through mode=$_mode"
+    return 0
+  fi
+
+  if [ $_argc -eq 0 ]; then
+    return 2
+  fi
+
+  case "$_mode" in
+    full)
+      if [ $_argc -gt 1 ]; then
+        echo "batch-process-issues.sh $* --auto  (batch: $_argc issues)"
+      elif [[ "$1" =~ ^[0-9]+$ ]]; then
+        if [ "${SUPERVISED:-false}" = true ]; then
+          echo "workflow-runner.sh $1 ${WORKFLOW_FLAGS[*]:-}  (full lifecycle, supervised)"
+        else
+          echo "workflow-runner.sh $1 --auto ${WORKFLOW_FLAGS[*]:-}  (full lifecycle)"
+        fi
+      else
+        echo "generate structured issue from text description via claude,"
+        echo "then workflow-runner.sh <new-issue>  (full lifecycle)"
+      fi
+      return 0
+      ;;
+    dev-and-pr)
+      [ $_argc -eq 1 ] || return 1
+      echo "claude-workflow.sh $1 --auto, then create-pr.sh --auto  (dev + PR only, skip review/merge)"
+      return 0
+      ;;
+    review-latest)
+      [ $_argc -eq 1 ] || return 1
+      echo "local-review.sh <pr-for-issue-$1> --post  (generate + post review)"
+      return 0
+      ;;
+    assess-and-fix)
+      [ $_argc -eq 1 ] || return 1
+      echo "assess-and-resolve.sh <pr-for-issue-$1> $1 --auto  (assess review + fix loop)"
+      return 0
+      ;;
+    status)
+      [ $_argc -eq 1 ] || return 1
+      echo "per-issue status overview for issue #$1  (read-only)"
+      return 0
+      ;;
+    undo)
+      [ $_argc -eq 1 ] || return 1
+      echo "undo-workflow.sh $1  (close PR, delete branch/worktree)"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+# --- end resolve_dispatch_plan ------------------------------------------------
+
+# Dry-run choke point (fail-closed): plan-and-exit BEFORE any side effect.
+# MUST stay immediately after the arg-parse loop and BEFORE the logging block
+# below — logging setup creates a log file and rotates (deletes) old logs, and
+# six modes (health-report, full-suite, refresh-encountered-issues, tags,
+# backfill-locks, reset-approval) dispatch before the smart-routing section.
+# RITE_DRY_RUN=true may arrive via the --dry-run flag, the environment, or
+# .rite/config — all three plan-and-exit here.
+#
+# Known residual: config.sh's ensure_timeout_cmd (sourced above) can
+# auto-install coreutils before this point. The guarantee is "no
+# git/gh/claude/log/workflow side effects after arg parsing", not literally zero.
+if [ "${RITE_DRY_RUN:-false}" = "true" ]; then
+  echo ""
+  print_header "Dry Run — Execution Plan"
+  echo "  Project:    ${RITE_PROJECT_NAME:-unknown} (${RITE_PROJECT_ROOT:-unknown})"
+  echo "  Invocation: mode=$MODE args=[${ARGS[*]:-}] filter=[${BATCH_FILTER_ARGS[*]:-}] pr=[${PR_INPUT:-}]"
+  set +e
+  _DRY_RUN_PLAN=$(resolve_dispatch_plan "$MODE" "${BATCH_FILTER_ARGS[*]:-}" "${PR_INPUT:-}" ${ARGS[@]+"${ARGS[@]}"})
+  _DRY_RUN_RC=$?
+  set -e
+  if [ $_DRY_RUN_RC -eq 0 ]; then
+    echo "  Would execute:"
+    echo "$_DRY_RUN_PLAN" | sed 's/^/    /'
+    echo ""
+    print_info "Dry run complete — nothing was executed"
+    exit 0
+  elif [ $_DRY_RUN_RC -eq 2 ]; then
+    print_error "dry-run: no target specified (an issue number, --label, or --pr is required)"
+    exit 1
+  else
+    print_error "dry-run: unsupported invocation — refusing (mode=$MODE args=[${ARGS[*]:-}] filter=[${BATCH_FILTER_ARGS[*]:-}] pr=[${PR_INPUT:-}])"
+    exit 1
+  fi
+fi
+
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
 if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ]; then

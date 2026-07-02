@@ -2171,6 +2171,16 @@ handle_closed_issue() {
 run_workflow() {
   local issue_number="$1"
 
+  # Layer-2 dry-run backstop (defense in depth): bin/rite's dry-run choke point
+  # plans-and-exits before dispatch, so RITE_DRY_RUN=true must never reach
+  # execution entry. If it does, refuse loudly rather than run a "dry" workflow
+  # for real. exit (not return) is deliberate: in batch mode this must kill the
+  # whole batch, not skip one issue and execute the next seven.
+  if [ "${RITE_DRY_RUN:-false}" = "true" ]; then
+    print_error "RITE_DRY_RUN=true but execution reached run_workflow() — refusing to run issue #${issue_number} (dry-run is plan-only; see 'rite --dry-run')"
+    exit 1
+  fi
+
   echo ""
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${GREEN}🤖 Automated Workflow Runner${NC}"
