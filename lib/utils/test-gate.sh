@@ -672,6 +672,36 @@ _node_runner_resolvable() {
 }
 
 # ---------------------------------------------------------------------------
+# _node_desymlink_node_modules — remove node_modules symlinks before install
+# Args: $1=project_root
+#
+# claude-workflow.sh symlinks the worktree's node_modules to the MAIN
+# checkout's to save disk. npm ci resolves THROUGH that link: its pre-reify
+# rm step readdirs the target and recursively deletes each entry — destroying
+# main's node_modules — then replaces the link with a real dir (npm install
+# reifies through/replaces the link the same way). Removing the LINK first
+# (plain `rm` on the link path — never rm -rf, never a trailing slash) makes
+# npm build a worktree-local real dir and leaves main's node_modules intact.
+#
+# Called ONLY inside the bootstrap branch: repos whose runners already
+# resolve never install, so they keep the symlink's disk-space benefit.
+# Real dirs and absent paths are no-ops; dangling symlinks are removed the
+# same way ([ -L ] is true for them, plain rm succeeds).
+# ---------------------------------------------------------------------------
+_node_desymlink_node_modules() {
+  local _pr="$1"
+  local _sink="${_gate_raw_sink:-/dev/null}"
+  local _nm
+  for _nm in "$_pr/node_modules" "$_pr/backend/node_modules"; do
+    if [ -L "$_nm" ]; then
+      echo "[test-gate] $_nm is a symlink — removing the link before install so npm cannot destroy its target" >> "$_sink"
+      rm "$_nm"
+    fi
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _node_is_workspaces_monorepo — is this an npm-workspaces monorepo? (issue #818)
 # Args: $1=project_root
 # Returns 0 (yes) / 1 (no).
@@ -1539,6 +1569,10 @@ run_test_gate() {
         _node_needs_bootstrap=true
       fi
       if [ "$_node_needs_bootstrap" = "true" ]; then
+        # De-symlink BEFORE either install path: npm ci/install through a
+        # symlinked node_modules destroys the symlink TARGET (main's
+        # node_modules) before reifying a real dir in its place.
+        _node_desymlink_node_modules "$project_root"
         if [ -f "$project_root/package-lock.json" ]; then
           (cd "$project_root" && npm ci --silent) >> "$_gate_raw_sink" 2>&1 || true
         else

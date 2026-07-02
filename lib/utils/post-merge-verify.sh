@@ -265,6 +265,11 @@ verify_post_merge() {
       fi
       # Node: npm ci or npm install
       if [ -f "package-lock.json" ] || [ -f "package.json" ]; then
+        # npm ci/install through a symlinked node_modules (rite worktree
+        # layout) destroys the symlink TARGET — remove the LINK first
+        # (plain rm, never rm -rf) so npm builds a worktree-local real dir.
+        [ -L node_modules ] && rm node_modules
+        [ -L backend/node_modules ] && rm backend/node_modules
         if [ -f "package-lock.json" ]; then
           npm ci --silent 2>&1 | tail -3 | sed 's/^/  /' >&2 || true
         else
