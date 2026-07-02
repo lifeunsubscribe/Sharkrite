@@ -791,6 +791,9 @@ regenerate_lockfiles_if_needed() {
 
   local _lockfile_staged=false
   local _pkg_json_dir _lockfile
+  # Accumulate staged lockfile paths so the commit can be scoped to them only,
+  # preventing a bare 'git commit' from sweeping in unrelated pre-staged files.
+  local _staged_lockfiles=""
 
   while IFS= read -r _pkg_json_path; do
     [ -z "$_pkg_json_path" ] && continue
@@ -828,19 +831,24 @@ regenerate_lockfiles_if_needed() {
     if [ -f "$_lockfile" ] && ! git diff --quiet -- "$_lockfile" 2>/dev/null; then
       git add "$_lockfile"
       _lockfile_staged=true
+      _staged_lockfiles="${_staged_lockfiles} ${_lockfile}"
       print_success "Staged regenerated package-lock.json in ${_pkg_json_dir}"
     elif ! git diff --cached --quiet -- "$_lockfile" 2>/dev/null; then
       # Already staged by a prior iteration (unlikely but harmless guard)
       _lockfile_staged=true
+      _staged_lockfiles="${_staged_lockfiles} ${_lockfile}"
     fi
   done <<< "$_changed_pkg_jsons"
 
   if [ "$_lockfile_staged" = "true" ]; then
     local _commit_exit=0
+    # Scope the commit to the staged lockfile paths only — a bare 'git commit'
+    # would absorb any other pre-staged files, violating the commit-hygiene contract.
+    # shellcheck disable=SC2086
     git commit -m "chore: regenerate package-lock.json after dependency changes
 
 package.json was modified by the dev session; lockfile regenerated via
-'npm install --package-lock-only' to keep \`npm ci\` in sync." > /dev/null || _commit_exit=$?
+'npm install --package-lock-only' to keep \`npm ci\` in sync." -- ${_staged_lockfiles} > /dev/null || _commit_exit=$?
     if [ "$_commit_exit" -ne 0 ]; then
       print_error "git commit for package-lock.json failed (exit ${_commit_exit})"
       return 1
