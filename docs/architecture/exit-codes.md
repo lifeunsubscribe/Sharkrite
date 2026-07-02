@@ -72,6 +72,15 @@ These codes cross script boundaries and must be kept unambiguous.
 | `14` | Issue locked by another live session — not a failure, batch records as `in_progress_elsewhere` (SKIPPED class) |
 | `127`| Provider CLI not found |
 
+### `phase_claude_workflow` (internal return from `workflow-runner.sh`)
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Development complete — work produced |
+| `1`  | Development failed |
+| `14` | Lock held by another session |
+| `15` | Already satisfied — `verify_already_satisfied()` confirmed the demanded state exists on `origin/main`; issue closed with evidence |
+
 ### `workflow-runner.sh` (return codes from `run_workflow`)
 
 | Code | Meaning |
@@ -83,6 +92,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `12` | Issue was already closed at start — no new work done (batch should skip stat gathering) |
 | `13` | **Invariant violated** — workflow reached its normal exit path but produced no commits on the feature branch and no PR for the issue. This is a bug (sourcing side-effect, phase-skip logic error, etc.), not a user-actionable failure. `batch-process-issues.sh` records this as `invariant_violated` and continues the loop. The full error was already printed by `run_workflow` before returning 13. Set `RITE_WORKFLOW_EXPLICIT_COMPLETE=1` to bypass (for future "completed without code" paths). |
 | `14` | Issue locked by another live session — propagated from `claude-workflow.sh`. Batch records as `in_progress_elsewhere` (SKIPPED class, not FAILED). |
+| `15` | **Already satisfied** — `verify_already_satisfied()` ran the issue's Verification Commands against `origin/main` and all exited 0. The issue was closed with evidence; no PR was created. `run_workflow` sets `RITE_WORKFLOW_EXPLICIT_COMPLETE=1` and returns 0. Batch treats this as a successful completion (same accounting as exit 0). |
 
 ### `batch-process-issues.sh` (final process exit)
 

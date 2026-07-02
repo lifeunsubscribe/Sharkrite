@@ -617,6 +617,144 @@ phase_pre_start_checks() {
   return 0
 }
 
+# verify_already_satisfied ISSUE_NUMBER
+#
+# After a no-change dev session, deterministically check whether the issue's
+# demanded state already exists on origin/main. Uses the "Verification Commands"
+# fenced block in the issue body as a concrete, runnable evidence source.
+#
+# Algorithm:
+#   1. Fetch the issue body (via gh API).
+#   2. Extract the ```bash ... ``` block that immediately follows a
+#      "## Verification Commands" heading. These are the exact commands the
+#      issue author said would prove satisfaction.
+#   3. Run EACH command (with a short timeout) in $RITE_PROJECT_ROOT against
+#      the base branch. Commands may not all be relevant to the demanded state,
+#      but if EVERY one exits 0 the issue is verifiably already satisfied.
+#   4. On full pass: post an evidence comment to the issue, close it with
+#      `--reason completed`, clean up any empty draft PR, emit a diag line,
+#      and return 0.
+#   5. On any failure or missing commands: return 1 (caller fails loud as before).
+#
+# Returns:
+#   0 — all commands passed; issue closed with evidence; PR cleaned up
+#   1 — commands failed, timed out, or no commands found; caller should fail loud
+#
+# Exit-code contract: when this returns 0, phase_claude_workflow returns 15
+# ("already satisfied — issue closed") so run_workflow can skip phases 2-4.
+# See: docs/architecture/exit-codes.md
+#
+# IMPORTANT: never let a model verdict alone trigger a close. Only deterministic
+# command execution (exit code 0) qualifies as evidence.
+verify_already_satisfied() {
+  local issue_number="$1"
+  local pr_number="${2:-}"   # empty draft PR to clean up on success
+
+  # --- 1. Fetch issue body ---
+  local _issue_body
+  _issue_body=$(gh_safe issue view "$issue_number" --json body --jq '.body' 2>/dev/null || true)
+  if [ -z "${_issue_body:-}" ]; then
+    return 1
+  fi
+
+  # --- 2. Extract verification commands from the issue body ---
+  # Match the "## Verification Commands" heading (any depth), then capture
+  # the first fenced ```bash ... ``` (or plain ```) block that follows.
+  # awk state machine: wait for the heading, then capture the fence block.
+  local _cmds
+  _cmds=$(printf '%s\n' "$_issue_body" | awk '
+    /^#+[[:space:]]+(Verification Commands?)[[:space:]]*$/ { in_section=1; next }
+    in_section && /^```/ {
+      if (!in_fence) { in_fence=1; next }
+      else { exit }          # closing fence — done
+    }
+    in_section && in_fence { print }
+  ' || true)
+
+  # Strip blank lines and comment lines; require at least one real command.
+  local _real_cmds
+  _real_cmds=$(printf '%s\n' "$_cmds" | grep -vE '^\s*(#|$)' || true)
+  if [ -z "${_real_cmds:-}" ]; then
+    # No parseable commands — cannot deterministically verify; fail loud as before.
+    return 1
+  fi
+
+  # --- 3. Run each command against the base branch ---
+  # Commands execute in $RITE_PROJECT_ROOT, which tracks origin/main (the main
+  # worktree). We ensure origin/main is current before running.
+  git -C "$RITE_PROJECT_ROOT" fetch origin main --quiet 2>/dev/null || true
+
+  local _evidence_lines=""     # accumulates "$ cmd\noutput" for the close comment
+  local _per_cmd_timeout=30    # seconds per command (safety cap for slow greps/make)
+  local _cmd _cmd_output _cmd_exit
+
+  while IFS= read -r _cmd; do
+    [ -n "${_cmd:-}" ] || continue
+
+    # Run the command inside a timeout-bounded subshell. eval is required because
+    # verification commands routinely use pipes, redirects, and compound syntax.
+    # The body is issue-author content (not external-API data), so eval scope is
+    # acceptable — the issue author controls the repo and can already run arbitrary
+    # commands in CI. Stdout+stderr are merged so the evidence captures both.
+    _cmd_exit=0
+    _cmd_output=$(
+      cd "$RITE_PROJECT_ROOT" || exit 1
+      if command -v timeout >/dev/null 2>&1; then
+        timeout "$_per_cmd_timeout" bash -c "$_cmd" 2>&1
+      else
+        bash -c "$_cmd" 2>&1
+      fi
+    ) || _cmd_exit=$?
+
+    if [ "$_cmd_exit" -ne 0 ]; then
+      # At least one command failed — issue is NOT already satisfied on origin/main.
+      local _cmd_short="${_cmd:0:120}"   # bash substring; no external cmd needed
+      _diag "VERIFY_SATISFIED issue=${issue_number} cmd_failed=\"${_cmd_short}\" exit=${_cmd_exit}"
+      return 1
+    fi
+
+    # Accumulate evidence (truncate very long outputs for the comment)
+    local _truncated_output
+    _truncated_output=$(printf '%s' "$_cmd_output" | head -20 || true)
+    _evidence_lines="${_evidence_lines}
+\`\`\`
+$ ${_cmd}
+${_truncated_output}
+\`\`\`"
+  done <<< "$_real_cmds"
+
+  # --- 4. All commands passed — issue is already satisfied ---
+  print_success "Already-satisfied verification passed for issue #${issue_number} (all verification commands exit 0 on origin/main)"
+  _diag "VERIFY_SATISFIED issue=${issue_number} outcome=already_satisfied"
+
+  # Build the close comment with evidence
+  local _close_comment
+  _close_comment=$(printf '%s\n\n%s\n\n%s\n\n%s\n\n%s' \
+    "**Automatically closed: already satisfied on \`origin/main\`**" \
+    "A dev session produced no changes for this issue. Before failing, the workflow ran the issue's Verification Commands against the base branch — all exited 0, confirming the demanded state already exists." \
+    "**Evidence (commands run against \`origin/main\`):**" \
+    "${_evidence_lines}" \
+    "<!-- sharkrite-auto-closed-already-satisfied:${issue_number} -->")
+
+  # Post the comment and close the issue
+  gh_safe issue comment "$issue_number" --body "$_close_comment" 2>/dev/null || true
+  gh_safe issue close "$issue_number" --reason completed 2>/dev/null || true
+  print_success "Issue #${issue_number} closed as already satisfied"
+
+  # Clean up any empty draft PR so it doesn't leave a stale worktree loop
+  if [ -n "${pr_number:-}" ]; then
+    local _pr_adds
+    _pr_adds=$(gh_safe pr view "$pr_number" --json additions --jq '.additions' 2>/dev/null || echo "0")
+    _pr_adds="${_pr_adds:-0}"
+    if [ "${_pr_adds:-0}" -eq 0 ]; then
+      gh_safe pr close "$pr_number" --delete-branch 2>/dev/null || true
+      print_info "Closed empty draft PR #${pr_number} for issue #${issue_number}"
+    fi
+  fi
+
+  return 0
+}
+
 phase_claude_workflow() {
   local issue_number="$1"
 
@@ -787,12 +925,22 @@ EOF
             fi
             WORKFLOW_EXIT=$?
             if [ $WORKFLOW_EXIT -eq 4 ]; then
+              print_warning "Development produced no changes after retry — checking if already satisfied on origin/main"
+              # Before failing loud, verify whether the issue is already satisfied on
+              # the base branch. verify_already_satisfied runs the issue's own
+              # Verification Commands deterministically; if ALL exit 0, it closes
+              # the issue with evidence and returns 0. On any failure or missing
+              # commands it returns 1 and we fall through to the loud fail.
+              # Pass pr_number so verify_already_satisfied can clean up the empty draft PR.
+              if verify_already_satisfied "$issue_number" "${pr_number:-}"; then
+                return 15  # already-satisfied sentinel (see exit-codes.md)
+              fi
               print_error "Development produced no changes after retry"
               print_info "Issue may need manual investigation or a clearer description"
               # Clean up empty draft PR
               if [ -n "${pr_number:-}" ]; then
                 local _pr_adds
-                _pr_adds=$(gh_safe pr view "$pr_number" --json additions --jq '.additions')
+                _pr_adds=$(gh_safe pr view "$pr_number" --json additions --jq '.additions' || echo "0")
                 _pr_adds="${_pr_adds:-0}"
                 if [ "${_pr_adds:-0}" -eq 0 ]; then
                   gh_safe pr close "$pr_number" --delete-branch 2>/dev/null || true
@@ -936,13 +1084,23 @@ EOF
         fi
 
         if [ $workflow_exit -eq 4 ]; then
+          print_warning "Development produced no changes after retry — checking if already satisfied on origin/main"
+          # Before failing loud, verify whether the issue is already satisfied on
+          # the base branch. verify_already_satisfied runs the issue's own
+          # Verification Commands deterministically; if ALL exit 0, it closes
+          # the issue with evidence and returns 0. On any failure or missing
+          # commands it returns 1 and we fall through to the loud fail.
+          # Pass PR_NUMBER so verify_already_satisfied can clean up the empty draft PR.
+          if verify_already_satisfied "$issue_number" "${PR_NUMBER:-}"; then
+            return 15  # already-satisfied sentinel (see exit-codes.md)
+          fi
           print_error "Development produced no changes after retry"
           print_info "Issue may need manual investigation or a clearer description"
 
           # Clean up empty draft PR so it doesn't cause stale worktree loops on next run
           if [ -n "${PR_NUMBER:-}" ]; then
             local _pr_additions
-            _pr_additions=$(gh_safe pr view "$PR_NUMBER" --json additions --jq '.additions')
+            _pr_additions=$(gh_safe pr view "$PR_NUMBER" --json additions --jq '.additions' || echo "0")
             _pr_additions="${_pr_additions:-0}"
             if [ "${_pr_additions:-0}" -eq 0 ]; then
               gh_safe pr close "$PR_NUMBER" --delete-branch 2>/dev/null || true
@@ -2484,6 +2642,18 @@ run_workflow() {
     if [ $_phase1_exit -ne 0 ]; then
       _timer_end "phase1_development"
       _rtk_snapshot "phase1_end"
+      # Exit 15: already-satisfied — issue was closed with evidence by
+      # verify_already_satisfied(); no PR to push/review/merge. Bypass the
+      # invariant check (no commits or PR is correct here) and return 0.
+      if [ $_phase1_exit -eq 15 ]; then
+        _diag "PHASE_TRANSITION issue=${issue_number} from=claude-workflow to=already_satisfied"
+        RITE_WORKFLOW_EXPLICIT_COMPLETE=1
+        print_success "Issue #${issue_number} resolved: already satisfied on origin/main (no PR needed)"
+        # Clear state file — workflow complete.
+        local _state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
+        rm -f "${_state_file}" 2>/dev/null || true
+        return 0
+      fi
       _diag "PHASE_FAILED issue=${issue_number} phase=claude-workflow"
       # Preserve exit 14 (lock held by another session) so run_workflow's
       # main() can route it to the in_progress_elsewhere path instead of
