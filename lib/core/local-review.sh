@@ -514,20 +514,49 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   # Hard error (non-zero, non-timeout): a transient API/network/rate-limit blip
   # fast-fails here in seconds (live: PR reviews exit-1'd in ~14s, aborting an
   # otherwise-complete run — issues #482, #649, #631). These are retryable: a
-  # momentary 429/5xx/overloaded clears in seconds. Back off and retry rather
-  # than throw away the dev work; only give up after exhausting attempts.
+  # momentary 429/5xx clears in seconds — but a capacity incident (HTTP 529 /
+  # overloaded_error) lasts minutes-to-hours and gets its own long backoff
+  # schedule below. Back off and retry rather than throw away the dev work;
+  # only give up after exhausting attempts.
   if [ "${REVIEW_EXIT:-0}" -ne 0 ]; then
+    # Surface the TAIL of provider stderr in every failure message. Live
+    # failure (issue #823): the log recorded only "exit 1" for all three
+    # attempts and the 529 root cause had to be inferred from a different
+    # issue's explicit error 14 minutes later.
+    _review_err_tail=$(echo "$CLAUDE_ERROR" | tail -n 5 || true)
+
+    # Overloaded signature: HTTP 529 or the API's overloaded_error type.
+    # 529 is anchored as a standalone number so unrelated text like
+    # "1529 tokens" cannot match (format-anchor convention).
+    _review_overloaded=false
+    if echo "$CLAUDE_ERROR" | grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error'; then
+      _review_overloaded=true
+    fi
+
     if [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ]; then
-      _review_backoff=$(( ${RITE_REVIEW_RETRY_BACKOFF:-3} * REVIEW_ATTEMPT ))
-      print_warning "Review provider failed (exit $REVIEW_EXIT, attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS)${CLAUDE_ERROR:+: $CLAUDE_ERROR} — retrying in ${_review_backoff}s..."
+      if [ "$_review_overloaded" = true ]; then
+        # A 529 incident outlasts the default 3s/6s schedule: issue #823
+        # burned all 3 retries in 9s inside a 20+ minute incident and lost
+        # an otherwise-complete run (PR #830 was already pushed). Long
+        # schedule (60s then 120s) so a retry can land after recovery.
+        _review_backoff=$(( ${RITE_REVIEW_OVERLOADED_BACKOFF:-60} * REVIEW_ATTEMPT ))
+        print_warning "Review provider overloaded (529/overloaded_error, attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS)${_review_err_tail:+ — stderr tail: $_review_err_tail}"
+        print_warning "Using long overloaded backoff schedule — retrying in ${_review_backoff}s..."
+      else
+        _review_backoff=$(( ${RITE_REVIEW_RETRY_BACKOFF:-3} * REVIEW_ATTEMPT ))
+        print_warning "Review provider failed (exit $REVIEW_EXIT, attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS)${_review_err_tail:+: $_review_err_tail} — retrying in ${_review_backoff}s..."
+      fi
       REVIEW_OUTPUT=""
       sleep "$_review_backoff"
       continue
     fi
-    print_error "Review failed (exit code: $REVIEW_EXIT) after $MAX_REVIEW_ATTEMPTS attempts"
-    if [ -n "$CLAUDE_ERROR" ]; then
-      echo "Error output:"
-      echo "$CLAUDE_ERROR"
+    if [ "$_review_overloaded" = true ]; then
+      print_error "Review failed after $MAX_REVIEW_ATTEMPTS attempts: provider was overloaded (529/overloaded_error) — the API is under a capacity incident. Dev work and the PR are intact; re-run this issue later, once the incident clears."
+    else
+      print_error "Review failed (exit code: $REVIEW_EXIT) after $MAX_REVIEW_ATTEMPTS attempts"
+    fi
+    if [ -n "$_review_err_tail" ]; then
+      print_error "Provider stderr (tail): $_review_err_tail"
     fi
     exit 1
   fi
