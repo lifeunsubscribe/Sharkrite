@@ -140,13 +140,19 @@ _parse_bats_failure_line() {
   local raw_line="$1"
   # bats failure format: "not ok N test description"
   if echo "$raw_line" | grep -qE '^not ok [0-9]+ '; then
-    local test_name _stripped
+    local test_name _stripped _reason
     # Strip the "not ok N " prefix, then ANSI/control bytes + JSON-escape via the
     # shared helper (portable across BSD/GNU sed — the old inline hex-range sed
     # errored on macOS and emptied the name).
     _stripped=$(echo "$raw_line" | sed 's/^not ok [0-9]* //' || true)
     test_name=$(_sanitize_json_value "$_stripped" || true)
-    printf '{"file":"bats","test_name":"%s","reason":"assertion failed"}' "$test_name"
+    # Synthetic not-run findings (issue #804) carry a [tests_not_run] marker so
+    # the per-item reason names the real cause instead of "assertion failed".
+    _reason="assertion failed"
+    case "$_stripped" in
+      "[tests_not_run]"*) _reason="tests_not_run" ;;
+    esac
+    printf '{"file":"bats","test_name":"%s","reason":"%s"}' "$test_name" "$_reason"
     return 0
   fi
   return 1
@@ -639,6 +645,89 @@ _extract_tap_failure_names() {
       "not ok "*) _tap_failure_name "$_line" ;;
     esac
   done < "$_tap_file"
+}
+
+# ---------------------------------------------------------------------------
+# Not-run detection helpers (issue #804)
+# ---------------------------------------------------------------------------
+# bats-core 1.13 exits non-zero when fewer tests execute than the 1..N plan
+# even with 0 reported failures, and a test killed before emitting its result
+# writes NOTHING to report.tap. Without detection the gate reports exit_code=1
+# with test_count=0 and the fix loop gets zero nameable findings (four blind
+# rounds on PR #828).
+# ---------------------------------------------------------------------------
+
+# _tap_plan_deficit — total "planned but never reported" test count across a
+# (possibly concatenated) TAP report file. Each bats invocation appended to
+# the file starts its own section with a `1..N` plan line; result lines are
+# `ok N ...` / `not ok N ...`. Deficit = sum over sections of plan - results.
+# Args: $1=tap_file  Stdout: non-negative integer (0 = no mismatch).
+_tap_plan_deficit() {
+  local _tap_file="$1"
+  [ -f "$_tap_file" ] || { echo 0; return 0; }
+  awk '
+    /^1\.\.[0-9]+$/ {
+      if (plan > run) deficit += plan - run
+      plan = substr($0, 4) + 0
+      run = 0
+      next
+    }
+    /^ok / { run++; next }
+    /^not ok / { run++; next }
+    END {
+      if (plan > run) deficit += plan - run
+      print deficit + 0
+    }
+  ' "$_tap_file" 2>/dev/null || echo 0
+}
+
+# _extract_notrun_test_names — best-effort names of tests that began but never
+# emitted a result, from the captured bats pretty stream.
+# Args: $1=pretty_capture_file  Stdout: one test name per line (may be empty).
+#
+# bats' pretty formatter updates the current line in place using
+# cursor-to-column CSI moves (ESC[<n>G) instead of newlines while a test runs.
+# A test killed before its result leaves a "begin" fragment (three-space
+# indent + test name) with no matching " ✓ name" / " ✗ name" / " - name"
+# result fragment. Convert the column moves to newlines, strip remaining ANSI,
+# then diff begin names against result names. The `bats warning: Executed...`
+# line shares the three-space indent and is filtered explicitly.
+_extract_notrun_test_names() {
+  local _pretty_file="$1"
+  [ -s "$_pretty_file" ] || return 0
+  local _begins _results _line _name
+  _begins=$(mktemp "/tmp/rite_gate_notrun_b_${PR_NUMBER:-0}_$$_XXXXXX")
+  _results=$(mktemp "/tmp/rite_gate_notrun_r_${PR_NUMBER:-0}_$$_XXXXXX")
+  while IFS= read -r _line; do
+    case "$_line" in
+      " ✓ "*) printf '%s\n' "${_line#" ✓ "}" >> "$_results" ;;
+      " ✗ "*) printf '%s\n' "${_line#" ✗ "}" >> "$_results" ;;
+      " - "*)
+        # Skipped tests render as " - name (skipped[: reason])" — strip the
+        # suffix so the result name matches its begin fragment (otherwise
+        # every skip would false-positive as a not-run test).
+        _name="${_line#" - "}"
+        printf '%s\n' "${_name%% (skipped*}" >> "$_results"
+        ;;
+      "   "*)
+        _name="${_line#   }"
+        case "$_name" in
+          " "*|""|"bats warning:"*) : ;;
+          *) printf '%s\n' "$_name" >> "$_begins" ;;
+        esac
+        ;;
+    esac
+  done < <(awk '{ gsub(/\033\[[0-9;]*G/, "\n"); print }' "$_pretty_file" 2>/dev/null \
+             | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[[:space:]]*$//' || true)
+  if [ -s "$_begins" ]; then
+    if [ -s "$_results" ]; then
+      grep -Fxv -f "$_results" "$_begins" | sort -u || true
+    else
+      sort -u "$_begins" || true
+    fi
+  fi
+  rm -f "$_begins" "$_results"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1353,7 @@ run_test_gate() {
   # rather than reading malformed JSON, while still logging the crash via _diag.
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
-        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}"
+        rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}" "${_bats_pretty_capture:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
@@ -1508,9 +1597,15 @@ run_test_gate() {
     # also routed to the run log via _gate_raw_sink.
     local _bats_use_pretty=false
     local _bats_tap_dir=""
+    local _bats_pretty_capture=""
     if _bats_has_report_formatter; then
       _bats_use_pretty=true
       _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$_XXXXXX")
+      # Pretty stream is ALSO tee'd into this capture file (streaming to
+      # _gate_raw_sink is preserved — tee writes through) so the not-run
+      # detector below can name tests that began but never emitted a result
+      # (issue #804). The TAP report can't: not-run tests write nothing to it.
+      _bats_pretty_capture=$(mktemp "/tmp/rite_gate_pretty_${PR_NUMBER:-0}_$$_XXXXXX")
       echo "[test-gate] bats: pretty formatter (terminal) + TAP report (parser)"
     else
       echo "[test-gate] bats: TAP formatter (--report-formatter not available in installed bats)"
@@ -1522,12 +1617,15 @@ run_test_gate() {
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo "[test-gate] Running bats -r tests/..."
       if [ "$_bats_use_pretty" = "true" ]; then
+        # tee into _bats_pretty_capture (not-run detection, #804) while still
+        # streaming to the sink — same exit-capture shape as the TAP fallback.
         { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
             "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
             bats -F pretty --report-formatter tap --output "$_bats_tap_dir" \
             "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" -r tests/) \
-            < /dev/null >> "$_gate_raw_sink" 2>&1; \
-          echo $? > "$_bats_exit_file"; } || true
+            < /dev/null 2>&1; \
+          echo $? > "$_bats_exit_file"; } \
+          | tee -a "$_bats_pretty_capture" >> "$_gate_raw_sink" || true
         cp "$_bats_tap_dir/report.tap" "$_tests_raw_file" 2>/dev/null || : > "$_tests_raw_file"
       else
         { (cd "$project_root" && "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
@@ -1583,8 +1681,9 @@ run_test_gate() {
               "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats -F pretty --report-formatter tap --output "$_par_tap_dir" \
               "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}") \
-              < /dev/null >> "$_gate_raw_sink" 2>&1; \
-            echo $? > "$_bats_exit_file"; } || true
+              < /dev/null 2>&1; \
+            echo $? > "$_bats_exit_file"; } \
+            | tee -a "$_bats_pretty_capture" >> "$_gate_raw_sink" || true
           cat "$_par_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
           rm -rf "$_par_tap_dir"
         else
@@ -1614,8 +1713,9 @@ run_test_gate() {
               "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats -F pretty --report-formatter tap --output "$_ser_tap_dir" \
               "${_serial_files[@]}") \
-              < /dev/null >> "$_gate_raw_sink" 2>&1; \
-            echo $? > "$_bats_exit_file"; } || true
+              < /dev/null 2>&1; \
+            echo $? > "$_bats_exit_file"; } \
+            | tee -a "$_bats_pretty_capture" >> "$_gate_raw_sink" || true
           cat "$_ser_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
           rm -rf "$_ser_tap_dir"
         else
@@ -1650,6 +1750,48 @@ run_test_gate() {
 
     rm -f "$_sc_exit_file" "$_lint_exit_file" "$_bats_exit_file"
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
+
+    # --- Plan-vs-executed mismatch: synthesize not-run findings (issue #804) ---
+    # bats-core 1.13 exits non-zero when fewer tests execute than the 1..N plan
+    # even with 0 reported failures, and not-run tests write NOTHING to
+    # report.tap — so a swallowed test yields exit_code=1 with test_count=0 and
+    # the fix loop gets zero nameable findings (four blind rounds on PR #828).
+    # Detect the mismatch (TAP plan deficit and/or the literal bats warning in
+    # the captured pretty stream) and emit synthetic not-ok findings, following
+    # the synthetic-TAP precedent (workspace_build_failed below).
+    if [ "$_tests_exit" -ne 0 ] && [ "$_tests_count" -eq 0 ]; then
+      local _notrun_deficit _notrun_warning="" _notrun_names="" _notrun_named=0
+      _notrun_deficit=$(_tap_plan_deficit "$_tests_raw_file")
+      if [ -n "${_bats_pretty_capture:-}" ] && [ -s "${_bats_pretty_capture:-}" ]; then
+        _notrun_warning=$(grep -oE 'Executed [0-9]+ instead of expected [0-9]+ tests' \
+          "$_bats_pretty_capture" | head -1 || true)
+      fi
+      if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ]; then
+        if [ -n "${_bats_pretty_capture:-}" ]; then
+          _notrun_names=$(_extract_notrun_test_names "$_bats_pretty_capture")
+        fi
+        if [ -n "$_notrun_names" ]; then
+          local _nn
+          while IFS= read -r _nn; do
+            [ -z "$_nn" ] && continue
+            _notrun_named=$(( _notrun_named + 1 ))
+            printf 'not ok %s [tests_not_run] %s — began but never emitted a result (bats plan/executed mismatch; killed before reporting)\n' \
+              "$_notrun_named" "$_nn" >> "$_tests_raw_file"
+          done <<< "$_notrun_names"
+          echo "[test-gate] bats: ${_notrun_named} planned test(s) never ran (${_notrun_warning:-plan/executed mismatch}) — emitting synthetic tests_not_run finding(s)"
+        else
+          # Names unidentifiable (e.g. TAP-fallback bats without a pretty
+          # capture) — emit ONE synthetic finding carrying the deficit so the
+          # fix loop still gets a nameable, blocking item.
+          printf 'not ok 1 [tests_not_run] %s planned bats test(s) never ran (%s) — no per-test names identifiable; check the run log\n' \
+            "$_notrun_deficit" "${_notrun_warning:-plan/executed mismatch}" >> "$_tests_raw_file"
+          echo "[test-gate] bats: plan/executed mismatch with no parseable failures — emitting synthetic tests_not_run finding"
+        fi
+        _gate_reason="tests_not_run"
+        _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=${_notrun_named} pr=${PR_NUMBER:-?}"
+        _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
+      fi
+    fi
   else
     # Non-Sharkrite: best-effort detection (npm test / make test / pytest / cargo / go)
     # For non-Sharkrite repos the gate runs whatever the manifest implies.
@@ -1946,7 +2088,7 @@ run_test_gate() {
     fi
   fi
 
-  rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}"
+  rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_bats_pretty_capture:-}"
   trap - EXIT
 
   # --- Determine overall exit code and outcome ---
