@@ -576,7 +576,10 @@ _do_rebase_and_push() {
   fi
 
   # Verify rebase didn't introduce silent semantic conflicts (tests pass)
-  if ! verify_post_merge "." "$_pre_rebase_head"; then
+  # origin/main base: three-dot selection covers branch-only files. The rebased-in
+  # main delta was already gated per-merge (green-main invariant) — re-verifying its
+  # full coverage union cost 180+ bats files per resume (issue #854).
+  if ! verify_post_merge "." "origin/main"; then
     _div_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
     # Roll back to the pre-rebase HEAD snapshot captured at function entry.
     # Prefer _pre_rebase_head (always fresh, set from git rev-parse at entry) over

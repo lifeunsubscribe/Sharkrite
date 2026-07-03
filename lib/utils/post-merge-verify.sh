@@ -65,11 +65,14 @@ fi
 #
 # pre_merge_ref (optional, default: HEAD~1):
 #   The commit SHA or ref representing the state BEFORE the merge/rebase.
-#   Used as RITE_TEST_GATE_DIFF_BASE so targeted selection covers the files
-#   that actually changed due to the merge — including main-originated files
-#   that origin/main...HEAD (three-dot merge-base) would exclude.
+#   Used as RITE_TEST_GATE_DIFF_BASE for targeted selection.
 #   For merge commits: HEAD~1 is the pre-merge feature branch tip.
-#   For rebases: pass the pre-rebase HEAD saved before 'git rebase'.
+#   For rebases: pass "origin/main" (issue #854). Passing the pre-rebase HEAD
+#   pulls every rebased-in main commit into the selection — after a heavy merge
+#   day that is 180+ bats files per resumed branch, re-paid on every restart.
+#   The main delta was already gated per-merge (green-main invariant, #707);
+#   the rebase-conflict question is answered by the branch's own coverage
+#   running against the post-rebase tree (origin/main...HEAD, three-dot).
 #
 # For non-Sharkrite repos (npm/pytest/make test), the original test
 # command construction and execution path is preserved unchanged.

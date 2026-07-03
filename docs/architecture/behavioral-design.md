@@ -1471,3 +1471,17 @@ side-effect-free fall-back on every failure mode.
 merge) was validated by unit tests with stubbed git/gh/gate/triage; a supervised
 `rite <N>` run against a crafted fast-path-eligible issue should confirm the real
 path before relying on it in unsupervised batches.
+
+## Post-Rebase Verification Scope (#854)
+
+Rebase-path `verify_post_merge` call sites (stale-branch trivial/standard rebase,
+divergence-handler) pass `origin/main` as the diff base, NOT the pre-rebase HEAD.
+Three-dot selection then covers branch-only files. Rationale: the rebased-in main
+delta was already gated per-merge (green-main invariant), so re-verifying its full
+coverage union (observed: 181/229 bats files for a 2-commit branch, two consecutive
+days, .rite/logs/rite-821-*-20260703-051808.log) is redundant — a rebase-introduced
+semantic conflict manifests in tests covering the BRANCH's files, which now run
+against the post-rebase tree. Merge-commit call sites keep `HEAD~1` (cheap, correct),
+and the no-diff full-suite fallback exploited by the main-broken check is untouched.
+Rejected: keeping the union behind an opt-in (no known consumer; revisit if a
+main-side interaction ever escapes branch coverage).
