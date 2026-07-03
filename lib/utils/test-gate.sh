@@ -740,7 +740,7 @@ _extract_notrun_test_names() {
           _desc="${_raw#\"}"
           _desc="${_desc%\"}"
           case "$_desc" in
-            *\\*) _desc=$(printf '%s\n' "$_desc" | sed 's/\\\([\\"$`]\)/\1/g') ;;
+            *\\*) _desc=$(printf '%s\n' "$_desc" | sed 's/\\\([\\"$`]\)/\1/g' || true) ;;
           esac
           ;;
         \'*)
