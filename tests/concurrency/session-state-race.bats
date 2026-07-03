@@ -44,6 +44,7 @@ setup() {
 
   # Source the session tracker
   source "$RITE_LIB_DIR/utils/session-tracker.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Initialize session
   init_session "unsupervised"

@@ -31,6 +31,7 @@ setup() {
 
   # Source the stale-branch library (also pulls in stash-manager, post-merge-verify)
   source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

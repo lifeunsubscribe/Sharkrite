@@ -55,6 +55,7 @@ setup() {
 
   # Source blocker-rules.sh after the shims are in place
   source "${RITE_LIB_DIR}/utils/blocker-rules.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

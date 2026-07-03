@@ -20,6 +20,7 @@ setup() {
   # Source test-gate.sh to get the helpers
   # shellcheck source=/dev/null
   source "${RITE_REPO_ROOT}/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Create a fixture repo with controlled bats files
   TEST_REPO=$(mktemp -d)

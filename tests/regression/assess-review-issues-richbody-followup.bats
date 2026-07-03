@@ -28,6 +28,7 @@ setup() {
   # Mirror empty-assessment-fails-loud.bats: source config, mock claude + gh on PATH.
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   source "${RITE_LIB_DIR}/utils/config.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   export PR_NUMBER=42
   export RITE_ISSUE_NUMBER=15

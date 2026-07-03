@@ -41,6 +41,7 @@ setup() {
 
   # Source the lock utilities (includes write_followup_evidence / read_followup_evidence)
   source "$RITE_LIB_DIR/utils/issue-lock.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Track "created" issues in a shared file (mirrors assess-and-resolve.sh pattern)
   export ISSUES_FILE="$RITE_TEST_TMPDIR/created-issues.txt"

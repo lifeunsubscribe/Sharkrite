@@ -10,6 +10,7 @@ setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   source "${RITE_LIB_DIR}/utils/config.sh"
   source "${RITE_LIB_DIR}/utils/logging.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Create a mock git repository
   export TEST_REPO=$(mktemp -d)
@@ -54,6 +55,7 @@ setup() {
   # the main program body (arg parsing, worktree navigation, Claude dev session).
   # Without this, sourcing launches a real Claude Code session (issue #469).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_LIB_DIR}/core/claude-workflow.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

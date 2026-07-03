@@ -13,6 +13,7 @@ setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   source "${RITE_LIB_DIR}/utils/config.sh"
   source "${RITE_LIB_DIR}/utils/logging.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
   # Isolate from the developer's local (gitignored) .rite/config, which sets
   # RITE_TEST_CMD to a bats wrapper. Without this, _run_dev_test_gate uses that
   # override and never enters the venv-bootstrap path these tests exercise.
@@ -53,6 +54,7 @@ setup() {
   # the main program body (arg parsing, worktree navigation, Claude dev session).
   # Without this, sourcing launches a real Claude Code session (issue #469).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_LIB_DIR}/core/claude-workflow.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

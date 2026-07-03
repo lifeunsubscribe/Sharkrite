@@ -58,6 +58,7 @@ setup() {
 
   # Source tag-index.sh to load tag_index_log_history() and its helpers.
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Extract reconcile_tag_index() from assess-documentation.sh via awk.
   # We extract only that function to avoid executing the script's top-level body.
