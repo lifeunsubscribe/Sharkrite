@@ -1833,8 +1833,10 @@ phase_completion() {
 # the correct number. Does NOT auto-redirect — the user must decide.
 #
 # Returns: 15 — sentinel meaning "number refers to a PR, not an issue".
-#   batch-process-issues.sh uses this to skip stat-gathering and continue to
-#   the next issue. Single-issue mode converts to exit 1 (non-zero refusal).
+#   Both single-issue and batch mode propagate exit 15 through main() so the
+#   caller sees a non-zero, non-misleading refusal code. Batch mode uses 15 to
+#   skip stat-gathering; single-issue mode uses it to exit cleanly without the
+#   "Workflow failed" message that the generic else branch would print.
 #   See: docs/architecture/exit-codes.md — exit code 15
 #   See: tests/regression/pr-number-refused-as-issue.bats
 # ---------------------------------------------------------------------------
@@ -2271,10 +2273,13 @@ run_workflow() {
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
     set -e
-    # Both single-issue and batch mode: return 15 sentinel so main() routes
-    # to the dedicated pr_number_refused branch without printing "Workflow failed".
-    # Batch mode uses exit 15 to skip stat-gathering; single-issue mode uses it
-    # to exit cleanly (the refusal message was already printed).
+    # Return 15 in both single-issue and batch mode so main() routes to the
+    # dedicated pr_number_refused branch without printing "Workflow failed".
+    # Batch: batch-process-issues.sh captures 15 to record pr_number_refused
+    #        (SKIPPED class) and skip post-issue stat-gathering.
+    # Single: exit 15 is non-zero (refusal accepted) and avoids the misleading
+    #         "Workflow failed" line that the generic else branch would print.
+    # See: docs/architecture/exit-codes.md — exit code 15
     return 15
   fi
 
@@ -3042,13 +3047,13 @@ main() {
   elif [ $workflow_exit -eq 15 ]; then
     # Number refers to a PR, not an issue.
     # The refusal message was already printed by handle_pr_number_refused().
-    # Both single-issue and batch mode reach this branch (run_workflow returns
-    # 15 in both cases). Propagate exit 15 so batch skips stat-gathering and
-    # records this as pr_number_refused (SKIPPED class, not FAILED).
-    # Single-issue mode: exit 15 is non-zero (refusal accepted) and avoids
-    # the misleading "Workflow failed" line that exit 1 via the else branch
-    # would have printed.
-    # See: docs/architecture/exit-codes.md
+    # run_workflow() returns 15 in both single-issue and batch modes.
+    # Propagate exit 15 so:
+    #   - Batch: batch-process-issues.sh skips stat-gathering and records
+    #     this as pr_number_refused (SKIPPED class, not FAILED).
+    #   - Single: exit 15 is non-zero (refusal accepted) and avoids the
+    #     misleading "Workflow failed" line that the else branch would print.
+    # See: docs/architecture/exit-codes.md — exit code 15
     exit 15
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter

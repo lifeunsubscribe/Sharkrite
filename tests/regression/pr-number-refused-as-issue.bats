@@ -21,8 +21,10 @@
 #      any worktree, lock, or dev-session side effects.
 #   3. handle_pr_number_refused() prints the PR title, url, and linked issue (if
 #      found), then returns 15.
-#   4. Single-issue mode: run_workflow() converts 15 to return 1 (non-zero refusal).
-#   5. Batch mode: run_workflow() returns 15; batch records pr_number_refused
+#   4. run_workflow() returns 15 in both single-issue and batch modes. main()
+#      routes exit 15 to the dedicated pr_number_refused branch, avoiding the
+#      misleading "Workflow failed" message that the generic else branch prints.
+#   5. Batch mode: batch-process-issues.sh captures exit 15 to record pr_number_refused
 #      (SKIPPED class) and continues remaining issues.
 #
 # Tests in this file:
@@ -40,7 +42,7 @@
 #     9. No gh pr list/view/issue list in the exit-15 branch (non-comment)
 #
 #   BEHAVIORAL (subprocess execution with stubs):
-#    10. Single-issue mode: run_workflow exits 1 for PR number (not 0 or 15)
+#    10. Single-issue mode: run_workflow exits 15 for PR number (non-zero refusal)
 #    11. Single-issue mode: refusal message names the PR
 #    12. Batch mode: run_workflow exits 15 for PR number (sentinel)
 #    13. Real issue number: url /issues/ path passes the check unchanged
@@ -299,16 +301,19 @@ run_with_timeout() { local _t="\$1"; shift; "\$@" 2>/dev/null || true; }
 STUB_EOF
 }
 
-@test "behavioral: single-issue mode exits 1 (not 15) when number is a PR" {
-  # run_workflow() must convert the internal return-15 to return-1 in single-issue
-  # mode so callers in set -e chains don't see a surprising non-standard exit code.
+@test "behavioral: single-issue mode exits 15 (non-zero refusal) when number is a PR" {
+  # run_workflow() returns 15 in both single-issue and batch mode.
+  # Exit 15 is non-zero (refusal accepted) and avoids the misleading
+  # "Workflow failed" message that the generic else branch in main() would print.
+  # See: docs/architecture/exit-codes.md — exit code 15
 
   _script="$BATS_TEST_TMPDIR/test-single-pr-refused.sh"
   _write_stub_preamble "$_script" "false" "https://github.com/owner/repo/pull/490" "Old PR title"
 
   cat >> "$_script" <<'INLINE_EOF'
 
-# Paste the functions under test
+# Inline copies matching real workflow-runner.sh logic (no BATCH_MODE gate —
+# both modes return 15 so main() can route cleanly without "Workflow failed").
 handle_pr_number_refused() {
   local issue_number="$1"
   local issue_data="$2"
@@ -337,16 +342,13 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    if [ "${BATCH_MODE:-false}" = "true" ]; then
-      return $_pr_ref_exit
-    else
-      return 1
-    fi
+    # Return 15 in both single-issue and batch mode — matches real code.
+    # main() routes this to the dedicated pr_number_refused branch (exit 15)
+    # without printing "Workflow failed".
+    return 15
   fi
   return 0
 }
@@ -354,8 +356,8 @@ run_workflow() {
 _exit=0
 run_workflow "490" || _exit=$?
 
-if [ "$_exit" -ne 1 ]; then
-  echo "FAIL: expected exit 1 for PR number in single-issue mode, got $_exit" >&2
+if [ "$_exit" -ne 15 ]; then
+  echo "FAIL: expected exit 15 for PR number in single-issue mode, got $_exit" >&2
   exit 1
 fi
 exit 0
@@ -405,13 +407,11 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    [ "${BATCH_MODE:-false}" = "true" ] && return $_pr_ref_exit
-    return 1
+    # Return 15 in both modes — matches real code.
+    return 15
   fi
   return 0
 }
@@ -484,16 +484,11 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    if [ "${BATCH_MODE:-false}" = "true" ]; then
-      return $_pr_ref_exit
-    else
-      return 1
-    fi
+    # Return 15 in both modes — matches real code.
+    return 15
   fi
   return 0
 }
@@ -551,13 +546,11 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    [ "${BATCH_MODE:-false}" = "true" ] && return $_pr_ref_exit
-    return 1
+    # Return 15 in both modes — matches real code.
+    return 15
   fi
   # Past the check — real issue proceeds normally
   echo "PASS_MARKER: issue passed PR check"
@@ -622,13 +615,11 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    [ "${BATCH_MODE:-false}" = "true" ] && return $_pr_ref_exit
-    return 1
+    # Return 15 in both modes — matches real code.
+    return 15
   fi
   return 0
 }
@@ -709,13 +700,11 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    [ "${BATCH_MODE:-false}" = "true" ] && return $_pr_ref_exit
-    return 1
+    # Return 15 in both modes — matches real code.
+    return 15
   fi
   return 0
 }
