@@ -79,6 +79,17 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   exit 1
 fi
 
+# Layer-2 dry-run backstop (defense in depth): bin/rite's dry-run choke point
+# plans-and-exits before dispatch, so RITE_DRY_RUN=true must never reach this
+# script's execution entry. If it does, refuse loudly rather than run the batch
+# for real. Gated to direct execution — tests source this file for its
+# functions (tests/regression/lib-resource-safety.bats), and a source-time exit
+# would violate re-source safety.
+if [ "${RITE_DRY_RUN:-false}" = "true" ] && [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  print_error "RITE_DRY_RUN=true but execution reached batch-process-issues.sh — refusing to run batch (dry-run is plan-only; see 'rite --dry-run')"
+  exit 1
+fi
+
 # Check dependencies
 if ! command -v gh &> /dev/null; then
   print_error "GitHub CLI required: brew install gh"
