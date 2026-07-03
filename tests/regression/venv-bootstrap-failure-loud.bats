@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/claude-workflow.sh
+# sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
+# concurrent-write, and timeout-race tests need the serial group)
 # Test suite for issue #12: Gate venv ready message on install success
 #
 # Verifies that when pip install fails (for base or dev requirements), the

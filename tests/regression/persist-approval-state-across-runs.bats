@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/blocker-rules.sh, lib/core/workflow-runner.sh
+# sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
+# concurrent-write, and timeout-race tests need the serial group)
 # tests/regression/persist-approval-state-across-runs.bats
 #
 # Regression test for issue #169: Persist approval/notification state across runs.
