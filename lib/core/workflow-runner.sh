@@ -1822,6 +1822,62 @@ phase_completion() {
 # ===================================================================
 
 # ---------------------------------------------------------------------------
+# handle_pr_number_refused ISSUE_NUMBER ISSUE_DATA
+#
+# Canonical refusal handler when a bare number passed to rite resolves to a
+# PR rather than an issue. GitHub's shared number space means `gh issue view N`
+# succeeds for PR numbers — the url field discriminates (/pull/ vs /issues/).
+#
+# Prints a named-PR error message. If the PR body contains a "Closes #M"
+# reference, also prints the linked issue number so the user can re-run with
+# the correct number. Does NOT auto-redirect — the user must decide.
+#
+# Returns: 15 — sentinel meaning "number refers to a PR, not an issue".
+#   batch-process-issues.sh uses this to skip stat-gathering and continue to
+#   the next issue. Single-issue mode converts to exit 1 (non-zero refusal).
+#   See: docs/architecture/exit-codes.md — exit code 15
+#   See: tests/regression/pr-number-refused-as-issue.bats
+# ---------------------------------------------------------------------------
+handle_pr_number_refused() {
+  local issue_number="$1"
+  local issue_data="$2"
+
+  local pr_title
+  pr_title=$(echo "$issue_data" | jq -r '.title // "unknown"' || true)
+  local pr_url
+  pr_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
+
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "#${issue_number} is a Pull Request, not an issue"
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "  PR title: ${pr_title}"
+  [ -n "$pr_url" ] && print_error "  PR url:   ${pr_url}"
+  print_error ""
+  print_error "rite accepts issue numbers only. Pass the linked issue number instead."
+
+  # Look up the issue that this PR closes (best-effort, non-fatal).
+  # Use `gh pr view` on the PR number to read the body, then grep for
+  # "Closes #N" / "Fixes #N" / "Resolves #N" patterns.
+  # The `|| true` guards prevent set -e from aborting if the API call fails or
+  # the PR body has no closing reference.
+  local _linked_issue=""
+  local _pr_body
+  _pr_body=$(gh_safe pr view "$issue_number" --json body --jq '.body' 2>/dev/null || true)
+  if [ -n "$_pr_body" ]; then
+    _linked_issue=$(echo "$_pr_body" | grep -ioE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
+  fi
+
+  if [ -n "$_linked_issue" ]; then
+    print_error ""
+    print_error "  Linked issue: #${_linked_issue}"
+    print_error "  Try: rite ${_linked_issue}"
+  fi
+
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  return 15
+}
+
+# ---------------------------------------------------------------------------
 # handle_closed_issue ISSUE_NUMBER ISSUE_DATA
 #
 # Canonical handler for closed issues. Prints a full closure summary (title,
@@ -2194,9 +2250,37 @@ run_workflow() {
   # Check if issue is already closed — delegate to the shared helper so both
   # single-issue and batch paths execute identical cleanup side effects.
   # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
+  #
+  # `url` is fetched here (no extra API call) to detect whether the number
+  # refers to a PR rather than an issue. GitHub's shared number space means
+  # `gh issue view <PR#>` succeeds and returns the PR — the url field is the
+  # cheapest discriminator: issue URLs contain /issues/, PR URLs contain /pull/.
+  # See: handle_pr_number_refused() and exit code 15 in docs/architecture/exit-codes.md
   local issue_data
-  issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences)
+  issue_data=$(gh_safe issue view "$issue_number" --json state,title,closedAt,closedByPullRequestsReferences,url)
   local issue_state=$(echo "$issue_data" | jq -r '.state')
+
+  # Reject bare PR numbers before doing any dev work.
+  # A PR number silently passes `gh issue view` because GitHub's number space is
+  # shared — PRs are also issues. The url field is the deterministic discriminator:
+  # real issues have /issues/N, PRs have /pull/N. Check this before the CLOSED gate
+  # so a closed PR number is also caught. See: exit code 15 in exit-codes.md.
+  local _issue_url
+  _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
+  if echo "$_issue_url" | grep -qF '/pull/'; then
+    local _pr_ref_exit
+    set +e
+    handle_pr_number_refused "$issue_number" "$issue_data"
+    _pr_ref_exit=$?
+    set -e
+    # Single-issue mode: exit 1 (the refusal message was already printed).
+    # Batch mode: return 15 sentinel so batch can skip stat-gathering and continue.
+    if [ "${BATCH_MODE:-false}" = "true" ]; then
+      return $_pr_ref_exit
+    else
+      return 1
+    fi
+  fi
 
   if [ "$issue_state" = "CLOSED" ]; then
     # set +e is required: handle_closed_issue returns 12 (sentinel) and under
@@ -2959,6 +3043,14 @@ main() {
     # acquire_issue_lock() via claude-workflow.sh::setup_issue_lock_if_needed().
     # See: docs/architecture/exit-codes.md
     exit 14
+  elif [ $workflow_exit -eq 15 ]; then
+    # Number refers to a PR, not an issue — propagate exit 15 so batch can
+    # record this as pr_number_refused (SKIPPED class, not FAILED).
+    # The refusal message was already printed by handle_pr_number_refused().
+    # Single-issue mode: run_workflow returns 1 (not 15), so exit 15 here is
+    # only reachable in BATCH_MODE. Propagate so batch skips stat-gathering.
+    # See: docs/architecture/exit-codes.md
+    exit 15
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6
