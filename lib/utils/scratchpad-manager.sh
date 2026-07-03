@@ -35,6 +35,8 @@ fi
 
 # Source scratchpad lock utilities if not already loaded
 # All writer functions below acquire the lock before modifying SCRATCHPAD_FILE.
+# On acquire timeout they degrade to skip: warn and return 0 — scratchpad
+# writes are advisory and must never fail the workflow that attempted them.
 # trap 'release_scratchpad_lock' RETURN fires when the function returns (normal,
 # error, or early return), ensuring the lock is always released.
 _SCRATCHPAD_MANAGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +49,12 @@ if ! declare -f gh_safe >/dev/null 2>&1; then
   source "$_SCRATCHPAD_MANAGER_DIR/gh-retry.sh"
 fi
 
+# Source output helpers if not already loaded (print_warning is used by the
+# degrade-to-skip acquire wrappers in the writer functions below)
+if ! declare -f print_warning >/dev/null 2>&1; then
+  source "$_SCRATCHPAD_MANAGER_DIR/colors.sh"
+fi
+
 # Update scratchpad with security findings from PR review
 update_scratchpad_from_pr() {
   local pr_number="$1"
@@ -56,12 +64,13 @@ update_scratchpad_from_pr() {
     return 0
   fi
 
-  acquire_scratchpad_lock
-  trap 'release_scratchpad_lock' RETURN
-
   echo "Updating scratchpad with PR #$pr_number findings..."
 
-  # Get PR review
+  # Get PR review BEFORE acquiring the lock — the lock must never be held
+  # across network I/O. gh_safe retries sleep 5/15/30s on API errors, so a
+  # fetch under the lock routinely pushes the hold past peers' 30s acquire
+  # timeout (live collision: two batches, LeadFlow 2026-07-01). The lock
+  # guards only the local read-modify-rename below.
   local review_body
   review_body=$(gh_safe pr view "$pr_number" --json comments --jq '[.comments[] | select(.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "github-actions[bot]")] | .[-1].body')
   review_body="${review_body:-}"
@@ -70,6 +79,12 @@ update_scratchpad_from_pr() {
     echo "No review found for PR #$pr_number"
     return 0
   fi
+
+  acquire_scratchpad_lock || {
+    print_warning "Scratchpad busy — skipping PR #$pr_number findings update (advisory)"
+    return 0
+  }
+  trap 'release_scratchpad_lock' RETURN
 
   # Extract security-related issues (CRITICAL, HIGH, MEDIUM with security keywords)
   local security_findings=$(echo "$review_body" | grep -A 5 -iE "(CRITICAL|HIGH|MEDIUM).*(security|auth|tenant|validation|sql|xss|csrf|injection|leak)" | head -50 || echo "")
@@ -158,7 +173,10 @@ clear_current_work() {
     return 0
   fi
 
-  acquire_scratchpad_lock
+  acquire_scratchpad_lock || {
+    print_warning "Scratchpad busy — skipping Current Work clear (advisory)"
+    return 0
+  }
   trap 'release_scratchpad_lock' RETURN
 
   echo "Clearing Current Work section..."
@@ -194,7 +212,10 @@ init_scratchpad() {
   fi
 
   # Acquire lock before creating — concurrent callers must not both write
-  acquire_scratchpad_lock
+  acquire_scratchpad_lock || {
+    print_warning "Scratchpad busy — skipping scratchpad init (advisory)"
+    return 0
+  }
   # Re-check after acquiring lock: another process may have created the file
   # while we were waiting.
   if [ ! -f "$SCRATCHPAD_FILE" ]; then
@@ -259,7 +280,10 @@ log_encountered_issue() {
     return 0
   fi
 
-  acquire_scratchpad_lock
+  acquire_scratchpad_lock || {
+    print_warning "Scratchpad busy — skipping encountered-issue log for ${file_path} (advisory)"
+    return 0
+  }
   trap 'release_scratchpad_lock' RETURN
 
   # Validate category
@@ -524,7 +548,10 @@ clear_encountered_issues() {
     return 0
   fi
 
-  acquire_scratchpad_lock
+  acquire_scratchpad_lock || {
+    print_warning "Scratchpad busy — skipping Encountered Issues clear (advisory)"
+    return 0
+  }
   trap 'release_scratchpad_lock' RETURN
 
   echo "Clearing Encountered Issues section..."
