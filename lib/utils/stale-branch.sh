@@ -358,7 +358,10 @@ _stale_classify_after_push_rejection() {
         _trivial_pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
         if git rebase "origin/$base_branch" 2>/dev/null; then
           # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
-          if ! verify_post_merge "$worktree_path" "$_trivial_pre_rebase_head"; then
+          # origin/main base: three-dot selection covers branch-only files. The rebased-in
+          # main delta was already gated per-merge (green-main invariant) — re-verifying its
+          # full coverage union cost 180+ bats files per resume (issue #854).
+          if ! verify_post_merge "$worktree_path" "origin/main"; then
             git rebase --abort 2>/dev/null || true
             print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
             return 1
@@ -569,7 +572,7 @@ _stale_rebase_onto_main() {
     fi
 
     # Verify rebase didn't introduce silent semantic conflicts (tests pass)
-    if ! verify_post_merge "$worktree_path" "$pre_rebase_head"; then
+    if ! verify_post_merge "$worktree_path" "origin/main"; then
       print_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
       git reset --hard "$pre_rebase_head" 2>/dev/null || true
       if [ "$workflow_mode" = "supervised" ]; then
@@ -646,7 +649,7 @@ _stale_rebase_onto_main() {
           fi
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
-        if ! verify_post_merge "$worktree_path" "$pre_rebase_head"; then
+        if ! verify_post_merge "$worktree_path" "origin/main"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
           return 1
