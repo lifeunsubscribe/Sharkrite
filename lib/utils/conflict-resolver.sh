@@ -5,10 +5,20 @@
 # Entry condition:
 #   Caller may invoke from either a merge-conflict state OR a clean tree (e.g. after
 #   aborting a rebase/merge). Step 3 re-runs git merge to recreate conflict markers.
-#   This file does NOT commit, push, run tests, or print to stdout.
+#   This file does NOT push, run tests, or print to stdout.
+#
+# Handoff contract (issue #858): the resolver SESSION only WRITES resolved file
+# content — in-session git side effects are policy-blocked for agentic sessions,
+# so resolved content may be left unstaged (or even untracked, in the add/add
+# materialization path, which also leaves a staged deletion at the same path).
+# The SCRIPT side owns staging and committing: after attempt_claude_merge_resolution
+# returns 0, callers MUST run commit_resolved_conflicts() (defined below), which
+# stages via `git add -A`, detects the live rebase/merge/plain context, and
+# continues/commits accordingly — surfacing git's stderr on failure.
 #
 # Exit codes (public contract — do NOT change without updating all call sites):
-#   0 = all conflicts resolved and staged (ready for git commit --no-edit)
+#   0 = all conflicts resolved in the working tree (NOT necessarily staged or
+#       committed — callers must complete the handoff via commit_resolved_conflicts)
 #   1 = failed (merge aborted, working tree returned to clean state)
 #   5 = provider usage cap reached (propagate to batch abort — do NOT fall back)
 #
@@ -160,12 +170,15 @@ _cr_materialize_addadd_conflict() {
 #   --timeout SECONDS     Agentic session timeout (default: RITE_FIX_TIMEOUT or 1800)
 #
 # Returns:
-#   0 = all conflicts resolved and staged (not committed)
+#   0 = all conflicts resolved in the working tree (caller must stage + commit
+#       via commit_resolved_conflicts — the session cannot run git side effects)
 #   1 = failed (merge aborted, working tree clean)
 #
 # Side effects:
 #   - Loads dev provider (caller must reload their provider after if needed)
-#   - On success: merge is resolved and staged, ready for git commit --no-edit
+#   - On success: resolved content is in the working tree; staging state varies
+#     (the add/add materialization path leaves resolved content untracked with a
+#     staged deletion at the same path). Run commit_resolved_conflicts next.
 #   - On failure: merge is aborted, working tree is clean
 attempt_claude_merge_resolution() {
   local _cr_issue_number=""
@@ -492,6 +505,110 @@ Resolve every conflict, then stage each file with git add."
     return 1
   fi
 
-  # Resolution verified — files are staged, ready for commit
+  # Resolution verified — complete the handoff with commit_resolved_conflicts
+  return 0
+}
+
+# ===================================================================
+# PUBLIC: commit_resolved_conflicts
+# ===================================================================
+
+# commit_resolved_conflicts [WORKTREE_PATH]
+#
+# Script-side stage+commit handoff after a successful resolver session (#858).
+# The resolver session WRITES resolved file content but cannot reliably stage
+# or commit it (in-session git side effects are policy-blocked), so the script
+# owns the whole sequence:
+#
+#   1. `git add -A` scoped to the worktree. Load-bearing BEFORE any staged-
+#      changes check: the add/add materialization path leaves the index holding
+#      a staged deletion while the resolved content sits UNTRACKED at the same
+#      path — committing without this add would commit a bare deletion
+#      (live: issue #821, 2026-07-03).
+#   2. Context detection from OBSERVABLE git state, not the documented flow:
+#        rebase in progress ($git_dir/rebase-merge or rebase-apply) →
+#          GIT_EDITOR=true git rebase --continue (or `git rebase --skip` when
+#          the resolution left nothing to commit — the patch is already
+#          upstream and --continue would refuse with "No changes")
+#        merge in progress ($git_dir/MERGE_HEAD) → git commit --no-edit
+#          (MERGE_MSG exists for --no-edit to reuse)
+#        plain → commit staged changes with an explicit -m: no MERGE_MSG
+#          exists, so a bare `git commit --no-edit` dies with "Aborting commit
+#          due to empty commit message" (the exact failure 2>/dev/null
+#          swallowed in issue #821); a clean index is a no-op success (the
+#          resolver's internal merge auto-committed).
+#   3. On failure: PRINT git's captured output (no 2>/dev/null swallowing) and
+#      abort context-correctly — rebase --abort mid-rebase, merge --abort
+#      mid-merge. The old inline call-site blocks ran `git merge --abort`
+#      unconditionally, which no-ops mid-rebase and strands the worktree.
+#
+# Returns:
+#   0 = resolution committed (or nothing needed committing)
+#   1 = failure (context aborted, git output printed to stderr)
+commit_resolved_conflicts() {
+  local _crc_wt="${1:-.}"
+
+  # Resolve the worktree's private git dir (worktree-aware: in a linked
+  # worktree, rebase-merge/MERGE_HEAD live under .git/worktrees/<name>).
+  local _crc_gitdir
+  _crc_gitdir=$(git -C "$_crc_wt" rev-parse --git-dir 2>/dev/null || true)
+  case "$_crc_gitdir" in
+    ""|/*) : ;;
+    # rev-parse --git-dir output is relative to the worktree when not absolute
+    *) _crc_gitdir="$_crc_wt/$_crc_gitdir" ;;
+  esac
+
+  local _crc_context="plain"
+  if [ -n "$_crc_gitdir" ] && { [ -d "$_crc_gitdir/rebase-merge" ] || [ -d "$_crc_gitdir/rebase-apply" ]; }; then
+    _crc_context="rebase"
+  elif [ -n "$_crc_gitdir" ] && [ -f "$_crc_gitdir/MERGE_HEAD" ]; then
+    _crc_context="merge"
+  fi
+
+  local _crc_out=""
+  local _crc_failed=false
+  if ! _crc_out=$(git -C "$_crc_wt" add -A 2>&1); then
+    _crc_failed=true
+  else
+    case "$_crc_context" in
+      rebase)
+        if git -C "$_crc_wt" diff --cached --quiet 2>/dev/null; then
+          # Resolution left nothing to commit (the stopped commit's change is
+          # already upstream). --continue refuses with "No changes"; --skip is
+          # git's documented continuation for this state.
+          _crc_out=$(git -C "$_crc_wt" rebase --skip 2>&1) || _crc_failed=true
+        else
+          # GIT_EDITOR=true keeps --continue non-interactive (it re-opens the
+          # replayed commit's message in an editor otherwise).
+          _crc_out=$(GIT_EDITOR=true git -C "$_crc_wt" rebase --continue 2>&1) || _crc_failed=true
+        fi
+        ;;
+      merge)
+        # MERGE_MSG exists for --no-edit to reuse. Always commit: even an
+        # index identical to HEAD needs the merge commit for ancestry.
+        _crc_out=$(git -C "$_crc_wt" commit --no-edit 2>&1) || _crc_failed=true
+        ;;
+      *)
+        # Plain context: either the resolver's internal merge auto-committed
+        # (index clean — nothing to do) or the add above staged resolved
+        # content with no merge/rebase in progress (add/add materialization).
+        if ! git -C "$_crc_wt" diff --cached --quiet 2>/dev/null; then
+          _crc_out=$(git -C "$_crc_wt" commit --no-edit -m "Resolve conflicts (Claude-assisted resolution)" 2>&1) || _crc_failed=true
+        fi
+        ;;
+    esac
+  fi
+
+  if [ "$_crc_failed" = true ]; then
+    _cr_error "Failed to commit resolved conflicts (context: $_crc_context)"
+    if [ -n "$_crc_out" ]; then
+      printf '%s\n' "$_crc_out" >&2
+    fi
+    case "$_crc_context" in
+      rebase) git -C "$_crc_wt" rebase --abort 2>/dev/null || true ;;
+      merge)  git -C "$_crc_wt" merge --abort 2>/dev/null || true ;;
+    esac
+    return 1
+  fi
   return 0
 }

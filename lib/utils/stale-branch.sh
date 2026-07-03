@@ -631,22 +631,15 @@ _stale_rebase_onto_main() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
-        # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
-        # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
-        # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
-        # case the index is already clean and `git commit --no-edit` would exit non-zero
-        # with "nothing to commit". Only commit if the index has staged changes.
-        #
-        # Use `git diff --cached --quiet` (exits 1 = staged changes present, 0 = index clean)
-        # rather than `git status --porcelain` which is overly broad: it also returns output
-        # for untracked files (??) and unstaged changes — neither of which `git commit` would
-        # include. Checking only the index avoids a spurious commit failure on those states.
-        if ! git diff --cached --quiet 2>/dev/null; then
-          if ! git commit --no-edit 2>/dev/null; then
-            print_error "Failed to commit resolved conflicts"
-            git merge --abort 2>/dev/null || true
-            return 1
-          fi
+        # Script-side stage+commit handoff (issue #858): the resolver session
+        # WRITES resolutions but cannot stage or commit them. The shared helper
+        # (conflict-resolver.sh::commit_resolved_conflicts) stages via
+        # `git add -A`, detects the live rebase/merge/plain context,
+        # continues/commits accordingly, and aborts context-correctly with
+        # git's stderr surfaced on failure.
+        if ! commit_resolved_conflicts "$worktree_path"; then
+          print_error "Failed to commit resolved conflicts"
+          return 1
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path" "origin/main"; then
@@ -788,22 +781,15 @@ _stale_merge_main_legacy() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
-        # Resolver stages files but does NOT commit (see conflict-resolver.sh contract line 10).
-        # However, the resolver's internal `git merge --no-edit` auto-commits when there are no
-        # conflicting files (rebase auto-resolved or Claude accepted one side wholesale). In that
-        # case the index is already clean and `git commit --no-edit` would exit non-zero
-        # with "nothing to commit". Only commit if the index has staged changes.
-        #
-        # Use `git diff --cached --quiet` (exits 1 = staged changes present, 0 = index clean)
-        # rather than `git status --porcelain` which is overly broad: it also returns output
-        # for untracked files (??) and unstaged changes — neither of which `git commit` would
-        # include. Checking only the index avoids a spurious commit failure on those states.
-        if ! git diff --cached --quiet 2>/dev/null; then
-          if ! git commit --no-edit 2>/dev/null; then
-            print_error "Failed to commit resolved conflicts"
-            git merge --abort 2>/dev/null || true
-            return 1
-          fi
+        # Script-side stage+commit handoff (issue #858): the resolver session
+        # WRITES resolutions but cannot stage or commit them. The shared helper
+        # (conflict-resolver.sh::commit_resolved_conflicts) stages via
+        # `git add -A`, detects the live rebase/merge/plain context,
+        # continues/commits accordingly, and aborts context-correctly with
+        # git's stderr surfaced on failure.
+        if ! commit_resolved_conflicts "$worktree_path"; then
+          print_error "Failed to commit resolved conflicts"
+          return 1
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path"; then
