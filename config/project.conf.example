@@ -80,6 +80,16 @@
 # Set to 0 to disable the cap entirely (unbounded — original behavior).
 # RITE_MAX_FINDINGS_PER_RUN=20
 
+# Batch gate circuit-breaker threshold (default: 3).
+# When this many consecutive issues fail their post-commit gate with the same
+# normalized failure signature (sorted unique failing-file set), the batch halts
+# with exit 16 and a remediation hint.  This prevents a doomed environment
+# (broken import, red main, bad test runner) from grinding through all remaining
+# issues and minting unlimited follow-up issues.
+# Set to 0 to disable the circuit breaker entirely.
+# See: docs/architecture/exit-codes.md — exit 16
+# RITE_BATCH_GATE_TRIP=3
+
 # =============================================================================
 # Plan Command (rite plan)
 # =============================================================================

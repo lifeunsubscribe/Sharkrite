@@ -78,6 +78,15 @@ teardown() {
   }
 }
 
+@test "structural: _update_gate_breaker_counter() helper exists in batch-process-issues.sh" {
+  grep -q '_update_gate_breaker_counter()' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _update_gate_breaker_counter() function not found in batch-process-issues.sh" >&2
+    echo "      This function encapsulates the counter-update logic so behavioral tests" >&2
+    echo "      can drive it directly rather than re-implementing it." >&2
+    return 1
+  }
+}
+
 @test "structural: circuit-breaker state variables initialized" {
   grep -q '_gate_consec_count=' "$BATCH_PROCESSOR" || {
     echo "FAIL: _gate_consec_count= not found in batch-process-issues.sh" >&2
@@ -314,7 +323,13 @@ EOF
 # =============================================================================
 
 # Helper: run the circuit-breaker counter logic for a sequence of gate findings.
-# Arguments: threshold, then a list of JSON strings (one per issue).
+# Drives the real _update_gate_breaker_counter function extracted from the
+# batch processor — not a re-implementation.  This ensures the behavioral tests
+# exercise the same code path that the production loop uses, including any
+# skip-path handling.
+#
+# Arguments: threshold, then a list of JSON strings (one per issue, each
+#   representing a 'failed' issue with gate findings).
 # Outputs: "TRIPPED sig=<sig>" if breaker fires, else "OK count=<n> sig=<sig>".
 _run_breaker_sequence() {
   local threshold="$1"
@@ -330,44 +345,45 @@ _run_breaker_sequence() {
     i=$((i + 1))
   done
 
-  # Extract the _extract_gate_signature function and replay the counter logic
+  # Load both helper functions from the real batch processor and drive them.
+  # Using awk to extract each function by name so we don't need to source the
+  # entire script (which has top-level executable code that would fail without
+  # the full runtime environment).
   run bash -c "
-    # Load the signature extractor
-    _func_src=\$(awk '
+    set -euo pipefail
+
+    # Extract _extract_gate_signature from the real script
+    _sig_src=\$(awk '
       /^_extract_gate_signature\(\)/ { in_func=1 }
       in_func { print }
       in_func && /^\}$/ { exit }
     ' '${BATCH_PROCESSOR}')
-    eval \"\$_func_src\"
+    eval \"\$_sig_src\"
 
-    # Circuit-breaker state
+    # Extract _update_gate_breaker_counter from the real script
+    _upd_src=\$(awk '
+      /^_update_gate_breaker_counter\(\)/ { in_func=1 }
+      in_func { print }
+      in_func && /^\}$/ { exit }
+    ' '${BATCH_PROCESSOR}')
+    eval \"\$_upd_src\"
+
+    # Circuit-breaker state (mirrors the main loop's variables)
     _gate_consec_count=0
     _gate_consec_sig=''
     _gate_circuit_tripped=false
     RITE_BATCH_GATE_TRIP=${threshold}
 
-    # Process each findings file in sequence
+    # Process each findings file in sequence, simulating a 'failed' issue.
+    # We pass issue_status='failed' so the function treats it as a gate-failure
+    # candidate (not a non-failure that would reset the streak).
     for _i in \$(seq 0 $((${#json_args[@]} - 1))); do
       _json='${_tmpdir}/gate-findings-'\${_i}'.json'
-
-      # Simulate: this is a 'failed' issue with gate findings
-      _this_sig=\$(_extract_gate_signature \"\$_json\" || true)
-
-      if [ -n \"\$_this_sig\" ]; then
-        if [ \"\$_this_sig\" = \"\$_gate_consec_sig\" ]; then
-          _gate_consec_count=\$((_gate_consec_count + 1))
-        else
-          _gate_consec_sig=\"\$_this_sig\"
-          _gate_consec_count=1
-        fi
-        if [ \"\$RITE_BATCH_GATE_TRIP\" -gt 0 ] && [ \"\$_gate_consec_count\" -ge \"\$RITE_BATCH_GATE_TRIP\" ]; then
-          _gate_circuit_tripped=true
-          echo \"TRIPPED sig=\${_gate_consec_sig}\"
-          exit 0
-        fi
-      else
-        _gate_consec_count=0
-        _gate_consec_sig=''
+      _ret=0
+      _update_gate_breaker_counter \"\$_json\" 'failed' || _ret=\$?
+      if [ \"\$_ret\" -eq 16 ]; then
+        echo \"TRIPPED sig=\${_gate_consec_sig}\"
+        exit 0
       fi
     done
 
@@ -440,61 +456,54 @@ _run_breaker_sequence() {
 }
 
 @test "behavioral: success between identical failures resets the streak" {
-  # Pattern: same-sig fail, then success (empty json → non-failure, no gate findings),
-  # then two more same-sig fails. Breaker must NOT trip (streak resets on success).
-  # We simulate success by skipping the counter update (as the real code does when
-  # issue_status == 'completed').
+  # Pattern: fail(A), success (issue_status=completed → reset), fail(A), fail(A).
+  # After the completed-status reset the streak drops to 0, so the two subsequent
+  # same-sig failures only reach count=2 — no trip.
+  # Drives _update_gate_breaker_counter from the real script directly.
   _tmpdir=$(mktemp -d)
   _same_json='{"lint":[],"tests":[{"file":"tests/unit/shared.bats","test_name":"import fails","reason":"assertion failed"}],"exit_code":1}'
-  _skip_json='{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"no_failures"}'
 
-  # Sequence: fail(A), skip/success(empty sig), fail(A), fail(A)
-  # After success: streak resets to 0; subsequent two same-sig failures only reach count=2
   run bash -c "
-    _func_src=\$(awk '
+    set -euo pipefail
+
+    # Load both helper functions from the real script
+    _sig_src=\$(awk '
       /^_extract_gate_signature\(\)/ { in_func=1 }
       in_func { print }
       in_func && /^\}$/ { exit }
     ' '${BATCH_PROCESSOR}')
-    eval \"\$_func_src\"
+    eval \"\$_sig_src\"
+
+    _upd_src=\$(awk '
+      /^_update_gate_breaker_counter\(\)/ { in_func=1 }
+      in_func { print }
+      in_func && /^\}$/ { exit }
+    ' '${BATCH_PROCESSOR}')
+    eval \"\$_upd_src\"
 
     _gate_consec_count=0
     _gate_consec_sig=''
     _gate_circuit_tripped=false
     RITE_BATCH_GATE_TRIP=3
 
-    # Issue 1: fail with same-sig
-    _json='${_tmpdir}/fail1.json'
-    printf '%s\n' '${_same_json}' > \"\$_json\"
-    _sig=\$(_extract_gate_signature \"\$_json\" || true)
-    if [ -n \"\$_sig\" ]; then
-      _gate_consec_sig=\"\$_sig\"; _gate_consec_count=1
-    fi
+    _fail_json='${_tmpdir}/fail.json'
+    printf '%s\n' '${_same_json}' > \"\$_fail_json\"
 
-    # Issue 2: successful completion → reset streak (the real code checks issue_status)
-    _gate_consec_count=0; _gate_consec_sig=''
+    # Issue 1: fail with same-sig (count=1)
+    _ret=0; _update_gate_breaker_counter \"\$_fail_json\" 'failed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED unexpectedly after issue 1'; exit 1; }
 
-    # Issue 3: fail with same-sig again
-    _sig=\$(_extract_gate_signature \"\$_json\" || true)
-    if [ -n \"\$_sig\" ]; then
-      if [ \"\$_sig\" = \"\$_gate_consec_sig\" ]; then
-        _gate_consec_count=\$((_gate_consec_count + 1))
-      else
-        _gate_consec_sig=\"\$_sig\"; _gate_consec_count=1
-      fi
-    fi
+    # Issue 2: successful completion → _update_gate_breaker_counter resets streak
+    _ret=0; _update_gate_breaker_counter '' 'completed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED unexpectedly after issue 2 (success)'; exit 1; }
 
-    # Issue 4: fail with same-sig again
-    _sig=\$(_extract_gate_signature \"\$_json\" || true)
-    if [ -n \"\$_sig\" ]; then
-      if [ \"\$_sig\" = \"\$_gate_consec_sig\" ]; then
-        _gate_consec_count=\$((_gate_consec_count + 1))
-      else
-        _gate_consec_sig=\"\$_sig\"; _gate_consec_count=1
-      fi
-    fi
+    # Issue 3: fail with same-sig again (count=1, not 2 — reset happened)
+    _ret=0; _update_gate_breaker_counter \"\$_fail_json\" 'failed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED unexpectedly after issue 3'; exit 1; }
 
-    if [ \"\$RITE_BATCH_GATE_TRIP\" -gt 0 ] && [ \"\$_gate_consec_count\" -ge \"\$RITE_BATCH_GATE_TRIP\" ]; then
+    # Issue 4: fail with same-sig again (count=2 — below threshold of 3)
+    _ret=0; _update_gate_breaker_counter \"\$_fail_json\" 'failed' || _ret=\$?
+    if [ \"\$_ret\" -eq 16 ]; then
       echo 'TRIPPED'
     else
       echo \"OK count=\${_gate_consec_count}\"
@@ -533,62 +542,65 @@ _run_breaker_sequence() {
 }
 
 @test "behavioral: empty signature (gate skipped) does not advance the streak" {
-  # A skipped gate produces an empty signature. It must not advance the counter
-  # or reset it — the streak stays unchanged so a later same-sig failure can
-  # still trip the breaker once N true failures accumulate.
+  # A skipped gate produces an empty signature; _update_gate_breaker_counter
+  # resets on empty signature (no parseable gate evidence).
+  # Sequence: fail(A), skipped(empty sig), fail(A), skipped(empty sig), fail(A)
+  # The two skipped entries each reset the streak, so the final count is 1.
+  # Drives _update_gate_breaker_counter from the real script directly.
   _same_json='{"lint":[],"tests":[{"file":"tests/unit/shared.bats","test_name":"import fails","reason":"assertion failed"}],"exit_code":1}'
   _skip_json='{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_timeout"}'
 
-  # Sequence: fail(A), skipped(empty), fail(A), skipped(empty), fail(A)
-  # The two skipped entries contribute nothing — the three A failures still form
-  # a consecutive streak of 3 from the breaker's perspective... BUT:
-  # The real code resets on empty sig. So: fail→skip resets→fail→skip resets→fail
-  # leaves count=1, not 3. The test validates the "empty sig resets streak" rule.
   run bash -c "
-    _func_src=\$(awk '
+    set -euo pipefail
+
+    # Load both helper functions from the real script
+    _sig_src=\$(awk '
       /^_extract_gate_signature\(\)/ { in_func=1 }
       in_func { print }
       in_func && /^\}$/ { exit }
     ' '${BATCH_PROCESSOR}')
-    eval \"\$_func_src\"
+    eval \"\$_sig_src\"
+
+    _upd_src=\$(awk '
+      /^_update_gate_breaker_counter\(\)/ { in_func=1 }
+      in_func { print }
+      in_func && /^\}$/ { exit }
+    ' '${BATCH_PROCESSOR}')
+    eval \"\$_upd_src\"
 
     _gate_consec_count=0
     _gate_consec_sig=''
     _gate_circuit_tripped=false
     RITE_BATCH_GATE_TRIP=3
 
-    # Helper: update counter for one issue
-    update_counter() {
-      local _json=\"\$1\"
-      local _sig
-      _sig=\$(_extract_gate_signature \"\$_json\" || true)
-      if [ -n \"\$_sig\" ]; then
-        if [ \"\$_sig\" = \"\$_gate_consec_sig\" ]; then
-          _gate_consec_count=\$((_gate_consec_count + 1))
-        else
-          _gate_consec_sig=\"\$_sig\"; _gate_consec_count=1
-        fi
-        if [ \"\$RITE_BATCH_GATE_TRIP\" -gt 0 ] && [ \"\$_gate_consec_count\" -ge \"\$RITE_BATCH_GATE_TRIP\" ]; then
-          echo 'TRIPPED'
-          return
-        fi
-      else
-        # Empty sig → reset (no gate evidence)
-        _gate_consec_count=0; _gate_consec_sig=''
-      fi
-    }
-
     _tmpdir=\$(mktemp -d)
     printf '%s\n' '${_same_json}' > \"\$_tmpdir/fail.json\"
     printf '%s\n' '${_skip_json}' > \"\$_tmpdir/skip.json\"
 
-    update_counter \"\$_tmpdir/fail.json\"  # count=1, sig=shared.bats
-    update_counter \"\$_tmpdir/skip.json\"  # empty → reset to count=0
-    update_counter \"\$_tmpdir/fail.json\"  # count=1 again
-    update_counter \"\$_tmpdir/skip.json\"  # empty → reset to count=0
-    update_counter \"\$_tmpdir/fail.json\"  # count=1 again
+    _ret=0
+    # Issue 1: fail → count=1, sig=shared.bats
+    _update_gate_breaker_counter \"\$_tmpdir/fail.json\" 'failed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED after issue 1'; exit 0; }
 
-    echo \"OK count=\${_gate_consec_count}\"
+    # Issue 2: skipped gate (empty sig) → function resets streak to count=0
+    _ret=0; _update_gate_breaker_counter \"\$_tmpdir/skip.json\" 'failed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED after issue 2 (skip)'; exit 0; }
+
+    # Issue 3: fail → count=1 again (not 2 — reset happened)
+    _ret=0; _update_gate_breaker_counter \"\$_tmpdir/fail.json\" 'failed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED after issue 3'; exit 0; }
+
+    # Issue 4: skipped gate (empty sig) → reset again
+    _ret=0; _update_gate_breaker_counter \"\$_tmpdir/skip.json\" 'failed' || _ret=\$?
+    [ \"\$_ret\" -ne 16 ] || { echo 'TRIPPED after issue 4 (skip)'; exit 0; }
+
+    # Issue 5: fail → count=1 once more
+    _ret=0; _update_gate_breaker_counter \"\$_tmpdir/fail.json\" 'failed' || _ret=\$?
+    if [ \"\$_ret\" -eq 16 ]; then
+      echo 'TRIPPED'
+    else
+      echo \"OK count=\${_gate_consec_count}\"
+    fi
   "
 
   [ "$status" -eq 0 ]
