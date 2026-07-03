@@ -440,6 +440,30 @@ claude_provider_dev_session_preamble() {
   local auto_mode="$1"
   local task_description="$2"
 
+  # Test-authoring runbook (project override or built-in) — injected below as
+  # Phase 4 guidance. Mirrors how plan-issues.sh loads docs/issue-runbook.md
+  # for `rite plan`: the project's .rite/ copy wins, else the install-dir doc.
+  # Gated on file existence: absent doc → empty section, prompt unchanged.
+  # All expansions are set -u-safe because tests source this file directly
+  # without config.sh having populated the RITE_* path variables.
+  local _runbook_file=""
+  if [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "${RITE_PROJECT_ROOT}/${RITE_DATA_DIR:-.rite}/test-authoring-runbook.md" ]; then
+    _runbook_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR:-.rite}/test-authoring-runbook.md"
+  elif [ -f "${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md" ]; then
+    _runbook_file="${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md"
+  fi
+  local test_runbook_section=""
+  if [ -n "$_runbook_file" ]; then
+    # CONTRACT (#495, pinned by tests/regression/dev-prompt-no-suite-runs.bats):
+    # this header references the Phase 4 title but must NOT reword the todo line
+    # in the heredoc below — em-dash + parens (not "Phase 4: ...") so the wording
+    # pins keep matching only the real todo title.
+    test_runbook_section="
+**Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check):**
+
+$(cat "$_runbook_file")"
+  fi
+
   cat <<EOF
 You are running inside a **Sharkrite** (CLI: \`rite\`) automated workflow session.
 The workflow tool is called **rite** — not "forge" or any other name.
@@ -466,6 +490,7 @@ Before starting, create a todo list with these items:
 
 Mark each phase as 'in_progress' when you start it, and 'completed' when finished.
 For complex phases, break them into sub-tasks.
+${test_runbook_section}
 EOF
 }
 
