@@ -681,52 +681,140 @@ _tap_plan_deficit() {
   ' "$_tap_file" 2>/dev/null || echo 0
 }
 
-# _extract_notrun_test_names — best-effort names of tests that began but never
-# emitted a result, from the captured bats pretty stream.
-# Args: $1=pretty_capture_file  Stdout: one test name per line (may be empty).
+# _extract_notrun_test_names — names of planned tests that never reported a
+# result. Set difference: planned test descriptions (parsed from the SELECTED
+# .bats files' @test lines) minus descriptions appearing in the TAP report's
+# result lines.
 #
-# bats' pretty formatter updates the current line in place using
-# cursor-to-column CSI moves (ESC[<n>G) instead of newlines while a test runs.
-# A test killed before its result leaves a "begin" fragment (three-space
-# indent + test name) with no matching " ✓ name" / " ✗ name" / " - name"
-# result fragment. Convert the column moves to newlines, strip remaining ANSI,
-# then diff begin names against result names. The `bats warning: Executed...`
-# line shares the three-space indent and is filtered explicitly.
+# The pre-#862 implementation paired begin/result fragments from the captured
+# pretty stream. Under `bats --jobs N` that stream interleaves across workers,
+# so pairing mismatched tests that ran fine — 130 phantom findings for a
+# deficit of 1 (PR #852 gate, 2026-07-03). The TAP report is the authoritative
+# record: every test that reported a result has an `ok N desc` / `not ok N
+# desc` line there; a swallowed test has none. Interleaving cannot corrupt a
+# set difference.
+#
+# Description matching mirrors bats-preprocess (BATS_TEST_PATTERN): the
+# description is the raw @test-line text up to the LAST blank+`{`, with ONE
+# leading and ONE trailing quote char stripped. bats does NOT shell-evaluate
+# it (`\"` stays two characters, `$var` stays literal), so the planned text
+# matches the TAP result text byte-for-byte. TAP directives the formatter
+# appends (` # skip[ reason]`, ` # timeout after Ns`, ` # in N ms` with
+# --timing) are stripped from result lines before comparison.
+#
+# Known imprecision: @test lines embedded in heredocs (test files that
+# generate fixture .bats files) inflate the planned set. That makes the
+# missing count disagree with the TAP deficit, which routes the caller to the
+# capped file-level fallback — degraded naming, never phantom names.
+#
+# Args: $1=tap_results_file  $2=selected-files list (one .bats path per line,
+#       relative to $3)  $3=project_root
+# Stdout: one `<file>\t<description>` line per planned-but-unreported test
+#         (multiset difference — a description shared by K planned tests with
+#         only J<K results yields K-J missing lines). May be empty.
 _extract_notrun_test_names() {
-  local _pretty_file="$1"
-  [ -s "$_pretty_file" ] || return 0
-  local _begins _results _line _name
-  _begins=$(mktemp "/tmp/rite_gate_notrun_b_${PR_NUMBER:-0}_$$_XXXXXX")
-  _results=$(mktemp "/tmp/rite_gate_notrun_r_${PR_NUMBER:-0}_$$_XXXXXX")
-  while IFS= read -r _line; do
-    case "$_line" in
-      " ✓ "*) printf '%s\n' "${_line#" ✓ "}" >> "$_results" ;;
-      " ✗ "*) printf '%s\n' "${_line#" ✗ "}" >> "$_results" ;;
-      " - "*)
-        # Skipped tests render as " - name (skipped[: reason])" — strip the
-        # suffix so the result name matches its begin fragment (otherwise
-        # every skip would false-positive as a not-run test).
-        _name="${_line#" - "}"
-        printf '%s\n' "${_name%% (skipped*}" >> "$_results"
-        ;;
-      "   "*)
-        _name="${_line#   }"
-        case "$_name" in
-          " "*|""|"bats warning:"*) : ;;
-          *) printf '%s\n' "$_name" >> "$_begins" ;;
-        esac
-        ;;
-    esac
-  done < <(awk '{ gsub(/\033\[[0-9;]*G/, "\n"); print }' "$_pretty_file" 2>/dev/null \
-             | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g; s/[[:space:]]*$//' || true)
-  if [ -s "$_begins" ]; then
-    if [ -s "$_results" ]; then
-      grep -Fxv -f "$_results" "$_begins" | sort -u || true
-    else
-      sort -u "$_begins" || true
-    fi
+  local _tap_file="$1" _files_list="$2" _root="$3"
+  [ -s "$_files_list" ] || return 0
+  local _planned _executed _bf _raw _desc
+  _planned=$(mktemp "/tmp/rite_gate_notrun_p_${PR_NUMBER:-0}_$$_XXXXXX")
+  _executed=$(mktemp "/tmp/rite_gate_notrun_x_${PR_NUMBER:-0}_$$_XXXXXX")
+  while IFS= read -r _bf; do
+    [ -z "$_bf" ] && continue
+    [ -f "$_root/$_bf" ] || continue
+    # Greedy BRE mirrors bats' greedy ERE: the capture extends to the LAST
+    # blank+`{` on the line, so descriptions containing `{` survive.
+    while IFS= read -r _raw; do
+      # One leading + one trailing quote char stripped — exactly what
+      # bats-preprocess does (no shell evaluation of the description).
+      _desc="${_raw#[\'\"]}"
+      _desc="${_desc%[\'\"]}"
+      [ -z "$_desc" ] && continue
+      printf '%s\t%s\n' "$_bf" "$_desc" >> "$_planned"
+    done < <(sed -n 's/^[[:blank:]]*@test[[:blank:]]\{1,\}\(.*[^[:blank:]]\)[[:blank:]]\{1,\}{.*$/\1/p' "$_root/$_bf" || true)
+  done < "$_files_list"
+  if [ -f "$_tap_file" ]; then
+    awk '
+      {
+        line = $0
+        if (line ~ /^not ok [0-9]+ /) sub(/^not ok [0-9]+ /, "", line)
+        else if (line ~ /^ok [0-9]+ /) sub(/^ok [0-9]+ /, "", line)
+        else next
+        sub(/ # skip( .*)?$/, "", line)
+        sub(/ # timeout after [0-9]+s$/, "", line)
+        sub(/ # in [0-9]+ ms$/, "", line)
+        print line
+      }
+    ' "$_tap_file" >> "$_executed" 2>/dev/null || true
   fi
-  rm -f "$_begins" "$_results"
+  # Multiset difference: consume one executed slot per matching planned
+  # description; whatever cannot be consumed never reported a result.
+  # FILENAME==ARGV[1] (not NR==FNR) — correct even when executed is empty.
+  awk '
+    FILENAME == ARGV[1] { execd[$0]++; next }
+    {
+      d = $0
+      sub(/^[^\t]*\t/, "", d)
+      if (execd[d] > 0) { execd[d]--; next }
+      print
+    }
+  ' "$_executed" "$_planned" || true
+  rm -f "$_planned" "$_executed"
+  return 0
+}
+
+# _synthesize_notrun_findings — append synthetic `not ok N [tests_not_run] ...`
+# lines to the raw TAP results file, CAPPED at the bats-reported deficit.
+#
+# Cap contract (#862): the finding count can never exceed the deficit. When
+# the set difference resolves exactly deficit-many names, each finding names
+# its test. Any disagreement (dynamic/unparseable descriptions, heredoc
+# inflation, cross-file duplicates) is ambiguous — emit deficit-many findings
+# naming the affected FILE(s) instead. Never phantom test names.
+#
+# Args: $1=tests_raw_file (TAP results; findings APPENDED in place)
+#       $2=selected-files list file (one .bats path per line, relative to $4)
+#       $3=deficit (integer >= 0 from _tap_plan_deficit)
+#       $4=project_root
+#       $5=bats warning text ("Executed X instead of expected Y tests"; may be "")
+# Stdout: one `named=<n> emitted=<m>` summary line for the caller's diag/log.
+_synthesize_notrun_findings() {
+  local _raw_file="$1" _files_list="$2" _deficit="$3" _root="$4" _warning="${5:-}"
+  local _eff="$_deficit" _names="" _missing_count=0 _emitted=0 _named=0 _nn _name
+  # Effective deficit: TAP plan arithmetic first; else derive it from the bats
+  # warning ("Executed X instead of expected Y tests" → Y-X); floor 1 — this
+  # function only runs after bats reported a mismatch, so at least one test is
+  # unaccounted for.
+  if [ "${_eff:-0}" -le 0 ] && [ -n "$_warning" ]; then
+    _eff=$(echo "$_warning" | awk '{ d = $6 - $2; print (d > 0 ? d : 0) }' || true)
+  fi
+  [ -z "$_eff" ] && _eff=0
+  [ "$_eff" -le 0 ] && _eff=1
+  _names=$(_extract_notrun_test_names "$_raw_file" "$_files_list" "$_root")
+  if [ -n "$_names" ]; then
+    _missing_count=$(printf '%s\n' "$_names" | grep -c '.' || true)
+  fi
+  if [ "$_missing_count" -gt 0 ] && [ "$_missing_count" -eq "$_eff" ]; then
+    # Unambiguous: planned-minus-reported resolves exactly deficit-many names.
+    while IFS= read -r _nn; do
+      [ -z "$_nn" ] && continue
+      _name="${_nn#*$'\t'}"
+      _emitted=$(( _emitted + 1 ))
+      printf 'not ok %s [tests_not_run] %s — planned but never reported a result (bats plan/executed mismatch; killed before reporting)\n' \
+        "$_emitted" "$_name" >> "$_raw_file"
+    done <<< "$_names"
+    _named=$_emitted
+  else
+    # Ambiguous — emit deficit-many findings naming the affected file(s).
+    local _files_label
+    _files_label=$(printf '%s\n' "$_names" | cut -f1 | grep -v '^$' | sort -u | paste -sd, - || true)
+    [ -z "$_files_label" ] && _files_label="selected bats file(s)"
+    while [ "$_emitted" -lt "$_eff" ]; do
+      _emitted=$(( _emitted + 1 ))
+      printf 'not ok %s [tests_not_run] planned test in %s never reported a result (%s) — test name unresolvable; check the run log\n' \
+        "$_emitted" "$_files_label" "${_warning:-bats plan/executed mismatch}" >> "$_raw_file"
+    done
+  fi
+  printf 'named=%s emitted=%s\n' "$_named" "$_emitted"
   return 0
 }
 
@@ -1603,8 +1691,12 @@ run_test_gate() {
       _bats_tap_dir=$(mktemp -d "/tmp/rite_gate_tap_${PR_NUMBER:-0}_$$_XXXXXX")
       # Pretty stream is ALSO tee'd into this capture file (streaming to
       # _gate_raw_sink is preserved — tee writes through) so the not-run
-      # detector below can name tests that began but never emitted a result
-      # (issue #804). The TAP report can't: not-run tests write nothing to it.
+      # detector below can spot the literal `bats warning: Executed X instead
+      # of expected Y tests` line (issue #804) — a detection TRIGGER only.
+      # Not-run NAMES are resolved from planned-@test-vs-TAP set difference,
+      # never from this stream: it interleaves across workers under --jobs
+      # and begin/result pairing produced 130 phantom findings for a deficit
+      # of 1 (issue #862).
       _bats_pretty_capture=$(mktemp "/tmp/rite_gate_pretty_${PR_NUMBER:-0}_$$_XXXXXX")
       echo "[test-gate] bats: pretty formatter (terminal) + TAP report (parser)"
     else
@@ -1760,35 +1852,40 @@ run_test_gate() {
     # the captured pretty stream) and emit synthetic not-ok findings, following
     # the synthetic-TAP precedent (workspace_build_failed below).
     if [ "$_tests_exit" -ne 0 ] && [ "$_tests_count" -eq 0 ]; then
-      local _notrun_deficit _notrun_warning="" _notrun_names="" _notrun_named=0
+      local _notrun_deficit _notrun_warning="" _notrun_named=0 _notrun_emitted=0
       _notrun_deficit=$(_tap_plan_deficit "$_tests_raw_file")
       if [ -n "${_bats_pretty_capture:-}" ] && [ -s "${_bats_pretty_capture:-}" ]; then
         _notrun_warning=$(grep -oE 'Executed [0-9]+ instead of expected [0-9]+ tests' \
           "$_bats_pretty_capture" | head -1 || true)
       fi
       if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ]; then
-        if [ -n "${_bats_pretty_capture:-}" ]; then
-          _notrun_names=$(_extract_notrun_test_names "$_bats_pretty_capture")
+        # Not-run names come from a set difference of planned @test
+        # descriptions (from the SELECTED bats files) minus TAP result lines —
+        # never from the pretty stream, which interleaves across workers under
+        # --jobs and mismatched begin/result pairs (130 phantom findings for a
+        # deficit of 1 on PR #852; issue #862). Finding count is capped at the
+        # bats-reported deficit inside _synthesize_notrun_findings.
+        local _notrun_files_list _notrun_summary
+        _notrun_files_list=$(mktemp "/tmp/rite_gate_notrun_f_${PR_NUMBER:-0}_$$_XXXXXX")
+        if [ "$_selection" = "FORCE_FULL" ]; then
+          # Mirror `bats -r tests/`: every .bats file under tests/ was planned.
+          (cd "$project_root" && find tests -name '*.bats' -type f 2>/dev/null | sort) \
+            > "$_notrun_files_list" || true
+        else
+          printf '%s\n' "$_selection" > "$_notrun_files_list"
         fi
-        if [ -n "$_notrun_names" ]; then
-          local _nn
-          while IFS= read -r _nn; do
-            [ -z "$_nn" ] && continue
-            _notrun_named=$(( _notrun_named + 1 ))
-            printf 'not ok %s [tests_not_run] %s — began but never emitted a result (bats plan/executed mismatch; killed before reporting)\n' \
-              "$_notrun_named" "$_nn" >> "$_tests_raw_file"
-          done <<< "$_notrun_names"
+        _notrun_summary=$(_synthesize_notrun_findings "$_tests_raw_file" \
+          "$_notrun_files_list" "$_notrun_deficit" "$project_root" "$_notrun_warning")
+        rm -f "$_notrun_files_list"
+        _notrun_named=$(echo "$_notrun_summary" | grep -oE 'named=[0-9]+' | cut -d= -f2 || true)
+        _notrun_emitted=$(echo "$_notrun_summary" | grep -oE 'emitted=[0-9]+' | cut -d= -f2 || true)
+        if [ "${_notrun_named:-0}" -gt 0 ]; then
           echo "[test-gate] bats: ${_notrun_named} planned test(s) never ran (${_notrun_warning:-plan/executed mismatch}) — emitting synthetic tests_not_run finding(s)"
         else
-          # Names unidentifiable (e.g. TAP-fallback bats without a pretty
-          # capture) — emit ONE synthetic finding carrying the deficit so the
-          # fix loop still gets a nameable, blocking item.
-          printf 'not ok 1 [tests_not_run] %s planned bats test(s) never ran (%s) — no per-test names identifiable; check the run log\n' \
-            "$_notrun_deficit" "${_notrun_warning:-plan/executed mismatch}" >> "$_tests_raw_file"
-          echo "[test-gate] bats: plan/executed mismatch with no parseable failures — emitting synthetic tests_not_run finding"
+          echo "[test-gate] bats: plan/executed mismatch with unresolvable test names — emitting ${_notrun_emitted:-0} synthetic tests_not_run finding(s) capped at the reported deficit"
         fi
         _gate_reason="tests_not_run"
-        _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=${_notrun_named} pr=${PR_NUMBER:-?}"
+        _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=${_notrun_named:-0} emitted=${_notrun_emitted:-0} pr=${PR_NUMBER:-?}"
         _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
       fi
     fi

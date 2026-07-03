@@ -2,22 +2,37 @@
 # sharkrite-test-covers: lib/utils/test-gate.sh, tests/regression/batch-locked-issue-in-progress-status.bats
 #
 # Regression tests: gate observability for bats plan-vs-executed mismatch
-# (issue #804, PR #828's four blind fix rounds).
+# (issue #804, PR #828's four blind fix rounds) and the not-run name
+# extraction rewrite (issue #862, PR #852's 130 phantom findings).
 #
 # bats-core 1.13 exits non-zero when fewer tests execute than the 1..N plan
 # even with 0 reported failures, and a test killed before emitting its result
-# writes NOTHING to report.tap. Before the fix, the gate reported exit_code=1
+# writes NOTHING to report.tap. Before #804, the gate reported exit_code=1
 # with test_count=0 — a blocking gate with zero nameable findings. The gate
-# now detects the mismatch (TAP plan deficit + the "Executed X instead of
-# expected Y" warning in the captured pretty stream), emits synthetic
-# [tests_not_run] not-ok findings naming the not-run tests when identifiable,
-# and records reason=tests_not_run in the gate JSON.
+# detects the mismatch (TAP plan deficit + the "Executed X instead of
+# expected Y" warning in the captured pretty stream) and emits synthetic
+# [tests_not_run] not-ok findings.
+#
+# #862 rewrote HOW the not-run names are resolved. The #840 extractor paired
+# begin/result fragments from the captured pretty stream — under `--jobs N`
+# that stream interleaves across workers, mismatching tests that ran fine
+# (live: deficit 1 → 130 phantom findings, PR #852 gate 2026-07-03). Names
+# now come from a set difference: planned @test descriptions (parsed from the
+# SELECTED .bats files) minus descriptions in report.tap result lines. The
+# synthetic finding count is CAPPED at the bats-reported deficit; when name
+# resolution is ambiguous the gate emits deficit-many findings naming the
+# affected file(s) — never phantom test names.
 #
 # The live swallow requires a CONJUNCTION (spec 2x2 matrix): a bats file whose
 # setup() leaks `set -euo pipefail` into the bats-exec-test shell AND
 # BATS_TEST_TIMEOUT set (the gate exports it). Then a failing test triggers
 # bats_kill_processes_of's untolerated `kill` (bats-exec-test:263) under the
 # leaked errexit, killing bats-exec-test before the `not ok` line is emitted.
+#
+# NOTE on fixtures: runtime-generated .bats files are written with printf,
+# never heredocs — bats-preprocess rewrites heredoc-embedded @test lines into
+# bats_test_function calls, which would leave the generated fixture without
+# the literal @test lines the planned-set parser reads.
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -68,33 +83,170 @@ EOF
 }
 
 # =============================================================================
-# UNIT: _extract_notrun_test_names (pretty-stream begin-without-result)
+# UNIT: _extract_notrun_test_names (planned-vs-TAP set difference, #862)
 # =============================================================================
 
-@test "unit: _extract_notrun_test_names names the begin-without-result test" {
-  _pf="$BATS_TEST_TMPDIR/pretty.out"
-  # Reproduce the real bats -F pretty in-place-update stream: cursor-to-column
-  # CSI moves (ESC[<n>G) separate begin/result fragments on one physical line.
-  printf '\033[34;1mswallow.bats\n' > "$_pf"
-  printf '\033[0m\033[1G   first passes\033[K\033[77G1/3\033[2G\033[1G \342\234\223 first passes\033[K\n' >> "$_pf"
-  printf '\033[0m\033[1G   second swallowed\033[K\033[77G2/3\033[2G\033[1G   third passes\033[K\033[77G3/3\033[2G\033[1G \342\234\223 third passes\033[K\n' >> "$_pf"
-  printf '\033[0m   bats warning: Executed 2 instead of expected 3 tests\n' >> "$_pf"
-  run _extract_notrun_test_names "$_pf"
+@test "unit: _extract_notrun_test_names names the swallowed test by planned-vs-TAP set difference" {
+  _root="$BATS_TEST_TMPDIR/sd-root"
+  mkdir -p "$_root/tests"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "first passes" { true; }\n'
+    printf '@test "second swallowed" { false; }\n'
+    printf '@test "third passes" { true; }\n'
+  } > "$_root/tests/swallow.bats"
+  _tap="$BATS_TEST_TMPDIR/sd.tap"
+  printf '1..3\nok 1 first passes\nok 3 third passes\n' > "$_tap"
+  _fl="$BATS_TEST_TMPDIR/sd.files"
+  printf 'tests/swallow.bats\n' > "$_fl"
+  run _extract_notrun_test_names "$_tap" "$_fl" "$_root"
   [ "$status" -eq 0 ]
-  [ "$output" = "second swallowed" ]
+  [ "$output" = "$(printf 'tests/swallow.bats\tsecond swallowed')" ]
 }
 
 @test "unit: _extract_notrun_test_names does not false-positive on skipped tests" {
-  _pf="$BATS_TEST_TMPDIR/pretty-skip.out"
-  # Skipped tests render as " - name (skipped: reason)" — the suffix must be
-  # stripped when matching results against begins.
-  printf '\033[34;1mskipmix.bats\n' > "$_pf"
-  printf '\033[0m\033[1G   b skipped\033[K\033[77G1/2\033[2G\033[1G - b skipped (skipped: why)\033[K\n' >> "$_pf"
-  printf '\033[0m\033[1G   c swallowed\033[K\033[77G2/2\033[2G\n' >> "$_pf"
-  printf '   bats warning: Executed 1 instead of expected 2 tests\n' >> "$_pf"
-  run _extract_notrun_test_names "$_pf"
+  # Skipped tests DO write a result line to report.tap (`ok N name # skip
+  # [reason]`) — the directive must be stripped before comparison, otherwise
+  # every skip would show up as a not-run test.
+  _root="$BATS_TEST_TMPDIR/skip-root"
+  mkdir -p "$_root/tests"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "b skipped" { skip "why"; }\n'
+    printf '@test "c swallowed" { false; }\n'
+  } > "$_root/tests/skipmix.bats"
+  _tap="$BATS_TEST_TMPDIR/skip.tap"
+  printf '1..2\nok 1 b skipped # skip why\n' > "$_tap"
+  _fl="$BATS_TEST_TMPDIR/skip.files"
+  printf 'tests/skipmix.bats\n' > "$_fl"
+  run _extract_notrun_test_names "$_tap" "$_fl" "$_root"
   [ "$status" -eq 0 ]
-  [ "$output" = "c swallowed" ]
+  [ "$output" = "$(printf 'tests/skipmix.bats\tc swallowed')" ]
+}
+
+@test "unit: _extract_notrun_test_names matches bats' verbatim descriptions (escapes kept literal)" {
+  # bats-preprocess strips ONE leading and ONE trailing quote char and does
+  # NOT shell-evaluate the description — `\"` stays two characters in both
+  # the registered name and the TAP result line. The planned-set parser must
+  # mirror that, or every escaped description would false-positive.
+  _root="$BATS_TEST_TMPDIR/esc-root"
+  mkdir -p "$_root/tests"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "handles \\"quoted\\" args" { true; }\n'
+    printf "@test 'single quoted' { true; }\n"
+    printf '@test "swallowed one" { false; }\n'
+  } > "$_root/tests/esc.bats"
+  _tap="$BATS_TEST_TMPDIR/esc.tap"
+  printf '1..3\nok 1 handles \\"quoted\\" args\nok 2 single quoted\n' > "$_tap"
+  _fl="$BATS_TEST_TMPDIR/esc.files"
+  printf 'tests/esc.bats\n' > "$_fl"
+  run _extract_notrun_test_names "$_tap" "$_fl" "$_root"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'tests/esc.bats\tswallowed one')" ]
+}
+
+# =============================================================================
+# UNIT: _synthesize_notrun_findings (deficit cap, #862)
+# =============================================================================
+
+@test "unit: interleaved-parallel fixture — deficit 1 yields exactly 1 finding (130-for-1 regression)" {
+  # Reproduces the PR #852 shape: two parallel worker files, 131 planned
+  # tests, 130 reported, deficit 1. The report formatter's merged TAP has the
+  # workers' results interleaved and out of order — the old pretty-stream
+  # begin/result pairing produced 130 phantom findings here; the set
+  # difference must yield exactly the 1 swallowed test.
+  _root="$BATS_TEST_TMPDIR/ilv-root"
+  mkdir -p "$_root/tests"
+  _fa="$_root/tests/par-a.bats"
+  _fb="$_root/tests/par-b.bats"
+  printf '#!/usr/bin/env bats\n' > "$_fa"
+  printf '#!/usr/bin/env bats\n' > "$_fb"
+  _i=1
+  while [ "$_i" -le 66 ]; do
+    if [ "$_i" -eq 33 ]; then
+      printf '@test "worker a test 33 swallowed mid flight" { false; }\n' >> "$_fa"
+    else
+      printf '@test "worker a test %s" { true; }\n' "$_i" >> "$_fa"
+    fi
+    _i=$(( _i + 1 ))
+  done
+  _i=1
+  while [ "$_i" -le 65 ]; do
+    printf '@test "worker b test %s" { true; }\n' "$_i" >> "$_fb"
+    _i=$(( _i + 1 ))
+  done
+  # Merged TAP: single 1..131 plan, 130 result lines alternating between
+  # workers, worker a's in REVERSE order — only test a/33 never reported.
+  _raw="$BATS_TEST_TMPDIR/ilv.tap"
+  printf '1..131\n' > "$_raw"
+  _n=1
+  _i=1
+  while [ "$_i" -le 66 ]; do
+    _j=$(( 67 - _i ))
+    if [ "$_j" -ne 33 ]; then
+      printf 'ok %s worker a test %s\n' "$_n" "$_j" >> "$_raw"
+      _n=$(( _n + 1 ))
+    fi
+    if [ "$_i" -le 65 ]; then
+      printf 'ok %s worker b test %s\n' "$_n" "$_i" >> "$_raw"
+      _n=$(( _n + 1 ))
+    fi
+    _i=$(( _i + 1 ))
+  done
+  # Fixture sanity: bats' arithmetic sees exactly a deficit of 1.
+  run _tap_plan_deficit "$_raw"
+  [ "$output" = "1" ]
+
+  _fl="$BATS_TEST_TMPDIR/ilv.files"
+  printf 'tests/par-a.bats\ntests/par-b.bats\n' > "$_fl"
+  run _synthesize_notrun_findings "$_raw" "$_fl" 1 "$_root" "Executed 130 instead of expected 131 tests"
+  [ "$status" -eq 0 ]
+  [ "$output" = "named=1 emitted=1" ]
+  # Exactly ONE synthetic finding — not 130 — and it names the real test.
+  [ "$(grep -c '\[tests_not_run\]' "$_raw")" -eq 1 ]
+  grep -q '\[tests_not_run\] worker a test 33 swallowed mid flight' "$_raw"
+}
+
+@test "unit: ambiguous name resolution emits deficit-many findings naming the file, never phantom test names" {
+  # TAP descriptions that do not match any planned @test line (e.g.
+  # BATS_TEST_NAME_PREFIX, heredoc-inflated planned sets) make the missing
+  # count disagree with the deficit. The gate must then emit exactly
+  # deficit-many findings labeled with the affected file — no planned name
+  # may leak into a finding it cannot prove not-run.
+  _root="$BATS_TEST_TMPDIR/amb-root"
+  mkdir -p "$_root/tests"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "alpha" { true; }\n'
+    printf '@test "beta" { true; }\n'
+    printf '@test "gamma" { false; }\n'
+  } > "$_root/tests/dyn.bats"
+  _raw="$BATS_TEST_TMPDIR/amb.tap"
+  printf '1..3\nok 1 pfx alpha\nok 2 pfx beta\n' > "$_raw"
+  _fl="$BATS_TEST_TMPDIR/amb.files"
+  printf 'tests/dyn.bats\n' > "$_fl"
+  run _synthesize_notrun_findings "$_raw" "$_fl" 1 "$_root" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "named=0 emitted=1" ]
+  [ "$(grep -c '\[tests_not_run\]' "$_raw")" -eq 1 ]
+  grep -q '\[tests_not_run\] planned test in tests/dyn.bats never reported a result' "$_raw"
+  ! grep -E '\[tests_not_run\].*(alpha|beta|gamma)' "$_raw"
+}
+
+@test "unit: _synthesize_notrun_findings derives the cap from the bats warning when TAP deficit is 0" {
+  # TAP-fallback path: no report.tap arithmetic, only the pretty-stream
+  # warning. Cap = expected - executed; with no resolvable files the label
+  # falls back to the generic one.
+  _raw="$BATS_TEST_TMPDIR/warn.tap"
+  : > "$_raw"
+  _fl="$BATS_TEST_TMPDIR/warn.files"
+  : > "$_fl"
+  run _synthesize_notrun_findings "$_raw" "$_fl" 0 "$BATS_TEST_TMPDIR" "Executed 280 instead of expected 283 tests"
+  [ "$status" -eq 0 ]
+  [ "$output" = "named=0 emitted=3" ]
+  [ "$(grep -c '\[tests_not_run\]' "$_raw")" -eq 3 ]
+  grep -q 'planned test in selected bats file(s) never reported a result' "$_raw"
 }
 
 # =============================================================================
@@ -102,7 +254,7 @@ EOF
 # =============================================================================
 
 @test "unit: _parse_bats_failure_line emits reason tests_not_run for synthetic marker lines" {
-  run _parse_bats_failure_line 'not ok 1 [tests_not_run] some test — began but never emitted a result'
+  run _parse_bats_failure_line 'not ok 1 [tests_not_run] some test — planned but never reported a result'
   [ "$status" -eq 0 ]
   [[ "$output" == *'"reason":"tests_not_run"'* ]]
   [[ "$output" == *'[tests_not_run] some test'* ]]
@@ -135,15 +287,16 @@ EOF
   # Swallow fixture per the spec 2x2 matrix: setup() sources a file that sets
   # `set -euo pipefail` (leaks into bats-exec-test); the gate itself exports
   # BATS_TEST_TIMEOUT; the failing test then gets killed before `not ok`.
+  # printf-written (not heredoc — see file header note on bats-preprocess).
   printf 'set -euo pipefail\n' > "$_repo/tests/strict-env.sh"
-  cat > "$_repo/tests/swallow-fixture.bats" <<'EOF'
-#!/usr/bin/env bats
-# sharkrite-test-covers: tests/strict-env.sh
-setup() { source "$BATS_TEST_DIRNAME/strict-env.sh"; }
-@test "passes before" { true; }
-@test "fails and is swallowed by leaked errexit plus timeout" { false; }
-@test "passes after" { true; }
-EOF
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '# sharkrite-test-covers: tests/strict-env.sh\n'
+    printf 'setup() { source "$BATS_TEST_DIRNAME/strict-env.sh"; }\n'
+    printf '@test "passes before" { true; }\n'
+    printf '@test "fails and is swallowed by leaked errexit plus timeout" { false; }\n'
+    printf '@test "passes after" { true; }\n'
+  } > "$_repo/tests/swallow-fixture.bats"
   (cd "$_repo" && git add -A && git commit -qm fixture) || return 1
 
   # --- Probe: does this bats version actually swallow? ---
@@ -194,9 +347,17 @@ EOF
     return 1
   }
   [ "$(jq -r '.exit_code' "$_out")" = "1" ]
-  # The swallowed test is named (pretty-stream begin-without-result).
+  # The swallowed test is named via the planned-vs-TAP set difference (#862).
   jq -r '.tests[].test_name' "$_out" | grep -q "swallowed" || {
     echo "FAIL: synthetic finding does not name the swallowed test:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+  # Deficit cap (#862): exactly ONE not-run finding for a deficit of 1 —
+  # never the 130-for-1 phantom flood.
+  _notrun_len=$(jq '[.tests[] | select(.reason == "tests_not_run")] | length' "$_out")
+  [ "${_notrun_len:-0}" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 tests_not_run finding for deficit 1, got ${_notrun_len}:" >&2
     cat "$_out" >&2
     return 1
   }
