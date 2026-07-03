@@ -124,26 +124,56 @@ EOF
   [ "$output" = "$(printf 'tests/skipmix.bats\tc swallowed')" ]
 }
 
-@test "unit: _extract_notrun_test_names matches bats' verbatim descriptions (escapes kept literal)" {
-  # bats-preprocess strips ONE leading and ONE trailing quote char and does
-  # NOT shell-evaluate the description — `\"` stays two characters in both
-  # the registered name and the TAP result line. The planned-set parser must
-  # mirror that, or every escaped description would false-positive.
+@test "unit: _extract_notrun_test_names unescapes double-quoted descriptions (bats shell-evaluates them)" {
+  # bats DOES shell-evaluate double-quoted descriptions when sourcing the
+  # preprocessed file (verified on bats 1.13.0): source text `handles
+  # \"quoted\" args` appears in report.tap as `handles "quoted" args`, and
+  # `\$5` as `$5`. Single-quoted descriptions stay literal. The planned-set
+  # parser must mirror this or every escaped description false-positives as
+  # not-run (2026-07-03 review finding on #862).
   _root="$BATS_TEST_TMPDIR/esc-root"
   mkdir -p "$_root/tests"
   {
     printf '#!/usr/bin/env bats\n'
     printf '@test "handles \\"quoted\\" args" { true; }\n'
+    printf '@test "costs \\$5 total" { true; }\n'
     printf "@test 'single quoted' { true; }\n"
     printf '@test "swallowed one" { false; }\n'
   } > "$_root/tests/esc.bats"
   _tap="$BATS_TEST_TMPDIR/esc.tap"
-  printf '1..3\nok 1 handles \\"quoted\\" args\nok 2 single quoted\n' > "$_tap"
+  # TAP written in REAL bats output form: escapes already collapsed.
+  {
+    printf '1..4\n'
+    printf 'ok 1 handles "quoted" args\n'
+    printf 'ok 2 costs $5 total\n'
+    printf 'ok 3 single quoted\n'
+  } > "$_tap"
   _fl="$BATS_TEST_TMPDIR/esc.files"
   printf 'tests/esc.bats\n' > "$_fl"
   run _extract_notrun_test_names "$_tap" "$_fl" "$_root"
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf 'tests/esc.bats\tswallowed one')" ]
+}
+
+@test "unit: escaped descriptions verified against REAL bats TAP output" {
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  # Ground truth: run real bats on an escaped-description file and feed its
+  # actual report.tap to the extractor — zero tests may classify as not-run.
+  _root="$BATS_TEST_TMPDIR/real-esc"
+  mkdir -p "$_root/tests" "$_root/tap"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "handles \\"quoted\\" args" { true; }\n'
+    printf '@test "costs \\$5 total" { true; }\n'
+  } > "$_root/tests/real.bats"
+  ( cd "$_root" && BATS_REPORT_FILENAME=report.tap \
+      bats --report-formatter tap --output "$_root/tap" tests/real.bats >/dev/null 2>&1 ) || true
+  [ -s "$_root/tap/report.tap" ] || skip "bats --report-formatter unavailable"
+  _fl="$BATS_TEST_TMPDIR/real.files"
+  printf 'tests/real.bats\n' > "$_fl"
+  run _extract_notrun_test_names "$_root/tap/report.tap" "$_fl" "$_root"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 # =============================================================================

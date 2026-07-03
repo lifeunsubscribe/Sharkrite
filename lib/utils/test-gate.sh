@@ -686,21 +686,27 @@ _tap_plan_deficit() {
 # .bats files' @test lines) minus descriptions appearing in the TAP report's
 # result lines.
 #
-# The pre-#862 implementation paired begin/result fragments from the captured
-# pretty stream. Under `bats --jobs N` that stream interleaves across workers,
-# so pairing mismatched tests that ran fine — 130 phantom findings for a
-# deficit of 1 (PR #852 gate, 2026-07-03). The TAP report is the authoritative
-# record: every test that reported a result has an `ok N desc` / `not ok N
-# desc` line there; a swallowed test has none. Interleaving cannot corrupt a
-# set difference.
+# The pre-#862 implementation drew names from the captured pretty stream,
+# whose begin fragments the formatter TRUNCATES at terminal width with `...`
+# — truncated begins never exact-matched full result names, yielding 130
+# phantom findings for a deficit of 1 (PR #852 gate, 2026-07-03; every
+# phantom name in that log carries a `...` suffix). The TAP report is the
+# authoritative record: every test that reported a result has an `ok N desc`
+# / `not ok N desc` line there; a swallowed test has none. Names here come
+# only from TAP + on-disk sources, never from the display stream, and the
+# caller caps emission at the bats-reported deficit — so ANY residual
+# corruption mechanism is bounded.
 #
 # Description matching mirrors bats-preprocess (BATS_TEST_PATTERN): the
 # description is the raw @test-line text up to the LAST blank+`{`, with ONE
-# leading and ONE trailing quote char stripped. bats does NOT shell-evaluate
-# it (`\"` stays two characters, `$var` stays literal), so the planned text
-# matches the TAP result text byte-for-byte. TAP directives the formatter
-# appends (` # skip[ reason]`, ` # timeout after Ns`, ` # in N ms` with
-# --timing) are stripped from result lines before comparison.
+# leading and ONE trailing quote char stripped. bats DOES shell-evaluate
+# double-quoted descriptions when sourcing the preprocessed file (verified on
+# bats 1.13.0 via report.tap bytes and BATS_TEST_DESCRIPTION): `\"` `\$`
+# `` \` `` `\\` collapse to the bare character. Planned descriptions from
+# double-quoted @test lines are therefore unescaped the same way before the
+# set difference; single-quoted descriptions stay literal. TAP directives the
+# formatter appends (` # skip[ reason]`, ` # timeout after Ns`, ` # in N ms`
+# with --timing) are stripped from result lines before comparison.
 #
 # Known imprecision: @test lines embedded in heredocs (test files that
 # generate fixture .bats files) inflate the planned set. That makes the
@@ -724,10 +730,27 @@ _extract_notrun_test_names() {
     # Greedy BRE mirrors bats' greedy ERE: the capture extends to the LAST
     # blank+`{` on the line, so descriptions containing `{` survive.
     while IFS= read -r _raw; do
-      # One leading + one trailing quote char stripped — exactly what
-      # bats-preprocess does (no shell evaluation of the description).
-      _desc="${_raw#[\'\"]}"
-      _desc="${_desc%[\'\"]}"
+      # Strip one leading + one trailing quote char (what bats-preprocess
+      # does), then mirror bats' shell evaluation of the description text:
+      # double-quoted descriptions collapse \" \$ \` \\ to the bare char
+      # (single-pass, left-to-right — matches double-quote semantics);
+      # single-quoted descriptions are literal.
+      case "$_raw" in
+        \"*)
+          _desc="${_raw#\"}"
+          _desc="${_desc%\"}"
+          case "$_desc" in
+            *\\*) _desc=$(printf '%s\n' "$_desc" | sed 's/\\\([\\"$`]\)/\1/g') ;;
+          esac
+          ;;
+        \'*)
+          _desc="${_raw#\'}"
+          _desc="${_desc%\'}"
+          ;;
+        *)
+          _desc="$_raw"
+          ;;
+      esac
       [ -z "$_desc" ] && continue
       printf '%s\t%s\n' "$_bf" "$_desc" >> "$_planned"
     done < <(sed -n 's/^[[:blank:]]*@test[[:blank:]]\{1,\}\(.*[^[:blank:]]\)[[:blank:]]\{1,\}{.*$/\1/p' "$_root/$_bf" || true)
@@ -1694,7 +1717,9 @@ run_test_gate() {
       # detector below can spot the literal `bats warning: Executed X instead
       # of expected Y tests` line (issue #804) — a detection TRIGGER only.
       # Not-run NAMES are resolved from planned-@test-vs-TAP set difference,
-      # never from this stream: it interleaves across workers under --jobs
+      # never from this stream: the pretty formatter truncates begin lines
+      # at terminal width (the 130-phantom mechanism, PR #852) and it
+      # interleaves across workers under --jobs
       # and begin/result pairing produced 130 phantom findings for a deficit
       # of 1 (issue #862).
       _bats_pretty_capture=$(mktemp "/tmp/rite_gate_pretty_${PR_NUMBER:-0}_$$_XXXXXX")
@@ -1861,7 +1886,8 @@ run_test_gate() {
       if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ]; then
         # Not-run names come from a set difference of planned @test
         # descriptions (from the SELECTED bats files) minus TAP result lines —
-        # never from the pretty stream, which interleaves across workers under
+        # never from the pretty stream, whose width-truncated begin lines
+        # produced the 130-phantom event (PR #852) and which interleaves under
         # --jobs and mismatched begin/result pairs (130 phantom findings for a
         # deficit of 1 on PR #852; issue #862). Finding count is capped at the
         # bats-reported deficit inside _synthesize_notrun_findings.
