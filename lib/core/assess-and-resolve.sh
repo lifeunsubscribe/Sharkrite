@@ -328,6 +328,69 @@ _resolve_done_def() {
 }
 
 # ---------------------------------------------------------------------------
+# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT
+#
+# Posts a minimal assessment PR comment (RITE_MARKER_ASSESSMENT marker)
+# containing the [GATE] ACTIONABLE_NOW items, for the fallback branch where
+# the LLM assessment failed but the post-commit gate has blocking findings.
+#
+# WHY (issue #821; LeadFlow #435/#431 same night): claude-workflow.sh
+# FIX_REVIEW_MODE reads the assessment EXCLUSIVELY from the PR comment when a
+# PR number is passed — the stdin fallback only exists when no PR number is
+# given. The normal comment-posting step lives in assess-review-issues.sh
+# (~line 796) and is only reached on the successful-LLM path, so this
+# fallback must post its own comment before exiting 2 or fix mode dies with
+# "No assessment found".
+#
+# Body format mirrors assess-review-issues.sh's ASSESSMENT_COMMENT: marker
+# line, header, Summary block, `---` separator, then the items. The `---`
+# separator is load-bearing: fix mode strips everything before it, then its
+# awk extraction parses the `### ... - ACTIONABLE_NOW` headers from the rest.
+#
+# Returns 0 when posted; 1 when the post failed (after printing a loud
+# warning). Caller must still exit 2 either way — objective gate failures
+# force the fix loop regardless of whether the comment landed.
+# ---------------------------------------------------------------------------
+_post_gate_fallback_assessment_comment() {
+  local _pr_number="$1"
+  local _gate_items="$2"
+  local _gate_count="$3"
+  local _ts _comment _body_file
+
+  _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  _comment="<!-- ${RITE_MARKER_ASSESSMENT} pr:${_pr_number} iteration:1 timestamp:${_ts} -->
+
+## 🔍 Sharkrite Assessment
+
+**PR:** #${_pr_number}
+**Assessed:** ${_ts}
+**Model:** none (LLM assessment failed — gate findings only)
+
+### Summary
+- **ACTIONABLE_NOW:** ${_gate_count} items (fix in this PR)
+- **ACTIONABLE_LATER:** 0 items (tech-debt)
+- **DISMISSED:** 0 items (not actionable)
+
+---
+
+${_gate_items}"
+
+  print_status "Posting gate-findings assessment comment to PR #${_pr_number}..."
+  _body_file=$(mktemp)
+  printf '%s' "$_comment" > "$_body_file"
+  if gh_safe pr comment "$_pr_number" --body-file "$_body_file" >/dev/null 2>&1; then
+    print_success "Gate-findings assessment posted to PR #${_pr_number}"
+    rm -f "$_body_file"
+    return 0
+  fi
+  rm -f "$_body_file"
+  print_warning "FAILED to post gate-findings assessment comment to PR #${_pr_number}"
+  print_warning "Fix mode reads the assessment from the PR comment — without it, fix mode will fail with 'No assessment found'"
+  print_warning "After resolving gh connectivity, re-run: rite ${ISSUE_NUMBER:-$_pr_number} --assess-and-fix"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
 # _resolve_priority_label, _resolve_done_def) without executing the script body
@@ -1390,6 +1453,11 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       ACTIONABLE_NOW_COUNT="$GATE_NOW_COUNT"
       ACTIONABLE_LATER_COUNT=0
       DISMISSED_COUNT=0
+      # Contract (#821): fix mode fetches the assessment from the PR comment
+      # when invoked with a PR number — the fd-3 echo below alone is invisible
+      # to it. Post the minimal assessment comment before exiting 2; on post
+      # failure still exit 2 (the helper prints the loud warning).
+      _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" || true
       echo "$ASSESSMENT_RESULT" >&3
       exit 2
     fi
