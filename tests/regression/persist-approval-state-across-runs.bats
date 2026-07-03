@@ -232,7 +232,15 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "concurrent add_approved_blocker calls produce valid durable JSON" {
-  local num_processes=4
+  # Two concurrent writers is the minimum that exercises the durable-file lock's
+  # mutual exclusion: without the lock, both read the same base state and the
+  # second mv clobbers the first, dropping an approval — caught below by the
+  # "all approvals present" check. The shared-lock contention (each acquire polls
+  # at 1s granularity, session-tracker.sh) scales with writer count; 4 writers
+  # blew the serial-group budget under --jobs 8 saturation, so keep this at the
+  # 2-writer floor. The durable lock's correctness itself is proven in lock.sh
+  # (#706); this is a regression guard, not a discovery stress test. Issue #878.
+  local num_processes=2
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
   mkdir -p "$exit_codes_dir"
 

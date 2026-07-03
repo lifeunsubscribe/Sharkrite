@@ -44,6 +44,15 @@ setup() {
   export AUTO_MODE=true
   export RITE_ORCHESTRATED=false
   export RITE_TEST_GATE_SKIP=false
+  # Disable the LLM auto-fix session (bats-suite convention — see
+  # claude-workflow.sh:673 and dev-gate-skip-when-orchestrated.bats). The mock
+  # repo's pytest run fails by design here (we exercise venv *bootstrap*, not a
+  # real suite); with auto-fix on, _run_dev_test_gate fires a real Claude agentic
+  # session on that failure. That session — not the pip shim — was the true cost
+  # and flake source: it drove the whole file ~9s -> ~94s and made the hanging-pip
+  # timing assertion fail non-deterministically (48s one run, 88s the next).
+  # Issue #878.
+  export RITE_TEST_GATE_AUTOFIX=false
 
   # Create a temporary bin directory for our shims.
   # Tests that need to intercept the bootstrap (no pre-existing venv) add
@@ -203,7 +212,9 @@ SHIMEOF
   # gate indefinitely when timeout/gtimeout is available.
   #
   # Strategy: set RITE_PIP_INSTALL_TIMEOUT=1 and inject a pip shim that sleeps
-  # 30 seconds.  run_with_timeout should kill it before it completes.
+  # 5 seconds — longer than the 1-second cap so run_with_timeout kills it
+  # mid-sleep, but a bounded blast radius if a kill ever races under load
+  # (was 30s; #878 caps shim sleeps at <=5s).
   # Skip if neither timeout nor gtimeout is on PATH — the bounding protection is a
   # no-op without the binary (the gate runs pip directly). The behavior on a
   # coreutils-less host is covered by the separate
@@ -221,15 +232,16 @@ SHIMEOF
   REAL_PYTHON3=$(which python3)
   export RITE_PIP_INSTALL_TIMEOUT=1
 
-  # python3 shim: build a fake venv whose pip sleeps 30 seconds (simulates wedge)
+  # python3 shim: build a fake venv whose pip sleeps 5 seconds (simulates wedge)
   cat > "$SHIM_DIR/python3" <<SHIMEOF
 #!/bin/bash
 if [[ "\$*" == *"-m venv"* ]]; then
   mkdir -p .venv/bin
-  # Pip shim: sleeps 30 s — far longer than the 1-second cap
+  # Pip shim: sleeps 5 s — longer than the 1-second cap so the kill lands
+  # mid-sleep, bounded blast radius if the kill ever races (was 30s; #878).
   cat > .venv/bin/pip <<'PIPEOF'
 #!/bin/bash
-sleep 30
+sleep 5
 exit 0
 PIPEOF
   chmod +x .venv/bin/pip
@@ -246,7 +258,10 @@ SHIMEOF
   chmod +x "$SHIM_DIR/python3"
   export PATH="$SHIM_DIR:$PATH"
 
-  # Run and measure elapsed time — should return well under 30 seconds
+  # Run and measure elapsed time — with the 1s cap the kill lands fast, so the
+  # gate returns in ~3s. If the run_with_timeout wrapper were ever removed, the
+  # two 5s shim sleeps (base + dev install) would sum to >=10s and trip the
+  # assertion below — that is the regression this guards.
   _start=$(date +%s)
   run _run_dev_test_gate
   _end=$(date +%s)
