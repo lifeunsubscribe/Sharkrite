@@ -60,6 +60,104 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 # Summary computation + stats-output functions (sourceable by regression tests)
 source "$_SCRIPT_DIR/batch-reporter.sh"
 
+# _extract_gate_signature <json_file>
+# Extract the circuit-breaker fingerprint from a gate-findings JSON file.
+# Returns the sorted unique set of failing test/lint files joined by commas,
+# or an empty string when the gate was skipped or produced no parseable findings.
+# An empty signature is treated as "no gate evidence" — it does NOT advance
+# the consecutive-failure counter so non-gate failures don't count toward the trip.
+_extract_gate_signature() {
+  local json_file="${1:-}"
+  [ -f "$json_file" ] || { printf ''; return 0; }
+  # Skipped gates (missing runner, gate_timeout, etc.) carry no signal.
+  local _skipped
+  _skipped=$(jq -r '.skipped // "false"' "$json_file" 2>/dev/null || echo "false")
+  if [ "$_skipped" = "true" ]; then
+    printf ''
+    return 0
+  fi
+  # Sorted unique file paths from both tests[] and lint[].
+  # For bats failures .tests[].file is always "bats"; for node tests it is the
+  # actual file path. Including lint[] catches repeated lint-only gate failures.
+  # `// empty` drops null entries (e.g. a bats record without a file field).
+  local _sig
+  _sig=$(jq -r \
+    '([.tests[].file // empty] + [.lint[].file // empty]) | sort | unique | join(",")' \
+    "$json_file" 2>/dev/null || true)
+  printf '%s' "${_sig:-}"
+}
+
+# Update the circuit-breaker counter for one issue outcome.
+#
+# Usage: _update_gate_breaker_counter <gate_json_file_or_empty> <issue_status>
+#
+# Mutates the three caller-scope variables:
+#   _gate_consec_count  — current consecutive-match streak
+#   _gate_consec_sig    — signature that the streak tracks
+#   _gate_circuit_tripped — set to "true" when breaker fires
+#
+# Returns:
+#   0  — normal (breaker not yet tripped)
+#   16 — breaker just tripped (caller should break the loop and exit 16)
+#
+# Design notes:
+#   • Non-failure statuses always reset the streak (these issues produced no
+#     gate failures, so they cannot be part of a repeated-failure pattern).
+#   • Gate failures with an empty parseable signature (gate_crashed, etc.)
+#     also reset — they carry no repeatable signal.
+#   • Gate failures with a non-empty signature advance the streak when they
+#     match the previous sig, or restart it (count=1) when they differ.
+#   • RITE_BATCH_GATE_TRIP=0 disables the breaker entirely.
+#
+# This function is defined separately from the main loop so that behavioral
+# bats tests can source just this function (via RITE_SOURCE_FUNCTIONS_ONLY=1
+# + awk extraction) and drive it directly — rather than re-implementing the
+# counter logic inside the test, which cannot catch skip-path bugs (#823).
+_update_gate_breaker_counter() {
+  local _gate_json="${1:-}"  # path to gate-findings JSON (may be empty)
+  local _issue_status="${2:-}"
+
+  # Non-failure outcomes: reset streak, no further action.
+  case "$_issue_status" in
+    completed|already_closed_at_start|in_progress_elsewhere|pr_number_refused|\
+    in_current_branch|waiting_for_parent|dep_failed|not_found)
+      _gate_consec_count=0
+      _gate_consec_sig=""
+      return 0
+      ;;
+  esac
+
+  # Failure path: inspect gate findings.
+  if [ -n "$_gate_json" ] && [ -f "$_gate_json" ]; then
+    local _this_sig
+    _this_sig=$(_extract_gate_signature "$_gate_json" || true)
+    if [ -n "$_this_sig" ]; then
+      if [ "$_this_sig" = "$_gate_consec_sig" ]; then
+        _gate_consec_count=$((_gate_consec_count + 1))
+      else
+        _gate_consec_sig="$_this_sig"
+        _gate_consec_count=1
+      fi
+      if [ "${RITE_BATCH_GATE_TRIP:-3}" -gt 0 ] && \
+         [ "$_gate_consec_count" -ge "${RITE_BATCH_GATE_TRIP:-3}" ]; then
+        _gate_circuit_tripped=true
+        return 16
+      fi
+    else
+      # Gate ran but produced no parseable signature (e.g. gate_crashed).
+      # Environmental noise — reset so we don't block on ambiguous data.
+      _gate_consec_count=0
+      _gate_consec_sig=""
+    fi
+  else
+    # No gate findings (crashed before gate ran): reset streak.
+    # Dev-phase or infrastructure failures, not repeated gate failures.
+    _gate_consec_count=0
+    _gate_consec_sig=""
+  fi
+  return 0
+}
+
 # Record a run to the persistent history file
 record_run() {
   local issue="$1" mode="$2"
@@ -550,6 +648,18 @@ ALREADY_CLOSED_AT_START_ISSUES=() # Exit 12: already closed when batch started, 
 IN_PROGRESS_ELSEWHERE_ISSUES=()  # Exit 14: locked by another live session, not a failure
 PR_NUMBER_REFUSED_ISSUES=()      # Exit 15: number refers to a PR, not an issue — refused
 
+# Circuit-breaker state (issue #823): consecutive identical gate failures.
+# Tracks the last-seen gate failure signature and the run length so the batch
+# can halt before dispatching more issues into a doomed environment.
+# Signature = sorted unique failing-test-file paths from gate-findings JSON.
+# The breaker trips when _gate_consec_count reaches RITE_BATCH_GATE_TRIP.
+# Both counters live in the main script body (not functions) because bash 4
+# associative-array state must be in scope for the main loop.
+_gate_consec_count=0
+_gate_consec_sig=""
+_gate_circuit_tripped=false
+RITE_BATCH_GATE_TRIP="${RITE_BATCH_GATE_TRIP:-3}"
+
 # Per-issue tracking (associative arrays, requires bash 4+)
 declare -A ISSUE_STATUS
 declare -A ISSUE_TIME
@@ -722,6 +832,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     print_error "Issue #$ISSUE_NUM not found"
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="not_found"
+    # Non-failure outcome: reset consecutive gate-failure streak before skipping.
+    _gate_consec_count=0; _gate_consec_sig=""
     continue
   fi
 
@@ -802,6 +914,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
           SKIPPED_ISSUES+=("$ISSUE_NUM")
           ISSUE_STATUS["$ISSUE_NUM"]="waiting_for_parent"
           echo ""
+          # Non-failure outcome: reset consecutive gate-failure streak before skipping.
+          _gate_consec_count=0; _gate_consec_sig=""
           continue
         fi
       elif [ "$PARENT_PR_STATE" = "MERGED" ]; then
@@ -853,6 +967,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="dep_failed"
       echo ""
+      # Non-failure outcome: reset consecutive gate-failure streak before skipping.
+      _gate_consec_count=0; _gate_consec_sig=""
       continue
     fi
   fi
@@ -887,6 +1003,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       SKIPPED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="active"
       echo ""
+      # Non-failure outcome: reset consecutive gate-failure streak before skipping.
+      _gate_consec_count=0; _gate_consec_sig=""
       continue
     fi
   fi
@@ -975,6 +1093,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       ISSUE_STATUS["$ISSUE_NUM"]="in_current_branch"
       ISSUE_PR["$ISSUE_NUM"]="$EXISTING_PR"
       echo ""
+      # Non-failure outcome: reset consecutive gate-failure streak before skipping.
+      _gate_consec_count=0; _gate_consec_sig=""
       continue
     fi
 
@@ -996,6 +1116,14 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   # end_issue_tracking is called in the success and failure branches below so
   # cumulative_work_seconds is always updated regardless of outcome.
   start_issue_tracking "$ISSUE_NUM"
+
+  # Circuit-breaker sentinel: capture a reference timestamp BEFORE the workflow
+  # runs so we can find the gate-findings JSON it writes (named by PR number,
+  # which we don't know here) by selecting files newer than this sentinel.
+  # The sentinel is a temp file whose mtime is set at creation time; we compare
+  # it against gate-findings-*.json files after the workflow exits.
+  # Scoped with PID suffix to prevent concurrent batches from racing on globs.
+  _gate_sentinel=$(mktemp "/tmp/rite_gate_sentinel_${ISSUE_NUM}_$$.XXXXXX" 2>/dev/null || true)
 
   # Run workflow and capture exit code explicitly before any if/then test.
   # `if cmd; then` discards non-zero codes — use the canonical set-e-safe
@@ -1220,6 +1348,51 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     fi
   fi
 
+  # Circuit-breaker check (issue #823): after every issue, update the
+  # consecutive-identical-gate-failure counter via _update_gate_breaker_counter.
+  # Strategy: read the gate-findings JSON written during this workflow run
+  # (identified by being newer than _gate_sentinel), extract the failure
+  # signature (sorted unique failing-file paths), and compare to the last
+  # seen signature.  Only gate failures with a non-empty signature advance
+  # the counter; successful issues or non-gate failures reset it.
+  # See: docs/architecture/exit-codes.md — exit code 16
+  _issue_gate_json=""
+  if [ -n "${_gate_sentinel:-}" ]; then
+    # Find the gate-findings JSON written during this issue's workflow run.
+    # workflow-runner.sh writes it to RITE_STATE_DIR/gate-findings-<PR>.json.
+    # We use -newer so we don't pick up stale files from prior issues.
+    _gate_state_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+    _issue_gate_json=$(find "$_gate_state_dir" -maxdepth 1 \
+      -name "gate-findings-*.json" -newer "$_gate_sentinel" 2>/dev/null | head -1 || true)
+    rm -f "${_gate_sentinel:-}"
+    _gate_sentinel=""
+  fi
+
+  _issue_status="${ISSUE_STATUS[$ISSUE_NUM]:-}"
+  _breaker_exit=0
+  _update_gate_breaker_counter "$_issue_gate_json" "$_issue_status" || _breaker_exit=$?
+  if [ "$_breaker_exit" -eq 16 ]; then
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "GATE_CIRCUIT_BREAKER tripped consecutive=${_gate_consec_count} threshold=${RITE_BATCH_GATE_TRIP} sig=${_gate_consec_sig}"
+    fi
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_error "Circuit breaker tripped: ${RITE_BATCH_GATE_TRIP} consecutive gate failures with identical signature"
+    print_error "Shared failure signature: ${_gate_consec_sig}"
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    print_warning "Cause is likely environmental (broken test environment, unresolvable import, or red main),"
+    print_warning "not per-issue — dispatching more issues would waste time and may mint follow-up issues."
+    echo ""
+    print_info "Remediation:"
+    print_info "  1. Run: make check && bats -r tests/ (verify the test suite passes locally)"
+    print_info "  2. Check for a broken import or build step matching the signature above"
+    print_info "  3. If main is red, wait for the red commit to be reverted or fixed"
+    print_info "  4. Re-run this batch once the environment is green"
+    print_info "  Override with: RITE_BATCH_GATE_TRIP=0 rite <issues...> (disables breaker)"
+    echo ""
+    break
+  fi
+
   # Issue-count cap removed. Only cumulative active-work hours cap matters now.
   CUMULATIVE_SECS=$(get_cumulative_work_seconds)
   ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
@@ -1430,7 +1603,14 @@ fi
 send_notification_all "$NOTIFICATION_MESSAGE" "normal"
 
 # Exit with appropriate code
-if [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
+# Circuit-breaker trip takes priority — it is a distinct failure mode that
+# requires environmental remediation before the batch can make progress.
+# See: docs/architecture/exit-codes.md — exit code 16
+if [ "${_gate_circuit_tripped:-false}" = "true" ]; then
+  print_error "Batch halted by circuit breaker (repeated identical gate failures)"
+  print_info "Signature: ${_gate_consec_sig}"
+  exit 16
+elif [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
   print_warning "Batch paused due to blocker"
   exit 10
 elif [ ${#FAILED_ISSUES[@]} -gt 0 ] && [ $COMPLETED_ISSUES -eq 0 ]; then

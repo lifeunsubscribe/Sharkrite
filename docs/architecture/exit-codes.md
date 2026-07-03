@@ -16,6 +16,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `5`  | `claude-workflow.sh`, `create-pr.sh`, `merge-pr.sh`, `stale-branch.sh`, `divergence-handler.sh`, `branch-preflight.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Usage/token cap reached — abort batch cleanly |
 | `6`  | `merge-pr.sh` | `workflow-runner.sh`, `batch-process-issues.sh` | Merge succeeded but worktree/branch cleanup failed — work IS on remote |
 | `10` | `batch-process-issues.sh` (exit) | Caller of `rite` batch | Batch completed with at least one blocker-deferred issue |
+| `16` | `batch-process-issues.sh` (exit) | Caller of `rite` batch | Batch halted by gate circuit breaker — `RITE_BATCH_GATE_TRIP` (default 3) consecutive issues ended with identical gate-failure signatures. Re-run after fixing the environment. Set `RITE_BATCH_GATE_TRIP=0` to disable. |
 | `11` | `stale-branch.sh` (`check_stale_branch`) | `workflow-runner.sh` stale-branch handler, `claude-workflow.sh` stale-branch health path | Stale branch: PR closed, branch/worktree cleaned up, restart fresh — caller must reset all resume state variables |
 | `12` | `workflow-runner.sh` (`handle_closed_issue` → `run_workflow`) | `batch-process-issues.sh` | Issue was already closed when the batch started — no new dev work done. `handle_closed_issue()` ran its full cleanup and printed the closure summary. `batch-process-issues.sh` skips the post-issue gh stat-gathering calls (pr list / pr view / issue list) and records the issue as `already_closed_at_start`. **Single-issue mode exits 0** (the closure summary was already printed; a non-zero exit would be surprising in `set -e` chains). **Batch mode exits 12** so `batch-process-issues.sh` can distinguish already-closed from active-work issues. |
 | `14` | `claude-workflow.sh` (`setup_issue_lock_if_needed`) | `workflow-runner.sh` (propagates), `batch-process-issues.sh` | Issue is already being processed by another live `rite` session (lock held by another PID). This is an expected concurrency condition, not a failure. `batch-process-issues.sh` records the issue as `in_progress_elsewhere` in the SKIPPED class — it is NOT counted as failed. The existing stderr message ("Issue #N is already being processed by PID X") is preserved. **Single-issue mode:** exits 14 so the caller can distinguish lock-held from a real dev failure. |
@@ -92,6 +93,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `0`  | All issues completed (or no issues run) |
 | `1`  | All issues failed, none completed |
 | `10` | Batch completed with at least one blocker-deferred issue |
+| `16` | Batch halted by gate circuit breaker — `RITE_BATCH_GATE_TRIP` (default 3) consecutive issues ended with gate failures whose normalized signature (sorted unique failing-file set from gate-findings JSON) matched. Cause is environmental, not per-issue; the batch printed the shared signature and a remediation hint. Re-run after fixing the environment. Set `RITE_BATCH_GATE_TRIP=0` to disable. See: issue #823. |
 
 ### `stale-branch.sh` (`check_stale_branch` return)
 
