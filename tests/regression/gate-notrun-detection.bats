@@ -149,9 +149,14 @@ EOF
   # --- Probe: does this bats version actually swallow? ---
   # If a future bats-core tolerates the kill at bats-exec-test:263, the failing
   # test reports a normal `not ok` and no synthetic finding is needed.
+  # BATS_TEST_TIMEOUT=5, not 120: the swallow conjunction needs the timeout
+  # SET (any value — the countdown must merely be alive when the test fails),
+  # but its orphaned countdown holds the pipe for the FULL remaining value
+  # after the kill (the spec's exactly-2:00 hanging-pipe evidence). At 120 this
+  # test itself blows the gate's own 120s per-test budget; at 5 it costs ~5s.
   _probe_tap="$BATS_TEST_TMPDIR/probe-tap"
   mkdir -p "$_probe_tap"
-  (cd "$_repo" && BATS_TEST_TIMEOUT=120 BATS_REPORT_FILENAME=report.tap TERM=dumb \
+  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
     bats -F pretty --report-formatter tap --output "$_probe_tap" \
     tests/swallow-fixture.bats < /dev/null > /dev/null 2>&1) || true
   _probe_notok=$(grep -c '^not ok ' "$_probe_tap/report.tap" 2>/dev/null || true)
@@ -161,6 +166,9 @@ EOF
   # EXIT trap, which must never touch this bats shell's own result trap) ---
   _out="$BATS_TEST_TMPDIR/gate.json"
   export RITE_TEST_GATE_DIFF_BASE="$_base"
+  # Same hanging-pipe economics for the inner gate: the gate honors
+  # RITE_BATS_TEST_TIMEOUT for its exported BATS_TEST_TIMEOUT.
+  export RITE_BATS_TEST_TIMEOUT=5
   unset RITE_GATE_BACKGROUND RITE_GATE_FORCE_FULL 2>/dev/null || true
   run run_test_gate "$_out" "$_repo"
 
