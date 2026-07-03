@@ -548,6 +548,7 @@ BLOCKED_ISSUES=()                # Exit 2: blocker
 SKIPPED_ISSUES=()                # Various skip reasons (all counted together for stats)
 ALREADY_CLOSED_AT_START_ISSUES=() # Exit 12: already closed when batch started, no new work
 IN_PROGRESS_ELSEWHERE_ISSUES=()  # Exit 14: locked by another live session, not a failure
+PR_NUMBER_REFUSED_ISSUES=()      # Exit 15: number refers to a PR, not an issue — refused
 
 # Per-issue tracking (associative arrays, requires bash 4+)
 declare -A ISSUE_STATUS
@@ -1119,6 +1120,26 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     IN_PROGRESS_ELSEWHERE_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="in_progress_elsewhere"
+
+  elif [ $_WF_EXIT -eq 15 ]; then
+    # Number refers to a PR, not an issue: handle_pr_number_refused() rejected
+    # this number. GitHub's shared number space means gh issue view succeeds for
+    # PR numbers — the refusal message was already printed by the handler.
+    # Record as pr_number_refused (SKIPPED class, not FAILED). No dev session
+    # ran and no stat-gathering is needed.
+    # See: docs/architecture/exit-codes.md — exit code 15
+    end_issue_tracking "$ISSUE_NUM"
+    ISSUE_END_TIME=$(date +%s)
+    ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
+    ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
+
+    print_info "⏭️  #$ISSUE_NUM skipped — number refers to a PR, not an issue"
+    print_info "Duration: ${ISSUE_DURATION}s"
+    echo ""
+
+    SKIPPED_ISSUES+=("$ISSUE_NUM")
+    PR_NUMBER_REFUSED_ISSUES+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="pr_number_refused"
 
   else
     EXIT_CODE=$_WF_EXIT
