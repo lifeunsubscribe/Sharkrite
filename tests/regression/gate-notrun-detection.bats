@@ -215,6 +215,8 @@ EOF
   run env TERM=dumb bats -f "returns 14 when phase_claude_workflow" \
     "${BATS_TEST_DIRNAME}/batch-locked-issue-in-progress-status.bats" < /dev/null
   [ "$status" -eq 0 ]
+  # Note: match "not ok" FIRST — a bare *"ok 1"* check also matches "not ok 1".
+  [[ "$output" != *"not ok"* ]]
   [[ "$output" == *"ok 1"* ]]
   [[ "$output" != *"Executed 0 instead of expected"* ]]
 }

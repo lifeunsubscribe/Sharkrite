@@ -594,6 +594,26 @@ source "${RITE_LIB_DIR}/core/workflow-runner.sh" 2>/dev/null || true
 
 # ── Override phase functions after source (so our stubs win) ──
 
+# gh_safe MUST be re-stubbed here: the source chain loads gh-retry.sh, whose
+# env-var re-source guard (_RITE_GH_RETRY_LOADED) does not check for an
+# existing function — the REAL gh_safe overwrites the pre-source stub. With
+# the real gh_safe, run_workflow queries live GitHub, sees issue #797 as
+# closed (it was open when this test was written), and exits 0 via the
+# closed-issue path instead of reaching the stubbed phase_claude_workflow.
+gh_safe() {
+  case "${1:-}" in
+    issue)
+      echo '{"state":"OPEN","title":"Test issue","closedAt":null,"closedByPullRequestsReferences":[]}'
+      ;;
+    pr)
+      echo '[]'
+      ;;
+    *)
+      echo '{}' ;;
+  esac
+}
+export -f gh_safe
+
 # phase_pre_start_checks: skip credential/session checks
 phase_pre_start_checks() { return 0; }
 
