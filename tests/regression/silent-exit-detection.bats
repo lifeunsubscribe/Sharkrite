@@ -153,6 +153,7 @@ setup() {
         _diag \"RITE_EXIT code=\${rc} mode=batch current_issue=\${ISSUE_NUM:-unknown}\"
       fi
     }
+    # sharkrite-lint disable TRAP_EXIT_IN_BATS_TEST - Reason: this trap is inside a bash -c fixture string (a child shell), not the bats test shell — it cannot clobber bats' result-emitting EXIT trap
     trap '_cleanup_batch_session' EXIT
     exit 7
   " || true

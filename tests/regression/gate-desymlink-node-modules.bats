@@ -30,6 +30,9 @@ setup() {
   source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/test-gate.sh"
+  # Leaked -u/pipefail + BATS_TEST_TIMEOUT swallows failing tests (keep -e:
+  # bats failure detection needs errexit).
+  set +u; set +o pipefail
 }
 
 teardown() { rm -rf "${TEST_REPO:-}"; }

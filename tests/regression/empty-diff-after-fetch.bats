@@ -59,6 +59,7 @@ setup() {
   # and fetch_pr_diff() without executing the script body (which needs config,
   # providers, a real PR number, etc.).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_REPO_ROOT}/lib/core/local-review.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

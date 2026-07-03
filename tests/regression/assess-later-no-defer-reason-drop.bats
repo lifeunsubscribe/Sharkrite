@@ -21,6 +21,7 @@
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   source "${RITE_LIB_DIR}/utils/config.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   export PR_NUMBER=99
   export RITE_ISSUE_NUMBER=42

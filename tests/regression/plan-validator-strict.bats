@@ -48,6 +48,7 @@ setup() {
   # regex never matches the fixtures' markers, and suppression silently fails.
   # shellcheck disable=SC1090
   source "${RITE_REPO_ROOT}/lib/utils/markers.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Stub print_* functions so output goes cleanly without terminal setup.
   print_warning() { echo "WARNING: $*" >&2; }

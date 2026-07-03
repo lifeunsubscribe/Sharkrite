@@ -45,6 +45,7 @@ setup() {
   cd "$FIXTURE_REPO"
 
   source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Force the deterministic "cannot auto-resolve" path: stub the conflict resolver to
   # report failure so these tests exercise the clean-abort contract (return 1, clear

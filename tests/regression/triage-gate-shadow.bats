@@ -18,6 +18,7 @@ setup() {
 
   # Load only the function defs (no script body / no gh / no claude).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/local-review.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Stubs: capture the diag, no prior reviews (first pass), classifier verdict
   # is driven per-test via TRIAGE_STUB_VERDICT / TRIAGE_STUB_CONF.

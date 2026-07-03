@@ -39,6 +39,7 @@ setup() {
 
   # Source the divergence-handler library (conflict-resolver.sh may not exist — that's fine)
   source "$RITE_LIB_DIR/utils/divergence-handler.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

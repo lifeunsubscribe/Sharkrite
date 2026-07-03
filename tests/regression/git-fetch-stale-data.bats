@@ -40,6 +40,7 @@ setup() {
   # Source git helpers (and colors it depends on)
   source "$RITE_LIB_DIR/utils/colors.sh"
   source "$RITE_LIB_DIR/utils/git-helpers.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

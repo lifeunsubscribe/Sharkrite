@@ -76,6 +76,7 @@ setup() {
   # Source local-review.sh in functions-only mode to load fetch_pr_diff()
   # without executing the script body (which needs config, providers, etc.).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "${RITE_REPO_ROOT}/lib/core/local-review.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # fetch_pr_diff delegates transient 5xx/429 retries to gh_safe (lib/utils/gh-retry.sh).
   # The functions-only guard in local-review.sh returns before that file is sourced, so
@@ -84,6 +85,7 @@ setup() {
   # RITE_GH_RETRY_MAX_SLEEP=0 keeps the retry path instant in tests.
   export RITE_GH_RETRY_MAX_SLEEP=0
   source "${RITE_REPO_ROOT}/lib/utils/gh-retry.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

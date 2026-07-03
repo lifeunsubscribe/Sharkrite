@@ -85,6 +85,7 @@ setup() {
   # This also sources all its dependencies (issue-lock.sh, markers.sh,
   # portable-cmds.sh, etc.) transitively.
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
   unset RITE_SOURCE_FUNCTIONS_ONLY
 
   # gh_safe stub — returns safe defaults for all dedup-relevant gh calls:

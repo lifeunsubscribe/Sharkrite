@@ -136,6 +136,7 @@ MOCK_SCRIPT
   # Source the library under test
   source "${RITE_LIB_DIR}/utils/config.sh"
   source "${RITE_LIB_DIR}/utils/issue-lock.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   export BRANCH_NAME ISSUE_NUMBER WORKTREE_PATH MOCK_BIN_DIR
 }

@@ -12,6 +12,7 @@ setup() {
   # Source necessary libraries
   export RITE_LIB_DIR="$(cd "$(dirname "$BATS_TEST_DIRNAME")/../lib" && pwd)"
   source "$RITE_LIB_DIR/utils/colors.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Create test worktree directory
   export TEST_WORKTREE="$(mktemp -d /tmp/test-worktree.XXXXXX)"

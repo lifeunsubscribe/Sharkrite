@@ -22,6 +22,7 @@ setup() {
 
   # Load fast-path functions only (no executable body).
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/utils/trivial-fix-fastpath.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Sentinels for assertions.
   export _GATE_CALLS="$RITE_PROJECT_ROOT/gate-calls"

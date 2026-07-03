@@ -19,6 +19,7 @@ setup() {
   run_test_gate() { echo ran > "$GATE_MARK"; return 0; }
   _diag() { :; }
   source "$REPO_ROOT/lib/utils/post-merge-verify.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Temp git repo that LOOKS like sharkrite (Makefile with shellcheck:+lint:),
   # so the gate path is taken whenever verification is NOT skipped.

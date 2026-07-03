@@ -111,6 +111,7 @@ GHEOF
   # RITE_LIB_DIR is already set above, so pr-detection.sh skips config.sh sourcing
   # shellcheck disable=SC1090
   source "${RITE_REPO_ROOT}/lib/utils/pr-detection.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

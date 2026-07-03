@@ -33,6 +33,7 @@ setup() {
   mkdir -p "$RITE_TEST_TMPDIR/.rite/state"
 
   source "$RITE_LIB_DIR/utils/session-tracker.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
   init_session "supervised"
 }
 

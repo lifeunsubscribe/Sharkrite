@@ -36,7 +36,7 @@ setup() {
   source "${RITE_REPO_ROOT}/lib/utils/logging.sh"
   source "${RITE_REPO_ROOT}/tests/fixtures/providers/gemini-mock.sh"
   source "${RITE_REPO_ROOT}/lib/providers/provider-interface.sh"
-  set -u
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

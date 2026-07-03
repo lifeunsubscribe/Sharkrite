@@ -67,6 +67,7 @@ setup() {
     if [ -f "${RITE_REPO_ROOT}/lib/utils/portable-cmds.sh" ]; then
       # shellcheck disable=SC1090
       source "${RITE_REPO_ROOT}/lib/utils/portable-cmds.sh"
+      set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
     fi
   fi
 
@@ -76,6 +77,7 @@ setup() {
     if [ -f "${RITE_REPO_ROOT}/lib/utils/markers.sh" ]; then
       # shellcheck disable=SC1090
       source "${RITE_REPO_ROOT}/lib/utils/markers.sh"
+      set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
     fi
   fi
 
@@ -85,6 +87,7 @@ setup() {
     if [ -f "${RITE_REPO_ROOT}/lib/utils/tag-index.sh" ]; then
       # shellcheck disable=SC1090
       source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
+      set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
     fi
   fi
 

@@ -30,6 +30,7 @@ SHIM
 
   # Source the timeout utility and ensure gtimeout/timeout is detected
   source "${RITE_LIB_DIR}/utils/timeout.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
   ensure_timeout_cmd
 
   # Skip entire suite if no timeout command is available (CI without coreutils)
@@ -44,6 +45,7 @@ SHIM
 
   # Source claude.sh after setting up the shim; it will find run_with_timeout already defined
   source "${RITE_LIB_DIR}/providers/claude.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

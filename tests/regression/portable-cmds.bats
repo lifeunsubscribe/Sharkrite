@@ -20,6 +20,7 @@ setup() {
   # Source the portable-cmds helpers for runtime tests
   # shellcheck source=/dev/null
   source "$PROJECT_ROOT/lib/utils/portable-cmds.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {

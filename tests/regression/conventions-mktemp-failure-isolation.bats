@@ -46,6 +46,7 @@ setup() {
   _MARKER_DIR="$(mktemp -d "${BATS_TEST_TMPDIR}/markers.XXXXXX")"
 
   source "${RITE_REPO_ROOT}/lib/utils/markers.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Stub logging so output does not pollute bats' TAP stream.
   print_warning() { :; }
@@ -54,6 +55,7 @@ setup() {
   export -f print_warning print_info verbose_info
 
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Extract _mark_updated(), update_conventions_from_marker(), and
   # assess_internal_changelog() — same awk extraction pattern used in
