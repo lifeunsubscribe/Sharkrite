@@ -192,7 +192,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '#!/usr/bin/env bats'
     echo '# sharkrite-test-covers: lib/utils/foo.sh'
     echo 'setup_file() {'
-    echo '  source "${RITE_LIB_DIR}/core/claude-workflow.sh"'
+    echo '  source "${RITE_LIB_DIR}/utils/config.sh"'
     echo '}'
     _emit_test_open "leaky file setup"
     echo '  true'
