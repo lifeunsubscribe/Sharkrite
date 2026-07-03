@@ -153,6 +153,166 @@ _parse_bats_failure_line() {
 }
 
 # ---------------------------------------------------------------------------
+# _normalize_node_test_output — synthesize TAP "not ok" lines from jest/vitest
+# failure output.
+#
+# The gate's failure plumbing is TAP-only: the test_count diag greps "^not ok "
+# and the tests[] JSON loop feeds _parse_bats_failure_line (^not ok N ). Jest
+# and vitest never emit TAP, so a real node test failure yielded test_count=0
+# and an empty tests[] array — assess-and-resolve.sh then fired only the
+# generic "no parseable findings" item and the fix session investigated blind
+# (LeadFlow PR #587: 53+ real failures, test_count=0).
+#
+# Rather than teach every consumer a second format, append deduped synthetic
+# "not ok N - <workspace>: <file>: <test>" lines to the raw output file — the
+# same trick the workspace-build failure path uses — so all existing ^not ok
+# plumbing picks the failures up unchanged. Forcing jest --json/reporters is
+# not viable: rite only controls the root `npm test`; per-workspace runner
+# flags live in each target repo's package.json (LeadFlow mixes jest+vitest).
+#
+# Patterns (ANSI-stripped first):
+#   jest suite     : "FAIL <path>[ (N.N s)]" at column 0
+#   jest per-test  : "  ● <suite> › <test>" — the › separator is required
+#                    (jest also emits bullet noise without it, e.g.
+#                    "● Cannot log after tests are done.")
+#   vitest suite   : " FAIL  <path> [ <path> ]" (leading whitespace)
+#   vitest per-test: " FAIL  <path> > <suite> > <test>"
+#   fallback       : a "Tests/Test Files/Test Suites: N failed" summary when
+#                    no per-line pattern matched (fully-silenced reporters)
+# Workspace attribution: "> pkg@ver test" banners name the block; a trailing
+# "npm error location <abs>" upgrades the prefix to the project-relative dir.
+# A suite entry is dropped when per-test entries exist for the same file.
+#
+# Args: $1 = raw tests output file (synthetic lines APPENDED in place;
+#            numbering continues after any existing "not ok" lines)
+#       $2 = project_root (optional — relativizes npm error location paths)
+# Returns 0 always; leaves the file untouched when nothing matched (the
+# assess-side no-findings synthetic block remains the final backstop).
+# ---------------------------------------------------------------------------
+_normalize_node_test_output() {
+  local raw_file="$1"
+  local norm_root="${2:-}"
+  [ -s "$raw_file" ] || return 0
+
+  local _norm_cap=50
+  local _norm_stripped _norm_extracted
+  _norm_stripped=$(mktemp "/tmp/rite_gate_norm_strip_$$_XXXXXX")
+  _norm_extracted=$(mktemp "/tmp/rite_gate_norm_desc_$$_XXXXXX")
+  # ANSI-strip first (same expression as _sanitize_json_value): npm piped
+  # output is normally plain, but some reporters force color.
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' "$raw_file" > "$_norm_stripped" || true
+
+  awk -v root="$norm_root" '
+    function flush(   i, pfx, out) {
+      pfx = (wsdir != "") ? wsdir : wsname
+      for (i = 1; i <= n; i++) {
+        if (typ[i] == "suite" && hasdetail[fil[i]]) continue
+        out = (pfx != "") ? pfx ": " buf[i] : buf[i]
+        if (!(out in seen)) { seen[out] = 1; print out }
+      }
+      n = 0; wsdir = ""
+      for (i in hasdetail) delete hasdetail[i]
+    }
+    # workspace banner: "> pkg@version test" — starts a new attribution block
+    /^> [^ ]+@[^ ]+ test$/ {
+      flush()
+      wsname = $2; sub(/@[^@]*$/, "", wsname)
+      cursuite = ""
+      next
+    }
+    # npm error location — closes the failing workspace block; prefer the
+    # project-relative directory over the package name when derivable
+    /^npm error location / {
+      if (root != "" && index($4, root "/") == 1)
+        wsdir = substr($4, length(root) + 2)
+      flush()
+      next
+    }
+    # jest suite failure at column 0; path guard rejects the bare word FAIL
+    # in code snippets (real paths contain "/" or .test./.spec.)
+    substr($0, 1, 5) == "FAIL " {
+      p = $2
+      if (p ~ /\// || p ~ /\.(test|spec)\./) {
+        cursuite = p
+        n++; buf[n] = p ": test suite failed"; typ[n] = "suite"; fil[n] = p
+      }
+      next
+    }
+    # jest per-test bullet — file comes from the preceding suite FAIL line
+    /^[[:space:]]*● / && / › / {
+      t = $0
+      sub(/^[[:space:]]*● /, "", t)
+      n++; typ[n] = "test"
+      if (cursuite != "") { buf[n] = cursuite ": " t; hasdetail[cursuite] = 1 }
+      else buf[n] = t
+      next
+    }
+    # vitest lines: leading whitespace + FAIL + path, then "[" (suite) or ">"
+    # (per-test — the description already carries the file)
+    /^[[:space:]]+FAIL[[:space:]]/ {
+      p = $2
+      if (p ~ /\// || p ~ /\.(test|spec)\./) {
+        if ($3 == ">") {
+          t = $0
+          sub(/^[[:space:]]+FAIL[[:space:]]+/, "", t)
+          n++; buf[n] = t; typ[n] = "test"; hasdetail[p] = 1
+        } else if ($3 == "[") {
+          n++; buf[n] = p ": test suite failed"; typ[n] = "suite"; fil[n] = p
+        }
+      }
+      next
+    }
+    END { flush() }
+  ' "$_norm_stripped" > "$_norm_extracted" || true
+
+  # Fallback: fully-silenced reporters fail with only a summary line — carry
+  # it so the finding at least names the failure counts. Requires >=1 failed
+  # (a passing "N passed" summary never matches).
+  if [ ! -s "$_norm_extracted" ]; then
+    grep -E '^[[:space:]]*(Test Suites|Test Files|Tests):?[[:space:]]+[1-9][0-9]* failed' "$_norm_stripped" \
+      | sed 's/^[[:space:]]*//' | tr -s ' ' > "$_norm_extracted" || true
+  fi
+
+  local _norm_total _norm_n _norm_desc
+  _norm_total=$(grep -c "" "$_norm_extracted" || true)
+  if [ "$_norm_total" -gt 0 ]; then
+    # Numbering continues after existing not-ok lines (e.g. the synthetic
+    # workspace-build failure line appended above the npm test run).
+    _norm_n=$(grep -c "^not ok " "$raw_file" || true)
+    while IFS= read -r _norm_desc; do
+      [ -n "$_norm_desc" ] || continue
+      _norm_n=$(( _norm_n + 1 ))
+      printf 'not ok %d - %s\n' "$_norm_n" "$_norm_desc" >> "$raw_file"
+    done < <(head -n "$_norm_cap" "$_norm_extracted")
+    # Cap bounds the assessment prompt size; note the overflow explicitly.
+    if [ "$_norm_total" -gt "$_norm_cap" ]; then
+      _norm_n=$(( _norm_n + 1 ))
+      printf 'not ok %d - ... and %d more test failure(s) truncated — see the gate log for full output\n' \
+        "$_norm_n" $(( _norm_total - _norm_cap )) >> "$raw_file"
+    fi
+    echo "[test-gate] normalized ${_norm_total} jest/vitest failure(s) into TAP findings"
+  fi
+  rm -f "${_norm_stripped:-}" "${_norm_extracted:-}"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _node_flavored_test_context — true when a RITE_TEST_COMMAND run is expected
+# to produce jest/vitest output (node runner named in the command, or the
+# repo is an npm package).
+# Args: $1 = project_root, $2 = test command string
+# ---------------------------------------------------------------------------
+_node_flavored_test_context() {
+  local ctx_root="$1"
+  local ctx_cmd="${2:-}"
+  case "$ctx_cmd" in
+    # *npm* also covers pnpm; *node* also covers nodemon
+    *npm*|*npx*|*yarn*|*jest*|*vitest*|*node*) return 0 ;;
+  esac
+  [ -f "$ctx_root/package.json" ]
+}
+
+# ---------------------------------------------------------------------------
 # Test selection by changed paths (issue #462)
 # ---------------------------------------------------------------------------
 # Bats files declare coverage via a single-line header:
@@ -1056,6 +1216,12 @@ run_test_gate() {
       | tee "$_tests_raw_file_cmd" || true
     local _cmd_tests_exit
     _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo "0")
+    # Same TAP-only hole as the npm branch: a node-flavored custom command
+    # (jest/vitest) would otherwise report test_count=0 on real failures.
+    if [ "$_cmd_tests_exit" -ne 0 ] \
+       && _node_flavored_test_context "$project_root" "${RITE_TEST_COMMAND}"; then
+      _normalize_node_test_output "$_tests_raw_file_cmd" "$project_root"
+    fi
     local _cmd_tests_count
     _cmd_tests_count=$(grep -c "^not ok " "$_tests_raw_file_cmd" || true)
     local _cmd_overall_exit=0
@@ -1624,6 +1790,13 @@ run_test_gate() {
         | tee -a "$_tests_raw_file" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
       [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
+      # jest/vitest never emit TAP: without normalization a real failure
+      # yields test_count=0 and an empty tests[] array, so the fix session
+      # gets no failing test names (LeadFlow PR #587). Synthesize not-ok
+      # lines so the ^not ok count and JSON loop below see the failures.
+      if [ "$_tests_exit" -ne 0 ]; then
+        _normalize_node_test_output "$_tests_raw_file" "$project_root"
+      fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
