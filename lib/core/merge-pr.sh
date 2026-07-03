@@ -1100,9 +1100,15 @@ EOF
         SCRATCHPAD_BACKUP="${SCRATCHPAD_FILE}.backup-$(date +%s)"
         cp "$SCRATCHPAD_FILE" "$SCRATCHPAD_BACKUP"
 
-        # Acquire scratchpad lock via shared module (atomic PID write, hard timeout)
-        # acquire_scratchpad_lock exits 1 on timeout — never proceeds without lock
-        acquire_scratchpad_lock
+        # Acquire scratchpad lock via shared module (atomic PID write, hard timeout).
+        # On contention the lock module returns 1 (no longer exit 1). This whole
+        # branch-notes cleanup is advisory, so skip it rather than proceed
+        # unlocked — errexit is OFF here (set +e above), so a bare failing call
+        # would fall through into unlocked scratchpad writes.
+        if ! acquire_scratchpad_lock; then
+          print_warning "Scratchpad lock busy — skipping branch-notes cleanup (advisory; next merge or deep clean will catch it)"
+          rm -f "$SCRATCHPAD_BACKUP"
+        else
         # Ensure the lock is released if the script exits unexpectedly between here
         # and the explicit release_scratchpad_lock call below (~line 1450).
         # Combine with cleanup_temp_files so we don't clobber the trap set at line 219,
@@ -1562,6 +1568,7 @@ EOF
           | tail -n +6 | while IFS= read -r _old_backup; do rm -f "$_old_backup"; done || true
         if [ "${RITE_VERBOSE:-false}" = "true" ]; then
           print_success "Scratchpad backup created: $(basename "$SCRATCHPAD_BACKUP")"
+        fi
         fi
       fi
 

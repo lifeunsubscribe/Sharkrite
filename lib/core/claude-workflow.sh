@@ -2614,7 +2614,11 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
   # release_issue_lock EXIT trap (line 163) and cleanup_on_interrupt INT/TERM/HUP
   # trap (line 148).  The explicit release_scratchpad_lock at the end of this
   # block is sufficient for this short critical section.
-  acquire_scratchpad_lock
+  # Lock contention returns 1 (not exit) — this Current Work note is advisory,
+  # so skip it rather than kill the dev session under set -e.
+  if ! acquire_scratchpad_lock; then
+    print_warning "Scratchpad lock busy — skipping Current Work update (advisory)"
+  else
   TEMP_SCRATCH=$(mktemp)
   if grep -q "## Current Work" "$SCRATCHPAD_FILE"; then
     # Update existing section
@@ -2633,6 +2637,7 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
     echo -e "\n## Current Work\n\n**Issue:** #${ISSUE_NUMBER:-unknown}\n**Description:** ${ISSUE_DESC}\n**Branch:** ${BRANCH_NAME:-$CURRENT_BRANCH}\n**Started:** $(date '+%Y-%m-%d %H:%M:%S')\n" >> "$SCRATCHPAD_FILE"
   fi
   release_scratchpad_lock
+  fi
 fi
 
 SECURITY_PROMPT=""

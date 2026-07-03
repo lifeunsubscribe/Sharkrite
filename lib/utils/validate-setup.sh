@@ -248,8 +248,11 @@ if [ -f "$SCRATCHPAD_FILE" ]; then
     print_warning "  Missing 'Recent Security Findings' section"
 
     if [ "$FIX_MODE" = true ]; then
-      # Acquire lock before writing — validate-setup may run while workflows are active
-      acquire_scratchpad_lock
+      # Acquire lock before writing — validate-setup may run while workflows are
+      # active. Contention returns 1: skip (advisory), re-run validate later.
+      if ! acquire_scratchpad_lock; then
+        print_warning "  Scratchpad lock busy — skipping section add (re-run validate-setup later)"
+      else
       _setup_scratchpad_lock_trap
       cat >> "$SCRATCHPAD_FILE" <<'EOF'
 
@@ -263,6 +266,7 @@ _Security issues found in recent PR reviews. Check these before implementing new
 EOF
       release_scratchpad_lock
       print_success "  Added 'Recent Security Findings' section"
+      fi
     fi
   fi
 
@@ -272,7 +276,10 @@ EOF
     print_warning "  Missing 'Current Work' section"
 
     if [ "$FIX_MODE" = true ]; then
-      acquire_scratchpad_lock
+      # Contention returns 1: skip (advisory), re-run validate later.
+      if ! acquire_scratchpad_lock; then
+        print_warning "  Scratchpad lock busy — skipping section add (re-run validate-setup later)"
+      else
       _setup_scratchpad_lock_trap
       cat >> "$SCRATCHPAD_FILE" <<'EOF'
 
@@ -284,6 +291,7 @@ _No active work - start new issue with rite_
 EOF
       release_scratchpad_lock
       print_success "  Added 'Current Work' section"
+      fi
     fi
   fi
 else
@@ -293,7 +301,10 @@ else
     # Initialize scratchpad with basic structure
     # Lock before creating so concurrent validate-setup --fix runs don't both write
     mkdir -p "$(dirname "$SCRATCHPAD_FILE")"
-    acquire_scratchpad_lock
+    # Contention returns 1: skip creation (advisory), re-run validate later.
+    if ! acquire_scratchpad_lock; then
+      print_warning "  Scratchpad lock busy — skipping scratchpad creation (re-run validate-setup later)"
+    else
     _setup_scratchpad_lock_trap
     # Re-check after acquiring lock — another process may have created it
     if [ ! -f "$SCRATCHPAD_FILE" ]; then
@@ -336,6 +347,7 @@ EOF
       print_success "Created scratchpad at $SCRATCHPAD_FILE"
     fi
     release_scratchpad_lock
+    fi
   fi
 fi
 echo ""

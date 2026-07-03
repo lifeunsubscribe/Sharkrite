@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/scratchpad-lock.sh, lib/utils/scratchpad-manager.sh
+# sharkrite-test-covers: lib/utils/scratchpad-lock.sh, lib/utils/scratchpad-manager.sh, lib/core/merge-pr.sh, lib/core/claude-workflow.sh, lib/utils/validate-setup.sh
 # tests/regression/scratchpad-lock-degrade.bats — lock timeout degrades to skip
 #
 # Live failure (LeadFlow, 2026-07-01): acquire_scratchpad_lock's `exit 1` on
@@ -196,4 +196,24 @@ hold_lock_with_live_pid() {
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"STATE_OK"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Structural pin (2026-07-02 review finding): with acquire returning 1 instead
+# of exiting, a BARE call site either kills its caller under set -e or — worse,
+# under set +e (merge-pr.sh post-merge cleanup) — falls through into an
+# UNLOCKED scratchpad write. Every production call must be guarded.
+# ---------------------------------------------------------------------------
+@test "structural: no bare acquire_scratchpad_lock call sites in lib/" {
+  _bare=$(grep -rn "acquire_scratchpad_lock" "${RITE_REPO_ROOT}/lib" \
+    --include="*.sh" \
+    | grep -v "scratchpad-lock.sh:" \
+    | grep -vE ":[0-9]+:[[:space:]]*#" \
+    | grep -vE "if ! acquire_scratchpad_lock|acquire_scratchpad_lock \|\||declare -f acquire_scratchpad_lock" \
+    || true)
+  if [ -n "$_bare" ]; then
+    echo "Unguarded acquire_scratchpad_lock call sites (guard with 'if ! acquire...' or '|| { skip }'):" >&2
+    echo "$_bare" >&2
+    return 1
+  fi
 }
