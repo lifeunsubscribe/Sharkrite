@@ -69,6 +69,16 @@ setup() {
   }
 }
 
+teardown() {
+  # Temp-dir cleanup for the exit-14 integration test. This MUST live in
+  # teardown(), never as a `trap ... EXIT` inside a @test body: bats emits the
+  # test's result from its own EXIT trap in the same shell, so a trap inside a
+  # test clobbers it — the whole file then reports "Executed 0 instead of
+  # expected N" and writes NOTHING to report.tap, giving the gate a blocking
+  # failure with zero nameable findings (issue #804, PR #828's blind rounds).
+  [ -n "${_tmpdir:-}" ] && rm -rf "$_tmpdir" || true
+}
+
 # =============================================================================
 # STRUCTURAL: verify the fix is in place (static code inspection)
 # =============================================================================
@@ -501,9 +511,9 @@ setup() {
   }
 
   # Build the harness script in a temp dir to avoid any working-dir coupling.
+  # Cleaned up in teardown() — never trap EXIT inside a @test body (see the
+  # teardown() comment: it clobbers bats' result-emitting EXIT trap).
   _tmpdir=$(mktemp -d)
-  # shellcheck disable=SC2064
-  trap "rm -rf '$_tmpdir'" EXIT
 
   cat > "$_tmpdir/harness.sh" <<'HARNESS_EOF'
 #!/bin/bash
@@ -583,6 +593,26 @@ export -f _timer_end
 source "${RITE_LIB_DIR}/core/workflow-runner.sh" 2>/dev/null || true
 
 # ── Override phase functions after source (so our stubs win) ──
+
+# gh_safe MUST be re-stubbed here: the source chain loads gh-retry.sh, whose
+# env-var re-source guard (_RITE_GH_RETRY_LOADED) does not check for an
+# existing function — the REAL gh_safe overwrites the pre-source stub. With
+# the real gh_safe, run_workflow queries live GitHub, sees issue #797 as
+# closed (it was open when this test was written), and exits 0 via the
+# closed-issue path instead of reaching the stubbed phase_claude_workflow.
+gh_safe() {
+  case "${1:-}" in
+    issue)
+      echo '{"state":"OPEN","title":"Test issue","closedAt":null,"closedByPullRequestsReferences":[]}'
+      ;;
+    pr)
+      echo '[]'
+      ;;
+    *)
+      echo '{}' ;;
+  esac
+}
+export -f gh_safe
 
 # phase_pre_start_checks: skip credential/session checks
 phase_pre_start_checks() { return 0; }
