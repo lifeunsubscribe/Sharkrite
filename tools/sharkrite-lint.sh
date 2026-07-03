@@ -1620,7 +1620,6 @@ done
 #   # sharkrite-lint disable TRAP_EXIT_IN_BATS_TEST - Reason: <text>
 echo "Checking for trap ... EXIT inside @test bodies in .bats files..."
 
-_r29_hits=""
 while IFS= read -r bats_file; do
   [ -z "$bats_file" ] && continue
   case "$bats_file" in
@@ -1724,8 +1723,12 @@ while IFS= read -r bats_file; do
         in_setup = 0; pend = 0
         next
       }
-      # guard seen: set +u / set +eu / set +o nounset clears any pending source
-      if ($0 ~ /set[[:space:]]+\+[a-z]*u/ || $0 ~ /set[[:space:]]+\+o[[:space:]]+nounset/) { pend = 0 }
+      # guard seen: set +u / set +o nounset clears any pending source.
+      # Deliberately EXCLUDES any form containing +e (set +eu, set +e):
+      # disabling errexit in setup() breaks bats failure detection itself
+      # (a failing test reports ok) — a strictly worse swallow than the one
+      # this rule prevents. Verified empirically 2026-07-02.
+      if ($0 ~ /set[[:space:]]+\+[a-df-z]*u[a-df-z]*([[:space:];]|$)/ || $0 ~ /set[[:space:]]+\+o[[:space:]]+nounset/) { pend = 0 }
       if ($0 ~ /(^|[^A-Za-z0-9_.])(source|\.)[ \t]+/ &&
           $0 ~ /(lib|LIB_DIR[}"'"'"']*)\/(core|utils|providers|hooks)\/|config\.sh/) {
         pend = 1; pline = FNR

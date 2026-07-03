@@ -26,7 +26,7 @@ setup() {
   # test-gate.sh leaks `set -euo pipefail` into this test shell — combined
   # with BATS_TEST_TIMEOUT (set by the gate) that leak is the exact swallow
   # this file guards against. Neutralize immediately after sourcing.
-  set +eu
+  set +u
   set +o pipefail
 }
 
