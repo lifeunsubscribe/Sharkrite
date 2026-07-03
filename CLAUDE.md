@@ -94,16 +94,18 @@ Any short-circuit that bypasses `run_workflow()` must be documented with `# Deli
 
 ### Model Selection Per Task
 
-Each task uses the model that fits its nature. Three independent model vars — changing one does not affect the others:
+Each task uses the model that fits its nature. Every role has its own independent model var — changing one does not affect the others:
 
 | Task | Var | Default | Why |
 |------|-----|---------|-----|
 | Code review | `RITE_REVIEW_MODEL` | `claude-opus-4-8` | Deep reasoning, broad context — catches edge cases that matter |
+| Issue planning | `RITE_PLAN_MODEL` | `claude-opus-4-8` | Generates issues from ADRs — highest-stakes reasoning (must honor ADRs, never hallucinate fixtures). Its own var, decoupled from review so moving review off opus can't silently downgrade planning. Before this role existed, `plan-issues.sh` passed `""` and rode `RITE_REVIEW_MODEL` invisibly. |
 | Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
+| Triage / classify | `RITE_TRIAGE_MODEL` | `claude-haiku-4-5` | Narrow binary/bucket classification (trivial-vs-substantive diff; doc categorization) — haiku's job |
 | Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
 
-**Never pass `""` as the model arg** to `provider_run_prompt_with_timeout` and rely on defaults — use an explicit role via `claude_provider_resolve_model`. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
+**Never pass `""` as the model arg** to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on defaults — an empty model silently falls through to `resolve_model "review"` (opus). Pass an explicit role via the provider-agnostic **`provider_resolve_model <role>`** (not the claude-prefixed `claude_provider_resolve_model` — `lib/core`/`lib/utils` must stay provider-agnostic). Both invariants are enforced by lint: `PROVIDER_MODEL_FALLTHROUGH` (Rule 31) rejects the bare `""`, `DIRECT_PROVIDER_CALL` (Rule 32) rejects direct `claude_provider_*` calls. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
 
 ## Shell Conventions
 

@@ -31,13 +31,13 @@ _source_generate_adr_for_ref() {
   _mark_updated() { touch "$_MARKER_DIR/$1"; }
   export -f _mark_updated
 
-  # Stub claude_provider_resolve_model — adr-generator.sh calls it to pick the
-  # doc-assessment model, but claude.sh (which defines it in production) is not
-  # sourced here. Without this stub the call errors with
-  # "claude_provider_resolve_model: command not found"; bats merges that stderr
-  # line into $output, breaking the [ -f "$output" ]/[ -z "$output" ] assertions.
-  claude_provider_resolve_model() { echo "claude-sonnet-4-6"; }
-  export -f claude_provider_resolve_model
+  # Stub provider_resolve_model — adr-generator.sh calls it (via the load_provider
+  # alias) to pick the doc-assessment model, but the provider layer is not sourced
+  # here. Without this stub the call errors with "provider_resolve_model: command
+  # not found"; bats merges that stderr line into $output, breaking the
+  # [ -f "$output" ]/[ -z "$output" ] assertions.
+  provider_resolve_model() { echo "claude-sonnet-4-6"; }
+  export -f provider_resolve_model
 }
 
 setup() {

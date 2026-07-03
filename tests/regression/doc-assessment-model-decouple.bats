@@ -11,7 +11,7 @@
 # Fix: claude_provider_resolve_model gains a "doc_assessment" role backed by
 # RITE_DOC_ASSESSMENT_MODEL (default: claude-sonnet-4-6). Every
 # provider_run_prompt_with_timeout call in assess-documentation.sh now passes
-# $(claude_provider_resolve_model doc_assessment) instead of "".
+# $(provider_resolve_model doc_assessment) — the provider-agnostic alias — instead of "".
 #
 # Test strategy:
 # 1. Default: doc_assessment resolves to claude-sonnet-4-6 (RITE_DOC_ASSESSMENT_MODEL unset).
@@ -157,9 +157,11 @@ TWO_ROLE_EOF
   bare_empty_count=$(echo "$call_lines" | grep -c 'provider_run_prompt_with_timeout.*""' || true)
   [ "$bare_empty_count" -eq 0 ]
 
-  # All calls should reference claude_provider_resolve_model doc_assessment
+  # All calls should reference the provider-agnostic resolver: provider_resolve_model
+  # doc_assessment (NOT the claude-prefixed claude_provider_resolve_model — lib/core
+  # must stay provider-agnostic; enforced by lint Rule 32 DIRECT_PROVIDER_CALL).
   local explicit_model_count
-  explicit_model_count=$(echo "$call_lines" | grep -c 'claude_provider_resolve_model doc_assessment' || true)
+  explicit_model_count=$(echo "$call_lines" | grep -c 'provider_resolve_model doc_assessment' || true)
   local total_calls
   total_calls=$(echo "$call_lines" | wc -l | tr -d ' ')
 

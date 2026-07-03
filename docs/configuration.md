@@ -29,6 +29,13 @@ RITE_ASSESSMENT_TIMEOUT=300
 # Fully independent of RITE_REVIEW_MODEL (code review stays on opus regardless).
 RITE_DOC_ASSESSMENT_MODEL=claude-sonnet-4-6
 
+# Issue planning model (default: opus). `rite plan` generates issues from ADRs —
+# the highest-stakes reasoning stage (it must honor ADRs and never hallucinate
+# fixtures), so it defaults to opus. Its OWN var, independent of RITE_REVIEW_MODEL:
+# moving review off opus must not silently downgrade planning. Before this var
+# existed, plan-issues.sh passed "" and rode RITE_REVIEW_MODEL invisibly.
+RITE_PLAN_MODEL=claude-opus-4-8
+
 # Documentation assessment outer timeout (seconds).
 # Caps the total wall-clock wait for the post-merge doc assessment subprocess.
 # With doc_assessment on sonnet: typical ~90-120s (fan-out ~30s, reconcile ~30s,
@@ -87,7 +94,9 @@ Control how Claude assesses PR review issues:
 | `RITE_MAX_ISSUE_HOURS` | Max hours for a **single issue**. Fires when a single `rite N` invocation exceeds this threshold — protects against fix-loop runaway and yak-shaves. | `4` |
 | `RITE_MAX_RETRIES` | Fix loop attempts | `3` |
 | `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) for the review-issue assessment phase | `300` |
+| `RITE_PLAN_MODEL` | Claude model for `rite plan` issue generation. Defaults to opus: planning is the highest-stakes reasoning stage (honor ADRs, don't hallucinate fixtures). Its own var, fully independent of `RITE_REVIEW_MODEL` — so moving review off opus can't silently downgrade planning. | `claude-opus-4-8` |
 | `RITE_DOC_ASSESSMENT_MODEL` | Claude model for doc assessment tasks (security, arch, api, ADR reconciliation). Defaults to sonnet: doc reconciliation is structured pattern matching ("did this diff change API surface X?"), sonnet's sweet spot. Fully independent of `RITE_REVIEW_MODEL` — changing one does not affect the other. Override to `claude-opus-4-8` only if you need deeper reasoning on unusually large diffs. | `claude-sonnet-4-6` |
+| `RITE_TRIAGE_MODEL` | Claude model for narrow classification (trivial-vs-substantive diff triage; doc auto-discovery categorization). Defaults to haiku: bucket classification, not deep reasoning. Independent of every other model var. | `claude-haiku-4-5` |
 | `RITE_DOC_ASSESSMENT_TIMEOUT` | Outer wall-clock cap (seconds) on the post-merge doc assessment subprocess. With doc_assessment on sonnet: typical ~90-120s (4 parallel sub-assessments ~30s + reconcile ~30s + validate ~30s). 300s provides headroom for big diffs and slow API responses without firing on normal runs. On timeout: completed sub-assessments are preserved and reported; incomplete ones are skipped. Workflow continues regardless. | `300` |
 | `RITE_AWS_PROFILE` | AWS profile for notifications | `default` |
 | `RITE_BIN_DIR` | Override symlink location | `~/.local/bin` |

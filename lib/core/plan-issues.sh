@@ -959,8 +959,9 @@ PROMPT_EOF
   while [ $attempt -lt $max_attempts ]; do
     attempt=$((attempt + 1))
 
-    # Use streaming prompt for real-time output visibility
-    provider_run_streaming_prompt "$_active_prompt" "" 2>"$claude_stderr" \
+    # Use streaming prompt for real-time output visibility.
+    # Explicit "plan" role (opus) — never "" (which falls through to the review model).
+    provider_run_streaming_prompt "$_active_prompt" "$(provider_resolve_model plan)" 2>"$claude_stderr" \
       | awk '
           # Truncate output on first duplicate issue (Claude sometimes regenerates the full set).
           # Buffer each ---ISSUE--- block; only emit on ---END--- if title is new.
@@ -2374,7 +2375,8 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
   local _completion_file _completion_stderr
   _completion_file=$(mktemp)
   _completion_stderr=$(mktemp)
-  if ! provider_run_streaming_prompt "$_completion_prompt" "" 2>"$_completion_stderr" \
+  # Explicit "plan" role (opus) — same reasoning stage as the primary generation call.
+  if ! provider_run_streaming_prompt "$_completion_prompt" "$(provider_resolve_model plan)" 2>"$_completion_stderr" \
       | tee "$_completion_file" >&2; then
     print_warning "Targeted completion call failed — keeping the partial slate" >&2
   fi

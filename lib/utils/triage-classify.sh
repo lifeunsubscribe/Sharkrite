@@ -17,7 +17,7 @@
 #   - lib/utils/trivial-fix-fastpath.sh → merge gate (#531)
 #
 # Runtime deps the CALLER must have sourced + initialized before calling:
-#   claude_provider_resolve_model, provider_run_prompt (provider-interface +
+#   provider_resolve_model, provider_run_prompt (provider-interface +
 #   load_provider) for Layer 2; detect_sensitivity_areas (blocker-rules) is
 #   optional — guarded by `declare -f`, skipped if absent.
 
@@ -93,7 +93,7 @@ triage_classify_diff() {
   else
     # Truncate the diff to keep the triage call cheap/fast.
     _diff_head=$(echo "$_diff" | head -c 6000 || true)
-    _tmodel=$(claude_provider_resolve_model "triage")
+    _tmodel=$(provider_resolve_model "triage")
     _tprompt="You are a code-review TRIAGE classifier. Decide if this diff is TRIVIAL (pure comment/docstring/whitespace edits, version-string bumps, log-message wording, mechanical rename with no logic change, or a purely additive test of existing behavior) or SUBSTANTIVE (any logic, control-flow, error-handling, or behavior change — anything you can't confidently call trivial). When unsure, answer substantive. Output ONLY compact JSON: {\"verdict\":\"trivial|substantive\",\"confidence\":0.0-1.0,\"reason\":\"<=8 words\"}.
 
 DIFF:
