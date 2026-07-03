@@ -2268,18 +2268,14 @@ run_workflow() {
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
   if echo "$_issue_url" | grep -qF '/pull/'; then
-    local _pr_ref_exit
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
-    _pr_ref_exit=$?
     set -e
-    # Single-issue mode: exit 1 (the refusal message was already printed).
-    # Batch mode: return 15 sentinel so batch can skip stat-gathering and continue.
-    if [ "${BATCH_MODE:-false}" = "true" ]; then
-      return $_pr_ref_exit
-    else
-      return 1
-    fi
+    # Both single-issue and batch mode: return 15 sentinel so main() routes
+    # to the dedicated pr_number_refused branch without printing "Workflow failed".
+    # Batch mode uses exit 15 to skip stat-gathering; single-issue mode uses it
+    # to exit cleanly (the refusal message was already printed).
+    return 15
   fi
 
   if [ "$issue_state" = "CLOSED" ]; then
@@ -3044,11 +3040,14 @@ main() {
     # See: docs/architecture/exit-codes.md
     exit 14
   elif [ $workflow_exit -eq 15 ]; then
-    # Number refers to a PR, not an issue — propagate exit 15 so batch can
-    # record this as pr_number_refused (SKIPPED class, not FAILED).
+    # Number refers to a PR, not an issue.
     # The refusal message was already printed by handle_pr_number_refused().
-    # Single-issue mode: run_workflow returns 1 (not 15), so exit 15 here is
-    # only reachable in BATCH_MODE. Propagate so batch skips stat-gathering.
+    # Both single-issue and batch mode reach this branch (run_workflow returns
+    # 15 in both cases). Propagate exit 15 so batch skips stat-gathering and
+    # records this as pr_number_refused (SKIPPED class, not FAILED).
+    # Single-issue mode: exit 15 is non-zero (refusal accepted) and avoids
+    # the misleading "Workflow failed" line that exit 1 via the else branch
+    # would have printed.
     # See: docs/architecture/exit-codes.md
     exit 15
   elif [ $workflow_exit -eq 6 ]; then
