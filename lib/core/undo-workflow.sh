@@ -141,6 +141,21 @@ if [ -n "$PR_NUMBER" ]; then
   fi
 fi
 
+# Never treat the issue being undone as its own follow-up. A self-referential
+# followup marker (or an over-broad parent-pr body search) can sweep the main
+# issue into FOLLOWUP_ISSUES; the follow-up loop below would then CLOSE it, which
+# defeats the whole point of undo — undoing an issue must leave it OPEN so it can
+# be re-run from scratch. Live incident: `rite --undo 821` closed #821, so the
+# next batch skipped it as already-closed. Filter the main issue out defensively.
+if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
+  _fu_kept=()
+  for _fu in "${FOLLOWUP_ISSUES[@]}"; do
+    [ "$_fu" = "$ISSUE_NUMBER" ] && continue
+    _fu_kept+=("$_fu")
+  done
+  FOLLOWUP_ISSUES=("${_fu_kept[@]+"${_fu_kept[@]}"}")
+fi
+
 # --- 1.3: Find worktree ---
 
 WORKTREE_PATH=""

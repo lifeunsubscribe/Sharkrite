@@ -60,3 +60,57 @@ teardown() { rm -rf "$TEST_DIR"; }
   run grep -E 'Failed to delete remote branch' "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
   [ "$status" -eq 0 ]
 }
+
+@test "undo excludes the issue being undone from FOLLOWUP_ISSUES (never closes the main issue)" {
+  # Reproduces the section-1.2 filter. The main issue must never be swept into
+  # the follow-up close loop — that would close it, and undo must leave the issue
+  # OPEN so it can be re-run from scratch (live incident: `rite --undo 821`
+  # closed #821, so the next batch skipped it as already-closed).
+  run bash -c '
+    set -euo pipefail
+    ISSUE_NUMBER=821
+    FOLLOWUP_ISSUES=(821 900 901)   # main issue erroneously swept in with real follow-ups
+
+    if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
+      _fu_kept=()
+      for _fu in "${FOLLOWUP_ISSUES[@]}"; do
+        [ "$_fu" = "$ISSUE_NUMBER" ] && continue
+        _fu_kept+=("$_fu")
+      done
+      FOLLOWUP_ISSUES=("${_fu_kept[@]+"${_fu_kept[@]}"}")
+    fi
+    printf "%s\n" "${FOLLOWUP_ISSUES[@]+"${FOLLOWUP_ISSUES[@]}"}"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"821"* ]] || { echo "FAIL: main issue 821 still in FOLLOWUP_ISSUES"; false; }
+  { [[ "$output" == *"900"* ]] && [[ "$output" == *"901"* ]]; } || { echo "FAIL: real follow-ups dropped: $output"; false; }
+}
+
+@test "undo FOLLOWUP_ISSUES filter is bash-3.2 safe when it empties the array" {
+  # If the only follow-up candidate IS the main issue, the filter empties the
+  # array; the "${arr[@]+...}" idiom must not trip set -u on bash 3.2.
+  run bash -c '
+    set -euo pipefail
+    ISSUE_NUMBER=821
+    FOLLOWUP_ISSUES=(821)
+
+    if [ ${#FOLLOWUP_ISSUES[@]} -gt 0 ]; then
+      _fu_kept=()
+      for _fu in "${FOLLOWUP_ISSUES[@]}"; do
+        [ "$_fu" = "$ISSUE_NUMBER" ] && continue
+        _fu_kept+=("$_fu")
+      done
+      FOLLOWUP_ISSUES=("${_fu_kept[@]+"${_fu_kept[@]}"}")
+    fi
+    echo "count=${#FOLLOWUP_ISSUES[@]}"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"count=0"* ]]
+}
+
+@test "undo source: the issue being undone is filtered out of FOLLOWUP_ISSUES" {
+  # Structural guard tying the behaviour above to the real source.
+  run grep -E '\[ "\$_fu" = "\$ISSUE_NUMBER" \] && continue' \
+    "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  [ "$status" -eq 0 ]
+}
