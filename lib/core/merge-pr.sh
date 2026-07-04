@@ -43,9 +43,182 @@ source "$RITE_LIB_DIR/utils/git-helpers.sh"
 # Source gh retry helper (provides gh_safe — retries 429/5xx, handles not-found)
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
 
+# Source labels helper (provides ensure_labels_exist — used by reconcile fn)
+source "$RITE_LIB_DIR/utils/labels.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
+
+# ---------------------------------------------------------------------------
+# _reconcile_followup_issues_on_merge PR_NUMBER [SOURCE_ISSUE_NUMBER]
+#
+# After a successful merge, enumerate open follow-up issues whose body carries
+# sharkrite-parent-pr:<merged_PR_number>, plus any open issues whose body
+# carries the same sharkrite-source-issue:<N> as this PR's source issue but a
+# different parent PR (close-and-restart lineage path).  For each found issue,
+# post a comment and add the needs-re-triage label so reviewers know to
+# re-verify the finding.
+#
+# Args:
+#   PR_NUMBER         — the merged PR number (required)
+#   SOURCE_ISSUE_NUMBER — the source issue number closed by this PR (optional).
+#     When provided, enables the close-and-restart lineage path: open follow-up
+#     issues carrying sharkrite-source-issue:<N> but a different parent-pr are
+#     included.  In merge-pr.sh this is the ISSUE_NUMBER extracted from the PR
+#     body ("Closes #N"), available at the call site.
+#
+# CONTRACT:
+#   - Network-light: one gh issue list --search per merge path; zero extra calls
+#     when the search returns nothing.
+#   - NO auto-close: v1 only comments + labels.
+#   - Format-anchored grep (BARE_MARKER_GREP rule): outer guard requires [0-9]+.
+#
+# Exit: always 0 (failures are logged as warnings, never crash the merge flow).
+# ---------------------------------------------------------------------------
+_reconcile_followup_issues_on_merge() {
+  local _pr_num="$1"
+  local _src_issue="${2:-}"
+
+  # ── Path 1: direct parent-PR match ─────────────────────────────────────────
+  # Search open issues whose body carries "sharkrite-parent-pr:<PR_NUMBER>".
+  # Use --search so GitHub's index does the work; one network call covers all
+  # follow-ups for this PR regardless of total issue count in the repo.
+  # The outer grep guard requires [0-9]+ per the BARE_MARKER_GREP rule:
+  # a documentation example like "sharkrite-parent-pr:N" (no digits) would match
+  # the bare-prefix check and return empty from the inner extraction, killing the
+  # batch silently under set -e + pipefail (live bug 2026-05-31, issue #34).
+  local _direct_hits=""
+  local _raw_direct_hits=""
+  _raw_direct_hits=$(gh_safe issue list \
+    --state open \
+    --search "\"${RITE_MARKER_PARENT_PR}:${_pr_num}\" in:body" \
+    --json number \
+    --jq '.[].number' || true)
+  _raw_direct_hits="${_raw_direct_hits:-}"
+
+  # Re-verify each search hit: GitHub's index can return superstring matches
+  # (e.g. parent-pr:4070 when searching parent-pr:407).  Fetch the issue body
+  # and require a format-anchored match before including the issue.
+  if [ -n "$_raw_direct_hits" ]; then
+    while IFS= read -r _candidate; do
+      [ -z "$_candidate" ] && continue
+      local _cbody=""
+      _cbody=$(gh_safe issue view "$_candidate" --json body --jq '.body' 2>/dev/null || true)
+      if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
+        _direct_hits="${_direct_hits}${_candidate}"$'\n'
+      fi
+    done <<< "$_raw_direct_hits"
+  fi
+  _direct_hits="${_direct_hits:-}"
+
+  # ── Path 2: close-and-restart lineage ──────────────────────────────────────
+  # When ISSUE_NUMBER is known, search open follow-up issues whose body carries
+  # the same sharkrite-source-issue:<N> but a DIFFERENT sharkrite-parent-pr
+  # (they were filed against a predecessor PR that closed and restarted).
+  # This is the close-and-restart scenario: PR #200 closed → PR #407 merged for
+  # the same source issue #100. Follow-ups filed against #200 carry
+  # sharkrite-source-issue:100 and sharkrite-parent-pr:200 — they are orphaned
+  # when #200 closes, and still need re-triage when #407 merges.
+  # Format-anchored guard on _src_issue: it comes from the "Closes #N" extraction
+  # in merge-pr.sh (always a number), but guard defensively anyway.
+  local _lineage_hits=""
+  if echo "${_src_issue:-}" | grep -qE '^[0-9]+$'; then
+    # Find open issues that share this source issue but point at a DIFFERENT
+    # parent PR.  One gh issue list call; filter locally via grep.
+    # Fetch numbers only (not body) to avoid multi-line body mis-parse:
+    # embedding body in jq output produces one physical line per body line,
+    # and the while-read loop would treat digit-leading body lines as phantom
+    # issue numbers, posting comments/labels to unrelated issues.
+    local _src_hits=""
+    _src_hits=$(gh_safe issue list \
+      --state open \
+      --search "\"${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}\" in:body" \
+      --json number \
+      --jq '.[].number' || true)
+    _src_hits="${_src_hits:-}"
+
+    if [ -n "$_src_hits" ]; then
+      while IFS= read -r _inum; do
+        [ -z "$_inum" ] && continue
+        # Validate: must be a bare number (guard against jq formatting noise).
+        echo "$_inum" | grep -qE '^[0-9]+$' || continue
+
+        # Fetch the body per-candidate (mirrors Path 1's re-verification approach)
+        # to avoid mutating unrelated issues from superstring search hits.
+        local _ibody=""
+        _ibody=$(gh_safe issue view "$_inum" --json body --jq '.body' 2>/dev/null || true)
+
+        # Re-verify: body must actually carry the source-issue marker with
+        # a boundary anchor to prevent superstring false positives
+        # (e.g. source-issue:1000 leaking in when searching source-issue:100).
+        if ! echo "${_ibody:-}" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}([^[:alnum:]_-]|$)"; then
+          continue
+        fi
+
+        # Only include if this issue does NOT already point at the merged PR
+        # (those are captured by Path 1 already).
+        if ! echo "${_ibody:-}" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
+          _lineage_hits="${_lineage_hits}${_inum}"$'\n'
+        fi
+      done <<< "$_src_hits"
+    fi
+  fi
+
+  # ── Merge both hit sets, deduplicate ───────────────────────────────────────
+  local _all_hits=""
+  _all_hits=$(printf '%s\n%s\n' "$_direct_hits" "$_lineage_hits" \
+    | grep -E '^[0-9]+$' | sort -un || true)
+  _all_hits="${_all_hits:-}"
+
+  if [ -z "$_all_hits" ]; then
+    # No follow-up issues found — zero extra gh calls (network-light contract).
+    return 0
+  fi
+
+  # ── Ensure needs-re-triage label exists ───────────────────────────────────
+  ensure_labels_exist "needs-re-triage" 2>/dev/null || true
+
+  # ── Comment + label each matching issue ───────────────────────────────────
+  local _comment_body_file=""
+  _comment_body_file=$(mktemp)
+  # shellcheck disable=SC2064
+  trap "rm -f '${_comment_body_file}'" RETURN
+  printf 'parent PR #%s merged — re-verify this finding against main\n' "$_pr_num" \
+    > "$_comment_body_file"
+
+  local _reconciled_count=0
+  while IFS= read -r _issue_num; do
+    [ -z "$_issue_num" ] && continue
+
+    # Post re-triage comment
+    local _comment_rc=0
+    gh_safe issue comment "$_issue_num" --body-file "$_comment_body_file" \
+      >/dev/null 2>&1 || _comment_rc=$?
+    if [ "$_comment_rc" -ne 0 ]; then
+      print_warning "Could not comment on follow-up issue #${_issue_num} (exit ${_comment_rc})"
+    fi
+
+    # Add needs-re-triage label
+    local _label_rc=0
+    gh_safe issue edit "$_issue_num" --add-label "needs-re-triage" \
+      >/dev/null 2>&1 || _label_rc=$?
+    if [ "$_label_rc" -ne 0 ]; then
+      print_warning "Could not add needs-re-triage label to issue #${_issue_num} (exit ${_label_rc})"
+    fi
+
+    if [ "$_comment_rc" -eq 0 ] && [ "$_label_rc" -eq 0 ]; then
+      _reconciled_count=$(( _reconciled_count + 1 ))
+    fi
+  done <<< "$_all_hits"
+
+  rm -f "$_comment_body_file" 2>/dev/null || true
+
+  if [ "$_reconciled_count" -gt 0 ]; then
+    print_success "Reconciled ${_reconciled_count} follow-up issue(s): re-triage comment + label added"
+  fi
+  return 0
+}
 
 # Parse arguments
 AUTO_MODE=false
@@ -980,6 +1153,15 @@ EOF
   else
     echo "  None (all items addressed in PR)"
   fi
+
+  # ─── Reconcile follow-up issues for the merged PR ──────────────────────────
+  # Post a re-triage comment + label on any open follow-up issues that still
+  # reference this PR (or its source issue via the close-and-restart path).
+  # Pass ISSUE_NUMBER (may be empty) to enable the lineage path: follow-up issues
+  # filed against a predecessor PR but sharing the same source issue are included.
+  # Network-light: zero extra gh calls when no follow-ups are found.
+  # Never crashes the merge flow (always exits 0 internally).
+  _reconcile_followup_issues_on_merge "$PR_NUMBER" "${ISSUE_NUMBER:-}" || true
 
   # ─── Cleanup: branches + worktree ───
   echo ""
