@@ -29,7 +29,7 @@ ensure_labels_exist() {
 
   local label
   IFS=',' read -ra label_arr <<< "$labels_csv"
-  for label in "${label_arr[@]}"; do
+  for label in "${label_arr[@]+"${label_arr[@]}"}"; do
     # Trim leading/trailing whitespace only. The previous form
     # "${label// /}" stripped ALL spaces, so multi-word labels like
     # "Medium Priority" became "MediumPriority" — creating orphan labels

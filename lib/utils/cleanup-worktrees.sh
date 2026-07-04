@@ -175,7 +175,7 @@ fi
 # Perform cleanup
 REMOVED_COUNT=0
 
-for entry in "${STALE_WORKTREES[@]}"; do
+for entry in "${STALE_WORKTREES[@]+"${STALE_WORKTREES[@]}"}"; do
   IFS='|' read -r wt_path wt_branch reason <<< "$entry"
 
   SHOULD_REMOVE=false

@@ -130,7 +130,7 @@ _grep_symbol() {
       || true)
   else
     # grep -rn fallback
-    results=$(grep -rnF "$symbol" "${dirs[@]}" 2>/dev/null \
+    results=$(grep -rnF "$symbol" "${dirs[@]+"${dirs[@]}"}" 2>/dev/null \
       | head -3 \
       | sed 's/\(:[0-9]*\):.*/\1/' \
       || true)
@@ -204,7 +204,7 @@ relevance_grep() {
     [ -z "$fpath" ] && continue
 
     local hits
-    hits=$(_grep_symbol "$fpath" "${search_dirs[@]}" || true)
+    hits=$(_grep_symbol "$fpath" "${search_dirs[@]+"${search_dirs[@]}"}" || true)
     [ -z "$hits" ] && continue
 
     # Collect non-self-reference hits first so a block with only a
@@ -238,7 +238,7 @@ relevance_grep() {
     [ -z "$sym" ] && continue
 
     local hits
-    hits=$(_grep_symbol "$sym" "${search_dirs[@]}" || true)
+    hits=$(_grep_symbol "$sym" "${search_dirs[@]+"${search_dirs[@]}"}" || true)
     [ -z "$hits" ] && continue
 
     output="${output}Existing usages of \`${sym}\`:"$'\n'

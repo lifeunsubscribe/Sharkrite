@@ -112,7 +112,7 @@ while IFS= read -r stash_line; do
   is_legacy=false
 
   # Check if this matches any legacy pattern
-  for pattern in "${LEGACY_PATTERNS[@]}"; do
+  for pattern in "${LEGACY_PATTERNS[@]+"${LEGACY_PATTERNS[@]}"}"; do
     if echo "$stash_line" | grep -qF "$pattern"; then
       is_legacy=true
       break
@@ -147,7 +147,7 @@ fi
 print_warning "Found $legacy_count legacy sharkrite stash(es):"
 echo ""
 
-for stash_line in "${legacy_stashes[@]}"; do
+for stash_line in "${legacy_stashes[@]+"${legacy_stashes[@]}"}"; do
   stash_ref=$(echo "$stash_line" | cut -d':' -f1)
   stash_msg=$(echo "$stash_line" | cut -d':' -f2-)
 

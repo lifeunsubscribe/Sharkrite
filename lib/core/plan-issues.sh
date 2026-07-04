@@ -312,7 +312,9 @@ plan_issues() {
 
   # Load context files
   local doc_content=""
-  for doc in "${doc_paths[@]}"; do
+  # +idiom: an instructions-only invocation (`rite plan "<text>"`) reaches here
+  # with doc_paths empty — bare [@] crashes under set -u on bash 3.2.
+  for doc in "${doc_paths[@]+"${doc_paths[@]}"}"; do
     local doc_basename
     doc_basename=$(basename "$doc")
     doc_content+="
@@ -3770,7 +3772,7 @@ create_issues() {
         local -a gh_args=()
         if [ -n "$current_labels" ]; then
           IFS=',' read -ra LABEL_ARRAY <<< "$current_labels"
-          for label in "${LABEL_ARRAY[@]}"; do
+          for label in "${LABEL_ARRAY[@]+"${LABEL_ARRAY[@]}"}"; do
             label=$(echo "$label" | xargs)  # trim whitespace
             gh_safe label create "$label" --force < /dev/null &>/dev/null || true
           done
@@ -3786,9 +3788,11 @@ create_issues() {
         printf '%s' "$current_body" > "$body_file"
 
         local issue_url gh_exit
+        # +idiom on gh_args: it only gains elements when the issue block carries
+        # a LABELS: line — an empty array's bare [@] crashes bash 3.2 under set -u.
         issue_url=$(gh_safe issue create \
           --title "$current_title" \
-          "${gh_args[@]}" \
+          "${gh_args[@]+"${gh_args[@]}"}" \
           --body-file "$body_file" < /dev/null 2>&1) && gh_exit=0 || gh_exit=$?
         rm -f "$body_file"
 
