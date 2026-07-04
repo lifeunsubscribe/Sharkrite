@@ -30,6 +30,9 @@
 #   6. Static: call site present in merge-pr.sh after follow-up issues section
 #   7. Static: format-anchored grep used (BARE_MARKER_GREP compliance)
 #   8. Static: needs-re-triage label defined in labels.sh
+#   9. Path 1 false-positive: superstring issue NOT labeled (parent-pr:4070 vs PR #407)
+#  10. Path 2 multi-line body: digit-leading body lines do NOT become phantom issues
+#  11. Path 2 superstring: source-issue:1000 NOT labeled when searching source-issue:100
 #
 # Verification command:
 #   bats tests/regression/followup-reconcile-on-merge.bats
@@ -260,13 +263,21 @@ _load_reconcile_fn() {
         echo ""
         return 0
       fi
-      # Path 2: source-issue:100 search → return the lineage issue
-      # Format: "<number> <body>" per --jq '.[] | "\(.number) \(.body)"'
+      # Path 2: source-issue:100 search → return only the issue NUMBER.
+      # Path 2 now fetches numbers only (no body in jq output) to avoid
+      # multi-line body mis-parse; body is retrieved via a separate view call.
       if echo "$_args_str" | grep -qF "${RITE_MARKER_SOURCE_ISSUE}:${src_issue}"; then
-        printf '%s %s\n' "$lineage_followup" "$_lineage_body"
+        printf '%s\n' "$lineage_followup"
         return 0
       fi
       echo ""
+      return 0
+    fi
+
+    # Path 2 per-candidate body fetch (and Path 1 re-verification).
+    if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
+      # Return the lineage body for #348.
+      printf '%s\n' "$_lineage_body"
       return 0
     fi
 
@@ -331,21 +342,22 @@ _load_reconcile_fn() {
 
     if [ "$subcmd" = "issue" ] && [ "$action" = "list" ]; then
       local _args_str="$*"
-      # Path 1: direct search returns #350
+      # Path 1: direct search returns #350 (number only)
       if echo "$_args_str" | grep -qF "${RITE_MARKER_PARENT_PR}:${pr}"; then
         echo "$both_hit"
         return 0
       fi
-      # Path 2: source-issue search also surfaces #350
+      # Path 2: source-issue search also surfaces #350 (number only — no body
+      # in jq output; body is fetched separately via issue view).
       if echo "$_args_str" | grep -qF "${RITE_MARKER_SOURCE_ISSUE}:${src_issue}"; then
-        printf '%s %s\n' "$both_hit" "$_body_350"
+        printf '%s\n' "$both_hit"
         return 0
       fi
       echo ""
       return 0
     fi
 
-    # Path 1 re-verification: issue view returns the body with the exact marker
+    # Per-candidate body fetch (Path 1 re-verification and Path 2 re-verify).
     if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
       printf '%s\n' "$_body_350"
       return 0
@@ -564,6 +576,191 @@ _load_reconcile_fn() {
   _label_count=$(grep -c "^${false_positive_issue}$" "$_labels" || true)
   [ "$_label_count" -eq 0 ] || {
     echo "FAIL: issue #${false_positive_issue} (parent-pr:4070) should NOT be labeled when PR #407 merges, got $_label_count label call(s)"
+    cat "$_labels" || true
+    false
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 10: Path 2 multi-line body — digit-leading body lines do NOT become
+#          phantom issues
+#
+# Regression guard for the multi-line body mis-parse fix:
+# The old Path 2 embedded issue bodies inline in the jq output
+# ('.[] | "\(.number) \(.body)"'), so a multi-line body produced multiple
+# physical lines.  Lines starting with digits were treated as issue numbers,
+# causing phantom comment/label calls on unrelated issues.
+#
+# The fix fetches numbers only from `issue list`, then fetches the body per-
+# candidate via `issue view` — exactly as Path 1 does.  This test simulates
+# a multi-line body with a digit-leading line (e.g. "100 completed items")
+# and verifies only the real follow-up issue (#348) gets processed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "Path 2 multi-line body: digit-leading body lines do NOT become phantom issues" {
+  _load_reconcile_fn
+
+  local pr=407
+  local src_issue=100
+  local predecessor_pr=200
+  local lineage_followup=348
+  # A digit that appears in the body — this would have been treated as a
+  # phantom issue number by the old code path.
+  local phantom_number=999
+
+  local _comments="$RITE_TEST_TMPDIR/comments-t10.txt"
+  local _labels="$RITE_TEST_TMPDIR/labels-t10.txt"
+  touch "$_comments" "$_labels"
+
+  # Body of issue #348: multi-line, with a digit-leading line that old code
+  # would have mistaken for an issue number.
+  local _lineage_body
+  _lineage_body="<!-- ${RITE_MARKER_PARENT_PR}:${predecessor_pr} --><!-- ${RITE_MARKER_SOURCE_ISSUE}:${src_issue} -->
+${phantom_number} completed items in this follow-up
+Some more body text"
+
+  gh_safe() {
+    local subcmd="${1:-}"
+    local action="${2:-}"
+
+    if [ "$subcmd" = "issue" ] && [ "$action" = "list" ]; then
+      local _args_str="$*"
+      # Path 1: no direct hits
+      if echo "$_args_str" | grep -qF "${RITE_MARKER_PARENT_PR}:${pr}"; then
+        echo ""
+        return 0
+      fi
+      # Path 2: source-issue search returns the lineage issue NUMBER only.
+      if echo "$_args_str" | grep -qF "${RITE_MARKER_SOURCE_ISSUE}:${src_issue}"; then
+        printf '%s\n' "$lineage_followup"
+        return 0
+      fi
+      echo ""
+      return 0
+    fi
+
+    # Per-candidate body fetch — returns the multi-line body.
+    if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
+      printf '%s\n' "$_lineage_body"
+      return 0
+    fi
+
+    if [ "$subcmd" = "issue" ] && [ "$action" = "comment" ]; then
+      echo "${3:-}" >> "$_comments"
+      return 0
+    fi
+    if [ "$subcmd" = "issue" ] && [ "$action" = "edit" ]; then
+      echo "${3:-}" >> "$_labels"
+      return 0
+    fi
+
+    return 0
+  }
+
+  _reconcile_followup_issues_on_merge "$pr" "$src_issue"
+
+  # The real follow-up #348 must receive exactly one comment + label.
+  local _comment_count
+  _comment_count=$(grep -c "^${lineage_followup}$" "$_comments" || true)
+  [ "$_comment_count" -eq 1 ] || {
+    echo "FAIL: expected 1 comment on issue #${lineage_followup}, got $_comment_count"
+    cat "$_comments" || true
+    false
+  }
+
+  # The phantom number (999) must NOT have been processed.
+  local _phantom_comments
+  _phantom_comments=$(grep -c "^${phantom_number}$" "$_comments" || true)
+  [ "$_phantom_comments" -eq 0 ] || {
+    echo "FAIL: digit-leading body line ${phantom_number} was treated as a phantom issue number; got $_phantom_comments comment(s)"
+    cat "$_comments" || true
+    false
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 11: Path 2 superstring — source-issue:1000 NOT labeled when searching
+#          source-issue:100
+#
+# Regression guard for the Path 2 boundary-anchor fix:
+# GitHub's search index returns superstring hits (source-issue:1000 when
+# querying source-issue:100).  Path 2's re-verification now uses a
+# boundary-anchored grep to reject those hits.
+#
+# Scenario:
+#   - PR #407 merges for source issue #100.
+#   - GitHub search returns issue #999 as a false-positive (its body carries
+#     sharkrite-source-issue:1000, NOT sharkrite-source-issue:100).
+#   - The boundary-anchored grep must reject issue #999 — no comment, no label.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "Path 2 superstring: source-issue:1000 NOT labeled when searching source-issue:100" {
+  _load_reconcile_fn
+
+  local pr=407
+  local src_issue=100
+  local false_positive_issue=999
+
+  local _comments="$RITE_TEST_TMPDIR/comments-t11.txt"
+  local _labels="$RITE_TEST_TMPDIR/labels-t11.txt"
+  touch "$_comments" "$_labels"
+
+  # Body of issue #999: carries source-issue:1000, NOT source-issue:100.
+  local _body_999="<!-- ${RITE_MARKER_SOURCE_ISSUE}:1000 -->"
+
+  gh_safe() {
+    local subcmd="${1:-}"
+    local action="${2:-}"
+
+    if [ "$subcmd" = "issue" ] && [ "$action" = "list" ]; then
+      local _args_str="$*"
+      # Path 1: no direct hits
+      if echo "$_args_str" | grep -qF "${RITE_MARKER_PARENT_PR}:${pr}"; then
+        echo ""
+        return 0
+      fi
+      # Path 2: search returns the superstring issue as a false-positive number.
+      if echo "$_args_str" | grep -qF "${RITE_MARKER_SOURCE_ISSUE}:${src_issue}"; then
+        printf '%s\n' "$false_positive_issue"
+        return 0
+      fi
+      echo ""
+      return 0
+    fi
+
+    # Per-candidate body fetch: returns the :1000 body (the superstring).
+    if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
+      printf '%s\n' "$_body_999"
+      return 0
+    fi
+
+    # These must NOT be called — the false-positive must be rejected.
+    if [ "$subcmd" = "issue" ] && [ "$action" = "comment" ]; then
+      echo "${3:-}" >> "$_comments"
+      return 0
+    fi
+    if [ "$subcmd" = "issue" ] && [ "$action" = "edit" ]; then
+      echo "${3:-}" >> "$_labels"
+      return 0
+    fi
+
+    return 0
+  }
+
+  _reconcile_followup_issues_on_merge "$pr" "$src_issue"
+
+  local _comment_count
+  _comment_count=$(grep -c "^${false_positive_issue}$" "$_comments" || true)
+  [ "$_comment_count" -eq 0 ] || {
+    echo "FAIL: issue #${false_positive_issue} (source-issue:1000) should NOT be commented when searching source-issue:100, got $_comment_count comment(s)"
+    cat "$_comments" || true
+    false
+  }
+
+  local _label_count
+  _label_count=$(grep -c "^${false_positive_issue}$" "$_labels" || true)
+  [ "$_label_count" -eq 0 ] || {
+    echo "FAIL: issue #${false_positive_issue} (source-issue:1000) should NOT be labeled when searching source-issue:100, got $_label_count label call(s)"
     cat "$_labels" || true
     false
   }

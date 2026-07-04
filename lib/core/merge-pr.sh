@@ -126,27 +126,39 @@ _reconcile_followup_issues_on_merge() {
   if echo "${_src_issue:-}" | grep -qE '^[0-9]+$'; then
     # Find open issues that share this source issue but point at a DIFFERENT
     # parent PR.  One gh issue list call; filter locally via grep.
+    # Fetch numbers only (not body) to avoid multi-line body mis-parse:
+    # embedding body in jq output produces one physical line per body line,
+    # and the while-read loop would treat digit-leading body lines as phantom
+    # issue numbers, posting comments/labels to unrelated issues.
     local _src_hits=""
     _src_hits=$(gh_safe issue list \
       --state open \
       --search "\"${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}\" in:body" \
-      --json number,body \
-      --jq '.[] | "\(.number) \(.body)"' || true)
+      --json number \
+      --jq '.[].number' || true)
     _src_hits="${_src_hits:-}"
 
     if [ -n "$_src_hits" ]; then
-      while IFS= read -r _line; do
-        [ -z "$_line" ] && continue
-        local _inum=""
-        _inum=$(echo "$_line" | grep -oE '^[0-9]+' || true)
+      while IFS= read -r _inum; do
         [ -z "$_inum" ] && continue
+        # Validate: must be a bare number (guard against jq formatting noise).
+        echo "$_inum" | grep -qE '^[0-9]+$' || continue
 
+        # Fetch the body per-candidate (mirrors Path 1's re-verification approach)
+        # to avoid mutating unrelated issues from superstring search hits.
         local _ibody=""
-        _ibody=$(echo "$_line" | sed 's/^[0-9]* //' || true)
+        _ibody=$(gh_safe issue view "$_inum" --json body --jq '.body' 2>/dev/null || true)
+
+        # Re-verify: body must actually carry the source-issue marker with
+        # a boundary anchor to prevent superstring false positives
+        # (e.g. source-issue:1000 leaking in when searching source-issue:100).
+        if ! echo "${_ibody:-}" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}([^[:alnum:]_-]|$)"; then
+          continue
+        fi
 
         # Only include if this issue does NOT already point at the merged PR
         # (those are captured by Path 1 already).
-        if ! echo "$_ibody" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
+        if ! echo "${_ibody:-}" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
           _lineage_hits="${_lineage_hits}${_inum}"$'\n'
         fi
       done <<< "$_src_hits"
