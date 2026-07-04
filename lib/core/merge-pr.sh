@@ -1059,7 +1059,7 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   fi
 
   # Extract issue number from PR if it exists
-  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | sed -n 's/.*Closes #\([0-9]\+\).*/\1/p' | head -1 || true)
+  ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | sed -n 's/.*Closes #\([0-9]\{1,\}\).*/\1/p' | head -1 || true)
 
   if [ ! -z "$ISSUE_NUMBER" ]; then
     if [ "$AUTO_MODE" = false ]; then
@@ -1373,7 +1373,7 @@ EOF
         # LAST_DEEP_CLEAN would be empty, causing date to fall back to epoch 0
         # and producing a bogus ~56-year age.  The empty-string check below handles
         # the absent-marker case explicitly instead.
-        LAST_DEEP_CLEAN=$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\+\).*/\1/p' "$SCRATCHPAD_FILE" 2>/dev/null | head -1 || true)
+        LAST_DEEP_CLEAN=$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\{1,\}\).*/\1/p' "$SCRATCHPAD_FILE" 2>/dev/null | head -1 || true)
 
         SHOULD_DEEP_CLEAN=false
         DEEP_CLEAN_REASON=""

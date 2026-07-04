@@ -143,7 +143,7 @@ Rules:
   fi
 
   # Strip markdown from title (safety net)
-  generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //' || true)
+  generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\{1,\} //' || true)
 
   # Validate title length
   if [ ${#generated_title} -gt 50 ]; then
@@ -182,7 +182,7 @@ Rules:
       echo -n "Enter new title: " >&2
       read -r generated_title </dev/tty
       # Validate edited title
-      generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //' || true)
+      generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\{1,\} //' || true)
       if [ ${#generated_title} -gt 50 ]; then
         generated_title=$(_truncate_at_word_boundary "$generated_title" 50)
         print_warning "Title truncated to 50 chars: $generated_title" >&2
@@ -365,7 +365,7 @@ _paraphrase_title() {
   result=$(provider_run_classify "$(printf "Condense this into an imperative-mood title, maximum 50 characters. Output ONLY the condensed title — no quotes, no prefix, no explanation.\n\n%s" "$long_title")") || return 1
 
   # Validate: single line, strip formatting, strip prefix Claude might add
-  result=$(echo "$result" | head -1 | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //; s/^"//; s/"$//' || true)
+  result=$(echo "$result" | head -1 | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\{1,\} //; s/^"//; s/"$//' || true)
   result=$(echo "$result" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //' || true)
 
   if [ -n "$result" ] && [ ${#result} -le 50 ]; then
@@ -384,7 +384,7 @@ _cleanup_title() {
 
   # 1. Strip markdown artifacts
   local cleaned
-  cleaned=$(echo "$title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\+ //' || true)
+  cleaned=$(echo "$title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\{1,\} //' || true)
 
   # 2. Strip conventional commit prefix (prefix moves to commit time)
   cleaned=$(echo "$cleaned" | sed -E 's/^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\([^)]*\))?: //' || true)

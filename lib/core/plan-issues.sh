@@ -2651,7 +2651,7 @@ _extract_packages_for_language() {
       # PyPI distribution names (e.g. yaml → pyyaml, bs4 → beautifulsoup4).
       grep -oE '^\s*(import|from)\s+[a-zA-Z_][a-zA-Z0-9_]*' | \
         sed 's/^[[:space:]]*//' | \
-        sed 's/^import[[:space:]]\+//; s/^from[[:space:]]\+//' | \
+        sed 's/^import[[:space:]]\{1,\}//; s/^from[[:space:]]\{1,\}//' | \
         grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*' | \
         _normalize_python_import_name || true
       ;;

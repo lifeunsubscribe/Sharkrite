@@ -43,7 +43,7 @@ _run_marker_logic() {
     SCRATCHPAD_SIZE=\$(wc -c < \"\$SCRATCHPAD_FILE\" 2>/dev/null || echo '0')
     ${size_override:+SCRATCHPAD_SIZE=$size_override}
 
-    LAST_DEEP_CLEAN=\$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\+\).*/\1/p' \"\$SCRATCHPAD_FILE\" 2>/dev/null | head -1 || true)
+    LAST_DEEP_CLEAN=\$(sed -n 's/.*<!-- last_deep_clean=\([0-9-]\{1,\}\).*/\1/p' \"\$SCRATCHPAD_FILE\" 2>/dev/null | head -1 || true)
 
     SHOULD_DEEP_CLEAN=false
     DEEP_CLEAN_REASON=''
