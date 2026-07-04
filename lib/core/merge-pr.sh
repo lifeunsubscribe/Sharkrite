@@ -89,11 +89,27 @@ _reconcile_followup_issues_on_merge() {
   # the bare-prefix check and return empty from the inner extraction, killing the
   # batch silently under set -e + pipefail (live bug 2026-05-31, issue #34).
   local _direct_hits=""
-  _direct_hits=$(gh_safe issue list \
+  local _raw_direct_hits=""
+  _raw_direct_hits=$(gh_safe issue list \
     --state open \
-    --search "${RITE_MARKER_PARENT_PR}:${_pr_num} in:body" \
+    --search "\"${RITE_MARKER_PARENT_PR}:${_pr_num}\" in:body" \
     --json number \
     --jq '.[].number' || true)
+  _raw_direct_hits="${_raw_direct_hits:-}"
+
+  # Re-verify each search hit: GitHub's index can return superstring matches
+  # (e.g. parent-pr:4070 when searching parent-pr:407).  Fetch the issue body
+  # and require a format-anchored match before including the issue.
+  if [ -n "$_raw_direct_hits" ]; then
+    while IFS= read -r _candidate; do
+      [ -z "$_candidate" ] && continue
+      local _cbody=""
+      _cbody=$(gh_safe issue view "$_candidate" --json body --jq '.body' 2>/dev/null || true)
+      if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
+        _direct_hits="${_direct_hits}${_candidate}"$'\n'
+      fi
+    done <<< "$_raw_direct_hits"
+  fi
   _direct_hits="${_direct_hits:-}"
 
   # ── Path 2: close-and-restart lineage ──────────────────────────────────────
@@ -113,7 +129,7 @@ _reconcile_followup_issues_on_merge() {
     local _src_hits=""
     _src_hits=$(gh_safe issue list \
       --state open \
-      --search "${RITE_MARKER_SOURCE_ISSUE}:${_src_issue} in:body" \
+      --search "\"${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}\" in:body" \
       --json number,body \
       --jq '.[] | "\(.number) \(.body)"' || true)
     _src_hits="${_src_hits:-}"

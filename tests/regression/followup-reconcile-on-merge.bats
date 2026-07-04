@@ -114,6 +114,9 @@ _load_reconcile_fn() {
   local _labels="$RITE_TEST_TMPDIR/labels-t1.txt"
   touch "$_comments" "$_labels"
 
+  # Body for issue #350: carries the exact parent-pr:407 marker.
+  local _body_350="<!-- ${RITE_MARKER_PARENT_PR}:${pr} -->"
+
   gh_safe() {
     local subcmd="${1:-}"
     local action="${2:-}"
@@ -121,6 +124,12 @@ _load_reconcile_fn() {
     # Path 1: issue list for parent-pr search → return the follow-up issue
     if [ "$subcmd" = "issue" ] && [ "$action" = "list" ]; then
       printf '%s\n' "$followup_issue"
+      return 0
+    fi
+
+    # Path 1 re-verification: issue view returns a body with the exact marker
+    if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
+      printf '%s\n' "$_body_350"
       return 0
     fi
 
@@ -336,6 +345,12 @@ _load_reconcile_fn() {
       return 0
     fi
 
+    # Path 1 re-verification: issue view returns the body with the exact marker
+    if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
+      printf '%s\n' "$_body_350"
+      return 0
+    fi
+
     if [ "$subcmd" = "issue" ] && [ "$action" = "comment" ]; then
       echo "${3:-}" >> "$_comments"
       return 0
@@ -471,6 +486,85 @@ _load_reconcile_fn() {
 @test "static: needs-re-triage label is defined in lib/utils/labels.sh" {
   grep -q 'needs-re-triage' "$RITE_REPO_ROOT/lib/utils/labels.sh" || {
     echo "FAIL: 'needs-re-triage' label not found in lib/utils/labels.sh"
+    false
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 9: Path 1 false-positive rejection — superstring issue NOT labeled
+#
+# Regression guard for the boundary-anchor fix (finding #1):
+# GitHub's search index can return issue #4070 when querying parent-pr:407
+# because the colon-tokenization does a substring match.  The per-candidate
+# body re-verification must reject #4070 by requiring ([^0-9]|$) after the PR
+# number in the anchored grep.
+#
+# Scenario:
+#   - PR #407 merges.
+#   - GitHub search returns issue #4070 as a false-positive hit (its body carries
+#     sharkrite-parent-pr:4070, NOT sharkrite-parent-pr:407).
+#   - The re-verification fetch of #4070 returns that body.
+#   - The boundary-anchored grep must reject it — no comment, no label.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@test "Path 1 false-positive: superstring issue (parent-pr:4070) is NOT labeled when PR #407 merges" {
+  _load_reconcile_fn
+
+  local pr=407
+  local false_positive_issue=4070
+
+  local _comments="$RITE_TEST_TMPDIR/comments-t9.txt"
+  local _labels="$RITE_TEST_TMPDIR/labels-t9.txt"
+  touch "$_comments" "$_labels"
+
+  # Body of issue #4070: carries parent-pr:4070, NOT parent-pr:407.
+  local _body_4070="<!-- ${RITE_MARKER_PARENT_PR}:${false_positive_issue} -->"
+
+  gh_safe() {
+    local subcmd="${1:-}"
+    local action="${2:-}"
+
+    # Path 1: search returns the superstring issue as a false-positive hit
+    if [ "$subcmd" = "issue" ] && [ "$action" = "list" ]; then
+      printf '%s\n' "$false_positive_issue"
+      return 0
+    fi
+
+    # Re-verification: issue view returns the body with parent-pr:4070 (not :407)
+    if [ "$subcmd" = "issue" ] && [ "$action" = "view" ]; then
+      printf '%s\n' "$_body_4070"
+      return 0
+    fi
+
+    # These must NOT be called — the false-positive must be rejected
+    if [ "$subcmd" = "issue" ] && [ "$action" = "comment" ]; then
+      echo "${3:-}" >> "$_comments"
+      return 0
+    fi
+    if [ "$subcmd" = "issue" ] && [ "$action" = "edit" ]; then
+      echo "${3:-}" >> "$_labels"
+      return 0
+    fi
+
+    return 0
+  }
+
+  # No source-issue arg → lineage path skipped entirely
+  _reconcile_followup_issues_on_merge "$pr"
+
+  local _comment_count
+  _comment_count=$(grep -c "^${false_positive_issue}$" "$_comments" || true)
+  [ "$_comment_count" -eq 0 ] || {
+    echo "FAIL: issue #${false_positive_issue} (parent-pr:4070) should NOT be commented when PR #407 merges, got $_comment_count comment(s)"
+    cat "$_comments" || true
+    false
+  }
+
+  local _label_count
+  _label_count=$(grep -c "^${false_positive_issue}$" "$_labels" || true)
+  [ "$_label_count" -eq 0 ] || {
+    echo "FAIL: issue #${false_positive_issue} (parent-pr:4070) should NOT be labeled when PR #407 merges, got $_label_count label call(s)"
+    cat "$_labels" || true
     false
   }
 }
