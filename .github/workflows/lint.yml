@@ -29,9 +29,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Install shellcheck (macOS)
+      - name: Install shellcheck + bash (macOS)
         if: runner.os == 'macOS'
-        run: brew install shellcheck
+        run: |
+          # bash: the runner's /usr/bin/env bash is system bash 3.2, but the dev
+          # environment this job mirrors (Sarah's Mac) has homebrew bash 5 on
+          # PATH — the lint tool and several bats tests use bash-4+ builtins
+          # (mapfile) under `#!/usr/bin/env bash`. The bash-3.2 contract for
+          # lib/ and bin/ #!/bin/bash scripts is enforced by lint rules
+          # (BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT), not by this job's shell.
+          brew install shellcheck bash
 
       - name: Run make check
         run: make check
