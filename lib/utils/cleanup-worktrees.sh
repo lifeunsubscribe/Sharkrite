@@ -81,6 +81,11 @@ while IFS= read -r wt_path; do
   [ -z "$wt_path" ] && continue
 
   WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "unknown")
+  # Detached HEAD (mid-rebase/bisect) reports an EMPTY branch name. Never treat
+  # it as stale — removing it destroys in-progress git state. Skip it.
+  if [ -z "$WT_BRANCH" ]; then
+    continue
+  fi
   UNCOMMITTED_COUNT=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
   # Check if branch has been merged/deleted

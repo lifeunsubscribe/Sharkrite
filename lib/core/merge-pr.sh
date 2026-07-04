@@ -1559,6 +1559,15 @@ EOF
               [ "$wt_path" = "$CURRENT_DIR" ] && continue
 
               WT_BRANCH=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "unknown")
+              # A worktree on detached HEAD reports an EMPTY branch name (git
+              # branch --show-current exits 0 with no output mid-rebase/mid-bisect).
+              # Never treat it as stale: force-removing it would destroy in-progress
+              # rebase state, and the batch-sibling protection below keys on the
+              # branch name — it cannot guard an empty one, so a protected sibling
+              # would be removed too. Skip it entirely.
+              if [ -z "$WT_BRANCH" ]; then
+                continue
+              fi
               UNCOMMITTED_COUNT=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
               # Check if branch has been merged/deleted
