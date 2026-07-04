@@ -8,29 +8,46 @@ on:
 
 jobs:
   shellcheck:
-    name: ShellCheck + Custom Lint Rules
-    runs-on: ubuntu-latest
+    name: ShellCheck + Custom Lint Rules (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Run BOTH OSes to completion — sharkrite must be portable across macOS
+      # (BSD userland, system bash 3.2) and Linux (GNU userland, bash 5.x). A
+      # failure on one must NOT cancel the other; we want both signals. macOS
+      # runners are free here because the repo is public.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install shellcheck
+      - name: Install shellcheck (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+
       - name: Run make check
         run: make check
 
-      - name: Install bats
-        if: success() || failure()
+      - name: Install bats (Linux)
+        if: (success() || failure()) && runner.os == 'Linux'
         run: |
           # Ubuntu's apt `bats` is <1.5.0 and REJECTS modern `run` flags
           # (run -0 / run --separate-stderr), failing ~50 tests that pass on the
           # bats 1.13.0 developers run locally (homebrew). Pin the same version.
           git clone --depth 1 --branch v1.13.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
           sudo /tmp/bats-core/install.sh /usr/local
+
+      - name: Install bats (macOS)
+        if: (success() || failure()) && runner.os == 'macOS'
+        run: brew install bats-core
 
       - name: Set up ~/.rite (replicate dev install env)
         if: success() || failure()
