@@ -126,7 +126,11 @@ EOF
   local after_archive=$(sed -n '/## Completed Work Archive/,$p' "$SCRATCHPAD_FILE")
 
   # Get existing entries (up to 4, since we're adding 1 new = 5 total)
-  local existing_entries=$(echo "$after_recent" | sed '/^## /Q' | grep -A 9999 "^### PR #" | head -c 5000 || echo "")
+  # Lowercase q (POSIX) — GNU-only Q hard-errors on BSD sed ("invalid command
+  # code Q"), and the || fallback masked it as empty → the 4-entry trim below
+  # never ran and the findings section grew unbounded on macOS. The extra line
+  # q prints (vs Q) is the terminating "## " header, which the grep discards.
+  local existing_entries=$(echo "$after_recent" | sed '/^## /q' | grep -A 9999 "^### PR #" | head -c 5000 || echo "")
 
   # Count existing entries
   local entry_count=$(echo "$existing_entries" | grep -c "^### PR #" || true)
