@@ -25,9 +25,13 @@
 #    then a guard that stops before the executable body when in function-only mode.
 #
 # Files that need RITE_SOURCE_FUNCTIONS_ONLY=1 are those known to run top-level
-# interactive or network-dependent code (cleanup-worktrees.sh). Other executables
-# (validate-setup.sh, format-review.sh) have their own variable-based guards that
-# make second-source exit 0 without needing the env var.
+# interactive, network-dependent, or machine-state-dependent code
+# (cleanup-worktrees.sh, validate-setup.sh). validate-setup.sh's program body
+# probes gh auth and the gitignored .rite data dir and exits non-zero when
+# they're missing — plain-sourcing it is only green on a fully set-up dev
+# machine (it failed in clean CI, 2026-07). Other executables (format-review.sh)
+# have their own variable-based guards that make second-source exit 0 without
+# needing the env var.
 
 setup() {
   # RITE_REPO_ROOT is the sharkrite source root
@@ -201,10 +205,6 @@ _assert_double_source() {
   _assert_double_source "lib/utils/timeout.sh"
 }
 
-@test "lib/utils/validate-setup.sh sources twice without error" {
-  _assert_double_source "lib/utils/validate-setup.sh"
-}
-
 # ---------------------------------------------------------------------------
 # lib/utils — executables that need RITE_SOURCE_FUNCTIONS_ONLY=1
 # ---------------------------------------------------------------------------
@@ -213,6 +213,18 @@ _assert_double_source() {
   # cleanup-worktrees.sh runs an interactive tty program; RITE_SOURCE_FUNCTIONS_ONLY=1
   # stops it before the interactive body so tests can load it safely.
   _assert_double_source "lib/utils/cleanup-worktrees.sh" "1"
+}
+
+@test "lib/utils/validate-setup.sh sources twice with RITE_SOURCE_FUNCTIONS_ONLY=1" {
+  # validate-setup.sh is a validation *program*: its body probes machine state
+  # (gh auth, .rite data dir, AWS creds) and exits non-zero when prerequisites
+  # are missing. Plain-sourcing runs that program, so the old form of this test
+  # was green on a set-up dev machine and red in clean CI (and when it exited 0
+  # it short-circuited the bash -c before the second source ever ran).
+  # RITE_SOURCE_FUNCTIONS_ONLY=1 stops the first source after function defs;
+  # the second source exercises the _RITE_VALIDATE_SETUP_LOADED guard —
+  # both guards verified, hermetically.
+  _assert_double_source "lib/utils/validate-setup.sh" "1"
 }
 
 # ---------------------------------------------------------------------------
