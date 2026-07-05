@@ -108,12 +108,28 @@ fi
 # — the intersection is by design. Empty intersection → exit 0 with a notice
 # (e.g. docs-only commit). Direct `make lint` (no env var) keeps full-scan
 # behavior unchanged.
+#
+# IMPORTANT: .bats files are NOT in SHELL_FILES (the SHELL_FILES find only covers
+# bin/, lib/, tools/). A bats-only commit would produce an empty SHELL_FILES
+# intersection and trigger an early exit BEFORE Rules 34/35 (which build their
+# own bats scan list) ever run. To prevent this, we pre-compute the bats
+# intersection here and skip the early exit when bats files are in scope.
 if [ -n "${RITE_LINT_FILES:-}" ]; then
   _lint_targeted_tmp=$(mktemp)
   printf '%s\n' "${SHELL_FILES[@]}" > "$_lint_targeted_tmp"
   mapfile -t SHELL_FILES < <(printf '%s\n' "$RITE_LINT_FILES" | grep -Fxf "$_lint_targeted_tmp" 2>/dev/null || true)
   rm -f "$_lint_targeted_tmp"
-  if [ "${#SHELL_FILES[@]}" -eq 0 ]; then
+  # Pre-compute the bats intersection before the early-exit guard so that a
+  # bats-only commit (SHELL_FILES empty but RITE_LINT_FILES has .bats paths)
+  # does not exit before Rules 34/35 get a chance to run. Rules 34/35 build
+  # their own _bats_scan_list near the bottom of the file; we just need to know
+  # here whether there are any in-scope bats files to decide on early exit.
+  _lint_bats_count=0
+  _lint_bats_all_tmp=$(mktemp)
+  find "$PROJECT_ROOT/tests" -name '*.bats' -type f 2>/dev/null > "$_lint_bats_all_tmp" || true
+  _lint_bats_count=$(printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' | grep -cFxf "$_lint_bats_all_tmp" 2>/dev/null || true)
+  rm -f "$_lint_bats_all_tmp"
+  if [ "${#SHELL_FILES[@]}" -eq 0 ] && [ "${_lint_bats_count:-0}" -eq 0 ]; then
     echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
     exit 0
   fi

@@ -528,3 +528,32 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "file-scope-env-suppressed.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
+
+# ---------------------------------------------------------------------------
+# Targeted-gate early-exit regression (bats-only RITE_LINT_FILES)
+# ---------------------------------------------------------------------------
+#
+# Regression for the issue where the early-exit guard at tools/sharkrite-lint.sh
+# (the SHELL_FILES empty-intersection check) fired before Rules 34/35 got a
+# chance to run when RITE_LINT_FILES contained ONLY .bats file paths.  The fix
+# pre-computes the bats intersection and gates the early-exit on BOTH being empty.
+#
+# Strategy: set RITE_LINT_FILES to a single real .bats file from the actual
+# project tests/ directory.  Before the fix this caused exit 0 with
+# "no in-scope shell files ... skipping"; after the fix lint proceeds and
+# emits "targeted scope" (Rules 34/35 run their bats scan, finding 0 violations
+# in a clean file).
+@test "early-exit guard does not fire when RITE_LINT_FILES contains only a .bats file" {
+  # Pick a real bats file from the project under test.  Any clean file will do;
+  # we use THIS test file — it's guaranteed to exist and to be violation-free
+  # for BATS_STUB_OVERWRITE and BATS_FILE_SCOPE_ENV_READ (it has no gh_safe
+  # pre-source stubs and no file-scope RITE_* reads).
+  _this_bats_file="${BATS_TEST_FILENAME}"
+  # Run from the real project root so SHELL_FILES (bin/lib/tools) is populated
+  # but RITE_LINT_FILES has no shell-file intersection — only the .bats path.
+  run env RITE_LINT_FILES="$_this_bats_file" bash "$LINT_SCRIPT"
+  # Must NOT exit with the "skipping" short-circuit message.
+  ! echo "$output" | grep -q "no in-scope shell files in targeted set"
+  # Must reach the "targeted scope" or completion path instead.
+  echo "$output" | grep -qE "targeted scope|All custom lint checks passed|Found [0-9]+ violation"
+}
