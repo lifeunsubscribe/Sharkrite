@@ -2525,11 +2525,23 @@ else
   elif echo "$push_output" | grep -qE "non-fast-forward|fetch first|\(non-fast-forward\)|\(fetch first\)"; then
     # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
     # Force push instead of delete+recreate — delete closes any linked PR.
-    print_warning "Remote branch diverged — force pushing to sync"
-    # Fetch with retries to update the lease ref — stale lease = force-with-lease refuses the push
+    #
+    # Safety posture (audit 2026-07-04): NO blind `git push --force` fallback.
+    # The old chain escalated ANY lease refusal to an unconditional --force,
+    # which can silently overwrite real foreign commits on a name-collision
+    # branch. We (1) fetch to refresh the lease ref, (2) print exactly what
+    # the remote tip is before replacing it, (3) push with --force-with-lease
+    # only, and (4) FAIL LOUD if the lease still refuses (someone pushed in
+    # the fetch→push window) instead of escalating.
+    print_warning "Remote branch diverged — force pushing to sync (with lease)"
     git_fetch_safe origin "$BRANCH_NAME" || true
-    git push -u --force-with-lease origin "$BRANCH_NAME" >/dev/null 2>&1 || \
-      git push -u --force origin "$BRANCH_NAME" >/dev/null 2>&1 || true
+    _remote_tip=$(git log -1 --oneline "origin/$BRANCH_NAME" 2>/dev/null || echo "(unreadable)")
+    print_info "Replacing remote tip: $_remote_tip"
+    if ! git push -u --force-with-lease origin "$BRANCH_NAME" >/dev/null 2>&1; then
+      print_error "force-with-lease refused (remote moved again) — not escalating to --force"
+      print_info "Inspect the remote branch and re-run: git log origin/$BRANCH_NAME"
+      return 1
+    fi
   else
     # Push failed for a non-divergence reason: missing remote, auth, network,
     # branch protection, etc. Don't silently force-push — that would either
