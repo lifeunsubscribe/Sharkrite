@@ -254,10 +254,12 @@ _assert_no_dispatch_calls() {
 }
 
 @test "resolve_dispatch_plan refuses an impossible tuple (fail-closed default branch)" {
-  # Extract the pure function straight from bin/rite via its markers — driving
-  # the default branch through the CLI would require fabricating a MODE the
-  # parser cannot produce.
+  # Extract both pure routing functions from bin/rite via their markers.
+  # resolve_dispatch_plan now delegates to resolve_dispatch_key, so both must
+  # be loaded before resolve_dispatch_plan can be exercised in isolation.
+  eval "$(sed -n '/^# --- resolve_dispatch_key (pure)/,/^# --- end resolve_dispatch_key/p' "$RITE_REPO_ROOT/bin/rite")"
   eval "$(sed -n '/^# --- resolve_dispatch_plan (pure)/,/^# --- end resolve_dispatch_plan/p' "$RITE_REPO_ROOT/bin/rite")"
+  declare -f resolve_dispatch_key >/dev/null
   declare -f resolve_dispatch_plan >/dev/null
 
   # Impossible mode → 1 (refuse)
@@ -317,6 +319,184 @@ _assert_no_dispatch_calls() {
   "
   [ "$status" -eq 0 ]
   [[ "$output" == "OK" ]]
+}
+
+# ---------------------------------------------------------------------------
+# resolve_dispatch_key unit tests — covers all recognized tuple keys
+# ---------------------------------------------------------------------------
+@test "resolve_dispatch_key returns correct keys for all recognized tuples" {
+  # Extract both pure routing functions from bin/rite via their markers.
+  eval "$(sed -n '/^# --- resolve_dispatch_key (pure)/,/^# --- end resolve_dispatch_key/p' "$RITE_REPO_ROOT/bin/rite")"
+  eval "$(sed -n '/^# --- resolve_dispatch_plan (pure)/,/^# --- end resolve_dispatch_plan/p' "$RITE_REPO_ROOT/bin/rite")"
+  set +u; set +o pipefail
+
+  run resolve_dispatch_key "health-report" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "health-report" ]
+
+  run resolve_dispatch_key "health-report" "" "" "--latest"
+  [ "$status" -eq 0 ]; [ "$output" = "health-report-latest" ]
+
+  run resolve_dispatch_key "full-suite" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "full-suite" ]
+
+  run resolve_dispatch_key "tags" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "tags" ]
+
+  run resolve_dispatch_key "backfill-locks" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "backfill-locks" ]
+
+  run resolve_dispatch_key "init" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "init" ]
+
+  run resolve_dispatch_key "plan" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "plan" ]
+
+  run resolve_dispatch_key "status" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "status-repo-wide" ]
+
+  run resolve_dispatch_key "full" "--label tech-debt" ""
+  [ "$status" -eq 0 ]; [ "$output" = "batch-filter" ]
+
+  run resolve_dispatch_key "full" "" "72"
+  [ "$status" -eq 0 ]; [ "$output" = "pr-resolve" ]
+
+  run resolve_dispatch_key "full" "" "" "42"
+  [ "$status" -eq 0 ]; [ "$output" = "single-issue" ]
+
+  run resolve_dispatch_key "full" "" "" "some description"
+  [ "$status" -eq 0 ]; [ "$output" = "single-issue-text" ]
+
+  run resolve_dispatch_key "full" "" "" "42" "43"
+  [ "$status" -eq 0 ]; [ "$output" = "batch-multi" ]
+
+  run resolve_dispatch_key "dev-and-pr" "" "" "42"
+  [ "$status" -eq 0 ]; [ "$output" = "dev-and-pr" ]
+
+  run resolve_dispatch_key "status" "" "" "42"
+  [ "$status" -eq 0 ]; [ "$output" = "status-per-issue" ]
+
+  run resolve_dispatch_key "review-latest" "" "" "42"
+  [ "$status" -eq 0 ]; [ "$output" = "review-latest" ]
+
+  run resolve_dispatch_key "assess-and-fix" "" "" "42"
+  [ "$status" -eq 0 ]; [ "$output" = "assess-and-fix" ]
+
+  run resolve_dispatch_key "undo" "" "" "42"
+  [ "$status" -eq 0 ]; [ "$output" = "undo" ]
+
+  # Unrecognized mode → empty string
+  run resolve_dispatch_key "no-such-mode" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "" ]
+
+  # No target in full mode → no-target
+  run resolve_dispatch_key "full" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "no-target" ]
+}
+
+@test "resolve_dispatch_key refuses mixed --pr and positional issue numbers" {
+  eval "$(sed -n '/^# --- resolve_dispatch_key (pure)/,/^# --- end resolve_dispatch_key/p' "$RITE_REPO_ROOT/bin/rite")"
+  set +u; set +o pipefail
+
+  run resolve_dispatch_key "full" "" "72" "42"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mixed-pr-and-issues" ]
+}
+
+# ---------------------------------------------------------------------------
+# Parity tests: for each tuple case, the dry-run plan names exactly the stub
+# that executes without --dry-run. This structurally proves plan == execution.
+# ---------------------------------------------------------------------------
+
+@test "parity: single-issue — dry-run plan names workflow-runner, real execution calls it" {
+  _run_rite --dry-run 42
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "workflow-runner.sh 42 --auto"
+
+  # Without --dry-run: normalize_and_resolve calls "gh issue view 42" before
+  # exec-ing workflow-runner.  Override the gh stub to emit minimal valid issue
+  # JSON so the pre-flight does not abort with "Issue #42 not found".
+  # Uses an unquoted heredoc so $_FAKE_BIN is expanded at write time.
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $_FAKE_BIN must be expanded at write time
+  cat > "$_FAKE_BIN/gh" << GHSTUB
+#!/bin/bash
+echo "STUB_CALLED:gh" >> "$_FAKE_BIN/gh.calls"
+# Return minimal valid JSON for "issue view" calls; pass everything else.
+if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+  echo '{"title":"Test issue","body":"","state":"OPEN"}'
+  exit 0
+fi
+exit 0
+GHSTUB
+  chmod +x "$_FAKE_BIN/gh"
+
+  _run_rite 42
+  [ "$status" -eq 0 ]
+  [ -f "$_FAKE_BIN/workflow-runner.calls" ]
+  [ ! -f "$_FAKE_BIN/batch-process-issues.calls" ]
+}
+
+@test "parity: multi-issue batch — dry-run plan names batch-process-issues, real execution calls it" {
+  _run_rite --dry-run 490 489 467
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "batch-process-issues.sh 490 489 467 --auto"
+
+  _run_rite 490 489 467
+  [ "$status" -eq 0 ]
+  [ -f "$_FAKE_BIN/batch-process-issues.calls" ]
+  [ ! -f "$_FAKE_BIN/workflow-runner.calls" ]
+}
+
+@test "parity: label-batch — dry-run plan names batch-process-issues, real execution calls it" {
+  _run_rite --label tech-debt --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "batch-process-issues.sh --label tech-debt --auto"
+
+  _run_rite --label tech-debt
+  [ "$status" -eq 0 ]
+  [ -f "$_FAKE_BIN/batch-process-issues.calls" ]
+}
+
+@test "parity: --pr mixed tuple refused identically by dry-run and real execution" {
+  # Dry-run: exits 1 (mixed-pr-and-issues)
+  _run_rite --dry-run --pr 72 42
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "ambiguous\|cannot be combined"
+
+  # Real: exits 1 with same semantic refusal
+  _run_rite --pr 72 42
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "ambiguous\|cannot be combined"
+}
+
+@test "parity: dispatch section has no independent routing conditionals (structural)" {
+  # After resolve_dispatch_key() is called in the dispatch section, there must
+  # be zero old-style 'elif [...MODE...ARGS...]' routing guards in the
+  # smart-routing block.  The entire routing decision lives in
+  # resolve_dispatch_key(); the case statement only dispatches.
+  local _dispatch_section
+  _dispatch_section=$(sed -n '/^# Smart routing/,/^esac$/p' "$RITE_REPO_ROOT/bin/rite")
+
+  # Must not contain: elif [...] && [ "$MODE" = ... ] (the pre-PR pattern)
+  if echo "$_dispatch_section" | grep -qE 'elif \[ \$\{#ARGS\[@\]\}.*\] && \[ "\$MODE"'; then
+    echo "FAIL: dispatch section still contains independent MODE+ARGS routing conditional" >&2
+    return 1
+  fi
+
+  # Must not contain: if [ "$MODE" = "status" ] && [ -z "${ARGS[0]:-}" ] (the pre-PR pattern)
+  if echo "$_dispatch_section" | grep -qE 'if \[ "\$MODE" = "status" \] && \[ -z'; then
+    echo "FAIL: dispatch section still contains independent status+ARGS routing conditional" >&2
+    return 1
+  fi
+
+  # Must contain exactly one routing entry point: the _DISPATCH_KEY assignment
+  # (anchoring on the assignment prevents false matches from comments that
+  # mention resolve_dispatch_key() by name).
+  local _key_calls
+  _key_calls=$(echo "$_dispatch_section" | grep -c '_DISPATCH_KEY=$(resolve_dispatch_key' || true)
+  if [ "$_key_calls" -ne 1 ]; then
+    echo "FAIL: expected exactly 1 _DISPATCH_KEY=\$(resolve_dispatch_key assignment in dispatch section, got $_key_calls" >&2
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
