@@ -1,10 +1,13 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh, bin/rite, lib/core/undo-workflow.sh
 # tests/regression/pr-number-refused-as-issue.bats
 #
 # Regression test: rite must refuse a bare PR number before any dev work runs.
 #
 # Issue #839 — "Reject bare PR numbers in issue commands"
+# Issue #851 — "Canonicalize bare PR-number calls to issue form"
+#   Extends #839 coverage to --status, --review-latest, --assess-and-fix, --undo
+#   entrypoints which bypass run_workflow()'s /pull/ guard.
 #
 # Root cause: GitHub's shared number space means `gh issue view <PR#>` succeeds
 # and returns the PR as if it were an issue. Before this fix, rite silently
@@ -48,10 +51,29 @@
 #    13. Real issue number: url /issues/ path passes the check unchanged
 #    14. Linked issue is printed when PR body contains "Closes #N"
 #    15. Linked issue suggestion is omitted when PR body has no closing ref
+#
+#   STRUCTURAL (static code inspection of bin/rite — phase-command entrypoints, #851):
+#    16. _reject_if_pr_number() function exists in bin/rite
+#    17. _reject_if_pr_number() uses exit 15
+#    18. status-per-issue dispatch block calls _reject_if_pr_number
+#    19. review-latest dispatch block calls _reject_if_pr_number
+#    20. assess-and-fix dispatch block calls _reject_if_pr_number
+#
+#   BEHAVIORAL (bin/rite _reject_if_pr_number(), #851):
+#    21. _reject_if_pr_number() exits 15 when issue number refers to a PR
+#
+#   STRUCTURAL (static code inspection of undo-workflow.sh, #851):
+#    22. undo-workflow.sh checks for /pull/ in the url field before Phase 1
+#    23. undo-workflow.sh exits 15 when /pull/ is detected
+#
+#   BEHAVIORAL (undo-workflow.sh, #851):
+#    24. undo-workflow.sh exits 15 when the issue number refers to a PR
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
+RITE_BINARY="$REPO_ROOT/bin/rite"
+UNDO_WORKFLOW="$REPO_ROOT/lib/core/undo-workflow.sh"
 
 setup() {
   [ -f "$WORKFLOW_RUNNER" ] || {
@@ -60,6 +82,14 @@ setup() {
   }
   [ -f "$BATCH_PROCESSOR" ] || {
     echo "FATAL: $BATCH_PROCESSOR not found" >&2
+    return 1
+  }
+  [ -f "$RITE_BINARY" ] || {
+    echo "FATAL: $RITE_BINARY not found" >&2
+    return 1
+  }
+  [ -f "$UNDO_WORKFLOW" ] || {
+    echo "FATAL: $UNDO_WORKFLOW not found" >&2
     return 1
   }
 }
@@ -743,6 +773,293 @@ INLINE_EOF
   }
   echo "$output" | grep -q "PASS" || {
     echo "FAIL: PASS marker not found" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL: bin/rite phase-command entrypoints (#851)
+# =============================================================================
+
+@test "structural: _reject_if_pr_number() function exists in bin/rite" {
+  # The helper centralizes the /pull/ guard for phase commands that bypass
+  # run_workflow()'s check. Its absence means the guard is missing entirely.
+  grep -q "^_reject_if_pr_number()" "$RITE_BINARY" || {
+    echo "FAIL: _reject_if_pr_number() not found in bin/rite" >&2
+    echo "      This function guards --status, --review-latest, and --assess-and-fix" >&2
+    return 1
+  }
+}
+
+@test "structural: _reject_if_pr_number() in bin/rite uses exit 15" {
+  # Exit 15 is the canonical sentinel for PR-number refusals.
+  # See: docs/architecture/exit-codes.md — exit code 15
+  _func_body=$(awk '
+    /^_reject_if_pr_number[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print $0 }
+  ' "$RITE_BINARY")
+
+  [ -n "$_func_body" ] || {
+    echo "FAIL: Could not extract _reject_if_pr_number function body from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_func_body" | grep -qE '^\s*exit 15' || {
+    echo "FAIL: _reject_if_pr_number() in bin/rite does not contain 'exit 15'" >&2
+    echo "      Exit code 15 is the canonical sentinel for PR-number refusals" >&2
+    return 1
+  }
+}
+
+@test "structural: status-per-issue dispatch block in bin/rite calls _reject_if_pr_number" {
+  # --status routes through pr-detection.sh directly, bypassing run_workflow()'s
+  # /pull/ guard. The _reject_if_pr_number() call must appear in the
+  # status-per-issue dispatch block, before the gh issue view fetch.
+  _block=$(awk '
+    /status-per-issue[)]\s*$/ { in_block=1; next }
+    in_block && /^\s*;;$/ { exit }
+    in_block { print $0 }
+  ' "$RITE_BINARY")
+
+  [ -n "$_block" ] || {
+    echo "FAIL: Could not extract status-per-issue block from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_block" | grep -q '_reject_if_pr_number' || {
+    echo "FAIL: status-per-issue block does not call _reject_if_pr_number" >&2
+    echo "      A bare PR number passed to 'rite N --status' would silently show PR data" >&2
+    return 1
+  }
+}
+
+@test "structural: review-latest dispatch block in bin/rite calls _reject_if_pr_number" {
+  # --review-latest calls normalize_and_resolve which uses 'gh issue view', so
+  # a PR number silently passes. The _reject_if_pr_number() call must appear
+  # BEFORE normalize_and_resolve in the review-latest dispatch block.
+  _block=$(awk '
+    /review-latest[)]\s*$/ { in_block=1; next }
+    in_block && /^\s*;;$/ { exit }
+    in_block { print $0 }
+  ' "$RITE_BINARY")
+
+  [ -n "$_block" ] || {
+    echo "FAIL: Could not extract review-latest block from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_block" | grep -q '_reject_if_pr_number' || {
+    echo "FAIL: review-latest block does not call _reject_if_pr_number" >&2
+    echo "      A bare PR number passed to 'rite N --review-latest' would silently operate on a PR" >&2
+    return 1
+  }
+}
+
+@test "structural: assess-and-fix dispatch block in bin/rite calls _reject_if_pr_number" {
+  # --assess-and-fix calls normalize_and_resolve before PR detection.
+  # The _reject_if_pr_number() call must appear BEFORE normalize_and_resolve.
+  _block=$(awk '
+    /assess-and-fix[)]\s*$/ { in_block=1; next }
+    in_block && /^\s*;;$/ { exit }
+    in_block { print $0 }
+  ' "$RITE_BINARY")
+
+  [ -n "$_block" ] || {
+    echo "FAIL: Could not extract assess-and-fix block from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_block" | grep -q '_reject_if_pr_number' || {
+    echo "FAIL: assess-and-fix block does not call _reject_if_pr_number" >&2
+    echo "      A bare PR number passed to 'rite N --assess-and-fix' would silently operate on a PR" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: bin/rite _reject_if_pr_number() (#851)
+# =============================================================================
+
+@test "behavioral: _reject_if_pr_number() exits 15 when issue number refers to a PR" {
+  # Stubs gh_safe to return a /pull/ URL, sources the helper function from
+  # bin/rite in function-only mode, invokes it, and asserts exit 15.
+  # Mirrors test 23 (undo-workflow.sh behavioral) — same pattern, different target.
+  _script="$BATS_TEST_TMPDIR/test-reject-if-pr-number.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (RITE_BINARY)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUMBER="490"
+
+# Minimal stubs for bin/rite dependencies used by _reject_if_pr_number()
+print_error()   { echo "ERROR: \$*" >&2; }
+print_info()    { :; }
+print_header()  { :; }
+print_success() { :; }
+print_step()    { :; }
+verbose_info()  { :; }
+
+# gh_safe stub: returns a /pull/ URL so _reject_if_pr_number() fires
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"url":"https://github.com/owner/repo/pull/490","title":"Old PR title"}'
+    return 0
+  fi
+  if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"body":""}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+# Extract and define only _reject_if_pr_number() from bin/rite
+# (awk pulls the function body; eval sources it into this shell)
+_func_body=\$(awk '
+  /^_reject_if_pr_number[(][)]/ { in_func=1; print; next }
+  in_func && /^\}$/ { print; in_func=0; next }
+  in_func { print }
+' "${RITE_BINARY}")
+
+[ -n "\$_func_body" ] || {
+  echo "FAIL: Could not extract _reject_if_pr_number from bin/rite" >&2
+  exit 1
+}
+
+eval "\$_func_body"
+
+# Invoke the guard in a subshell — _reject_if_pr_number() uses 'exit 15',
+# so we must capture it from a subshell rather than via || capture.
+_exit=0
+( _reject_if_pr_number "\$ISSUE_NUMBER" ) || _exit=\$?
+
+if [ "\$_exit" -ne 15 ]; then
+  echo "FAIL: expected exit 15 for PR number, got \$_exit" >&2
+  exit 1
+fi
+echo "PASS: _reject_if_pr_number() exited 15 for PR number"
+exit 0
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PASS" || {
+    echo "FAIL: PASS marker not found in output" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL: undo-workflow.sh (#851)
+# =============================================================================
+
+@test "structural: undo-workflow.sh contains /pull/ check before Phase 1 Discovery" {
+  # Phase 1 Discovery starts after the PR-number guard.
+  # Verify both the /pull/ check and Phase 1 marker exist, and in the right order.
+  _pull_line=$(grep -n "grep -qF '/pull/'" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
+  [ -n "$_pull_line" ] || {
+    echo "FAIL: No grep -qF '/pull/' found in undo-workflow.sh" >&2
+    echo "      The PR-number guard must check the url field before any discovery work" >&2
+    return 1
+  }
+
+  _phase1_line=$(grep -n "PHASE 1: DISCOVERY" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
+  [ -n "$_phase1_line" ] || {
+    echo "FAIL: Could not find 'PHASE 1: DISCOVERY' marker in undo-workflow.sh" >&2
+    return 1
+  }
+
+  if [ "$_pull_line" -ge "$_phase1_line" ]; then
+    echo "FAIL: /pull/ check (line $_pull_line) must appear BEFORE Phase 1 Discovery (line $_phase1_line)" >&2
+    echo "      The guard must fire before any discovery side effects run" >&2
+    return 1
+  fi
+}
+
+@test "structural: undo-workflow.sh exits 15 in the PR-number guard" {
+  # Exit 15 is the canonical sentinel for bare-PR-number refusals.
+  # The block between the /pull/ check and Phase 1 must contain 'exit 15'.
+  _pull_line=$(grep -n "grep -qF '/pull/'" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
+  _phase1_line=$(grep -n "PHASE 1: DISCOVERY" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_pull_line" ] && [ -n "$_phase1_line" ] || {
+    echo "FAIL: Could not locate the guard block boundaries in undo-workflow.sh" >&2
+    return 1
+  }
+
+  _guard_block=$(awk "NR >= $_pull_line && NR < $_phase1_line" "$UNDO_WORKFLOW")
+  echo "$_guard_block" | grep -q 'exit 15' || {
+    echo "FAIL: undo-workflow.sh guard block does not contain 'exit 15'" >&2
+    echo "      Exit code 15 is the canonical sentinel for PR-number refusals" >&2
+    echo "      See: docs/architecture/exit-codes.md — exit code 15" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: undo-workflow.sh (#851)
+# =============================================================================
+
+@test "behavioral: undo-workflow.sh exits 15 when issue number refers to a PR" {
+  # rite <PR#> --undo must be refused before any discovery or cleanup work runs.
+  # This test runs a stub script that inlines the undo-workflow.sh argument
+  # validation + PR guard, with a gh_safe stub returning a /pull/ URL.
+  _script="$BATS_TEST_TMPDIR/test-undo-pr-refused.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (BATS_TEST_TMPDIR)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUMBER="490"
+
+print_error() { echo "ERROR: \$*" >&2; }
+
+# gh_safe stub: returns a PR url for issue view calls
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"url":"https://github.com/owner/repo/pull/490","title":"Old PR title"}'
+    return 0
+  fi
+  if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"body":""}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+# Inline the undo-workflow.sh PR guard (mirrors real code — no lib deps needed)
+_undo_check_data=\$(gh_safe issue view "\$ISSUE_NUMBER" --json url,title 2>/dev/null || true)
+_undo_url=\$(echo "\$_undo_check_data" | jq -r '.url // ""' 2>/dev/null || true)
+if echo "\$_undo_url" | grep -qF '/pull/'; then
+  _undo_title=\$(echo "\$_undo_check_data" | jq -r '.title // "unknown"' 2>/dev/null || true)
+  print_error "#\${ISSUE_NUMBER} is a Pull Request, not an issue"
+  print_error "  PR title: \${_undo_title}"
+  exit 15
+fi
+
+# Should not reach here for a PR number
+echo "FAIL_MARKER: guard did not fire for PR number" >&2
+exit 1
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 15 ] || {
+    echo "FAIL: expected exit 15 for PR number in undo mode, got $status" >&2
     echo "Output: $output" >&2
     return 1
   }

@@ -49,6 +49,44 @@ if ! [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || [ "$ISSUE_NUMBER" -le 0 ] 2>/dev/null;
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Reject bare PR numbers before any discovery or cleanup work runs.
+#
+# GitHub's shared number space means `gh issue view <PR#>` succeeds and
+# returns the PR — the url field is the cheapest discriminator (/pull/ vs
+# /issues/). Without this guard, `rite <PR#> --undo` would silently treat a
+# PR number as an issue, attempt to discover and clean up artifacts that don't
+# exist (or belong to a different workflow), and leave the caller confused.
+#
+# Exit 15 is the canonical sentinel for "bare PR number passed as issue".
+# See: docs/architecture/exit-codes.md — exit code 15
+# See: handle_pr_number_refused() in lib/core/workflow-runner.sh (analogous)
+# ---------------------------------------------------------------------------
+_undo_check_data=$(gh_safe issue view "$ISSUE_NUMBER" --json url,title 2>/dev/null || true)
+_undo_url=$(echo "$_undo_check_data" | jq -r '.url // ""' 2>/dev/null || true)
+if echo "$_undo_url" | grep -qF '/pull/'; then
+  _undo_title=$(echo "$_undo_check_data" | jq -r '.title // "unknown"' 2>/dev/null || true)
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "#${ISSUE_NUMBER} is a Pull Request, not an issue"
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "  PR title: ${_undo_title}"
+  [ -n "$_undo_url" ] && print_error "  PR url:   ${_undo_url}"
+  print_error ""
+  print_error "rite --undo accepts issue numbers only. Pass the linked issue number instead."
+  _undo_pr_body=$(gh_safe pr view "$ISSUE_NUMBER" --json body --jq '.body' 2>/dev/null || true)
+  _undo_linked=""
+  if [ -n "$_undo_pr_body" ]; then
+    _undo_linked=$(echo "$_undo_pr_body" | grep -ioE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
+  fi
+  if [ -n "$_undo_linked" ]; then
+    print_error ""
+    print_error "  Linked issue: #${_undo_linked}"
+    print_error "  Try: rite ${_undo_linked} --undo"
+  fi
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit 15
+fi
+
 # =============================================================================
 # PHASE 1: DISCOVERY
 # =============================================================================
