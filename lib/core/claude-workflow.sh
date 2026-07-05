@@ -355,6 +355,81 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 _RITE_PIP_TIMEOUT_WARNED=false
 
 # ===================================================================
+# _regen_lockfiles_if_needed — regenerate package-lock.json after dev sessions
+#
+# When the dev session modifies a package.json, `npm ci` (used by the #784 node
+# bootstrap in test-gate.sh) fails with EUSAGE because the lockfile is out of
+# sync.  This function detects staged package.json changes, runs `npm install`
+# in each affected directory, and stages the regenerated package-lock.json so
+# the committed tree is always in sync.
+#
+# Call this AFTER `git add -A` (and after symlink exclusions) but BEFORE
+# `git commit`, at every commit point in the dev workflow.
+#
+# Rules:
+#   - No staged package.json changes → no-op (no lockfile churn).
+#   - `npm` not on PATH → warn and skip (non-Node repos unaffected).
+#   - `npm install` fails → print error and return 1 (caller must abort commit).
+#   - Monorepo: each directory with a changed package.json is handled
+#     independently (e.g. root + api/ each get their own lockfile regenerated).
+# ===================================================================
+_regen_lockfiles_if_needed() {
+  # Collect directories containing staged package.json modifications.
+  # Use || true: grep exits 1 on no match; under set -e that would kill the script.
+  local _changed_pkg_dirs
+  _changed_pkg_dirs=$(git diff --cached --name-only 2>/dev/null \
+    | grep -E '(^|/)package\.json$' \
+    | sed 's|/package\.json$||; s|^package\.json$|.|' \
+    | sort -u || true)
+
+  if [ -z "$_changed_pkg_dirs" ]; then
+    # No package.json staged — nothing to regenerate.
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    print_warning "package.json changed but npm not found on PATH — skipping lockfile regeneration"
+    return 0
+  fi
+
+  local _dir _lock _npm_exit
+  while IFS= read -r _dir; do
+    [ -z "$_dir" ] && continue
+
+    # Resolve to absolute path (the git repo root + relative dir).
+    local _abs_dir
+    _abs_dir="$(git rev-parse --show-toplevel)/${_dir}"
+    # When _dir is "." (root package.json) the path becomes "<root>/." which is fine.
+
+    if [ ! -f "${_abs_dir}/package.json" ]; then
+      # File was deleted — no lockfile to regenerate.
+      continue
+    fi
+
+    print_status "Regenerating package-lock.json in ${_dir} (package.json changed)..."
+
+    _npm_exit=0
+    (cd "$_abs_dir" && npm install --package-lock-only --silent 2>&1) || _npm_exit=$?
+
+    if [ "$_npm_exit" -ne 0 ]; then
+      print_error "npm install failed in ${_dir} (exit ${_npm_exit}) — cannot regenerate package-lock.json"
+      print_info "Fix the npm error and re-run, or check package.json for syntax errors"
+      return 1
+    fi
+
+    _lock="${_abs_dir}/package-lock.json"
+    if [ -f "$_lock" ]; then
+      git add "$_lock"
+      print_success "Staged regenerated package-lock.json in ${_dir}"
+    else
+      print_warning "npm install ran in ${_dir} but package-lock.json was not created — skipping stage"
+    fi
+  done <<< "$_changed_pkg_dirs"
+
+  return 0
+}
+
+# ===================================================================
 # _run_dev_test_gate — dev/initial-commit test runner (NOT the structured gate)
 #
 # This is the dev-path test gate: runs the project's test suite before
@@ -836,6 +911,10 @@ check_dev_session_output() {
     # Exclude .gitignore (modified by sharkrite's symlink pattern repair)
     git reset HEAD .gitignore 2>/dev/null || true
 
+    # Regenerate package-lock.json if package.json was modified (issue #804).
+    # Runs after staging so git diff --cached reflects the actual committed tree.
+    _regen_lockfiles_if_needed || return 1
+
     # Create auto-commit
     local auto_commit_msg="chore: auto-commit dev session output for issue #${ISSUE_NUMBER:-unknown}
 
@@ -1038,6 +1117,9 @@ $EXIT_INSTRUCTION"
   # Commit and push the fixes
   print_status "Committing fixes..."
   git add -A
+
+  # Regenerate package-lock.json if package.json was modified (issue #804).
+  _regen_lockfiles_if_needed || exit 1
 
   # Generate commit message based on review content summary
   COMMIT_MSG="fix: address review findings from PR automated review
@@ -3240,6 +3322,10 @@ fi
 # patterns (.rite, .claude, node_modules) but these shouldn't be committed to
 # the target repo. The working tree copy stays modified (needed for ignore rules).
 git reset HEAD .gitignore 2>/dev/null || true
+
+# Regenerate package-lock.json if package.json was modified (issue #804).
+# Runs after all exclusions so the cached index is the true committed tree.
+_regen_lockfiles_if_needed || exit 1
 
 git commit -m "$COMMIT_MSG" > /dev/null
 

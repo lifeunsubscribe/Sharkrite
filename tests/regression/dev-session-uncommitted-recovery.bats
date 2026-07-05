@@ -224,3 +224,108 @@ teardown() {
   COMMITS_AHEAD=$(git rev-list --count origin/main..HEAD)
   [ "$COMMITS_AHEAD" -eq 2 ]  # init + real commit (no auto-commit)
 }
+
+# ===========================================================================
+# _regen_lockfiles_if_needed tests (issue #804)
+# These tests share the git-repo setup from the suite above.  They stub npm
+# via a PATH-isolated stub dir so the real npm binary is never invoked.
+# Per the test runbook: hide a binary by stripping PATH, not by function.
+# ===========================================================================
+
+# Helper: build a stub dir with an npm script that succeeds and creates
+# package-lock.json, then re-export PATH to include it.
+_setup_npm_stub_success() {
+  local stub_dir="$TEST_REPO/stub-npm-ok"
+  mkdir -p "$stub_dir"
+  printf '#!/bin/sh\n# npm stub: succeeds and writes package-lock.json\n# Accept --package-lock-only and --silent flags silently.\ndir=$(pwd)\nprintf '"'"'{"lockfileVersion":3}\n'"'"' > "$dir/package-lock.json"\nexit 0\n' > "$stub_dir/npm"
+  chmod +x "$stub_dir/npm"
+  export PATH="$stub_dir:$PATH"
+}
+
+# Helper: build a stub dir with an npm script that always fails.
+_setup_npm_stub_fail() {
+  local stub_dir="$TEST_REPO/stub-npm-fail"
+  mkdir -p "$stub_dir"
+  printf '#!/bin/sh\n# npm stub: always fails\necho "npm ERR! simulated failure" >&2\nexit 1\n' > "$stub_dir/npm"
+  chmod +x "$stub_dir/npm"
+  export PATH="$stub_dir:$PATH"
+}
+
+@test "_regen_lockfiles_if_needed: no-op when no package.json staged" {
+  # Stage a regular file — not package.json
+  echo "console.log('hi');" > index.js
+  git add index.js
+
+  _setup_npm_stub_success
+
+  run _regen_lockfiles_if_needed
+
+  [ "$status" -eq 0 ]
+  # npm stub must NOT have been called (no package-lock.json created at all)
+  [ ! -f "$TEST_REPO/package-lock.json" ]
+}
+
+@test "_regen_lockfiles_if_needed: regenerates root package-lock.json when package.json staged" {
+  # Stage a package.json change at the root
+  printf '{"name":"test","version":"1.0.0","dependencies":{}}\n' > package.json
+  git add package.json
+
+  _setup_npm_stub_success
+
+  run _regen_lockfiles_if_needed
+
+  [ "$status" -eq 0 ]
+  # package-lock.json must have been created and staged
+  [ -f "$TEST_REPO/package-lock.json" ]
+  # It must be staged
+  git diff --cached --name-only | grep -q "package-lock.json"
+}
+
+@test "_regen_lockfiles_if_needed: regenerates sub-package lockfile in monorepo" {
+  # Stage a package.json change in a subdirectory (e.g. api/)
+  mkdir -p api
+  printf '{"name":"api","version":"1.0.0","dependencies":{}}\n' > api/package.json
+  git add api/package.json
+
+  _setup_npm_stub_success
+
+  run _regen_lockfiles_if_needed
+
+  [ "$status" -eq 0 ]
+  # package-lock.json must have been created in api/
+  [ -f "$TEST_REPO/api/package-lock.json" ]
+  git diff --cached --name-only | grep -q "api/package-lock.json"
+}
+
+@test "_regen_lockfiles_if_needed: surfaces failure when npm install fails" {
+  # Stage a package.json change
+  printf '{"name":"test","version":"1.0.0"}\n' > package.json
+  git add package.json
+
+  _setup_npm_stub_fail
+
+  run _regen_lockfiles_if_needed
+
+  # Must fail (non-zero exit) so the commit is aborted
+  [ "$status" -ne 0 ]
+  # Error message must mention npm install failure
+  [[ "$output" =~ "npm install failed" ]]
+}
+
+@test "_regen_lockfiles_if_needed: warns and skips when npm not on PATH" {
+  # Stage a package.json change
+  printf '{"name":"test","version":"1.0.0"}\n' > package.json
+  git add package.json
+
+  # Remove npm from PATH entirely
+  export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "npm" | paste -sd ':' -)
+  # Ensure npm truly absent (use a minimal PATH)
+  export PATH="/usr/bin:/bin"
+
+  run _regen_lockfiles_if_needed
+
+  # Must succeed (non-Node repos unaffected — don't block the commit)
+  [ "$status" -eq 0 ]
+  # Warning must mention npm not found
+  [[ "$output" =~ "npm not found" ]]
+}
