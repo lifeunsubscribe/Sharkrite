@@ -46,14 +46,15 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
-# Reuse (don't duplicate) _resolve_done_def from assess-and-resolve.sh so the
-# surviving ACTIONABLE_LATER follow-up bodies use the same runbook-compliant
-# done-definition wording as the per-finding loop.  Functions-only source: the
-# RITE_SOURCE_FUNCTIONS_ONLY=1 guard in assess-and-resolve.sh returns before its
-# program body (no arg parsing, no exec redirects, no live gh/claude calls); its
-# pre-guard sources are utils + pr-detection only — no source cycle back here.
-# The declare -f guard makes this a no-op if the function is already loaded.
-if ! declare -f _resolve_done_def >/dev/null 2>&1; then
+# Reuse (don't duplicate) _resolve_done_def and _resolve_time_estimate from
+# assess-and-resolve.sh so the surviving ACTIONABLE_LATER follow-up bodies use
+# the same runbook-compliant wording and estimate derivation as the per-finding
+# loop.  Functions-only source: the RITE_SOURCE_FUNCTIONS_ONLY=1 guard in
+# assess-and-resolve.sh returns before its program body (no arg parsing, no
+# exec redirects, no live gh/claude calls); its pre-guard sources are utils +
+# pr-detection only — no source cycle back here.
+# The declare -f guard makes this a no-op if the functions are already loaded.
+if ! declare -f _resolve_done_def >/dev/null 2>&1 || ! declare -f _resolve_time_estimate >/dev/null 2>&1; then
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
 fi
 
@@ -1132,23 +1133,9 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           _done_def=$(_resolve_done_def "${ITEM_SEVERITY:-MEDIUM}")
 
           # Time Estimate: derive from Fix Effort metadata when available;
-          # fall back to a severity-based default (mirrors assess-and-resolve.sh:1992-1997).
-          _time_estimate=""
-          case "${ITEM_FIX_EFFORT:-}" in
-            *\>1hr*) _time_estimate="2hr" ;;
-            *\<1hr*) _time_estimate="1hr" ;;
-            *\<10min*) _time_estimate="30min" ;;
-            *)
-              # No Fix Effort field — derive from severity so the runbook-required
-              # section is never absent.  High-priority buffer (+50%) per runbook §3.
-              case "${ITEM_SEVERITY:-MEDIUM}" in
-                CRITICAL) _time_estimate="2hr" ;;
-                HIGH)     _time_estimate="1hr" ;;
-                MEDIUM)   _time_estimate="45min" ;;
-                *)        _time_estimate="30min" ;;
-              esac
-              ;;
-          esac
+          # fall back to a severity-based default — shared helper avoids
+          # duplication with assess-and-resolve.sh.
+          _time_estimate=$(_resolve_time_estimate "${ITEM_FIX_EFFORT:-}" "${ITEM_SEVERITY:-MEDIUM}")
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh body builder) ---
           # Section order follows docs/issue-runbook.md:

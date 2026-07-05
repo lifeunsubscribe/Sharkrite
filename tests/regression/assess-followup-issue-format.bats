@@ -430,32 +430,39 @@ Done when the finding is addressed."
 # ─── Test 14: Unit — Time Estimate populated by severity fallback ──────────────
 
 @test "assess-and-resolve.sh: Time Estimate severity fallback produces non-empty value for each severity" {
-  # When Fix Effort metadata is absent, the case-in-case fallback must yield a
+  # When Fix Effort metadata is absent, _resolve_time_estimate must yield a
   # non-empty Fibonacci estimate for each recognized severity token.
   # Verifies issue #909 fix: severity-based fallback fills §3 when Fix Effort is missing.
+  #
+  # Calls the real _resolve_time_estimate() from assess-and-resolve.sh (sourced
+  # via RITE_SOURCE_FUNCTIONS_ONLY=1) so that any future change to the case arms
+  # breaks this test rather than passing silently (same pattern as Tests 10-11).
 
-  for _sev in CRITICAL HIGH MEDIUM LOW ""; do
-    _time_estimate=""
-    _f_fix_effort=""          # no Fix Effort field
-    _f_severity="${_sev:-MEDIUM}"
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    export RITE_PROJECT_ROOT='${RITE_REPO_ROOT}'
+    # Stub print functions consumed by sourced dependencies
+    print_info()    { :; }
+    print_warning() { :; }
+    print_success() { :; }
+    print_error()   { :; }
+    verbose_info()  { :; }
+    _diag()         { :; }
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh'
+    # Call the real helper — not an inline copy of the case arms
+    for _sev in CRITICAL HIGH MEDIUM LOW ''; do
+      _time_estimate=\$(_resolve_time_estimate '' \"\${_sev:-MEDIUM}\")
+      [ -n \"\$_time_estimate\" ] || {
+        echo \"FAIL: Time Estimate empty for severity '\${_sev:-MEDIUM}'\"
+        exit 1
+      }
+    done
+  "
 
-    case "${_f_fix_effort:-}" in
-      *\>1hr*) _time_estimate="2hr" ;;
-      *\<1hr*) _time_estimate="1hr" ;;
-      *\<10min*) _time_estimate="30min" ;;
-      *)
-        case "${_f_severity}" in
-          CRITICAL) _time_estimate="2hr" ;;
-          HIGH)     _time_estimate="1hr" ;;
-          MEDIUM)   _time_estimate="45min" ;;
-          *)        _time_estimate="30min" ;;
-        esac
-        ;;
-    esac
-
-    [ -n "$_time_estimate" ] || {
-      echo "FAIL: Time Estimate empty for severity '${_sev:-MEDIUM}'"
-      false
-    }
-  done
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status)"
+    echo "Output: $output"
+    false
+  }
 }

@@ -328,6 +328,40 @@ _resolve_done_def() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_time_estimate — derive a Fibonacci time estimate from Fix Effort and severity
+#
+# Args: $1 = fix_effort string (from assessment metadata, e.g. "<1hr", ">1hr", "<10min")
+#       $2 = severity token (CRITICAL, HIGH, MEDIUM, LOW — already normalized)
+# Output: Fibonacci time estimate string (echoed to stdout)
+#
+# Extracted from the per-finding loop for the same reason as _resolve_done_def:
+# tests can call the real function instead of inlining a copy of the case arms,
+# ensuring any change to the mapping is caught by regression tests.
+#
+# Fix Effort takes precedence; severity-based fallback ensures the runbook-required
+# section is never blank. High-priority buffer (+50%) per runbook §3.
+# ---------------------------------------------------------------------------
+_resolve_time_estimate() {
+  local _fix_effort="${1:-}"
+  local _sev="${2:-MEDIUM}"
+  local _estimate=""
+  case "${_fix_effort}" in
+    *\>1hr*) _estimate="2hr" ;;
+    *\<1hr*) _estimate="1hr" ;;
+    *\<10min*) _estimate="30min" ;;
+    *)
+      case "${_sev}" in
+        CRITICAL) _estimate="2hr" ;;
+        HIGH)     _estimate="1hr" ;;
+        MEDIUM)   _estimate="45min" ;;
+        *)        _estimate="30min" ;;
+      esac
+      ;;
+  esac
+  echo "$_estimate"
+}
+
+# ---------------------------------------------------------------------------
 # _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT [MODEL_LINE]
 #
 # Posts a minimal assessment PR comment (RITE_MARKER_ASSESSMENT marker)
@@ -400,9 +434,9 @@ ${_gate_items}"
 # ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
-# _resolve_priority_label, _resolve_done_def) without executing the script body
-# (which parses args, sets up exec redirects, installs traps, and makes live
-# gh/claude calls).
+# _resolve_priority_label, _resolve_done_def, _resolve_time_estimate) without
+# executing the script body (which parses args, sets up exec redirects,
+# installs traps, and makes live gh/claude calls).
 # ---------------------------------------------------------------------------
 if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || true
@@ -1991,20 +2025,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Time Estimate from Fix Effort metadata; severity-based fallback when
     # Fix Effort is absent so the runbook-required section is never blank.
     # High-priority buffer (+50%) applied by the runbook's §3 guidance.
-    _time_estimate=""
-    case "${_f_fix_effort:-}" in
-      *\>1hr*) _time_estimate="2hr" ;;
-      *\<1hr*) _time_estimate="1hr" ;;
-      *\<10min*) _time_estimate="30min" ;;
-      *)
-        case "${_f_severity}" in
-          CRITICAL) _time_estimate="2hr" ;;
-          HIGH)     _time_estimate="1hr" ;;
-          MEDIUM)   _time_estimate="45min" ;;
-          *)        _time_estimate="30min" ;;
-        esac
-        ;;
-    esac
+    _time_estimate=$(_resolve_time_estimate "${_f_fix_effort:-}" "${_f_severity}")
 
     # --- Build issue body ---
     SOURCE_ISSUE_MARKER=""
