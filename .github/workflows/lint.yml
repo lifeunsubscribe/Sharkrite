@@ -29,7 +29,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Install shellcheck + bash (macOS)
+      - name: Install shellcheck + bash + coreutils (macOS)
         if: runner.os == 'macOS'
         run: |
           # bash: the runner's /usr/bin/env bash is system bash 3.2, but the dev
@@ -38,7 +38,11 @@ jobs:
           # (mapfile) under `#!/usr/bin/env bash`. The bash-3.2 contract for
           # lib/ and bin/ #!/bin/bash scripts is enforced by lint rules
           # (BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT), not by this job's shell.
-          brew install shellcheck bash
+          # coreutils: macOS ships no timeout(1); the dev env has coreutils
+          # (gtimeout + unprefixed timeout in /opt/homebrew/bin). Without it,
+          # timeout-dependent tests (fault-injection hang tests,
+          # claude-timeout.bats) skip instead of exercising their assertions.
+          brew install shellcheck bash coreutils
 
       - name: Run make check
         run: make check

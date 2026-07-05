@@ -53,24 +53,31 @@ setup() {
   # Build a tiny temp directory and pass it as --worktree. Stub gh to print its
   # cwd to stderr, then assert the stub ran from the temp dir (proving the cd
   # happened) rather than from RITE_PROJECT_ROOT.
+  #
+  # Stubs are PATH binaries, not exported functions (test-authoring runbook §2):
+  # the script's load_provider re-defines provider_* at source time, silently
+  # clobbering function stubs — and claude_provider_validate_cli shells out to
+  # the real CLI, so the old function stubs left this test dependent on an
+  # installed+authenticated claude (green locally, red on CI).
   _tmp_wt=$(mktemp -d)
-  trap "rm -rf '$_tmp_wt'" RETURN
+  _stub_bin=$(mktemp -d)
+  trap "rm -rf '$_tmp_wt' '$_stub_bin'" RETURN
+
+  # claude stub — satisfies detect_cli (command -v) and validate_cli (the
+  # `echo test | claude --print` health probe just needs exit 0).
+  printf '#!/bin/sh\nexit 0\n' > "$_stub_bin/claude"
+  # gh stub — print cwd to stderr, exit 1 to short-circuit the script after
+  # the first gh call.
+  printf '#!/bin/sh\npwd >&2\nexit 1\n' > "$_stub_bin/gh"
+  chmod +x "$_stub_bin/claude" "$_stub_bin/gh"
 
   run bash -c "
+    export PATH='$_stub_bin':\$PATH
     export RITE_LIB_DIR='$PROJECT_ROOT/lib'
     export RITE_PROJECT_ROOT='$PROJECT_ROOT'
     export RITE_DATA_DIR='.rite'
     export RITE_VERBOSE=false
     export RITE_REVIEW_PROVIDER=claude
-
-    # Stub provider — we don't want to spin up Claude
-    provider_detect_cli()   { return 0; }
-    provider_validate_cli() { return 0; }
-    export -f provider_detect_cli provider_validate_cli
-
-    # Stub gh — print cwd to stderr, exit 1 to short-circuit the script
-    gh() { pwd >&2; return 1; }
-    export -f gh
 
     bash '$ASSESS_DOC_SCRIPT' 99999 --auto --worktree '$_tmp_wt' 2>&1 || true
   "

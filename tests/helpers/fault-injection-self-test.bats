@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: tests/helpers/*
+# sharkrite-gate-serial
 # Self-tests for fault-injection harness
 # Demonstrates all fault injection patterns
 
@@ -11,6 +12,14 @@ load 'fault-injection'
 setup() {
   export RITE_REPO_ROOT="${BATS_TEST_DIRNAME}/../.."
   reset_fault_injection
+
+  # Resolve a timeout command for the hang tests. macOS ships no timeout(1);
+  # coreutils provides gtimeout (and links timeout unprefixed). Mirrors the
+  # claude-timeout.bats precedent: resolve via lib/utils/timeout.sh, and the
+  # hang tests skip when neither is installed instead of failing with 127.
+  source "${RITE_REPO_ROOT}/lib/utils/timeout.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests; keep -e
+  ensure_timeout_cmd
 }
 
 # =============================================================================
@@ -91,24 +100,26 @@ setup() {
 # =============================================================================
 
 @test "inject_command_hang causes timeout for gh" {
+  [ -n "${RITE_TIMEOUT_CMD:-}" ] || skip "No timeout command available (install coreutils)"
   inject_command_hang "gh"
 
-  # The external `timeout` binary cannot invoke a bash function directly, so
+  # The external timeout binary cannot invoke a bash function directly, so
   # export the function and run it through a child shell.
   export -f mock_gh
-  run timeout 1 bash -c 'mock_gh pr list'
+  run "$RITE_TIMEOUT_CMD" 1 bash -c 'mock_gh pr list'
   # timeout exits with 124 when command times out
   [ "$status" -eq 124 ]
 }
 
 @test "inject_command_hang with duration hangs for specified time" {
+  [ -n "${RITE_TIMEOUT_CMD:-}" ] || skip "No timeout command available (install coreutils)"
   inject_command_hang "claude" 2
 
-  # The external `timeout` binary cannot invoke a bash function directly, so
+  # The external timeout binary cannot invoke a bash function directly, so
   # export the function and run it through a child shell.
   export -f mock_claude
   start_time=$(date +%s)
-  run timeout 3 bash -c 'mock_claude --print "task"'
+  run "$RITE_TIMEOUT_CMD" 3 bash -c 'mock_claude --print "task"'
   end_time=$(date +%s)
 
   duration=$((end_time - start_time))
@@ -174,10 +185,13 @@ setup() {
   run mock_claude --print "test"
   [ "$status" -eq 0 ]
 
-  # Verify no hang — route through a child shell so the external `timeout`
-  # binary can reach the exported bash function.
+  # Verify no hang — route through a child shell so the external timeout
+  # binary can reach the exported bash function. Skip is placed here (not at
+  # the top) so the mock_gh/mock_claude reset assertions above still run on
+  # machines without a timeout command.
+  [ -n "${RITE_TIMEOUT_CMD:-}" ] || skip "No timeout command available (install coreutils)"
   export -f mock_gh
-  run timeout 1 bash -c 'mock_gh issue list'
+  run "$RITE_TIMEOUT_CMD" 1 bash -c 'mock_gh issue list'
   [ "$status" -eq 0 ]
 }
 

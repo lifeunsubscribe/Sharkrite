@@ -63,6 +63,16 @@ ensure_timeout_cmd() {
       else
         echo -e "${RED:-}❌ Failed to install coreutils${NC:-}" >&2
       fi
+    elif [ ! -t 0 ]; then
+      # Supervised mode WITHOUT a terminal (CI, cron/launchd, piped stdin).
+      # Nobody can answer a prompt here, and `read -p` at EOF returns non-zero
+      # — under set -e that kills the ENTIRE source chain, because config.sh
+      # calls ensure_timeout_cmd at source time (STEP 6b). Live failure:
+      # macOS CI without coreutils — `load_lib utils/pr-detection.sh` died
+      # inside this function (full-phase.bats). Fall through to the graceful
+      # no-timeout fallback below instead of crashing.
+      echo -e "${YELLOW:-}⚠️  timeout command not found — continuing without timeout protection${NC:-}" >&2
+      echo "  Install with: brew install coreutils" >&2
     else
       # Supervised mode — prompt
       echo "" >&2
@@ -70,7 +80,9 @@ ensure_timeout_cmd() {
       echo "  Sharkrite uses timeout to prevent Claude sessions from hanging." >&2
       echo "  Without it, a stalled Claude call will block the workflow indefinitely." >&2
       echo "" >&2
-      read -p "  Install coreutils via Homebrew? (Y/n): " -n 1 -r REPLY >&2
+      # `|| REPLY=n` — a TTY read can still fail (Ctrl-D); treat as decline
+      # rather than letting set -e kill the source chain.
+      read -p "  Install coreutils via Homebrew? (Y/n): " -n 1 -r REPLY >&2 || REPLY="n"
       echo >&2
       if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy]$ ]]; then
         echo "  Installing coreutils..." >&2
