@@ -28,6 +28,8 @@
 # replace the kill-0 reclamation with a time-based TTL instead.
 #
 # Usage:
+#   acquire_batch_lock <issue_list_str>                      # Repo-level batch mutex; returns 0 on success, 1 if live batch holds it
+#   release_batch_lock                                       # Release batch mutex (pid-checked; safe in EXIT traps)
 #   acquire_issue_lock <issue_number>                        # Returns 0 on success, 1 if locked by live process
 #   release_issue_lock <issue_number>                        # Cleanup lock directory
 #   acquire_pr_followup_lock <pr_number> [source_issue]      # Returns 0 on success, 1 on timeout
@@ -198,6 +200,137 @@ acquire_issue_lock() {
 release_issue_lock() {
   local issue_number="$1"
   local lock_dir="${RITE_LOCK_DIR}/issue-${issue_number}.lock"
+
+  if [ -d "$lock_dir" ]; then
+    # Only remove if it's our lock (PID matches)
+    if [ -f "$lock_dir/pid" ]; then
+      local lock_pid
+      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+      if [ "$lock_pid" = "$$" ]; then
+        rm -rf "$lock_dir" 2>/dev/null || true
+      fi
+    fi
+  fi
+}
+
+# Acquire repo-level batch mutex
+#
+# Prevents two concurrent `rite` batch invocations from contending on shared
+# state (scratchpad locks, worktree pool).  Only one batch may hold this lock
+# at a time.  A second invocation detects a live holder and refuses loudly
+# (exit 17) instead of silently corrupting in-flight work.
+#
+# Lock structure:
+#   ${RITE_LOCK_DIR}/batch.lock/pid     — holding batch's PID (atomic write)
+#   ${RITE_LOCK_DIR}/batch.lock/issues  — space-separated issue list for diagnostics
+#   ${RITE_LOCK_DIR}/batch.lock/cwd     — working directory for diagnostics
+#
+# Same-host assumption and stale-lock reclamation follow the same logic as
+# acquire_issue_lock: kill -0 liveness, _atomic_steal_stale_lock for the
+# concurrent-reclaim race.  See the file-level comment for the shared-storage
+# caveat.
+#
+# Args: issue_list (space-separated string of issue numbers, for diagnostics)
+# Returns: 0 on success (lock acquired)
+#          1 if a live batch already holds the lock (caller should exit 17)
+acquire_batch_lock() {
+  local issue_list="${1:-}"
+  local lock_dir="${RITE_LOCK_DIR}/batch.lock"
+
+  # Ensure lock directory parent exists
+  mkdir -p "${RITE_LOCK_DIR}"
+
+  local lock_attempts=0
+  local max_attempts=30
+  local _grace_period_consumed=false
+
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    # Check if the holding process is still alive
+    if [ -f "$lock_dir/pid" ]; then
+      local lock_pid
+      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+
+      # kill -0: same-host assumption — only valid within a single PID namespace.
+      # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
+      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        # Holding process is dead — atomically steal the stale lock, then re-loop.
+        echo "⚠️  Reclaiming stale batch lock from dead process (PID $lock_pid)" >&2
+        _atomic_steal_stale_lock "$lock_dir"
+        continue
+      fi
+
+      # Defense-in-depth: if WE are the lock holder (same PID), reclaim our own lock.
+      # This can happen if a batch script execs itself to restart without releasing.
+      if [ -n "$lock_pid" ] && [ "$lock_pid" = "$$" ]; then
+        echo "⚠️  Reclaiming self-held batch lock (post-exec restart)" >&2
+        _atomic_steal_stale_lock "$lock_dir"
+        continue
+      fi
+
+      # Lock is held by a live batch — report holder details and refuse.
+      local holder_issues=""
+      if [ -f "$lock_dir/issues" ]; then
+        holder_issues=$(cat "$lock_dir/issues" 2>/dev/null || echo "")
+      fi
+      echo "❌ Another batch is already running (PID ${lock_pid})" >&2
+      if [ -n "$holder_issues" ]; then
+        echo "   Holder is processing: ${holder_issues}" >&2
+      fi
+      echo "   Wait for it to finish, or kill PID ${lock_pid} if it crashed." >&2
+      return 1
+    else
+      # Lock dir exists but no PID file — give a grace period before reclaiming
+      # (same pattern as acquire_issue_lock: atomic PID write closes this window,
+      # but a crashed holder may leave the dir without a pid file).
+      if [ "$_grace_period_consumed" = "false" ]; then
+        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
+        _grace_period_consumed=true
+      fi
+      if [ ! -f "$lock_dir/pid" ]; then
+        echo "⚠️  Reclaiming stale batch lock (no PID file after grace period)" >&2
+        _atomic_steal_stale_lock "$lock_dir"
+        continue
+      fi
+    fi
+
+    lock_attempts=$((lock_attempts + 1))
+    if [ $lock_attempts -ge $max_attempts ]; then
+      echo "❌ Batch lock timeout after ${max_attempts} seconds" >&2
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  # Write PID atomically via temp+rename so a concurrent waiter never sees the
+  # lock dir exist with no PID file (the TOCTOU window the old direct echo creates).
+  local _pid_tmp
+  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
+  echo $$ > "$_pid_tmp"
+  mv "$_pid_tmp" "${lock_dir}/pid"
+
+  # Write issue list for diagnostics (the holder's issue list visible to refusers).
+  # Best-effort: failure does not block acquisition.
+  local _issues_tmp
+  _issues_tmp=$(mktemp "${lock_dir}/issues.XXXXXX")
+  printf '%s\n' "$issue_list" > "$_issues_tmp" 2>/dev/null && \
+    mv "$_issues_tmp" "${lock_dir}/issues" || \
+    rm -f "$_issues_tmp" 2>/dev/null || true
+
+  # Write cwd for diagnostics.  Best-effort: failure does not block acquisition.
+  local _cwd_tmp
+  _cwd_tmp=$(mktemp "${lock_dir}/cwd.XXXXXX")
+  pwd > "$_cwd_tmp" 2>/dev/null && mv "$_cwd_tmp" "${lock_dir}/cwd" || \
+    rm -f "$_cwd_tmp" 2>/dev/null || true
+
+  return 0
+}
+
+# Release repo-level batch mutex
+# Only removes the lock if our PID matches (pid-checked, same as release_issue_lock).
+# Safe to call from EXIT traps and SIGINT handlers.
+release_batch_lock() {
+  local lock_dir="${RITE_LOCK_DIR}/batch.lock"
 
   if [ -d "$lock_dir" ]; then
     # Only remove if it's our lock (PID matches)
