@@ -1755,6 +1755,7 @@ phase_merge_pr() {
 phase_completion() {
   local issue_number="$1"
   local pr_number="$2"
+  local workflow_start_ts="${3:-}"
 
   # Defense-in-depth: phase_merge_pr removes the worktree and restores cwd to
   # $RITE_PROJECT_ROOT before returning (Option A fix), but any other path that
@@ -1814,6 +1815,16 @@ phase_completion() {
   fi
 
   print_success "Issue #${issue_number} workflow complete!"
+
+  # Single-issue mode: show this issue's total runtime. Batch mode prints its
+  # own per-issue Duration line, so skip here to avoid a duplicate.
+  if [ "${BATCH_MODE:-false}" != "true" ] && [ -n "$workflow_start_ts" ]; then
+    local _wf_now _wf_elapsed
+    _wf_now=$(date +%s)
+    _wf_elapsed=$(( _wf_now - workflow_start_ts ))
+    print_info "Runtime: $((_wf_elapsed / 60))m $((_wf_elapsed % 60))s"
+  fi
+
   return 0
 }
 
@@ -2228,6 +2239,12 @@ handle_closed_issue() {
 
 run_workflow() {
   local issue_number="$1"
+
+  # Wall-clock start for this issue's total runtime, surfaced at completion
+  # (phase_completion). Batch mode prints its own per-issue Duration line, so
+  # this is only displayed in single-issue mode.
+  local _workflow_start_ts
+  _workflow_start_ts=$(date +%s)
 
   # Layer-2 dry-run backstop (defense in depth): bin/rite's dry-run choke point
   # plans-and-exits before dispatch, so RITE_DRY_RUN=true must never reach
@@ -2745,7 +2762,7 @@ run_workflow() {
   # Phase 5: Completion and notifications
   _diag "PHASE_TRANSITION issue=${issue_number} from=${CURRENT_PHASE:-start} to=completion"
   CURRENT_PHASE="completion"
-  phase_completion "$issue_number" "$PR_NUMBER"
+  phase_completion "$issue_number" "$PR_NUMBER" "$_workflow_start_ts"
 
   # Clear state file on successful completion
   local state_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/session-state-${issue_number}.json"
