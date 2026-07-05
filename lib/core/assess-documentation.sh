@@ -1831,7 +1831,11 @@ rm -f "$ASSESS_PROMPT_FILE"
 
 # --- Apply or report ---
 
-if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
+# Guard and extraction use the SAME anchor (^NEEDS_UPDATE: with colon). The old
+# colon-less guard let a malformed model line ("NEEDS_UPDATE" alone) enter the
+# branch while the colon-anchored extraction returned empty — read -ra of ""
+# then produced an empty FILES_ARRAY whose bare [@] crashes bash 3.2 under set -u.
+if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE:"; then
   DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //' || true)
   REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || true)
 
@@ -1858,7 +1862,10 @@ if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE"; then
     UPDATED_FILES=()
     SKIPPED_FILES=()
 
-    for doc_file in "${FILES_ARRAY[@]}"; do
+    # +idiom: "NEEDS_UPDATE:" with an empty file list still passes the guard
+    # above; read -ra of "" yields an empty array whose bare [@] crashes
+    # bash 3.2 under set -u.
+    for doc_file in "${FILES_ARRAY[@]+"${FILES_ARRAY[@]}"}"; do
       doc_file=$(echo "$doc_file" | xargs)  # trim whitespace
 
       if [ ! -f "$doc_file" ]; then

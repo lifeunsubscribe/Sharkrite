@@ -464,7 +464,7 @@ else
 
   if [ "$FIX_MODE" = true ]; then
     echo "# Sharkrite workflow artifacts" > "$GITIGNORE_FILE"
-    for pattern in "${REQUIRED_IGNORES[@]}"; do
+    for pattern in "${REQUIRED_IGNORES[@]+"${REQUIRED_IGNORES[@]}"}"; do
       echo "$pattern" >> "$GITIGNORE_FILE"
     done
     print_success "Created .gitignore with workflow artifact patterns"

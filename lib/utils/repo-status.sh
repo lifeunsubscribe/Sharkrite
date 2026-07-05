@@ -501,9 +501,12 @@ repo_wide_status() {
     if [ "$group_by_label" = "--by-label" ]; then
       # Collect unique labels
       local all_labels=()
-      for labels_str in "${issue_labels_list[@]}"; do
+      # +idiom on both loops: zero open issues leaves issue_labels_list empty,
+      # and an unlabeled issue yields an empty label_arr — bare [@] expansion
+      # of an empty array crashes under set -u on bash 3.2 (PR #266 pattern).
+      for labels_str in "${issue_labels_list[@]+"${issue_labels_list[@]}"}"; do
         IFS=', ' read -ra label_arr <<< "$labels_str"
-        for lbl in "${label_arr[@]}"; do
+        for lbl in "${label_arr[@]+"${label_arr[@]}"}"; do
           lbl=$(echo "$lbl" | xargs)  # trim
           [ -z "$lbl" ] && continue
           # Check if already in all_labels

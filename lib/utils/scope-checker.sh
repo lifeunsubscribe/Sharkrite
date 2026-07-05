@@ -328,8 +328,11 @@ check_scope_boundary() {
     _file_norm=$(echo "$_file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
 
     # Check DO NOT patterns first (explicit exclusion wins).
-    # _donot_patterns is always declared with local _donot_patterns=() so the
-    # array expansion is safe even when empty (bash 4+ empty array behaviour).
+    # +idiom REQUIRED: this file is #!/bin/bash (bash 3.2 on macOS), where a
+    # bare [@] expansion of an empty array crashes under set -u — a Scope
+    # Boundary with a DO: line but no DO NOT: line leaves _donot_patterns
+    # empty. (An earlier comment here wrongly assumed bash-4 empty-array
+    # semantics.)
     #
     # Two matching strategies:
     #   - Path-shaped patterns  → use _file_matches_pattern (prefix/glob)
@@ -337,7 +340,7 @@ check_scope_boundary() {
     #     word from the prose phrase (e.g. "touch unrelated tests" matches
     #     any file whose path contains "unrelated" or "tests")
     local _donot_match=false
-    for _pat in "${_donot_patterns[@]}"; do
+    for _pat in "${_donot_patterns[@]+"${_donot_patterns[@]}"}"; do
       [ -z "${_pat:-}" ] && continue
       if _is_path_shaped "$_pat"; then
         # Path-shaped: use standard prefix/glob matching
@@ -402,7 +405,10 @@ check_scope_boundary() {
       # prose words from being used as path prefixes (which would never match)
       # and ensures real path mentions inside prose DO bullets are honoured.
       local _do_match=false
-      for _pat in "${_do_patterns[@]}"; do
+      # +idiom: a Scope Boundary with DO NOT: but no DO: leaves _do_patterns
+      # empty — bare [@] crashes bash 3.2 under set -u (sibling of the
+      # _donot_patterns fix above).
+      for _pat in "${_do_patterns[@]+"${_do_patterns[@]}"}"; do
         [ -z "$_pat" ] && continue
         if [[ "$_pat" == *" "* ]]; then
           # Prose bullet: try each whitespace-separated token that is path-shaped

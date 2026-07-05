@@ -3337,7 +3337,7 @@ if [ ! -z "$PR_JSON" ] && [ "$PR_JSON" != "null" ]; then
     echo "  3. Address feedback if any (assess-and-resolve.sh)"
     echo "  4. Merge when approved"
 
-    if [ -n "$WORKTREE_PATH" ]; then
+    if [ -n "${WORKTREE_PATH:-}" ]; then
       echo ""
       verbose_info "Worktree will be cleaned up after merge"
       echo "  Location: $WORKTREE_PATH"
@@ -3354,7 +3354,7 @@ fi
 
 # Check if still in worktree
 CURRENT_PATH=$(pwd)
-if [[ "$CURRENT_PATH" == *"$(basename "$RITE_WORKTREE_DIR")"* ]] || [ -n "$WORKTREE_PATH" ]; then
+if [[ "$CURRENT_PATH" == *"$(basename "$RITE_WORKTREE_DIR")"* ]] || [ -n "${WORKTREE_PATH:-}" ]; then
   echo ""
   print_info "You are in an isolated worktree"
   echo "  Location: ${WORKTREE_PATH:-$CURRENT_PATH}"

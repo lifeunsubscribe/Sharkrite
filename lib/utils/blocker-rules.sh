@@ -621,7 +621,7 @@ detect_protected_scripts() {
   # Convert pipe-separated pattern to array for iteration
   IFS='|' read -ra protected_scripts <<< "$protected_pattern"
 
-  for script in "${protected_scripts[@]}"; do
+  for script in "${protected_scripts[@]+"${protected_scripts[@]}"}"; do
     local changes
     changes=$(gh_safe pr view "$pr_number" --json files --jq ".files[] | select(.path | contains(\"$script\")) | .path")
     changes="${changes:-}"
@@ -729,7 +729,7 @@ Guidance: Verify cost implications of referenced cloud services. Check for appro
   # Protected scripts
   local protected_matches=""
   IFS='|' read -ra _protected_list <<< "$BLOCKER_PROTECTED_SCRIPTS"
-  for _script in "${_protected_list[@]}"; do
+  for _script in "${_protected_list[@]+"${_protected_list[@]}"}"; do
     local _match
     _match=$(echo "$changed_files" | grep -F "$_script" || true)
     if [ -n "$_match" ]; then

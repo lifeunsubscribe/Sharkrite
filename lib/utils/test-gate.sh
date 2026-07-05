@@ -375,7 +375,7 @@ _select_lint_by_changed_paths() {
     local _trigger _changed
     while IFS= read -r _changed; do
       [ -z "$_changed" ] && continue
-      for _trigger in "${_LINT_GATE_FULL_SUITE_TRIGGERS[@]}"; do
+      for _trigger in "${_LINT_GATE_FULL_SUITE_TRIGGERS[@]+"${_LINT_GATE_FULL_SUITE_TRIGGERS[@]}"}"; do
         # shellcheck disable=SC2254  # glob expansion in case is intentional
         case "$_changed" in
           $_trigger)
@@ -1829,7 +1829,7 @@ run_test_gate() {
           { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
               "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats -F pretty --report-formatter tap --output "$_ser_tap_dir" \
-              "${_serial_files[@]}") \
+              "${_serial_files[@]+"${_serial_files[@]}"}") \
               < /dev/null 2>&1; \
             echo $? > "$_bats_exit_file"; } \
             | tee -a "$_bats_pretty_capture" >> "$_gate_raw_sink" || true
@@ -1837,7 +1837,7 @@ run_test_gate() {
           rm -rf "$_ser_tap_dir"
         else
           { (cd "$project_root" && "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
-              bats "${_serial_files[@]}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
+              bats "${_serial_files[@]+"${_serial_files[@]}"}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
             | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
         fi
         _ser_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)

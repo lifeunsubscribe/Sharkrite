@@ -93,7 +93,7 @@ autofix_file() {
     )
   fi
 
-  if ! sed "${_sed_args[@]}" "$_f" > "$_tmp" 2>/dev/null; then
+  if ! sed "${_sed_args[@]+"${_sed_args[@]}"}" "$_f" > "$_tmp" 2>/dev/null; then
     rm -f "$_tmp"; echo 0; return 0
   fi
 
