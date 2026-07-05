@@ -327,15 +327,165 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- resolve_dispatch_plan (pure) --------------------------------------------
-# Maps the dispatch tuple (MODE, batch filter, PR input, issue args) to the
-# target the dispatch chain below would execute. Routing is decided by the
-# whole tuple, not MODE alone — MODE stays "full" for single-issue, multi-issue
-# batch, --label batch, and --pr flows.
+# --- resolve_dispatch_key (pure) ---------------------------------------------
+# Maps the dispatch tuple (MODE, batch filter, PR input, issue args) to a
+# machine-readable routing key consumed by BOTH the dry-run printer and the
+# real dispatch chain.  This is the single source of truth for routing
+# decisions — neither the dry-run printer nor the real dispatch section may
+# contain independent routing conditionals that could drift from each other.
 #
-# Consumed ONLY by the dry-run printer for now. Follow-up: rewire the real
-# dispatch chain through this function so the plan can never drift from the
-# actual routing.
+# Usage:  resolve_dispatch_key MODE BATCH_FILTER PR_INPUT [ISSUE_ARGS...]
+# Output: one token on stdout:
+#   "status-repo-wide"     rite --status (no issue)
+#   "batch-filter"         rite --label ...
+#   "pr-resolve"           rite --pr N
+#   "no-target"            no issue number, --label, or --pr supplied
+#   "single-issue"         rite N (full mode)
+#   "single-issue-text"    rite "description text" (full mode)
+#   "batch-multi"          rite N1 N2 ... (full mode, >1 arg)
+#   "dev-and-pr"           rite N --dev-and-pr
+#   "status-per-issue"     rite N --status
+#   "review-latest"        rite N --review-latest
+#   "assess-and-fix"       rite N --assess-and-fix
+#   "undo"                 rite N --undo
+#   "health-report"        rite --health-report
+#   "health-report-latest" rite --health-report --latest
+#   "full-suite"           rite --full-suite
+#   "refresh-encountered-issues"
+#   "tags"
+#   "backfill-locks"
+#   "reset-approval-issue" rite N --reset-approval
+#   "reset-approval-all"   rite --reset-approval
+#   "init"
+#   "plan"
+#   "mixed-pr-and-issues"  ambiguous: --pr N plus positional issue numbers
+#   ""                     (empty) = unrecognized tuple; caller must refuse
+# Return: always 0 (callers check the output string)
+resolve_dispatch_key() {
+  local _mode="$1" _batch_filter="$2" _pr_input="$3"
+  shift 3
+  local _argc=$#
+
+  # Early-dispatch modes (take precedence over batch filter / PR / issue args).
+  case "$_mode" in
+    health-report)
+      if [ "${1:-}" = "--latest" ]; then
+        echo "health-report-latest"
+      else
+        echo "health-report"
+      fi
+      return 0
+      ;;
+    full-suite)
+      echo "full-suite"
+      return 0
+      ;;
+    refresh-encountered-issues)
+      echo "refresh-encountered-issues"
+      return 0
+      ;;
+    tags)
+      echo "tags"
+      return 0
+      ;;
+    backfill-locks)
+      echo "backfill-locks"
+      return 0
+      ;;
+    reset-approval)
+      if [ $_argc -ge 1 ]; then
+        echo "reset-approval-issue"
+      else
+        echo "reset-approval-all"
+      fi
+      return 0
+      ;;
+    init)
+      echo "init"
+      return 0
+      ;;
+    plan)
+      echo "plan"
+      return 0
+      ;;
+    full|dev-and-pr|review-latest|assess-and-fix|status|undo)
+      # Smart-routing modes — tuple-based routing below.
+      ;;
+    *)
+      echo ""
+      return 0
+      ;;
+  esac
+
+  # Refuse ambiguous mixed tuple: --pr N plus positional issue numbers.
+  if [ -n "$_pr_input" ] && [ $_argc -gt 0 ]; then
+    echo "mixed-pr-and-issues"
+    return 0
+  fi
+
+  # Smart-routing precedence: status-no-args → batch filter → --pr → argc.
+  if [ "$_mode" = "status" ] && [ $_argc -eq 0 ] && [ -z "$_pr_input" ]; then
+    echo "status-repo-wide"
+    return 0
+  fi
+
+  if [ -n "$_batch_filter" ]; then
+    echo "batch-filter"
+    return 0
+  fi
+
+  if [ -n "$_pr_input" ]; then
+    echo "pr-resolve"
+    return 0
+  fi
+
+  if [ $_argc -eq 0 ]; then
+    echo "no-target"
+    return 0
+  fi
+
+  case "$_mode" in
+    full)
+      if [ $_argc -gt 1 ]; then
+        echo "batch-multi"
+      elif [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+        echo "single-issue"
+      else
+        echo "single-issue-text"
+      fi
+      return 0
+      ;;
+    dev-and-pr)
+      if [ $_argc -eq 1 ]; then echo "dev-and-pr"; else echo ""; fi
+      return 0
+      ;;
+    review-latest)
+      if [ $_argc -eq 1 ]; then echo "review-latest"; else echo ""; fi
+      return 0
+      ;;
+    assess-and-fix)
+      if [ $_argc -eq 1 ]; then echo "assess-and-fix"; else echo ""; fi
+      return 0
+      ;;
+    status)
+      if [ $_argc -eq 1 ]; then echo "status-per-issue"; else echo ""; fi
+      return 0
+      ;;
+    undo)
+      if [ $_argc -eq 1 ]; then echo "undo"; else echo ""; fi
+      return 0
+      ;;
+  esac
+
+  echo ""
+  return 0
+}
+# --- end resolve_dispatch_key -------------------------------------------------
+
+# --- resolve_dispatch_plan (pure) --------------------------------------------
+# Maps the dispatch tuple to human-readable plan lines for --dry-run display.
+# Delegates all routing decisions to resolve_dispatch_key() so the plan can
+# never drift from the real dispatch chain.
 #
 # Usage:  resolve_dispatch_plan MODE BATCH_FILTER PR_INPUT [ISSUE_ARGS...]
 # Output: plan lines on stdout. No side effects, no network, no filesystem
@@ -348,17 +498,17 @@ done
 resolve_dispatch_plan() {
   local _mode="$1" _batch_filter="$2" _pr_input="$3"
   shift 3
-  local _argc=$#
 
-  # Early-dispatch modes: these fire before logging setup and smart routing,
-  # so they take precedence over any batch filter / PR input in the tuple.
-  case "$_mode" in
+  local _key
+  _key=$(resolve_dispatch_key "$_mode" "$_batch_filter" "$_pr_input" "$@")
+
+  case "$_key" in
+    health-report-latest)
+      echo "rite-health-report --latest  (display most recent report, read-only)"
+      return 0
+      ;;
     health-report)
-      if [ "${1:-}" = "--latest" ]; then
-        echo "rite-health-report --latest  (display most recent report, read-only)"
-      else
-        echo "rite-health-report --display  (generate health report via claude)"
-      fi
+      echo "rite-health-report --display  (generate health report via claude)"
       return 0
       ;;
     full-suite)
@@ -377,12 +527,12 @@ resolve_dispatch_plan() {
       echo "backfill_worktree_locks  (write lock dirs for legacy worktrees)"
       return 0
       ;;
-    reset-approval)
-      if [ $_argc -ge 1 ]; then
-        echo "clear saved blocker approvals for issue #${1}"
-      else
-        echo "clear ALL saved blocker approvals (global reset)"
-      fi
+    reset-approval-issue)
+      echo "clear saved blocker approvals for issue #${1}"
+      return 0
+      ;;
+    reset-approval-all)
+      echo "clear ALL saved blocker approvals (global reset)"
       return 0
       ;;
     init)
@@ -393,84 +543,75 @@ resolve_dispatch_plan() {
       echo "plan-issues.sh::plan_issues ${PLAN_ARGS[*]:-}  (generate GitHub issues via claude)"
       return 0
       ;;
-    full|dev-and-pr|review-latest|assess-and-fix|status|undo)
-      # Smart-routing modes — tuple-based routing below.
+    status-repo-wide)
+      echo "repo_wide_status ${LABEL_FILTER:-}  (read-only repo overview)"
+      return 0
+      ;;
+    batch-filter)
+      if [ $# -gt 0 ]; then
+        echo "batch-process-issues.sh $_batch_filter $* --auto  (batch via filter)"
+      else
+        echo "batch-process-issues.sh $_batch_filter --auto  (batch via filter)"
+      fi
+      return 0
+      ;;
+    pr-resolve)
+      echo "resolve PR #$_pr_input to its linked issue via gh  (orphan PR: creates a tracking issue, may close the PR if stale)"
+      echo "then dispatch the resolved issue through mode=$_mode"
+      return 0
+      ;;
+    no-target)
+      return 2
+      ;;
+    single-issue)
+      if [ "${SUPERVISED:-false}" = true ]; then
+        echo "workflow-runner.sh $1 ${WORKFLOW_FLAGS[*]:-}  (full lifecycle, supervised)"
+      else
+        echo "workflow-runner.sh $1 --auto ${WORKFLOW_FLAGS[*]:-}  (full lifecycle)"
+      fi
+      return 0
+      ;;
+    single-issue-text)
+      echo "generate structured issue from text description via claude,"
+      echo "then workflow-runner.sh <new-issue>  (full lifecycle)"
+      return 0
+      ;;
+    batch-multi)
+      echo "batch-process-issues.sh $* --auto  (batch: $# issues)"
+      return 0
+      ;;
+    dev-and-pr)
+      echo "claude-workflow.sh $1 --auto, then create-pr.sh --auto  (dev + PR only, skip review/merge)"
+      return 0
+      ;;
+    review-latest)
+      echo "local-review.sh <pr-for-issue-$1> --post  (generate + post review)"
+      return 0
+      ;;
+    assess-and-fix)
+      echo "assess-and-resolve.sh <pr-for-issue-$1> $1 --auto  (assess review + fix loop)"
+      return 0
+      ;;
+    status-per-issue)
+      echo "per-issue status overview for issue #$1  (read-only)"
+      return 0
+      ;;
+    undo)
+      echo "undo-workflow.sh $1  (close PR, delete branch/worktree)"
+      return 0
+      ;;
+    mixed-pr-and-issues)
+      # Surface the ambiguity to the dry-run printer; real dispatch refuses loudly.
+      echo "ERROR: ambiguous invocation — --pr $_pr_input and positional issue(s) $* cannot be combined"
+      return 1
+      ;;
+    "")
+      return 1
       ;;
     *)
       return 1
       ;;
   esac
-
-  # Mirrors the smart-routing precedence of the dispatch chain below:
-  # status-no-args → batch filter → --pr resolution → argc-based routing.
-  if [ "$_mode" = "status" ] && [ $_argc -eq 0 ]; then
-    echo "repo_wide_status ${LABEL_FILTER:-}  (read-only repo overview)"
-    return 0
-  fi
-
-  if [ -n "$_batch_filter" ]; then
-    if [ $_argc -gt 0 ]; then
-      echo "batch-process-issues.sh $_batch_filter $* --auto  (batch via filter)"
-    else
-      echo "batch-process-issues.sh $_batch_filter --auto  (batch via filter)"
-    fi
-    return 0
-  fi
-
-  if [ -n "$_pr_input" ]; then
-    echo "resolve PR #$_pr_input to its linked issue via gh  (orphan PR: creates a tracking issue, may close the PR if stale)"
-    echo "then dispatch the resolved issue through mode=$_mode"
-    return 0
-  fi
-
-  if [ $_argc -eq 0 ]; then
-    return 2
-  fi
-
-  case "$_mode" in
-    full)
-      if [ $_argc -gt 1 ]; then
-        echo "batch-process-issues.sh $* --auto  (batch: $_argc issues)"
-      elif [[ "$1" =~ ^[0-9]+$ ]]; then
-        if [ "${SUPERVISED:-false}" = true ]; then
-          echo "workflow-runner.sh $1 ${WORKFLOW_FLAGS[*]:-}  (full lifecycle, supervised)"
-        else
-          echo "workflow-runner.sh $1 --auto ${WORKFLOW_FLAGS[*]:-}  (full lifecycle)"
-        fi
-      else
-        echo "generate structured issue from text description via claude,"
-        echo "then workflow-runner.sh <new-issue>  (full lifecycle)"
-      fi
-      return 0
-      ;;
-    dev-and-pr)
-      [ $_argc -eq 1 ] || return 1
-      echo "claude-workflow.sh $1 --auto, then create-pr.sh --auto  (dev + PR only, skip review/merge)"
-      return 0
-      ;;
-    review-latest)
-      [ $_argc -eq 1 ] || return 1
-      echo "local-review.sh <pr-for-issue-$1> --post  (generate + post review)"
-      return 0
-      ;;
-    assess-and-fix)
-      [ $_argc -eq 1 ] || return 1
-      echo "assess-and-resolve.sh <pr-for-issue-$1> $1 --auto  (assess review + fix loop)"
-      return 0
-      ;;
-    status)
-      [ $_argc -eq 1 ] || return 1
-      echo "per-issue status overview for issue #$1  (read-only)"
-      return 0
-      ;;
-    undo)
-      [ $_argc -eq 1 ] || return 1
-      echo "undo-workflow.sh $1  (close PR, delete branch/worktree)"
-      return 0
-      ;;
-  esac
-
-  return 1
 }
 # --- end resolve_dispatch_plan ------------------------------------------------
 
@@ -1110,6 +1251,16 @@ if ! gh auth status &>/dev/null; then
   exit 1
 fi
 
+# Refuse ambiguous mixed tuple before any resolution side effects.
+# --pr N plus positional issue numbers is structurally ambiguous: the caller
+# cannot know which issue the workflow will act on.  Refuse loudly here and
+# also in resolve_dispatch_key() so dry-run and real execution agree.
+if [ -n "${PR_INPUT:-}" ] && [ ${#ARGS[@]} -gt 0 ]; then
+  print_error "ambiguous invocation: --pr $PR_INPUT and positional issue(s) ${ARGS[*]} cannot be combined"
+  echo "Use either --pr <number> or positional issue numbers, not both."
+  exit 1
+fi
+
 # Resolve --pr to issue number
 if [ -n "${PR_INPUT:-}" ]; then
   print_status "Resolving PR #$PR_INPUT..."
@@ -1224,6 +1375,9 @@ Fresh implementation will be started on issue #${LINKED_ISSUE}."
     print_success "PR #$PR_INPUT → issue #$LINKED_ISSUE"
   fi
   ARGS=("$LINKED_ISSUE")
+  # Clear PR_INPUT after resolution so resolve_dispatch_key() sees only the
+  # resolved issue in ARGS (prevents spurious mixed-pr-and-issues detection).
+  PR_INPUT=""
 fi
 
 # Record a run to the persistent history file (independent of logs)
@@ -1236,39 +1390,68 @@ record_run() {
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
 }
 
-# Smart routing
-# Repo-wide status (--status with no issue number)
-if [ "$MODE" = "status" ] && [ -z "${ARGS[0]:-}" ]; then
-  source "$RITE_LIB_DIR/utils/repo-status.sh"
-  repo_wide_status "${LABEL_FILTER:-}"
-  exit 0
-elif [ ${#BATCH_FILTER_ARGS[@]} -gt 0 ]; then
-  # Batch mode via filter (e.g., --label tech-debt)
-  exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "${BATCH_FILTER_ARGS[@]}" ${ARGS[@]+"${ARGS[@]}"} --auto
-elif [ -z "${ARGS[0]:-}" ]; then
-  print_error "No issues specified"
-  echo "Run 'rite --help' for usage"
-  exit 1
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "full" ]; then
-  normalize_and_resolve "${ARGS[0]}"
-  record_run "$ISSUE_NUMBER" "full"
-  # Full lifecycle: work -> PR -> review -> fixes -> merge
-  # Default to unsupervised (--auto) unless --supervised was explicitly passed
-  if [ "$SUPERVISED" = false ]; then
-    exec "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" --auto "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
-  else
-    exec "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
-  fi
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "dev-and-pr" ]; then
-  normalize_and_resolve "${ARGS[0]}"
-  record_run "$ISSUE_NUMBER" "dev-and-pr"
-  print_info "Dev + PR: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
-  "$RITE_LIB_DIR/core/claude-workflow.sh" "$ISSUE_NUMBER" --auto
-  "$RITE_LIB_DIR/core/create-pr.sh" --auto
-  print_success "Dev + PR complete — PR created, skipping review/merge"
-  exit 0
+# Smart routing — all dispatch decisions derive from resolve_dispatch_key() so
+# the routing logic has exactly one source of truth shared with the dry-run
+# printer. No independent routing conditionals may appear in this section.
+_DISPATCH_KEY=$(resolve_dispatch_key "$MODE" "${BATCH_FILTER_ARGS[*]:-}" "${PR_INPUT:-}" ${ARGS[@]+"${ARGS[@]}"})
 
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
+case "$_DISPATCH_KEY" in
+
+  mixed-pr-and-issues)
+    # Defense-in-depth: the early refusal block above (before --pr resolution)
+    # handles this for the real path.  This branch catches any future code path
+    # that could reach here with an uncleared PR_INPUT.
+    print_error "ambiguous invocation: --pr ${PR_INPUT:-} and positional issue(s) ${ARGS[*]:-} cannot be combined"
+    echo "Use either --pr <number> or positional issue numbers, not both."
+    exit 1
+    ;;
+
+  status-repo-wide)
+    source "$RITE_LIB_DIR/utils/repo-status.sh"
+    repo_wide_status "${LABEL_FILTER:-}"
+    exit 0
+    ;;
+
+  batch-filter)
+    # Batch mode via filter (e.g., --label tech-debt)
+    exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "${BATCH_FILTER_ARGS[@]}" ${ARGS[@]+"${ARGS[@]}"} --auto
+    ;;
+
+  no-target)
+    print_error "No issues specified"
+    echo "Run 'rite --help' for usage"
+    exit 1
+    ;;
+
+  single-issue|single-issue-text)
+    normalize_and_resolve "${ARGS[0]}"
+    record_run "$ISSUE_NUMBER" "full"
+    # Full lifecycle: work -> PR -> review -> fixes -> merge
+    # Default to unsupervised (--auto) unless --supervised was explicitly passed
+    if [ "$SUPERVISED" = false ]; then
+      exec "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" --auto "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
+    else
+      exec "$RITE_LIB_DIR/core/workflow-runner.sh" "$ISSUE_NUMBER" "${WORKFLOW_FLAGS[@]+"${WORKFLOW_FLAGS[@]}"}"
+    fi
+    ;;
+
+  batch-multi)
+    # Batch mode via multiple issue numbers
+    print_info "Batch processing ${#ARGS[@]} issues"
+    exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "${ARGS[@]}" --auto
+    ;;
+
+  dev-and-pr)
+    normalize_and_resolve "${ARGS[0]}"
+    record_run "$ISSUE_NUMBER" "dev-and-pr"
+    print_info "Dev + PR: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
+    "$RITE_LIB_DIR/core/claude-workflow.sh" "$ISSUE_NUMBER" --auto
+    "$RITE_LIB_DIR/core/create-pr.sh" --auto
+    print_success "Dev + PR complete — PR created, skipping review/merge"
+    exit 0
+    ;;
+
+  status-per-issue)
   # Status mode: read-only overview of issue workflow state
   # Skips normalize_and_resolve (no Claude call needed for status)
   STATUS_ISSUE="${ARGS[0]}"
@@ -1489,11 +1672,12 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "status" ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   exit 0
+    ;;
 
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
-  normalize_and_resolve "${ARGS[0]}"
-  record_run "$ISSUE_NUMBER" "review-latest"
-  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+  review-latest)
+    normalize_and_resolve "${ARGS[0]}"
+    record_run "$ISSUE_NUMBER" "review-latest"
+    source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
   # Find PR for this issue
   if ! detect_pr_for_issue "$ISSUE_NUMBER"; then
@@ -1554,11 +1738,12 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "review-latest" ]; then
   fi
   print_success "Review posted for issue #$ISSUE_NUMBER"
   exit 0
+    ;;
 
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
-  normalize_and_resolve "${ARGS[0]}"
-  record_run "$ISSUE_NUMBER" "assess-and-fix"
-  source "$RITE_LIB_DIR/utils/pr-detection.sh"
+  assess-and-fix)
+    normalize_and_resolve "${ARGS[0]}"
+    record_run "$ISSUE_NUMBER" "assess-and-fix"
+    source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
   # Find PR for this issue
   if ! detect_pr_for_issue "$ISSUE_NUMBER"; then
@@ -1674,20 +1859,22 @@ elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "assess-and-fix" ]; then
   done
 
   exit $FINAL_EXIT
+    ;;
 
-elif [ "$MODE" = "undo" ] && [ ${#ARGS[@]} -ne 1 ]; then
-  print_error "--undo requires exactly one issue number"
-  echo "Usage: rite <issue> --undo"
-  exit 1
-elif [ ${#ARGS[@]} -eq 1 ] && [ "$MODE" = "undo" ]; then
-  # Undo mode: no normalization needed, just validate and pass through
-  if [[ ! "${ARGS[0]}" =~ ^[0-9]+$ ]]; then
-    print_error "--undo requires an issue number, not a description"
+  undo)
+    # Undo mode: no normalization needed, just validate and pass through
+    if [[ ! "${ARGS[0]}" =~ ^[0-9]+$ ]]; then
+      print_error "--undo requires an issue number, not a description"
+      exit 1
+    fi
+    exec "$RITE_LIB_DIR/core/undo-workflow.sh" "${ARGS[0]}"
+    ;;
+
+  ""|*)
+    # Empty key = unrecognized tuple (e.g. undo with wrong arg count).
+    print_error "unsupported invocation (mode=$MODE args=[${ARGS[*]:-}] filter=[${BATCH_FILTER_ARGS[*]:-}] pr=[${PR_INPUT:-}])"
+    echo "Run 'rite --help' for usage"
     exit 1
-  fi
-  exec "$RITE_LIB_DIR/core/undo-workflow.sh" "${ARGS[0]}"
-elif [ ${#ARGS[@]} -gt 1 ]; then
-  # Batch mode via multiple issue numbers
-  print_info "Batch processing ${#ARGS[@]} issues"
-  exec "$RITE_LIB_DIR/core/batch-process-issues.sh" "${ARGS[@]}" --auto
-fi
+    ;;
+
+esac
