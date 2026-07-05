@@ -43,6 +43,24 @@ strip_ansi() {
   perl -pe 'BEGIN { $| = 1 } s/\e\[[0-9;]*[a-zA-Z]//g'
 }
 
+# Indent + prettify `git push` porcelain for nested workflow output. Reads the
+# push transcript on stdin and rewrites each line:
+#   "To <url>"                 -> "   To <url>"                (base indent)
+#   "<sha>..<sha> <l> -> <r>"  -> "      <sha>..<sha> <l>"     (deeper indent)
+#                                 "         -> <r>"            (ref target on its own line)
+# Splitting on " -> " keeps the long branch->branch mapping from running off the
+# right edge. awk (POSIX index/substr) stays portable across BSD/GNU.
+format_git_push_output() {
+  awk '
+    { _l=$0; sub(/^[ \t]+/, "", _l)
+      _p=index(_l, " -> ")
+      if (_p>0)
+        printf "      %s\n         -> %s\n", substr(_l,1,_p-1), substr(_l,_p+4)
+      else
+        printf "   %s\n", _l
+    }'
+}
+
 # Export for use in subshells
 export RED GREEN YELLOW BLUE MAGENTA CYAN BOLD DIM NC
-export -f print_header print_success print_error print_warning print_info print_status print_step strip_ansi 2>/dev/null || true
+export -f print_header print_success print_error print_warning print_info print_status print_step strip_ansi format_git_push_output 2>/dev/null || true

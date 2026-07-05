@@ -1161,7 +1161,6 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     PR_NUMBER="${PR_NUMBER:-}"
     [ "$PR_NUMBER" = "null" ] && PR_NUMBER=""
 
-    print_success "Issue #$ISSUE_NUM completed successfully"
     if [ -n "$PR_NUMBER" ]; then
       print_info "PR: #$PR_NUMBER"
       ISSUE_PR["$ISSUE_NUM"]="$PR_NUMBER"

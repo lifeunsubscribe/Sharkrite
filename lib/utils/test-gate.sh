@@ -1353,6 +1353,19 @@ _dir_rel() {
 }
 
 # ---------------------------------------------------------------------------
+# _gate_status — emit a [test-gate] progress line, routed by run mode.
+#
+# Reads the caller's `_gate_raw_sink` (bash dynamic scope): in BACKGROUND mode
+# it is the run log, so these lines buffer there and only the final digest
+# reaches the terminal (no interleaving with the concurrent review stream); in
+# FOREGROUND mode it is /dev/stdout, so progress stays live. The `:-/dev/stdout`
+# default keeps it safe if ever called before the sink is set.
+# ---------------------------------------------------------------------------
+_gate_status() {
+  echo "$@" >> "${_gate_raw_sink:-/dev/stdout}"
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1552,14 +1565,14 @@ run_test_gate() {
     _lint_selection=$(_select_lint_by_changed_paths "$_changed_files" "$project_root")
 
     if [ "$_lint_selection" = "FORCE_FULL" ]; then
-      echo "[test-gate] Lint: full scan"
+      _gate_status "[test-gate] Lint: full scan"
       _diag "LINT_GATE_SELECTION mode=full pr=${PR_NUMBER:-?}"
     elif [ -z "$_lint_selection" ]; then
-      echo "[test-gate] Lint: no shell-source changes — skipping"
+      _gate_status "[test-gate] Lint: no shell-source changes — skipping"
       _diag "LINT_GATE_SELECTION mode=skipped selected=0 pr=${PR_NUMBER:-?}"
     else
       _lint_selected_count=$(echo "$_lint_selection" | grep -c '.' || true)
-      echo "[test-gate] Lint: targeted (${_lint_selected_count} changed shell file(s))"
+      _gate_status "[test-gate] Lint: targeted (${_lint_selected_count} changed shell file(s))"
       _diag "LINT_GATE_SELECTION mode=targeted selected=${_lint_selected_count} pr=${PR_NUMBER:-?}"
     fi
 
@@ -1575,7 +1588,7 @@ run_test_gate() {
     _sc_raw_individual=$(mktemp "/tmp/rite_gate_sc_raw_${PR_NUMBER:-0}_$$_XXXXXX")
     _lint_raw_individual=$(mktemp "/tmp/rite_gate_lint_raw_${PR_NUMBER:-0}_$$_XXXXXX")
 
-    echo "[test-gate] Running make shellcheck + make lint (concurrent)..."
+    _gate_status "[test-gate] Running make shellcheck + make lint (concurrent)..."
     { (cd "$project_root" && make shellcheck) > "$_sc_raw_individual" 2>&1; echo $? > "$_sc_exit_file"; } &
     local _sc_pid=$!
 
@@ -1650,10 +1663,10 @@ run_test_gate() {
     _bats_jobs=$(_compute_bats_jobs)
     if [ "$_bats_jobs" -gt 1 ]; then
       _bats_jobs_args=(--jobs "$_bats_jobs")
-      echo "[test-gate] bats: parallel (--jobs ${_bats_jobs})"
+      _gate_status "[test-gate] bats: parallel (--jobs ${_bats_jobs})"
     else
       _bats_jobs_args=()
-      echo "[test-gate] bats: serial (parallel binary not found; install GNU parallel to enable)"
+      _gate_status "[test-gate] bats: serial (parallel binary not found; install GNU parallel to enable)"
     fi
     _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
 
@@ -1739,16 +1752,16 @@ run_test_gate() {
       # and begin/result pairing produced 130 phantom findings for a deficit
       # of 1 (issue #862).
       _bats_pretty_capture=$(mktemp "/tmp/rite_gate_pretty_${PR_NUMBER:-0}_$$_XXXXXX")
-      echo "[test-gate] bats: pretty formatter (terminal) + TAP report (parser)"
+      _gate_status "[test-gate] bats: pretty formatter (terminal) + TAP report (parser)"
     else
-      echo "[test-gate] bats: TAP formatter (--report-formatter not available in installed bats)"
+      _gate_status "[test-gate] bats: TAP formatter (--report-formatter not available in installed bats)"
     fi
 
     if [ "$_selection" = "FORCE_FULL" ]; then
       _selected_count="$_total_bats"
-      echo "[test-gate] Selection: full suite (${_total_bats} bats files — RITE_GATE_FORCE_FULL opt-in)"
+      _gate_status "[test-gate] Selection: full suite (${_total_bats} bats files — RITE_GATE_FORCE_FULL opt-in)"
       _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
-      echo "[test-gate] Running bats -r tests/..."
+      _gate_status "[test-gate] Running bats -r tests/..."
       if [ "$_bats_use_pretty" = "true" ]; then
         # tee into _bats_pretty_capture (not-run detection, #804) while still
         # streaming to the sink — same exit-capture shape as the TAP fallback.
@@ -1772,13 +1785,13 @@ run_test_gate() {
       # loud: the diag records selected=0 so the health report can watch for
       # systematic coverage gaps.
       _selected_count=0
-      echo "[test-gate] Selection: targeted (0/${_total_bats} bats files — no covered tests for changed paths, skipping bats)"
+      _gate_status "[test-gate] Selection: targeted (0/${_total_bats} bats files — no covered tests for changed paths, skipping bats)"
       _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=${_total_bats} pr=${PR_NUMBER:-?}"
       echo 0 > "$_bats_exit_file"
       : > "$_tests_raw_file"
     else
       _selected_count=$(echo "$_selection" | grep -c '.' || true)
-      echo "[test-gate] Selection: targeted (${_selected_count}/${_total_bats} bats files based on changed paths)"
+      _gate_status "[test-gate] Selection: targeted (${_selected_count}/${_total_bats} bats files based on changed paths)"
       _diag "TEST_GATE_SELECTION mode=targeted selected=${_selected_count} total=${_total_bats} pr=${PR_NUMBER:-?}"
       # Split selected files into parallel and serial groups.
       # Files carrying the sharkrite-gate-serial hint (load-sensitive or subprocess-heavy
@@ -1799,14 +1812,14 @@ run_test_gate() {
       local _serial_count=${#_serial_files[@]}
       local _parallel_count=${#_parallel_files[@]}
       if [ "$_serial_count" -gt 0 ]; then
-        echo "[test-gate] bats split: ${_parallel_count} parallel, ${_serial_count} serial (load-sensitive)"
+        _gate_status "[test-gate] bats split: ${_parallel_count} parallel, ${_serial_count} serial (load-sensitive)"
         _diag "BATS_SERIAL_SPLIT parallel=${_parallel_count} serial=${_serial_count} pr=${PR_NUMBER:-?}"
       fi
 
       # Run parallel batch (if any)
       local _par_exit=0
       if [ "$_parallel_count" -gt 0 ]; then
-        echo "[test-gate] Running bats on ${_parallel_count} parallel file(s)..."
+        _gate_status "[test-gate] Running bats on ${_parallel_count} parallel file(s)..."
         if [ "$_bats_use_pretty" = "true" ]; then
           local _par_tap_dir
           _par_tap_dir=$(mktemp -d "/tmp/rite_gate_par_tap_${PR_NUMBER:-0}_$$_XXXXXX")
@@ -1826,7 +1839,7 @@ run_test_gate() {
         fi
         _par_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
         if [ "$_par_exit" = "124" ] || [ "$_par_exit" = "137" ]; then
-          echo "[test-gate] bats (parallel group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
+          _gate_status "[test-gate] bats (parallel group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=parallel timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
         fi
         echo 0 > "$_bats_exit_file"
@@ -1838,7 +1851,7 @@ run_test_gate() {
       # GNU parallel for single-file sequential execution.
       local _ser_exit=0
       if [ "$_serial_count" -gt 0 ]; then
-        echo "[test-gate] Running bats on ${_serial_count} serial file(s) (no --jobs, load-sensitive)..."
+        _gate_status "[test-gate] Running bats on ${_serial_count} serial file(s) (no --jobs, load-sensitive)..."
         if [ "$_bats_use_pretty" = "true" ]; then
           local _ser_tap_dir
           _ser_tap_dir=$(mktemp -d "/tmp/rite_gate_ser_tap_${PR_NUMBER:-0}_$$_XXXXXX")
@@ -1858,7 +1871,7 @@ run_test_gate() {
         fi
         _ser_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
         if [ "$_ser_exit" = "124" ] || [ "$_ser_exit" = "137" ]; then
-          echo "[test-gate] bats (serial group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
+          _gate_status "[test-gate] bats (serial group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=serial timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
         fi
       fi
@@ -1874,7 +1887,7 @@ run_test_gate() {
     # Watchdog kill on the full-suite path (par/ser groups note it above and
     # merge their exits to 0/1, so 124/137 here can only come from full-suite).
     if [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; then
-      echo "[test-gate] bats (full suite) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
+      _gate_status "[test-gate] bats (full suite) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
       _diag "TEST_GATE_WATCHDOG_KILL group=full timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
     fi
 
@@ -1931,9 +1944,9 @@ run_test_gate() {
         _notrun_named=$(echo "$_notrun_summary" | grep -oE 'named=[0-9]+' | cut -d= -f2 || true)
         _notrun_emitted=$(echo "$_notrun_summary" | grep -oE 'emitted=[0-9]+' | cut -d= -f2 || true)
         if [ "${_notrun_named:-0}" -gt 0 ]; then
-          echo "[test-gate] bats: ${_notrun_named} planned test(s) never ran (${_notrun_warning:-plan/executed mismatch}) — emitting synthetic tests_not_run finding(s)"
+          _gate_status "[test-gate] bats: ${_notrun_named} planned test(s) never ran (${_notrun_warning:-plan/executed mismatch}) — emitting synthetic tests_not_run finding(s)"
         else
-          echo "[test-gate] bats: plan/executed mismatch with unresolvable test names — emitting ${_notrun_emitted:-0} synthetic tests_not_run finding(s) capped at the reported deficit"
+          _gate_status "[test-gate] bats: plan/executed mismatch with unresolvable test names — emitting ${_notrun_emitted:-0} synthetic tests_not_run finding(s) capped at the reported deficit"
         fi
         _gate_reason="tests_not_run"
         _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=${_notrun_named:-0} emitted=${_notrun_emitted:-0} pr=${PR_NUMBER:-?}"

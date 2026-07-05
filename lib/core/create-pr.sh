@@ -176,7 +176,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
 
   if [ "$CURRENT_HEAD" != "$PR_HEAD" ]; then
     print_status "Pushing new commits to PR..."
-    if ! git push origin "$CURRENT_BRANCH"; then
+    if ! git push origin "$CURRENT_BRANCH" 2>&1 | format_git_push_output; then
       # Push failed — likely remote ahead of local (foreign commits)
       print_warning "Push rejected — checking for remote divergence"
 
@@ -206,7 +206,7 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
       fi
     fi
     PUSHED_NEW_COMMITS=true
-    print_success "Pushed new commits"
+    print_success "Pushed new commits" | sed 's/^/   /'
   else
     if [ -n "${ISSUE_NUMBER:-}" ]; then
       print_success "Issue #${ISSUE_NUMBER} branch is up to date — all commits already pushed"
@@ -249,9 +249,9 @@ ${UPDATED_BODY}"
     # Use temp file to avoid shell metacharacter issues in body
     PR_BODY_FILE=$(mktemp)
     printf '%s' "$UPDATED_BODY" > "$PR_BODY_FILE"
-    gh_safe pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE" 2>/dev/null || print_warning "Could not update PR description"
+    gh_safe pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE" 2>/dev/null | sed 's/^/   /' || print_warning "Could not update PR description"
     rm -f "$PR_BODY_FILE"
-    print_success "PR description updated"
+    print_success "PR description updated" | sed 's/^/   /'
   fi
   echo ""
 fi

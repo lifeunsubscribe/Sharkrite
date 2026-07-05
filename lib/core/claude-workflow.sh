@@ -1179,6 +1179,7 @@ $EXIT_INSTRUCTION"
   fi
 
   _timer_end "claude_fix_session"
+  echo ""
   print_success "Review fix session complete"
 
   # NOTE: Verification (make check + bats -r tests/) no longer runs here.
@@ -1223,7 +1224,7 @@ See PR comments for detailed list of fixes applied.
 
 Changes made via automated workflow (rite --fix-review mode)."
 
-  git commit -m "$COMMIT_MSG" || {
+  git commit -m "$COMMIT_MSG" 2>&1 | sed 's/^/   /' || {
     print_warning "No changes to commit"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1239,9 +1240,10 @@ Changes made via automated workflow (rite --fix-review mode)."
     # The new review will see current state and assess fresh
   }
 
+  echo ""
   print_status "Pushing fixes to remote..."
   _fix_branch=$(git branch --show-current)
-  if ! git push origin "$_fix_branch"; then
+  if ! git push origin "$_fix_branch" 2>&1 | format_git_push_output; then
     # Push failed — check for remote divergence
     print_warning "Push rejected — checking for divergence"
     source "$RITE_LIB_DIR/utils/divergence-handler.sh"
@@ -1270,7 +1272,8 @@ Changes made via automated workflow (rite --fix-review mode)."
     fi
   fi
 
-  print_success "Fixes committed and pushed successfully"
+  print_success "Fixes committed and pushed successfully" | sed 's/^/   /'
+  echo ""
   exit 0
 fi
 
