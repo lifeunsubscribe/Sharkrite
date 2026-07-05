@@ -369,3 +369,131 @@ _setup_npm_stub_fail() {
   [[ "$_staged_content" =~ "lockfileVersion" ]]
   [[ ! "$_staged_content" =~ '"stale":true' ]]
 }
+
+# ===========================================================================
+# Integration tests: call-site exit-code propagation (issue #804)
+#
+# These tests exercise the WIRED call sites — check_dev_session_output (the
+# auto-commit path) — with a failing npm stub, asserting that a return-1 from
+# _regen_lockfiles_if_needed actually aborts the commit.  This closes the gap
+# where all earlier tests called _regen_lockfiles_if_needed in isolation and
+# could not catch a mis-wired call site.
+# ===========================================================================
+
+@test "integration: check_dev_session_output aborts commit when npm fails (exit-code propagation)" {
+  # This is the call site at claude-workflow.sh:926 — the auto-commit path.
+  # Scenario: Claude left uncommitted changes AND package.json was modified.
+  # npm fails → _regen_lockfiles_if_needed returns 1 → check_dev_session_output
+  # must return 1 (no commit created).
+
+  # Arrange: stage a package.json change to trigger lockfile regen path,
+  # plus a non-package-json file to ensure there IS something to commit.
+  printf '{"name":"test","version":"1.0.0","dependencies":{}}\n' > package.json
+  echo "const x = 1;" > feature.js
+  # Do NOT commit — simulate Claude leaving files unstaged.
+
+  _setup_npm_stub_fail  # npm always fails
+
+  run check_dev_session_output
+
+  # check_dev_session_output must return non-zero (npm failure aborts the commit).
+  [ "$status" -ne 0 ]
+
+  # No auto-commit must have been created — the branch must still be at the
+  # init commit (1 commit ahead of origin/main, not 2).
+  _commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  [ "$_commits_ahead" -eq 1 ]
+}
+
+@test "integration: check_dev_session_output succeeds when npm succeeds (exit-code propagation)" {
+  # Mirror of the test above: with a succeeding npm stub, check_dev_session_output
+  # must commit and return 0 — confirms the call site wiring is correct in both
+  # directions (not just the failure path).
+
+  printf '{"name":"test","version":"1.0.0","dependencies":{}}\n' > package.json
+  echo "const x = 1;" > feature.js
+
+  _setup_npm_stub_success  # npm succeeds and creates package-lock.json
+
+  run check_dev_session_output
+
+  [ "$status" -eq 0 ]
+
+  # Auto-commit must have been created.
+  _commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  [ "$_commits_ahead" -eq 2 ]
+
+  # package-lock.json must be in the committed tree (staged by _regen_lockfiles_if_needed
+  # before the auto-commit ran).
+  git show HEAD --name-only | grep -q "package-lock.json"
+}
+
+@test "_regen_lockfiles_if_needed: workspaces monorepo regenerates root lockfile only" {
+  # When the project is an npm-workspaces monorepo, only the root package-lock.json
+  # is authoritative. The function must ignore sub-package changes and regenerate
+  # the root lockfile regardless of which package.json files were staged.
+  #
+  # Setup: root package.json with workspaces field + a sub-package package.json.
+  # Only the sub-package package.json is staged (simulating a sub-package dep change).
+  # The npm stub creates package-lock.json in the directory it is invoked from.
+  # If the function correctly redirects to the root, the root lockfile is created.
+  # If it incorrectly invokes npm in the sub-package dir, only that lockfile exists.
+
+  # Skip if jq is not available — _node_is_workspaces_monorepo requires jq.
+  if ! command -v jq >/dev/null 2>&1; then
+    skip "jq not available — _node_is_workspaces_monorepo detection requires jq"
+  fi
+
+  # Create a workspaces monorepo layout.
+  printf '{"name":"root","version":"1.0.0","workspaces":["packages/*"]}\n' > package.json
+  mkdir -p packages/api
+  printf '{"name":"api","version":"1.0.0","dependencies":{}}\n' > packages/api/package.json
+
+  # Commit the root package.json so _node_is_workspaces_monorepo can read it.
+  git add package.json packages/api/package.json
+  git commit --amend --no-edit --quiet
+
+  # Now stage ONLY the sub-package package.json (simulating a sub-dep change).
+  printf '{"name":"api","version":"1.0.0","dependencies":{"lodash":"^4.0.0"}}\n' > packages/api/package.json
+  git add packages/api/package.json
+
+  _setup_npm_stub_success  # stub creates package-lock.json in cwd
+
+  run _regen_lockfiles_if_needed
+
+  [ "$status" -eq 0 ]
+
+  # The ROOT package-lock.json must have been created (monorepo path redirected to root).
+  [ -f "$TEST_REPO/package-lock.json" ]
+
+  # The sub-package must NOT have a lockfile created — only the root was regenerated.
+  [ ! -f "$TEST_REPO/packages/api/package-lock.json" ]
+
+  # Root lockfile must be staged.
+  git diff --cached --name-only | grep -q "^package-lock.json$"
+}
+
+@test "_regen_lockfiles_if_needed: removes node_modules symlink before npm install" {
+  # De-symlink guard: npm install resolves through symlinked node_modules and
+  # can destroy the target. The function must remove a node_modules symlink
+  # before running npm so that npm creates a real dir in the worktree instead.
+
+  # Stage a package.json change to trigger regen.
+  printf '{"name":"test","version":"1.0.0","dependencies":{}}\n' > package.json
+  git add package.json
+
+  # Create a symlink for node_modules (simulating the worktree symlink pattern).
+  # Point it at /dev/null (always present, never a real node_modules dir) so
+  # if npm tried to reify through it there would be obvious fallout.
+  ln -s /dev/null node_modules
+
+  _setup_npm_stub_success
+
+  run _regen_lockfiles_if_needed
+
+  [ "$status" -eq 0 ]
+
+  # The symlink must have been removed (replaced by npm with a real dir or absent).
+  # Either way the symlink itself must be gone.
+  [ ! -L "$TEST_REPO/node_modules" ]
+}
