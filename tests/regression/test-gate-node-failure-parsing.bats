@@ -299,3 +299,71 @@ SCRIPT
   run grep -E 'TEST_GATE outcome=failed .*test_count=[1-9]' "$TEST_REPO/diag.log"
   [ "$status" -eq 0 ]
 }
+
+@test "integration: node-flavored RITE_TEST_COMMAND failure yields non-empty gate JSON tests[] (issue #846)" {
+  # Regression: pre-fix the RITE_TEST_COMMAND branch hardcoded tests:[] even
+  # when _normalize_node_test_output produced ^not ok lines — diag test_count
+  # was nonzero but the fix loop got zero named findings (diag/JSON inconsistency).
+  _make_npm_repo
+  _init_git
+  cat > "$TEST_REPO/run-node-tests.sh" <<SCRIPT
+#!/bin/bash
+cat "$FIXTURE"
+exit 1
+SCRIPT
+  chmod +x "$TEST_REPO/run-node-tests.sh"
+
+  : > "$TEST_REPO/diag.log"
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=587 RITE_LOG_FILE='$TEST_REPO/diag.log' RITE_GATE_BACKGROUND=1
+    export RITE_TEST_COMMAND='./run-node-tests.sh'
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
+  " </dev/null
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # The regression this test pins: tests[] must NOT be empty for a failing
+  # RITE_TEST_COMMAND that emits jest/vitest output (normalizer produces ^not ok lines).
+  run jq -r '.tests | length' "$TEST_REPO/gate.json"
+  [ "$status" -eq 0 ]
+  [ "$output" -gt 0 ]
+
+  # Named findings must carry recognizable test names from the fixture.
+  run jq -r '.tests[].test_name' "$TEST_REPO/gate.json"
+  echo "$output" | grep -q 'backfill-lead-gsi-keys.test.ts'
+  echo "$output" | grep -q 'AutomationFlow.test.tsx'
+
+  # Diag count and JSON length must agree (the inconsistency that prompted issue #846).
+  _diag_count=$(grep -oE 'test_count=[0-9]+' "$TEST_REPO/diag.log" | tail -1 | cut -d= -f2 || true)
+  _json_count=$(jq -r '.tests | length' "$TEST_REPO/gate.json")
+  [ "$_diag_count" = "$_json_count" ]
+}
+
+@test "integration: passing RITE_TEST_COMMAND still yields tests:[] and exit 0" {
+  # Non-regression: a passing custom command must not produce spurious test findings.
+  _make_npm_repo
+  _init_git
+  cat > "$TEST_REPO/run-node-tests.sh" <<SCRIPT
+#!/bin/bash
+echo "Tests passed."
+exit 0
+SCRIPT
+  chmod +x "$TEST_REPO/run-node-tests.sh"
+
+  : > "$TEST_REPO/diag.log"
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=587 RITE_LOG_FILE='$TEST_REPO/diag.log' RITE_GATE_BACKGROUND=1
+    export RITE_TEST_COMMAND='./run-node-tests.sh'
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
+  " </dev/null
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+  run jq -r '.tests | length' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+}
