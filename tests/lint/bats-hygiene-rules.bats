@@ -272,3 +272,259 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "setup-suppressed.bats.*BATS_SETUP_STRICT_LEAK"
 }
+
+# ---------------------------------------------------------------------------
+# BATS_STUB_OVERWRITE
+# ---------------------------------------------------------------------------
+
+@test "BATS_STUB_OVERWRITE: flags gh_safe stub defined before source of transitive loader without re-stub" {
+  # The canonical failure: a pre-source gh_safe() stub is silently overwritten
+  # by gh-retry.sh's unconditional function definition when workflow-runner.sh
+  # is sourced. Without a re-stub the real gh_safe queries live GitHub.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { echo "stub"; }'
+    echo '  source "$RITE_LIB_DIR/core/workflow-runner.sh"'
+    echo '}'
+    _emit_test_open "stub missing re-stub"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-bad.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_STUB_OVERWRITE"
+  echo "$output" | grep -q "stub-overwrite-bad.bats:4 - BATS_STUB_OVERWRITE"
+}
+
+@test "BATS_STUB_OVERWRITE: passes when gh_safe is re-stubbed after source" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { echo "stub"; }'
+    echo '  source "$RITE_LIB_DIR/core/workflow-runner.sh"'
+    echo '  # Re-stub AFTER source: gh-retry.sh overwrites the pre-source stub'
+    echo '  gh_safe() { echo "re-stub"; }'
+    echo '}'
+    _emit_test_open "correctly re-stubbed"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-good.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "stub-overwrite-good.bats.*BATS_STUB_OVERWRITE"
+}
+
+@test "BATS_STUB_OVERWRITE: does not flag gh_safe stub defined only after source" {
+  # A stub defined only after source is correct (no pre-source stub at all)
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  source "$RITE_LIB_DIR/core/workflow-runner.sh"'
+    echo '  gh_safe() { echo "post-stub only"; }'
+    echo '}'
+    _emit_test_open "post-stub only"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-post-only.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "stub-overwrite-post-only.bats.*BATS_STUB_OVERWRITE"
+}
+
+@test "BATS_STUB_OVERWRITE: does not flag gh_safe stub in a bats file with no lib source" {
+  # A bats file that defines gh_safe() but never sources a transitive loader
+  # has no overwrite risk.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { echo "stub"; }'
+    echo '}'
+    _emit_test_open "no lib source"
+    echo '  run gh_safe pr view 1'
+    echo '  [ "$status" -eq 0 ]'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-no-source.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "stub-overwrite-no-source.bats.*BATS_STUB_OVERWRITE"
+}
+
+@test "BATS_STUB_OVERWRITE: does not flag gh_safe stub inside a heredoc fixture" {
+  # A gh_safe() definition inside a heredoc is fixture content — it's part of
+  # a child script, not a bats-level stub that gets overwritten at source time.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    _emit_test_open "fixture writer"
+    printf "  cat > \"\$BATS_TEST_TMPDIR/harness.sh\" <<'EOF'\n"
+    echo '#!/bin/bash'
+    echo 'gh_safe() { echo "harness stub"; }'
+    echo 'source "$RITE_LIB_DIR/core/workflow-runner.sh"'
+    echo 'EOF'
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-heredoc.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "stub-overwrite-heredoc.bats.*BATS_STUB_OVERWRITE"
+}
+
+@test "BATS_STUB_OVERWRITE: suppression comment on preceding line is honored" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  # sharkrite-lint disable BATS_STUB_OVERWRITE - Reason: gh-retry.sh is itself the file under test'
+    echo '  gh_safe() { echo "stub"; }'
+    echo '  source "$RITE_LIB_DIR/core/workflow-runner.sh"'
+    echo '}'
+    _emit_test_open "suppressed"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-suppressed.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "stub-overwrite-suppressed.bats.*BATS_STUB_OVERWRITE"
+}
+
+@test "BATS_STUB_OVERWRITE: flags when source is gh-retry.sh directly" {
+  # Direct source of gh-retry.sh also overwrites any pre-stub
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { echo "stub"; }'
+    echo '  source "$RITE_LIB_DIR/utils/gh-retry.sh"'
+    echo '}'
+    _emit_test_open "direct gh-retry source"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/stub-overwrite-direct.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_STUB_OVERWRITE"
+  echo "$output" | grep -q "stub-overwrite-direct.bats:4 - BATS_STUB_OVERWRITE"
+}
+
+# ---------------------------------------------------------------------------
+# BATS_FILE_SCOPE_ENV_READ
+# ---------------------------------------------------------------------------
+
+@test "BATS_FILE_SCOPE_ENV_READ: flags file-scope assignment reading RITE_LIB_DIR" {
+  # The _WORKFLOW_FILE landmine: file-scope code reading $RITE_LIB_DIR is
+  # evaluated at bats load time, before setup() runs — RITE_LIB_DIR may be
+  # unset or stale at that point.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'WORKFLOW_FILE="$RITE_LIB_DIR/core/claude-workflow.sh"'
+    echo 'setup() { true; }'
+    _emit_test_open "uses file-scope var"
+    echo '  [ -n "$WORKFLOW_FILE" ]'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-bad.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+  echo "$output" | grep -q "file-scope-env-bad.bats:3 - BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: flags file-scope assignment reading RITE_PROJECT_ROOT" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'DATA_DIR="${RITE_PROJECT_ROOT}/.rite"'
+    _emit_test_open "reads RITE_PROJECT_ROOT at file scope"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-root.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+  echo "$output" | grep -q "file-scope-env-root.bats:3 - BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: passes for file-scope assignment using BATS_TEST_FILENAME" {
+  # BATS_* vars are bats-provided at parse time — safe for file-scope use
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"'
+    echo 'WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"'
+    _emit_test_open "uses bats-provided var"
+    echo '  [ -n "$REPO_ROOT" ]'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-bats.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-env-bats.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: does not flag RITE_* reads inside setup()" {
+  # Inside setup() is depth > 0 — not file scope, always safe
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  WORKFLOW_FILE="${RITE_LIB_DIR}/core/claude-workflow.sh"'
+    echo '  export WORKFLOW_FILE'
+    echo '}'
+    _emit_test_open "reads RITE_ inside setup"
+    echo '  [ -n "$WORKFLOW_FILE" ]'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-in-setup.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-env-in-setup.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: does not flag RITE_* reads inside a @test body" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    _emit_test_open "reads RITE_ inside test"
+    echo '  WORKFLOW_FILE="$RITE_LIB_DIR/core/claude-workflow.sh"'
+    echo '  [ -n "$WORKFLOW_FILE" ]'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-in-test.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-env-in-test.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: does not flag RITE_* inside a heredoc fixture at file scope" {
+  # Heredoc content is fixture code — not bats-shell file-scope assignments
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    _emit_test_open "writes fixture at file scope"
+    printf "  cat > \"\$BATS_TEST_TMPDIR/stub.sh\" <<'EOF'\n"
+    echo 'RITE_LIB_DIR="/dev/null/stub"'
+    echo 'EOF'
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-heredoc.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-env-heredoc.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: suppression comment on preceding line is honored" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo '# sharkrite-lint disable BATS_FILE_SCOPE_ENV_READ - Reason: RITE_LIB_DIR is guaranteed set by the test harness before bats loads this file'
+    echo 'WORKFLOW_FILE="$RITE_LIB_DIR/core/claude-workflow.sh"'
+    _emit_test_open "suppressed"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-env-suppressed.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-env-suppressed.bats.*BATS_FILE_SCOPE_ENV_READ"
+}

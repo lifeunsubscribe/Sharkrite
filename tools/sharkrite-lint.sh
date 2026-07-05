@@ -1845,6 +1845,235 @@ for file in "${SHELL_FILES[@]}"; do
   done <<< "$_r33_hits"
 done
 
+# Rule 34: Pre-source stub overwritten by env-guarded lib (BATS_STUB_OVERWRITE)
+#
+# Env-guarded libs (those using _RITE_*_LOADED variable guards instead of
+# function-sentinel guards) define their real functions unconditionally at
+# source time, OVERWRITING any same-named stub defined before the source.
+# The canonical example: gh-retry.sh uses _RITE_GH_RETRY_LOADED and defines
+# gh_safe() every time it's sourced — so a pre-source `gh_safe() { ... }` stub
+# in a bats setup() or harness script is silently replaced by the real gh_safe,
+# which then queries live GitHub. This hit production for two days (PR #840).
+#
+# The practical proxy: a .bats file (at bats shell level, not in a heredoc)
+# defines a stub for a known env-guarded function (gh_safe is the canonical
+# case) before a source of a lib that transitively loads the env-guarded file,
+# and no re-stub appears after the last source.
+#
+# Known env-guarded functions (env-var guard, not function-sentinel):
+#   gh_safe — defined by lib/utils/gh-retry.sh (_RITE_GH_RETRY_LOADED)
+#
+# Transitive loaders that pull in gh-retry.sh:
+#   workflow-runner.sh, batch-process-issues.sh, claude-workflow.sh,
+#   assess-and-resolve.sh, create-pr.sh, merge-pr.sh, local-review.sh
+#
+# Detection strategy (AWK state machine, heredoc-aware):
+#   1. Track when we enter/exit a heredoc — lines inside are fixture content.
+#   2. At bats shell level, note the line number of the FIRST stub definition
+#      for each known function (pre_line[name]).
+#   3. Note the line number of the LAST source of a transitive loader
+#      (last_source_line).
+#   4. Note the line number of the LAST stub re-definition for each name
+#      (post_line[name]).
+#   5. At END: if pre_line[name] > 0 AND last_source_line > 0 AND
+#      pre_line[name] < last_source_line AND post_line[name] <= last_source_line
+#      → violation (stub was set before the source, never re-set after).
+#
+# Suppression: place on the line immediately before the flagged definition:
+#   # sharkrite-lint disable BATS_STUB_OVERWRITE - Reason: <text>
+echo "Checking for pre-source stubs overwritten by env-guarded libs in .bats files..."
+
+while IFS= read -r bats_file; do
+  [ -z "$bats_file" ] && continue
+  case "$bats_file" in
+    */tests/fixtures/*|tests/fixtures/*) continue ;;
+  esac
+  _r34_file_hits=$(awk '
+    FNR == 1 {
+      in_heredoc = 0; hd_marker = ""
+      # Track: first pre-source stub line and last post-source stub line per function
+      delete pre_line; delete post_line
+      last_source_line = 0
+      suppress_next = 0
+    }
+    {
+      # Heredoc close
+      if (in_heredoc) {
+        _close = $0; sub(/^[[:space:]]*/, "", _close)
+        if (_close == hd_marker) in_heredoc = 0
+        next
+      }
+      # Suppression comment: flag the next non-comment line
+      if ($0 ~ /sharkrite-lint[[:space:]]+disable[[:space:]]+BATS_STUB_OVERWRITE/) {
+        suppress_next = 1
+        next
+      }
+      # Skip other comments (but process suppression above first)
+      if ($0 ~ /^[[:space:]]*#/) next
+      # Heredoc open detection (runs on every non-comment, non-heredoc-body line)
+      if (index($0, "<<") > 0) {
+        tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
+        gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
+        if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
+          hd_marker = _p[1]; in_heredoc = 1
+        }
+      }
+      # Detect source of a known transitive loader of gh-retry.sh.
+      # Matches: source .../workflow-runner.sh, .../batch-process-issues.sh,
+      #   .../claude-workflow.sh, .../assess-and-resolve.sh, .../create-pr.sh,
+      #   .../merge-pr.sh, .../local-review.sh, .../gh-retry.sh directly.
+      if ($0 ~ /(source|\.)[[:space:]]/ &&
+          ($0 ~ /workflow-runner\.sh/ || $0 ~ /batch-process-issues\.sh/ ||
+           $0 ~ /claude-workflow\.sh/ || $0 ~ /assess-and-resolve\.sh/ ||
+           $0 ~ /create-pr\.sh/ || $0 ~ /merge-pr\.sh/ ||
+           $0 ~ /local-review\.sh/ || $0 ~ /gh-retry\.sh/)) {
+        last_source_line = FNR
+        next
+      }
+      # Detect stub/re-stub definition for known env-guarded functions.
+      # Pattern: `gh_safe() {` or `gh_safe () {` at any indentation.
+      # Known env-guarded functions (env-var guard, not function-sentinel):
+      #   gh_safe (from gh-retry.sh / _RITE_GH_RETRY_LOADED)
+      if ($0 ~ /^[[:space:]]*(gh_safe)[[:space:]]*\(\)[[:space:]]*\{/) {
+        name = "gh_safe"
+        if (suppress_next) { suppress_next = 0; next }
+        if (last_source_line == 0) {
+          # Before any source — record as potential pre-source stub
+          if (!(name in pre_line)) pre_line[name] = FNR
+        } else {
+          # After a source — record as post-source re-stub (update to latest)
+          post_line[name] = FNR
+        }
+        next
+      }
+      suppress_next = 0
+    }
+    END {
+      for (name in pre_line) {
+        if (last_source_line > 0 && pre_line[name] < last_source_line) {
+          # Stub was defined before the source; check if re-stubbed after
+          if (!(name in post_line) || post_line[name] <= last_source_line) {
+            print pre_line[name] "\t" name
+          }
+        }
+      }
+    }
+  ' "$bats_file" </dev/null 2>/dev/null || true)
+  [ -z "$_r34_file_hits" ] && continue
+  while IFS=$'\t' read -r _hit_line _hit_name; do
+    [ -z "$_hit_line" ] && continue
+    _prev_line=$(sed -n "$((_hit_line - 1))p" "$bats_file" 2>/dev/null || true)
+    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_STUB_OVERWRITE'; then
+      continue
+    fi
+    print_violation "$bats_file" "$_hit_line" "BATS_STUB_OVERWRITE" \
+      "${_hit_name}() stub defined before sourcing an env-guarded lib — the real ${_hit_name} will overwrite it; re-stub ${_hit_name}() after the last source (see PR #840 incident)"
+  done <<< "$_r34_file_hits"
+done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+
+# Rule 35: File-scope assignment reading inherited RITE_* env vars in .bats files
+#          (BATS_FILE_SCOPE_ENV_READ)
+#
+# bats loads each .bats file exactly once and executes file-scope code at parse
+# time (before any setup/test). A file-scope assignment that reads an inherited
+# env var (like `WORKFLOW_FILE="$RITE_LIB_DIR/..."`) is evaluated at load time,
+# when the env var may be unset or stale from a previous test run. The correct
+# pattern is to set these in setup() where bats has fully initialized the env.
+#
+# The `_WORKFLOW_FILE` landmine on the #804 branch was exactly this: a file-scope
+# `_WORKFLOW_FILE="..."` that referenced `$RITE_LIB_DIR` before setup() ran,
+# producing a path built from the wrong (or unset) RITE_LIB_DIR — RCA fix
+# direction (3)(b).
+#
+# Detection strategy (AWK state machine, heredoc-aware):
+#   Track function/test depth. At depth 0 (file scope), flag any assignment
+#   whose RHS references `$RITE_` or `${RITE_`.
+#   BATS_* vars are exempt (bats-provided at parse time, always correct).
+#   Assignments that use only literal values or $BATS_*/$(…) are exempt.
+#
+# False-positive guards:
+#   - Lines inside heredocs are content, not bats shell code.
+#   - REPO_ROOT=$(cd "$(dirname "$BATS_TEST_FILENAME")/...") is the standard
+#     bats-safe file-scope pattern (uses BATS_TEST_FILENAME, not RITE_*).
+#   - Suppression comment for the rare legitimate file-scope RITE_* read.
+#
+# Suppression: place on the line immediately before the flagged line:
+#   # sharkrite-lint disable BATS_FILE_SCOPE_ENV_READ - Reason: <text>
+echo "Checking for file-scope RITE_* env var reads in .bats files..."
+
+while IFS= read -r bats_file; do
+  [ -z "$bats_file" ] && continue
+  case "$bats_file" in
+    */tests/fixtures/*|tests/fixtures/*) continue ;;
+  esac
+  _r35_file_hits=$(awk '
+    FNR == 1 {
+      in_heredoc = 0; hd_marker = ""; depth = 0; suppress_next = 0
+    }
+    {
+      # Heredoc close
+      if (in_heredoc) {
+        _close = $0; sub(/^[[:space:]]*/, "", _close)
+        if (_close == hd_marker) in_heredoc = 0
+        next
+      }
+      # Suppression comment
+      if ($0 ~ /sharkrite-lint[[:space:]]+disable[[:space:]]+BATS_FILE_SCOPE_ENV_READ/) {
+        suppress_next = 1
+        next
+      }
+      # Skip other comments
+      if ($0 ~ /^[[:space:]]*#/) next
+      # Heredoc open (intentional fall-through: opener line is shell code)
+      if (index($0, "<<") > 0) {
+        tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
+        gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
+        if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
+          hd_marker = _p[1]; in_heredoc = 1
+        }
+      }
+      # Track brace depth to detect file-scope vs inside-function/test scope.
+      # Strip string literals to avoid braces inside strings skewing depth.
+      _stripped = $0
+      gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
+      gsub(/"[^"]*"/, "", _stripped)
+      gsub(/\$\{[^}]*\}/, "", _stripped)
+      _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
+      _tmp = _stripped; _cb = gsub(/}/, "", _tmp)
+      depth += _ob - _cb
+      if (depth < 0) depth = 0
+      # Only check file-scope lines (depth == 0 means we are not inside a
+      # function/test body at the END of this line; we need to check the
+      # assignment BEFORE updating depth, so use depth AFTER update but
+      # check lines where effective depth is 0).
+      # A function opener `foo() {` changes depth from 0 to 1 on the same
+      # line — assignment check only applies when we are NOT just entering
+      # a new scope. Treat depth == 0 after open-brace accounting as
+      # file-scope (the body of the function is depth >= 1 on subsequent lines).
+      if (depth > 0) { suppress_next = 0; next }
+      # At file scope: flag VAR=... lines whose RHS references $RITE_ or ${RITE_
+      # (but not $BATS_* which is bats-provided and always safe at file scope).
+      if ($0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/ &&
+          ($0 ~ /\$RITE_[A-Za-z0-9_]/ || $0 ~ /\$\{RITE_[A-Za-z0-9_]/)) {
+        if (suppress_next) { suppress_next = 0; next }
+        print FNR
+        next
+      }
+      suppress_next = 0
+    }
+  ' "$bats_file" </dev/null 2>/dev/null || true)
+  [ -z "$_r35_file_hits" ] && continue
+  while IFS= read -r _hit_line; do
+    [ -z "$_hit_line" ] && continue
+    _prev_line=$(sed -n "$((_hit_line - 1))p" "$bats_file" 2>/dev/null || true)
+    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_FILE_SCOPE_ENV_READ'; then
+      continue
+    fi
+    print_violation "$bats_file" "$_hit_line" "BATS_FILE_SCOPE_ENV_READ" \
+      "file-scope assignment reads \$RITE_* env var — evaluated at bats load time before setup() runs; move into setup() or use \${RITE_VAR:-default} inside a function"
+  done <<< "$_r35_file_hits"
+done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+
 echo ""
 echo "----------------------------------------"
 if [ "$VIOLATIONS" -eq 0 ]; then
