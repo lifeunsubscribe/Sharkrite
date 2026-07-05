@@ -126,7 +126,7 @@ if [ -n "${RITE_LINT_FILES:-}" ]; then
   # here whether there are any in-scope bats files to decide on early exit.
   _lint_bats_count=0
   _lint_bats_all_tmp=$(mktemp)
-  find "$PROJECT_ROOT/tests" -name '*.bats' -type f 2>/dev/null > "$_lint_bats_all_tmp" || true
+  find tests -name '*.bats' -type f 2>/dev/null > "$_lint_bats_all_tmp" || true
   _lint_bats_count=$(printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' | grep -cFxf "$_lint_bats_all_tmp" 2>/dev/null || true)
   rm -f "$_lint_bats_all_tmp"
   if [ "${#SHELL_FILES[@]}" -eq 0 ] && [ "${_lint_bats_count:-0}" -eq 0 ]; then
@@ -1904,7 +1904,7 @@ echo "Checking for pre-source stubs overwritten by env-guarded libs in .bats fil
 # intersection of all .bats files and the targeted changed-file set.
 # When unset (plain `make lint`), scan all .bats files as before.
 _bats_all_tmp=$(mktemp)
-find "$PROJECT_ROOT/tests" -name '*.bats' -type f 2>/dev/null > "$_bats_all_tmp" || true
+find tests -name '*.bats' -type f 2>/dev/null > "$_bats_all_tmp" || true
 if [ -n "${RITE_LINT_FILES:-}" ]; then
   _bats_lint_files=$(mktemp)
   printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' > "$_bats_lint_files" 2>/dev/null || true
