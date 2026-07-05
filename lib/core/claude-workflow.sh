@@ -355,6 +355,149 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 _RITE_PIP_TIMEOUT_WARNED=false
 
 # ===================================================================
+# _regen_lockfiles_if_needed — regenerate package-lock.json after dev sessions
+#
+# When the dev session modifies a package.json, `npm ci` (used by the #784 node
+# bootstrap in test-gate.sh) fails with EUSAGE because the lockfile is out of
+# sync.  This function detects staged package.json changes, runs `npm install`
+# in each affected directory, and stages the regenerated package-lock.json so
+# the committed tree is always in sync.
+#
+# Call this AFTER `git add -A` (and after symlink exclusions) but BEFORE
+# `git commit`, at every commit point in the dev workflow.
+#
+# Rules:
+#   - No staged package.json changes → no-op (no lockfile churn).
+#   - `npm` not on PATH → warn and skip (non-Node repos unaffected).
+#   - `npm install` fails → print error and return 1 (caller must abort commit).
+#   - npm-workspaces monorepo: regenerate ONLY the root lockfile regardless of
+#     which package.json files changed (sub-package lockfiles are not authoritative;
+#     regenerating them leaves the root lockfile stale and npm ci still fails).
+#   - Non-workspaces monorepo: each directory with a changed package.json is
+#     handled independently (e.g. root + api/ each get their own lockfile).
+#   - De-symlink guard: removes any node_modules symlinks before npm install to
+#     prevent npm from destroying the main checkout's shared node_modules through
+#     the link (same guard applied by test-gate.sh before every install).
+#   - Timeout: npm install is run under run_with_timeout (120s) when the helper is
+#     available (i.e. when RITE_TIMEOUT_CMD is set — timeout/gtimeout on PATH).
+#     On hosts without timeout/gtimeout the install runs unbounded; the 124-branch
+#     is dead code in that case. On timeout the error is surfaced via return 1 so
+#     the caller can abort the commit.
+# ===================================================================
+_regen_lockfiles_if_needed() {
+  # Load node helpers from test-gate.sh if not already available.
+  # test-gate.sh is always sourced by workflow-runner.sh before claude-workflow.sh
+  # runs, so declare -f will normally succeed immediately (no-op source).
+  # The guarded source is a belt-and-suspenders fallback for test contexts where
+  # claude-workflow.sh is sourced standalone (e.g. dev-session-uncommitted-recovery.bats).
+  if ! declare -f _node_desymlink_node_modules >/dev/null 2>&1; then
+    if [ -f "${RITE_LIB_DIR:-}/utils/test-gate.sh" ]; then
+      source "${RITE_LIB_DIR}/utils/test-gate.sh"
+    fi
+  fi
+
+  # Collect directories containing staged package.json modifications.
+  # Use || true: grep exits 1 on no match; under set -e that would kill the script.
+  local _changed_pkg_dirs
+  _changed_pkg_dirs=$(git diff --cached --name-only 2>/dev/null \
+    | grep -E '(^|/)package\.json$' \
+    | sed 's|/package\.json$||; s|^package\.json$|.|' \
+    | sort -u || true)
+
+  if [ -z "$_changed_pkg_dirs" ]; then
+    # No package.json staged — nothing to regenerate.
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    print_warning "package.json changed but npm not found on PATH — skipping lockfile regeneration"
+    return 0
+  fi
+
+  # Resolve repo root once (used for all directories and the monorepo check).
+  # Guard: git rev-parse can fail when cwd was deleted (post-worktree-removal
+  # hazard, CLAUDE.md → "CWD after worktree removal"). Capture with || true,
+  # validate the result, and skip with a warning rather than aborting under set -e.
+  local _repo_root
+  _repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$_repo_root" ]; then
+    print_warning "git rev-parse --show-toplevel failed — skipping lockfile regeneration"
+    return 0
+  fi
+
+  # npm-workspaces monorepo: the authoritative lockfile is the single root one.
+  # Regenerating per-subdirectory lockfiles leaves the root stale, so npm ci at
+  # the project root still fails — the exact failure the issue targets. When we
+  # detect a workspaces monorepo, override the per-dir list with just ".".
+  if declare -f _node_is_workspaces_monorepo >/dev/null 2>&1; then
+    if _node_is_workspaces_monorepo "$_repo_root"; then
+      print_status "npm workspaces monorepo detected — regenerating root lockfile only"
+      _changed_pkg_dirs="."
+    fi
+  fi
+
+  local _dir _lock _npm_exit _npm_timeout
+  # Timeout for npm install: 120s is generous for a lockfile-only install
+  # (no downloads, just dependency resolution) but bounded so a stalled registry
+  # does not hang the nightly batch indefinitely.
+  _npm_timeout=120
+  while IFS= read -r _dir; do
+    [ -z "$_dir" ] && continue
+
+    local _abs_dir
+    _abs_dir="${_repo_root}/${_dir}"
+    # When _dir is "." (root package.json) the path becomes "<root>/." which is fine.
+
+    if [ ! -f "${_abs_dir}/package.json" ]; then
+      # File was deleted — no lockfile to regenerate.
+      continue
+    fi
+
+    # De-symlink guard: npm install resolves through symlinked node_modules
+    # directories and can destroy the main checkout's shared node_modules before
+    # reifying a real dir in the worktree. Removing the symlink first (plain rm
+    # on the link — never rm -rf) prevents this. Real dirs and absent paths are
+    # no-ops; test-gate.sh applies this same guard before every install.
+    if declare -f _node_desymlink_node_modules >/dev/null 2>&1; then
+      _node_desymlink_node_modules "$_abs_dir"
+    elif [ -L "${_abs_dir}/node_modules" ]; then
+      rm "${_abs_dir}/node_modules"
+    fi
+
+    print_status "Regenerating package-lock.json in ${_dir} (package.json changed)..."
+
+    _npm_exit=0
+    if declare -f run_with_timeout >/dev/null 2>&1; then
+      (cd "$_abs_dir" && run_with_timeout "$_npm_timeout" npm install --package-lock-only --silent 2>&1) || _npm_exit=$?
+    else
+      (cd "$_abs_dir" && npm install --package-lock-only --silent 2>&1) || _npm_exit=$?
+    fi
+
+    if [ "$_npm_exit" -eq 124 ]; then
+      print_error "npm install timed out after ${_npm_timeout}s in ${_dir} — skipping lockfile regeneration (registry stall?)"
+      print_info "The committed package-lock.json may be stale; re-run or fix the registry connection"
+      return 1
+    fi
+
+    if [ "$_npm_exit" -ne 0 ]; then
+      print_error "npm install failed in ${_dir} (exit ${_npm_exit}) — cannot regenerate package-lock.json"
+      print_info "Fix the npm error and re-run, or check package.json for syntax errors"
+      return 1
+    fi
+
+    _lock="${_abs_dir}/package-lock.json"
+    if [ -f "$_lock" ]; then
+      git add "$_lock"
+      print_success "Staged regenerated package-lock.json in ${_dir}"
+    else
+      print_warning "npm install ran in ${_dir} but package-lock.json was not created — skipping stage"
+    fi
+  done <<< "$_changed_pkg_dirs"
+
+  return 0
+}
+
+# ===================================================================
 # _run_dev_test_gate — dev/initial-commit test runner (NOT the structured gate)
 #
 # This is the dev-path test gate: runs the project's test suite before
@@ -836,6 +979,14 @@ check_dev_session_output() {
     # Exclude .gitignore (modified by sharkrite's symlink pattern repair)
     git reset HEAD .gitignore 2>/dev/null || true
 
+    # Regenerate package-lock.json if package.json was modified (issue #804).
+    # Runs after staging so git diff --cached reflects the actual committed tree.
+    # Error propagation: return 1 propagates through check_dev_session_output to
+    # the caller; the function has already printed the error message.
+    if ! _regen_lockfiles_if_needed; then
+      return 1
+    fi
+
     # Create auto-commit
     local auto_commit_msg="chore: auto-commit dev session output for issue #${ISSUE_NUMBER:-unknown}
 
@@ -1038,6 +1189,31 @@ $EXIT_INSTRUCTION"
   # Commit and push the fixes
   print_status "Committing fixes..."
   git add -A
+
+  # Regenerate package-lock.json if package.json was modified (issue #804).
+  # Error propagation contract (fix-loop path):
+  #   A failed npm install must NOT discard the review fixes that are already staged.
+  #   Strategy: attempt regen FIRST (it stages the lockfile if successful). If regen
+  #   fails, commit whatever non-lockfile review fixes are already staged so they are
+  #   not lost, then exit 1 to surface the npm error to the orchestrator so the next
+  #   review cycle sees it. This satisfies AC #4: "surface the failure, do not
+  #   silently commit a stale/partial lockfile" — and preserves already-applied fixes
+  #   (issue #804).
+  _regen_exit=0
+  _regen_lockfiles_if_needed || _regen_exit=$?
+  if [ "$_regen_exit" -ne 0 ]; then
+    # npm regen failed: commit any non-lockfile review fixes that are staged so
+    # they are not lost, then exit 1 to surface the npm error to the orchestrator.
+    print_warning "npm lockfile regeneration failed — committing non-lockfile fixes to preserve work"
+    COMMIT_MSG_NPM_ERR="fix: address review findings (npm lockfile regen failed — see error above)
+
+Auto-generated commit addressing review findings. package-lock.json could not be
+regenerated (npm failure). Fix the npm error and re-run, or check package.json.
+
+Changes made via automated workflow (rite --fix-review mode)."
+    git commit -m "$COMMIT_MSG_NPM_ERR" 2>/dev/null || true
+    exit 1
+  fi
 
   # Generate commit message based on review content summary
   COMMIT_MSG="fix: address review findings from PR automated review
@@ -3240,6 +3416,15 @@ fi
 # patterns (.rite, .claude, node_modules) but these shouldn't be committed to
 # the target repo. The working tree copy stays modified (needed for ignore rules).
 git reset HEAD .gitignore 2>/dev/null || true
+
+# Regenerate package-lock.json if package.json was modified (issue #804).
+# Runs after all exclusions so the cached index is the true committed tree.
+# Error propagation: _regen_lockfiles_if_needed prints the error and returns 1
+# on npm failure; exit 1 here signals session-failed to the orchestrator
+# (exit-codes.md: claude-workflow.sh exit 1 = Session failed).
+if ! _regen_lockfiles_if_needed; then
+  exit 1
+fi
 
 git commit -m "$COMMIT_MSG" > /dev/null
 
