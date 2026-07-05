@@ -619,6 +619,7 @@ Supported suppression rules:
 - `UNQUOTED_HEREDOC` — for intentional variable expansion in heredocs
 - `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` — for scripts that are guaranteed to run under bash 4+ through another mechanism (document the reason clearly)
 - `BARE_VAR_REFERENCE` — for module-local alias variables in `lib/utils/*.sh` that are safely initialized at module load time (e.g., `SLACK_WEBHOOK="${SLACK_WEBHOOK:-}"` at module top)
+- `EMPTY_ARRAY_EXPANSION_BASH32` (Rule 33) — unguarded `"${arr[@]}"` in `#!/bin/bash` files crashes bash 3.2 under `set -u` when the array is empty. Canonical fix is the `+idiom` (`"${arr[@]+"${arr[@]}"}"`) or a nearby `${#arr[@]}` count-guard; suppress only when population is guaranteed by a caller contract (state the contract in the Reason)
 
 **Pre-push hook** (optional):
 ```bash
@@ -626,7 +627,7 @@ cp tools/git-hooks/pre-push .git/hooks/pre-push
 chmod +x .git/hooks/pre-push
 ```
 
-**CI gate**: `.github/workflows/lint.yml` runs `make check` on every PR.
+**CI gate**: `.github/workflows/lint.yml` runs `make check` **and the full bats suite on a macOS + Linux matrix** (`fail-fast: false`) on every PR. sharkrite must stay portable to both: macOS = BSD userland (the dev machine), Linux = GNU. The macOS job installs homebrew bash + coreutils to mirror the dev environment; the bash-3.2 contract for `#!/bin/bash` scripts is enforced by lint (Rules 21 + 33), not by the CI shell. GNU-only idioms (`sed \+`/`\|`/`\u`/`Q`, `date -d` without a BSD fallback, bare `timeout`, non-terminal `mktemp` X's) pass Linux and silently break on macOS — see #884/#894 for the fixed classes.
 
 ## Testing
 

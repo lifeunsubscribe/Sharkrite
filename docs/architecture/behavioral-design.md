@@ -434,7 +434,7 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 ### Serial Gate Hint (`sharkrite-gate-serial`) (#724)
 
-**2026-06-26.** Some bats files are load-sensitive — they spawn many subprocesses, mass-source the full lib tree, or are otherwise flaky when other bats workers are running concurrently under `bats --jobs N`. Under block-on-any, a single spurious flake from such a file blocks the gate and feeds the fix loop, burning retry iterations on a phantom failure (#649: `lib-resource-safety.bats` reported 2 `MISSING_RESOURCE_GUARD` tests as `not ok` under `--jobs 8`; both passed cleanly in isolation).
+**2026-06-26.** Some bats files are load-sensitive — they spawn many subprocesses, mass-source the full lib tree, or are otherwise flaky when other bats workers are running concurrently under `bats --jobs N`. Under block-on-any, a single spurious flake from such a file blocks the gate and feeds the fix loop, burning retry iterations on a phantom failure (#649: `lib-resource-safety.bats` reported 2 `MISSING_RESOURCE_GUARD` tests as `not ok` under `--jobs 8`; both passed cleanly in isolation). *(2026-07-05 correction: a large share of what looked like `lib-resource-safety` load-flake was actually `validate-setup.sh` running its validation program at source time — an environment dependence fixed in #899/#902. The load-sensitivity mechanism described here remains real for genuinely subprocess-heavy files, but attribute a failure to load only after ruling out env dependence.)*
 
 **Why not exclusion?** Concurrency tests (`tests/concurrency/*`) are **excluded** from the gate entirely because their failure mode (file-based barrier timeouts) is inherent to parallelism and provides no useful signal under `bats --jobs`. `lib-resource-safety.bats` is different: the tests are sound, the coverage is necessary (every lib-touching issue selects it via `lib/**/*.sh`), and the failures are load-induced rather than semantically parallel. Excluding it would silently drop valid coverage from the targeted gate.
 
@@ -1485,3 +1485,74 @@ against the post-rebase tree. Merge-commit call sites keep `HEAD~1` (cheap, corr
 and the no-diff full-suite fallback exploited by the main-broken check is untouched.
 Rejected: keeping the union behind an opt-in (no known consumer; revisit if a
 main-side interaction ever escapes branch coverage).
+
+## Undo Never Closes the Issue Being Undone (#887)
+
+**2026-07-04.** `rite --undo N` exists to put issue N back in a
+runnable-from-scratch state. The follow-up-cleanup loop closes every issue in
+`FOLLOWUP_ISSUES`; a self-referential marker (or over-broad marker search) can
+sweep the main issue into that set, and the section-3.8 reopen only fires when
+the issue was already closed at undo-start — so an open issue the loop closed
+stayed closed. Live incident: `rite --undo 821` closed #821; the next batch
+skipped it as already-done. Contract: `ISSUE_NUMBER` is filtered out of
+`FOLLOWUP_ISSUES` after population (bash-3.2-safe), unconditionally. Any future
+follow-up discovery method must preserve this self-exclusion. Test:
+`tests/regression/undo-lock-and-branch-cleanup.bats`.
+
+## Worktree Cleanup Skips Detached HEAD (#889)
+
+**2026-07-04.** `git branch --show-current` returns an EMPTY string on detached
+HEAD — the normal state mid-rebase/mid-bisect. The deep-clean (merge-pr.sh) and
+cleanup-worktrees.sh stale-decision coerced empty to "unknown" → "branch
+deleted/merged" → `git worktree remove --force`, destroying in-progress rebase
+state; the batch-sibling protection keys on the branch name, so an empty name
+bypassed it too. Contract: an empty `WT_BRANCH` means detached HEAD — skip the
+worktree entirely, never judge it stale. Applies to BOTH cleanup sites; any new
+worktree sweep must carry the same guard. Test:
+`tests/regression/worktree-detached-head-not-stale.bats`.
+
+## Divergence "Reviewed" Verdict Compares Epochs (#896)
+
+**2026-07-04.** The RELATED-divergence auto-rebase decision compared the
+assessment comment's `createdAt` (API, always `Z`-UTC) against `git log
+--format=%aI` (numeric-offset local time) with a lexicographic `[[ > ]]` — a
+meaningless verdict across renderings; a false "reviewed" auto-rebased
+UNREVIEWED foreign commits past the auto-mode block. Contract (repo-wide, this
+was the one missed site): timestamps are compared as EPOCH SECONDS only. Git
+times are taken natively via `%at` (no parsing); API times go through
+`iso_to_epoch` (Z-UTC is its contract); parse failure (0) falls through to the
+safe UNREVIEWED path. Test: `tests/regression/orchestrator-integrity-fixes.bats`.
+
+## Force Push Is Lease-Only — No Blind Fallback (#896)
+
+**2026-07-04.** The diverged-branch initial push escalated any
+`--force-with-lease` refusal to an unconditional `--force`, which can overwrite
+real foreign commits on a name-collision branch (and the pre-push fetch had
+already weakened the lease to "whatever was there a moment ago"). Contract:
+sharkrite never runs a bare `git push --force`. The diverged-branch path
+prints the remote tip it is about to replace, pushes with `--force-with-lease`
+only, and FAILS LOUD if the lease refuses (remote moved in the fetch→push
+window) — surfacing to the operator instead of escalating. Test pin in
+`tests/regression/orchestrator-integrity-fixes.bats`.
+
+## validate-setup.sh Is Functions-Only Under Sourcing (#899)
+
+**2026-07-05.** `validate-setup.sh` ran its entire validation program (gh-auth
+probe, `.rite` checks) at SOURCE time and exited 1 in any clean environment —
+which is why `source-all-libs.bats`/`lib-resource-safety.bats` failed in CI
+while passing on a configured dev machine. The long-standing "fails spuriously
+in agent shells" explanation was wrong; it was this env dependence. Contract:
+executables that are also sourced honor `RITE_SOURCE_FUNCTIONS_ONLY=1`
+(local-review.sh pattern) — sourcing loads definitions only; direct execution
+is unchanged. Any new lib executable with a program body needs the same guard.
+
+## ensure_timeout_cmd Never Blocks or Crashes on Non-TTY (#900)
+
+**2026-07-05.** With no timeout binary on Darwin+brew in supervised mode,
+`ensure_timeout_cmd` prompted via `read -p`; on non-TTY stdin (CI, cron,
+launchd, pipes) `read` hits EOF, returns non-zero, and `set -e` killed the
+ENTIRE config.sh source chain (config sources it at load time) — the graceful
+`RITE_TIMEOUT_CMD=""` fallback was unreachable. Contract: interactive prompts
+in load-time code paths must branch on `[ -t 0 ]` and degrade to the
+non-interactive fallback; the TTY read is hardened with `|| REPLY=n`. This is
+the load-time sibling of the "explicit exit instructions" session rules.
