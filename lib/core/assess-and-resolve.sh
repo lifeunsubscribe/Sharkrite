@@ -328,11 +328,17 @@ _resolve_done_def() {
 }
 
 # ---------------------------------------------------------------------------
-# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT
+# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT [MODEL_LINE]
 #
 # Posts a minimal assessment PR comment (RITE_MARKER_ASSESSMENT marker)
-# containing the [GATE] ACTIONABLE_NOW items, for the fallback branch where
-# the LLM assessment failed but the post-commit gate has blocking findings.
+# containing the [GATE] ACTIONABLE_NOW items, for cases where the post-commit
+# gate has blocking findings that must force a fix loop.
+#
+# MODEL_LINE (optional): overrides the "**Model:**" status line in the comment
+# body. Default: "none (LLM assessment failed — gate findings only)", which is
+# accurate only when the LLM did not run. Callers where the LLM succeeded but
+# gate failures force the loop should pass a descriptive override so the PR
+# comment does not falsely claim the LLM assessment failed.
 #
 # WHY (issue #821; LeadFlow #435/#431 same night): claude-workflow.sh
 # FIX_REVIEW_MODE reads the assessment EXCLUSIVELY from the PR comment when a
@@ -355,6 +361,7 @@ _post_gate_fallback_assessment_comment() {
   local _pr_number="$1"
   local _gate_items="$2"
   local _gate_count="$3"
+  local _model_line="${4:-none (LLM assessment failed — gate findings only)}"
   local _ts _comment _body_file
 
   _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -364,7 +371,7 @@ _post_gate_fallback_assessment_comment() {
 
 **PR:** #${_pr_number}
 **Assessed:** ${_ts}
-**Model:** none (LLM assessment failed — gate findings only)
+**Model:** ${_model_line}
 
 ### Summary
 - **ACTIONABLE_NOW:** ${_gate_count} items (fix in this PR)
@@ -1280,6 +1287,15 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # so it cannot be lost by a header-format mismatch.
       if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
         print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite all-dismissed review"
+        # Contract (#849 sibling of #821): fix mode reads the assessment from the
+        # PR comment when invoked with a PR number. The fd-3 echo below is not
+        # visible to fix mode. Post the gate items as a minimal assessment comment
+        # so fix mode has the [GATE] items to work from.
+        # Deliberate: LLM ran successfully (all items dismissed); the 4th arg
+        # overrides the default "LLM assessment failed" label so the PR comment
+        # accurately reflects that gate failures forced the loop, not LLM failure.
+        _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" \
+          "none (LLM assessment succeeded — gate failures forced fix loop)" || true
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
@@ -1292,6 +1308,15 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # found only ACTIONABLE_LATER items in the review. Same rationale as above.
       if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
         print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite no NOW review items"
+        # Contract (#849 sibling of #821): fix mode reads the assessment from the
+        # PR comment when invoked with a PR number. The fd-3 echo below is not
+        # visible to fix mode. Post the gate items as a minimal assessment comment
+        # so fix mode has the [GATE] items to work from.
+        # Deliberate: LLM ran successfully (only ACTIONABLE_LATER items); the 4th
+        # arg overrides the default "LLM assessment failed" label so the PR comment
+        # accurately reflects that gate failures forced the loop, not LLM failure.
+        _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" \
+          "none (LLM assessment succeeded — gate failures forced fix loop)" || true
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
