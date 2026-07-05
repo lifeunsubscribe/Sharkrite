@@ -433,6 +433,127 @@ EOF
   }
 }
 
+@test "behavioral: gate detects swallowed test even when real not-ok findings also exist (mixed-outcome, issue #847)" {
+  # Regression guard for issue #847: the old caller gate had
+  # `if [ "$_tests_exit" -ne 0 ] && [ "$_tests_count" -eq 0 ]` — the
+  # `&& [ "$_tests_count" -eq 0 ]` guard silently skipped deficit detection
+  # whenever at least one real `not ok` was already present. A run with 1
+  # real failure + 1 swallowed test had _tests_count=1, so the swallowed
+  # test was invisible to the fix loop. The fix removes that outer count
+  # guard; this test pins that the synthetic tests_not_run finding fires
+  # end-to-end through run_test_gate even when real not-ok lines exist.
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  command -v make >/dev/null 2>&1 || skip "make not installed"
+  command -v git >/dev/null 2>&1 || skip "git not installed"
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+
+  # --- Fixture repo ---
+  _repo="$BATS_TEST_TMPDIR/mixed-repo"
+  mkdir -p "$_repo/tests"
+  (cd "$_repo" && git init -q && git config user.email t@t.test && git config user.name t) || return 1
+  printf 'shellcheck:\n\t@true\nlint:\n\t@true\n' > "$_repo/Makefile"
+  (cd "$_repo" && git add -A && git commit -qm base) || return 1
+  _base=$(cd "$_repo" && git rev-parse HEAD)
+
+  # File 1: normal failure — no set -e leak, so bats writes the `not ok` line
+  # to TAP normally. This gives _tests_count > 0 before deficit detection runs.
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '# sharkrite-test-covers: tests/normal-fail.bats\n'
+    printf '@test "passes first" { true; }\n'
+    printf '@test "fails normally and reports not ok" { false; }\n'
+  } > "$_repo/tests/normal-fail.bats"
+
+  # File 2: swallow fixture — same 2x2 conjunction as the existing behavioral
+  # test: setup() leaks `set -euo pipefail`, gate exports BATS_TEST_TIMEOUT,
+  # the failing test triggers bats_kill_processes_of under leaked errexit,
+  # killing bats-exec-test before `not ok` is emitted (swallowed).
+  printf 'set -euo pipefail\n' > "$_repo/tests/strict-env.sh"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '# sharkrite-test-covers: tests/strict-env.sh\n'
+    printf 'setup() { source "$BATS_TEST_DIRNAME/strict-env.sh"; }\n'
+    printf '@test "passes before swallow" { true; }\n'
+    printf '@test "mixed swallowed by leaked errexit plus timeout" { false; }\n'
+    printf '@test "passes after swallow" { true; }\n'
+  } > "$_repo/tests/swallow-fixture.bats"
+
+  (cd "$_repo" && git add -A && git commit -qm fixture) || return 1
+
+  # --- Probe 1: confirm the swallow-fixture.bats actually swallows ---
+  # If this bats version tolerates the kill and writes a `not ok`, neither
+  # the old code nor the new code would differ — skip to avoid false signals.
+  _probe_tap="$BATS_TEST_TMPDIR/mixed-probe-tap"
+  mkdir -p "$_probe_tap"
+  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
+    bats -F pretty --report-formatter tap --output "$_probe_tap" \
+    tests/swallow-fixture.bats < /dev/null > /dev/null 2>&1) || true
+  _probe_notok=$(grep -c '^not ok ' "$_probe_tap/report.tap" 2>/dev/null || true)
+  [ "${_probe_notok:-0}" -eq 0 ] || skip "this bats version reports the swallow-fixture failure normally (no swallow to detect)"
+
+  # --- Probe 2: confirm normal-fail.bats DOES produce a real not ok ---
+  # Without this the test could degenerate into the all-swallowed case.
+  _probe2_tap="$BATS_TEST_TMPDIR/mixed-probe2-tap"
+  mkdir -p "$_probe2_tap"
+  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
+    bats -F pretty --report-formatter tap --output "$_probe2_tap" \
+    tests/normal-fail.bats < /dev/null > /dev/null 2>&1) || true
+  _probe2_notok=$(grep -c '^not ok ' "$_probe2_tap/report.tap" 2>/dev/null || true)
+  [ "${_probe2_notok:-0}" -ge 1 ] || skip "normal-fail.bats did not produce a real not ok line — mixed fixture degenerated"
+
+  # --- Run the gate over BOTH fixture files ---
+  _out="$BATS_TEST_TMPDIR/mixed-gate.json"
+  export RITE_TEST_GATE_DIFF_BASE="$_base"
+  export RITE_BATS_TEST_TIMEOUT=5
+  unset RITE_GATE_BACKGROUND RITE_GATE_FORCE_FULL 2>/dev/null || true
+  run run_test_gate "$_out" "$_repo"
+
+  # Gate must block (exit 1).
+  [ "$status" -eq 1 ] || {
+    echo "FAIL: gate exit was $status, expected 1 (blocking)" >&2
+    echo "$output" >&2
+    return 1
+  }
+  [ -s "$_out" ] || {
+    echo "FAIL: gate JSON not written" >&2
+    return 1
+  }
+
+  # The swallowed test's synthetic finding must be present — this is the
+  # regression guard: with the old `&& [ "$_tests_count" -eq 0 ]` guard
+  # the real not-ok from normal-fail.bats would set _tests_count=1 and
+  # deficit detection would be skipped, so no tests_not_run finding would
+  # appear.
+  grep -q '"reason":"tests_not_run"' "$_out" || {
+    echo "FAIL: gate JSON lacks reason=tests_not_run (swallowed test not detected):" >&2
+    cat "$_out" >&2
+    return 1
+  }
+
+  # The synthetic finding must name the swallowed test.
+  jq -r '.tests[].test_name' "$_out" | grep -q "mixed swallowed" || {
+    echo "FAIL: synthetic finding does not name the swallowed test:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+
+  # The real assertion-failed finding from normal-fail.bats must also be present
+  # — confirming this is genuinely the mixed-outcome case.
+  grep -q '"reason":"assertion failed"' "$_out" || {
+    echo "FAIL: gate JSON lacks real assertion-failed finding — mixed case not exercised:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+
+  # Deficit cap: exactly ONE not-run finding for a deficit of 1.
+  _notrun_len=$(jq '[.tests[] | select(.reason == "tests_not_run")] | length' "$_out")
+  [ "${_notrun_len:-0}" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 tests_not_run finding for deficit 1, got ${_notrun_len}:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+}
+
 # =============================================================================
 # LANDMINE GUARD: batch-locked-issue-in-progress-status.bats
 # =============================================================================
