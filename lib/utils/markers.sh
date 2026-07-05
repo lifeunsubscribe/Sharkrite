@@ -77,6 +77,16 @@ RITE_MARKER_REVIEW_DATA="sharkrite-review-data"
 # Format in PR body: <!-- sharkrite-convention --> ... <!-- /sharkrite-convention -->
 RITE_MARKER_CONVENTION="sharkrite-convention"
 
+# Recurring pattern catalog marker — included in a closed issue or PR body to register
+# a bug class that recurred 2+ times. Harvested by encountered-issues-renderer.sh via
+# rite --refresh-encountered-issues.
+# Format in issue/PR body: <!-- sharkrite-recurring-pattern --> ... <!-- /sharkrite-recurring-pattern -->
+# The block content uses the same structured fields as the issue template:
+#   **Pattern:** <name>
+#   **Root Cause:** <class>
+#   **Mitigation:** <fix or lint rule>
+RITE_MARKER_RECURRING_PATTERN="sharkrite-recurring-pattern"
+
 # Scope warning marker — injected into PR body when files outside scope are modified.
 # Format in PR body: <!-- sharkrite-scope-warning -->
 RITE_MARKER_SCOPE_WARNING="sharkrite-scope-warning"

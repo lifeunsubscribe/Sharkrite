@@ -102,6 +102,8 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
 
     **Minimum bar:** At least one sibling instance considered (even if the conclusion is "no siblings exist because this code path is unique — here's why"). "No siblings found, here's why" is a valid and sufficient answer.
 
+    **Recurring pattern catalog:** If this bug class recurred 2+ times, add a `<!-- sharkrite-recurring-pattern -->` block to the **closed** issue or PR body so `rite --refresh-encountered-issues` picks it up automatically. See `docs/architecture/encountered-issues.md` → "How to Register a Pattern" for the block format.
+
 ---
 
 ## Issue Sizing Guidelines
