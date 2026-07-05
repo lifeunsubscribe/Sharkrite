@@ -1,19 +1,24 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/post-merge-verify.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/post-merge-verify.sh, lib/core/claude-workflow.sh
 # npm ci/install through a symlinked node_modules DESTROYS the symlink TARGET
 # (the main checkout's node_modules): npm's pre-reify rm step readdirs THROUGH
 # the link and recursively deletes each entry of the target, then replaces the
-# link with a real dir. rite worktrees have exactly that layout —
-# claude-workflow.sh symlinks worktree node_modules → main's to save disk — so
-# every gate bootstrap (and post-merge dep reinstall) emptied main's
-# node_modules.
+# link with a real dir.
 #
-# Fix: _node_desymlink_node_modules (test-gate.sh) removes the LINK (plain rm,
-# never rm -rf) inside the bootstrap branch, strictly BEFORE npm ci/install;
-# the same 2-line guard is inlined in post-merge-verify.sh's Node
-# dep-reinstall branch. npm then builds a worktree-local real dir and main's
-# node_modules survives. Repos that never bootstrap keep the symlink (and the
-# disk-space benefit) untouched.
+# History: claude-workflow.sh used to symlink worktree node_modules → main's to
+# save disk. Every gate bootstrap (and post-merge dep reinstall) emptied main's
+# node_modules through that link.  PR #835 added de-symlink guards as a defense;
+# #844 removed the creation entirely (root-cause fix).
+#
+# What these tests cover:
+#  1. _node_desymlink_node_modules (test-gate.sh) — removes the LINK (plain rm,
+#     never rm -rf) inside the bootstrap branch, strictly BEFORE npm ci/install.
+#  2. post-merge-verify.sh's Node dep-reinstall branch — same inline guard.
+#  3. Structural invariant — claude-workflow.sh no longer creates the symlink
+#     (worktree creation produces no node_modules at all, never a symlink).
+#
+# The de-symlink defenses are kept as belt-and-suspenders for pre-existing
+# worktrees created before #844.
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -262,4 +267,25 @@ STUB
 
   # Verification itself passed (stubbed jest is green).
   [ "$status" -eq 0 ]
+}
+
+# --- creation-side invariant (structural, #844) --------------------------------
+# Structural assertion: worktree creation (claude-workflow.sh) must NOT contain
+# the ln -s node_modules symlink-creation block. This is a structural grep pin
+# per the test runbook: it encodes a wording contract that code cannot express
+# (the absence of a deliberate unsafe construction).
+#
+# If this test fails, someone re-added the symlink creation. See behavioral-
+# design.md → "Worktree Creation No Longer Symlinks node_modules (#844)" for
+# the rationale before reverting this assertion.
+@test "structural: claude-workflow.sh does not create a node_modules symlink (#844)" {
+  local _wf="$RITE_LIB_DIR/core/claude-workflow.sh"
+  # The old creation block contained this literal. Its absence proves removal.
+  run grep -n 'ln -s.*node_modules.*node_modules' "$_wf"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: claude-workflow.sh still contains a node_modules symlink-creation line:"
+    echo "$output"
+    echo "See behavioral-design.md → 'Worktree Creation No Longer Symlinks node_modules (#844)'"
+    false
+  }
 }

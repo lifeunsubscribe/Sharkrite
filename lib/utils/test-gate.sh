@@ -1035,18 +1035,19 @@ _node_runner_resolvable() {
 # _node_desymlink_node_modules — remove node_modules symlinks before install
 # Args: $1=project_root
 #
-# claude-workflow.sh symlinks the worktree's node_modules to the MAIN
-# checkout's to save disk. npm ci resolves THROUGH that link: its pre-reify
-# rm step readdirs the target and recursively deletes each entry — destroying
-# main's node_modules — then replaces the link with a real dir (npm install
-# reifies through/replaces the link the same way). Removing the LINK first
-# (plain `rm` on the link path — never rm -rf, never a trailing slash) makes
-# npm build a worktree-local real dir and leaves main's node_modules intact.
+# Belt-and-suspenders defense kept for pre-existing worktrees. Worktree
+# creation no longer symlinks node_modules (#844), but older worktrees may
+# still carry the link. npm ci resolves THROUGH a symlink: its pre-reify rm
+# step readdirs the target and recursively deletes each entry — destroying the
+# symlink's target — then replaces the link with a real dir (npm install
+# reifies the same way). Removing the LINK first (plain `rm` on the link path
+# — never rm -rf, never a trailing slash) makes npm build a worktree-local
+# real dir and leaves the target intact.
 #
 # Called ONLY inside the bootstrap branch: repos whose runners already
-# resolve never install, so they keep the symlink's disk-space benefit.
-# Real dirs and absent paths are no-ops; dangling symlinks are removed the
-# same way ([ -L ] is true for them, plain rm succeeds).
+# resolve never install, so any surviving symlink's disk-space benefit is
+# preserved.  Real dirs and absent paths are no-ops; dangling symlinks are
+# removed the same way ([ -L ] is true for them, plain rm succeeds).
 # ---------------------------------------------------------------------------
 _node_desymlink_node_modules() {
   local _pr="$1"
