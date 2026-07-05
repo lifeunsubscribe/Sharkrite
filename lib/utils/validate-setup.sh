@@ -43,6 +43,16 @@ print_error() { echo -e "${RED}❌ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests can
+# load only the function definitions without running the validation program
+# (local-review.sh pattern). The program body below probes live machine state —
+# gh auth, the gitignored .rite data dir, AWS credentials — and exits non-zero
+# when any prerequisite is missing, so sourcing it makes the caller's exit code
+# depend on the host environment (green on a set-up dev machine, red in clean CI).
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
+
 FIX_MODE=false
 if [ "${1:-}" = "--fix" ]; then
   FIX_MODE=true

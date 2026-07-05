@@ -92,7 +92,7 @@ setup() {
   #   - issue view N --json state  → "OPEN"  (evidence validation: trust it)
   #   - issue list --search ... in:body → "" (no issue found in body search)
   #   - issue list --search in:title → "[]"  (no issue found in title search)
-  #   - pr view N --json comments   → "0"    (no follow-up marker comments)
+  #   - pr view N --json comments   → empty  (no follow-up marker-comment bodies)
   # Tests that need different behavior override gh_safe locally.
   gh_safe() {
     local subcmd="${1:-}"
@@ -107,9 +107,11 @@ setup() {
       echo "[]"
       return 0
     fi
-    # Source 4: gh pr view N --json comments --jq "... | length" → 0 (no comments)
+    # Source 4: gh pr view N --json comments --jq emits marker-comment BODIES
+    # (post-#647 interface — production greps them with -cF "$_clean_title").
+    # Empty output = no follow-up comments. Do NOT echo "0": that pre-#647
+    # count shape reads as a one-line comment body under the new interface.
     if [ "$subcmd" = "pr" ] && [ "${2:-}" = "view" ]; then
-      echo "0"
       return 0
     fi
     return 0
@@ -187,12 +189,15 @@ run_sentinel_dedup_create() {
   # Stub gh_safe for all dedup-relevant calls (same defaults as setup()):
   #   - issue view N → "OPEN"  (validates evidence as open; Source 1)
   #   - issue list  → "[]"     (no match from Sources 2 + 3)
-  #   - pr view N   → "0"      (no follow-up marker comments; Source 4)
+  #   - pr view N   → empty    (no follow-up marker-comment bodies; Source 4.
+  #     Post-#647 the production --jq emits comment BODIES piped through
+  #     grep -cF; a literal "0" would count as one body and fire spurious
+  #     comment-retry iterations.)
   gh_safe() {
     local subcmd="${1:-}"
     if [ "$subcmd" = "issue" ] && [ "${2:-}" = "view" ]; then echo "OPEN"; return 0; fi
     if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then echo "[]";   return 0; fi
-    if [ "$subcmd" = "pr"    ] && [ "${2:-}" = "view" ]; then echo "0";    return 0; fi
+    if [ "$subcmd" = "pr"    ] && [ "${2:-}" = "view" ]; then return 0; fi
     return 0
   }
 
@@ -475,8 +480,16 @@ run_sentinel_dedup_create() {
   ISSUE_SEARCH="review feedback — PR #${pr} for issue #${src}"
   _lock_was_contended=true   # simulates B blocked on A; A just released the lock
   EXISTING_ISSUE=""
+  # #647 (one-finding-per-issue) scoped Source 4's PR-comment scan by piping the
+  # marker-comment bodies through grep -cF "$_clean_title". It is unconditionally
+  # set on the production call path (assess-and-resolve.sh ~line 1799); set it
+  # here so the direct call honors the function's documented input contract.
+  # (Unset, grep's empty pattern matches ANY stub output line, firing the
+  # comment-retry branch instead of the contention branch under test.)
+  ISSUE_TITLE="review feedback — PR #${pr} for issue #${src}"
+  _clean_title="$ISSUE_TITLE"
 
-  # gh_safe stub: Sources 2+3+4 all return empty/zero — simulates index lag.
+  # gh_safe stub: Sources 2+3+4 all return empty — simulates index lag.
   # The key assertion is not whether an issue is found, but whether the
   # contention-retry branch in Source 4 fires and consumes _lock_was_contended.
   gh_safe() {
@@ -487,8 +500,11 @@ run_sentinel_dedup_create() {
     if [ "$subcmd" = "issue" ] && [ "${2:-}" = "view" ]; then echo ""; return 0; fi
     # Sources 2+3: issue list → no match
     if [ "$subcmd" = "issue" ] && [ "${2:-}" = "list" ]; then echo "[]"; return 0; fi
-    # Source 4: pr view → 0 comments; contention signal is the only retry trigger
-    if [ "$subcmd" = "pr"    ] && [ "${2:-}" = "view" ]; then echo "0";  return 0; fi
+    # Source 4: pr view --jq emits marker-comment BODIES (post-#647 interface);
+    # empty output = no follow-up comments, so the contention signal is the only
+    # retry trigger. (echo "0" here would read as a one-line comment body — the
+    # pre-#647 count shape that made this test fire the wrong retry branch.)
+    if [ "$subcmd" = "pr"    ] && [ "${2:-}" = "view" ]; then return 0; fi
     return 0
   }
 
