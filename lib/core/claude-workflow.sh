@@ -376,8 +376,10 @@ _RITE_PIP_TIMEOUT_WARNED=false
 #   - Non-workspaces monorepo: each directory with a changed package.json is
 #     handled independently (e.g. root + api/ each get their own lockfile).
 #   - De-symlink guard: removes any node_modules symlinks before npm install to
-#     prevent npm from destroying the main checkout's shared node_modules through
-#     the link (same guard applied by test-gate.sh before every install).
+#     prevent npm from destroying the symlink target. Worktree creation no
+#     longer creates these symlinks (#844), but pre-existing worktrees may
+#     carry them; the guard is kept as belt-and-suspenders (same guard applied
+#     by test-gate.sh before every install).
 #   - Timeout: npm install is run under run_with_timeout (120s) when the helper is
 #     available (i.e. when RITE_TIMEOUT_CMD is set — timeout/gtimeout on PATH).
 #     On hosts without timeout/gtimeout the install runs unbounded; the 124-branch
@@ -2484,12 +2486,14 @@ If the changes are unrelated work, answer UNRELATED."
 
     print_success "Worktree ready"
 
-    # Add symlink patterns to .gitignore BEFORE creating symlinks
-    # This prevents them from ever appearing as untracked files in git status
+    # Ensure worktree-specific paths are in .gitignore so they never appear as
+    # untracked files. node_modules is included even though we no longer create a
+    # symlink (#844) — belt-and-suspenders against accidental commits if npm
+    # installs locally or a pre-existing symlink survives from an older worktree.
+    # No trailing slashes: "foo/" only matches directories, but symlinks are
+    # files (git mode 120000) so "foo/" won't match them. "foo" matches both.
     ensure_symlinks_gitignored() {
       local gitignore="$WORKTREE_PATH/.gitignore"
-      # No trailing slashes — "foo/" only matches directories, but symlinks are
-      # files (mode 120000) so "foo/" won't match them. "foo" matches both.
       local patterns=(".rite" ".claude" "node_modules" "backend/node_modules")
       local updated=0
 
@@ -2509,23 +2513,24 @@ If the changes are unrelated work, answer UNRELATED."
       done
 
       if [ "$updated" -gt 0 ]; then
-        print_info "Updated $updated symlink pattern(s) in .gitignore"
+        print_info "Updated $updated .gitignore pattern(s) for worktree-local paths"
       fi
     }
     ensure_symlinks_gitignored
 
-    # Symlink node_modules to save disk space (if project has them)
-    if [ -d "$MAIN_WORKTREE/node_modules" ]; then
-      cd "$WORKTREE_PATH"
-      rm -rf node_modules 2>/dev/null || true
-      ln -s "$MAIN_WORKTREE/node_modules" node_modules
-      cd "$WORKTREE_PATH"
-    elif [ -d "$MAIN_WORKTREE/backend/node_modules" ]; then
-      cd "$WORKTREE_PATH/backend" 2>/dev/null || true
-      rm -rf node_modules 2>/dev/null || true
-      ln -s "$MAIN_WORKTREE/backend/node_modules" node_modules 2>/dev/null || true
-      cd "$WORKTREE_PATH"
-    fi
+    # node_modules: no symlink created (#844). The old "symlink to save disk
+    # space" pattern was removed because:
+    #   1. npm ci/install resolves THROUGH the symlink and can destroy the main
+    #      checkout's node_modules (PR #835 patched the destruction, but the
+    #      root cause was the symlink itself).
+    #   2. The gate bootstrap (test-gate.sh::_node_desymlink_node_modules) and
+    #      post-merge-verify.sh both de-symlink before every install anyway, so
+    #      the disk-saving benefit only existed until the first bootstrap.
+    #   3. Per-worktree node_modules are a normal outcome; npm ci is fast enough
+    #      to make the disk trade-off not worth the complexity.
+    # The de-symlink defenses in test-gate.sh and post-merge-verify.sh are
+    # intentionally kept as belt-and-suspenders for pre-existing worktrees that
+    # were created before this change.
 
     # Symlink rite data dir to share scratchpad and context across worktrees
     RITE_DATA_PATH="$MAIN_WORKTREE/$RITE_DATA_DIR"

@@ -1556,3 +1556,43 @@ ENTIRE config.sh source chain (config sources it at load time) — the graceful
 in load-time code paths must branch on `[ -t 0 ]` and degrade to the
 non-interactive fallback; the TTY read is hardened with `|| REPLY=n`. This is
 the load-time sibling of the "explicit exit instructions" session rules.
+
+## Worktree Creation No Longer Symlinks node_modules (#844)
+
+**2026-07-05.** Removed the `ln -s "$MAIN_WORKTREE/node_modules" node_modules`
+block from `claude-workflow.sh`'s worktree-setup path. The symlink was created
+"to save disk space" (initial-commit vintage). Three reasons for removal:
+
+1. **Root cause of PR #835.** `npm ci`/`npm install` resolves THROUGH a
+   symlinked `node_modules`: its pre-reify step readdirs the target and
+   recursively deletes each entry — destroying the main checkout's
+   `node_modules` — before replacing the link with a real dir. PR #835 patched
+   the destruction with a de-symlink guard, but patching the symptom is worse
+   than removing the cause.
+
+2. **Disk-space benefit was illusory.** The gate bootstrap
+   (`test-gate.sh::_node_desymlink_node_modules`) and `post-merge-verify.sh`
+   both de-symlink before every `npm ci`/`npm install`. Any worktree that runs
+   a bootstrap immediately replaces the symlink with a per-worktree real dir,
+   so the shared-disk benefit only existed until the first install.
+
+3. **Per-worktree node_modules is normal.** `npm ci` is fast and the disk
+   overhead of isolated installs is acceptable; the shared-symlink complexity
+   is not.
+
+**What stays:** The de-symlink defenses in `test-gate.sh` and
+`post-merge-verify.sh` are intentionally preserved as belt-and-suspenders for
+pre-existing worktrees created before this change (they still carry the symlink
+until their first bootstrap). The defenses are no-ops for real dirs and absent
+paths, so they are safe to keep indefinitely.
+
+**`.gitignore` treatment:** `node_modules` and `backend/node_modules` remain in
+the `.gitignore` patterns written by `ensure_symlinks_gitignored` — belt-and-
+suspenders against accidental commits if npm installs locally in a worktree or
+a pre-existing symlink survives. The staging-cleanup blocks (git mode 120000
+checks before commit) are also kept for the same reason.
+
+**Files changed:** `lib/core/claude-workflow.sh` (creation removed),
+`lib/utils/test-gate.sh` (comment updated),
+`tests/regression/gate-desymlink-node-modules.bats` (header updated, creation-
+side assertion added).
