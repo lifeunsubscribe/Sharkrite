@@ -329,3 +329,43 @@ _setup_npm_stub_fail() {
   # Warning must mention npm not found
   [[ "$output" =~ "npm not found" ]]
 }
+
+@test "_regen_lockfiles_if_needed: reconciles stale lockfile when package.json drifted (issue #804 core scenario)" {
+  # Core motivating scenario from issue #804: a package-lock.json already exists
+  # in the repo (committed) but is out of sync because package.json was changed.
+  # The function must update and re-stage the lockfile — not just create a fresh one.
+  #
+  # Setup: commit an initial package.json + a stale package-lock.json so both
+  # are tracked.  The stale lockfile has stale content ("lockfileVersion":1)
+  # while the npm stub will write updated content ("lockfileVersion":3).
+  printf '{"name":"test","version":"1.0.0","dependencies":{}}\n' > package.json
+  printf '{"lockfileVersion":1,"stale":true}\n' > package-lock.json
+  git add package.json package-lock.json
+  # Amend into the branch-init commit rather than creating a second commit —
+  # a second commit ahead of origin/main would make check_dev_session_output
+  # treat the branch as already having real work, which would skip auto-commit
+  # but is irrelevant here since we're testing _regen_lockfiles_if_needed directly.
+  git commit --amend --no-edit --quiet
+
+  # Now simulate a dependency change: modify package.json and stage it.
+  # The package-lock.json in the working tree still has the old stale content.
+  printf '{"name":"test","version":"1.0.0","dependencies":{"lodash":"^4.0.0"}}\n' > package.json
+  git add package.json
+  # package-lock.json is NOT staged — it's the stale committed version
+
+  _setup_npm_stub_success  # stub writes {"lockfileVersion":3} to package-lock.json
+
+  run _regen_lockfiles_if_needed
+
+  # Must succeed
+  [ "$status" -eq 0 ]
+  # npm stub must have run and updated the lockfile on disk
+  [ -f "$TEST_REPO/package-lock.json" ]
+  # The updated lockfile must be staged (re-staged by _regen_lockfiles_if_needed)
+  git diff --cached --name-only | grep -q "package-lock.json"
+  # The staged lockfile must contain the new content written by the npm stub,
+  # not the original stale content — this proves reconciliation, not just creation.
+  _staged_content=$(git show :package-lock.json 2>/dev/null || true)
+  [[ "$_staged_content" =~ "lockfileVersion" ]]
+  [[ ! "$_staged_content" =~ '"stale":true' ]]
+}

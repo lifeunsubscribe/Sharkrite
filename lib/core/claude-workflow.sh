@@ -397,8 +397,16 @@ _regen_lockfiles_if_needed() {
     [ -z "$_dir" ] && continue
 
     # Resolve to absolute path (the git repo root + relative dir).
-    local _abs_dir
-    _abs_dir="$(git rev-parse --show-toplevel)/${_dir}"
+    # Guard: git rev-parse can fail when cwd was deleted (post-worktree-removal
+    # hazard, CLAUDE.md → "CWD after worktree removal"). Capture with || true,
+    # validate the result, and skip with a warning rather than aborting under set -e.
+    local _abs_dir _repo_root
+    _repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$_repo_root" ]; then
+      print_warning "git rev-parse --show-toplevel failed in ${_dir} — skipping lockfile regeneration for this directory"
+      continue
+    fi
+    _abs_dir="${_repo_root}/${_dir}"
     # When _dir is "." (root package.json) the path becomes "<root>/." which is fine.
 
     if [ ! -f "${_abs_dir}/package.json" ]; then
@@ -913,7 +921,11 @@ check_dev_session_output() {
 
     # Regenerate package-lock.json if package.json was modified (issue #804).
     # Runs after staging so git diff --cached reflects the actual committed tree.
-    _regen_lockfiles_if_needed || return 1
+    # Error propagation: return 1 propagates through check_dev_session_output to
+    # the caller; the function has already printed the error message.
+    if ! _regen_lockfiles_if_needed; then
+      return 1
+    fi
 
     # Create auto-commit
     local auto_commit_msg="chore: auto-commit dev session output for issue #${ISSUE_NUMBER:-unknown}
@@ -1119,7 +1131,12 @@ $EXIT_INSTRUCTION"
   git add -A
 
   # Regenerate package-lock.json if package.json was modified (issue #804).
-  _regen_lockfiles_if_needed || exit 1
+  # Error propagation: _regen_lockfiles_if_needed prints the error and returns 1
+  # on npm failure; exit 1 here signals session-failed to the orchestrator
+  # (exit-codes.md: claude-workflow.sh exit 1 = Session failed).
+  if ! _regen_lockfiles_if_needed; then
+    exit 1
+  fi
 
   # Generate commit message based on review content summary
   COMMIT_MSG="fix: address review findings from PR automated review
@@ -3325,7 +3342,12 @@ git reset HEAD .gitignore 2>/dev/null || true
 
 # Regenerate package-lock.json if package.json was modified (issue #804).
 # Runs after all exclusions so the cached index is the true committed tree.
-_regen_lockfiles_if_needed || exit 1
+# Error propagation: _regen_lockfiles_if_needed prints the error and returns 1
+# on npm failure; exit 1 here signals session-failed to the orchestrator
+# (exit-codes.md: claude-workflow.sh exit 1 = Session failed).
+if ! _regen_lockfiles_if_needed; then
+  exit 1
+fi
 
 git commit -m "$COMMIT_MSG" > /dev/null
 
