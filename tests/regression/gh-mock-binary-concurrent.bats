@@ -31,7 +31,9 @@
 
 load '../helpers/setup.bash'
 
-# Path to the binary mock under test
+# Path to the binary mock under test. RITE_REPO_ROOT is set at file scope by
+# load '../helpers/setup.bash' before this line, so this is safe at file scope.
+# sharkrite-lint disable BATS_FILE_SCOPE_ENV_READ - Reason: RITE_REPO_ROOT is a bats-time constant set by setup.bash before this file-scope line; moving into setup() would break the top-level skip guard.
 GH_MOCK_BIN="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"
 
 setup() {

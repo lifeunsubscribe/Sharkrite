@@ -1883,6 +1883,22 @@ done
 #   # sharkrite-lint disable BATS_STUB_OVERWRITE - Reason: <text>
 echo "Checking for pre-source stubs overwritten by env-guarded libs in .bats files..."
 
+# Build the bats file list for Rules 34/35.
+# When RITE_LINT_FILES is set (post-commit targeted gate), restrict to the
+# intersection of all .bats files and the targeted changed-file set.
+# When unset (plain `make lint`), scan all .bats files as before.
+_bats_all_tmp=$(mktemp)
+find "$PROJECT_ROOT/tests" -name '*.bats' -type f 2>/dev/null > "$_bats_all_tmp" || true
+if [ -n "${RITE_LINT_FILES:-}" ]; then
+  _bats_lint_files=$(mktemp)
+  printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' > "$_bats_lint_files" 2>/dev/null || true
+  _bats_scan_list=$(grep -Fxf "$_bats_lint_files" "$_bats_all_tmp" 2>/dev/null || true)
+  rm -f "$_bats_lint_files"
+else
+  _bats_scan_list=$(cat "$_bats_all_tmp" 2>/dev/null || true)
+fi
+rm -f "$_bats_all_tmp"
+
 while IFS= read -r bats_file; do
   [ -z "$bats_file" ] && continue
   case "$bats_file" in
@@ -1922,11 +1938,15 @@ while IFS= read -r bats_file; do
       # Matches: source .../workflow-runner.sh, .../batch-process-issues.sh,
       #   .../claude-workflow.sh, .../assess-and-resolve.sh, .../create-pr.sh,
       #   .../merge-pr.sh, .../local-review.sh, .../gh-retry.sh directly.
+      # Exception: RITE_SOURCE_FUNCTIONS_ONLY=1 sources never execute the loader
+      # body (the env-guarded lib guard skips all definitions), so gh_safe is
+      # never overwritten — do NOT update last_source_line for these.
       if ($0 ~ /(source|\.)[[:space:]]/ &&
           ($0 ~ /workflow-runner\.sh/ || $0 ~ /batch-process-issues\.sh/ ||
            $0 ~ /claude-workflow\.sh/ || $0 ~ /assess-and-resolve\.sh/ ||
            $0 ~ /create-pr\.sh/ || $0 ~ /merge-pr\.sh/ ||
            $0 ~ /local-review\.sh/ || $0 ~ /gh-retry\.sh/)) {
+        if ($0 ~ /RITE_SOURCE_FUNCTIONS_ONLY=1/) next
         last_source_line = FNR
         next
       }
@@ -1969,7 +1989,7 @@ while IFS= read -r bats_file; do
     print_violation "$bats_file" "$_hit_line" "BATS_STUB_OVERWRITE" \
       "${_hit_name}() stub defined before sourcing an env-guarded lib — the real ${_hit_name} will overwrite it; re-stub ${_hit_name}() after the last source (see PR #840 incident)"
   done <<< "$_r34_file_hits"
-done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+done <<< "$_bats_scan_list"
 
 # Rule 35: File-scope assignment reading inherited RITE_* env vars in .bats files
 #          (BATS_FILE_SCOPE_ENV_READ)
@@ -2009,12 +2029,22 @@ while IFS= read -r bats_file; do
   _r35_file_hits=$(awk '
     FNR == 1 {
       in_heredoc = 0; hd_marker = ""; depth = 0; suppress_next = 0
+      in_sq_string = 0
     }
     {
       # Heredoc close
       if (in_heredoc) {
         _close = $0; sub(/^[[:space:]]*/, "", _close)
         if (_close == hd_marker) in_heredoc = 0
+        next
+      }
+      # Multi-line single-quoted string body: content is data, not shell code.
+      # Count single-quotes on the line; odd total means the string closes here.
+      # Use \047 (octal for single-quote) in AWK string literals to avoid
+      # shell quoting conflicts inside the outer awk single-quoted argument.
+      if (in_sq_string) {
+        _sq_tmp = $0; _sq_count = gsub(/\047/, "\047", _sq_tmp)
+        if (_sq_count % 2 == 1) in_sq_string = 0
         next
       }
       # Suppression comment
@@ -2031,6 +2061,18 @@ while IFS= read -r bats_file; do
         if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) {
           hd_marker = _p[1]; in_heredoc = 1
         }
+      }
+      # Detect start of a multi-line single-quoted string assignment.
+      # Pattern: VAR=<squote> where the opening single-quote is not closed on
+      # the same line — the string body continues on subsequent lines.
+      # Only fires at file scope (depth==0) to avoid function-body false
+      # positive suppression. Content inside the string is data, not shell code.
+      if (depth == 0 && $0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\047/) {
+        # Count single-quotes after the = to determine open vs closed.
+        _rest = $0; sub(/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/, "", _rest)
+        _sq_tmp = _rest; _sq_count = gsub(/\047/, "\047", _sq_tmp)
+        # Odd count means the string is still open after this line.
+        if (_sq_count % 2 == 1) { in_sq_string = 1; next }
       }
       # Track brace depth to detect file-scope vs inside-function/test scope.
       # Strip string literals to avoid braces inside strings skewing depth.
@@ -2072,7 +2114,7 @@ while IFS= read -r bats_file; do
     print_violation "$bats_file" "$_hit_line" "BATS_FILE_SCOPE_ENV_READ" \
       "file-scope assignment reads \$RITE_* env var — evaluated at bats load time before setup() runs; move into setup() or use \${RITE_VAR:-default} inside a function"
   done <<< "$_r35_file_hits"
-done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+done <<< "$_bats_scan_list"
 
 echo ""
 echo "----------------------------------------"
