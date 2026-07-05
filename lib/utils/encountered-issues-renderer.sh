@@ -1,12 +1,23 @@
 #!/bin/bash
 # lib/utils/encountered-issues-renderer.sh
 #
-# Renders docs/architecture/encountered-issues.md from closed GitHub issues
-# tagged with the `recurring-pattern` label.
+# Renders docs/architecture/encountered-issues.md from closed GitHub issues and
+# PRs that carry the <!-- sharkrite-recurring-pattern --> in-body marker block.
 #
-# Each labeled issue represents one bug class that recurred 2+ times during
+# Each marker block represents one bug class that recurred 2+ times during
 # dogfooding. The rendered file lists each pattern, its instances, root cause,
 # and mitigation — so future Claude sessions can diagnose similar bugs faster.
+#
+# Discovery mechanism:
+#   Primary path  — closed issues/PRs whose BODY contains the marker block
+#                   <!-- sharkrite-recurring-pattern --> ... <!-- /sharkrite-recurring-pattern -->
+#   Legacy path   — closed issues with the `recurring-pattern` LABEL (transition period)
+#   Both paths are unioned and deduplicated by issue number so that issues
+#   labeled during the pre-marker era are still ingested. Once all known
+#   patterns carry the marker, the label path can be removed.
+#
+# To register a new pattern: add the marker block (see encountered-issues.md
+# for the format) to the issue or PR body — no label needed.
 #
 # Usage (standalone): lib/utils/encountered-issues-renderer.sh
 # Usage (via rite):   rite --refresh-encountered-issues
@@ -27,12 +38,60 @@ fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
+source "$RITE_LIB_DIR/utils/markers.sh"
+
+# ---------------------------------------------------------------------------
+# _extract_marker_block(body)
+#
+# Extracts the content between <!-- sharkrite-recurring-pattern --> and
+# <!-- /sharkrite-recurring-pattern --> from the given body text.
+#
+# The open marker must appear as the COMPLETE HTML comment tag (no prefix/suffix
+# other than optional whitespace) — this is the format anchor that prevents a
+# body which merely DOCUMENTS the marker from matching (bare-prefix-guard rule).
+#
+# Returns the block content on stdout, or empty string if no block found.
+# ---------------------------------------------------------------------------
+_extract_marker_block() {
+  local body="$1"
+  local open_marker="<!-- ${RITE_MARKER_RECURRING_PATTERN} -->"
+  local close_marker="<!-- /${RITE_MARKER_RECURRING_PATTERN} -->"
+
+  # awk-based extraction with fenced-code-block guard (mirrors conventions.md approach).
+  # Convention block content is processed FIRST — lines inside the marker block
+  # are never seen by the fence guard (prevents a backtick-fence inside the block
+  # from prematurely toggling the guard and truncating the block).
+  # Inline on one line so Rule 8's next-line lookahead picks up `|| true`.
+  echo "$body" | awk -v open="$open_marker" -v close="$close_marker" '$0 == open && !in_fence { in_block=1; buf=""; next } in_block && $0 == close { print buf; in_block=0; next } in_block { buf = (buf == "") ? $0 : buf "\n" $0; next } !in_fence && /^[[:space:]]{0,3}```/ { fence_str=$0; sub(/^[[:space:]]*/,"",fence_str); fence_len=0; while(substr(fence_str,fence_len+1,1)=="`") fence_len++; in_fence=1; next } in_fence && /^[[:space:]]{0,3}```/ { close_str=$0; sub(/^[[:space:]]*/,"",close_str); close_len=0; while(substr(close_str,close_len+1,1)=="`") close_len++; close_after=substr(close_str,close_len+1); if(close_len>=fence_len && close_after~/^[[:space:]]*$/) { in_fence=0; fence_len=0 }; next } in_fence { next } $0 == close { next }' || true
+}
+
+# ---------------------------------------------------------------------------
+# _body_has_recurring_marker(body)
+#
+# Returns 0 (true) if the body contains a REAL (format-anchored) marker block.
+# Returns 1 if not present or only found in documentation examples.
+#
+# Format anchor: the open tag must appear as the complete, literal HTML comment
+# "<!-- sharkrite-recurring-pattern -->" — not a bare "sharkrite-recurring-pattern:"
+# prefix, not inside a fenced code block.  This prevents issue bodies that
+# merely DOCUMENT the marker format from being treated as carriers.
+# ---------------------------------------------------------------------------
+_body_has_recurring_marker() {
+  local body="$1"
+  local block
+  block=$(_extract_marker_block "$body")
+  [ -n "$block" ]
+}
 
 # ---------------------------------------------------------------------------
 # render_encountered_issues()
 #
-# Fetches closed issues with `recurring-pattern` label from GitHub, renders
-# sorted markdown to OUTPUT_FILE (defaults to docs/architecture/encountered-issues.md).
+# Fetches closed issues and PRs that carry the sharkrite-recurring-pattern
+# in-body marker block from GitHub, renders sorted markdown to OUTPUT_FILE
+# (defaults to docs/architecture/encountered-issues.md).
+#
+# Also ingests issues with the legacy `recurring-pattern` label (transition
+# period — allows pre-marker issues to still appear in the catalog).
 #
 # Environment:
 #   RITE_PROJECT_ROOT  — project root (set by config.sh)
@@ -44,31 +103,187 @@ source "$RITE_LIB_DIR/utils/gh-retry.sh"
 # ---------------------------------------------------------------------------
 render_encountered_issues() {
   local output_file="${OUTPUT_FILE:-$RITE_PROJECT_ROOT/docs/architecture/encountered-issues.md}"
-  local label="recurring-pattern"
+  local legacy_label="recurring-pattern"
 
   # Ensure output directory exists
   mkdir -p "$(dirname "$output_file")"
 
-  print_info "Fetching closed issues with label '$label'..." >&2
+  # ── Primary path: body-marker harvest ────────────────────────────────────
+  # Fetch all recently closed issues and filter to those whose body contains the
+  # format-anchored marker.  The --search flag uses GitHub's "in:body" qualifier
+  # to pre-filter server-side; we still validate locally to reject documentation
+  # examples (bare-prefix-guard requirement).
+  #
+  # We search for the marker name WITHOUT the HTML comment delimiters, since
+  # GitHub's issue search strips HTML comments.  The format anchor is enforced
+  # locally by _body_has_recurring_marker() after fetch.
+  print_info "Fetching closed issues/PRs with body marker '${RITE_MARKER_RECURRING_PATTERN}'..." >&2
 
-  # Fetch issues. Sort is applied in jq: ascending by number (stable).
-  # gh_safe provides retry + resilience (from lib/utils/gh-retry.sh).
-  local issues_json
-  issues_json=$(gh_safe issue list \
-    --label "$label" \
+  # GitHub strips HTML comments before indexing, so the "in:body" search qualifier
+  # will return zero results for markers that exist ONLY inside <!-- --> tags.
+  # Strategy: try the server-side search first (fast, handles non-HTML-comment
+  # markers), then always backstop with a bounded recently-closed fetch and a
+  # local _body_has_recurring_marker scan to catch HTML-comment-only markers.
+  # Results from both paths are merged and deduplicated by number.
+
+  local marker_issues_json marker_prs_json
+  # Issues: server-side pre-filter attempt (may return empty due to HTML-comment stripping)
+  local _server_issues_json
+  _server_issues_json=$(gh_safe issue list \
+    --state closed \
+    --search "${RITE_MARKER_RECURRING_PATTERN} in:body" \
+    --json number,title,body,closedAt,closedByPullRequestsReferences \
+    --limit 200 2>/dev/null || true)
+  _server_issues_json="${_server_issues_json:-[]}"
+
+  # Issues: bounded recently-closed fetch for local scan backstop.
+  # GitHub strips HTML comments from the indexed body, so "in:body" misses
+  # markers that live inside <!-- --> tags.  Fetch the 300 most recent closed
+  # issues and validate locally; merge with the server-side results so neither
+  # path is the only line of defence.
+  local _recent_issues_json
+  _recent_issues_json=$(gh_safe issue list \
+    --state closed \
+    --json number,title,body,closedAt,closedByPullRequestsReferences \
+    --limit 300 2>/dev/null || true)
+  _recent_issues_json="${_recent_issues_json:-[]}"
+
+  # Merge server + recent; unique_by(.number) keeps the first occurrence (server result
+  # is first, so its richer data wins when both paths find the same issue).
+  marker_issues_json=$(jq -n \
+    --argjson srv "$_server_issues_json" \
+    --argjson rec "$_recent_issues_json" \
+    '($srv + $rec) | unique_by(.number)' 2>/dev/null || echo "[]")
+  marker_issues_json="${marker_issues_json:-[]}"
+
+  # PRs: same two-path approach.
+  local _server_prs_json
+  _server_prs_json=$(gh_safe pr list \
+    --state closed \
+    --search "${RITE_MARKER_RECURRING_PATTERN} in:body" \
+    --json number,title,body,closedAt \
+    --limit 200 2>/dev/null || true)
+  _server_prs_json="${_server_prs_json:-[]}"
+
+  # PRs: bounded recently-closed fetch backstop.
+  local _recent_prs_json
+  _recent_prs_json=$(gh_safe pr list \
+    --state closed \
+    --json number,title,body,closedAt \
+    --limit 300 2>/dev/null || true)
+  _recent_prs_json="${_recent_prs_json:-[]}"
+
+  # Merge server + recent PR results; server wins on duplicates.
+  marker_prs_json=$(jq -n \
+    --argjson srv "$_server_prs_json" \
+    --argjson rec "$_recent_prs_json" \
+    '($srv + $rec) | unique_by(.number)' 2>/dev/null || echo "[]")
+  marker_prs_json="${marker_prs_json:-[]}"
+
+  # ── Legacy path: label harvest (transition period) ────────────────────────
+  # Still ingest issues with the old `recurring-pattern` label so that patterns
+  # documented before this marker was introduced are not lost.
+  # Removed once all known patterns have been migrated to the marker.
+  print_info "Fetching closed issues with legacy label '${legacy_label}' (transition)..." >&2
+
+  local legacy_issues_json
+  legacy_issues_json=$(gh_safe issue list \
+    --label "$legacy_label" \
     --state closed \
     --json number,title,body,closedAt,closedByPullRequestsReferences \
     --limit 200 2>/dev/null || true)
-  issues_json="${issues_json:-[]}"
+  legacy_issues_json="${legacy_issues_json:-[]}"
+
+  # ── Local format-anchor validation ───────────────────────────────────────
+  # Filter marker_issues_json to only entries where the body actually contains
+  # a REAL (format-anchored) <!-- sharkrite-recurring-pattern --> block.
+  # This rejects issues whose bodies merely document the marker format.
+  #
+  # Implementation: write each body to a temp file, run _body_has_recurring_marker,
+  # collect passing indices, then rebuild a filtered JSON array with jq.
+  local _marker_count _marker_count_raw
+  _marker_count_raw=$(echo "$marker_issues_json" | jq 'length' 2>/dev/null || echo "0")
+  # Digits-only guard: jq may return empty/null if the input was malformed;
+  # a non-integer would abort the while loop under set -e.  Default to 0.
+  case "${_marker_count_raw:-}" in
+    ''|*[!0-9]*) _marker_count=0 ;;
+    *) _marker_count="$_marker_count_raw" ;;
+  esac
+
+  # _validated_indices accumulates as "0,2,5" — a comma-separated list of
+  # passing array indices. jq's .[0,2,5] slice syntax selects exactly those
+  # elements without a shell loop, producing a filtered array in one jq call.
+  local _validated_indices=""
+  local _vi=0
+  while [ "$_vi" -lt "$_marker_count" ]; do
+    local _candidate_body
+    _candidate_body=$(echo "$marker_issues_json" | jq -r ".[$_vi].body // \"\"" 2>/dev/null || true)
+    if _body_has_recurring_marker "$_candidate_body"; then
+      _validated_indices="${_validated_indices:+$_validated_indices,}$_vi"
+    fi
+    _vi=$((_vi + 1))
+  done
+
+  # Rebuild validated issues array from passing indices
+  local validated_marker_issues_json
+  if [ -n "$_validated_indices" ]; then
+    validated_marker_issues_json=$(echo "$marker_issues_json" | jq "[.[$_validated_indices]]" 2>/dev/null || echo "[]")
+  else
+    validated_marker_issues_json="[]"
+  fi
+
+  # Validate PR marker bodies similarly; synthesize issue-like shape (no closedByPullRequestsReferences)
+  local _pr_count _pr_count_raw
+  _pr_count_raw=$(echo "$marker_prs_json" | jq 'length' 2>/dev/null || echo "0")
+  # Digits-only guard: same rationale as _marker_count above.
+  case "${_pr_count_raw:-}" in
+    ''|*[!0-9]*) _pr_count=0 ;;
+    *) _pr_count="$_pr_count_raw" ;;
+  esac
+
+  local _pr_validated_indices=""
+  local _pi=0
+  while [ "$_pi" -lt "$_pr_count" ]; do
+    local _pr_candidate_body
+    _pr_candidate_body=$(echo "$marker_prs_json" | jq -r ".[$_pi].body // \"\"" 2>/dev/null || true)
+    if _body_has_recurring_marker "$_pr_candidate_body"; then
+      _pr_validated_indices="${_pr_validated_indices:+$_pr_validated_indices,}$_pi"
+    fi
+    _pi=$((_pi + 1))
+  done
+
+  # PRs become issue-like records with closedByPullRequestsReferences = [] (they ARE the PR)
+  local validated_marker_prs_json
+  if [ -n "$_pr_validated_indices" ]; then
+    validated_marker_prs_json=$(echo "$marker_prs_json" | jq "[.[$_pr_validated_indices] | {number, title, body, closedAt, closedByPullRequestsReferences: []}]" 2>/dev/null || echo "[]")
+  else
+    validated_marker_prs_json="[]"
+  fi
+
+  # ── Merge + deduplicate by issue number ───────────────────────────────────
+  # Union of marker issues, marker PRs, and legacy label issues.
+  # When the same number appears in multiple sources, the first occurrence wins
+  # (marker takes priority over legacy label, since marker bodies are richer).
+  # jq's unique_by preserves first occurrence in the array.
+  local all_issues_json
+  all_issues_json=$(jq -n \
+    --argjson marker "$validated_marker_issues_json" \
+    --argjson prs "$validated_marker_prs_json" \
+    --argjson legacy "$legacy_issues_json" \
+    '($marker + $prs + $legacy) | unique_by(.number)' 2>/dev/null || echo "[]")
+  all_issues_json="${all_issues_json:-[]}"
 
   local count
-  count=$(echo "$issues_json" | jq 'length' 2>/dev/null || echo "0")
+  count=$(echo "$all_issues_json" | jq 'length' 2>/dev/null || echo "0")
 
-  print_info "Found $count issue(s) with label '$label'" >&2
+  local marker_found legacy_found
+  marker_found=$(echo "$validated_marker_issues_json" | jq 'length' 2>/dev/null || echo "0")
+  legacy_found=$(echo "$legacy_issues_json" | jq 'length' 2>/dev/null || echo "0")
+  print_info "Found ${marker_found} issue(s) with body marker, ${legacy_found} with legacy label, ${count} total after dedup" >&2
 
   # Sort by issue number ascending (stable, deterministic output)
   local sorted_json
-  sorted_json=$(echo "$issues_json" | jq 'sort_by(.number)' 2>/dev/null || echo "[]")
+  sorted_json=$(echo "$all_issues_json" | jq 'sort_by(.number)' 2>/dev/null || echo "[]")
 
   local today
   today=$(date '+%Y-%m-%d')
@@ -76,14 +291,15 @@ render_encountered_issues() {
   # ── Write header ──────────────────────────────────────────────────────────
   {
     echo "<!-- Auto-generated by encountered-issues-renderer.sh. Do not hand-edit."
-    echo "     To add a pattern: label the originating issue \`recurring-pattern\`"
-    echo "     and run \`rite --refresh-encountered-issues\`."
+    echo "     To add a pattern: add a <!-- ${RITE_MARKER_RECURRING_PATTERN} --> block to the"
+    echo "     closed issue or PR body and run \`rite --refresh-encountered-issues\`."
     echo "     Last refreshed: $today -->"
     echo ""
     echo "# Encountered Issues — Recurring Bug Pattern Catalog"
     echo ""
-    echo "> **Auto-generated. Do not hand-edit.** To add a pattern, label the"
-    echo "> originating issue \`recurring-pattern\` and run \`rite --refresh-encountered-issues\`."
+    echo "> **Auto-generated. Do not hand-edit.** To add a pattern, add a"
+    echo "> \`<!-- ${RITE_MARKER_RECURRING_PATTERN} -->\` block to the closed issue or PR body"
+    echo "> and run \`rite --refresh-encountered-issues\`."
     echo ""
     echo "This catalog lists bug classes that recurred 2+ times during Sharkrite"
     echo "dogfooding. Its purpose: let future Claude sessions recognize a familiar"
@@ -95,8 +311,9 @@ render_encountered_issues() {
     if [ "$count" -eq 0 ]; then
       echo "---"
       echo ""
-      echo "_No recurring patterns recorded yet. Label closed issues with_"
-      echo "_\`recurring-pattern\` and re-run \`rite --refresh-encountered-issues\`._"
+      echo "_No recurring patterns recorded yet. Add a_"
+      echo "_\`<!-- ${RITE_MARKER_RECURRING_PATTERN} -->\` block to a closed issue or PR body_"
+      echo "_and re-run \`rite --refresh-encountered-issues\`._"
     else
       echo "## Table of Contents"
       echo ""
@@ -155,8 +372,8 @@ render_encountered_issues() {
         [ -n "$issue_closed_at" ] && echo "**Closed:** ${issue_closed_at}" && echo ""
 
         # ── Body sections ────────────────────────────────────────────────────
-        # Extract the **Description**: field from the standard Sharkrite issue
-        # template, or fall back to structured ## sections, or a raw excerpt.
+        # Priority 0: extract the in-body marker block content (new mechanism).
+        # Falls through to legacy strategies for pre-marker issues.
         _render_body_sections "$issue_body"
 
         echo "---"
@@ -175,6 +392,7 @@ render_encountered_issues() {
 #
 # Extracts meaningful content from an issue body in priority order:
 #
+#   0. <!-- sharkrite-recurring-pattern --> block (new in-body marker)
 #   1. **Description**: field (standard Sharkrite issue template — after the
 #      "---" divider that follows the Bug Confirmation block)
 #   2. Canonical ## headings: Description, Root Cause, Variants, Mitigation,
@@ -190,6 +408,23 @@ _render_body_sections() {
     echo "_No description._"
     echo ""
     return
+  fi
+
+  # ── Strategy 0: In-body marker block (new mechanism) ─────────────────────
+  # When the body carries a <!-- sharkrite-recurring-pattern --> block,
+  # render its content verbatim (it already contains structured fields like
+  # **Pattern:**, **Root Cause:**, **Mitigation:**).
+  local marker_block
+  marker_block=$(_extract_marker_block "$body")
+  if [ -n "$marker_block" ]; then
+    # Strip leading/trailing blank lines (portable awk — no BSD-sed \n quirks).
+    # Inlined onto one line so Rule 8's next-line lookahead picks up `|| true`.
+    marker_block=$(echo "$marker_block" | awk '/[^[:space:]]/ { found=1 } found { lines[n++] = $0 } END { while (n > 0 && lines[n-1] ~ /^[[:space:]]*$/) n--; for (i = 0; i < n; i++) print lines[i] }' || true)
+    if [ -n "$marker_block" ]; then
+      echo "$marker_block"
+      echo ""
+      return
+    fi
   fi
 
   # ── Strategy 1: Extract **Description**: from standard Sharkrite template ──

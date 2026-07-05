@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/encountered-issues-renderer.sh
+# sharkrite-test-covers: lib/utils/encountered-issues-renderer.sh, lib/utils/markers.sh
 # Regression test for: encountered-issues-renderer.sh
 #
 # Tests that the renderer:
@@ -10,6 +10,10 @@
 #   5. Handles the empty-issues case (no labeled issues) gracefully
 #   6. Extracts **Description**: text from the standard Sharkrite issue template
 #   7. bin/rite --refresh-encountered-issues flag dispatches to the renderer
+#   8. Harvests patterns from <!-- sharkrite-recurring-pattern --> body marker blocks
+#   9. Format-anchor guard: a body that only documents the marker string does NOT match
+#  10. Transition: marker and legacy label results are unioned and deduplicated
+#  11. PR bodies with the marker block are ingested as entries
 
 load '../helpers/setup.bash'
 
@@ -28,15 +32,19 @@ setup() {
   MOCK_BIN="$RITE_TEST_TMPDIR/mock-bin"
   mkdir -p "$MOCK_BIN"
 
-  # The stub returns 3 issues when called with the recurring-pattern label query.
+  # The stub handles three query types:
+  #   1. issue list --label recurring-pattern  → 3 legacy-labeled issues (no body marker)
+  #   2. issue list --search "sharkrite-recurring-pattern in:body" → empty (default setup)
+  #   3. pr list   --search "sharkrite-recurring-pattern in:body" → empty (default setup)
   # Issues are returned out of order to verify sort-by-number behaviour.
   cat > "$MOCK_BIN/gh" <<'MOCK_EOF'
 #!/bin/bash
 # Mock gh: returns preset JSON for the issue list query; no-ops for anything else.
 
-# Detect the issue list query by looking for --label in the args
 _args="$*"
-if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q "recurring-pattern"; then
+
+# Legacy label query: issue list --label recurring-pattern
+if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q -- "--label"; then
   cat <<'JSON'
 [
   {
@@ -69,6 +77,17 @@ if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q "recurring-pa
   }
 ]
 JSON
+  exit 0
+fi
+
+# Marker-search queries (issue list --search / pr list --search): return empty by default.
+# Individual tests override this mock to return marker-carrying bodies.
+if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q -- "--search"; then
+  echo "[]"
+  exit 0
+fi
+if echo "$_args" | grep -q "pr list" && echo "$_args" | grep -q -- "--search"; then
+  echo "[]"
   exit 0
 fi
 
@@ -329,4 +348,210 @@ EMPTY_MOCK
   "
   [ "$status" -eq 0 ]
   [[ "$output" == *"double-source-ok"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: _extract_marker_block extracts content from a well-formed body
+# (unit test for the format-anchored block extractor)
+# ---------------------------------------------------------------------------
+
+@test "_extract_marker_block returns block content from a body with the marker" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    export PATH='$MOCK_BIN:$PATH'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/markers.sh'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/encountered-issues-renderer.sh'
+    set +u; set +o pipefail
+    BODY=\$(printf '%s\n' \
+      'Some prose before.' \
+      '<!-- sharkrite-recurring-pattern -->' \
+      '**Pattern:** Unanchored grep' \
+      '**Root Cause:** grep -q without format anchor matches documentation examples' \
+      '**Mitigation:** Use grep -qE with digit anchor ([0-9]+)' \
+      '<!-- /sharkrite-recurring-pattern -->' \
+      'Some prose after.')
+    _extract_marker_block \"\$BODY\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"**Pattern:** Unanchored grep"* ]]
+  [[ "$output" == *"**Root Cause:**"* ]]
+  [[ "$output" == *"**Mitigation:**"* ]]
+  # Prose outside the block must not appear
+  [[ "$output" != *"Some prose before"* ]]
+  [[ "$output" != *"Some prose after"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: _extract_marker_block returns empty for a body with bare marker text
+# (format-anchor guard — bare-prefix-guard rule)
+# ---------------------------------------------------------------------------
+
+@test "_extract_marker_block returns empty for body that only documents the marker string" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    export PATH='$MOCK_BIN:$PATH'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/markers.sh'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/encountered-issues-renderer.sh'
+    set +u; set +o pipefail
+    # Body documents the marker in a code span — not a real HTML comment block
+    BODY='To add a pattern use sharkrite-recurring-pattern in your issue body.'
+    result=\$(_extract_marker_block \"\$BODY\")
+    if [ -n \"\$result\" ]; then
+      echo \"FAIL: extracted non-empty block from documentation-only body: \$result\"
+      exit 1
+    fi
+    echo 'empty-ok'
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"empty-ok"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: _extract_marker_block rejects marker inside a fenced code block
+# (fence guard — prevents code examples from being ingested as real entries)
+# ---------------------------------------------------------------------------
+
+@test "_extract_marker_block rejects marker inside fenced code block" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    export PATH='$MOCK_BIN:$PATH'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/markers.sh'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/encountered-issues-renderer.sh'
+    set +u; set +o pipefail
+    # Marker inside a fenced code block — must not be extracted.
+    # Build with printf so bats preprocessor does not rewrite @test-like lines.
+    # FENCE var holds the triple-backtick string to avoid literal backtick issues.
+    FENCE='```'
+    BODY=\$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+      'Example format:' \
+      "\$FENCE" \
+      '<!-- sharkrite-recurring-pattern -->' \
+      '**Pattern:** Example only' \
+      '<!-- /sharkrite-recurring-pattern -->' \
+      "\$FENCE")
+    result=\$(_extract_marker_block \"\$BODY\")
+    if [ -n \"\$result\" ]; then
+      echo \"FAIL: extracted block from inside fenced code: \$result\"
+      exit 1
+    fi
+    echo 'fence-guard-ok'
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fence-guard-ok"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: renderer ingests an issue whose body carries the marker block
+# (primary harvest path — marker takes priority over legacy label)
+# ---------------------------------------------------------------------------
+
+@test "renderer ingests issue with body marker block and renders its content" {
+  # Override mock gh to return one issue with a real marker block in its body
+  # for the --search query path; nothing for the legacy --label path.
+  # Body uses JSON \n escapes so jq -r produces real newlines on extraction.
+  cat > "$MOCK_BIN/gh" <<'MARKER_MOCK'
+#!/bin/bash
+_args="$*"
+# Marker-search query: return one issue with a real recurring-pattern block
+if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q -- "--search"; then
+  cat <<'JSON'
+[{"number":55,"title":"BSD date -d crashes on macOS","body":"Some prose.\n<!-- sharkrite-recurring-pattern -->\n**Pattern:** BSD date -d not portable\n**Root Cause:** GNU date -d parses date strings; BSD date -d does not exist\n**Mitigation:** Use date -jf on macOS with detection guard\n<!-- /sharkrite-recurring-pattern -->\nMore prose.","closedAt":"2026-07-01T12:00:00Z","closedByPullRequestsReferences":[{"number":99}]}]
+JSON
+  exit 0
+fi
+# Legacy label query and pr list: return empty for this test
+echo "[]"
+exit 0
+MARKER_MOCK
+  chmod +x "$MOCK_BIN/gh"
+
+  _run_renderer
+
+  [ "$status" -eq 0 ]
+  [ -f "$OUTPUT_FILE" ]
+
+  # The marker block content must appear in the output
+  run grep -q "BSD date -d not portable" "$OUTPUT_FILE"
+  [ "$status" -eq 0 ]
+
+  run grep -q "GNU date -d parses" "$OUTPUT_FILE"
+  [ "$status" -eq 0 ]
+
+  # The issue title must appear
+  run grep -q "BSD date -d crashes on macOS" "$OUTPUT_FILE"
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 19: transition — marker-path and legacy-label-path results are unioned
+# and deduplicated (same issue number appears in both sources → one entry)
+# ---------------------------------------------------------------------------
+
+@test "transition: marker-path and legacy-label-path results deduplicate by number" {
+  # Override mock: marker search returns issue #7 with a body marker;
+  # legacy label query returns issues #7 and #42 (without a body marker).
+  # After dedup, #7 appears once (from marker path, higher priority).
+  cat > "$MOCK_BIN/gh" <<'DEDUP_MOCK'
+#!/bin/bash
+_args="$*"
+# Marker-search issues: issue #7 WITH body marker
+if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q -- "--search"; then
+  cat <<'JSON'
+[{"number":7,"title":"local outside function","body":"<!-- sharkrite-recurring-pattern -->\n**Pattern:** local outside function\n**Mitigation:** LOCAL_OUTSIDE_FUNCTION lint rule\n<!-- /sharkrite-recurring-pattern -->","closedAt":"2026-05-10T08:00:00Z","closedByPullRequestsReferences":[{"number":9}]}]
+JSON
+  exit 0
+fi
+# Legacy label: issues #7 and #42 (without body marker)
+if echo "$_args" | grep -q "issue list" && echo "$_args" | grep -q -- "--label"; then
+  cat <<'JSON'
+[{"number":7,"title":"local outside function","body":"No marker here.","closedAt":"2026-05-10T08:00:00Z","closedByPullRequestsReferences":[{"number":9}]},{"number":42,"title":"Batch reporter","body":"No marker.","closedAt":"2026-05-15T10:00:00Z","closedByPullRequestsReferences":[{"number":88}]}]
+JSON
+  exit 0
+fi
+# PR search: empty
+echo "[]"
+exit 0
+DEDUP_MOCK
+  chmod +x "$MOCK_BIN/gh"
+
+  _run_renderer
+
+  [ "$status" -eq 0 ]
+  [ -f "$OUTPUT_FILE" ]
+
+  # Both issues must appear (union)
+  run grep -q "local outside function" "$OUTPUT_FILE"
+  [ "$status" -eq 0 ]
+  run grep -q "Batch reporter" "$OUTPUT_FILE"
+  [ "$status" -eq 0 ]
+
+  # Issue #7 must appear exactly once (dedup)
+  run bash -c "grep -c '^\*\*Issue:\*\* \[#7\]' '$OUTPUT_FILE' || true"
+  [ "$output" -eq 1 ]
+
+  # The marker block content (from the primary path) must be rendered for #7
+  run grep -q "LOCAL_OUTSIDE_FUNCTION lint rule" "$OUTPUT_FILE"
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 20: markers.sh exports RITE_MARKER_RECURRING_PATTERN
+# ---------------------------------------------------------------------------
+
+@test "markers.sh defines RITE_MARKER_RECURRING_PATTERN constant" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export PATH='$MOCK_BIN:$PATH'
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_REPO_ROOT/lib/utils/markers.sh'
+    echo \"\$RITE_MARKER_RECURRING_PATTERN\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "sharkrite-recurring-pattern" ]
 }
