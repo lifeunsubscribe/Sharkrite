@@ -293,6 +293,10 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/stub-overwrite-bad.bats"
   cd "$TEST_REPO"
+  # Scope Rules 34/35 to the fixture: the harness exports RITE_LINT_FILES
+  # (colors.sh, for speed), and 34/35 intersect it with find output — the
+  # fixture must be in the set or the rule scans nothing (the 848 gate red).
+  export RITE_LINT_FILES="${RITE_LINT_FILES}"$'\n'"tests/regression/stub-overwrite-bad.bats"
   run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_STUB_OVERWRITE"
   echo "$output" | grep -q "stub-overwrite-bad.bats:4 - BATS_STUB_OVERWRITE"
@@ -406,6 +410,10 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/stub-overwrite-direct.bats"
   cd "$TEST_REPO"
+  # Scope Rules 34/35 to the fixture: the harness exports RITE_LINT_FILES
+  # (colors.sh, for speed), and 34/35 intersect it with find output — the
+  # fixture must be in the set or the rule scans nothing (the 848 gate red).
+  export RITE_LINT_FILES="${RITE_LINT_FILES}"$'\n'"tests/regression/stub-overwrite-direct.bats"
   run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_STUB_OVERWRITE"
   echo "$output" | grep -q "stub-overwrite-direct.bats:4 - BATS_STUB_OVERWRITE"
@@ -429,6 +437,10 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/file-scope-env-bad.bats"
   cd "$TEST_REPO"
+  # Scope Rules 34/35 to the fixture: the harness exports RITE_LINT_FILES
+  # (colors.sh, for speed), and 34/35 intersect it with find output — the
+  # fixture must be in the set or the rule scans nothing (the 848 gate red).
+  export RITE_LINT_FILES="${RITE_LINT_FILES}"$'\n'"tests/regression/file-scope-env-bad.bats"
   run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
   echo "$output" | grep -q "file-scope-env-bad.bats:3 - BATS_FILE_SCOPE_ENV_READ"
@@ -444,6 +456,10 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/file-scope-env-root.bats"
   cd "$TEST_REPO"
+  # Scope Rules 34/35 to the fixture: the harness exports RITE_LINT_FILES
+  # (colors.sh, for speed), and 34/35 intersect it with find output — the
+  # fixture must be in the set or the rule scans nothing (the 848 gate red).
+  export RITE_LINT_FILES="${RITE_LINT_FILES}"$'\n'"tests/regression/file-scope-env-root.bats"
   run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
   echo "$output" | grep -q "file-scope-env-root.bats:3 - BATS_FILE_SCOPE_ENV_READ"

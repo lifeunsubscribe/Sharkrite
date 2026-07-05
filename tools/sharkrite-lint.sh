@@ -47,6 +47,22 @@ print_violation() {
   VIOLATIONS=$((VIOLATIONS + 1))
 }
 
+# Normalize RITE_LINT_FILES entries to CWD-relative form. The targeted gate
+# passes git-diff-relative paths, but callers (bats harnesses, operators) may
+# pass absolute paths — while the bats-file intersections below compare
+# exact-line (grep -Fx) against `find tests` output, which is CWD-relative.
+# Without this, an absolute .bats entry silently intersects to EMPTY and
+# Rules 34/35 scan nothing (the live 848 failure: rules inert under the test
+# harness; early-exit count always 0 for absolute entries).
+_normalize_lint_files() {
+  [ -z "${RITE_LINT_FILES:-}" ] && return 0
+  local _p
+  while IFS= read -r _p; do
+    [ -z "$_p" ] && continue
+    printf '%s\n' "${_p#"$PWD"/}"
+  done <<< "$RITE_LINT_FILES"
+}
+
 # Print warning (informational, doesn't fail build)
 print_warning() {
   local file=$1
@@ -127,7 +143,7 @@ if [ -n "${RITE_LINT_FILES:-}" ]; then
   _lint_bats_count=0
   _lint_bats_all_tmp=$(mktemp)
   find tests -name '*.bats' -type f 2>/dev/null > "$_lint_bats_all_tmp" || true
-  _lint_bats_count=$(printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' | grep -cFxf "$_lint_bats_all_tmp" 2>/dev/null || true)
+  _lint_bats_count=$(_normalize_lint_files | grep '\.bats$' | grep -cFxf "$_lint_bats_all_tmp" 2>/dev/null || true)
   rm -f "$_lint_bats_all_tmp"
   if [ "${#SHELL_FILES[@]}" -eq 0 ] && [ "${_lint_bats_count:-0}" -eq 0 ]; then
     echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
@@ -1907,7 +1923,7 @@ _bats_all_tmp=$(mktemp)
 find tests -name '*.bats' -type f 2>/dev/null > "$_bats_all_tmp" || true
 if [ -n "${RITE_LINT_FILES:-}" ]; then
   _bats_lint_files=$(mktemp)
-  printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' > "$_bats_lint_files" 2>/dev/null || true
+  _normalize_lint_files | grep '\.bats$' > "$_bats_lint_files" 2>/dev/null || true
   _bats_scan_list=$(grep -Fxf "$_bats_lint_files" "$_bats_all_tmp" 2>/dev/null || true)
   rm -f "$_bats_lint_files"
 else
