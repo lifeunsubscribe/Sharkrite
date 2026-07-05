@@ -119,23 +119,65 @@ render_encountered_issues() {
   # locally by _body_has_recurring_marker() after fetch.
   print_info "Fetching closed issues/PRs with body marker '${RITE_MARKER_RECURRING_PATTERN}'..." >&2
 
+  # GitHub strips HTML comments before indexing, so the "in:body" search qualifier
+  # will return zero results for markers that exist ONLY inside <!-- --> tags.
+  # Strategy: try the server-side search first (fast, handles non-HTML-comment
+  # markers), then always backstop with a bounded recently-closed fetch and a
+  # local _body_has_recurring_marker scan to catch HTML-comment-only markers.
+  # Results from both paths are merged and deduplicated by number.
+
   local marker_issues_json marker_prs_json
-  # Issues: search by body text (server-side pre-filter) + local format-anchor validation
-  marker_issues_json=$(gh_safe issue list \
+  # Issues: server-side pre-filter attempt (may return empty due to HTML-comment stripping)
+  local _server_issues_json
+  _server_issues_json=$(gh_safe issue list \
     --state closed \
     --search "${RITE_MARKER_RECURRING_PATTERN} in:body" \
     --json number,title,body,closedAt,closedByPullRequestsReferences \
     --limit 200 2>/dev/null || true)
+  _server_issues_json="${_server_issues_json:-[]}"
+
+  # Issues: bounded recently-closed fetch for local scan backstop.
+  # GitHub strips HTML comments from the indexed body, so "in:body" misses
+  # markers that live inside <!-- --> tags.  Fetch the 300 most recent closed
+  # issues and validate locally; merge with the server-side results so neither
+  # path is the only line of defence.
+  local _recent_issues_json
+  _recent_issues_json=$(gh_safe issue list \
+    --state closed \
+    --json number,title,body,closedAt,closedByPullRequestsReferences \
+    --limit 300 2>/dev/null || true)
+  _recent_issues_json="${_recent_issues_json:-[]}"
+
+  # Merge server + recent; unique_by(.number) keeps the first occurrence (server result
+  # is first, so its richer data wins when both paths find the same issue).
+  marker_issues_json=$(jq -n \
+    --argjson srv "$_server_issues_json" \
+    --argjson rec "$_recent_issues_json" \
+    '($srv + $rec) | unique_by(.number)' 2>/dev/null || echo "[]")
   marker_issues_json="${marker_issues_json:-[]}"
 
-  # PRs: same body-text search; a bug fix may put the marker in the PR body
-  # rather than the originating issue.  Fetch PR number + body; we synthesize
-  # an issue-like record from the PR for the dedup/render pipeline.
-  marker_prs_json=$(gh_safe pr list \
+  # PRs: same two-path approach.
+  local _server_prs_json
+  _server_prs_json=$(gh_safe pr list \
     --state closed \
     --search "${RITE_MARKER_RECURRING_PATTERN} in:body" \
     --json number,title,body,closedAt \
     --limit 200 2>/dev/null || true)
+  _server_prs_json="${_server_prs_json:-[]}"
+
+  # PRs: bounded recently-closed fetch backstop.
+  local _recent_prs_json
+  _recent_prs_json=$(gh_safe pr list \
+    --state closed \
+    --json number,title,body,closedAt \
+    --limit 300 2>/dev/null || true)
+  _recent_prs_json="${_recent_prs_json:-[]}"
+
+  # Merge server + recent PR results; server wins on duplicates.
+  marker_prs_json=$(jq -n \
+    --argjson srv "$_server_prs_json" \
+    --argjson rec "$_recent_prs_json" \
+    '($srv + $rec) | unique_by(.number)' 2>/dev/null || echo "[]")
   marker_prs_json="${marker_prs_json:-[]}"
 
   # ── Legacy path: label harvest (transition period) ────────────────────────
@@ -161,7 +203,12 @@ render_encountered_issues() {
   # collect passing indices, then rebuild a filtered JSON array with jq.
   local _marker_count _marker_count_raw
   _marker_count_raw=$(echo "$marker_issues_json" | jq 'length' 2>/dev/null || echo "0")
-  _marker_count="${_marker_count_raw:-0}"
+  # Digits-only guard: jq may return empty/null if the input was malformed;
+  # a non-integer would abort the while loop under set -e.  Default to 0.
+  case "${_marker_count_raw:-}" in
+    ''|*[!0-9]*) _marker_count=0 ;;
+    *) _marker_count="$_marker_count_raw" ;;
+  esac
 
   # _validated_indices accumulates as "0,2,5" — a comma-separated list of
   # passing array indices. jq's .[0,2,5] slice syntax selects exactly those
@@ -188,7 +235,11 @@ render_encountered_issues() {
   # Validate PR marker bodies similarly; synthesize issue-like shape (no closedByPullRequestsReferences)
   local _pr_count _pr_count_raw
   _pr_count_raw=$(echo "$marker_prs_json" | jq 'length' 2>/dev/null || echo "0")
-  _pr_count="${_pr_count_raw:-0}"
+  # Digits-only guard: same rationale as _marker_count above.
+  case "${_pr_count_raw:-}" in
+    ''|*[!0-9]*) _pr_count=0 ;;
+    *) _pr_count="$_pr_count_raw" ;;
+  esac
 
   local _pr_validated_indices=""
   local _pi=0
