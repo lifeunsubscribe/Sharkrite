@@ -1988,19 +1988,36 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Done Definition: severity-appropriate
     _done_def=$(_resolve_done_def "${_f_severity}")
 
-    # Time Estimate from Fix Effort metadata
+    # Time Estimate from Fix Effort metadata; severity-based fallback when
+    # Fix Effort is absent so the runbook-required section is never blank.
+    # High-priority buffer (+50%) applied by the runbook's §3 guidance.
     _time_estimate=""
     case "${_f_fix_effort:-}" in
       *\>1hr*) _time_estimate="2hr" ;;
       *\<1hr*) _time_estimate="1hr" ;;
       *\<10min*) _time_estimate="30min" ;;
+      *)
+        case "${_f_severity}" in
+          CRITICAL) _time_estimate="2hr" ;;
+          HIGH)     _time_estimate="1hr" ;;
+          MEDIUM)   _time_estimate="45min" ;;
+          *)        _time_estimate="30min" ;;
+        esac
+        ;;
     esac
 
     # --- Build issue body ---
     SOURCE_ISSUE_MARKER=""
     [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
 
+    # Section order follows docs/issue-runbook.md:
+    #   Time Estimate (§3) → Description (§4) → Claude Context (§5) →
+    #   Acceptance Criteria (§6) → Verification Commands (§7) →
+    #   Done Definition (§8) → Scope Boundary (§9) → Dependencies (§10)
     FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+## Time Estimate
+${_time_estimate}
+
 ## Description
 
 ${_f_reasoning:-${_clean_title}}
@@ -2017,8 +2034,13 @@ $([ -n "$_f_context" ] && echo "
 **Context:** ${_f_context}")
 
 ## Claude Context
-Files to read before starting:
+Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+Files to Modify:
+${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+Related Issues: #${ISSUE_NUMBER:-${PR_NUMBER}}
 
 ## Acceptance Criteria
 ${_acceptance_criterion}: see Description above for details
@@ -2037,9 +2059,6 @@ ${SCOPE_DO_BULLETS}
 
 ## Dependencies
 After: #${ISSUE_NUMBER:-${PR_NUMBER}}
-$([ -n "${_time_estimate}" ] && echo "
-## Time Estimate
-${_time_estimate}" || echo "")
 
 ---
 

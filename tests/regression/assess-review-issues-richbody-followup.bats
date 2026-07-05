@@ -17,12 +17,16 @@
 #   --body-file passed to `issue create`) and asserts the new body shape.
 #
 # Tests:
-#   1. Body contains all runbook section headers + parent-PR marker
+#   1. Body contains all runbook section headers + parent-PR marker (incl. Time Estimate)
 #   2. HIGH finding (with Location) → concrete `sed -n` verification command
 #   3. MEDIUM finding (no Location) → `# TODO` verification fallback
 #   4. Two distinct findings → two issue-create calls with distinct titles
 #   5. No cross-finding Location leak (MEDIUM body lacks the HIGH Location)
 #   6. Single-quote Location → `# TODO:` prose fallback (sanitization regression)
+#   7. lock-dir isolation: sentinels land under test tmpdir
+#   8. Time Estimate appears before Description (runbook §3 ordering) — issue #909
+#   9. "Files to read before starting:" old label absent; "Files to Read:" present — issue #909
+#  10. Fix Effort field drives Time Estimate when present — issue #909
 
 setup() {
   # Mirror empty-assessment-fails-loud.bats: source config, mock claude + gh on PATH.
@@ -204,6 +208,7 @@ _nth_body() {
   [ -n "$_body" ] || { echo "FAIL: no first issue body captured"; cat "$CREATE_CAPTURE"; false; }
 
   for _section in \
+    '## Time Estimate' \
     '## Description' \
     '## Claude Context' \
     '## Acceptance Criteria' \
@@ -418,4 +423,110 @@ _medium_finding_body() {
     fi
   done
   return 0
+}
+
+# ─── Test 8: Time Estimate appears before Description (runbook §3 ordering) ──
+
+@test "richbody: ## Time Estimate section appears before ## Description in each body" {
+  # Issue #909: Time Estimate was missing from assess-review-issues.sh follow-ups
+  # and was placed after Dependencies in assess-and-resolve.sh.
+  # Runbook §3: Time Estimate is the third required section (before Description §4).
+  # Verify the section ordering in the actual generated issue body.
+  _run_assess
+
+  local _body _te_pos _desc_pos
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no first issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  # Extract line numbers of each marker in the body.
+  _te_pos=$(echo "$_body" | grep -n '## Time Estimate' | head -1 | cut -d: -f1 || true)
+  _desc_pos=$(echo "$_body" | grep -n '## Description' | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_te_pos" ] || {
+    echo "FAIL: '## Time Estimate' not found in generated body"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+  [ -n "$_desc_pos" ] || {
+    echo "FAIL: '## Description' not found in generated body"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+  [ "$_te_pos" -lt "$_desc_pos" ] || {
+    echo "FAIL: '## Time Estimate' (line $_te_pos) must appear before '## Description' (line $_desc_pos)"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+}
+
+# ─── Test 9: Old Claude Context label absent; runbook §5 label present ────────
+
+@test "richbody: 'Files to Read:' label used in Claude Context (not old 'Files to read before starting:')" {
+  # Issue #909: assess-review-issues.sh used "Files to read before starting:" in
+  # the Claude Context section.  Runbook §5 specifies "Files to Read:".
+  _run_assess
+
+  local _body
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no first issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  # Old label must be absent.
+  echo "$_body" | grep -qF "Files to read before starting:" && {
+    echo "FAIL: body still contains old 'Files to read before starting:' label"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+
+  # New runbook §5 label must be present.
+  echo "$_body" | grep -qF "Files to Read:" || {
+    echo "FAIL: body missing 'Files to Read:' (runbook §5 Claude Context label)"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+  return 0
+}
+
+# ─── Test 10: Fix Effort field drives Time Estimate when present ──────────────
+
+@test "richbody: Fix Effort '>1hr' drives Time Estimate to '2hr'" {
+  # Issue #909: assess-review-issues.sh didn't extract Fix Effort for ACTIONABLE_LATER
+  # items. Verify that when a finding carries **Fix Effort: >1hr**, the body
+  # contains '2hr' in the ## Time Estimate section.
+  cat > "$MOCK_PROVIDER_DIR/claude" <<'MOCK_EOF'
+#!/bin/bash
+cat <<'ASSESSMENT_EOF'
+### Refactor auth module - ACTIONABLE_LATER
+
+**Severity:** HIGH
+**Category:** CodeQuality
+**Reasoning:** The auth module is deeply coupled and hard to test.
+**Context:** Would require touching multiple files.
+**Fix Effort:** >1hr
+**Defer Reason:** Large refactor, separate PR needed.
+ASSESSMENT_EOF
+exit 0
+MOCK_EOF
+  chmod +x "$MOCK_PROVIDER_DIR/claude"
+
+  _run_assess
+
+  local _body
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  # The Time Estimate section must contain '2hr' driven by Fix Effort >1hr.
+  local _te_content
+  _te_content=$(echo "$_body" | awk '/## Time Estimate/{found=1;next} found && /^##/{exit} found{print}' || true)
+  echo "$_te_content" | grep -qF "2hr" || {
+    echo "FAIL: Time Estimate section should contain '2hr' for Fix Effort '>1hr'"
+    echo "--- Time Estimate content: '$_te_content' ---"
+    echo "--- full body ---"
+    echo "$_body"
+    false
+  }
 }

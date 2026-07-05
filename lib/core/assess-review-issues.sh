@@ -903,6 +903,8 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_DEFER=""
         # Reset Location so a finding without one can't inherit the prior finding's.
         ITEM_LOCATION=""
+        # Reset Fix Effort so a finding without one can't inherit the prior finding's.
+        ITEM_FIX_EFFORT=""
         ;;
       \*\*Severity:\*\**)
         ITEM_SEVERITY="${line#\*\*Severity:\*\* }"
@@ -921,6 +923,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ;;
       \*\*Defer\ Reason:\*\**)
         ITEM_DEFER="${line#\*\*Defer Reason:\*\* }"
+        ;;
+      \*\*Fix\ Effort:\*\**)
+        ITEM_FIX_EFFORT="${line#\*\*Fix Effort:\*\* }"
         ;;
       ---END---)
         # Severity gate: LOW findings are logged but do not justify issue overhead.
@@ -1126,8 +1131,34 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # Done Definition: severity-appropriate (reused function from assess-and-resolve.sh)
           _done_def=$(_resolve_done_def "${ITEM_SEVERITY:-MEDIUM}")
 
-          # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh:1879-1922) ---
+          # Time Estimate: derive from Fix Effort metadata when available;
+          # fall back to a severity-based default (mirrors assess-and-resolve.sh:1992-1997).
+          _time_estimate=""
+          case "${ITEM_FIX_EFFORT:-}" in
+            *\>1hr*) _time_estimate="2hr" ;;
+            *\<1hr*) _time_estimate="1hr" ;;
+            *\<10min*) _time_estimate="30min" ;;
+            *)
+              # No Fix Effort field — derive from severity so the runbook-required
+              # section is never absent.  High-priority buffer (+50%) per runbook §3.
+              case "${ITEM_SEVERITY:-MEDIUM}" in
+                CRITICAL) _time_estimate="2hr" ;;
+                HIGH)     _time_estimate="1hr" ;;
+                MEDIUM)   _time_estimate="45min" ;;
+                *)        _time_estimate="30min" ;;
+              esac
+              ;;
+          esac
+
+          # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh body builder) ---
+          # Section order follows docs/issue-runbook.md:
+          #   Time Estimate (§3) → Description (§4) → Claude Context (§5) →
+          #   Acceptance Criteria (§6) → Verification Commands (§7) →
+          #   Done Definition (§8) → Scope Boundary (§9) → Dependencies (§10)
           ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+## Time Estimate
+${_time_estimate}
+
 ## Description
 
 ${ITEM_REASONING:-$ITEM_TITLE}
@@ -1144,8 +1175,13 @@ $([ -n "${ITEM_CONTEXT:-}" ] && echo "
 **Context:** ${ITEM_CONTEXT:-}" || echo "")
 
 ## Claude Context
-Files to read before starting:
+Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+Files to Modify:
+${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+Related Issues: #${RITE_ISSUE_NUMBER:-${PR_NUMBER}}
 
 ## Acceptance Criteria
 ${_acceptance_criterion}
@@ -1247,6 +1283,7 @@ _Parent PR: #${PR_NUMBER}_"
     in_later && /^\*\*Context:\*\*/ { print $0 }
     in_later && /^\*\*Location:\*\*/ { print $0 }
     in_later && /^\*\*Defer Reason:\*\*/ { print $0 }
+    in_later && /^\*\*Fix Effort:\*\*/ { print $0 }
     END { if (in_later) print "---END---" }
   ')
 

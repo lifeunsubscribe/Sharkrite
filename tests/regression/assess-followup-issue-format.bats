@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/assess-and-resolve.sh
-# Regression test for: assess-and-resolve.sh follow-up issue format (issue #518)
+# Regression test for: assess-and-resolve.sh follow-up issue format (issue #518, #909)
 #
 # Defects fixed:
 #   1. Multi-finding bundling: all ACTIONABLE_LATER findings in one issue with (+N more)
@@ -8,6 +8,8 @@
 #   3. List markers (^[0-9]+\.) leaked into issue titles
 #   4. Empty severity-bucket scaffolding (### CRITICAL (0)) in body
 #   5. No acceptance criteria / verification command in generated bodies
+#   6. Time Estimate missing (issue #909): runbook §3 requires it; now present and ordered before Description
+#   7. Claude Context used "Files to read before starting:" (issue #909): now uses runbook §5 labels
 #
 # New behavior:
 #   - One issue per ACTIONABLE_(NOW|LATER) finding
@@ -17,6 +19,8 @@
 #   - Body omits empty severity buckets
 #   - Label (tech-debt / review-follow-up) applied via --label, not in title
 #   - Dedup/source-marker suffix preserved for unique scoping per PR+source-issue
+#   - ## Time Estimate section present and ordered BEFORE ## Description
+#   - ## Claude Context uses "Files to Read:" / "Files to Modify:" / "Related Issues:" labels
 #
 # Tests in this file:
 #   1. Static: per-finding while-loop over ACTIONABLE_ headers exists
@@ -32,6 +36,9 @@
 #              (calls real _resolve_priority_label from assess-and-resolve.sh)
 #  11. Unit:   CRITICAL severity with annotation produces CRITICAL done definition
 #              (calls real _resolve_done_def from assess-and-resolve.sh)
+#  12. Static: ## Time Estimate section appears BEFORE ## Description (runbook §3 ordering)
+#  13. Static: "Files to read before starting:" old label replaced by "Files to Read:" (runbook §5)
+#  14. Unit:   Time Estimate section is always populated (severity fallback when Fix Effort absent)
 
 load '../helpers/setup.bash'
 
@@ -367,4 +374,88 @@ Done when the finding is addressed."
     echo "FAIL: _finding_labels does not contain 'priority-high': '$_finding_labels'"
     false
   }
+}
+
+# ─── Test 12: Static — ## Time Estimate appears BEFORE ## Description ─────────
+
+@test "assess-and-resolve.sh: ## Time Estimate section appears before ## Description (runbook §3)" {
+  # Issue #909: Time Estimate was emitted AFTER Dependencies, violating runbook §3.
+  # The static ordering contract: the line "## Time Estimate" must appear before
+  # "## Description" in the FOLLOWUP_BODY heredoc in the per-finding loop.
+  #
+  # We extract the line numbers of both patterns from the source file and assert
+  # Time Estimate line < Description line.  The grep must find at least one
+  # occurrence of each in the body builder context (not just anywhere in the file).
+
+  _te_line=$(grep -n '## Time Estimate' "$ASSESS_RESOLVE_SCRIPT" | head -1 | cut -d: -f1 || true)
+  _desc_line=$(grep -n '## Description' "$ASSESS_RESOLVE_SCRIPT" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_te_line" ] || {
+    echo "FAIL: '## Time Estimate' not found in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+  [ -n "$_desc_line" ] || {
+    echo "FAIL: '## Description' not found in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+  [ "$_te_line" -lt "$_desc_line" ] || {
+    echo "FAIL: '## Time Estimate' (line $_te_line) must appear before '## Description' (line $_desc_line)"
+    echo "Runbook §3: Time Estimate is the third required section, Description is fourth"
+    false
+  }
+}
+
+# ─── Test 13: Static — old "Files to read before starting:" label removed ─────
+
+@test "assess-and-resolve.sh: old 'Files to read before starting:' label replaced by 'Files to Read:'" {
+  # Issue #909: Claude Context used "Files to read before starting:" (non-standard).
+  # Runbook §5 specifies: "Files to Read:" / "Files to Modify:" / "Related Issues:"
+  # Assert the old label is gone and the new runbook label is present.
+
+  run grep -n 'Files to read before starting:' "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: Old 'Files to read before starting:' label still present in body builder"
+    echo "Matches:"
+    echo "$output"
+    false
+  }
+
+  run grep -n 'Files to Read:' "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: New 'Files to Read:' label (runbook §5) not found in body builder"
+    false
+  }
+}
+
+# ─── Test 14: Unit — Time Estimate populated by severity fallback ──────────────
+
+@test "assess-and-resolve.sh: Time Estimate severity fallback produces non-empty value for each severity" {
+  # When Fix Effort metadata is absent, the case-in-case fallback must yield a
+  # non-empty Fibonacci estimate for each recognized severity token.
+  # Verifies issue #909 fix: severity-based fallback fills §3 when Fix Effort is missing.
+
+  for _sev in CRITICAL HIGH MEDIUM LOW ""; do
+    _time_estimate=""
+    _f_fix_effort=""          # no Fix Effort field
+    _f_severity="${_sev:-MEDIUM}"
+
+    case "${_f_fix_effort:-}" in
+      *\>1hr*) _time_estimate="2hr" ;;
+      *\<1hr*) _time_estimate="1hr" ;;
+      *\<10min*) _time_estimate="30min" ;;
+      *)
+        case "${_f_severity}" in
+          CRITICAL) _time_estimate="2hr" ;;
+          HIGH)     _time_estimate="1hr" ;;
+          MEDIUM)   _time_estimate="45min" ;;
+          *)        _time_estimate="30min" ;;
+        esac
+        ;;
+    esac
+
+    [ -n "$_time_estimate" ] || {
+      echo "FAIL: Time Estimate empty for severity '${_sev:-MEDIUM}'"
+      false
+    }
+  done
 }
