@@ -87,6 +87,16 @@ RITE_MARKER_ASSESSMENT="sharkrite-assessment"
 RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
 MARKERS_EOF
 
+  # Stub issue-lock.sh — sourced by the script since #756 for the follow-up
+  # evidence oracle (derive_followup_finding_key / write_followup_evidence).
+  # Both are only called on the ACTIONABLE_LATER follow-up path, which these
+  # tests never reach — minimal signature-compatible stubs suffice.
+  cat > "$RITE_LIB_DIR/utils/issue-lock.sh" <<'ISSUELOCK_EOF'
+#!/bin/bash
+derive_followup_finding_key() { echo "0-stub-finding-1"; }
+write_followup_evidence() { return 0; }
+ISSUELOCK_EOF
+
   # Stub pr-detection.sh — gh_safe (no network), commit-time helper, regex.
   cat > "$RITE_LIB_DIR/utils/pr-detection.sh" <<'PRDETECT_EOF'
 #!/bin/bash
@@ -116,6 +126,15 @@ provider_detect_error() {
   echo "UNKNOWN_ERROR"
 }
 PROVIDER_EOF
+
+  # Stub assess-and-resolve.sh — the script functions-only-sources it since
+  # #795 to reuse _resolve_done_def (guarded by `declare -f`, loaded with
+  # RITE_SOURCE_FUNCTIONS_ONLY=1). Only called on the ACTIONABLE_LATER
+  # follow-up path — a stub with just that function suffices.
+  cat > "$RITE_LIB_DIR/core/assess-and-resolve.sh" <<'RESOLVE_EOF'
+#!/bin/bash
+_resolve_done_def() { echo "Done when the finding is addressed."; }
+RESOLVE_EOF
 
   # Copy actual assess-review-issues.sh from the real repo
   REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
