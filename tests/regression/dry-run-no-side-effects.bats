@@ -412,7 +412,23 @@ _assert_no_dispatch_calls() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "workflow-runner.sh 42 --auto"
 
-  # Without --dry-run: workflow-runner stub is called, batch stub is not
+  # Without --dry-run: normalize_and_resolve calls "gh issue view 42" before
+  # exec-ing workflow-runner.  Override the gh stub to emit minimal valid issue
+  # JSON so the pre-flight does not abort with "Issue #42 not found".
+  # Uses an unquoted heredoc so $_FAKE_BIN is expanded at write time.
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $_FAKE_BIN must be expanded at write time
+  cat > "$_FAKE_BIN/gh" << GHSTUB
+#!/bin/bash
+echo "STUB_CALLED:gh" >> "$_FAKE_BIN/gh.calls"
+# Return minimal valid JSON for "issue view" calls; pass everything else.
+if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+  echo '{"title":"Test issue","body":"","state":"OPEN"}'
+  exit 0
+fi
+exit 0
+GHSTUB
+  chmod +x "$_FAKE_BIN/gh"
+
   _run_rite 42
   [ "$status" -eq 0 ]
   [ -f "$_FAKE_BIN/workflow-runner.calls" ]
@@ -472,11 +488,13 @@ _assert_no_dispatch_calls() {
     return 1
   fi
 
-  # Must contain exactly one routing entry point: resolve_dispatch_key call
+  # Must contain exactly one routing entry point: the _DISPATCH_KEY assignment
+  # (anchoring on the assignment prevents false matches from comments that
+  # mention resolve_dispatch_key() by name).
   local _key_calls
-  _key_calls=$(echo "$_dispatch_section" | grep -c "resolve_dispatch_key" || true)
+  _key_calls=$(echo "$_dispatch_section" | grep -c '_DISPATCH_KEY=$(resolve_dispatch_key' || true)
   if [ "$_key_calls" -ne 1 ]; then
-    echo "FAIL: expected exactly 1 resolve_dispatch_key call in dispatch section, got $_key_calls" >&2
+    echo "FAIL: expected exactly 1 _DISPATCH_KEY=\$(resolve_dispatch_key assignment in dispatch section, got $_key_calls" >&2
     return 1
   fi
 }

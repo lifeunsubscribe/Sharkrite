@@ -472,7 +472,7 @@ resolve_dispatch_key() {
       return 0
       ;;
     undo)
-      if [ $_argc -eq 1 ]; then echo "undo"; else echo ""; fi
+      if [ $_argc -eq 1 ]; then echo "undo"; else echo "undo-bad-args"; fi
       return 0
       ;;
   esac
@@ -600,6 +600,10 @@ resolve_dispatch_plan() {
       echo "undo-workflow.sh $1  (close PR, delete branch/worktree)"
       return 0
       ;;
+    undo-bad-args)
+      echo "ERROR: --undo requires exactly one issue number (got $# args)"
+      return 1
+      ;;
     mixed-pr-and-issues)
       # Surface the ambiguity to the dry-run printer; real dispatch refuses loudly.
       echo "ERROR: ambiguous invocation — --pr $_pr_input and positional issue(s) $* cannot be combined"
@@ -645,7 +649,15 @@ if [ "${RITE_DRY_RUN:-false}" = "true" ]; then
     print_error "dry-run: no target specified (an issue number, --label, or --pr is required)"
     exit 1
   else
-    print_error "dry-run: unsupported invocation — refusing (mode=$MODE args=[${ARGS[*]:-}] filter=[${BATCH_FILTER_ARGS[*]:-}] pr=[${PR_INPUT:-}])"
+    # Surface the plan text (e.g. "ERROR: ambiguous invocation — ...") so the
+    # dry-run output matches the real execution's refusal wording.  A bare
+    # generic message would hide the actual reason (mixed --pr + issue args,
+    # unrecognized mode, etc.) and break the parity contract.
+    if [ -n "${_DRY_RUN_PLAN:-}" ]; then
+      print_error "$_DRY_RUN_PLAN"
+    else
+      print_error "dry-run: unsupported invocation — refusing (mode=$MODE args=[${ARGS[*]:-}] filter=[${BATCH_FILTER_ARGS[*]:-}] pr=[${PR_INPUT:-}])"
+    fi
     exit 1
   fi
 fi
@@ -1870,8 +1882,15 @@ case "$_DISPATCH_KEY" in
     exec "$RITE_LIB_DIR/core/undo-workflow.sh" "${ARGS[0]}"
     ;;
 
+  undo-bad-args)
+    # undo requires exactly one issue number.
+    print_error "--undo requires exactly one issue number"
+    echo "Usage: rite <issue-number> --undo"
+    exit 1
+    ;;
+
   ""|*)
-    # Empty key = unrecognized tuple (e.g. undo with wrong arg count).
+    # Empty key = unrecognized tuple.
     print_error "unsupported invocation (mode=$MODE args=[${ARGS[*]:-}] filter=[${BATCH_FILTER_ARGS[*]:-}] pr=[${PR_INPUT:-}])"
     echo "Run 'rite --help' for usage"
     exit 1
