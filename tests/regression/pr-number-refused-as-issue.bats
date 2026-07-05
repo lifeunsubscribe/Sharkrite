@@ -59,12 +59,15 @@
 #    19. review-latest dispatch block calls _reject_if_pr_number
 #    20. assess-and-fix dispatch block calls _reject_if_pr_number
 #
+#   BEHAVIORAL (bin/rite _reject_if_pr_number(), #851):
+#    21. _reject_if_pr_number() exits 15 when issue number refers to a PR
+#
 #   STRUCTURAL (static code inspection of undo-workflow.sh, #851):
-#    21. undo-workflow.sh checks for /pull/ in the url field before Phase 1
-#    22. undo-workflow.sh exits 15 when /pull/ is detected
+#    22. undo-workflow.sh checks for /pull/ in the url field before Phase 1
+#    23. undo-workflow.sh exits 15 when /pull/ is detected
 #
 #   BEHAVIORAL (undo-workflow.sh, #851):
-#    23. undo-workflow.sh exits 15 when the issue number refers to a PR
+#    24. undo-workflow.sh exits 15 when the issue number refers to a PR
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
@@ -871,6 +874,88 @@ INLINE_EOF
   echo "$_block" | grep -q '_reject_if_pr_number' || {
     echo "FAIL: assess-and-fix block does not call _reject_if_pr_number" >&2
     echo "      A bare PR number passed to 'rite N --assess-and-fix' would silently operate on a PR" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: bin/rite _reject_if_pr_number() (#851)
+# =============================================================================
+
+@test "behavioral: _reject_if_pr_number() exits 15 when issue number refers to a PR" {
+  # Stubs gh_safe to return a /pull/ URL, sources the helper function from
+  # bin/rite in function-only mode, invokes it, and asserts exit 15.
+  # Mirrors test 23 (undo-workflow.sh behavioral) — same pattern, different target.
+  _script="$BATS_TEST_TMPDIR/test-reject-if-pr-number.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (RITE_BINARY)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUMBER="490"
+
+# Minimal stubs for bin/rite dependencies used by _reject_if_pr_number()
+print_error()   { echo "ERROR: \$*" >&2; }
+print_info()    { :; }
+print_header()  { :; }
+print_success() { :; }
+print_step()    { :; }
+verbose_info()  { :; }
+
+# gh_safe stub: returns a /pull/ URL so _reject_if_pr_number() fires
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"url":"https://github.com/owner/repo/pull/490","title":"Old PR title"}'
+    return 0
+  fi
+  if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"body":""}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+# Extract and define only _reject_if_pr_number() from bin/rite
+# (awk pulls the function body; eval sources it into this shell)
+_func_body=\$(awk '
+  /^_reject_if_pr_number[(][)]/ { in_func=1; print; next }
+  in_func && /^\}$/ { print; in_func=0; next }
+  in_func { print }
+' "${RITE_BINARY}")
+
+[ -n "\$_func_body" ] || {
+  echo "FAIL: Could not extract _reject_if_pr_number from bin/rite" >&2
+  exit 1
+}
+
+eval "\$_func_body"
+
+# Invoke the guard in a subshell — _reject_if_pr_number() uses 'exit 15',
+# so we must capture it from a subshell rather than via || capture.
+_exit=0
+( _reject_if_pr_number "\$ISSUE_NUMBER" ) || _exit=\$?
+
+if [ "\$_exit" -ne 15 ]; then
+  echo "FAIL: expected exit 15 for PR number, got \$_exit" >&2
+  exit 1
+fi
+echo "PASS: _reject_if_pr_number() exited 15 for PR number"
+exit 0
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PASS" || {
+    echo "FAIL: PASS marker not found in output" >&2
+    echo "Output: $output" >&2
     return 1
   }
 }
