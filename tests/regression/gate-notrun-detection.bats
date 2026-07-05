@@ -279,6 +279,46 @@ EOF
   grep -q 'planned test in selected bats file(s) never reported a result' "$_raw"
 }
 
+@test "unit: _synthesize_notrun_findings works when TAP already has real not-ok lines (mixed-outcome, issue #847)" {
+  # Regression: the old caller gate (`_tests_count -eq 0`) skipped deficit
+  # detection whenever at least one `not ok` line existed in report.tap.
+  # A run with 1 real failure + 1 swallowed test has _tests_count=1, so the
+  # swallow was invisible. This unit test verifies that _synthesize_notrun_findings
+  # itself operates correctly on a mixed TAP file (1 real failure, 1 not reported).
+  _root="$BATS_TEST_TMPDIR/mixed-root"
+  mkdir -p "$_root/tests"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "passes cleanly" { true; }\n'
+    printf '@test "fails with not ok" { false; }\n'
+    printf '@test "swallowed by errexit leak" { false; }\n'
+  } > "$_root/tests/mixed.bats"
+  # TAP has 3 planned, 2 reported: 1 real not ok + 1 ok; the swallowed test
+  # never wrote a result line so the plan shows deficit=1.
+  _raw="$BATS_TEST_TMPDIR/mixed.tap"
+  {
+    printf '1..3\n'
+    printf 'ok 1 passes cleanly\n'
+    printf 'not ok 2 fails with not ok\n'
+  } > "$_raw"
+  _fl="$BATS_TEST_TMPDIR/mixed.files"
+  printf 'tests/mixed.bats\n' > "$_fl"
+  # Deficit = 1 (3 planned, 2 reported).
+  run _tap_plan_deficit "$_raw"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+  # Synthesize — must succeed and name the swallowed test even though the TAP
+  # file already contains a real `not ok` line (mixed-outcome case).
+  run _synthesize_notrun_findings "$_raw" "$_fl" 1 "$_root" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "named=1 emitted=1" ]
+  # Exactly one synthetic not-run finding appended, naming the swallowed test.
+  [ "$(grep -c '\[tests_not_run\]' "$_raw")" -eq 1 ]
+  grep -q '\[tests_not_run\] swallowed by errexit leak' "$_raw"
+  # The pre-existing real not-ok line must still be present (no corruption).
+  grep -q '^not ok 2 fails with not ok$' "$_raw"
+}
+
 # =============================================================================
 # UNIT: _parse_bats_failure_line synthetic-marker reason
 # =============================================================================
@@ -385,6 +425,127 @@ EOF
   }
   # Deficit cap (#862): exactly ONE not-run finding for a deficit of 1 —
   # never the 130-for-1 phantom flood.
+  _notrun_len=$(jq '[.tests[] | select(.reason == "tests_not_run")] | length' "$_out")
+  [ "${_notrun_len:-0}" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 tests_not_run finding for deficit 1, got ${_notrun_len}:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+}
+
+@test "behavioral: gate detects swallowed test even when real not-ok findings also exist (mixed-outcome, issue #847)" {
+  # Regression guard for issue #847: the old caller gate had
+  # `if [ "$_tests_exit" -ne 0 ] && [ "$_tests_count" -eq 0 ]` — the
+  # `&& [ "$_tests_count" -eq 0 ]` guard silently skipped deficit detection
+  # whenever at least one real `not ok` was already present. A run with 1
+  # real failure + 1 swallowed test had _tests_count=1, so the swallowed
+  # test was invisible to the fix loop. The fix removes that outer count
+  # guard; this test pins that the synthetic tests_not_run finding fires
+  # end-to-end through run_test_gate even when real not-ok lines exist.
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  command -v make >/dev/null 2>&1 || skip "make not installed"
+  command -v git >/dev/null 2>&1 || skip "git not installed"
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+
+  # --- Fixture repo ---
+  _repo="$BATS_TEST_TMPDIR/mixed-repo"
+  mkdir -p "$_repo/tests"
+  (cd "$_repo" && git init -q && git config user.email t@t.test && git config user.name t) || return 1
+  printf 'shellcheck:\n\t@true\nlint:\n\t@true\n' > "$_repo/Makefile"
+  (cd "$_repo" && git add -A && git commit -qm base) || return 1
+  _base=$(cd "$_repo" && git rev-parse HEAD)
+
+  # File 1: normal failure — no set -e leak, so bats writes the `not ok` line
+  # to TAP normally. This gives _tests_count > 0 before deficit detection runs.
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '# sharkrite-test-covers: tests/normal-fail.bats\n'
+    printf '@test "passes first" { true; }\n'
+    printf '@test "fails normally and reports not ok" { false; }\n'
+  } > "$_repo/tests/normal-fail.bats"
+
+  # File 2: swallow fixture — same 2x2 conjunction as the existing behavioral
+  # test: setup() leaks `set -euo pipefail`, gate exports BATS_TEST_TIMEOUT,
+  # the failing test triggers bats_kill_processes_of under leaked errexit,
+  # killing bats-exec-test before `not ok` is emitted (swallowed).
+  printf 'set -euo pipefail\n' > "$_repo/tests/strict-env.sh"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '# sharkrite-test-covers: tests/strict-env.sh\n'
+    printf 'setup() { source "$BATS_TEST_DIRNAME/strict-env.sh"; }\n'
+    printf '@test "passes before swallow" { true; }\n'
+    printf '@test "mixed swallowed by leaked errexit plus timeout" { false; }\n'
+    printf '@test "passes after swallow" { true; }\n'
+  } > "$_repo/tests/swallow-fixture.bats"
+
+  (cd "$_repo" && git add -A && git commit -qm fixture) || return 1
+
+  # --- Probe 1: confirm the swallow-fixture.bats actually swallows ---
+  # If this bats version tolerates the kill and writes a `not ok`, neither
+  # the old code nor the new code would differ — skip to avoid false signals.
+  _probe_tap="$BATS_TEST_TMPDIR/mixed-probe-tap"
+  mkdir -p "$_probe_tap"
+  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
+    bats -F pretty --report-formatter tap --output "$_probe_tap" \
+    tests/swallow-fixture.bats < /dev/null > /dev/null 2>&1) || true
+  _probe_notok=$(grep -c '^not ok ' "$_probe_tap/report.tap" 2>/dev/null || true)
+  [ "${_probe_notok:-0}" -eq 0 ] || skip "this bats version reports the swallow-fixture failure normally (no swallow to detect)"
+
+  # --- Probe 2: confirm normal-fail.bats DOES produce a real not ok ---
+  # Without this the test could degenerate into the all-swallowed case.
+  _probe2_tap="$BATS_TEST_TMPDIR/mixed-probe2-tap"
+  mkdir -p "$_probe2_tap"
+  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
+    bats -F pretty --report-formatter tap --output "$_probe2_tap" \
+    tests/normal-fail.bats < /dev/null > /dev/null 2>&1) || true
+  _probe2_notok=$(grep -c '^not ok ' "$_probe2_tap/report.tap" 2>/dev/null || true)
+  [ "${_probe2_notok:-0}" -ge 1 ] || skip "normal-fail.bats did not produce a real not ok line — mixed fixture degenerated"
+
+  # --- Run the gate over BOTH fixture files ---
+  _out="$BATS_TEST_TMPDIR/mixed-gate.json"
+  export RITE_TEST_GATE_DIFF_BASE="$_base"
+  export RITE_BATS_TEST_TIMEOUT=5
+  unset RITE_GATE_BACKGROUND RITE_GATE_FORCE_FULL 2>/dev/null || true
+  run run_test_gate "$_out" "$_repo"
+
+  # Gate must block (exit 1).
+  [ "$status" -eq 1 ] || {
+    echo "FAIL: gate exit was $status, expected 1 (blocking)" >&2
+    echo "$output" >&2
+    return 1
+  }
+  [ -s "$_out" ] || {
+    echo "FAIL: gate JSON not written" >&2
+    return 1
+  }
+
+  # The swallowed test's synthetic finding must be present — this is the
+  # regression guard: with the old `&& [ "$_tests_count" -eq 0 ]` guard
+  # the real not-ok from normal-fail.bats would set _tests_count=1 and
+  # deficit detection would be skipped, so no tests_not_run finding would
+  # appear.
+  grep -q '"reason":"tests_not_run"' "$_out" || {
+    echo "FAIL: gate JSON lacks reason=tests_not_run (swallowed test not detected):" >&2
+    cat "$_out" >&2
+    return 1
+  }
+
+  # The synthetic finding must name the swallowed test.
+  jq -r '.tests[].test_name' "$_out" | grep -q "mixed swallowed" || {
+    echo "FAIL: synthetic finding does not name the swallowed test:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+
+  # The real assertion-failed finding from normal-fail.bats must also be present
+  # — confirming this is genuinely the mixed-outcome case.
+  grep -q '"reason":"assertion failed"' "$_out" || {
+    echo "FAIL: gate JSON lacks real assertion-failed finding — mixed case not exercised:" >&2
+    cat "$_out" >&2
+    return 1
+  }
+
+  # Deficit cap: exactly ONE not-run finding for a deficit of 1.
   _notrun_len=$(jq '[.tests[] | select(.reason == "tests_not_run")] | length' "$_out")
   [ "${_notrun_len:-0}" -eq 1 ] || {
     echo "FAIL: expected exactly 1 tests_not_run finding for deficit 1, got ${_notrun_len}:" >&2

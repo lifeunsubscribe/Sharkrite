@@ -1892,7 +1892,16 @@ run_test_gate() {
     # Detect the mismatch (TAP plan deficit and/or the literal bats warning in
     # the captured pretty stream) and emit synthetic not-ok findings, following
     # the synthetic-TAP precedent (workspace_build_failed below).
-    if [ "$_tests_exit" -ne 0 ] && [ "$_tests_count" -eq 0 ]; then
+    #
+    # Run deficit detection for ANY non-zero bats exit — not only when
+    # _tests_count=0 (issue #847). A run with both real `not ok` findings AND a
+    # swallowed test has _tests_count>0, so the old `&& [ _tests_count -eq 0 ]`
+    # guard silently skipped deficit detection and left the swallowed names
+    # invisible to the fix loop. The inner guard (`_notrun_deficit -gt 0 ||
+    # -n _notrun_warning`) already ensures we only synthesize findings when a
+    # real plan/executed mismatch exists — the outer count gate is redundant and
+    # incorrect in the mixed case.
+    if [ "$_tests_exit" -ne 0 ]; then
       local _notrun_deficit _notrun_warning="" _notrun_named=0 _notrun_emitted=0
       _notrun_deficit=$(_tap_plan_deficit "$_tests_raw_file")
       if [ -n "${_bats_pretty_capture:-}" ] && [ -s "${_bats_pretty_capture:-}" ]; then
