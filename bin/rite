@@ -1183,6 +1183,54 @@ fi
 # Source normalization utilities
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 
+# ---------------------------------------------------------------------------
+# _reject_if_pr_number ISSUE_NUMBER
+#
+# Guard for phase commands (--status, --review-latest, --assess-and-fix) that
+# accept a bare number but do not route through run_workflow()'s /pull/ check.
+# GitHub's shared number space means `gh issue view <PR#>` succeeds and returns
+# the PR — the url field discriminates (/pull/ vs /issues/).
+#
+# If the number refers to a PR, prints a named-PR error (matching the
+# handle_pr_number_refused() output style from workflow-runner.sh) and exits 15.
+# Exit 15 is the canonical sentinel for "bare PR number passed as issue".
+# See: docs/architecture/exit-codes.md — exit code 15
+# See: handle_pr_number_refused() in lib/core/workflow-runner.sh
+# ---------------------------------------------------------------------------
+_reject_if_pr_number() {
+  local _n="$1"
+  # Fetch url + title in a single API call (no extra round-trip).
+  local _data
+  _data=$(gh_safe issue view "$_n" --json url,title 2>/dev/null || true)
+  local _url
+  _url=$(echo "$_data" | jq -r '.url // ""' 2>/dev/null || true)
+  if echo "$_url" | grep -qF '/pull/'; then
+    local _title
+    _title=$(echo "$_data" | jq -r '.title // "unknown"' 2>/dev/null || true)
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_error "#${_n} is a Pull Request, not an issue"
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_error "  PR title: ${_title}"
+    [ -n "$_url" ] && print_error "  PR url:   ${_url}"
+    print_error ""
+    print_error "rite accepts issue numbers only. Pass the linked issue number instead."
+    # Best-effort: look up linked issue from PR body (non-fatal if this fails).
+    local _pr_body
+    _pr_body=$(gh_safe pr view "$_n" --json body --jq '.body' 2>/dev/null || true)
+    local _linked=""
+    if [ -n "$_pr_body" ]; then
+      _linked=$(echo "$_pr_body" | grep -ioE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
+    fi
+    if [ -n "$_linked" ]; then
+      print_error ""
+      print_error "  Linked issue: #${_linked}"
+      print_error "  Try: rite ${_linked}"
+    fi
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    exit 15
+  fi
+}
+
 # Normalize and resolve issue input.
 # Runs in the MAIN shell (not a subshell) so NORMALIZED_SUBJECT, WORK_DESCRIPTION,
 # ISSUE_NUMBER, and ISSUE_DESC are available to the calling scope.
@@ -1472,6 +1520,12 @@ case "$_DISPATCH_KEY" in
     exit 1
   fi
 
+  # Reject bare PR numbers before doing any work.
+  # run_workflow()'s /pull/ guard does not cover --status (it routes through
+  # pr-detection.sh directly). Mirror the same guard here.
+  # See: _reject_if_pr_number() above and exit code 15 in exit-codes.md.
+  _reject_if_pr_number "$STATUS_ISSUE"
+
   source "$RITE_LIB_DIR/utils/pr-detection.sh"
 
   # ── Issue info ──
@@ -1687,6 +1741,12 @@ case "$_DISPATCH_KEY" in
     ;;
 
   review-latest)
+    # Reject bare PR numbers before normalize_and_resolve (which would succeed
+    # for PR numbers via `gh issue view`, silently operating on a PR).
+    # See: _reject_if_pr_number() and exit code 15 in exit-codes.md.
+    if [[ "${ARGS[0]:-}" =~ ^[0-9]+$ ]]; then
+      _reject_if_pr_number "${ARGS[0]}"
+    fi
     normalize_and_resolve "${ARGS[0]}"
     record_run "$ISSUE_NUMBER" "review-latest"
     source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -1753,6 +1813,12 @@ case "$_DISPATCH_KEY" in
     ;;
 
   assess-and-fix)
+    # Reject bare PR numbers before normalize_and_resolve (which would succeed
+    # for PR numbers via `gh issue view`, silently operating on a PR).
+    # See: _reject_if_pr_number() and exit code 15 in exit-codes.md.
+    if [[ "${ARGS[0]:-}" =~ ^[0-9]+$ ]]; then
+      _reject_if_pr_number "${ARGS[0]}"
+    fi
     normalize_and_resolve "${ARGS[0]}"
     record_run "$ISSUE_NUMBER" "assess-and-fix"
     source "$RITE_LIB_DIR/utils/pr-detection.sh"
