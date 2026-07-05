@@ -20,6 +20,15 @@
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+
+  # Isolate RITE_LOCK_DIR BEFORE sourcing config.sh so the :-default in config.sh
+  # does not resolve to the real .rite/locks/. write_followup_evidence (called by
+  # the script under test) writes sentinel files under RITE_LOCK_DIR; without this
+  # guard those sentinels accumulate in the live repo locks dir across gate runs.
+  export RITE_TEST_TMPDIR
+  RITE_TEST_TMPDIR=$(mktemp -d)
+  export RITE_LOCK_DIR="${RITE_TEST_TMPDIR}/locks"
+
   source "${RITE_LIB_DIR}/utils/config.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
@@ -116,6 +125,7 @@ MOCK_EOF
 teardown() {
   rm -f "$MOCK_REVIEW_FILE"
   rm -rf "$MOCK_PROVIDER_DIR"
+  rm -rf "${RITE_TEST_TMPDIR:-}"
 }
 
 # Helper: run assess-review-issues.sh with the mock claude already on PATH.
