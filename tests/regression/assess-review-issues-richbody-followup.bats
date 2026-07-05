@@ -27,6 +27,7 @@
 #   8. Time Estimate appears before Description (runbook §3 ordering) — issue #909
 #   9. "Files to read before starting:" old label absent; "Files to Read:" present — issue #909
 #  10. Fix Effort field drives Time Estimate when present — issue #909
+#  11. Mixed-case severity with no Fix Effort → correct Fibonacci via normalization — issue #849
 
 setup() {
   # Mirror empty-assessment-fails-loud.bats: source config, mock claude + gh on PATH.
@@ -525,6 +526,49 @@ MOCK_EOF
   echo "$_te_content" | grep -qF "2hr" || {
     echo "FAIL: Time Estimate section should contain '2hr' for Fix Effort '>1hr'"
     echo "--- Time Estimate content: '$_te_content' ---"
+    echo "--- full body ---"
+    echo "$_body"
+    false
+  }
+}
+
+# ─── Test 11: mixed-case severity with no Fix Effort → correct Fibonacci ──────
+
+@test "richbody: mixed-case severity 'medium' with no Fix Effort yields severity-based Fibonacci ('45min')" {
+  # Issue #849 regression: ITEM_SEVERITY captured raw from LLM output
+  # ("medium", "Medium", "MEDIUM (annotation)") fell through _resolve_time_estimate's
+  # uppercase-only case arms → silent wrong estimate (the wildcard arm produced "30min"
+  # instead of the correct "45min" for MEDIUM).
+  # The fix normalizes ITEM_SEVERITY at capture (awk '{print $1}' + tr uppercase).
+  # This test drives a lower-case "medium" severity with no Fix Effort field and
+  # asserts that the Time Estimate section contains "45min" (the correct MEDIUM default).
+  cat > "$MOCK_PROVIDER_DIR/claude" <<'MOCK_EOF'
+#!/bin/bash
+cat <<'ASSESSMENT_EOF'
+### Address flaky retry logic - ACTIONABLE_LATER
+
+**Severity:** medium
+**Category:** Reliability
+**Reasoning:** Retry logic intermittently fails under load; needs backoff tuning.
+**Context:** Not blocking this PR but should be tracked.
+**Defer Reason:** Requires load-testing harness not yet available.
+ASSESSMENT_EOF
+exit 0
+MOCK_EOF
+  chmod +x "$MOCK_PROVIDER_DIR/claude"
+
+  _run_assess
+
+  local _body
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  # Time Estimate section must contain "45min" — the MEDIUM severity default.
+  # Before the normalization fix it would contain "30min" (wildcard arm).
+  local _te_content
+  _te_content=$(echo "$_body" | awk '/## Time Estimate/{found=1;next} found && /^##/{exit} found{print}' || true)
+  echo "$_te_content" | grep -qF "45min" || {
+    echo "FAIL: mixed-case 'medium' severity should yield '45min' Time Estimate (got: '$_te_content')"
     echo "--- full body ---"
     echo "$_body"
     false

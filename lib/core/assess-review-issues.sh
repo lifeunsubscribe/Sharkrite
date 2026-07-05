@@ -909,6 +909,11 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ;;
       \*\*Severity:\*\**)
         ITEM_SEVERITY="${line#\*\*Severity:\*\* }"
+        # Normalize to leading token in uppercase so mixed-case LLM output like
+        # "medium" or "High (annotation)" doesn't fall through _resolve_time_estimate's
+        # exact-match case arms.  Mirrors assess-and-resolve.sh:1881.
+        ITEM_SEVERITY=$(echo "$ITEM_SEVERITY" | awk '{print $1}' | tr '[:lower:]' '[:upper:]' || true)
+        ITEM_SEVERITY="${ITEM_SEVERITY:-MEDIUM}"
         ;;
       \*\*Category:\*\**)
         ITEM_CATEGORY="${line#\*\*Category:\*\* }"
