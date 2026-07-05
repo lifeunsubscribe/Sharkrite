@@ -14,8 +14,14 @@ export RITE_REPO_ROOT
 
 # Create unique temp directory for this test
 # Will be cleaned up automatically by bats after test completes
+#
+# Also exports RITE_LOCK_DIR pointing inside the test tmpdir so that any lib
+# sourced after this call (including config.sh and issue-lock.sh) resolves the
+# lock/evidence directory to the test tmpdir rather than the real .rite/locks/.
+# Must be set before sourcing config.sh (which uses the :- default).
 setup_test_tmpdir() {
   export RITE_TEST_TMPDIR="$(mktemp -d "${BATS_TEST_TMPDIR}/rite-test.XXXXXX")"
+  export RITE_LOCK_DIR="${RITE_TEST_TMPDIR}/locks"
   cd "$RITE_TEST_TMPDIR"
 }
 

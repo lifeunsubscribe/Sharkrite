@@ -27,6 +27,15 @@
 setup() {
   # Mirror empty-assessment-fails-loud.bats: source config, mock claude + gh on PATH.
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+
+  # Isolate RITE_LOCK_DIR BEFORE sourcing config.sh so the :-default in config.sh
+  # does not resolve to the real .rite/locks/. write_followup_evidence (called by
+  # the script under test) writes sentinel files under RITE_LOCK_DIR; without this
+  # guard those sentinels accumulate in the live repo locks dir across gate runs.
+  export RITE_TEST_TMPDIR
+  RITE_TEST_TMPDIR=$(mktemp -d)
+  export RITE_LOCK_DIR="${RITE_TEST_TMPDIR}/locks"
+
   source "${RITE_LIB_DIR}/utils/config.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
@@ -161,6 +170,7 @@ MOCK_EOF
 teardown() {
   rm -f "$MOCK_REVIEW_FILE"
   rm -rf "$MOCK_PROVIDER_DIR"
+  rm -rf "${RITE_TEST_TMPDIR:-}"
 }
 
 # Helper: run the script and return the full capture file contents.
@@ -345,6 +355,39 @@ MOCK_EOF
     false
   }
   return 0
+}
+
+# ─── Test 7: sentinel files land under RITE_TEST_TMPDIR, not the real locks dir ──
+#
+# Regression guard for the RITE_LOCK_DIR isolation fix (issue #834): running the
+# full script must write write_followup_evidence files only inside the test tmpdir.
+# If RITE_LOCK_DIR is accidentally resolved to the real .rite/locks/ the count check
+# below will catch it on the next gate run.
+
+@test "lock-dir isolation: write_followup_evidence sentinels land under test tmpdir, not real locks" {
+  _run_assess
+
+  # Confirm RITE_LOCK_DIR is pointing inside the test tmpdir, not the real .rite/locks/.
+  echo "$RITE_LOCK_DIR" | grep -qF "$RITE_TEST_TMPDIR" || {
+    echo "FAIL: RITE_LOCK_DIR='$RITE_LOCK_DIR' is not inside RITE_TEST_TMPDIR='$RITE_TEST_TMPDIR'"
+    echo "Sentinel files may have been written to the real .rite/locks/ directory."
+    false
+  }
+
+  # Any evidence file written by the script must live under RITE_LOCK_DIR.
+  # Fail unconditionally if the directory is absent — a missing dir means
+  # sentinel writes never landed in the test tmpdir, which defeats the assertion.
+  [ -d "$RITE_LOCK_DIR" ] || {
+    echo "FAIL: RITE_LOCK_DIR='$RITE_LOCK_DIR' does not exist — sentinel writes never landed in the test tmpdir"
+    false
+  }
+  local _count
+  _count=$(find "$RITE_LOCK_DIR" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
+  # Confirm the files ARE there (proves write_followup_evidence ran).
+  [ "$_count" -gt 0 ] || {
+    echo "FAIL: no evidence files found under RITE_LOCK_DIR='$RITE_LOCK_DIR' — did write_followup_evidence run?"
+    false
+  }
 }
 
 # ─── Helpers: locate a finding's body by its title ────────────────────────────
