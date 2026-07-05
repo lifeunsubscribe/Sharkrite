@@ -375,15 +375,19 @@ MOCK_EOF
   }
 
   # Any evidence file written by the script must live under RITE_LOCK_DIR.
-  if [ -d "$RITE_LOCK_DIR" ]; then
-    local _count
-    _count=$(find "$RITE_LOCK_DIR" -type f 2>/dev/null | wc -l || true)
-    # Confirm the files ARE there (proves write_followup_evidence ran).
-    [ "$_count" -gt 0 ] || {
-      echo "FAIL: no evidence files found under RITE_LOCK_DIR='$RITE_LOCK_DIR' — did write_followup_evidence run?"
-      false
-    }
-  fi
+  # Fail unconditionally if the directory is absent — a missing dir means
+  # sentinel writes never landed in the test tmpdir, which defeats the assertion.
+  [ -d "$RITE_LOCK_DIR" ] || {
+    echo "FAIL: RITE_LOCK_DIR='$RITE_LOCK_DIR' does not exist — sentinel writes never landed in the test tmpdir"
+    false
+  }
+  local _count
+  _count=$(find "$RITE_LOCK_DIR" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
+  # Confirm the files ARE there (proves write_followup_evidence ran).
+  [ "$_count" -gt 0 ] || {
+    echo "FAIL: no evidence files found under RITE_LOCK_DIR='$RITE_LOCK_DIR' — did write_followup_evidence run?"
+    false
+  }
 }
 
 # ─── Helpers: locate a finding's body by its title ────────────────────────────
