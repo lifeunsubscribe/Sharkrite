@@ -378,9 +378,11 @@ _RITE_PIP_TIMEOUT_WARNED=false
 #   - De-symlink guard: removes any node_modules symlinks before npm install to
 #     prevent npm from destroying the main checkout's shared node_modules through
 #     the link (same guard applied by test-gate.sh before every install).
-#   - Timeout: npm install is bounded at 120s. A registry stall in the unsupervised
-#     commit path would otherwise hang the entire nightly batch. On timeout the
-#     error is surfaced via return 1 so the caller can abort the commit.
+#   - Timeout: npm install is run under run_with_timeout (120s) when the helper is
+#     available (i.e. when RITE_TIMEOUT_CMD is set — timeout/gtimeout on PATH).
+#     On hosts without timeout/gtimeout the install runs unbounded; the 124-branch
+#     is dead code in that case. On timeout the error is surfaced via return 1 so
+#     the caller can abort the commit.
 # ===================================================================
 _regen_lockfiles_if_needed() {
   # Load node helpers from test-gate.sh if not already available.
@@ -1191,11 +1193,12 @@ $EXIT_INSTRUCTION"
   # Regenerate package-lock.json if package.json was modified (issue #804).
   # Error propagation contract (fix-loop path):
   #   A failed npm install must NOT discard the review fixes that are already staged.
-  #   Strategy: commit what is staged FIRST (the review fixes), then attempt regen.
-  #   If regen fails, the review fixes are preserved in the commit; we exit 1 to
-  #   surface the npm error to the orchestrator so the next review cycle sees it.
-  #   This satisfies AC #4: "surface the failure, do not silently commit a stale/
-  #   partial lockfile" — and does not lose already-applied fixes (issue #804).
+  #   Strategy: attempt regen FIRST (it stages the lockfile if successful). If regen
+  #   fails, commit whatever non-lockfile review fixes are already staged so they are
+  #   not lost, then exit 1 to surface the npm error to the orchestrator so the next
+  #   review cycle sees it. This satisfies AC #4: "surface the failure, do not
+  #   silently commit a stale/partial lockfile" — and preserves already-applied fixes
+  #   (issue #804).
   _regen_exit=0
   _regen_lockfiles_if_needed || _regen_exit=$?
   if [ "$_regen_exit" -ne 0 ]; then
