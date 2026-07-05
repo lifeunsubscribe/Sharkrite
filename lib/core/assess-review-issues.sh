@@ -317,7 +317,9 @@ elif [ -f "$RITE_PROJECT_ROOT/CLAUDE.md" ]; then
   ASSESSMENT_CONTEXT=$(sed -n '/[Ss]ecurity/,/^## /p' "$RITE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -100 || echo "")
 
   # Also grab commit conventions if present
-  CONVENTIONS=$(sed -n '/[Cc]ommit [Cc]onventions\|[Gg]it.*[Cc]onventions/,/^## /p' "$RITE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -50 || echo "")
+  # -E for portable alternation — BRE \| is a GNU extension; BSD sed treats it
+  # literally, silently matching nothing (conventions dropped from the prompt).
+  CONVENTIONS=$(sed -nE '/[Cc]ommit [Cc]onventions|[Gg]it.*[Cc]onventions/,/^## /p' "$RITE_PROJECT_ROOT/CLAUDE.md" 2>/dev/null | head -50 || echo "")
   if [ -n "$CONVENTIONS" ]; then
     ASSESSMENT_CONTEXT="${ASSESSMENT_CONTEXT}
 

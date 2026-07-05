@@ -800,7 +800,11 @@ fi
 # Failure is non-fatal — per-issue cleanup degrades gracefully.
 _BATCH_FETCH_PRUNE_DONE=false
 print_info "Prefetching remote refs (git fetch --prune)..."
-if timeout 10 git fetch --prune origin >/dev/null 2>&1; then
+# run_with_timeout, not bare `timeout` — stock macOS has no timeout(1) (it's
+# gtimeout via coreutils); a bare call is exit-127 and misreports as "timed out".
+# run_with_timeout degrades to running unbounded when no timeout binary exists,
+# which is acceptable for this non-fatal prefetch.
+if run_with_timeout 10 git fetch --prune origin >/dev/null 2>&1; then
   _BATCH_FETCH_PRUNE_DONE=true
   print_success "Remote refs up to date"
 else

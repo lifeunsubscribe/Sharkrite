@@ -1209,7 +1209,10 @@ _lint_issues() {
             # Extract router name from "Files to Modify" section only (not "Files to Read"
             # which may reference other routers as patterns)
             # Stop at blank line OR next markdown section (**, ##, Related)
-            _router_name=$(echo "$_issue_block" | sed -n '/Files to Modify/,/^\*\*\|^##\|^Related\|^$/p' | grep -oiE 'routers/[a-z_]+\.py' | head -1 | sed 's|routers/||; s|\.py||' || true)
+            # -E for portable alternation — BRE \| is GNU-only; on BSD sed the
+            # end-address never matched, so the range over-captured to EOF and
+            # could pick a router from a later section.
+            _router_name=$(echo "$_issue_block" | sed -nE '/Files to Modify/,/^\*\*|^##|^Related|^$/p' | grep -oiE 'routers/[a-z_]+\.py' | head -1 | sed 's|routers/||; s|\.py||' || true)
             if [ -n "$_router_name" ]; then
               _service_file="src/services/${_router_name}_service.py"
               print_info "Adding $_service_file to '$_issue_title'" >&2

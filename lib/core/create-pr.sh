@@ -286,8 +286,12 @@ if [ "$PR_EXISTS" = false ]; then
   elif [ ! -z "$ISSUE_NUMBER" ] && [ ! -z "$ISSUE_TITLE" ]; then
     PR_TITLE="$ISSUE_TITLE"
   else
-    # Extract title from branch name
-    PR_TITLE=$(echo "$CURRENT_BRANCH" | sed 's/.*\///' | tr '-' ' ' | sed 's/\b\(.\)/\u\1/g' || true)
+    # Extract title from branch name. Title-case via awk — the old GNU-sed
+    # word-boundary + uppercase-escape substitution silently corrupts on BSD
+    # sed (both escapes are GNU extensions; BSD emitted literal-u garbage
+    # like "uix uogin uug").
+    PR_TITLE=$(echo "$CURRENT_BRANCH" | sed 's/.*\///' | tr '-' ' ' \
+      | awk '{for(i=1;i<=NF;i++)$i=toupper(substr($i,1,1)) substr($i,2)}1' || true)
   fi
 
   # Build changes summary (marked section)
