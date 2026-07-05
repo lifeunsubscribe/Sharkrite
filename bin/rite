@@ -202,6 +202,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Usage:"
       echo "  rite <issue>                  Process single issue (unsupervised, default)"
+      echo "  rite \"<description>\"          Generate a structured issue from free text, then run it"
       echo "  rite <issue> --supervised     Process single issue (supervised mode)"
       echo "  rite <issue1> <issue2>        Process multiple issues (batch)"
       echo "  rite --label tech-debt        Process all open issues with label (batch)"
