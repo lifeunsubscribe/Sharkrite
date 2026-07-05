@@ -386,3 +386,253 @@ WRAPPER_EOF
   }
   true
 }
+
+# ---------------------------------------------------------------------------
+# Helpers for success-path tests (issues #849)
+# ---------------------------------------------------------------------------
+
+# Installs a SUCCEEDING assess-review-issues.sh stub that outputs assessment
+# items in the structured format used by assess-and-resolve.sh and exits 0.
+# The stub's output controls which decision branch assess-and-resolve.sh takes:
+#   - all-dismissed:  ASSESSMENT_TYPE=dismissed → all items DISMISSED
+#   - later-only:     ASSESSMENT_TYPE=later     → all items ACTIONABLE_LATER
+#
+# The stub also simulates the assess-review-issues.sh PR comment post so the
+# stateful mock records an initial comment (without gate items) — allowing the
+# test to verify that _post_gate_fallback_assessment_comment posts a SECOND
+# comment that carries the gate items.
+#
+# Caller must set ASSESSMENT_TYPE before invoking run_assess_and_resolve.
+_setup_mock_lib_tree_succeeding_assessment() {
+  mkdir -p "$MOCK_LIB_DIR/core"
+  mkdir -p "$MOCK_LIB_DIR/utils"
+
+  for _f in "$RITE_REPO_ROOT/lib/utils/"*.sh; do
+    ln -sf "$_f" "$MOCK_LIB_DIR/utils/$(basename "$_f")"
+  done
+  for _f in "$RITE_REPO_ROOT/lib/core/"*.sh; do
+    ln -sf "$_f" "$MOCK_LIB_DIR/core/$(basename "$_f")"
+  done
+
+  # Override: assess-review-issues.sh — outputs well-formed assessment and exits 0.
+  # CRITICAL: rm -f first to break the symlink from the loop above.
+  rm -f "$MOCK_LIB_DIR/core/assess-review-issues.sh"
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded
+  cat > "$MOCK_LIB_DIR/core/assess-review-issues.sh" << ASSESS_SUCCESS_STUB_EOF
+#!/usr/bin/env bash
+# Stub assess-review-issues.sh: succeeds with a structured assessment.
+# ASSESSMENT_TYPE controls the output:
+#   dismissed  → one DISMISSED item
+#   later      → one ACTIONABLE_LATER item
+set -euo pipefail
+
+_type="\${ASSESSMENT_TYPE:-dismissed}"
+
+# Emit a minimal but well-formed assessment comment to the PR (simulating the
+# real assess-review-issues.sh behaviour at line ~822) so tests can verify
+# that the gate-fallback comment is posted AS A SECOND comment afterward.
+_ts=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+_pr="\${1:-0}"
+_body_file=\$(mktemp)
+if [ "\$_type" = "later" ]; then
+  printf '%s' "<!-- sharkrite-assessment pr:\${_pr} iteration:1 timestamp:\${_ts} -->
+
+## Sharkrite Assessment
+### Summary
+- **ACTIONABLE_NOW:** 0 items
+- **ACTIONABLE_LATER:** 1 items
+
+---
+
+### Missing docs - ACTIONABLE_LATER
+**Severity:** LOW
+**Location:** docs/README.md:1
+" > "\$_body_file"
+else
+  printf '%s' "<!-- sharkrite-assessment pr:\${_pr} iteration:1 timestamp:\${_ts} -->
+
+## Sharkrite Assessment
+### Summary
+- **ACTIONABLE_NOW:** 0 items
+- **ACTIONABLE_LATER:** 0 items
+
+---
+
+### Missing docs - DISMISSED
+**Severity:** LOW
+**Location:** docs/README.md:1
+" > "\$_body_file"
+fi
+# Post the comment via gh (captured by the stateful mock).
+gh pr comment "\$_pr" --body-file "\$_body_file" >/dev/null 2>&1 || true
+rm -f "\$_body_file"
+
+# Output the assessment result to stdout (what assess-and-resolve.sh captures).
+if [ "\$_type" = "later" ]; then
+  printf '%s\n' \
+    "### Missing docs - ACTIONABLE_LATER" \
+    "**Severity:** LOW" \
+    "**Location:** docs/README.md:1"
+else
+  printf '%s\n' \
+    "### Missing docs - DISMISSED" \
+    "**Severity:** LOW" \
+    "**Location:** docs/README.md:1"
+fi
+exit 0
+ASSESS_SUCCESS_STUB_EOF
+  chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
+
+  # Override: format-review.sh — no-op display stub.
+  rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
+  cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
+#!/usr/bin/env bash
+# Stub format-review.sh: no-op.
+exit 0
+FORMAT_STUB_EOF
+  chmod +x "$MOCK_LIB_DIR/utils/format-review.sh"
+}
+
+# ---------------------------------------------------------------------------
+# 5. Success path: all-dismissed + gate findings → posts gate comment, exits 2
+# ---------------------------------------------------------------------------
+
+@test "success-path all-dismissed + gate findings: posts gate assessment comment and exits 2" {
+  # Replace the failing-assessment mock lib with the succeeding one.
+  rm -rf "$MOCK_LIB_DIR"
+  export ASSESSMENT_TYPE=dismissed
+  _setup_mock_lib_tree_succeeding_assessment
+
+  _write_gate_findings_with_failure
+
+  run_assess_and_resolve 80 45
+
+  [ "$status" -eq 2 ] || {
+    echo "FAIL: expected exit 2 (gate-forced fix loop), got $status"
+    echo "Output: ${output:0:1500}"
+    false
+  }
+
+  # Gate comment must have been posted (the #849 contract).
+  local _bodies
+  _bodies=$(_recorded_comments_for_pr 80)
+  [ -n "$_bodies" ] || {
+    echo "FAIL: no PR comment was posted — fix mode will die with 'No assessment found'"
+    cat "$GH_MOCK_STATE_DIR/pr-comments.json"
+    false
+  }
+
+  # The LAST comment must carry the gate items (posted by _post_gate_fallback_assessment_comment).
+  local _last_comment
+  _last_comment=$(jq -r --arg pr "80" \
+    'if has($pr) then .[$pr][-1].body else "" end' \
+    "$GH_MOCK_STATE_DIR/pr-comments.json")
+
+  echo "$_last_comment" | grep -q "<!-- sharkrite-assessment" || {
+    echo "FAIL: last comment missing the sharkrite-assessment marker"
+    echo "Comment: ${_last_comment:0:800}"
+    false
+  }
+  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure: tests/regression/example.bats - ACTIONABLE_NOW$" || {
+    echo "FAIL: last comment missing the structured [GATE] ACTIONABLE_NOW item"
+    echo "Comment: ${_last_comment:0:800}"
+    false
+  }
+  echo "$_last_comment" | grep -q "add_approved_blocker concurrency timeout" || {
+    echo "FAIL: last comment missing the failing test name"
+    echo "Comment: ${_last_comment:0:800}"
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 6. Success path: LATER-only + gate findings → posts gate comment, exits 2
+# ---------------------------------------------------------------------------
+
+@test "success-path LATER-only + gate findings: posts gate assessment comment and exits 2" {
+  # Replace the failing-assessment mock lib with the succeeding one.
+  rm -rf "$MOCK_LIB_DIR"
+  export ASSESSMENT_TYPE=later
+  _setup_mock_lib_tree_succeeding_assessment
+
+  _write_gate_findings_with_failure
+
+  run_assess_and_resolve 81 46
+
+  [ "$status" -eq 2 ] || {
+    echo "FAIL: expected exit 2 (gate-forced fix loop), got $status"
+    echo "Output: ${output:0:1500}"
+    false
+  }
+
+  # Gate comment must have been posted.
+  local _bodies
+  _bodies=$(_recorded_comments_for_pr 81)
+  [ -n "$_bodies" ] || {
+    echo "FAIL: no PR comment was posted — fix mode will die with 'No assessment found'"
+    cat "$GH_MOCK_STATE_DIR/pr-comments.json"
+    false
+  }
+
+  # The LAST comment must carry the gate items.
+  local _last_comment
+  _last_comment=$(jq -r --arg pr "81" \
+    'if has($pr) then .[$pr][-1].body else "" end' \
+    "$GH_MOCK_STATE_DIR/pr-comments.json")
+
+  echo "$_last_comment" | grep -q "<!-- sharkrite-assessment" || {
+    echo "FAIL: last comment missing the sharkrite-assessment marker"
+    echo "Comment: ${_last_comment:0:800}"
+    false
+  }
+  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure: tests/regression/example.bats - ACTIONABLE_NOW$" || {
+    echo "FAIL: last comment missing the structured [GATE] ACTIONABLE_NOW item"
+    echo "Comment: ${_last_comment:0:800}"
+    false
+  }
+  echo "$_last_comment" | grep -q "add_approved_blocker concurrency timeout" || {
+    echo "FAIL: last comment missing the failing test name"
+    echo "Comment: ${_last_comment:0:800}"
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 7. Pure-review: success + no gate findings → behavior unchanged (no extra comment)
+# ---------------------------------------------------------------------------
+
+@test "success-path pure-review no gate findings: all-dismissed exits 0, no extra gate comment" {
+  # Replace the failing-assessment mock lib with the succeeding all-dismissed one.
+  rm -rf "$MOCK_LIB_DIR"
+  export ASSESSMENT_TYPE=dismissed
+  _setup_mock_lib_tree_succeeding_assessment
+
+  # No gate findings.
+  unset RITE_GATE_FINDINGS 2>/dev/null || true
+
+  run_assess_and_resolve 82 47
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (all-dismissed, no gate), got $status"
+    echo "Output: ${output:0:1500}"
+    false
+  }
+
+  # assess-review-issues.sh stub posts one comment; no gate-fallback comment.
+  local _comment_count
+  _comment_count=$(jq -r --arg pr "82" \
+    'if has($pr) then (.[$pr] | length) else 0 end' \
+    "$GH_MOCK_STATE_DIR/pr-comments.json" 2>/dev/null || echo "0")
+
+  # Exactly one comment (from the stub's simulate-real-behavior post); zero or
+  # one is acceptable — what must NOT happen is a second gate-fallback comment.
+  local _bodies
+  _bodies=$(_recorded_comments_for_pr 82)
+  local _gate_comment_count
+  _gate_comment_count=$(printf '%s\n' "$_bodies" | grep -c "LLM assessment failed" || true)
+  [ "$_gate_comment_count" -eq 0 ] || {
+    echo "FAIL: a gate-fallback comment was posted on the no-gate pure-review path (behavior change)"
+    echo "Comment: ${_bodies:0:800}"
+    false
+  }
+}

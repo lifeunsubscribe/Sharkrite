@@ -1280,6 +1280,11 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # so it cannot be lost by a header-format mismatch.
       if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
         print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite all-dismissed review"
+        # Contract (#849 sibling of #821): fix mode reads the assessment from the
+        # PR comment when invoked with a PR number. The fd-3 echo below is not
+        # visible to fix mode. Post the gate items as a minimal assessment comment
+        # so fix mode has the [GATE] items to work from.
+        _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" || true
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
@@ -1292,6 +1297,11 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # found only ACTIONABLE_LATER items in the review. Same rationale as above.
       if [ "${GATE_NOW_COUNT:-0}" -gt 0 ]; then
         print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — forcing fix loop despite no NOW review items"
+        # Contract (#849 sibling of #821): fix mode reads the assessment from the
+        # PR comment when invoked with a PR number. The fd-3 echo below is not
+        # visible to fix mode. Post the gate items as a minimal assessment comment
+        # so fix mode has the [GATE] items to work from.
+        _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" || true
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
