@@ -56,10 +56,11 @@ print_violation() {
 # harness; early-exit count always 0 for absolute entries).
 _normalize_lint_files() {
   [ -z "${RITE_LINT_FILES:-}" ] && return 0
-  local _p
+  local _p _stripped
   while IFS= read -r _p; do
     [ -z "$_p" ] && continue
-    printf '%s\n' "${_p#"$PWD"/}"
+    _stripped=${_p#"$PWD"/}
+    printf '%s\n' "$_stripped"
   done <<< "$RITE_LINT_FILES"
 }
 
