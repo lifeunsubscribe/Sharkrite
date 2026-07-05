@@ -36,6 +36,12 @@ if ! declare -f git_fetch_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/git-helpers.sh"
 fi
 
+# Source date helpers for iso_to_epoch (epoch-seconds timestamp comparison —
+# never compare ISO strings lexicographically; see the reviewed-verdict check).
+if ! declare -f iso_to_epoch >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/date-helpers.sh"
+fi
+
 # Source notifications for Slack/email alerts
 if [ -f "$RITE_LIB_DIR/utils/notifications.sh" ]; then
   source "$RITE_LIB_DIR/utils/notifications.sh"
@@ -341,11 +347,25 @@ _handle_related() {
       || true)
     assess_time="${assess_time:-}"
 
-    local foreign_commit_time
-    foreign_commit_time=$(git log -1 --format="%aI" "$DIVERGENCE_REMOTE_HEAD" 2>/dev/null || echo "")
+    # Compare as EPOCH SECONDS, never lexicographic (MEMORY.md/CLAUDE.md
+    # contract). The old [[ > ]] string-compared the API's Z-suffixed UTC
+    # against git %aI's numeric-offset local time — the same instant renders
+    # as different strings, so the "reviewed" verdict was meaningless and a
+    # false positive auto-rebased UNREVIEWED foreign commits past the
+    # auto-mode block below. %at gives git's time natively as epoch (no
+    # parsing, no timezone); the API createdAt is always Z-UTC, which is
+    # exactly iso_to_epoch's contract.
+    local foreign_commit_epoch
+    foreign_commit_epoch=$(git log -1 --format="%at" "$DIVERGENCE_REMOTE_HEAD" 2>/dev/null || echo "0")
+    foreign_commit_epoch="${foreign_commit_epoch:-0}"
 
-    if [ -n "$assess_time" ] && [ "$assess_time" != "" ] && [ -n "$foreign_commit_time" ]; then
-      if [[ "$assess_time" > "$foreign_commit_time" ]]; then
+    local assess_epoch
+    assess_epoch=$(iso_to_epoch "${assess_time:-}")
+
+    # Both timestamps must have parsed (>0) — on any parse failure fall
+    # through to the safe UNREVIEWED path rather than guessing.
+    if [ "$assess_epoch" -gt 0 ] && [ "$foreign_commit_epoch" -gt 0 ]; then
+      if [ "$assess_epoch" -gt "$foreign_commit_epoch" ]; then
         reviewed=true
       fi
     fi

@@ -199,7 +199,11 @@ detect_review_state() {
   # Fetch latest review comment (sharkrite-local-review marker only)
   local review_json _jq_review_filter
   _jq_review_filter="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0] // {}"
-  review_json=$(gh_safe pr view "$pr_number" --json comments --jq "$_jq_review_filter")
+  # || true: when gh_safe exhausts its retries it returns non-zero, and a bare
+  # $() under set -e kills the caller (rite --status / --review-latest /
+  # --assess-and-fix die silently mid-command). Degrade to the {} fallback —
+  # "no review found" — instead. Every peer call in this file already does this.
+  review_json=$(gh_safe pr view "$pr_number" --json comments --jq "$_jq_review_filter" || true)
   review_json="${review_json:-"{}"}"
 
   REVIEW_BODY=$(echo "$review_json" | jq -r '.body // ""' 2>/dev/null)
