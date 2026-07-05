@@ -279,6 +279,46 @@ EOF
   grep -q 'planned test in selected bats file(s) never reported a result' "$_raw"
 }
 
+@test "unit: _synthesize_notrun_findings works when TAP already has real not-ok lines (mixed-outcome, issue #847)" {
+  # Regression: the old caller gate (`_tests_count -eq 0`) skipped deficit
+  # detection whenever at least one `not ok` line existed in report.tap.
+  # A run with 1 real failure + 1 swallowed test has _tests_count=1, so the
+  # swallow was invisible. This unit test verifies that _synthesize_notrun_findings
+  # itself operates correctly on a mixed TAP file (1 real failure, 1 not reported).
+  _root="$BATS_TEST_TMPDIR/mixed-root"
+  mkdir -p "$_root/tests"
+  {
+    printf '#!/usr/bin/env bats\n'
+    printf '@test "passes cleanly" { true; }\n'
+    printf '@test "fails with not ok" { false; }\n'
+    printf '@test "swallowed by errexit leak" { false; }\n'
+  } > "$_root/tests/mixed.bats"
+  # TAP has 3 planned, 2 reported: 1 real not ok + 1 ok; the swallowed test
+  # never wrote a result line so the plan shows deficit=1.
+  _raw="$BATS_TEST_TMPDIR/mixed.tap"
+  {
+    printf '1..3\n'
+    printf 'ok 1 passes cleanly\n'
+    printf 'not ok 2 fails with not ok\n'
+  } > "$_raw"
+  _fl="$BATS_TEST_TMPDIR/mixed.files"
+  printf 'tests/mixed.bats\n' > "$_fl"
+  # Deficit = 1 (3 planned, 2 reported).
+  run _tap_plan_deficit "$_raw"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+  # Synthesize — must succeed and name the swallowed test even though the TAP
+  # file already contains a real `not ok` line (mixed-outcome case).
+  run _synthesize_notrun_findings "$_raw" "$_fl" 1 "$_root" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "named=1 emitted=1" ]
+  # Exactly one synthetic not-run finding appended, naming the swallowed test.
+  [ "$(grep -c '\[tests_not_run\]' "$_raw")" -eq 1 ]
+  grep -q '\[tests_not_run\] swallowed by errexit leak' "$_raw"
+  # The pre-existing real not-ok line must still be present (no corruption).
+  grep -q '^not ok 2 fails with not ok$' "$_raw"
+}
+
 # =============================================================================
 # UNIT: _parse_bats_failure_line synthetic-marker reason
 # =============================================================================
