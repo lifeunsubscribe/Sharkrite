@@ -186,7 +186,9 @@ teardown() {
   # Stub claude that prints the live auth fingerprint and exits 1
   cat > "$_tmpdir/claude" <<'STUB'
 #!/bin/bash
-echo "Invalid API key · Please run /login" >&2
+# Live: claude --print emits this on STDOUT (outside the stream-json
+# envelope) — it must flow through the tee capture, not stderr.
+echo "Invalid API key · Please run /login"
 exit 1
 STUB
   chmod +x "$_tmpdir/claude"
@@ -213,9 +215,21 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir'
+    # Stub dir FIRST so claude/jq/tee stubs shadow real binaries, but keep
+    # system dirs: the provider function needs uname/mktemp/rm/grep — a
+    # stub-only PATH made these 3 unit tests fail on every gate round.
+    export PATH='$_tmpdir:/usr/bin:/bin'
     export RITE_LIB_DIR='$REPO_ROOT/lib'
     export RITE_CLAUDE_TIMEOUT_PROMPT=10
+    # Pre-mark timeout detection as resolved: claude.sh calls
+    # ensure_timeout_cmd AT SOURCE TIME (file scope, line ~26), and the
+    # restricted PATH has no timeout/gtimeout/brew — without this the source
+    # aborts mid-file under set -e and the session function never defines.
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    # Real stderr sink (arg 4): /dev/null would discard stderr-channel
+    # fingerprints before the detection grep reads them.
+    _stderr_capture=\$(mktemp)
     export RITE_CLAUDE_TIMEOUT_AGENTIC=10
 
     # Source only the function we need (no executable body)
@@ -241,7 +255,7 @@ STUB
     claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
 
     _exit=0
-    claude_provider_run_agentic_session 'test prompt' 10 true /dev/null || _exit=\$?
+    claude_provider_run_agentic_session 'test prompt' 10 true "\$_stderr_capture" || _exit=\$?
     exit \$_exit
   "
 
@@ -281,9 +295,21 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir'
+    # Stub dir FIRST so claude/jq/tee stubs shadow real binaries, but keep
+    # system dirs: the provider function needs uname/mktemp/rm/grep — a
+    # stub-only PATH made these 3 unit tests fail on every gate round.
+    export PATH='$_tmpdir:/usr/bin:/bin'
     export RITE_LIB_DIR='$REPO_ROOT/lib'
     export RITE_CLAUDE_TIMEOUT_PROMPT=10
+    # Pre-mark timeout detection as resolved: claude.sh calls
+    # ensure_timeout_cmd AT SOURCE TIME (file scope, line ~26), and the
+    # restricted PATH has no timeout/gtimeout/brew — without this the source
+    # aborts mid-file under set -e and the session function never defines.
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    # Real stderr sink (arg 4): /dev/null would discard stderr-channel
+    # fingerprints before the detection grep reads them.
+    _stderr_capture=\$(mktemp)
     export RITE_CLAUDE_TIMEOUT_AGENTIC=10
 
     RITE_SOURCE_FUNCTIONS_ONLY=1 source '$CLAUDE_PROVIDER' || true
@@ -297,7 +323,7 @@ STUB
     claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
 
     _exit=0
-    claude_provider_run_agentic_session 'test prompt' 10 true /dev/null || _exit=\$?
+    claude_provider_run_agentic_session 'test prompt' 10 true "\$_stderr_capture" || _exit=\$?
     exit \$_exit
   "
 
@@ -314,7 +340,9 @@ STUB
   # Stub claude that prints a usage-cap message (not auth failure)
   cat > "$_tmpdir/claude" <<'STUB'
 #!/bin/bash
-echo "Spending cap reached resets 11:20pm" >&2
+# Live: cap messages appear on stdout outside the JSON envelope (see the
+# provider's _stdout_capture comment) — stdout, not stderr.
+echo "Spending cap reached resets 11:20pm"
 exit 1
 STUB
   chmod +x "$_tmpdir/claude"
@@ -337,9 +365,21 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir'
+    # Stub dir FIRST so claude/jq/tee stubs shadow real binaries, but keep
+    # system dirs: the provider function needs uname/mktemp/rm/grep — a
+    # stub-only PATH made these 3 unit tests fail on every gate round.
+    export PATH='$_tmpdir:/usr/bin:/bin'
     export RITE_LIB_DIR='$REPO_ROOT/lib'
     export RITE_CLAUDE_TIMEOUT_PROMPT=10
+    # Pre-mark timeout detection as resolved: claude.sh calls
+    # ensure_timeout_cmd AT SOURCE TIME (file scope, line ~26), and the
+    # restricted PATH has no timeout/gtimeout/brew — without this the source
+    # aborts mid-file under set -e and the session function never defines.
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    # Real stderr sink (arg 4): /dev/null would discard stderr-channel
+    # fingerprints before the detection grep reads them.
+    _stderr_capture=\$(mktemp)
     export RITE_CLAUDE_TIMEOUT_AGENTIC=10
 
     RITE_SOURCE_FUNCTIONS_ONLY=1 source '$CLAUDE_PROVIDER' || true
@@ -353,7 +393,7 @@ STUB
     claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
 
     _exit=0
-    claude_provider_run_agentic_session 'test prompt' 10 true /dev/null || _exit=\$?
+    claude_provider_run_agentic_session 'test prompt' 10 true "\$_stderr_capture" || _exit=\$?
     exit \$_exit
   "
 
@@ -394,9 +434,21 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir'
+    # Stub dir FIRST so claude/jq/tee stubs shadow real binaries, but keep
+    # system dirs: the provider function needs uname/mktemp/rm/grep — a
+    # stub-only PATH made these 3 unit tests fail on every gate round.
+    export PATH='$_tmpdir:/usr/bin:/bin'
     export RITE_LIB_DIR='$REPO_ROOT/lib'
     export RITE_CLAUDE_TIMEOUT_PROMPT=10
+    # Pre-mark timeout detection as resolved: claude.sh calls
+    # ensure_timeout_cmd AT SOURCE TIME (file scope, line ~26), and the
+    # restricted PATH has no timeout/gtimeout/brew — without this the source
+    # aborts mid-file under set -e and the session function never defines.
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    # Real stderr sink (arg 4): /dev/null would discard stderr-channel
+    # fingerprints before the detection grep reads them.
+    _stderr_capture=\$(mktemp)
     export RITE_CLAUDE_TIMEOUT_AGENTIC=10
 
     RITE_SOURCE_FUNCTIONS_ONLY=1 source '$CLAUDE_PROVIDER' || true
@@ -410,7 +462,7 @@ STUB
     claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
 
     _exit=0
-    claude_provider_run_agentic_session 'test prompt' 10 true /dev/null || _exit=\$?
+    claude_provider_run_agentic_session 'test prompt' 10 true "\$_stderr_capture" || _exit=\$?
     exit \$_exit
   "
 

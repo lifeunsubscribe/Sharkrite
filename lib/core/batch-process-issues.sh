@@ -1403,7 +1403,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       print_error "Provider auth failure on issue #$ISSUE_NUM — halting batch"
       print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
       echo ""
-      print_error "Claude CLI is logged out — run: claude /login"
+      print_error "$(provider_name) is logged out — run: claude /login"
       print_info "All remaining issues will be recorded as skipped:auth."
       print_info "Re-run this batch after logging in."
       print_info "Duration: ${ISSUE_DURATION}s"

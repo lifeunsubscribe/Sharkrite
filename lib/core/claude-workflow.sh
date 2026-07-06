@@ -3131,7 +3131,7 @@ else
     # Single-issue mode: exit 18 surfaces the clear auth error to the operator.
     # See: lib/core/batch-process-issues.sh exit-18 handler.
     # See: docs/architecture/exit-codes.md — exit 18.
-    print_error "Claude CLI is not authenticated — dev session cannot start"
+    print_error "$(provider_name) is not authenticated — dev session cannot start"
     print_info "Run: claude /login"
     rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
     exit 18
