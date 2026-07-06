@@ -1598,6 +1598,34 @@ run_test_gate() {
        && _node_flavored_test_context "$project_root" "${RITE_TEST_COMMAND}"; then
       _normalize_node_test_output "$_tests_raw_file_cmd" "$project_root"
     fi
+    # Missing-deps / no-tests-collected fallback: mirrors the pytest-direct branch.
+    # When RITE_TEST_COMMAND wraps a Python runner (e.g. "python -m pytest"), a
+    # missing venv exits non-zero with a ModuleNotFoundError signature — that's an
+    # environment gap, not a test failure.  Exit 5 (no tests collected) is also a
+    # loud skip.  Both are caught by _classify_pytest_outcome before the hard-fail
+    # path below, so the gate doesn't block the merge on an environment issue.
+    if [ "$_cmd_tests_exit" -ne 0 ]; then
+      local _cmd_raw _cmd_py_outcome
+      _cmd_raw=$(cat "$_tests_raw_file_cmd" 2>/dev/null || true)
+      _cmd_py_outcome=$(_classify_pytest_outcome "$_cmd_tests_exit" "$_cmd_raw")
+      if [ "$_cmd_py_outcome" = "skipped:missing_deps" ]; then
+        echo "[test-gate] WARNING: RITE_TEST_COMMAND output indicates missing dependencies (ModuleNotFoundError)." >&2
+        echo "[test-gate] Install the project's test dependencies or update RITE_TEST_COMMAND to activate the venv." >&2
+        _diag "TEST_GATE outcome=skipped reason=missing_deps pr=${PR_NUMBER:-?}"
+        rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_deps"
+        return 0
+      elif [ "$_cmd_py_outcome" = "skipped:no_tests" ]; then
+        echo "[test-gate] WARNING: RITE_TEST_COMMAND collected no tests (exit 5)." >&2
+        echo "[test-gate] Add test files or update RITE_TEST_COMMAND to point at your test runner." >&2
+        _diag "TEST_GATE outcome=skipped reason=no_tests pr=${PR_NUMBER:-?}"
+        rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"
+        trap - EXIT
+        _gate_write_json "$output_file" "[]" "[]" "0" "true" "no_tests"
+        return 0
+      fi
+    fi
     local _cmd_tests_count
     _cmd_tests_count=$(grep -c "^not ok " "$_tests_raw_file_cmd" || true)
     local _cmd_overall_exit=0
@@ -2158,6 +2186,33 @@ run_test_gate() {
         | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
+      # Missing-deps / no-tests-collected fallback for Makefile-wrapped pytest.
+      # When make test delegates to python3 -m pytest, a missing venv exits
+      # non-zero with ModuleNotFoundError — that's an env gap, not a test failure.
+      # Exit 5 (no tests collected) from a wrapped pytest also bubbles through
+      # make as a non-zero exit and should be a loud skip rather than a hard block.
+      if [ "$_tests_exit" -ne 0 ]; then
+        local _make_raw _make_outcome
+        _make_raw=$(cat "$_tests_raw_file" 2>/dev/null || true)
+        _make_outcome=$(_classify_pytest_outcome "$_tests_exit" "$_make_raw")
+        if [ "$_make_outcome" = "skipped:missing_deps" ]; then
+          echo "[test-gate] WARNING: make test detected missing dependencies (ModuleNotFoundError)." >&2
+          echo "[test-gate] Install the project's test dependencies (e.g. pip install -r requirements-dev.txt) or set RITE_TEST_COMMAND to a wrapper that activates the venv." >&2
+          _diag "TEST_GATE outcome=skipped reason=missing_deps pr=${PR_NUMBER:-?}"
+          rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+          trap - EXIT
+          _gate_write_json "$output_file" "[]" "[]" "0" "true" "missing_deps"
+          return 0
+        elif [ "$_make_outcome" = "skipped:no_tests" ]; then
+          echo "[test-gate] WARNING: make test collected no tests (exit 5)." >&2
+          echo "[test-gate] Add test files or set RITE_TEST_COMMAND to skip this check." >&2
+          _diag "TEST_GATE outcome=skipped reason=no_tests pr=${PR_NUMBER:-?}"
+          rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_nonsr_exit_file:-}"
+          trap - EXIT
+          _gate_write_json "$output_file" "[]" "[]" "0" "true" "no_tests"
+          return 0
+        fi
+      fi
     elif [ -f "$project_root/package.json" ]; then
       # node_modules bootstrap (issue #784, #807): rite worktrees never get a real
       # node_modules of their own — claude-workflow.sh symlinks the worktree's

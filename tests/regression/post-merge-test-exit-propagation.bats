@@ -517,3 +517,159 @@ MF_EOF
   # Gate must NOT have been called for a non-Sharkrite repo
   [ ! -f "$gate_called_sentinel" ]
 }
+
+# ---------------------------------------------------------------------------
+# Missing-deps / no-tests fallback for non-Sharkrite pytest path (issue #750)
+# verify_post_merge classifies pytest output rather than hard-failing on
+# environment errors (missing venv, no tests found after merge).
+# ---------------------------------------------------------------------------
+
+@test "verify_post_merge: pytest missing-deps (ModuleNotFoundError) → returns 0, not 1" {
+  # A missing venv causes pytest to exit 1 with a ModuleNotFoundError signature.
+  # Before the fix, verify_post_merge treated this as a merge-induced failure
+  # and returned 1, blocking the workflow. After the fix it should skip gracefully.
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  # Stub command named "pytest" so `echo "$test_cmd" | grep -q "pytest"` matches.
+  local _stub_dir="${BATS_TEST_TMPDIR}/stubs"
+  mkdir -p "$_stub_dir"
+  # Name the stub "pytest" so the command string contains "pytest"
+  cat > "$_stub_dir/pytest" <<'STUB'
+#!/bin/sh
+printf 'E  ModuleNotFoundError: No module named '"'"'mypackage'"'"'\n'
+exit 1
+STUB
+  chmod +x "$_stub_dir/pytest"
+
+  # RITE_TEST_CMD must contain "pytest" so the grep guard fires
+  export RITE_TEST_CMD="$_stub_dir/pytest"
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+  set +u; set +o pipefail
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  # Must return 0 (skip), not 1 (fail), when output is a missing-deps signature
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: verify_post_merge should return 0 (skip) for missing-deps, not 1"
+    echo "Output: $output"
+    false
+  }
+
+  # Must emit a WARNING about missing dependencies
+  [[ "$output" == *"WARNING"* ]] || [[ "$output" == *"missing dep"* ]] || {
+    echo "FAIL: expected WARNING or 'missing dep' in output for missing-deps skip"
+    echo "Output: $output"
+    false
+  }
+
+  # Must not claim the merge caused a semantic conflict
+  [[ "$output" != *"semantic conflict"* ]] || {
+    echo "FAIL: output should not blame the merge for a missing-deps environment issue"
+    echo "Output: $output"
+    false
+  }
+}
+
+@test "verify_post_merge: pytest missing (No module named pytest) → returns 0, not 1" {
+  # When pytest itself is not installed, python3 -m pytest exits 1 with the
+  # bare interpreter error "No module named pytest" (no ^E prefix).
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  local _stub_dir="${BATS_TEST_TMPDIR}/stubs2"
+  mkdir -p "$_stub_dir"
+  cat > "$_stub_dir/pytest" <<'STUB'
+#!/bin/sh
+printf '/usr/bin/python3: No module named pytest\n'
+exit 1
+STUB
+  chmod +x "$_stub_dir/pytest"
+
+  export RITE_TEST_CMD="$_stub_dir/pytest"
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+  set +u; set +o pipefail
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: verify_post_merge should return 0 for missing pytest installation"
+    echo "Output: $output"
+    false
+  }
+}
+
+@test "verify_post_merge: pytest exit 5 (no tests collected) → returns 0, not 1" {
+  # pytest exits 5 when no tests are collected.  This is not a merge-induced
+  # failure — the merge shouldn't be blocked on a missing test file.
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  local _stub_dir="${BATS_TEST_TMPDIR}/stubs3"
+  mkdir -p "$_stub_dir"
+  cat > "$_stub_dir/pytest" <<'STUB'
+#!/bin/sh
+printf '============== no tests ran ==============\n'
+exit 5
+STUB
+  chmod +x "$_stub_dir/pytest"
+
+  export RITE_TEST_CMD="$_stub_dir/pytest"
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+  set +u; set +o pipefail
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: verify_post_merge should return 0 for no-tests-collected (exit 5)"
+    echo "Output: $output"
+    false
+  }
+
+  [[ "$output" == *"no tests"* ]] || [[ "$output" == *"skipped"* ]] || {
+    echo "FAIL: expected 'no tests' or 'skipped' in output for exit-5 skip"
+    echo "Output: $output"
+    false
+  }
+}
+
+@test "verify_post_merge: real pytest failure (FAILED line) → still returns 1 (no false skip)" {
+  # A real test failure that mentions ModuleNotFoundError in a traceback must
+  # NOT be silently skipped — this guards the v1 false-skip regression.
+  REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+
+  local _stub_dir="${BATS_TEST_TMPDIR}/stubs4"
+  mkdir -p "$_stub_dir"
+  cat > "$_stub_dir/pytest" <<'STUB'
+#!/bin/sh
+printf 'FAILED test_thing.py::test_something - AssertionError\n'
+printf 'E  ModuleNotFoundError: No module named mypackage\n'
+exit 1
+STUB
+  chmod +x "$_stub_dir/pytest"
+
+  export RITE_TEST_CMD="$_stub_dir/pytest"
+
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+  set +u; set +o pipefail
+
+  # Stub git to skip the "is main broken?" check so we isolate the classification
+  git() {
+    if [[ "$*" == *"worktree add"* ]]; then return 1; fi
+    command git "$@"
+  }
+  export -f git
+
+  run verify_post_merge "$TEST_WORKTREE"
+
+  # Must return 1 because this is a real test failure, not a missing-deps skip
+  [ "$status" -eq 1 ] || {
+    echo "FAIL: verify_post_merge should return 1 for real test failures (FAILED+AssertionError)"
+    echo "Output: $output"
+    false
+  }
+}
