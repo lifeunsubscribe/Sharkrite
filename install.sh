@@ -31,7 +31,7 @@ print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Installation targets
-INSTALL_DIR="$HOME/.rite"
+INSTALL_DIR="${RITE_INSTALL_DIR:-$HOME/.rite}"
 CONFIG_DIR="$HOME/.config/rite"
 BIN_DIR="${RITE_BIN_DIR:-$HOME/.local/bin}"
 
@@ -196,6 +196,13 @@ cp -R "$SOURCE_DIR/templates" "$INSTALL_DIR/templates"
 # Copy config examples/
 rm -rf "$INSTALL_DIR/config"
 cp -R "$SOURCE_DIR/config" "$INSTALL_DIR/config"
+
+# Copy runbooks (issue-runbook.md + test-authoring-runbook.md) to docs/
+# These are probed by plan-issues.sh and lib/providers/claude.sh at runtime;
+# without them the existence gate silently no-ops on standard installs.
+mkdir -p "$INSTALL_DIR/docs"
+cp "$SOURCE_DIR/docs/issue-runbook.md" "$INSTALL_DIR/docs/issue-runbook.md"
+cp "$SOURCE_DIR/docs/test-authoring-runbook.md" "$INSTALL_DIR/docs/test-authoring-runbook.md"
 
 # Make all scripts executable
 find "$INSTALL_DIR" -name "*.sh" -exec chmod +x {} \;
