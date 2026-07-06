@@ -1,3 +1,10 @@
+<!-- sharkrite-issue-template
+  This file is a REFERENCE template for manual issue authoring and `rite --init`
+  setup. It is NOT loaded at runtime by the follow-up issue builder (assess-and-resolve.sh
+  / assess-review-issues.sh). Those builders maintain the section structure inline,
+  validated by tests/regression/followup-runbook-conformance.bats. Edit this file
+  to update the human-readable reference; edit the builders to change generated output.
+-->
 ## Title
 [Phase N] Verb noun - specific component
 

@@ -205,6 +205,7 @@ _nth_body() {
 
   for _section in \
     '## Description' \
+    '## Time Estimate' \
     '## Claude Context' \
     '## Acceptance Criteria' \
     '## Verification Commands' \
@@ -386,6 +387,63 @@ MOCK_EOF
   # Confirm the files ARE there (proves write_followup_evidence ran).
   [ "$_count" -gt 0 ] || {
     echo "FAIL: no evidence files found under RITE_LOCK_DIR='$RITE_LOCK_DIR' — did write_followup_evidence run?"
+    false
+  }
+}
+
+# ─── Test 8: Claude Context uses runbook Files to Read / Files to Modify split ──
+
+@test "richbody: Claude Context section uses 'Files to Read:' / 'Files to Modify:' format" {
+  _run_assess
+
+  local _body
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no first issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  echo "$_body" | grep -qF "Files to Read:" || {
+    echo "FAIL: body missing 'Files to Read:' in Claude Context (runbook §5 requires split format)"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+  echo "$_body" | grep -qF "Files to Modify:" || {
+    echo "FAIL: body missing 'Files to Modify:' in Claude Context (runbook §5 requires split format)"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+  # The old monolithic 'Files to read before starting:' must be gone.
+  echo "$_body" | grep -qF "Files to read before starting:" && {
+    echo "FAIL: old 'Files to read before starting:' still present — must use split format"
+    echo "$_body"
+    false
+  }
+  return 0
+}
+
+# ─── Test 9: Time Estimate section present with a value ───────────────────────
+
+@test "richbody: Time Estimate section is present and non-empty" {
+  _run_assess
+
+  local _body
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no first issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  # Section header must be present.
+  echo "$_body" | grep -qF "## Time Estimate" || {
+    echo "FAIL: body missing '## Time Estimate' section (runbook §3 requires it)"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+  # The line after the header must contain a non-empty estimate.
+  local _te_val
+  _te_val=$(echo "$_body" | awk '/^## Time Estimate/{getline; print}')
+  [ -n "${_te_val// /}" ] || {
+    echo "FAIL: Time Estimate section is empty (expected e.g. '30min')"
+    echo "--- body ---"
+    echo "$_body"
     false
   }
 }

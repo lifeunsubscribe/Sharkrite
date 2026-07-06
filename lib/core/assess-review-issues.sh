@@ -46,13 +46,14 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
-# Reuse (don't duplicate) _resolve_done_def from assess-and-resolve.sh so the
-# surviving ACTIONABLE_LATER follow-up bodies use the same runbook-compliant
-# done-definition wording as the per-finding loop.  Functions-only source: the
-# RITE_SOURCE_FUNCTIONS_ONLY=1 guard in assess-and-resolve.sh returns before its
-# program body (no arg parsing, no exec redirects, no live gh/claude calls); its
-# pre-guard sources are utils + pr-detection only — no source cycle back here.
-# The declare -f guard makes this a no-op if the function is already loaded.
+# Reuse _resolve_done_def and _resolve_time_estimate from assess-and-resolve.sh
+# so the surviving ACTIONABLE_LATER follow-up bodies use the same runbook-compliant
+# done-definition wording and time-estimate mapping as the per-finding loop.
+# Functions-only source: the RITE_SOURCE_FUNCTIONS_ONLY=1 guard in
+# assess-and-resolve.sh returns before its program body (no arg parsing, no exec
+# redirects, no live gh/claude calls); its pre-guard sources are utils +
+# pr-detection only — no source cycle back here.
+# The declare -f guard makes this a no-op if the functions are already loaded.
 if ! declare -f _resolve_done_def >/dev/null 2>&1; then
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
 fi
@@ -513,6 +514,7 @@ For each item, use EXACTLY this format (no deviations):
 {FOR ACTIONABLE_NOW: **Location:** {specific file path and/or function name where fix should land}}
 {FOR ACTIONABLE_NOW: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Location:** {specific file(s), module, or domain this finding applies to — must be concrete enough that someone unfamiliar with the PR can find the right code}}
+{FOR ACTIONABLE_LATER: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR}}
 
 DO NOT add any summary section, recommendations, or extra text after the items.
@@ -901,6 +903,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_REASONING=""
         ITEM_CONTEXT=""
         ITEM_DEFER=""
+        ITEM_FIX_EFFORT=""
         # Reset Location so a finding without one can't inherit the prior finding's.
         ITEM_LOCATION=""
         ;;
@@ -921,6 +924,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ;;
       \*\*Defer\ Reason:\*\**)
         ITEM_DEFER="${line#\*\*Defer Reason:\*\* }"
+        ;;
+      \*\*Fix\ Effort:\*\**)
+        ITEM_FIX_EFFORT="${line#\*\*Fix Effort:\*\* }"
         ;;
       ---END---)
         # Severity gate: LOW findings are logged but do not justify issue overhead.
@@ -1126,7 +1132,20 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # Done Definition: severity-appropriate (reused function from assess-and-resolve.sh)
           _done_def=$(_resolve_done_def "${ITEM_SEVERITY:-MEDIUM}")
 
-          # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh:1879-1922) ---
+          # Time Estimate: map Fix Effort → Fibonacci (shared function so wording
+          # matches assess-and-resolve.sh's per-finding loop — runbook §3).
+          _time_estimate=$(_resolve_time_estimate "${ITEM_FIX_EFFORT:-}")
+
+          # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
+          # For follow-ups all parent-PR changed files are inspection candidates;
+          # leave "Files to Modify:" as a placeholder for the implementer.
+          _claude_context_section="Files to Read:
+${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+Files to Modify:
+- _Determine from the finding above_"
+
+          # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
           ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
 ## Description
 
@@ -1143,9 +1162,11 @@ $([ -n "${ITEM_DEFER:-}" ] && echo "
 $([ -n "${ITEM_CONTEXT:-}" ] && echo "
 **Context:** ${ITEM_CONTEXT:-}" || echo "")
 
+## Time Estimate
+${_time_estimate:-30min}
+
 ## Claude Context
-Files to read before starting:
-${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+${_claude_context_section}
 
 ## Acceptance Criteria
 ${_acceptance_criterion}
@@ -1247,6 +1268,7 @@ _Parent PR: #${PR_NUMBER}_"
     in_later && /^\*\*Context:\*\*/ { print $0 }
     in_later && /^\*\*Location:\*\*/ { print $0 }
     in_later && /^\*\*Defer Reason:\*\*/ { print $0 }
+    in_later && /^\*\*Fix Effort:\*\*/ { print $0 }
     END { if (in_later) print "---END---" }
   ')
 
