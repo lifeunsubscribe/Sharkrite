@@ -60,6 +60,15 @@
 # Default workflow mode: supervised or unsupervised
 # WORKFLOW_MODE="supervised"
 
+# Maximum work-commits on a branch before rebase conflicts attempt LLM resolution
+# instead of close-and-restart (default: 3).
+# In auto mode, when a stale-branch rebase hits conflicts, branches with
+# work-commit count <= this threshold restart fresh (exit 11) rather than invoking
+# attempt_claude_merge_resolution — avoiding resolution + 181-file verification cost
+# that routinely exceeds the original dev cost of small branches (issue #855).
+# Set to 0 to disable the fast-path (always attempt LLM resolution).
+# RITE_REBASE_CONFLICT_RESTART_MAX=3
+
 # Assessment timeout for this project (complex projects may need longer)
 # Default is 300s. Raise to 600 if assessments time out during heavy provider load.
 # RITE_ASSESSMENT_TIMEOUT=300

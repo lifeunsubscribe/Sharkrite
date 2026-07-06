@@ -618,6 +618,32 @@ _stale_rebase_onto_main() {
       git stash pop 2>/dev/null || true
     fi
 
+    # Small-branch fast-path (issue #855): in auto mode, rebase conflicts on a branch
+    # with few work commits trigger close-and-restart instead of LLM resolution.
+    # Rationale: LLM resolution + 181-file post-rebase verification routinely costs
+    # more than the original dev work for small branches (live: issue #821, 2 commits).
+    # Threshold controlled by RITE_REBASE_CONFLICT_RESTART_MAX (default: 3).
+    # Supervised mode is unaffected — the user decides via the prompt below.
+    if [ "$workflow_mode" != "supervised" ]; then
+      local _restart_max="${RITE_REBASE_CONFLICT_RESTART_MAX:-3}"
+      # Guard: non-numeric value would crash the -le arithmetic test under set -e.
+      # Fall back to the default (3) if the knob is not a non-negative integer.
+      case "$_restart_max" in
+        ''|*[!0-9]*) _restart_max=3 ;;
+      esac
+      if [ "$commits_ahead" -le "$_restart_max" ]; then
+        print_status "Small branch ($commits_ahead work commit(s) ≤ $_restart_max) — restarting fresh instead of LLM resolution"
+        _diag "STALE_CONFLICT_RESTART issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name} work_commits=${commits_ahead} max=${_restart_max}"
+        # Compute commits-behind for the close comment (used only for the PR comment body).
+        local _restart_behind
+        _restart_behind=$(git rev-list --count "HEAD..origin/$base_branch" 2>/dev/null || echo "0")
+        _stale_close_and_cleanup "${pr_number:-}" "${issue_number:-}" "$worktree_path" "$branch_name" "$_restart_behind" "$base_branch"
+        # Exit code 11: stale-branch restarted fresh — caller must reset all resume state.
+        # See docs/architecture/exit-codes.md for the canonical exit-code table.
+        return 11
+      fi
+    fi
+
     # In auto mode, attempt Claude-assisted conflict resolution before bailing.
     # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
     # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
