@@ -1596,3 +1596,24 @@ checks before commit) are also kept for the same reason.
 `lib/utils/test-gate.sh` (comment updated),
 `tests/regression/gate-desymlink-node-modules.bats` (header updated, creation-
 side assertion added).
+
+## Gate Flake-Retry: One Bounded Serial Re-Run (#938)
+
+**2026-07-05.** Block-on-any treats a load-flake exactly like a real failure;
+three merges were blocked in one day by failures that passed 3× in isolation
+minutes later (SIGINT pair twice, a symlink assert once), each burning fix-loop
+iterations on phantoms. Contract amendment to Block-on-Any: when the targeted
+bats run fails (and was NOT watchdog-killed — a timeout is not a flake), the
+gate re-runs JUST the failing files once, serially (no --jobs). Tests passing
+the quiet run are load-flakes: their `not ok N name` TAP lines are flipped to
+`ok N name` IN PLACE (numbering preserved so the #804 plan-deficit math is
+untouched) and they are named LOUDLY (`cleared on serial re-run (load flake)`
++ `[diag] TEST_GATE_FLAKE_RETRY cleared= persisted=`) so health reports keep
+seeing recurring flakes rather than silently absorbing them. Failures that
+persist on the quiet run block exactly as before. Bounds: targeted-selection
+path only; 1..RITE_GATE_FLAKE_RETRY_MAX_FILES (default 5) failing files (more
+is real breakage); `[tests_not_run]` synthetics never retry (a swallow is not
+a flake); RITE_GATE_FLAKE_RETRY=false is the operator off-switch. Rejected:
+per-test quarantine lists (rot silently; the serial re-run is evidence-based
+per occurrence) and N>1 retries (a test needing two quiet runs isn't flaking,
+it's broken). Test: tests/regression/gate-flake-retry.bats.
