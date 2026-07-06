@@ -55,6 +55,7 @@ setup() {
   _diag()         { :; }
 
   # Source markers so RITE_MARKER_PARENT_PR / RITE_MARKER_SOURCE_ISSUE are set.
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: markers.sh uses a function-sentinel guard (declare -f rite_markers_loaded); pre-source stubs are preserved on source.
   source "$RITE_LIB_DIR/utils/markers.sh"
   set +u; set +o pipefail
 }

@@ -22,10 +22,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 _r8_awk=""
 _r13_awk=""
 _r27_awk=""
+_r34_awk=""
 _cleanup_awk_tmpfiles() {
   [ -n "$_r8_awk"  ] && rm -f "$_r8_awk"
   [ -n "$_r13_awk" ] && rm -f "$_r13_awk"
   [ -n "$_r27_awk" ] && rm -f "$_r27_awk"
+  [ -n "$_r34_awk" ] && rm -f "$_r34_awk"
   # Always return 0 — the trap fires on EXIT and a non-zero return here would
   # override the script's intended exit code (e.g. exit 0 → exit 1 when both
   # tmpfile vars are empty and the last `[ -n "" ]` test returns 1).
@@ -1844,6 +1846,250 @@ for file in "${SHELL_FILES[@]}"; do
       "\"\${${_r33_name}[@]}\" without +idiom or nearby \${#${_r33_name}[@]} guard crashes bash 3.2 under set -u when the array is empty — use \"\${${_r33_name}[@]+\"\${${_r33_name}[@]}\"}\""
   done <<< "$_r33_hits"
 done
+
+# Rule 34: Pre-source function stub overwritten by env-guarded lib (BATS_PRE_SOURCE_STUB_OVERWRITE)
+#
+# When setup()/setup_file() in a .bats file defines a function stub (e.g.,
+# `gh_safe() {`) and then sources a lib file that uses an env-var re-source
+# guard (e.g., `_RITE_GH_RETRY_LOADED=true`), the REAL function definition
+# from the lib OVERWRITES the pre-source stub.  Function-sentinel guards skip
+# by checking `declare -f`; env-var guards skip by checking a shell variable
+# — they do NOT check whether the function is already defined in the calling
+# shell, so the real implementation always wins on source.
+#
+# Live failure: a pre-source `gh_safe` stub was silently overwritten after
+# `source gh-retry.sh`; the exit-14 test hit live GitHub for two days
+# (issue #804, PR #840 pointwise fix, this rule from PR #848).
+#
+# The rule flags: any .bats setup()/setup_file() that:
+#   1. Defines at least one function stub (`NAME() {` line)
+#   2. Sources a lib file (path matching lib/... or $RITE_LIB_DIR/.../...)
+#   3. Does NOT re-define the stub function after the LAST source line
+#
+# Heredoc-aware: stub/source lines inside fixture heredocs are content, not
+# setup code.
+#
+# Suppression: place on the line immediately before the flagged source line:
+#   # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: <text>
+echo "Checking for pre-source function stubs overwritten by env-guarded lib sources..."
+
+_r34_awk=$(mktemp)
+# AWK strategy:
+#   Track state for each setup()/setup_file() function body.
+#   Collect stub function names defined before a source (phase = "pre").
+#   When a source line is seen, flip to "post" phase and record the source line.
+#   Collect stub re-definitions seen after the source (phase = "post").
+#   On closing }, if there are pre-source stubs that have no post-source re-stub,
+#   report the source line number (so the user knows which source is the trigger).
+#
+# BSD AWK compatible: no \s, no + quantifier, no \b, no gensub, no match(,,arr).
+# Uses index(), [[:space:]], and [^a-zA-Z0-9_] for word-boundary checks.
+#
+# Output: FILENAME TAB linenum (tab-separated for paths with colons)
+printf '%s\n' \
+  'FNR == 1 { in_heredoc = 0; hd_marker = ""; in_setup = 0; phase = "none"; src_line = 0 }' \
+  'function array_has(arr, n,    k) { for (k in arr) if (k == n) return 1; return 0 }' \
+  '{' \
+  '  # ---- heredoc close ----' \
+  '  if (in_heredoc) {' \
+  '    _c = $0; sub(/^[[:space:]]*/, "", _c)' \
+  '    if (_c == hd_marker) in_heredoc = 0' \
+  '    next' \
+  '  }' \
+  '  if ($0 ~ /^[[:space:]]*#/) next' \
+  '  # ---- heredoc open ----' \
+  '  if (index($0, "<<") > 0) {' \
+  '    tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)' \
+  '    gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")' \
+  '    if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }' \
+  '  }' \
+  '  # ---- setup()/setup_file() open ----' \
+  '  if (!in_setup) {' \
+  '    if ($0 ~ /^(setup|setup_file|setup_suite)[[:space:]]*\(\)/) {' \
+  '      in_setup = 1; phase = "none"; src_line = 0' \
+  '      delete pre_stubs; delete post_stubs' \
+  '    }' \
+  '    next' \
+  '  }' \
+  '  # ---- setup() close ----' \
+  '  if ($0 ~ /^}[[:space:]]*$/) {' \
+  '    # If we saw at least one source and have pre-stubs with no post re-stub, report' \
+  '    if (src_line > 0) {' \
+  '      for (fn in pre_stubs) {' \
+  '        if (!array_has(post_stubs, fn)) {' \
+  '          print FILENAME "\t" src_line "\t" fn' \
+  '        }' \
+  '      }' \
+  '    }' \
+  '    in_setup = 0; phase = "none"; src_line = 0' \
+  '    delete pre_stubs; delete post_stubs' \
+  '    next' \
+  '  }' \
+  '  # ---- function stub definition (NAME() { form) ----' \
+  '  # Match:   name() {   or   name ()  {' \
+  '  # Require word-start (after whitespace or line-start) and word-end before ().' \
+  '  if ($0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{/ ||' \
+  '      $0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*$/) {' \
+  '    # Extract function name: take the first token before ()' \
+  '    fn_tok = $0; sub(/^[[:space:]]*/, "", fn_tok); sub(/[[:space:]]*\(.*/, "", fn_tok)' \
+  '    if (length(fn_tok) > 0 && fn_tok ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {' \
+  '      if (phase == "none" || phase == "pre") { phase = "pre"; pre_stubs[fn_tok] = FNR }' \
+  '      else if (phase == "post") { post_stubs[fn_tok] = FNR }' \
+  '    }' \
+  '  }' \
+  '  # ---- source line ----' \
+  '  # Matches: source /path/lib/...  or  . /path/lib/...  or  source "${RITE_LIB_DIR}/...' \
+  '  # The same path pattern as Rule 30: lib/ path or config.sh.' \
+  '  if (($0 ~ /(^|[^A-Za-z0-9_.])(source|\.)[ \t]+/ &&' \
+  '       $0 ~ /(lib|LIB_DIR[}"'"'"']*)\/(core|utils|providers|hooks)\/|config\.sh/) &&' \
+  '      index($0, "RITE_SOURCE_FUNCTIONS_ONLY") == 0) {' \
+  '    if (phase == "pre") {' \
+  '      # Only report the first (or last? use last for the re-stub check to be sound) source.' \
+  '      # Use the LAST source line as the report point — the re-stub must follow all sources.' \
+  '      src_line = FNR; phase = "post"' \
+  '      delete post_stubs' \
+  '    } else if (phase == "post") {' \
+  '      src_line = FNR; delete post_stubs' \
+  '    }' \
+  '  }' \
+  '}' \
+  'END {' \
+  '  if (in_setup && src_line > 0) {' \
+  '    for (fn in pre_stubs) {' \
+  '      if (!array_has(post_stubs, fn)) {' \
+  '        print FILENAME "\t" src_line "\t" fn' \
+  '      }' \
+  '    }' \
+  '  }' \
+  '}' \
+  > "$_r34_awk"
+
+while IFS= read -r bats_file; do
+  [ -z "$bats_file" ] && continue
+  case "$bats_file" in
+    */tests/fixtures/*|tests/fixtures/*) continue ;;
+  esac
+  _r34_file_hits=$(awk -f "$_r34_awk" "$bats_file" </dev/null 2>/dev/null || true)
+  [ -z "$_r34_file_hits" ] && continue
+  while IFS=$'\t' read -r _r34_fname _r34_line _r34_fn; do
+    [ -z "$_r34_line" ] && continue
+    _prev_line=$(sed -n "$((_r34_line - 1))p" "$bats_file" 2>/dev/null || true)
+    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_PRE_SOURCE_STUB_OVERWRITE'; then
+      continue
+    fi
+    print_violation "$bats_file" "$_r34_line" "BATS_PRE_SOURCE_STUB_OVERWRITE" \
+      "stub '${_r34_fn}()' defined before this lib source is overwritten by the lib's real definition (env-var guards don't check for existing functions); re-define the stub AFTER the last source in setup()"
+  done <<< "$_r34_file_hits"
+done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+
+rm -f "$_r34_awk"
+_r34_awk=""
+
+# Rule 35: File-scope RITE_* / inherited env-var reads in .bats files (BATS_FILE_SCOPE_ENV_READ)
+#
+# Assignments at the TRUE file scope of a .bats file (outside any function or
+# @test block) that reference $RITE_* environment variables are unsafe.  They
+# execute when bats parses and loads the file — before setup() runs — at which
+# point the env vars may not yet be set (especially RITE_REPO_ROOT and
+# RITE_TEST_TMPDIR, which are set by tests/helpers/setup.bash inside setup()).
+#
+# Live failure class: `_WORKFLOW_FILE="${RITE_LIB_DIR}/core/workflow-runner.sh"`
+# at file scope (on the #804 branch) expanded to an empty path because
+# RITE_LIB_DIR was not exported before the file was parsed — tests then failed
+# to source the lib and bats reported "Executed 0 instead of expected N".
+#
+# Safe patterns NOT flagged:
+#   - Assignments derived from BATS_TEST_FILENAME / BATS_TEST_DIRNAME /
+#     BATS_TEST_TMPDIR — these are bats builtins always set before parsing.
+#   - Assignments inside any function (setup, setup_file, @test, helpers).
+#   - Assignments inside heredoc bodies.
+#
+# Suppression: place on the line immediately before the flagged assignment:
+#   # sharkrite-lint disable BATS_FILE_SCOPE_ENV_READ - Reason: <text>
+echo "Checking for file-scope RITE_* env-var reads in .bats files..."
+
+while IFS= read -r bats_file; do
+  [ -z "$bats_file" ] && continue
+  case "$bats_file" in
+    */tests/fixtures/*|tests/fixtures/*) continue ;;
+  esac
+  _r35_file_hits=$(awk '
+    FNR == 1 { in_heredoc = 0; hd_marker = ""; depth = 0; in_squote_ml = 0 }
+    {
+      # ---- multi-line single-quoted string close ----
+      # A file-scope VAR='"'"'...'"'"' assignment can span multiple lines.
+      # Lines inside it look like normal code but must not be flagged.
+      if (in_squote_ml) {
+        # The string ends at the first bare single-quote at end-of-line (no escape in single quotes).
+        if ($0 ~ /'"'"'[[:space:]]*$/) in_squote_ml = 0
+        next
+      }
+      # ---- heredoc close ----
+      if (in_heredoc) {
+        _c = $0; sub(/^[[:space:]]*/, "", _c)
+        if (_c == hd_marker) in_heredoc = 0
+        next
+      }
+      if ($0 ~ /^[[:space:]]*#/) next
+      # ---- heredoc open ----
+      if (index($0, "<<") > 0) {
+        tok = $0; sub(/.*<<-?[[:space:]]*/, "", tok)
+        gsub(/['"'"'"]/, "", tok); split(tok, _p, " ")
+        if (length(_p[1]) > 0 && _p[1] ~ /^[A-Za-z_][A-Za-z_0-9]*$/) { hd_marker = _p[1]; in_heredoc = 1 }
+      }
+      # ---- detect multi-line single-quoted assignment at file scope ----
+      # Pattern:  VAR='"'"'  (line ends after opening single quote, no closing quote)
+      # This is the pattern used for inline shell-script variables like:
+      #   _script_body='"'"'
+      #     ... code with ${RITE_*} ...
+      #   '"'"'
+      if (depth == 0 && $0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*='"'"'/ && $0 !~ /'"'"'.*'"'"'[[:space:]]*$/) {
+        # Odd number of single quotes → opens a multi-line block
+        _sq_count = 0; _tmp_sq = $0
+        while (index(_tmp_sq, "'"'"'") > 0) { _sq_count++; sub(/'"'"'/, "", _tmp_sq) }
+        if (_sq_count % 2 == 1) { in_squote_ml = 1; next }
+      }
+      # ---- track brace depth (to detect file-scope vs inside-function) ----
+      # Strip string literals and ${} expansions to avoid counting braces inside them.
+      _stripped = $0
+      gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
+      gsub(/"[^"]*"/, "", _stripped)
+      gsub(/\$\{[^}]*\}/, "", _stripped)
+      _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
+      _tmp = _stripped; _cb = gsub(/}/, "", _tmp)
+      depth += _ob - _cb
+      if (depth < 0) depth = 0
+      # ---- only flag at file scope (depth == 0) ----
+      if (depth > 0) next
+      # ---- detect: VAR=... referencing $RITE_* on a bare assignment line ----
+      # The assignment must:
+      #   - Be a plain variable assignment (not inside a function/test/if body)
+      #   - Reference $RITE_* (with or without braces)
+      #   - NOT be purely derived from BATS builtins (BATS_TEST_FILENAME, etc.)
+      #
+      # Pattern: line matches  VAR=...${RITE_...  or  VAR=...$RITE_...
+      # And the RHS contains \$RITE_ (not just \$BATS_TEST_* or \$BATS_TEST_DIRNAME)
+      if ($0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/ &&
+          ($0 ~ /\$\{RITE_[A-Z_]/ || $0 ~ /\$RITE_[A-Z_]/)) {
+        # Skip if the only RITE_ reference is inside a BATS_TEST_FILENAME/DIRNAME
+        # derivation (those are always set). Heuristic: if the line also has
+        # BATS_TEST_FILENAME or BATS_TEST_DIRNAME, assume it is the safe pattern.
+        if (index($0, "BATS_TEST_FILENAME") > 0 || index($0, "BATS_TEST_DIRNAME") > 0) next
+        print FNR
+      }
+    }
+  ' "$bats_file" </dev/null 2>/dev/null || true)
+  [ -z "$_r35_file_hits" ] && continue
+  while IFS= read -r _r35_line; do
+    [ -z "$_r35_line" ] && continue
+    _prev_line=$(sed -n "$((_r35_line - 1))p" "$bats_file" 2>/dev/null || true)
+    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_FILE_SCOPE_ENV_READ'; then
+      continue
+    fi
+    print_violation "$bats_file" "$_r35_line" "BATS_FILE_SCOPE_ENV_READ" \
+      "file-scope assignment reads \$RITE_* env var before setup() runs — RITE_* vars may not be set at parse time; move this assignment into setup() or suppress if the variable is guaranteed to be exported before bats parses the file"
+  done <<< "$_r35_file_hits"
+done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
 
 echo ""
 echo "----------------------------------------"

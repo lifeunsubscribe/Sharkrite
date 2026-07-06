@@ -67,6 +67,7 @@ setup() {
   if ! declare -f portable_sed_i >/dev/null 2>&1; then
     if [ -f "${RITE_REPO_ROOT}/lib/utils/portable-cmds.sh" ]; then
       # shellcheck disable=SC1090
+      # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: portable-cmds.sh uses a function-sentinel guard (declare -f portable_sed_i); pre-source stubs are preserved on source.
       source "${RITE_REPO_ROOT}/lib/utils/portable-cmds.sh"
       set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
     fi

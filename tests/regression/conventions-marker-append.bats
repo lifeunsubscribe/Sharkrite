@@ -65,6 +65,14 @@ setup() {
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
+  # Re-stub after source: tag-index.sh chains to colors.sh (env-var guard
+  # _RITE_COLORS_LOADED) which overwrites print_warning and print_info.
+  # Re-define to keep test output noise-free (no ANSI codes / emoji from colors.sh).
+  print_warning() { :; }
+  print_info()    { :; }
+  verbose_info()  { :; }
+  export -f print_warning print_info verbose_info
+
   # Extract _mark_updated() and update_conventions_from_marker() from
   # assess-documentation.sh via awk, same pattern as changelog-ordering.bats.
   eval "$(awk '

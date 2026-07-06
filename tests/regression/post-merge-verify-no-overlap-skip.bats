@@ -18,6 +18,7 @@ setup() {
   export GATE_MARK="$BATS_TEST_TMPDIR/gate-ran"
   run_test_gate() { echo ran > "$GATE_MARK"; return 0; }
   _diag() { :; }
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: post-merge-verify.sh uses function-sentinel guards (declare -f verify_post_merge, declare -f _diag, declare -f run_test_gate); all pre-source stubs are preserved on source.
   source "$REPO_ROOT/lib/utils/post-merge-verify.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 

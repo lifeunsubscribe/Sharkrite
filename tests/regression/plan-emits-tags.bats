@@ -86,6 +86,7 @@ setup() {
   if ! declare -f parse_tag_index >/dev/null 2>&1; then
     if [ -f "${RITE_REPO_ROOT}/lib/utils/tag-index.sh" ]; then
       # shellcheck disable=SC1090
+      # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: guarded by declare -f parse_tag_index (function-sentinel); pre-source stubs are preserved. If the guard fires, tag-index.sh chains to colors.sh (env-var) but the test doesn't depend on print_* stub format.
       source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
       set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
     fi

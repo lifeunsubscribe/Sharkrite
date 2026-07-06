@@ -31,10 +31,14 @@
 
 load '../helpers/setup.bash'
 
-# Path to the binary mock under test
-GH_MOCK_BIN="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"
-
 setup() {
+  # GH_MOCK_BIN is initialized inside setup() rather than at file scope:
+  # reading RITE_REPO_ROOT at .bats file scope depends on bats' load ordering,
+  # which is fragile. setup.bash exports RITE_REPO_ROOT before setup() runs,
+  # so this assignment is always safe here.
+  GH_MOCK_BIN="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"
+  export GH_MOCK_BIN
+
   # RITE_REPO_ROOT is set at load time by setup.bash; guard before any path
   # construction that depends on it.
   [[ -n "${RITE_REPO_ROOT:-}" ]] || {

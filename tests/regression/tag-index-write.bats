@@ -36,6 +36,7 @@ setup() {
   export -f verbose_info
 
   # Source tag-index.sh to load write helpers
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: tag-index.sh uses a function-sentinel guard (declare -f show_tag_index); pre-source verbose_info() stub is preserved. colors.sh is in the chain but does not define verbose_info.
   source "$RITE_LIB_DIR/utils/tag-index.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }

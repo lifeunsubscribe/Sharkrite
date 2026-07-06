@@ -84,6 +84,7 @@ setup() {
   # are never exercised (the call would be 'command not found' and fall straight through).
   # RITE_GH_RETRY_MAX_SLEEP=0 keeps the retry path instant in tests.
   export RITE_GH_RETRY_MAX_SLEEP=0
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: gh-retry.sh defines only gh_safe and _gh_is_read_op; it does NOT define print_status/print_error/print_warning/print_success/print_header/_timer_start/_timer_end/_diag — those pre-source stubs are not overwritten.
   source "${RITE_REPO_ROOT}/lib/utils/gh-retry.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
