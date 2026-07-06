@@ -1,21 +1,22 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/workflow-runner.sh
-# Regression test: gate raw output routing is CONDITIONAL on concurrency.
+# Regression test: gate raw output routing for summary mode and verbose mode.
 #
-#   - BACKGROUND gate (RITE_GATE_BACKGROUND=1) runs concurrent with review
-#     generation, so its voluminous raw bats/lint output is routed to the run log
-#     only (RITE_LOG_FILE) and the terminal gets a compact digest — no interleave.
-#   - FOREGROUND gate (default: post-merge-verify, fastpath, standalone) has no
-#     concurrent output to protect, so routing to the log would make a multi-minute
-#     run look like a HANG. It streams live to the terminal instead (the FIFO-tee
-#     still logs it). Live progress beats a phantom hang.
+# Summary mode (default, RITE_GATE_VERBOSE unset):
+#   Raw runner output → RITE_LOG_FILE via direct-append (two-channel convention).
+#   Console sees only the compact digest + named failures.
+#   Works for both BACKGROUND and FOREGROUND invocations.
+#
+# Verbose mode (RITE_GATE_VERBOSE=true or RITE_VERBOSE=true):
+#   BACKGROUND gate (RITE_GATE_BACKGROUND=1): raw → log (avoid interleave).
+#   FOREGROUND gate: raw → stdout (live progress, no phantom hang).
 #
 # Verifies:
-#   1. BACKGROUND + RITE_LOG_FILE set → raw lands in the LOG, not stdout; digest
-#      + blocking-failure name on stdout.
-#   2. BACKGROUND + RITE_LOG_FILE unset → falls back to stdout (never lost).
-#   3. FOREGROUND (no flag) + RITE_LOG_FILE set → raw streams LIVE to stdout (the
-#      fix for the "looks like a hang" complaint).
+#   1. SUMMARY mode + RITE_LOG_FILE set → raw in LOG, compact digest on stdout.
+#   2. SUMMARY mode + RITE_LOG_FILE unset → raw silently to /dev/null; digest still on stdout.
+#   3. SUMMARY mode + FOREGROUND → raw goes to log (not stdout), digest on stdout.
+#   4. VERBOSE mode + FOREGROUND → raw streams LIVE to stdout (legacy hang-fix preserved).
+#   5. Structural: the two concurrent review-loop gates set RITE_GATE_BACKGROUND=1.
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -63,7 +64,9 @@ STUBEOF
   chmod +x "$stub_dir/bats"
 }
 
-@test "BACKGROUND gate routes raw bats output to the log (not stdout) and prints a digest" {
+@test "SUMMARY mode: raw bats output goes to log (not stdout) and digest appears on stdout" {
+  # Default (no RITE_GATE_VERBOSE): raw output suppressed from console regardless
+  # of whether the gate is BACKGROUND or FOREGROUND.
   _stub_dir="${BATS_TEST_TMPDIR}/routing_stub"
   _make_failing_bats_stub "$_stub_dir"
   _proj=$(_make_stub_project)
@@ -76,6 +79,8 @@ STUBEOF
     export RITE_TEST_GATE_DIFF_BASE='HEAD'
     export RITE_LOG_FILE='${_log}'
     export RITE_GATE_BACKGROUND=1
+    unset RITE_GATE_VERBOSE
+    unset RITE_VERBOSE
     _diag() { true; }
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
@@ -83,9 +88,9 @@ STUBEOF
     PATH=\"${_stub_dir}:\$PATH\" run_test_gate '${_gate_out}' '${_proj}'
   " || true
 
-  # Background: the noisy raw pretty stream must NOT appear on the terminal...
+  # Summary mode: the noisy raw pretty stream must NOT appear on the terminal...
   ! echo "$output" | grep -q 'RAW_PRETTY_MARKER' \
-    || { echo "FAIL: raw bats output leaked onto stdout"; echo "$output"; return 1; }
+    || { echo "FAIL: raw bats output leaked onto stdout in summary mode"; echo "$output"; return 1; }
   # ...it must be captured in the run log instead.
   [ -f "$_log" ] || { echo "FAIL: run log not written"; return 1; }
   grep -q 'RAW_PRETTY_MARKER' "$_log" \
@@ -98,7 +103,10 @@ STUBEOF
     || { echo "FAIL: blocking failure not named in digest"; echo "$output"; return 1; }
 }
 
-@test "BACKGROUND gate falls back to stdout when RITE_LOG_FILE is unset (output never lost)" {
+@test "SUMMARY mode + no RITE_LOG_FILE: raw silently to /dev/null; digest still on stdout" {
+  # Without a log file configured, raw output goes to /dev/null in summary mode.
+  # The compact digest (including named failures) is still visible on stdout so
+  # the user knows what failed — the gate never drops failure names.
   _stub_dir="${BATS_TEST_TMPDIR}/routing_stub_nolog"
   _make_failing_bats_stub "$_stub_dir"
   _proj=$(_make_stub_project)
@@ -110,6 +118,8 @@ STUBEOF
     export RITE_TEST_GATE_DIFF_BASE='HEAD'
     unset RITE_LOG_FILE
     export RITE_GATE_BACKGROUND=1
+    unset RITE_GATE_VERBOSE
+    unset RITE_VERBOSE
     _diag() { true; }
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
@@ -117,19 +127,23 @@ STUBEOF
     PATH=\"${_stub_dir}:\$PATH\" run_test_gate '${_gate_out}' '${_proj}'
   " || true
 
-  # With no log configured, raw output falls back to stdout so nothing is lost.
-  echo "$output" | grep -q 'RAW_PRETTY_MARKER' \
-    || { echo "FAIL: raw output lost when RITE_LOG_FILE unset"; echo "$output"; return 1; }
+  # No log configured: raw output goes to /dev/null (not stdout).
+  ! echo "$output" | grep -q 'RAW_PRETTY_MARKER' \
+    || { echo "FAIL: raw output leaked to stdout (should be /dev/null in summary mode)"; echo "$output"; return 1; }
+  # But the digest (named failures) still surfaces on stdout.
+  echo "$output" | grep -q 'blocking-failure-xyz' \
+    || { echo "FAIL: blocking failure name missing from stdout when no log configured"; echo "$output"; return 1; }
 }
 
-@test "FOREGROUND gate streams raw output LIVE to stdout even with RITE_LOG_FILE set (no phantom hang)" {
-  # The fix: a foreground gate (no RITE_GATE_BACKGROUND) must show live progress
-  # on the terminal — routing it to the log made a long bats run look frozen.
-  _stub_dir="${BATS_TEST_TMPDIR}/routing_stub_fg"
+@test "SUMMARY mode + FOREGROUND: raw goes to log (not stdout), digest on stdout" {
+  # Summary mode applies to FOREGROUND gates too — the issue was console noise
+  # from repeated npm error trailers. Foreground no longer streams raw to stdout
+  # by default; it goes to the log like the background path.
+  _stub_dir="${BATS_TEST_TMPDIR}/routing_stub_fg_summary"
   _make_failing_bats_stub "$_stub_dir"
   _proj=$(_make_stub_project)
-  _gate_out="${BATS_TEST_TMPDIR}/gate_out_fg.json"
-  _log="${BATS_TEST_TMPDIR}/run_fg.log"
+  _gate_out="${BATS_TEST_TMPDIR}/gate_out_fg_summary.json"
+  _log="${BATS_TEST_TMPDIR}/run_fg_summary.log"
 
   run bash -c "
     export RITE_LIB_DIR='${RITE_LIB_DIR}'
@@ -137,6 +151,8 @@ STUBEOF
     export RITE_TEST_GATE_DIFF_BASE='HEAD'
     export RITE_LOG_FILE='${_log}'
     unset RITE_GATE_BACKGROUND
+    unset RITE_GATE_VERBOSE
+    unset RITE_VERBOSE
     _diag() { true; }
     export -f _diag 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
@@ -144,10 +160,44 @@ STUBEOF
     PATH=\"${_stub_dir}:\$PATH\" run_test_gate '${_gate_out}' '${_proj}'
   " || true
 
-  # Foreground: raw stream IS visible live on the terminal (the anti-hang fix),
-  # even though a log is configured.
+  # Summary mode (foreground): raw must NOT stream to stdout.
+  ! echo "$output" | grep -q 'RAW_PRETTY_MARKER' \
+    || { echo "FAIL: raw bats output leaked to stdout in foreground summary mode"; echo "$output"; return 1; }
+  # Raw must be in the log.
+  [ -f "$_log" ] || { echo "FAIL: run log not written for foreground gate"; return 1; }
+  grep -q 'RAW_PRETTY_MARKER' "$_log" \
+    || { echo "FAIL: raw bats output not in run log for foreground gate"; cat "$_log"; return 1; }
+  # Digest still appears on stdout.
+  echo "$output" | grep -q 'blocking-failure-xyz' \
+    || { echo "FAIL: blocking failure not named in digest"; echo "$output"; return 1; }
+}
+
+@test "VERBOSE mode + FOREGROUND: raw streams LIVE to stdout (hang-fix preserved)" {
+  # With RITE_GATE_VERBOSE=true a foreground gate restores live streaming so
+  # developers can watch progress without tailing the log file.
+  _stub_dir="${BATS_TEST_TMPDIR}/routing_stub_fg_verbose"
+  _make_failing_bats_stub "$_stub_dir"
+  _proj=$(_make_stub_project)
+  _gate_out="${BATS_TEST_TMPDIR}/gate_out_fg_verbose.json"
+  _log="${BATS_TEST_TMPDIR}/run_fg_verbose.log"
+
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export PR_NUMBER='777'
+    export RITE_TEST_GATE_DIFF_BASE='HEAD'
+    export RITE_LOG_FILE='${_log}'
+    unset RITE_GATE_BACKGROUND
+    export RITE_GATE_VERBOSE=true
+    _diag() { true; }
+    export -f _diag 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    PATH=\"${_stub_dir}:\$PATH\" run_test_gate '${_gate_out}' '${_proj}'
+  " || true
+
+  # Verbose + foreground: raw stream IS visible live on the terminal.
   echo "$output" | grep -q 'RAW_PRETTY_MARKER' \
-    || { echo "FAIL: foreground gate hid raw output from stdout (the hang feeling)"; echo "$output"; return 1; }
+    || { echo "FAIL: verbose foreground gate hid raw output from stdout"; echo "$output"; return 1; }
 }
 
 @test "structural: the two concurrent review-loop gates set RITE_GATE_BACKGROUND=1" {

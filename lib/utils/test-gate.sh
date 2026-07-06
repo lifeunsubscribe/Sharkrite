@@ -1464,13 +1464,17 @@ _dir_rel() {
 }
 
 # ---------------------------------------------------------------------------
-# _gate_status — emit a [test-gate] progress line, routed by run mode.
+# _gate_status — emit a [test-gate] progress line, routed by _gate_raw_sink.
 #
-# Reads the caller's `_gate_raw_sink` (bash dynamic scope): in BACKGROUND mode
-# it is the run log, so these lines buffer there and only the final digest
-# reaches the terminal (no interleaving with the concurrent review stream); in
-# FOREGROUND mode it is /dev/stdout, so progress stays live. The `:-/dev/stdout`
-# default keeps it safe if ever called before the sink is set.
+# Reads the caller's `_gate_raw_sink` (bash dynamic scope):
+#   - Summary mode (default): sink is RITE_LOG_FILE — progress lines buffer
+#     there and only the compact digest reaches the terminal.
+#   - Verbose + background: sink is RITE_LOG_FILE — avoids interleaving with
+#     the concurrent review stream.
+#   - Verbose + foreground: sink is /dev/stdout — live progress visible on the
+#     terminal.
+# The `:-/dev/stdout` default keeps it safe if ever called before the sink is
+# set (e.g. in early-exit paths above run_test_gate).
 # ---------------------------------------------------------------------------
 _gate_status() {
   echo "$@" >> "${_gate_raw_sink:-/dev/stdout}"
@@ -1510,6 +1514,50 @@ run_test_gate() {
     return 0
   fi
 
+  # --- Summary mode vs verbose mode ---
+  # In summary mode (the default), raw test-runner output is routed directly to
+  # RITE_LOG_FILE (the two-channel direct-append path, like [diag] lines) so the
+  # console only sees the per-workspace summary + named failures + [test-gate]/
+  # TEST_GATE lines. This caps console output at ~30 lines per gate run regardless
+  # of how many workspaces / raw npm trailers the runner produces.
+  #
+  # Verbose mode (RITE_VERBOSE=true or RITE_GATE_VERBOSE=true) restores raw
+  # streaming to the terminal — useful for debugging a failing gate locally.
+  #
+  # The existing BACKGROUND gate flag is preserved: it controls whether the gate
+  # runs concurrently with review generation. In summary mode, both foreground and
+  # background paths use the log-only channel; the background flag only matters for
+  # the verbose fallback path.
+  local _gate_verbose=false
+  if [ "${RITE_VERBOSE:-}" = "true" ] || [ "${RITE_GATE_VERBOSE:-}" = "true" ]; then
+    _gate_verbose=true
+  fi
+
+  # Raw gate output routing — established once here and used by every runner path:
+  #
+  #   SUMMARY mode (default, _gate_verbose=false):
+  #     Raw output → RITE_LOG_FILE via direct-append (two-channel convention,
+  #     same channel as [diag] lines). Console gets the compact digest only.
+  #     Falls back to /dev/null when no log configured (digest still reaches
+  #     stdout; nothing is lost from the assessment's point of view).
+  #
+  #   VERBOSE mode (_gate_verbose=true):
+  #     BACKGROUND gate (RITE_GATE_BACKGROUND=1): raw output → log file to
+  #       avoid interleaving with the concurrent review stream.
+  #     FOREGROUND gate: raw output → /dev/stdout so live progress is visible
+  #       and the run doesn't look frozen. FIFO-tee still captures it.
+  local _gate_raw_sink
+  if [ "$_gate_verbose" = "false" ]; then
+    # Summary mode: direct-append to log; NOT through the FIFO tee.
+    _gate_raw_sink="${RITE_LOG_FILE:-/dev/null}"
+  elif [ "${RITE_GATE_BACKGROUND:-}" = "1" ]; then
+    # Verbose + background: route to log to avoid interleaving.
+    _gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"
+  else
+    # Verbose + foreground: live to terminal.
+    _gate_raw_sink="/dev/stdout"
+  fi
+
   # --- RITE_TEST_COMMAND override ---
   # When set, use this command verbatim as the test runner for non-Sharkrite repos
   # instead of manifest detection. Checked before the manifest ladder so projects
@@ -1536,8 +1584,11 @@ run_test_gate() {
     # Use sh -c to support multi-word commands (e.g. "cargo test --features integration")
     # without eval. RITE_TEST_COMMAND is operator-configured in .rite/config, not
     # derived from external input.
+    # Capture to the raw file for JSON parsing AND append to the sink (summary →
+    # log only; verbose → live terminal or log). The tee writes the raw file in
+    # real time while the sink gets the unfiltered stream for full fidelity.
     { (cd "$project_root" && sh -c "${RITE_TEST_COMMAND}" 2>&1); echo $? > "$_nonsr_exit_file_cmd"; } \
-      | tee "$_tests_raw_file_cmd" || true
+      | tee "$_tests_raw_file_cmd" >> "$_gate_raw_sink" || true
     local _cmd_tests_exit
     _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo 1)
     _cmd_tests_exit=${_cmd_tests_exit:-1}  # empty file = child killed before writing = failure (#935)
@@ -1573,6 +1624,24 @@ run_test_gate() {
     local _outcome_cmd="passed"
     [ "$_cmd_overall_exit" -ne 0 ] && _outcome_cmd="failed"
     _diag "TEST_GATE outcome=${_outcome_cmd} lint_count=0 test_count=${_cmd_tests_count} duration_s=${_duration_cmd} pr=${PR_NUMBER:-?}"
+    # Console digest for the RITE_TEST_COMMAND path (summary mode hides raw output above).
+    if [ "$_cmd_overall_exit" -ne 0 ]; then
+      echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
+      if [ "$_cmd_tests_count" -gt 0 ]; then
+        local _cmd_fail_names
+        _cmd_fail_names=$(_extract_tap_failure_names "$_tests_raw_file_cmd")
+        if [ -n "$_cmd_fail_names" ]; then
+          local _cmd_ncount
+          _cmd_ncount=$(printf '%s\n' "$_cmd_fail_names" | grep -c '.' || true)
+          echo "⚠️  ${_cmd_ncount} test failure(s) blocking the gate:"
+          printf '%s\n' "$_cmd_fail_names" | while IFS= read -r _n; do
+            [ -n "$_n" ] && echo "   • ${_n}"
+          done
+        fi
+      fi
+    else
+      echo "[test-gate] RITE_TEST_COMMAND: passed ✅"
+    fi
     _gate_write_json "$output_file" "[]" "$_cmd_tests_items" "$_cmd_overall_exit"
     rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"
     trap - EXIT
@@ -1624,32 +1693,8 @@ run_test_gate() {
   # in its synthetic blocking [GATE] item.  Empty string = no named reason.
   local _gate_reason=""
 
-  # Raw gate output routing depends on whether this gate runs CONCURRENTLY:
-  #
-  #   - BACKGROUND gate (RITE_GATE_BACKGROUND=1) — the review-loop gate runs in
-  #     parallel with review generation (workflow-runner Phase 2/3). Streaming its
-  #     voluminous output (concurrent shellcheck+lint + bats pretty, plus a single
-  #     failing whole-session test replaying its transcript) onto the terminal
-  #     interleaves with the review stream. Route it to the run log only; the
-  #     terminal gets a compact digest at the end. Mirrors the two-channel
-  #     convention (direct >> "$RITE_LOG_FILE", like [diag] lines).
-  #
-  #   - FOREGROUND gate (default — post-merge-verify, fastpath, standalone) — there
-  #     is NO concurrent output to protect, so routing the stream to the log makes
-  #     a multi-minute bats run look like a HANG (a silent gap with nothing
-  #     printing). Stream live to the terminal instead so progress is visible; the
-  #     bin/rite FIFO-tee still captures it into the log. (The digest still prints
-  #     as a recap.) Live "test spam" beats a phantom hang when nothing else is
-  #     competing for the terminal.
-  #
-  # Background routing falls back to /dev/stdout when no log is configured
-  # (unlogged/sandboxed runs) so output is never lost.
-  local _gate_raw_sink
-  if [ "${RITE_GATE_BACKGROUND:-}" = "1" ]; then
-    _gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"
-  else
-    _gate_raw_sink="/dev/stdout"
-  fi
+  # _gate_verbose and _gate_raw_sink are resolved above (before RITE_TEST_COMMAND
+  # early-return) so the same sink is used by every runner path uniformly.
 
   if [ "$_is_sharkrite" = "true" ]; then
     # --- Sharkrite: shellcheck + custom lint (run independently so both run even if shellcheck fails) ---
@@ -2107,9 +2152,10 @@ run_test_gate() {
 
     if [ -f "$project_root/Makefile" ] && grep -q "^test:" "$project_root/Makefile" 2>/dev/null; then
       echo "[test-gate] Running make test..."
-      # tee to stdout for full-transcript log capture; temp file for JSON findings
+      # Capture to raw file for JSON parsing AND append to sink (summary → log;
+      # verbose → live terminal). Two-channel convention: raw appended directly.
       { (cd "$project_root" && make test 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+        | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
     elif [ -f "$project_root/package.json" ]; then
@@ -2222,7 +2268,7 @@ run_test_gate() {
       # merge rather than overwrite so both build failures and test failures block.
       local _npm_test_prior_exit="$_tests_exit"
       { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee -a "$_tests_raw_file" || true
+        | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
       [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
@@ -2236,7 +2282,7 @@ run_test_gate() {
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+        | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
       # Classify the pytest run to distinguish env failures from real failures.
@@ -2277,7 +2323,7 @@ run_test_gate() {
       fi
       echo "[test-gate] Running cargo test..."
       { (cd "$project_root" && cargo test 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+        | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
     elif [ -f "$project_root/go.mod" ]; then
@@ -2293,7 +2339,7 @@ run_test_gate() {
       fi
       echo "[test-gate] Running go test ./..."
       { (cd "$project_root" && go test ./... 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee "$_tests_raw_file" || true
+        | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
     elif (cd "$project_root" && _has_ino=false; for _f in ./*.ino; do [ -e "$_f" ] && { _has_ino=true; break; }; done; [ "$_has_ino" = true ]); then
@@ -2377,11 +2423,18 @@ run_test_gate() {
   # --- Capture terminal-digest inputs before the raw TAP file is removed ---
   # Block-on-any: every failure blocks, so name them all.
   local _bats_pass=0 _bats_fail_total=0 _summary_names=""
+  local _nonsr_fail_count=0 _nonsr_fail_names=""
   if [ "$_is_sharkrite" = "true" ]; then
     _bats_pass=$(grep -c "^ok " "$_tests_raw_file" 2>/dev/null || true)
     _bats_fail_total=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
     if [ "$_bats_fail_total" -gt 0 ]; then
       _summary_names=$(_extract_tap_failure_names "$_tests_raw_file")
+    fi
+  else
+    # Non-Sharkrite: capture TAP failure names before the file is deleted below.
+    _nonsr_fail_count=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
+    if [ "$_nonsr_fail_count" -gt 0 ]; then
+      _nonsr_fail_names=$(_extract_tap_failure_names "$_tests_raw_file")
     fi
   fi
 
@@ -2407,10 +2460,10 @@ run_test_gate() {
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
 
-  # --- Compact terminal digest (Sharkrite bats path) ---
-  # The raw bats/lint output went to the run log only (_gate_raw_sink); surface
-  # just the high-signal result here so concurrent phases aren't drowned. New
-  # (blocking) failures are named; pre-existing/suppressed ones stay in the log.
+  # --- Compact terminal digest ---
+  # Raw runner output went to _gate_raw_sink (summary mode → log only; verbose →
+  # live terminal). Surface the high-signal result here so concurrent phases
+  # aren't drowned. Named failures appear once; full transcript is in the log.
   if [ "$_is_sharkrite" = "true" ]; then
     if [ "$_lint_count" -gt 0 ]; then
       echo "[test-gate] lint: ${_lint_count} finding(s) blocking — full output in run log"
@@ -2427,7 +2480,33 @@ run_test_gate() {
         [ -n "${RITE_LOG_FILE:-}" ] && echo "   Full bats output: ${RITE_LOG_FILE}"
       fi
     elif [ "$_bats_pass" -gt 0 ]; then
-      echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+      if [ "$_gate_verbose" = "false" ]; then
+        echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+      fi
+    fi
+    # In summary mode, hint where the raw output can be found (only when we
+    # suppressed it — i.e., verbose=false and a log file is configured).
+    if [ "$_gate_verbose" = "false" ] && [ -n "${RITE_LOG_FILE:-}" ] \
+       && [ "$_lint_count" -eq 0 ] && [ "$_bats_fail_total" -eq 0 ]; then
+      : # All passed — the ✅ line above is sufficient, no log hint needed.
+    elif [ "$_gate_verbose" = "false" ] && [ -n "${RITE_LOG_FILE:-}" ]; then
+      echo "[test-gate] (raw runner output suppressed; use RITE_GATE_VERBOSE=true to stream — full output in ${RITE_LOG_FILE})"
+    fi
+  else
+    # Non-Sharkrite runners: emit a one-line outcome summary since raw output
+    # went to the sink (log or verbose stream) rather than the terminal.
+    if [ "$_tests_exit" -ne 0 ]; then
+      if [ "${_nonsr_fail_count:-0}" -gt 0 ]; then
+        echo "[test-gate] tests: ${_nonsr_fail_count} failure(s) (blocking)"
+        if [ -n "$_nonsr_fail_names" ]; then
+          printf '%s\n' "$_nonsr_fail_names" | while IFS= read -r _n; do
+            [ -n "$_n" ] && echo "   • ${_n}"
+          done
+        fi
+      else
+        echo "[test-gate] tests: FAILED (no parseable findings — see ${RITE_LOG_FILE:-run log})"
+      fi
+      [ -n "${RITE_LOG_FILE:-}" ] && echo "   Full output: ${RITE_LOG_FILE}"
     fi
   fi
 
