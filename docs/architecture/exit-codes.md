@@ -94,6 +94,7 @@ These codes cross script boundaries and must be kept unambiguous.
 | `1`  | All issues failed, none completed |
 | `10` | Batch completed with at least one blocker-deferred issue |
 | `16` | Batch halted by gate circuit breaker — `RITE_BATCH_GATE_TRIP` (default 3) consecutive issues ended with gate failures whose normalized signature (sorted unique failing-file set from gate-findings JSON) matched. Cause is environmental, not per-issue; the batch printed the shared signature and a remediation hint. Re-run after fixing the environment. Set `RITE_BATCH_GATE_TRIP=0` to disable. See: issue #823. |
+| `17` | Batch refused — another batch is already running against this repo (repo-level mutex held by a live process). The error message names the holder PID and its issue list. Wait for the holder to finish, or kill the holder PID if it crashed and the lock is stale (stale locks are auto-reclaimed on the next invocation). See: issue #833. |
 
 ### `stale-branch.sh` (`check_stale_branch` return)
 

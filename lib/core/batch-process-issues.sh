@@ -54,6 +54,7 @@ source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
+source "$RITE_LIB_DIR/utils/issue-lock.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -630,6 +631,10 @@ _cleanup_batch_session() {
     _diag "RITE_EXIT code=${rc} mode=batch current_issue=${ISSUE_NUM:-unknown}"
   fi
   rm -f "${SESSION_STATE_FILE:-}"
+  # Release the repo-level batch mutex (pid-checked; safe on interrupt/error/normal exit).
+  if declare -f release_batch_lock >/dev/null 2>&1; then
+    release_batch_lock
+  fi
 }
 trap '_cleanup_batch_session' EXIT
 
@@ -674,6 +679,29 @@ FAILED_PAIRS=()
 
 # Pre-start checks
 print_info "Running pre-start checks..."
+
+# ---------------------------------------------------------------------------
+# Repo-level batch mutex (issue #833)
+#
+# Acquire before any issue processing so concurrent batch invocations fail
+# loudly instead of contending on shared state (scratchpad locks, worktree
+# pool).  A refused batch exits 17 — distinct from per-issue failures so
+# callers and nightly automation can distinguish "another batch is running"
+# from a genuine workflow failure.
+#
+# The EXIT trap (_cleanup_batch_session) releases the lock unconditionally via
+# release_batch_lock(), which is pid-checked so it never removes another
+# process's lock.  The trap fires on normal exit, error, and SIGINT.
+#
+# Stale locks (dead PID) are atomically reclaimed by acquire_batch_lock() so
+# a crashed batch never permanently blocks subsequent invocations.
+# ---------------------------------------------------------------------------
+_batch_issue_list_str="${ISSUE_LIST[*]}"
+if ! acquire_batch_lock "$_batch_issue_list_str"; then
+  # acquire_batch_lock already printed the holder PID + issue list to stderr.
+  print_error "Batch refused: another batch is already running. Exit code 17."
+  exit 17
+fi
 
 # AWS credential check — warn only, don't block. If creds are actually needed,
 # tests will fail (which IS a hard gate).
