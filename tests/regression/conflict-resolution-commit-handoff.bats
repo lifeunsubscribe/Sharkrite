@@ -337,3 +337,120 @@ _make_conflict_branches() {
     fi
   done
 }
+
+# ───────────────────────────────────────────────────────────────────
+# Structural: resolver prompt contains no denied git-add instruction
+# ───────────────────────────────────────────────────────────────────
+
+@test "structural: resolver session prompt contains no denied git add instruction (#871)" {
+  # The PreToolUse deny hook blocks 'git add' inside agentic sessions. An
+  # instruction to 'stage each file with git add' burns session turns and
+  # produces confusing 'git add needs to be run outside this session' output.
+  # Pin: conflict-resolver.sh's prompt text must not contain an in-session
+  # git-add instruction. Acceptable forms: "git add" in RULES (prohibiting it)
+  # or in comments, but NOT in a directive telling Claude to run it.
+  local _resolver="$RITE_REPO_ROOT/lib/utils/conflict-resolver.sh"
+
+  # The denied instruction appeared in two forms in the original prompt (#871):
+  #   "stage it with 'git add <file>'"
+  #   "stage each file with git add"
+  # Check for both. Escape the pipe so grep sees a literal pipe char (OR is not needed;
+  # we check each independently for a clearer failure message).
+  if grep -q "stage.*with 'git add" "$_resolver"; then
+    echo "Prompt still contains denied 'stage ... with git add <file>' instruction" >&2
+    return 1
+  fi
+  if grep -q "stage each file with git add" "$_resolver"; then
+    echo "Prompt still contains denied 'stage each file with git add' instruction" >&2
+    return 1
+  fi
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Scoped staging: operator WIP stays uncommitted after resolution
+# ───────────────────────────────────────────────────────────────────
+
+@test "scoped staging: operator WIP file stays uncommitted after conflict resolution handoff (#871)" {
+  # Regression guard for the dirty-worktree + successful-resolution path.
+  #
+  # Scenario (mirrors the stale-branch.sh flow):
+  #   1. Two branches conflict on conflict.txt (guaranteed content conflict)
+  #   2. WIP file wip.txt exists in the worktree (operator uncommitted work)
+  #   3. Resolver session stub WRITES resolved conflict.txt, stages NOTHING
+  #   4. _RITE_RESOLVER_CONFLICT_PATHS is set to "conflict.txt" (pre-session capture)
+  #   5. commit_resolved_conflicts is called — must stage ONLY conflict.txt
+  #
+  # Invariant: wip.txt must remain UNTRACKED and UNSTAGED after the handoff.
+  # Previously git add -A would sweep wip.txt into the resolution commit.
+
+  _make_repo
+  _make_conflict_branches  # leaves cwd on feat, conflict on f.txt
+
+  # Start a rebase to create the rebase context (the most common conflict path)
+  run git rebase main
+  [ "$status" -ne 0 ]  # sanity: rebase stopped on the conflict
+  local _gitdir
+  _gitdir=$(git rev-parse --git-dir)
+  [ -d "$_gitdir/rebase-merge" ] || [ -d "$_gitdir/rebase-apply" ]
+
+  # Simulate operator WIP: an untracked file that exists in the tree when the
+  # resolver is called (simulates post-stash-pop state in stale-branch.sh)
+  echo "operator WIP - must not ride the resolution commit" > wip.txt
+
+  # Simulate resolver session: WRITE the resolution, stage NOTHING
+  echo "resolved version" > f.txt
+
+  # Set _RITE_RESOLVER_CONFLICT_PATHS as attempt_claude_merge_resolution would —
+  # only the conflict file, not the WIP file
+  export _RITE_RESOLVER_CONFLICT_PATHS="f.txt"
+
+  # Call directly (not via 'run') so the variable unset in commit_resolved_conflicts
+  # is visible in this shell — we need to verify it's cleared after use.
+  commit_resolved_conflicts "$PWD"
+
+  # Rebase must have completed (not stranded)
+  [ ! -d "$_gitdir/rebase-merge" ]
+  [ ! -d "$_gitdir/rebase-apply" ]
+
+  # Resolved content must be in the commit
+  [ "$(git show HEAD:f.txt)" = "resolved version" ]
+
+  # WIP file must stay UNTRACKED — NOT in the commit, NOT staged.
+  # git ls-files --error-unmatch exits 1 when the file is not tracked.
+  # Use 'run' so bats captures the expected non-zero exit without tripping errexit.
+  run git ls-files --error-unmatch wip.txt
+  [ "$status" -ne 0 ]  # not tracked — WIP survived
+
+  # Belt-and-suspenders: the resolution commit must not include wip.txt
+  local _commit_files
+  _commit_files=$(git show --name-only --pretty=format: HEAD || true)
+  if echo "$_commit_files" | grep -qF "wip.txt"; then
+    echo "wip.txt was swept into the resolution commit by git add -A" >&2
+    return 1
+  fi
+
+  # _RITE_RESOLVER_CONFLICT_PATHS must be cleared after use (no leak to next call)
+  [ -z "${_RITE_RESOLVER_CONFLICT_PATHS:-}" ]
+}
+
+@test "scoped staging: fallback to -A when _RITE_RESOLVER_CONFLICT_PATHS is unset (backward compat)" {
+  # Callers that bypass attempt_claude_merge_resolution (e.g. direct test
+  # invocations, or older call paths) should still work: no path list set →
+  # fall back to git add -A, which is the original behavior.
+
+  _make_repo
+
+  # Live add/add incident shape: staged deletion + untracked rewrite at same path
+  git rm --cached -q f.txt
+  echo "resolved via fallback path" > f.txt
+
+  # Explicitly unset the path list to exercise the fallback
+  unset _RITE_RESOLVER_CONFLICT_PATHS
+
+  run commit_resolved_conflicts "$PWD"
+  [ "$status" -eq 0 ]
+
+  # -A picked up the untracked rewrite — content committed, not a bare deletion
+  [ -n "$(git ls-files f.txt)" ]
+  [ "$(git show HEAD:f.txt)" = "resolved via fallback path" ]
+}

@@ -7,14 +7,16 @@
 #   aborting a rebase/merge). Step 3 re-runs git merge to recreate conflict markers.
 #   This file does NOT push, run tests, or print to stdout.
 #
-# Handoff contract (issue #858): the resolver SESSION only WRITES resolved file
-# content — in-session git side effects are policy-blocked for agentic sessions,
+# Handoff contract (issues #858, #871): the resolver SESSION only WRITES resolved
+# file content — in-session git side effects are policy-blocked for agentic sessions,
 # so resolved content may be left unstaged (or even untracked, in the add/add
 # materialization path, which also leaves a staged deletion at the same path).
 # The SCRIPT side owns staging and committing: after attempt_claude_merge_resolution
 # returns 0, callers MUST run commit_resolved_conflicts() (defined below), which
-# stages via `git add -A`, detects the live rebase/merge/plain context, and
-# continues/commits accordingly — surfacing git's stderr on failure.
+# stages via scoped `git add -- <conflict-paths>` (set from _RITE_RESOLVER_CONFLICT_PATHS,
+# populated before the session; falls back to `git add -A` for direct callers),
+# detects the live rebase/merge/plain context, and continues/commits accordingly —
+# surfacing git's stderr on failure.
 #
 # Exit codes (public contract — do NOT change without updating all call sites):
 #   0 = all conflicts resolved in the working tree (NOT necessarily staged or
@@ -378,10 +380,10 @@ attempt_claude_merge_resolution() {
 main is the source of truth. It represents accepted, merged work. This branch is the newcomer.
 Your job: rebase this branch's INTENT onto main's current reality.
 
-After resolving each file, stage it with 'git add <file>'.
+Write the resolved content to each conflicting file. The workflow stages and commits it after
+the session — do NOT run git add, git commit, git push, or any gh commands.
 
 RULES:
-- Do NOT run git commit, git push, or any gh commands.
 - main wins on structure: if main changed an API contract, function signature, config schema,
   database model, or interface — adopt main's version. Then adapt this branch's changes to work
   with main's structure.
@@ -425,11 +427,23 @@ ${_cr_main_diff:-No diff available}
 ${_cr_conflict_files}
 
 Read each conflicting file now. The files contain conflict markers (<<<<<<< HEAD, =======, >>>>>>>).
-Resolve every conflict, then stage each file with git add."
+Resolve every conflict by writing the resolved content to each file. The workflow stages and commits
+the resolved files after this session ends."
 
   # ── Step 5: Load dev provider and run agentic session ──
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_DEV_PROVIDER:-claude}"
+
+  # Publish the pre-session conflict-path list for commit_resolved_conflicts.
+  # The resolver SESSION can only WRITE file content (git side effects are
+  # policy-blocked), so staging must happen in the script after the session.
+  # Using -A would sweep any operator WIP that was stash-popped back into the
+  # tree before this call (the dirty-worktree → stash → abort → pop → resolve
+  # flow in stale-branch.sh). Exporting the path list here lets the shared
+  # commit helper stage ONLY the conflict paths — not the whole worktree.
+  # The variable is cleared by commit_resolved_conflicts after use.
+  _RITE_RESOLVER_CONFLICT_PATHS="$_cr_conflict_files"
+  export _RITE_RESOLVER_CONFLICT_PATHS
 
   _cr_status "Running Claude conflict resolution session..." >&2
 
@@ -520,11 +534,17 @@ Resolve every conflict, then stage each file with git add."
 # or commit it (in-session git side effects are policy-blocked), so the script
 # owns the whole sequence:
 #
-#   1. `git add -A` scoped to the worktree. Load-bearing BEFORE any staged-
-#      changes check: the add/add materialization path leaves the index holding
-#      a staged deletion while the resolved content sits UNTRACKED at the same
-#      path — committing without this add would commit a bare deletion
-#      (live: issue #821, 2026-07-03).
+#   1. Stage the conflict paths captured before the resolver session (#871).
+#      Staged set is scoped to _RITE_RESOLVER_CONFLICT_PATHS (set by
+#      attempt_claude_merge_resolution before the agentic session) to avoid
+#      sweeping operator WIP that was stash-popped back into the tree before
+#      the resolver ran (dirty-worktree → stash → abort → pop → resolve flow).
+#      Falls back to `git add -A` when the variable is unset (backward compat
+#      for callers that bypass attempt_claude_merge_resolution).
+#      Load-bearing BEFORE any staged-changes check: the add/add
+#      materialization path leaves the index holding a staged deletion while
+#      the resolved content sits UNTRACKED at the same path — committing
+#      without this add would commit a bare deletion (live: issue #821, 2026-07-03).
 #   2. Context detection from OBSERVABLE git state, not the documented flow:
 #        rebase in progress ($git_dir/rebase-merge or rebase-apply) →
 #          GIT_EDITOR=true git rebase --continue (or `git rebase --skip` when
@@ -565,11 +585,45 @@ commit_resolved_conflicts() {
     _crc_context="merge"
   fi
 
+  # Stage the conflict paths captured before the resolver session, not the
+  # whole worktree (-A). Using -A would sweep operator WIP that was stash-popped
+  # back into the tree before attempt_claude_merge_resolution was called
+  # (the dirty-worktree → stash → abort → pop → resolve flow in stale-branch.sh).
+  #
+  # _RITE_RESOLVER_CONFLICT_PATHS is set by attempt_claude_merge_resolution
+  # immediately before the agentic session; it contains only the unmerged file
+  # paths from `git diff --name-only --diff-filter=U`. We clear it here after
+  # reading so it doesn't leak to subsequent calls. Falls back to -A when the
+  # variable is unset (e.g. when commit_resolved_conflicts is called by a caller
+  # that did not go through attempt_claude_merge_resolution, preserving backward
+  # compatibility with direct callers).
+  local _crc_conflict_paths="${_RITE_RESOLVER_CONFLICT_PATHS:-}"
+  unset _RITE_RESOLVER_CONFLICT_PATHS
+
   local _crc_out=""
   local _crc_failed=false
-  if ! _crc_out=$(git -C "$_crc_wt" add -A 2>&1); then
-    _crc_failed=true
+
+  if [ -n "$_crc_conflict_paths" ]; then
+    # Scoped staging: stage only the pre-session conflict paths (plus any newly
+    # materialized versions at those paths). Reads the list line-by-line so each
+    # path is passed as a distinct, properly-quoted argument to git add.
+    local _crc_add_args=()
+    while IFS= read -r _crc_p; do
+      [ -n "$_crc_p" ] && _crc_add_args+=("$_crc_p")
+    done <<< "$_crc_conflict_paths"
+    if [ "${#_crc_add_args[@]}" -gt 0 ]; then
+      if ! _crc_out=$(git -C "$_crc_wt" add -- "${_crc_add_args[@]}" 2>&1); then
+        _crc_failed=true
+      fi
+    fi
   else
+    # Fallback: no path list available — stage everything (backward compat).
+    if ! _crc_out=$(git -C "$_crc_wt" add -A 2>&1); then
+      _crc_failed=true
+    fi
+  fi
+
+  if [ "$_crc_failed" = false ]; then
     case "$_crc_context" in
       rebase)
         if git -C "$_crc_wt" diff --cached --quiet 2>/dev/null; then
