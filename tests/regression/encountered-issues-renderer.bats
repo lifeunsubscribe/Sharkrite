@@ -566,12 +566,14 @@ DEDUP_MOCK
 @test "all gh fetches in render_encountered_issues use --limit 1000 (not 200 or 300)" {
   local renderer="$RITE_REPO_ROOT/lib/utils/encountered-issues-renderer.sh"
 
-  # Verify --limit 1000 appears five times (server issues, backstop issues,
-  # server PRs, backstop PRs, legacy label) — and NOT --limit 200 or --limit 300.
-  run bash -c "grep -c -- '--limit 1000' '$renderer' || true"
+  # Verify --limit 1000 appears on exactly five gh_safe call lines (server issues,
+  # backstop issues, server PRs, backstop PRs, legacy label) — scoped to gh_safe
+  # lines so comment-only occurrences can't mask a missing call site.
+  run bash -c "grep 'gh_safe' '$renderer' | grep -c -- '--limit 1000' || true"
   [ "$status" -eq 0 ]
-  # Must have at least 5 occurrences (one per gh_safe call)
-  [ "$output" -ge 5 ]
+  # Must be exactly 5 — one per gh_safe call site; any fewer means a call site
+  # was silently dropped and the durability guarantee is broken.
+  [ "$output" -eq 5 ]
 
   # No surviving --limit 200 or --limit 300 in gh_safe calls (only in comments).
   # Check that no gh_safe call line uses the old caps.
