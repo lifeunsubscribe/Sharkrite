@@ -101,6 +101,9 @@ EOF
   REAL_LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
   TEST_LINT_SCRIPT="$TEST_DIR/tools/sharkrite-lint.sh"
   cp "$REAL_LINT_SCRIPT" "$TEST_LINT_SCRIPT"
+  # The linter is driver + rule fragments (#952 split): the driver hard-fails
+  # without tools/lint-rules/, so the copied structure must carry both.
+  cp -R "$BATS_TEST_DIRNAME/../../tools/lint-rules" "$TEST_DIR/tools/lint-rules"
 
   # Run the linter from within the test directory
   # PROJECT_ROOT will resolve to $TEST_DIR via the script's own path detection
@@ -134,6 +137,9 @@ EOF
   REAL_LINT_SCRIPT="$BATS_TEST_DIRNAME/../../tools/sharkrite-lint.sh"
   TEST_LINT_SCRIPT="$TEST_DIR/tools/sharkrite-lint.sh"
   cp "$REAL_LINT_SCRIPT" "$TEST_LINT_SCRIPT"
+  # The linter is driver + rule fragments (#952 split): the driver hard-fails
+  # without tools/lint-rules/, so the copied structure must carry both.
+  cp -R "$BATS_TEST_DIRNAME/../../tools/lint-rules" "$TEST_DIR/tools/lint-rules"
 
   # Run the linter from within the test directory
   # PROJECT_ROOT will resolve to $TEST_DIR via the script's own path detection

@@ -427,8 +427,12 @@ EMPTY_MOCK
     set +u; set +o pipefail
     # Marker inside a fenced code block — must not be extracted.
     # Build with printf so bats preprocessor does not rewrite @test-like lines.
-    # FENCE var holds the triple-backtick string to avoid literal backtick issues.
-    FENCE='```'
+    # FENCE holds the triple-backtick string. The \` escapes are REQUIRED:
+    # this test body is a double-quoted bash -c string, where a bare backtick
+    # opens command substitution — three of them left one unmatched, an EOF
+    # syntax error that killed the whole file's gather step and broke main's
+    # full bats run for every PR (shipped by #977's batch, 2026-07-06).
+    FENCE='\`\`\`'
     BODY=\$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
       'Example format:' \
       "\$FENCE" \
