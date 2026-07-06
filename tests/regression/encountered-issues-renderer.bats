@@ -14,6 +14,7 @@
 #   9. Format-anchor guard: a body that only documents the marker string does NOT match
 #  10. Transition: marker and legacy label results are unioned and deduplicated
 #  11. PR bodies with the marker block are ingested as entries
+#  12. All gh fetches use --limit 1000 (durability: aged issues not dropped from catalog)
 
 load '../helpers/setup.bash'
 
@@ -554,4 +555,29 @@ DEDUP_MOCK
   "
   [ "$status" -eq 0 ]
   [ "$output" = "sharkrite-recurring-pattern" ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 21: all gh fetches in render_encountered_issues use --limit 1000
+# (durability: aged marker-carrying issues are not silently dropped from the
+# catalog as the repo grows past the old 200/300-result window — issue #923)
+# ---------------------------------------------------------------------------
+
+@test "all gh fetches in render_encountered_issues use --limit 1000 (not 200 or 300)" {
+  local renderer="$RITE_REPO_ROOT/lib/utils/encountered-issues-renderer.sh"
+
+  # Verify --limit 1000 appears five times (server issues, backstop issues,
+  # server PRs, backstop PRs, legacy label) — and NOT --limit 200 or --limit 300.
+  run bash -c "grep -c -- '--limit 1000' '$renderer' || true"
+  [ "$status" -eq 0 ]
+  # Must have at least 5 occurrences (one per gh_safe call)
+  [ "$output" -ge 5 ]
+
+  # No surviving --limit 200 or --limit 300 in gh_safe calls (only in comments).
+  # Check that no gh_safe call line uses the old caps.
+  run bash -c "grep 'gh_safe' '$renderer' | grep -c -- '--limit 200' || true"
+  [ "$output" -eq 0 ]
+
+  run bash -c "grep 'gh_safe' '$renderer' | grep -c -- '--limit 300' || true"
+  [ "$output" -eq 0 ]
 }

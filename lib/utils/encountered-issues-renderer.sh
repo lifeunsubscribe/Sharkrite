@@ -128,24 +128,28 @@ render_encountered_issues() {
 
   local marker_issues_json marker_prs_json
   # Issues: server-side pre-filter attempt (may return empty due to HTML-comment stripping)
+  # --limit 1000 (gh's max page) so aged issues are not silently dropped as the
+  # repo grows — the previous --limit 200 window could miss patterns older than
+  # the 200 most-recently-closed issues (#923).
   local _server_issues_json
   _server_issues_json=$(gh_safe issue list \
     --state closed \
     --search "${RITE_MARKER_RECURRING_PATTERN} in:body" \
     --json number,title,body,closedAt,closedByPullRequestsReferences \
-    --limit 200 2>/dev/null || true)
+    --limit 1000 2>/dev/null || true)
   _server_issues_json="${_server_issues_json:-[]}"
 
   # Issues: bounded recently-closed fetch for local scan backstop.
   # GitHub strips HTML comments from the indexed body, so "in:body" misses
-  # markers that live inside <!-- --> tags.  Fetch the 300 most recent closed
+  # markers that live inside <!-- --> tags.  Fetch the 1000 most recent closed
   # issues and validate locally; merge with the server-side results so neither
-  # path is the only line of defence.
+  # path is the only line of defence.  1000 = gh's max page, matching the
+  # closed-PR cleanup fallback (workflow-runner.sh Tier 2) for consistency.
   local _recent_issues_json
   _recent_issues_json=$(gh_safe issue list \
     --state closed \
     --json number,title,body,closedAt,closedByPullRequestsReferences \
-    --limit 300 2>/dev/null || true)
+    --limit 1000 2>/dev/null || true)
   _recent_issues_json="${_recent_issues_json:-[]}"
 
   # Merge server + recent; unique_by(.number) keeps the first occurrence (server result
@@ -157,20 +161,23 @@ render_encountered_issues() {
   marker_issues_json="${marker_issues_json:-[]}"
 
   # PRs: same two-path approach.
+  # --limit 1000 matches the issue backstop and gh's max page size (#923).
   local _server_prs_json
   _server_prs_json=$(gh_safe pr list \
     --state closed \
     --search "${RITE_MARKER_RECURRING_PATTERN} in:body" \
     --json number,title,body,closedAt \
-    --limit 200 2>/dev/null || true)
+    --limit 1000 2>/dev/null || true)
   _server_prs_json="${_server_prs_json:-[]}"
 
   # PRs: bounded recently-closed fetch backstop.
+  # --limit 1000 so marker-carrying PRs that age past the old 300-result window
+  # are still harvested during the local _body_has_recurring_marker scan.
   local _recent_prs_json
   _recent_prs_json=$(gh_safe pr list \
     --state closed \
     --json number,title,body,closedAt \
-    --limit 300 2>/dev/null || true)
+    --limit 1000 2>/dev/null || true)
   _recent_prs_json="${_recent_prs_json:-[]}"
 
   # Merge server + recent PR results; server wins on duplicates.
@@ -187,11 +194,13 @@ render_encountered_issues() {
   print_info "Fetching closed issues with legacy label '${legacy_label}' (transition)..." >&2
 
   local legacy_issues_json
+  # --limit 1000 matches the marker backstop so legacy-labeled patterns are not
+  # silently dropped from the catalog as the repo grows past 200+ closed issues.
   legacy_issues_json=$(gh_safe issue list \
     --label "$legacy_label" \
     --state closed \
     --json number,title,body,closedAt,closedByPullRequestsReferences \
-    --limit 200 2>/dev/null || true)
+    --limit 1000 2>/dev/null || true)
   legacy_issues_json="${legacy_issues_json:-[]}"
 
   # ── Local format-anchor validation ───────────────────────────────────────
