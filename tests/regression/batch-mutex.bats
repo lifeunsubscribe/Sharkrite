@@ -377,3 +377,10 @@ teardown() {
   run grep -E 'still queued .*behind PID' "$BATCH_SCRIPT"
   [ "$status" -eq 0 ]
 }
+
+@test "parallel default: batch mutex is opt-in via RITE_BATCH_SERIALIZE (#958)" {
+  run grep -E 'RITE_BATCH_SERIALIZE:-false' "$BATCH_SCRIPT"
+  [ "$status" -eq 0 ]
+  run grep -F "concurrent batches allowed; per-issue locks guard collisions" "$BATCH_SCRIPT"
+  [ "$status" -eq 0 ]
+}
