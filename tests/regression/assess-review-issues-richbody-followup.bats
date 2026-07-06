@@ -448,6 +448,39 @@ MOCK_EOF
   }
 }
 
+# ─── Test 10: Dependencies field uses dep-guard-visible format (issue #954) ────
+#
+# The batch dep-guard greps ^(\*\*)?Dependencies(\*\*)?\s*: — a markdown
+# "## Dependencies" header is NOT matched (no colon), making the After: #N
+# dependency invisible to the guard. The generated body must use the labeled
+# "**Dependencies**: After: #N" format on a single line.
+
+@test "richbody: Dependencies field uses dep-guard-visible '**Dependencies**:' format" {
+  _run_assess
+
+  local _body
+  _body=$(_nth_body 1)
+  [ -n "$_body" ] || { echo "FAIL: no first issue body captured"; cat "$CREATE_CAPTURE"; false; }
+
+  # Must contain the bold-label format the dep-guard can detect.
+  echo "$_body" | grep -qF '**Dependencies**: After:' || {
+    echo "FAIL: body missing '**Dependencies**: After:' — dep-guard cannot detect this dependency"
+    echo "(batch dep-guard greps '^(\*\*)?Dependencies(\*\*)?\s*:'; '## Dependencies' is invisible)"
+    echo "--- body ---"
+    echo "$_body"
+    false
+  }
+
+  # Must NOT contain the invisible markdown header format.
+  echo "$_body" | grep -qF '## Dependencies' && {
+    echo "FAIL: body contains '## Dependencies' markdown header — invisible to batch dep-guard"
+    echo "Use '**Dependencies**: After: #N' on a single line instead."
+    echo "$_body"
+    false
+  }
+  return 0
+}
+
 # ─── Helpers: locate a finding's body by its title ────────────────────────────
 
 # Return the captured body whose body contains the HIGH finding's acceptance line.

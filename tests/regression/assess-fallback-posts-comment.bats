@@ -636,3 +636,50 @@ FORMAT_STUB_EOF
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# #949: gate items must reach the POSTED assessment on the LLM-SUCCESS path.
+# The normal comment (assess-review-issues) posts BEFORE the [GATE] merge, so
+# fix mode — which reads the LATEST posted assessment — saw no NOW items when
+# gate findings were the only ones: empty ~90s fix cycles to exhaustion
+# (LeadFlow #401/#491, sharkrite #910). The fix posts a superseding MERGED
+# comment at the merge point; these pins prove the posted shape parses through
+# fix mode's real extraction pipeline.
+# ---------------------------------------------------------------------------
+
+@test "#949: merged comment parses through fix-mode extraction (gate-only NOW)" {
+  # Body in _post_gate_fallback_assessment_comment's exact shape, param2 = the
+  # MERGED assessment (gate items + LLM text with its own sections).
+  merged_comment='<!-- sharkrite-assessment pr:99 iteration:1 timestamp:T -->
+
+## 🔍 Sharkrite Assessment
+
+**Model:** merged — LLM assessment + 1 gate finding(s) (#949)
+
+### Summary
+- **ACTIONABLE_NOW:** 1 items (fix in this PR)
+
+---
+
+### [GATE] bats failure: tests/regression/foo.bats - ACTIONABLE_NOW
+**Severity:** HIGH
+Objective gate failure.
+
+### Cosmetic nit in logging - DISMISSED
+**Reasoning:** not actionable.'
+
+  # Fix mode pipeline: strip to first ---, then extract NOW blocks (verbatim awk).
+  content=$(echo "$merged_comment" | sed -n '/^---$/,$p' | tail -n +2)
+  now_items=$(echo "$content" | awk '/^### .* - ACTIONABLE_NOW$/ { printing=1 } /^### .* - (ACTIONABLE_LATER|DISMISSED)$/ { printing=0 } /^(✅|───|━━)/ { printing=0 } printing { print }')
+  [[ "$now_items" == *"[GATE] bats failure: tests/regression/foo.bats"* ]]
+  [[ "$now_items" != *"Cosmetic nit"* ]]
+  [ -n "$now_items" ]
+}
+
+@test "#949 source: LLM-success path posts the merged assessment after the counts" {
+  run grep -n "Posted merged assessment (LLM + \[GATE\] items)" "${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  [ "$status" -eq 0 ]
+  # The superseding post passes the MERGED NOW count, not the gate-only count.
+  run grep -A1 '_post_gate_fallback_assessment_comment "\$PR_NUMBER" "\$ASSESSMENT_RESULT" "\$ACTIONABLE_NOW_COUNT"' "${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  [ "$status" -eq 0 ]
+}

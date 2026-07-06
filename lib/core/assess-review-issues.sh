@@ -1348,8 +1348,7 @@ ${_done_def}
 ${SCOPE_DO_BULLETS}
 - DO NOT: Refactor surrounding code, add new features, or modify unrelated files
 
-## Dependencies
-After: #${RITE_ISSUE_NUMBER:-${PR_NUMBER}}
+**Dependencies**: After: #${RITE_ISSUE_NUMBER:-${PR_NUMBER}}
 
 ---
 _Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
