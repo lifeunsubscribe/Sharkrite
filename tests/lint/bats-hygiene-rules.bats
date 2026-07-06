@@ -460,3 +460,27 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "file-scope-rite-suppressed.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
+
+# ---------------------------------------------------------------------------
+# Real-tree cleanliness: Rules 34 + 35 must produce zero hits on the actual
+# repo tree.  This is the enforcement of the "repo sweep" acceptance criterion
+# and the reason the lint rules exist: the rules ship clean.
+# ---------------------------------------------------------------------------
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: zero hits on the real repo tree" {
+  # Run the full lint from the actual repo root (not TEST_REPO).
+  # RITE_LINT_FILES is intentionally NOT passed so the bats-file rules
+  # (find tests -name '*.bats') scan the full real tests/ tree.
+  cd "$RITE_REPO_ROOT"
+  run bash "$LINT_SCRIPT"
+  # Assert no BATS_PRE_SOURCE_STUB_OVERWRITE violations in the output.
+  ! echo "$output" | grep -q "BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: zero hits on the real repo tree" {
+  # Run the full lint from the actual repo root (not TEST_REPO).
+  cd "$RITE_REPO_ROOT"
+  run bash "$LINT_SCRIPT"
+  # Assert no BATS_FILE_SCOPE_ENV_READ violations in the output.
+  ! echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+}

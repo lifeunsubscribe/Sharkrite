@@ -1973,10 +1973,26 @@ while IFS= read -r bats_file; do
   [ -z "$_r34_file_hits" ] && continue
   while IFS=$'\t' read -r _r34_fname _r34_line _r34_fn; do
     [ -z "$_r34_line" ] && continue
-    _prev_line=$(sed -n "$((_r34_line - 1))p" "$bats_file" 2>/dev/null || true)
-    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_PRE_SOURCE_STUB_OVERWRITE'; then
-      continue
-    fi
+    # Scan backwards past any contiguous comment lines (e.g. # shellcheck source=)
+    # to find a suppression comment — codebase convention places # shellcheck
+    # directives between the suppression comment and the source line.
+    _r34_suppressed=false
+    _r34_lookback=$((_r34_line - 1))
+    while [ "$_r34_lookback" -gt 0 ]; do
+      _prev_line=$(sed -n "${_r34_lookback}p" "$bats_file" 2>/dev/null || true)
+      if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_PRE_SOURCE_STUB_OVERWRITE'; then
+        _r34_suppressed=true
+        break
+      fi
+      # Keep scanning if this line is a pure comment line (e.g. # shellcheck …)
+      if echo "$_prev_line" | grep -qE '^\s*#'; then
+        _r34_lookback=$((_r34_lookback - 1))
+        continue
+      fi
+      # Non-comment, non-suppression line — stop scanning
+      break
+    done
+    [ "$_r34_suppressed" = "true" ] && continue
     print_violation "$bats_file" "$_r34_line" "BATS_PRE_SOURCE_STUB_OVERWRITE" \
       "stub '${_r34_fn}()' defined before this lib source is overwritten by the lib's real definition (env-var guards don't check for existing functions); re-define the stub AFTER the last source in setup()"
   done <<< "$_r34_file_hits"
@@ -2082,10 +2098,25 @@ while IFS= read -r bats_file; do
   [ -z "$_r35_file_hits" ] && continue
   while IFS= read -r _r35_line; do
     [ -z "$_r35_line" ] && continue
-    _prev_line=$(sed -n "$((_r35_line - 1))p" "$bats_file" 2>/dev/null || true)
-    if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_FILE_SCOPE_ENV_READ'; then
-      continue
-    fi
+    # Scan backwards past any contiguous comment lines (e.g. # shellcheck source=)
+    # to find a suppression comment — same convention as Rule 34.
+    _r35_suppressed=false
+    _r35_lookback=$((_r35_line - 1))
+    while [ "$_r35_lookback" -gt 0 ]; do
+      _prev_line=$(sed -n "${_r35_lookback}p" "$bats_file" 2>/dev/null || true)
+      if echo "$_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*BATS_FILE_SCOPE_ENV_READ'; then
+        _r35_suppressed=true
+        break
+      fi
+      # Keep scanning if this line is a pure comment line
+      if echo "$_prev_line" | grep -qE '^\s*#'; then
+        _r35_lookback=$((_r35_lookback - 1))
+        continue
+      fi
+      # Non-comment, non-suppression line — stop scanning
+      break
+    done
+    [ "$_r35_suppressed" = "true" ] && continue
     print_violation "$bats_file" "$_r35_line" "BATS_FILE_SCOPE_ENV_READ" \
       "file-scope assignment reads \$RITE_* env var before setup() runs — RITE_* vars may not be set at parse time; move this assignment into setup() or suppress if the variable is guaranteed to be exported before bats parses the file"
   done <<< "$_r35_file_hits"
