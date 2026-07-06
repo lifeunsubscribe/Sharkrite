@@ -122,11 +122,20 @@ _batch_print_stats() {
 
   # Auth-failure skipped issues get their own section — provider was logged out,
   # batch was halted immediately, remaining issues were not attempted.
+  # The triggering issue (AUTH_FAILURE_ISSUES, status=auth_failure) is always
+  # shown alongside the skipped-remainder issues (SKIPPED_ISSUES, status=skipped:auth)
+  # so the section is never empty when the gate fires.
   # Remediation: run `claude /login`, then re-run the batch.
   if [ "${_auth_failure_count:-0}" -gt 0 ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Skipped — Provider Auth Failure (batch halted)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # Show the issue(s) that triggered the auth failure (status=auth_failure).
+    local _auth_trigger
+    for _auth_trigger in "${AUTH_FAILURE_ISSUES[@]+"${AUTH_FAILURE_ISSUES[@]}"}"; do
+      echo "  ✗  Issue #$_auth_trigger (auth failure — triggered batch halt)"
+    done
+    # Show issues that were never attempted because the batch halted (status=skipped:auth).
     local _auth_num
     for _auth_num in "${SKIPPED_ISSUES[@]+"${SKIPPED_ISSUES[@]}"}"; do
       if [ "${ISSUE_STATUS[$_auth_num]:-}" = "skipped:auth" ]; then

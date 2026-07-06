@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh, lib/core/batch-process-issues.sh, lib/core/batch-reporter.sh
+# sharkrite-test-covers: lib/providers/claude.sh, lib/core/batch-process-issues.sh, lib/core/batch-reporter.sh, lib/core/workflow-runner.sh
 # tests/regression/batch-auth-halt.bats
 #
 # Regression test: provider auth failure must halt the entire batch immediately
@@ -39,17 +39,22 @@
 #    16. skipped:auth issues are included in SKIPPED_ISSUES
 #    17. _batch_print_stats reports skipped:auth issues in their own section
 #    18. _batch_print_stats excludes skipped:auth from generic Skipped Issues section
+#
+#   PROPAGATION (exit 18 through workflow-runner.sh main dispatcher):
+#    19. workflow-runner.sh main() propagates exit 18 (not collapsed to exit 1)
+#    20. workflow-runner.sh main() exit-18 branch present (structural)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 CLAUDE_PROVIDER="$REPO_ROOT/lib/providers/claude.sh"
 CLAUDE_WORKFLOW="$REPO_ROOT/lib/core/claude-workflow.sh"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 BATCH_REPORTER="$REPO_ROOT/lib/core/batch-reporter.sh"
+WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
 EXIT_CODES_DOC="$REPO_ROOT/docs/architecture/exit-codes.md"
 
 setup() {
   for _f in "$CLAUDE_PROVIDER" "$CLAUDE_WORKFLOW" "$BATCH_PROCESSOR" \
-             "$BATCH_REPORTER" "$EXIT_CODES_DOC"; do
+             "$BATCH_REPORTER" "$WORKFLOW_RUNNER" "$EXIT_CODES_DOC"; do
     [ -f "$_f" ] || {
       echo "FATAL: $_f not found" >&2
       return 1
@@ -639,6 +644,81 @@ STUB
   echo "$output" | grep -qi 'login' || {
     echo "FAIL: auth-failure section does not mention 'login' remediation" >&2
     echo "      output: $output" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# PROPAGATION: exit 18 through workflow-runner.sh main() dispatcher
+#
+# workflow-runner.sh main() reads run_workflow's return code and dispatches
+# to an explicit exit call per code.  Without a branch for exit 18, the else
+# branch collapses it to exit 1, and batch-process-issues.sh never sees 18
+# (its exit-18 handler never fires, _BATCH_AUTH_HALT is never set, the batch
+# does not halt).
+#
+# Strategy: replicate the main() dispatcher logic from workflow-runner.sh
+# (the same simulation approach used by exit-code-propagation.bats Layer B)
+# and assert exit 18 passes through rather than collapsing to 1.
+# =============================================================================
+
+# Helper: simulate the main() dispatcher from workflow-runner.sh.
+# Returns (to stdout) the process exit code the dispatcher would produce for
+# a given run_workflow return value.  Mirror the elif chain exactly; update
+# this helper whenever a new branch is added to main().
+_simulate_runner_main_dispatcher() {
+  local workflow_exit=$1
+  if [ "$workflow_exit" -eq 0 ]; then
+    echo 0
+  elif [ "$workflow_exit" -eq 12 ]; then
+    echo 12
+  elif [ "$workflow_exit" -eq 13 ]; then
+    echo 13
+  elif [ "$workflow_exit" -eq 14 ]; then
+    echo 14
+  elif [ "$workflow_exit" -eq 15 ]; then
+    echo 15
+  elif [ "$workflow_exit" -eq 6 ]; then
+    echo 6
+  elif [ "$workflow_exit" -eq 18 ]; then
+    echo 18
+  elif [ "$workflow_exit" -eq 5 ]; then
+    echo 5
+  else
+    echo 1
+  fi
+}
+
+@test "propagation: run_workflow returns 18 -> main dispatcher exits 18 (not collapsed to 1)" {
+  # The core invariant: exit 18 must NOT fall through to the else branch.
+  # If it does, batch sees exit 1 (generic failure) and never halts.
+  _out=$(_simulate_runner_main_dispatcher 18)
+  [ "$_out" -eq 18 ] || {
+    echo "FAIL: expected exit 18, got $_out" >&2
+    echo "      main() must have an explicit elif for exit 18" >&2
+    return 1
+  }
+}
+
+@test "propagation: run_workflow returns 1 (generic) still exits 1 (exit-18 branch does not over-reach)" {
+  # Sanity check: a plain failure must still produce exit 1, not 18.
+  _out=$(_simulate_runner_main_dispatcher 1)
+  [ "$_out" -eq 1 ] || {
+    echo "FAIL: expected exit 1 for generic failure, got $_out" >&2
+    return 1
+  }
+}
+
+@test "structural: workflow-runner.sh main() has explicit elif branch for exit 18" {
+  # grep for the literal branch — if it's missing, the simulation above is
+  # broken or someone removed the branch without updating the test.
+  grep -qE 'workflow_exit.*-eq 18|18.*workflow_exit' "$WORKFLOW_RUNNER" || {
+    echo "FAIL: no 'elif [ \$workflow_exit -eq 18 ]' branch in workflow-runner.sh main()" >&2
+    echo "      Without this branch, exit 18 collapses to exit 1 in the else clause" >&2
+    return 1
+  }
+  grep -qE 'exit 18' "$WORKFLOW_RUNNER" || {
+    echo "FAIL: 'exit 18' not found in workflow-runner.sh" >&2
     return 1
   }
 }

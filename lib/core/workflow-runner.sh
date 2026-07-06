@@ -3114,6 +3114,12 @@ main() {
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6
+  elif [ $workflow_exit -eq 18 ]; then
+    # Provider auth failure — propagate exit 18 so batch can halt immediately
+    # and record remaining issues as skipped:auth rather than retrying each one.
+    # See: lib/providers/claude.sh (fingerprint detection → exit 18)
+    # See: docs/architecture/exit-codes.md — exit 18
+    exit 18
   elif [ $workflow_exit -eq 5 ]; then
     # Usage cap reached — propagate exit 5 so batch can abort cleanly
     exit 5
