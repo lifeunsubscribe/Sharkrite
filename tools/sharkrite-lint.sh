@@ -122,10 +122,10 @@ if [ -n "${RITE_LINT_FILES:-}" ]; then
   echo "Sharkrite custom lint: targeted scope (${#SHELL_FILES[@]} file(s))"
 fi
 
-# Rule 1: grep -c with || echo "0" (produces double zero)
+# Rule 1: grep -c with || true (produces double zero)
 echo "Checking for 'grep -c ... || echo \"0\"' pattern..."
 for file in "${SHELL_FILES[@]}"; do
-  # Match: grep -c <pattern> || echo "0"
+  # Match: grep -c <pattern> || true
   # This is wrong because grep -c always outputs a count
   while IFS=: read -r line_num line_content; do
     if echo "$line_content" | grep -qE 'grep\s+-c.*\|\|\s*echo\s+"0"'; then
@@ -614,12 +614,12 @@ done
 rm -f "$_r13_awk"
 _r13_awk=""
 
-# Rule 14: ${VAR:-{}} appends a stray '}' to non-empty values
-# Bash parses ${VAR:-{}} as ${VAR:-{} + literal '}', so when VAR is non-empty
+# Rule 14: ${VAR:-"{}"} appends a stray '}' to non-empty values
+# Bash parses ${VAR:-"{}"} as ${VAR:-{} + literal '}', so when VAR is non-empty
 # the result is "$VAR}" — corrupting JSON that already ends in '}'.
 # Live bug: every batch crash with "jq: parse error: Unmatched '}'".
 # Fix: quote the default — "${VAR:-"{}"}".
-echo "Checking for '\${VAR:-{}}' parameter expansion bug..."
+echo "Checking for '\${VAR:-"{}"}' parameter expansion bug..."
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     if echo "$line_content" | grep -qE '^\s*#'; then
@@ -627,7 +627,7 @@ for file in "${SHELL_FILES[@]}"; do
     fi
     if echo "$line_content" | grep -qE ':-\{\}\}'; then
       print_violation "$file" "$line_num" "JQ_DEFAULT_BRACE" \
-        "\${VAR:-{}} appends stray '}' to non-empty values — use \"\${VAR:-\"{}\"}\" instead"
+        "\${VAR:-"{}"} appends stray '}' to non-empty values — use \"\${VAR:-\"{}\"}\" instead"
     fi
   done < <(grep -nE ':-\{\}\}' "$file" 2>/dev/null || true)
 done
