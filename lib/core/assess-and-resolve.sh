@@ -398,11 +398,32 @@ ${_gate_items}"
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_time_estimate — map Fix Effort metadata to a Fibonacci time estimate
+#
+# Args: $1 = fix effort string (e.g. "<10min", "<1hr", ">1hr" — from assessment)
+# Output: Fibonacci estimate (30min|1hr|2hr) or "" when effort is empty/unknown
+#
+# Used by both assess-and-resolve.sh (per-finding loop) and assess-review-issues.sh
+# (ACTIONABLE_LATER loop) so both emit consistent Time Estimate sections.
+# Sourced via RITE_SOURCE_FUNCTIONS_ONLY=1 by assess-review-issues.sh.
+# ---------------------------------------------------------------------------
+_resolve_time_estimate() {
+  local _effort="${1:-}"
+  local _estimate=""
+  case "${_effort}" in
+    *\>1hr*)   _estimate="2hr" ;;
+    *\<1hr*)   _estimate="1hr" ;;
+    *\<10min*) _estimate="30min" ;;
+  esac
+  echo "$_estimate"
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
-# _resolve_priority_label, _resolve_done_def) without executing the script body
-# (which parses args, sets up exec redirects, installs traps, and makes live
-# gh/claude calls).
+# _resolve_priority_label, _resolve_done_def, _resolve_time_estimate) without
+# executing the script body (which parses args, sets up exec redirects,
+# installs traps, and makes live gh/claude calls).
 # ---------------------------------------------------------------------------
 if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || true
@@ -1988,17 +2009,23 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Done Definition: severity-appropriate
     _done_def=$(_resolve_done_def "${_f_severity}")
 
-    # Time Estimate from Fix Effort metadata
-    _time_estimate=""
-    case "${_f_fix_effort:-}" in
-      *\>1hr*) _time_estimate="2hr" ;;
-      *\<1hr*) _time_estimate="1hr" ;;
-      *\<10min*) _time_estimate="30min" ;;
-    esac
+    # Time Estimate from Fix Effort metadata (shared function so wording matches
+    # assess-review-issues.sh's ACTIONABLE_LATER path — runbook §3).
+    _time_estimate=$(_resolve_time_estimate "${_f_fix_effort:-}")
 
     # --- Build issue body ---
     SOURCE_ISSUE_MARKER=""
     [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
+
+    # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
+    # For follow-ups, all parent-PR changed files are candidates for inspection;
+    # none are guaranteed to require modification, so emit all under "Files to Read:"
+    # and leave "Files to Modify:" as a concrete placeholder for the implementer.
+    _claude_context_section="Files to Read:
+${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+
+Files to Modify:
+- _Determine from the finding above_"
 
     FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
 ## Description
@@ -2016,9 +2043,11 @@ $([ -n "$_f_defer" ] && echo "
 $([ -n "$_f_context" ] && echo "
 **Context:** ${_f_context}")
 
+## Time Estimate
+${_time_estimate:-30min}
+
 ## Claude Context
-Files to read before starting:
-${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
+${_claude_context_section}
 
 ## Acceptance Criteria
 ${_acceptance_criterion}: see Description above for details
@@ -2037,9 +2066,6 @@ ${SCOPE_DO_BULLETS}
 
 ## Dependencies
 After: #${ISSUE_NUMBER:-${PR_NUMBER}}
-$([ -n "${_time_estimate}" ] && echo "
-## Time Estimate
-${_time_estimate}" || echo "")
 
 ---
 
