@@ -115,7 +115,7 @@ teardown() {
     '## Verification Commands' \
     '## Done Definition' \
     '## Scope Boundary' \
-    '## Dependencies'; do
+    '**Dependencies**'; do
     grep -qF "$_section" "$ASSESS_RESOLVE_SCRIPT" || {
       echo "FAIL: '$_section' not found in $ASSESS_RESOLVE_SCRIPT"
       false
@@ -172,7 +172,7 @@ teardown() {
     '## Verification Commands' \
     '## Done Definition' \
     '## Scope Boundary' \
-    '## Dependencies'; do
+    '**Dependencies**'; do
     grep -qF "$_section" "$ASSESS_REVIEW_SCRIPT" || {
       echo "FAIL: '$_section' not found in $ASSESS_REVIEW_SCRIPT"
       false
@@ -203,6 +203,63 @@ teardown() {
 @test "assess-review-issues.sh Time Estimate: uses _resolve_time_estimate helper" {
   grep -qF '_resolve_time_estimate' "$ASSESS_REVIEW_SCRIPT" || {
     echo "FAIL: _resolve_time_estimate not called in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+}
+
+# ─── Tests 11-14: dep-guard-visible Dependencies format (issue #954) ──────────
+#
+# The batch dep-guard greps ^(\*\*)?Dependencies(\*\*)?\s*: to find dependencies.
+# A "## Dependencies" markdown header is NOT matched by this pattern (no colon),
+# so any After: #N on a continuation line is invisible to the guard — the batch
+# runner may process a follow-up before its parent (ordering defect).
+#
+# These pins enforce that both builders use the labeled format **Dependencies**:
+# (detected by the guard) and have removed the invisible ## Dependencies header.
+
+@test "assess-and-resolve.sh: follow-up body uses dep-guard-visible '**Dependencies**:' format" {
+  # The issue body heredoc must contain the bold-label format so the batch
+  # dep-guard (^(\*\*)?Dependencies(\*\*)?\s*:) can detect the dependency edge.
+  grep -qF '**Dependencies**: After:' "$ASSESS_RESOLVE_SCRIPT" || {
+    echo "FAIL: '**Dependencies**: After:' not found in $ASSESS_RESOLVE_SCRIPT"
+    echo "Follow-up bodies must use the bold-label format so the batch dep-guard"
+    echo "can detect 'After: #N' dependency edges (issue #954)."
+    false
+  }
+}
+
+@test "assess-and-resolve.sh: follow-up body does NOT use invisible '## Dependencies' markdown header" {
+  # A bare '## Dependencies' header in the issue body heredoc is NOT detected by
+  # the batch dep-guard grep, making the After: #N dependency invisible to ordering.
+  # The builder must use '**Dependencies**: After: #N' on a single line instead.
+  run grep -F '## Dependencies' "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: '## Dependencies' markdown header still present in $ASSESS_RESOLVE_SCRIPT"
+    echo "The batch dep-guard cannot detect this format — use '**Dependencies**: After: #N' instead."
+    echo "$output"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: follow-up body uses dep-guard-visible '**Dependencies**:' format" {
+  # Same constraint as assess-and-resolve.sh — the ACTIONABLE_LATER path must also
+  # emit the labeled format so the batch dep-guard detects the After: #N edge.
+  grep -qF '**Dependencies**: After:' "$ASSESS_REVIEW_SCRIPT" || {
+    echo "FAIL: '**Dependencies**: After:' not found in $ASSESS_REVIEW_SCRIPT"
+    echo "Follow-up bodies must use the bold-label format so the batch dep-guard"
+    echo "can detect 'After: #N' dependency edges (issue #954)."
+    false
+  }
+}
+
+@test "assess-review-issues.sh: follow-up body does NOT use invisible '## Dependencies' markdown header" {
+  # A bare '## Dependencies' header in the issue body heredoc is NOT detected by
+  # the batch dep-guard grep, making the After: #N dependency invisible to ordering.
+  run grep -F '## Dependencies' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: '## Dependencies' markdown header still present in $ASSESS_REVIEW_SCRIPT"
+    echo "The batch dep-guard cannot detect this format — use '**Dependencies**: After: #N' instead."
+    echo "$output"
     false
   }
 }
