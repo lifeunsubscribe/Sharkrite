@@ -652,6 +652,11 @@ SKIPPED_ISSUES=()                # Various skip reasons (all counted together fo
 ALREADY_CLOSED_AT_START_ISSUES=() # Exit 12: already closed when batch started, no new work
 IN_PROGRESS_ELSEWHERE_ISSUES=()  # Exit 14: locked by another live session, not a failure
 PR_NUMBER_REFUSED_ISSUES=()      # Exit 15: number refers to a PR, not an issue — refused
+AUTH_FAILURE_ISSUES=()           # Exit 18: provider auth failure — batch halted, remainder skipped
+
+# Auth-halt flag: set to true when exit 18 triggers a batch halt so the
+# post-loop pass can mark remaining unprocessed issues as skipped:auth.
+_BATCH_AUTH_HALT=false
 
 # Circuit-breaker state (issue #823): consecutive identical gate failures.
 # Tracks the last-seen gate failure signature and the run length so the batch
@@ -1385,6 +1390,30 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
       break
 
+    elif [ $EXIT_CODE -eq 18 ]; then
+      # Provider auth failure — the Claude CLI is logged out (401 / "Invalid API
+      # key" class error). Every subsequent issue's dev session will fail
+      # identically, so halt the batch immediately rather than burning ~2min per
+      # remaining issue on guaranteed-futile retries.
+      # Remaining unprocessed issues are marked skipped:auth in the post-loop
+      # pass below (_BATCH_AUTH_HALT flag).
+      # See: lib/providers/claude.sh (fingerprint detection → exit 18)
+      # See: docs/architecture/exit-codes.md — exit 18
+      print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      print_error "Provider auth failure on issue #$ISSUE_NUM — halting batch"
+      print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo ""
+      print_error "$(provider_name) is logged out — run: claude /login"
+      print_info "All remaining issues will be recorded as skipped:auth."
+      print_info "Re-run this batch after logging in."
+      print_info "Duration: ${ISSUE_DURATION}s"
+      echo ""
+      FAILED_ISSUES+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
+      AUTH_FAILURE_ISSUES+=("$ISSUE_NUM")
+      _BATCH_AUTH_HALT=true
+      break
+
     elif [ $EXIT_CODE -eq 10 ]; then
       # Blocker detected - defer instead of stopping
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
@@ -1474,6 +1503,20 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     echo ""
   fi
 done
+
+# Post-loop: mark any unprocessed issues as skipped:auth when the batch was
+# halted by a provider auth failure (exit 18). These issues never entered the
+# workflow — they would have hit the same guaranteed-fatal auth error.
+# The ISSUE_LIST may include issues that were skipped earlier for other reasons
+# (dep_failed, not_found, etc.) — only issues with no recorded status are new.
+if [ "$_BATCH_AUTH_HALT" = "true" ]; then
+  for _unprocessed_num in "${ISSUE_LIST[@]}"; do
+    if [ -z "${ISSUE_STATUS[$_unprocessed_num]:-}" ]; then
+      SKIPPED_ISSUES+=("$_unprocessed_num")
+      ISSUE_STATUS["$_unprocessed_num"]="skipped:auth"
+    fi
+  done
+fi
 
 # Calculate final stats
 # TOTAL_PROCESSED = issues that actually ran through the workflow (completed, failed, or blocked).

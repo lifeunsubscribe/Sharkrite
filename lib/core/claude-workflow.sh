@@ -852,7 +852,11 @@ $_fail_summary
         provider_run_agentic_session "$_fix_prompt" "${RITE_FIX_TIMEOUT:-1800}" true /dev/null || _fix_exit=$?
         _timer_end "test_fix_session"
 
-        if [ $_fix_exit -eq 0 ]; then
+        if [ $_fix_exit -eq 18 ]; then
+          # Auth failure during test-gate fix session — propagate so batch halts.
+          print_error "Provider auth failure during test-gate fix session — aborting batch"
+          exit 18
+        elif [ $_fix_exit -eq 0 ]; then
           # Re-run tests after fix
           print_status "Re-running tests after fix..."
           rm -f "$_test_output_file"
@@ -1172,6 +1176,12 @@ $EXIT_INSTRUCTION"
       # the generic non-zero handler treat it as an ordinary fix failure.
       print_error "Claude usage cap reached during fix session — aborting batch"
       exit 5
+    elif [ $FIX_EXIT_CODE -eq 18 ]; then
+      # Auth failure during fix session — propagate so batch halts.
+      # Mirrors the exit-5 branch above; a mid-batch auth expiry must stop
+      # the whole run rather than being swallowed as a generic fix failure.
+      print_error "Provider auth failure during fix session — aborting batch"
+      exit 18
     elif [ $FIX_EXIT_CODE -ne 0 ]; then
       print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
     fi
@@ -1188,6 +1198,16 @@ $EXIT_INSTRUCTION"
 
     if [ "${FIX_EXIT_CODE:-0}" -eq 124 ]; then
       print_warning "Supervised session timed out after ${SUPERVISED_TIMEOUT}s"
+    elif [ "${FIX_EXIT_CODE:-0}" -eq 5 ]; then
+      # Usage cap reached during supervised fix session — propagate so batch aborts.
+      print_error "Claude usage cap reached during supervised fix session — aborting batch"
+      exit 5
+    elif [ "${FIX_EXIT_CODE:-0}" -eq 18 ]; then
+      # Auth failure during supervised fix session — propagate so batch halts.
+      # Mirrors the auto-mode branch above (line 1168-1173); a mid-batch auth expiry
+      # must stop the whole run rather than being swallowed as a generic fix failure.
+      print_error "Provider auth failure during supervised fix session — aborting batch"
+      exit 18
     fi
   fi
 
@@ -3102,6 +3122,19 @@ else
       grep -iE "spending cap|usage limit|rate limit|[0-9]+-hour limit" "$CLAUDE_STDERR_FILE" | head -3 || true
     fi
     exit 5
+  elif [ $CLAUDE_EXIT_CODE -eq 18 ]; then
+    # Provider auth failure — claude_provider_run_agentic_session detected the
+    # auth fingerprint ("Invalid API key · Please run /login" or equivalent 401
+    # class message) and translated it into exit 18. Propagate so the batch
+    # processor halts immediately with a remediation hint instead of burning
+    # ~2min per remaining issue on guaranteed-futile dev-session restarts.
+    # Single-issue mode: exit 18 surfaces the clear auth error to the operator.
+    # See: lib/core/batch-process-issues.sh exit-18 handler.
+    # See: docs/architecture/exit-codes.md — exit 18.
+    print_error "$(provider_name) is not authenticated — dev session cannot start"
+    print_info "Run: claude /login"
+    rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
+    exit 18
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
     if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then

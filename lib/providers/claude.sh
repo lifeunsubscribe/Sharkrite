@@ -194,6 +194,19 @@ claude_provider_run_agentic_session() {
      grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
     _exit_code=5
+  # Detect provider auth failure in stdout or stderr. Live phrasings observed
+  # (Pilot 2026-07-05/06, rite-855-871-872 batch):
+  #   - "Invalid API key · Please run /login"
+  #   - "API Error: 401 ... Invalid authentication credentials ... Please run /login"
+  # A logged-out/401-class error is batch-fatal: every subsequent issue's dev
+  # session will fail identically. Emit exit 18 so the batch processor halts
+  # immediately with a remediation message instead of burning ~2min per issue
+  # on guaranteed-futile retries. See: lib/core/batch-process-issues.sh exit-18
+  # handler and docs/architecture/exit-codes.md.
+  elif [ "$_exit_code" -ne 0 ] && \
+     grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
+       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+    _exit_code=18
   fi
   rm -f "$_stdout_capture"
   [ -n "$_settings_file" ] && rm -f "$_settings_file"

@@ -746,3 +746,22 @@ EOF
   _count=$(grep -cE "\bexit 5\b" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
   [ "$_count" -ge 1 ]
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# claude-workflow.sh must exit 18 for provider auth failures in:
+#   (a) the fix loop (FIX_EXIT_CODE -eq 18 branch), AND
+#   (b) the test-gate autofix (_fix_exit -eq 18 branch)
+# Without these, a mid-batch auth expiry in either automated path is swallowed
+# as a generic fix failure instead of halting the whole batch.
+# ─────────────────────────────────────────────────────────────────────────────
+@test "structural: claude-workflow.sh exits 18 in fix-loop (FIX_EXIT_CODE path)" {
+  # The fix-loop handler must have an explicit -eq 18 branch on FIX_EXIT_CODE
+  _count=$(grep -cE "FIX_EXIT_CODE -eq 18" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+  [ "$_count" -ge 1 ]
+}
+
+@test "structural: claude-workflow.sh exits 18 in test-gate autofix (_fix_exit path)" {
+  # The test-gate autofix handler must have an explicit -eq 18 branch on _fix_exit
+  _count=$(grep -cE "_fix_exit -eq 18" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+  [ "$_count" -ge 1 ]
+}

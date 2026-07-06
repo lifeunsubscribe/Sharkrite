@@ -33,13 +33,15 @@ _batch_compute_totals() {
 # ---------------------------------------------------------------------------
 # _batch_print_stats
 # Emit the "Overall Statistics" block, the "Already Closed at Start" detail
-# section, the "In Progress Elsewhere" detail section, and the generic
-# "Skipped Issues" detail section to stdout.
+# section, the "In Progress Elsewhere" detail section, the "Auth Failure
+# Skipped" detail section, and the generic "Skipped Issues" detail section
+# to stdout.
 #
 # Reads:  TOTAL_ISSUES, TOTAL_PROCESSED, COMPLETED_ISSUES, MERGED_CLEANUP_FAILED,
 #         FAILED_ISSUES, BLOCKED_ISSUES, SKIPPED_ISSUES, ISSUE_STATUS,
 #         ALREADY_CLOSED_AT_START_ISSUES (optional, defaults to empty),
 #         IN_PROGRESS_ELSEWHERE_ISSUES (optional, defaults to empty),
+#         AUTH_FAILURE_ISSUES (optional, defaults to empty),
 #         TOTAL_DURATION (optional)
 # ---------------------------------------------------------------------------
 _batch_print_stats() {
@@ -60,6 +62,14 @@ _batch_print_stats() {
     _in_progress_elsewhere_count=${#IN_PROGRESS_ELSEWHERE_ISSUES[@]}
   else
     _in_progress_elsewhere_count=0
+  fi
+
+  # AUTH_FAILURE_ISSUES may not be declared in older test fixtures.
+  local _auth_failure_count
+  if declare -p AUTH_FAILURE_ISSUES >/dev/null 2>&1; then
+    _auth_failure_count=${#AUTH_FAILURE_ISSUES[@]}
+  else
+    _auth_failure_count=0
   fi
 
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -110,14 +120,43 @@ _batch_print_stats() {
     echo ""
   fi
 
-  # Generic skipped section: excludes already_closed_at_start and
-  # in_progress_elsewhere issues (they have their own sections above) —
-  # show only the remaining skip reasons.
+  # Auth-failure skipped issues get their own section — provider was logged out,
+  # batch was halted immediately, remaining issues were not attempted.
+  # The triggering issue (AUTH_FAILURE_ISSUES, status=auth_failure) is always
+  # shown alongside the skipped-remainder issues (SKIPPED_ISSUES, status=skipped:auth)
+  # so the section is never empty when the gate fires.
+  # Remediation: run `claude /login`, then re-run the batch.
+  if [ "${_auth_failure_count:-0}" -gt 0 ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Skipped — Provider Auth Failure (batch halted)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # Show the issue(s) that triggered the auth failure (status=auth_failure).
+    local _auth_trigger
+    for _auth_trigger in "${AUTH_FAILURE_ISSUES[@]+"${AUTH_FAILURE_ISSUES[@]}"}"; do
+      echo "  ✗  Issue #$_auth_trigger (auth failure — triggered batch halt)"
+    done
+    # Show issues that were never attempted because the batch halted (status=skipped:auth).
+    local _auth_num
+    for _auth_num in "${SKIPPED_ISSUES[@]+"${SKIPPED_ISSUES[@]}"}"; do
+      if [ "${ISSUE_STATUS[$_auth_num]:-}" = "skipped:auth" ]; then
+        echo "  ⏭️  Issue #$_auth_num (skipped — provider was logged out)"
+      fi
+    done
+    echo ""
+    echo "  Remediation: claude /login, then re-run this batch"
+    echo ""
+  fi
+
+  # Generic skipped section: excludes already_closed_at_start,
+  # in_progress_elsewhere, and skipped:auth issues (they have their own
+  # sections above) — show only the remaining skip reasons.
   local _other_skipped=()
   local _skip_num _skip_reason
   for _skip_num in "${SKIPPED_ISSUES[@]+"${SKIPPED_ISSUES[@]}"}"; do
     _skip_reason=${ISSUE_STATUS[$_skip_num]:-"unknown"}
-    if [ "$_skip_reason" != "already_closed_at_start" ] && [ "$_skip_reason" != "in_progress_elsewhere" ]; then
+    if [ "$_skip_reason" != "already_closed_at_start" ] && \
+       [ "$_skip_reason" != "in_progress_elsewhere" ] && \
+       [ "$_skip_reason" != "skipped:auth" ]; then
       _other_skipped+=("$_skip_num")
     fi
   done
