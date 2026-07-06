@@ -220,6 +220,38 @@ CLEANUP_WT="$SCRIPT_DIR/lib/utils/cleanup-worktrees.sh"
   [ ! -d "$wt_path" ]   # must be removed despite trailing slash in second arg
 }
 
+@test "empty container cleanup: empty first arg is a no-op (does not rmdir /)" {
+  # Safety anchor: when wt_path is empty the case pattern becomes "/*" and would
+  # match ANY path.  The guard must return 0 before reaching the case statement.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-empty-arg"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  mkdir -p "$rite_wt_dir"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  # Empty first arg: must return 0 without attempting any rmdir.
+  rmdir_empty_worktree_container "" "$rite_wt_dir"
+  [ -d "$rite_wt_dir" ]  # container dir must be untouched
+}
+
+@test "empty container cleanup: empty second arg is a no-op (does not match /*)" {
+  # Safety anchor: when rite_worktree_dir is empty the pattern becomes "/*" which
+  # would match any absolute path.  The guard must return 0 before the case.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-empty-base"
+  local wt_path="${test_dir}/sh-wt/fx-issue-972"
+  mkdir -p "$wt_path"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  # Empty second arg: must return 0 without attempting any rmdir.
+  rmdir_empty_worktree_container "$wt_path" ""
+  [ -d "$wt_path" ]  # worktree dir must be untouched
+}
+
 @test "merge-pr source: stale-worktree loop calls rmdir_empty_worktree_container after removal" {
   # Structural pin for the deep-clean loop in merge-pr.sh.
   local remove_line rmdir_line

@@ -69,6 +69,7 @@ fi
 rmdir_empty_worktree_container() {
   local _wt_path="${1:-}"
   local _rite_wt_dir="${2:-}"
+  [ -n "$_wt_path" ] && [ -n "$_rite_wt_dir" ] || return 0
   _rite_wt_dir="${_rite_wt_dir%/}"   # strip trailing slash — prevents ".../base//*" mismatch
   case "$_wt_path" in "$_rite_wt_dir"/*)
     rmdir "$_wt_path" 2>/dev/null || true ;;
