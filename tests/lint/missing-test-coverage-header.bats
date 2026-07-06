@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/25-bats-files-must-declare-test-coverage-via-sh.sh, tools/sharkrite-lint.sh
 #
 # Regression test for the MISSING_TEST_COVERAGE_HEADER lint rule.
 # After PR #480 backfilled covers headers on all 142 bats files and

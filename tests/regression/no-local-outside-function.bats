@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/07-local-keyword-outside-function-sc2168-but-ca.sh, tools/sharkrite-lint.sh
 # Regression test for #77: Detect 'local' outside function scope
 #
 # Bug history:

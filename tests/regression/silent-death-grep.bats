@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/08-unsafe-pipe-inside-command-substitution-sile.sh, tools/lint-rules/16-missing-re-source-guard-in-lib-utils-lib-pro.sh, tools/sharkrite-lint.sh
 # Regression test for: Sweep codebase for set -e + pipefail silent-death
 #
 # Bug pattern: VAR=$(... | grep ...) under set -euo pipefail silently kills

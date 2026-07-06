@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/07-local-keyword-outside-function-sc2168-but-ca.sh, tools/lint-rules/08-unsafe-pipe-inside-command-substitution-sile.sh, tools/lint-rules/13-raw-gh-cli-calls-not-wrapped-in-gh-safe.sh, tools/sharkrite-lint.sh
 # Regression test: lint rules correctly report file/line when the scanned file
 # resides in a path containing a colon.
 #

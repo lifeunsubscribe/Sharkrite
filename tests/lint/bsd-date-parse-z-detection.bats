@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/28-bsd-date-jf-parsing-a-z-utc-timestamp-to-epo.sh, tools/sharkrite-lint.sh
 # Tests for Rule 26: BSD_DATE_PARSE_Z_WITHOUT_U
 #
 # Verifies the lint rule flags BSD `date -jf` invocations that parse a Z/UTC

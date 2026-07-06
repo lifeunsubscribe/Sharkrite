@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/markers.sh, tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/18-unbalanced-or-duplicated-sharkrite-extract-m.sh, tools/sharkrite-lint.sh, lib/utils/markers.sh
 # Regression test for #197: Validate sharkrite-extract marker pairs for sed extraction
 #
 # Failure modes this test guards against:

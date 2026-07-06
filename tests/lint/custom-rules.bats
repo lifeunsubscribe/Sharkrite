@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/01-grep-c-with-true-produces-double-zero.sh, tools/lint-rules/02-git-push-without-explicit-refspec-dangerous.sh, tools/lint-rules/03-eval-with-github-api-data-security-risk.sh, tools/lint-rules/04-unquoted-heredoc-in-command-substitution.sh, tools/lint-rules/05-bsd-only-sed-i-without-gnu-fallback.sh, tools/lint-rules/06-pipestatus-after-true-or-non-pipeline.sh, tools/lint-rules/07-local-keyword-outside-function-sc2168-but-ca.sh, tools/lint-rules/08-unsafe-pipe-inside-command-substitution-sile.sh, tools/lint-rules/10-bsd-only-sed-i-without-portable-wrapper-exce.sh, tools/lint-rules/13-raw-gh-cli-calls-not-wrapped-in-gh-safe.sh, tools/sharkrite-lint.sh
 # Tests for Sharkrite custom lint rules
 
 setup() {

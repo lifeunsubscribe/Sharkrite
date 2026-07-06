@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh, lib/utils/test-gate.sh
+# sharkrite-test-covers: tools/sharkrite-lint.sh, lib/utils/test-gate.sh
 #
 # Regression test: targeted lint selection via RITE_LINT_FILES.
 #

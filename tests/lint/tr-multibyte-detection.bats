@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/27-tr-with-a-multibyte-utf-8-replacement-delete.sh, tools/sharkrite-lint.sh
 # Tests for Rule 26: TR_MULTIBYTE_REPLACEMENT
 #
 # Verifies that the lint rule flags `tr` calls whose SET operands contain a

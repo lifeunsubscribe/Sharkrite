@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/33-unguarded-array-expansion-in-bin-bash-script.sh, tools/sharkrite-lint.sh
 # Tests for Rule 33: EMPTY_ARRAY_EXPANSION_BASH32
 #
 # On macOS system bash 3.2, expanding an EMPTY array via "${arr[@]}" under

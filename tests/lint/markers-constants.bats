@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh, lib/utils/markers.sh
+# sharkrite-test-covers: tools/lint-rules/19-raw-sharkrite-marker-literals-in-shell-sourc.sh, tools/sharkrite-lint.sh, lib/utils/markers.sh
 # Lint tests for Rule 19: RAW_MARKER_LITERAL
 #
 # Verifies that:

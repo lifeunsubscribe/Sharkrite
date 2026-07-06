@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/22-function-sentinel-re-source-guard-combined-w.sh, tools/sharkrite-lint.sh
 # Tests for Rule 22: FUNCTION_SENTINEL_GUARD_WITH_EXPORT_F
 #
 # The combo of `if declare -f <fn>; then return 0; fi` (function-sentinel
