@@ -626,6 +626,11 @@ _stale_rebase_onto_main() {
     # Supervised mode is unaffected — the user decides via the prompt below.
     if [ "$workflow_mode" != "supervised" ]; then
       local _restart_max="${RITE_REBASE_CONFLICT_RESTART_MAX:-3}"
+      # Guard: non-numeric value would crash the -le arithmetic test under set -e.
+      # Fall back to the default (3) if the knob is not a non-negative integer.
+      case "$_restart_max" in
+        ''|*[!0-9]*) _restart_max=3 ;;
+      esac
       if [ "$commits_ahead" -le "$_restart_max" ]; then
         print_status "Small branch ($commits_ahead work commit(s) ≤ $_restart_max) — restarting fresh instead of LLM resolution"
         _diag "STALE_CONFLICT_RESTART issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name} work_commits=${commits_ahead} max=${_restart_max}"

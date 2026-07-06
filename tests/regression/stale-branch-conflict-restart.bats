@@ -220,9 +220,12 @@ _setup_conflicting_branch_with_commits() {
 
   unset RITE_REBASE_CONFLICT_RESTART_MAX  # use default (3)
 
-  # Pipe "d" (abort) to stdin so the supervised prompt doesn't hang
+  # Feed "d" (abort) to stdin so the supervised prompt doesn't hang.
+  # Use a here-string (<<<) rather than a pipe so the function runs in the
+  # current shell — a pipe would run it in a subshell and mutations to
+  # llm_called would be invisible to the assertion below.
   local exit_code=0
-  echo "d" | _stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "supervised" "821" "999" 2>/dev/null || exit_code=$?
+  _stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "supervised" "821" "999" 2>/dev/null <<< "d" || exit_code=$?
 
   # Supervised mode with "d" (abort) → exit 1, not exit 11
   [ "$exit_code" -ne 11 ]
