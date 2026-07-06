@@ -132,6 +132,116 @@ _parse_lint_line() {
 }
 
 # ---------------------------------------------------------------------------
+# _gate_flake_retry_pass RAW_FILE PROJECT_ROOT — one bounded serial retry of
+# failing bats FILES (#938). A load-flake blocks a merge exactly like a real
+# failure (live 2026-07-05: three merges blocked by failures that passed 3x in
+# isolation minutes later). Contract:
+#   - Extract failing test names from RAW_FILE's TAP; map them to files by
+#     grepping the selection (dynamic-scoped _parallel_files/_serial_files —
+#     targeted path only; the full-suite path has no selection and skips).
+#   - 1..RITE_GATE_FLAKE_RETRY_MAX_FILES (default 5) failing files → re-run
+#     JUST those files once, serially (no --jobs). More = real breakage, no
+#     retry (logged). RITE_GATE_FLAKE_RETRY=false disables entirely.
+#   - Tests passing on the quiet re-run are load-flakes: their `not ok N name`
+#     lines are FLIPPED to `ok N name` in RAW_FILE (numbering preserved so the
+#     #804 plan-deficit detector's math is untouched), and they are named
+#     LOUDLY (health reports must keep seeing recurring flakes — cleared, not
+#     silently absorbed). Failures persisting on the re-run keep blocking
+#     exactly as before (block-on-any preserved for real reds).
+# Echoes the recomputed tests-exit (0 when no `not ok` remains, else 1).
+# Never called after a watchdog kill (caller guards) — a timeout is not a flake.
+# ---------------------------------------------------------------------------
+_gate_flake_retry_pass() {
+  local _fr_raw="$1" _fr_root="$2"
+  local _fr_max="${RITE_GATE_FLAKE_RETRY_MAX_FILES:-5}"
+
+  # Failing test names from TAP (skip #804 synthetics — "never ran" entries
+  # were not executed, there is nothing to retry; they indicate a swallow).
+  local _fr_names
+  _fr_names=$(grep -E '^not ok [0-9]+ ' "$_fr_raw" 2>/dev/null \
+    | sed -E 's/^not ok [0-9]+ //' | grep -v '^\[tests_not_run\]' || true)
+  [ -z "$_fr_names" ] && { echo 1; return 0; }
+
+  # Map names -> files across the selection (targeted path only).
+  local _fr_selection=()
+  _fr_selection+=("${_parallel_files[@]+"${_parallel_files[@]}"}")
+  _fr_selection+=("${_serial_files[@]+"${_serial_files[@]}"}")
+  if [ "${#_fr_selection[@]}" -eq 0 ]; then
+    echo 1; return 0
+  fi
+  local _fr_files="" _fr_name _fr_hit
+  while IFS= read -r _fr_name; do
+    [ -z "$_fr_name" ] && continue
+    # Strip a trailing " # timeout after Ns"-style TAP directive before matching.
+    _fr_name="${_fr_name%% # *}"
+    _fr_hit=$(grep -lF "$_fr_name" "${_fr_selection[@]+"${_fr_selection[@]}"}" 2>/dev/null | head -1 || true)
+    [ -n "$_fr_hit" ] && _fr_files="${_fr_files}${_fr_hit}"$'\n'
+  done <<< "$_fr_names"
+  _fr_files=$(printf '%s' "$_fr_files" | sort -u | grep -v '^$' || true)
+  local _fr_file_count
+  _fr_file_count=$(printf '%s\n' "$_fr_files" | grep -c . || true)
+
+  if [ "${_fr_file_count:-0}" -lt 1 ]; then
+    echo 1; return 0   # names unmappable (fixture-generated?) — no retry
+  fi
+  if [ "$_fr_file_count" -gt "$_fr_max" ]; then
+    _gate_status "[test-gate] ${_fr_file_count} files failing (> ${_fr_max}) — skipping flake retry, treating as real breakage"
+    echo 1; return 0
+  fi
+
+  _gate_status "[test-gate] Flake retry: re-running ${_fr_file_count} failing file(s) once, serially..."
+  local _fr_retry_raw _fr_retry_exit=0
+  _fr_retry_raw=$(mktemp "/tmp/rite_gate_flake_retry_${PR_NUMBER:-0}_$$_XXXXXX")
+  local _fr_file_arr=()
+  while IFS= read -r _fr_hit; do
+    [ -n "$_fr_hit" ] && _fr_file_arr+=("$_fr_hit")
+  done <<< "$_fr_files"
+  { (cd "$_fr_root" && "${_bats_sandbox[@]+"${_bats_sandbox[@]}"}" \
+      bats "${_fr_file_arr[@]+"${_fr_file_arr[@]}"}" < /dev/null 2>&1); \
+    echo $? > "${_fr_retry_raw}.exit"; } >> "$_fr_retry_raw" || true
+  _fr_retry_exit=$(cat "${_fr_retry_raw}.exit" 2>/dev/null || echo 1)
+  _fr_retry_exit=${_fr_retry_exit:-1}
+  rm -f "${_fr_retry_raw}.exit"
+
+  # Which of the original failures STILL fail on the quiet run?
+  local _fr_persist
+  _fr_persist=$(grep -E '^not ok [0-9]+ ' "$_fr_retry_raw" 2>/dev/null \
+    | sed -E 's/^not ok [0-9]+ //' | sed 's/ # .*//' || true)
+  rm -f "$_fr_retry_raw"
+
+  # Flip cleared failures to ok IN PLACE (numbering preserved for #804 math).
+  local _fr_cleared=0 _fr_persisted=0 _fr_cleared_names=""
+  while IFS= read -r _fr_name; do
+    [ -z "$_fr_name" ] && continue
+    local _fr_clean="${_fr_name%% # *}"
+    if printf '%s\n' "$_fr_persist" | grep -qxF "$_fr_clean"; then
+      _fr_persisted=$((_fr_persisted + 1))
+      continue
+    fi
+    # awk exact-line flip (sed would need escaping the arbitrary test name)
+    awk -v tgt="not ok" -v name="$_fr_name" '
+      index($0, "not ok ") == 1 && substr($0, index($0, " " name)) == " " name {
+        n = $3; print "ok " n " " name; next
+      }
+      { print }
+    ' FS=' ' "$_fr_raw" > "${_fr_raw}.flip" && mv "${_fr_raw}.flip" "$_fr_raw"
+    _fr_cleared=$((_fr_cleared + 1))
+    _fr_cleared_names="${_fr_cleared_names}${_fr_clean}; "
+  done <<< "$_fr_names"
+
+  if [ "$_fr_cleared" -gt 0 ]; then
+    _gate_status "[test-gate] ${_fr_cleared} failure(s) cleared on serial re-run (load flake): ${_fr_cleared_names%??}"
+  fi
+  _diag "TEST_GATE_FLAKE_RETRY cleared=${_fr_cleared} persisted=${_fr_persisted} files=${_fr_file_count} retry_exit=${_fr_retry_exit} pr=${PR_NUMBER:-?}"
+
+  if grep -qE '^not ok [0-9]+ ' "$_fr_raw" 2>/dev/null; then
+    echo 1
+  else
+    echo 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # _parse_bats_failure — convert bats failure output to JSON fragment
 # Input: bats test failure section text
 # Output: JSON objects (one per failure)
@@ -1846,6 +1956,7 @@ run_test_gate() {
         if [ "$_par_exit" = "124" ] || [ "$_par_exit" = "137" ]; then
           _gate_status "[test-gate] bats (parallel group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=parallel timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+          _fr_watchdog=true
         fi
         echo 0 > "$_bats_exit_file"
       fi
@@ -1879,6 +1990,7 @@ run_test_gate() {
         if [ "$_ser_exit" = "124" ] || [ "$_ser_exit" = "137" ]; then
           _gate_status "[test-gate] bats (serial group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=serial timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+          _fr_watchdog=true
         fi
       fi
 
@@ -1896,6 +2008,18 @@ run_test_gate() {
     if [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; then
       _gate_status "[test-gate] bats (full suite) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
       _diag "TEST_GATE_WATCHDOG_KILL group=full timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+    fi
+
+    # --- Flake retry (#938): one bounded serial re-run of failing files ------
+    # Guards: real failure only (not watchdog kills — a timeout is not a flake),
+    # targeted-selection path only (the function skips when no selection), and
+    # RITE_GATE_FLAKE_RETRY=false as the operator off-switch.
+    if [ "${_tests_exit:-1}" -ne 0 ] \
+       && [ "$_tests_exit" != "124" ] && [ "$_tests_exit" != "137" ] \
+       && [ "${_fr_watchdog:-false}" != "true" ] \
+       && [ "${RITE_GATE_FLAKE_RETRY:-true}" = "true" ]; then
+      _tests_exit=$(_gate_flake_retry_pass "$_tests_raw_file" "$project_root")
+      _tests_exit=${_tests_exit:-1}
     fi
 
     # Clean up tap dir if used (never a glob — scoped to this invocation's pid-named dir)
