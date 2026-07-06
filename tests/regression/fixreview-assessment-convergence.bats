@@ -202,13 +202,29 @@ teardown() {
   }
 }
 
-@test "assess-review-issues.sh: pass-type fallback uses threshold ≥2 (post-post, runs after review posted)" {
-  # assessment runs AFTER local-review.sh posts the current review; count=1 is
-  # the current-run review.  Only count≥2 means a prior review exists.
-  # This matches _triage_emit_shadow's ≥2 rule for the same reason.
-  run grep -n 'ge 2\|-ge 2' "$ASSESS_REVIEW_SCRIPT"
+@test "assess-review-issues.sh: pass-type fallback threshold-selection block sets both ≥2 (post-post) and ≥1 (consume-not-post) branches and compares via variable" {
+  # The threshold-selection block in assess-review-issues.sh has two branches:
+  #   RITE_REVIEW_JUST_POSTED=true  → _fixreview_threshold=2  (post-post path:
+  #     the current-run review inflates the count by 1; only count≥2 means a
+  #     prior review exists)
+  #   RITE_REVIEW_JUST_POSTED=false → _fixreview_threshold=1  (consume-not-post
+  #     path: a pre-existing review was consumed without posting; count=1 already
+  #     means "prior review exists" — standalone --assess-and-fix path)
+  # The comparison must use -ge "$_fixreview_threshold" (not a hardcoded literal)
+  # so both branches apply the correct threshold at runtime.
+  local threshold_block
+  threshold_block=$(awk '/RITE_REVIEW_JUST_POSTED/{f=1} f{print; if (/^fi$/) {exit}}' "$ASSESS_REVIEW_SCRIPT")
+  [[ "$threshold_block" == *"_fixreview_threshold=2"* ]] || {
+    echo "FAIL: threshold-selection block must set _fixreview_threshold=2 for post-post path in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+  [[ "$threshold_block" == *"_fixreview_threshold=1"* ]] || {
+    echo "FAIL: threshold-selection block must set _fixreview_threshold=1 for consume-not-post path in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+  run grep -n -- '-ge "\$_fixreview_threshold"' "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: pass-type fallback must use ≥2 threshold (not ≥1) in $ASSESS_REVIEW_SCRIPT"
+    echo "FAIL: pass-type comparison must use -ge \"\$_fixreview_threshold\" (variable, not literal) in $ASSESS_REVIEW_SCRIPT"
     false
   }
 }
