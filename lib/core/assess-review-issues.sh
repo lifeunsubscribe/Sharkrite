@@ -379,6 +379,65 @@ else
   print_status "No prior assessment decisions found (first iteration)"
 fi
 
+# =============================================================================
+# RETRY CONVERGENCE RULE: Inject for fix-loop retry passes (retry N > 0)
+# =============================================================================
+# When the assessor runs on a retry pass it has already seen a prior assessment
+# that produced ACTIONABLE_NOW items.  Those items were (nominally) fixed by the
+# developer.  New ACTIONABLE_NOW items on a retry pass are presumptively
+# regressions or pre-existing issues that were missed — NOT new valid targets.
+#
+# Rule: a finding that was NOT in any prior ACTIONABLE_NOW list is classified
+# ACTIONABLE_LATER (not NOW) unless:
+#   (a) it is CRITICAL severity, OR
+#   (b) the finding includes an explicit, specific attribution to code introduced
+#       by the most recent fix commit (i.e. the fix itself caused the problem).
+#
+# The prior decisions ledger (above) already carries DISMISSED/LATER context.
+# This section adds the NOW-escalation bar for items the prior assessment did
+# not yet classify (i.e. new findings seen for the first time on this retry).
+
+# Read retry count from caller-exported env var (set by assess-and-resolve.sh).
+# Fall back to 0 (first pass — no convergence rule applied).
+_ASSESS_RETRY_COUNT="${RITE_REVIEW_RETRY_COUNT:-0}"
+# Sanitize
+case "${_ASSESS_RETRY_COUNT:-0}" in
+  ''|*[!0-9]*) _ASSESS_RETRY_COUNT=0 ;;
+esac
+
+RETRY_PASS_RULE_SECTION=""
+if [ "${_ASSESS_RETRY_COUNT:-0}" -gt 0 ]; then
+  print_status "Retry pass (${_ASSESS_RETRY_COUNT}) — injecting convergence rule into assessor context"
+  RETRY_PASS_RULE_SECTION="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX-LOOP RETRY CONVERGENCE RULE (retry ${_ASSESS_RETRY_COUNT})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is assessment iteration ${_ASSESS_RETRY_COUNT} of a fix loop.  Prior ACTIONABLE_NOW
+items were addressed by the developer.  This assessment verifies convergence.
+
+CONVERGENCE RULE — applies to every finding in the current review:
+
+A finding is ACTIONABLE_NOW on this retry ONLY if one of these is true:
+  (A) Severity is CRITICAL — always escalated regardless of origin.
+  (B) The finding is explicitly attributable to code INTRODUCED by the fix
+      commit(s) since the prior review (i.e. the fix itself caused the problem).
+      You MUST quote the specific new code that is the evidence.
+
+A finding that does NOT meet (A) or (B) MUST be classified ACTIONABLE_LATER
+(or DISMISSED if not worth tracking at all) — regardless of its severity.
+
+In particular: do NOT raise ACTIONABLE_NOW for:
+  - Pre-existing issues that were present before the fix commit.
+  - Issues already present in the prior review that have now been fixed
+    (do not re-raise a fixed finding as a new issue).
+  - Issues first observed on this retry but NOT attributable to the fix.
+
+The goal is convergence: the ACTIONABLE_NOW count on this pass MUST be ≤ the
+count from the immediately prior pass.  A growing count blocks the PR.
+
+"
+fi
+
 # Error detection now handled by provider_detect_error() from provider abstraction.
 # Export detected error for use by workflow-runner
 export CLAUDE_ERROR_TYPE=""
@@ -416,7 +475,7 @@ PROJECT CONTEXT:
 
 $PROJECT_CONTEXT_SECTION
 
-${PRIOR_DECISIONS_SECTION}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${PRIOR_DECISIONS_SECTION}${RETRY_PASS_RULE_SECTION}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CODE REVIEW TO ASSESS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

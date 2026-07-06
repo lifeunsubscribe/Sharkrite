@@ -214,6 +214,136 @@ _triage_emit_shadow() {
 }
 
 # ---------------------------------------------------------------------------
+# build_fixreview_context — build verification context for fix-loop re-reviews
+#
+# On a fixreview pass the reviewer must NOT re-roll a fresh audit; instead it
+# verifies prior findings and limits new NOW findings to those introduced by the
+# fix commits.  This function fetches:
+#
+#   1. The most recent prior review body (posted before this run started).
+#   2. The fix-commits diff: commits between the prior review's embedded SHA
+#      and the current HEAD.  Falls back to the full PR diff when no SHA is
+#      available or the range is not computable.
+#
+# Outputs a multi-line string ready to embed in the review prompt, or an empty
+# string when the function cannot gather enough context (gh/git failure).
+# Callers should treat empty output as "fall through to first-pass behaviour".
+#
+# Args: PR_NUMBER [CURRENT_HEAD_SHA]
+# ---------------------------------------------------------------------------
+build_fixreview_context() {
+  local _pr="$1"
+  local _current_sha="${2:-}"
+
+  # Fetch all review comments, newest-first
+  local _jq_all_reviews
+  _jq_all_reviews="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse"
+  local _all_reviews_json
+  _all_reviews_json=$(gh_safe pr view "$_pr" --json comments \
+    --jq "$_jq_all_reviews" 2>/dev/null || true)
+  _all_reviews_json="${_all_reviews_json:-[]}"
+
+  local _count
+  _count=$(printf '%s' "$_all_reviews_json" | jq 'length' 2>/dev/null || echo "0")
+
+  # The caller (script body) already verified count >= 2 before invoking this
+  # function.  This guard is a defensive fallback for standalone tests that call
+  # the function directly.  count==0 means no reviews posted yet — bail out.
+  if [ "${_count:-0}" -lt 1 ] 2>/dev/null; then
+    echo ""
+    return 0
+  fi
+
+  # The most recent posted review is index 0 (newest-first sort).
+  # When count==1 that IS the only prior; when count>=2 it's still the latest.
+  local _prior_body
+  _prior_body=$(printf '%s' "$_all_reviews_json" | jq -r '.[0].body' 2>/dev/null || true)
+  if [ -z "${_prior_body:-}" ]; then
+    echo ""
+    return 0
+  fi
+
+  # Extract the SHA embedded in the prior review marker (may be empty for old reviews)
+  local _prior_sha
+  _prior_sha=$(echo "$_prior_body" | grep -oE "${RITE_MARKER_REVIEW}[^>]*commit:[a-f0-9]{7,40}" \
+    | grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true)
+
+  # Build fix-commits diff: commits pushed since the prior review
+  local _fix_diff=""
+  if [ -n "${_prior_sha:-}" ] && [ -n "${_current_sha:-}" ]; then
+    # Range: commits introduced after the prior review's SHA up to current HEAD
+    _fix_diff=$(git diff "${_prior_sha}..${_current_sha}" 2>/dev/null || true)
+  fi
+
+  # If the range diff is empty (no commits, git unavailable, or SHA not found
+  # locally), fall back to a short message — the reviewer can still use the
+  # prior review body as context.
+  local _fix_diff_section=""
+  if [ -n "${_fix_diff:-}" ]; then
+    local _fix_lines
+    _fix_lines=$(printf '%s\n' "$_fix_diff" | wc -l | tr -d ' ')
+    # Cap at 400 lines to keep prompt size reasonable; reviewer sees full PR diff below
+    if [ "${_fix_lines:-0}" -gt 400 ]; then
+      _fix_diff=$(printf '%s\n' "$_fix_diff" | head -400)
+      _fix_diff_section="
+\`\`\`diff
+${_fix_diff}
+... (truncated at 400 lines — see full PR diff below for remaining changes)
+\`\`\`"
+    else
+      _fix_diff_section="
+\`\`\`diff
+${_fix_diff}
+\`\`\`"
+    fi
+  else
+    _fix_diff_section="
+_(Fix-commits diff unavailable — review the full PR diff below for changes since the prior review.)_"
+  fi
+
+  # Truncate the prior review body to avoid bloating the prompt.
+  # Keep the first 80 lines (covers the findings summary + key items).
+  local _prior_summary
+  _prior_summary=$(printf '%s\n' "$_prior_body" | head -80 || true)
+
+  printf '%s' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFICATION PASS — FIX-LOOP RE-REVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is a fix-loop re-review, NOT a fresh audit.  The developer has applied
+fixes in response to the prior review.  Your job is VERIFICATION:
+
+1. For each finding in the PRIOR REVIEW below:
+   - Check whether it is FIXED in the current diff.
+   - If fixed: do NOT report it again.
+   - If NOT fixed: report it as-is (same severity, same title).
+
+2. New findings are ONLY in scope if:
+   - They are CRITICAL severity (always surfaced regardless of origin), OR
+   - You can specifically attribute them to a code change introduced in the
+     FIX-COMMITS DIFF below (i.e., the fix itself introduced a new problem).
+
+3. Do NOT re-raise pre-existing findings that were NOT in the prior review —
+   those were already reviewed and accepted or will be addressed separately.
+
+4. Convergence goal: the NOW count MUST NOT grow across fix iterations.
+   Raising new non-critical, non-fix-introduced items causes divergence and
+   blocks the PR indefinitely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRIOR REVIEW (most recent, truncated):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${_prior_summary}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX-COMMITS DIFF (changes since prior review):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${_fix_diff_section}
+"
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above without executing the script body
 # (which sources config, parses args, calls gh/claude, etc.).
@@ -392,11 +522,31 @@ $(head -200 "$RITE_PROJECT_ROOT/CLAUDE.md")"
   print_status "Loaded project context from CLAUDE.md"
 fi
 
-# NOTE: No iteration context is injected here. The review must always be a fresh,
-# unbiased analysis of the current code state. The assessment step
-# (assess-review-issues.sh) handles comparing findings against issue scope and
-# filtering previously-addressed items. If fixed items no longer appear in the
-# diff, the review simply won't flag them — which is the correct behavior.
+# Detect whether this is a fix-loop re-review (fixreview pass) and, if so,
+# inject verification context so the reviewer converges rather than re-auditing.
+# A true first-pass review stays unmodified (FIXREVIEW_CONTEXT is empty).
+#
+# Pass-type detection: count reviews already posted for this PR.  A review
+# for THIS run may already be posted by the time we reach this point, so a
+# genuine first pass shows count 1 (the just-posted one).  >=2 means a prior
+# review existed before this run — we are in the fix loop.
+FIXREVIEW_CONTEXT=""
+_REVIEW_PRIOR_COUNT=$(gh_safe pr view "$PR_NUMBER" --json comments \
+  --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" \
+  2>/dev/null || echo 0)
+# Sanitize: treat non-numeric output as 0
+case "${_REVIEW_PRIOR_COUNT:-0}" in
+  ''|*[!0-9]*) _REVIEW_PRIOR_COUNT=0 ;;
+esac
+if [ "${_REVIEW_PRIOR_COUNT:-0}" -ge 2 ]; then
+  print_status "Fix-loop re-review detected ($((${_REVIEW_PRIOR_COUNT:-0})) prior reviews) — building verification context..."
+  FIXREVIEW_CONTEXT=$(build_fixreview_context "$PR_NUMBER" "${PR_HEAD_SHA:-}" 2>/dev/null || true)
+  if [ -n "${FIXREVIEW_CONTEXT:-}" ]; then
+    print_status "Verification context injected (prior review + fix-commits diff)"
+  else
+    print_warning "Could not build fixreview context (gh/git unavailable) — proceeding as first-pass"
+  fi
+fi
 
 # Detect sensitivity areas from changed file patterns for enhanced review focus
 SENSITIVITY_SECTION=""
@@ -432,8 +582,49 @@ REVIEW_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Use consistent model for reviews (matches assessment model for determinism)
 EFFECTIVE_MODEL="$RITE_REVIEW_MODEL"
 
-# Build the full prompt
-REVIEW_PROMPT="$REVIEW_INSTRUCTIONS
+# Build the full prompt.
+# When FIXREVIEW_CONTEXT is non-empty (fix-loop re-review), prepend the
+# verification rules and prior-review context BEFORE the review instructions.
+# First-pass reviews are unchanged (FIXREVIEW_CONTEXT is empty string).
+if [ -n "${FIXREVIEW_CONTEXT:-}" ]; then
+  REVIEW_PROMPT="${FIXREVIEW_CONTEXT}
+
+---
+
+${REVIEW_INSTRUCTIONS}
+$PROJECT_CONTEXT
+${SENSITIVITY_SECTION:-}
+
+---
+
+## Review Metadata
+
+Use these values in your JSON output:
+- **Model:** $EFFECTIVE_MODEL
+- **Timestamp:** $REVIEW_TIMESTAMP
+- **Files Analyzed:** $DIFF_FILES
+
+---
+
+## PR Information
+
+**Title:** $PR_TITLE
+**Branch:** $PR_HEAD -> $PR_BASE
+**PR Number:** #$PR_NUMBER
+
+---
+
+## Code Changes (Full PR Diff)
+
+\`\`\`diff
+$PR_DIFF
+\`\`\`
+
+---
+
+Please provide your code review following the output format specified above. Start with the human-readable markdown review, then end with the hidden JSON data block."
+else
+  REVIEW_PROMPT="$REVIEW_INSTRUCTIONS
 $PROJECT_CONTEXT
 ${SENSITIVITY_SECTION:-}
 
@@ -465,6 +656,7 @@ $PR_DIFF
 ---
 
 Please provide your code review following the output format specified above. Start with the human-readable markdown review, then end with the hidden JSON data block."
+fi
 
 # Estimate review time based on diff size
 if [ "$DIFF_LINES" -lt 100 ]; then
