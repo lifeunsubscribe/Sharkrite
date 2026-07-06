@@ -1278,6 +1278,27 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     ACTIONABLE_LATER_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -c "^### .* - ACTIONABLE_LATER" || true)
     DISMISSED_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -c "^### .* - DISMISSED" || true)
 
+    # (moved below the counts so the Summary block reflects the MERGED totals)
+    if [ -n "${GATE_PREPEND_ITEMS:-}" ]; then
+      # #949: the POSTED comment must be the single source of truth. The normal
+      # LLM-success comment was posted by assess-review-issues.sh BEFORE this
+      # merge, so it lacks the [GATE] items — and fix mode reads the LATEST
+      # posted assessment, not our in-memory view. When gate findings were the
+      # only ACTIONABLE_NOW items, fix mode saw "nothing to fix" and burned
+      # empty ~90s cycles to retry exhaustion (3 repros: LeadFlow #401/#491,
+      # sharkrite #910). Post a superseding comment with the MERGED result so
+      # the counter below and fix mode read the same text by construction.
+      if [ -n "${PR_NUMBER:-}" ]; then
+        if _post_gate_fallback_assessment_comment "$PR_NUMBER" "$ASSESSMENT_RESULT" "$ACTIONABLE_NOW_COUNT" \
+             "merged — LLM assessment + ${GATE_NOW_COUNT} gate finding(s) (#949)"; then
+          print_status "Posted merged assessment (LLM + [GATE] items) — fix mode reads this superseding comment"
+        else
+          print_warning "Could not post the merged assessment comment — fix mode may not see the [GATE] items this round (#949)"
+        fi
+      fi
+    fi
+
+
     # Print detailed assessment breakdown FIRST (shows reasoning for each item)
     print_assessment_details "$ASSESSMENT_RESULT" || {
       print_warning "Could not parse assessment details (format may be unexpected)"
