@@ -18,6 +18,11 @@ load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
 
 setup() {
+  # Pin the LEGACY resolver/abort path: #855's small-branch fast-path (auto-mode
+  # conflicts on <=RITE_REBASE_CONFLICT_RESTART_MAX work commits restart fresh)
+  # would preempt the conflict-resolution contracts these tests pin. 0 disables
+  # the fast-path; the restart contract is covered by stale-branch-conflict-restart.bats.
+  export RITE_REBASE_CONFLICT_RESTART_MAX=0
   setup_test_tmpdir
 
   # Create bare remote and fixture repo
