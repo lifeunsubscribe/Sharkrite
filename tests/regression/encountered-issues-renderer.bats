@@ -566,20 +566,23 @@ DEDUP_MOCK
 @test "all gh fetches in render_encountered_issues use --limit 1000 (not 200 or 300)" {
   local renderer="$RITE_REPO_ROOT/lib/utils/encountered-issues-renderer.sh"
 
-  # Verify --limit 1000 appears on exactly five gh_safe call lines (server issues,
-  # backstop issues, server PRs, backstop PRs, legacy label) — scoped to gh_safe
-  # lines so comment-only occurrences can't mask a missing call site.
-  run bash -c "grep 'gh_safe' '$renderer' | grep -c -- '--limit 1000' || true"
+  # Verify --limit 1000 appears on exactly five gh_safe argument lines (server
+  # issues, backstop issues, server PRs, backstop PRs, legacy label).
+  # Match the continuation-line pattern "    --limit 1000 2>/dev/null" which
+  # appears only on real call sites, not in comments (comments end at EOL, not
+  # with a redirection suffix).  gh_safe and --limit are on separate continuation
+  # lines so the old "grep gh_safe | grep --limit" pipeline always matched 0.
+  run bash -c "grep -c -- '--limit 1000 2>/dev/null' '$renderer' || true"
   [ "$status" -eq 0 ]
   # Must be exactly 5 — one per gh_safe call site; any fewer means a call site
   # was silently dropped and the durability guarantee is broken.
   [ "$output" -eq 5 ]
 
-  # No surviving --limit 200 or --limit 300 in gh_safe calls (only in comments).
-  # Check that no gh_safe call line uses the old caps.
-  run bash -c "grep 'gh_safe' '$renderer' | grep -c -- '--limit 200' || true"
+  # No surviving --limit 200 or --limit 300 on call-site lines (the 2>/dev/null
+  # suffix distinguishes call lines from comment lines that may mention old caps).
+  run bash -c "grep -c -- '--limit 200 2>/dev/null' '$renderer' || true"
   [ "$output" -eq 0 ]
 
-  run bash -c "grep 'gh_safe' '$renderer' | grep -c -- '--limit 300' || true"
+  run bash -c "grep -c -- '--limit 300 2>/dev/null' '$renderer' || true"
   [ "$output" -eq 0 ]
 }
