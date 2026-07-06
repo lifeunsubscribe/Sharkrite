@@ -27,6 +27,7 @@ setup() {
   _diag() { true; }
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: test-gate.sh uses a function-sentinel guard (declare -f run_test_gate); pre-source _diag() stub is preserved on source.
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/test-gate.sh"
   # Leaked -u/pipefail + BATS_TEST_TIMEOUT swallows failing tests (keep -e:

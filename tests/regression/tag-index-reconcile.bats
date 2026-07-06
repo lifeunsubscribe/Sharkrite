@@ -57,8 +57,17 @@ setup() {
   export -f claude_provider_resolve_model provider_run_prompt_with_timeout
 
   # Source tag-index.sh to load tag_index_log_history() and its helpers.
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: tag-index.sh uses a function-sentinel guard (declare -f tag_index_log_history); pre-source provider stubs are preserved on source. print_warning/print_info are re-stubbed below because colors.sh (chained) uses an env-var guard only.
+  # shellcheck source=/dev/null
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  # Re-stub after source: tag-index.sh chains to colors.sh (env-var guard
+  # _RITE_COLORS_LOADED) which overwrites print_warning and print_info.
+  print_warning() { :; }
+  print_info()    { :; }
+  verbose_info()  { :; }
+  export -f print_warning print_info verbose_info
 
   # Extract reconcile_tag_index() from assess-documentation.sh via awk.
   # We extract only that function to avoid executing the script's top-level body.

@@ -56,6 +56,22 @@ setup() {
   # Source blocker-rules.sh after the shims are in place
   source "${RITE_LIB_DIR}/utils/blocker-rules.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  # Re-stub after source: blocker-rules.sh chains into gh-retry.sh (env-var guard
+  # _RITE_GH_RETRY_LOADED) and notifications.sh (env-var guard
+  # _RITE_NOTIFICATIONS_LOADED), both of which overwrite pre-source stubs. gh_safe
+  # must call the controlled mock (not the real gh binary); send_blocker_notification
+  # must no-op so tests don't attempt real Slack/email delivery.
+  # print_* are re-stubbed defensively (colors.sh is not in the chain here, but
+  # restoring them makes test output stable regardless of future dependency changes).
+  gh_safe() { command gh "$@"; }
+  send_blocker_notification() { :; }
+  print_info()    { echo "[INFO] $*" >&2; }
+  print_warning() { echo "[WARN] $*" >&2; }
+  print_error()   { echo "[ERROR] $*" >&2; }
+  print_success() { echo "[OK] $*" >&2; }
+  print_status()  { echo "[STATUS] $*" >&2; }
+  export -f gh_safe send_blocker_notification print_info print_warning print_error print_success print_status
 }
 
 teardown() {

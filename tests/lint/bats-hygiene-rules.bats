@@ -272,3 +272,215 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "setup-suppressed.bats.*BATS_SETUP_STRICT_LEAK"
 }
+
+# ---------------------------------------------------------------------------
+# BATS_PRE_SOURCE_STUB_OVERWRITE
+# ---------------------------------------------------------------------------
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: flags stub defined before lib source without post-source re-stub" {
+  # setup() defines gh_safe() stub, then sources a lib — but never re-defines
+  # gh_safe() after the source.  Rule 34 should flag the source line.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { return 0; }'
+    echo '  source "$RITE_LIB_DIR/utils/foo.sh"'
+    echo '  set +u; set +o pipefail'
+    echo '}'
+    _emit_test_open "stub-overwrite victim"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/pre-source-stub-no-restub.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_PRE_SOURCE_STUB_OVERWRITE"
+  echo "$output" | grep -q "pre-source-stub-no-restub.bats:5 - BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: passes when stub is re-defined after the source" {
+  # Pre-source stub + post-source re-stub: the rule should NOT flag this.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { return 0; }'
+    echo '  source "$RITE_LIB_DIR/utils/foo.sh"'
+    echo '  set +u; set +o pipefail'
+    echo '  gh_safe() { return 0; }  # re-stub after source'
+    echo '}'
+    _emit_test_open "stub-overwrite safe"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/pre-source-stub-with-restub.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "pre-source-stub-with-restub.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: does not flag when stub defined only after source" {
+  # No pre-source stub at all — only a post-source definition.  Must not flag.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  source "$RITE_LIB_DIR/utils/foo.sh"'
+    echo '  set +u; set +o pipefail'
+    echo '  gh_safe() { return 0; }'
+    echo '}'
+    _emit_test_open "post-only stub"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/pre-source-post-only.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "pre-source-post-only.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: suppression comment on preceding line is honored" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { return 0; }'
+    echo '  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: foo.sh uses function-sentinel guard'
+    echo '  source "$RITE_LIB_DIR/utils/foo.sh"'
+    echo '  set +u; set +o pipefail'
+    echo '}'
+    _emit_test_open "suppressed overwrite"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/pre-source-stub-suppressed.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "pre-source-stub-suppressed.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: does not flag function definitions inside a heredoc in setup()" {
+  # A heredoc body in setup() may contain function definitions — those are
+  # fixture content, not stubs, and must not be counted by the rule.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo "  cat > \"\$BATS_TEST_TMPDIR/stub.sh\" <<'STUB'"
+    echo '#!/bin/bash'
+    echo 'gh_safe() { return 0; }'
+    echo 'STUB'
+    echo '  source "$RITE_LIB_DIR/utils/foo.sh"'
+    echo '  set +u; set +o pipefail'
+    echo '}'
+    _emit_test_open "heredoc stub"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/pre-source-heredoc-stub.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "pre-source-heredoc-stub.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+# ---------------------------------------------------------------------------
+# BATS_FILE_SCOPE_ENV_READ
+# ---------------------------------------------------------------------------
+
+@test "BATS_FILE_SCOPE_ENV_READ: flags RITE_* env-var read at file scope" {
+  # An assignment outside any function that references \$RITE_REPO_ROOT.
+  # Rule 35 should flag this line.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo "load '../helpers/setup.bash'"
+    echo 'MY_PATH="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"'
+    echo 'setup() {'
+    echo '  setup_test_tmpdir'
+    echo '}'
+    _emit_test_open "file-scope env read"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-rite-read.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+  echo "$output" | grep -q "file-scope-rite-read.bats:4 - BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: passes when RITE_* assignment is inside setup()" {
+  # The same assignment moved inside setup() is safe and must not be flagged.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo "load '../helpers/setup.bash'"
+    echo 'setup() {'
+    echo '  MY_PATH="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"'
+    echo '  setup_test_tmpdir'
+    echo '}'
+    _emit_test_open "setup-scoped assignment"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-rite-safe.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-rite-safe.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: does not flag BATS_TEST_DIRNAME-derived assignments at file scope" {
+  # Assignments that reference BATS_TEST_DIRNAME (a bats builtin always set at
+  # parse time) are safe patterns and must not be flagged.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'RITE_REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"'
+    echo 'setup() {'
+    echo '  true'
+    echo '}'
+    _emit_test_open "bats-builtin derived"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-bats-builtin.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-bats-builtin.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: suppression comment on preceding line is honored" {
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo "load '../helpers/setup.bash'"
+    echo '# sharkrite-lint disable BATS_FILE_SCOPE_ENV_READ - Reason: setup.bash exports RITE_REPO_ROOT at load time'
+    echo 'MY_PATH="${RITE_REPO_ROOT}/tests/helpers/gh-mock-binary.sh"'
+    echo 'setup() {'
+    echo '  setup_test_tmpdir'
+    echo '}'
+    _emit_test_open "suppressed file-scope"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-rite-suppressed.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-rite-suppressed.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+# ---------------------------------------------------------------------------
+# Real-tree cleanliness: Rules 34 + 35 must produce zero hits on the actual
+# repo tree.  This is the enforcement of the "repo sweep" acceptance criterion
+# and the reason the lint rules exist: the rules ship clean.
+# ---------------------------------------------------------------------------
+
+@test "BATS_PRE_SOURCE_STUB_OVERWRITE: zero hits on the real repo tree" {
+  # Run the full lint from the actual repo root (not TEST_REPO).
+  # RITE_LINT_FILES is intentionally NOT passed so the bats-file rules
+  # (find tests -name '*.bats') scan the full real tests/ tree.
+  cd "$RITE_REPO_ROOT"
+  run bash "$LINT_SCRIPT"
+  # Assert no BATS_PRE_SOURCE_STUB_OVERWRITE violations in the output.
+  ! echo "$output" | grep -q "BATS_PRE_SOURCE_STUB_OVERWRITE"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: zero hits on the real repo tree" {
+  # Run the full lint from the actual repo root (not TEST_REPO).
+  cd "$RITE_REPO_ROOT"
+  run bash "$LINT_SCRIPT"
+  # Assert no BATS_FILE_SCOPE_ENV_READ violations in the output.
+  ! echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+}
