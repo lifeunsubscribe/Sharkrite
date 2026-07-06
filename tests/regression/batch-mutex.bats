@@ -26,6 +26,7 @@
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 ISSUE_LOCK="$REPO_ROOT/lib/utils/issue-lock.sh"
+BATCH_SCRIPT="$REPO_ROOT/lib/core/batch-process-issues.sh"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 EXIT_CODES_DOC="$REPO_ROOT/docs/architecture/exit-codes.md"
 
@@ -339,4 +340,40 @@ teardown() {
     echo "FAIL: exit 17 entry in exit-codes.md does not describe the batch-refused semantic" >&2
     return 1
   }
+}
+
+@test "queue mode: second batch waits for a live holder, then acquires (#956)" {
+  # Holder: a real process that holds the lock briefly, then releases.
+  run bash -c '
+    export RITE_LOCK_DIR="'"$RITE_LOCK_DIR"'"
+    source "'"$ISSUE_LOCK"'"
+    set +u; set +o pipefail
+    ( acquire_batch_lock "1 2" || exit 9
+      sleep 2
+      release_batch_lock ) &
+    holder=$!
+    sleep 0.5   # let the holder win the lock
+    # Waiter: replicate the queue loop (15s slice shrunk via a direct retry loop)
+    waited=0
+    until acquire_batch_lock "3 4" 2>/dev/null; do
+      sleep 0.5; waited=$((waited+1))
+      [ "$waited" -gt 20 ] && { echo TIMEOUT; exit 1; }
+    done
+    echo "ACQUIRED after ~$((waited/2))s"
+    release_batch_lock
+    wait $holder
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ACQUIRED"* ]]
+}
+
+@test "queue opt-out: RITE_BATCH_QUEUE=false preserves the exit-17 refusal path" {
+  run grep -A3 'RITE_BATCH_QUEUE:-true' "$BATCH_SCRIPT"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "exit 17"
+}
+
+@test "queue mode source: waiter heartbeats name the holder pid" {
+  run grep -E 'still queued .*behind PID' "$BATCH_SCRIPT"
+  [ "$status" -eq 0 ]
 }

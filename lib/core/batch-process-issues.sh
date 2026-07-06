@@ -698,9 +698,32 @@ print_info "Running pre-start checks..."
 # ---------------------------------------------------------------------------
 _batch_issue_list_str="${ISSUE_LIST[*]}"
 if ! acquire_batch_lock "$_batch_issue_list_str"; then
-  # acquire_batch_lock already printed the holder PID + issue list to stderr.
-  print_error "Batch refused: another batch is already running. Exit code 17."
-  exit 17
+  # A LIVE batch holds the repo lock (stale locks were already reclaimed
+  # inside acquire_batch_lock). Default behavior is to QUEUE (#956): the
+  # whole point of the mutex is fire-and-forget stacking of batches, so wait
+  # with a heartbeat and start when the holder releases. Set
+  # RITE_BATCH_QUEUE=false for the old hard-refusal (exit 17 — kept for
+  # scripts that want a fast no).
+  if [ "${RITE_BATCH_QUEUE:-true}" != "true" ]; then
+    # acquire_batch_lock already printed the holder PID + issue list to stderr.
+    print_error "Batch refused: another batch is already running. Exit code 17."
+    exit 17
+  fi
+  _bq_holder_pid=$(cat "${RITE_LOCK_DIR}/batch.lock/pid" 2>/dev/null || echo "?")
+  _bq_holder_issues=$(cat "${RITE_LOCK_DIR}/batch.lock/issues" 2>/dev/null || echo "?")
+  print_info "Queued behind running batch (PID ${_bq_holder_pid}; issues: ${_bq_holder_issues}) — will start when it finishes. Ctrl-C to leave the queue."
+  _bq_waited=0
+  # 2>/dev/null: each re-attempt would spam the holder-PID refusal line; the
+  # initial message + the 60s heartbeat carry that information.
+  until acquire_batch_lock "$_batch_issue_list_str" 2>/dev/null; do
+    sleep 15
+    _bq_waited=$((_bq_waited + 15))
+    if [ $((_bq_waited % 60)) -eq 0 ]; then
+      _bq_holder_pid=$(cat "${RITE_LOCK_DIR}/batch.lock/pid" 2>/dev/null || echo "?")
+      print_info "  ...still queued (${_bq_waited}s) behind PID ${_bq_holder_pid}"
+    fi
+  done
+  print_success "Lock acquired after ${_bq_waited}s in queue — starting batch"
 fi
 
 # AWS credential check — warn only, don't block. If creds are actually needed,
