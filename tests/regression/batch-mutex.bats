@@ -216,6 +216,7 @@ teardown() {
         release_batch_lock
       fi
     }
+    # sharkrite-lint disable TRAP_EXIT_IN_BATS_TEST - Reason: this trap is inside the bash -c CHILD process string (it is the subject under test — verifying the EXIT trap releases the batch lock); it never touches the bats shell's result-emitting trap
     trap '_cleanup' EXIT
 
     acquire_batch_lock '5 6'
