@@ -25,6 +25,7 @@ fi
 
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
 
 # Function-only mode: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here
 # so tests can load only the helper function definitions without running the
@@ -210,10 +211,7 @@ for entry in "${STALE_WORKTREES[@]+"${STALE_WORKTREES[@]}"}"; do
     print_success "Removed: $(basename "$wt_path")"
     REMOVED_COUNT=$((REMOVED_COUNT + 1))
     # Rmdir the parent container dir if it is now empty and lives inside RITE_WORKTREE_DIR
-    _wt_container=$(dirname "$wt_path")
-    case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
-      rmdir "$_wt_container" 2>/dev/null || true ;;
-    esac
+    rmdir_empty_worktree_container "$(dirname "$wt_path")" "$RITE_WORKTREE_DIR"
   fi
 done
 

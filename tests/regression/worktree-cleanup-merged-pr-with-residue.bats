@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh
+# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh, lib/utils/git-helpers.sh
 # Regression test: worktree auto-cleanup correctly detects merged PRs
 # Issue #182
 #
@@ -141,77 +141,99 @@ MERGE_PR="$SCRIPT_DIR/lib/core/merge-pr.sh"
 CLEANUP_WT="$SCRIPT_DIR/lib/utils/cleanup-worktrees.sh"
 
 @test "empty container cleanup: behavioral fixture - empty parent is removed" {
-  # Exercises the rmdir-if-empty logic directly (shared by all three removal sites).
+  # Exercises the real rmdir_empty_worktree_container function from git-helpers.sh.
+  #
+  # Directory layout mirrors production:
+  #   RITE_WORKTREE_DIR = .../sh-wt
+  #   container         = .../sh-wt/issue-972  (child of RITE_WORKTREE_DIR)
+  #   wt_path           = .../sh-wt/issue-972/fix
   local test_dir="${BATS_TEST_TMPDIR}/rmdir-fixture"
   local rite_wt_dir="${test_dir}/sh-wt"
-  local wt_path="${rite_wt_dir}/issue-972-fix"
+  local container="${rite_wt_dir}/issue-972"
+  local wt_path="${container}/fix"
 
   mkdir -p "$wt_path"
   rm -rf "$wt_path"    # simulate git worktree remove
 
-  RITE_WORKTREE_DIR="$rite_wt_dir"
-  _wt_container=$(dirname "$wt_path")
-  case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
-    rmdir "$_wt_container" 2>/dev/null || true ;;
-  esac
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
 
-  [ ! -d "$rite_wt_dir" ]
+  rmdir_empty_worktree_container "$container" "$rite_wt_dir"
+  [ ! -d "$container" ]  # empty container must be gone; sh-wt itself is untouched
 }
 
 @test "empty container cleanup: behavioral fixture - non-empty parent is untouched" {
   local test_dir="${BATS_TEST_TMPDIR}/rmdir-fixture2"
   local rite_wt_dir="${test_dir}/sh-wt"
-  local wt_path="${rite_wt_dir}/issue-972-fix"
-  local sibling="${rite_wt_dir}/issue-100-sibling"
+  local container="${rite_wt_dir}/issue-972"
+  local wt_path="${container}/fix"
+  local sibling="${container}/issue-100-sibling"
 
   mkdir -p "$wt_path" "$sibling"
   rm -rf "$wt_path"    # simulate git worktree remove
 
-  RITE_WORKTREE_DIR="$rite_wt_dir"
-  _wt_container=$(dirname "$wt_path")
-  case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
-    rmdir "$_wt_container" 2>/dev/null || true ;;
-  esac
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
 
-  [ -d "$rite_wt_dir" ]  # sibling still there — container must survive
+  rmdir_empty_worktree_container "$container" "$rite_wt_dir"
+  [ -d "$container" ]  # sibling still there — container must survive
 }
 
-@test "merge-pr source: stale-worktree loop rmdir empty container after removal" {
+@test "empty container cleanup: sibling dir outside RITE_WORKTREE_DIR is NOT removed" {
+  # Regression guard for the prefix-glob bug (#972): a sibling dir like sh-wt-archive
+  # must NOT be removed when RITE_WORKTREE_DIR is sh-wt (bare prefix would match).
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-sibling"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  local sibling_dir="${test_dir}/sh-wt-archive"  # sibling of sh-wt, NOT a child
+
+  mkdir -p "$sibling_dir"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  rmdir_empty_worktree_container "$sibling_dir" "$rite_wt_dir"
+  [ -d "$sibling_dir" ]  # sibling dir must be untouched
+}
+
+@test "merge-pr source: stale-worktree loop calls rmdir_empty_worktree_container after removal" {
   # Structural pin for the deep-clean loop in merge-pr.sh.
   local remove_line rmdir_line
   remove_line=$(grep -n 'git worktree remove.*wt_path.*--force.*git worktree remove.*wt_path' "$MERGE_PR" | head -1 | cut -d: -f1)
-  rmdir_line=$(grep -n 'rmdir.*_wt_container.*2>/dev/null' "$MERGE_PR" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$MERGE_PR" | head -1 | cut -d: -f1)
   [ -n "$remove_line" ] || { echo "FAIL: stale-worktree removal not found in merge-pr.sh"; return 1; }
-  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir guard not found in merge-pr.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in merge-pr.sh"; return 1; }
   [ "$rmdir_line" -gt "$remove_line" ] || {
-    echo "FAIL: first rmdir (line $rmdir_line) must come after stale worktree remove (line $remove_line)"
+    echo "FAIL: first rmdir_empty_worktree_container (line $rmdir_line) must come after stale worktree remove (line $remove_line)"
     return 1
   }
 }
 
-@test "merge-pr source: current-worktree removal path has rmdir empty container" {
+@test "merge-pr source: current-worktree removal path calls rmdir_empty_worktree_container" {
   # Structural pin for the per-merge worktree removal (CURRENT_DIR path).
-  local current_dir_remove_line rmdir_lines rmdir_line2
+  local current_dir_remove_line rmdir_line2
   current_dir_remove_line=$(grep -n 'git worktree remove.*CURRENT_DIR.*--force' "$MERGE_PR" | head -1 | cut -d: -f1)
-  # There are two rmdir occurrences; the second follows the CURRENT_DIR removal.
-  rmdir_line2=$(grep -n 'rmdir.*_wt_container.*2>/dev/null' "$MERGE_PR" | tail -1 | cut -d: -f1)
+  # There are two call sites; the second follows the CURRENT_DIR removal.
+  rmdir_line2=$(grep -n 'rmdir_empty_worktree_container' "$MERGE_PR" | tail -1 | cut -d: -f1)
   [ -n "$current_dir_remove_line" ] || { echo "FAIL: CURRENT_DIR worktree remove not found"; return 1; }
-  [ -n "$rmdir_line2" ]             || { echo "FAIL: second rmdir guard not found in merge-pr.sh"; return 1; }
+  [ -n "$rmdir_line2" ]             || { echo "FAIL: second rmdir_empty_worktree_container not found in merge-pr.sh"; return 1; }
   [ "$rmdir_line2" -gt "$current_dir_remove_line" ] || {
-    echo "FAIL: second rmdir (line $rmdir_line2) must come after CURRENT_DIR remove (line $current_dir_remove_line)"
+    echo "FAIL: second rmdir_empty_worktree_container (line $rmdir_line2) must come after CURRENT_DIR remove (line $current_dir_remove_line)"
     return 1
   }
 }
 
-@test "cleanup-worktrees source: rmdir empty container after manual worktree removal" {
+@test "cleanup-worktrees source: calls rmdir_empty_worktree_container after manual worktree removal" {
   # Structural pin for the manual cleanup script.
   local remove_line rmdir_line
   remove_line=$(grep -n 'git worktree remove.*wt_path.*--force' "$CLEANUP_WT" | head -1 | cut -d: -f1)
-  rmdir_line=$(grep -n 'rmdir.*_wt_container.*2>/dev/null' "$CLEANUP_WT" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$CLEANUP_WT" | head -1 | cut -d: -f1)
   [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in cleanup-worktrees.sh"; return 1; }
-  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir guard not found in cleanup-worktrees.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in cleanup-worktrees.sh"; return 1; }
   [ "$rmdir_line" -gt "$remove_line" ] || {
-    echo "FAIL: rmdir (line $rmdir_line) must come after git worktree remove (line $remove_line)"
+    echo "FAIL: rmdir_empty_worktree_container (line $rmdir_line) must come after git worktree remove (line $remove_line)"
     return 1
   }
 }

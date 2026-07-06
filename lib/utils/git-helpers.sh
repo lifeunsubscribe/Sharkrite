@@ -38,6 +38,34 @@ fi
 # Example:
 #   git_fetch_safe origin main || { print_error "Cannot proceed without fresh main ref"; exit 1; }
 #   git_fetch_safe origin "$BRANCH_NAME" || true  # best-effort only (explain why in comment)
+
+# rmdir_empty_worktree_container <wt_container> <rite_worktree_dir>
+#
+# Removes the parent container directory of a just-removed worktree when it is
+# now empty AND lives directly inside RITE_WORKTREE_DIR (i.e. its path is
+# exactly "$RITE_WORKTREE_DIR/<container>").
+#
+# The "/*" anchor in the case pattern is critical: without it a bare prefix
+# match would fire for sibling directories (e.g. "sh-wt-archive" would match
+# a base of "sh-wt"), potentially deleting containers that belong to other
+# repos. The anchor requires a directory separator after the base, so only
+# immediate children of RITE_WORKTREE_DIR are candidates.
+#
+# Arguments:
+#   wt_container      - The dirname of the removed worktree (output of
+#                       dirname "$wt_path" after git worktree remove)
+#   rite_worktree_dir - RITE_WORKTREE_DIR value for this repo
+#
+# Returns: always 0 (rmdir failure is silently ignored — non-empty or
+#          already-gone containers are both fine outcomes)
+rmdir_empty_worktree_container() {
+  local _wt_container="${1:-}"
+  local _rite_wt_dir="${2:-}"
+  case "$_wt_container" in "$_rite_wt_dir"/*)
+    rmdir "$_wt_container" 2>/dev/null || true ;;
+  esac
+}
+
 git_fetch_safe() {
   local remote="${1:?git_fetch_safe: remote argument required}"
   local ref="${2:?git_fetch_safe: ref argument required}"
