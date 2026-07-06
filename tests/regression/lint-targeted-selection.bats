@@ -232,3 +232,67 @@ docs/architecture/foo.md"
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Rules 34/35 gate coverage: sharkrite-lint.sh must NOT exit early when
+# RITE_LINT_FILES contains .bats paths and SHELL_FILES intersection is empty.
+# Issue #921: bats-only commits were silently skipping Rules 34/35.
+# ---------------------------------------------------------------------------
+
+@test "sharkrite-lint: bats-only RITE_LINT_FILES does not early-exit (Rules 34/35 must run)" {
+  # When RITE_LINT_FILES contains only .bats paths, SHELL_FILES intersection is
+  # empty. Pre-fix: lint exited 0 immediately with "no in-scope shell files",
+  # skipping Rules 34/35 (which scan tests/ independently of SHELL_FILES).
+  # Post-fix: lint continues and runs bats-file rules.
+  #
+  # Use a real bats file so RITE_LINT_FILES is non-empty and contains a .bats path.
+  local _bats_file="$PROJECT_ROOT/tests/lint/bats-hygiene-rules.bats"
+  [ -f "$_bats_file" ] || { echo "fixture bats file not found: $_bats_file" >&2; return 1; }
+
+  export RITE_LINT_FILES="$_bats_file"
+  run bash "$LINT_SCRIPT"
+
+  # Must NOT output the "skipping" early-exit notice.
+  [[ ! "$output" =~ "no in-scope shell files in targeted set — skipping" ]] || {
+    echo "FAIL: lint exited early (Rules 34/35 were skipped) on bats-only RITE_LINT_FILES" >&2
+    echo "$output" >&2
+    return 1
+  }
+  # Must output the bats-file-only scope notice.
+  [[ "$output" =~ "bats-file-only scope" ]] || {
+    echo "FAIL: expected 'bats-file-only scope' notice; got:" >&2
+    echo "$output" >&2
+    return 1
+  }
+}
+
+@test "sharkrite-lint: mixed shell+bats RITE_LINT_FILES reports targeted scope" {
+  # When RITE_LINT_FILES contains both a shell file and a .bats file, the
+  # targeted scope notice should mention the shell file count (not bats-file-only).
+  local _bats_file="$PROJECT_ROOT/tests/lint/bats-hygiene-rules.bats"
+  [ -f "$_bats_file" ] || { echo "fixture bats file not found: $_bats_file" >&2; return 1; }
+
+  # Use a fixture shell file with a violation so SHELL_FILES intersection is non-empty.
+  cat > "$FIXTURE_DIR/mixed.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+local foo="bar"
+echo "$foo"
+EOF
+
+  export RITE_LINT_FILES="$FIXTURE_DIR/mixed.sh
+$_bats_file"
+  run bash "$LINT_SCRIPT"
+
+  # SHELL_FILES intersection is non-empty (mixed.sh is in scope) → targeted scope notice.
+  [[ "$output" =~ "targeted scope" ]] || {
+    echo "FAIL: expected 'targeted scope' notice for mixed shell+bats RITE_LINT_FILES; got:" >&2
+    echo "$output" >&2
+    return 1
+  }
+  # mixed.sh has a LOCAL_OUTSIDE_FUNCTION violation → exit non-zero.
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: expected lint violation for mixed.sh; exit status was 0" >&2
+    return 1
+  }
+}

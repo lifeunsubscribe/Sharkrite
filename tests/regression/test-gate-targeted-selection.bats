@@ -380,3 +380,85 @@ EOF
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Rules 34/35 gate coverage: _select_lint_by_changed_paths must emit changed
+# .bats file paths so that lint actually runs (and Rules 34/35 scan tests/).
+# Issue #921: before this fix, bats-only diffs produced empty lint selection,
+# causing lint to be skipped entirely and making Rules 34/35 inert.
+# ---------------------------------------------------------------------------
+
+@test "_select_lint_by_changed_paths: changed .bats file is emitted for lint" {
+  # A changed tests/regression/*.bats file must appear in the lint selection
+  # so that Rules 34/35 are invoked. Pre-fix: bats paths were silently dropped,
+  # producing empty output → lint skipped → rules never ran against the diff.
+  #
+  # Use TEST_REPO fixtures (not RITE_REPO_ROOT) so the [ -f ] guard passes.
+  local result
+  result=$(_select_lint_by_changed_paths "tests/regression/covers-foo.bats" "$TEST_REPO")
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "bats-only diff should not escalate to FORCE_FULL" >&2
+    return 1
+  }
+  [ -n "$result" ] || {
+    echo "expected non-empty selection for changed .bats file; lint would be skipped" >&2
+    return 1
+  }
+  echo "$result" | grep -q "covers-foo.bats" || {
+    echo "expected covers-foo.bats in lint selection; got: $result" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: bats-only diff is not empty (Rules 34/35 gate)" {
+  # Regression: bats-only diffs used to produce empty lint selection, entirely
+  # skipping lint (and Rules 34/35 with it). The fix emits .bats paths so the
+  # lint gate runs with a non-empty RITE_LINT_FILES list.
+  local result
+  result=$(_select_lint_by_changed_paths "tests/lint/bats-hygiene-rules.bats" "$RITE_REPO_ROOT")
+  [ -n "$result" ] || {
+    echo "bats-only diff produced empty lint selection — Rules 34/35 would be skipped" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: tests/lint .bats path is emitted" {
+  # Tests in tests/lint/ are also scanned by Rules 34/35; their paths must also
+  # be emitted when changed. Uses a real file (bats-hygiene-rules.bats exists in RITE_REPO_ROOT).
+  local result
+  result=$(_select_lint_by_changed_paths "tests/lint/bats-hygiene-rules.bats" "$RITE_REPO_ROOT")
+  echo "$result" | grep -q "bats-hygiene-rules.bats" || {
+    echo "expected bats-hygiene-rules.bats in lint selection; got: $result" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: mixed source+bats diff emits both" {
+  # When a commit touches both a lib file and a .bats file, both must appear
+  # in the selection — the lib file for shell rules 1-33, the bats file as a
+  # signal that Rules 34/35 should run.
+  local changed
+  changed=$(printf 'lib/utils/test-gate.sh\ntests/regression/test-gate-targeted-selection.bats\n')
+  local result
+  result=$(_select_lint_by_changed_paths "$changed" "$RITE_REPO_ROOT")
+  echo "$result" | grep -q "test-gate.sh" || {
+    echo "expected test-gate.sh in selection; got: $result" >&2
+    return 1
+  }
+  echo "$result" | grep -q "test-gate-targeted-selection.bats" || {
+    echo "expected test-gate-targeted-selection.bats in selection; got: $result" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: nonexistent .bats file is not emitted" {
+  # The [ -f ] guard must also apply to .bats paths — deleted files must not
+  # appear in the selection (same contract as lib/bin/tools paths).
+  local result
+  result=$(_select_lint_by_changed_paths "tests/regression/this-bats-was-deleted.bats" "$RITE_REPO_ROOT")
+  [ "$result" != "FORCE_FULL" ]
+  [ -z "$result" ] || {
+    echo "expected empty selection for nonexistent .bats; got: $result" >&2
+    return 1
+  }
+}
