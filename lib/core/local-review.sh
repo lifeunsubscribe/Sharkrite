@@ -272,7 +272,10 @@ build_fixreview_context() {
   local _fix_diff=""
   if [ -n "${_prior_sha:-}" ] && [ -n "${_current_sha:-}" ]; then
     # Range: commits introduced after the prior review's SHA up to current HEAD
-    _fix_diff=$(git diff "${_prior_sha}..${_current_sha}" 2>/dev/null || true)
+    # Use three-dot (merge-base semantics) to match line 85's established pattern
+    # and avoid polluting with base-branch drift after rebase/merge-main.
+    # -C "$RITE_PROJECT_ROOT" ensures the command resolves even when cwd is a worktree.
+    _fix_diff=$(git -C "$RITE_PROJECT_ROOT" diff "${_prior_sha}...${_current_sha}" 2>/dev/null || true)
   fi
 
   # If the range diff is empty (no commits, git unavailable, or SHA not found
