@@ -209,6 +209,11 @@ for entry in "${STALE_WORKTREES[@]+"${STALE_WORKTREES[@]}"}"; do
     git worktree remove "$wt_path" --force 2>/dev/null || git worktree remove "$wt_path"
     print_success "Removed: $(basename "$wt_path")"
     REMOVED_COUNT=$((REMOVED_COUNT + 1))
+    # Rmdir the parent container dir if it is now empty and lives inside RITE_WORKTREE_DIR
+    _wt_container=$(dirname "$wt_path")
+    case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
+      rmdir "$_wt_container" 2>/dev/null || true ;;
+    esac
   fi
 done
 

@@ -114,3 +114,70 @@ teardown() { rm -rf "$TEST_DIR"; }
     "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Empty container dir cleanup after worktree removal (#972)
+# ---------------------------------------------------------------------------
+
+@test "undo: rmdir empty container dir after worktree removal" {
+  # Behavioural fixture test: after removing the worktree, its now-empty parent
+  # container dir (which is inside RITE_WORKTREE_DIR) must be removed.
+  run bash -c '
+    set -euo pipefail
+    RITE_WORKTREE_DIR="'"$TEST_DIR"'/sh-wt"
+    container="${RITE_WORKTREE_DIR}"
+    wt_path="${container}/issue-972-fix"
+
+    mkdir -p "$wt_path"                        # simulate an existing worktree dir
+    rm -rf "$wt_path"                          # simulate git worktree remove
+
+    # Apply the cleanup logic from undo-workflow.sh
+    _wt_container=$(dirname "$wt_path")
+    case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
+      rmdir "$_wt_container" 2>/dev/null || true ;;
+    esac
+
+    [ -d "$container" ] && { echo "FAIL: empty container survived"; exit 1; }
+    echo "OK"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "undo: non-empty container dir is NOT removed after worktree removal" {
+  # Guard: rmdir silently fails when the container still has sibling worktrees.
+  run bash -c '
+    set -euo pipefail
+    RITE_WORKTREE_DIR="'"$TEST_DIR"'/sh-wt"
+    container="${RITE_WORKTREE_DIR}"
+    wt_path="${container}/issue-972-fix"
+    sibling="${container}/issue-100-sibling"   # another worktree still present
+
+    mkdir -p "$wt_path" "$sibling"
+    rm -rf "$wt_path"                          # simulate git worktree remove
+
+    _wt_container=$(dirname "$wt_path")
+    case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
+      rmdir "$_wt_container" 2>/dev/null || true ;;
+    esac
+
+    [ -d "$container" ] || { echo "FAIL: non-empty container was removed"; exit 1; }
+    echo "OK"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "undo source: rmdir empty container pattern present after git worktree remove" {
+  # Structural pin: the rmdir guard must appear after the worktree remove in the source.
+  local src="${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  local remove_line rmdir_line
+  remove_line=$(grep -n "git worktree remove.*WORKTREE_PATH.*--force" "$src" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir.*_wt_container.*2>/dev/null' "$src" | head -1 | cut -d: -f1)
+  [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in undo-workflow.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir guard not found in undo-workflow.sh"; return 1; }
+  [ "$rmdir_line" -gt "$remove_line" ] || {
+    echo "FAIL: rmdir (line $rmdir_line) must come after git worktree remove (line $remove_line)"
+    return 1
+  }
+}

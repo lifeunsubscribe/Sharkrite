@@ -1641,6 +1641,11 @@ EOF
                 if git worktree remove "$wt_path" --force 2>/dev/null || git worktree remove "$wt_path" 2>/dev/null; then
                   REMOVED_COUNT=$((REMOVED_COUNT + 1))
                   REMOVED_BRANCHES+=("$WT_BRANCH ($STALE_REASON)")
+                  # Rmdir the parent container dir if it is now empty and lives inside RITE_WORKTREE_DIR
+                  _wt_container=$(dirname "$wt_path")
+                  case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
+                    rmdir "$_wt_container" 2>/dev/null || true ;;
+                  esac
                 fi
               fi
             done <<< "$EXISTING_WORKTREES"
@@ -1767,6 +1772,11 @@ EOF
       # (already cd'd to MAIN_WORKTREE at top of this block)
       if git worktree remove "$CURRENT_DIR" --force 2>/dev/null; then
         echo -e "${GREEN}  ✓ Removed worktree: $(basename "$CURRENT_DIR")${NC}"
+        # Rmdir the parent container dir if it is now empty and lives inside RITE_WORKTREE_DIR
+        _wt_container=$(dirname "$CURRENT_DIR")
+        case "$_wt_container" in "$RITE_WORKTREE_DIR"*)
+          rmdir "$_wt_container" 2>/dev/null || true ;;
+        esac
       else
         print_warning "Could not remove worktree: $CURRENT_DIR"
         print_info "Remove manually: git worktree remove '$CURRENT_DIR' --force"
