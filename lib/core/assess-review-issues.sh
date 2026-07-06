@@ -251,6 +251,114 @@ ${_cur_title}"
   echo "$ledger"
 }
 
+# =============================================================================
+# PRIOR NOW LEDGER: Build list of ACTIONABLE_NOW items from the most recent
+# prior assessment — used by the convergence rule on retry passes.
+# =============================================================================
+# On a retry pass the reviewer already attempted to fix the prior NOW items.
+# The assessor needs to know what those items were so it can:
+#   1. Verify each was fixed (and not re-classify it if so).
+#   2. Apply a tighter bar to NEW NOW items (introduced-by-fix or CRITICAL only).
+#
+# Only the MOST RECENT assessment is relevant — older ones are superseded.
+
+build_prior_now_ledger() {
+  local pr_number="$1"
+
+  # Fetch the most recent assessment comment (newest-first → index 0).
+  local assessments_json _jq_latest_assessment
+  _jq_latest_assessment="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0]"
+  local latest_json
+  latest_json=$(gh_safe pr view "$pr_number" --json comments \
+    --jq "$_jq_latest_assessment" || true)
+  latest_json="${latest_json:-}"
+
+  if [ -z "$latest_json" ] || [ "$latest_json" = "null" ]; then
+    echo ""
+    return 0
+  fi
+
+  local comment_body
+  comment_body=$(echo "$latest_json" | jq -r '.body' 2>/dev/null || echo "")
+  local timestamp
+  timestamp=$(echo "$latest_json" | jq -r '.createdAt' 2>/dev/null || echo "")
+
+  # Assessment content lives after the '---' separator in the comment body
+  local assessment_content
+  assessment_content=$(echo "$comment_body" | sed -n '/^---$/,$p' | tail -n +2 || true)
+  [ -z "$assessment_content" ] && echo "" && return 0
+
+  # Parse only ACTIONABLE_NOW items
+  local ledger=""
+  local _cur_title _cur_state _cur_reason _cur_severity
+  _cur_title="" _cur_state="" _cur_reason="" _cur_severity=""
+
+  while IFS= read -r line; do
+    case "$line" in
+      ITEM_TITLE:*) _cur_title="${line#ITEM_TITLE:}" ;;
+      ITEM_STATE:*) _cur_state="${line#ITEM_STATE:}" ;;
+      ITEM_REASON:*) _cur_reason="${line#ITEM_REASON:}" ;;
+      ITEM_SEVERITY:*) _cur_severity="${line#ITEM_SEVERITY:}" ;;
+      ITEM_END)
+        if [ -n "${_cur_title:-}" ]; then
+          local entry
+          entry="### ${_cur_title} - ${_cur_state}
+**Severity:** ${_cur_severity:-unknown}
+**Reasoning:** ${_cur_reason}
+**Classified:** ${timestamp}"
+          ledger="${ledger}${entry}
+
+"
+        fi
+        _cur_title="" _cur_state="" _cur_reason="" _cur_severity=""
+        ;;
+    esac
+  done < <(echo "$assessment_content" | awk '
+    /^### .* - ACTIONABLE_NOW$/ {
+      if (title != "") {
+        print "ITEM_TITLE:" title
+        print "ITEM_STATE:" item_state
+        print "ITEM_REASON:" reasoning
+        print "ITEM_SEVERITY:" severity
+        print "ITEM_END"
+      }
+      line = $0; gsub(/^### /, "", line)
+      item_state = line; gsub(/^.* - /, "", item_state)
+      title = line; gsub(/ - [A-Z_]+$/, "", title)
+      reasoning = ""; severity = ""
+      next
+    }
+    /^### / {
+      if (title != "") {
+        print "ITEM_TITLE:" title
+        print "ITEM_STATE:" item_state
+        print "ITEM_REASON:" reasoning
+        print "ITEM_SEVERITY:" severity
+        print "ITEM_END"
+        title = ""; reasoning = ""; item_state = ""; severity = ""
+      }
+      next
+    }
+    title != "" && /^\*\*Reasoning:\*\*/ {
+      reasoning = $0; gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
+    }
+    title != "" && /^\*\*Severity:\*\*/ {
+      severity = $0; gsub(/^\*\*Severity:\*\* /, "", severity)
+    }
+    END {
+      if (title != "") {
+        print "ITEM_TITLE:" title
+        print "ITEM_STATE:" item_state
+        print "ITEM_REASON:" reasoning
+        print "ITEM_SEVERITY:" severity
+        print "ITEM_END"
+      }
+    }
+  ')
+
+  echo "$ledger"
+}
+
 PR_NUMBER="$1"
 REVIEW_FILE="$2"
 AUTO_MODE=false
@@ -259,6 +367,10 @@ AUTO_MODE=false
 if [ "${3:-}" = "--auto" ]; then
   AUTO_MODE=true
 fi
+
+# Read retry count exported by assess-and-resolve.sh.
+# Used to activate convergence rules on retry passes.
+RETRY_COUNT="${RITE_RETRY_COUNT:-0}"
 
 # Override print functions to send to stderr (don't interfere with stdout pipe)
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}" >&2; }
@@ -380,6 +492,59 @@ else
   print_status "No prior assessment decisions found (first iteration)"
 fi
 
+# =============================================================================
+# FIXREVIEW CONVERGENCE: Prior ACTIONABLE_NOW ledger + convergence rules
+# =============================================================================
+# On retry passes (RETRY_COUNT > 0), the assessor sees the ACTIONABLE_NOW items
+# from the most recent prior assessment. This gives it cross-round memory so it
+# can verify each prior NOW finding is fixed, and apply a tighter bar to new NOW
+# items (introduced-by-fix commit or CRITICAL only).
+#
+# On first pass (RETRY_COUNT=0) this section is empty — no change to behavior.
+
+FIXREVIEW_NOW_SECTION=""
+if [ "${RETRY_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+  print_status "Retry pass (retry $RETRY_COUNT) — fetching prior ACTIONABLE_NOW items for convergence..."
+  PRIOR_NOW_LEDGER=$(build_prior_now_ledger "$PR_NUMBER" 2>/dev/null || echo "")
+  if [ -n "$PRIOR_NOW_LEDGER" ]; then
+    PRIOR_NOW_COUNT=$(echo "$PRIOR_NOW_LEDGER" | grep -c "^### " || true)
+    print_status "Loaded $PRIOR_NOW_COUNT prior ACTIONABLE_NOW item(s) for convergence check"
+    FIXREVIEW_NOW_SECTION="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX-LOOP CONVERGENCE RULES (retry $RETRY_COUNT):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is a RETRY ASSESSMENT after a fix-loop iteration. A prior assessment
+classified the ACTIONABLE_NOW items listed below. The developer has applied
+fixes since then. Apply these additional rules ON TOP OF the standard assessment:
+
+RULE 1 — PRIOR ACTIONABLE_NOW VERIFICATION:
+For each prior ACTIONABLE_NOW item listed below, check whether it was addressed
+by the fix commits:
+  - If FIXED: classify it DISMISSED in this assessment (do not re-raise it).
+  - If NOT FIXED or PARTIALLY FIXED: re-raise it as ACTIONABLE_NOW, noting
+    that it was not fully addressed by the fix.
+
+RULE 2 — NEW ACTIONABLE_NOW BAR (tighter on retry):
+A finding that was NOT in the prior ACTIONABLE_NOW list may only be classified
+as ACTIONABLE_NOW in this retry assessment if it meets ONE of these conditions:
+  a) It was INTRODUCED by the fix commits (visible in changes since the prior
+     review, not pre-existing in the full PR diff).
+  b) It is CRITICAL severity regardless of origin.
+Any other new finding that does not meet (a) or (b) MUST be classified
+ACTIONABLE_LATER or DISMISSED — NOT ACTIONABLE_NOW.
+The reasoning for any new ACTIONABLE_NOW item MUST explicitly state which
+condition it satisfies: \"introduced by fix commits\" or \"CRITICAL severity\".
+
+PRIOR ACTIONABLE_NOW ITEMS (from most recent assessment):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${PRIOR_NOW_LEDGER}
+"
+  else
+    print_status "No prior ACTIONABLE_NOW items found — treating as standard assessment"
+  fi
+fi
+
 # Error detection now handled by provider_detect_error() from provider abstraction.
 # Export detected error for use by workflow-runner
 export CLAUDE_ERROR_TYPE=""
@@ -417,7 +582,7 @@ PROJECT CONTEXT:
 
 $PROJECT_CONTEXT_SECTION
 
-${PRIOR_DECISIONS_SECTION}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${FIXREVIEW_NOW_SECTION}${PRIOR_DECISIONS_SECTION}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CODE REVIEW TO ASSESS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

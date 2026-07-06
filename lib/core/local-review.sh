@@ -392,11 +392,122 @@ $(head -200 "$RITE_PROJECT_ROOT/CLAUDE.md")"
   print_status "Loaded project context from CLAUDE.md"
 fi
 
-# NOTE: No iteration context is injected here. The review must always be a fresh,
-# unbiased analysis of the current code state. The assessment step
-# (assess-review-issues.sh) handles comparing findings against issue scope and
-# filtering previously-addressed items. If fixed items no longer appear in the
-# diff, the review simply won't flag them — which is the correct behavior.
+# =============================================================================
+# FIXREVIEW PASS DETECTION: inject prior review + fix-commit diff for convergence
+# =============================================================================
+# On the first review pass the prompt is a fresh audit of the full PR diff.
+# On a fixreview pass (≥2 existing review markers on this PR), the prompt
+# becomes a VERIFICATION pass: the prior review body and the diff of only the
+# fix commits are injected so the reviewer can confirm each prior NOW finding
+# is fixed or not fixed, without re-discovering pre-existing issues.
+#
+# This prevents the live divergence pattern (#804, 2026-07-05) where:
+#   round-1: NOW=3 (fixed faithfully)
+#   round-2: NOW=5 DIFFERENT items (pre-existing, missed in round 1)
+# A verification-framed prompt re-anchors the reviewer to the prior set.
+
+FIXREVIEW_CONTEXT_SECTION=""
+
+# Count existing review markers to determine pass type.
+# This check happens BEFORE the current review is generated and posted, so the
+# count reflects only previously posted reviews. Any count ≥1 means a prior
+# review exists and this is a fixreview pass.
+#
+# Note: _triage_emit_shadow uses ≥2 because it runs AFTER the review is posted
+# (so the current-run review may already be counted). Here we run before posting,
+# so the threshold is ≥1. Both produce equivalent detection of "prior review exists".
+_prior_review_count=$(gh_safe pr view "$PR_NUMBER" --json comments \
+  --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" \
+  2>/dev/null || echo 0)
+_prior_review_count="${_prior_review_count:-0}"
+
+if [ "${_prior_review_count:-0}" -ge 1 ] 2>/dev/null; then
+  print_status "Fix-review pass detected ($((${_prior_review_count:-0})) prior review(s)) — building verification context..."
+
+  # Fetch the most recent prior review body (the one BEFORE this run).
+  # We want the latest posted review; newest-first → index 0.
+  _prior_review_body=$(gh_safe pr view "$PR_NUMBER" --json comments \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body" \
+    2>/dev/null || true)
+  _prior_review_body="${_prior_review_body:-}"
+
+  # Extract the SHA from the prior review marker (for fix-commit diff).
+  # Marker format: <!-- sharkrite-local-review ... commit:<sha> -->
+  _prior_review_sha=""
+  if [ -n "$_prior_review_body" ]; then
+    _prior_review_sha=$(echo "$_prior_review_body" \
+      | grep -oE "commit:[a-f0-9]{7,40}" | head -1 | cut -d: -f2 || true)
+    _prior_review_sha="${_prior_review_sha:-}"
+  fi
+
+  # Build fix-commit diff: commits pushed after the prior review SHA.
+  # Falls back to the full PR diff if the SHA is unavailable (no regression —
+  # first-pass framing is always safe).
+  _fix_commit_diff=""
+  if [ -n "$_prior_review_sha" ] && git rev-parse --verify "$_prior_review_sha" >/dev/null 2>&1; then
+    _fix_commit_diff=$(git diff "${_prior_review_sha}...HEAD" 2>/dev/null || true)
+    _fix_commit_diff="${_fix_commit_diff:-}"
+    if [ -n "$_fix_commit_diff" ]; then
+      _fix_diff_lines=$(printf '%s\n' "$_fix_commit_diff" | wc -l | tr -d ' ')
+      print_status "Fix-commit diff: ${_fix_diff_lines} lines since ${_prior_review_sha:0:8}"
+    else
+      print_status "No fix-commit diff found since ${_prior_review_sha:0:8} — verification will use full diff"
+    fi
+  else
+    if [ -n "$_prior_review_sha" ]; then
+      print_warning "Prior review SHA ${_prior_review_sha:0:8} not found locally — falling back to full diff for verification"
+    else
+      print_warning "Prior review has no embedded SHA — falling back to full diff for verification"
+    fi
+  fi
+
+  # Build the fixreview context section injected into the prompt.
+  # Only emit if we have a prior review body to anchor against.
+  if [ -n "$_prior_review_body" ]; then
+    _fix_diff_section=""
+    if [ -n "$_fix_commit_diff" ]; then
+      _fix_diff_section="
+---
+
+## Fix Commits (Changes Since Prior Review)
+
+The following diff represents ONLY the commits pushed as fixes since the prior review.
+Use this to assess whether each prior ACTIONABLE_NOW finding has been addressed:
+
+\`\`\`diff
+${_fix_commit_diff}
+\`\`\`"
+    fi
+
+    FIXREVIEW_CONTEXT_SECTION="
+
+---
+
+## ⚠️ VERIFICATION PASS — Fix-Loop Iteration
+
+This is a fix-loop re-review. A prior review raised ACTIONABLE_NOW findings.
+The developer has applied fixes. Your job is NOT a fresh audit — it is verification.
+
+**Instructions:**
+1. For each ACTIONABLE_NOW finding in the PRIOR REVIEW below: determine FIXED or NOT FIXED based on the fix-commit diff.
+   - FIXED: the concern is fully resolved → do NOT re-raise it.
+   - NOT FIXED (or partially fixed): re-raise it as ACTIONABLE_NOW with a note that it was not addressed.
+2. New findings are only valid if:
+   - They were **introduced by the fix commits** (i.e. visible in the fix-commit diff, NOT pre-existing in the full PR diff before the fix), OR
+   - They are CRITICAL severity (always surface regardless of origin).
+   Do NOT re-raise pre-existing issues that were NOT flagged in the prior review.
+3. Apply the same output format as a normal review.
+
+## Prior Review (Most Recent)
+
+${_prior_review_body}
+${_fix_diff_section}"
+
+    print_status "Fixreview context built — review will verify prior findings"
+  else
+    print_warning "Could not fetch prior review body — proceeding as fresh review"
+  fi
+fi
 
 # Detect sensitivity areas from changed file patterns for enhanced review focus
 SENSITIVITY_SECTION=""
@@ -436,6 +547,7 @@ EFFECTIVE_MODEL="$RITE_REVIEW_MODEL"
 REVIEW_PROMPT="$REVIEW_INSTRUCTIONS
 $PROJECT_CONTEXT
 ${SENSITIVITY_SECTION:-}
+${FIXREVIEW_CONTEXT_SECTION:-}
 
 ---
 
@@ -456,7 +568,7 @@ Use these values in your JSON output:
 
 ---
 
-## Code Changes (Diff)
+## Code Changes (Full PR Diff)
 
 \`\`\`diff
 $PR_DIFF
