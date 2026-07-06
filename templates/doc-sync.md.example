@@ -1,0 +1,41 @@
+# .rite/doc-sync.md — Layer 2 doc-sync rules
+#
+# This file controls how Sharkrite updates your project docs after each merge.
+# It is injected as free-form instructions into the post-merge doc assessment
+# prompt (assess-documentation.sh). Write it as human-readable guidance:
+# which docs to check, which sections to keep current, and what to ignore.
+#
+# HOW TO ACTIVATE:
+#   Copy or rename this file to .rite/doc-sync.md (drop the .example suffix).
+#   Without that file, Layer 2 is skipped entirely — no doc updates happen.
+#
+# EXAMPLE RULES (uncomment and adapt):
+
+## Routing / API surface
+
+When a file under `routers/`, `routes/`, or `api/` changes, check whether
+the README's API section (or a dedicated `docs/api.md`) needs updating.
+Add or remove endpoint entries to reflect the current surface.
+
+## Breaking changes
+
+When a PR removes a public function, renames a config key, or changes a
+command-line flag, append a dated entry to CHANGELOG.md under the
+current version heading:
+
+```
+## [Unreleased]
+### Breaking
+- <date>: <what changed and why>
+```
+
+## Environment variables
+
+When a new `RITE_*` or app-level env var is introduced, add it to the
+"Environment variables" table in README.md (or `docs/configuration.md`
+if the project has one). Include: name, default value, description.
+
+## What to skip
+
+Do not update docs/architecture/ or docs/project/ — those are maintained
+by hand and require context beyond what a single PR provides.
