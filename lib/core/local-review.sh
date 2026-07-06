@@ -414,9 +414,10 @@ FIXREVIEW_CONTEXT_SECTION=""
 # count reflects only previously posted reviews. Any count ≥1 means a prior
 # review exists and this is a fixreview pass.
 #
-# Note: _triage_emit_shadow uses ≥2 because it runs AFTER the review is posted
-# (so the current-run review may already be counted). Here we run before posting,
-# so the threshold is ≥1. Both produce equivalent detection of "prior review exists".
+# Note: _triage_emit_shadow and assess-review-issues.sh (pass-type fallback)
+# both use ≥2 because they run AFTER the review is posted (so the current-run
+# review may already be counted). Here we run before posting, so the threshold
+# is ≥1. All three produce equivalent detection of "prior review exists".
 _prior_review_count=$(gh_safe pr view "$PR_NUMBER" --json comments \
   --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" \
   2>/dev/null || echo 0)

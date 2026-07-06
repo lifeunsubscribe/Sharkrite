@@ -372,6 +372,72 @@ fi
 # Used to activate convergence rules on retry passes.
 RETRY_COUNT="${RITE_RETRY_COUNT:-0}"
 
+# =============================================================================
+# PASS-TYPE FALLBACK: Reconcile with local-review.sh's comment-count detector
+# =============================================================================
+# Problem: two independent pass-type detectors can disagree on resumed/standalone
+# paths (e.g. --review-latest then --assess-and-fix):
+#
+#   local-review.sh:         fixreview = _prior_review_count >= 1  (pre-post count)
+#   assess-review-issues.sh: fixreview = RETRY_COUNT > 0  (env, threaded by assess-and-resolve.sh)
+#
+# On standalone --assess-and-fix, RETRY resets to 0 so RITE_RETRY_COUNT=0
+# even though local-review.sh may have already produced a VERIFICATION PASS
+# framed review (because prior reviews exist). The assessor then lacks convergence
+# rules, breaking the #910 guarantee for that path.
+#
+# Fix: when RETRY_COUNT=0, check whether prior review markers exist on the PR.
+# The correct threshold depends on whether assess-and-resolve.sh posted a new
+# review marker this invocation (RITE_REVIEW_JUST_POSTED=true) or consumed a
+# pre-existing one (false/unset — the standalone consume-not-post path):
+#
+#   RITE_REVIEW_JUST_POSTED=true  → post-post count: threshold ≥2
+#     The current-run review inflates the count by 1, so count=1 is "only this
+#     run's review, no prior pass". Matches _triage_emit_shadow's ≥2 threshold.
+#
+#   RITE_REVIEW_JUST_POSTED=false → consume-not-post count: threshold ≥1
+#     No new marker was posted. count=1 already means "one prior review exists"
+#     — this IS a fixreview pass (the standalone --assess-and-fix case).
+#
+# Both detectors now use PR state (review marker count) rather than the
+# externally-threaded value being the sole authority on resume paths.
+#
+# The gh call is defensive: failure → assume first pass (safe: at most we skip
+# convergence rules, which is the pre-fix behavior).
+if [ "${RETRY_COUNT:-0}" -eq 0 ] 2>/dev/null; then
+  _prior_review_count_for_assess=$(gh_safe pr view "$PR_NUMBER" --json comments \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" \
+    2>/dev/null || echo 0)
+  _prior_review_count_for_assess="${_prior_review_count_for_assess:-0}"
+  # Threshold selection depends on whether assess-and-resolve.sh posted a fresh
+  # review marker this invocation (RITE_REVIEW_JUST_POSTED=true) or consumed a
+  # pre-existing one (RITE_REVIEW_JUST_POSTED=false / unset):
+  #
+  # Post-then-count path (fix loop, or first-ever review generation):
+  #   The current-run review was just posted, so count=1 means only that review
+  #   exists — no prior pass has run. Threshold ≥2 is correct here.
+  #
+  # Consume-not-post path (standalone --assess-and-fix / --review-latest then
+  #   --assess-and-fix): assess-and-resolve.sh read a pre-existing review into
+  #   REVIEW_FILE without posting a new marker, so count=1 means exactly one
+  #   prior review exists — this IS a fixreview pass. Threshold ≥1 is correct.
+  #
+  # This reconciles the two pass-type detectors so both halves engage on
+  # resumed/standalone paths (issue #937 acceptance criterion).
+  if [ "${RITE_REVIEW_JUST_POSTED:-false}" = "true" ]; then
+    # Review was freshly posted this invocation: use post-post threshold.
+    _fixreview_threshold=2
+  else
+    # Review was consumed (pre-existing): use pre-post threshold.
+    _fixreview_threshold=1
+  fi
+  if [ "${_prior_review_count_for_assess:-0}" -ge "$_fixreview_threshold" ] 2>/dev/null; then
+    echo "Fixreview pass detected via prior review count ($((${_prior_review_count_for_assess:-0})) review(s), threshold ${_fixreview_threshold}) — activating convergence rules" >&2
+    RETRY_COUNT=1
+  fi
+  unset _prior_review_count_for_assess _fixreview_threshold
+fi
+
 # Override print functions to send to stderr (don't interfere with stdout pipe)
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}" >&2; }
 print_status() { echo -e "${BLUE}$1${NC}" >&2; }

@@ -1624,6 +1624,39 @@ per-test quarantine lists (rot silently; the serial re-run is evidence-based
 per occurrence) and N>1 retries (a test needing two quiet runs isn't flaking,
 it's broken). Test: tests/regression/gate-flake-retry.bats.
 
+## Pass-Type Detector Threshold Reconciliation (#937)
+
+`assess-review-issues.sh` detects whether an assessment is a "fixreview pass"
+(a retry after at least one prior review exists) by counting sharkrite review
+markers in the PR. Two call paths reach the assessor with different marker
+counts, requiring different thresholds:
+
+**Post-post path** (orchestrated fix loop — `assess-and-resolve.sh` calls
+`local-review.sh` which posts a new marker, then calls `assess-review-issues.sh`):
+`RITE_REVIEW_JUST_POSTED=true`. The freshly-posted marker inflates the count by 1;
+count=1 means only the current-run review exists — no prior pass ran.
+Threshold: **≥2** (one existing + one just-posted = first fixreview pass).
+
+**Consume-not-post path** (standalone `--assess-and-fix` after `--review-latest`,
+or any resumed path where the review was consumed from the PR without
+re-posting): `RITE_REVIEW_JUST_POSTED=false` (or unset). count=1 already means
+exactly one prior review exists — this IS a fixreview pass.
+Threshold: **≥1**.
+
+`assess-and-resolve.sh` exports `RITE_REVIEW_JUST_POSTED` before calling the
+assessor. The assessor reads it at startup and sets `_fixreview_threshold`
+accordingly, then uses `-ge "$_fixreview_threshold"` for the comparison.
+
+Without this reconciliation, standalone `--assess-and-fix` always behaved as if
+it were the first pass (RETRY_COUNT stayed 0, convergence rules never engaged),
+causing the fix loop to diverge on resumed workflows — the original issue #937
+symptom.
+
+**Contract invariants (pinned by `tests/regression/fixreview-assessment-convergence.bats`):**
+- Both threshold branches (`_fixreview_threshold=2`, `_fixreview_threshold=1`) exist in the assessor.
+- The comparison uses `-ge "$_fixreview_threshold"` (variable, not a hardcoded literal).
+- `assess-and-resolve.sh` exports `RITE_REVIEW_JUST_POSTED` before calling the assessor.
+
 ## Gate Verdict Persistence: Empty Re-Selection Cannot Pass Vacuously (#944)
 
 **2026-07-06.** The fix-loop re-gate deliberately narrows its diff base to the

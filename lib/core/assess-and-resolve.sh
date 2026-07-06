@@ -771,6 +771,13 @@ REVIEW_JSON=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_JQ_REVIEW_FET
   exit 1
 }
 
+# Track whether this run freshly posted a new review marker, or consumed a
+# pre-existing one. Used by assess-review-issues.sh to select the correct
+# pass-type threshold: >= 2 when a new marker was just posted (count includes
+# the current-run review), >= 1 when a pre-existing review was consumed
+# (no new marker added — count=1 already means "prior review exists").
+_review_just_posted=false
+
 if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "null" ]; then
   # No review found - auto-generate one
   print_status "No review found - generating local review..."
@@ -782,6 +789,7 @@ if [ "$REVIEW_JSON" = "{}" ] || [ -z "$REVIEW_JSON" ] || [ "$REVIEW_JSON" = "nul
     if "$LOCAL_REVIEW_SCRIPT" "$PR_NUMBER" --post --auto; then
       print_success "Local review posted"
       echo ""
+      _review_just_posted=true
 
       # Re-fetch the review we just posted
       sleep 2  # Give GitHub a moment to index
@@ -1232,6 +1240,13 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   # Export retry count so assess-review-issues.sh can apply convergence rules
   # on retry passes (new ACTIONABLE_NOW items must be introduced-by-fix or CRITICAL).
   export RITE_RETRY_COUNT="${RETRY_COUNT:-0}"
+  # Export whether a new review marker was just posted by this invocation.
+  # assess-review-issues.sh uses this to select the correct pass-type threshold:
+  # >= 2 when a new marker was just posted (the current-run review inflates the
+  # count by 1); >= 1 when a pre-existing review was consumed without posting
+  # (count=1 already means "prior review exists" — the standalone path).
+  # See: behavioral-design.md → "Pass-Type Detector Threshold Reconciliation".
+  export RITE_REVIEW_JUST_POSTED="${_review_just_posted:-false}"
   # Per-item issue passback: assess-review-issues.sh writes created issue numbers
   # (one per line) to this temp file so we can skip the consolidated rollup when
   # per-item issues already cover the ACTIONABLE_LATER findings.

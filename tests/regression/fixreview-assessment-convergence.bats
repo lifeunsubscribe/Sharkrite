@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-review-issues.sh, lib/core/assess-and-resolve.sh
+# sharkrite-test-covers: lib/core/assess-review-issues.sh, lib/core/assess-and-resolve.sh, lib/core/local-review.sh
 #
 # Regression tests for issue #910 — fix-loop assessment had no cross-round memory:
 # new ACTIONABLE_NOW items on retry could be disjoint pre-existing findings, causing
@@ -166,6 +166,100 @@ teardown() {
   guard_num="${guard_line%%:*}"
   [ "$init_num" -lt "$guard_num" ] || {
     echo "FAIL: FIXREVIEW_NOW_SECTION init (line $init_num) must appear before RETRY_COUNT guard (line $guard_num)"
+    false
+  }
+}
+
+# ─── Tests 11-15: Pass-type fallback (issue #937) ─────────────────────────────
+# Regression guard for the two-signal disagreement on resumed/standalone paths:
+# local-review.sh detects fixreview via review-marker count (≥1 pre-post);
+# assess-review-issues.sh was using RITE_RETRY_COUNT alone.  On --assess-and-fix
+# after --review-latest, RETRY resets to 0 so the convergence rules were skipped
+# even though the review was framed as a VERIFICATION PASS.
+
+@test "assess-review-issues.sh: pass-type fallback block is present when RETRY_COUNT=0" {
+  # The fallback must exist and guard itself with RETRY_COUNT -eq 0.
+  run grep -n 'RETRY_COUNT.*-eq 0\|RETRY_COUNT.*eq 0' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: no RETRY_COUNT=0 guard for pass-type fallback in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: pass-type fallback queries prior review marker count" {
+  # The fallback must count prior review comments the same way local-review.sh does.
+  run grep -n '_prior_review_count_for_assess\|prior_review_count_for_assess' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: no prior review count variable found in pass-type fallback in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+
+  # Must use the canonical review marker constant (not a hardcoded string).
+  run grep -n 'RITE_MARKER_REVIEW' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: pass-type fallback must use RITE_MARKER_REVIEW constant, not a literal in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: pass-type fallback threshold-selection block sets both ≥2 (post-post) and ≥1 (consume-not-post) branches and compares via variable" {
+  # The threshold-selection block in assess-review-issues.sh has two branches:
+  #   RITE_REVIEW_JUST_POSTED=true  → _fixreview_threshold=2  (post-post path:
+  #     the current-run review inflates the count by 1; only count≥2 means a
+  #     prior review exists)
+  #   RITE_REVIEW_JUST_POSTED=false → _fixreview_threshold=1  (consume-not-post
+  #     path: a pre-existing review was consumed without posting; count=1 already
+  #     means "prior review exists" — standalone --assess-and-fix path)
+  # The comparison must use -ge "$_fixreview_threshold" (not a hardcoded literal)
+  # so both branches apply the correct threshold at runtime.
+  local threshold_block
+  threshold_block=$(awk '/RITE_REVIEW_JUST_POSTED/{f=1} f{print; if (/^fi$/) {exit}}' "$ASSESS_REVIEW_SCRIPT")
+  [[ "$threshold_block" == *"_fixreview_threshold=2"* ]] || {
+    echo "FAIL: threshold-selection block must set _fixreview_threshold=2 for post-post path in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+  [[ "$threshold_block" == *"_fixreview_threshold=1"* ]] || {
+    echo "FAIL: threshold-selection block must set _fixreview_threshold=1 for consume-not-post path in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+  run grep -n -- '-ge "\$_fixreview_threshold"' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: pass-type comparison must use -ge \"\$_fixreview_threshold\" (variable, not literal) in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: pass-type fallback sets RETRY_COUNT=1 when prior review detected" {
+  # When a prior review is found, the fallback must activate convergence rules
+  # by setting RETRY_COUNT to 1.
+  local fallback_block
+  fallback_block=$(awk '/RETRY_COUNT.*-eq 0/{f=1} f{print; if (/^fi$/) exit}' "$ASSESS_REVIEW_SCRIPT")
+  [[ "$fallback_block" == *"RETRY_COUNT=1"* ]] || {
+    echo "FAIL: pass-type fallback does not set RETRY_COUNT=1 when prior review detected in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+}
+
+@test "assess-review-issues.sh: pass-type fallback is defensive (gh failure → first pass assumed)" {
+  # The gh call must have a || echo 0 (or || true) fallback so a network failure
+  # doesn't crash the assessment — it just treats this as a first pass.
+  local fallback_block
+  fallback_block=$(awk '/RETRY_COUNT.*-eq 0/{f=1} f{print; if (/^fi$/) exit}' "$ASSESS_REVIEW_SCRIPT")
+  [[ "$fallback_block" == *"|| echo 0"* ]] || {
+    echo "FAIL: pass-type fallback gh call must default to 0 on failure (|| echo 0) in $ASSESS_REVIEW_SCRIPT"
+    false
+  }
+}
+
+# ─── Test 16: local-review.sh comment cross-references assess-review-issues.sh ─
+
+@test "local-review.sh: threshold comment cross-references assess-review-issues.sh pass-type fallback" {
+  # After the fix, local-review.sh's threshold comment must mention
+  # assess-review-issues.sh so the relationship between the three detectors
+  # is documented in one place.
+  run grep -n 'assess-review-issues' "${RITE_REPO_ROOT}/lib/core/local-review.sh"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: local-review.sh threshold comment does not mention assess-review-issues.sh"
     false
   }
 }
