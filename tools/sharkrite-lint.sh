@@ -619,7 +619,7 @@ _r13_awk=""
 # the result is "$VAR}" — corrupting JSON that already ends in '}'.
 # Live bug: every batch crash with "jq: parse error: Unmatched '}'".
 # Fix: quote the default — "${VAR:-"{}"}".
-echo "Checking for '\${VAR:-"{}"}' parameter expansion bug..."
+echo "Checking for '\${VAR:-\"{}\"}' parameter expansion bug..."
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     if echo "$line_content" | grep -qE '^\s*#'; then
@@ -627,7 +627,7 @@ for file in "${SHELL_FILES[@]}"; do
     fi
     if echo "$line_content" | grep -qE ':-\{\}\}'; then
       print_violation "$file" "$line_num" "JQ_DEFAULT_BRACE" \
-        "\${VAR:-"{}"} appends stray '}' to non-empty values — use \"\${VAR:-\"{}\"}\" instead"
+        "\${VAR:-\"{}\"} appends stray '}' to non-empty values — use \"\${VAR:-\"{}\"}\" instead"
     fi
   done < <(grep -nE ':-\{\}\}' "$file" 2>/dev/null || true)
 done
