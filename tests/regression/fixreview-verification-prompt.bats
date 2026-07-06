@@ -100,10 +100,10 @@ teardown() {
 # ─── Test 6: fix-commit diff uses three-dot syntax ───────────────────────────
 
 @test "local-review.sh: fix-commit diff uses three-dot ancestor syntax" {
-  # git diff <sha>...HEAD gives commits SINCE the prior review SHA.
-  run grep -n '\.\.\.HEAD' "$LOCAL_REVIEW_SCRIPT"
+  # git diff <sha>...origin/<branch> gives commits SINCE the prior review SHA.
+  run grep -nE '\.\.\.origin/' "$LOCAL_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: no 'sha...HEAD' three-dot diff syntax found in $LOCAL_REVIEW_SCRIPT"
+    echo "FAIL: no 'sha...origin/<branch>' three-dot diff syntax found in $LOCAL_REVIEW_SCRIPT"
     false
   }
 }
