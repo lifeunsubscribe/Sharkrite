@@ -524,6 +524,14 @@ claude_provider_resolve_model() {
     # matching and comparison, not the deep reasoning needed for code review.
     # See: docs/architecture/behavioral-design.md → "Model Selection Per Task"
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    # plan generates GitHub issues from architectural docs (rite plan). It is the
+    # highest-stakes reasoning stage — it must honor ADRs and never hallucinate
+    # fixtures — so it defaults to opus. Its OWN var, decoupled from review: moving
+    # review off opus must never silently downgrade planning with it. Before this
+    # role existed, plan-issues.sh passed "" and fell through to the review default,
+    # invisibly coupling the two. See: "Model Selection Per Task" in
+    # docs/architecture/behavioral-design.md.
+    plan)           echo "${RITE_PLAN_MODEL:-claude-opus-4-8}" ;;
     # triage classifies a diff as trivial-vs-substantive to route the (expensive)
     # opus review. It's a narrow binary classification, not deep reasoning —
     # haiku's job. Decoupled from every other var. See: "Triage Gate" in

@@ -143,7 +143,7 @@ ADR_EOF
   # See: docs/architecture/behavioral-design.md → "Doc assessment model".
   adr_output=$(provider_run_prompt_with_timeout \
     "$(cat "$prompt_file")" \
-    "$(claude_provider_resolve_model doc_assessment)" \
+    "$(provider_resolve_model doc_assessment)" \
     true \
     "$ADR_GENERATOR_TIMEOUT" 2>/dev/null) || true
   rm -f "$prompt_file"

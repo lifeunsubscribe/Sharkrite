@@ -676,24 +676,30 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 | Task | Nature | Model | Why |
 |------|--------|-------|-----|
 | Code review (`assess-review-issues.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
+| Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
 | Doc assessment (`assess-documentation.sh`) | "Did this diff change API surface X? Update api.md accordingly." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
+| Triage / classify (`triage-classify.sh`, doc auto-discovery in `bin/rite`) | Trivial-vs-substantive diff; doc categorization | `RITE_TRIAGE_MODEL` (default: `claude-haiku-4-5`) | Narrow bucket classification — haiku's job, not opus's |
 
-**Principle: the model fits the task, not the adjacent role.** Before this was explicit, `assess-documentation.sh` had no model var and fell through to `claude_provider_resolve_model "review"` → `RITE_REVIEW_MODEL`. This created silent coupling: setting `RITE_REVIEW_MODEL=opus` for quality-critical review silently promoted doc assessment to opus too, inflating wall-clock from ~90-120s to 3-6 minutes and regularly firing the 180s watchdog.
+**Principle: the model fits the task, not the adjacent role.** Before this was explicit, `assess-documentation.sh` had no model var and fell through to `resolve_model "review"` → `RITE_REVIEW_MODEL`. This created silent coupling: setting `RITE_REVIEW_MODEL=opus` for quality-critical review silently promoted doc assessment to opus too, inflating wall-clock from ~90-120s to 3-6 minutes and regularly firing the 180s watchdog. The **same trap** later bit planning: `plan-issues.sh` (and doc auto-discovery in `bin/rite`) passed `""` and rode the review model invisibly — the highest-stakes stage coupled to the one var most likely to be tuned. Fixed by giving planning its own `plan` role (default opus) and classification an explicit `triage` role, then enforcing "no bare `""`" in lint (Rule 31, `PROVIDER_MODEL_FALLTHROUGH`).
 
-**Independence contract:** `RITE_REVIEW_MODEL` and `RITE_DOC_ASSESSMENT_MODEL` are fully independent. Changing one does not affect the other. `claude_provider_resolve_model` dispatches by role:
+**Independence contract:** each role's var is fully independent. Changing one does not affect the others. The resolver dispatches by role:
 
 ```bash
 claude_provider_resolve_model() {
   case "$1" in
     review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    plan)           echo "${RITE_PLAN_MODEL:-claude-opus-4-8}" ;;
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;
     dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
 }
 ```
 
-**New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt_with_timeout` and rely on provider defaults — defaults may change. If a call is doc-like (pattern matching, summarization), use `doc_assessment`. If it's bug-detection or nuanced reasoning, use `review`.
+Note `plan` defaults to the same model as `review` (opus) *today*, but the point of the separate var is that this equality is not load-bearing: moving `RITE_REVIEW_MODEL` off opus must not drag planning down with it.
+
+**New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on provider defaults — defaults may change, and an empty model silently resolves to the `review` model. Use the provider-agnostic **`provider_resolve_model <role>`** — code in `lib/core`/`lib/utils` must not call the claude-prefixed `claude_provider_resolve_model` directly (enforced by Rule 32, `DIRECT_PROVIDER_CALL`). Pick the role by nature: doc-like (pattern matching, summarization) → `doc_assessment`; bug-detection or nuanced reasoning → `review`; issue generation → `plan`; bucket classification → `triage`.
 
 ### Wall-clock impact
 

@@ -36,14 +36,14 @@ setup() {
   export -f print_warning print_info verbose_info
 
   # Stubs for the sonnet similarity wiring (#766). DOC_CLAUDE_TIMEOUT and
-  # claude_provider_resolve_model are normally provided by assess-documentation.sh's
-  # top-level body, which we deliberately do not execute. provider_run_prompt_with_timeout
-  # echoes whatever canned JSON a test places in SIMILARITY_JSON (empty by default,
-  # so similarity-unaware tests stay no-ops).
+  # provider_resolve_model are normally provided by assess-documentation.sh's
+  # top-level body + load_provider, which we deliberately do not execute.
+  # provider_run_prompt_with_timeout echoes whatever canned JSON a test places in
+  # SIMILARITY_JSON (empty by default, so similarity-unaware tests stay no-ops).
   export DOC_CLAUDE_TIMEOUT=120
   export SIMILARITY_JSON=""
   export COVERAGE_JSON=""
-  claude_provider_resolve_model() { echo "stub-model"; }
+  provider_resolve_model() { echo "stub-model"; }
   # Both the similarity (#766) and coverage (#767) checks call this stub. They
   # are distinguished by prompt content: the coverage prompt asks for
   # "missing_pointers", the similarity prompt asks for "merges". This lets a
@@ -54,7 +54,7 @@ setup() {
       *)                  printf '%s' "${SIMILARITY_JSON:-}" ;;
     esac
   }
-  export -f claude_provider_resolve_model provider_run_prompt_with_timeout
+  export -f provider_resolve_model provider_run_prompt_with_timeout
 
   # Source tag-index.sh to load tag_index_log_history() and its helpers.
   # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: tag-index.sh uses a function-sentinel guard (declare -f tag_index_log_history); pre-source provider stubs are preserved on source. print_warning/print_info are re-stubbed below because colors.sh (chained) uses an env-var guard only.

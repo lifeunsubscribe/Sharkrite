@@ -24,12 +24,12 @@ setup() {
   # is driven per-test via TRIAGE_STUB_VERDICT / TRIAGE_STUB_CONF.
   _diag() { echo "$1"; }
   gh_safe() { echo "${GH_PRIOR_REVIEWS:-0}"; }
-  claude_provider_resolve_model() { echo "claude-haiku-4-5"; }
+  provider_resolve_model() { echo "claude-haiku-4-5"; }
   provider_run_prompt() {
     printf '{"verdict":"%s","confidence":%s,"reason":"stub"}\n' \
       "${TRIAGE_STUB_VERDICT:-substantive}" "${TRIAGE_STUB_CONF:-0.9}"
   }
-  export -f _diag gh_safe claude_provider_resolve_model provider_run_prompt
+  export -f _diag gh_safe provider_resolve_model provider_run_prompt
 }
 
 _run_shadow() { # $1=diff $2=files

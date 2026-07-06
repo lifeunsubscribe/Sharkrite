@@ -973,7 +973,9 @@ CLASSIFY_EOF
 
       source "$RITE_LIB_DIR/providers/provider-interface.sh"
       load_provider "${RITE_UTILITY_PROVIDER:-claude}"
-      _classification=$(provider_run_prompt "$_classify_prompt" "" true 2>/dev/null) || _classification=""
+      # Doc categorization is a cheap classification — use the explicit "triage" role
+      # (haiku), never "" (which would fall through to the expensive review model).
+      _classification=$(provider_run_prompt "$_classify_prompt" "$(provider_resolve_model triage)" true 2>/dev/null) || _classification=""
 
       if [ -z "$_classification" ]; then
         print_warning "Doc classification failed. Configure RITE_PLAN_DOCS manually in .rite/config"
