@@ -1229,6 +1229,9 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   ASSESSMENT_EXIT_CODE=0
   # Export source issue number so assess-review-issues.sh can scope dedup searches
   export RITE_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+  # Export retry count so assess-review-issues.sh can apply convergence rules
+  # on retry passes (new ACTIONABLE_NOW items must be introduced-by-fix or CRITICAL).
+  export RITE_RETRY_COUNT="${RETRY_COUNT:-0}"
   # Per-item issue passback: assess-review-issues.sh writes created issue numbers
   # (one per line) to this temp file so we can skip the consolidated rollup when
   # per-item issues already cover the ACTIONABLE_LATER findings.

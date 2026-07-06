@@ -657,12 +657,14 @@ _stale_rebase_onto_main() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
-        # Script-side stage+commit handoff (issue #858): the resolver session
+        # Script-side stage+commit handoff (issues #858, #871): the resolver session
         # WRITES resolutions but cannot stage or commit them. The shared helper
-        # (conflict-resolver.sh::commit_resolved_conflicts) stages via
-        # `git add -A`, detects the live rebase/merge/plain context,
-        # continues/commits accordingly, and aborts context-correctly with
-        # git's stderr surfaced on failure.
+        # (conflict-resolver.sh::commit_resolved_conflicts) reads the conflict-path
+        # list exported by attempt_claude_merge_resolution (_RITE_RESOLVER_CONFLICT_PATHS)
+        # and stages only those paths — not the whole tree — so operator WIP that was
+        # stash-popped back into the tree before the resolver ran stays uncommitted.
+        # The helper then detects the live rebase/merge/plain context, continues/commits
+        # accordingly, and aborts context-correctly with git's stderr surfaced on failure.
         if ! commit_resolved_conflicts "$worktree_path"; then
           print_error "Failed to commit resolved conflicts"
           return 1
@@ -807,12 +809,14 @@ _stale_merge_main_legacy() {
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_success "Conflicts resolved by Claude"
-        # Script-side stage+commit handoff (issue #858): the resolver session
+        # Script-side stage+commit handoff (issues #858, #871): the resolver session
         # WRITES resolutions but cannot stage or commit them. The shared helper
-        # (conflict-resolver.sh::commit_resolved_conflicts) stages via
-        # `git add -A`, detects the live rebase/merge/plain context,
-        # continues/commits accordingly, and aborts context-correctly with
-        # git's stderr surfaced on failure.
+        # (conflict-resolver.sh::commit_resolved_conflicts) reads the conflict-path
+        # list exported by attempt_claude_merge_resolution (_RITE_RESOLVER_CONFLICT_PATHS)
+        # and stages only those paths — not the whole tree — so operator WIP that was
+        # stash-popped back into the tree before the resolver ran stays uncommitted.
+        # The helper then detects the live rebase/merge/plain context, continues/commits
+        # accordingly, and aborts context-correctly with git's stderr surfaced on failure.
         if ! commit_resolved_conflicts "$worktree_path"; then
           print_error "Failed to commit resolved conflicts"
           return 1
