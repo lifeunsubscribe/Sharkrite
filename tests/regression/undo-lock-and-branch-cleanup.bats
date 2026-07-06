@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/undo-workflow.sh
+# sharkrite-test-covers: lib/core/undo-workflow.sh, lib/utils/git-helpers.sh
 # Regression: `rite --undo N` must comprehensively clean its artifacts.
 #
 # Live gaps (#649): after `rite --undo 649`, two orphans survived —
@@ -113,4 +113,64 @@ teardown() { rm -rf "$TEST_DIR"; }
   run grep -E '\[ "\$_fu" = "\$ISSUE_NUMBER" \] && continue' \
     "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
   [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Empty container dir cleanup after worktree removal (#972)
+# ---------------------------------------------------------------------------
+
+@test "undo: rmdir empty container dir after worktree removal" {
+  # Behavioural fixture test: calls the real rmdir_empty_worktree_container
+  # function from git-helpers.sh so any regression in the shipped code is caught.
+  #
+  # Directory layout mirrors production:
+  #   RITE_WORKTREE_DIR = .../sh-wt
+  #   container         = .../sh-wt/issue-972      (child of RITE_WORKTREE_DIR)
+  #   wt_path           = .../sh-wt/issue-972/fix  (the actual worktree)
+  local rite_wt_dir="${TEST_DIR}/sh-wt"
+  local container="${rite_wt_dir}/issue-972"
+  local wt_path="${container}/fix"
+
+  mkdir -p "$wt_path"
+  rm -rf "$wt_path"    # simulate git worktree remove
+
+  # Source the real helper (function-sentinel guard preserves stubs)
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${RITE_REPO_ROOT}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  rmdir_empty_worktree_container "$container" "$rite_wt_dir"
+  [ ! -d "$container" ]  # empty container must be gone
+}
+
+@test "undo: non-empty container dir is NOT removed after worktree removal" {
+  # Guard: rmdir silently fails when the container still has sibling worktrees.
+  local rite_wt_dir="${TEST_DIR}/sh-wt2"
+  local container="${rite_wt_dir}/issue-972"
+  local wt_path="${container}/fix"
+  local sibling="${container}/issue-100-sibling"  # another worktree still present
+
+  mkdir -p "$wt_path" "$sibling"
+  rm -rf "$wt_path"    # simulate git worktree remove
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${RITE_REPO_ROOT}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  rmdir_empty_worktree_container "$container" "$rite_wt_dir"
+  [ -d "$container" ]  # sibling still present — container must survive
+}
+
+@test "undo source: rmdir_empty_worktree_container called after git worktree remove" {
+  # Structural pin: the call must appear after the worktree remove in the source.
+  local src="${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  local remove_line rmdir_line
+  remove_line=$(grep -n "git worktree remove.*WORKTREE_PATH.*--force" "$src" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$src" | head -1 | cut -d: -f1)
+  [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in undo-workflow.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in undo-workflow.sh"; return 1; }
+  [ "$rmdir_line" -gt "$remove_line" ] || {
+    echo "FAIL: rmdir_empty_worktree_container (line $rmdir_line) must come after git worktree remove (line $remove_line)"
+    return 1
+  }
 }

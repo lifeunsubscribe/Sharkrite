@@ -470,6 +470,8 @@ if [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
 
   if git worktree remove "$WORKTREE_PATH" --force 2>/dev/null; then
     echo -e "${GREEN}  ✓ Removed worktree: $(basename "$WORKTREE_PATH")${NC}"
+    # Rmdir the worktree dir if it is now empty and lives inside RITE_WORKTREE_DIR
+    rmdir_empty_worktree_container "$WORKTREE_PATH" "$RITE_WORKTREE_DIR"
   else
     print_warning "Failed to remove worktree: $WORKTREE_PATH"
     print_info "Try manually: git worktree remove '$WORKTREE_PATH' --force"

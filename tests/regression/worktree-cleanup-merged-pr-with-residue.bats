@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh
+# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh, lib/utils/git-helpers.sh
 # Regression test: worktree auto-cleanup correctly detects merged PRs
 # Issue #182
 #
@@ -128,4 +128,166 @@ CLAUDE_WORKFLOW="$SCRIPT_DIR/lib/core/claude-workflow.sh"
   [ -f "$CLAUDE_WORKFLOW" ]
 
   grep -qE "git worktree remove --force" "$CLAUDE_WORKFLOW"
+}
+
+# ---------------------------------------------------------------------------
+# Empty container dir cleanup after worktree removal (#972)
+# merge-pr.sh deep-clean loop + current-worktree removal path
+# cleanup-worktrees.sh manual cleanup path
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+MERGE_PR="$SCRIPT_DIR/lib/core/merge-pr.sh"
+CLEANUP_WT="$SCRIPT_DIR/lib/utils/cleanup-worktrees.sh"
+
+@test "empty container cleanup: behavioral fixture - empty worktree dir is removed" {
+  # Exercises the real rmdir_empty_worktree_container function from git-helpers.sh.
+  #
+  # Directory layout mirrors production (flat layout):
+  #   RITE_WORKTREE_DIR = .../sh-wt
+  #   wt_path           = .../sh-wt/fx-issue-972  (direct child of RITE_WORKTREE_DIR)
+  #
+  # After `git worktree remove`, git deletes the .git file but the directory
+  # may remain empty.  rmdir_empty_worktree_container removes it.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-fixture"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  local wt_path="${rite_wt_dir}/fx-issue-972"
+
+  mkdir -p "$wt_path"
+  # Simulate git worktree remove leaving an empty directory (git deletes .git
+  # file but leaves the dir when residue is absent — rmdir cleans that up).
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  rmdir_empty_worktree_container "$wt_path" "$rite_wt_dir"
+  [ ! -d "$wt_path" ]   # empty worktree dir must be gone; sh-wt itself is untouched
+}
+
+@test "empty container cleanup: behavioral fixture - non-empty worktree dir is untouched" {
+  # When the worktree dir still contains residue files after git worktree remove,
+  # rmdir must fail silently and leave the directory in place.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-fixture2"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  local wt_path="${rite_wt_dir}/fx-issue-972"
+  local residue="${wt_path}/sharkrite-scratchpad.md"
+
+  mkdir -p "$wt_path"
+  touch "$residue"   # residue file — rmdir must not remove it
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  rmdir_empty_worktree_container "$wt_path" "$rite_wt_dir"
+  [ -d "$wt_path" ]    # non-empty worktree dir must survive
+}
+
+@test "empty container cleanup: sibling dir outside RITE_WORKTREE_DIR is NOT removed" {
+  # Regression guard for the prefix-glob bug (#972): a sibling dir like sh-wt-archive
+  # must NOT be removed when RITE_WORKTREE_DIR is sh-wt (bare prefix would match).
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-sibling"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  local sibling_dir="${test_dir}/sh-wt-archive"  # sibling of sh-wt, NOT a child
+
+  mkdir -p "$sibling_dir"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  rmdir_empty_worktree_container "$sibling_dir" "$rite_wt_dir"
+  [ -d "$sibling_dir" ]  # sibling dir must be untouched
+}
+
+@test "empty container cleanup: trailing slash in RITE_WORKTREE_DIR is normalized" {
+  # Regression guard for the trailing-slash bug: RITE_WORKTREE_DIR with a
+  # trailing slash produces pattern ".../base//*" which fails to match a
+  # direct child like ".../base/fx-foo", rendering the helper silently inert.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-trailing-slash"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  local wt_path="${rite_wt_dir}/fx-issue-972"
+
+  mkdir -p "$wt_path"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  # Pass rite_wt_dir WITH a trailing slash — the function must normalize it.
+  rmdir_empty_worktree_container "$wt_path" "${rite_wt_dir}/"
+  [ ! -d "$wt_path" ]   # must be removed despite trailing slash in second arg
+}
+
+@test "empty container cleanup: empty first arg is a no-op (does not rmdir /)" {
+  # Safety anchor: when wt_path is empty the case pattern becomes "/*" and would
+  # match ANY path.  The guard must return 0 before reaching the case statement.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-empty-arg"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  mkdir -p "$rite_wt_dir"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  # Empty first arg: must return 0 without attempting any rmdir.
+  rmdir_empty_worktree_container "" "$rite_wt_dir"
+  [ -d "$rite_wt_dir" ]  # container dir must be untouched
+}
+
+@test "empty container cleanup: empty second arg is a no-op (does not match /*)" {
+  # Safety anchor: when rite_worktree_dir is empty the pattern becomes "/*" which
+  # would match any absolute path.  The guard must return 0 before the case.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-empty-base"
+  local wt_path="${test_dir}/sh-wt/fx-issue-972"
+  mkdir -p "$wt_path"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  # Empty second arg: must return 0 without attempting any rmdir.
+  rmdir_empty_worktree_container "$wt_path" ""
+  [ -d "$wt_path" ]  # worktree dir must be untouched
+}
+
+@test "merge-pr source: stale-worktree loop calls rmdir_empty_worktree_container after removal" {
+  # Structural pin for the deep-clean loop in merge-pr.sh.
+  local remove_line rmdir_line
+  remove_line=$(grep -n 'git worktree remove.*wt_path.*--force.*git worktree remove.*wt_path' "$MERGE_PR" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$MERGE_PR" | head -1 | cut -d: -f1)
+  [ -n "$remove_line" ] || { echo "FAIL: stale-worktree removal not found in merge-pr.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in merge-pr.sh"; return 1; }
+  [ "$rmdir_line" -gt "$remove_line" ] || {
+    echo "FAIL: first rmdir_empty_worktree_container (line $rmdir_line) must come after stale worktree remove (line $remove_line)"
+    return 1
+  }
+}
+
+@test "merge-pr source: current-worktree removal path calls rmdir_empty_worktree_container" {
+  # Structural pin for the per-merge worktree removal (CURRENT_DIR path).
+  local current_dir_remove_line rmdir_line2
+  current_dir_remove_line=$(grep -n 'git worktree remove.*CURRENT_DIR.*--force' "$MERGE_PR" | head -1 | cut -d: -f1)
+  # There are two call sites; the second follows the CURRENT_DIR removal.
+  rmdir_line2=$(grep -n 'rmdir_empty_worktree_container' "$MERGE_PR" | tail -1 | cut -d: -f1)
+  [ -n "$current_dir_remove_line" ] || { echo "FAIL: CURRENT_DIR worktree remove not found"; return 1; }
+  [ -n "$rmdir_line2" ]             || { echo "FAIL: second rmdir_empty_worktree_container not found in merge-pr.sh"; return 1; }
+  [ "$rmdir_line2" -gt "$current_dir_remove_line" ] || {
+    echo "FAIL: second rmdir_empty_worktree_container (line $rmdir_line2) must come after CURRENT_DIR remove (line $current_dir_remove_line)"
+    return 1
+  }
+}
+
+@test "cleanup-worktrees source: calls rmdir_empty_worktree_container after manual worktree removal" {
+  # Structural pin for the manual cleanup script.
+  local remove_line rmdir_line
+  remove_line=$(grep -n 'git worktree remove.*wt_path.*--force' "$CLEANUP_WT" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$CLEANUP_WT" | head -1 | cut -d: -f1)
+  [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in cleanup-worktrees.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in cleanup-worktrees.sh"; return 1; }
+  [ "$rmdir_line" -gt "$remove_line" ] || {
+    echo "FAIL: rmdir_empty_worktree_container (line $rmdir_line) must come after git worktree remove (line $remove_line)"
+    return 1
+  }
 }
