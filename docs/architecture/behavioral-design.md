@@ -1623,3 +1623,21 @@ a flake); RITE_GATE_FLAKE_RETRY=false is the operator off-switch. Rejected:
 per-test quarantine lists (rot silently; the serial re-run is evidence-based
 per occurrence) and N>1 retries (a test needing two quiet runs isn't flaking,
 it's broken). Test: tests/regression/gate-flake-retry.bats.
+
+## Gate Verdict Persistence: Empty Re-Selection Cannot Pass Vacuously (#944)
+
+**2026-07-06.** The fix-loop re-gate deliberately narrows its diff base to the
+fix commit (workflow-runner passes `_pre_fix_head`) so a fix round re-runs only
+what the fix touched. The hole: a fix touching only uncovered paths computed an
+EMPTY selection and the round reported outcome=passed having verified NOTHING —
+overwriting the prior failing verdict. Live escape: PR #931 (`selected=15 →
+failed`, then `selected=0 → passed`), which merged #855 red; repaired in #943.
+Contract: on a FAILED outcome the gate persists the failing FILES per PR
+(`.rite/state/gate-prior-failing-pr<PR>.list`, `[tests_not_run]` synthetics
+excluded — a swallow is not a re-runnable failure); every subsequent run for
+that PR UNIONS those files into its selection (`reselected_prior=true` diag +
+loud line), so `selected=0` is only reachable when no prior failure exists; a
+PASSED outcome clears the state, keeping genuine zero-selection runs
+(docs-only diffs) skipped. Rejected: re-running the full prior selection every
+fix round (restores the pre-narrowing cost the narrowing exists to avoid —
+failing files are the sufficient invariant).
