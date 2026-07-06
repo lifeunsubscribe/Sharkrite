@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/31-empty-model-arg-to-a-provider-run-function-s.sh, tools/lint-rules/32-direct-claude-provider-call-in-lib-core-or-l.sh, tools/sharkrite-lint.sh
 # Tests for Rule 31 (PROVIDER_MODEL_FALLTHROUGH) and Rule 32 (DIRECT_PROVIDER_CALL).
 #
 # Rule 31: passing "" as the model arg to provider_run_prompt /
