@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/25-bats-files-must-declare-test-coverage-via-sh.sh, tools/lint-rules/29-trap-exit-inside-a-test-body-in-a-bats-file.sh, tools/lint-rules/30-bats-setup-setup-file-sources-a-lib-file-wit.sh, tools/lint-rules/34-pre-source-function-stub-overwritten-by-env.sh, tools/lint-rules/35-file-scope-rite-inherited-env-var-reads-in-b.sh, tools/sharkrite-lint.sh
 #
 # Regression tests for the two bats-hygiene lint rules added after the
 # 2026-07-01 not-run incident (failing tests swallowed to "not run" by the

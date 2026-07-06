@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh
+# sharkrite-test-covers: tools/lint-rules/26-non-portable-sleep-infinity-sleep-inf-bsd-ma.sh, tools/sharkrite-lint.sh
 # Tests for Rule 26: SLEEP_INFINITY_NOT_PORTABLE
 #
 # Verifies the lint rule flags `sleep infinity` / `sleep inf` (which BSD/macOS

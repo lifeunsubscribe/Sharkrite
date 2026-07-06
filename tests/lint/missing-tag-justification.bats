@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/*-lint.sh, lib/utils/tag-index.sh
+# sharkrite-test-covers: tools/lint-rules/23-missing-tag-justification-tag-in-convention.sh, tools/sharkrite-lint.sh, lib/utils/tag-index.sh
 # Tests for Rule 23: MISSING_TAG_JUSTIFICATION
 #
 # A convention block with tags: foo declares a tag.  Every declared tag must:

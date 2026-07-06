@@ -31,7 +31,10 @@ shellcheck:
 		echo "ERROR: shellcheck not installed. Install with: brew install shellcheck"; \
 		exit 1; \
 	fi
-	@find bin lib tools -type f \( -name "*.sh" -o -path "bin/rite*" -o -path "tools/git-hooks/*" \) -exec shellcheck --severity=warning {} +
+	@# tools/lint-rules/* are driver-sourced fragments of sharkrite-lint.sh — standalone
+	@# shellcheck would flag SC2154 on every driver-defined var; they are syntax-checked
+	@# by the driver sourcing them under set -e and behavior-checked by tests/lint/. (#919)
+	@find bin lib tools -type f -not -path "tools/lint-rules/*" \( -name "*.sh" -o -path "bin/rite*" -o -path "tools/git-hooks/*" \) -exec shellcheck --severity=warning {} +
 
 # Run custom lint rules
 lint:
