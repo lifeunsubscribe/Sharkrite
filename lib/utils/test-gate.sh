@@ -1814,6 +1814,33 @@ run_test_gate() {
       _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
     fi
 
+    # --- Verdict persistence (#944): union in previously-failing files -------
+    # A prior gate run for this PR that FAILED leaves its failing FILES in a
+    # state file. The next run's selection must include them: fix-loop re-gates
+    # deliberately narrow the diff base to the fix commit (workflow-runner
+    # passes _pre_fix_head), so a fix touching only uncovered paths computed an
+    # EMPTY selection and the round reported outcome=passed having verified
+    # NOTHING — a vacuous pass that merged red (live escape: PR #931/#855,
+    # selected=15/failed → selected=0/passed → red main, repaired in #943).
+    # With the union, selected can only be 0 when there is no prior failure.
+    local _prior_fail_file="${RITE_STATE_DIR:-$project_root/.rite/state}/gate-prior-failing-pr${PR_NUMBER:-0}.list"
+    if [ -s "$_prior_fail_file" ]; then
+      local _prior_injected=0 _pf
+      while IFS= read -r _pf; do
+        [ -z "$_pf" ] && continue
+        [ -f "$project_root/$_pf" ] || continue
+        if ! printf '%s\n' "$_selection" | grep -qxF "$_pf"; then
+          _selection="${_selection:+$_selection
+}$_pf"
+          _prior_injected=$((_prior_injected + 1))
+        fi
+      done < "$_prior_fail_file"
+      if [ "$_prior_injected" -gt 0 ]; then
+        _gate_status "[test-gate] Re-verifying ${_prior_injected} previously-failing file(s) from the last gate round (verdict persistence, #944)"
+        _diag "TEST_GATE_SELECTION reselected_prior=true injected=${_prior_injected} pr=${PR_NUMBER:-?}"
+      fi
+    fi
+
     # --- Bats parallelism (--jobs N) ---
     # Auto-detect: use GNU parallel if installed (capped at 4 procs); serial
     # otherwise. RITE_BATS_JOBS=N overrides. File-level parallel only — within
@@ -2457,6 +2484,36 @@ run_test_gate() {
   local _gate_end
   _gate_end=$(date +%s)
   local _duration=$(( _gate_end - _gate_start ))
+
+  # --- Verdict persistence (#944): record failing FILES / clear on pass -----
+  # Failing test names from the TAP are mapped to their bats files via the
+  # selection (same approach as the #945 flake-retry); the list feeds the next
+  # run's selection union above. A passing outcome clears the state so genuine
+  # zero-selection runs (docs-only diffs, no prior failure) stay skipped.
+  local _vp_state_file="${RITE_STATE_DIR:-$project_root/.rite/state}/gate-prior-failing-pr${PR_NUMBER:-0}.list"
+  if [ "$_outcome" = "passed" ]; then
+    rm -f "$_vp_state_file" 2>/dev/null || true
+  elif [ "$_outcome" = "failed" ] && [ -f "${_tests_raw_file:-/nonexistent}" ]; then
+    local _vp_names _vp_name _vp_hit _vp_out=""
+    _vp_names=$(grep -E '^not ok [0-9]+ ' "$_tests_raw_file" 2>/dev/null \
+      | sed -E 's/^not ok [0-9]+ //' | sed 's/ # .*//' | grep -v '^\[tests_not_run\]' || true)
+    if [ -n "$_vp_names" ] && [ -n "${_selection:-}" ]; then
+      local _vp_sel_arr=()
+      while IFS= read -r _vp_hit; do
+        [ -n "$_vp_hit" ] && _vp_sel_arr+=("$project_root/$_vp_hit")
+      done <<< "$_selection"
+      while IFS= read -r _vp_name; do
+        [ -z "$_vp_name" ] && continue
+        _vp_hit=$(grep -lF "$_vp_name" "${_vp_sel_arr[@]+"${_vp_sel_arr[@]}"}" 2>/dev/null | head -1 || true)
+        [ -n "$_vp_hit" ] && _vp_out="${_vp_out}${_vp_hit#"$project_root"/}"$'\n'
+      done <<< "$_vp_names"
+      _vp_out=$(printf '%s' "$_vp_out" | sort -u | grep -v '^$' || true)
+      if [ -n "$_vp_out" ]; then
+        mkdir -p "$(dirname "$_vp_state_file")" 2>/dev/null || true
+        printf '%s\n' "$_vp_out" > "$_vp_state_file"
+      fi
+    fi
+  fi
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
 
