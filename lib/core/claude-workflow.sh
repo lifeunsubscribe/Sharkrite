@@ -852,7 +852,11 @@ $_fail_summary
         provider_run_agentic_session "$_fix_prompt" "${RITE_FIX_TIMEOUT:-1800}" true /dev/null || _fix_exit=$?
         _timer_end "test_fix_session"
 
-        if [ $_fix_exit -eq 0 ]; then
+        if [ $_fix_exit -eq 18 ]; then
+          # Auth failure during test-gate fix session — propagate so batch halts.
+          print_error "Provider auth failure during test-gate fix session — aborting batch"
+          exit 18
+        elif [ $_fix_exit -eq 0 ]; then
           # Re-run tests after fix
           print_status "Re-running tests after fix..."
           rm -f "$_test_output_file"
@@ -1172,6 +1176,12 @@ $EXIT_INSTRUCTION"
       # the generic non-zero handler treat it as an ordinary fix failure.
       print_error "Claude usage cap reached during fix session — aborting batch"
       exit 5
+    elif [ $FIX_EXIT_CODE -eq 18 ]; then
+      # Auth failure during fix session — propagate so batch halts.
+      # Mirrors the exit-5 branch above; a mid-batch auth expiry must stop
+      # the whole run rather than being swallowed as a generic fix failure.
+      print_error "Provider auth failure during fix session — aborting batch"
+      exit 18
     elif [ $FIX_EXIT_CODE -ne 0 ]; then
       print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
     fi
