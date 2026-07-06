@@ -83,14 +83,23 @@ teardown() {
 # ---------------------------------------------------------------------------
 # Test 3: plan-issues.sh probed path resolves in the installed layout
 #
-# plan-issues.sh:348 probes:
-#   "$RITE_INSTALL_DIR/docs/issue-runbook.md"
+# Extracts the install-dir branch of the probe from plan-issues.sh so this
+# test stays bound to the actual loader path rather than a hardcoded copy.
 # ---------------------------------------------------------------------------
 
 @test "plan-issues.sh install-dir probe path resolves after install" {
-  # Simulate exactly what plan-issues.sh does: use RITE_INSTALL_DIR to build
-  # the fallback path and assert it is a readable file.
-  _probe="${_INSTALL_PREFIX}/docs/issue-runbook.md"
+  # Extract the install-dir probe from the source — the elif branch that
+  # tests "$RITE_INSTALL_DIR/docs/issue-runbook.md".  grep for the literal
+  # text and pull the path token so this test breaks if the loader drifts.
+  _probe_expr=$(grep -oE '\$RITE_INSTALL_DIR/docs/issue-runbook\.md' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" | head -1 || true)
+  [ -n "$_probe_expr" ] || {
+    echo "FAIL: could not extract RITE_INSTALL_DIR probe from plan-issues.sh"
+    false
+  }
+  # Evaluate the expression with RITE_INSTALL_DIR bound to the test prefix.
+  RITE_INSTALL_DIR="$_INSTALL_PREFIX" \
+    _probe=$(eval echo "$_probe_expr")
   [ -f "$_probe" ] || {
     echo "FAIL: plan-issues.sh probe path not found: $_probe"
     false
@@ -100,14 +109,23 @@ teardown() {
 # ---------------------------------------------------------------------------
 # Test 4: lib/providers/claude.sh probed path resolves in the installed layout
 #
-# claude.sh:452 probes:
-#   "${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md"
+# Extracts the install-dir branch of the probe from claude.sh so this test
+# stays bound to the actual loader path rather than a hardcoded copy.
 # ---------------------------------------------------------------------------
 
 @test "lib/providers/claude.sh install-dir probe path resolves after install" {
-  # Simulate exactly what claude.sh does: prefer RITE_INSTALL_DIR, fall back
-  # to $HOME/.rite.
-  _probe="${_INSTALL_PREFIX:-${_FAKE_HOME}/.rite}/docs/test-authoring-runbook.md"
+  # Extract the install-dir probe from the source — the elif branch that
+  # tests "${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md".
+  _probe_expr=$(grep -oE '\$\{RITE_INSTALL_DIR:-\$HOME/\.rite\}/docs/test-authoring-runbook\.md' \
+    "${RITE_REPO_ROOT}/lib/providers/claude.sh" | head -1 || true)
+  [ -n "$_probe_expr" ] || {
+    echo "FAIL: could not extract RITE_INSTALL_DIR probe from lib/providers/claude.sh"
+    false
+  }
+  # Evaluate the expression with RITE_INSTALL_DIR and HOME bound to the test
+  # prefix/fake-home so the fallback also resolves under the test tree.
+  RITE_INSTALL_DIR="$_INSTALL_PREFIX" HOME="$_FAKE_HOME" \
+    _probe=$(eval echo "$_probe_expr")
   [ -f "$_probe" ] || {
     echo "FAIL: claude.sh probe path not found: $_probe"
     false

@@ -3,7 +3,7 @@
 # Idempotent: safe to run multiple times (updates existing installation)
 #
 # Installation layout:
-#   ~/.rite/           - Sharkrite runtime (lib/, templates/, config/)
+#   ~/.rite/           - Sharkrite runtime (lib/, templates/, config/, docs/)
 #   ~/.local/bin/rite  - Symlink to bin/rite (or custom location)
 #   ~/.config/rite/    - User configuration (preserved on update)
 
