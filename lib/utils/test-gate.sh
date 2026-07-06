@@ -2191,7 +2191,30 @@ run_test_gate() {
       # non-zero with ModuleNotFoundError — that's an env gap, not a test failure.
       # Exit 5 (no tests collected) from a wrapped pytest also bubbles through
       # make as a non-zero exit and should be a loud skip rather than a hard block.
-      if [ "$_tests_exit" -ne 0 ]; then
+      #
+      # Pytest-context guard: only apply _classify_pytest_outcome when the make
+      # test recipe actually delegates to pytest/python.  Without this guard, a
+      # non-pytest make target whose failure happens to contain a "No module named"
+      # string (e.g. a missing app dependency imported at startup) would be
+      # misclassified as skipped:missing_deps and pass the gate green — a
+      # false-skip that lets a broken merge through.
+      #
+      # Two signals (either is sufficient):
+      #   1. The test: recipe references python/pytest (cheap; checked first).
+      #   2. The captured output contains a pytest session banner (covers
+      #      multi-step recipes that call pytest indirectly).
+      local _make_is_pytest_context=false
+      local _make_recipe
+      _make_recipe=$(awk '/^test:/{found=1;next} found && /^\t/{print;next} found{exit}' \
+        "$project_root/Makefile" 2>/dev/null || true)
+      if echo "$_make_recipe" | grep -qiE '(pytest|python3?[[:space:]]+-m[[:space:]]+pytest|python3?)'; then
+        _make_is_pytest_context=true
+      elif [ -f "$_tests_raw_file" ] && \
+           grep -qE '(=====.*test session starts|platform .* pytest|collected [0-9]+ item)' \
+           "$_tests_raw_file" 2>/dev/null; then
+        _make_is_pytest_context=true
+      fi
+      if [ "$_tests_exit" -ne 0 ] && [ "$_make_is_pytest_context" = "true" ]; then
         local _make_raw _make_outcome
         _make_raw=$(cat "$_tests_raw_file" 2>/dev/null || true)
         _make_outcome=$(_classify_pytest_outcome "$_tests_exit" "$_make_raw")

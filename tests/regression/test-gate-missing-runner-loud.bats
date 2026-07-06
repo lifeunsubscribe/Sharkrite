@@ -667,10 +667,19 @@ EOF
   # A Makefile test: target that runs python -m pytest in a missing-venv
   # environment exits non-zero with ModuleNotFoundError output.
   # The gate should classify this as a loud skip, not a hard failure.
+  # The recipe references pytest so the pytest-context guard fires.
+  cat > "$STUB_DIR/pytest" <<'STUB'
+#!/bin/sh
+printf 'E  ModuleNotFoundError: No module named mypackage\n'
+exit 1
+STUB
+  chmod +x "$STUB_DIR/pytest"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $STUB_DIR must expand into Makefile recipe
   cat > "$TEST_REPO/Makefile" <<EOF
 .PHONY: test
 test:
-	@printf 'E  ModuleNotFoundError: No module named mypackage\n' && exit 1
+	@PATH="$STUB_DIR:\$\$PATH" pytest
 EOF
 
   _run_gate ""
@@ -706,10 +715,19 @@ EOF
   # A Makefile test: target that runs pytest and exits 5 when no tests are
   # found should produce a loud skip rather than blocking the merge.
   # make propagates the test runner's exit 5 as its own exit code.
-  cat > "$TEST_REPO/Makefile" <<'EOF'
+  # The recipe references pytest so the pytest-context guard fires.
+  cat > "$STUB_DIR/pytest" <<'STUB'
+#!/bin/sh
+printf '============== no tests ran ==============\n'
+exit 5
+STUB
+  chmod +x "$STUB_DIR/pytest"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $STUB_DIR must expand into Makefile recipe
+  cat > "$TEST_REPO/Makefile" <<EOF
 .PHONY: test
 test:
-	@printf '============== no tests ran ==============\n'; exit 5
+	@PATH="$STUB_DIR:\$\$PATH" pytest
 EOF
 
   _run_gate ""
@@ -736,10 +754,20 @@ EOF
 
 @test "make test: real test failure (FAILED line) → still hard-fails (no false skip)" {
   # A real pytest failure bubbled through make must NOT be silently skipped.
-  cat > "$TEST_REPO/Makefile" <<'EOF'
+  # Recipe references pytest so the pytest-context guard fires; the FAILED+
+  # AssertionError output must still be classified as a real failure.
+  cat > "$STUB_DIR/pytest" <<'STUB'
+#!/bin/sh
+printf 'FAILED test_thing.py::test_foo - AssertionError\n'
+exit 1
+STUB
+  chmod +x "$STUB_DIR/pytest"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $STUB_DIR must expand into Makefile recipe
+  cat > "$TEST_REPO/Makefile" <<EOF
 .PHONY: test
 test:
-	@printf 'FAILED test_thing.py::test_foo - AssertionError\n'; exit 1
+	@PATH="$STUB_DIR:\$\$PATH" pytest
 EOF
 
   _run_gate ""
@@ -759,6 +787,45 @@ EOF
   _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
   [ "${_exit_code:-0}" -ne 0 ] || {
     echo "FAIL: exit_code should be non-zero for a real make test failure"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+}
+
+@test "make test: non-pytest target with 'No module named' in output → hard-fails (pytest-context guard)" {
+  # This is the false-skip regression guard for the pytest-context check.
+  # A non-pytest make test: target (e.g. running an app binary) that fails
+  # because a Python import is missing at startup produces output that looks
+  # like a missing-deps signature.  Without the pytest-context guard the old
+  # code would classify this as skipped:missing_deps and pass the gate green,
+  # letting a broken merge through.  With the guard, the recipe must reference
+  # pytest/python for _classify_pytest_outcome to fire; a generic target
+  # bypasses the classifier and hard-fails on the non-zero exit.
+  cat > "$TEST_REPO/Makefile" <<'EOF'
+.PHONY: test
+test:
+	@printf 'E  ModuleNotFoundError: No module named mypackage\n' && exit 1
+EOF
+
+  _run_gate ""
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must NOT have skipped — this is a non-pytest target
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -z "$_skipped" ] || {
+    echo "FAIL: gate should NOT skip for a non-pytest make test target (pytest-context guard)"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  # exit_code must be non-zero (hard failure)
+  local _exit_code
+  _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
+  [ "${_exit_code:-0}" -ne 0 ] || {
+    echo "FAIL: exit_code should be non-zero for a non-pytest make test failure"
     echo "JSON: $(cat "$TEST_REPO/gate.json")"
     false
   }
