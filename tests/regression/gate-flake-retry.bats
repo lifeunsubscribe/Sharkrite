@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-gate-serial — spawns real inner bats runs (runbook rule 6); under --jobs load these
+# time out at the 120s per-test budget (live: blocked issue #871's gate, 2026-07-05)
 # Regression for #938: one bounded serial retry of failing bats files.
 # A load-flake blocked three merges on 2026-07-05 (SIGINT pair twice, a
 # symlink assert once) — each green in isolation minutes later. Contract:

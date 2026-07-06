@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/workflow-runner.sh
+# sharkrite-gate-serial — sleep-based timing with sliced waits (runbook rule 6); under --jobs load these
+# time out at the 120s per-test budget (live: blocked issue #871's gate, 2026-07-05)
 # Regression for #946: the post-review gate wait heartbeats instead of sitting
 # silent. Review typically beats the parallel gate by minutes; the old single
 # bounded wait printed NOTHING after "Review posted" — every iteration read as
