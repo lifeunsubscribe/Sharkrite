@@ -697,7 +697,16 @@ print_info "Running pre-start checks..."
 # a crashed batch never permanently blocks subsequent invocations.
 # ---------------------------------------------------------------------------
 _batch_issue_list_str="${ISSUE_LIST[*]}"
-if ! acquire_batch_lock "$_batch_issue_list_str"; then
+# Concurrent batches are the DEFAULT workflow (the original design: "split into
+# parallel groups of 8"). The per-issue locks + the active-issue skip below are
+# the real collision guards; repo-wide merge-time sweeps carry their own guards
+# (#890). The whole-batch mutex is OPT-IN (RITE_BATCH_SERIALIZE=true) for
+# cautious/low-resource runs — with queue-then-run semantics (#956/#957), or
+# hard refusal under RITE_BATCH_QUEUE=false. (#958: serialization was never
+# the operator's ask; parallel throughput was.)
+if [ "${RITE_BATCH_SERIALIZE:-false}" != "true" ]; then
+  print_info "Running without the batch mutex (concurrent batches allowed; per-issue locks guard collisions). Set RITE_BATCH_SERIALIZE=true to queue instead."
+elif ! acquire_batch_lock "$_batch_issue_list_str"; then
   # A LIVE batch holds the repo lock (stale locks were already reclaimed
   # inside acquire_batch_lock). Default behavior is to QUEUE (#956): the
   # whole point of the mutex is fire-and-forget stacking of batches, so wait
