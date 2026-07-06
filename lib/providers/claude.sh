@@ -436,32 +436,52 @@ claude_provider_build_tool_restrictions() {
 # Prompt Adaptation
 # =============================================================================
 
-claude_provider_dev_session_preamble() {
-  local auto_mode="$1"
-  local task_description="$2"
-
-  # Test-authoring runbook (project override or built-in) — injected below as
-  # Phase 4 guidance. Mirrors how plan-issues.sh loads docs/issue-runbook.md
-  # for `rite plan`: the project's .rite/ copy wins, else the install-dir doc.
-  # Gated on file existence: absent doc → empty section, prompt unchanged.
-  # All expansions are set -u-safe because tests source this file directly
-  # without config.sh having populated the RITE_* path variables.
+# claude_provider_load_test_authoring_runbook()
+#
+# Shared helper: resolve and return the test-authoring runbook section string.
+#
+# Lookup chain (project override wins, same as plan-issues.sh issue-runbook):
+#   1. $RITE_PROJECT_ROOT/$RITE_DATA_DIR/test-authoring-runbook.md
+#   2. ${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md
+#
+# Outputs the formatted runbook section (header + file content) when found,
+# or an empty string when neither location exists (silent no-op).
+# All expansions are set -u-safe: RITE_* vars use :- defaults so the function
+# can be called from tests that source this file without config.sh loaded.
+#
+# Called by: claude_provider_dev_session_preamble (dev sessions)
+#            provider_load_test_authoring_runbook → fix-session prompt builder
+claude_provider_load_test_authoring_runbook() {
   local _runbook_file=""
   if [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "${RITE_PROJECT_ROOT}/${RITE_DATA_DIR:-.rite}/test-authoring-runbook.md" ]; then
     _runbook_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR:-.rite}/test-authoring-runbook.md"
   elif [ -f "${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md" ]; then
     _runbook_file="${RITE_INSTALL_DIR:-$HOME/.rite}/docs/test-authoring-runbook.md"
   fi
-  local test_runbook_section=""
+
   if [ -n "$_runbook_file" ]; then
     # CONTRACT (#495, pinned by tests/regression/dev-prompt-no-suite-runs.bats):
     # this header references the Phase 4 title but must NOT reword the todo line
-    # in the heredoc below — em-dash + parens (not "Phase 4: ...") so the wording
-    # pins keep matching only the real todo title.
-    test_runbook_section="
-**Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check):**
+    # in dev_session_preamble — em-dash + parens so wording pins match only the
+    # real todo title, not this header.
+    printf '%s\n' \
+      "**Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check):**" \
+      "" \
+      "$(cat "$_runbook_file")"
+  fi
+}
 
-$(cat "$_runbook_file")"
+claude_provider_dev_session_preamble() {
+  local auto_mode="$1"
+  local task_description="$2"
+
+  # Load the test-authoring runbook via the shared helper (project override or
+  # built-in). Absent doc → empty section, prompt unchanged.
+  local test_runbook_section=""
+  test_runbook_section=$(claude_provider_load_test_authoring_runbook)
+  if [ -n "$test_runbook_section" ]; then
+    test_runbook_section="
+${test_runbook_section}"
   fi
 
   cat <<EOF

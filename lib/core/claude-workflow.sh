@@ -1075,6 +1075,16 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
 
   ACTIONABLE_NOW_COUNT=$(echo "$ACTIONABLE_NOW_ITEMS" | grep -c "^### .* - ACTIONABLE_NOW" || true)
 
+  # Inject test-authoring runbook when the fix session may touch tests/ files.
+  # Gate: only grows the prompt when a [GATE] bats failure or a review finding
+  # referencing tests/ or .bats is present — DO NOT inject when no tests are
+  # in play (per issue #909 scope boundary).
+  # Lookup chain mirrors dev_session_preamble (project override → install-dir doc).
+  _fix_test_runbook_section=""
+  if echo "$ACTIONABLE_NOW_ITEMS" | grep -qE 'tests/|\.bats'; then
+    _fix_test_runbook_section=$(provider_load_test_authoring_runbook || true)
+  fi
+
   # Build fix prompt - tool restrictions are enforced by --disallowedTools flag
   FIX_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) fix-review session.
 Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
@@ -1111,6 +1121,7 @@ The workflow will automatically commit, push, and request a new review. Post-com
 - Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands
 - Do NOT modify workflow, config, or CI files (.rite/, .github/workflows/, .claude/)
 
+${_fix_test_runbook_section}
 $EXIT_INSTRUCTION"
 
   print_status "Invoking Sharkrite to fix review issues..."

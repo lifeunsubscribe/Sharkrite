@@ -80,6 +80,7 @@ load_provider() {
     detect_error \
     supports_tool_restrictions build_tool_restrictions \
     dev_session_preamble exit_instructions \
+    load_test_authoring_runbook \
     resolve_model name; do
     eval "provider_${fn}() { ${provider_name//-/_}_provider_${fn} \"\$@\"; }"
   done
