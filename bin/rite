@@ -886,6 +886,15 @@ if [ "$MODE" = "init" ]; then
     print_info ".rite/issue-template.md already exists, skipping"
   fi
 
+  # doc-sync.md.example — inactive starter for Layer 2 doc maintenance
+  # Users opt in by copying this to .rite/doc-sync.md (see README)
+  if [ ! -f "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md.example" ]; then
+    cp "$RITE_INSTALL_DIR/templates/doc-sync.md.example" "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md.example"
+    print_success "Created .rite/doc-sync.md.example (inactive — copy to .rite/doc-sync.md to enable)"
+  else
+    print_info ".rite/doc-sync.md.example already exists, skipping"
+  fi
+
   # Create backward-compat symlink if .claude/ exists
   if [ -d "$RITE_PROJECT_ROOT/.claude" ] && [ ! -e "$RITE_PROJECT_ROOT/.claude/scratch.md" ]; then
     ln -sf "../$RITE_DATA_DIR/scratch.md" "$RITE_PROJECT_ROOT/.claude/scratch.md"

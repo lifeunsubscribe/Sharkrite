@@ -165,6 +165,6 @@
 # No configuration needed for internal docs.
 
 # To enable project doc sync, create .rite/doc-sync.md with instructions
-# for which project docs to update and how. See templates/doc-sync.md
+# for which project docs to update and how. See templates/doc-sync.md.example
 # for the format. If .rite/doc-sync.md does not exist, only internal
 # docs are maintained.
