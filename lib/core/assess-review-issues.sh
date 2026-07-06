@@ -266,7 +266,7 @@ build_prior_now_ledger() {
   local pr_number="$1"
 
   # Fetch the most recent assessment comment (newest-first → index 0).
-  local assessments_json _jq_latest_assessment
+  local _jq_latest_assessment
   _jq_latest_assessment="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0]"
   local latest_json
   latest_json=$(gh_safe pr view "$pr_number" --json comments \
@@ -314,7 +314,7 @@ build_prior_now_ledger() {
         ;;
     esac
   done < <(echo "$assessment_content" | awk '
-    /^### .* - ACTIONABLE_NOW$/ {
+    /^### .* - ACTIONABLE_NOW[[:space:]]*$/ {
       if (title != "") {
         print "ITEM_TITLE:" title
         print "ITEM_STATE:" item_state

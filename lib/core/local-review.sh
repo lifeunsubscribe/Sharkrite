@@ -233,6 +233,7 @@ source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
@@ -396,7 +397,7 @@ fi
 # FIXREVIEW PASS DETECTION: inject prior review + fix-commit diff for convergence
 # =============================================================================
 # On the first review pass the prompt is a fresh audit of the full PR diff.
-# On a fixreview pass (≥2 existing review markers on this PR), the prompt
+# On a fixreview pass (≥1 existing review marker on this PR; checked pre-post — see note below), the prompt
 # becomes a VERIFICATION pass: the prior review body and the diff of only the
 # fix commits are injected so the reviewer can confirm each prior NOW finding
 # is fixed or not fixed, without re-discovering pre-existing issues.
@@ -433,10 +434,11 @@ if [ "${_prior_review_count:-0}" -ge 1 ] 2>/dev/null; then
 
   # Extract the SHA from the prior review marker (for fix-commit diff).
   # Marker format: <!-- sharkrite-local-review ... commit:<sha> -->
+  # Uses extract_review_sha (review-helper.sh) which anchors to the marker prefix
+  # so a "commit:<hex>" reference inside the review prose is not mistakenly captured.
   _prior_review_sha=""
   if [ -n "$_prior_review_body" ]; then
-    _prior_review_sha=$(echo "$_prior_review_body" \
-      | grep -oE "commit:[a-f0-9]{7,40}" | head -1 | cut -d: -f2 || true)
+    _prior_review_sha=$(extract_review_sha "$_prior_review_body" || true)
     _prior_review_sha="${_prior_review_sha:-}"
   fi
 
@@ -444,8 +446,8 @@ if [ "${_prior_review_count:-0}" -ge 1 ] 2>/dev/null; then
   # Falls back to the full PR diff if the SHA is unavailable (no regression —
   # first-pass framing is always safe).
   _fix_commit_diff=""
-  if [ -n "$_prior_review_sha" ] && git rev-parse --verify "$_prior_review_sha" >/dev/null 2>&1; then
-    _fix_commit_diff=$(git diff "${_prior_review_sha}...HEAD" 2>/dev/null || true)
+  if [ -n "$_prior_review_sha" ] && git -C "$RITE_PROJECT_ROOT" rev-parse --verify "$_prior_review_sha" >/dev/null 2>&1; then
+    _fix_commit_diff=$(git -C "$RITE_PROJECT_ROOT" diff "${_prior_review_sha}...origin/${PR_HEAD}" 2>/dev/null || true)
     _fix_commit_diff="${_fix_commit_diff:-}"
     if [ -n "$_fix_commit_diff" ]; then
       _fix_diff_lines=$(printf '%s\n' "$_fix_commit_diff" | wc -l | tr -d ' ')
