@@ -558,6 +558,42 @@ phase_wait_doc_assessment() {
   _RITE_DOC_LOG=""
 }
 
+# _wait_gate_heartbeat PID TIMEOUT — wait_pid_with_timeout in 60s slices with a
+# console heartbeat (#946). The review usually finishes minutes before the
+# parallel gate; the old single bounded wait was SILENT, so every iteration
+# showed a dead console after "Review posted" and read as a hang. One line up
+# front + one per minute keeps the operator informed without leaking gate noise
+# (raw gate output stays on the log channel — #917's scope).
+# Returns the child's reaped exit code; 124 preserved for a genuine timeout.
+# Slice size injectable for tests via RITE_GATE_HEARTBEAT_SLICE (default 60).
+# Known hairline (pre-existing in the 124 convention): a gate child that itself
+# exits 124 is indistinguishable from a slice timeout for one slice; the next
+# slice reaps it immediately, so the cost is one spurious heartbeat line.
+_wait_gate_heartbeat() {
+  local _hb_pid="$1" _hb_timeout="${2:-1800}"
+  local _hb_slice_max="${RITE_GATE_HEARTBEAT_SLICE:-60}"
+  local _hb_elapsed=0 _hb_slice _hb_rc=0
+  print_info "Review done — waiting for the parallel gate to finish (bounded ${_hb_timeout}s; progress in the run log)..."
+  while [ "$_hb_elapsed" -lt "$_hb_timeout" ]; do
+    _hb_slice=$(( _hb_timeout - _hb_elapsed ))
+    [ "$_hb_slice" -gt "$_hb_slice_max" ] && _hb_slice="$_hb_slice_max"
+    _hb_rc=0
+    wait_pid_with_timeout "$_hb_pid" "$_hb_slice" || _hb_rc=$?
+    if [ "$_hb_rc" -ne 124 ]; then
+      return "$_hb_rc"
+    fi
+    # Slice elapsed with the gate still alive — heartbeat and keep waiting.
+    if ! kill -0 "$_hb_pid" 2>/dev/null; then
+      # Child exited with literal 124 during the slice (hairline above): it is
+      # already reaped; report it as the child's code.
+      return 124
+    fi
+    _hb_elapsed=$(( _hb_elapsed + _hb_slice ))
+    print_info "  ...gate still running (${_hb_elapsed}s elapsed of ${_hb_timeout}s)"
+  done
+  return 124
+}
+
 # Kill any in-flight doc assessment without waiting. Called from the interrupt
 # handler — we want a quick exit, not a 300s wait.
 phase_kill_doc_assessment() {
@@ -1417,8 +1453,10 @@ phase_assess_and_resolve() {
     # `rite 482` wedged ~2.5h). On timeout we kill the gate's process tree, record
     # a skipped-gate sentinel, log [diag] GATE_TIMEOUT, and proceed — the gate
     # contributed no signal this round, but the workflow does not hang.
+    # Heartbeat (#946): the review usually finishes minutes before the gate, and
+    # this wait was SILENT — every iteration read as a hang at the console.
     local _gate_exit=0
-    wait_pid_with_timeout "$_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _gate_exit=$?
+    _wait_gate_heartbeat "$_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _gate_exit=$?
     if [ "$_gate_exit" -eq 124 ]; then
       _diag "GATE_TIMEOUT pr=${pr_number:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s"
       print_warning "Post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — likely a leaked subprocess holding the gate pipe. Killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
@@ -2686,7 +2724,8 @@ run_workflow() {
     # runs only on subsequent retries).
     if [ -n "$_init_gate_pid" ]; then
       local _init_gate_exit=0
-      wait_pid_with_timeout "$_init_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _init_gate_exit=$?
+      # Heartbeat (#946): review beats the gate by minutes; silence here reads as a hang.
+      _wait_gate_heartbeat "$_init_gate_pid" "${RITE_GATE_WAIT_TIMEOUT:-1800}" || _init_gate_exit=$?
       if [ "$_init_gate_exit" -eq 124 ]; then
         _diag "GATE_TIMEOUT pr=${PR_NUMBER:-?} timeout=${RITE_GATE_WAIT_TIMEOUT:-1800}s phase=initial"
         print_warning "Initial post-commit gate exceeded ${RITE_GATE_WAIT_TIMEOUT:-1800}s — killing it and proceeding; the gate provided no signal this round (see [diag] GATE_TIMEOUT)."
