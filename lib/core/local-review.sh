@@ -254,10 +254,22 @@ build_fixreview_context() {
     return 0
   fi
 
-  # The most recent posted review is index 0 (newest-first sort).
-  # When count==1 that IS the only prior; when count>=2 it's still the latest.
-  local _prior_body
-  _prior_body=$(printf '%s' "$_all_reviews_json" | jq -r '.[0].body' 2>/dev/null || true)
+  # Select the most recent posted review that does NOT belong to the current run.
+  # When count==2, index [0] (newest-first) can be the review the current run just
+  # posted at HEAD — feeding the reviewer its own output and collapsing the
+  # fix-commits diff to empty.  Filter out any review whose embedded commit SHA
+  # matches _current_sha before taking index [0].
+  local _prior_body=""
+  if [ -n "${_current_sha:-}" ]; then
+    _prior_body=$(printf '%s' "$_all_reviews_json" \
+      | jq -r --arg sha "$_current_sha" \
+          '[.[] | select(.body | test("commit:" + $sha) | not)] | .[0].body // ""' \
+          2>/dev/null || true)
+  fi
+  # Fallback: no current SHA supplied (standalone tests) or jq found nothing — use index [0]
+  if [ -z "${_prior_body:-}" ]; then
+    _prior_body=$(printf '%s' "$_all_reviews_json" | jq -r '.[0].body' 2>/dev/null || true)
+  fi
   if [ -z "${_prior_body:-}" ]; then
     echo ""
     return 0
