@@ -1429,7 +1429,8 @@ run_test_gate() {
     { (cd "$project_root" && sh -c "${RITE_TEST_COMMAND}" 2>&1); echo $? > "$_nonsr_exit_file_cmd"; } \
       | tee "$_tests_raw_file_cmd" || true
     local _cmd_tests_exit
-    _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo "0")
+    _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo 1)
+    _cmd_tests_exit=${_cmd_tests_exit:-1}  # empty file = child killed before writing = failure (#935)
     # Same TAP-only hole as the npm branch: a node-flavored custom command
     # (jest/vitest) would otherwise report test_count=0 on real failures.
     if [ "$_cmd_tests_exit" -ne 0 ] \
@@ -1608,8 +1609,10 @@ run_test_gate() {
 
     wait "$_sc_pid" 2>/dev/null || true
     [ -n "$_lint_pid" ] && { wait "$_lint_pid" 2>/dev/null || true; }
-    _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 0)
-    _lint_tool_exit=$(cat "$_lint_exit_file" 2>/dev/null || echo 0)
+    _shellcheck_exit=$(cat "$_sc_exit_file" 2>/dev/null || echo 1)
+    _shellcheck_exit=${_shellcheck_exit:-1}  # empty = killed before writing = failure (#935)
+    _lint_tool_exit=$(cat "$_lint_exit_file" 2>/dev/null || echo 1)
+    _lint_tool_exit=${_lint_tool_exit:-1}  # empty = killed before writing = failure (#935)
 
     # Merge into the JSON parser's input AND append to the run log (not the
     # terminal). Order: shellcheck first, then lint (matches the previous
@@ -1838,7 +1841,8 @@ run_test_gate() {
               bats "${_bats_jobs_args[@]+"${_bats_jobs_args[@]}"}" "${_parallel_files[@]}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
             | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
         fi
-        _par_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+        _par_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 1)
+        _par_exit=${_par_exit:-1}  # empty = killed before writing = failure (#935)
         if [ "$_par_exit" = "124" ] || [ "$_par_exit" = "137" ]; then
           _gate_status "[test-gate] bats (parallel group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=parallel timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
@@ -1870,7 +1874,8 @@ run_test_gate() {
               bats "${_serial_files[@]+"${_serial_files[@]}"}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
             | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
         fi
-        _ser_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+        _ser_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 1)
+        _ser_exit=${_ser_exit:-1}  # empty = killed before writing = failure (#935)
         if [ "$_ser_exit" = "124" ] || [ "$_ser_exit" = "137" ]; then
           _gate_status "[test-gate] bats (serial group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=serial timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
@@ -1884,7 +1889,8 @@ run_test_gate() {
         echo 0 > "$_bats_exit_file"
       fi
     fi
-    _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 0)
+    _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 1)
+    _tests_exit=${_tests_exit:-1}  # empty = killed before writing = failure (#935)
     # Watchdog kill on the full-suite path (par/ser groups note it above and
     # merge their exits to 0/1, so 124/137 here can only come from full-suite).
     if [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; then
@@ -1980,7 +1986,8 @@ run_test_gate() {
       # tee to stdout for full-transcript log capture; temp file for JSON findings
       { (cd "$project_root" && make test 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
     elif [ -f "$project_root/package.json" ]; then
       # node_modules bootstrap (issue #784, #807): rite worktrees never get a real
       # node_modules of their own — claude-workflow.sh symlinks the worktree's
@@ -2092,7 +2099,8 @@ run_test_gate() {
       local _npm_test_prior_exit="$_tests_exit"
       { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee -a "$_tests_raw_file" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
       [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
       # jest/vitest never emit TAP: without normalization a real failure
       # yields test_count=0 and an empty tests[] array, so the fix session
@@ -2105,7 +2113,8 @@ run_test_gate() {
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
       # Classify the pytest run to distinguish env failures from real failures.
       # A missing dep or no-tests-collected result is a loud skip, not a failure.
       # Real failures (including ones whose tracebacks mention ModuleNotFoundError)
@@ -2145,7 +2154,8 @@ run_test_gate() {
       echo "[test-gate] Running cargo test..."
       { (cd "$project_root" && cargo test 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
     elif [ -f "$project_root/go.mod" ]; then
       if ! command -v go >/dev/null 2>&1; then
         # go not installed — loud skip with toolchain hint (missing runner, not a failure)
@@ -2160,7 +2170,8 @@ run_test_gate() {
       echo "[test-gate] Running go test ./..."
       { (cd "$project_root" && go test ./... 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 0)
+      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
     elif (cd "$project_root" && _has_ino=false; for _f in ./*.ino; do [ -e "$_f" ] && { _has_ino=true; break; }; done; [ "$_has_ino" = true ]); then
       # Arduino sketch detected — arduino-cli/pio requires board config; skip with hint.
       # This is a loud skip: we know source exists but cannot run verification
