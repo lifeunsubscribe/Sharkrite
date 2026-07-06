@@ -3102,6 +3102,19 @@ else
       grep -iE "spending cap|usage limit|rate limit|[0-9]+-hour limit" "$CLAUDE_STDERR_FILE" | head -3 || true
     fi
     exit 5
+  elif [ $CLAUDE_EXIT_CODE -eq 18 ]; then
+    # Provider auth failure — claude_provider_run_agentic_session detected the
+    # auth fingerprint ("Invalid API key · Please run /login" or equivalent 401
+    # class message) and translated it into exit 18. Propagate so the batch
+    # processor halts immediately with a remediation hint instead of burning
+    # ~2min per remaining issue on guaranteed-futile dev-session restarts.
+    # Single-issue mode: exit 18 surfaces the clear auth error to the operator.
+    # See: lib/core/batch-process-issues.sh exit-18 handler.
+    # See: docs/architecture/exit-codes.md — exit 18.
+    print_error "Claude CLI is not authenticated — dev session cannot start"
+    print_info "Run: claude /login"
+    rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
+    exit 18
   elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
     if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
