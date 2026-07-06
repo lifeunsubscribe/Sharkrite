@@ -210,8 +210,8 @@ for entry in "${STALE_WORKTREES[@]+"${STALE_WORKTREES[@]}"}"; do
     git worktree remove "$wt_path" --force 2>/dev/null || git worktree remove "$wt_path"
     print_success "Removed: $(basename "$wt_path")"
     REMOVED_COUNT=$((REMOVED_COUNT + 1))
-    # Rmdir the parent container dir if it is now empty and lives inside RITE_WORKTREE_DIR
-    rmdir_empty_worktree_container "$(dirname "$wt_path")" "$RITE_WORKTREE_DIR"
+    # Rmdir the worktree dir if it is now empty and lives inside RITE_WORKTREE_DIR
+    rmdir_empty_worktree_container "$wt_path" "$RITE_WORKTREE_DIR"
   fi
 done
 

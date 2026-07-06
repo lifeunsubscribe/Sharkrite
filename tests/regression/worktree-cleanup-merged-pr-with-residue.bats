@@ -140,45 +140,48 @@ SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 MERGE_PR="$SCRIPT_DIR/lib/core/merge-pr.sh"
 CLEANUP_WT="$SCRIPT_DIR/lib/utils/cleanup-worktrees.sh"
 
-@test "empty container cleanup: behavioral fixture - empty parent is removed" {
+@test "empty container cleanup: behavioral fixture - empty worktree dir is removed" {
   # Exercises the real rmdir_empty_worktree_container function from git-helpers.sh.
   #
-  # Directory layout mirrors production:
+  # Directory layout mirrors production (flat layout):
   #   RITE_WORKTREE_DIR = .../sh-wt
-  #   container         = .../sh-wt/issue-972  (child of RITE_WORKTREE_DIR)
-  #   wt_path           = .../sh-wt/issue-972/fix
+  #   wt_path           = .../sh-wt/fx-issue-972  (direct child of RITE_WORKTREE_DIR)
+  #
+  # After `git worktree remove`, git deletes the .git file but the directory
+  # may remain empty.  rmdir_empty_worktree_container removes it.
   local test_dir="${BATS_TEST_TMPDIR}/rmdir-fixture"
   local rite_wt_dir="${test_dir}/sh-wt"
-  local container="${rite_wt_dir}/issue-972"
-  local wt_path="${container}/fix"
+  local wt_path="${rite_wt_dir}/fx-issue-972"
 
   mkdir -p "$wt_path"
-  rm -rf "$wt_path"    # simulate git worktree remove
+  # Simulate git worktree remove leaving an empty directory (git deletes .git
+  # file but leaves the dir when residue is absent — rmdir cleans that up).
 
   # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
   source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
   set +u; set +o pipefail
 
-  rmdir_empty_worktree_container "$container" "$rite_wt_dir"
-  [ ! -d "$container" ]  # empty container must be gone; sh-wt itself is untouched
+  rmdir_empty_worktree_container "$wt_path" "$rite_wt_dir"
+  [ ! -d "$wt_path" ]   # empty worktree dir must be gone; sh-wt itself is untouched
 }
 
-@test "empty container cleanup: behavioral fixture - non-empty parent is untouched" {
+@test "empty container cleanup: behavioral fixture - non-empty worktree dir is untouched" {
+  # When the worktree dir still contains residue files after git worktree remove,
+  # rmdir must fail silently and leave the directory in place.
   local test_dir="${BATS_TEST_TMPDIR}/rmdir-fixture2"
   local rite_wt_dir="${test_dir}/sh-wt"
-  local container="${rite_wt_dir}/issue-972"
-  local wt_path="${container}/fix"
-  local sibling="${container}/issue-100-sibling"
+  local wt_path="${rite_wt_dir}/fx-issue-972"
+  local residue="${wt_path}/sharkrite-scratchpad.md"
 
-  mkdir -p "$wt_path" "$sibling"
-  rm -rf "$wt_path"    # simulate git worktree remove
+  mkdir -p "$wt_path"
+  touch "$residue"   # residue file — rmdir must not remove it
 
   # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
   source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
   set +u; set +o pipefail
 
-  rmdir_empty_worktree_container "$container" "$rite_wt_dir"
-  [ -d "$container" ]  # sibling still there — container must survive
+  rmdir_empty_worktree_container "$wt_path" "$rite_wt_dir"
+  [ -d "$wt_path" ]    # non-empty worktree dir must survive
 }
 
 @test "empty container cleanup: sibling dir outside RITE_WORKTREE_DIR is NOT removed" {
@@ -196,6 +199,25 @@ CLEANUP_WT="$SCRIPT_DIR/lib/utils/cleanup-worktrees.sh"
 
   rmdir_empty_worktree_container "$sibling_dir" "$rite_wt_dir"
   [ -d "$sibling_dir" ]  # sibling dir must be untouched
+}
+
+@test "empty container cleanup: trailing slash in RITE_WORKTREE_DIR is normalized" {
+  # Regression guard for the trailing-slash bug: RITE_WORKTREE_DIR with a
+  # trailing slash produces pattern ".../base//*" which fails to match a
+  # direct child like ".../base/fx-foo", rendering the helper silently inert.
+  local test_dir="${BATS_TEST_TMPDIR}/rmdir-trailing-slash"
+  local rite_wt_dir="${test_dir}/sh-wt"
+  local wt_path="${rite_wt_dir}/fx-issue-972"
+
+  mkdir -p "$wt_path"
+
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: git-helpers.sh uses declare -f git_fetch_safe guard; rmdir_empty_worktree_container is not stubbed above
+  source "${SCRIPT_DIR}/lib/utils/git-helpers.sh"
+  set +u; set +o pipefail
+
+  # Pass rite_wt_dir WITH a trailing slash — the function must normalize it.
+  rmdir_empty_worktree_container "$wt_path" "${rite_wt_dir}/"
+  [ ! -d "$wt_path" ]   # must be removed despite trailing slash in second arg
 }
 
 @test "merge-pr source: stale-worktree loop calls rmdir_empty_worktree_container after removal" {
