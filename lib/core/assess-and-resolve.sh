@@ -2067,8 +2067,7 @@ ${_done_def}
 ${SCOPE_DO_BULLETS}
 - DO NOT: Refactor surrounding code, add new features, or modify unrelated files
 
-## Dependencies
-After: #${ISSUE_NUMBER:-${PR_NUMBER}}
+**Dependencies**: After: #${ISSUE_NUMBER:-${PR_NUMBER}}
 
 ---
 

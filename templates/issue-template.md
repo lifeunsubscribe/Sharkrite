@@ -48,10 +48,7 @@ One sentence. The human reads this and knows whether to stop iterating.
 - DO: specific actions in scope
 - DO NOT: specific actions out of scope
 
-## Dependencies
-After: #N
-Blocked by: #N
-None
+**Dependencies**: After: #N / Blocked by: #N / None
 
 ## Bug Class Analysis
 *(Required for bug-fix issues. Omit for feature/infra/docs issues.)*
