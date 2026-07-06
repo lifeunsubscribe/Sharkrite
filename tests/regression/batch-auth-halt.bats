@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh, lib/core/batch-process-issues.sh, lib/core/batch-reporter.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/providers/claude.sh, lib/core/batch-process-issues.sh, lib/core/batch-reporter.sh, lib/core/workflow-runner.sh, lib/core/claude-workflow.sh
 # tests/regression/batch-auth-halt.bats
 #
 # Regression test: provider auth failure must halt the entire batch immediately
@@ -719,6 +719,41 @@ _simulate_runner_main_dispatcher() {
   }
   grep -qE 'exit 18' "$WORKFLOW_RUNNER" || {
     echo "FAIL: 'exit 18' not found in workflow-runner.sh" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL: supervised fix session must propagate exit 18
+#
+# Issue #937 review finding: the supervised fix branch (claude-workflow.sh)
+# only checked exit 124 (timeout), letting exit 18 fall through to
+# print_success and continue — the batch-halt feature was incomplete on
+# the supervised path.
+# =============================================================================
+
+@test "structural: claude-workflow.sh supervised fix branch exits 18 on FIX_EXIT_CODE=18" {
+  # The supervised fix block must contain an exit-18 branch, mirroring the
+  # auto-mode block above it.  Without this, a supervised-mode auth failure
+  # is swallowed and the batch does not halt.
+  #
+  # We look for the pattern in the supervised block specifically: the branch
+  # must come after the SUPERVISED_TIMEOUT assignment and before the closing fi.
+  _supervised_block=$(awk '
+    /SUPERVISED_TIMEOUT=/ { in_block=1 }
+    in_block { print }
+    in_block && /^  fi$/ { exit }
+  ' "$CLAUDE_WORKFLOW")
+
+  echo "$_supervised_block" | grep -qE 'FIX_EXIT_CODE.*18|18.*FIX_EXIT_CODE' || {
+    echo "FAIL: no exit-18 branch found in the supervised fix block of claude-workflow.sh" >&2
+    echo "      The supervised fix branch must mirror the auto-mode exit-18 handler" >&2
+    echo "      so that a mid-session auth failure halts the batch even in supervised mode." >&2
+    return 1
+  }
+
+  echo "$_supervised_block" | grep -q 'exit 18' || {
+    echo "FAIL: 'exit 18' not found in the supervised fix block of claude-workflow.sh" >&2
     return 1
   }
 }

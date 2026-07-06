@@ -1198,6 +1198,16 @@ $EXIT_INSTRUCTION"
 
     if [ "${FIX_EXIT_CODE:-0}" -eq 124 ]; then
       print_warning "Supervised session timed out after ${SUPERVISED_TIMEOUT}s"
+    elif [ "${FIX_EXIT_CODE:-0}" -eq 5 ]; then
+      # Usage cap reached during supervised fix session — propagate so batch aborts.
+      print_error "Claude usage cap reached during supervised fix session — aborting batch"
+      exit 5
+    elif [ "${FIX_EXIT_CODE:-0}" -eq 18 ]; then
+      # Auth failure during supervised fix session — propagate so batch halts.
+      # Mirrors the auto-mode branch above (line 1168-1173); a mid-batch auth expiry
+      # must stop the whole run rather than being swallowed as a generic fix failure.
+      print_error "Provider auth failure during supervised fix session — aborting batch"
+      exit 18
     fi
   fi
 
