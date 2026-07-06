@@ -514,6 +514,7 @@ For each item, use EXACTLY this format (no deviations):
 {FOR ACTIONABLE_NOW: **Location:** {specific file path and/or function name where fix should land}}
 {FOR ACTIONABLE_NOW: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Location:** {specific file(s), module, or domain this finding applies to — must be concrete enough that someone unfamiliar with the PR can find the right code}}
+{FOR ACTIONABLE_LATER: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR}}
 
 DO NOT add any summary section, recommendations, or extra text after the items.
