@@ -299,6 +299,11 @@ verify_post_merge() {
     timeout_cmd="timeout $verify_timeout"
   fi
 
+  # Capture output to a temp file so we can classify missing-deps / no-tests
+  # signatures (for pytest-flavored commands) before deciding whether to block.
+  # Output is also forwarded to stderr (indented) so the operator sees it live.
+  local _pmv_out_file
+  _pmv_out_file=$(mktemp "/tmp/rite_pmv_out_$$_XXXXXX")
   # Run inside a subshell: source env file, then run the test command.
   # timeout wraps the test command directly (an external binary) rather than
   # a shell function, which external commands cannot exec.
@@ -316,12 +321,45 @@ verify_post_merge() {
     else
       eval "$test_cmd"
     fi
-  ) 2>&1 | sed 's/^/  /' >&2 || test_exit=$?
+  ) 2>&1 | tee "$_pmv_out_file" | sed 's/^/  /' >&2 || test_exit=$?
 
   if [ "$test_exit" -eq 124 ]; then
+    rm -f "${_pmv_out_file:-}"
     echo "⚠️  Post-merge verification timed out after ${verify_timeout}s — skipping" >&2
     return 0
   fi
+
+  # Missing-deps / no-tests-collected fallback for pytest-flavored test commands.
+  # A missing venv or absent pytest installation exits non-zero with a
+  # ModuleNotFoundError signature — that's an environment gap, not a semantic
+  # conflict introduced by the merge.  Exit 5 (no tests collected) is similarly
+  # benign.  Both should be loud skips rather than hard failures so the workflow
+  # isn't blocked on a broken dev environment that the merge didn't cause.
+  # _classify_pytest_outcome is defined in test-gate.sh (sourced above); the
+  # declare -f guard keeps the call safe in test sandboxes that stub run_test_gate
+  # without sourcing the full test-gate.sh.
+  if [ "$test_exit" -ne 0 ] \
+     && echo "$test_cmd" | grep -q "pytest" \
+     && declare -f _classify_pytest_outcome >/dev/null 2>&1; then
+    local _pmv_raw _pmv_outcome
+    _pmv_raw=$(cat "$_pmv_out_file" 2>/dev/null || true)
+    _pmv_outcome=$(_classify_pytest_outcome "$test_exit" "$_pmv_raw")
+    if [ "$_pmv_outcome" = "skipped:missing_deps" ]; then
+      rm -f "${_pmv_out_file:-}"
+      echo "[post-merge-verify] WARNING: pytest detected missing dependencies (ModuleNotFoundError)." >&2
+      echo "[post-merge-verify] Install test dependencies (e.g. pip install -r requirements-dev.txt) or activate the venv before running rite." >&2
+      echo "Post-merge verification skipped — missing test dependencies (environment gap, not a merge conflict)" >&2
+      _diag "POST_MERGE_VERIFY skip=missing_deps pr=${PR_NUMBER:-?}"
+      return 0
+    elif [ "$_pmv_outcome" = "skipped:no_tests" ]; then
+      rm -f "${_pmv_out_file:-}"
+      echo "[post-merge-verify] WARNING: pytest collected no tests (exit 5)." >&2
+      echo "Post-merge verification skipped — no tests collected" >&2
+      _diag "POST_MERGE_VERIFY skip=no_tests pr=${PR_NUMBER:-?}"
+      return 0
+    fi
+  fi
+  rm -f "${_pmv_out_file:-}"
 
   if [ "$test_exit" -ne 0 ]; then
     # Before blaming the merge, check if main itself is broken.

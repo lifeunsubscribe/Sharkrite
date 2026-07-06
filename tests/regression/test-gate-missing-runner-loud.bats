@@ -5,6 +5,8 @@
 #   1. RITE_TEST_COMMAND override (honored over manifest detection)
 #   2. Manifest table: Cargo.toml→cargo test, go.mod→go test, *.ino→loud skip
 #   3. Missing-runner skip is LOUD (warning on stderr) when PR touches source files
+#   4. RITE_TEST_COMMAND missing-deps/no-tests fallback (issue #750)
+#   5. make test missing-deps/no-tests fallback (issue #750)
 #
 # Issue #717/#719: skip-but-pass was invisible fake-green for non-sharkrite repos.
 # Every non-Sharkrite repo that lacked a recognized runner got exit 0 (skipped),
@@ -13,6 +15,10 @@
 #   - Cargo.toml, go.mod, *.ino added to the manifest ladder
 #   - *.ino always loud-skips (board config required; RITE_TEST_COMMAND needed)
 #   - else-skip path warns on stderr when git diff shows source-file changes
+#
+# Issue #750: RITE_TEST_COMMAND and make test paths hard-failed on missing-deps
+# (ModuleNotFoundError) and no-tests-collected (exit 5), while the pytest-direct
+# path already classified these as graceful skips.  Parity added for both paths.
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -509,5 +515,336 @@ STUB
       echo "      Expected: WARNING: No test runner detected..."
       false
     }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 4. RITE_TEST_COMMAND missing-deps / no-tests fallback (issue #750)
+# ---------------------------------------------------------------------------
+
+@test "RITE_TEST_COMMAND: ModuleNotFoundError output → skipped:missing_deps (not failed)" {
+  # RITE_TEST_COMMAND wraps a pytest invocation in a missing-venv environment.
+  # The classifier should convert this to a loud skip rather than a hard failure.
+  cat > "$STUB_DIR/missing-venv-runner.sh" <<'EOF'
+#!/bin/sh
+printf 'E  ModuleNotFoundError: No module named '"'"'mypackage'"'"'\n'
+exit 1
+EOF
+  chmod +x "$STUB_DIR/missing-venv-runner.sh"
+
+  _run_gate "RITE_TEST_COMMAND='$STUB_DIR/missing-venv-runner.sh'"
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must have skipped (not failed)
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should skip (not fail) when RITE_TEST_COMMAND emits ModuleNotFoundError"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  # The reason must be missing_deps
+  local _reason
+  _reason=$(grep -o '"reason":"[^"]*"' "$TEST_REPO/gate.json" || true)
+  [ "$_reason" = '"reason":"missing_deps"' ] || {
+    echo "FAIL: expected reason=missing_deps, got: $_reason"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+
+  # A WARNING must appear in the output so the operator knows
+  [[ "$output" == *"WARNING"* ]] || {
+    echo "FAIL: expected WARNING in output for missing-deps skip"
+    echo "Gate output: $output"
+    false
+  }
+}
+
+@test "RITE_TEST_COMMAND: python3 -m pytest missing → skipped:missing_deps (not failed)" {
+  # Bare python interpreter error for missing pytest module (no ^E prefix).
+  cat > "$STUB_DIR/no-pytest-runner.sh" <<'EOF'
+#!/bin/sh
+printf '/usr/bin/python3: No module named pytest\n'
+exit 1
+EOF
+  chmod +x "$STUB_DIR/no-pytest-runner.sh"
+
+  _run_gate "RITE_TEST_COMMAND='$STUB_DIR/no-pytest-runner.sh'"
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should skip when RITE_TEST_COMMAND shows missing pytest module"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  local _reason
+  _reason=$(grep -o '"reason":"[^"]*"' "$TEST_REPO/gate.json" || true)
+  [ "$_reason" = '"reason":"missing_deps"' ] || {
+    echo "FAIL: expected reason=missing_deps, got: $_reason"
+    false
+  }
+}
+
+@test "RITE_TEST_COMMAND: exit 5 (no tests collected) → skipped:no_tests (not failed)" {
+  # pytest exits 5 when no tests are collected; RITE_TEST_COMMAND wrapping pytest
+  # should produce a loud skip rather than a hard failure.
+  cat > "$STUB_DIR/no-tests-runner.sh" <<'EOF'
+#!/bin/sh
+printf '============== no tests ran ==============\n'
+exit 5
+EOF
+  chmod +x "$STUB_DIR/no-tests-runner.sh"
+
+  _run_gate "RITE_TEST_COMMAND='$STUB_DIR/no-tests-runner.sh'"
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should skip (not fail) when RITE_TEST_COMMAND exits 5"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  local _reason
+  _reason=$(grep -o '"reason":"[^"]*"' "$TEST_REPO/gate.json" || true)
+  [ "$_reason" = '"reason":"no_tests"' ] || {
+    echo "FAIL: expected reason=no_tests, got: $_reason"
+    false
+  }
+}
+
+@test "RITE_TEST_COMMAND: real test failure (FAILED line) → still hard-fails (no false skip)" {
+  # A real test failure that mentions ModuleNotFoundError in a traceback must
+  # NOT be silently skipped — this is the v1 false-skip regression guard.
+  cat > "$STUB_DIR/real-failure-runner.sh" <<'EOF'
+#!/bin/sh
+printf 'FAILED test_thing.py::test_something - AssertionError\n'
+printf 'E  ModuleNotFoundError: No module named '"'"'"'"'"'mypackage'"'"'"'"'"'\n'
+exit 1
+EOF
+  chmod +x "$STUB_DIR/real-failure-runner.sh"
+
+  _run_gate "RITE_TEST_COMMAND='$STUB_DIR/real-failure-runner.sh'"
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must NOT have skipped — this is a real failure
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -z "$_skipped" ] || {
+    echo "FAIL: gate should NOT skip when output contains FAILED/AssertionError"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  # exit_code must be non-zero
+  local _exit_code
+  _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
+  [ "${_exit_code:-0}" -ne 0 ] || {
+    echo "FAIL: exit_code should be non-zero for a real test failure"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 5. make test missing-deps / no-tests fallback (issue #750)
+# ---------------------------------------------------------------------------
+
+@test "make test: Makefile wraps pytest with missing deps → skipped:missing_deps" {
+  # A Makefile test: target that runs python -m pytest in a missing-venv
+  # environment exits non-zero with ModuleNotFoundError output.
+  # The gate should classify this as a loud skip, not a hard failure.
+  # The recipe references pytest so the pytest-context guard fires.
+  cat > "$STUB_DIR/pytest" <<'STUB'
+#!/bin/sh
+printf 'E  ModuleNotFoundError: No module named mypackage\n'
+exit 1
+STUB
+  chmod +x "$STUB_DIR/pytest"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $STUB_DIR must expand into Makefile recipe
+  cat > "$TEST_REPO/Makefile" <<EOF
+.PHONY: test
+test:
+	@PATH="$STUB_DIR:\$\$PATH" pytest
+EOF
+
+  _run_gate ""
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should skip when make test outputs ModuleNotFoundError"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  local _reason
+  _reason=$(grep -o '"reason":"[^"]*"' "$TEST_REPO/gate.json" || true)
+  [ "$_reason" = '"reason":"missing_deps"' ] || {
+    echo "FAIL: expected reason=missing_deps, got: $_reason"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+
+  # Warn operator about the missing-deps condition
+  [[ "$output" == *"WARNING"* ]] || {
+    echo "FAIL: expected WARNING in output for missing-deps skip from make test"
+    echo "Gate output: $output"
+    false
+  }
+}
+
+@test "make test: Makefile wraps pytest with no tests collected (exit 5) → skipped:no_tests" {
+  # A Makefile test: target that runs pytest and exits 5 when no tests are
+  # found should produce a loud skip rather than blocking the merge.
+  # make propagates the test runner's exit 5 as its own exit code.
+  # The recipe references pytest so the pytest-context guard fires.
+  cat > "$STUB_DIR/pytest" <<'STUB'
+#!/bin/sh
+printf '============== no tests ran ==============\n'
+exit 5
+STUB
+  chmod +x "$STUB_DIR/pytest"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $STUB_DIR must expand into Makefile recipe
+  cat > "$TEST_REPO/Makefile" <<EOF
+.PHONY: test
+test:
+	@PATH="$STUB_DIR:\$\$PATH" pytest
+EOF
+
+  _run_gate ""
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -n "$_skipped" ] || {
+    echo "FAIL: gate should skip when make test exits 5 (no tests collected)"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  local _reason
+  _reason=$(grep -o '"reason":"[^"]*"' "$TEST_REPO/gate.json" || true)
+  [ "$_reason" = '"reason":"no_tests"' ] || {
+    echo "FAIL: expected reason=no_tests, got: $_reason"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+}
+
+@test "make test: real test failure (FAILED line) → still hard-fails (no false skip)" {
+  # A real pytest failure bubbled through make must NOT be silently skipped.
+  # Recipe references pytest so the pytest-context guard fires; the FAILED+
+  # AssertionError output must still be classified as a real failure.
+  cat > "$STUB_DIR/pytest" <<'STUB'
+#!/bin/sh
+printf 'FAILED test_thing.py::test_foo - AssertionError\n'
+exit 1
+STUB
+  chmod +x "$STUB_DIR/pytest"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $STUB_DIR must expand into Makefile recipe
+  cat > "$TEST_REPO/Makefile" <<EOF
+.PHONY: test
+test:
+	@PATH="$STUB_DIR:\$\$PATH" pytest
+EOF
+
+  _run_gate ""
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -z "$_skipped" ] || {
+    echo "FAIL: gate should NOT skip when make test output contains FAILED/AssertionError"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  local _exit_code
+  _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
+  [ "${_exit_code:-0}" -ne 0 ] || {
+    echo "FAIL: exit_code should be non-zero for a real make test failure"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+}
+
+@test "make test: non-pytest target with 'No module named' in output → hard-fails (pytest-context guard)" {
+  # This is the false-skip regression guard for the pytest-context check.
+  # A non-pytest make test: target (e.g. running an app binary) that fails
+  # because a Python import is missing at startup produces output that looks
+  # like a missing-deps signature.  Without the pytest-context guard the old
+  # code would classify this as skipped:missing_deps and pass the gate green,
+  # letting a broken merge through.  With the guard, the recipe must reference
+  # pytest/python for _classify_pytest_outcome to fire; a generic target
+  # bypasses the classifier and hard-fails on the non-zero exit.
+  cat > "$TEST_REPO/Makefile" <<'EOF'
+.PHONY: test
+test:
+	@printf 'E  ModuleNotFoundError: No module named mypackage\n' && exit 1
+EOF
+
+  _run_gate ""
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must NOT have skipped — this is a non-pytest target
+  local _skipped
+  _skipped=$(grep -o '"skipped":true' "$TEST_REPO/gate.json" || true)
+  [ -z "$_skipped" ] || {
+    echo "FAIL: gate should NOT skip for a non-pytest make test target (pytest-context guard)"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  # exit_code must be non-zero (hard failure)
+  local _exit_code
+  _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
+  [ "${_exit_code:-0}" -ne 0 ] || {
+    echo "FAIL: exit_code should be non-zero for a non-pytest make test failure"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+}
+
+# Static: verify the fallback check exists in source for both paths
+@test "static: RITE_TEST_COMMAND path has missing-deps classification in source" {
+  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
+  # The RITE_TEST_COMMAND block must call _classify_pytest_outcome for missing-deps
+  grep -q '_classify_pytest_outcome' "$_script" || {
+    echo "FAIL: _classify_pytest_outcome not found in test-gate.sh"
+    echo "      Both RITE_TEST_COMMAND and make test paths must call it for parity."
+    false
+  }
+  # Confirm missing_deps reason is written from RITE_TEST_COMMAND path
+  grep -q 'missing_deps.*RITE_TEST_COMMAND\|RITE_TEST_COMMAND.*missing_deps\|RITE_TEST_COMMAND.*missing.dep\|missing.dep.*RITE_TEST_COMMAND' "$_script" \
+  || grep -q 'output.*indicates missing\|missing dependencies.*RITE_TEST_COMMAND\|RITE_TEST_COMMAND.*missing dep' "$_script" \
+  || grep -q '"missing_deps"' "$_script" || {
+    echo "FAIL: missing_deps skip JSON not found in test-gate.sh for RITE_TEST_COMMAND path"
+    false
   }
 }
