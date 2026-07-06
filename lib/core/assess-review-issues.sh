@@ -372,6 +372,49 @@ fi
 # Used to activate convergence rules on retry passes.
 RETRY_COUNT="${RITE_RETRY_COUNT:-0}"
 
+# =============================================================================
+# PASS-TYPE FALLBACK: Reconcile with local-review.sh's comment-count detector
+# =============================================================================
+# Problem: two independent pass-type detectors can disagree on resumed/standalone
+# paths (e.g. --review-latest then --assess-and-fix):
+#
+#   local-review.sh:       fixreview = _prior_review_count >= 1  (pre-post count)
+#   assess-review-issues.sh: fixreview = RETRY_COUNT > 0  (env, threaded by assess-and-resolve.sh)
+#
+# On standalone --assess-and-fix, RETRY resets to 0 so RITE_RETRY_COUNT=0
+# even though local-review.sh may have already produced a VERIFICATION PASS
+# framed review (because prior reviews exist). The assessor then lacks convergence
+# rules, breaking the #910 guarantee for that path.
+#
+# Fix: when RETRY_COUNT=0, check whether prior review markers exist on the PR.
+# If ≥2 review markers exist, this is a fixreview pass — activate convergence
+# rules by setting RETRY_COUNT=1 locally. Threshold is ≥2 (not ≥1) because
+# assessment runs AFTER the review is posted, so count=1 is the current-run
+# review (no prior pass). This matches _triage_emit_shadow's ≥2 threshold.
+# Both detectors now use PR state (review marker count) rather than the
+# externally-threaded value being the sole authority on resume paths.
+#
+# The gh call is defensive: failure → assume first pass (safe: at most we skip
+# convergence rules, which is the pre-fix behavior).
+if [ "${RETRY_COUNT:-0}" -eq 0 ] 2>/dev/null; then
+  _prior_review_count_for_assess=$(gh_safe pr view "$PR_NUMBER" --json comments \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | length" \
+    2>/dev/null || echo 0)
+  _prior_review_count_for_assess="${_prior_review_count_for_assess:-0}"
+  # Threshold is ≥2 (NOT ≥1) because assessment always runs AFTER the review
+  # is posted. Count=1 means the current-run review was just posted — no prior
+  # review exists. Count≥2 means at least one prior review exists (same
+  # post-post logic as _triage_emit_shadow in local-review.sh which also uses
+  # ≥2). This matches the comment in local-review.sh: "local-review.sh uses ≥1
+  # because it checks BEFORE posting; _triage_emit_shadow uses ≥2 because it
+  # runs AFTER posting."
+  if [ "${_prior_review_count_for_assess:-0}" -ge 2 ] 2>/dev/null; then
+    echo "Fixreview pass detected via prior review count ($((${_prior_review_count_for_assess:-0})) review(s)) — activating convergence rules" >&2
+    RETRY_COUNT=1
+  fi
+  unset _prior_review_count_for_assess
+fi
+
 # Override print functions to send to stderr (don't interfere with stdout pipe)
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}" >&2; }
 print_status() { echo -e "${BLUE}$1${NC}" >&2; }
