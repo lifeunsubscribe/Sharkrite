@@ -62,7 +62,10 @@ _extract_marker_block() {
   # are never seen by the fence guard (prevents a backtick-fence inside the block
   # from prematurely toggling the guard and truncating the block).
   # Inline on one line so Rule 8's next-line lookahead picks up `|| true`.
-  echo "$body" | awk -v open="$open_marker" -v close="$close_marker" '$0 == open && !in_fence { in_block=1; buf=""; next } in_block && $0 == close { print buf; in_block=0; next } in_block { buf = (buf == "") ? $0 : buf "\n" $0; next } !in_fence && /^[[:space:]]{0,3}```/ { fence_str=$0; sub(/^[[:space:]]*/,"",fence_str); fence_len=0; while(substr(fence_str,fence_len+1,1)=="`") fence_len++; in_fence=1; next } in_fence && /^[[:space:]]{0,3}```/ { close_str=$0; sub(/^[[:space:]]*/,"",close_str); close_len=0; while(substr(close_str,close_len+1,1)=="`") close_len++; close_after=substr(close_str,close_len+1); if(close_len>=fence_len && close_after~/^[[:space:]]*$/) { in_fence=0; fence_len=0 }; next } in_fence { next } $0 == close { next }' || true
+  # Marker vars are om/cm, NOT open/close: `close` is awk's builtin — BSD awk
+  # (macOS) hard-errors on it as a variable name, and the || true swallowed
+  # that error so every extraction silently returned empty (#977 regression).
+  echo "$body" | awk -v om="$open_marker" -v cm="$close_marker" '$0 == om && !in_fence { in_block=1; buf=""; next } in_block && $0 == cm { print buf; in_block=0; next } in_block { buf = (buf == "") ? $0 : buf "\n" $0; next } !in_fence && /^[[:space:]]{0,3}```/ { fence_str=$0; sub(/^[[:space:]]*/,"",fence_str); fence_len=0; while(substr(fence_str,fence_len+1,1)=="`") fence_len++; in_fence=1; next } in_fence && /^[[:space:]]{0,3}```/ { close_str=$0; sub(/^[[:space:]]*/,"",close_str); close_len=0; while(substr(close_str,close_len+1,1)=="`") close_len++; close_after=substr(close_str,close_len+1); if(close_len>=fence_len && close_after~/^[[:space:]]*$/) { in_fence=0; fence_len=0 }; next } in_fence { next } $0 == cm { next }' || true
 }
 
 # ---------------------------------------------------------------------------
