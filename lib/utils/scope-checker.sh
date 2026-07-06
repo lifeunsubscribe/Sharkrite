@@ -202,6 +202,9 @@ _file_matches_pattern() {
 # Compares changed files in the current git worktree against the DO/DO NOT
 # patterns parsed from ISSUE_BODY.
 #
+# Also unions the "Files to Modify:" list from the Claude Context section into
+# the allowed set — declared modification intent can never be a violation.
+#
 # Outputs violations to stdout (one file per line, prefixed with "VIOLATION: ").
 # Also outputs info/warning lines to stderr.
 #
@@ -247,6 +250,33 @@ check_scope_boundary() {
   # If no patterns found at all, no Scope Boundary section is present → skip
   if [ "${#_do_patterns[@]}" -eq 0 ] && [ "${#_donot_patterns[@]}" -eq 0 ]; then
     return 0
+  fi
+
+  # Prose-only guard: when DO bullets exist but none contains a STRONG path
+  # token (path-shaped + slash), check_scope_boundary would flag every changed
+  # file as a violation (no path can match a prose-only DO).  Defer to the
+  # scope_boundary_is_enforceable predicate — if it says non-enforceable, skip
+  # the check silently rather than emitting false-positive violations.
+  if [ "${#_do_patterns[@]}" -gt 0 ] && ! scope_boundary_is_enforceable "$issue_body"; then
+    return 0
+  fi
+
+  # Union Files-to-Modify paths from Claude Context into the DO allowed set.
+  # Declared modification intent (what the issue author told Claude to change)
+  # can never be a violation — the author explicitly listed those files.
+  # We add them as additional DO patterns so they satisfy the "must match at
+  # least one DO" check without altering any existing matching logic.
+  if [ "${#_do_patterns[@]}" -gt 0 ]; then
+    local _ftm_path
+    while IFS= read -r _ftm_path; do
+      [ -z "$_ftm_path" ] && continue
+      # Lowercase and strip leading ./ to match the normalisation applied to
+      # changed-file paths inside the violation loop below.
+      _ftm_path=$(echo "$_ftm_path" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
+      if _is_path_shaped "$_ftm_path"; then
+        _do_patterns+=("$_ftm_path")
+      fi
+    done <<< "$(parse_files_to_modify "$issue_body")"
   fi
 
   # Collect changed files vs origin/main (or all staged/modified if no origin/main).
@@ -446,17 +476,123 @@ check_scope_boundary() {
 }
 
 # ---------------------------------------------------------------------------
+# _is_strong_path_token PATTERN
+#
+# Returns 0 when PATTERN is a strong path token — one that is both path-shaped
+# AND looks like an actual file/directory path rather than a prose technique
+# description (e.g. "mkdir/pid/kill-0" has slashes but is not a path spec).
+#
+# A token is strong when it contains a slash AND at least one of:
+#   - ends with a trailing slash (explicit directory reference)
+#   - the leaf component (last segment after final /) has a recognised file
+#     extension (e.g. .sh, .bats, .md — tested via _is_path_shaped on the leaf)
+#   - contains a glob metacharacter (* ? [) — glob path specs are always strong
+#
+# Bare filenames like "issue-lock.sh" or "foo.bats" (no slash) are NOT strong
+# even though _is_path_shaped returns true for them — without a directory
+# prefix they are ambiguous prose references, not enforceable path specs.
+#
+# Examples:
+#   lib/core/foo.sh      → strong (slash + leaf extension)
+#   lib/core/            → strong (slash + trailing slash)
+#   lib/core/*.sh        → strong (slash + glob)
+#   tests/regression/    → strong (slash + trailing slash)
+#   issue-lock.sh        → NOT strong (extension only, no slash)
+#   foo.bats             → NOT strong (extension only, no slash)
+#   *                    → NOT strong (glob without slash)
+#   mkdir/pid/kill-0     → NOT strong (slash present but no extension on leaf,
+#                          no trailing slash, no glob — prose technique token)
+# ---------------------------------------------------------------------------
+_is_strong_path_token() {
+  local pattern="$1"
+  # Must satisfy _is_path_shaped first
+  if ! _is_path_shaped "$pattern"; then return 1; fi
+  # Must contain a slash to be a proper directory-relative path
+  if [[ "$pattern" != */* ]]; then return 1; fi
+  # Trailing slash → explicit directory reference (always strong)
+  if [[ "$pattern" == */ ]]; then return 0; fi
+  # Glob metacharacter anywhere → path glob spec (always strong)
+  if [[ "$pattern" == *'*'* ]] || [[ "$pattern" == *'?'* ]] || [[ "$pattern" == *'['* ]]; then
+    return 0
+  fi
+  # Leaf component (last segment after final /) must have a file extension.
+  # This rejects prose technique tokens like "mkdir/pid/kill-0" where the
+  # leaf has no extension and the slashes are punctuation, not path separators.
+  local _leaf="${pattern##*/}"
+  if _is_path_shaped "$_leaf"; then return 0; fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# parse_files_to_modify ISSUE_BODY
+#
+# Extracts the raw bullet text listed under the "Files to Modify:" sub-heading
+# in the "Claude Context" section of an issue body.  Outputs one entry per
+# line (leading bullet marker and inline comments stripped).
+#
+# Issue runbook format (both forms accepted):
+#   ## Claude Context
+#   Files to Modify:
+#   - lib/core/foo.sh
+#   - tests/regression/bar.bats
+#
+# Note: bullets are emitted verbatim (prose entries are NOT filtered here).
+# Callers are responsible for filtering to path-shaped tokens if required
+# (e.g. check_scope_boundary filters with _is_path_shaped before adding to
+# the DO allowed set).
+#
+# Parsing stops when a non-bullet, non-blank line is encountered (i.e. the
+# next prose sub-heading) or at the next Markdown section heading.
+# ---------------------------------------------------------------------------
+parse_files_to_modify() {
+  local issue_body="$1"
+
+  # Extract the Claude Context section (stops at next ## heading, bold-label
+  # section header like **Scope Boundary**, or end of document).
+  local _cc_section
+  _cc_section=$(echo "$issue_body" | \
+    awk '/^#+[[:space:]]*Claude Context[[:space:]]*:?[[:space:]]*$|^\*\*Claude Context\*\*[[:space:]]*:?[[:space:]]*$/{found=1; next}
+         found && /^(##|\*\*[A-Z])/{found=0}
+         found{print}' || true)
+
+  if [ -z "$_cc_section" ]; then return 0; fi
+
+  # Within that section, find the "Files to Modify:" sub-heading and collect bullets.
+  echo "$_cc_section" | \
+    awk '/^[[:space:]]*Files[[:space:]]+to[[:space:]]+Modify[[:space:]]*:/{in_mod=1; next}
+         in_mod && /^[[:space:]]*[-*][[:space:]]/{
+           line=$0
+           sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
+           sub(/[[:space:]]*#.*$/, "", line)
+           sub(/[[:space:]]+$/, "", line)
+           print line
+           next
+         }
+         in_mod && /^[[:space:]]*$/{next}
+         in_mod && /^[[:space:]]*[A-Za-z]/{in_mod=0}
+         in_mod && /^#+/{in_mod=0}' || true
+}
+
+# ---------------------------------------------------------------------------
 # scope_boundary_is_enforceable ISSUE_BODY
 #
 # Returns 0 (enforceable) when:
 #   - the body has no Scope Boundary section (no DO patterns to enforce), OR
-#   - at least one DO bullet contains a path-shaped token (file path, dir
-#     prefix, or glob).
+#   - at least one DO bullet contains a STRONG path token — a token that is
+#     both path-shaped AND has a directory component (contains a slash).
 #
 # Returns 1 (NOT enforceable) only when DO bullets exist but every one of them
-# is pure prose. In that case check_scope_boundary would flag every changed
-# file as a violation (no path can match a prose-only DO), so the caller
-# should skip the check and log a diag line instead of emitting noise.
+# is pure prose (including bare filenames like "issue-lock.sh" that appear as
+# prose references without a directory prefix).  In that case
+# check_scope_boundary would flag every changed file as a violation (no path
+# can match a prose-only DO), so the caller should skip the check and log a
+# diag line instead of emitting noise.
+#
+# Key distinction from the old predicate: "issue-lock.sh" in a bullet like
+# "DO: repo-level mutex, reusing issue-lock.sh's pattern" is NOT a strong path
+# token (no slash), so such a bullet is treated as prose-only → non-enforceable.
+# "lib/utils/issue-lock.sh" in a bullet IS a strong path token (has slash) →
+# enforceable.
 # ---------------------------------------------------------------------------
 scope_boundary_is_enforceable() {
   local issue_body="${1:-}"
@@ -484,15 +620,18 @@ scope_boundary_is_enforceable() {
     return 0
   fi
 
+  # Require at least one STRONG path token (path-shaped + contains a slash).
+  # Bare filenames like "issue-lock.sh" in prose do not qualify.
   local _pat _token
   for _pat in "${_do_patterns[@]}"; do
     [ -z "$_pat" ] && continue
     if [[ "$_pat" == *" "* ]]; then
+      # Multi-word bullet: check each whitespace-separated token
       for _token in $_pat; do
-        if _is_path_shaped "$_token"; then return 0; fi
+        if _is_strong_path_token "$_token"; then return 0; fi
       done
     else
-      if _is_path_shaped "$_pat"; then return 0; fi
+      if _is_strong_path_token "$_pat"; then return 0; fi
     fi
   done
 
