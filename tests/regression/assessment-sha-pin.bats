@@ -212,8 +212,10 @@ setup() {
 @test "source: markers.sh documents the commit: attribute in the assessment marker format" {
   run grep -n "commit:" "$RITE_REPO_ROOT/lib/utils/markers.sh"
   [ "$status" -eq 0 ]
-  # The assessment marker comment (not the review marker) must reference commit:
-  run grep -A5 "RITE_MARKER_ASSESSMENT" "$RITE_REPO_ROOT/lib/utils/markers.sh"
+  # The assessment marker comment (not the review marker) must reference commit:.
+  # markers.sh convention puts the format doc comment ABOVE the assignment, so
+  # grep the lines BEFORE the RITE_MARKER_ASSESSMENT= line (-B, not -A).
+  run grep -B5 "^RITE_MARKER_ASSESSMENT=" "$RITE_REPO_ROOT/lib/utils/markers.sh"
   [[ "$output" == *"commit:"* ]]
 }
 
