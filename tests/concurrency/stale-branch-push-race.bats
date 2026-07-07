@@ -619,7 +619,7 @@ wait_at_barrier() {
   git push origin --delete "$branch_name" >/dev/null 2>&1 || true
 }
 
-@test "stale-branch push-race: TRIVIAL foreign commit with code changes is preserved via cherry-pick (exit 0)" {
+@test "stale-branch push-race: TRIVIAL foreign commit with code changes is preserved via cherry-pick (exit 2, re-review)" {
   # Regression test for the Pilot ×3 incident (2026-07-06, issues #983/#984/#985/#986).
   # The bug: a collaborator's hand-fix (act() wrapper, fixture timestamp) landed on
   # the remote branch. classify_foreign_commits returned TRIVIAL (message-pattern match
@@ -633,7 +633,10 @@ wait_at_barrier() {
   # classify_foreign_commits is stubbed to TRIVIAL (simulating the misclassification
   # that caused the incident). After the fix, the file must survive in the pushed branch.
   #
-  # Expected: exit 0 (cherry-pick succeeded, no re-review for TRIVIAL), foreign file present.
+  # Expected: exit 2 (cherry-pick succeeded, re-review triggered for non-empty foreign
+  # content), foreign file present. The TRIVIAL classification was based on commit message
+  # patterns; non-empty content means real code was preserved — re-review is required
+  # (consistent with RELATED/UNRELATED paths). Caller maps exit 2 → re-enter Phase 2→3.
 
   cd "$FIXTURE_REPO"
 
@@ -681,8 +684,8 @@ wait_at_barrier() {
   # Drive the function — this triggers the rebase+push-rejection+classify+cherry-pick path
   run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
 
-  # Must succeed (exit 0): cherry-pick preserved the code commit, no re-review for TRIVIAL
-  [ "$status" -eq 0 ]
+  # Must exit 2: cherry-pick preserved the code commit, re-review required for non-empty foreign content
+  [ "$status" -eq 2 ]
 
   # CRITICAL: the foreign code commit's file must be present on the pushed branch
   [ -f "$worktree_path/act-wrapper.sh" ] || {
