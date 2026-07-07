@@ -59,6 +59,52 @@ _denied() { echo "$1" | grep -q '"permissionDecision":"deny"'; }
 @test "allow: 'makefile' does not trip the make rule" { run _hook "vim makefile"; [ -z "$output" ]; }
 @test "allow: 'gherkin' does not trip the gh rule"     { run _hook "cat gherkin.txt"; [ -z "$output" ]; }
 
+# ---- command-position anchoring: path/argument mentions must not deny (#994) ----
+@test "allow: cp of a .bats path + bash -n (live FP, issue #976 fix session)" {
+  run _hook "cp tests/regression/gate-flake-retry.bats /tmp/x.sh && bash -n /tmp/x.sh"
+  [ -z "$output" ]
+}
+@test "allow: bash -n on a .bats path"    { run _hook "bash -n tests/regression/foo.bats"; [ -z "$output" ]; }
+@test "allow: ls of a make-named path"    { run _hook "ls tests/lint/make-check.bats"; [ -z "$output" ]; }
+@test "allow: grep in a .bats path"       { run _hook "grep -n foo tests/x.bats"; [ -z "$output" ]; }
+@test "allow: git add of a .bats path"    { run _hook "git add tests/regression/foo.bats"; [ -z "$output" ]; }
+@test "allow: quoted-argument runner mention" { run _hook "echo 'run bats later'"; [ -z "$output" ]; }
+@test "allow: git log --grep 'make check'" { run _hook "git log --grep 'make check'"; [ -z "$output" ]; }
+@test "allow: direct-exec of a test file is not the runner (deliberate)" {
+  # ./tests/foo.bats flips deny->allow under the position anchor: the rule
+  # targets `bats` the RUNNER; .bats files here are data (mode 644).
+  run _hook "./tests/foo.bats"
+  [ -z "$output" ]
+}
+
+# ---- command-position anchoring: runners at command position stay blocked (#994) ----
+@test "deny: bats after &&"           { run _hook "cd x && bats tests/"; _denied "$output"; }
+@test "deny: bats after ;"            { run _hook "echo hi; bats tests/"; _denied "$output"; }
+@test "deny: bats after a pipe"       { run _hook "echo x | bats -"; _denied "$output"; }
+@test "deny: env-prefixed bats"       { run _hook "env A=1 bats file.bats"; _denied "$output"; }
+@test "deny: VAR=val-prefixed bats"   { run _hook "FOO=1 bats tests/"; _denied "$output"; }
+@test "deny: command-prefixed bats"   { run _hook "command bats tests/"; _denied "$output"; }
+@test "deny: bats inside \$( )"       { run _hook "out=\$(bats tests/)"; _denied "$output"; }
+@test "deny: bats inside backticks"   { run _hook 'echo `bats tests/`'; _denied "$output"; }
+@test "deny: bats in a subshell"      { run _hook "(bats tests/)"; _denied "$output"; }
+@test "deny: npx bats"                { run _hook "npx bats tests/"; _denied "$output"; }
+@test "deny: python -m pytest"        { run _hook "python3 -m pytest"; _denied "$output"; }
+@test "deny: path-invoked bats"       { run _hook "/usr/local/bin/bats tests/"; _denied "$output"; }
+@test "deny: node_modules bats"       { run _hook "./node_modules/.bin/bats tests/"; _denied "$output"; }
+@test "deny: timeout-wrapped bats"    { run _hook "timeout 300 bats tests/"; _denied "$output"; }
+@test "deny: gtimeout-wrapped bats"   { run _hook "gtimeout 300 bats tests/"; _denied "$output"; }
+@test "deny: time-wrapped make"       { run _hook "time make check"; _denied "$output"; }
+@test "deny: xargs bats"              { run _hook "echo tests/ | xargs bats"; _denied "$output"; }
+@test "deny: nohup bats"              { run _hook "nohup bats tests/"; _denied "$output"; }
+@test "deny: sudo make"               { run _hook "sudo make install"; _denied "$output"; }
+@test "deny: multiline command, runner on line 2" {
+  # printf leaves the literal \n in the JSON string; jq decodes it to a real
+  # newline. grep is line-based, so line 2 anchors via ^.
+  run _hook 'true\nbats tests/'
+  _denied "$output"
+}
+@test "deny: VAR=val-prefixed env dump" { run _hook "FOO=1 env"; _denied "$output"; }
+
 # ---- fail-open: non-Bash tools and malformed input ----
 @test "allow: non-Bash tool is not gated (even a denylisted-looking command)" {
   run _hook "git commit" "Read"
