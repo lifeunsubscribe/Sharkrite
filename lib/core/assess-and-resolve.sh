@@ -1358,7 +1358,12 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         # Compute the review-origin count: total NOW minus gate-only NOW.
         # Passed as the 5th arg so _post_gate_fallback_assessment_comment can
         # render the split annotation and grouped sub-headings (issue #985).
-        _now_review_count=$(( ACTIONABLE_NOW_COUNT - GATE_NOW_COUNT ))
+        # Guard against negative values (mirrors the console-path guard at line ~1385).
+        if [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]; then
+          _now_review_count=$(( ACTIONABLE_NOW_COUNT - GATE_NOW_COUNT ))
+        else
+          _now_review_count=0
+        fi
         if _post_gate_fallback_assessment_comment "$PR_NUMBER" "$ASSESSMENT_RESULT" "$ACTIONABLE_NOW_COUNT" \
              "merged — LLM assessment + ${GATE_NOW_COUNT} gate finding(s) (#949)" \
              "$_now_review_count"; then
