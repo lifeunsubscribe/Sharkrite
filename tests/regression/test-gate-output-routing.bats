@@ -35,6 +35,9 @@ shellcheck:
 lint:
 	@true
 MAKEFILE
+  # A dummy .bats file ensures _total_bats > 0 so the gate does not short-circuit
+  # with "no bats suite" before invoking the stub bats binary.
+  printf '#!/usr/bin/env bats\n@test "stub" { true; }\n' > "$dir/tests/stub.bats"
   echo "$dir"
 }
 
