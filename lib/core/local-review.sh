@@ -234,6 +234,7 @@ source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/review-helper.sh"
+source "$RITE_LIB_DIR/utils/format-review.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
@@ -697,6 +698,14 @@ fi
 _timer_end "review_generation"
 print_success "Review generated successfully"
 echo ""
+
+# Strip any provider narration that precedes the structured review heading.
+# Models occasionally narrate before "## 📋 Code Review" ("I now have full
+# context…"); that text lands verbatim in the posted PR comment and the user
+# scrolls past it looking for the review. strip_pre_review_narration drops
+# everything before the first ^## .*Code Review line. Fail-open: unstructured
+# reviews (no matching heading) pass through unchanged.
+REVIEW_OUTPUT=$(strip_pre_review_narration "$REVIEW_OUTPUT")
 
 # Add marker with model metadata for assessment consistency.
 # The commit: attribute records the HEAD SHA at review generation time.
