@@ -29,6 +29,7 @@ source "$RITE_LIB_DIR/utils/pr-summary.sh"
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
+source "$RITE_LIB_DIR/utils/pr-refusal.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
@@ -1905,38 +1906,11 @@ handle_pr_number_refused() {
   local issue_number="$1"
   local issue_data="$2"
 
-  local pr_title
-  pr_title=$(echo "$issue_data" | jq -r '.title // "unknown"' || true)
-  local pr_url
-  pr_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
-
-  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  print_error "#${issue_number} is a Pull Request, not an issue"
-  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  print_error "  PR title: ${pr_title}"
-  [ -n "$pr_url" ] && print_error "  PR url:   ${pr_url}"
-  print_error ""
-  print_error "rite accepts issue numbers only. Pass the linked issue number instead."
-
-  # Look up the issue that this PR closes (best-effort, non-fatal).
-  # Use `gh pr view` on the PR number to read the body, then grep for
-  # "Closes #N" / "Fixes #N" / "Resolves #N" patterns.
-  # The `|| true` guards prevent set -e from aborting if the API call fails or
-  # the PR body has no closing reference.
-  local _linked_issue=""
-  local _pr_body
-  _pr_body=$(gh_safe pr view "$issue_number" --json body --jq '.body' 2>/dev/null || true)
-  if [ -n "$_pr_body" ]; then
-    _linked_issue=$(echo "$_pr_body" | grep -ioE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
-  fi
-
-  if [ -n "$_linked_issue" ]; then
-    print_error ""
-    print_error "  Linked issue: #${_linked_issue}"
-    print_error "  Try: rite ${_linked_issue}"
-  fi
-
-  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  # Delegate to the shared helper (lib/utils/pr-refusal.sh).
+  # The helper prints the canonical refusal message and returns 15 when the
+  # number resolves to a PR; returns 0 otherwise (which should never happen
+  # here since the caller already verified the /pull/ URL — treat as refusal).
+  refuse_if_pr_number "$issue_number" "$issue_data" "rite" || return 15
   return 15
 }
 

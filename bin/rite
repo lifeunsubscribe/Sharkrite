@@ -1194,6 +1194,9 @@ fi
 # Source normalization utilities
 source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 
+# Source shared PR-number refusal helper (single source of truth for exit-15 guard)
+source "$RITE_LIB_DIR/utils/pr-refusal.sh"
+
 # ---------------------------------------------------------------------------
 # _reject_if_pr_number ISSUE_NUMBER
 #
@@ -1210,36 +1213,11 @@ source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 # ---------------------------------------------------------------------------
 _reject_if_pr_number() {
   local _n="$1"
-  # Fetch url + title in a single API call (no extra round-trip).
-  local _data
-  _data=$(gh_safe issue view "$_n" --json url,title 2>/dev/null || true)
-  local _url
-  _url=$(echo "$_data" | jq -r '.url // ""' 2>/dev/null || true)
-  if echo "$_url" | grep -qF '/pull/'; then
-    local _title
-    _title=$(echo "$_data" | jq -r '.title // "unknown"' 2>/dev/null || true)
-    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    print_error "#${_n} is a Pull Request, not an issue"
-    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    print_error "  PR title: ${_title}"
-    [ -n "$_url" ] && print_error "  PR url:   ${_url}"
-    print_error ""
-    print_error "rite accepts issue numbers only. Pass the linked issue number instead."
-    # Best-effort: look up linked issue from PR body (non-fatal if this fails).
-    local _pr_body
-    _pr_body=$(gh_safe pr view "$_n" --json body --jq '.body' 2>/dev/null || true)
-    local _linked=""
-    if [ -n "$_pr_body" ]; then
-      _linked=$(echo "$_pr_body" | grep -ioE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
-    fi
-    if [ -n "$_linked" ]; then
-      print_error ""
-      print_error "  Linked issue: #${_linked}"
-      print_error "  Try: rite ${_linked}"
-    fi
-    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    exit 15
-  fi
+  # Delegate to the shared helper (lib/utils/pr-refusal.sh).
+  # The helper fetches issue data, prints the canonical refusal message,
+  # and returns 15 when the number resolves to a PR.
+  # bin/rite uses exit (not return) because it is a top-level entrypoint.
+  refuse_if_pr_number "$_n" "" "rite" || exit 15
 }
 
 # Normalize and resolve issue input.
