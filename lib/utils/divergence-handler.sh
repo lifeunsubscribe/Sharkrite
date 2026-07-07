@@ -195,23 +195,34 @@ classify_foreign_commits() {
       # resolution that edited source files, or an "act() wrapper" added during
       # conflict resolution — the Pilot ×3 incident, 2026-07-06).
       #
-      # Verify the foreign commits are content-empty vs local HEAD:
-      # `git diff local_head..remote_head` is empty iff the tree at remote_head
-      # is identical to the tree at local_head. This means the foreign commits
-      # brought in nothing beyond what our local branch already has — they are
-      # a pure structural sync that merges main into the feature branch but
-      # writes no new bytes to tracked files. If the diff is non-empty, the
-      # merge commit introduced real content (code, fixtures, etc.) and MUST NOT
-      # be silently discarded regardless of the commit message pattern.
+      # Verify the foreign commits are content-empty vs base:
+      # Use merge-base(local,remote) as the anchor so that base-branch drift
+      # (new commits on main that the remote merge brought in) does not inflate
+      # the diff and falsely mark a pure mainline-sync as content-bearing.
+      # `git diff merge-base..remote_head` shows what the foreign commits
+      # introduced beyond the common ancestor of local and remote. This is
+      # the "effective patch" of the foreign commits — if it is empty, the
+      # commits wrote nothing new that neither side already had. If non-empty,
+      # real content (code, fixtures, etc.) was introduced and MUST NOT be
+      # silently discarded regardless of the commit message pattern.
+      local _merge_base_lr
+      _merge_base_lr=$(git merge-base "${local_head}" "${remote_head}" 2>/dev/null || true)
       local _content_diff
-      _content_diff=$(git diff "${local_head}..${remote_head}" 2>/dev/null || true)
+      _content_diff=$(git diff "${_merge_base_lr:-${local_head}}..${remote_head}" 2>/dev/null || true)
       if [ -z "$_content_diff" ]; then
         export DIVERGENCE_CLASS="TRIVIAL"
-        _div_info "Fast classification: mainline sync ($non_main_count merge commit(s) + ${total_commits} total from main, net-diff empty vs local)" >&2
+        _div_info "Fast classification: mainline sync ($non_main_count merge commit(s) + ${total_commits} total from main, net-diff empty vs merge-base)" >&2
         return 0
       fi
-      _div_info "Mainline-sync message pattern but diff vs local HEAD is non-empty — contains code changes, not TRIVIAL" >&2
-      # Falls through to rite-pattern check or Claude slow-path
+      # Mainline-sync message pattern but non-empty content: classify as RELATED.
+      # These commits carry conflict-resolution edits (e.g. act() wrapper, fixture
+      # timestamp added during a "Merge branch 'main' into" conflict — the Pilot ×3
+      # incident, 2026-07-06). They are authored on this branch and are directly
+      # related to the ongoing issue work. Falling through to the Claude slow-path
+      # causes the test-suite runner to block waiting for a live API call.
+      export DIVERGENCE_CLASS="RELATED"
+      _div_info "Fast classification: mainline-sync message but non-empty diff — code changes present, classifying RELATED" >&2
+      return 0
     fi
   fi
 

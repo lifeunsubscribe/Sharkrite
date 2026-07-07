@@ -216,10 +216,17 @@ _mid_run_rebase_onto_main() {
         _mid_local_head=$(git rev-parse HEAD 2>/dev/null || true)
 
         if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ] && [ "$_mid_remote_head" != "$_mid_local_head" ]; then
+          # Anchor the emptiness check to merge-base(local,remote) so that
+          # base-branch drift (commits on main that the remote merge brought in)
+          # does not inflate the diff and falsely classify real code changes as
+          # content-empty. git diff merge-base..remote_head is the effective patch
+          # introduced by the foreign commits beyond the common ancestor.
+          local _mid_merge_base
+          _mid_merge_base=$(git merge-base "${_mid_local_head}" "${_mid_remote_head}" 2>/dev/null || true)
           local _mid_foreign_diff
-          _mid_foreign_diff=$(git diff "${_mid_local_head}..${_mid_remote_head}" 2>/dev/null || true)
+          _mid_foreign_diff=$(git diff "${_mid_merge_base:-${_mid_local_head}}..${_mid_remote_head}" 2>/dev/null || true)
           if [ -z "$_mid_foreign_diff" ]; then
-            # Content-empty foreign commits (pure mainline-sync merge). Safe to
+            # Content-empty vs merge-base (pure mainline-sync merge). Safe to
             # discard by re-fetching the lease ref and retrying the push.
             print_info "mid-run-rebase: foreign commits are content-empty — retrying push after lease refresh"
             if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
