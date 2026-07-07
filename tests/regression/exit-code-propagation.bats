@@ -765,3 +765,14 @@ EOF
   _count=$(grep -cE "_fix_exit -eq 18" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
   [ "$_count" -ge 1 ]
 }
+
+@test "structural: claude-workflow.sh exits 5 in test-gate autofix (_fix_exit path, #963)" {
+  # The test-gate autofix handler must ALSO propagate exit 5 (usage cap) —
+  # the fix-loop and supervised paths both do; without this branch a cap
+  # first hit during a test-gate fix cascades across the remaining batch
+  # (#963 — the exact waste the exit-5 machinery exists to prevent).
+  _count=$(grep -cE "_fix_exit -eq 5" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+  [ "$_count" -ge 1 ]
+  # And the branch must exit 5, not fall through to the generic failure:
+  grep -A6 "_fix_exit -eq 5" "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" | grep -q "exit 5"
+}

@@ -856,6 +856,13 @@ $_fail_summary
           # Auth failure during test-gate fix session — propagate so batch halts.
           print_error "Provider auth failure during test-gate fix session — aborting batch"
           exit 18
+        elif [ $_fix_exit -eq 5 ]; then
+          # Usage cap during test-gate fix session — propagate so batch aborts
+          # (#963: the auto-mode and supervised fix paths both propagate exit 5,
+          # but this branch swallowed it into the generic cannot-commit failure,
+          # cascading the cap across every remaining issue in the batch).
+          print_error "$(provider_name) usage cap reached during test-gate fix session — aborting batch"
+          exit 5
         elif [ $_fix_exit -eq 0 ]; then
           # Re-run tests after fix
           print_status "Re-running tests after fix..."
