@@ -83,11 +83,14 @@ SCRIPT_EOF
   WORKFLOW_PID=$!
   set +m
 
-  # Wait for pipeline to be established
-  sleep 1
+  # Wait for pipeline to be established.  Two seconds is intentionally longer
+  # than one: the process-substitution pipeline (bash → tee → perl) can take
+  # up to ~0.5s to spawn on a loaded macOS system, and we want the SIGINT
+  # test to be meaningful rather than racing against startup.
+  sleep 2
 
   # Verify the workflow process is still running (the 100-iteration loop
-  # takes ~20s total, so after 1s it must still be alive if setup succeeded).
+  # takes ~20s total, so after 2s it must still be alive if setup succeeded).
   # Using kill -0 rather than pgrep -P: process-substitution children
   # (tee, perl) may not appear as direct PPID children on macOS, making
   # pgrep -P unreliable as a pipeline-started probe.
@@ -124,8 +127,17 @@ SCRIPT_EOF
     WAIT_COUNT=$((WAIT_COUNT + 1))
   done
 
-  # Reap any zombie before kill -0 assertion (zombie → fully gone)
-  wait "$WORKFLOW_PID" 2>/dev/null || true
+  # Reap any zombie before kill -0 assertion (zombie → fully gone).
+  # Only call wait when the process is confirmed dead/zombie — an unconditional
+  # wait on a still-living process blocks indefinitely, which hangs the test.
+  if ! kill -0 "$WORKFLOW_PID" 2>/dev/null; then
+    wait "$WORKFLOW_PID" 2>/dev/null || true
+  else
+    _ps_check=$(ps -p "$WORKFLOW_PID" -o state= 2>/dev/null | tr -d '[:space:]' || true)
+    if [ "$_ps_check" = "Z" ]; then
+      wait "$WORKFLOW_PID" 2>/dev/null || true
+    fi
+  fi
 
   # Verify the main process is dead
   run kill -0 "$WORKFLOW_PID" 2>&1
@@ -290,8 +302,17 @@ SCRIPT_EOF
     WAIT_COUNT=$((WAIT_COUNT + 1))
   done
 
-  # Reap any zombie before kill -0 assertion (zombie → fully gone)
-  wait "$PID" 2>/dev/null || true
+  # Reap any zombie before kill -0 assertion (zombie → fully gone).
+  # Only call wait when the process is confirmed dead/zombie — an unconditional
+  # wait on a still-living process blocks indefinitely, which hangs the test.
+  if ! kill -0 "$PID" 2>/dev/null; then
+    wait "$PID" 2>/dev/null || true
+  else
+    _ps_check=$(ps -p "$PID" -o state= 2>/dev/null | tr -d '[:space:]' || true)
+    if [ "$_ps_check" = "Z" ]; then
+      wait "$PID" 2>/dev/null || true
+    fi
+  fi
 
   # Verify dead (interrupt teardown should be fast)
   run kill -0 "$PID" 2>&1
