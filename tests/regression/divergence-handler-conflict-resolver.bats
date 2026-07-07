@@ -288,3 +288,116 @@ _setup_diverging_branch() {
   git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
   git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
 }
+
+# ───────────────────────────────────────────────────────────────────
+# Classifier: mainline-sync with code changes must NOT be TRIVIAL
+# Regression for the Pilot ×3 incident (2026-07-06, issues #983-986)
+# ───────────────────────────────────────────────────────────────────
+
+@test "classify_foreign_commits: mainline-sync merge message with code changes is NOT TRIVIAL" {
+  # Bug: A "Merge branch 'main' into feature" commit with conflict-resolution code
+  # changes (act() wrapper, fixture timestamp) was classified as TRIVIAL by message
+  # pattern alone. The net diff vs local HEAD was non-empty but the check was skipped.
+  #
+  # Fix: classify_foreign_commits now verifies git diff local..remote is empty before
+  # granting TRIVIAL on the mainline-sync message pattern.
+  #
+  # Scenario: remote branch has a commit with the "Merge branch 'main' into" message
+  # that ALSO modifies file content. The classification must NOT be TRIVIAL.
+
+  cd "$FIXTURE_REPO"
+
+  # Create feature branch with one commit
+  local branch_name="fix/classifier-code-change-test"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-class.txt
+  git add feature-class.txt
+  git commit -m "Feature work" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Capture local_head before adding the foreign commit
+  local local_head
+  local_head=$(git rev-parse HEAD)
+
+  # Simulate a "Merge branch main" commit that ALSO introduced code content
+  # (conflict resolution that added new lines — the Pilot ×3 pattern)
+  echo "act_helper() { echo 'added during conflict resolution'; }" >> feature-class.txt
+  git add feature-class.txt
+  git commit -m "Merge branch 'main' into $branch_name"
+  local remote_head
+  remote_head=$(git rev-parse HEAD)
+
+  # Push the merge commit to origin
+  git push origin "$branch_name" >/dev/null 2>&1
+
+  # Go back to local_head to simulate the pre-push state of the other client
+  git reset --hard "$local_head" >/dev/null 2>&1
+
+  # Classify — must NOT return TRIVIAL because the diff is non-empty
+  classify_foreign_commits "$branch_name" "$local_head" "$remote_head" ""
+  local classification="${DIVERGENCE_CLASS:-}"
+
+  # CRITICAL: mainline-sync message + non-empty content diff = NOT TRIVIAL
+  [ "$classification" != "TRIVIAL" ] || {
+    echo "FAIL: classification=$classification (expected RELATED or UNRELATED)"
+    echo "      A merge commit with code changes was classified as TRIVIAL — the"
+    echo "      content-diff guard is not working."
+    return 1
+  }
+
+  # Classification must be a valid non-trivial class
+  [[ "$classification" = "RELATED" || "$classification" = "UNRELATED" ]] || {
+    echo "FAIL: unexpected classification '$classification'"
+    return 1
+  }
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git checkout main >/dev/null 2>&1
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
+@test "classify_foreign_commits: pure mainline-sync merge (content-empty) is still TRIVIAL" {
+  # Companion to the test above: a "Merge branch 'main'" commit that introduces
+  # ZERO new content (the tree at remote_head equals the tree at local_head) is
+  # still classified as TRIVIAL. This pins the existing pure-sync discard behavior.
+
+  cd "$FIXTURE_REPO"
+
+  local branch_name="fix/classifier-pure-sync-test"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-sync.txt
+  git add feature-sync.txt
+  git commit -m "Feature work" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  local local_head
+  local_head=$(git rev-parse HEAD)
+
+  # Create an EMPTY commit with a mainline-sync message — no file changes
+  git commit --allow-empty -m "Merge branch 'main' into $branch_name"
+  local remote_head
+  remote_head=$(git rev-parse HEAD)
+
+  git push origin "$branch_name" >/dev/null 2>&1
+
+  # Return to local_head
+  git reset --hard "$local_head" >/dev/null 2>&1
+
+  # Classify — must return TRIVIAL (empty diff, pure sync)
+  classify_foreign_commits "$branch_name" "$local_head" "$remote_head" ""
+  local classification="${DIVERGENCE_CLASS:-}"
+
+  [ "$classification" = "TRIVIAL" ] || {
+    echo "FAIL: classification=$classification (expected TRIVIAL for content-empty merge commit)"
+    echo "      Pure mainline-sync was not classified as TRIVIAL — discard guard is too aggressive."
+    return 1
+  }
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git checkout main >/dev/null 2>&1
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
