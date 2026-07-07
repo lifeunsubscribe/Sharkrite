@@ -334,3 +334,89 @@ README.md"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "expected empty for deleted bats; got: '$output'" >&2; return 1; }
 }
+
+# ---------------------------------------------------------------------------
+# End-to-end: Rules 34/35 actually execute against a .bats-only RITE_LINT_FILES
+#
+# These tests verify the full path: RITE_LINT_FILES with a .bats-only set →
+# sharkrite-lint.sh does NOT early-exit → Rules 34/35 run and report violations.
+# Without the fix, sharkrite-lint.sh exited 0 ("no in-scope shell files") before
+# the rules were ever sourced, so no violations were reported even for bad code.
+# ---------------------------------------------------------------------------
+
+@test "E2E: bats-only RITE_LINT_FILES: lint does not skip, Rule 35 banner appears" {
+  # Fixture: a .bats file with a RITE_* file-scope reference (Rule 35 violation).
+  # Placed in BATS_TEST_TMPDIR so it does not live under tests/ (avoids
+  # confusing the real test suite's own targeted selection).
+  local _bats_fixture="${BATS_TEST_TMPDIR}/rule35-fixture.bats"
+  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/config.sh\n_SCOPE_VAR="${RITE_LIB_DIR}/something.sh"\n@test "placeholder" { true; }\n' \
+    > "$_bats_fixture"
+
+  # RITE_LINT_FILES contains ONLY the .bats fixture — no bin/lib/tools entries.
+  export RITE_LINT_FILES="$_bats_fixture"
+  run "$LINT_SCRIPT"
+
+  # Must NOT have silently skipped (old bug: exit 0 with "no in-scope shell files").
+  [[ ! "$output" =~ "no in-scope shell files" ]] || {
+    echo "REGRESSION: lint skipped when bats-only RITE_LINT_FILES was set" >&2
+    echo "output: $output" >&2
+    return 1
+  }
+  # Rule 35 banner must appear — confirms the rule actually executed.
+  [[ "$output" =~ "BATS_FILE_SCOPE_ENV_READ" ]] || {
+    echo "FAIL: Rule 35 (BATS_FILE_SCOPE_ENV_READ) banner not found in lint output" >&2
+    echo "output: $output" >&2
+    return 1
+  }
+}
+
+@test "E2E: bats-only RITE_LINT_FILES: Rule 35 reports the fixture violation" {
+  # Same fixture as above — rerun asserting a violation is actually recorded
+  # (non-zero exit) and names the fixture file.
+  local _bats_fixture="${BATS_TEST_TMPDIR}/rule35-violation-fixture.bats"
+  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/config.sh\n_SCOPE_VAR="${RITE_LIB_DIR}/something.sh"\n@test "placeholder" { true; }\n' \
+    > "$_bats_fixture"
+
+  export RITE_LINT_FILES="$_bats_fixture"
+  run "$LINT_SCRIPT"
+
+  # Lint must exit non-zero (violation found).
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for Rule 35 violation; got status=0" >&2
+    echo "output: $output" >&2
+    return 1
+  }
+  # The fixture file must be named in the output.
+  [[ "$output" =~ "rule35-violation-fixture.bats" ]] || {
+    echo "FAIL: fixture file not named in lint output" >&2
+    echo "output: $output" >&2
+    return 1
+  }
+}
+
+@test "E2E: bats-only RITE_LINT_FILES: Rule 34 banner appears on stub-overwrite fixture" {
+  # Fixture: a .bats file with a pre-source stub that would be overwritten by
+  # an env-var-guarded lib source (Rule 34 violation).
+  local _bats_fixture="${BATS_TEST_TMPDIR}/rule34-fixture.bats"
+  # The fixture defines gh_safe() before sourcing a lib path, which triggers
+  # Rule 34 since gh_safe is a well-known stub that env-var-guarded libs overwrite.
+  printf '%s\n' \
+    '#!/usr/bin/env bats' \
+    '# sharkrite-test-covers: lib/utils/config.sh' \
+    'setup() {' \
+    '  gh_safe() { echo "stub"; }' \
+    '  source "${RITE_LIB_DIR}/utils/gh-retry.sh"' \
+    '}' \
+    '@test "placeholder" { true; }' \
+    > "$_bats_fixture"
+
+  export RITE_LINT_FILES="$_bats_fixture"
+  run "$LINT_SCRIPT"
+
+  # Rule 34 banner must appear — confirms the rule executed.
+  [[ "$output" =~ "BATS_PRE_SOURCE_STUB_OVERWRITE" ]] || {
+    echo "FAIL: Rule 34 (BATS_PRE_SOURCE_STUB_OVERWRITE) banner not found in lint output" >&2
+    echo "output: $output" >&2
+    return 1
+  }
+}

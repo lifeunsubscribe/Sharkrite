@@ -109,20 +109,37 @@ fi
 #
 # Files in RITE_LINT_FILES that aren't already in SHELL_FILES (e.g. docs, deleted
 # files, fixtures, tests/, the lint script's self-exclusion) are silently dropped
-# — the intersection is by design. Empty intersection → exit 0 with a notice
+# — the intersection is by design.  Empty intersection → exit 0 with a notice
 # (e.g. docs-only commit). Direct `make lint` (no env var) keeps full-scan
 # behavior unchanged.
+#
+# RITE_LINT_BATS_FILES: populated below from the .bats entries in RITE_LINT_FILES.
+# Rules 34/35 (BATS_PRE_SOURCE_STUB_OVERWRITE, BATS_FILE_SCOPE_ENV_READ) target
+# .bats files independently via their own find loop — they never appear in
+# SHELL_FILES (which covers only bin/lib/tools).  Extracting them here and
+# exposing RITE_LINT_BATS_FILES lets the rules narrow their find to the changed
+# set instead of all tests/, enabling targeted gate runs for bats-only commits.
+RITE_LINT_BATS_FILES=""
 if [ -n "${RITE_LINT_FILES:-}" ]; then
   _lint_targeted_tmp=$(mktemp)
   printf '%s\n' "${SHELL_FILES[@]}" > "$_lint_targeted_tmp"
   mapfile -t SHELL_FILES < <(printf '%s\n' "$RITE_LINT_FILES" | grep -Fxf "$_lint_targeted_tmp" 2>/dev/null || true)
   rm -f "$_lint_targeted_tmp"
-  if [ "${#SHELL_FILES[@]}" -eq 0 ]; then
+
+  # Extract .bats entries from RITE_LINT_FILES for Rules 34/35.
+  RITE_LINT_BATS_FILES=$(printf '%s\n' "$RITE_LINT_FILES" | grep '\.bats$' || true)
+
+  if [ "${#SHELL_FILES[@]}" -eq 0 ] && [ -z "$RITE_LINT_BATS_FILES" ]; then
     echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
     exit 0
   fi
-  echo "Sharkrite custom lint: targeted scope (${#SHELL_FILES[@]} file(s))"
+  if [ "${#SHELL_FILES[@]}" -eq 0 ]; then
+    echo "Sharkrite custom lint: targeted scope (bats-only: $(printf '%s\n' "$RITE_LINT_BATS_FILES" | grep -c '.' || true) file(s))"
+  else
+    echo "Sharkrite custom lint: targeted scope (${#SHELL_FILES[@]} shell file(s)$([ -n "$RITE_LINT_BATS_FILES" ] && printf ', %s bats file(s)' "$(printf '%s\n' "$RITE_LINT_BATS_FILES" | grep -c '.' || true)" || true))"
+  fi
 fi
+export RITE_LINT_BATS_FILES
 
 # ---------------------------------------------------------------------------
 # Rule execution — each rule lives in tools/lint-rules/NN-slug.sh and is

@@ -120,5 +120,12 @@ while IFS= read -r bats_file; do
     print_violation "$bats_file" "$_r35_line" "BATS_FILE_SCOPE_ENV_READ" \
       "file-scope assignment reads \$RITE_* env var before setup() runs — RITE_* vars may not be set at parse time; move this assignment into setup() or suppress if the variable is guaranteed to be exported before bats parses the file"
   done <<< "$_r35_file_hits"
-done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+done < <(
+  if [ -n "${RITE_LINT_BATS_FILES:-}" ]; then
+    # Targeted mode: only scan the changed .bats files passed by the gate.
+    printf '%s\n' "$RITE_LINT_BATS_FILES" | grep -E '\.bats$' || true
+  else
+    find tests -name '*.bats' -type f 2>/dev/null || true
+  fi
+)
 

@@ -150,7 +150,14 @@ while IFS= read -r bats_file; do
     print_violation "$bats_file" "$_r34_line" "BATS_PRE_SOURCE_STUB_OVERWRITE" \
       "stub '${_r34_fn}()' defined before this lib source is overwritten by the lib's real definition (env-var guards don't check for existing functions); re-define the stub AFTER the last source in setup()"
   done <<< "$_r34_file_hits"
-done < <(find tests -name '*.bats' -type f 2>/dev/null || true)
+done < <(
+  if [ -n "${RITE_LINT_BATS_FILES:-}" ]; then
+    # Targeted mode: only scan the changed .bats files passed by the gate.
+    printf '%s\n' "$RITE_LINT_BATS_FILES" | grep -E '\.bats$' || true
+  else
+    find tests -name '*.bats' -type f 2>/dev/null || true
+  fi
+)
 
 rm -f "$_r34_awk"
 _r34_awk=""
