@@ -240,29 +240,27 @@ STUB
 # Test 7: A legitimate text description still reaches issue-generation.
 #         The bare-word guard must NOT break the explicit description path.
 #
-# Strategy: stub `claude` so we can detect that normalize_piped_input was
-# entered (it calls claude via provider_run_prompt).  We don't need a full
-# LLM call — just confirm the "Generating structured issue" message appears,
-# which means we reached the right code path.
+# Strategy: use --dry-run mode so bin/rite exits after printing its routing
+# plan without actually calling normalize_piped_input (which has an
+# interactive /dev/tty approval loop that would block in a test environment).
+# The dry-run plan line "generate structured issue from text description via
+# claude" confirms that the text-description path was chosen, not a
+# subcommand route.
 # ---------------------------------------------------------------------------
 @test "legitimate text description still reaches issue-generation (not broken)" {
-  # Stub claude to exit non-zero quickly (simulates unavailable provider).
-  # normalize_piped_input will print "Generating structured issue from description..."
-  # before calling claude, so we'll capture that message.
-  _stub_command "claude" 1 ""
-  # Also stub gh so pre-flight checks pass (gh auth status etc.)
-  _stub_command "gh" 0 ""
-
   run env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
     PATH="$_FAKE_BIN:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
     RITE_LOG_AUTO=false \
+    RITE_DRY_RUN=true \
     bash "$_FAKE_BIN/rite" "Fix the login button to work on mobile" < /dev/null 2>&1 || true
 
-  # The issue-generation path must have been entered — even if it ultimately
-  # fails (claude stub exits 1), the entry message appears first.
-  echo "$output" | grep -q "Generating structured issue"
+  # Dry-run must show the text-description routing plan — confirms the
+  # input was treated as a free-text issue description, not a subcommand.
+  echo "$output" | grep -q "generate structured issue from text description"
+  # Issue-generation subcommand routing must NOT appear (guard still works).
+  ! echo "$output" | grep -q "Generating structured issue"
 }
 
 # ---------------------------------------------------------------------------

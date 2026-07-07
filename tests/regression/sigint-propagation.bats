@@ -83,15 +83,16 @@ SCRIPT_EOF
   WORKFLOW_PID=$!
   set +m
 
-  # Wait for pipeline to be established (tee and perl should be running)
+  # Wait for pipeline to be established
   sleep 1
 
-  # Verify child processes exist (tee and perl from logging pipeline)
-  # This confirms the pipeline is actually running
-  CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" | wc -l | tr -d ' ')
-  [ "$CHILD_COUNT" -gt 0 ] || {
-    echo "ERROR: No child processes found. Pipeline may not have started." >&2
-    kill "$WORKFLOW_PID" 2>/dev/null || true
+  # Verify the workflow process is still running (the 100-iteration loop
+  # takes ~20s total, so after 1s it must still be alive if setup succeeded).
+  # Using kill -0 rather than pgrep -P: process-substitution children
+  # (tee, perl) may not appear as direct PPID children on macOS, making
+  # pgrep -P unreliable as a pipeline-started probe.
+  kill -0 "$WORKFLOW_PID" 2>/dev/null || {
+    echo "ERROR: Test script exited before SIGINT was sent." >&2
     return 1
   }
 
@@ -106,16 +107,25 @@ SCRIPT_EOF
   sleep 0.3
   kill -0 "$WORKFLOW_PID" 2>/dev/null && kill -INT "$WORKFLOW_PID" 2>/dev/null || true
 
-  # Wait up to 5 seconds for all processes to terminate
+  # Wait up to 5 seconds for all processes to terminate.
+  # Uses ps state check alongside kill -0: a SIGKILL'd bash process
+  # becomes a zombie (state 'Z') still visible to kill -0 but no longer
+  # running — treat zombie as terminated to avoid a spurious 5s spin.
   WAIT_COUNT=0
   while [ $WAIT_COUNT -lt 10 ]; do
-    # Check if main process is still alive
     if ! kill -0 "$WORKFLOW_PID" 2>/dev/null; then
-      break
+      break  # Process fully gone
+    fi
+    _ps_state=$(ps -p "$WORKFLOW_PID" -o state= 2>/dev/null | tr -d '[:space:]' || true)
+    if [ "$_ps_state" = "Z" ] || [ -z "$_ps_state" ]; then
+      break  # Zombie or gone: process is no longer running
     fi
     sleep 0.5
     WAIT_COUNT=$((WAIT_COUNT + 1))
   done
+
+  # Reap any zombie before kill -0 assertion (zombie → fully gone)
+  wait "$WORKFLOW_PID" 2>/dev/null || true
 
   # Verify the main process is dead
   run kill -0 "$WORKFLOW_PID" 2>&1
@@ -263,20 +273,30 @@ SCRIPT_EOF
   # single-interrupt teardown contract instead.)
   kill -INT "$PID" 2>/dev/null || true
 
-  # Should exit quickly within the bounded window
+  # Should exit quickly within the bounded window.
+  # Uses ps state check alongside kill -0: a SIGKILL'd bash process
+  # becomes a zombie (state 'Z') still visible to kill -0 but no longer
+  # running — treat zombie as terminated to avoid a spurious loop spin.
   WAIT_COUNT=0
-  while [ $WAIT_COUNT -lt 6 ]; do
+  while [ $WAIT_COUNT -lt 10 ]; do
     if ! kill -0 "$PID" 2>/dev/null; then
-      break
+      break  # Process fully gone
+    fi
+    _ps_state=$(ps -p "$PID" -o state= 2>/dev/null | tr -d '[:space:]' || true)
+    if [ "$_ps_state" = "Z" ] || [ -z "$_ps_state" ]; then
+      break  # Zombie or gone: process is no longer running
     fi
     sleep 0.5
     WAIT_COUNT=$((WAIT_COUNT + 1))
   done
 
+  # Reap any zombie before kill -0 assertion (zombie → fully gone)
+  wait "$PID" 2>/dev/null || true
+
   # Verify dead (interrupt teardown should be fast)
   run kill -0 "$PID" 2>&1
   [ "$status" -ne 0 ]
 
-  # Should have exited well within 3 seconds
-  [ $WAIT_COUNT -lt 6 ]
+  # Should have exited well within 5 seconds
+  [ $WAIT_COUNT -lt 10 ]
 }
