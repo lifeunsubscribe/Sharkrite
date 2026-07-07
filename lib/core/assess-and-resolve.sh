@@ -328,17 +328,26 @@ _resolve_done_def() {
 }
 
 # ---------------------------------------------------------------------------
-# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT [MODEL_LINE]
+# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT [MODEL_LINE] [NOW_REVIEW_COUNT]
 #
 # Posts a minimal assessment PR comment (RITE_MARKER_ASSESSMENT marker)
 # containing the [GATE] ACTIONABLE_NOW items, for cases where the post-commit
 # gate has blocking findings that must force a fix loop.
 #
-# MODEL_LINE (optional): overrides the "**Model:**" status line in the comment
-# body. Default: "none (LLM assessment failed — gate findings only)", which is
-# accurate only when the LLM did not run. Callers where the LLM succeeded but
-# gate failures force the loop should pass a descriptive override so the PR
-# comment does not falsely claim the LLM assessment failed.
+# MODEL_LINE (optional, $4): overrides the "**Model:**" status line in the
+# comment body. Default: "none (LLM assessment failed — gate findings only)",
+# which is accurate only when the LLM did not run. Callers where the LLM
+# succeeded but gate failures force the loop should pass a descriptive override
+# so the PR comment does not falsely claim the LLM assessment failed.
+#
+# NOW_REVIEW_COUNT (optional, $5): number of LLM review items in GATE_ITEMS
+# (i.e. items without the [GATE] prefix). When > 0, GATE_ITEMS is a merged
+# result and the function groups items under two sub-headings:
+#   #### Failed tests (gate)   — [GATE] items
+#   #### Review findings       — review items
+# The Summary ACTIONABLE_NOW line also shows the split:
+#   ACTIONABLE_NOW: 5 items (3 failed tests, 2 review) (fix in this PR)
+# When 0 (default), only gate items are present and no sub-headings are added.
 #
 # WHY (issue #821; LeadFlow #435/#431 same night): claude-workflow.sh
 # FIX_REVIEW_MODE reads the assessment EXCLUSIVELY from the PR comment when a
@@ -352,6 +361,10 @@ _resolve_done_def() {
 # line, header, Summary block, `---` separator, then the items. The `---`
 # separator is load-bearing: fix mode strips everything before it, then its
 # awk extraction parses the `### ... - ACTIONABLE_NOW` headers from the rest.
+# Sub-headings (#### level) are interleaved between item blocks and are
+# transparent to fix mode's awk extractor (which only triggers on `### `
+# headers) — they appear in the PR comment for human readers, invisible to
+# the extraction pipeline.
 #
 # Returns 0 when posted; 1 when the post failed (after printing a loud
 # warning). Caller must still exit 2 either way — objective gate failures
@@ -362,9 +375,47 @@ _post_gate_fallback_assessment_comment() {
   local _gate_items="$2"
   local _gate_count="$3"
   local _model_line="${4:-none (LLM assessment failed — gate findings only)}"
-  local _ts _comment _body_file
+  local _now_review_count="${5:-0}"
+  local _ts _comment _body_file _now_summary_suffix _items_body _gate_only_count
 
   _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  # Build the ACTIONABLE_NOW summary line — plain count when gate-only, split
+  # annotation when both origins are present.
+  # _gate_count is the TOTAL now count when called from #949 (merged path).
+  # The gate-only subset = _gate_count - _now_review_count.
+  if [ "${_now_review_count:-0}" -gt 0 ]; then
+    _gate_only_count=$(( _gate_count - _now_review_count ))
+    _now_summary_suffix=" (${_gate_only_count} failed tests, ${_now_review_count} review)"
+  else
+    _now_summary_suffix=""
+  fi
+
+  # Build the items section — inject sub-headings when both origins present.
+  # The [GATE] prefix convention distinguishes gate items from review items.
+  # Sub-headings sit between item blocks; fix mode's awk extractor ignores them
+  # (it triggers on `^### ` not `^#### `), so extraction is unaffected.
+  if [ "${_now_review_count:-0}" -gt 0 ]; then
+    _items_body="#### Failed tests (gate)
+
+${_gate_items}"
+    # Replace the transition point: the first `### ` line that does NOT start
+    # with `### [GATE]` is the first review item — insert the heading before it.
+    # Use awk for multi-line safety (sed ranges are fragile across BRE dialects).
+    _items_body=$(printf '%s' "$_items_body" | awk '
+      /^### \[GATE\]/ { in_gate=1; print; next }
+      /^### / && in_gate {
+        in_gate=0
+        print "\n#### Review findings\n"
+        print
+        next
+      }
+      { print }
+    ' || true)
+  else
+    _items_body="${_gate_items}"
+  fi
+
   _comment="<!-- ${RITE_MARKER_ASSESSMENT} pr:${_pr_number} iteration:1 timestamp:${_ts} -->
 
 ## 🔍 Sharkrite Assessment
@@ -374,13 +425,13 @@ _post_gate_fallback_assessment_comment() {
 **Model:** ${_model_line}
 
 ### Summary
-- **ACTIONABLE_NOW:** ${_gate_count} items (fix in this PR)
+- **ACTIONABLE_NOW:** ${_gate_count} items${_now_summary_suffix} (fix in this PR)
 - **ACTIONABLE_LATER:** 0 items (tech-debt)
 - **DISMISSED:** 0 items (not actionable)
 
 ---
 
-${_gate_items}"
+${_items_body}"
 
   print_status "Posting gate-findings assessment comment to PR #${_pr_number}..."
   _body_file=$(mktemp)
@@ -1304,8 +1355,13 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # sharkrite #910). Post a superseding comment with the MERGED result so
       # the counter below and fix mode read the same text by construction.
       if [ -n "${PR_NUMBER:-}" ]; then
+        # Compute the review-origin count: total NOW minus gate-only NOW.
+        # Passed as the 5th arg so _post_gate_fallback_assessment_comment can
+        # render the split annotation and grouped sub-headings (issue #985).
+        _now_review_count=$(( ACTIONABLE_NOW_COUNT - GATE_NOW_COUNT ))
         if _post_gate_fallback_assessment_comment "$PR_NUMBER" "$ASSESSMENT_RESULT" "$ACTIONABLE_NOW_COUNT" \
-             "merged — LLM assessment + ${GATE_NOW_COUNT} gate finding(s) (#949)"; then
+             "merged — LLM assessment + ${GATE_NOW_COUNT} gate finding(s) (#949)" \
+             "$_now_review_count"; then
           print_status "Posted merged assessment (LLM + [GATE] items) — fix mode reads this superseding comment"
         else
           print_warning "Could not post the merged assessment comment — fix mode may not see the [GATE] items this round (#949)"
@@ -1324,10 +1380,20 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     # This is the single authoritative summary — three-state (NOW/LATER/
     # DISMISSED) is the axis the workflow actually decides on. Loud per-line
     # emoji + Total mirror the old severity rollup that used to print below.
+    # Split annotation for ACTIONABLE_NOW when both origins are present (issue #985).
+    # Gate-origin count is already tracked in GATE_NOW_COUNT; review = total - gate.
+    if [ "${GATE_NOW_COUNT:-0}" -gt 0 ] && [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]; then
+      _now_review_count=$(( ACTIONABLE_NOW_COUNT - GATE_NOW_COUNT ))
+      _now_label="$ACTIONABLE_NOW_COUNT items (gate=${GATE_NOW_COUNT}, review=${_now_review_count})"
+    else
+      _now_review_count=0
+      _now_label="$ACTIONABLE_NOW_COUNT items"
+    fi
+
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "📊 Assessment Summary:"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🔧 ACTIONABLE_NOW: $ACTIONABLE_NOW_COUNT items - fix now"
+    echo "🔧 ACTIONABLE_NOW: ${_now_label} - fix now"
     echo "📝 ACTIONABLE_LATER: $ACTIONABLE_LATER_COUNT items - defer to tech-debt"
     echo "🗑️  DISMISSED: $DISMISSED_COUNT items - not worth tracking"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1335,8 +1401,10 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
-    # Diagnostic logging for health reports
-    _diag "ASSESSMENT issue=${ISSUE_NUMBER} retry=${RETRY_COUNT} now=${ACTIONABLE_NOW_COUNT} later=${ACTIONABLE_LATER_COUNT} dismissed=${DISMISSED_COUNT}"
+    # Diagnostic logging for health reports (issue #985: append now_gate/now_review fields).
+    # Append-only: health-report parsers tolerate extra fields — existing consumers
+    # key on now= and need no changes; the new fields are purely additive.
+    _diag "ASSESSMENT issue=${ISSUE_NUMBER} retry=${RETRY_COUNT} now=${ACTIONABLE_NOW_COUNT} now_gate=${GATE_NOW_COUNT:-0} now_review=${_now_review_count} later=${ACTIONABLE_LATER_COUNT} dismissed=${DISMISSED_COUNT}"
 
     # Decision tree based on three-state counts
     if [ "$ACTIONABLE_NOW_COUNT" -eq 0 ] && [ "$ACTIONABLE_LATER_COUNT" -eq 0 ]; then
