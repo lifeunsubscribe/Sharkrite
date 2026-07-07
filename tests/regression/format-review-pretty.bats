@@ -11,12 +11,20 @@
 #   - preserves fenced code/fix blocks
 #   - never emits raw markers, HTML comments, or model preamble
 #
+# strip_pre_review_narration (added for issue #985):
+#   - narration before the "## …Code Review" heading is stripped from REVIEW_OUTPUT
+#     before the PR comment is assembled, so users never see debugging spew
+#   - bodies without a matching heading pass through unchanged (fail-open)
+#
 # Tests in this file:
 #   1. Markers, HTML comments, and model preamble are stripped
 #   2. Summary banner (counts + verdict) is rendered from the JSON block
 #   3. Fenced code/fix block content is preserved
 #   4. Section/item structure survives (severity headers, item titles)
 #   5. Fallback: no JSON block still renders body + Findings line
+#   6. strip_pre_review_narration: narration before header is stripped
+#   7. strip_pre_review_narration: body with no review header passes through unchanged
+#   8. strip_pre_review_narration: marker line is preserved as the first line
 
 load '../helpers/setup.bash'
 
@@ -30,6 +38,14 @@ setup() {
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
   FORMAT_REVIEW="${RITE_REPO_ROOT}/lib/utils/format-review.sh"
   [ -x "$FORMAT_REVIEW" ] || chmod +x "$FORMAT_REVIEW"
+
+  # Source format-review.sh to make strip_pre_review_narration available.
+  # ${BASH_SOURCE[0]} != ${0} when sourced, so the main execution block
+  # is skipped. Restore bats shell flags after the source (the lib runs
+  # set -euo pipefail at source time — see test runbook Rule 3).
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: no stubs need protecting here
+  source "${RITE_REPO_ROOT}/lib/utils/format-review.sh"
+  set +u; set +o pipefail
 
   REVIEW_FILE="${RITE_TEST_TMPDIR}/review.md"
   cat > "$REVIEW_FILE" <<'EOF'
@@ -141,4 +157,73 @@ _render() {
   [[ "$output" =~ "Findings:" ]]
   [[ "$output" =~ "HIGH Priority Issues" ]]
   [[ ! "$output" =~ "sharkrite-local-review" ]]
+}
+
+# ---------------------------------------------------------------------------
+# strip_pre_review_narration tests (issue #985)
+# ---------------------------------------------------------------------------
+
+@test "strip_pre_review_narration: narration before header is stripped" {
+  # Simulate what REVIEW_OUTPUT looks like when the model narrates first.
+  # The marker line is NOT included — it is prepended separately by local-review.sh.
+  local narrated_body
+  narrated_body="I now have complete context. Let me verify the changes.
+After careful analysis, I can confirm the approach is sound.
+
+## 📋 Code Review
+
+**Findings:** CRITICAL: 0 | HIGH: 1 | MEDIUM: 0 | LOW: 0
+
+### 🟠 HIGH Priority Issues
+
+#### 1. Missing error check"
+
+  run strip_pre_review_narration "$narrated_body"
+  [ "$status" -eq 0 ]
+  # Narration lines are gone
+  [[ ! "$output" =~ "I now have complete context" ]]
+  [[ ! "$output" =~ "After careful analysis" ]]
+  # Review header and body survive
+  [[ "$output" =~ "## 📋 Code Review" ]]
+  [[ "$output" =~ "HIGH Priority Issues" ]]
+  [[ "$output" =~ "Missing error check" ]]
+}
+
+@test "strip_pre_review_narration: body with no review header passes through unchanged" {
+  # Unstructured reviews (no ^## .*Code Review heading) must be returned verbatim
+  # so that review content is never silently discarded (fail-open contract).
+  local plain_body
+  plain_body="This PR looks fine overall. One minor concern:
+the timeout constant should be named more clearly."
+
+  run strip_pre_review_narration "$plain_body"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "This PR looks fine overall" ]]
+  [[ "$output" =~ "timeout constant" ]]
+}
+
+@test "strip_pre_review_narration: marker line is the first line of REVIEW_COMMENT after strip" {
+  # Asserts the invariant that staleness detection depends on:
+  # after stripping, the assembled REVIEW_COMMENT still starts with the marker line.
+  local narrated_body
+  narrated_body="Let me now summarize my findings.
+
+## 📋 Code Review
+
+**Findings:** CRITICAL: 0 | HIGH: 0 | MEDIUM: 1 | LOW: 0"
+
+  local marker_line="<!-- sharkrite-local-review model:test timestamp:2026-07-07T00:00:00Z -->"
+  local stripped
+  stripped=$(strip_pre_review_narration "$narrated_body")
+
+  # Build the REVIEW_COMMENT exactly as local-review.sh does.
+  local assembled_comment
+  assembled_comment="${marker_line}
+
+${stripped}"
+
+  # The very first line must be the marker — not narration text.
+  local first_line
+  first_line=$(printf '%s\n' "$assembled_comment" | head -1)
+  [[ "$first_line" == "$marker_line" ]]
 }

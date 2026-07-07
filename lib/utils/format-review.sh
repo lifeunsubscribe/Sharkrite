@@ -13,6 +13,13 @@
 # It strips the review marker line, the model's pre-review preamble, all
 # HTML-comment markers (including <!-- item:N --> delimiters), and the trailing
 # JSON data block — none of which belong on screen.
+#
+# Sourceable function:
+#   strip_pre_review_narration BODY
+#     — Drops any text between the sharkrite-local-review marker and the first
+#       "## …Code Review" heading so that provider narration ("I now have full
+#       context…") is never visible in the posted PR comment. Returns BODY
+#       unchanged when no structured heading is found (fail-open).
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then
@@ -32,6 +39,38 @@ set -euo pipefail
 # hardcode marker strings — see lib/utils/markers.sh).
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
+
+# ---------------------------------------------------------------------------
+# strip_pre_review_narration: drop provider narration before the review header.
+#
+# When the model narrates before the structured review (e.g. "I now have full
+# context. Let me verify…"), that text lands verbatim in the posted PR comment
+# and the user scrolls past it looking for the review. This function removes
+# everything between the (already-prepended) marker line and the first
+# "## …Code Review" heading so the comment opens on the review itself.
+#
+# Arg 1: raw review body (REVIEW_OUTPUT — the text AFTER the marker line).
+# Outputs the cleaned body to stdout.
+#
+# Fail-open contract: when no "## …Code Review" heading exists, the body is
+# printed unchanged. This ensures unstructured reviews are never silently
+# discarded.
+#
+# The marker line itself is NOT part of the input — it has already been
+# prepended separately in local-review.sh and must not be touched here.
+# ---------------------------------------------------------------------------
+strip_pre_review_narration() {
+  local body="$1"
+  # Check for a structured Code Review heading (case-insensitive "Code Review").
+  # Using printf + awk for portability (no bash-specific extensions).
+  if printf '%s\n' "$body" | grep -qE "^## .*[Cc]ode [Rr]eview"; then
+    # Drop every line before the first matching heading; emit from that line on.
+    printf '%s\n' "$body" | awk '/^## .*[Cc]ode [Rr]eview/{found=1} found{print}'
+  else
+    # No heading found — return unchanged (fail-open).
+    printf '%s\n' "$body"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # _fr_render_banner: print the summary banner from the embedded JSON block.
