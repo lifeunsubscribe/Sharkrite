@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh, bin/rite, lib/core/undo-workflow.sh
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh, bin/rite, lib/core/undo-workflow.sh, lib/utils/pr-refusal.sh
 # tests/regression/pr-number-refused-as-issue.bats
 #
 # Regression test: rite must refuse a bare PR number before any dev work runs.
@@ -68,12 +68,28 @@
 #
 #   BEHAVIORAL (undo-workflow.sh, #851):
 #    24. undo-workflow.sh exits 15 when the issue number refers to a PR
+#
+#   STRUCTURAL (lib/utils/pr-refusal.sh — shared helper, this issue):
+#    25. refuse_if_pr_number() function exists in pr-refusal.sh
+#    26. pr-refusal.sh has a function-sentinel re-source guard
+#    27. workflow-runner.sh sources pr-refusal.sh
+#    28. bin/rite sources pr-refusal.sh
+#    29. undo-workflow.sh sources pr-refusal.sh
+#    30. handle_pr_number_refused() delegates to refuse_if_pr_number
+#    31. _reject_if_pr_number() delegates to refuse_if_pr_number
+#
+#   BEHAVIORAL (lib/utils/pr-refusal.sh — shared helper, this issue):
+#    32. refuse_if_pr_number() returns 15 for a PR number
+#    33. refuse_if_pr_number() returns 0 for a real issue number
+#    34. refuse_if_pr_number() accepts pre-fetched ISSUE_DATA (no extra API call)
+#    35. refuse_if_pr_number() uses CALLER_VERB in the error message
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 RITE_BINARY="$REPO_ROOT/bin/rite"
 UNDO_WORKFLOW="$REPO_ROOT/lib/core/undo-workflow.sh"
+PR_REFUSAL_LIB="$REPO_ROOT/lib/utils/pr-refusal.sh"
 
 setup() {
   [ -f "$WORKFLOW_RUNNER" ] || {
@@ -90,6 +106,10 @@ setup() {
   }
   [ -f "$UNDO_WORKFLOW" ] || {
     echo "FATAL: $UNDO_WORKFLOW not found" >&2
+    return 1
+  }
+  [ -f "$PR_REFUSAL_LIB" ] || {
+    echo "FATAL: $PR_REFUSAL_LIB not found" >&2
     return 1
   }
 }
@@ -964,13 +984,13 @@ STUB_EOF
 # STRUCTURAL: undo-workflow.sh (#851)
 # =============================================================================
 
-@test "structural: undo-workflow.sh contains /pull/ check before Phase 1 Discovery" {
-  # Phase 1 Discovery starts after the PR-number guard.
-  # Verify both the /pull/ check and Phase 1 marker exist, and in the right order.
-  _pull_line=$(grep -n "grep -qF '/pull/'" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
-  [ -n "$_pull_line" ] || {
-    echo "FAIL: No grep -qF '/pull/' found in undo-workflow.sh" >&2
-    echo "      The PR-number guard must check the url field before any discovery work" >&2
+@test "structural: undo-workflow.sh delegates to refuse_if_pr_number before Phase 1 Discovery" {
+  # The guard now delegates to lib/utils/pr-refusal.sh (refuse_if_pr_number).
+  # Verify the delegation call exists and appears before Phase 1 Discovery.
+  _guard_line=$(grep -n "refuse_if_pr_number" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
+  [ -n "$_guard_line" ] || {
+    echo "FAIL: No refuse_if_pr_number call found in undo-workflow.sh" >&2
+    echo "      The PR-number guard must delegate to lib/utils/pr-refusal.sh" >&2
     return 1
   }
 
@@ -980,8 +1000,8 @@ STUB_EOF
     return 1
   }
 
-  if [ "$_pull_line" -ge "$_phase1_line" ]; then
-    echo "FAIL: /pull/ check (line $_pull_line) must appear BEFORE Phase 1 Discovery (line $_phase1_line)" >&2
+  if [ "$_guard_line" -ge "$_phase1_line" ]; then
+    echo "FAIL: refuse_if_pr_number call (line $_guard_line) must appear BEFORE Phase 1 Discovery (line $_phase1_line)" >&2
     echo "      The guard must fire before any discovery side effects run" >&2
     return 1
   fi
@@ -989,18 +1009,18 @@ STUB_EOF
 
 @test "structural: undo-workflow.sh exits 15 in the PR-number guard" {
   # Exit 15 is the canonical sentinel for bare-PR-number refusals.
-  # The block between the /pull/ check and Phase 1 must contain 'exit 15'.
-  _pull_line=$(grep -n "grep -qF '/pull/'" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
+  # The guard line uses '|| exit 15' so the process exits when the helper returns 15.
+  _guard_line=$(grep -n "refuse_if_pr_number" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
   _phase1_line=$(grep -n "PHASE 1: DISCOVERY" "$UNDO_WORKFLOW" | head -1 | cut -d: -f1 || true)
 
-  [ -n "$_pull_line" ] && [ -n "$_phase1_line" ] || {
-    echo "FAIL: Could not locate the guard block boundaries in undo-workflow.sh" >&2
+  [ -n "$_guard_line" ] && [ -n "$_phase1_line" ] || {
+    echo "FAIL: Could not locate the guard boundaries in undo-workflow.sh" >&2
     return 1
   }
 
-  _guard_block=$(awk "NR >= $_pull_line && NR < $_phase1_line" "$UNDO_WORKFLOW")
+  _guard_block=$(awk "NR >= $_guard_line && NR < $_phase1_line" "$UNDO_WORKFLOW")
   echo "$_guard_block" | grep -q 'exit 15' || {
-    echo "FAIL: undo-workflow.sh guard block does not contain 'exit 15'" >&2
+    echo "FAIL: undo-workflow.sh guard does not contain 'exit 15'" >&2
     echo "      Exit code 15 is the canonical sentinel for PR-number refusals" >&2
     echo "      See: docs/architecture/exit-codes.md — exit code 15" >&2
     return 1
@@ -1013,11 +1033,12 @@ STUB_EOF
 
 @test "behavioral: undo-workflow.sh exits 15 when issue number refers to a PR" {
   # rite <PR#> --undo must be refused before any discovery or cleanup work runs.
-  # This test runs a stub script that inlines the undo-workflow.sh argument
-  # validation + PR guard, with a gh_safe stub returning a /pull/ URL.
+  # Sources refuse_if_pr_number from the shared helper and exercises the
+  # undo-workflow.sh delegation pattern: refuse_if_pr_number ... || exit 15.
   _script="$BATS_TEST_TMPDIR/test-undo-pr-refused.sh"
+  _pr_refusal_lib="$REPO_ROOT/lib/utils/pr-refusal.sh"
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (BATS_TEST_TMPDIR)
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (BATS_TEST_TMPDIR, _pr_refusal_lib)
   cat > "$_script" <<STUB_EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1040,15 +1061,11 @@ gh_safe() {
   return 0
 }
 
-# Inline the undo-workflow.sh PR guard (mirrors real code — no lib deps needed)
-_undo_check_data=\$(gh_safe issue view "\$ISSUE_NUMBER" --json url,title 2>/dev/null || true)
-_undo_url=\$(echo "\$_undo_check_data" | jq -r '.url // ""' 2>/dev/null || true)
-if echo "\$_undo_url" | grep -qF '/pull/'; then
-  _undo_title=\$(echo "\$_undo_check_data" | jq -r '.title // "unknown"' 2>/dev/null || true)
-  print_error "#\${ISSUE_NUMBER} is a Pull Request, not an issue"
-  print_error "  PR title: \${_undo_title}"
-  exit 15
-fi
+# Load the shared helper (mirrors undo-workflow.sh's source line)
+source "${_pr_refusal_lib}"
+
+# Exercise the delegation pattern from undo-workflow.sh
+refuse_if_pr_number "\$ISSUE_NUMBER" "" "rite --undo" || exit 15
 
 # Should not reach here for a PR number
 echo "FAIL_MARKER: guard did not fire for PR number" >&2
@@ -1060,6 +1077,310 @@ STUB_EOF
 
   [ "$status" -eq 15 ] || {
     echo "FAIL: expected exit 15 for PR number in undo mode, got $status" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL: lib/utils/pr-refusal.sh — shared helper (this issue)
+# =============================================================================
+
+@test "structural: refuse_if_pr_number() function exists in lib/utils/pr-refusal.sh" {
+  grep -q "^refuse_if_pr_number()" "$PR_REFUSAL_LIB" || {
+    echo "FAIL: refuse_if_pr_number() not found in lib/utils/pr-refusal.sh" >&2
+    echo "      This is the shared canonical PR-refusal helper" >&2
+    return 1
+  }
+}
+
+@test "structural: lib/utils/pr-refusal.sh has a function-sentinel re-source guard" {
+  # The guard must use 'declare -f refuse_if_pr_number' so multiple sources are safe.
+  grep -q "declare -f refuse_if_pr_number" "$PR_REFUSAL_LIB" || {
+    echo "FAIL: No function-sentinel re-source guard found in lib/utils/pr-refusal.sh" >&2
+    echo "      Guard pattern: 'if declare -f refuse_if_pr_number >/dev/null 2>&1'" >&2
+    return 1
+  }
+}
+
+@test "structural: workflow-runner.sh sources pr-refusal.sh" {
+  grep -q "source.*pr-refusal.sh" "$WORKFLOW_RUNNER" || {
+    echo "FAIL: workflow-runner.sh does not source lib/utils/pr-refusal.sh" >&2
+    return 1
+  }
+}
+
+@test "structural: bin/rite sources pr-refusal.sh" {
+  grep -q "source.*pr-refusal.sh" "$RITE_BINARY" || {
+    echo "FAIL: bin/rite does not source lib/utils/pr-refusal.sh" >&2
+    return 1
+  }
+}
+
+@test "structural: undo-workflow.sh sources pr-refusal.sh" {
+  grep -q "source.*pr-refusal.sh" "$UNDO_WORKFLOW" || {
+    echo "FAIL: undo-workflow.sh does not source lib/utils/pr-refusal.sh" >&2
+    return 1
+  }
+}
+
+@test "structural: handle_pr_number_refused() in workflow-runner.sh delegates to refuse_if_pr_number" {
+  _func_body=$(awk '
+    /^handle_pr_number_refused[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print $0 }
+  ' "$WORKFLOW_RUNNER")
+
+  [ -n "$_func_body" ] || {
+    echo "FAIL: Could not extract handle_pr_number_refused function body" >&2
+    return 1
+  }
+
+  echo "$_func_body" | grep -q "refuse_if_pr_number" || {
+    echo "FAIL: handle_pr_number_refused() does not delegate to refuse_if_pr_number" >&2
+    echo "      The function must call the shared helper instead of duplicating logic" >&2
+    return 1
+  }
+}
+
+@test "structural: _reject_if_pr_number() in bin/rite delegates to refuse_if_pr_number" {
+  _func_body=$(awk '
+    /^_reject_if_pr_number[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print $0 }
+  ' "$RITE_BINARY")
+
+  [ -n "$_func_body" ] || {
+    echo "FAIL: Could not extract _reject_if_pr_number function body from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_func_body" | grep -q "refuse_if_pr_number" || {
+    echo "FAIL: _reject_if_pr_number() does not delegate to refuse_if_pr_number" >&2
+    echo "      The function must call the shared helper instead of duplicating logic" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: lib/utils/pr-refusal.sh — shared helper (this issue)
+# =============================================================================
+
+@test "behavioral: refuse_if_pr_number() returns 15 for a PR number" {
+  _script="$BATS_TEST_TMPDIR/test-rpn-pr-returns-15.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (PR_REFUSAL_LIB)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+print_error() { echo "ERROR: \$*" >&2; }
+
+# gh_safe stub: returns a /pull/ URL
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"url":"https://github.com/owner/repo/pull/490","title":"Old PR title"}'
+    return 0
+  fi
+  if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"body":""}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+source "${PR_REFUSAL_LIB}"
+
+_exit=0
+refuse_if_pr_number "490" "" "rite" || _exit=\$?
+
+if [ "\$_exit" -ne 15 ]; then
+  echo "FAIL: expected return 15 for PR number, got \$_exit" >&2
+  exit 1
+fi
+echo "PASS: refuse_if_pr_number returned 15 for PR number"
+exit 0
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PASS" || {
+    echo "FAIL: PASS marker not found" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: refuse_if_pr_number() returns 0 for a real issue number" {
+  _script="$BATS_TEST_TMPDIR/test-rpn-issue-returns-0.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (PR_REFUSAL_LIB)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+print_error() { echo "ERROR: \$*" >&2; }
+
+# gh_safe stub: returns an /issues/ URL (real issue, not PR)
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"url":"https://github.com/owner/repo/issues/839","title":"A real issue"}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+source "${PR_REFUSAL_LIB}"
+
+_exit=0
+refuse_if_pr_number "839" "" "rite" || _exit=\$?
+
+if [ "\$_exit" -ne 0 ]; then
+  echo "FAIL: expected return 0 for real issue, got \$_exit" >&2
+  exit 1
+fi
+echo "PASS: refuse_if_pr_number returned 0 for real issue"
+exit 0
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PASS" || {
+    echo "FAIL: PASS marker not found" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: refuse_if_pr_number() accepts pre-fetched ISSUE_DATA (no extra gh issue view call)" {
+  # When ISSUE_DATA is provided, gh_safe issue view must NOT be called.
+  # If it is called, the stub fails loudly.
+  _script="$BATS_TEST_TMPDIR/test-rpn-prefetched-data.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (PR_REFUSAL_LIB)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+print_error() { echo "ERROR: \$*" >&2; }
+
+# gh_safe stub: fails if called for 'issue view' (data was pre-fetched)
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo "FAIL: gh_safe issue view was called despite pre-fetched ISSUE_DATA" >&2
+    exit 2
+  fi
+  # pr view is allowed (linked-issue lookup)
+  if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"body":""}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+source "${PR_REFUSAL_LIB}"
+
+# Pre-fetched data with /pull/ URL — no extra API call should happen
+_prefetched='{"url":"https://github.com/owner/repo/pull/490","title":"Old PR"}'
+
+_exit=0
+refuse_if_pr_number "490" "\$_prefetched" "rite" || _exit=\$?
+
+if [ "\$_exit" -ne 15 ]; then
+  echo "FAIL: expected return 15 for pre-fetched PR data, got \$_exit" >&2
+  exit 1
+fi
+echo "PASS: refuse_if_pr_number used pre-fetched data without extra API call"
+exit 0
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PASS" || {
+    echo "FAIL: PASS marker not found" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: refuse_if_pr_number() uses CALLER_VERB in the error message" {
+  # The CALLER_VERB arg customizes the 'accepts issue numbers only' line.
+  # undo-workflow.sh passes 'rite --undo' so the message says
+  # 'rite --undo accepts issue numbers only.' instead of just 'rite'.
+  _script="$BATS_TEST_TMPDIR/test-rpn-caller-verb.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (PR_REFUSAL_LIB)
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+print_error() { echo "ERROR: \$*" >&2; }
+
+gh_safe() {
+  if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"url":"https://github.com/owner/repo/pull/490","title":"Old PR title"}'
+    return 0
+  fi
+  if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+    echo '{"body":""}'
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+source "${PR_REFUSAL_LIB}"
+
+_exit=0
+refuse_if_pr_number "490" "" "rite --undo" 2>/tmp/rpn_verb_stderr_\$\$ || _exit=\$?
+_stderr=\$(cat /tmp/rpn_verb_stderr_\$\$ || true)
+rm -f /tmp/rpn_verb_stderr_\$\$
+
+if [ "\$_exit" -ne 15 ]; then
+  echo "FAIL: expected return 15 for PR number, got \$_exit" >&2
+  exit 1
+fi
+
+if ! echo "\$_stderr" | grep -q "rite --undo"; then
+  echo "FAIL: CALLER_VERB 'rite --undo' not found in error message" >&2
+  echo "Stderr was: \$_stderr" >&2
+  exit 1
+fi
+echo "PASS: refuse_if_pr_number used CALLER_VERB in error message"
+exit 0
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PASS" || {
+    echo "FAIL: PASS marker not found" >&2
     echo "Output: $output" >&2
     return 1
   }
