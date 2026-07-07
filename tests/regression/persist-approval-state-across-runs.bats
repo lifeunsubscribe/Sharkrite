@@ -244,6 +244,11 @@ teardown() {
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
   mkdir -p "$exit_codes_dir"
 
+  # Collect background PIDs so we wait only for OUR jobs, not any bats-internal
+  # background processes — bare `wait` without PIDs can block on unrelated jobs
+  # and cause a 120 s bats timeout. (bats spawns background processes internally
+  # for output capture; waiting for all of them hangs the test indefinitely.)
+  local bg_pids=()
   for i in $(seq 1 $num_processes); do
     (
       # Give each subshell its own SESSION_STATE_FILE so concurrent processes do
@@ -255,9 +260,13 @@ teardown() {
       add_approved_blocker "issue-${i}" "blocker-${i}"
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    bg_pids+=($!)
   done
 
-  wait
+  # Wait only for the background subshells we spawned above.
+  for pid in "${bg_pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
 
   for i in $(seq 1 $num_processes); do
     [ -f "$exit_codes_dir/process_${i}.exit" ]

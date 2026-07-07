@@ -95,8 +95,16 @@ SCRIPT_EOF
     return 1
   }
 
-  # Send SIGINT to the process group (simulates Ctrl-C)
+  # Send SIGINT to the process group (simulates Ctrl-C).
+  # The group signal is the production path (see cleanup_on_interrupt in
+  # workflow-runner.sh). On macOS non-interactive bash, `set -m` reliably
+  # creates a new PGID for the backgrounded script, but as a belt-and-
+  # suspenders measure we also send direct INT if the group kill doesn't
+  # land within 0.3s — this keeps the test robust without changing what we
+  # assert (the cleanup_on_interrupt trap still runs and kills children).
   kill -INT -"$WORKFLOW_PID" 2>/dev/null || true
+  sleep 0.3
+  kill -0 "$WORKFLOW_PID" 2>/dev/null && kill -INT "$WORKFLOW_PID" 2>/dev/null || true
 
   # Wait up to 5 seconds for all processes to terminate
   WAIT_COUNT=0

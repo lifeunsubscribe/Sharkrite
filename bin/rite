@@ -1217,7 +1217,9 @@ _reject_if_pr_number() {
   # The helper fetches issue data, prints the canonical refusal message,
   # and returns 15 when the number resolves to a PR.
   # bin/rite uses exit (not return) because it is a top-level entrypoint.
-  refuse_if_pr_number "$_n" "" "rite" || exit 15
+  if ! refuse_if_pr_number "$_n" "" "rite"; then
+    exit 15
+  fi
 }
 
 # Normalize and resolve issue input.
