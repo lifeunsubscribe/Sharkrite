@@ -61,11 +61,18 @@ setup() {
     fi
   done
 
+  # `yes n |` (not </dev/null): install.sh has three OPTIONAL read -p prompts
+  # (deps-continue, brew bash, GNU parallel). On CI runners the parallel
+  # prompt fires (no parallel binary, brew present) and read-at-EOF dies
+  # under set -e BEFORE any copy — so the suite failed on CI while passing
+  # locally where all optional tools exist. A stream of "n" declines every
+  # optional install deterministically; the deps-continue prompt never fires
+  # because the stubs above satisfy the dep check.
   RITE_INSTALL_DIR="$_INSTALL_PREFIX" \
   HOME="$_FAKE_HOME" \
   RITE_BIN_DIR="$_FAKE_HOME/.local/bin" \
   PATH="$PATH:$_dep_stubs" \
-  bash "${RITE_REPO_ROOT}/install.sh" </dev/null >/dev/null 2>&1
+  bash -c 'yes n | bash "$1" >/dev/null 2>&1' _ "${RITE_REPO_ROOT}/install.sh"
 }
 
 teardown() {
