@@ -285,6 +285,13 @@ _stale_classify_after_push_rejection() {
   local pr_number="${4:-}"
   local workflow_mode="${5:-auto}"
   local base_branch="${6:-main}"
+  # Pre-rebase HEAD from the caller (#1012): the rebase at the call site has
+  # already rewritten HEAD, so anchoring foreign-commit computation to the
+  # CURRENT head counts the branch's own pre-rebase commits (old SHAs still
+  # on remote) as foreign. The pre-rebase tip is exactly what our last push
+  # (and the force-with-lease lease) knew about — commits beyond it are the
+  # truly foreign ones. Falls back to current HEAD when not supplied.
+  local pre_rebase_head="${7:-}"
 
   # Re-fetch to get the current remote state
   if ! git fetch origin "$branch_name" 2>/dev/null; then
@@ -302,6 +309,8 @@ _stale_classify_after_push_rejection() {
     return 1
   fi
 
+  local foreign_anchor="${pre_rebase_head:-$local_head}"
+
   # Check if local is now ahead-of or equal to remote (e.g., another process already
   # resolved the same race and the remote is now pointing at our commit or a descendant).
   if [ "$local_head" = "$remote_head" ]; then
@@ -309,14 +318,23 @@ _stale_classify_after_push_rejection() {
     return 0
   fi
 
-  # Count commits on remote that local doesn't have
+  # Count commits on remote that the last-pushed tip doesn't have
   local foreign_commits
-  foreign_commits=$(git log --oneline "${local_head}..${remote_head}" 2>/dev/null || true)
+  foreign_commits=$(git log --oneline "${foreign_anchor}..${remote_head}" 2>/dev/null || true)
 
   if [ -z "$foreign_commits" ]; then
-    # Local is ahead of remote (no foreign commits) — safe to retry push
-    print_info "No foreign commits found after re-fetch — remote may be behind ours"
-    return 0
+    # Remote is at/behind our last-pushed tip (e.g. a stale lease, or another
+    # client moved the ref backward). Nothing foreign to preserve — but the
+    # rejected push never landed, so retry it now that the :290 fetch has
+    # refreshed the lease. Returning 0 without pushing would report success
+    # on a branch that was never updated (#1012).
+    print_info "No foreign commits beyond our last-pushed tip — retrying push with refreshed lease"
+    if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+      print_success "Push succeeded on retry (no foreign commits)"
+      return 0
+    fi
+    print_error "Push still rejected with no foreign commits to classify — manual intervention needed"
+    return 1
   fi
 
   local foreign_count
@@ -342,24 +360,31 @@ _stale_classify_after_push_rejection() {
       _DIV_FALLBACK_CLASS="UNRELATED"
     fi
 
-    classify_foreign_commits "$branch_name" "$local_head" "$remote_head" "${issue_number:-}"
+    # Anchor classification to the pre-rebase tip: classify_foreign_commits
+    # derives its commit set and content diff from its local_head argument,
+    # so the post-rebase HEAD would feed it our own rewritten commits (#1012).
+    classify_foreign_commits "$branch_name" "$foreign_anchor" "$remote_head" "${issue_number:-}"
     local classification="${DIVERGENCE_CLASS:-UNRELATED}"
 
     case "$classification" in
       TRIVIAL)
-        # TRIVIAL discard is legal ONLY for commits provably content-empty vs base.
-        # Anchor the check to merge-base(local,remote) so that base-branch drift
-        # (commits on main that the remote merge brought in) does not inflate the
-        # diff and produce a false "non-empty" that wrongly forces preservation.
-        # `git diff merge-base..remote_head` shows what the foreign commits
-        # introduced beyond the common ancestor — the effective new content.
-        # If empty, the commits are a pure structural sync (mainline-sync merges
-        # whose effective patch set ⊆ base). If non-empty, the commits contain
-        # real changes that must survive: rebase onto base then cherry-pick on top.
-        local _trivial_merge_base
-        _trivial_merge_base=$(git merge-base "${local_head}" "${remote_head}" 2>/dev/null || true)
+        # TRIVIAL discard is legal ONLY for commits provably content-empty vs
+        # the tip we last pushed. remote_head descends from foreign_anchor in
+        # the normal race (the foreign push was a fast-forward on our tip), so
+        # `git diff foreign_anchor..remote_head` IS the effective foreign
+        # content — no merge-base needed (#1012 deleted that machinery: with
+        # the post-rebase head it regressed to the old fork point and pulled
+        # the branch's own feature diff into the check, making the discard
+        # path unreachable). If a concurrent client force-pushed rewritten
+        # history the diff may include rewritten copies of our commits —
+        # degraded but strictly no worse than the old behavior, and the
+        # cherry-pick below keeps become-empty replays instead of aborting.
+        # If empty, the commits are a pure structural sync (mainline-sync
+        # merges whose effective patch set ⊆ base). If non-empty, the commits
+        # contain real changes that must survive: rebase onto base then
+        # cherry-pick on top.
         local _trivial_content_diff
-        _trivial_content_diff=$(git diff "${_trivial_merge_base:-${local_head}}..${remote_head}" 2>/dev/null || true)
+        _trivial_content_diff=$(git diff "${foreign_anchor}..${remote_head}" 2>/dev/null || true)
 
         if [ -z "$_trivial_content_diff" ]; then
           # Content-empty vs merge-base: purely structural (mainline sync
@@ -403,9 +428,11 @@ _stale_classify_after_push_rejection() {
           # goal. Instead we replay foreign commits explicitly after the base rebase.
           print_warning "Foreign commits classified as TRIVIAL but contain code changes — preserving via cherry-pick replay"
 
-          # Collect foreign SHAs in order (oldest first for cherry-pick)
+          # Collect foreign SHAs in order (oldest first for cherry-pick),
+          # anchored to the pre-rebase tip (#1012) so the branch's own
+          # rewritten commits are not replayed as foreign.
           local _foreign_shas_ordered
-          _foreign_shas_ordered=$(git log --format="%H" "${local_head}..${remote_head}" --reverse 2>/dev/null || true)
+          _foreign_shas_ordered=$(git log --format="%H" "${foreign_anchor}..${remote_head}" --reverse 2>/dev/null || true)
 
           if [ -z "$_foreign_shas_ordered" ]; then
             print_error "Could not determine foreign commit SHAs — cannot preserve"
@@ -428,8 +455,11 @@ _stale_classify_after_push_rejection() {
           #     side), which replays the merge commit's changes onto the current HEAD.
           #   Now-empty commits: after rebasing onto origin/$base_branch the cherry-
           #     picked changes may already be present (content already on base).
-          #     Use --allow-empty so the cherry-pick records the commit instead of
-          #     failing — the empty commit is harmless and preserves the history.
+          #     --allow-empty only admits commits that were ALREADY empty; a commit
+          #     that BECOMES empty during the replay still stops the cherry-pick
+          #     ("The previous cherry-pick is now empty", rc=1). Pass
+          #     --keep-redundant-commits as well so become-empty replays are
+          #     recorded and the loop continues (#1012; verified on git 2.39.5).
           local _cherry_failed=false
           local _cherry_sha
           while IFS= read -r _cherry_sha; do
@@ -440,9 +470,9 @@ _stale_classify_after_push_rejection() {
             local _cherry_rc=0
             if [ "${_parent_count:-0}" -gt 1 ]; then
               # Merge commit: cherry-pick with -m 1 (mainline = first parent)
-              git cherry-pick -m 1 --allow-empty "$_cherry_sha" 2>/dev/null || _cherry_rc=$?
+              git cherry-pick -m 1 --allow-empty --keep-redundant-commits "$_cherry_sha" 2>/dev/null || _cherry_rc=$?
             else
-              git cherry-pick --allow-empty "$_cherry_sha" 2>/dev/null || _cherry_rc=$?
+              git cherry-pick --allow-empty --keep-redundant-commits "$_cherry_sha" 2>/dev/null || _cherry_rc=$?
             fi
             if [ "$_cherry_rc" -ne 0 ]; then
               # Cherry-pick conflict: halt or prompt
@@ -755,7 +785,9 @@ _stale_rebase_onto_main() {
       # deciding what to do — silently absorbing unreviewed foreign commits
       # would bypass the review cycle.
       print_warning "Push rejected after rebase (force-with-lease) — re-fetching to classify foreign commits"
-      _stale_classify_after_push_rejection "$worktree_path" "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode" "$base_branch"
+      # Pass the pre-rebase tip: the classifier must anchor foreign-commit
+      # computation to what our last push knew about, not the rewritten HEAD (#1012).
+      _stale_classify_after_push_rejection "$worktree_path" "$branch_name" "${issue_number:-}" "${pr_number:-}" "$workflow_mode" "$base_branch" "$pre_rebase_head"
       return $?
     fi
   else
