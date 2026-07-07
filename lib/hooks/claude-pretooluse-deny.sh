@@ -23,10 +23,24 @@ if declare -f _rite_hook_denial_reason >/dev/null 2>&1; then
 fi
 
 # Echo a human-readable reason and return 0 when $1 is a forbidden command;
-# return 1 (no output) when the command is allowed. Patterns use word anchors
-# ((^|[^[:alnum:]_]) ... ([[:space:]]|$)) so "makefile"/"cmake" don't match "make".
+# return 1 (no output) when the command is allowed. Two anchor conventions:
+# word anchors ((^|[^[:alnum:]_]) ... ([[:space:]]|$)) for tokens forbidden
+# anywhere in the string (git/gh/rm/network — "makefile"/"cmake" still don't
+# match "make"-style rules), and the command-POSITION anchor $_cmd_pos for
+# tokens forbidden only as the executed command (runners, env dumps), so path
+# arguments naming them don't trip the rule (issue #994).
 _rite_hook_denial_reason() {
   _cmd="$1"
+  # Command-position anchor (issue #994): start of the string or of a segment
+  # after ; & | ( $( `, optionally behind wrapper words (env/command/npx/
+  # nohup/time/xargs/sudo), a `[g]timeout [flags] DURATION` prefix, or VAR=val
+  # assignments. grep is line-based, so newline-separated commands anchor via
+  # ^ per line. A path ARGUMENT (cp tests/foo.bats /tmp) never sits at command
+  # position. The regex is quote-blind — two accepted residuals: a separator
+  # inside quotes ("echo 'a; bats b'") still denies (fails closed), and a
+  # runner quoted into a nested shell ("bash -c 'bats t/'") is allowed (fails
+  # open; the nested shell's own tool calls are still hook-gated).
+  _cmd_pos='(^|[;&|(]|[$][(]|`)[[:space:]]*((env|command|npx|nohup|time|xargs|sudo)[[:space:]]+|g?timeout[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[0-9]+[smhd]?[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
   # git commit / git push (read-only git is allowed: status, diff, log, add, ...)
   if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])git[[:space:]]+(commit|push)([^[:alnum:]_]|$)'; then
     echo "git commit/push is handled by the rite workflow after this session"; return 0
@@ -35,8 +49,13 @@ _rite_hook_denial_reason() {
   if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])gh([[:space:]]|$)'; then
     echo "gh commands are handled by the rite workflow, not the session"; return 0
   fi
-  # test/lint runners — these run in the post-commit gate, not in-session
-  if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])(make|bats|pytest)([[:space:]]|$)'; then
+  # test/lint runners — these run in the post-commit gate, not in-session.
+  # Command-position anchored (issue #994): a .bats/make/pytest path argument
+  # (cp/ls/bash -n/git add on a test file) must not deny. ([^[:space:];&|]*/)?
+  # keeps path-INVOKED runners denied (/usr/local/bin/bats, node_modules/.bin/
+  # bats); direct-exec of a test file (./tests/foo.bats) is deliberately
+  # allowed — the rule targets the runner, not test files named like it.
+  if printf '%s' "$_cmd" | grep -qE "${_cmd_pos}([^[:space:];&|]*/)?(make|bats|pytest|python[0-9.]*[[:space:]]+-m[[:space:]]+pytest)([[:space:]]|$)"; then
     echo "test/lint runners run in the post-commit gate; do not run them in-session"; return 0
   fi
   # rm -rf / rm -fr (any flag bundle containing both r and f)
@@ -47,8 +66,10 @@ _rite_hook_denial_reason() {
   if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])(ssh|scp|curl|wget)([[:space:]]|$)'; then
     echo "remote/network access is blocked in-session"; return 0
   fi
-  # environment / credential dumps (env / printenv as a command, not env-prefix vars)
-  if printf '%s' "$_cmd" | grep -qE '(^|[;&|][[:space:]]*)(env|printenv)([[:space:]]|$)'; then
+  # environment / credential dumps (env / printenv as a command). Shares the
+  # command-position anchor — strict superset of the old bespoke (^|[;&|]…)
+  # anchor (additionally denies "FOO=1 env"; allows nothing new).
+  if printf '%s' "$_cmd" | grep -qE "${_cmd_pos}(env|printenv)([[:space:]]|$)"; then
     echo "environment dumps are blocked in-session"; return 0
   fi
   # sensitive paths (shells rc, ssh keys, system config)
