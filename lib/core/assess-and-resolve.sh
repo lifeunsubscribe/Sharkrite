@@ -1201,7 +1201,8 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       echo ""
       # Mark as skipped so the normal failure-processing block below does not fire
       # and GATE_NOW_COUNT stays 0. The early exit at 'zero findings + gate passed'
-      # will also be blocked because we set _gate_skipped=true here.
+      # is also guarded by _gate_verdict_is_stale so a stale PASS cannot authorize
+      # a merge even when the review has zero findings.
       _gate_skipped="true"
     else
       # Gate FAILED at a superseded SHA — still report it (conservative).
@@ -1305,7 +1306,8 @@ fi
 REVIEW_FINDINGS_LINE=$(grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" "$REVIEW_FILE" 2>/dev/null | head -1 || true)
 if [ -n "$REVIEW_FINDINGS_LINE" ]; then
   REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
-  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ]; then
+  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ] \
+     && [ "${_gate_verdict_is_stale:-false}" != "true" ]; then
     print_header "🦈 Smart Assessment (Sharkrite)"
     print_success "Review has zero findings and gate passed — skipping assessment, proceeding to merge"
     echo ""

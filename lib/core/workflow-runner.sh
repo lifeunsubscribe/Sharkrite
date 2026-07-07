@@ -2736,13 +2736,20 @@ run_workflow() {
         _resume_assess_sha=$(extract_assessment_sha "$pr_latest_assessment" || true)
         _resume_assess_sha="${_resume_assess_sha:-}"
 
-        # _remote_head is already resolved above (same git query used for unpushed check).
+        # Use resolve_pr_head_sha (API-authoritative, falls back to local git) rather
+        # than _remote_head (local origin/<branch> ref) — the two can diverge if the
+        # remote was updated after the last fetch of this worktree.  Consistent with
+        # the phase_assess_and_resolve entry check at line ~1208.
+        local _resume_head_sha
+        _resume_head_sha=$(resolve_pr_head_sha "$PR_NUMBER" "${WORKTREE_PATH:-}" || true)
+        _resume_head_sha="${_resume_head_sha:-}"
+
         local _resume_assess_is_current=false
-        if [ -n "$_resume_assess_sha" ] && [ -n "${_remote_head:-}" ]; then
-          if [ "$_resume_assess_sha" = "$_remote_head" ]; then
+        if [ -n "$_resume_assess_sha" ] && [ -n "${_resume_head_sha:-}" ]; then
+          if [ "$_resume_assess_sha" = "$_resume_head_sha" ]; then
             _resume_assess_is_current=true
           else
-            print_warning "Cached assessment is stale — assessment covers ${_resume_assess_sha:0:8}, HEAD is ${_remote_head:0:8}"
+            print_warning "Cached assessment is stale — assessment covers ${_resume_assess_sha:0:8}, HEAD is ${_resume_head_sha:0:8}"
             print_warning "Re-assessing to ensure verdict covers the current commit"
             echo ""
           fi

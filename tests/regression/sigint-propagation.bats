@@ -87,9 +87,10 @@ SCRIPT_EOF
   sleep 1
 
   # Verify child processes exist (tee and perl from logging pipeline)
-  # This confirms the pipeline is actually running
-  CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" | wc -l | tr -d ' ')
-  [ "$CHILD_COUNT" -gt 0 ] || {
+  # This confirms the pipeline is actually running.
+  # pgrep exits 1 when no matches — add || true to avoid pipefail failure.
+  CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "${CHILD_COUNT:-0}" -gt 0 ] || {
     echo "ERROR: No child processes found. Pipeline may not have started." >&2
     kill "$WORKFLOW_PID" 2>/dev/null || true
     return 1
@@ -113,8 +114,18 @@ SCRIPT_EOF
   run kill -0 "$WORKFLOW_PID" 2>&1
   [ "$status" -ne 0 ]
 
-  # Verify all child processes are dead (no orphaned tee or perl)
-  ORPHAN_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ')
+  # Verify all child processes are dead (no orphaned tee or perl).
+  # Brief retry: on macOS, SIGKILL-killed children can transiently appear in
+  # pgrep output for a few milliseconds before the kernel updates the process
+  # table. Re-check up to 5 times with 0.1s gaps before declaring failure.
+  ORPHAN_COUNT=1
+  _orphan_checks=0
+  while [ "$ORPHAN_COUNT" -gt 0 ] && [ "$_orphan_checks" -lt 5 ]; do
+    sleep 0.1
+    ORPHAN_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
+    ORPHAN_COUNT="${ORPHAN_COUNT:-0}"
+    _orphan_checks=$((_orphan_checks + 1))
+  done
   [ "$ORPHAN_COUNT" -eq 0 ]
 
   # Cleanup should have been fast (< 5 seconds)
@@ -187,9 +198,9 @@ SCRIPT_EOF
   run kill -0 "$WORKFLOW_PID" 2>&1
   [ "$status" -ne 0 ]
 
-  # Verify no orphans
-  ORPHAN_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ')
-  [ "$ORPHAN_COUNT" -eq 0 ]
+  # Verify no orphans (pgrep exits 1 on no match; || true prevents pipefail kill)
+  ORPHAN_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "${ORPHAN_COUNT:-0}" -eq 0 ]
 }
 
 @test "process group kill handles double interrupt (force exit)" {

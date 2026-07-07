@@ -216,3 +216,107 @@ setup() {
   run grep -A5 "RITE_MARKER_ASSESSMENT" "$RITE_REPO_ROOT/lib/utils/markers.sh"
   [[ "$output" == *"commit:"* ]]
 }
+
+# =============================================================================
+# SURFACE 1 behavioral: stale gate PASS must not authorize merge via early exit
+# =============================================================================
+
+@test "behavioral: stale gate PASS + zero-finding review does NOT reach exit 0 (early-exit blocked)" {
+  # Fixture: replicate the gate-staleness check + early-exit decision path from
+  # assess-and-resolve.sh lines 1115-1262. A PASSING gate verdict from SHA A
+  # combined with a zero-finding review must NOT exit 0 when the current HEAD
+  # is SHA B. Before the #985/#986 fix, _gate_verdict_is_stale was set to true
+  # but the early-exit at 'zero findings + gate passed' did not check it,
+  # allowing a stale PASS to authorize a merge (PR #674 incident class).
+  run bash -c '
+    set -euo pipefail
+
+    # Minimal stubs for the decision logic under test.
+    print_warning() { echo "WARN: $*" >&2; }
+    print_success() { echo "OK: $*" >&2; }
+    print_header()  { true; }
+
+    # Gate findings file: gate PASSED at SHA A.
+    GATE_FILE=$(mktemp)
+    printf '"'"'{"exit_code":0,"head_sha":"sha-a-stale111","lint":[],"tests":[],"skipped":false}'"'"' > "$GATE_FILE"
+
+    # Review file: zero findings (the path that previously triggered early exit 0).
+    REVIEW_FILE=$(mktemp)
+    printf '"'"'Findings: CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0\n'"'"' > "$REVIEW_FILE"
+
+    # Current HEAD is SHA B (different from gate SHA A).
+    CURRENT_HEAD_SHA="sha-b-current222"
+
+    # --- Gate staleness check (mirrors assess-and-resolve.sh) ---
+    GATE_NOW_COUNT=0
+    _gate_skipped=$(jq -r '"'"'.skipped // false'"'"' "$GATE_FILE")
+    _gate_exit_code=$(jq -r '"'"'.exit_code // 0'"'"' "$GATE_FILE")
+    _gate_verdict_sha=$(jq -r '"'"'.head_sha // ""'"'"' "$GATE_FILE")
+    _gate_verdict_is_stale=false
+
+    if [ -n "$_gate_verdict_sha" ] && [ -n "${CURRENT_HEAD_SHA:-}" ] \
+       && [ "$_gate_verdict_sha" != "$CURRENT_HEAD_SHA" ]; then
+      if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -eq 0 ]; then
+        _gate_verdict_is_stale=true
+        _gate_skipped="true"
+      fi
+    fi
+
+    # --- Early-exit decision (mirrors the fixed assess-and-resolve.sh) ---
+    REVIEW_FINDINGS_LINE=$(grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" "$REVIEW_FILE" | head -1 || true)
+    if [ -n "$REVIEW_FINDINGS_LINE" ]; then
+      REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '"'"'{sum += $1} END {print sum}'"'"' || true)
+      if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ] \
+         && [ "${_gate_verdict_is_stale:-false}" != "true" ]; then
+        # This must NOT be reached — a stale gate PASS cannot authorize a merge.
+        echo "BUG: early exit reached with stale gate PASS — PR #674 class regression"
+        exit 0
+      fi
+    fi
+
+    # Correct outcome: early exit was blocked, processing continues.
+    echo "CORRECT: early exit blocked, stale gate PASS did not authorize merge"
+    exit 2   # any non-zero exit signals the caller that assessment must proceed
+
+    rm -f "$GATE_FILE" "$REVIEW_FILE" 2>/dev/null || true
+  '
+  # The subprocess must NOT exit 0 (which would indicate the merge was wrongly authorized).
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"CORRECT: early exit blocked"* ]]
+}
+
+@test "source: early-exit guard includes _gate_verdict_is_stale check" {
+  # Structural pin: the early-exit condition at 'zero findings + gate passed' must
+  # include the _gate_verdict_is_stale guard. This is the specific fix for the HIGH
+  # finding that a stale PASS can reach exit 0 via GATE_NOW_COUNT=0 + REVIEW=0.
+  # Source-grep is appropriate here because the invariant is about the guard's
+  # PRESENCE in the condition — structural, not about logic paths (behavioral test above).
+  run grep -n "_gate_verdict_is_stale" "$RITE_REPO_ROOT/lib/core/assess-and-resolve.sh"
+  [ "$status" -eq 0 ]
+  # Must appear at both the DETECTION site (set to true) and the early-exit GUARD.
+  run grep -c "_gate_verdict_is_stale" "$RITE_REPO_ROOT/lib/core/assess-and-resolve.sh"
+  [ "$output" -ge 3 ]
+}
+
+# =============================================================================
+# SURFACE 2 behavioral: resume block uses resolve_pr_head_sha for SHA comparison
+# =============================================================================
+
+@test "source: run_workflow resume block uses resolve_pr_head_sha not _remote_head for assessment SHA check" {
+  # The resume skip-to-merge check must use resolve_pr_head_sha (API-authoritative)
+  # not _remote_head (local cached ref) for the assessment currency comparison.
+  # _remote_head can be stale if the remote was updated without a fetch to this
+  # worktree — using it would accept a stale cached assessment as current.
+  #
+  # Structural pin: verify _resume_head_sha (the local variable set by the
+  # resolve_pr_head_sha call) is used in the comparison at the resume block.
+  run grep -n "_resume_head_sha" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+  [ "$status" -eq 0 ]
+  # Both the assignment (resolve call) and comparisons must be present.
+  run grep -c "_resume_head_sha" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+  [ "$output" -ge 3 ]
+  # The resolve_pr_head_sha call must be at the resume block (not only at phase entry).
+  # We verify by checking that it appears at least twice in workflow-runner.sh total.
+  run grep -c "resolve_pr_head_sha" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+  [ "$output" -ge 2 ]
+}
