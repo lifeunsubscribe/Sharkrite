@@ -848,3 +848,125 @@ EOF
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# 6. No-bats-suite skip (issue #976)
+# ---------------------------------------------------------------------------
+# A Sharkrite repo with no *.bats files under tests/ (or no tests/ dir at all)
+# must produce outcome=skipped reason=no_bats_suite, NOT a gate failure.
+# Live trigger: LeadFlow PRs #598 #607 #618 #630 each minted a phantom HIGH
+# [GATE] bats failure because bats -r tests/ exited non-zero on an empty suite.
+
+@test "no-bats-suite: Sharkrite repo with no .bats files passes gate (not failed)" {
+  # Build a minimal Sharkrite-like fixture: Makefile with shellcheck: + lint:
+  # targets that succeed instantly (no real shell files to check), and no
+  # tests/ directory at all.
+  #
+  # Expected outcome: gate exits 0 (passes) with exit_code:0 and tests:[] —
+  # no [GATE] ACTIONABLE_NOW finding minted. The bats step is skipped internally
+  # and the diag emits reason=no_bats_suite; the gate JSON itself is a clean pass
+  # (lint OK, no bats failures) rather than a skip-sentinel (skipped:true is only
+  # for whole-gate skips like missing_runner / missing_worktree).
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: no variables to expand; heredoc used for clarity
+  cat > "$TEST_REPO/Makefile" <<'EOF'
+.PHONY: shellcheck lint
+shellcheck:
+	@true
+lint:
+	@true
+EOF
+
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=999
+    _diag() { true; }; export -f _diag 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
+  " </dev/null
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (make or bats not installed)"
+
+  # Gate must NOT have failed (exit_code must be 0)
+  local _exit_code
+  _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
+  [ "${_exit_code:-}" = "0" ] || {
+    echo "FAIL: gate should exit_code:0 for a repo with no .bats files (not failed)"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  # tests[] must be empty — no [GATE] findings minted
+  local _tests
+  _tests=$(grep -o '"tests":\[\]' "$TEST_REPO/gate.json" || true)
+  [ -n "$_tests" ] || {
+    echo "FAIL: expected tests:[] (no findings) for a repo with no .bats files"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+
+  # The gate output must mention the bats skip message (emitted to stderr)
+  [[ "$output" == *"bats: skipped (no bats suite)"* ]] || {
+    echo "FAIL: expected '[test-gate] bats: skipped (no bats suite)' in gate output"
+    echo "Gate output: $output"
+    false
+  }
+}
+
+@test "no-bats-suite: Sharkrite repo with empty tests/ dir (no .bats) passes gate" {
+  # Same scenario but the tests/ directory exists — just contains no .bats files.
+  # bats -r tests/ on an empty dir also exits non-zero; the guard fires before
+  # attempting the invocation so the gate still exits 0 with no findings.
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: no variables to expand; heredoc used for clarity
+  cat > "$TEST_REPO/Makefile" <<'EOF'
+.PHONY: shellcheck lint
+shellcheck:
+	@true
+lint:
+	@true
+EOF
+  mkdir -p "$TEST_REPO/tests"
+  # tests/ exists but contains only a non-bats file
+  printf '# placeholder\n' > "$TEST_REPO/tests/README.md"
+
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=999
+    _diag() { true; }; export -f _diag 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
+  " </dev/null
+
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (make or bats not installed)"
+
+  local _exit_code
+  _exit_code=$(grep -o '"exit_code":[0-9]*' "$TEST_REPO/gate.json" | grep -o '[0-9]*' || true)
+  [ "${_exit_code:-}" = "0" ] || {
+    echo "FAIL: gate should exit_code:0 for Sharkrite repo with tests/ but no .bats files"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    echo "Gate output: $output"
+    false
+  }
+
+  local _tests
+  _tests=$(grep -o '"tests":\[\]' "$TEST_REPO/gate.json" || true)
+  [ -n "$_tests" ] || {
+    echo "FAIL: expected tests:[] for a repo with no .bats files (no findings)"
+    echo "JSON: $(cat "$TEST_REPO/gate.json")"
+    false
+  }
+}
+
+@test "static: no_bats_suite skip guard present in source" {
+  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
+  # The no-bats-suite skip branch must emit the structured diag and message.
+  grep -q 'no_bats_suite' "$_script" || {
+    echo "FAIL: 'no_bats_suite' not found in test-gate.sh"
+    echo "      The bats-skip guard must emit reason=no_bats_suite when no .bats files exist."
+    false
+  }
+  grep -q 'bats: skipped (no bats suite)' "$_script" || {
+    echo "FAIL: 'bats: skipped (no bats suite)' message not found in test-gate.sh"
+    false
+  }
+}
