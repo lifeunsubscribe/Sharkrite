@@ -683,3 +683,262 @@ Objective gate failure.
   run grep -A1 '_post_gate_fallback_assessment_comment "\$PR_NUMBER" "\$ASSESSMENT_RESULT" "\$ACTIONABLE_NOW_COUNT"' "${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# #985: Grouped comment + split counts when both origins present
+# ---------------------------------------------------------------------------
+#
+# These tests cover the "both gate and review ACTIONABLE_NOW items" path:
+#   - _post_gate_fallback_assessment_comment with _now_review_count > 0 must
+#     group items under #### Failed tests (gate) and #### Review findings
+#   - The Summary ACTIONABLE_NOW line must carry the split annotation
+#   - The ASSESSMENT diag line must include now_gate= and now_review= fields
+#   - Fix-mode extraction must still capture ALL ACTIONABLE_NOW blocks
+#     from the grouped comment (both gate and review groups)
+#
+# Harness: uses a new succeeding stub that outputs ACTIONABLE_NOW review items
+# alongside the gate findings, triggering the merged (#949) + grouped (#985) path.
+
+# Installs a succeeding assess-review-issues.sh stub that outputs one
+# ACTIONABLE_NOW review item — triggering the merged #949 + grouped #985 path.
+_setup_mock_lib_tree_now_review_item() {
+  mkdir -p "$MOCK_LIB_DIR/core"
+  mkdir -p "$MOCK_LIB_DIR/utils"
+
+  for _f in "$RITE_REPO_ROOT/lib/utils/"*.sh; do
+    ln -sf "$_f" "$MOCK_LIB_DIR/utils/$(basename "$_f")"
+  done
+  for _f in "$RITE_REPO_ROOT/lib/core/"*.sh; do
+    ln -sf "$_f" "$MOCK_LIB_DIR/core/$(basename "$_f")"
+  done
+
+  # Override: assess-review-issues.sh — outputs ONE ACTIONABLE_NOW review item.
+  rm -f "$MOCK_LIB_DIR/core/assess-review-issues.sh"
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded
+  cat > "$MOCK_LIB_DIR/core/assess-review-issues.sh" << ASSESS_NOW_STUB_EOF
+#!/usr/bin/env bash
+# Stub: outputs one ACTIONABLE_NOW review item (triggers #949 merged path).
+set -euo pipefail
+_ts=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+_pr="\${1:-0}"
+_body_file=\$(mktemp)
+printf '%s' "<!-- sharkrite-assessment pr:\${_pr} iteration:1 timestamp:\${_ts} -->
+
+## Sharkrite Assessment
+### Summary
+- **ACTIONABLE_NOW:** 1 items
+
+---
+
+### Input validation missing - ACTIONABLE_NOW
+**Severity:** HIGH
+**Location:** lib/core/config.sh:10
+" > "\$_body_file"
+gh pr comment "\$_pr" --body-file "\$_body_file" >/dev/null 2>&1 || true
+rm -f "\$_body_file"
+
+printf '%s\n' \
+  "### Input validation missing - ACTIONABLE_NOW" \
+  "**Severity:** HIGH" \
+  "**Location:** lib/core/config.sh:10"
+exit 0
+ASSESS_NOW_STUB_EOF
+  chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
+
+  # Override: format-review.sh — no-op display stub.
+  rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
+  cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
+#!/usr/bin/env bash
+# Stub format-review.sh: no-op.
+exit 0
+FORMAT_STUB_EOF
+  chmod +x "$MOCK_LIB_DIR/utils/format-review.sh"
+}
+
+@test "#985: merged comment (gate + review) groups items under sub-headings in posted comment" {
+  rm -rf "$MOCK_LIB_DIR"
+  _setup_mock_lib_tree_now_review_item
+
+  _write_gate_findings_with_failure
+
+  run_assess_and_resolve 90 55
+
+  [ "$status" -eq 2 ] || {
+    echo "FAIL: expected exit 2 (gate-forced fix loop), got $status"
+    echo "Output: ${output:0:1500}"
+    false
+  }
+
+  # The LAST comment is the merged #949 superseding comment.
+  local _last_comment
+  _last_comment=$(jq -r --arg pr "90" \
+    'if has($pr) then .[$pr][-1].body else "" end' \
+    "$GH_MOCK_STATE_DIR/pr-comments.json")
+
+  [ -n "$_last_comment" ] || {
+    echo "FAIL: no PR comment recorded for PR #90"
+    cat "$GH_MOCK_STATE_DIR/pr-comments.json"
+    false
+  }
+
+  # Must have the #### Failed tests (gate) sub-heading.
+  echo "$_last_comment" | grep -q "#### Failed tests (gate)" || {
+    echo "FAIL: merged comment missing '#### Failed tests (gate)' sub-heading"
+    echo "Comment: ${_last_comment:0:1200}"
+    false
+  }
+
+  # Must have the #### Review findings sub-heading.
+  echo "$_last_comment" | grep -q "#### Review findings" || {
+    echo "FAIL: merged comment missing '#### Review findings' sub-heading"
+    echo "Comment: ${_last_comment:0:1200}"
+    false
+  }
+
+  # Both item types must be present.
+  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure" || {
+    echo "FAIL: merged comment missing the gate item"
+    echo "Comment: ${_last_comment:0:1200}"
+    false
+  }
+  echo "$_last_comment" | grep -q "^### Input validation missing - ACTIONABLE_NOW" || {
+    echo "FAIL: merged comment missing the review item"
+    echo "Comment: ${_last_comment:0:1200}"
+    false
+  }
+}
+
+@test "#985: Summary ACTIONABLE_NOW line shows split annotation (gate=N, review=N)" {
+  rm -rf "$MOCK_LIB_DIR"
+  _setup_mock_lib_tree_now_review_item
+
+  _write_gate_findings_with_failure
+
+  run_assess_and_resolve 91 56
+
+  [ "$status" -eq 2 ] || {
+    echo "FAIL: expected exit 2, got $status"
+    echo "Output: ${output:0:1500}"
+    false
+  }
+
+  local _last_comment
+  _last_comment=$(jq -r --arg pr "91" \
+    'if has($pr) then .[$pr][-1].body else "" end' \
+    "$GH_MOCK_STATE_DIR/pr-comments.json")
+
+  # The Summary ACTIONABLE_NOW line must carry the split annotation.
+  # Format: ACTIONABLE_NOW: 2 items (1 failed tests, 1 review) (fix in this PR)
+  echo "$_last_comment" | grep -qE "\*\*ACTIONABLE_NOW:\*\* [0-9]+ items \([0-9]+ failed tests, [0-9]+ review\)" || {
+    echo "FAIL: Summary ACTIONABLE_NOW line missing split annotation '(N failed tests, N review)'"
+    echo "Comment summary section:"
+    echo "$_last_comment" | grep -A4 "### Summary" || true
+    false
+  }
+}
+
+@test "#985 source: ASSESSMENT diag line carries now_gate= and now_review= fields" {
+  # Structural pin: _diag is a no-op in the subprocess harness, so we verify
+  # the _diag call site in source rather than running a subprocess.
+  # This is a legitimate structural check: the format of the diag emission line
+  # is a wiring invariant (health-report parsers key on these field names) that
+  # cannot be expressed by a behavioral test without removing the _diag no-op.
+  local _assess_file="${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  run grep -n 'now_gate=' "$_assess_file"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: now_gate= field not found in _diag call in assess-and-resolve.sh"
+    false
+  }
+  run grep -n 'now_review=' "$_assess_file"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: now_review= field not found in _diag call in assess-and-resolve.sh"
+    false
+  }
+  # Verify both fields appear on the same _diag "ASSESSMENT" line.
+  run grep -E '_diag.*ASSESSMENT.*now_gate=.*now_review=' "$_assess_file"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _diag ASSESSMENT line does not carry both now_gate= and now_review= fields on the same line"
+    grep '_diag.*ASSESSMENT' "$_assess_file" || true
+    false
+  }
+}
+
+@test "#985: fix-mode extraction captures ALL ACTIONABLE_NOW blocks from grouped comment (gate + review)" {
+  # This extends the #949 parse-through test to verify both groups survive extraction.
+  # The grouped comment has sub-headings between item blocks; the awk extractor
+  # must be unaffected (it triggers on ^### not ^####).
+  merged_grouped_comment='<!-- sharkrite-assessment pr:99 iteration:1 timestamp:T -->
+
+## 🔍 Sharkrite Assessment
+
+**Model:** merged — LLM assessment + 1 gate finding(s) (#949)
+
+### Summary
+- **ACTIONABLE_NOW:** 2 items (1 failed tests, 1 review) (fix in this PR)
+
+---
+
+#### Failed tests (gate)
+
+### [GATE] bats failure: tests/regression/foo.bats - ACTIONABLE_NOW
+**Severity:** HIGH
+Objective gate failure.
+
+#### Review findings
+
+### Input not sanitized - ACTIONABLE_NOW
+**Severity:** HIGH
+**Location:** lib/core/config.sh:10
+Subjective review finding.'
+
+  # Fix mode pipeline: strip to first ---, then extract NOW blocks (verbatim awk).
+  content=$(echo "$merged_grouped_comment" | sed -n '/^---$/,$p' | tail -n +2)
+  now_items=$(echo "$content" | awk '/^### .* - ACTIONABLE_NOW$/ { printing=1 } /^### .* - (ACTIONABLE_LATER|DISMISSED)$/ { printing=0 } /^(✅|───|━━)/ { printing=0 } printing { print }')
+
+  # Both groups must be captured.
+  [[ "$now_items" == *"[GATE] bats failure: tests/regression/foo.bats"* ]] || {
+    echo "FAIL: gate item not captured by fix-mode awk from grouped comment"
+    echo "Extracted: ${now_items:0:600}"
+    false
+  }
+  [[ "$now_items" == *"Input not sanitized"* ]] || {
+    echo "FAIL: review item not captured by fix-mode awk from grouped comment"
+    echo "Extracted: ${now_items:0:600}"
+    false
+  }
+
+  # Sub-headings must NOT become separate extracted items (#### level, not ###).
+  local _count
+  _count=$(echo "$now_items" | grep -c "^### .* - ACTIONABLE_NOW" || true)
+  [ "$_count" -eq 2 ] || {
+    echo "FAIL: expected exactly 2 ACTIONABLE_NOW blocks extracted, got $_count"
+    echo "Extracted: ${now_items:0:600}"
+    false
+  }
+
+  # DISMISSED/LATER items and sub-headings must not leak into the extracted output
+  [[ "$now_items" != *"DISMISSED"* ]] || {
+    echo "FAIL: DISMISSED item leaked into ACTIONABLE_NOW extraction"
+    false
+  }
+  [ -n "$now_items" ]
+}
+
+@test "#985 invariant: assess-and-resolve.sh introduces no new ### - STATE header grammar" {
+  # Three-state machine invariant: origin grouping is via #### sub-headings (H4),
+  # never new H3 (###) state tokens. This pin asserts that no line in
+  # assess-and-resolve.sh echoes or prints a new `### ... - <STATE>` pattern
+  # beyond the three canonical states.
+  # (make check catches this too via the grammar; this bats pin is the runtime guard.)
+  local _assess_file="${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  local _bad_states
+  _bad_states=$(grep -oE '"### .* - [A-Z_]+"' "$_assess_file" | \
+    grep -vE '"### .*- (ACTIONABLE_NOW|ACTIONABLE_LATER|DISMISSED)"' | \
+    grep -vE '^\s*#' || true)
+  if [ -n "$_bad_states" ]; then
+    echo "FAIL: new ### - STATE header string introduced in assess-and-resolve.sh"
+    echo "Found: $_bad_states"
+    return 1
+  fi
+  true
+}

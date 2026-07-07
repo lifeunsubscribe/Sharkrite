@@ -128,3 +128,62 @@ setup() {
   fi
   true
 }
+
+# ---------------------------------------------------------------------------
+# #985: Fix prompt must present gate and review items as distinct sections
+# ---------------------------------------------------------------------------
+
+@test "#985: fix prompt splits gate items into 'Failing tests' section when both origins present" {
+  # Structural pin: the fix prompt code path must define the gate section heading.
+  # When _fix_gate_count > 0 AND _fix_review_count > 0, the prompt uses a sectioned
+  # layout with explicit headings — the session must not treat a red test as prose feedback.
+  if ! grep -q 'Failing tests' "$WORKFLOW_FILE"; then
+    echo "FAIL: 'Failing tests' section heading not found in claude-workflow.sh fix prompt"
+    return 1
+  fi
+  true
+}
+
+@test "#985: fix prompt presents 'Review findings' section for LLM items when both origins present" {
+  if ! grep -q 'Review findings' "$WORKFLOW_FILE"; then
+    echo "FAIL: 'Review findings' section heading not found in claude-workflow.sh fix prompt"
+    return 1
+  fi
+  true
+}
+
+@test "#985: fix prompt falls back to flat list when only gate items (no review items)" {
+  # When only gate items are present, the prompt must NOT add a 'Failing tests'
+  # section header — the condition guards on BOTH counts being > 0.
+  # Structural pin: the guard condition must check _fix_review_count.
+  if ! grep -q '_fix_review_count' "$WORKFLOW_FILE"; then
+    echo "FAIL: _fix_review_count guard not found — flat-list fallback condition missing"
+    return 1
+  fi
+  true
+}
+
+@test "#985: fix prompt Failing tests section instructs 'fix the code or the test'" {
+  # Wording contract: gate failures need a different fix instruction than review findings.
+  # The session should know it may need to fix the test assertion, not just the code.
+  if ! grep -q 'fix the code or the test' "$WORKFLOW_FILE"; then
+    echo "FAIL: 'fix the code or the test' instruction not found in claude-workflow.sh"
+    return 1
+  fi
+  true
+}
+
+@test "#985: three-state machine invariant: no new STATE headers beyond ACTIONABLE_NOW/LATER/DISMISSED" {
+  # The sub-headings introduced by #985 use #### (H4) level, not ### (H3).
+  # ### level is reserved for the three assessment states. This pin asserts no
+  # new ### - <STATE> patterns were added (the grammar is unchanged).
+  local _new_states
+  _new_states=$(grep -oE '^### .* - [A-Z_]+$' "$WORKFLOW_FILE" | \
+    grep -vE ' - (ACTIONABLE_NOW|ACTIONABLE_LATER|DISMISSED)$' || true)
+  if [ -n "$_new_states" ]; then
+    echo "FAIL: new ### - STATE header grammar introduced in claude-workflow.sh"
+    echo "Found: $_new_states"
+    return 1
+  fi
+  true
+}
