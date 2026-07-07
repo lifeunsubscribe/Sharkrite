@@ -23,6 +23,9 @@ fi
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
+# Source git helpers (provides rmdir_empty_worktree_container — used in
+# _stale_close_and_cleanup to remove empty worktree container dirs)
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
 
 # Source logging for _diag structured diagnostic lines (no-op if already loaded)
 if ! declare -f _diag >/dev/null 2>&1; then
@@ -1096,6 +1099,8 @@ _stale_close_and_cleanup() {
   # 4. Remove worktree (local filesystem — safe regardless of PR close result)
   if git worktree remove "$worktree_path" --force 2>/dev/null; then
     print_info "Removed worktree: $(basename "$worktree_path")"
+    # Rmdir the worktree dir if it is now empty and lives inside RITE_WORKTREE_DIR
+    rmdir_empty_worktree_container "$worktree_path" "$RITE_WORKTREE_DIR"
   else
     print_warning "Failed to remove worktree: $worktree_path"
   fi

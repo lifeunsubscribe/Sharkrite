@@ -72,6 +72,9 @@ MERGE_PR="$RITE_LIB_DIR/core/merge-pr.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/timeout.sh"
+# Source git helpers (provides rmdir_empty_worktree_container — used in
+# handle_closed_issue cleanup to remove empty worktree container dirs)
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
 ensure_timeout_cmd
 
 # ===================================================================
@@ -2349,6 +2352,8 @@ handle_closed_issue() {
         [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
         found_local_orphans=true
         echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
+        # Rmdir the worktree dir if it is now empty and lives inside RITE_WORKTREE_DIR
+        rmdir_empty_worktree_container "$wt_path" "$RITE_WORKTREE_DIR"
       fi
     fi
 

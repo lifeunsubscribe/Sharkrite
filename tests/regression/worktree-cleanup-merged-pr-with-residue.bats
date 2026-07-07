@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh, lib/utils/git-helpers.sh
+# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh, lib/utils/git-helpers.sh, lib/core/workflow-runner.sh, lib/utils/stale-branch.sh
 # Regression test: worktree auto-cleanup correctly detects merged PRs
 # Issue #182
 #
@@ -290,4 +290,50 @@ CLEANUP_WT="$SCRIPT_DIR/lib/utils/cleanup-worktrees.sh"
     echo "FAIL: rmdir_empty_worktree_container (line $rmdir_line) must come after git worktree remove (line $remove_line)"
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# Sibling worktree-removal sites (#980)
+# workflow-runner.sh handle_closed_issue + stale-branch.sh _stale_close_and_cleanup
+# ---------------------------------------------------------------------------
+
+WORKFLOW_RUNNER="$SCRIPT_DIR/lib/core/workflow-runner.sh"
+STALE_BRANCH="$SCRIPT_DIR/lib/utils/stale-branch.sh"
+
+@test "workflow-runner source: handle_closed_issue calls rmdir_empty_worktree_container after git worktree remove" {
+  # Structural pin: the call must appear after the worktree remove in handle_closed_issue.
+  # These are the closed-issue cleanup sites (sibling of the merge-pr.sh deep-clean loop).
+  local remove_line rmdir_line
+  remove_line=$(grep -n 'git worktree remove.*wt_path.*--force' "$WORKFLOW_RUNNER" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$WORKFLOW_RUNNER" | head -1 | cut -d: -f1)
+  [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in workflow-runner.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in workflow-runner.sh"; return 1; }
+  [ "$rmdir_line" -gt "$remove_line" ] || {
+    echo "FAIL: rmdir_empty_worktree_container (line $rmdir_line) must come after git worktree remove (line $remove_line)"
+    return 1
+  }
+}
+
+@test "stale-branch source: _stale_close_and_cleanup calls rmdir_empty_worktree_container after git worktree remove" {
+  # Structural pin: the call must appear after the worktree remove in _stale_close_and_cleanup.
+  # This is the close-and-restart path (stale branch threshold exceeded).
+  local remove_line rmdir_line
+  remove_line=$(grep -n 'git worktree remove.*worktree_path.*--force' "$STALE_BRANCH" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$STALE_BRANCH" | head -1 | cut -d: -f1)
+  [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in stale-branch.sh"; return 1; }
+  [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in stale-branch.sh"; return 1; }
+  [ "$rmdir_line" -gt "$remove_line" ] || {
+    echo "FAIL: rmdir_empty_worktree_container (line $rmdir_line) must come after git worktree remove (line $remove_line)"
+    return 1
+  }
+}
+
+@test "workflow-runner source: sources git-helpers.sh (provides rmdir_empty_worktree_container)" {
+  # Guard: the function must be available at runtime in workflow-runner.sh.
+  grep -qE 'source.*git-helpers\.sh' "$WORKFLOW_RUNNER"
+}
+
+@test "stale-branch source: sources git-helpers.sh (provides rmdir_empty_worktree_container)" {
+  # Guard: the function must be available at runtime in stale-branch.sh.
+  grep -qE 'source.*git-helpers\.sh' "$STALE_BRANCH"
 }
