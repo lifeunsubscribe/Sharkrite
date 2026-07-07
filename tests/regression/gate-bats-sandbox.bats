@@ -26,12 +26,21 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   for _var in RITE_LOG_FILE PR_NUMBER ISSUE_NUMBER \
       BATS_RUN_TMPDIR BATS_SUITE_TMPDIR BATS_FILE_TMPDIR \
       BATS_TEST_TMPDIR BATS_ROOT_PID BATS_LIBEXEC_DIR \
-      BATS_TMPDIR BATS_TEST_TIMEOUT BATS_SUITE_TEST_NUMBER; do
+      BATS_TMPDIR BATS_SUITE_TEST_NUMBER; do
     echo "$_def" | grep -q -- "-u $_var" || {
       echo "FAIL: _bats_sandbox scrub is missing -u $_var" >&2
       return 1
     }
   done
+  # BATS_TEST_TIMEOUT must NOT be scrubbed: the gate exports its own per-test
+  # watchdog value, and -u here would strip that export from the wrapped bats,
+  # disabling per-test timeouts and breaking swallowed-test detection (live
+  # regression caught by gate-notrun-detection.bats tests 14/15 on PR #995).
+  echo "$_def" | grep -q -- "-u BATS_TEST_TIMEOUT" && {
+    echo "FAIL: _bats_sandbox must not scrub BATS_TEST_TIMEOUT (gate-owned export)" >&2
+    return 1
+  }
+  return 0
 }
 
 @test "structural: sandbox is defined BEFORE the first bats invocation" {
