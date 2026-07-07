@@ -1111,13 +1111,13 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   # Splitting lets the fix prompt present each group as a distinct section so the
   # session doesn't treat a red test like prose feedback.
   _fix_gate_items=$(echo "$ACTIONABLE_NOW_ITEMS" | awk '
-    /^### \[GATE\].*- ACTIONABLE_NOW$/ { in_block=1; is_gate=1; next }
+    /^### \[GATE\].*- ACTIONABLE_NOW$/ { in_block=1; is_gate=1; print; next }
     /^### .*- ACTIONABLE_NOW$/ { in_block=1; is_gate=0; next }
     is_gate && in_block { print }
   ' || true)
   _fix_review_items=$(echo "$ACTIONABLE_NOW_ITEMS" | awk '
     /^### \[GATE\].*- ACTIONABLE_NOW$/ { in_block=1; is_gate=1; next }
-    /^### .*- ACTIONABLE_NOW$/ { in_block=1; is_gate=0; next }
+    /^### .*- ACTIONABLE_NOW$/ { in_block=1; is_gate=0; print; next }
     !is_gate && in_block { print }
   ' || true)
 
