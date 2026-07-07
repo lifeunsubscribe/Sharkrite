@@ -1819,6 +1819,21 @@ run_test_gate() {
     local _total_bats _selection _selected_count
     _total_bats=$(cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ')
 
+    # No-bats-suite guard: if no *.bats files exist (no tests/ dir, or tests/ has
+    # no .bats files), skip bats entirely — nothing to verify, not a failure.
+    # Mirrors the missing_runner/missing_deps skip shape. The gate still records
+    # lint findings; only the bats step is bypassed.
+    local _bats_skip=false
+    if [ "${_total_bats:-0}" -eq 0 ]; then
+      echo "[test-gate] bats: skipped (no bats suite)" >&2
+      _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=0 pr=${PR_NUMBER:-?}"
+      _diag "TEST_GATE_BATS outcome=skipped reason=no_bats_suite pr=${PR_NUMBER:-?}"
+      echo 0 > "$_bats_exit_file"
+      : > "$_tests_raw_file"
+      _bats_skip=true
+    fi
+
+    if [ "$_bats_skip" = "false" ]; then
     # FORCE_FULL gate: an empty changed-file set conflates several causes — no
     # commits yet, a git-diff error laundered to "" by `2>/dev/null || true`, or a
     # deliberate DIFF_BASE=HEAD — and silently mapping ALL of them to "run
@@ -2101,6 +2116,7 @@ run_test_gate() {
         echo 0 > "$_bats_exit_file"
       fi
     fi
+    fi  # end _bats_skip guard
     _tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 1)
     _tests_exit=${_tests_exit:-1}  # empty = killed before writing = failure (#935)
     # Watchdog kill on the full-suite path (par/ser groups note it above and

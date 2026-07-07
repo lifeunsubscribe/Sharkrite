@@ -23,7 +23,15 @@ setup() {
   # Stubs the function expects from gate scope (dynamic scoping).
   _gate_status() { echo "$@"; }
   _diag() { echo "[diag] $*"; }
-  _bats_sandbox=()
+  # Unset outer BATS_* env vars so nested bats invocations inside
+  # _gate_flake_retry_pass don't inherit the outer test runner's IPC state and
+  # hang (live: tests 11-12 timed out at 120s when BATS_SUITE_TMPDIR et al.
+  # were inherited — inner bats tried to share outer bats' FD/socket channels).
+  _bats_sandbox=(env
+    -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR -u BATS_RUN_TMPDIR
+    -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR -u BATS_TMPDIR
+    -u BATS_TEST_TIMEOUT -u BATS_SUITE_TEST_NUMBER
+    -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER)
   PR_NUMBER=0
 }
 
