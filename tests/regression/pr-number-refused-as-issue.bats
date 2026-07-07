@@ -815,6 +815,11 @@ INLINE_EOF
 @test "structural: _reject_if_pr_number() in bin/rite uses exit 15" {
   # Exit 15 is the canonical sentinel for PR-number refusals.
   # See: docs/architecture/exit-codes.md — exit code 15
+  # Since #998 the function delegates: `refuse_if_pr_number ... || exit 15`.
+  # Match 'exit 15' unanchored (the convention of the undo structural test
+  # below), not the pre-#998 line-anchored inline form; the delegation call
+  # itself is pinned by its own structural test — together they guard the
+  # contract. (#1010: the old anchored grep went red on main post-#998.)
   _func_body=$(awk '
     /^_reject_if_pr_number[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
@@ -826,7 +831,7 @@ INLINE_EOF
     return 1
   }
 
-  echo "$_func_body" | grep -qE '^\s*exit 15' || {
+  echo "$_func_body" | grep -q 'exit 15' || {
     echo "FAIL: _reject_if_pr_number() in bin/rite does not contain 'exit 15'" >&2
     echo "      Exit code 15 is the canonical sentinel for PR-number refusals" >&2
     return 1
@@ -903,9 +908,13 @@ INLINE_EOF
 # =============================================================================
 
 @test "behavioral: _reject_if_pr_number() exits 15 when issue number refers to a PR" {
-  # Stubs gh_safe to return a /pull/ URL, sources the helper function from
-  # bin/rite in function-only mode, invokes it, and asserts exit 15.
-  # Mirrors test 23 (undo-workflow.sh behavioral) — same pattern, different target.
+  # Stubs gh_safe to return a /pull/ URL, sources the REAL refusal helper
+  # (lib/utils/pr-refusal.sh — the function under test delegates to it),
+  # eval's the extracted function, invokes it, and asserts exit 15 AND the
+  # canonical refusal message. Without the source, command-not-found (127)
+  # also trips `|| exit 15` and the test passes without exercising any
+  # refusal logic (#1010 vacuous-pass fix). Mirrors test 23 (undo-workflow.sh
+  # behavioral) — same pattern, different target.
   _script="$BATS_TEST_TMPDIR/test-reject-if-pr-number.sh"
 
   # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand (RITE_BINARY)
@@ -937,6 +946,12 @@ gh_safe() {
   return 0
 }
 
+# Real refusal helper — _reject_if_pr_number() delegates to
+# refuse_if_pr_number. Sourced so the delegation is actually exercised;
+# an unsourced helper's command-not-found (127) would also trip
+# '|| exit 15' and mask a broken contract (#1010).
+source "${PR_REFUSAL_LIB}"
+
 # Extract and define only _reject_if_pr_number() from bin/rite
 # (awk pulls the function body; eval sources it into this shell)
 _func_body=\$(awk '
@@ -954,13 +969,20 @@ eval "\$_func_body"
 
 # Invoke the guard in a subshell — _reject_if_pr_number() uses 'exit 15',
 # so we must capture it from a subshell rather than via || capture.
+# Capture stderr too: the canonical refusal message proves the real
+# helper ran (a command-not-found 127 prints no such message).
 _exit=0
-( _reject_if_pr_number "\$ISSUE_NUMBER" ) || _exit=\$?
+_err=\$( ( _reject_if_pr_number "\$ISSUE_NUMBER" ) 2>&1 ) || _exit=\$?
 
 if [ "\$_exit" -ne 15 ]; then
   echo "FAIL: expected exit 15 for PR number, got \$_exit" >&2
   exit 1
 fi
+printf '%s\n' "\$_err" | grep -q "is a Pull Request" || {
+  echo "FAIL: canonical refusal message not printed — helper not exercised?" >&2
+  echo "stderr was: \$_err" >&2
+  exit 1
+}
 echo "PASS: _reject_if_pr_number() exited 15 for PR number"
 exit 0
 STUB_EOF
