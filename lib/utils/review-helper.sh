@@ -218,9 +218,31 @@ resolve_pr_head_sha() {
   echo "${_rph_head_sha:-}"
 }
 
+# =============================================================================
+# extract_assessment_sha — parse the HEAD SHA embedded in an assessment marker
+#
+# Assessments generated after issue #986 embed the HEAD SHA at generation time:
+#   <!-- sharkrite-assessment pr:N iteration:1 timestamp:ISO commit:<sha> -->
+# This function extracts that SHA so callers can perform a deterministic
+# currency check (SHA comparison) rather than unconditionally re-assessing.
+#
+# Usage: extract_assessment_sha <assessment_body>
+# Output: SHA string on stdout, or empty string if the assessment predates SHA
+#         embedding (assessments before issue #986 won't have the commit: attribute).
+# =============================================================================
+extract_assessment_sha() {
+  local assessment_body="$1"
+  # Match "commit:" followed by a hex SHA (7-40 chars) inside the marker comment.
+  # The outer grep anchors to the marker prefix so commit: references inside the
+  # assessment body text are not mistakenly captured as the embedded SHA.
+  echo "$assessment_body" | grep -oE "${RITE_MARKER_ASSESSMENT}[^>]*commit:[a-f0-9]{7,40}" | \
+    grep -oE "commit:[a-f0-9]{7,40}" | sed 's/commit://' | head -1 || true
+}
+
 # Export functions
 export -f trigger_local_review
 export -f get_review_for_pr
 export -f handle_stale_review
 export -f extract_review_sha
+export -f extract_assessment_sha
 export -f resolve_pr_head_sha
