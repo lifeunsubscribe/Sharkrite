@@ -1945,9 +1945,13 @@ run_test_gate() {
     # inner bats (gate-flake-retry.bats exercising _gate_flake_retry_pass),
     # inherited BATS_RUN_TMPDIR/BATS_ROOT_PID etc. collide with the inner
     # runner's IPC — deterministic 120s deadlock (#993, live in #976's gate).
+    # Var list is the union of #991's empirically-needed set (its fix-loop hit
+    # the same deadlock and scrubbed the test side only) and #993's; keep in
+    # sync with gate-flake-retry.bats' setup mirror.
     local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
       -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
-      -u BATS_TEST_TMPDIR -u BATS_ROOT_PID)
+      -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
+      -u BATS_TMPDIR -u BATS_TEST_TIMEOUT -u BATS_SUITE_TEST_NUMBER)
     local _bats_watchdog=()
     local _gate_bats_timeout="${RITE_GATE_BATS_TIMEOUT:-1800}"
     if [ "$_gate_bats_timeout" != "0" ]; then

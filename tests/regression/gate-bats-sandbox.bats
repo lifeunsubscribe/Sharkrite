@@ -25,7 +25,8 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   [ -n "$_def" ]
   for _var in RITE_LOG_FILE PR_NUMBER ISSUE_NUMBER \
       BATS_RUN_TMPDIR BATS_SUITE_TMPDIR BATS_FILE_TMPDIR \
-      BATS_TEST_TMPDIR BATS_ROOT_PID; do
+      BATS_TEST_TMPDIR BATS_ROOT_PID BATS_LIBEXEC_DIR \
+      BATS_TMPDIR BATS_TEST_TIMEOUT BATS_SUITE_TEST_NUMBER; do
     echo "$_def" | grep -q -- "-u $_var" || {
       echo "FAIL: _bats_sandbox scrub is missing -u $_var" >&2
       return 1
