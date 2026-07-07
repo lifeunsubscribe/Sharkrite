@@ -1096,8 +1096,11 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   # DO NOT inject when neither signal fires (prompt bloat on non-test fixes).
   # Lookup chain mirrors dev_session_preamble (project override → install-dir doc).
   _fix_test_runbook_section=""
-  _fix_branch_has_tests=""
-  _fix_branch_has_tests=$(git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^tests/' && echo "yes" || true)
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    _fix_branch_has_tests=$(git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^tests/' && echo "yes" || true)
+  else
+    _fix_branch_has_tests=""
+  fi
   if echo "$ACTIONABLE_NOW_ITEMS" | grep -qE 'tests/|\.bats' || [ "$_fix_branch_has_tests" = "yes" ]; then
     _fix_test_runbook_section=$(provider_load_test_authoring_runbook || true)
   fi
