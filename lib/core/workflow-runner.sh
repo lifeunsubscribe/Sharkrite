@@ -823,6 +823,12 @@ EOF
             fi
             WORKFLOW_EXIT=$?
             if [ $WORKFLOW_EXIT -eq 4 ]; then
+              # Two consecutive no-change sessions: before failing loud, run the
+              # execution-free already-fixed check (#821). Closes with evidence
+              # and returns 0, or returns 1 → the original fail-loud path.
+              if verify_already_fixed_on_main "$issue_number" "${pr_number:-}"; then
+                return 0
+              fi
               print_error "Development produced no changes after retry"
               print_info "Issue may need manual investigation or a clearer description"
               # Clean up empty draft PR
@@ -972,6 +978,12 @@ EOF
         fi
 
         if [ $workflow_exit -eq 4 ]; then
+          # Two consecutive no-change sessions: before failing loud, run the
+          # execution-free already-fixed check (#821). Closes with evidence
+          # and returns 0, or returns 1 → the original fail-loud path.
+          if verify_already_fixed_on_main "$issue_number" "${PR_NUMBER:-}"; then
+            return 0
+          fi
           print_error "Development produced no changes after retry"
           print_info "Issue may need manual investigation or a clearer description"
 
@@ -1926,6 +1938,175 @@ handle_pr_number_refused() {
 
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   return 15
+}
+
+# ---------------------------------------------------------------------------
+# verify_already_fixed_on_main ISSUE_NUMBER [PR_NUMBER_TO_CLOSE]
+#
+# Called after two consecutive no-change dev sessions (#821). Attempts to
+# verify DETERMINISTICALLY — and EXECUTION-FREE — that the issue's demanded
+# state already exists on the base branch, so the issue can be closed with
+# evidence instead of failing loudly and burning a session on every future
+# batch (live: 5 zombie sessions in one day, 2026-07-06).
+#
+# EXECUTION-FREE CONTRACT (PR #873 review, CRITICAL): issue bodies are
+# attacker-controllable text. NOTHING from the issue is ever executed —
+# no bash -c, no eval, no expansion. The single verification line is PARSED
+# as data against a strict whitelist and re-interpreted as a fixed-string
+# lookup we run ourselves:
+#
+#   grep [-flags] 'PATTERN' path        →  git grep -F -- 'PATTERN' path
+#   git grep [-flags] 'PATTERN' path    →  git grep -F -- 'PATTERN' path
+#
+# Whitelist rules (any violation → no evidence → fail loud, never guess):
+#   - exactly one non-comment line in the Verification Commands block
+#   - first token(s) `grep` or `git grep`; flags ignored
+#   - PATTERN must be single-quoted in the issue text (a literal by
+#     construction — no $ ` \ expansion survives single quotes) and must not
+#     itself contain $ or backticks (defense in depth)
+#   - path must be repo-relative, exist in the pinned checkout, and contain
+#     no `..` traversal
+#   - the whole line must be free of shell metacharacters: ; | & > < $ `
+#
+# Ref-pinning (ported verbatim from the #873 branch): evidence only counts
+# against origin/main — fetch must succeed, HEAD must equal origin/main, and
+# the working tree must be clean. Any doubt → return 1 (fail-loud path).
+#
+# Returns 0 — already-fixed confirmed; issue closed with the evidence quoted.
+# Returns 1 — no safe evidence; caller fails loud exactly as before.
+# ---------------------------------------------------------------------------
+verify_already_fixed_on_main() {
+  local issue_number="$1"
+  local pr_to_close="${2:-}"
+
+  # --- 1. Fetch issue body (data only) -------------------------------------
+  local _issue_body
+  _issue_body=$(gh_safe issue view "$issue_number" --json body --jq '.body' 2>/dev/null || true)
+  if [ -z "${_issue_body:-}" ]; then
+    return 1
+  fi
+
+  # --- 2. Extract the single verification line (text as data) --------------
+  local _verify_line
+  _verify_line=$(printf '%s\n' "$_issue_body" | tr -d '\r' | awk '
+    /^## Verification Commands[[:space:]]*$/ { in_section=1; next }
+    /^\*\*Verification Commands\*\*:/ { in_section=1; next }
+    in_section && /^```/ {
+      if (!in_fence) { in_fence=1; next }
+      else { exit }
+    }
+    in_section && in_fence && /[^[:space:]]/ {
+      if (/^[[:space:]]*#/) next
+      cmd_count++
+      if (cmd_count == 1) { first_cmd = $0 }
+    }
+    END { if (cmd_count == 1) { print first_cmd } }
+  ' || true)
+  _verify_line=$(printf '%s' "${_verify_line:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)
+  [ -z "${_verify_line:-}" ] && return 1
+
+  # --- 3. Whitelist-parse into (pattern, path) — NEVER execute -------------
+  # Reject any shell metacharacter outright (the line is data, not a command).
+  case "$_verify_line" in
+    *';'*|*'|'*|*'&'*|*'>'*|*'<'*|*'$'*|*'`'*) return 1 ;;
+  esac
+  # Shape: grep ... 'PATTERN' PATH   or   git grep ... 'PATTERN' PATH
+  local _rest=""
+  case "$_verify_line" in
+    "git grep "*) _rest="${_verify_line#git grep }" ;;
+    "grep "*)     _rest="${_verify_line#grep }" ;;
+    *) return 1 ;;
+  esac
+  # Strip leading flag tokens (e.g. -q, -F, -n, -rn). Flags are ignored — we
+  # always run our own fixed-string lookup.
+  while true; do
+    case "$_rest" in
+      -*" "*) _rest="${_rest#* }" ;;
+      *) break ;;
+    esac
+  done
+  # PATTERN: must be single-quoted in the issue text (literal by construction).
+  local _pattern _path
+  case "$_rest" in
+    "'"*"'"*)
+      _pattern="${_rest#\'}"
+      _pattern="${_pattern%%\'*}"
+      _path="${_rest#\'"$_pattern"\'}"
+      _path=$(printf '%s' "$_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)
+      ;;
+    *) return 1 ;;
+  esac
+  [ -z "$_pattern" ] && return 1
+  # Path safety: single repo-relative token, no traversal, must exist on main.
+  case "$_path" in
+    ''|*' '*|/*|*'..'*) return 1 ;;
+  esac
+
+  # --- 4. Ref-pin the checkout to origin/main (ported from #873 branch) ----
+  local _fetch_exit=0
+  git -C "$RITE_PROJECT_ROOT" fetch origin main --quiet 2>/dev/null || _fetch_exit=$?
+  if [ "$_fetch_exit" -ne 0 ]; then
+    print_info "git fetch origin main failed (exit ${_fetch_exit}) — cannot verify against current main; failing loud instead of guessing"
+    return 1
+  fi
+  local _main_sha _head_sha
+  _main_sha=$(git -C "$RITE_PROJECT_ROOT" rev-parse origin/main 2>/dev/null || true)
+  _head_sha=$(git -C "$RITE_PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)
+  if [ -z "${_main_sha:-}" ] || [ -z "${_head_sha:-}" ] || [ "$_head_sha" != "$_main_sha" ]; then
+    print_info "Checkout is not pinned to origin/main — skipping already-fixed verification"
+    return 1
+  fi
+  local _dirty
+  _dirty=$(git -C "$RITE_PROJECT_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)
+  if [ -n "${_dirty:-}" ]; then
+    print_info "Working tree is dirty — cannot reliably verify against origin/main; skipping"
+    return 1
+  fi
+  [ -f "$RITE_PROJECT_ROOT/$_path" ] || return 1
+
+  # --- 5. The data check: our own fixed-string lookup ----------------------
+  print_info "No changes after retry — checking if issue #${issue_number} is already satisfied on main..."
+  print_info "Data check (execution-free): git grep -F -- '<pattern>' ${_path}"
+  local _match_line
+  _match_line=$(git -C "$RITE_PROJECT_ROOT" grep -nF -- "$_pattern" "$_path" 2>/dev/null | head -3 || true)
+  if [ -z "${_match_line:-}" ]; then
+    print_info "Pattern not present on main — issue is genuinely not satisfied"
+    return 1
+  fi
+
+  # --- 6. Already fixed: close with the evidence quoted --------------------
+  print_success "Evidence found on main — issue #${issue_number} is already satisfied"
+  local _close_comment
+  _close_comment="✅ Already satisfied on \`main\` — closing automatically.
+
+Two consecutive no-change dev sessions were followed by a deterministic, execution-free data check against the pinned base branch (#821: issue text is data — nothing from this issue was executed).
+
+**Data check:** \`git grep -nF -- '<pattern from this issue's Verification Commands>' ${_path}\`
+
+**Evidence (first matches):**
+\`\`\`
+${_match_line}
+\`\`\`"
+  local _cc_file
+  _cc_file=$(mktemp)
+  printf '%s' "$_close_comment" > "$_cc_file"
+  gh_safe issue comment "$issue_number" --body-file "$_cc_file" >/dev/null 2>&1 || true
+  rm -f "$_cc_file"
+  gh_safe issue close "$issue_number" >/dev/null 2>&1 || true
+  print_success "Issue #${issue_number} closed: already fixed on main"
+
+  # Clean up an empty draft PR left by the no-change session.
+  if [ -n "${pr_to_close:-}" ]; then
+    local _pr_adds
+    _pr_adds=$(gh_safe pr view "$pr_to_close" --json additions --jq '.additions' 2>/dev/null || echo "0")
+    if [ "${_pr_adds:-0}" -eq 0 ] 2>/dev/null; then
+      gh_safe pr close "$pr_to_close" --delete-branch >/dev/null 2>&1 || true
+      print_info "Closed empty draft PR #${pr_to_close} for issue #${issue_number}"
+    fi
+  fi
+
+  _diag "ALREADY_FIXED issue=${issue_number} mode=data_check path=${_path}"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
