@@ -232,3 +232,105 @@ docs/architecture/foo.md"
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Rules 34/35: changed .bats files must be passed to lint (issue #921)
+#
+# _select_lint_by_changed_paths previously only emitted bin/lib/tools paths,
+# so BATS_PRE_SOURCE_STUB_OVERWRITE (Rule 34) and BATS_FILE_SCOPE_ENV_READ
+# (Rule 35) never ran against changed .bats files through the post-commit
+# gate.  The fix adds tests/*.bats and tests/*/*.bats to the eligible pattern.
+# ---------------------------------------------------------------------------
+
+@test "_select_lint_by_changed_paths: changed .bats in tests/regression/ is emitted" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail
+
+  # Use a file that genuinely exists so the [ -f ] guard passes.
+  _changed="tests/regression/lint-targeted-selection.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PROJECT_ROOT/tests/regression/lint-targeted-selection.bats" ] || {
+    echo "expected absolute path to bats file; got: '$output'" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: changed .bats in tests/lint/ is emitted" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail
+
+  _changed="tests/lint/bats-hygiene-rules.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PROJECT_ROOT/tests/lint/bats-hygiene-rules.bats" ] || {
+    echo "expected absolute path to bats file; got: '$output'" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: bats-only diff produces non-empty output (lint runs)" {
+  # Regression: with only .bats files changed and no bin/lib/tools changes,
+  # the old code returned empty (skip lint).  Empty means Rules 34/35 never
+  # ran against the changed bats file — the exact gap this issue fixes.
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail
+
+  _changed="tests/regression/lint-targeted-selection.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ] || {
+    echo "REGRESSION: bats-only diff returned empty — Rules 34/35 would be skipped" >&2
+    return 1
+  }
+  [ "$output" != "FORCE_FULL" ] || {
+    echo "FAIL: bats-only diff escalated to full lint scan (unexpected)" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: mixed bats + lib diff emits both" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail
+
+  _changed=$(printf 'lib/utils/test-gate.sh\ntests/regression/lint-targeted-selection.bats\n')
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "lib/utils/test-gate.sh" || {
+    echo "expected lib/utils/test-gate.sh in output; got: '$output'" >&2
+    return 1
+  }
+  echo "$output" | grep -q "tests/regression/lint-targeted-selection.bats" || {
+    echo "expected bats file in output; got: '$output'" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: docs-only diff still produces empty even with bats extension" {
+  # Docs changes are still ignored — only bin/lib/tools/tests/*.bats are eligible.
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail
+
+  _changed="docs/architecture/foo.md
+README.md"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "expected empty output; got: '$output'" >&2; return 1; }
+}
+
+@test "_select_lint_by_changed_paths: nonexistent .bats file filtered by [ -f ]" {
+  # A deleted .bats file in the diff must not be emitted.
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail
+
+  _changed="tests/regression/this-was-deleted.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "expected empty for deleted bats; got: '$output'" >&2; return 1; }
+}
