@@ -2612,7 +2612,7 @@ run_test_gate() {
         [ -n "$_vp_hit" ] && _vp_out="${_vp_out}${_vp_hit#"$project_root"/}"$'\n'
       done <<< "$_vp_names"
       _vp_out=$(printf '%s' "$_vp_out" | sort -u | grep -v '^$' || true)
-      # #985: gather failures (e.g. "not ok 1 bats-gather-tests") produce a TAP
+      # #983: gather failures (e.g. "not ok 1 bats-gather-tests") produce a TAP
       # name that matches no file content — the loop above yields an empty
       # _vp_out even though the run failed.  Persisting nothing means the next
       # round's selection is empty and the gate reports outcome=passed having

@@ -78,72 +78,61 @@ setup() {
   [ "$output" -ge 2 ]   # flake-retry (#945) + verdict persistence (#944) both exclude synthetics
 }
 
-# --- #985: gather-failure fallback (persist full selection when names unmap) ---
+# --- #983: gather-failure fallback (persist full selection when names unmap) ---
 
 @test "behavioral: gather-failure TAP persists full selection (not empty state)" {
-  # Replicates the persist hook logic for the case where the only TAP failure is
-  # "bats-gather-tests" — a synthetic that grep -lF never maps to a real file.
-  # Before #985 the fallback was absent: _vp_out stayed empty, nothing persisted,
-  # and the next round re-selected 0 files → vacuous pass → live escapes #964/#977.
-  run bash -c '
-    set -euo pipefail
-    project_root="'"${BATS_TEST_TMPDIR}"'/proj"
-    state_dir="'"$STATE_DIR"'"
-    mkdir -p "$project_root/tests"
+  # Runs the REAL persist hook — sed-extracted from $GATE and eval'd in
+  # function scope (the block uses `local`) — against a gather-failure TAP
+  # ("not ok 1 bats-gather-tests", a name grep -lF never maps to a file) and
+  # a 2-file selection. Before #983 the fallback was absent: _vp_out stayed
+  # empty, nothing persisted, and the next round re-selected 0 files →
+  # vacuous pass → live escapes #964/#965/#977. Also asserts the passed
+  # outcome clears the state file (same hook, second invocation).
+  _driver="$BATS_TEST_TMPDIR/persist-hook-driver.sh"
+  cat > "$_driver" <<'DRIVER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+GATE="$1"; project_root="$2"; RITE_STATE_DIR="$3"
 
-    # Two bats files in the selection (content is irrelevant for the gather case)
-    printf "#!/usr/bin/env bats\n@test \"x\" { true; }\n" \
-      > "$project_root/tests/alpha.bats"
-    printf "#!/usr/bin/env bats\n@test \"y\" { true; }\n" \
-      > "$project_root/tests/beta.bats"
+mkdir -p "$project_root/tests" "$RITE_STATE_DIR"
+# Two bats files in the selection (content is irrelevant for the gather case)
+printf '#!/usr/bin/env bats\n@test "x" { true; }\n' > "$project_root/tests/alpha.bats"
+printf '#!/usr/bin/env bats\n@test "y" { true; }\n' > "$project_root/tests/beta.bats"
 
-    # TAP output for a gather failure: only the synthetic gather-tests line
-    tap_file=$(mktemp)
-    printf "1..1\nnot ok 1 bats-gather-tests\n" > "$tap_file"
+# TAP output for a gather failure: only the synthetic gather-tests line
+_tests_raw_file=$(mktemp)
+printf '1..1\nnot ok 1 bats-gather-tests\n' > "$_tests_raw_file"
 
-    _vp_state_file="$state_dir/gate-prior-failing-pr985.list"
-    _selection="tests/alpha.bats
+PR_NUMBER=983
+_outcome="failed"
+_selection="tests/alpha.bats
 tests/beta.bats"
 
-    # --- replicate persist hook logic (lib/utils/test-gate.sh ~2601-2628) ---
-    _vp_names=$(grep -E '"'"'^not ok [0-9]+ '"'"'" "$tap_file" 2>/dev/null \
-      | sed -E '"'"'s/^not ok [0-9]+ //'"'"' | sed '"'"'s/ # .*//'"'"' \
-      | grep -v '"'"'^[[]tests_not_run[]]'"'"' || true)
-    _vp_out=""
-    if [ -n "$_vp_names" ] && [ -n "$_selection" ]; then
-      _vp_sel_arr=()
-      while IFS= read -r _vp_hit; do
-        [ -n "$_vp_hit" ] && _vp_sel_arr+=("$project_root/$_vp_hit")
-      done <<< "$_selection"
-      while IFS= read -r _vp_name; do
-        [ -z "$_vp_name" ] && continue
-        _vp_hit=$(grep -lF "$_vp_name" "${_vp_sel_arr[@]+"${_vp_sel_arr[@]}"}" 2>/dev/null | head -1 || true)
-        [ -n "$_vp_hit" ] && _vp_out="${_vp_out}${_vp_hit#"$project_root"/}"$'"'"'\n'"'"'
-      done <<< "$_vp_names"
-      _vp_out=$(printf '"'"'%s'"'"' "$_vp_out" | sort -u | grep -v '"'"'^$'"'"' || true)
-      # #985 fallback: unmappable names (gather errors) → persist whole selection
-      if [ -z "$_vp_out" ]; then
-        _vp_out=$(printf '"'"'%s\n'"'"' "$_selection" | grep -v '"'"'^$'"'"' || true)
-      fi
-      if [ -n "$_vp_out" ]; then
-        mkdir -p "$(dirname "$_vp_state_file")" 2>/dev/null || true
-        printf '"'"'%s\n'"'"' "$_vp_out" > "$_vp_state_file"
-      fi
-    fi
-    rm -f "$tap_file"
-    # --- end replicate ---
+# Extract the persist hook verbatim: from the state-file assignment to the
+# first 2-space fi (the outer if/elif close). Anchor drift fails loudly here.
+_hook_src=$(sed -n '/local _vp_state_file=/,/^  fi$/p' "$GATE")
+[ -n "$_hook_src" ] || { echo "FAIL: could not extract persist hook from $GATE" >&2; exit 1; }
+_persist_hook() { eval "$_hook_src"; }
 
-    # Both selection files must appear in the state file
-    grep -qxF "tests/alpha.bats" "$_vp_state_file" && echo "alpha:found"
-    grep -qxF "tests/beta.bats"  "$_vp_state_file" && echo "beta:found"
-  '
+_persist_hook
+_state="$RITE_STATE_DIR/gate-prior-failing-pr${PR_NUMBER}.list"
+grep -qxF "tests/alpha.bats" "$_state" && echo "alpha:found"
+grep -qxF "tests/beta.bats"  "$_state" && echo "beta:found"
+
+# Passing outcome clears the state file (behavioral half of source test above)
+_outcome="passed"
+_persist_hook
+[ ! -f "$_state" ] && echo "cleared:ok"
+DRIVER_EOF
+  run bash "$_driver" "$GATE" "$BATS_TEST_TMPDIR/proj" "$STATE_DIR"
   [ "$status" -eq 0 ]
   [[ "$output" == *"alpha:found"* ]]
   [[ "$output" == *"beta:found"* ]]
+  [[ "$output" == *"cleared:ok"* ]]
 }
 
 @test "source: gather-failure fallback (full-selection persist) exists in persist hook" {
-  # #985: when _vp_out is empty after name→file mapping, we fall back to the full
+  # #983: when _vp_out is empty after name→file mapping, we fall back to the full
   # selection.  Assert both the guard and the fallback assignment are present.
   run grep -cF 'if [ -z "$_vp_out" ]' "$GATE"
   [ "$status" -eq 0 ]
