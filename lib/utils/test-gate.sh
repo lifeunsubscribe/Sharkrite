@@ -1941,7 +1941,13 @@ run_test_gate() {
     #      1800s; override via RITE_GATE_BATS_TIMEOUT (0 disables). Detection
     #      is deliberately prompt-free: never call ensure_timeout_cmd here —
     #      its supervised-mode install prompt would itself read stdin mid-gate.
-    local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER)
+    # BATS_* scrub: when the gate's own bats run selects a test that spawns
+    # inner bats (gate-flake-retry.bats exercising _gate_flake_retry_pass),
+    # inherited BATS_RUN_TMPDIR/BATS_ROOT_PID etc. collide with the inner
+    # runner's IPC — deterministic 120s deadlock (#993, live in #976's gate).
+    local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
+      -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
+      -u BATS_TEST_TMPDIR -u BATS_ROOT_PID)
     local _bats_watchdog=()
     local _gate_bats_timeout="${RITE_GATE_BATS_TIMEOUT:-1800}"
     if [ "$_gate_bats_timeout" != "0" ]; then
