@@ -2244,7 +2244,17 @@ run_test_gate() {
       if [ "$_tests_exit" -ne 0 ] && [ "$_make_is_pytest_context" = "true" ]; then
         local _make_raw _make_outcome
         _make_raw=$(cat "$_tests_raw_file" 2>/dev/null || true)
-        _make_outcome=$(_classify_pytest_outcome "$_tests_exit" "$_make_raw")
+        # Unwrap make's exit before classifying: make maps ANY failing recipe
+        # to its own exit 2, which _classify_pytest_outcome (correctly, per
+        # pytest's exit-code table) reads as "collection error → failed" —
+        # so a wrapped missing-venv (pytest exit 1) or no-tests (exit 5) was
+        # never classified as a skip. The recipe's real exit is in make's
+        # "*** [target] Error N" line; fall back to make's exit when absent.
+        local _make_inner_exit
+        _make_inner_exit=$(printf '%s\n' "$_make_raw" \
+          | grep -oE '\*\*\* \[[^]]*\] Error [0-9]+' | head -1 \
+          | grep -oE '[0-9]+$' || true)
+        _make_outcome=$(_classify_pytest_outcome "${_make_inner_exit:-$_tests_exit}" "$_make_raw")
         if [ "$_make_outcome" = "skipped:missing_deps" ]; then
           echo "[test-gate] WARNING: make test detected missing dependencies (ModuleNotFoundError)." >&2
           echo "[test-gate] Install the project's test dependencies (e.g. pip install -r requirements-dev.txt) or set RITE_TEST_COMMAND to a wrapper that activates the venv." >&2

@@ -211,7 +211,10 @@ _nth_body() {
     '## Verification Commands' \
     '## Done Definition' \
     '## Scope Boundary' \
-    '## Dependencies'; do
+    '**Dependencies**'; do
+    # ^ #964: Dependencies is a '**Dependencies**:' LINE, not a '## Dependencies'
+    # header — the batch dep-guard greps '^(\*\*)?Dependencies(\*\*)?:' and a
+    # markdown header is invisible to it (test 10 pins the same contract).
     echo "$_body" | grep -qF "$_section" || {
       echo "FAIL: body missing section: $_section"
       echo "--- body ---"

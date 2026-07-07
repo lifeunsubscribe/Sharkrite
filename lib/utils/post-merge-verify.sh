@@ -302,13 +302,18 @@ verify_post_merge() {
   # Capture output to a temp file so we can classify missing-deps / no-tests
   # signatures (for pytest-flavored commands) before deciding whether to block.
   # Output is also forwarded to stderr (indented) so the operator sees it live.
-  local _pmv_out_file
+  local _pmv_out_file _pmv_exit_file
   _pmv_out_file=$(mktemp "/tmp/rite_pmv_out_$$_XXXXXX")
+  _pmv_exit_file=$(mktemp "/tmp/rite_pmv_exit_$$_XXXXXX")
   # Run inside a subshell: source env file, then run the test command.
   # timeout wraps the test command directly (an external binary) rather than
   # a shell function, which external commands cannot exec.
-  # With pipefail, $? captures the test command's exit, not sed's (which is always 0).
-  (
+  # Exit is captured via exit-file INSIDE the pipeline (#936 pattern), NOT via
+  # `|| test_exit=$?` after it: that form only sees the test command's exit
+  # under pipefail, and verify_post_merge is a sourced function — any caller
+  # running without pipefail would silently read sed's 0 and pass real
+  # failures at the merge gate (live: sweep 2026-07-06, tests pinned below).
+  { (
     cd "$run_dir"
     if [ -n "$env_file" ]; then
       set -a
@@ -321,7 +326,10 @@ verify_post_merge() {
     else
       eval "$test_cmd"
     fi
-  ) 2>&1 | tee "$_pmv_out_file" | sed 's/^/  /' >&2 || test_exit=$?
+  ); echo $? > "$_pmv_exit_file"; } 2>&1 | tee "$_pmv_out_file" | sed 's/^/  /' >&2 || true
+  test_exit=$(cat "$_pmv_exit_file" 2>/dev/null || echo 1)
+  test_exit=${test_exit:-1}  # empty file = child killed before writing = failure (#936)
+  rm -f "$_pmv_exit_file"
 
   if [ "$test_exit" -eq 124 ]; then
     rm -f "${_pmv_out_file:-}"

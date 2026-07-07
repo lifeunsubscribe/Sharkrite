@@ -54,7 +54,9 @@ teardown() {
   cd "$PROJECT_ROOT"
 
   # Check that the lint script contains the LOCAL_OUTSIDE_FUNCTION rule
-  run grep -q "LOCAL_OUTSIDE_FUNCTION" tools/sharkrite-lint.sh
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "LOCAL_OUTSIDE_FUNCTION" tools/sharkrite-lint.sh tools/lint-rules
   [ "$status" -eq 0 ]
 }
 

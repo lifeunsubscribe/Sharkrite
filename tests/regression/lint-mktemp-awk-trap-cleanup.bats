@@ -44,25 +44,29 @@ setup() {
   # This guarantees the cleanup trap's '[ -n "$_r8_awk" ]' check is always safe
   # even if the script is aborted before mktemp runs.
 
-  # Extract line numbers for the empty-string initializations and mktemp calls.
+  # Post-#952: the initializers live in the DRIVER; the mktemp calls live in
+  # the rule fragments (08-*, 13-*). The driver sources fragments in its
+  # rule-execution loop, so "init precedes mktemp" is proven by: init line
+  # exists in the driver AND appears before the fragment-sourcing loop.
   _init_r8=$(grep -n '^_r8_awk=""' "$LINT_SCRIPT" | head -1 | cut -d: -f1 || true)
   _init_r13=$(grep -n '^_r13_awk=""' "$LINT_SCRIPT" | head -1 | cut -d: -f1 || true)
-  _mktemp_r8=$(grep -n '_r8_awk=$(mktemp)' "$LINT_SCRIPT" | head -1 | cut -d: -f1 || true)
-  _mktemp_r13=$(grep -n '_r13_awk=$(mktemp)' "$LINT_SCRIPT" | head -1 | cut -d: -f1 || true)
+  _mktemp_r8=$(grep -l '_r8_awk=$(mktemp)' "$PROJECT_ROOT"/tools/lint-rules/*.sh | head -1 || true)
+  _mktemp_r13=$(grep -l '_r13_awk=$(mktemp)' "$PROJECT_ROOT"/tools/lint-rules/*.sh | head -1 || true)
+  _source_loop=$(grep -n 'for _rule_file in' "$LINT_SCRIPT" | head -1 | cut -d: -f1 || true)
 
-  # All four lines must exist
-  [ -n "$_init_r8" ]   || { echo "_r8_awk=\"\" initializer not found" >&2; return 1; }
-  [ -n "$_init_r13" ]  || { echo "_r13_awk=\"\" initializer not found" >&2; return 1; }
-  [ -n "$_mktemp_r8" ] || { echo "_r8_awk=\$(mktemp) not found" >&2; return 1; }
-  [ -n "$_mktemp_r13" ]|| { echo "_r13_awk=\$(mktemp) not found" >&2; return 1; }
+  [ -n "$_init_r8" ]   || { echo "_r8_awk=\"\" initializer not found in driver" >&2; return 1; }
+  [ -n "$_init_r13" ]  || { echo "_r13_awk=\"\" initializer not found in driver" >&2; return 1; }
+  [ -n "$_mktemp_r8" ] || { echo "_r8_awk=\$(mktemp) not found in any fragment" >&2; return 1; }
+  [ -n "$_mktemp_r13" ]|| { echo "_r13_awk=\$(mktemp) not found in any fragment" >&2; return 1; }
+  [ -n "$_source_loop" ] || { echo "fragment-sourcing loop not found in driver" >&2; return 1; }
 
-  # Initializations must precede the mktemp calls
-  [ "$_init_r8"  -lt "$_mktemp_r8"  ] || {
-    echo "_r8_awk=\"\" (line $_init_r8) must appear before _r8_awk=\$(mktemp) (line $_mktemp_r8)" >&2
+  # Initializations must precede the fragment-sourcing loop (hence all mktemps)
+  [ "$_init_r8"  -lt "$_source_loop" ] || {
+    echo "_r8_awk=\"\" (line $_init_r8) must precede the fragment loop (line $_source_loop)" >&2
     return 1
   }
-  [ "$_init_r13" -lt "$_mktemp_r13" ] || {
-    echo "_r13_awk=\"\" (line $_init_r13) must appear before _r13_awk=\$(mktemp) (line $_mktemp_r13)" >&2
+  [ "$_init_r13" -lt "$_source_loop" ] || {
+    echo "_r13_awk=\"\" (line $_init_r13) must precede the fragment loop (line $_source_loop)" >&2
     return 1
   }
 }

@@ -452,18 +452,20 @@ CONFIG
   _gate_all="${_gate_out}
 $(cat "${_gate_log}" 2>/dev/null || true)"
 
-  # Verify targeted mode was selected (not full suite)
-  [[ "$_gate_out" == *"targeted"* ]] || {
-    echo "Expected targeted selection in gate output, got:" >&2
-    echo "$_gate_out" >&2
+  # Verify targeted mode was selected (not full suite). Post-#965 the
+  # selection line lives in the run log's TEST_GATE_SELECTION diag (stdout is
+  # summary-quiet by default) — assert on stdout+log combined.
+  [[ "$_gate_all" == *"targeted"* ]] || {
+    echo "Expected targeted selection in gate output+log, got:" >&2
+    echo "$_gate_all" >&2
     return 1
   }
 
-  # Verify only 1 of 2 bats files was selected
-  [[ "$_gate_out" == *"1/2"* ]] || [[ "$_gate_out" == *"1 of 2"* ]] || \
-  [[ "$_gate_out" == *"(1/"* ]] || {
+  # Verify only 1 of 2 bats files was selected (diag: selected=1 total=2)
+  [[ "$_gate_all" == *"1/2"* ]] || [[ "$_gate_all" == *"1 of 2"* ]] || \
+  [[ "$_gate_all" == *"(1/"* ]] || [[ "$_gate_all" == *"selected=1"* ]] || {
     echo "Expected 1/2 bats files selected, got:" >&2
-    echo "$_gate_out" >&2
+    echo "$_gate_all" >&2
     return 1
   }
 

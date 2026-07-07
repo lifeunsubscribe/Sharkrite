@@ -262,6 +262,8 @@ EOF
 
 @test "lint rule BARE_MARKER_GREP is defined in sharkrite-lint.sh" {
   cd "$PROJECT_ROOT"
-  run grep -q "BARE_MARKER_GREP" tools/sharkrite-lint.sh
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "BARE_MARKER_GREP" tools/sharkrite-lint.sh tools/lint-rules
   [ "$status" -eq 0 ]
 }

@@ -295,6 +295,8 @@ send_email() {
 }
 
 @test "lint rule BARE_VAR_REFERENCE is defined in sharkrite-lint.sh" {
-  run grep -q "BARE_VAR_REFERENCE" "$LINT_SCRIPT"
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "BARE_VAR_REFERENCE" "$LINT_SCRIPT" "$(dirname "$LINT_SCRIPT")/lint-rules"
   [ "$status" -eq 0 ]
 }

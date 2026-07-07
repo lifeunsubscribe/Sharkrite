@@ -48,10 +48,31 @@ setup() {
   #     no interactive prompts fire.
   #
   # NOTE: install.sh is an executable script, not a lib — run it as a subprocess.
+  # Gap-filler stubs APPENDED to PATH (real binaries win): CI runners lack
+  # the `claude` CLI, so install.sh's dep precheck hits its interactive
+  # "Continue anyway?" read — with stdin at /dev/null that aborts the install
+  # before any copy and all four tests fail on CI while passing locally.
+  local _dep_stubs="${RITE_TEST_TMPDIR}/dep-stubs"
+  mkdir -p "$_dep_stubs"
+  for _dep in claude gh jq git; do
+    if ! command -v "$_dep" >/dev/null 2>&1; then
+      printf '#!/bin/sh\nexit 0\n' > "$_dep_stubs/$_dep"
+      chmod +x "$_dep_stubs/$_dep"
+    fi
+  done
+
+  # `yes n |` (not </dev/null): install.sh has three OPTIONAL read -p prompts
+  # (deps-continue, brew bash, GNU parallel). On CI runners the parallel
+  # prompt fires (no parallel binary, brew present) and read-at-EOF dies
+  # under set -e BEFORE any copy — so the suite failed on CI while passing
+  # locally where all optional tools exist. A stream of "n" declines every
+  # optional install deterministically; the deps-continue prompt never fires
+  # because the stubs above satisfy the dep check.
   RITE_INSTALL_DIR="$_INSTALL_PREFIX" \
   HOME="$_FAKE_HOME" \
   RITE_BIN_DIR="$_FAKE_HOME/.local/bin" \
-  bash "${RITE_REPO_ROOT}/install.sh" </dev/null >/dev/null 2>&1
+  PATH="$PATH:$_dep_stubs" \
+  bash -c 'yes n | bash "$1" >/dev/null 2>&1' _ "${RITE_REPO_ROOT}/install.sh"
 }
 
 teardown() {

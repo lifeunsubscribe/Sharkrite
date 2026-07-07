@@ -150,6 +150,8 @@ hang() {
 }
 
 @test "lint rule SLEEP_INFINITY_NOT_PORTABLE is defined in sharkrite-lint.sh" {
-  run grep -q "SLEEP_INFINITY_NOT_PORTABLE" "$LINT_SCRIPT"
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "SLEEP_INFINITY_NOT_PORTABLE" "$LINT_SCRIPT" "$(dirname "$LINT_SCRIPT")/lint-rules"
   [ "$status" -eq 0 ]
 }
