@@ -347,36 +347,146 @@ _stale_classify_after_push_rejection() {
 
     case "$classification" in
       TRIVIAL)
-        # Mainline sync or doc-only changes: safe to discard without re-review.
-        # Rebase onto origin/$base_branch (not origin/$branch_name) to ensure the branch
-        # remains up-to-date with the PR's base. Because the rebase base is origin/$base_branch —
-        # not origin/$branch_name — the foreign commits on origin/$branch_name are
-        # NOT replayed; they are discarded. The branch history is rewritten on top
-        # of the base branch, so the final force-push drops the foreign commits from the remote.
-        print_info "Foreign commits classified as TRIVIAL — discarding and rebasing onto origin/$base_branch"
-        local _trivial_pre_rebase_head
-        _trivial_pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
-        if git rebase "origin/$base_branch" 2>/dev/null; then
-          # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
-          # origin/main base: three-dot selection covers branch-only files. The rebased-in
-          # main delta was already gated per-merge (green-main invariant) — re-verifying its
-          # full coverage union cost 180+ bats files per resume (issue #854).
-          if ! verify_post_merge "$worktree_path" "origin/main"; then
-            git rebase --abort 2>/dev/null || true
-            print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
-            return 1
-          fi
-          if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-            print_success "Branch rebased onto origin/$base_branch (TRIVIAL foreign commits discarded)"
-            return 0
+        # TRIVIAL discard is legal ONLY for commits provably content-empty vs base
+        # (mainline-sync merges whose patch-id set ⊆ base). Anything else must be
+        # preserved: rebase onto base then cherry-pick the foreign commits on top.
+        #
+        # Check: are the foreign commits truly content-empty? Compare the tree at
+        # remote_head vs local_head. If the diff is empty, the foreign commits
+        # introduced no new content — discard is safe. If non-empty, the commits
+        # contain real changes that must survive through the push.
+        local _trivial_content_diff
+        _trivial_content_diff=$(git diff "${local_head}..${remote_head}" 2>/dev/null || true)
+
+        if [ -z "$_trivial_content_diff" ]; then
+          # Content-empty vs our local HEAD: purely structural (mainline sync
+          # merge commits, doc-only, formatting). Safe to discard.
+          print_info "Foreign commits classified as TRIVIAL (content-empty vs local) — discarding and rebasing onto origin/$base_branch"
+          local _trivial_pre_rebase_head
+          _trivial_pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
+          if git rebase "origin/$base_branch" 2>/dev/null; then
+            # Verify the rebase didn't introduce silent semantic conflicts (tests pass)
+            # origin/main base: three-dot selection covers branch-only files. The rebased-in
+            # main delta was already gated per-merge (green-main invariant) — re-verifying its
+            # full coverage union cost 180+ bats files per resume (issue #854).
+            if ! verify_post_merge "$worktree_path" "origin/main"; then
+              git rebase --abort 2>/dev/null || true
+              print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
+              return 1
+            fi
+            if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+              print_success "Branch rebased onto origin/$base_branch (TRIVIAL foreign commits discarded — content-empty)"
+              return 0
+            else
+              print_error "Push still rejected after discarding TRIVIAL commits — another race occurred"
+              return 1
+            fi
           else
-            print_error "Push still rejected after discarding TRIVIAL commits — another race occurred"
+            git rebase --abort 2>/dev/null || true
+            print_error "Rebase failed when discarding TRIVIAL foreign commits — cannot proceed"
             return 1
           fi
         else
-          git rebase --abort 2>/dev/null || true
-          print_error "Rebase failed when discarding TRIVIAL foreign commits — cannot proceed"
-          return 1
+          # TRIVIAL classification but non-empty content vs local HEAD.
+          # The foreign commits contain code changes (e.g. an act() wrapper, a
+          # fixture timestamp added during conflict resolution). These must be
+          # preserved. Strategy: rebase our commits onto origin/$base_branch
+          # (so we're fresh off base), then cherry-pick the foreign commits on
+          # top so their content survives.
+          #
+          # Note: we cannot simply rebase onto origin/$branch_name (which would
+          # absorb foreign commits) because the base branch update is the primary
+          # goal. Instead we replay foreign commits explicitly after the base rebase.
+          print_warning "Foreign commits classified as TRIVIAL but contain code changes — preserving via cherry-pick replay"
+
+          # Collect foreign SHAs in order (oldest first for cherry-pick)
+          local _foreign_shas_ordered
+          _foreign_shas_ordered=$(git log --format="%H" "${local_head}..${remote_head}" --reverse 2>/dev/null || true)
+
+          if [ -z "$_foreign_shas_ordered" ]; then
+            print_error "Could not determine foreign commit SHAs — cannot preserve"
+            return 1
+          fi
+
+          # Step 1: Rebase our commits onto origin/$base_branch
+          local _preserve_pre_rebase_head
+          _preserve_pre_rebase_head=$(git rev-parse HEAD 2>/dev/null || true)
+          if ! git rebase "origin/$base_branch" 2>/dev/null; then
+            git rebase --abort 2>/dev/null || true
+            print_error "Rebase onto origin/$base_branch failed — cannot preserve foreign commits"
+            return 1
+          fi
+
+          # Step 2: Cherry-pick foreign commits on top
+          local _cherry_failed=false
+          local _cherry_sha
+          while IFS= read -r _cherry_sha; do
+            [ -z "$_cherry_sha" ] && continue
+            if ! git cherry-pick "$_cherry_sha" 2>/dev/null; then
+              # Cherry-pick conflict: halt or prompt
+              git cherry-pick --abort 2>/dev/null || true
+              _cherry_failed=true
+              break
+            fi
+          done <<EOF_FOREIGN_SHAS
+$_foreign_shas_ordered
+EOF_FOREIGN_SHAS
+
+          if [ "$_cherry_failed" = "true" ]; then
+            if [ "$workflow_mode" = "supervised" ]; then
+              print_error "Cherry-pick of foreign commits failed — conflicts detected"
+              echo "" >&2
+              echo "Foreign commits could not be replayed cleanly onto the rebased branch." >&2
+              echo "Options:" >&2
+              echo "  a) Abort (leave branch in rebased state without foreign commits)" >&2
+              echo "  b) Skip preserving foreign commits and push rebased branch only" >&2
+              echo "" >&2
+              printf "Choose [a/b]: " >&2
+              local _replay_choice
+              read -n 1 -r _replay_choice
+              echo >&2
+              case "$_replay_choice" in
+                b|B)
+                  print_warning "Pushing rebased branch without foreign commits (user choice)"
+                  if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+                    print_success "Branch rebased onto origin/$base_branch (foreign commits dropped by user choice)"
+                    return 0
+                  else
+                    print_error "Push failed after supervised discard"
+                    return 1
+                  fi
+                  ;;
+                *)
+                  print_info "Aborting — resetting to pre-rebase state"
+                  git reset --hard "${_preserve_pre_rebase_head:-HEAD}" 2>/dev/null || true
+                  return 1
+                  ;;
+              esac
+            else
+              # Auto mode: halt loudly — never silently discard
+              print_error "Cherry-pick of TRIVIAL foreign commits failed (conflicts) — halting to preserve code commits"
+              print_error "Foreign commits contain code changes that conflict with the rebased branch."
+              print_info "Run 'rite ${issue_number:-<issue>} --supervised' to resolve manually"
+              # Reset to pre-rebase state so the branch is clean for manual handling
+              git reset --hard "${_preserve_pre_rebase_head:-HEAD}" 2>/dev/null || true
+              return 1
+            fi
+          fi
+
+          # Cherry-picks succeeded — verify and push
+          if ! verify_post_merge "$worktree_path" "origin/main"; then
+            print_error "Post-rebase+replay verification failed — cannot proceed"
+            git reset --hard "${_preserve_pre_rebase_head:-HEAD}" 2>/dev/null || true
+            return 1
+          fi
+          if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+            print_success "Branch rebased onto origin/$base_branch with TRIVIAL foreign commits preserved via cherry-pick"
+            # Return 0: content preserved, no re-review needed for TRIVIAL
+            return 0
+          else
+            print_error "Push rejected after preserving TRIVIAL foreign commits — another race occurred"
+            return 1
+          fi
         fi
         ;;
 

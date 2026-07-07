@@ -546,12 +546,193 @@ wait_at_barrier() {
   git push origin --delete "$branch_name" >/dev/null 2>&1 || true
 }
 
-@test "stale-branch push-race: TRIVIAL foreign commit is absorbed silently (exit 0)" {
-  # Companion to the test above: when the foreign commits are classified as TRIVIAL
-  # (mainline sync, docs, formatting — no logic changes), they are absorbed and the
-  # push retried. No re-review is needed.
+@test "stale-branch push-race: TRIVIAL foreign commit that is content-empty vs local is discarded (exit 0)" {
+  # When the foreign commits are classified as TRIVIAL AND their net diff vs our
+  # local HEAD is empty (pure mainline-sync that brings in no new file content),
+  # they are discarded without re-review. This pins the "pure sync discard" behavior.
   #
-  # Expected: _stale_rebase_onto_main returns exit 0 after absorbing TRIVIAL commits.
+  # Scenario: The concurrent push is a merge commit that merges main into the feature
+  # branch, but the feature branch already has the same file state as main (no conflict
+  # resolutions, no extra lines). The diff between local HEAD and remote HEAD is empty.
+  #
+  # Expected: _stale_rebase_onto_main returns exit 0 (content-empty, discard safe).
+
+  cd "$FIXTURE_REPO"
+
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+  # Stub classify_foreign_commits to return TRIVIAL (simulates mainline-sync classification)
+  classify_foreign_commits() {
+    export DIVERGENCE_CLASS="TRIVIAL"
+    return 0
+  }
+
+  # Stub verify_post_merge so it always passes
+  verify_post_merge() { return 0; }
+
+  local branch_name="fix/race-trivial-content-empty-27"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-ce.txt
+  git add feature-ce.txt
+  git commit -m "Feature work (content-empty trivial test)" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Diverge main
+  git checkout main >/dev/null 2>&1
+  echo "main divergence" > main-ce.txt
+  git add main-ce.txt
+  git commit -m "Main divergence (content-empty trivial test)" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
+
+  local worktree_path="$RITE_WORKTREE_DIR/issue-ce-27"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Concurrent push that is content-IDENTICAL to the worktree's current HEAD:
+  # clone the remote at the worktree's current tip, create a "merge" commit that
+  # has no net diff vs the feature branch tip (same tree), and push it.
+  # We simulate this by creating an empty commit (--allow-empty) — its tree is
+  # identical to HEAD so git diff local..remote is empty.
+  local concurrent_dir="$RITE_TEST_TMPDIR/concurrent-ce"
+  git clone "$BARE_REMOTE" "$concurrent_dir" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.email "concurrent@example.com" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.name "Concurrent Client" >/dev/null 2>&1
+  git -C "$concurrent_dir" checkout "$branch_name" >/dev/null 2>&1
+  # Empty commit: no file changes — the tree at remote_head equals tree at local_head
+  git -C "$concurrent_dir" commit --allow-empty -m "Merge branch 'main' into $branch_name" >/dev/null 2>&1
+  git -C "$concurrent_dir" push origin "$branch_name" >/dev/null 2>&1
+
+  # Drive the function
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
+
+  # Content-empty TRIVIAL: must discard (exit 0, no re-review)
+  [ "$status" -eq 0 ]
+
+  # No new content from the empty foreign commit should appear (it had none to add)
+  # Feature file must still exist
+  [ -f "$worktree_path/feature-ce.txt" ]
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
+@test "stale-branch push-race: TRIVIAL foreign commit with code changes is preserved via cherry-pick (exit 0)" {
+  # Regression test for the Pilot ×3 incident (2026-07-06, issues #983/#984/#985/#986).
+  # The bug: a collaborator's hand-fix (act() wrapper, fixture timestamp) landed on
+  # the remote branch. classify_foreign_commits returned TRIVIAL (message-pattern match
+  # or Claude classification). The old TRIVIAL path rebased onto base WITHOUT preserving
+  # the foreign commits — force-push silently dropped them.
+  #
+  # Fix: TRIVIAL discard is legal ONLY when content-empty vs local HEAD. When non-empty,
+  # cherry-pick the foreign commits onto the rebased branch.
+  #
+  # Scenario: Remote branch has a foreign commit that adds a new file (real code change).
+  # classify_foreign_commits is stubbed to TRIVIAL (simulating the misclassification
+  # that caused the incident). After the fix, the file must survive in the pushed branch.
+  #
+  # Expected: exit 0 (cherry-pick succeeded, no re-review for TRIVIAL), foreign file present.
+
+  cd "$FIXTURE_REPO"
+
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+
+  # Stub classify_foreign_commits to return TRIVIAL (simulating the Pilot ×3 mismatch)
+  classify_foreign_commits() {
+    export DIVERGENCE_CLASS="TRIVIAL"
+    return 0
+  }
+
+  # Stub verify_post_merge so it always passes
+  verify_post_merge() { return 0; }
+
+  local branch_name="fix/race-trivial-preserve-code-27"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-preserve.txt
+  git add feature-preserve.txt
+  git commit -m "Feature work (preserve test)" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Diverge main
+  git checkout main >/dev/null 2>&1
+  echo "main divergence" > main-preserve.txt
+  git add main-preserve.txt
+  git commit -m "Main divergence (preserve test)" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
+
+  local worktree_path="$RITE_WORKTREE_DIR/issue-preserve-27"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Concurrent push: a collaborator's hand-fix that adds a new file (real code change)
+  local concurrent_dir="$RITE_TEST_TMPDIR/concurrent-preserve"
+  git clone "$BARE_REMOTE" "$concurrent_dir" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.email "collaborator@example.com" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.name "Collaborator" >/dev/null 2>&1
+  git -C "$concurrent_dir" checkout "$branch_name" >/dev/null 2>&1
+  # This is the "act() wrapper" or "fixture timestamp" type commit that must NOT be dropped
+  echo "act_helper() { echo 'hand-fix'; }" > "$concurrent_dir/act-wrapper.sh"
+  git -C "$concurrent_dir" add act-wrapper.sh >/dev/null 2>&1
+  git -C "$concurrent_dir" commit -m "fix: add act wrapper helper (hand fix)" >/dev/null 2>&1
+  git -C "$concurrent_dir" push origin "$branch_name" >/dev/null 2>&1
+
+  # Drive the function — this triggers the rebase+push-rejection+classify+cherry-pick path
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
+
+  # Must succeed (exit 0): cherry-pick preserved the code commit, no re-review for TRIVIAL
+  [ "$status" -eq 0 ]
+
+  # CRITICAL: the foreign code commit's file must be present on the pushed branch
+  [ -f "$worktree_path/act-wrapper.sh" ] || {
+    echo "FAIL: act-wrapper.sh missing from worktree — foreign code commit was silently dropped"
+    git -C "$worktree_path" log --oneline | head -10
+    return 1
+  }
+
+  # The file must contain the expected content (not just an empty file)
+  run grep -q "act_helper" "$worktree_path/act-wrapper.sh"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: act-wrapper.sh content missing — cherry-pick did not preserve the foreign commit's content"
+    return 1
+  }
+
+  # Verify the pushed remote branch also contains the file (not just the local worktree)
+  local _inspect_dir="$RITE_TEST_TMPDIR/inspect-preserve"
+  git clone "$BARE_REMOTE" "$_inspect_dir" >/dev/null 2>&1
+  git -C "$_inspect_dir" checkout "$branch_name" >/dev/null 2>&1
+  [ -f "$_inspect_dir/act-wrapper.sh" ] || {
+    echo "FAIL: act-wrapper.sh missing from pushed remote branch — cherry-pick result was not pushed"
+    git -C "$_inspect_dir" log --oneline | head -10
+    return 1
+  }
+
+  # Original feature work must also survive
+  [ -f "$worktree_path/feature-preserve.txt" ]
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
+@test "stale-branch push-race: TRIVIAL foreign commit with replay conflict halts loudly in auto mode (exit 1, no push)" {
+  # When a TRIVIAL-classified foreign commit has code changes (non-empty content diff)
+  # and the cherry-pick onto the rebased branch CONFLICTS, auto mode must halt loudly
+  # without pushing — never silently discard foreign code commits.
+  #
+  # Fixture for cherry-pick conflict (add/add):
+  #   1. Feature branch has feature.txt
+  #   2. Main diverges and adds shared.txt = "main content"
+  #   3. Rebase succeeds: rebased HEAD gains shared.txt from main
+  #   4. Foreign commit (from pre-rebase parent, where shared.txt did NOT exist):
+  #      adds shared.txt = "collaborator content"
+  #   5. Cherry-pick of foreign commit onto rebased HEAD: add/add conflict on shared.txt
+  #      (rebased HEAD already has it from main; foreign commit adds it again differently)
+  #
+  # Expected: exit 1, no force-push to remote, informative error message.
 
   cd "$FIXTURE_REPO"
 
@@ -563,52 +744,65 @@ wait_at_barrier() {
     return 0
   }
 
-  # Stub verify_post_merge so it always passes
+  # Stub verify_post_merge so it always passes (conflict is at cherry-pick level, not tests)
   verify_post_merge() { return 0; }
 
-  local branch_name="fix/race-trivial-test-27"
+  local branch_name="fix/race-trivial-conflict-halt-27"
   git checkout -b "$branch_name" main >/dev/null 2>&1
-  echo "feature work" > feature-trivial.txt
-  git add feature-trivial.txt
-  git commit -m "Feature work (trivial test)" >/dev/null 2>&1
+  # Feature branch: add feature.txt only (shared.txt does not exist yet)
+  echo "feature work" > feature-halt.txt
+  git add feature-halt.txt
+  git commit -m "Feature work" >/dev/null 2>&1
   git push -u origin "$branch_name" >/dev/null 2>&1
 
-  # Diverge main
+  # Diverge main: main adds shared.txt = "main content"
+  # After rebase, the worktree will have shared.txt (from main)
   git checkout main >/dev/null 2>&1
-  echo "main divergence" > main-trivial.txt
-  git add main-trivial.txt
-  git commit -m "Main divergence (trivial test)" >/dev/null 2>&1
+  echo "main content for shared" > shared.txt
+  git add shared.txt
+  git commit -m "Main: add shared.txt" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
-  # Stay on main so `git worktree add "$branch_name"` below does not hit
-  # fatal: "'<branch>' is already checked out" (status 128). Same fix as the
-  # UNRELATED-commit test. (universal git behaviour, not BSD)
   git checkout main >/dev/null 2>&1
 
-  local worktree_path="$RITE_WORKTREE_DIR/issue-trivial-27"
+  local worktree_path="$RITE_WORKTREE_DIR/issue-halt-27"
   git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
 
-  # Concurrent TRIVIAL push (a doc-only change)
-  local concurrent_dir="$RITE_TEST_TMPDIR/concurrent-trivial"
+  # Foreign commit (from concurrent client, based on feature branch tip where
+  # shared.txt did NOT exist): adds shared.txt = "collaborator content".
+  # After rebase, our HEAD will have shared.txt = "main content" (from main).
+  # Cherry-pick this foreign commit → add/add conflict on shared.txt.
+  local concurrent_dir="$RITE_TEST_TMPDIR/concurrent-halt"
   git clone "$BARE_REMOTE" "$concurrent_dir" >/dev/null 2>&1
-  git -C "$concurrent_dir" config user.email "concurrent@example.com" >/dev/null 2>&1
-  git -C "$concurrent_dir" config user.name "Concurrent Client" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.email "collaborator@example.com" >/dev/null 2>&1
+  git -C "$concurrent_dir" config user.name "Collaborator" >/dev/null 2>&1
   git -C "$concurrent_dir" checkout "$branch_name" >/dev/null 2>&1
-  echo "# trivial doc update" >> "$concurrent_dir/feature-trivial.txt"
-  git -C "$concurrent_dir" add feature-trivial.txt >/dev/null 2>&1
-  git -C "$concurrent_dir" commit -m "docs: minor doc update (trivial)" >/dev/null 2>&1
+  # Add shared.txt differently — this conflicts on cherry-pick (main already added it)
+  echo "collaborator content for shared (different from main)" > "$concurrent_dir/shared.txt"
+  git -C "$concurrent_dir" add shared.txt >/dev/null 2>&1
+  git -C "$concurrent_dir" commit -m "fix: add shared.txt (collaborator version)" >/dev/null 2>&1
   git -C "$concurrent_dir" push origin "$branch_name" >/dev/null 2>&1
 
-  # Drive the function
+  # Record the remote tip BEFORE the function runs (to verify no force-push happened)
+  local remote_tip_before
+  remote_tip_before=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
+
+  # Drive the function in auto mode — cherry-pick will conflict, must halt (exit 1)
   run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "" ""
 
-  # TRIVIAL foreign commits must be discarded: exit 0 (no re-review needed)
-  [ "$status" -eq 0 ]
+  # Must return non-zero (halt, no push)
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: function returned 0 — should have halted on cherry-pick conflict"
+    return 1
+  }
 
-  # The trivial foreign commit must have been DISCARDED (not absorbed):
-  # the concurrent client appended "# trivial doc update" to feature-trivial.txt,
-  # but after rebase onto origin/main the worktree must NOT contain that line.
-  run grep -q "trivial doc update" "$worktree_path/feature-trivial.txt"
-  [ "$status" -ne 0 ]
+  # CRITICAL: the remote tip must NOT have advanced — no force-push should have occurred
+  local remote_tip_after
+  remote_tip_after=$(git ls-remote "$BARE_REMOTE" "refs/heads/$branch_name" | awk '{print $1}' || true)
+  [ "$remote_tip_before" = "$remote_tip_after" ] || {
+    echo "FAIL: remote tip changed from $remote_tip_before to $remote_tip_after"
+    echo "      A force-push occurred despite a cherry-pick conflict — foreign commits may have been lost"
+    return 1
+  }
 
   # Clean up
   cd "$FIXTURE_REPO"

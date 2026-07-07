@@ -190,9 +190,28 @@ classify_foreign_commits() {
     non_main_merge_count=$(echo "$non_main_commits" | grep -ciE "Merge branch '(main|master|develop)' into|Merge pull request .* from .*/main" || true)
 
     if [ "$non_main_merge_count" -eq "$non_main_count" ] && [ "$non_main_count" -gt 0 ]; then
-      export DIVERGENCE_CLASS="TRIVIAL"
-      _div_info "Fast classification: mainline sync ($non_main_count merge commit(s) + ${total_commits} total from main)" >&2
-      return 0
+      # Message pattern matches mainline-sync merge commits. Guard against a
+      # merge commit that also sneaks in real code changes (e.g. a conflict
+      # resolution that edited source files, or an "act() wrapper" added during
+      # conflict resolution — the Pilot ×3 incident, 2026-07-06).
+      #
+      # Verify the foreign commits are content-empty vs local HEAD:
+      # `git diff local_head..remote_head` is empty iff the tree at remote_head
+      # is identical to the tree at local_head. This means the foreign commits
+      # brought in nothing beyond what our local branch already has — they are
+      # a pure structural sync that merges main into the feature branch but
+      # writes no new bytes to tracked files. If the diff is non-empty, the
+      # merge commit introduced real content (code, fixtures, etc.) and MUST NOT
+      # be silently discarded regardless of the commit message pattern.
+      local _content_diff
+      _content_diff=$(git diff "${local_head}..${remote_head}" 2>/dev/null || true)
+      if [ -z "$_content_diff" ]; then
+        export DIVERGENCE_CLASS="TRIVIAL"
+        _div_info "Fast classification: mainline sync ($non_main_count merge commit(s) + ${total_commits} total from main, net-diff empty vs local)" >&2
+        return 0
+      fi
+      _div_info "Mainline-sync message pattern but diff vs local HEAD is non-empty — contains code changes, not TRIVIAL" >&2
+      # Falls through to rite-pattern check or Claude slow-path
     fi
   fi
 

@@ -203,11 +203,46 @@ _mid_run_rebase_onto_main() {
       print_info "mid-run rebase: rebased ${commits_ahead} commit(s) onto origin/main, pushed"
       return 0
     else
-      # Push rejected — another concurrent push happened.  This is rare mid-run (the
-      # branch should only have our commits), but it can happen with parallel batch runs.
-      # Don't try to classify: just abort cleanly and let the caller handle it.
-      git rebase --abort 2>/dev/null || true
-      print_warning "mid-run-rebase: push rejected after rebase (concurrent push?) — reverting to pre-rebase state"
+      # Push rejected — another concurrent push happened while we were rebasing.
+      # The remote branch has foreign commits we don't have. Apply preserve-or-halt:
+      # re-fetch and inspect the foreign commits. If they are content-empty vs our
+      # rebased HEAD (pure mainline-sync merge commits), discard and retry. Otherwise
+      # halt loudly — we must not silently drop code commits.
+      print_warning "mid-run-rebase: push rejected after rebase — checking for foreign commits"
+      if git fetch origin "$branch_name" 2>/dev/null; then
+        local _mid_remote_head
+        _mid_remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || true)
+        local _mid_local_head
+        _mid_local_head=$(git rev-parse HEAD 2>/dev/null || true)
+
+        if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ] && [ "$_mid_remote_head" != "$_mid_local_head" ]; then
+          local _mid_foreign_diff
+          _mid_foreign_diff=$(git diff "${_mid_local_head}..${_mid_remote_head}" 2>/dev/null || true)
+          if [ -z "$_mid_foreign_diff" ]; then
+            # Content-empty foreign commits (pure mainline-sync merge). Safe to
+            # discard by re-fetching the lease ref and retrying the push.
+            print_info "mid-run-rebase: foreign commits are content-empty — retrying push after lease refresh"
+            if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+              print_info "mid-run rebase: push succeeded after lease refresh (content-empty foreign commits discarded)"
+              return 0
+            fi
+          fi
+          # Non-empty foreign commits (code changes). Halt loudly — do NOT push.
+          # Preserve-or-halt contract: a push here would clobber foreign code commits.
+          print_error "mid-run-rebase: push rejected — remote has foreign code commits that would be lost by force-push"
+          print_error "Foreign commits contain code changes — halting to prevent data loss"
+          print_info "Foreign commits on remote:"
+          git log --oneline "${_mid_local_head}..${_mid_remote_head}" 2>/dev/null | sed 's/^/  /' >&2
+          print_info "Run 'rite ${issue_number:-<issue>} --supervised' to integrate and resolve manually"
+          if [ -n "$pre_rebase_head" ]; then
+            git reset --hard "$pre_rebase_head" 2>/dev/null || true
+            print_info "Branch restored to pre-rebase HEAD"
+          fi
+          return 1
+        fi
+      fi
+      # Could not fetch or determine remote state — revert to pre-rebase and fail safely
+      print_warning "mid-run-rebase: push rejected — could not inspect remote state, reverting to pre-rebase"
       if [ -n "$pre_rebase_head" ]; then
         git reset --hard "$pre_rebase_head" 2>/dev/null || true
       fi
