@@ -1087,12 +1087,18 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   ACTIONABLE_NOW_COUNT=$(echo "$ACTIONABLE_NOW_ITEMS" | grep -c "^### .* - ACTIONABLE_NOW" || true)
 
   # Inject test-authoring runbook when the fix session may touch tests/ files.
-  # Gate: only grows the prompt when a [GATE] bats failure or a review finding
-  # referencing tests/ or .bats is present — DO NOT inject when no tests are
-  # in play (per issue #909 scope boundary).
+  # Two signals, either sufficient (per issue #985 scope):
+  #   1. ACTIONABLE_NOW_ITEMS text mentions a tests/ path or .bats file
+  #      (covers [GATE] bats failures and review findings naming test files)
+  #   2. branch already has tests/ changes relative to origin/main
+  #      (covers the case where items describe a logic fix but the branch
+  #       also carries test edits that the fix session will continue to touch)
+  # DO NOT inject when neither signal fires (prompt bloat on non-test fixes).
   # Lookup chain mirrors dev_session_preamble (project override → install-dir doc).
   _fix_test_runbook_section=""
-  if echo "$ACTIONABLE_NOW_ITEMS" | grep -qE 'tests/|\.bats'; then
+  _fix_branch_has_tests=""
+  _fix_branch_has_tests=$(git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^tests/' && echo "yes" || true)
+  if echo "$ACTIONABLE_NOW_ITEMS" | grep -qE 'tests/|\.bats' || [ "$_fix_branch_has_tests" = "yes" ]; then
     _fix_test_runbook_section=$(provider_load_test_authoring_runbook || true)
   fi
 

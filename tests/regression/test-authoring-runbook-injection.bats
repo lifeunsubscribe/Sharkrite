@@ -218,3 +218,31 @@ setup() {
   }
   true
 }
+
+# ---------------------------------------------------------------------------
+# Group C (signal 2): branch-has-tests git diff gate structural pins
+# ---------------------------------------------------------------------------
+
+@test "fix-session code checks git diff for branch tests/ changes (signal 2)" {
+  # Signal 2: when the branch already has tests/ changes relative to origin/main,
+  # inject the runbook even if ACTIONABLE_NOW_ITEMS doesn't mention tests/.
+  # Verify the source contains a git diff --name-only check probing tests/.
+  if ! grep -qE 'git diff.*--name-only.*origin/main|git diff.*--name-only.*HEAD' "$WORKFLOW_FILE"; then
+    echo "FAIL: claude-workflow.sh has no git diff --name-only probe for branch tests/ changes"
+    echo "Expected: git diff --name-only origin/main...HEAD piped to a grep for tests/"
+    return 1
+  fi
+  true
+}
+
+@test "fix-session gate includes OR arm for branch-has-tests signal" {
+  # The if-gate must combine both signals with ||:
+  #   if ... (signal 1 ACTIONABLE_NOW_ITEMS) || [ branch has tests ]; then
+  # Verify the if line that triggers runbook injection contains both signals.
+  if ! grep -qE 'ACTIONABLE_NOW_ITEMS.*\|\|.*_fix_branch_has_tests|_fix_branch_has_tests.*\|\|.*ACTIONABLE_NOW_ITEMS' "$WORKFLOW_FILE"; then
+    echo "FAIL: injection gate does not combine ACTIONABLE_NOW_ITEMS and _fix_branch_has_tests with ||"
+    echo "Both signals must be checked so branch-level test changes trigger injection"
+    return 1
+  fi
+  true
+}
