@@ -16,9 +16,21 @@
 
 setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
 
-@test "structural: sandbox env scrub is defined with all three deny-listed vars" {
-  grep -qE '_bats_sandbox=\(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER\)' \
-    "${RITE_LIB_DIR}/utils/test-gate.sh"
+@test "structural: sandbox env scrub is defined with all deny-listed vars" {
+  # Workflow vars (live-freeze class, see header) plus BATS_* IPC vars (#993:
+  # inherited BATS_RUN_TMPDIR/BATS_ROOT_PID deadlock nested bats runs). The
+  # definition spans continuation lines, so extract from the opening paren to
+  # the closing paren and assert each -u flag is present.
+  _def=$(sed -n '/_bats_sandbox=(env -u/,/)/p' "${RITE_LIB_DIR}/utils/test-gate.sh")
+  [ -n "$_def" ]
+  for _var in RITE_LOG_FILE PR_NUMBER ISSUE_NUMBER \
+      BATS_RUN_TMPDIR BATS_SUITE_TMPDIR BATS_FILE_TMPDIR \
+      BATS_TEST_TMPDIR BATS_ROOT_PID; do
+    echo "$_def" | grep -q -- "-u $_var" || {
+      echo "FAIL: _bats_sandbox scrub is missing -u $_var" >&2
+      return 1
+    }
+  done
 }
 
 @test "structural: sandbox is defined BEFORE the first bats invocation" {
