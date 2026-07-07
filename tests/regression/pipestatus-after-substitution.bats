@@ -85,6 +85,9 @@ DATE_EOF
 #!/bin/bash
 RITE_MARKER_ASSESSMENT="sharkrite-assessment"
 RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
+RITE_MARKER_REVIEW="sharkrite-local-review"
+RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
+RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
 MARKERS_EOF
 
   # Stub issue-lock.sh — sourced by the script since #756 for the follow-up

@@ -48,9 +48,23 @@ setup() {
   #     no interactive prompts fire.
   #
   # NOTE: install.sh is an executable script, not a lib — run it as a subprocess.
+  # Gap-filler stubs APPENDED to PATH (real binaries win): CI runners lack
+  # the `claude` CLI, so install.sh's dep precheck hits its interactive
+  # "Continue anyway?" read — with stdin at /dev/null that aborts the install
+  # before any copy and all four tests fail on CI while passing locally.
+  local _dep_stubs="${RITE_TEST_TMPDIR}/dep-stubs"
+  mkdir -p "$_dep_stubs"
+  for _dep in claude gh jq git; do
+    if ! command -v "$_dep" >/dev/null 2>&1; then
+      printf '#!/bin/sh\nexit 0\n' > "$_dep_stubs/$_dep"
+      chmod +x "$_dep_stubs/$_dep"
+    fi
+  done
+
   RITE_INSTALL_DIR="$_INSTALL_PREFIX" \
   HOME="$_FAKE_HOME" \
   RITE_BIN_DIR="$_FAKE_HOME/.local/bin" \
+  PATH="$PATH:$_dep_stubs" \
   bash "${RITE_REPO_ROOT}/install.sh" </dev/null >/dev/null 2>&1
 }
 

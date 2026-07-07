@@ -50,7 +50,9 @@ teardown() {
 
 @test "RAW_MARKER_LITERAL rule is registered in sharkrite-lint.sh" {
   cd "$PROJECT_ROOT"
-  run grep -q "RAW_MARKER_LITERAL" tools/sharkrite-lint.sh
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "RAW_MARKER_LITERAL" tools/sharkrite-lint.sh tools/lint-rules
   [ "$status" -eq 0 ]
 }
 

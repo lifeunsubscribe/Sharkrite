@@ -30,6 +30,10 @@
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   export LINT_SCRIPT="$PROJECT_ROOT/tools/sharkrite-lint.sh"
+  # Post-#952 the AWK programs under test live in tools/lint-rules/ fragments;
+  # content assertions must scan driver + fragments as one source.
+  _lint_sources() { cat "$LINT_SCRIPT" "$PROJECT_ROOT"/tools/lint-rules/*.sh; }
+  export -f _lint_sources 2>/dev/null || true
 
   # Use a temp dir outside the project tree for extra fixtures.
   # Note: RITE_LINT_EXTRA_DIRS is colon-separated, so the directory path
@@ -54,14 +58,14 @@ teardown() {
   # Using colon would break file path extraction when the path contains colons.
 
   # No colon-separated FILENAME/FNR print must exist
-  _colon_count=$(grep -c 'print FILENAME ":" FNR' "$LINT_SCRIPT" || true)
+  _colon_count=$(_lint_sources | grep -c 'print FILENAME ":" FNR' || true)
   [ "$_colon_count" -eq 0 ] || {
     echo "Found colon-separated FILENAME/FNR print(s) in sharkrite-lint.sh (count: $_colon_count)" >&2
     return 1
   }
 
   # At least one tab-separated FILENAME/FNR print must exist (Rule 7's output line)
-  _tab_count=$(grep -c 'print FILENAME "\\t" FNR' "$LINT_SCRIPT" || true)
+  _tab_count=$(_lint_sources | grep -c 'print FILENAME "\\t" FNR' || true)
   [ "$_tab_count" -ge 1 ] || {
     echo "No tab-separated FILENAME/FNR print found in Rule 7 AWK" >&2
     return 1
@@ -73,14 +77,14 @@ teardown() {
   # must emit pending_fname "\t" pending_line, not pending_fname ":" pending_line.
 
   # No colon-separated pending_fname output must exist
-  _colon_count=$(grep -c '":" pending_line' "$LINT_SCRIPT" || true)
+  _colon_count=$(_lint_sources | grep -c '":" pending_line' || true)
   [ "$_colon_count" -eq 0 ] || {
     echo "Found colon-separated Rule 8 AWK output (count: $_colon_count)" >&2
     return 1
   }
 
   # At least one \t-separated output line must exist
-  _tab_count=$(grep -c '"\\t" pending_line' "$LINT_SCRIPT" || true)
+  _tab_count=$(_lint_sources | grep -c '"\\t" pending_line' || true)
   [ "$_tab_count" -ge 1 ] || {
     echo "No tab-separated pending_fname output found in Rule 8 AWK" >&2
     return 1
@@ -90,7 +94,7 @@ teardown() {
 @test "Rule 9 AWK print statements use tab separator" {
   # Rule 9 emits FILENAME "\t" FNR "\t" TAG for each detected token.
   # Colon separator would break on colon-containing paths.
-  _colon_count=$(grep -c 'print FILENAME ":" FNR' "$LINT_SCRIPT" || true)
+  _colon_count=$(_lint_sources | grep -c 'print FILENAME ":" FNR' || true)
   [ "$_colon_count" -eq 0 ] || {
     echo "Found $colon_count colon-separated FILENAME/FNR print(s) in sharkrite-lint.sh" >&2
     return 1
@@ -100,7 +104,7 @@ teardown() {
 @test "Rule 13 AWK program uses tab separator" {
   # Rule 13 emits FILENAME "\t" NR, not FILENAME ":" NR ":" $0.
   # The old format with $0 (line content) and colon separator broke on colon paths.
-  _colon_count=$(grep -c 'print FILENAME ":" NR' "$LINT_SCRIPT" || true)
+  _colon_count=$(_lint_sources | grep -c 'print FILENAME ":" NR' || true)
   [ "$_colon_count" -eq 0 ] || {
     echo "Found colon-separated FILENAME/NR print in Rule 13 AWK" >&2
     return 1
@@ -118,8 +122,14 @@ teardown() {
   # _hit_line/_hit_tag variables which come from AWK multi-file output.
 
   # Collect _hit_file/_hit_line/_hit_tag assignments that still use cut -d:
-  _colon_cut_lines=$(grep -n '_hit_file\s*=\|_hit_line\s*=\|_hit_tag\s*=' "$LINT_SCRIPT" | \
-    grep 'cut -d:' || true)
+  # awk carries a 1-line lookbehind so parses annotated
+  # "# sharkrite-lint-safe: single-file" (grep -n lineno:content — no
+  # filename field) are exempt; only unannotated colon-cuts are violations.
+  _colon_cut_lines=$(_lint_sources | awk '
+    /_hit_(file|line|tag)[[:space:]]*=/ && /cut -d:/ {
+      if (prev !~ /sharkrite-lint-safe: single-file/) print NR": "$0
+    }
+    { prev = $0 }' || true)
 
   [ -z "$_colon_cut_lines" ] || {
     echo "Found colon-based cut in AWK hit-parsing code:" >&2
@@ -131,20 +141,20 @@ teardown() {
 @test "Rule 18 uses AWK not grep -rn for marker collection" {
   # Rule 18 previously used 'grep -rn' which outputs 'file:linenum:content',
   # broken for colon-containing paths.  It must now use AWK with tab output.
-  _grep_rn_count=$(grep -c "_r18_starts=\$(grep -rn" "$LINT_SCRIPT" || true)
+  _grep_rn_count=$(_lint_sources | grep -c "_r18_starts=\$(grep -rn" || true)
   [ "$_grep_rn_count" -eq 0 ] || {
     echo "Rule 18 still uses grep -rn for _r18_starts (colon-path unsafe)" >&2
     return 1
   }
 
-  _grep_rn_ends=$(grep -c "_r18_ends=\$(grep -rn" "$LINT_SCRIPT" || true)
+  _grep_rn_ends=$(_lint_sources | grep -c "_r18_ends=\$(grep -rn" || true)
   [ "$_grep_rn_ends" -eq 0 ] || {
     echo "Rule 18 still uses grep -rn for _r18_ends (colon-path unsafe)" >&2
     return 1
   }
 
   # Must use AWK instead
-  _awk_starts=$(grep -c "_r18_starts=\$(awk" "$LINT_SCRIPT" || true)
+  _awk_starts=$(_lint_sources | grep -c "_r18_starts=\$(awk" || true)
   [ "$_awk_starts" -ge 1 ] || {
     echo "Rule 18 does not use AWK for _r18_starts collection" >&2
     return 1

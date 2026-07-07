@@ -84,7 +84,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "lint file contains Rule 10 (BARE_BSD_SED_I)" {
-  run grep -q "BARE_BSD_SED_I" "$PROJECT_ROOT/tools/sharkrite-lint.sh"
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "BARE_BSD_SED_I" "$PROJECT_ROOT/tools/sharkrite-lint.sh" "$PROJECT_ROOT/tools/lint-rules"
   [ "$status" -eq 0 ]
 }
 
@@ -105,7 +107,8 @@ teardown() {
 
 @test "Rule 10 skips portable-cmds.sh (guard confirmed present)" {
   # Rule 10 explicitly excludes portable-cmds.sh; verify the skip guard exists
-  run grep -q 'portable-cmds.sh' "$PROJECT_ROOT/tools/sharkrite-lint.sh"
+  # Rule 10's guard lives in its fragment post-#952.
+  run grep -q 'portable-cmds.sh' "$PROJECT_ROOT"/tools/lint-rules/10-*.sh
   [ "$status" -eq 0 ]
 }
 
@@ -114,7 +117,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "lint file contains Rule 11 (BARE_BSD_STAT_F)" {
-  run grep -q "BARE_BSD_STAT_F" "$PROJECT_ROOT/tools/sharkrite-lint.sh"
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "BARE_BSD_STAT_F" "$PROJECT_ROOT/tools/sharkrite-lint.sh" "$PROJECT_ROOT/tools/lint-rules"
   [ "$status" -eq 0 ]
 }
 
@@ -135,7 +140,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "lint file contains Rule 12 (XARGS_WITHOUT_NULL)" {
-  run grep -q "XARGS_WITHOUT_NULL" "$PROJECT_ROOT/tools/sharkrite-lint.sh"
+  # Post-#952 the linter is driver + tools/lint-rules/ fragments — rule
+  # bodies live in the fragments, so the assertion must search both.
+  run grep -qr "XARGS_WITHOUT_NULL" "$PROJECT_ROOT/tools/sharkrite-lint.sh" "$PROJECT_ROOT/tools/lint-rules"
   [ "$status" -eq 0 ]
 }
 
@@ -160,7 +167,8 @@ teardown() {
 @test "Rule 5 is restricted to portable-cmds.sh only (no double-report)" {
   # Confirm the Rule 5 loop has a guard that skips non-portable-cmds.sh files
   # The guard: [[ "$file" != */portable-cmds.sh ]] → continue
-  run grep -A5 'Rule 5' "$PROJECT_ROOT/tools/sharkrite-lint.sh"
+  # Rule 5 lives in its fragment post-#952.
+  run grep -A5 'Rule 5' "$PROJECT_ROOT"/tools/lint-rules/05-*.sh
   [ "$status" -eq 0 ]
   [[ "$output" =~ "portable-cmds.sh" ]]
   [[ "$output" =~ "continue" ]]

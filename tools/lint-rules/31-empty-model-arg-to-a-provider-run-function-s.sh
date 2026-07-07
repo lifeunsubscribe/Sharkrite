@@ -14,6 +14,9 @@ for file in "${SHELL_FILES[@]}"; do
   [ -z "$_r31_hits" ] && continue
   while IFS= read -r _hit; do
     [ -z "$_hit" ] && continue
+    # Single-file grep -n output is "lineno:content" — no filename field, so
+    # colon-cut cannot mangle paths (only multi-file AWK output needs tab cuts).
+    # sharkrite-lint-safe: single-file
     _hit_line=$(echo "$_hit" | cut -d: -f1)
     _hit_content=$(echo "$_hit" | cut -d: -f2-)
     # Skip comment lines (the pattern could appear in documentation examples)
