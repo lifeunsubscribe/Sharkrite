@@ -117,7 +117,7 @@ $FIXTURE_DIR/real.sh"
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "real.sh" ]] || { echo "$output" >&2; return 1; }
-  [[ "$output" =~ "targeted scope (1 file" ]] || { echo "expected '1 file' count; got:" >&2; echo "$output" >&2; return 1; }
+  [[ "$output" =~ "targeted scope (1 shell file" ]] || { echo "expected '1 shell file' count; got:" >&2; echo "$output" >&2; return 1; }
 }
 
 # ---------------------------------------------------------------------------
