@@ -38,7 +38,11 @@ rite_markers_loaded() { return 0; }
 RITE_MARKER_REVIEW="sharkrite-local-review"
 
 # Assessment comment marker — assessment results are posted under this marker.
-# Format in comment: <!-- sharkrite-assessment -->
+# Format in comment: <!-- sharkrite-assessment pr:N iteration:1 timestamp:ISO commit:SHA -->
+# The commit: attribute records the HEAD SHA at assessment generation time, enabling
+# SHA-based currency detection (see workflow-runner.sh). Older assessments without
+# this attribute fall back to re-assessing unconditionally (backward compat, same
+# pattern as #354's review fallback). Parsing: extract_assessment_sha() in review-helper.sh.
 RITE_MARKER_ASSESSMENT="sharkrite-assessment"
 
 # Follow-up issue link marker — posted as PR comment after creating a tech-debt issue.

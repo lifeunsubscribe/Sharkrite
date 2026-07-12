@@ -328,7 +328,7 @@ _resolve_done_def() {
 }
 
 # ---------------------------------------------------------------------------
-# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT [MODEL_LINE] [NOW_REVIEW_COUNT]
+# _post_gate_fallback_assessment_comment PR_NUMBER GATE_ITEMS GATE_NOW_COUNT [MODEL_LINE] [NOW_REVIEW_COUNT] [HEAD_SHA]
 #
 # Posts a minimal assessment PR comment (RITE_MARKER_ASSESSMENT marker)
 # containing the [GATE] ACTIONABLE_NOW items, for cases where the post-commit
@@ -376,9 +376,17 @@ _post_gate_fallback_assessment_comment() {
   local _gate_count="$3"
   local _model_line="${4:-none (LLM assessment failed — gate findings only)}"
   local _now_review_count="${5:-0}"
-  local _ts _comment _body_file _now_summary_suffix _items_body _gate_only_count
+  # $6: head_sha — optional HEAD SHA to embed in the assessment marker for
+  # SHA-based currency detection (#986). If empty (pre-#986 callers), the
+  # marker has no commit: attribute and readers fall back to re-assessing.
+  local _head_sha="${6:-}"
+  local _ts _comment _body_file _now_summary_suffix _items_body _gate_only_count _sha_attr
 
   _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  _sha_attr=""
+  if [ -n "$_head_sha" ]; then
+    _sha_attr=" commit:${_head_sha}"
+  fi
 
   # Build the ACTIONABLE_NOW summary line — plain count when gate-only, split
   # annotation when both origins are present.
@@ -416,7 +424,8 @@ ${_gate_items}"
     _items_body="${_gate_items}"
   fi
 
-  _comment="<!-- ${RITE_MARKER_ASSESSMENT} pr:${_pr_number} iteration:1 timestamp:${_ts} -->
+  _comment="<!-- ${RITE_MARKER_ASSESSMENT} pr:${_pr_number} iteration:1 timestamp:${_ts}${_sha_attr} -->
+
 
 ## 🔍 Sharkrite Assessment
 
@@ -1165,6 +1174,43 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
     ''|*[!0-9]*) _gate_exit_code=0 ;;
   esac
 
+  # ---- Gate verdict SHA-pinning check (issue #986) ----
+  # A passing gate verdict from a superseded commit must NOT authorize a merge
+  # or skip the fix loop. Verify the head_sha embedded in the gate JSON matches
+  # the PR's current HEAD (CURRENT_HEAD_SHA, resolved above via the GitHub API).
+  #
+  # Conservative rules:
+  #   - No head_sha in JSON (pre-#986 gate) → accept as-is (backward compat)
+  #   - SHA match or no CURRENT_HEAD_SHA known → accept as-is
+  #   - SHA mismatch AND gate PASSED → verdict is stale; emit loud warning
+  #     and discard it (treat as if no gate ran — assessment must proceed)
+  #   - SHA mismatch AND gate FAILED → still block (conservative: failure from
+  #     an earlier SHA is a real signal; it may still apply to HEAD)
+  _gate_verdict_sha=$(jq -r '.head_sha // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
+  _gate_verdict_sha="${_gate_verdict_sha:-}"
+  _gate_verdict_is_stale=false
+
+  if [ -n "$_gate_verdict_sha" ] && [ -n "${CURRENT_HEAD_SHA:-}" ] \
+     && [ "$_gate_verdict_sha" != "$CURRENT_HEAD_SHA" ]; then
+    # SHA mismatch detected.
+    if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -eq 0 ]; then
+      # Gate PASSED at a superseded SHA — this verdict cannot authorize a merge.
+      _gate_verdict_is_stale=true
+      print_warning "Gate verdict is stale — gate ran at ${_gate_verdict_sha:0:8}, HEAD is ${CURRENT_HEAD_SHA:0:8}"
+      print_warning "A PASSING verdict from a superseded commit cannot authorize a merge — discarding it (gate must re-run)"
+      echo ""
+      # Mark as skipped so the normal failure-processing block below does not fire
+      # and GATE_NOW_COUNT stays 0. The early exit at 'zero findings + gate passed'
+      # is also guarded by _gate_verdict_is_stale so a stale PASS cannot authorize
+      # a merge even when the review has zero findings.
+      _gate_skipped="true"
+    else
+      # Gate FAILED at a superseded SHA — still report it (conservative).
+      print_warning "Gate verdict was recorded at ${_gate_verdict_sha:0:8} (current HEAD: ${CURRENT_HEAD_SHA:0:8}) — verdict may not reflect the current state, but failures are still reported"
+      echo ""
+    fi
+  fi
+
   if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
     # Build [GATE] ACTIONABLE_NOW items from lint failures
     while IFS= read -r _lint_item; do
@@ -1260,7 +1306,8 @@ fi
 REVIEW_FINDINGS_LINE=$(grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" "$REVIEW_FILE" 2>/dev/null | head -1 || true)
 if [ -n "$REVIEW_FINDINGS_LINE" ]; then
   REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
-  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ]; then
+  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ] \
+     && [ "${_gate_verdict_is_stale:-false}" != "true" ]; then
     print_header "🦈 Smart Assessment (Sharkrite)"
     print_success "Review has zero findings and gate passed — skipping assessment, proceeding to merge"
     echo ""
@@ -1366,7 +1413,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         fi
         if _post_gate_fallback_assessment_comment "$PR_NUMBER" "$ASSESSMENT_RESULT" "$ACTIONABLE_NOW_COUNT" \
              "merged — LLM assessment + ${GATE_NOW_COUNT} gate finding(s) (#949)" \
-             "$_now_review_count"; then
+             "$_now_review_count" "${CURRENT_HEAD_SHA:-}"; then
           print_status "Posted merged assessment (LLM + [GATE] items) — fix mode reads this superseding comment"
         else
           print_warning "Could not post the merged assessment comment — fix mode may not see the [GATE] items this round (#949)"
@@ -1428,7 +1475,8 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         # overrides the default "LLM assessment failed" label so the PR comment
         # accurately reflects that gate failures forced the loop, not LLM failure.
         _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" \
-          "none (LLM assessment succeeded — gate failures forced fix loop)" || true
+          "none (LLM assessment succeeded — gate failures forced fix loop)" \
+          "0" "${CURRENT_HEAD_SHA:-}" || true
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
@@ -1449,7 +1497,8 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         # arg overrides the default "LLM assessment failed" label so the PR comment
         # accurately reflects that gate failures forced the loop, not LLM failure.
         _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" \
-          "none (LLM assessment succeeded — gate failures forced fix loop)" || true
+          "none (LLM assessment succeeded — gate failures forced fix loop)" \
+          "0" "${CURRENT_HEAD_SHA:-}" || true
         echo "$ASSESSMENT_RESULT" >&3
         exit 2
       fi
@@ -1615,7 +1664,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # when invoked with a PR number — the fd-3 echo below alone is invisible
       # to it. Post the minimal assessment comment before exiting 2; on post
       # failure still exit 2 (the helper prints the loud warning).
-      _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" || true
+      _post_gate_fallback_assessment_comment "$PR_NUMBER" "$GATE_PREPEND_ITEMS" "$GATE_NOW_COUNT" "" "0" "${CURRENT_HEAD_SHA:-}" || true
       echo "$ASSESSMENT_RESULT" >&3
       exit 2
     fi

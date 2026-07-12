@@ -1028,7 +1028,22 @@ fi
 
 # Build assessment summary for PR comment
 ASSESSMENT_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-ASSESSMENT_COMMENT="<!-- ${RITE_MARKER_ASSESSMENT} pr:${PR_NUMBER} iteration:1 timestamp:${ASSESSMENT_TIMESTAMP} -->
+
+# Embed HEAD SHA at assessment generation time for SHA-based currency detection
+# (issue #986 — assessment cache SHA pinning). Mirrors the review marker pattern
+# (#354). Readers (workflow-runner.sh) compare this SHA to current HEAD before
+# consuming a passing assessment as a phase-skip or merge-authorize signal.
+# Uses the GitHub API (headRefOid) for the same authoritative reason as
+# resolve_pr_head_sha in assess-and-resolve.sh: local git cwd may be main,
+# not the feature worktree. Falls back to empty (pre-#986 behavior: re-assess).
+_ASSESSMENT_HEAD_SHA=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+_ASSESSMENT_HEAD_SHA="${_ASSESSMENT_HEAD_SHA:-}"
+_ASSESSMENT_SHA_ATTR=""
+if [ -n "$_ASSESSMENT_HEAD_SHA" ]; then
+  _ASSESSMENT_SHA_ATTR=" commit:${_ASSESSMENT_HEAD_SHA}"
+fi
+
+ASSESSMENT_COMMENT="<!-- ${RITE_MARKER_ASSESSMENT} pr:${PR_NUMBER} iteration:1 timestamp:${ASSESSMENT_TIMESTAMP}${_ASSESSMENT_SHA_ATTR} -->
 
 ## 🔍 Sharkrite Assessment
 

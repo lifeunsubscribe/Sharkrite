@@ -41,13 +41,18 @@ source "$RITE_LIB_DIR/utils/markers.sh"
 # ---------------------------------------------------------------------------
 # _gate_write_json — emit structured gate result JSON
 # Args: $1=output_file $2=lint_json_array $3=tests_json_array $4=exit_code
-#       $5=skipped(true|false) $6=reason(optional)
+#       $5=skipped(true|false) $6=reason(optional) $7=head_sha(optional)
 #
 # When skipped=true the reason explains why (e.g. "missing_runner").
 # When skipped=false and reason is non-empty (e.g. "runner_unavailable") the
 # reason field is included in the non-skipped JSON so assess-and-resolve.sh
 # can name the cause when synthesizing a blocking [GATE] item for a failure
 # that produced no parseable lint/test array entries.
+#
+# head_sha (arg 7): the HEAD SHA of the worktree at gate-run time, embedded so
+# assess-and-resolve.sh can verify the verdict covers the current HEAD before
+# consuming it (issue #986 — gate verdict SHA pinning). Only populated for the
+# final PASS/FAIL verdict write (not for skipped sentinel writes).
 # ---------------------------------------------------------------------------
 _gate_write_json() {
   local output_file="$1"
@@ -56,15 +61,23 @@ _gate_write_json() {
   local exit_code="$4"
   local skipped="${5:-false}"
   local reason="${6:-}"
+  local head_sha="${7:-}"
 
   if [ "$skipped" = "true" ]; then
     printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"%s"}\n' "$reason" > "$output_file"
+  elif [ -n "$reason" ] && [ -n "$head_sha" ]; then
+    # Non-skipped failure with a named reason and SHA.
+    printf '{"lint":%s,"tests":%s,"exit_code":%s,"reason":"%s","head_sha":"%s"}\n' \
+      "$lint_json" "$tests_json" "$exit_code" "$reason" "$head_sha" > "$output_file"
   elif [ -n "$reason" ]; then
     # Non-skipped failure with a named reason (e.g. runner_unavailable).
     # Include the reason field so assess-and-resolve.sh can synthesize a
     # descriptive blocking [GATE] item even when lint[] and tests[] are empty.
     printf '{"lint":%s,"tests":%s,"exit_code":%s,"reason":"%s"}\n' \
       "$lint_json" "$tests_json" "$exit_code" "$reason" > "$output_file"
+  elif [ -n "$head_sha" ]; then
+    printf '{"lint":%s,"tests":%s,"exit_code":%s,"head_sha":"%s"}\n' \
+      "$lint_json" "$tests_json" "$exit_code" "$head_sha" > "$output_file"
   else
     printf '{"lint":%s,"tests":%s,"exit_code":%s}\n' "$lint_json" "$tests_json" "$exit_code" > "$output_file"
   fi
@@ -2695,8 +2708,18 @@ run_test_gate() {
     fi
   fi
 
+  # Capture HEAD SHA at gate completion time for SHA-pinning (issue #986).
+  # Readers (assess-and-resolve.sh) verify this SHA against the PR's current
+  # HEAD before consuming a passing verdict — a PASS from a superseded commit
+  # must not authorize a merge or phase-skip at a later SHA.
+  # Uses the same project_root git context that drove the test run itself.
+  local _gate_head_sha
+  _gate_head_sha=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)
+  _gate_head_sha="${_gate_head_sha:-}"
+
   # Pass _gate_reason (may be empty) so _gate_write_json can include it in the
   # JSON when a named failure reason was recorded (e.g. runner_unavailable).
-  _gate_write_json "$output_file" "$_lint_items" "$_tests_items" "$_overall_exit" "false" "$_gate_reason"
+  # Pass _gate_head_sha for SHA-pinning (#986).
+  _gate_write_json "$output_file" "$_lint_items" "$_tests_items" "$_overall_exit" "false" "$_gate_reason" "$_gate_head_sha"
   return "$_overall_exit"
 }

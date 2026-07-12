@@ -1193,14 +1193,54 @@ phase_assess_and_resolve() {
       local existing_later=$(echo "$existing_assessment" | grep -c "^### .* - ACTIONABLE_LATER" || true)
 
       if [ "$existing_actionable" -eq 0 ]; then
-        # Assessment passes — but check if ACTIONABLE_LATER items need tech-debt issues
-        if [ "$existing_later" -gt 0 ] && [ "$has_followup" != "true" ]; then
-          print_info "Assessment passes but $existing_later ACTIONABLE_LATER items need tech-debt issues — running Phase 3"
+        # Assessment passes — but verify it covers the current HEAD SHA before trusting it.
+        # A passing assessment from a superseded commit must not authorize a phase-skip
+        # (issue #986 — assessment cache SHA pinning, same class as #354 review staleness).
+        #
+        # PRIMARY CHECK: SHA-based (deterministic).
+        #   Assessments generated after #986 embed commit:<sha> in the marker.
+        #   Compare that SHA to the PR's current HEAD via the shared helper.
+        # FALLBACK: No SHA in assessment (pre-#986) → warn and re-assess unconditionally.
+        #   This is the conservative path: we cannot prove the assessment is current.
+        local _existing_assess_sha
+        _existing_assess_sha=$(extract_assessment_sha "$existing_assessment" || true)
+        _existing_assess_sha="${_existing_assess_sha:-}"
+        local _assess_head_sha
+        _assess_head_sha=$(resolve_pr_head_sha "$pr_number" "${WORKTREE_PATH:-}" || true)
+        _assess_head_sha="${_assess_head_sha:-}"
+
+        local _assessment_is_current=false
+        if [ -n "$_existing_assess_sha" ] && [ -n "$_assess_head_sha" ]; then
+          if [ "$_existing_assess_sha" = "$_assess_head_sha" ]; then
+            _assessment_is_current=true
+          else
+            print_warning "Cached assessment is stale — assessment covers ${_existing_assess_sha:0:8}, HEAD is ${_assess_head_sha:0:8}"
+            print_warning "Re-assessing to ensure verdict covers the current commit"
+            echo ""
+          fi
+        elif [ -z "$_existing_assess_sha" ]; then
+          # Pre-#986 assessment: no SHA embedded — cannot verify currency.
+          # Re-assess unconditionally (conservative backward-compat path).
+          print_info "Cached assessment predates SHA embedding (#986) — re-assessing to verify currency"
+          _assessment_is_current=false
         else
-          print_info "Issue #$issue_number already has a passing assessment (0 ACTIONABLE_NOW) — skipping assessment phase"
-          [ "$existing_later" -gt 0 ] && print_status "  ($existing_later ACTIONABLE_LATER items already have follow-up issues)"
-          return 0
+          # HEAD SHA unavailable — fall back to accepting the cached assessment
+          # (API failure is transient; better to proceed than block indefinitely).
+          print_warning "Could not resolve PR HEAD SHA — accepting cached assessment as-is (API fallback)"
+          _assessment_is_current=true
         fi
+
+        if [ "$_assessment_is_current" = "true" ]; then
+          # Check if ACTIONABLE_LATER items need tech-debt issues
+          if [ "$existing_later" -gt 0 ] && [ "$has_followup" != "true" ]; then
+            print_info "Assessment passes but $existing_later ACTIONABLE_LATER items need tech-debt issues — running Phase 3"
+          else
+            print_info "Issue #$issue_number already has a passing assessment (0 ACTIONABLE_NOW) — skipping assessment phase"
+            [ "$existing_later" -gt 0 ] && print_status "  ($existing_later ACTIONABLE_LATER items already have follow-up issues)"
+            return 0
+          fi
+        fi
+        # _assessment_is_current=false: fall through to run assessment
       else
         print_info "Existing assessment has $existing_actionable ACTIONABLE_NOW items — re-entering fix loop"
       fi
@@ -2685,13 +2725,56 @@ run_workflow() {
       local actionable_later=$(echo "$pr_latest_assessment" | grep -c "^### .* - ACTIONABLE_LATER" || true)
 
       if [ "$actionable_now" -eq 0 ]; then
-        # Check: if ACTIONABLE_LATER items exist, tech-debt issues must be created first
-        if [ "$actionable_later" -gt 0 ] && [ "$pr_has_followup" != "true" ]; then
-          skip_to_phase="assess-resolve"
-          print_info "Assessment passes but $actionable_later ACTIONABLE_LATER items need tech-debt issues"
+        # Assessment passes — but verify the assessment SHA before trusting it for
+        # a phase-skip. A passing assessment from a superseded commit must not
+        # authorize a skip-to-merge (issue #986 — same class as #354 review staleness).
+        #
+        # PRIMARY CHECK: SHA-based (deterministic). Pre-#986 assessments (no SHA) →
+        # conservative fallback: re-assess unconditionally.
+        # API-unavailable fallback: accept the cached assessment (transient failure).
+        local _resume_assess_sha
+        _resume_assess_sha=$(extract_assessment_sha "$pr_latest_assessment" || true)
+        _resume_assess_sha="${_resume_assess_sha:-}"
+
+        # Use resolve_pr_head_sha (API-authoritative, falls back to local git) rather
+        # than _remote_head (local origin/<branch> ref) — the two can diverge if the
+        # remote was updated after the last fetch of this worktree.  Consistent with
+        # the phase_assess_and_resolve entry check at line ~1208.
+        local _resume_head_sha
+        _resume_head_sha=$(resolve_pr_head_sha "$PR_NUMBER" "${WORKTREE_PATH:-}" || true)
+        _resume_head_sha="${_resume_head_sha:-}"
+
+        local _resume_assess_is_current=false
+        if [ -n "$_resume_assess_sha" ] && [ -n "${_resume_head_sha:-}" ]; then
+          if [ "$_resume_assess_sha" = "$_resume_head_sha" ]; then
+            _resume_assess_is_current=true
+          else
+            print_warning "Cached assessment is stale — assessment covers ${_resume_assess_sha:0:8}, HEAD is ${_resume_head_sha:0:8}"
+            print_warning "Re-assessing to ensure verdict covers the current commit"
+            echo ""
+          fi
+        elif [ -z "$_resume_assess_sha" ]; then
+          # Pre-#986 assessment — cannot prove currency.
+          print_info "Cached assessment predates SHA embedding (#986) — re-assessing to verify currency"
+          _resume_assess_is_current=false
         else
-          skip_to_phase="merge"
-          print_info "Review current, assessment passes → skipping to merge"
+          # HEAD SHA unavailable — accept cached assessment (API fallback, transient).
+          print_warning "Could not resolve PR HEAD SHA — accepting cached assessment as-is (API fallback)"
+          _resume_assess_is_current=true
+        fi
+
+        if [ "$_resume_assess_is_current" = "true" ]; then
+          # Check: if ACTIONABLE_LATER items exist, tech-debt issues must be created first
+          if [ "$actionable_later" -gt 0 ] && [ "$pr_has_followup" != "true" ]; then
+            skip_to_phase="assess-resolve"
+            print_info "Assessment passes but $actionable_later ACTIONABLE_LATER items need tech-debt issues"
+          else
+            skip_to_phase="merge"
+            print_info "Review current, assessment passes → skipping to merge"
+          fi
+        else
+          # Assessment stale or unverifiable — re-assess
+          skip_to_phase="assess-resolve"
         fi
       else
         skip_to_phase="assess-resolve"

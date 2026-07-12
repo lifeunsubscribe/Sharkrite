@@ -240,27 +240,47 @@ teardown() {
   # blew the serial-group budget under --jobs 8 saturation, so keep this at the
   # 2-writer floor. The durable lock's correctness itself is proven in lock.sh
   # (#706); this is a regression guard, not a discovery stress test. Issue #878.
+  #
+  # Implementation note: each worker is launched as a separate `bash` process
+  # (not a `( ) &` subshell) so that each gets its own $$ / $BASHPID. A
+  # subshell inherits the parent's $$, which causes lock.sh's PID-based
+  # liveness check to treat both workers as the same process — the loser sees
+  # the lock holder's PID = its own $$ and incorrectly steals the live lock,
+  # racing to produce corrupt JSON or causing a 120s lock-timeout.
   local num_processes=2
   local exit_codes_dir="$RITE_TEST_TMPDIR/exit_codes"
+  local worker_script="$RITE_TEST_TMPDIR/worker.sh"
   mkdir -p "$exit_codes_dir"
 
+  # Write a standalone worker script so each invocation gets its own PID.
+  cat > "$worker_script" <<WORKER_EOF
+#!/bin/bash
+set -euo pipefail
+WORKER_INDEX="\$1"
+export SESSION_STATE_FILE="$RITE_TEST_TMPDIR/rite-session-state-\${WORKER_INDEX}.json"
+export RITE_LIB_DIR="$RITE_LIB_DIR"
+export RITE_STATE_DIR="$RITE_STATE_DIR"
+export RITE_PROJECT_NAME="${RITE_PROJECT_NAME:-test-project}"
+# Source session-tracker fresh (new process, no inherited guard state).
+source "\$RITE_LIB_DIR/utils/session-tracker.sh"
+init_session "supervised"
+add_approved_blocker "issue-\${WORKER_INDEX}" "blocker-\${WORKER_INDEX}"
+echo \$? > "$exit_codes_dir/process_\${WORKER_INDEX}.exit"
+WORKER_EOF
+  chmod +x "$worker_script"
+
+  # Launch each worker as a separate process (own $$) so lock.sh PID checks work.
   for i in $(seq 1 $num_processes); do
-    (
-      # Give each subshell its own SESSION_STATE_FILE so concurrent processes do
-      # not contend on the per-session lock or corrupt each other's session file.
-      # RITE_STATE_DIR is intentionally shared — that is the durable store under test.
-      export SESSION_STATE_FILE="$RITE_TEST_TMPDIR/rite-session-state-${i}.json"
-      source "$RITE_LIB_DIR/utils/session-tracker.sh"
-      init_session "supervised"
-      add_approved_blocker "issue-${i}" "blocker-${i}"
-      echo $? > "$exit_codes_dir/process_${i}.exit"
-    ) &
+    bash "$worker_script" "$i" &
   done
 
   wait
 
   for i in $(seq 1 $num_processes); do
-    [ -f "$exit_codes_dir/process_${i}.exit" ]
+    [ -f "$exit_codes_dir/process_${i}.exit" ] || {
+      echo "FAIL: worker $i did not write exit code (may have crashed before completion)"
+      return 1
+    }
     local code
     code=$(cat "$exit_codes_dir/process_${i}.exit")
     [ "$code" -eq 0 ] || {
