@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, tools/sharkrite-lint.sh
 # Regression test: test_gate targeted selection by changed paths (issue #462)
 #
 # Verifies:

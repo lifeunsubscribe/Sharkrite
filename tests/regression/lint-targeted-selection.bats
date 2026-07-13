@@ -342,3 +342,101 @@ README.md"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "expected empty for deleted bats; got: '$output'" >&2; return 1; }
 }
+
+# ---------------------------------------------------------------------------
+# End-to-end: bats-only RITE_LINT_FILES must reach Rules 34/35
+#
+# These tests verify the fix for issue #921: when RITE_LINT_FILES contains
+# only .bats paths (no bin/lib/tools shell files), the driver must NOT exit
+# early — it must fall through to the rule loop so Rules 34 and 35 fire.
+#
+# Pattern: create an isolated temp repo, plant a known-bad fixture .bats file
+# under tests/regression/, cd into the repo so `find tests` in Rules 34/35
+# finds it, set RITE_LINT_FILES to the bats path only, run the lint script,
+# and assert the rule violation is reported.
+#
+# CRITICAL: literal '@test' tokens must never appear at line-start inside
+# heredocs in this file — bats' preprocessor would count them as real tests
+# in this suite. Use _emit_bats_test_open() below.
+# ---------------------------------------------------------------------------
+
+_emit_bats_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
+
+@test "bats-only RITE_LINT_FILES: Rule 34 fires (BATS_PRE_SOURCE_STUB_OVERWRITE)" {
+  # Build an isolated repo with the structure Rules 34/35 expect.
+  _e2e_repo="$BATS_TEST_TMPDIR/e2e-repo"
+  mkdir -p "$_e2e_repo/tests/regression" "$_e2e_repo/lib/utils"
+  # Minimal lib stub so the source line in the fixture looks like a real lib source.
+  printf '#!/bin/bash\n_RITE_FOO_LOADED=true\nfoo() { :; }\n' > "$_e2e_repo/lib/utils/config.sh"
+
+  # Fixture: setup() defines a stub then sources a lib — classic Rule 34 pattern.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/config.sh'
+    echo 'setup() {'
+    echo '  gh_safe() { echo "stub"; }'
+    echo '  source "${RITE_LIB_DIR}/utils/config.sh"'
+    echo '}'
+    _emit_bats_test_open "example"
+    echo '  true'
+    echo '}'
+  } > "$_e2e_repo/tests/regression/rule34-fixture.bats"
+
+  # RITE_LINT_FILES points only at the .bats file — no shell (bin/lib/tools) files.
+  # RITE_LINT_EXTRA_DIRS must be unset so SHELL_FILES stays empty after intersection.
+  unset RITE_LINT_EXTRA_DIRS
+  export RITE_LINT_FILES="$_e2e_repo/tests/regression/rule34-fixture.bats"
+
+  cd "$_e2e_repo"
+  run bash "$LINT_SCRIPT"
+
+  # The driver must NOT have exited early (no "skipping" message).
+  [[ ! "$output" =~ "no in-scope shell files in targeted set" ]] || {
+    echo "REGRESSION: driver exited early — Rule 34 never ran" >&2
+    echo "$output" >&2
+    return 1
+  }
+  # Rule 34 must have detected the pre-source stub overwrite violation.
+  [[ "$output" =~ "BATS_PRE_SOURCE_STUB_OVERWRITE" ]] || {
+    echo "FAIL: expected BATS_PRE_SOURCE_STUB_OVERWRITE in output; got:" >&2
+    echo "$output" >&2
+    return 1
+  }
+}
+
+@test "bats-only RITE_LINT_FILES: Rule 35 fires (BATS_FILE_SCOPE_ENV_READ)" {
+  # Build an isolated repo with the structure Rules 34/35 expect.
+  _e2e_repo="$BATS_TEST_TMPDIR/e2e-repo-r35"
+  mkdir -p "$_e2e_repo/tests/regression"
+
+  # Fixture: file-scope RITE_* reference — classic Rule 35 pattern.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/config.sh'
+    echo '_WORKFLOW_FILE="${RITE_LIB_DIR}/core/workflow-runner.sh"'
+    echo 'setup() { true; }'
+    _emit_bats_test_open "example"
+    echo '  true'
+    echo '}'
+  } > "$_e2e_repo/tests/regression/rule35-fixture.bats"
+
+  # RITE_LINT_FILES points only at the .bats file.
+  unset RITE_LINT_EXTRA_DIRS
+  export RITE_LINT_FILES="$_e2e_repo/tests/regression/rule35-fixture.bats"
+
+  cd "$_e2e_repo"
+  run bash "$LINT_SCRIPT"
+
+  # The driver must NOT have exited early.
+  [[ ! "$output" =~ "no in-scope shell files in targeted set" ]] || {
+    echo "REGRESSION: driver exited early — Rule 35 never ran" >&2
+    echo "$output" >&2
+    return 1
+  }
+  # Rule 35 must have detected the file-scope RITE_* read.
+  [[ "$output" =~ "BATS_FILE_SCOPE_ENV_READ" ]] || {
+    echo "FAIL: expected BATS_FILE_SCOPE_ENV_READ in output; got:" >&2
+    echo "$output" >&2
+    return 1
+  }
+}

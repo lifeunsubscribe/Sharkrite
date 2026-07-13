@@ -108,20 +108,34 @@ fi
 # changed-file set (parallel to the bats targeted-selection mechanism from #462).
 #
 # Files in RITE_LINT_FILES that aren't already in SHELL_FILES (e.g. docs, deleted
-# files, fixtures, tests/, the lint script's self-exclusion) are silently dropped
-# — the intersection is by design. Empty intersection → exit 0 with a notice
-# (e.g. docs-only commit). Direct `make lint` (no env var) keeps full-scan
-# behavior unchanged.
+# files, fixtures, the lint script's self-exclusion) are silently dropped from the
+# shell-file scan — the intersection is by design. Empty shell-file intersection
+# → exit 0 with a notice (e.g. docs-only commit), UNLESS some entries are .bats
+# files — in that case execution falls through to the rule loop so Rules 34/35
+# (which use their own `find tests` scan) can run against the changed bats files.
+# Direct `make lint` (no env var) keeps full-scan behavior unchanged.
 if [ -n "${RITE_LINT_FILES:-}" ]; then
   _lint_targeted_tmp=$(mktemp)
   printf '%s\n' "${SHELL_FILES[@]}" > "$_lint_targeted_tmp"
   mapfile -t SHELL_FILES < <(printf '%s\n' "$RITE_LINT_FILES" | grep -Fxf "$_lint_targeted_tmp" 2>/dev/null || true)
   rm -f "$_lint_targeted_tmp"
   if [ "${#SHELL_FILES[@]}" -eq 0 ]; then
-    echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
-    exit 0
+    # No shell files (bin/lib/tools) in the targeted set. Before exiting,
+    # check whether any changed files are .bats files — if so, Rules 34/35
+    # (BATS_PRE_SOURCE_STUB_OVERWRITE and BATS_FILE_SCOPE_ENV_READ) must still
+    # run, because they scan tests/*.bats independently of SHELL_FILES.
+    # Letting execution fall through to the rule loop is safe: SHELL_FILES is
+    # empty so all SHELL_FILES-iterating rules are no-ops; only rules with
+    # their own find loop (Rules 34/35) do real work.
+    if printf '%s\n' "$RITE_LINT_FILES" | grep -qE '\.bats$'; then
+      echo "Sharkrite custom lint: targeted scope (bats-only — running Rules 34/35)"
+    else
+      echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
+      exit 0
+    fi
+  else
+    echo "Sharkrite custom lint: targeted scope (${#SHELL_FILES[@]} file(s))"
   fi
-  echo "Sharkrite custom lint: targeted scope (${#SHELL_FILES[@]} file(s))"
 fi
 
 # ---------------------------------------------------------------------------
