@@ -44,6 +44,19 @@
 #    22. Body with prose "After #1" but Dependencies: None → issue NOT skipped
 #    23. Body with Dependencies: After #N where N is failed → issue skipped
 #    24. Bare #N dep: "Dependencies: #N" where N is failed → issue skipped
+#
+#   LEGACY FORM (## Dependencies markdown header — pre-#964 issues):
+#    25. "## Dependencies\nAfter: #N" → N extracted (mirrors #967 body shape)
+#    26. "### Dependencies\nAfter: #N" → N extracted (any ## level)
+#    27. "## Dependencies\nBlocked by: #N" → N extracted
+#    28. "## Dependencies" + multiple following lines → all extracted
+#    29. "## Dependencies" stops at next ## section header → refs after stop not collected
+#    30. Canonical "**Dependencies**: After #N" still works (existing behavior pinned)
+#
+#   FENCE GUARD (## Dependencies or **Dependencies**: inside code fence → NOT collected):
+#    31. "## Dependencies" inside ``` fence → NOT treated as dep section
+#    32. "**Dependencies**: After #N" inside ``` fence → NOT treated as dep (canonical form)
+#    33. Fence closes correctly — header AFTER close of fence IS detected
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -640,6 +653,213 @@ SCRIPT_EOF
   ! echo "$output" | grep -q "PROCEEDED" || {
     echo "FAIL: issue incorrectly proceeded despite failed bare dep #30" >&2
     echo "Output: $output" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# LEGACY FORM: ## Dependencies markdown header (pre-#964 issues, e.g. #967)
+# =============================================================================
+
+@test "legacy: '## Dependencies\\nAfter: #N' → N extracted (mirrors #967 body shape)" {
+  # Root regression: issue #967 used '## Dependencies' / 'After: #921' and ran
+  # concurrently with open #921 instead of deferring. Live batch: 2026-07-06.
+  _load_extract_helper
+
+  _body="## Description
+Implements the widget redesign.
+
+## Dependencies
+After: #921
+
+## Acceptance Criteria
+- [ ] Widget renders correctly"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  [ "$_result" = "921" ] || {
+    echo "FAIL: expected '921' from legacy '## Dependencies / After: #921' body, got: '$_result'" >&2
+    echo "      This is the exact #967 body shape that caused the live batch failure" >&2
+    return 1
+  }
+}
+
+@test "legacy: '### Dependencies\\nAfter: #N' → N extracted (any ## level)" {
+  # The guard must handle any markdown heading depth (##, ###, ####, etc.)
+  # that documents dependencies — not just the two-hash form.
+  _load_extract_helper
+
+  _body="## Description
+Implements the next phase.
+
+### Dependencies
+After: #55
+
+## Acceptance Criteria
+- [ ] Phase complete"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  [ "$_result" = "55" ] || {
+    echo "FAIL: expected '55' from '### Dependencies / After: #55', got: '$_result'" >&2
+    return 1
+  }
+}
+
+@test "legacy: '## Dependencies\\nBlocked by: #N' → N extracted" {
+  _load_extract_helper
+
+  _body="## Dependencies
+Blocked by: #12"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  [ "$_result" = "12" ] || {
+    echo "FAIL: expected '12' from 'Blocked by: #12', got: '$_result'" >&2
+    return 1
+  }
+}
+
+@test "legacy: '## Dependencies' with multiple following lines → all deps extracted" {
+  _load_extract_helper
+
+  _body="## Description
+Implements the next phase.
+
+## Dependencies
+After: #10
+After: #20
+Blocked by: #30
+
+## Acceptance Criteria
+- [ ] All prior phases complete"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  echo "$_result" | grep -qw "10" || {
+    echo "FAIL: expected '10' in '$_result'" >&2
+    return 1
+  }
+  echo "$_result" | grep -qw "20" || {
+    echo "FAIL: expected '20' in '$_result'" >&2
+    return 1
+  }
+  echo "$_result" | grep -qw "30" || {
+    echo "FAIL: expected '30' in '$_result'" >&2
+    return 1
+  }
+}
+
+@test "legacy: '## Dependencies' stops at next ## section header — refs after stop not collected" {
+  # The stop-at-next-header rule must still apply when the legacy form is active.
+  _load_extract_helper
+
+  _body="## Dependencies
+After: #10
+
+## Acceptance Criteria
+After: #99 is mentioned here as a prerequisite explanation"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  echo "$_result" | grep -qw "10" || {
+    echo "FAIL: expected '10' (in dep section) in '$_result'" >&2
+    return 1
+  }
+  ! echo "$_result" | grep -qw "99" || {
+    echo "FAIL: '99' (after section stop) must NOT appear in '$_result'" >&2
+    return 1
+  }
+}
+
+@test "legacy pin: canonical '**Dependencies**: After #N' still works (behavior preserved)" {
+  # Regression guard: adding legacy-form support must not break the canonical form.
+  _load_extract_helper
+
+  _body="**Dependencies**: After #77
+
+**Done Definition**: Tests pass"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  [ "$_result" = "77" ] || {
+    echo "FAIL: canonical form broken — expected '77', got: '$_result'" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# FENCE GUARD: headers inside ``` fences must NOT trigger dep collection
+# =============================================================================
+
+@test "fence guard: '## Dependencies' inside \`\`\` fence → NOT treated as dep section" {
+  # A body documenting the dep header format in a code example must not
+  # trigger dep collection. Mirrors the BARE_MARKER_GREP rule: format anchor
+  # needed; fence content is documentation, not live dependency edges.
+  _load_extract_helper
+
+  _body="## Description
+The issue format requires a dep section. Example:
+
+\`\`\`
+## Dependencies
+After: #921
+\`\`\`
+
+**Dependencies**: None"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  # "921" is inside the fence — must NOT be collected
+  ! echo "$_result" | grep -qw "921" || {
+    echo "FAIL: '921' inside code fence must NOT be harvested as a dep" >&2
+    echo "      The fence guard must prevent '## Dependencies' inside \`\`\` from triggering collection" >&2
+    echo "      Got: '$_result'" >&2
+    return 1
+  }
+}
+
+@test "fence guard: '**Dependencies**: After #N' inside \`\`\` fence → NOT treated as dep" {
+  # The canonical form is also fenced-guarded — a code example showing the
+  # header format must not trigger collection.
+  _load_extract_helper
+
+  _body="## Description
+Use the canonical form in your issues:
+
+\`\`\`
+**Dependencies**: After #42
+\`\`\`
+
+**Dependencies**: None"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  # "42" is inside the fence — must NOT be collected
+  ! echo "$_result" | grep -qw "42" || {
+    echo "FAIL: '42' inside code fence must NOT be harvested as a dep" >&2
+    echo "      Got: '$_result'" >&2
+    return 1
+  }
+}
+
+@test "fence guard: header AFTER close of fence IS detected correctly" {
+  # After a fence closes, dep header detection must resume normally.
+  # The fence toggle must not leave collection permanently disabled.
+  _load_extract_helper
+
+  _body="## Description
+Example:
+
+\`\`\`
+## Dependencies
+After: #999
+\`\`\`
+
+## Dependencies
+After: #88"
+
+  _result=$(_extract_dep_issues_from_body "$_body" || true)
+  # "88" is after the fence close — must be collected
+  echo "$_result" | grep -qw "88" || {
+    echo "FAIL: '88' after fence close must be collected — got: '$_result'" >&2
+    return 1
+  }
+  # "999" is inside the fence — must NOT be collected
+  ! echo "$_result" | grep -qw "999" || {
+    echo "FAIL: '999' inside fence must NOT be collected — got: '$_result'" >&2
     return 1
   }
 }
