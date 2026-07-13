@@ -128,6 +128,7 @@ $FIXTURE_DIR/real.sh"
   # Source the helper. test-gate.sh expects RITE_LIB_DIR pre-set.
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   run _select_lint_by_changed_paths "" "$PROJECT_ROOT"
   [ "$status" -eq 0 ]
@@ -137,6 +138,7 @@ $FIXTURE_DIR/real.sh"
 @test "_select_lint_by_changed_paths: lint-rule change forces full scan" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # A change to tools/sharkrite-lint.sh must trip the FORCE_FULL trigger:
   # new rule may apply retroactively to files outside the diff.
@@ -151,6 +153,7 @@ docs/README.md"
 @test "_select_lint_by_changed_paths: Makefile change forces full scan" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   _changed="lib/core/foo.sh
 Makefile"
@@ -162,6 +165,7 @@ Makefile"
 @test "_select_lint_by_changed_paths: docs-only diff → empty (skip lint)" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # No bin/lib/tools entries → no lint-eligible paths emitted. test-gate
   # treats empty stdout as "skip lint".
@@ -175,6 +179,7 @@ README.md"
 @test "_select_lint_by_changed_paths: shell-source diff emits absolute paths" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Use a file that genuinely exists in the project so the [ -f ] guard passes.
   _changed="lib/utils/test-gate.sh
@@ -191,6 +196,7 @@ docs/architecture/foo.md"
 @test "_select_lint_by_changed_paths: deleted files filtered out by [ -f ]" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # A file in the diff that no longer exists on disk (deletion) must not be
   # emitted — passing a nonexistent absolute path to RITE_LINT_FILES would
@@ -210,6 +216,7 @@ docs/architecture/foo.md"
 @test "_select_lint_by_changed_paths: SKIP_TRIGGERS bypasses Makefile trigger" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   RITE_TEST_GATE_SKIP_TRIGGERS=true \
     run _select_lint_by_changed_paths "Makefile" "$PROJECT_ROOT"
@@ -223,6 +230,7 @@ docs/architecture/foo.md"
 @test "_select_lint_by_changed_paths: SKIP_TRIGGERS off → Makefile still triggers" {
   export RITE_LIB_DIR="$PROJECT_ROOT/lib"
   source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Default mode unchanged: trigger fires.
   run _select_lint_by_changed_paths "Makefile" "$PROJECT_ROOT"
@@ -231,4 +239,106 @@ docs/architecture/foo.md"
     echo "regression: Makefile NOT triggering FORCE_FULL in default mode" >&2
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# Rules 34/35: changed .bats files must be passed to lint (issue #921)
+#
+# _select_lint_by_changed_paths previously only emitted bin/lib/tools paths,
+# so BATS_PRE_SOURCE_STUB_OVERWRITE (Rule 34) and BATS_FILE_SCOPE_ENV_READ
+# (Rule 35) never ran against changed .bats files through the post-commit
+# gate.  The fix adds tests/*.bats and tests/*/*.bats to the eligible pattern.
+# ---------------------------------------------------------------------------
+
+@test "_select_lint_by_changed_paths: changed .bats in tests/regression/ is emitted" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  # Use a file that genuinely exists so the [ -f ] guard passes.
+  _changed="tests/regression/lint-targeted-selection.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PROJECT_ROOT/tests/regression/lint-targeted-selection.bats" ] || {
+    echo "expected absolute path to bats file; got: '$output'" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: changed .bats in tests/lint/ is emitted" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  _changed="tests/lint/bats-hygiene-rules.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PROJECT_ROOT/tests/lint/bats-hygiene-rules.bats" ] || {
+    echo "expected absolute path to bats file; got: '$output'" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: bats-only diff produces non-empty output (lint runs)" {
+  # Regression: with only .bats files changed and no bin/lib/tools changes,
+  # the old code returned empty (skip lint).  Empty means Rules 34/35 never
+  # ran against the changed bats file — the exact gap this issue fixes.
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  _changed="tests/regression/lint-targeted-selection.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ] || {
+    echo "REGRESSION: bats-only diff returned empty — Rules 34/35 would be skipped" >&2
+    return 1
+  }
+  [ "$output" != "FORCE_FULL" ] || {
+    echo "FAIL: bats-only diff escalated to full lint scan (unexpected)" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: mixed bats + lib diff emits both" {
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  _changed=$(printf 'lib/utils/test-gate.sh\ntests/regression/lint-targeted-selection.bats\n')
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "lib/utils/test-gate.sh" || {
+    echo "expected lib/utils/test-gate.sh in output; got: '$output'" >&2
+    return 1
+  }
+  echo "$output" | grep -q "tests/regression/lint-targeted-selection.bats" || {
+    echo "expected bats file in output; got: '$output'" >&2
+    return 1
+  }
+}
+
+@test "_select_lint_by_changed_paths: docs-only diff still produces empty even with bats extension" {
+  # Docs changes are still ignored — only bin/lib/tools/tests/*.bats are eligible.
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  _changed="docs/architecture/foo.md
+README.md"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "expected empty output; got: '$output'" >&2; return 1; }
+}
+
+@test "_select_lint_by_changed_paths: nonexistent .bats file filtered by [ -f ]" {
+  # A deleted .bats file in the diff must not be emitted.
+  export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+  source "$PROJECT_ROOT/lib/utils/test-gate.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  _changed="tests/regression/this-was-deleted.bats"
+  run _select_lint_by_changed_paths "$_changed" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "expected empty for deleted bats; got: '$output'" >&2; return 1; }
 }

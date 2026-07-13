@@ -380,3 +380,30 @@ EOF
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Lint bats scope (issue #921 / PR #966):
+# Changed .bats files must be passed to _select_lint_by_changed_paths so
+# Rules 34 (BATS_PRE_SOURCE_STUB_OVERWRITE) and 35 (BATS_FILE_SCOPE_ENV_READ)
+# run against the changed bats file during the post-commit gate.
+# Previously _select_lint_by_changed_paths only emitted bin/lib/tools paths.
+# ---------------------------------------------------------------------------
+
+@test "_select_lint_by_changed_paths: changed .bats in tests/ is included in lint scope" {
+  # Verifies the fix from issue #921: tests/*.bats and tests/*/*.bats are now
+  # eligible paths for lint (so Rules 34/35 can run against them).
+  # Use a bats file that genuinely exists so the [ -f ] guard passes.
+  result=$(_select_lint_by_changed_paths "tests/regression/test-gate-targeted-selection.bats" "$RITE_REPO_ROOT")
+  [ -n "$result" ] || {
+    echo "REGRESSION(#921): changed bats file produced empty lint scope — Rules 34/35 would be skipped" >&2
+    return 1
+  }
+  [ "$result" != "FORCE_FULL" ] || {
+    echo "FAIL: changed bats file escalated to FORCE_FULL lint scan (unexpected)" >&2
+    return 1
+  }
+  echo "$result" | grep -q "test-gate-targeted-selection.bats" || {
+    echo "expected test-gate-targeted-selection.bats in lint scope; got: '$result'" >&2
+    return 1
+  }
+}
