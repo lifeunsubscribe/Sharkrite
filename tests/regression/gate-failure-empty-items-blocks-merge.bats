@@ -8,12 +8,16 @@
 # produced {"lint":[],"tests":[],"exit_code":1} — assessment saw 0 GATE items,
 # reported "ready to merge", and squash-merged without the suite ever passing.
 #
-# Four contracts tested:
+# Five contracts tested:
 #   1. Empty-findings JSON (exit_code≠0) → ≥1 [GATE] ACTIONABLE_NOW item synthesized
 #   2. Synthetic item is non-deferrable at retry cap (≥3): routes to
 #      CREATE_CRITICAL_FOLLOWUP=true, not CREATE_SECURITY_DEBT (merge)
 #   3. Empty-lint variant (non-zero exit, empty lint array): also blocked
 #   4. test-gate.sh writes "reason":"runner_unavailable" in the 127-path JSON
+#   5. (#1014) skipped:true sentinels whose reason means verification never
+#      concluded (gate_timeout / gate_crashed) synthesize a blocking item;
+#      environmental skips (missing_deps/missing_runner/missing_worktree/
+#      no_tests) keep the documented non-blocking pass-through
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -75,6 +79,19 @@ _run_gate_consumption_kernel() {
       _gate_now_count=$(( _gate_now_count + 1 ))
       _gate_has_synthetic=true
     fi
+  elif [ "$_gate_skipped" = "true" ]; then
+    # Unverified-skip blocking (#1014) — mirrors the production elif: a skip
+    # whose reason means "verification started but never concluded" blocks;
+    # environmental skips (missing_deps/missing_runner/missing_worktree/
+    # no_tests) stay non-blocking.
+    local _gate_skip_reason
+    _gate_skip_reason=$(jq -r '.reason // ""' "$_gate_file" 2>/dev/null || true)
+    case "$_gate_skip_reason" in
+      gate_timeout|gate_crashed)
+        _gate_now_count=$(( _gate_now_count + 1 ))
+        _gate_has_synthetic=true
+        ;;
+    esac
   fi
 
   echo "GATE_NOW_COUNT=${_gate_now_count}"
@@ -193,6 +210,127 @@ _run_retry_cap_kernel_for_gate() {
   [[ "$output" == *"GATE_NOW_COUNT=0"* ]] || {
     echo "FAIL: expected GATE_NOW_COUNT=0 for a skipped gate, got: $output"
     echo "      A skipped gate (missing_runner, exit_code=0) must not block the merge."
+    false
+  }
+}
+
+# ===========================================================================
+# Contract 5 (#1014): unverified skips (gate_timeout / gate_crashed) BLOCK;
+# environmental skips stay non-blocking.
+#
+# Live escape: PR #998 (issue #930, 2026-07-06) — the gate's bats run was
+# watchdog-killed at 1800s (TEST_GATE_WATCHDOG_KILL, the #993 deadlock),
+# workflow-runner wrote the gate_timeout sentinel, assessment saw now=0, and
+# the lap merged 40 minutes after the gate started, having verified nothing.
+# ===========================================================================
+
+@test "gate_timeout skip synthesizes a blocking item (#1014)" {
+  local _gate_file
+  _gate_file=$(mktemp)
+  printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_timeout"}\n' > "$_gate_file"
+
+  run _run_gate_consumption_kernel "$_gate_file"
+  rm -f "$_gate_file"
+
+  [[ "$output" == *"jq unavailable"* ]] && skip "jq not available in this environment"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"GATE_NOW_COUNT=1"* ]] || {
+    echo "FAIL: expected GATE_NOW_COUNT=1 for a gate_timeout skip, got: $output"
+    echo "      A watchdog-killed gate verified nothing — it must block, not pass."
+    false
+  }
+}
+
+@test "gate_crashed skip synthesizes a blocking item (#1014)" {
+  # The crash trap's own comment says it exists to prevent fail-open — but the
+  # sentinel previously yielded zero blocking items, the same hole.
+  local _gate_file
+  _gate_file=$(mktemp)
+  printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}\n' > "$_gate_file"
+
+  run _run_gate_consumption_kernel "$_gate_file"
+  rm -f "$_gate_file"
+
+  [[ "$output" == *"jq unavailable"* ]] && skip "jq not available in this environment"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"GATE_NOW_COUNT=1"* ]] || {
+    echo "FAIL: expected GATE_NOW_COUNT=1 for a gate_crashed skip, got: $output"
+    false
+  }
+}
+
+@test "environmental skips stay non-blocking: missing_deps / missing_worktree / no_tests (#1014)" {
+  local _gate_file _reason
+  for _reason in missing_deps missing_worktree no_tests; do
+    _gate_file=$(mktemp)
+    printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"%s"}\n' "$_reason" > "$_gate_file"
+    run _run_gate_consumption_kernel "$_gate_file"
+    rm -f "$_gate_file"
+    [[ "$output" == *"jq unavailable"* ]] && skip "jq not available in this environment"
+    [[ "$output" == *"GATE_NOW_COUNT=0"* ]] || {
+      echo "FAIL: environmental skip '$_reason' must stay non-blocking, got: $output"
+      false
+    }
+  done
+}
+
+@test "behavioral (#1014): REAL consumption block blocks gate_timeout, passes missing_runner" {
+  # Runs the PRODUCTION gate-consumption block — sed-extracted from
+  # assess-and-resolve.sh and eval'd with print_* stubbed — against both a
+  # gate_timeout sentinel (expect 1 blocking item mentioning the reason) and a
+  # missing_runner sentinel (expect 0). Guards against the replica kernel
+  # above drifting from the real code (the #983 vacuous-replica lesson).
+  command -v jq >/dev/null 2>&1 || skip "jq not available in this environment"
+  _driver="$BATS_TEST_TMPDIR/consumption-driver.sh"
+  cat > "$_driver" <<'DRIVER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+SRC="$1"; REASON="$2"
+print_warning() { echo "WARN: $*" >&2; }
+print_status()  { :; }
+print_success() { :; }
+CURRENT_HEAD_SHA=""
+_GATE_FINDINGS_FILE=$(mktemp)
+printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"%s"}\n' "$REASON" > "$_GATE_FINDINGS_FILE"
+
+# Extract the production block: from the GATE_PREPEND_ITEMS reset to the
+# column-0 fi that closes the findings-file guard. Anchor drift fails loudly.
+_block=$(sed -n '/^GATE_PREPEND_ITEMS=""$/,/^fi$/p' "$SRC")
+[ -n "$_block" ] || { echo "FAIL: could not extract consumption block" >&2; exit 1; }
+eval "$_block"
+
+echo "COUNT=${GATE_NOW_COUNT}"
+printf '%s' "$GATE_PREPEND_ITEMS" | head -1
+DRIVER_EOF
+
+  _src="${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+
+  run bash "$_driver" "$_src" "gate_timeout"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"COUNT=1"* ]] || {
+    echo "FAIL: real consumption block did not block gate_timeout. Output: $output"
+    false
+  }
+  [[ "$output" == *"gate_timeout"* ]] && [[ "$output" == *"ACTIONABLE_NOW"* ]] || {
+    echo "FAIL: synthesized item missing reason/structured header. Output: $output"
+    false
+  }
+
+  run bash "$_driver" "$_src" "missing_runner"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"COUNT=0"* ]] || {
+    echo "FAIL: real consumption block must not block missing_runner. Output: $output"
+    false
+  }
+}
+
+@test "source (#1014): production case arm covers exactly gate_timeout|gate_crashed" {
+  local _script="${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  run grep -n 'gate_timeout|gate_crashed)' "$_script"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: unverified-skip case arm (gate_timeout|gate_crashed) not found"
     false
   }
 }
