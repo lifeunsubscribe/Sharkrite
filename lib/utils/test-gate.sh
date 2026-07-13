@@ -514,11 +514,16 @@ _select_lint_by_changed_paths() {
   # final scope filter is the intersection inside sharkrite-lint.sh (it knows
   # exactly which files are in SHELL_FILES, including its own self-exclusion),
   # so this check just keeps the env-var compact and avoids passing obviously
-  # irrelevant entries (docs, tests, etc).
+  # irrelevant entries (docs, etc).
+  #
+  # tests/**/*.bats are lint-eligible: Rules 34/35 (BATS_PRE_SOURCE_STUB_OVERWRITE,
+  # BATS_FILE_SCOPE_ENV_READ) target .bats files specifically. Without emitting
+  # changed .bats paths here, those rules never run against changed test files
+  # through the post-commit gate (the production path they were built for).
   while IFS= read -r _changed; do
     [ -z "$_changed" ] && continue
     case "$_changed" in
-      bin/*|lib/*|tools/*)
+      bin/*|lib/*|tools/*|tests/*.bats|tests/*/*.bats)
         [ -f "$project_root/$_changed" ] && echo "$project_root/$_changed"
         ;;
     esac
