@@ -1286,6 +1286,36 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
     if [ "$GATE_NOW_COUNT" -gt 0 ]; then
       print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
     fi
+  elif [ "$_gate_skipped" = "true" ]; then
+    # ---- Unverified-skip blocking (issue #1014) ----
+    # skipped:true sentinels split into two classes by reason:
+    #   * verification STARTED but never CONCLUDED — gate_timeout (the
+    #     bounded-wait kill, #654's anti-hang design) and gate_crashed (the
+    #     crash trap). These previously read as a green gate here: zero [GATE]
+    #     items, so a clean review authorized the merge with the change
+    #     entirely unverified. Live escape: PR #998 merged 40 minutes after
+    #     its gate was watchdog-killed (#993 deadlock) and shipped the #1010
+    #     regression. A missing verdict is not a passing verdict — block.
+    #   * deliberate environmental skips — missing_deps / missing_runner /
+    #     missing_worktree (target repo not bootstrapped: the suite is
+    #     un-runnable there, not hung mid-verification) and no_tests. These
+    #     keep the documented proceed-with-review-only contract.
+    # The stale-PASS discard above (#986) also sets _gate_skipped=true but
+    # writes no reason into the JSON, so it never matches this case.
+    _gate_skip_reason=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
+    case "$_gate_skip_reason" in
+      gate_timeout|gate_crashed)
+        GATE_PREPEND_ITEMS+="### [GATE] ${_gate_skip_reason}: gate never produced a verdict — change is unverified - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Gate failure (objective — no LLM categorization needed)
+**Fix Effort:** Investigate (the gate was killed before completing)
+**Reasoning:** The post-commit gate was terminated before producing a verdict (reason: ${_gate_skip_reason}). None of the selection was verified — a missing verdict is not a passing verdict, and merging unverified code is not acceptable. Investigate why the gate did not finish (nested-bats deadlock, leaked subprocess holding the gate pipe, crashed runner), resolve it, and let the gate re-run to a real verdict.
+
+"
+        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        print_warning "Gate was killed before completing (${_gate_skip_reason}) — change is unverified, blocking (#1014)"
+        ;;
+    esac
   fi
 
   # Delete after consumption so stale findings cannot leak into a later resume or
