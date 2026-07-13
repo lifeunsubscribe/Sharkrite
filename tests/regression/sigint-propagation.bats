@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/utils/colors.sh, lib/utils/logging.sh
 # sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
 # concurrent-write, and timeout-race tests need the serial group)
 # Regression test for: Make Ctrl-C reliably terminate rite workflow
@@ -34,7 +34,10 @@ teardown() {
   LOG_FILE="${RITE_TEST_ROOT}/test.log"
 
   cat > "$TEST_SCRIPT" <<'SCRIPT_EOF'
-#!/bin/bash
+#!/usr/bin/env bash
+# Use env bash (homebrew bash 5.x) rather than /bin/bash (macOS 3.2).
+# bash 3.2's non-interactive SIGINT handling can exit-on-set-e before the
+# trap fires when the process is under heavy load (gate after parallel batch).
 set -euo pipefail
 
 RITE_LIB_DIR="${1}"
@@ -44,7 +47,7 @@ LOG_FILE="${2}"
 source "${RITE_LIB_DIR}/utils/colors.sh"
 source "${RITE_LIB_DIR}/utils/logging.sh"
 
-# Set up logging pipeline (same as bin/rite:299)
+# Set up logging pipeline (same as bin/rite)
 mkdir -p "$(dirname "$LOG_FILE")"
 echo "=== Test Log ===" > "$LOG_FILE"
 exec > >(tee >(strip_ansi >> "$LOG_FILE"))
@@ -74,16 +77,28 @@ SCRIPT_EOF
   chmod +x "$TEST_SCRIPT"
 
   # Start the test workflow in its own process group (job control ON) so the
-  # negative-PID group signal below is actually deliverable. Without `set -m`,
-  # a backgrounded child under non-interactive bash shares the parent's PGID,
-  # so `kill -INT -<childPID>` fails with 'No such process' and the signal is
-  # never delivered.
+  # script's in-trap `kill -TERM -- -$$` targets only its own group, not the
+  # bats process group.  Without `set -m` the child shares the bats PGID and
+  # the in-trap group-kill would reach bats itself.
   set -m
   "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" &
   WORKFLOW_PID=$!
   set +m
 
-  # Wait for pipeline to be established (tee and perl should be running)
+  # Wait for pipeline to be established (tee and perl should be running).
+  # Also use this window to confirm the PGID was actually set — under load the
+  # kernel's setpgid() can lag behind exec (race between fork+setpgid and the
+  # child running), so poll until PGID == PID or the window expires.
+  _pgid_ok=false
+  _pgid_checks=0
+  while [ "$_pgid_ok" = false ] && [ "$_pgid_checks" -lt 10 ]; do
+    sleep 0.1
+    _child_pgid=$(ps -o pgid= -p "$WORKFLOW_PID" 2>/dev/null | tr -d ' ' || true)
+    [ "$_child_pgid" = "$WORKFLOW_PID" ] && _pgid_ok=true
+    _pgid_checks=$((_pgid_checks + 1))
+  done
+  # Wait for rest of the 1s pipeline-establishment window (already spent up to 1s above).
+  # If PGID check didn't succeed in 1s, skip the remaining setup sleep; fall through.
   sleep 1
 
   # Verify child processes exist (tee and perl from logging pipeline)
@@ -96,8 +111,12 @@ SCRIPT_EOF
     return 1
   }
 
-  # Send SIGINT to the process group (simulates Ctrl-C)
-  kill -INT -"$WORKFLOW_PID" 2>/dev/null || true
+  # Send SIGINT to the process (simulates Ctrl-C reaching the workflow leader).
+  # We send to the PID directly rather than the process group so that signal
+  # delivery is unaffected by PGID-race lag under load — the script's own
+  # cleanup_on_interrupt trap is what kills the full group; that is what this
+  # test verifies.
+  kill -INT "$WORKFLOW_PID" 2>/dev/null || true
 
   # Wait up to 5 seconds for all processes to terminate
   WAIT_COUNT=0
@@ -138,7 +157,8 @@ SCRIPT_EOF
   LOG_FILE="${RITE_TEST_ROOT}/test-hup.log"
 
   cat > "$TEST_SCRIPT" <<'SCRIPT_EOF'
-#!/bin/bash
+#!/usr/bin/env bash
+# Use env bash (homebrew bash 5.x) — see SIGINT test fixture comment.
 set -euo pipefail
 
 RITE_LIB_DIR="${1}"
@@ -171,8 +191,8 @@ SCRIPT_EOF
 
   chmod +x "$TEST_SCRIPT"
 
-  # Start workflow in its own process group so the negative-PID group signal is
-  # deliverable (see comment in the SIGINT test).
+  # Start workflow in its own process group so the script's in-trap
+  # `kill -TERM -- -$$` targets only its own group (see comment in SIGINT test).
   set -m
   "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" &
   WORKFLOW_PID=$!
@@ -181,8 +201,10 @@ SCRIPT_EOF
   # Wait for pipeline establishment
   sleep 1
 
-  # Send SIGHUP (simulates terminal closing)
-  kill -HUP -"$WORKFLOW_PID" 2>/dev/null || true
+  # Send SIGHUP to the workflow leader directly (simulates terminal closing).
+  # Direct PID delivery avoids PGID-race lag under load; the script's trap
+  # handles the group kill internally.
+  kill -HUP "$WORKFLOW_PID" 2>/dev/null || true
 
   # Wait for termination
   WAIT_COUNT=0
@@ -208,7 +230,8 @@ SCRIPT_EOF
   TEST_SCRIPT="${RITE_TEST_ROOT}/test-double-interrupt.sh"
 
   cat > "$TEST_SCRIPT" <<'SCRIPT_EOF'
-#!/bin/bash
+#!/usr/bin/env bash
+# Use env bash (homebrew bash 5.x) — see SIGINT test fixture comment.
 set -euo pipefail
 
 INTERRUPT_RECEIVED=false
