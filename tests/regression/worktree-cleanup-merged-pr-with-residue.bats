@@ -303,7 +303,7 @@ STALE_BRANCH="$SCRIPT_DIR/lib/utils/stale-branch.sh"
   # Structural pin: the call must appear after the git worktree remove in handle_closed_issue.
   local remove_line rmdir_line
   remove_line=$(grep -n 'git worktree remove.*wt_path.*--force' "$WORKFLOW_RUNNER" | head -1 | cut -d: -f1)
-  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$WORKFLOW_RUNNER" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container "' "$WORKFLOW_RUNNER" | head -1 | cut -d: -f1)
   [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in workflow-runner.sh"; return 1; }
   [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in workflow-runner.sh"; return 1; }
   [ "$rmdir_line" -gt "$remove_line" ] || {
@@ -316,7 +316,7 @@ STALE_BRANCH="$SCRIPT_DIR/lib/utils/stale-branch.sh"
   # Structural pin: the call must appear after the git worktree remove in _stale_close_and_cleanup.
   local remove_line rmdir_line
   remove_line=$(grep -n 'git worktree remove.*worktree_path.*--force' "$STALE_BRANCH" | head -1 | cut -d: -f1)
-  rmdir_line=$(grep -n 'rmdir_empty_worktree_container' "$STALE_BRANCH" | head -1 | cut -d: -f1)
+  rmdir_line=$(grep -n 'rmdir_empty_worktree_container "' "$STALE_BRANCH" | head -1 | cut -d: -f1)
   [ -n "$remove_line" ] || { echo "FAIL: git worktree remove not found in stale-branch.sh"; return 1; }
   [ -n "$rmdir_line" ]  || { echo "FAIL: rmdir_empty_worktree_container not found in stale-branch.sh"; return 1; }
   [ "$rmdir_line" -gt "$remove_line" ] || {
