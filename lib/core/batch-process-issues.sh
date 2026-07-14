@@ -1259,7 +1259,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
         NEW_ISSUES_CREATED+=("Issue #$NEW_DEBT_ISSUE (from PR #$PR_NUMBER)")
       fi
     fi
-    print_info "Duration: ${ISSUE_DURATION}s"
+    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
     echo ""
 
     COMPLETED_ISSUES=$((COMPLETED_ISSUES + 1))
@@ -1267,7 +1267,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
 
     # Send success notification if smart-wait was used (means auto-merge happened)
     if [ "$SMART_WAIT" = true ] && [ -n "$PR_NUMBER" ]; then
-      send_notification "✅ Auto-Merge Success!" "Issue #$ISSUE_NUM completed and PR #$PR_NUMBER merged automatically! Duration: $((ISSUE_DURATION / 60))m" "success"
+      send_notification "✅ Auto-Merge Success!" "Issue #$ISSUE_NUM completed and PR #$PR_NUMBER merged automatically! Duration: $(_format_elapsed "$ISSUE_DURATION")" "success"
     fi
 
   elif [ $_WF_EXIT -eq 12 ]; then
@@ -1288,7 +1288,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "Issue #$ISSUE_NUM was already closed — no new work this session"
-    print_info "Duration: ${ISSUE_DURATION}s"
+    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1310,7 +1310,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "⏭️  Issue #$ISSUE_NUM skipped — already being processed by another session"
-    print_info "Duration: ${ISSUE_DURATION}s"
+    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1330,7 +1330,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "⏭️  #$ISSUE_NUM skipped — number refers to a PR, not an issue"
-    print_info "Duration: ${ISSUE_DURATION}s"
+    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1349,7 +1349,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     if [ $EXIT_CODE -eq 6 ]; then
       # Merge succeeded but cleanup failed — work IS on remote
       print_warning "Issue #$ISSUE_NUM: merge succeeded but cleanup failed (exit code: 6)"
-      print_info "Duration: ${ISSUE_DURATION}s"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
       MERGED_CLEANUP_FAILED+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="merged_cleanup_failed"
@@ -1376,7 +1376,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       # See: docs/architecture/exit-codes.md (exit 13 — invariant violated)
       print_error "Issue #$ISSUE_NUM: workflow invariant violated — no commits and no PR produced (exit code: 13)"
       print_error "This is a workflow logic bug, not a user-actionable failure — check logs above"
-      print_info "Duration: ${ISSUE_DURATION}s"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
@@ -1384,7 +1384,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort the entire batch to avoid hammering the API
       print_error "Issue #$ISSUE_NUM hit usage cap (exit code: 5) — aborting batch"
-      print_info "Duration: ${ISSUE_DURATION}s"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
@@ -1406,7 +1406,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       print_error "$(provider_name) is logged out — run: claude /login"
       print_info "All remaining issues will be recorded as skipped:auth."
       print_info "Re-run this batch after logging in."
-      print_info "Duration: ${ISSUE_DURATION}s"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
@@ -1417,7 +1417,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     elif [ $EXIT_CODE -eq 10 ]; then
       # Blocker detected - defer instead of stopping
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
-      print_info "Duration: ${ISSUE_DURATION}s"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
       print_warning "Blocker detected - deferring issue #$ISSUE_NUM"
       BLOCKED_ISSUES+=("$ISSUE_NUM")
@@ -1433,7 +1433,7 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     else
       # Other failure (dev or merge actually failed)
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
-      print_info "Duration: ${ISSUE_DURATION}s"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
@@ -1573,7 +1573,7 @@ if [ $COMPLETED_ISSUES -gt 0 ]; then
     if [ "${ISSUE_STATUS[$ISSUE_NUM]}" = "completed" ]; then
       DURATION=${ISSUE_TIME[$ISSUE_NUM]:-0}
       PR_NUM=${ISSUE_PR[$ISSUE_NUM]:-"N/A"}
-      echo "  ✅ Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s)"
+      echo "  ✅ Issue #$ISSUE_NUM → PR #$PR_NUM ($(_format_elapsed "$DURATION"))"
     fi
   done | sort -t'#' -k2 -n
   echo ""
@@ -1589,9 +1589,9 @@ if [ ${#MERGED_CLEANUP_FAILED[@]} -gt 0 ]; then
     REPO_URL=$(gh_safe repo view --json url --jq '.url' || true)
     REPO_URL="${REPO_URL:-}"
     if [ -n "$REPO_URL" ] && [ "$PR_NUM" != "N/A" ]; then
-      echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s) - ${REPO_URL}/pull/${PR_NUM}"
+      echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM ($(_format_elapsed "$DURATION")) - ${REPO_URL}/pull/${PR_NUM}"
     else
-      echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM (${DURATION}s)"
+      echo "  ⚠️  Issue #$ISSUE_NUM → PR #$PR_NUM ($(_format_elapsed "$DURATION"))"
     fi
   done | sort -t'#' -k2 -n
   echo ""
@@ -1606,7 +1606,7 @@ if [ ${#FAILED_ISSUES[@]} -gt 0 ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   for ISSUE_NUM in "${FAILED_ISSUES[@]}"; do
     DURATION=${ISSUE_TIME[$ISSUE_NUM]:-0}
-    echo "  ❌ Issue #$ISSUE_NUM (${DURATION}s)"
+    echo "  ❌ Issue #$ISSUE_NUM ($(_format_elapsed "$DURATION"))"
   done
   echo ""
 fi
@@ -1617,7 +1617,7 @@ if [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   for ISSUE_NUM in "${BLOCKED_ISSUES[@]}"; do
     DURATION=${ISSUE_TIME[$ISSUE_NUM]:-0}
-    echo "  🚨 Issue #$ISSUE_NUM (${DURATION}s)"
+    echo "  🚨 Issue #$ISSUE_NUM ($(_format_elapsed "$DURATION"))"
   done
   echo ""
   print_warning "These issues require manual review - no follow-up was created"
@@ -1635,7 +1635,7 @@ NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
 • Failed: ${#FAILED_ISSUES[@]} ❌
 • Blocked: ${#BLOCKED_ISSUES[@]} 🚨
 • Skipped: ${#SKIPPED_ISSUES[@]} ⏭️
-• Duration: $((TOTAL_DURATION / 60))m $((TOTAL_DURATION % 60))s
+• Duration: $(_format_elapsed "$TOTAL_DURATION")
 • Success Rate: $((COMPLETED_ISSUES * 100 / TOTAL_ISSUES))%"
 
 # Add merged branches section
