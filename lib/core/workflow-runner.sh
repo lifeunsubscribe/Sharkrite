@@ -2602,7 +2602,89 @@ run_workflow() {
     fi
   fi
 
+  # ── Parent-PR attachment contract ──
+  # Follow-up issues carry <!-- sharkrite-parent-pr:N --> in their body.
+  # When the parent PR is still OPEN, the follow-up's entire workflow targets
+  # that PR end-to-end — we adopt its PR_NUMBER so that every downstream phase
+  # (Phase 2 review, Phase 3 assess, Phase 4 merge) operates on the correct
+  # artifact without performing issue-number-derived discovery that would find
+  # nothing (the follow-up has no own PR yet).
+  #
+  # WORKTREE_PATH resolution: the adopt arm resolves WORKTREE_PATH directly
+  # from PARENT_PR_BRANCH (already known from detect_parent_pr_attachment,
+  # no extra API call). If the parent worktree IS local, WORKTREE_PATH is set
+  # and RESUME_MODE=true so the phase-skip block targets the parent PR. If the
+  # parent worktree is NOT local (cross-machine or removed), WORKTREE_PATH stays
+  # unset; the generic block below also finds nothing, and Phase 1 creates a new
+  # worktree on the parent branch — ensuring the dev session and review still
+  # target the correct PR (not a follow-up-scoped fresh branch).
+  #
+  # When the parent PR is MERGED or CLOSED at run time, the marker is kept
+  # for traceability but attachment is skipped; the follow-up gets its own
+  # fresh branch from main (normal workflow).
+  #
+  # This block is the SINGLE resolver — it runs once per workflow start and
+  # its result is authoritative for all phases. All other parent-pr lookups
+  # (claude-workflow.sh find_worktree_for_task, batch deferral) are parallel
+  # paths that operate at different scopes; this one owns the orchestrator's
+  # PR_NUMBER and WORKTREE_PATH variables.
+  #
+  # References: docs/architecture/behavioral-design.md → "Parent-PR Attachment Contract"
+  # Regression: tests/regression/batch-single-issue-parity.bats (follow-up fixtures)
+  local _attachment_issue_body="${ISSUE_BODY:-}"
+  if [ -z "${PR_NUMBER:-}" ] || [ "${PR_NUMBER:-}" = "null" ]; then
+    # Only resolve attachment when PR_NUMBER is not already known. If an earlier
+    # `detect_pr_for_issue` call found a Closes-#N PR (e.g., a re-run where the
+    # follow-up got its own PR), that PR wins — we are not a fresh follow-up.
+    if [ -z "$_attachment_issue_body" ]; then
+      # Fetch body if not already in scope (direct invocation without bin/rite).
+      _attachment_issue_body=$(gh_safe issue view "$issue_number" --json body --jq '.body' 2>/dev/null || true)
+      _attachment_issue_body="${_attachment_issue_body:-}"
+    fi
+
+    if [ -n "$_attachment_issue_body" ]; then
+      detect_parent_pr_attachment "$_attachment_issue_body"
+      # PARENT_ATTACHMENT_MODE, PARENT_PR_NUMBER, PARENT_PR_BRANCH are now set.
+
+      if [ "$PARENT_ATTACHMENT_MODE" = "adopt" ] && [ -n "$PARENT_PR_NUMBER" ]; then
+        PR_NUMBER="$PARENT_PR_NUMBER"
+        CURRENT_PR="$PR_NUMBER"
+        export PR_NUMBER
+
+        # Resolve WORKTREE_PATH from the parent branch so downstream phases
+        # (review, assess, merge) operate on the correct artifact. PARENT_PR_BRANCH
+        # is already known from detect_parent_pr_attachment — use it directly to
+        # skip the redundant gh pr view call in the generic block below.
+        #
+        # Cross-machine/cross-session note: if the parent worktree is not local
+        # (the follow-up is running on a different machine or after the worktree
+        # was removed), _wt_path will be empty and WORKTREE_PATH stays unset.
+        # In that case the generic block below also finds nothing, and the workflow
+        # falls through to Phase 1 — which creates a new worktree on the parent
+        # PR's branch so the follow-up dev session and review target the correct PR.
+        if [ -n "${PARENT_PR_BRANCH:-}" ]; then
+          local _parent_wt_path
+          _parent_wt_path=$(git worktree list | grep "\[$PARENT_PR_BRANCH\]" | awk '{print $1}' || true)
+          if [ -n "$_parent_wt_path" ] && [ -d "$_parent_wt_path" ]; then
+            WORKTREE_PATH="$_parent_wt_path"
+            set_current_worktree "$WORKTREE_PATH"
+            RESUME_MODE=true
+            print_info "Follow-up issue #$issue_number: adopted parent PR #$PARENT_PR_NUMBER (branch: $PARENT_PR_BRANCH, worktree: $WORKTREE_PATH)"
+          else
+            print_info "Follow-up issue #$issue_number: adopted parent PR #$PARENT_PR_NUMBER (branch: $PARENT_PR_BRANCH — worktree not local, Phase 1 will target the parent branch)"
+          fi
+        else
+          print_info "Follow-up issue #$issue_number carries parent-pr marker → adopting parent PR #$PARENT_PR_NUMBER (state: $PARENT_PR_STATE)"
+        fi
+      elif [ "$PARENT_ATTACHMENT_MODE" = "ignore" ] && [ -n "$PARENT_PR_NUMBER" ]; then
+        print_info "Follow-up issue #$issue_number: parent PR #$PARENT_PR_NUMBER is $PARENT_PR_STATE — running fresh branch (marker kept for traceability)"
+      fi
+      # mode=none: no marker, fall through to normal workflow
+    fi
+  fi
+
   # ── Detect worktree for this PR's branch (if not already known) ──
+  # Skip if WORKTREE_PATH is already resolved (e.g., by the adopt arm above).
   if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
     if [ -z "${WORKTREE_PATH:-}" ] || [ ! -d "${WORKTREE_PATH:-}" ]; then
       local _pr_branch
