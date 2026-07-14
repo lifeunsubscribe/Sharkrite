@@ -83,22 +83,15 @@ SCRIPT_EOF
   WORKFLOW_PID=$!
   set +m
 
-  # Poll up to 5 seconds for the tee/strip_ansi pipeline children to appear.
-  # A flat sleep 1 was previously used here but proved racy under system load:
-  # the process substitution `>(tee >(strip_ansi ...))` starts a bash subshell
-  # which in turn spawns tee, so first-child latency can exceed 1s on a busy
-  # host. We now retry in 0.25s increments (20 tries = 5s window), which is
-  # enough for any reasonable load scenario while keeping the test bounded.
-  CHILD_COUNT=0
-  _child_polls=0
-  while [ "$CHILD_COUNT" -eq 0 ] && [ "$_child_polls" -lt 20 ]; do
-    sleep 0.25
-    CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
-    CHILD_COUNT="${CHILD_COUNT:-0}"
-    _child_polls=$((_child_polls + 1))
-  done
-  [ "$CHILD_COUNT" -gt 0 ] || {
-    echo "ERROR: No child processes found after ${_child_polls} polls (5s). Pipeline may not have started." >&2
+  # Wait for pipeline to be established (tee and perl should be running)
+  sleep 1
+
+  # Verify child processes exist (tee and perl from logging pipeline)
+  # This confirms the pipeline is actually running.
+  # pgrep exits 1 when no matches — add || true to avoid pipefail failure.
+  CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "${CHILD_COUNT:-0}" -gt 0 ] || {
+    echo "ERROR: No child processes found. Pipeline may not have started." >&2
     kill "$WORKFLOW_PID" 2>/dev/null || true
     return 1
   }
@@ -106,13 +99,9 @@ SCRIPT_EOF
   # Send SIGINT to the process group (simulates Ctrl-C)
   kill -INT -"$WORKFLOW_PID" 2>/dev/null || true
 
-  # Wait up to 8 seconds for all processes to terminate. The cleanup handler
-  # sends SIGTERM, sleeps 0.5s, then sends SIGKILL — so normal exit is ~1s.
-  # Under load (CI, parallel bats, full suite) the child sleep(1) processes can
-  # delay the handler's foreground return by up to 2s before bash delivers the
-  # pending SIGTERM trap. 8s (16 × 0.5s) gives ample headroom.
+  # Wait up to 5 seconds for all processes to terminate
   WAIT_COUNT=0
-  while [ $WAIT_COUNT -lt 16 ]; do
+  while [ $WAIT_COUNT -lt 10 ]; do
     # Check if main process is still alive
     if ! kill -0 "$WORKFLOW_PID" 2>/dev/null; then
       break
@@ -123,34 +112,24 @@ SCRIPT_EOF
 
   # Verify the main process is dead
   run kill -0 "$WORKFLOW_PID" 2>&1
-  [ "$status" -ne 0 ] || {
-    echo "ERROR: main process $WORKFLOW_PID still alive after 8s" >&2
-    kill -KILL "$WORKFLOW_PID" 2>/dev/null || true
-    return 1
-  }
+  [ "$status" -ne 0 ]
 
   # Verify all child processes are dead (no orphaned tee or perl).
   # Brief retry: on macOS, SIGKILL-killed children can transiently appear in
   # pgrep output for a few milliseconds before the kernel updates the process
-  # table. Re-check up to 10 times with 0.2s gaps before declaring failure.
+  # table. Re-check up to 5 times with 0.1s gaps before declaring failure.
   ORPHAN_COUNT=1
   _orphan_checks=0
-  while [ "$ORPHAN_COUNT" -gt 0 ] && [ "$_orphan_checks" -lt 10 ]; do
-    sleep 0.2
+  while [ "$ORPHAN_COUNT" -gt 0 ] && [ "$_orphan_checks" -lt 5 ]; do
+    sleep 0.1
     ORPHAN_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
     ORPHAN_COUNT="${ORPHAN_COUNT:-0}"
     _orphan_checks=$((_orphan_checks + 1))
   done
-  [ "$ORPHAN_COUNT" -eq 0 ] || {
-    echo "ERROR: ${ORPHAN_COUNT} orphaned child process(es) of PID $WORKFLOW_PID still alive after 2s" >&2
-    return 1
-  }
+  [ "$ORPHAN_COUNT" -eq 0 ]
 
-  # Cleanup should have been fast (< 8 seconds)
-  [ $WAIT_COUNT -lt 16 ] || {
-    echo "ERROR: process group kill took too long (${WAIT_COUNT} × 0.5s intervals)" >&2
-    return 1
-  }
+  # Cleanup should have been fast (< 5 seconds)
+  [ $WAIT_COUNT -lt 10 ]
 }
 
 @test "SIGHUP kills entire process group when terminal closes" {
@@ -287,15 +266,9 @@ SCRIPT_EOF
   # single-interrupt teardown contract instead.)
   kill -INT "$PID" 2>/dev/null || true
 
-  # Wait up to 6 seconds (12 × 0.5s) for the process to exit. The cleanup
-  # handler sends SIGTERM (to the process group, which it is the sole member
-  # of), sleeps 0.5s, then sends SIGKILL. Under load the TERM delivery can be
-  # deferred slightly: the trap fires only after the current foreground `sleep
-  # 0.2` returns, and on a very busy host that handoff can slip. 6s (was 3s)
-  # gives a 10× headroom over the nominal ~0.7s handler path while staying
-  # well inside the bats per-test budget.
+  # Should exit quickly within the bounded window
   WAIT_COUNT=0
-  while [ $WAIT_COUNT -lt 12 ]; do
+  while [ $WAIT_COUNT -lt 6 ]; do
     if ! kill -0 "$PID" 2>/dev/null; then
       break
     fi
@@ -305,15 +278,8 @@ SCRIPT_EOF
 
   # Verify dead (interrupt teardown should be fast)
   run kill -0 "$PID" 2>&1
-  [ "$status" -ne 0 ] || {
-    echo "ERROR: process $PID still alive after 6s — interrupt handler did not terminate it" >&2
-    kill -KILL "$PID" 2>/dev/null || true
-    return 1
-  }
+  [ "$status" -ne 0 ]
 
-  # Should have exited well within 6 seconds
-  [ $WAIT_COUNT -lt 12 ] || {
-    echo "ERROR: interrupt teardown took too long (${WAIT_COUNT} × 0.5s intervals, limit 12)" >&2
-    return 1
-  }
+  # Should have exited well within 3 seconds
+  [ $WAIT_COUNT -lt 6 ]
 }
