@@ -520,10 +520,13 @@ _select_lint_by_changed_paths() {
   # BATS_FILE_SCOPE_ENV_READ) target .bats files specifically. Without emitting
   # changed .bats paths here, those rules never run against changed test files
   # through the post-commit gate (the production path they were built for).
+  # `tests/*.bats` alone spans every depth: in a `case` pattern `*` matches `/`,
+  # so it already covers tests/regression/foo.bats et al. A separate
+  # tests/*/*.bats would be redundant and trips shellcheck SC2221/2222 (#1015).
   while IFS= read -r _changed; do
     [ -z "$_changed" ] && continue
     case "$_changed" in
-      bin/*|lib/*|tools/*|tests/*.bats|tests/*/*.bats)
+      bin/*|lib/*|tools/*|tests/*.bats)
         [ -f "$project_root/$_changed" ] && echo "$project_root/$_changed"
         ;;
     esac
