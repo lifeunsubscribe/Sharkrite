@@ -287,9 +287,19 @@ fi
 # class (see CLAUDE.md "Unanchored marker grep").
 #
 # Algorithm (mirrors plan-issues.sh strict-lint dep extraction, PR #557):
-#   1. Walk lines; enter dep-collection mode when a line matches
-#      "**Dependencies**:" or "Dependencies:" (case-insensitive header).
-#   2. While in dep-collection mode:
+#   1. Walk lines; track fenced-code-block state — lines inside ``` fences
+#      are skipped entirely (fence guard prevents documented-marker false
+#      positives; mirrors the BARE_MARKER_GREP rule and encountered-issues
+#      renderer's extractor approach).
+#   2. Enter dep-collection mode when a line matches EITHER:
+#      a. "**Dependencies**:" or "Dependencies:" (canonical inline form, PR #964)
+#      b. "## Dependencies" or "### Dependencies" etc. (legacy markdown-header
+#         form — issues created before PR #964 used this style; e.g. #967
+#         which ran concurrently with its open parent #921 because the guard
+#         missed its "## Dependencies / After: #921" body). The `**Dependencies**:`
+#         line form remains the canonical authoring format — the legacy form is
+#         read-side only.
+#   3. While in dep-collection mode:
 #      a. Strip "(can run in parallel with #N, ...)" annotations — these are
 #         scheduling hints, not dependency edges (see plan-issues.sh:1466-1473).
 #      b. Collect all #N issue refs from the cleaned line — both keyword-anchored
@@ -298,7 +308,7 @@ fi
 #         (versions, timeouts, counts) from being harvested as issue numbers.
 #      c. Stop at the next markdown section header (lines starting with "**"
 #         or "##") or the "---" horizontal rule used as a section divider.
-#   3. If no Dependencies: header is found → output nothing (no deps).
+#   4. If no Dependencies: header is found → output nothing (no deps).
 #      Rationale: a body lacking the structured field is malformed per the
 #      issue template; any dep-pattern in the prose is unreliable. An
 #      operator running `rite N1 N2` is presumed to have resolved ordering
@@ -311,10 +321,22 @@ fi
 _extract_dep_issues_from_body() {
   local _body="$1"
   local _in_deps=false
+  local _in_fence=false
   local _collected=""
 
   while IFS= read -r _bline; do
-    # Detect the Dependencies: header (with or without ** markdown bold)
+    # Fence guard: toggle in/out of fenced code blocks on ``` markers.
+    # When inside a fence, skip ALL header detection — a "## Dependencies"
+    # or "**Dependencies**:" line inside a code example must not trigger
+    # dep collection (BARE_MARKER_GREP rule: format anchor needed; fence
+    # content is documentation, not live dependency edges).
+    case "$_bline" in
+      '```'*) [ "$_in_fence" = false ] && _in_fence=true || _in_fence=false; continue ;;
+    esac
+    [ "$_in_fence" = true ] && continue
+
+    # Detect the canonical Dependencies: header (with or without ** markdown bold).
+    # This is the form produced by the generator (PR #964) and the authoring standard.
     if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
       _in_deps=true
       # Strip parallel-with annotations before harvesting inline refs
@@ -327,6 +349,15 @@ _extract_dep_issues_from_body() {
       local _inline_refs
       _inline_refs=$(echo "$_clean" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' || true)
       [ -n "$_inline_refs" ] && _collected="${_collected:+$_collected }$_inline_refs"
+      continue
+    fi
+
+    # Detect the legacy markdown-header form: "## Dependencies" (any level ##).
+    # Issues authored before PR #964 used this style; deps appear on following
+    # lines as "After: #N" / "Blocked by: #N". The header line itself carries
+    # no inline refs, so just enter dep-collection mode and continue.
+    if echo "$_bline" | grep -qiE '^##+ Dependencies\s*$'; then
+      _in_deps=true
       continue
     fi
 

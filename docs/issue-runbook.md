@@ -79,6 +79,11 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
     - `After: #N` — should be done after issue N
     - `Blocked by: #N` — cannot start until N is complete
     - `None` — can start independently
+    - Use the `**Dependencies**: After: #N` inline form (canonical). The batch
+      dep-guard reads BOTH the inline form (`**Dependencies**:` / `Dependencies:`)
+      AND the legacy markdown-header form (`## Dependencies` with `After: #N` on
+      following lines). The inline form is the authoring standard — the guard
+      reads the legacy form for backward compatibility with pre-#964 issues.
 
 11. **Bug Class Analysis** *(required for bug-fix issues; omit for feature/infra issues)*
 
