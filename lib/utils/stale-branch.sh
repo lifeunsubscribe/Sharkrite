@@ -46,6 +46,12 @@ if ! declare -f verify_post_merge >/dev/null 2>&1; then
   exit 1
 fi
 
+# Source git helpers (provides rmdir_empty_worktree_container — residue cleanup
+# after worktree removal; also provides git_fetch_safe).
+if ! declare -f rmdir_empty_worktree_container >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/git-helpers.sh"
+fi
+
 # Source conflict resolver if available (provided by issue #21).
 # Guarded: stale-branch works without it — resolver is an enhancement,
 # not a hard dependency. When present, attempt_claude_merge_resolution()
@@ -1128,6 +1134,7 @@ _stale_close_and_cleanup() {
   # 4. Remove worktree (local filesystem — safe regardless of PR close result)
   if git worktree remove "$worktree_path" --force 2>/dev/null; then
     print_info "Removed worktree: $(basename "$worktree_path")"
+    rmdir_empty_worktree_container "$worktree_path" "$RITE_WORKTREE_DIR"
   else
     print_warning "Failed to remove worktree: $worktree_path"
   fi

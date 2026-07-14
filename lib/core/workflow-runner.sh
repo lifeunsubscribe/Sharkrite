@@ -33,6 +33,8 @@ source "$RITE_LIB_DIR/utils/pr-refusal.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+# git-helpers.sh: rmdir_empty_worktree_container — residue cleanup after worktree removal
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
 # review-helper.sh: shared extract_review_sha / resolve_pr_head_sha helpers
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -2389,6 +2391,7 @@ handle_closed_issue() {
         [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
         found_local_orphans=true
         echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
+        rmdir_empty_worktree_container "$wt_path" "$RITE_WORKTREE_DIR"
       fi
     fi
 
