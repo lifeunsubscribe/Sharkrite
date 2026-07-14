@@ -253,10 +253,14 @@ teardown() {
   mkdir -p "$exit_codes_dir"
 
   # Write a standalone worker script so each invocation gets its own PID.
+  # Stderr is redirected to a per-worker log file so failures produce useful
+  # diagnostics (previously silent crashes showed only "did not write exit code").
   cat > "$worker_script" <<WORKER_EOF
 #!/bin/bash
 set -euo pipefail
 WORKER_INDEX="\$1"
+STDERR_LOG="$exit_codes_dir/stderr_\${WORKER_INDEX}.log"
+exec 2>"\$STDERR_LOG"
 export SESSION_STATE_FILE="$RITE_TEST_TMPDIR/rite-session-state-\${WORKER_INDEX}.json"
 export RITE_LIB_DIR="$RITE_LIB_DIR"
 export RITE_STATE_DIR="$RITE_STATE_DIR"
@@ -279,12 +283,20 @@ WORKER_EOF
   for i in $(seq 1 $num_processes); do
     [ -f "$exit_codes_dir/process_${i}.exit" ] || {
       echo "FAIL: worker $i did not write exit code (may have crashed before completion)"
+      if [ -f "$exit_codes_dir/stderr_${i}.log" ]; then
+        echo "Worker $i stderr:" >&2
+        cat "$exit_codes_dir/stderr_${i}.log" >&2
+      fi
       return 1
     }
     local code
     code=$(cat "$exit_codes_dir/process_${i}.exit")
     [ "$code" -eq 0 ] || {
       echo "FAIL: process $i exited with code $code"
+      if [ -f "$exit_codes_dir/stderr_${i}.log" ]; then
+        echo "Worker $i stderr:" >&2
+        cat "$exit_codes_dir/stderr_${i}.log" >&2
+      fi
       return 1
     }
   done

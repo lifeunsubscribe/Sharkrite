@@ -1674,3 +1674,65 @@ PASSED outcome clears the state, keeping genuine zero-selection runs
 (docs-only diffs) skipped. Rejected: re-running the full prior selection every
 fix round (restores the pre-narrowing cost the narrowing exists to avoid —
 failing files are the sufficient invariant).
+
+## Parent-PR Attachment Contract (#1007/#1008)
+
+**2026-07-13.** Follow-up issues (review findings, tech-debt) carry a
+`<!-- sharkrite-parent-pr:N -->` marker in their body referencing the PR that
+produced the work they must address. Without a resolver, running `rite <follow-up>`
+re-discovers no PR (the follow-up has no own PR yet), launches a new dev session,
+and creates a fresh PR — producing a phantom review of the follow-up's empty
+branch followed by a phase-fail (issue #967).
+
+### Single Resolver in `workflow-runner.sh::run_workflow`
+
+The resolver runs ONCE per workflow start, BEFORE the phase-skip block, and is
+the authoritative source for the orchestrator's `PR_NUMBER` and `WORKTREE_PATH`.
+All other parent-pr lookups (batch deferral in `batch-process-issues.sh`, the
+`find_worktree_for_task` helper in `claude-workflow.sh`) operate at different
+scopes and are parallel paths — they do not replace this resolver.
+
+**Implementation:** `detect_parent_pr_attachment` (`lib/utils/pr-detection.sh`)
+parses the issue body, extracts the parent PR number, queries GitHub for the
+PR's state, and returns one of three modes:
+
+| `PARENT_ATTACHMENT_MODE` | Condition | Orchestrator action |
+|---|---|---|
+| `adopt` | Parent PR is `OPEN` | Set `PR_NUMBER = PARENT_PR_NUMBER`; resolve `WORKTREE_PATH` from parent branch |
+| `ignore` | Parent PR is `MERGED` or `CLOSED` | Log traceability note; run fresh branch from main (normal workflow) |
+| `none` | No marker in body | Fall through to normal workflow |
+
+API failure (GitHub unavailable, PR not found) → `ignore` (safe fail-open: run
+fresh rather than blocking on a missing verdict).
+
+### WORKTREE_PATH Resolution
+
+The adopt arm resolves `WORKTREE_PATH` directly from `PARENT_PR_BRANCH` (already
+populated by `detect_parent_pr_attachment`, no extra API call). Two sub-cases:
+
+**Local worktree found:** `WORKTREE_PATH` is set, `RESUME_MODE=true`. The
+phase-skip block (`if PR_NUMBER && WORKTREE_PATH && is-dir`) fires and the
+follow-up's run resumes from wherever the parent PR left off (review, assess, or
+merge).
+
+**Local worktree not found** (cross-machine / worktree removed): `WORKTREE_PATH`
+stays unset. The generic worktree-detection block below also finds nothing. Phase 1
+runs and creates a NEW worktree on the PARENT BRANCH (not a follow-up-scoped fresh
+branch), so the dev session and subsequent review still target the parent PR — the
+phantom-review-then-phase-fail shape is avoided.
+
+### Guard: Only Resolve When PR_NUMBER Is Unknown
+
+The attachment resolver only runs when `PR_NUMBER` is empty or `null` at the time
+of the check. If an earlier `detect_pr_for_issue` call found a `Closes-#N` PR
+(e.g., a re-run where the follow-up already has its own PR), that PR wins — the
+follow-up is no longer a fresh follow-up and attachment is not needed.
+
+### Regression
+
+`tests/regression/batch-single-issue-parity.bats` — fixtures: follow-up with OPEN
+parent (adopt path), follow-up with MERGED parent (ignore path), and #967's
+phantom-review shape (no local worktree, verifies Phase 1 targets parent branch).
+
+Direct unit tests for `detect_parent_pr_attachment` outcomes:
+`tests/regression/parent-pr-attachment.bats`.

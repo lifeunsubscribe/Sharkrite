@@ -260,3 +260,142 @@ write_gh_response() {
   [ "$PR_NUMBER" = "30" ]
   [ "$PR_BRANCH" = "fix/older-open" ]
 }
+
+# ===========================================================================
+# detect_parent_pr_attachment — resolver contract (#1007/#1008)
+#
+# Covers all four outcome arms of the single-resolver:
+#   none                — no marker in body (or documentation placeholder)
+#   adopt               — marker with OPEN parent PR
+#   ignore (MERGED)     — marker with MERGED parent PR
+#   ignore (API-fail)   — marker present but GitHub API unavailable
+#
+# Each test calls detect_parent_pr_attachment directly and asserts the
+# PARENT_ATTACHMENT_MODE / PARENT_PR_NUMBER / PARENT_PR_STATE / PARENT_PR_BRANCH
+# variables that the orchestrator relies on. The setup() above provides the
+# mock gh binary; GH_MOCK_RESPONSE_FILE is overwritten per test.
+# ===========================================================================
+
+@test "detect_parent_pr_attachment: no marker → mode=none, variables empty" {
+  # Issue body with no parent-pr marker at all.
+  local body="## Summary\nFollow-up from review findings.\n\nFixes a bug."
+  detect_parent_pr_attachment "$body"
+
+  [ "$PARENT_ATTACHMENT_MODE" = "none" ] || {
+    echo "FAIL: expected mode=none, got: $PARENT_ATTACHMENT_MODE"
+    return 1
+  }
+  [ -z "$PARENT_PR_NUMBER" ] || {
+    echo "FAIL: expected empty PARENT_PR_NUMBER, got: $PARENT_PR_NUMBER"
+    return 1
+  }
+}
+
+@test "detect_parent_pr_attachment: documentation placeholder → mode=none (bare-prefix guard)" {
+  # Issue body that DOCUMENTS the marker format but has no real numeric value.
+  # The outer guard must reject this; without the [0-9]+ anchor the extraction
+  # returns empty and set -e kills the script silently (bare-prefix guard class,
+  # CLAUDE.md and commit 206f2be). Mode must stay none — no API call fired.
+  local body="Use <!-- sharkrite-parent-pr:N --> where N is the parent PR number."
+  detect_parent_pr_attachment "$body"
+
+  [ "$PARENT_ATTACHMENT_MODE" = "none" ] || {
+    echo "FAIL: documentation placeholder matched guard — expected mode=none, got: $PARENT_ATTACHMENT_MODE"
+    return 1
+  }
+  [ -z "$PARENT_PR_NUMBER" ] || {
+    echo "FAIL: expected empty PARENT_PR_NUMBER for placeholder, got: $PARENT_PR_NUMBER"
+    return 1
+  }
+}
+
+@test "detect_parent_pr_attachment: OPEN parent → mode=adopt with PR branch" {
+  # Follow-up issue body with a real sharkrite-parent-pr:42 marker.
+  # The mock gh returns PR #42 as OPEN.
+  write_gh_response '[
+    {"number": 42, "state": "OPEN", "headRefName": "feat/parent-pr-branch",
+     "body": "Closes #100 - Parent PR", "title": "Parent PR"}
+  ]'
+
+  local body="Follow-up findings.\n\n<!-- sharkrite-parent-pr:42 -->"
+  detect_parent_pr_attachment "$body"
+
+  [ "$PARENT_ATTACHMENT_MODE" = "adopt" ] || {
+    echo "FAIL: expected mode=adopt for OPEN parent, got: $PARENT_ATTACHMENT_MODE"
+    return 1
+  }
+  [ "$PARENT_PR_NUMBER" = "42" ] || {
+    echo "FAIL: expected PARENT_PR_NUMBER=42, got: $PARENT_PR_NUMBER"
+    return 1
+  }
+  [ "$PARENT_PR_STATE" = "OPEN" ] || {
+    echo "FAIL: expected PARENT_PR_STATE=OPEN, got: $PARENT_PR_STATE"
+    return 1
+  }
+  [ "$PARENT_PR_BRANCH" = "feat/parent-pr-branch" ] || {
+    echo "FAIL: expected PARENT_PR_BRANCH=feat/parent-pr-branch, got: $PARENT_PR_BRANCH"
+    return 1
+  }
+}
+
+@test "detect_parent_pr_attachment: MERGED parent → mode=ignore" {
+  # Follow-up issue body with a sharkrite-parent-pr:99 marker whose PR is MERGED.
+  # Adopt must be skipped; the follow-up gets a fresh branch.
+  write_gh_response '[
+    {"number": 99, "state": "MERGED", "headRefName": "feat/already-merged",
+     "body": "Closes #200 - Now merged", "title": "Merged parent PR"}
+  ]'
+
+  local body="Follow-up after merge.\n\n<!-- sharkrite-parent-pr:99 -->"
+  detect_parent_pr_attachment "$body"
+
+  [ "$PARENT_ATTACHMENT_MODE" = "ignore" ] || {
+    echo "FAIL: expected mode=ignore for MERGED parent, got: $PARENT_ATTACHMENT_MODE"
+    return 1
+  }
+  [ "$PARENT_PR_NUMBER" = "99" ] || {
+    echo "FAIL: expected PARENT_PR_NUMBER=99, got: $PARENT_PR_NUMBER"
+    return 1
+  }
+  [ "$PARENT_PR_STATE" = "MERGED" ] || {
+    echo "FAIL: expected PARENT_PR_STATE=MERGED, got: $PARENT_PR_STATE"
+    return 1
+  }
+}
+
+@test "detect_parent_pr_attachment: CLOSED parent → mode=ignore" {
+  # A closed (not merged) parent PR also produces mode=ignore.
+  write_gh_response '[
+    {"number": 77, "state": "CLOSED", "headRefName": "feat/closed-pr",
+     "body": "Closes #300 - Closed without merge", "title": "Closed PR"}
+  ]'
+
+  local body="Follow-up for closed PR.\n\n<!-- sharkrite-parent-pr:77 -->"
+  detect_parent_pr_attachment "$body"
+
+  [ "$PARENT_ATTACHMENT_MODE" = "ignore" ] || {
+    echo "FAIL: expected mode=ignore for CLOSED parent, got: $PARENT_ATTACHMENT_MODE"
+    return 1
+  }
+}
+
+@test "detect_parent_pr_attachment: API failure → mode=ignore (safe fail-open)" {
+  # When GitHub is unavailable (gh returns non-zero), the resolver must return
+  # mode=ignore so the follow-up runs fresh rather than blocking. Uses an empty
+  # response file so the mock gh pr view returns {} and jq produces empty state.
+  # RITE_GH_MAX_RETRIES=1 avoids the 3-retry wait built into gh_safe.
+  export RITE_GH_MAX_RETRIES=1
+  write_gh_response '[]'   # empty array → mock returns "{}" for any PR view
+
+  local body="Follow-up body.\n\n<!-- sharkrite-parent-pr:55 -->"
+  detect_parent_pr_attachment "$body"
+
+  [ "$PARENT_ATTACHMENT_MODE" = "ignore" ] || {
+    echo "FAIL: expected mode=ignore on API failure/empty response, got: $PARENT_ATTACHMENT_MODE"
+    return 1
+  }
+  [ "$PARENT_PR_NUMBER" = "55" ] || {
+    echo "FAIL: expected PARENT_PR_NUMBER=55 (marker was parsed), got: $PARENT_PR_NUMBER"
+    return 1
+  }
+}
