@@ -2602,6 +2602,53 @@ run_workflow() {
     fi
   fi
 
+  # ── Parent-PR attachment contract ──
+  # Follow-up issues carry <!-- sharkrite-parent-pr:N --> in their body.
+  # When the parent PR is still OPEN, the follow-up's entire workflow targets
+  # that PR end-to-end — we adopt its PR_NUMBER and WORKTREE_PATH so that
+  # every downstream phase (Phase 2 review, Phase 3 assess, Phase 4 merge)
+  # operates on the correct artifact without performing issue-number-derived
+  # discovery that would find nothing (the follow-up has no own PR yet).
+  #
+  # When the parent PR is MERGED or CLOSED at run time, the marker is kept
+  # for traceability but attachment is skipped; the follow-up gets its own
+  # fresh branch from main (normal workflow).
+  #
+  # This block is the SINGLE resolver — it runs once per workflow start and
+  # its result is authoritative for all phases. All other parent-pr lookups
+  # (claude-workflow.sh find_worktree_for_task, batch deferral) are parallel
+  # paths that operate at different scopes; this one owns the orchestrator's
+  # PR_NUMBER and WORKTREE_PATH variables.
+  #
+  # References: docs/architecture/behavioral-design.md → "Parent-PR Attachment Contract"
+  # Regression: tests/regression/batch-single-issue-parity.bats (follow-up fixtures)
+  local _attachment_issue_body="${ISSUE_BODY:-}"
+  if [ -z "${PR_NUMBER:-}" ] || [ "${PR_NUMBER:-}" = "null" ]; then
+    # Only resolve attachment when PR_NUMBER is not already known. If an earlier
+    # `detect_pr_for_issue` call found a Closes-#N PR (e.g., a re-run where the
+    # follow-up got its own PR), that PR wins — we are not a fresh follow-up.
+    if [ -z "$_attachment_issue_body" ]; then
+      # Fetch body if not already in scope (direct invocation without bin/rite).
+      _attachment_issue_body=$(gh_safe issue view "$issue_number" --json body --jq '.body' 2>/dev/null || true)
+      _attachment_issue_body="${_attachment_issue_body:-}"
+    fi
+
+    if [ -n "$_attachment_issue_body" ]; then
+      detect_parent_pr_attachment "$_attachment_issue_body"
+      # PARENT_ATTACHMENT_MODE, PARENT_PR_NUMBER, PARENT_PR_BRANCH are now set.
+
+      if [ "$PARENT_ATTACHMENT_MODE" = "adopt" ] && [ -n "$PARENT_PR_NUMBER" ]; then
+        print_info "Follow-up issue #$issue_number carries parent-pr marker → adopting parent PR #$PARENT_PR_NUMBER (state: $PARENT_PR_STATE)"
+        PR_NUMBER="$PARENT_PR_NUMBER"
+        CURRENT_PR="$PR_NUMBER"
+        export PR_NUMBER
+      elif [ "$PARENT_ATTACHMENT_MODE" = "ignore" ] && [ -n "$PARENT_PR_NUMBER" ]; then
+        print_info "Follow-up issue #$issue_number: parent PR #$PARENT_PR_NUMBER is $PARENT_PR_STATE — running fresh branch (marker kept for traceability)"
+      fi
+      # mode=none: no marker, fall through to normal workflow
+    fi
+  fi
+
   # ── Detect worktree for this PR's branch (if not already known) ──
   if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
     if [ -z "${WORKTREE_PATH:-}" ] || [ ! -d "${WORKTREE_PATH:-}" ]; then

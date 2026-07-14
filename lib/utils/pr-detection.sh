@@ -258,3 +258,80 @@ detect_review_state() {
 
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# detect_parent_pr_attachment ISSUE_BODY
+#
+# Single resolver for the parent-PR attachment contract.
+# Reads the sharkrite-parent-pr:N marker from ISSUE_BODY and queries GitHub
+# for the parent PR's state. Sets caller-scope variables encoding the contract:
+#
+#   PARENT_PR_NUMBER  — parent PR number (or "" if no marker)
+#   PARENT_PR_STATE   — "OPEN", "MERGED", "CLOSED", or "" if no marker
+#   PARENT_PR_BRANCH  — head branch of the parent PR (or "")
+#   PARENT_ATTACHMENT_MODE — "adopt" | "ignore" | "none"
+#     adopt  = parent PR is OPEN → orchestrator must use parent PR/worktree
+#     ignore = parent PR is MERGED or CLOSED → run fresh branch from main
+#     none   = no parent-pr marker in issue body
+#
+# Contract arms:
+#   adopt:  follow-up's dev session, review, and assessment target the parent
+#           PR end-to-end. The orchestrator adopts PR_NUMBER/WORKTREE_PATH from
+#           the parent so no phase performs issue-number-derived discovery.
+#   ignore: the marker is preserved for traceability but the attachment is
+#           skipped; the follow-up runs fresh on a new branch from main.
+#
+# CRITICAL: The outer guard requires digits — otherwise issue bodies that
+# DOCUMENT the marker format (e.g. "sharkrite-parent-pr:N" as a placeholder)
+# match and the inner extraction returns empty, killing the script silently
+# under set -e + pipefail. Same bug class fixed in commit 206f2be.
+# See CLAUDE.md — "Unanchored marker grep (bare-prefix guard)".
+#
+# Returns: 0 always (sets PARENT_ATTACHMENT_MODE="none" on error/no-match)
+# ---------------------------------------------------------------------------
+detect_parent_pr_attachment() {
+  local issue_body="$1"
+
+  PARENT_PR_NUMBER=""
+  PARENT_PR_STATE=""
+  PARENT_PR_BRANCH=""
+  PARENT_ATTACHMENT_MODE="none"
+
+  # Outer guard requires digits — rejects all placeholder/documentation text.
+  if ! echo "$issue_body" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
+    return 0
+  fi
+
+  # Extract parent PR number (safe: outer guard already verified digit presence).
+  PARENT_PR_NUMBER=$(echo "$issue_body" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)
+  PARENT_PR_NUMBER="${PARENT_PR_NUMBER:-}"
+
+  if [ -z "$PARENT_PR_NUMBER" ]; then
+    return 0
+  fi
+
+  # Query parent PR state and head branch in one call.
+  local _parent_pr_json
+  _parent_pr_json=$(gh_safe pr view "$PARENT_PR_NUMBER" --json state,headRefName 2>/dev/null || true)
+  _parent_pr_json="${_parent_pr_json:-}"
+
+  if [ -z "$_parent_pr_json" ] || [ "$_parent_pr_json" = "null" ]; then
+    # GitHub API unavailable or PR not found — treat as ignore (safe: run fresh).
+    PARENT_ATTACHMENT_MODE="ignore"
+    return 0
+  fi
+
+  PARENT_PR_STATE=$(echo "$_parent_pr_json" | jq -r '.state // ""' 2>/dev/null || true)
+  PARENT_PR_BRANCH=$(echo "$_parent_pr_json" | jq -r '.headRefName // ""' 2>/dev/null || true)
+  PARENT_PR_STATE="${PARENT_PR_STATE:-}"
+  PARENT_PR_BRANCH="${PARENT_PR_BRANCH:-}"
+
+  if [ "$PARENT_PR_STATE" = "OPEN" ]; then
+    PARENT_ATTACHMENT_MODE="adopt"
+  else
+    # MERGED or CLOSED: ignore attachment, run fresh.
+    PARENT_ATTACHMENT_MODE="ignore"
+  fi
+
+  return 0
+}
