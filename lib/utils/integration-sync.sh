@@ -24,7 +24,7 @@
 #
 # Diagnostic:
 #   Emits one structured diag line via _diag (logging.sh):
-#   INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict
+#   INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|push_failed
 
 set -euo pipefail
 
@@ -154,7 +154,7 @@ sync_integration_branch() {
     print_success "Merge succeeded — pushing to origin/$SYNC_BRANCH"
     if ! git -C "$_sync_wt" push origin "HEAD:refs/heads/$SYNC_BRANCH"; then
       print_error "Push failed after successful merge"
-      _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=conflict"
+      _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=push_failed"
       return 1
     fi
     print_success "Branch '$SYNC_BRANCH' synced successfully"
@@ -181,9 +181,15 @@ sync_integration_branch() {
     # --merge-target already defaults to origin/main inside conflict-resolver.sh,
     # but specifying it here makes the intent clear and resilient to future
     # default changes.
-    attempt_claude_merge_resolution \
+    #
+    # cd into the sync worktree before calling the resolver: conflict-resolver.sh
+    # uses bare `git` calls (rev-parse, diff, merge, etc.) that act on cwd.
+    # stale-branch.sh:717 does the same cd before calling the resolver — we
+    # must match that pattern exactly (see Scope Boundary DO).
+    # Run in a subshell so the cd does not escape to the caller.
+    ( cd "$_sync_wt" && attempt_claude_merge_resolution \
       --branch-name "$SYNC_BRANCH" \
-      --merge-target "origin/main" || _resolver_rc=$?
+      --merge-target "origin/main" ) || _resolver_rc=$?
 
     if [ "$_resolver_rc" -eq 0 ]; then
       print_success "Conflicts resolved by Claude"
@@ -207,7 +213,7 @@ sync_integration_branch() {
       # adds commits without rewriting history).
       if ! git -C "$_sync_wt" push origin "HEAD:refs/heads/$SYNC_BRANCH"; then
         print_error "Push failed after conflict resolution"
-        _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=conflict"
+        _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=push_failed"
         trap - EXIT
         git worktree remove --force "$_sync_wt" 2>/dev/null || true
         return 1

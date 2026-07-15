@@ -168,3 +168,38 @@ _run_rite() {
 
   echo "$output" | grep -q -- '--sync'
 }
+
+# ---------------------------------------------------------------------------
+# Test 11: Conflict resolver is called inside a subshell that cd's into the
+#          sync worktree (structural grep — the cwd contract cannot be asserted
+#          via output alone without a live git repo).
+#
+# stale-branch.sh:717 does `cd "$worktree_path"` before calling the resolver;
+# integration-sync.sh must match that pattern exactly.  The canonical fix wraps
+# the call in `( cd "$_sync_wt" && attempt_claude_merge_resolution ... )`.
+# ---------------------------------------------------------------------------
+@test "integration-sync.sh calls resolver inside a subshell with cd into sync worktree" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  # The resolver call must be preceded by a cd into $_sync_wt in the same subshell.
+  # Pattern: ( cd "$_sync_wt" && attempt_claude_merge_resolution
+  grep -q 'cd "\$_sync_wt".*attempt_claude_merge_resolution\|( cd "\$_sync_wt"' "$_lib"
+}
+
+# ---------------------------------------------------------------------------
+# Test 12: push_failed outcome is emitted in diag for push failures (not
+#          outcome=conflict, which would misattribute push/network errors).
+# ---------------------------------------------------------------------------
+@test "integration-sync.sh emits push_failed diag outcome (not conflict) for push errors" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  # At least two outcome=push_failed lines must be present (one per push site:
+  # post-clean-merge push and post-resolution push).
+  local _count
+  _count=$(grep -c 'outcome=push_failed' "$_lib" || true)
+  [ "$_count" -ge 2 ]
+  # Lines that print "Push failed" must pair with push_failed, not conflict.
+  # Extract the _diag call immediately following each "Push failed" print and
+  # confirm none of them say outcome=conflict.
+  ! grep -A1 'print_error "Push failed' "$_lib" | grep -q 'outcome=conflict'
+}
