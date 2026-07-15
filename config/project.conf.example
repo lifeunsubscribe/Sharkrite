@@ -168,3 +168,10 @@
 # for which project docs to update and how. See templates/doc-sync.md.example
 # for the format. If .rite/doc-sync.md does not exist, only internal
 # docs are maintained.
+
+# Docs map auto-rebuild (default: true).
+# When true, docs_map_ensure() automatically rebuilds .rite/state/docs-map.tsv
+# when the file is missing. The map inventories README.md, CLAUDE.md, and
+# docs/**/*.md with headings and ADR flags for use by cluster-B doc-sync features.
+# Set to "false" to suppress auto-rebuild (e.g. when the map is managed externally).
+# RITE_DOCS_MAP_AUTO=true

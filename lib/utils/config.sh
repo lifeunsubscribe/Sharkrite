@@ -326,6 +326,13 @@ RITE_PLAN_FIXTURE_GLOB="${RITE_PLAN_FIXTURE_GLOB:-}"
 # false positives for a specific run.
 RITE_PLAN_SKIP_INTEGRATION_CHECK="${RITE_PLAN_SKIP_INTEGRATION_CHECK:-0}"
 
+# Docs map: auto-rebuild control.
+# When true (default), docs_map_ensure() rebuilds .rite/state/docs-map.tsv when
+# the file is missing.  Set to "false" to suppress auto-rebuild (e.g. in tests
+# or when the map is managed externally).  Does not affect docs_map_build(), which
+# always rebuilds unconditionally.
+RITE_DOCS_MAP_AUTO="${RITE_DOCS_MAP_AUTO:-true}"
+
 # Dry-run mode
 RITE_DRY_RUN="${RITE_DRY_RUN:-false}"
 
@@ -417,6 +424,7 @@ export RITE_PLAN_DOC_BYTE_CAP
 export RITE_PLAN_INCLUDE_README
 export RITE_PLAN_FIXTURE_GLOB
 export RITE_PLAN_SKIP_INTEGRATION_CHECK
+export RITE_DOCS_MAP_AUTO
 export RITE_DRY_RUN
 export RITE_SKIP_TESTS
 export RITE_TEST_CMD
