@@ -22,6 +22,8 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 # Source all library modules
+# doc-consent.sh: ensure_doc_mode (consent gate for cluster-B doc-sync features)
+source "$RITE_LIB_DIR/utils/doc-consent.sh"
 source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"
 source "$RITE_LIB_DIR/utils/session-tracker.sh"
@@ -2498,6 +2500,12 @@ run_workflow() {
   echo "🚀 Processing issue #${issue_number} (full lifecycle)"
   echo -e "${GREEN}Session initialized (mode: $WORKFLOW_MODE)${NC}"
   echo ""
+
+  # Ensure doc-mode consent is recorded before doing any work.
+  # ensure_doc_mode is a no-op when RITE_DOC_MODE is already set.
+  # In supervised non-batch TTY runs it asks once; in all other contexts it
+  # sets a session-only changelog default without writing config.
+  ensure_doc_mode
 
   # Check if issue is already closed — delegate to the shared helper so both
   # single-issue and batch paths execute identical cleanup side effects.

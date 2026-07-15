@@ -214,6 +214,15 @@ RITE_MAX_FINDINGS_PER_RUN="${RITE_MAX_FINDINGS_PER_RUN:-20}"
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
+# Doc-mode consent: records whether the user consented to sharkrite updating
+# files in docs/ when code changes make them inaccurate.
+# Values: "sync" (yes — .rite/doc-sync.md scaffolded, Layer 2 active) or
+#         "changelog" (no — drift notes only).
+# EMPTY DEFAULT IS INTENTIONAL: empty means "not yet recorded"; defaulting to
+# "changelog" here would break the ask-once logic in ensure_doc_mode().
+# Set via `rite --init` or a supervised workflow run.
+RITE_DOC_MODE="${RITE_DOC_MODE:-}"
+
 # Notifications (opt-in per project — global env vars like SLACK_WEBHOOK are ignored
 # unless RITE_NOTIFICATIONS is explicitly set to "true")
 RITE_NOTIFICATIONS="${RITE_NOTIFICATIONS:-false}"
@@ -432,6 +441,7 @@ export RITE_DEDUP_BACKOFF
 export RITE_FOLLOWUP_SENTINEL_TTL_S
 export RITE_FOLLOWUP_LOCK_DWELL_S
 export RITE_MAX_FINDINGS_PER_RUN
+export RITE_DOC_MODE
 export BLOCKER_INFRASTRUCTURE_PATHS
 export BLOCKER_MIGRATION_PATHS
 export BLOCKER_AUTH_PATHS

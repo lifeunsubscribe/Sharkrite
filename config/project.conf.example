@@ -175,3 +175,17 @@
 # docs/**/*.md with headings and ADR flags for use by cluster-B doc-sync features.
 # Set to "false" to suppress auto-rebuild (e.g. when the map is managed externally).
 # RITE_DOCS_MAP_AUTO=true
+
+# Doc-mode consent — controls whether sharkrite updates files in docs/ after merges.
+#
+# Values:
+#   "sync"      — yes consent; sharkrite may update docs/ when code changes make
+#                 them inaccurate.  Requires .rite/doc-sync.md to be present (Layer 2
+#                 activation switch).  Set by rite --init when you answer Y.
+#   "changelog" — no consent; only drift changelog entries are written.
+#                 Set by rite --init when you answer N.
+#
+# LEAVE UNSET (default: empty) to let sharkrite ask on the next supervised run.
+# An empty value means "not yet recorded" — it is NOT the same as "changelog".
+# Setting this to "changelog" here permanently suppresses the consent prompt.
+# # RITE_DOC_MODE="changelog"
