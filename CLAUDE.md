@@ -568,6 +568,7 @@ ${RITE_LOCK_DIR}/issue-N.lock/
 ANY issue you file — by hand via `gh issue create`, or via `rite plan` — MUST follow `docs/issue-runbook.md`. Do NOT hand-write ad-hoc Problem/Fix bodies: that lapse shipped wrong file pointers (#720, #722 named files the fix didn't touch) and bloated dev sessions with exploration. Non-negotiables from the runbook:
 - **Claude Context** file pointers VERIFIED by grep/read — never from memory.
 - **Acceptance Criteria** with copy-pasteable verification commands; a concrete one-line **Done Definition**; a **Scope Boundary** (DO / DO NOT) that GUARDS the fix without adding irrelevant constraints that bloat the work.
+- **Documentation Impact** (required for every issue): name the artifact checked for a read-only accuracy check, OR name the file + section + verification grep for asserted additions — never "N/A" or "Docs updated as needed".
 - **Bug Class Analysis** (real sibling instances + a reuse check) for bug issues — prefer reusing an existing abstraction over building new.
 
 ## Follow-up Issue Template
