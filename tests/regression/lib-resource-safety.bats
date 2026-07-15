@@ -123,6 +123,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/issue-lock.sh"
 }
 
+@test "lib/utils/integration-sync.sh sources twice without error" {
+  _assert_double_source "lib/utils/integration-sync.sh"
+}
+
 @test "lib/utils/labels.sh sources twice without error" {
   _assert_double_source "lib/utils/labels.sh"
 }

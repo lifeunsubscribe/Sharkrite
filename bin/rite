@@ -61,6 +61,7 @@ WORKFLOW_FLAGS=()
 LABEL_FILTER=""
 BATCH_FILTER_ARGS=()
 SUPERVISED=false
+SYNC_BRANCH_ARG=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dev-and-pr)
@@ -112,6 +113,18 @@ while [[ $# -gt 0 ]]; do
     --full-suite)
       MODE="full-suite"
       shift
+      ;;
+    --sync)
+      # Sync an integration branch: fetch origin, merge origin/main into the
+      # branch (never rebase), push. Explicit, never automatic.
+      MODE="sync"
+      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        print_error "--sync requires a branch name"
+        echo "Usage: rite --sync <integration-branch>"
+        exit 1
+      fi
+      SYNC_BRANCH_ARG="$2"
+      shift 2
       ;;
     --refresh-encountered-issues)
       MODE="refresh-encountered-issues"
@@ -236,6 +249,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
+      echo "  rite --sync <branch>          Merge origin/main into an integration branch (explicit, never automatic)"
       echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
@@ -326,6 +340,19 @@ while [[ $# -gt 0 ]]; do
       MODE="full-suite"
       shift
       ;;
+    sync)
+      # Bare-word alias: `rite sync <branch>` → `rite --sync <branch>`.
+      # Mirrors the --sync flag case above, including the required-arg check.
+      MODE="sync"
+      shift
+      if [ -z "${1:-}" ] || [[ "$1" == -* ]]; then
+        print_error "sync requires a branch name"
+        echo "Usage: rite sync <integration-branch>"
+        exit 1
+      fi
+      SYNC_BRANCH_ARG="$1"
+      shift
+      ;;
     backfill-locks)
       MODE="backfill-locks"
       shift
@@ -365,6 +392,7 @@ done
 #   "health-report"        rite --health-report
 #   "health-report-latest" rite --health-report --latest
 #   "full-suite"           rite --full-suite
+#   "sync"                 rite --sync <branch>
 #   "refresh-encountered-issues"
 #   "tags"
 #   "backfill-locks"
@@ -392,6 +420,10 @@ resolve_dispatch_key() {
       ;;
     full-suite)
       echo "full-suite"
+      return 0
+      ;;
+    sync)
+      echo "sync"
       return 0
       ;;
     refresh-encountered-issues)
@@ -527,6 +559,10 @@ resolve_dispatch_plan() {
       ;;
     full-suite)
       echo "rite-full-suite  (unfiltered make check + bats -r tests/)"
+      return 0
+      ;;
+    sync)
+      echo "integration-sync.sh::sync_integration_branch ${SYNC_BRANCH_ARG:-<branch>}  (fetch + merge origin/main into branch, push)"
       return 0
       ;;
     refresh-encountered-issues)
@@ -695,6 +731,14 @@ fi
 # Bypasses targeted-selection logic; manages its own per-run log file.
 if [ "$MODE" = "full-suite" ]; then
   exec "$SCRIPT_DIR/rite-full-suite"
+fi
+
+# Integration branch sync: fetch + merge origin/main into the branch, push.
+# Explicit, never automatic. Branch arg was consumed and validated at parse time.
+if [ "$MODE" = "sync" ]; then
+  source "$RITE_LIB_DIR/utils/integration-sync.sh"
+  sync_integration_branch "${SYNC_BRANCH_ARG:-}"
+  exit $?
 fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
