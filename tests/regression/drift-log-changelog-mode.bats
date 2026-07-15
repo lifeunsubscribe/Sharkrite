@@ -291,7 +291,9 @@ teardown() {
   git commit -q -m "docs: record drift entry for PR #300"
 
   # The commit must only touch the drift log.
-  _changed="$(git show --name-only HEAD | tail -n +2 | grep -v '^$' || true)"
+  # git show --pretty=format: suppresses the commit header lines so only
+  # changed filenames are emitted (no Author/Date/message lines to filter).
+  _changed="$(git show --name-only --pretty=format: HEAD | grep -v '^$' || true)"
   # Must contain the drift log path
   echo "$_changed" | grep -q 'docs/sharkrite-drift-log.md'
   # Must NOT contain any other file

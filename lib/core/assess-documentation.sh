@@ -1945,7 +1945,7 @@ DRIFT_PROMPT_EOF
 
   local _commit_msg="docs: record drift entry for PR #${pr_number}"
   if git commit -m "$_commit_msg" 2>/dev/null; then
-    if git push 2>/dev/null; then
+    if git push origin "$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null; then
       print_info "  drift-log: committed and pushed"
     else
       print_info "  drift-log: committed (push failed — local only)"
