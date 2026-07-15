@@ -3087,7 +3087,7 @@ ${PHASE_0_INSTRUCTIONS}
 
 ### Phase 5: Code Comments
 1. Add inline comments and JSDoc/TSDoc for complex logic only
-2. Do NOT update files in docs/, README, or CHANGELOG — those are handled by a separate review phase
+2. Do NOT update files in docs/, README, or CHANGELOG — those are handled by a separate review phase, unless the issue's Files to Modify explicitly lists them
 
 ### Phase 6: VERIFY SCOPE BOUNDARY (REQUIRED — do not skip)
 

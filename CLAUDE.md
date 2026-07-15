@@ -691,6 +691,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
    - Supervised: "When all phases are complete, immediately exit with `/exit`"
    - Auto: `--print` handles exit; prompt says "session will end automatically"
 5. **No "Ready to start?" or open-ended questions at end** — The prompt should end with a directive ("Begin with Phase 0"), not a question that invites Claude to wait for confirmation.
+6. **Phase 5 docs prohibition carries a Files-to-Modify carve-out** — The Phase 5 step 2 prohibition ("Do NOT update files in docs/, README, or CHANGELOG") includes the carve-out "unless the issue's Files to Modify explicitly lists them". Without it, an issue that legitimately lists a doc file in Files to Modify contradicts the prohibition — and per the #495 regression class a blanket prohibition phrasing overrides the issue body, causing the model to silently skip the listed doc work. The #495 reword-all-locations rule applies: any cross-reference that restates the Phase 5 docs prohibition must carry the same carve-out. (Audited 2026-07: `lib/providers/claude.sh` ~521 and `tests/fixtures/providers/gemini-mock.sh` ~171 are both silent on docs — no reword needed there; fix-session `FIX_PROMPT` Scope block has no docs prohibition — no change there either.)
 
 ## Git Commits
 
