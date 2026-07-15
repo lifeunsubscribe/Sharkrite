@@ -1328,6 +1328,106 @@ COVERAGE_EOF
   return 0
 }
 
+# commit_catalog_files — best-effort commit (and push) of the two auto-written
+# catalog files after the writers run.
+#
+# Context: update_conventions_from_marker() and update_tag_index_from_block()
+# write docs/architecture/conventions.md and docs/architecture/tag-index.md
+# directly into the main worktree ($RITE_PROJECT_ROOT). Without a commit step
+# the changes are stranded as uncommitted/untracked state and silently lost
+# when any clean-tree operation (checkout, stash, reset) runs.  This helper
+# is the commit step; it mirrors the Layer 2 best-effort commit+push style at
+# lines ~1959-1979 of this file.
+#
+# Safety constraints (see issue #1030):
+#   - All git ops use `git -C "$RITE_PROJECT_ROOT"` — the script cds into the
+#     feature worktree when invoked with --worktree, so relative-path git ops
+#     would target the wrong worktree.
+#   - `git add` is issued per-file (not as a multi-file batch) so that a
+#     missing tag-index.md (first PR with tags) does not cause git to exit
+#     non-zero and silently skip staging conventions.md alongside it.
+#   - Change detection covers both modified ("M ") and untracked ("??") states
+#     so tag-index.md (which may be newly created) is handled correctly.
+#   - When the main worktree HEAD is not on the default branch (main/master),
+#     we skip silently with one info line. Committing catalogs onto an arbitrary
+#     feature checkout would corrupt the user's working tree.
+#   - Push uses an explicit `git push origin main` refspec (not a bare `git
+#     push`) to satisfy the GIT_PUSH_NO_REFSPEC lint rule and be unambiguous.
+#   - Push failure is non-fatal but the commit is rolled back (`reset --soft
+#     HEAD~1`) so local main stays fast-forwardable. A bare "local only"
+#     approach would leave local main with a commit that can never be pushed,
+#     breaking the post-merge `git pull --ff-only` in merge-pr.sh.
+#   - Any git failure (commit fails, repo not found) returns 0 so downstream
+#     assessments still run.
+commit_catalog_files() {
+  local pr_number="$1"
+
+  # Guard: only commit when the main worktree is on the default branch.
+  # Committing onto a user's feature branch or a detached HEAD would be wrong.
+  local _main_branch
+  _main_branch=$(git -C "$RITE_PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  case "${_main_branch}" in
+    main|master)
+      # On the default branch — safe to commit catalogs.
+      ;;
+    ""|HEAD)
+      # Detached HEAD or unknown — skip.
+      print_info "  catalog commit: detached HEAD or unresolvable branch in main worktree — skipping"
+      return 0
+      ;;
+    *)
+      # Some other branch (user's feature checkout).  Skip rather than pollute.
+      print_info "  catalog commit: main worktree is on '${_main_branch}' (not main/master) — skipping"
+      return 0
+      ;;
+  esac
+
+  # Check whether either catalog file has uncommitted changes (modified or untracked).
+  # `git status --porcelain -- <paths>` outputs one line per changed path; empty = clean.
+  # `|| true` prevents the pipeline from killing the script under set -e when no
+  # paths are listed (git exits 0 anyway, but the || true is defensive).
+  local _status
+  _status=$(git -C "$RITE_PROJECT_ROOT" status --porcelain \
+    -- "docs/architecture/conventions.md" "docs/architecture/tag-index.md" 2>/dev/null || true)
+
+  if [ -z "$_status" ]; then
+    # No changes to either catalog file — nothing to commit.
+    return 0
+  fi
+
+  # Stage exactly the two catalog paths (no broad git add -A / git add .).
+  # Add each file individually so a missing tag-index.md (first PR with tags)
+  # does not cause git add to exit non-zero and skip staging conventions.md.
+  git -C "$RITE_PROJECT_ROOT" add "docs/architecture/conventions.md" 2>/dev/null || true
+  git -C "$RITE_PROJECT_ROOT" add "docs/architecture/tag-index.md" 2>/dev/null || true
+
+  # Commit best-effort.  `git commit` exits non-zero if there is nothing to commit
+  # (e.g. the add above was a no-op because the file was already staged); that is
+  # not an error — just return 0 without a push attempt.
+  if git -C "$RITE_PROJECT_ROOT" commit \
+    -m "docs: update catalog files for PR #${pr_number}
+
+Auto-committed by assess-documentation (conventions + tag-index catalog update).
+
+Related: #${pr_number}" 2>/dev/null; then
+    # Commit succeeded — push best-effort with an explicit refspec so the lint
+    # rule (GIT_PUSH_NO_REFSPEC) is satisfied and the push target is unambiguous.
+    # If push fails (e.g. non-fast-forward because origin/main advanced while we
+    # were working), undo the commit so local main stays fast-forwardable.
+    # Leaving a committed-but-not-pushable HEAD would break the workflow's own
+    # post-merge "git pull --ff-only" in merge-pr.sh.
+    if git -C "$RITE_PROJECT_ROOT" push origin main 2>/dev/null; then
+      print_info "  catalog commit: committed and pushed catalog updates for PR #${pr_number}"
+    else
+      # Push failed — roll back the commit so local main is not left diverged.
+      git -C "$RITE_PROJECT_ROOT" reset --soft HEAD~1 2>/dev/null || true
+      print_info "  catalog commit: push failed for PR #${pr_number} — catalog changes left as uncommitted local state"
+    fi
+  fi
+
+  return 0
+}
+
 # --- Run internal doc assessments ---
 
 # Conventions marker extraction is instant (no Claude call) — run inline
@@ -1336,6 +1436,9 @@ update_conventions_from_marker "$PR_NUMBER" "$PR_BODY"
 # lines.  The || true backstop (#764) ensures a non-zero return never aborts the
 # doc-assessment pass under set -euo pipefail.
 reconcile_tag_index "$PR_BODY" "$PR_NUMBER" || true
+# Commit any catalog changes the two writers above produced.  Best-effort:
+# never aborts the assessment on failure.
+commit_catalog_files "$PR_NUMBER" || true
 
 # Changelog is instant (no Claude call) — run inline
 assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"
