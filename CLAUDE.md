@@ -42,6 +42,7 @@ lib/utils/config.sh               # Config loading, path setup, provider variabl
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/doc-consent.sh          # Doc-mode consent helpers (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog)
 lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → .rite/state/docs-map.tsv)
+lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — changelog mode)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)

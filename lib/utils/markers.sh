@@ -129,6 +129,30 @@ RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
 RITE_MARKER_GATE_SERIAL="sharkrite-gate-serial"
 
 # ---------------------------------------------------------------------------
+# Doc drift log marker (changelog mode — issue #1035)
+# ---------------------------------------------------------------------------
+
+# Doc drift log entry marker — appended to docs/sharkrite-drift-log.md in
+# changelog mode (RITE_DOC_MODE=changelog) once per merge. Each block records
+# the changed source files, implicated doc files (resolved via the docs map),
+# and a one-line suspected inaccuracy so non-consenting repos accumulate an
+# auditable burn-down list without sharkrite editing their prose.
+#
+# Format in drift log:
+#   <!-- sharkrite-doc-drift pr:N issue:N recorded:ISO8601 -->
+#   **Changed files**: lib/core/foo.sh, lib/utils/bar.sh
+#   **Implicated docs**:
+#   - docs/architecture/behavioral-design.md — "Gate Block-on-Any"
+#   **Suspected inaccuracy**: <one line>
+#   <!-- /sharkrite-doc-drift -->
+#
+# NOTE: "doc-drift", NOT "drift" — avoids collision with the tag-index drift
+# reconciliation path (reconcile_tag_index in assess-documentation.sh).
+# Any grep guard against this marker MUST carry pr:[0-9] format anchor
+# (BARE_MARKER_GREP rule). See lib/utils/drift-log.sh for the format library.
+RITE_MARKER_DOC_DRIFT="sharkrite-doc-drift"
+
+# ---------------------------------------------------------------------------
 # Planning markers
 # ---------------------------------------------------------------------------
 

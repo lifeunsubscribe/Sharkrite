@@ -109,6 +109,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/docs-map.sh"
 }
 
+@test "lib/utils/drift-log.sh sources twice without error" {
+  _assert_double_source "lib/utils/drift-log.sh"
+}
+
 @test "lib/utils/format-review.sh sources twice without error" {
   _assert_double_source "lib/utils/format-review.sh"
 }
