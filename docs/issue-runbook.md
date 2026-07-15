@@ -85,7 +85,32 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
       following lines). The inline form is the authoring standard — the guard
       reads the legacy form for backward compatibility with pre-#964 issues.
 
-11. **Bug Class Analysis** *(required for bug-fix issues; omit for feature/infra issues)*
+11. **Documentation Impact** *(required for every issue)*
+
+    State what documentation the change touches — or name exactly what was checked to conclude none does. Most doc impact is a read-only accuracy check (does a list, number, or table still include the right entries?) — not prose writing. Name the artifact checked.
+
+    **Default — read-only accuracy check:**
+    ```
+    Verified `CLAUDE.md` → custom lint rule list still accurate — this change adds no new rule; no update needed.
+    Verified `docs/architecture/exit-codes.md` — no exit codes added or changed; no update needed.
+    ```
+
+    **Asserted additions — required for feature/refactor issues that add user-facing surface** (new config var, new CLI flag, new exit code, new section, new command):
+    ```
+    Adds config var `RITE_FOO` → document in `config/project.conf.example`
+      (verify: `grep -n RITE_FOO config/project.conf.example`).
+    Adds new exit code 14 → document in `docs/architecture/exit-codes.md`
+      (verify: `grep -n 'exit.*14\|14.*exit' docs/architecture/exit-codes.md`).
+    ```
+
+    **Anti-examples** (never use these):
+    - "Docs updated as needed" — unbounded; names nothing
+    - "N/A" — bare; must name what was checked to conclude no impact
+    - "Will document in a follow-up" — deferral without a named issue number
+
+    **Why this section exists:** Doc drift is invisible at authoring time. Most impact is a cheap list/number/table inclusion check that nobody is prompted to perform; this section makes that check a first-class part of every issue.
+
+12. **Bug Class Analysis** *(required for bug-fix issues; omit for feature/infra issues)*
 
     Before writing the fix, enumerate:
 
@@ -168,6 +193,8 @@ Files to Modify:
 - DO NOT: create application data models (separate issue)
 
 **Dependencies**: None
+
+**Documentation Impact**: Verified `docs/architecture/exit-codes.md` — no new exit codes added; verified `.env.example` comment block — connection string entry already present; no update needed.
 ```
 
 ### Backend / API Issues
@@ -213,6 +240,8 @@ curl -X POST http://localhost:3000/auth/login \
 - DO NOT: registration, password reset, OAuth (separate issues)
 
 **Dependencies**: After #N (database schema), After #M (auth middleware)
+
+**Documentation Impact**: Adds POST /auth/login endpoint → document in `docs/api-reference.md` (auth section) (verify: `grep -n 'auth/login' docs/api-reference.md`). Verified `docs/architecture/exit-codes.md` — no new exit codes; no update needed.
 ```
 
 ### Database / Data Model Issues
@@ -243,6 +272,8 @@ Files to Modify:
 **Done Definition**: Done when migration applies cleanly and models appear in the database.
 
 **Dependencies**: After #N (database setup)
+
+**Documentation Impact**: Verified `docs/data-model.md` — schema requirements doc already reflects the planned User/Tenant shape; no update needed after implementation (doc preceded the migration by design).
 ```
 
 ### Testing Issues
@@ -271,6 +302,8 @@ Files to Modify:
 **Done Definition**: Done when the full auth flow test passes end-to-end.
 
 **Dependencies**: After #N (login), After #M (register), After #K (profile)
+
+**Documentation Impact**: Verified `docs/architecture/behavioral-design.md` → testing section — no new test strategy introduced; verified `README` test-running instructions — still accurate; no update needed.
 ```
 
 ### Documentation Issues
@@ -299,6 +332,8 @@ Files to Modify:
 **Done Definition**: Done when a developer can read the docs and successfully authenticate without looking at source code.
 
 **Dependencies**: After #N (integration tests — confirms the API is stable)
+
+**Documentation Impact**: Asserted addition — this issue IS the doc change: `docs/api-reference.md` auth section (verify: `grep -n 'auth/login\|auth/register' docs/api-reference.md`). No other docs affected.
 ```
 
 ---

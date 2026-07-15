@@ -50,6 +50,13 @@ One sentence. The human reads this and knows whether to stop iterating.
 
 **Dependencies**: After: #N / Blocked by: #N / None
 
+## Documentation Impact
+*(Required for every issue. Name the artifact checked, or name the file/section/verify-grep for asserted additions.)*
+
+- Read-only check example: "Verified `CLAUDE.md` → custom lint rule list still accurate — this change adds no new rule; no update needed."
+- Asserted addition example: "Adds config var `RITE_FOO` → document in `config/project.conf.example` (verify: `grep -n RITE_FOO config/project.conf.example`)."
+- Anti-examples (never use): "Docs updated as needed" / "N/A" / "Will document in a follow-up"
+
 ## Bug Class Analysis
 *(Required for bug-fix issues. Omit for feature/infra/docs issues.)*
 
