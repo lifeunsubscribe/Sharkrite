@@ -307,3 +307,43 @@ WORKER_EOF
     }
   done
 }
+
+# ---------------------------------------------------------------------------
+# Regression guard (approval-lock atomic migration): the approval lock must use
+# the shared lock.sh ln+token primitive, NOT the old hand-rolled mkdir+sleep-1
+# mutex. That mutex's create→PID-write window let a CPU-starved holder's live
+# lock be reclaimed by a waiter after a 1s grace, breaking mutual exclusion and
+# hanging concurrent add_approved_blocker under gate --jobs 8 load past the 120s
+# bats timeout (blocked #1007 and #1008, 2026-07). This is the same #706
+# migration the SESSION lock already has.
+# ---------------------------------------------------------------------------
+@test "source: _acquire_approval_lock delegates to lock_acquire (atomic primitive)" {
+  _tracker="${BATS_TEST_DIRNAME}/../../lib/utils/session-tracker.sh"
+  # Extract the function body and assert it calls lock_acquire.
+  _body=$(awk '/^_acquire_approval_lock\(\)/{f=1} f{print} f&&/^}$/{exit}' "$_tracker")
+  echo "$_body" | grep -q 'lock_acquire ' || {
+    echo "FAIL: _acquire_approval_lock does not delegate to lock_acquire" >&2
+    echo "      It must use the shared lock.sh primitive, not a hand-rolled lock." >&2
+    return 1
+  }
+}
+
+@test "source: _acquire_approval_lock has NO hand-rolled mkdir-spin mutex" {
+  _tracker="${BATS_TEST_DIRNAME}/../../lib/utils/session-tracker.sh"
+  _body=$(awk '/^_acquire_approval_lock\(\)/{f=1} f{print} f&&/^}$/{exit}' "$_tracker")
+  # The vulnerable pattern was `while ! mkdir "$lockdir"` + a separate pid write.
+  ! echo "$_body" | grep -qE 'while ! mkdir|mktemp .*lockdir|pid\.XXXXXX' || {
+    echo "FAIL: hand-rolled mkdir-spin mutex reintroduced in _acquire_approval_lock" >&2
+    echo "      The create→PID-write window hangs concurrent workers under load." >&2
+    return 1
+  }
+}
+
+@test "source: _release_approval_lock delegates to lock_release" {
+  _tracker="${BATS_TEST_DIRNAME}/../../lib/utils/session-tracker.sh"
+  _body=$(awk '/^_release_approval_lock\(\)/{f=1} f{print} f&&/^}$/{exit}' "$_tracker")
+  echo "$_body" | grep -q 'lock_release ' || {
+    echo "FAIL: _release_approval_lock does not delegate to lock_release" >&2
+    return 1
+  }
+}
