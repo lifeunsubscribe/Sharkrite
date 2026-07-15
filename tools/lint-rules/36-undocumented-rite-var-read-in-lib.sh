@@ -82,25 +82,39 @@ for _r36_file in "${_r36_lib_files[@]}"; do
       continue
     fi
 
-    # Extract the variable name from the match.
+    # Extract all variable names from the line — a single line can reference
+    # multiple RITE_* vars (e.g. string interpolation, export lists, comparisons).
+    # head -1 would silently ignore every match after the first; iterate instead.
     # Pattern matches $RITE_VAR or ${RITE_VAR... (with optional braces).
     # _RITE_ prefix is excluded by the regex anchor (RITE_ not preceded by _).
-    _r36_var_name=$(echo "$_r36_line_content" | grep -oE '\$\{?RITE_[A-Z0-9_]+' | head -1 | sed 's/\$[{]*//' || true)
-    [ -n "$_r36_var_name" ] || continue
 
-    # Check if var is in the allowlist (documented set ∪ ledger).
-    if printf '%s\n' "$_r36_allowed_set" | grep -qxF "$_r36_var_name"; then
-      continue
-    fi
-
-    # Check for suppression comment on preceding line.
+    # Fetch suppression state once per line (shared by all vars on this line).
     _r36_prev_num=$((_r36_line_num - 1))
     _r36_prev_line=$(sed -n "${_r36_prev_num}p" "$_r36_file" 2>/dev/null || true)
+    _r36_suppressed=false
     if echo "$_r36_prev_line" | grep -qE '#.*sharkrite-lint.*disable.*UNDOCUMENTED_RITE_VAR'; then
-      continue
+      _r36_suppressed=true
     fi
 
-    print_violation "$_r36_file" "$_r36_line_num" "UNDOCUMENTED_RITE_VAR" \
-      "\$${_r36_var_name} is not documented in config/project.conf.example or config/rite.conf.example — add a commented-out option entry to one of the config examples, add to the ledger (pre-existing only), or suppress inline with a Reason if this is a genuinely internal var (consider using _RITE_ prefix instead)"
+    # Collect all distinct RITE_* var names from this line.
+    _r36_vars_on_line=$(echo "$_r36_line_content" | grep -oE '\$\{?RITE_[A-Z0-9_]+' | sed 's/\$[{]*//' | sort -u || true)
+    [ -n "$_r36_vars_on_line" ] || continue
+
+    while IFS= read -r _r36_var_name; do
+      [ -n "$_r36_var_name" ] || continue
+
+      # Check if var is in the allowlist (documented set ∪ ledger).
+      if printf '%s\n' "$_r36_allowed_set" | grep -qxF "$_r36_var_name"; then
+        continue
+      fi
+
+      # Check for suppression comment on preceding line.
+      if [ "$_r36_suppressed" = "true" ]; then
+        continue
+      fi
+
+      print_violation "$_r36_file" "$_r36_line_num" "UNDOCUMENTED_RITE_VAR" \
+        "\$${_r36_var_name} is not documented in config/project.conf.example or config/rite.conf.example — add a commented-out option entry to one of the config examples, add to the ledger (pre-existing only), or suppress inline with a Reason if this is a genuinely internal var (consider using _RITE_ prefix instead)"
+    done <<< "$_r36_vars_on_line"
   done < <(grep -nE '\$\{?RITE_[A-Z0-9_]+' "$_r36_file" 2>/dev/null || true)
 done
