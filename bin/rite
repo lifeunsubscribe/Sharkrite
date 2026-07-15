@@ -909,6 +909,54 @@ if [ "$MODE" = "init" ]; then
     print_info ".rite/doc-sync.md.example already exists, skipping"
   fi
 
+  # ─────────────────────────────────────────────────────────────────
+  # Doc-mode consent (Layer 2 activation)
+  # ─────────────────────────────────────────────────────────────────
+  _config_file_for_doc_mode="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
+  _doc_sync_active="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md"
+  _doc_sync_example="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md.example"
+
+  # Source doc-consent helpers (provides record_doc_mode)
+  source "$RITE_LIB_DIR/utils/doc-consent.sh"
+  # Also ensure docs-map builder is available for both branches below
+  source "$RITE_LIB_DIR/utils/docs-map.sh"
+
+  # Determine consent state and act accordingly
+  _doc_mode_already_recorded=false
+  if grep -qE '^RITE_DOC_MODE=' "$_config_file_for_doc_mode" 2>/dev/null; then
+    _doc_mode_already_recorded=true
+  fi
+
+  if [ "$_doc_mode_already_recorded" = "true" ]; then
+    # Already recorded — load and announce
+    _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
+    print_info "Doc mode already configured: ${_recorded_mode:-sync}"
+  elif [ -f "$_doc_sync_active" ]; then
+    # .rite/doc-sync.md already exists (manual opt-in) — manual opt-in IS consent
+    record_doc_mode "sync"
+    print_success "Doc mode: sync (detected existing .rite/doc-sync.md — manual opt-in recorded)"
+    # Build docs map (sync branch)
+    docs_map_build
+  else
+    # Ask the consent question
+    echo ""
+    read -p "  May sharkrite update files in docs/ when code changes make them inaccurate? [Y/n] " -n 1 -r
+    echo
+    if [[ ! ${REPLY:-Y} =~ ^[Nn]$ ]]; then
+      # Yes: scaffold .rite/doc-sync.md from template + record sync
+      cp "$_doc_sync_example" "$_doc_sync_active"
+      print_success "Created .rite/doc-sync.md (Layer 2 doc sync enabled)"
+      record_doc_mode "sync"
+      print_success "Doc mode: sync (docs/ will be kept accurate after merges)"
+    else
+      # No: record changelog only
+      record_doc_mode "changelog"
+      print_info "Doc mode: changelog (drift notes only; re-run rite --init to change)"
+    fi
+    # Build docs map (both branches)
+    docs_map_build
+  fi
+
   # Create backward-compat symlink if .claude/ exists
   if [ -d "$RITE_PROJECT_ROOT/.claude" ] && [ ! -e "$RITE_PROJECT_ROOT/.claude/scratch.md" ]; then
     ln -sf "../$RITE_DATA_DIR/scratch.md" "$RITE_PROJECT_ROOT/.claude/scratch.md"

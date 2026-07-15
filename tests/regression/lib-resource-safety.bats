@@ -101,6 +101,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/divergence-handler.sh"
 }
 
+@test "lib/utils/doc-consent.sh sources twice without error" {
+  _assert_double_source "lib/utils/doc-consent.sh"
+}
+
 @test "lib/utils/docs-map.sh sources twice without error" {
   _assert_double_source "lib/utils/docs-map.sh"
 }
