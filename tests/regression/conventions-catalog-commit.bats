@@ -11,14 +11,16 @@
 #   3. Stages and commits exactly docs/architecture/conventions.md and
 #      docs/architecture/tag-index.md when they have changes.
 #   4. Handles an untracked tag-index.md (created for the first time).
-#   5. Treats push failure as non-fatal: prints a "local only" warning and
-#      returns 0 without aborting the caller.
+#   5. Treats push failure as non-fatal: rolls back the commit so local main
+#      stays fast-forwardable, prints a push-failed warning, returns 0.
 #
 # Tests:
 #   (a) appended conventions entry → commit created, contains only catalog paths
 #   (b) untracked tag-index.md    → added and committed
 #   (c) no catalog changes        → no commit created
-#   (d) push failure              → non-fatal, warning line, exit 0
+#   (d) push failure              → non-fatal, commit rolled back, exit 0
+#      (d1) no remote configured   → push fails, commit rolled back
+#      (d2) remote advanced (non-ff) → push rejected, commit rolled back, local main stays ff-able
 #   (e) non-default branch        → skip with info line, no commit
 
 load '../helpers/setup.bash'
@@ -74,6 +76,13 @@ EOF
   # The name varies between git versions (master vs main); force it to main.
   git -C "$RITE_TEST_TMPDIR" checkout -q -b main 2>/dev/null || \
     git -C "$RITE_TEST_TMPDIR" branch -m main 2>/dev/null || true
+
+  # Set up a bare clone as "origin" so commit_catalog_files() can push
+  # successfully in tests that verify a commit is retained after push.
+  # Tests that need push to fail can remove the remote first.
+  local _bare_dir="${BATS_TEST_TMPDIR}/origin-bare.git"
+  git clone --bare -q "$RITE_TEST_TMPDIR" "$_bare_dir"
+  git -C "$RITE_TEST_TMPDIR" remote add origin "$_bare_dir"
 
   # Stubs for print_info / print_warning so they do not produce ANSI noise.
   print_info()    { echo "INFO: $*" ; }
@@ -219,28 +228,91 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test (d): push failure → non-fatal, warning line, exit 0
+# Test (d): push failure → non-fatal, commit rolled back, local main stays
+#           fast-forwardable.  Two cases:
+#   (d1) no remote configured at all
+#   (d2) remote has advanced out-of-band (non-fast-forward rejection)
 # ---------------------------------------------------------------------------
 
-@test "(d) push failure: non-fatal, prints local-only line, returns 0" {
+@test "(d) push failure: non-fatal, commit rolled back, local main stays fast-forwardable, returns 0" {
   local conventions_file="${RITE_TEST_TMPDIR}/docs/architecture/conventions.md"
+
+  # --- Case (d1): no remote --- #
+  # Remove the origin set up in setup() so push fails with "no remote".
+  git -C "$RITE_TEST_TMPDIR" remote remove origin 2>/dev/null || true
 
   # Append a change so commit_catalog_files has something to commit.
   echo "" >> "$conventions_file"
-  echo "## push-fail-test" >> "$conventions_file"
+  echo "## push-fail-d1" >> "$conventions_file"
 
-  # The test git repo has no remote configured, so push will fail naturally.
-  # This exercises the push-failure path in commit_catalog_files without any
-  # git stubbing.  Confirm no remote exists.
-  run git -C "$RITE_TEST_TMPDIR" remote
-  [ -z "$output" ]
+  local count_before_d1
+  count_before_d1=$(commit_count)
 
   # Must return 0 even though push fails.
   run commit_catalog_files "101"
   [ "$status" -eq 0 ]
 
-  # Output must mention "local only" (the non-fatal push-failure path).
-  echo "$output" | grep -qi "local only"
+  # Output must mention push failure (new message does not say "local only").
+  echo "$output" | grep -qi "push failed"
+
+  # Commit must have been rolled back so local main is not left diverged.
+  local count_after_d1
+  count_after_d1=$(commit_count)
+  [ "$count_after_d1" -eq "$count_before_d1" ]
+
+  # The catalog change must still be present as uncommitted working-tree state
+  # (reset --soft restores the staged index; conventions.md is modified again).
+  run git -C "$RITE_TEST_TMPDIR" status --porcelain -- "docs/architecture/conventions.md"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+
+  # --- Case (d2): remote has advanced (non-fast-forward rejection) --- #
+  # Re-add origin so we can simulate a remote that is ahead of local main.
+  local _bare_dir="${BATS_TEST_TMPDIR}/origin-bare-d2.git"
+  git clone --bare -q "$RITE_TEST_TMPDIR" "$_bare_dir"
+  git -C "$RITE_TEST_TMPDIR" remote add origin "$_bare_dir"
+
+  # Advance origin/main out-of-band by directly pushing a commit to the bare
+  # repo, making local main non-fast-forwardable.
+  local _extra_dir="${BATS_TEST_TMPDIR}/extra-clone"
+  git clone -q "$_bare_dir" "$_extra_dir" 2>/dev/null
+  git -C "$_extra_dir" config user.email "other@example.com"
+  git -C "$_extra_dir" config user.name "Other"
+  echo "# remote-only change" >> "$_extra_dir/docs/architecture/conventions.md"
+  git -C "$_extra_dir" add "docs/architecture/conventions.md"
+  git -C "$_extra_dir" commit -q -m "remote-only commit"
+  git -C "$_extra_dir" push -q origin main 2>/dev/null
+
+  # Now local main is behind origin/main — push would be non-fast-forward.
+  # Verify origin is ahead.
+  git -C "$RITE_TEST_TMPDIR" fetch -q origin main 2>/dev/null
+  run git -C "$RITE_TEST_TMPDIR" merge-base --is-ancestor FETCH_HEAD HEAD
+  # FETCH_HEAD (origin/main) is NOT an ancestor of HEAD (local main) → exit 1
+  [ "$status" -eq 1 ]
+
+  # Append a catalog change so commit_catalog_files has something to commit.
+  echo "## push-fail-d2" >> "$conventions_file"
+
+  local count_before_d2
+  count_before_d2=$(commit_count)
+
+  run commit_catalog_files "102"
+  [ "$status" -eq 0 ]
+
+  # Output must mention push failure.
+  echo "$output" | grep -qi "push failed"
+
+  # Most importantly: local main must NOT be left with a non-ff commit.
+  # After the rollback, local main must still be fast-forwardable to origin/main
+  # (i.e. local HEAD is an ancestor of FETCH_HEAD, or equal to it).
+  git -C "$RITE_TEST_TMPDIR" fetch -q origin main 2>/dev/null
+  run git -C "$RITE_TEST_TMPDIR" merge-base --is-ancestor HEAD FETCH_HEAD
+  # HEAD (local) IS an ancestor of FETCH_HEAD (origin) → exit 0
+  [ "$status" -eq 0 ]
+
+  local count_after_d2
+  count_after_d2=$(commit_count)
+  [ "$count_after_d2" -eq "$count_before_d2" ]
 }
 
 # ---------------------------------------------------------------------------
