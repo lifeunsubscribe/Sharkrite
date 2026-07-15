@@ -60,6 +60,11 @@
 # Default workflow mode: supervised or unsupervised
 # WORKFLOW_MODE="supervised"
 
+# Target integration branch for PR base and merge operations (default: main).
+# Override when the project uses a non-main integration branch (e.g. "develop").
+# Consumed by the integration-branch workflow (cluster A issues #1033+).
+# RITE_TARGET_BRANCH="main"
+
 # Maximum work-commits on a branch before rebase conflicts attempt LLM resolution
 # instead of close-and-restart (default: 3).
 # In auto mode, when a stale-branch rebase hits conflicts, branches with

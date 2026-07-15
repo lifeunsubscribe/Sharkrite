@@ -161,6 +161,7 @@ RITE_MAX_ISSUE_HOURS="${RITE_MAX_ISSUE_HOURS:-4}"
 RITE_MAX_RETRIES="${RITE_MAX_RETRIES:-3}"
 RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-300}"
 RITE_STALE_BRANCH_THRESHOLD="${RITE_STALE_BRANCH_THRESHOLD:-10}"
+RITE_TARGET_BRANCH="${RITE_TARGET_BRANCH:-main}"
 # Hard ceiling on how long the orchestrator waits for the backgrounded post-commit
 # gate before killing its process tree and proceeding (issue #654). The gate
 # normally finishes in seconds-to-minutes; 30min is a generous ceiling that still
@@ -392,6 +393,7 @@ export RITE_MAX_ISSUE_HOURS
 export RITE_MAX_RETRIES
 export RITE_ASSESSMENT_TIMEOUT
 export RITE_STALE_BRANCH_THRESHOLD
+export RITE_TARGET_BRANCH
 export RITE_GATE_WAIT_TIMEOUT
 export WORKFLOW_MODE
 export RITE_NOTIFICATIONS

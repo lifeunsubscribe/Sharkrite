@@ -165,6 +165,19 @@ while [[ $# -gt 0 ]]; do
       PR_INPUT="$2"
       shift 2
       ;;
+    --branch)
+      # Set target integration branch (default: main); consumed by follow-on issues
+      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        print_error "--branch requires a branch name"
+        exit 1
+      fi
+      if [[ "$2" == *[[:space:]]* ]]; then
+        print_error "--branch value must not contain whitespace"
+        exit 1
+      fi
+      export RITE_TARGET_BRANCH="$2"
+      shift 2
+      ;;
     --dry-run)
       # Already parsed above
       shift
@@ -234,6 +247,7 @@ while [[ $# -gt 0 ]]; do
       echo "Workflow flags:"
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
+      echo "  --branch <name>            Target integration branch (default: main; inert until #1033)"
       echo "  --no-log                   Disable logging (logs are on by default)"
       echo "  --verbose                  Show extra detail (branch cleanup explanations, etc.)"
       echo "  --log=FILE                 Log to a specific file instead of auto-generated path"
