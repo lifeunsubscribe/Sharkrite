@@ -31,6 +31,8 @@ load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 # top-level executable body. See lib/utils/adr-generator.sh.
 source "$RITE_LIB_DIR/utils/adr-generator.sh"
 source "$RITE_LIB_DIR/utils/tag-index.sh"
+source "$RITE_LIB_DIR/utils/docs-map.sh"
+source "$RITE_LIB_DIR/utils/drift-log.sh"
 
 # Timeout per provider call in doc assessment (seconds)
 DOC_CLAUDE_TIMEOUT="${RITE_DOC_CLAUDE_TIMEOUT:-120}"
@@ -1747,9 +1749,226 @@ fi
 # LAYER 2: USER PROJECT DOCS (only if doc-sync.md exists)
 # =====================================================================
 
+# ---------------------------------------------------------------------------
+# _append_doc_drift_entry PR_NUMBER PR_BODY CHANGED_FILES
+#
+# Changelog-mode helper: append one drift log entry for this PR and commit
+# + push the log only. Called when RITE_DOC_MODE=changelog AND doc-sync.md
+# is absent (the user has opted in to changelog mode but not sync mode).
+#
+# Graceful-degradation contract: same as reconcile_tag_index (lines 1009-1012)
+# — every error path prints a warning and returns 0 so the doc-assessment pass
+# is never aborted.
+#
+# Arguments:
+#   $1  PR number
+#   $2  PR body text (already-fetched PR_BODY — no extra gh call)
+#   $3  Newline-separated changed files (non-docs), may be empty
+# ---------------------------------------------------------------------------
+_append_doc_drift_entry() {
+  local pr_number="$1"
+  local pr_body="$2"
+  local changed_files_no_docs="$3"
+
+  # ------------------------------------------------------------------
+  # Skip: docs-only PR (CHANGED_FILES_NO_DOCS is empty) — no entry,
+  # no noise. One verbose line so diagnostics are traceable.
+  # ------------------------------------------------------------------
+  if [ -z "$changed_files_no_docs" ]; then
+    verbose_info "  drift-log: PR #${pr_number} is docs-only — skipping drift entry"
+    return 0
+  fi
+
+  # ------------------------------------------------------------------
+  # Extract issue number from PR body via the same sed as merge-pr.sh:1062.
+  # No extra gh call — PR_BODY is already fetched.
+  # ------------------------------------------------------------------
+  local issue_number
+  issue_number="$(echo "$pr_body" | sed -n 's/.*Closes #\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+  issue_number="${issue_number:--}"   # fall back to "-" when absent
+
+  # ------------------------------------------------------------------
+  # Implicated docs: source the docs map, grep each mapped doc for
+  # mentions of the changed source paths or their basenames, and collect
+  # up to 10 matches with their nearest heading (section attribution).
+  # ------------------------------------------------------------------
+  # Ensure docs map exists (build silently if missing; errors are non-fatal).
+  docs_map_ensure || true
+
+  local map_file
+  map_file="$(docs_map_path)" || true
+
+  local implicated_docs=""
+  local _impl_count=0
+  local _cf_line
+
+  if [ -f "$map_file" ]; then
+    # Collect doc file paths from the map (column 1, skip the comment header).
+    # Use a while-read loop for bash 3.2 compat (no mapfile).
+    local -a _doc_files=()
+    while IFS= read -r _map_row; do
+      # Skip comment header lines (start with #)
+      case "$_map_row" in '#'*) continue ;; esac
+      # Extract field 1 (tab-separated)
+      local _doc_rel_path
+      _doc_rel_path="$(echo "$_map_row" | cut -f1 || true)"
+      [ -z "$_doc_rel_path" ] && continue
+      # De-duplicate: only add when not already in _doc_files.
+      local _already=false
+      local _existing_df
+      for _existing_df in "${_doc_files[@]+"${_doc_files[@]}"}"; do
+        [ "$_existing_df" = "$_doc_rel_path" ] && { _already=true; break; }
+      done
+      [ "$_already" = false ] && _doc_files+=("$_doc_rel_path")
+    done < "$map_file"
+
+    # For each mapped doc, grep for mentions of each changed file or its
+    # basename. Record file + nearest heading (section attribution from map).
+    local _doc_rel
+    for _doc_rel in "${_doc_files[@]+"${_doc_files[@]}"}"; do
+      [ "$_impl_count" -ge 10 ] && break   # cap at 10
+
+      local _doc_abs="${RITE_PROJECT_ROOT}/${_doc_rel}"
+      [ -f "$_doc_abs" ] || continue
+
+      # Check if any changed file (path or basename) appears in this doc.
+      local _matched=false
+      local _matched_term=""
+      while IFS= read -r _cf_line || [ -n "$_cf_line" ]; do
+        [ -z "$_cf_line" ] && continue
+        # Check both the full relative path and the basename.
+        local _cf_base
+        _cf_base="$(basename "$_cf_line")"
+        if grep -qF "$_cf_line" "$_doc_abs" 2>/dev/null || \
+           grep -qF "$_cf_base" "$_doc_abs" 2>/dev/null; then
+          _matched=true
+          _matched_term="$_cf_base"
+          break
+        fi
+      done <<EOF_CFCHECK
+$changed_files_no_docs
+EOF_CFCHECK
+
+      [ "$_matched" = false ] && continue
+
+      # Best-effort section attribution: look up the first heading for this
+      # doc in the TSV map (column 5 = heading_text). awk -F'\t' for portable
+      # tab-separated parsing (BSD + GNU awk both support -F'\t').
+      local _section=""
+      _section="$(awk -F'\t' -v doc="$_doc_rel" '$1 == doc && $5 != "" { print $5; exit }' \
+        "$map_file" 2>/dev/null || true)"
+      # If map lookup returned empty, fall back to the first heading in the file.
+      if [ -z "$_section" ]; then
+        _section="$(grep -m1 '^#' "$_doc_abs" 2>/dev/null | sed 's/^#\{1,6\}[[:space:]]*//' || true)"
+      fi
+
+      if [ -n "$_section" ]; then
+        implicated_docs="${implicated_docs}- ${_doc_rel} — \"${_section}\""$'\n'
+      else
+        implicated_docs="${implicated_docs}- ${_doc_rel}"$'\n'
+      fi
+      _impl_count=$((_impl_count + 1))
+    done
+  fi
+
+  # Strip trailing newline from implicated_docs.
+  implicated_docs="${implicated_docs%$'\n'}"
+
+  # Skip: zero implicated docs — no entry, no noise.
+  if [ -z "$implicated_docs" ]; then
+    verbose_info "  drift-log: PR #${pr_number} — no implicated docs found; skipping drift entry"
+    return 0
+  fi
+
+  # ------------------------------------------------------------------
+  # One-liner suspected inaccuracy via doc_assessment model.
+  # On provider failure/empty, degrade to deterministic fallback text.
+  # Mirrors the model-call pattern at assess-documentation.sh line 1932.
+  # Rule 31: never pass "" as model. Rule 32: use provider_resolve_model.
+  # ------------------------------------------------------------------
+  local _drift_prompt_file
+  _drift_prompt_file="$(mktemp 2>/dev/null)" || {
+    print_warning "drift-log: mktemp failed for prompt — using fallback inaccuracy line"
+    _drift_prompt_file=""
+  }
+
+  local suspected_inaccuracy=""
+  if [ -n "$_drift_prompt_file" ]; then
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: context vars must expand
+    cat > "$_drift_prompt_file" <<DRIFT_PROMPT_EOF
+You are reviewing a merged pull request to identify the single most likely documentation
+inaccuracy it may have introduced.
+
+PR #${pr_number} changed these source files:
+${changed_files_no_docs}
+
+The following documentation files were found to mention these files:
+${implicated_docs}
+
+In one sentence (≤120 chars), describe the most likely documentation inaccuracy
+introduced by this change. Focus on concrete details: changed defaults, removed
+features, new commands, renamed symbols, or altered behaviour. Do NOT start with
+"The documentation" — start with the specific claim that may now be outdated.
+
+Output ONLY the one-sentence inaccuracy description. Nothing else.
+DRIFT_PROMPT_EOF
+
+    suspected_inaccuracy="$(provider_run_prompt_with_timeout "$(cat "$_drift_prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null)" || true
+    rm -f "$_drift_prompt_file"
+  fi
+
+  # Degrade on empty/failed provider response.
+  if [ -z "$suspected_inaccuracy" ]; then
+    suspected_inaccuracy="not assessed — provider unavailable; verify implicated sections manually"
+  fi
+
+  # ------------------------------------------------------------------
+  # Append drift entry (via drift-log.sh library — never aborts).
+  # ------------------------------------------------------------------
+  drift_log_append "$pr_number" "$issue_number" \
+    "$changed_files_no_docs" "$implicated_docs" "$suspected_inaccuracy" || {
+    print_warning "drift-log: append failed for PR #${pr_number} — skipping commit"
+    return 0
+  }
+
+  print_info "  drift-log: recorded drift entry for PR #${pr_number} → docs/sharkrite-drift-log.md"
+
+  # ------------------------------------------------------------------
+  # Commit + push the drift log only. Mirrors the Layer 2 commit block
+  # at assess-documentation.sh lines 1965-1985.
+  # ------------------------------------------------------------------
+  local _log_path
+  _log_path="$(drift_log_path)" || { print_warning "drift-log: could not resolve path for commit"; return 0; }
+
+  git add "$_log_path" 2>/dev/null || { print_warning "drift-log: git add failed — entry written but not committed"; return 0; }
+
+  local _commit_msg="docs: record drift entry for PR #${pr_number}"
+  if git commit -m "$_commit_msg" 2>/dev/null; then
+    if git push origin "$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null; then
+      print_info "  drift-log: committed and pushed"
+    else
+      print_info "  drift-log: committed (push failed — local only)"
+    fi
+  else
+    # Nothing staged (e.g. no-op append somehow). Not an error.
+    verbose_info "  drift-log: nothing to commit (entry may already exist)"
+  fi
+}
+
 DOC_SYNC_FILE="${RITE_PROJECT_ROOT}/.rite/doc-sync.md"
 
 if [ ! -f "$DOC_SYNC_FILE" ]; then
+  # ------------------------------------------------------------------
+  # Changelog mode: doc-sync.md absent AND RITE_DOC_MODE=changelog.
+  # Append one drift entry instead of editing user docs; then exit 0.
+  # Default/unset mode: current behaviour byte-identical (exit 0, no-op).
+  # ------------------------------------------------------------------
+  if [ "${RITE_DOC_MODE:-}" = "changelog" ]; then
+    # Compute CHANGED_FILES_NO_DOCS here — the sync-mode path computes it
+    # at line 1785 (after this guard), so we must duplicate it for changelog.
+    _CHANGELOG_CHANGED_FILES_NO_DOCS="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)"
+    _append_doc_drift_entry "$PR_NUMBER" "$PR_BODY" "$_CHANGELOG_CHANGED_FILES_NO_DOCS" || true
+  fi
   echo ""
   exit 0
 fi

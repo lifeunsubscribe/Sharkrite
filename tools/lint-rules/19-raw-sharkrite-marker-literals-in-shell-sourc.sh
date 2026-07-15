@@ -9,6 +9,9 @@
 #
 # Allowlist (files where literal marker strings are required or expected):
 #   - lib/utils/markers.sh        — the canonical source-of-truth definitions
+#   - lib/utils/drift-log.sh      — format-implementing library for RITE_MARKER_DOC_DRIFT;
+#                                   holds a fallback literal for standalone-source safety
+#                                   (markers.sh may not be loaded in test subshells)
 #   - tests/                      — bats tests may grep for/assert on marker strings
 #   - tools/sharkrite-lint.sh     — this file; rule definitions contain the pattern
 #
@@ -21,8 +24,11 @@
 echo "Checking for raw sharkrite-* marker literals (use RITE_MARKER_* constants)..."
 
 for file in "${SHELL_FILES[@]}"; do
-  # Allowlist: markers.sh itself (the definitions), and this lint file
-  if [[ "$file" == */lib/utils/markers.sh ]] || [[ "$file" == */tools/sharkrite-lint.sh ]]; then
+  # Allowlist: markers.sh (definitions), drift-log.sh (format owner with fallback
+  # literal for standalone-source safety), and this lint file.
+  if [[ "$file" == */lib/utils/markers.sh ]] || \
+     [[ "$file" == */lib/utils/drift-log.sh ]] || \
+     [[ "$file" == */tools/sharkrite-lint.sh ]]; then
     continue
   fi
 
