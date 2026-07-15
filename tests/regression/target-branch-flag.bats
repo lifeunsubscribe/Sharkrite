@@ -17,6 +17,12 @@ load '../helpers/setup'
 # ---------------------------------------------------------------------------
 # Shared helper: run bin/rite with a minimal env so it can source config.sh
 # without needing a real project root.
+#
+# EVERY real-bin/rite invocation below MUST carry `< /dev/null`. Without it, a
+# child bin/rite spawns can reach for the controlling tty; under the gate's
+# --jobs 8 bats run that SIGTTIN-stops the whole process group and the gate
+# hangs to its 1800s watchdog (the rite-804 freeze class — see
+# gate-bats-sandbox.bats). Enforced by lint (Rule 37, BATS_RITE_STDIN_GUARD).
 # ---------------------------------------------------------------------------
 setup() {
   setup_test_tmpdir
@@ -38,7 +44,7 @@ teardown() {
 # Test 1: Missing value — --branch with no following argument
 # ---------------------------------------------------------------------------
 @test "--branch: rejects missing value" {
-  run bash "$RITE_REPO_ROOT/bin/rite" --branch
+  run bash "$RITE_REPO_ROOT/bin/rite" --branch < /dev/null
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "requires a branch name"
 }
@@ -47,7 +53,7 @@ teardown() {
 # Test 2: Flag-shaped value — --branch --auto (next arg looks like a flag)
 # ---------------------------------------------------------------------------
 @test "--branch: rejects flag-shaped value (--branch --auto)" {
-  run bash "$RITE_REPO_ROOT/bin/rite" --branch --auto
+  run bash "$RITE_REPO_ROOT/bin/rite" --branch --auto < /dev/null
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "requires a branch name"
 }
@@ -56,7 +62,7 @@ teardown() {
 # Test 3: Whitespace-containing value — --branch "feat branch"
 # ---------------------------------------------------------------------------
 @test "--branch: rejects value containing whitespace" {
-  run bash "$RITE_REPO_ROOT/bin/rite" --branch "feat branch"
+  run bash "$RITE_REPO_ROOT/bin/rite" --branch "feat branch" < /dev/null
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "must not contain whitespace"
 }
@@ -72,7 +78,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "--branch: accepts valid value without error" {
   # --version exits 0 immediately after arg parse completes
-  run bash "$RITE_REPO_ROOT/bin/rite" --branch develop --version
+  run bash "$RITE_REPO_ROOT/bin/rite" --branch develop --version < /dev/null
   [ "$status" -eq 0 ]
 }
 
@@ -123,7 +129,7 @@ EOF
 # Test 5: --branch flag is present in --help output
 # ---------------------------------------------------------------------------
 @test "--branch: appears in --help output" {
-  run bash "$RITE_REPO_ROOT/bin/rite" --help
+  run bash "$RITE_REPO_ROOT/bin/rite" --help < /dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -q -- "--branch <name>"
 }
