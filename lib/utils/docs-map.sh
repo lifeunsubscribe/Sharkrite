@@ -239,28 +239,46 @@ docs_map_build() {
       adr_flag="adr"
     fi
 
-    # Harvest headings: grep lines starting with one or more '#'
-    # Use || true to prevent silent death under set -e when grep finds no match.
-    local headings_raw
-    headings_raw="$(grep "^#" "$file_path" 2>/dev/null || true)"
+    # Harvest headings: read line-by-line tracking fenced code blocks so that
+    # '#' lines inside ``` or ~~~ fences (shebangs, code comments) are not
+    # misclassified as Markdown headings.
+    local heading_count=0
+    local in_fence=0      # 0 = prose, 1 = inside a fenced code block
+    local raw_line
+    while IFS= read -r raw_line; do
+      # Detect fence open/close: lines starting with ``` or ~~~.
+      case "$raw_line" in
+        '```'* | '~~~'*)
+          if [ "$in_fence" -eq 0 ]; then
+            in_fence=1
+          else
+            in_fence=0
+          fi
+          continue
+          ;;
+      esac
+      # Skip lines inside a fenced code block
+      [ "$in_fence" -eq 0 ] || continue
+      # Only process lines that start with '#' (potential Markdown headings)
+      case "$raw_line" in
+        '#'*)
+          local h_level h_text
+          h_level="$(_docs_map_heading_level "$raw_line")"
+          h_text="$(_docs_map_heading_text "$raw_line")"
+          # _docs_map_heading_level returns empty for >6 '#' (not a valid heading)
+          [ -n "$h_level" ] || continue
+          printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$rel_path" "$head_sha" "$adr_flag" "$h_level" "$h_text" >> "$tmp_file"
+          heading_count=$((heading_count + 1))
+          ;;
+      esac
+    done < "$file_path"
 
-    if [ -z "$headings_raw" ]; then
+    if [ "$heading_count" -eq 0 ]; then
       # File has zero headings: emit one row with empty level/heading so the
       # file still appears in the inventory (per spec).
       printf '%s\t%s\t%s\t%s\t%s\n' \
         "$rel_path" "$head_sha" "$adr_flag" "" "" >> "$tmp_file"
-    else
-      # Emit one row per heading
-      local heading_line
-      while IFS= read -r heading_line; do
-        # Skip empty lines (shouldn't happen with grep "^#" but guard anyway)
-        [ -n "$heading_line" ] || continue
-        local h_level h_text
-        h_level="$(_docs_map_heading_level "$heading_line")"
-        h_text="$(_docs_map_heading_text "$heading_line")"
-        printf '%s\t%s\t%s\t%s\t%s\n' \
-          "$rel_path" "$head_sha" "$adr_flag" "$h_level" "$h_text" >> "$tmp_file"
-      done <<< "$headings_raw"
     fi
   done
 
