@@ -520,6 +520,7 @@ rite plan --preview        # Preview issues without creating
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
+rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
