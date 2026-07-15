@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh, lib/utils/git-helpers.sh
+# sharkrite-test-covers: lib/core/claude-workflow.sh, lib/core/merge-pr.sh, lib/utils/cleanup-worktrees.sh, lib/utils/git-helpers.sh
 # Regression test: worktree auto-cleanup correctly detects merged PRs
 # Issue #182
 #

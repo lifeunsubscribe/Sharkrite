@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/merge-pr.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/branch-preflight.sh
 # tests/regression/pr-close-branch-delete-race.bats
 #
 # Regression tests for the race condition between PR close and remote branch deletion.
