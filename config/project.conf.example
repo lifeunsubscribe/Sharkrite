@@ -188,4 +188,4 @@
 # LEAVE UNSET (default: empty) to let sharkrite ask on the next supervised run.
 # An empty value means "not yet recorded" — it is NOT the same as "changelog".
 # Setting this to "changelog" here permanently suppresses the consent prompt.
-# # RITE_DOC_MODE="changelog"
+# RITE_DOC_MODE="changelog"
