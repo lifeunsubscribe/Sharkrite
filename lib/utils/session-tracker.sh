@@ -572,75 +572,42 @@ EOF
 
 # _acquire_approval_lock
 #
-# Acquires a dedicated mkdir-based lock for the durable approval-state file.
-# This lock is SEPARATE from the per-session lock so that concurrent `rite`
-# invocations operating on different issues (each with their own SESSION_STATE_FILE
-# and per-session lock path) don't race on the shared approval-state.json.
+# Acquires a dedicated lock for the durable approval-state file. This lock is
+# SEPARATE from the per-session lock so that concurrent `rite` invocations
+# operating on different issues (each with their own SESSION_STATE_FILE and
+# per-session lock path) don't race on the shared approval-state.json.
 #
-# Uses mkdir atomic semantics (same portable pattern as the session lock).
+# Uses the shared atomic lock primitive (lock.sh, #706) — the SAME one
+# _acquire_session_lock uses. This is the migration the session lock already
+# got but the approval lock was left out of: the old hand-rolled mkdir+sleep-1
+# mutex had a create→PID-write window (mkdir, THEN separately write pid) in
+# which a CPU-starved holder's live lock dir was reclaimed by a waiter after a
+# 1s grace period — breaking mutual exclusion and hanging concurrent
+# add_approved_blocker under gate load past the 120s bats timeout (both #1007
+# and #1008 blocked, 2026-07). lock.sh's ln+token primitive claims the lock
+# and its identity token in one atomic step, so no such window exists.
 # Timeout controlled by RITE_APPROVAL_LOCK_TIMEOUT (default: 30s).
 _acquire_approval_lock() {
   local approval_file
   approval_file="$(_get_approval_state_file)"
-  local lockdir="${approval_file}.lock"
+  local lockfile="${approval_file}.lock"
   local max_attempts="${RITE_APPROVAL_LOCK_TIMEOUT:-30}"
-  local attempts=0
-  local pid_tmp
 
-  while ! mkdir "$lockdir" 2>/dev/null; do
-    if [ -f "$lockdir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        echo "approval-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
-        rm -rf "$lockdir" 2>/dev/null || true
-        continue
-      fi
-    else
-      attempts=$((attempts + 1))
-      if [ "$attempts" -ge "$max_attempts" ]; then
-        echo "ERROR: approval-state lock timeout after ${max_attempts}s." >&2
-        echo "       To recover, remove: rm -rf \"$lockdir\"" >&2
-        exit 1
-      fi
-      sleep 1
-      if [ ! -f "$lockdir/pid" ]; then
-        echo "approval-lock: reclaiming lock dir with no PID after grace period" >&2
-        rm -rf "$lockdir" 2>/dev/null || true
-        continue
-      fi
-    fi
-
-    attempts=$((attempts + 1))
-    if [ "$attempts" -ge "$max_attempts" ]; then
-      echo "ERROR: approval-state lock timeout after ${max_attempts}s." >&2
-      echo "       To recover, remove: rm -rf \"$lockdir\"" >&2
-      exit 1
-    fi
-    sleep 1
-  done
-
-  # Write PID atomically so waiters never see an empty lock dir
-  pid_tmp=$(mktemp "${lockdir}/pid.XXXXXX")
-  echo $$ > "$pid_tmp"
-  mv "$pid_tmp" "${lockdir}/pid"
+  if ! lock_acquire "$lockfile" "$max_attempts"; then
+    echo "ERROR: approval-state lock timeout after ${max_attempts}s." >&2
+    echo "       To recover, remove: rm -rf \"$lockfile\"" >&2
+    exit 1
+  fi
 }
 
 # _release_approval_lock
 #
-# Releases the dedicated approval-state lock. Idempotent.
+# Releases the dedicated approval-state lock. Idempotent (lock_release only
+# removes the lock when this process holds its token).
 _release_approval_lock() {
   local approval_file
   approval_file="$(_get_approval_state_file)"
-  local lockdir="${approval_file}.lock"
-
-  if [ -d "$lockdir" ] && [ -f "$lockdir/pid" ]; then
-    local lock_pid
-    lock_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-    if [ "$lock_pid" = "$$" ]; then
-      rm -rf "$lockdir" 2>/dev/null || true
-    fi
-  fi
+  lock_release "${approval_file}.lock"
 }
 
 # _add_to_approval_file KEY FIELD
