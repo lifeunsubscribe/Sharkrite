@@ -1913,8 +1913,7 @@ features, new commands, renamed symbols, or altered behaviour. Do NOT start with
 Output ONLY the one-sentence inaccuracy description. Nothing else.
 DRIFT_PROMPT_EOF
 
-    suspected_inaccuracy="$(provider_run_prompt_with_timeout "$(cat "$_drift_prompt_file")" \
-      "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null)" || true
+    suspected_inaccuracy="$(provider_run_prompt_with_timeout "$(cat "$_drift_prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null)" || true
     rm -f "$_drift_prompt_file"
   fi
 
