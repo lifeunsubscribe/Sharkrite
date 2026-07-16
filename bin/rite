@@ -1550,6 +1550,19 @@ record_run() {
 # printer. No independent routing conditionals may appear in this section.
 _DISPATCH_KEY=$(resolve_dispatch_key "$MODE" "${BATCH_FILTER_ARGS[*]:-}" "${PR_INPUT:-}" ${ARGS[@]+"${ARGS[@]}"})
 
+# Target-branch preflight: verify (or auto-create) the target branch on origin.
+# Scoped to workflow-running dispatch keys only — status/plan/undo paths stay
+# network-free (doc §5.3). Gated on non-main so the default path pays zero
+# network cost and no extra sourcing. Preflight failure exits before any LLM work.
+case "$_DISPATCH_KEY" in
+  single-issue|single-issue-text|batch-filter|batch-multi|dev-and-pr)
+    if [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then
+      source "$RITE_LIB_DIR/utils/stale-branch.sh"
+      ensure_target_branch_exists "$RITE_TARGET_BRANCH" || exit 1
+    fi
+    ;;
+esac
+
 case "$_DISPATCH_KEY" in
 
   mixed-pr-and-issues)

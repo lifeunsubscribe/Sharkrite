@@ -2654,6 +2654,14 @@ If the changes are unrelated work, answer UNRELATED."
     if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
       echo "$WORKTREE_PATH" > "${RITE_STATE_DIR}/worktree-handoff-${ISSUE_NUMBER}.txt" 2>/dev/null || true
     fi
+    # Write target-branch state file so resumed runs (--base flag omitted) can
+    # recover the target without requiring an explicit re-pass of the flag.
+    # Path MUST be absolute — cwd moves into the worktree at the cd above.
+    # Write-once Phase-1 semantics; cleanup on --undo/close is #1040.
+    # Gated on non-main so the default path stays byte-identical (no new file). # sharkrite-target-transport
+    if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${ISSUE_NUMBER:-}" ] && [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then  # sharkrite-target-transport
+      echo "$RITE_TARGET_BRANCH" > "${RITE_STATE_DIR}/target-branch-${ISSUE_NUMBER}.txt" 2>/dev/null || true  # sharkrite-target-transport
+    fi
 
     # Check for relevant stashed changes and auto-apply if they're from this branch
     LATEST_STASH_BRANCH=$(git stash list 2>/dev/null | head -1 | grep -oE 'WIP on [^:]+|On [^:]+' | sed 's/.*On //' | sed 's/WIP on //' || echo "")
