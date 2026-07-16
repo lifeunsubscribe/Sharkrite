@@ -124,9 +124,18 @@ _stale_resolve_base_branch() {
 
   local _raw_base
   _raw_base=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
-  _raw_base="${_raw_base:-main}"
 
-  # Validate via the shared helper — one validation invariant, one definition.
+  # Empty response means API unavailable or PR not found — source=fallback.
+  # Must check emptiness BEFORE applying the default ("main") so that a genuine
+  # API hit of "main" (which validates cleanly) is distinguishable from a missing
+  # API response that fell through to the default value.
+  if [ -z "${_raw_base:-}" ]; then
+    _STALE_BASE_BRANCH="main"
+    _STALE_BASE_BRANCH_SOURCE="fallback"
+    return 0
+  fi
+
+  # Validate non-empty response via the shared helper — one validation invariant.
   if ! _rite_branch_name_safe "$_raw_base"; then
     _diag "STALE_BASE_BRANCH_INVALID pr=${pr_number} base_branch_raw=${_raw_base} fallback=main"
     _STALE_BASE_BRANCH="main"

@@ -311,15 +311,19 @@ teardown() {
 }
 
 @test "ensure_target_branch_exists: auto-creates branch, exactly one push, one print_info" {
-  _push_count=0
-  _ls_remote_exit=1  # branch does NOT exist
+  # Use a temp file as push counter so the count survives the run subshell.
+  local _push_count_file="$RITE_TEST_TMPDIR/push_count.txt"
+  echo "0" > "$_push_count_file"
+  export _PUSH_COUNT_FILE="$_push_count_file"
 
   git() {
     case "$1" in
       ls-remote)
-        return "$_ls_remote_exit" ;;  # first call: missing
+        return 1 ;;  # branch does NOT exist
       push)
-        _push_count=$(( _push_count + 1 ))
+        local _c
+        _c=$(cat "$_PUSH_COUNT_FILE")
+        echo $(( _c + 1 )) > "$_PUSH_COUNT_FILE"
         # Verify the refspec format: origin/main:refs/heads/<branch>
         if [ "$3" != "origin/main:refs/heads/integration" ]; then
           echo "WRONG_REFSPEC: $3" >&2
@@ -333,13 +337,11 @@ teardown() {
   }
   export -f git
 
-  _info_count=0
-  print_info() { _info_count=$(( _info_count + 1 )); }
-  export -f print_info
-
   run ensure_target_branch_exists "integration"
   [ "$status" -eq 0 ]
-  [ "$_push_count" -eq 1 ]
+  local _push_count
+  _push_count=$(cat "$_push_count_file")
+  [ "$_push_count" -eq 1 ] || { echo "FAIL: push_count=$_push_count expected 1"; return 1; }
 }
 
 @test "ensure_target_branch_exists: returns 1 + print_error on push failure" {
