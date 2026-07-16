@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f handle_stale_branch >/dev/null 2>&1; then
+if declare -f check_stale_branch >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
