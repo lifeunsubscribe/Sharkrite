@@ -46,7 +46,7 @@ lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
-lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart
+lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart; target-branch resolver (resolve_target_branch) and origin preflight (ensure_target_branch_exists)
 lib/utils/test-gate.sh           # Post-commit verification gate (make check + bats -r tests/)
 ```
 

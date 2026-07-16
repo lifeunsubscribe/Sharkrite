@@ -34,6 +34,11 @@ if ! declare -f gh_safe >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/gh-retry.sh"
 fi
 
+# Source git helpers (provides git_fetch_safe for ensure_target_branch_exists)
+if ! declare -f git_fetch_safe >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/git-helpers.sh"
+fi
+
 # Source post-merge verification utilities
 if ! source "$RITE_LIB_DIR/utils/post-merge-verify.sh"; then
   echo "ERROR: Failed to source post-merge-verify.sh" >&2
@@ -55,6 +60,44 @@ if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
 fi
 
 # ===================================================================
+# INTERNAL: Branch name validation
+# ===================================================================
+
+# _rite_branch_name_safe NAME
+#
+# Returns 0 (safe) or 1 (unsafe) for a branch name.
+# Accepts: alphanumeric, '-', '_', '.', '/' (standard git ref charset).
+# Rejects: '..' sequences (path traversal), shell meta-characters, multi-line
+#          values (a single clean line among several would otherwise pass the
+#          line-oriented grep checks).
+#
+# Single source of validation truth — called by _stale_resolve_base_branch
+# and the tier-2/tier-3 resolver checks.
+_rite_branch_name_safe() {
+  local _name="${1:-}"
+  # Reject empty
+  [ -n "$_name" ] || return 1
+  # Reject multi-line: if wc -l sees > 0 lines (i.e. any embedded newline)
+  # then the value spans multiple lines and must be rejected. Note: bash strips
+  # trailing newlines from $() substitutions, so the case-pattern trick
+  # `*"$(printf '\n')"*` always produces `**` (matches all). wc -l is the
+  # reliable portable alternative.
+  local _lcount
+  _lcount=$(printf '%s' "$_name" | wc -l | tr -d ' ')
+  [ "${_lcount:-0}" -eq 0 ] || return 1
+  # Reject '..' (path traversal)
+  case "$_name" in
+    *..*)
+      return 1 ;;
+  esac
+  # Validate charset: only alphanumeric, '-', '_', '.', '/' are safe git ref chars
+  if ! printf '%s' "$_name" | grep -qE '^[a-zA-Z0-9_./-]+$'; then
+    return 1
+  fi
+  return 0
+}
+
+# ===================================================================
 # INTERNAL: Base branch resolution
 # ===================================================================
 
@@ -62,12 +105,18 @@ fi
 #
 # Resolves the PR's actual base branch from the GitHub API.
 # Falls back to "main" when the API is unreachable or the PR is not found.
-# Validates the returned name against a safe character set to prevent
+# Validates the returned name via _rite_branch_name_safe to prevent
 # path-traversal or injection attacks (same pattern as blocker-rules.sh).
-# Sets: _STALE_BASE_BRANCH (callers should copy to a local var)
+#
+# Sets:
+#   _STALE_BASE_BRANCH        — resolved branch name (callers should copy to a local var)
+#   _STALE_BASE_BRANCH_SOURCE — "api" when the API returned a valid name,
+#                               "fallback" when the API was unavailable/invalid
+#                               (backward-compatible addition for resolve_target_branch)
 _stale_resolve_base_branch() {
   local pr_number="$1"
   _STALE_BASE_BRANCH="main"
+  _STALE_BASE_BRANCH_SOURCE="fallback"
 
   if [ -z "${pr_number:-}" ] || [ "$pr_number" = "null" ]; then
     return 0
@@ -77,15 +126,137 @@ _stale_resolve_base_branch() {
   _raw_base=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
   _raw_base="${_raw_base:-main}"
 
-  # Validate: only alphanumeric, '-', '_', '.', '/' are safe git ref characters.
-  # Reject '..' sequences (path traversal) and any shell meta-characters.
-  if ! echo "$_raw_base" | grep -qE '^[a-zA-Z0-9_./-]+$' || echo "$_raw_base" | grep -qF '..'; then
+  # Validate via the shared helper — one validation invariant, one definition.
+  if ! _rite_branch_name_safe "$_raw_base"; then
     _diag "STALE_BASE_BRANCH_INVALID pr=${pr_number} base_branch_raw=${_raw_base} fallback=main"
     _STALE_BASE_BRANCH="main"
+    _STALE_BASE_BRANCH_SOURCE="fallback"
     return 0
   fi
 
   _STALE_BASE_BRANCH="$_raw_base"
+  _STALE_BASE_BRANCH_SOURCE="api"
+}
+
+# ===================================================================
+# PUBLIC: Target branch resolver
+# ===================================================================
+
+# resolve_target_branch ISSUE_NUMBER [PR_NUMBER]
+#
+# Four-tier resolver for the effective target branch of an issue.
+# Detection-only (tier 1): reports what the PR's base is, never silently
+# adopts it when it conflicts with an explicit --base/--branch flag.
+# Mismatch handling is #1044's to implement.
+#
+# Tier precedence (first hit wins):
+#   1. PR baseRefName  — via _stale_resolve_base_branch (single API reader)
+#   2. State file      — ${RITE_STATE_DIR}/target-branch-${ISSUE_NUMBER}.txt
+#   3. RITE_TARGET_BRANCH env — transport only; fires only when non-empty AND != "main"
+#                               (config.sh defaults it to "main" so bare "main" = unset)
+#   4. "main"          — default
+#
+# Output:  resolved branch name on stdout (data channel; print_* stays on stderr)
+# Sets:    RESOLVED_TARGET_BRANCH — resolved branch name (for same-shell callers)
+#          RESOLVED_TARGET_SOURCE — source of the resolution:
+#                                   "pr" | "state" | "env" | "default"
+resolve_target_branch() {
+  local _issue_number="${1:-}"
+  local _pr_number="${2:-}"
+  RESOLVED_TARGET_BRANCH="main"
+  RESOLVED_TARGET_SOURCE="default"
+
+  # ── Tier 1: PR baseRefName ──────────────────────────────────────────────────
+  # Reuse the single existing API reader (no second baseRefName query anywhere).
+  # _STALE_BASE_BRANCH_SOURCE=api means the API returned a valid name;
+  # fallback means the API was unreachable or the PR was not found — fall through.
+  if [ -n "${_pr_number:-}" ] && [ "$_pr_number" != "null" ]; then
+    _stale_resolve_base_branch "$_pr_number"
+    if [ "${_STALE_BASE_BRANCH_SOURCE:-fallback}" = "api" ]; then
+      RESOLVED_TARGET_BRANCH="$_STALE_BASE_BRANCH"
+      RESOLVED_TARGET_SOURCE="pr"
+      echo "$RESOLVED_TARGET_BRANCH"
+      return 0
+    fi
+    # API unreachable / PR not found — fall through to tier 2
+  fi
+
+  # ── Tier 2: per-issue state file ────────────────────────────────────────────
+  if [ -n "${_issue_number:-}" ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+    local _state_file="${RITE_STATE_DIR}/target-branch-${_issue_number}.txt"
+    if [ -f "$_state_file" ]; then
+      local _state_val
+      _state_val=$(cat "$_state_file" 2>/dev/null || true)
+      _state_val="${_state_val:-}"
+      if _rite_branch_name_safe "$_state_val"; then
+        RESOLVED_TARGET_BRANCH="$_state_val"
+        RESOLVED_TARGET_SOURCE="state"
+        echo "$RESOLVED_TARGET_BRANCH"
+        return 0
+      else
+        _diag "TARGET_BRANCH_STATE_INVALID issue=${_issue_number} value=${_state_val} falling_through=true"
+        # Invalid or empty content — fall through to tier 3
+      fi
+    fi
+  fi
+
+  # ── Tier 3: RITE_TARGET_BRANCH env ──────────────────────────────────────────
+  # Transport only. config.sh (#1031) defaults it to "main", so a bare "main"
+  # is indistinguishable from "unset" — tier 3 fires only when non-empty AND != "main".
+  if [ -n "${RITE_TARGET_BRANCH:-}" ] && [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then
+    if _rite_branch_name_safe "$RITE_TARGET_BRANCH"; then
+      RESOLVED_TARGET_BRANCH="$RITE_TARGET_BRANCH"
+      RESOLVED_TARGET_SOURCE="env"
+      echo "$RESOLVED_TARGET_BRANCH"
+      return 0
+    else
+      _diag "TARGET_BRANCH_ENV_INVALID value=${RITE_TARGET_BRANCH} falling_through=true"
+      # Invalid value — fall through to tier 4
+    fi
+  fi
+
+  # ── Tier 4: default ─────────────────────────────────────────────────────────
+  RESOLVED_TARGET_BRANCH="main"
+  RESOLVED_TARGET_SOURCE="default"
+  echo "$RESOLVED_TARGET_BRANCH"
+  return 0
+}
+
+# ===================================================================
+# PUBLIC: Target branch preflight
+# ===================================================================
+
+# ensure_target_branch_exists BRANCH
+#
+# Verifies the target branch exists on origin. If missing, auto-creates it
+# from origin/main (Sarah 2026-07-07 ruling: typo cost accepted, visible in
+# --status; §2.4 "bail loudly" superseded).
+#
+# The explicit "origin/main:refs/heads/$branch" refspec satisfies the
+# push-without-refspec lint rule. The "origin/main" literals here are
+# intentionally main-relative (creating FROM main is the point) — when
+# #1052's RAW_ORIGIN_MAIN_REF lint lands, this site gets the inline
+# suppression comment; do not pre-add it now.
+#
+# Returns:
+#   0 — branch exists (or was created)
+#   1 — invalid branch name or push failed
+ensure_target_branch_exists() {
+  local branch="${1:?ensure_target_branch_exists: branch required}"
+  _rite_branch_name_safe "$branch" || { print_error "Invalid target branch name: '$branch'"; return 1; }
+  [ "$branch" = "main" ] && return 0
+
+  if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+    return 0   # exists — zero writes, zero output
+  fi
+
+  git_fetch_safe origin main || return 1
+  if git push origin "origin/main:refs/heads/$branch" >/dev/null 2>&1; then
+    print_info "Target branch '$branch' not on origin — created from origin/main"
+    return 0
+  fi
+  print_error "Failed to create target branch '$branch' on origin"
+  return 1
 }
 
 # ===================================================================

@@ -3203,13 +3203,16 @@ _check_no_work_invariant() {
 main() {
   # Parse arguments
   if [ $# -lt 1 ]; then
-    echo "Usage: $0 ISSUE_NUMBER [--supervised|--unsupervised|--auto] [--bypass-blockers]"
+    echo "Usage: $0 ISSUE_NUMBER [--supervised|--unsupervised|--auto] [--bypass-blockers] [--base <branch>]"
     echo ""
     echo "Options:"
     echo "  --supervised        Requires manual confirmations (default)"
     echo "  --unsupervised      Fully automated mode (alias: --auto)"
     echo "  --auto              Same as --unsupervised"
     echo "  --bypass-blockers   Report blockers as warnings without stopping the workflow"
+    echo "  --base <branch>     Target branch for this issue (default: main). Sets"
+    echo "                      RITE_TARGET_BRANCH and writes the per-issue state file"
+    echo "                      so resumed runs recover the target without re-passing the flag."
     echo ""
     echo "Environment Variables:"
     echo "  WORKFLOW_MODE           supervised or unsupervised (default: supervised)"
@@ -3243,6 +3246,18 @@ main() {
         ;;
       --bypass-blockers)
         BYPASS_BLOCKERS=true
+        ;;
+      --base)
+        # Value-taking flag: validate and export RITE_TARGET_BRANCH. # sharkrite-target-transport
+        # The loop's trailing bare `shift` consumes "--base"; this extra `shift`
+        # consumes the value. Missing or flag-shaped value is an error.
+        if [ -z "${2:-}" ] || [ "${2#-}" != "${2}" ]; then
+          print_error "--base requires a branch name (got: '${2:-<empty>}')"
+          exit 1
+        fi
+        RITE_TARGET_BRANCH="$2"
+        export RITE_TARGET_BRANCH  # sharkrite-target-transport
+        shift  # consume the value (the loop's shift below consumes the flag)
         ;;
       *)
         print_error "Unknown flag: $1"
