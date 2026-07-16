@@ -78,6 +78,23 @@ setup() {
   # shellcheck disable=SC1090
   source "$RITE_REPO_ROOT/lib/utils/stale-branch.sh"
 
+  # Re-stub after source: colors.sh (sourced transitively, env-var guard) overwrites
+  # print_* with real implementations. Re-define all pre-source stubs here so the
+  # test-controlled behaviour is restored. (Rule 34: BATS_PRE_SOURCE_STUB_OVERWRITE)
+  print_status()  { :; }
+  print_info()    { :; }
+  print_warning() { :; }
+  print_error()   { echo "ERROR: $*" >&2; }
+  print_success() { :; }
+  print_header()  { :; }
+  _diag()         { :; }
+  gh_safe()             { return 0; }
+  create_sharkrite_stash() { return 0; }
+  verify_post_merge()      { return 0; }
+  git_fetch_safe()         { return 0; }
+  export -f print_status print_info print_warning print_error print_success print_header _diag
+  export -f gh_safe create_sharkrite_stash verify_post_merge git_fetch_safe
+
   # Restore bats shell flags (lib sources under set -euo pipefail)
   set +u; set +o pipefail
 }
