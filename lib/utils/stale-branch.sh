@@ -1308,6 +1308,9 @@ _stale_close_and_cleanup() {
   # 4. Remove worktree (local filesystem — safe regardless of PR close result)
   if git worktree remove "$worktree_path" --force 2>/dev/null; then
     print_info "Removed worktree: $(basename "$worktree_path")"
+    # Clean up the now-empty container dir left under RITE_WORKTREE_DIR (#980) —
+    # git worktree remove deletes the .git file but leaves the directory behind.
+    rmdir_empty_worktree_container "$worktree_path" "${RITE_WORKTREE_DIR:-}"
   else
     print_warning "Failed to remove worktree: $worktree_path"
   fi
