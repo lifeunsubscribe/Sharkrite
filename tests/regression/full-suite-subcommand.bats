@@ -561,7 +561,7 @@ EOF
     PATH="$_fake_bin:$PATH" \
     RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
     RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
-    bash "$_fake_bin/rite" --full-suite
+    bash "$_fake_bin/rite" --full-suite < /dev/null
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "FULL_SUITE_STUB_CALLED"
