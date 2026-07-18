@@ -1044,11 +1044,17 @@ Auto-salvaged to prevent work loss."
 # ISSUE_NUMBER is set by arg parsing above (:260-277).
 # Coordinate with sibling #1036: same variable name, one resolution — whichever
 # sibling lands second reuses _target if already set (idempotent re-resolve).
+# Guarded: must not run under RITE_SOURCE_FUNCTIONS_ONLY=1 — sourcing stale-branch.sh
+# and calling resolve_target_branch (which reads state files and may call gh) are
+# side effects. Helper functions that read $_target use ${_target:-main} as a
+# safe default when sourced for functions only.
 # ===================================================================
-if ! declare -f resolve_target_branch >/dev/null 2>&1; then
-  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" != "1" ]; then
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  _target=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${PR_NUMBER:-}")
 fi
-_target=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${PR_NUMBER:-}")
 
 # ===================================================================
 # EARLY EXIT FOR FIX-REVIEW MODE

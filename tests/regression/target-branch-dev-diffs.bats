@@ -224,14 +224,19 @@ teardown() {
   # for the two cross-worktree UNPUSHED cleanup-guard fallbacks (~lines 2337/2415).
   # Those are exempt because they iterate other worktrees and use origin/main
   # only as a last-resort fallback when origin/<that_branch> is absent.
+  # Both exempt lines use rev-list --count (not diff/log/show), so we filter them out.
   _src=$(cat "$RITE_REPO_ROOT/lib/core/claude-workflow.sh")
 
-  # Count raw origin/main diff ranges; UNPUSHED guards add exactly 2.
-  _count=$(echo "$_src" | grep -cE 'origin/main[.][.][.]?HEAD|HEAD[.][.][.]?origin/main' || true)
+  # Filter out the two exempt UNPUSHED guard lines (identified by rev-list --count),
+  # then count any remaining raw origin/main diff ranges — expect 0.
+  _count=$(echo "$_src" | grep -E 'origin/main[.][.][.]?HEAD|HEAD[.][.][.]?origin/main' \
+    | grep -v 'rev-list --count' \
+    | grep -c '.' || true)
   if [ "$_count" -gt 0 ]; then
     echo "FAIL: claude-workflow.sh has $_count raw origin/main diff range(s) outside UNPUSHED guards (expected 0)"
     echo "--- matches ---"
-    echo "$_src" | grep -nE 'origin/main[.][.][.]?HEAD|HEAD[.][.][.]?origin/main' || true
+    echo "$_src" | grep -nE 'origin/main[.][.][.]?HEAD|HEAD[.][.][.]?origin/main' \
+      | grep -v 'rev-list --count' || true
     return 1
   fi
 }
@@ -362,4 +367,51 @@ teardown() {
       return 1
     }
   done
+}
+
+# =============================================================================
+# BEHAVIORAL: RITE_SOURCE_FUNCTIONS_ONLY=1 suppresses _target resolution side effects
+# =============================================================================
+
+@test "behavioral: claude-workflow.sh _target block is side-effect-free under RITE_SOURCE_FUNCTIONS_ONLY=1" {
+  # Pins the fix for the unguarded _target block (issue #1035 review finding).
+  # When sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, the block that sources
+  # stale-branch.sh and calls resolve_target_branch must NOT execute — even
+  # when ISSUE_NUMBER and PR_NUMBER are set (the conditions that trigger a live
+  # gh API call inside resolve_target_branch).
+
+  _sentinel="${RITE_TEST_TMPDIR}/resolve_target_branch_called.sentinel"
+
+  # Ensure we're not blocked by the re-source guard from a prior source in this session.
+  unset _RITE_CLAUDE_WORKFLOW_LOADED
+
+  # Define resolve_target_branch as a sentinel-touching stub.
+  # Must be defined after any source that could overwrite it — but claude-workflow.sh
+  # does not define resolve_target_branch (it lives in stale-branch.sh), so a
+  # pre-source definition is safe. We also re-define after source as defense-in-depth.
+  resolve_target_branch() {
+    touch "$_sentinel"
+    echo "main"
+  }
+  export -f resolve_target_branch
+
+  # Source with RITE_SOURCE_FUNCTIONS_ONLY=1 to load only function definitions.
+  # ISSUE_NUMBER and PR_NUMBER are set to maximise the chance the guarded block
+  # would fire if unguarded.
+  ISSUE_NUMBER=99 PR_NUMBER=42 RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    source "${RITE_LIB_DIR}/core/claude-workflow.sh" 2>/dev/null || true
+  set +u; set +o pipefail
+
+  # Re-define stub after source (Rule 34: BATS_PRE_SOURCE_STUB_OVERWRITE defense-in-depth).
+  # claude-workflow.sh does not define resolve_target_branch, so this is a no-op guard.
+  resolve_target_branch() {
+    touch "$_sentinel"
+    echo "main"
+  }
+
+  # Assert the sentinel was NOT created — the guarded block must not have run.
+  if [ -f "$_sentinel" ]; then
+    echo "FAIL: resolve_target_branch was called under RITE_SOURCE_FUNCTIONS_ONLY=1 — _target block is not guarded"
+    return 1
+  fi
 }
