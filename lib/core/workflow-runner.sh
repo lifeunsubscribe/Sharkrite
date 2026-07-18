@@ -32,6 +32,9 @@ source "$RITE_LIB_DIR/utils/normalize-issue.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/pr-refusal.sh"
+# git-helpers.sh: rmdir_empty_worktree_container — used by handle_closed_issue's
+# worktree cleanup (#980). Not export -f'd, so source it directly here.
+source "$RITE_LIB_DIR/utils/git-helpers.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/stash-manager.sh"
 source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
@@ -2400,6 +2403,8 @@ handle_closed_issue() {
         [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
         found_local_orphans=true
         echo -e "${GREEN}  ✓ Removed worktree: $(basename "$wt_path")${NC}"
+        # Clean up the now-empty container dir left under RITE_WORKTREE_DIR (#980).
+        rmdir_empty_worktree_container "$wt_path" "${RITE_WORKTREE_DIR:-}"
       fi
     fi
 
