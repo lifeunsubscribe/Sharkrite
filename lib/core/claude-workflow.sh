@@ -1097,8 +1097,14 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   # DO NOT inject when neither signal fires (prompt bloat on non-test fixes).
   # Lookup chain mirrors dev_session_preamble (project override → install-dir doc).
   _fix_test_runbook_section=""
-  # _target is set in the main script body before this function is called.
-  local _fix_tgt="${_target:-main}"
+  # Resolve target branch locally — the main-body _target assignment at ~1758 is
+  # unreachable from this path (FIX_REVIEW_MODE exits at 1377). Mirror the lazy-source
+  # pattern used at the new-worktree block (~2454) so _fix_tgt is never a stale fallback.
+  # Plain _-prefix assignment (no `local`) — `local` crashes in the top-level script body.
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  _fix_tgt=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${FIX_PR_NUMBER:-}")
   if git rev-parse --verify "origin/${_fix_tgt}" >/dev/null 2>&1; then
     _fix_branch_has_tests=$(git diff --name-only "origin/${_fix_tgt}...HEAD" 2>/dev/null | grep -qE '^tests/' && echo "yes" || true)
   else

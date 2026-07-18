@@ -526,6 +526,47 @@ teardown() {
   }
 }
 
+# =============================================================================
+# STRUCTURAL: claude-workflow.sh — fix-review path _fix_tgt resolution
+# =============================================================================
+
+@test "structural: claude-workflow.sh FIX_REVIEW_MODE resolves _fix_tgt via resolve_target_branch before origin/\${_fix_tgt} use" {
+  # The FIX_REVIEW_MODE block exits at ~1377 — before the main-body _target
+  # assignment at ~1758.  The fix must resolve _fix_tgt locally (via
+  # resolve_target_branch) inside the block so the git diff that detects
+  # tests/ changes uses the correct base, not always "main".
+  #
+  # This is a structural pin: it asserts:
+  #   (a) _fix_tgt is assigned from resolve_target_branch (not bare "${_target:-main}")
+  #   (b) the lazy-source guard is present before the call
+  #   (c) no `local _fix_tgt` at top-level script scope (crashes under bash -n / set -e)
+  _src=$(cat "$RITE_REPO_ROOT/lib/core/claude-workflow.sh")
+
+  # (a) Must use resolve_target_branch to set _fix_tgt, not a bare fallback
+  echo "$_src" | grep -q '_fix_tgt=$(resolve_target_branch' || {
+    echo "FAIL: claude-workflow.sh FIX_REVIEW_MODE missing '_fix_tgt=\$(resolve_target_branch ...)"
+    return 1
+  }
+
+  # (b) Lazy-source guard must be present before the call (declare -f pattern)
+  echo "$_src" | grep -q 'declare -f resolve_target_branch' || {
+    echo "FAIL: claude-workflow.sh FIX_REVIEW_MODE missing 'declare -f resolve_target_branch' guard"
+    return 1
+  }
+
+  # (c) Must NOT use `local _fix_tgt` — crashes in top-level script body
+  if echo "$_src" | grep -q 'local _fix_tgt'; then
+    echo "FAIL: claude-workflow.sh has 'local _fix_tgt' at top-level script scope (crashes under bash)"
+    return 1
+  fi
+
+  # (d) The diff consumer must reference origin/\${_fix_tgt}, not origin/\${_target:-main}
+  echo "$_src" | grep -q 'origin/${_fix_tgt}' || {
+    echo "FAIL: claude-workflow.sh FIX_REVIEW_MODE git diff does not use 'origin/\${_fix_tgt}'"
+    return 1
+  }
+}
+
 @test "behavioral: operator-set RITE_TEST_GATE_DIFF_BASE overrides resolved target" {
   # When an operator sets RITE_TEST_GATE_DIFF_BASE explicitly, it must win over the
   # per-invocation seed (${RITE_TEST_GATE_DIFF_BASE:-origin/${_target}}).
