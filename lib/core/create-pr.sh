@@ -35,7 +35,7 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 # Parse arguments
 AUTO_MODE=false
 ISSUE_NUMBER=""
-BASE_BRANCH="main"
+BASE_BRANCH=""  # Empty sentinel: resolver fills this after the arg loop when not set by --base
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -55,6 +55,17 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Default base branch via resolver when --base was not explicitly passed.
+# An explicit --base in the loop above wins; the positional issue number parsed at :52
+# is available as the state-file key. No PR yet when we reach here on initial creation;
+# tier 2 (state file) and tier 3 (env RITE_TARGET_BRANCH) provide the non-main target.
+if [ -z "${BASE_BRANCH:-}" ]; then
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  BASE_BRANCH=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${PR_NUMBER:-}")
+fi
 
 CURRENT_BRANCH=$(git branch --show-current)
 
@@ -91,8 +102,10 @@ if ! command -v jq &> /dev/null; then
   exit 1
 fi
 
-# Smart navigation: if on main/develop and issue number provided, find worktree
-if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" ]]; then
+# Smart navigation: if on a base branch (main/develop or the resolved target) and issue number
+# provided, find worktree. Treating the resolved target as a base branch prevents opening a PR
+# from the integration branch onto itself when the branch checks out as its own target.
+if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" || "$CURRENT_BRANCH" == "$BASE_BRANCH" ]]; then
   if [ ! -z "$ISSUE_NUMBER" ]; then
     print_status "On $CURRENT_BRANCH branch - looking for worktree for issue #$ISSUE_NUMBER..."
 

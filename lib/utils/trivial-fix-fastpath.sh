@@ -225,7 +225,17 @@ try_trivial_fix_fastpath() {
   local _pr_body
   _pr_body=$(printf 'Trivial-fix fast-path applied for issue #%s (skipped dev session + full review).\n\nThe change was applied deterministically from a patch in the issue body, then validated by:\n- `git apply --check` (patch applies cleanly)\n- `bash -n` syntax check\n- cheap haiku triage classifier (verdict: trivial)\n- post-commit gate (`make check` + `bats -r tests/`)\n\nCloses #%s\n\n<!-- sharkrite-fastpath-pr:%s -->' "$issue_number" "$issue_number" "$issue_number")
 
-  PR_NUMBER=$(gh_safe pr create --title "$_issue_title" --body "$_pr_body" --head "$_branch" --base main 2>/dev/null | grep -oE '[0-9]+$' | tail -1 || true)
+  # Resolve the effective target branch for the PR base.
+  # issue_number is in scope (param 1 of try_trivial_fix_fastpath).
+  # Lazy-source stale-branch.sh behind declare -f (precedent: claude-workflow.sh:2005/2029).
+  # No PR yet at this point — resolver uses tier 2 (state file) or tier 3 (env).
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  local _fastpath_target
+  _fastpath_target=$(resolve_target_branch "$issue_number" "")
+
+  PR_NUMBER=$(gh_safe pr create --title "$_issue_title" --body "$_pr_body" --head "$_branch" --base "$_fastpath_target" 2>/dev/null | grep -oE '[0-9]+$' | tail -1 || true)
   if [ -z "${PR_NUMBER:-}" ]; then
     # PR may exist already; look it up by branch.
     PR_NUMBER=$(gh_safe pr list --head "$_branch" --json number --jq '.[0].number // empty' 2>/dev/null || true)

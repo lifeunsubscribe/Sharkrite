@@ -1134,12 +1134,21 @@ phase_create_pr() {
   # Does NOT run assessment - that happens in Phase 3
   # create-pr.sh may exit with code 10 if early blocker detection triggers
   # Export BYPASS_BLOCKERS so create-pr.sh receives it across the process boundary
+  # Pass --base with the resolved target so create-pr.sh doesn't re-hit the PR API;
+  # no PR yet at first entry so the resolver uses tier 2 (state file) / tier 3 (env).
+  # stale-branch.sh may not be loaded yet at this phase-chokepoint — lazy-source behind
+  # declare -f (precedent: workflow-runner.sh:2716 and claude-workflow.sh:2005/2029).
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  local _wf_target
+  _wf_target=$(resolve_target_branch "$issue_number" "${PR_NUMBER:-}")
   export BYPASS_BLOCKERS
   set +e  # Temporarily disable exit-on-error to capture exit code
   if [ "$WORKFLOW_MODE" = "supervised" ]; then
-    "$CREATE_PR"
+    "$CREATE_PR" --base "$_wf_target"
   else
-    "$CREATE_PR" --auto
+    "$CREATE_PR" --auto --base "$_wf_target"
   fi
   local create_pr_exit=$?
   set -e  # Re-enable exit-on-error

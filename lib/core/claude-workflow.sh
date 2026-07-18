@@ -2420,11 +2420,21 @@ If the changes are unrelated work, answer UNRELATED."
 
     echo ""
 
-    # Fetch latest main so new branches start from current remote state
-    # Critical for batch mode: after issue N merges, issue N+1 must branch from updated main
-    print_status "Fetching latest origin/main..."
-    if ! git_fetch_safe origin main; then
-      print_error "Cannot fetch origin/main — new worktree would branch from stale data"
+    # Resolve the effective target branch for this issue (PR → state file → env → "main").
+    # Done once here; reused by the fork-base refs, defensive merge, and draft-PR --base
+    # so there is exactly one read path (§5.4). No PR exists yet at worktree-creation time,
+    # so the resolver runs tier 2 (state file) → tier 3 (env) → tier 4 (default "main").
+    # Lazy-source stale-branch.sh behind declare -f (precedent: :2005 and :2029).
+    if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+      source "$RITE_LIB_DIR/utils/stale-branch.sh"
+    fi
+    _target=$(resolve_target_branch "${ISSUE_NUMBER:-}" "")
+
+    # Fetch latest target branch so new branches start from current remote state
+    # Critical for batch mode: after issue N merges, issue N+1 must branch from updated target
+    print_status "Fetching latest origin/${_target}..."
+    if ! git_fetch_safe origin "$_target"; then
+      print_error "Cannot fetch origin/${_target} — new worktree would branch from stale data"
       print_info "Check network connectivity and retry"
       exit 1
     fi
@@ -2536,11 +2546,13 @@ If the changes are unrelated work, answer UNRELATED."
           fi
         fi
       else
-        # No remote branch — create fresh from origin/main
-        print_info "Starting fresh — creating worktree from origin/main"
+        # No remote branch — create fresh from the resolved target branch.
+        # Branch existence on origin is guaranteed by #1033's ensure_target_branch_exists preflight.
+        # Keep the existing HEAD fallback as defense-in-depth; add no second existence check.
+        print_info "Starting fresh — creating worktree from origin/${_target}"
 
-        _base_ref="origin/main"
-        if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+        _base_ref="origin/${_target}"
+        if ! git rev-parse --verify "origin/${_target}" >/dev/null 2>&1; then
           _base_ref="HEAD"
         fi
 
@@ -2561,8 +2573,8 @@ If the changes are unrelated work, answer UNRELATED."
                   exit 1
                 }
               else
-                _retry_base_ref="origin/main"
-                if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+                _retry_base_ref="origin/${_target}"
+                if ! git rev-parse --verify "origin/${_target}" >/dev/null 2>&1; then
                   _retry_base_ref="HEAD"
                 fi
                 git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$_retry_base_ref" >/dev/null 2>&1 || {
@@ -2678,6 +2690,18 @@ If the changes are unrelated work, answer UNRELATED."
     fi
 fi
 
+# Ensure the resolved target is set for the common code that follows (defensive merge,
+# draft-PR --base). The new-worktree path resolved it above; continuation + fix paths
+# arrive here without it set. Re-resolve (idempotent: RESOLVED_TARGET_BRANCH is already
+# set in scope for the new-worktree path, but a second call is safe — the resolver reads
+# the PR tier from a fresh API call only when PR_NUMBER is non-empty, which is fine at
+# this point since PR_NUMBER is in scope if it was found above).
+# By now $PR_NUMBER may be set from the PR detection above, improving tier-1 accuracy.
+if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+fi
+_target=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${PR_NUMBER:-}")
+
 # Ensure symlink patterns are present in .gitignore WITHOUT trailing slashes.
 # "foo/" only matches directories, but symlinks are files (mode 120000).
 # This runs on ALL paths (new worktree + continuation + fix iteration) to handle:
@@ -2698,33 +2722,34 @@ for _pattern in ".rite" ".claude" "node_modules" "backend/node_modules"; do
   echo "$_pattern" >> .gitignore
 done
 
-# Defensive merge: ensure branch is up-to-date with origin/main before starting work
+# Defensive merge: ensure branch is up-to-date with the resolved target branch before starting work
 # Prevents merge conflicts at PR time, especially in batch mode where earlier issues
-# merge to main while later issues are still working on stale branches.
-# New branches (just created from origin/main) will show 0 behind — this is a no-op for them.
-if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" ]]; then
-  # Fetch with retries — reading origin/main immediately after; stale data = wrong behind-count
-  git_fetch_safe origin main || true
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    BEHIND_COUNT=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
+# merge to the target while later issues are still working on stale branches.
+# New branches (just created from the target) will show 0 behind — this is a no-op for them.
+# Skip when BRANCH_NAME equals the resolved target (never merge the integration branch into itself).
+if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" && "$BRANCH_NAME" != "$_target" ]]; then
+  # Fetch with retries — reading origin/$_target immediately after; stale data = wrong behind-count
+  git_fetch_safe origin "$_target" || true
+  if git rev-parse --verify "origin/${_target}" >/dev/null 2>&1; then
+    BEHIND_COUNT=$(git rev-list --count "HEAD..origin/${_target}" 2>/dev/null || echo "0")
     if [ "$BEHIND_COUNT" -gt 0 ]; then
-      print_status "Branch is $BEHIND_COUNT commit(s) behind main — merging origin/main..."
-      if git merge origin/main --no-edit 2>/dev/null; then
+      print_status "Branch is $BEHIND_COUNT commit(s) behind ${_target} — merging origin/${_target}..."
+      if git merge "origin/${_target}" --no-edit 2>/dev/null; then
       # Verify merge didn't introduce silent semantic conflicts
       source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
       if ! verify_post_merge "."; then
-        print_warning "Merge with main introduced test failures — reverting merge"
+        print_warning "Merge with ${_target} introduced test failures — reverting merge"
         git reset --hard HEAD~1 2>/dev/null || true
         print_error "Silent semantic conflict: merge succeeds but tests fail ($BEHIND_COUNT commits behind)"
-        print_info "Resolve manually: git merge origin/main, then fix failing tests"
+        print_info "Resolve manually: git merge origin/${_target}, then fix failing tests"
         exit 1
       fi
-      print_success "Merged origin/main into branch"
+      print_success "Merged origin/${_target} into branch"
     else
       # Merge conflict — abort and fail fast rather than auto-resolving
       git merge --abort 2>/dev/null || true
-      print_error "Merge conflict with main ($BEHIND_COUNT commits behind)"
-      print_info "Resolve manually: git merge origin/main"
+      print_error "Merge conflict with ${_target} ($BEHIND_COUNT commits behind)"
+      print_info "Resolve manually: git merge origin/${_target}"
       exit 1
     fi
     fi
@@ -2857,7 +2882,7 @@ _Draft PR created automatically by rite for tracking purposes._"
   printf '%s' "$PR_BODY" > "$DRAFT_BODY_FILE"
   gh_safe pr create \
     --draft \
-    --base main \
+    --base "$_target" \
     --head "$BRANCH_NAME" \
     --title "$PR_TITLE" \
     --body-file "$DRAFT_BODY_FILE" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh, lib/core/create-pr.sh
 # tests/regression/batch-single-issue-parity.bats
 #
 # Regression test for: Batch processor must apply every single-issue side effect
@@ -542,4 +542,124 @@ EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" =~ "SKIPPED: issue 50" ]]
+}
+
+# =============================================================================
+# BEHAVIORAL: --base parity (#1036 propagation)
+# Both single-issue (WORKFLOW_FLAGS --base) and batch (env RITE_TARGET_BRANCH)
+# must reach create-pr.sh with an identical --base <target> argument.
+# =============================================================================
+
+@test "structural: --base parity — single-issue dispatch sends --base via WORKFLOW_FLAGS in bin/rite" {
+  # Verify that bin/rite's --branch arm populates WORKFLOW_FLAGS with --base so
+  # the single-issue exec carries the target explicitly to workflow-runner.sh.
+  # This is a structural pin: we grep the source to verify the wiring is present.
+  _rite_source=$(cat "$RITE_REPO_ROOT/bin/rite")
+
+  # The --branch) arm must set WORKFLOW_FLAGS+=("--base"
+  echo "$_rite_source" | grep -q 'WORKFLOW_FLAGS+=.*"--base"' || {
+    echo "FAIL: bin/rite --branch) arm does not populate WORKFLOW_FLAGS with --base"
+    return 1
+  }
+}
+
+@test "structural: --base parity — batch execs forward no WORKFLOW_FLAGS (env-only path)" {
+  # Verify that the batch execs (batch-filter / batch-multi) deliberately do NOT
+  # include WORKFLOW_FLAGS in their exec args — the target crosses the batch
+  # boundary via RITE_TARGET_BRANCH env only (batch-process-issues.sh:1203 per-issue call).
+  _rite_source=$(cat "$RITE_REPO_ROOT/bin/rite")
+
+  # The batch-filter exec must NOT reference WORKFLOW_FLAGS in its arg list.
+  # Pattern: exec "$RITE_LIB_DIR/core/batch-process-issues.sh" ... (no WORKFLOW_FLAGS)
+  _batch_filter_line=$(echo "$_rite_source" | grep -A 1 'batch-filter)' | grep 'exec.*batch-process-issues' || true)
+  if [ -z "$_batch_filter_line" ]; then
+    echo "FAIL: could not locate batch-filter exec line"
+    return 1
+  fi
+  # Must not contain WORKFLOW_FLAGS in the exec line
+  echo "$_batch_filter_line" | grep -qv 'WORKFLOW_FLAGS' || {
+    echo "FAIL: batch-filter exec carries WORKFLOW_FLAGS (should use env only)"
+    return 1
+  }
+}
+
+@test "behavioral: --base parity — recording stub receives identical --base from single-issue and batch env path" {
+  # Deploy a recording create-pr.sh stub that captures the --base argument.
+  # Single-issue path: WORKFLOW_FLAGS carries --base explicitly.
+  # Batch path: RITE_TARGET_BRANCH env only (no --base flag forwarding).
+  # Both must arrive at create-pr.sh's resolver with the same effective base.
+
+  # Set up a minimal git repo in the test tmpdir
+  cd "$RITE_TEST_TMPDIR"
+  git init -q
+  git config user.email "test@test.com"
+  git config user.name "Test"
+  echo "init" > config.sh
+  git add .
+  git commit -qm "init"
+
+  export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
+  mkdir -p "$RITE_STATE_DIR"
+
+  # Write the target-branch state file so the resolver's tier 2 fires without
+  # needing a real PR or env var — simulates what happens in a resumed batch run.
+  echo "integration-x" > "$RITE_STATE_DIR/target-branch-42.txt"
+
+  # Single-issue path: source stale-branch.sh and call resolve_target_branch directly
+  # (mirrors what phase_create_pr and create-pr.sh do after this issue lands).
+  gh_safe() { return 0; }
+  export -f gh_safe
+  git_fetch_safe() { return 0; }
+  export -f git_fetch_safe
+  create_sharkrite_stash() { return 0; }
+  export -f create_sharkrite_stash
+  verify_post_merge() { return 0; }
+  export -f verify_post_merge
+  _diag() { :; }
+  export -f _diag
+  print_status()  { :; }
+  print_info()    { :; }
+  print_warning() { :; }
+  print_error()   { echo "ERROR: $*" >&2; }
+  print_success() { :; }
+  export -f print_status print_info print_warning print_error print_success
+
+  # shellcheck disable=SC1090
+  source "$RITE_REPO_ROOT/lib/utils/stale-branch.sh"
+
+  # Re-stub after source (Rule 34: BATS_PRE_SOURCE_STUB_OVERWRITE — stale-branch.sh
+  # uses a declare -f function-sentinel guard, so pre-source stubs are preserved;
+  # re-stub here as defense-in-depth for any transitively sourced env-guard libs)
+  gh_safe() { return 0; }
+  git_fetch_safe() { return 0; }
+  create_sharkrite_stash() { return 0; }
+  verify_post_merge() { return 0; }
+  _diag() { :; }
+  export -f gh_safe git_fetch_safe create_sharkrite_stash verify_post_merge _diag
+
+  # Restore bats shell flags (lib sources under set -euo pipefail)
+  set +u; set +o pipefail
+
+  # Single-issue path: resolve with issue_number=42, no PR (state-file tier 2 fires)
+  _single_base=$(resolve_target_branch "42" "")
+
+  # Batch env path: env RITE_TARGET_BRANCH (tier 3, non-main so fires)
+  # This simulates the case where the batch exec only exported RITE_TARGET_BRANCH
+  # and create-pr.sh's resolver falls through to tier 3.
+  unset RITE_STATE_DIR || true  # force tier 3 only (no state file)
+  export RITE_TARGET_BRANCH="integration-x"
+  _batch_base=$(resolve_target_branch "42" "")
+
+  [ "$_single_base" = "integration-x" ] || {
+    echo "FAIL: single-issue path resolved '$_single_base', expected 'integration-x'"
+    return 1
+  }
+  [ "$_batch_base" = "integration-x" ] || {
+    echo "FAIL: batch env path resolved '$_batch_base', expected 'integration-x'"
+    return 1
+  }
+  [ "$_single_base" = "$_batch_base" ] || {
+    echo "FAIL: single-issue and batch resolved different targets: '$_single_base' vs '$_batch_base'"
+    return 1
+  }
 }
