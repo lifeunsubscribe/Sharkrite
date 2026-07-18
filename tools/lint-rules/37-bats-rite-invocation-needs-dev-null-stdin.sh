@@ -30,8 +30,13 @@ _r37_exec='(^|[;&|(]|run )[[:space:]]*bash[[:space:]]+"?[^"|]*/(bin/)?rite"?'
 
 while IFS= read -r bats_file; do
   [ -z "$bats_file" ] && continue
+  # Skip support files AND tests/lint/ — the latter are rule-test files whose
+  # printf/echo fixtures DELIBERATELY contain unguarded rite invocations as test
+  # data (e.g. bats-rite-stdin-guard.bats asserts the rule fires on them). They
+  # never execute a real rite, so flagging their fixture strings is a false
+  # positive that reds main's own lint.
   case "$bats_file" in
-    *tests/helpers/*|*tests/fixtures/*) continue ;;
+    *tests/helpers/*|*tests/fixtures/*|*tests/lint/*) continue ;;
   esac
 
   while IFS=: read -r _r37_lno _r37_line; do

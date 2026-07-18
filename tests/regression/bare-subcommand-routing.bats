@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: bin/rite
+# sharkrite-gate-serial — drives the real bin/rite down the issue-generation
+# routing path; runs serial so a heavy/interactive-adjacent invocation can't
+# stall the --jobs 8 parallel group (defense-in-depth; the root fix is the
+# [ -t 0 ] guard in normalize-issue.sh's approval block).
 # tests/regression/bare-subcommand-routing.bats
 #
 # Regression tests for bare-word subcommand routing in bin/rite (#804).
