@@ -197,13 +197,21 @@ _file_matches_pattern() {
 }
 
 # ---------------------------------------------------------------------------
-# check_scope_boundary ISSUE_BODY [WORKTREE_PATH]
+# check_scope_boundary ISSUE_BODY [WORKTREE_PATH [BASE_REF]]
 #
 # Compares changed files in the current git worktree against the DO/DO NOT
 # patterns parsed from ISSUE_BODY.
 #
 # Also unions the "Files to Modify:" list from the Claude Context section into
 # the allowed set — declared modification intent can never be a violation.
+#
+# BASE_REF (optional, default "origin/main"): the git ref to diff against when
+#   collecting changed files.  Pass the resolved target branch (e.g.
+#   "origin/integration-x") so integration-branch workflows are not compared
+#   against the wrong base.  The default "origin/main" preserves backward
+#   compatibility for standalone/test callers.  A formal #1052 lint backstop
+#   (RAW_ORIGIN_MAIN_REF) will suppress the bare default once all callers pass
+#   an explicit ref; leave the default in place until that lands.
 #
 # Outputs violations to stdout (one file per line, prefixed with "VIOLATION: ").
 # Also outputs info/warning lines to stderr.
@@ -215,6 +223,7 @@ _file_matches_pattern() {
 check_scope_boundary() {
   local issue_body="${1:-}"
   local worktree_path="${2:-$(pwd)}"
+  local base_ref="${3:-origin/main}"
 
   # No issue body → nothing to check
   if [ -z "$issue_body" ] || [ "$issue_body" = "null" ]; then
@@ -279,7 +288,7 @@ check_scope_boundary() {
     done <<< "$(parse_files_to_modify "$issue_body")"
   fi
 
-  # Collect changed files vs origin/main (or all staged/modified if no origin/main).
+  # Collect changed files vs the resolved base_ref (or all staged/modified if base_ref is not found).
   # Use --name-status to capture per-file status codes (A=added, D=deleted, M=modified,
   # R=renamed, etc.) so the test-path whitelist can be restricted to added files only.
   local _changed_files=()
@@ -287,8 +296,8 @@ check_scope_boundary() {
   # Only added test files are implicitly whitelisted; deleted/modified test files are not.
   local _added_files_set=""
   local _git_diff_status
-  if git -C "$worktree_path" rev-parse --verify origin/main >/dev/null 2>&1; then
-    _git_diff_status=$(git -C "$worktree_path" diff --name-status origin/main...HEAD 2>/dev/null || true)
+  if git -C "$worktree_path" rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+    _git_diff_status=$(git -C "$worktree_path" diff --name-status "${base_ref}...HEAD" 2>/dev/null || true)
   else
     _git_diff_status=$(git -C "$worktree_path" diff --name-status HEAD 2>/dev/null || true)
   fi
