@@ -145,6 +145,10 @@ while [[ $# -gt 0 ]]; do
       WORKFLOW_FLAGS+=("--bypass-blockers")
       shift
       ;;
+    --allow-main-base)
+      WORKFLOW_FLAGS+=("--allow-main-base")
+      shift
+      ;;
     --by-label|--group-by-label)
       LABEL_FILTER="--by-label"
       shift
@@ -265,6 +269,7 @@ while [[ $# -gt 0 ]]; do
       echo "Workflow flags:"
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
+      echo "  --allow-main-base          Allow merging a main-based PR when session target is non-main (overrides integration-branch guard)"
       echo "  --branch <name>            Target integration branch (default: main; inert until #1033)"
       echo "  --no-log                   Disable logging (logs are on by default)"
       echo "  --verbose                  Show extra detail (branch cleanup explanations, etc.)"

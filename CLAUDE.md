@@ -478,6 +478,7 @@ Only content-aware and practical conditions block merges:
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
   - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
 - **AWS credentials expired** — deployment credentials invalid
+- **Integration-branch guard** — `merge-pr.sh` exits 1 when the PR targets `main` but the session's resolved target (state file → `RITE_TARGET_BRANCH` → default) is a non-main integration branch. Substitutes for GitHub branch protection (unavailable on the free plan). Override with `--allow-main-base`: `rite <issue> --allow-main-base`. Implemented in `lib/core/merge-pr.sh`; forwarded by `lib/core/workflow-runner.sh`.
 - **Supervised mode**: Interactive `read -p` prompt for approval
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
 - Approvals remembered per-issue via `has_approved_blocker()`

@@ -222,17 +222,19 @@ _reconcile_followup_issues_on_merge() {
 
 # Parse arguments
 AUTO_MODE=false
+ALLOW_MAIN_BASE=false
 PR_NUMBER=""
 for arg in "$@"; do
   if [[ "$arg" == "--auto" ]]; then
     AUTO_MODE=true
+  elif [[ "$arg" == "--allow-main-base" ]]; then
+    ALLOW_MAIN_BASE=true
   elif [[ "$arg" =~ ^[0-9]+$ ]]; then
     PR_NUMBER="$arg"
   fi
 done
 
 CURRENT_BRANCH=$(git branch --show-current)
-BASE_BRANCH="main"
 
 # Colors for output
 RED='\033[0;31m'
@@ -636,6 +638,15 @@ PR_URL=$(echo "$PR_DETAILS" | jq -r '.url')
 PR_BASE=$(echo "$PR_DETAILS" | jq -r '.baseRefName')
 PR_HEAD=$(echo "$PR_DETAILS" | jq -r '.headRefName' || true)
 
+# Charset-validate PR_BASE before interpolating into any git command.
+# Reuses the same safe-charset pattern as _rite_branch_name_safe in stale-branch.sh
+# (alphanumeric, '-', '_', '.', '/'; rejects '..', meta-characters, multi-line values).
+if ! printf '%s' "$PR_BASE" | grep -qE '^[a-zA-Z0-9_./-]+$' \
+    || printf '%s' "$PR_BASE" | grep -q '\.\.'; then
+  print_error "PR base branch name contains invalid characters: '$PR_BASE'"
+  exit 1
+fi
+
 if is_verbose; then
   print_header "📋 PR Information"
   echo "Title: $PR_TITLE"
@@ -645,6 +656,29 @@ if is_verbose; then
   echo "Base: $PR_BASE → Head: $PR_HEAD"
   echo "Draft: $PR_IS_DRAFT"
   echo "Mergeable: $PR_MERGEABLE"
+fi
+
+# Soft guard: refuse to merge a main-based PR when the session's configured target
+# is a non-main integration branch. This is the branch-protection substitute while
+# .rite/config pins a non-main target (GitHub branch protection unavailable on free plan).
+#
+# The resolver is called WITHOUT a PR number so it resolves state-file → env → "main"
+# (tier 2/3/4). Passing PR_NUMBER would make tier 1 return PR_BASE itself, making the
+# comparison circular and always passing.
+#
+# Guard fires: resolved target != "main" AND PR_BASE = "main" AND --allow-main-base absent.
+if [ "$ALLOW_MAIN_BASE" != "true" ] && [ "$PR_BASE" = "main" ]; then
+  # Lazy-source stale-branch.sh for resolve_target_branch (idempotent, re-source-safe).
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  _guard_resolved_target=$(resolve_target_branch "${ISSUE_NUMBER:-}" 2>/dev/null || echo "main")
+  if [ "${_guard_resolved_target:-main}" != "main" ]; then
+    print_error "Refusing to merge: PR #$PR_NUMBER targets 'main' but the session target is '$_guard_resolved_target'"
+    print_error "This guard substitutes for GitHub branch protection (free plan has none)."
+    print_error "To override: rite ${ISSUE_NUMBER:-$PR_NUMBER} --allow-main-base"
+    exit 1
+  fi
 fi
 
 # Validation checks
@@ -681,15 +715,15 @@ fi
 if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
   print_warning "PR mergeable state: $PR_MERGEABLE"
   if [ "$PR_MERGEABLE" = "CONFLICTING" ]; then
-    # Always attempt to auto-resolve by merging main into the feature branch
-    print_info "Attempting to merge main into feature branch to resolve conflicts..."
-    # Fetch with retries — reading origin/main immediately after; stale data = wrong conflict state
-    if ! git_fetch_safe origin main; then
-      print_error "Cannot resolve conflicts: failed to fetch fresh main ref"
+    # Always attempt to auto-resolve by merging the PR's base into the feature branch
+    print_info "Attempting to merge $PR_BASE into feature branch to resolve conflicts..."
+    # Fetch with retries — reading origin/$PR_BASE immediately after; stale data = wrong conflict state
+    if ! git_fetch_safe origin "$PR_BASE"; then
+      print_error "Cannot resolve conflicts: failed to fetch fresh $PR_BASE ref"
       VALIDATION_FAILED=true
-    elif git merge origin/main --no-edit 2>/dev/null; then
+    elif git merge "origin/$PR_BASE" --no-edit 2>/dev/null; then
       if git push origin "$PR_HEAD" 2>/dev/null; then
-        print_success "Merged main into branch and pushed — re-checking mergeable state"
+        print_success "Merged $PR_BASE into branch and pushed — re-checking mergeable state"
         # Give GitHub a moment to update mergeable state
         sleep 3
         PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
@@ -697,11 +731,11 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
         if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
           print_success "PR is now mergeable"
         else
-          print_error "PR still not mergeable after merging main (state: $PR_MERGEABLE)"
+          print_error "PR still not mergeable after merging $PR_BASE (state: $PR_MERGEABLE)"
           VALIDATION_FAILED=true
         fi
       else
-        print_error "Push failed after merging main"
+        print_error "Push failed after merging $PR_BASE"
         git reset --hard HEAD~1 2>/dev/null || true
         VALIDATION_FAILED=true
       fi
@@ -962,13 +996,13 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
     fi
   fi
 
-  # Handle "not mergeable" — branch may be behind main; try updating and retry once
+  # Handle "not mergeable" — branch may be behind the PR base; try updating and retry once
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable|405"; then
-    print_warning "PR is not mergeable — attempting branch update against main"
-    # Fetch with retries — reading origin/main immediately after; stale data = wrong merge base
-    if ! git_fetch_safe origin main; then
-      print_error "Cannot update branch: failed to fetch fresh main ref"
-    elif git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+    print_warning "PR is not mergeable — attempting branch update against $PR_BASE"
+    # Fetch with retries — reading origin/$PR_BASE immediately after; stale data = wrong merge base
+    if ! git_fetch_safe origin "$PR_BASE"; then
+      print_error "Cannot update branch: failed to fetch fresh $PR_BASE ref"
+    elif git merge "origin/$PR_BASE" --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
       print_status "Branch updated — retrying merge..."
       sleep 3
       EXPECTED_HEAD=$(gh_safe pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
@@ -978,7 +1012,7 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
         -f sha="$EXPECTED_HEAD"
     else
       git merge --abort 2>/dev/null || true
-      print_error "Could not update branch against main"
+      print_error "Could not update branch against $PR_BASE"
     fi
   fi
 else
@@ -986,19 +1020,19 @@ else
   print_info "Using fallback merge (no SHA verification)"
   _do_merge gh_safe pr merge "$PR_NUMBER" "--$MERGE_METHOD"
 
-  # Handle "not mergeable" in fallback path — branch may be behind main
+  # Handle "not mergeable" in fallback path — branch may be behind the PR base
   if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
-    print_warning "PR is not mergeable — attempting branch update against main"
-    # Fetch with retries — reading origin/main immediately after; stale data = wrong merge base
-    if ! git_fetch_safe origin main; then
-      print_error "Cannot update branch: failed to fetch fresh main ref"
-    elif git merge origin/main --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
+    print_warning "PR is not mergeable — attempting branch update against $PR_BASE"
+    # Fetch with retries — reading origin/$PR_BASE immediately after; stale data = wrong merge base
+    if ! git_fetch_safe origin "$PR_BASE"; then
+      print_error "Cannot update branch: failed to fetch fresh $PR_BASE ref"
+    elif git merge "origin/$PR_BASE" --no-edit 2>/dev/null && git push origin "$PR_HEAD" 2>/dev/null; then
       print_status "Branch updated — retrying merge..."
       sleep 3
       _do_merge gh_safe pr merge "$PR_NUMBER" "--$MERGE_METHOD"
     else
       git merge --abort 2>/dev/null || true
-      print_error "Could not update branch against main"
+      print_error "Could not update branch against $PR_BASE"
     fi
   fi
 fi
@@ -1231,6 +1265,9 @@ EOF
   # the merge. Without this, ls in the project root shows stale state and the
   # user (reasonably) concludes the work never landed.
   #
+  # STAYS-MAIN: this local-main fast-forward is trunk housekeeping — it always runs
+  # regardless of PR_BASE. Do NOT replace it with a PR_BASE-only update.
+  #
   # Two cases:
   #   1. main is checked out in some worktree (typical) — git pull --ff-only there
   #   2. main not checked out anywhere — git fetch origin main:main updates the ref directly
@@ -1246,6 +1283,34 @@ EOF
       print_success "Local main fast-forwarded to origin/main"
     else
       print_warning "Could not update local main — run 'git pull --ff-only origin main' manually"
+    fi
+  fi
+
+  # Parallel fast-forward: when the PR targets a non-main integration branch, also
+  # fast-forward that branch locally so the user's checkout of the integration branch
+  # reflects the merge without a manual pull.
+  #
+  # Placement: runs BEFORE worktree removal (below) so cwd is still valid here; uses
+  # a (cd …) subshell so the outer cwd is not changed.
+  #
+  # Awk exact-string match (awk -v): never interpolate a branch name into an awk regex —
+  # branch names may contain '.' which would match any character in a regex context.
+  if [ "$PR_BASE" != "main" ]; then
+    BASE_CHECKOUT_PATH=$(git worktree list --porcelain 2>/dev/null \
+      | awk -v b="refs/heads/$PR_BASE" \
+          '/^worktree / { p = substr($0, 10) } $0 == "branch " b { print p; exit }' || true)
+    if [ -n "$BASE_CHECKOUT_PATH" ]; then
+      if (cd "$BASE_CHECKOUT_PATH" && git pull --ff-only origin "$PR_BASE" >/dev/null 2>&1); then
+        print_success "Local $PR_BASE fast-forwarded to origin/$PR_BASE"
+      else
+        print_warning "Could not fast-forward local $PR_BASE in $BASE_CHECKOUT_PATH — run 'git pull --ff-only origin $PR_BASE' there manually"
+      fi
+    else
+      if git fetch origin "$PR_BASE:$PR_BASE" >/dev/null 2>&1; then
+        print_success "Local $PR_BASE fast-forwarded to origin/$PR_BASE"
+      else
+        print_warning "Could not update local $PR_BASE — run 'git pull --ff-only origin $PR_BASE' manually"
+      fi
     fi
   fi
 
