@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh
+# sharkrite-test-covers: lib/core/assess-review-issues.sh, lib/utils/config.sh
 # Test suite for issue #8: Make empty Claude assessment fail loud, not
 #
 # Verifies that empty assessment output (transient API failure) causes a loud

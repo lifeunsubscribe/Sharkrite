@@ -151,6 +151,25 @@ if [ ! -d "$_LINT_RULES_DIR" ]; then
   echo "ERROR: rule directory not found: $_LINT_RULES_DIR" >&2
   exit 1
 fi
+
+# Fragment-number uniqueness guard (#1023): the loop below sources
+# lint-rules/*.sh in sort order — nothing dedups the NN- prefix, so two
+# fragments sharing a number BOTH load silently (their helper/awk-tmp vars can
+# clobber each other, and a duplicate RULE_NAME makes suppression ambiguous).
+# This is not hypothetical: #1029's rule 36 and a new covers rule collided.
+# Fail loudly here so a duplicate number can never ship unnoticed — a branch
+# that adds a colliding fragment goes red on its own `make lint`/gate.
+_lint_dup_nums=$(ls "$_LINT_RULES_DIR"/*.sh 2>/dev/null \
+  | sed -E 's#.*/([0-9]+)-.*#\1#' | sort | uniq -d)
+if [ -n "$_lint_dup_nums" ]; then
+  echo "ERROR: duplicate lint-rule fragment number(s): $(echo $_lint_dup_nums)" >&2
+  echo "       Each tools/lint-rules/NN-*.sh must use a unique NN prefix. Offenders:" >&2
+  for _n in $_lint_dup_nums; do
+    ls "$_LINT_RULES_DIR/${_n}-"*.sh 2>/dev/null | sed 's#^#         #' >&2
+  done
+  exit 1
+fi
+
 for _rule_file in "$_LINT_RULES_DIR"/*.sh; do
   [ -f "$_rule_file" ] || continue
   # shellcheck source=/dev/null

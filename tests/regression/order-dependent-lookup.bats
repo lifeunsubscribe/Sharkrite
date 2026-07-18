@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh
+# sharkrite-test-covers: lib/utils/issue-lock.sh, lib/utils/session-tracker.sh
 # tests/regression/order-dependent-lookup.bats
 #
 # Regression tests for order-dependent lookup bugs in issue-lock.sh:
