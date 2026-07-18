@@ -1319,13 +1319,19 @@ phase_assess_and_resolve() {
     local _mid_rebase_branch
     _mid_rebase_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     if [ -n "$_mid_rebase_branch" ] && [ "$_mid_rebase_branch" != "main" ] && [ "$_mid_rebase_branch" != "master" ]; then
+      # Resolve the target branch once per scope — $_target was already computed above
+      # via resolve_target_branch for the gate-base fallback, so reuse it. Resolving
+      # again inline would double the GitHub API call (tier 1) per fix iteration.
+      local _mid_rebase_base
+      _mid_rebase_base="$_target"
       local _mid_rebase_result=0
       check_and_rebase_against_main \
         "$WORKTREE_PATH" \
         "$_mid_rebase_branch" \
         "$issue_number" \
         "${pr_number:-}" \
-        "$WORKFLOW_MODE" || _mid_rebase_result=$?
+        "$WORKFLOW_MODE" \
+        "$_mid_rebase_base" || _mid_rebase_result=$?
       if [ "$_mid_rebase_result" -ne 0 ]; then
         # Rebase conflict (Claude-assisted resolution failed): abort before spending
         # Claude time on a review.

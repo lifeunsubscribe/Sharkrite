@@ -484,9 +484,9 @@ Only content-aware and practical conditions block merges:
 
 ### Stale Branch Handling
 
-When resuming an issue with an existing PR, the branch is checked against `origin/main`. Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
+When resuming an issue with an existing PR, the branch is checked against the PR's base branch (`origin/main` by default). Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
 
-- **Below threshold**: Rebase the feature branch onto `origin/main` (replays branch commits on top of fresh main), then force-push with `--force-with-lease`. Rebase avoids the false conflicts a merge would surface when main has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; otherwise auto mode bails and supervised mode prompts.
+- **Below threshold**: Rebase the feature branch onto the PR's base branch (`origin/main` by default) (replays branch commits on top of fresh base), then force-push with `--force-with-lease`. Rebase avoids the false conflicts a merge would surface when the base has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; otherwise auto mode bails and supervised mode prompts.
 - **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
 - **At/above threshold (supervised)**: Prompt with 5 options (close+restart recommended, rebase onto main, merge main into branch [legacy], continue, abort). The legacy merge path is kept opt-in for cases where rewriting history is unacceptable.
 
