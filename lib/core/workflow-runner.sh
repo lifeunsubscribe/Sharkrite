@@ -664,6 +664,16 @@ phase_claude_workflow() {
 
   print_header "Phase 1: Sharkrite Workflow (Development)"
 
+  # Resolve target branch once per function invocation (SC2155: declare then assign).
+  # resolve_target_branch reads the PR base (tier 1), state file (tier 2), env (tier 3),
+  # or falls back to "main" (tier 4). stale-branch.sh may not be loaded yet here —
+  # lazy-source behind declare -f (same precedent as phase_create_pr :1144).
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  local _target
+  _target=$(resolve_target_branch "$issue_number" "${PR_NUMBER:-}")
+
   set_current_issue "$issue_number"
 
   # Check if resuming or starting fresh
@@ -794,7 +804,7 @@ EOF
         # Check if PR has actual file changes (not just placeholder commit).
         # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
         cd "$WORKTREE_PATH" || exit 1
-        FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+        FILE_CHANGES=$(git diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
 
         if [ "$FILE_CHANGES" -gt 0 ]; then
           print_info "Issue #$issue_number has $FILE_CHANGES file(s) changed — skipping development phase"
@@ -859,7 +869,7 @@ EOF
 
           # Re-check if development actually produced work
           local post_dev_changes
-          post_dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+          post_dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
           if [ "${post_dev_changes:-0}" -eq 0 ]; then
             print_warning "No work was produced in the development phase"
             print_info "Aborting workflow — nothing to push or review"
@@ -1035,10 +1045,10 @@ EOF
 
       set_current_worktree "$WORKTREE_PATH"
 
-      # Verify development actually produced work (file changes vs main).
-      # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
+      # Verify development actually produced work (file changes vs target).
+      # Use triple-dot (merge-base diff) so advancing target doesn't false-positive.
       local file_changes
-      file_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+      file_changes=$(git -C "$WORKTREE_PATH" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
 
       if [ "$file_changes" -eq 0 ]; then
         print_warning "No work was produced in the development phase"
@@ -1177,6 +1187,15 @@ phase_assess_and_resolve() {
   local pr_number="$2"
   local retry_count="${3:-0}"  # Default to 0 if not provided
   local max_retries=3
+
+  # Resolve target branch once (SC2155: declare then assign).
+  # Used as the FALLBACK for RITE_TEST_GATE_DIFF_BASE in the fix-loop gate —
+  # the incremental _pre_fix_head base (#724) is primary; this is only the fallback.
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  local _target
+  _target=$(resolve_target_branch "$issue_number" "${pr_number:-}")
 
   # Track retry count globally for interrupt handler
   CURRENT_RETRY="$retry_count"
@@ -1484,10 +1503,10 @@ phase_assess_and_resolve() {
     print_info "Starting post-commit gate in background (make check + bats -r tests/)..."
     # RITE_GATE_BACKGROUND=1: runs concurrent with review generation → route raw
     # output to the log (not the terminal) so it can't interleave with the review.
-    # Incremental selection: diff against the pre-fix HEAD (not origin/main) so the
+    # Incremental selection: diff against the pre-fix HEAD (not origin/target) so the
     # gate re-runs only tests covering THIS fix's changes — not the full targeted
-    # set every iteration (#724). Falls back to origin/main if HEAD was unreadable.
-    RITE_GATE_BACKGROUND=1 RITE_TEST_GATE_DIFF_BASE="${_pre_fix_head:-origin/main}" run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
+    # set every iteration (#724). Falls back to origin/$_target if HEAD was unreadable.
+    RITE_GATE_BACKGROUND=1 RITE_TEST_GATE_DIFF_BASE="${_pre_fix_head:-origin/${_target}}" run_test_gate "$_gate_output_file" "$WORKTREE_PATH" &
     _gate_pid=$!
 
     # Spawn doc assessment in parallel with the gate + review regeneration.
@@ -2495,6 +2514,17 @@ run_workflow() {
   local _workflow_start_ts
   _workflow_start_ts=$(date +%s)
 
+  # Resolve target branch once per run_workflow() invocation (SC2155: declare then assign).
+  # Never export — a persistent export from issue 1 would poison issue 2's default
+  # in a multi-issue batch.  The :-seeding below preserves the operator override
+  # contract (RITE_TEST_GATE_DIFF_BASE set externally still wins via ${VAR:-...}).
+  # Lazy-source stale-branch.sh behind declare -f (same precedent as phase_create_pr).
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  local _target
+  _target=$(resolve_target_branch "$issue_number" "${PR_NUMBER:-}")
+
   # Layer-2 dry-run backstop (defense in depth): bin/rite's dry-run choke point
   # plans-and-exits before dispatch, so RITE_DRY_RUN=true must never reach
   # execution entry. If it does, refuse loudly rather than run a "dry" workflow
@@ -2714,7 +2744,7 @@ run_workflow() {
       if [ -n "$_pr_branch" ]; then
         local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
-          local _file_changes=$(git -C "$_wt_path" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+          local _file_changes=$(git -C "$_wt_path" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
           if [ "$_file_changes" -gt 0 ]; then
             WORKTREE_PATH="$_wt_path"
             set_current_worktree "$WORKTREE_PATH"
@@ -2763,23 +2793,24 @@ run_workflow() {
     # 0 = branch current or merged main, continue normally
   fi
 
-  # ── Update branch against main for worktree-without-PR resume (e.g., dev-phase test failures) ──
+  # ── Update branch against target for worktree-without-PR resume (e.g., dev-phase test failures) ──
   # The stale branch check above requires PR_NUMBER and is skipped when development never
   # created a PR (e.g., tests failed before push). Update here so the retry gets a fresh baseline.
+  # PR_NUMBER is empty here — resolver used tier 2 (state file) or tier 3 (env) / tier 4 (default).
   if [ "$RESUME_MODE" = true ] && [ -z "${PR_NUMBER:-}" ] && [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
-    git -C "$WORKTREE_PATH" fetch origin main 2>/dev/null || true
+    git -C "$WORKTREE_PATH" fetch origin "$_target" 2>/dev/null || true
     local _behind_main
-    _behind_main=$(git -C "$WORKTREE_PATH" rev-list --count "HEAD..origin/main" 2>/dev/null || echo "0")
+    _behind_main=$(git -C "$WORKTREE_PATH" rev-list --count "HEAD..origin/${_target}" 2>/dev/null || echo "0")
     if [ "${_behind_main:-0}" -gt 0 ]; then
-      print_status "Branch is $_behind_main commit(s) behind main — updating before retry..."
+      print_status "Branch is $_behind_main commit(s) behind ${_target} — updating before retry..."
       local _dev_branch
       _dev_branch=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-      if git -C "$WORKTREE_PATH" merge origin/main --no-edit 2>/dev/null; then
+      if git -C "$WORKTREE_PATH" merge "origin/${_target}" --no-edit 2>/dev/null; then
         [ -n "$_dev_branch" ] && git -C "$WORKTREE_PATH" push origin "$_dev_branch" 2>/dev/null || true
-        print_success "Branch updated against main"
+        print_success "Branch updated against ${_target}"
       else
         git -C "$WORKTREE_PATH" merge --abort 2>/dev/null || true
-        print_warning "Could not auto-update branch against main — resuming anyway"
+        print_warning "Could not auto-update branch against ${_target} — resuming anyway"
       fi
     fi
   fi
@@ -2889,7 +2920,7 @@ run_workflow() {
       print_info "Review current, no assessment → running assessment"
     else
       # Review stale or missing — skip dev if work exists, run from push/review
-      local _dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+      local _dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
       if [ "${_dev_changes:-0}" -gt 0 ]; then
         skip_to_phase="create-pr"
         print_info "Dev complete, review needs refresh → running from push/review"
@@ -3001,7 +3032,7 @@ run_workflow() {
     if [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ] \
        && [ -f "$_autofix_script" ] && declare -f run_with_timeout >/dev/null 2>&1; then
       ( cd "$WORKTREE_PATH" \
-          && run_with_timeout 60 bash "$_autofix_script" --changed "${RITE_TEST_GATE_DIFF_BASE:-origin/main}" ) \
+          && run_with_timeout 60 bash "$_autofix_script" --changed "${RITE_TEST_GATE_DIFF_BASE:-origin/${_target}}" ) \
           >/dev/null 2>&1 || true
       # Commit any fixes the prepass made (quiet; nothing staged → no commit).
       if [ -n "$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || true)" ]; then
@@ -3035,7 +3066,9 @@ run_workflow() {
       print_info "Starting post-commit gate in background (parallel with review)..."
       # RITE_GATE_BACKGROUND=1: parallel with review generation → route raw output
       # to the log (not the terminal) so it can't interleave with the review.
-      RITE_GATE_BACKGROUND=1 run_test_gate "$_init_gate_file" "$WORKTREE_PATH" &
+      # Seed RITE_TEST_GATE_DIFF_BASE so the gate's targeted selection diffs against
+      # the resolved target (not origin/main) — only-if-unset so operator override wins.
+      RITE_GATE_BACKGROUND=1 RITE_TEST_GATE_DIFF_BASE="${RITE_TEST_GATE_DIFF_BASE:-origin/${_target}}" run_test_gate "$_init_gate_file" "$WORKTREE_PATH" &
       _init_gate_pid=$!
     fi
 
@@ -3187,9 +3220,12 @@ _check_no_work_invariant() {
   local _inv_commits=0
   local _inv_pr=""
 
-  # Check commits on the feature branch (requires a live worktree)
+  # Check commits on the feature branch (requires a live worktree).
+  # Resolve target to count commits vs the correct base (not always main).
   if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
-    _inv_commits=$(git -C "$worktree_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo 0)
+    local _inv_target
+    _inv_target=$(resolve_target_branch "$issue_number" "${pr_number:-}" 2>/dev/null || echo "main")
+    _inv_commits=$(git -C "$worktree_path" rev-list --count "origin/${_inv_target}..HEAD" 2>/dev/null || echo 0)
   fi
 
   # Check whether a PR exists for the issue (set by PR detection or Phase 2)

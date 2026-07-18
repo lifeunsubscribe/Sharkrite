@@ -118,20 +118,28 @@ try_trivial_fix_fastpath() {
   local _issue_title
   _issue_title=$(gh_safe issue view "$issue_number" --json title --jq '.title' 2>/dev/null || echo "issue-$issue_number")
 
+  # Resolve target branch once (SC2155: declare then assign).
+  # No PR exists at this point — resolver uses tier 2 (state file) or tier 3 (env) / tier 4 (default).
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  local _fastpath_target
+  _fastpath_target=$(resolve_target_branch "$issue_number" "")
+
   # --- 2. Worktree + branch ----------------------------------------------
   local _branch="fastpath/issue-${issue_number}"
   local _safe="${_branch//\//-}"
   _safe="${_safe//../-}"; _safe="${_safe//./}"; _safe="${_safe#-}"; _safe="${_safe%-}"
   local _worktree="${RITE_WORKTREE_DIR}/${_safe}"
 
-  git -C "$RITE_PROJECT_ROOT" fetch origin main --quiet 2>/dev/null || true
+  git -C "$RITE_PROJECT_ROOT" fetch origin "$_fastpath_target" --quiet 2>/dev/null || true
   mkdir -p "$RITE_WORKTREE_DIR" 2>/dev/null || true
 
   # If a stale worktree/branch from a prior aborted run exists, clear it first.
   fastpath_cleanup_worktree "$_worktree" "$_branch"
 
-  local _base_ref="origin/main"
-  git -C "$RITE_PROJECT_ROOT" rev-parse --verify "$_base_ref" >/dev/null 2>&1 || _base_ref="main"
+  local _base_ref="origin/${_fastpath_target}"
+  git -C "$RITE_PROJECT_ROOT" rev-parse --verify "$_base_ref" >/dev/null 2>&1 || _base_ref="$_fastpath_target"
   if ! git -C "$RITE_PROJECT_ROOT" worktree add -b "$_branch" "$_worktree" "$_base_ref" >/dev/null 2>&1; then
     print_warning "Fast-path: could not create worktree — falling back to normal flow"
     return 1
@@ -225,15 +233,7 @@ try_trivial_fix_fastpath() {
   local _pr_body
   _pr_body=$(printf 'Trivial-fix fast-path applied for issue #%s (skipped dev session + full review).\n\nThe change was applied deterministically from a patch in the issue body, then validated by:\n- `git apply --check` (patch applies cleanly)\n- `bash -n` syntax check\n- cheap haiku triage classifier (verdict: trivial)\n- post-commit gate (`make check` + `bats -r tests/`)\n\nCloses #%s\n\n<!-- sharkrite-fastpath-pr:%s -->' "$issue_number" "$issue_number" "$issue_number")
 
-  # Resolve the effective target branch for the PR base.
-  # issue_number is in scope (param 1 of try_trivial_fix_fastpath).
-  # Lazy-source stale-branch.sh behind declare -f (precedent: claude-workflow.sh:2005/2029).
-  # No PR yet at this point — resolver uses tier 2 (state file) or tier 3 (env).
-  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
-    source "$RITE_LIB_DIR/utils/stale-branch.sh"
-  fi
-  local _fastpath_target
-  _fastpath_target=$(resolve_target_branch "$issue_number" "")
+  # _fastpath_target is already resolved above (step 2) — reuse it for the PR base.
 
   PR_NUMBER=$(gh_safe pr create --title "$_issue_title" --body "$_pr_body" --head "$_branch" --base "$_fastpath_target" 2>/dev/null | grep -oE '[0-9]+$' | tail -1 || true)
   if [ -z "${PR_NUMBER:-}" ]; then
