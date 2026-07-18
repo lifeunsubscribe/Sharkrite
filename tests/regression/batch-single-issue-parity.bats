@@ -571,9 +571,10 @@ EOF
 
   # The batch-filter exec must NOT reference WORKFLOW_FLAGS in its arg list.
   # Pattern: exec "$RITE_LIB_DIR/core/batch-process-issues.sh" ... (no WORKFLOW_FLAGS)
-  _batch_filter_line=$(echo "$_rite_source" | grep -A 1 'batch-filter)' | grep 'exec.*batch-process-issues' || true)
+  # Match the exec line directly (it may be several lines after 'batch-filter)' due to comments).
+  _batch_filter_line=$(echo "$_rite_source" | grep 'exec.*batch-process-issues\.sh.*BATCH_FILTER_ARGS' || true)
   if [ -z "$_batch_filter_line" ]; then
-    echo "FAIL: could not locate batch-filter exec line"
+    echo "FAIL: could not locate batch-filter exec line (exec.*batch-process-issues.sh.*BATCH_FILTER_ARGS)"
     return 1
   fi
   # Must not contain WORKFLOW_FLAGS in the exec line

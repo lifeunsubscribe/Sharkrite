@@ -283,7 +283,12 @@ teardown() {
   unset RITE_TARGET_BRANCH || true
   unset RITE_STATE_DIR     || true
 
-  _result=$(resolve_target_branch "" "")
+  # Call in the current shell (not a subshell via $()) so the same-shell
+  # side-effect RESOLVED_TARGET_SOURCE is visible after the call.
+  _tmp_out=$(mktemp)
+  resolve_target_branch "" "" > "$_tmp_out"
+  _result=$(cat "$_tmp_out")
+  rm -f "$_tmp_out"
 
   [ "$_result" = "main" ] || {
     echo "FAIL: default resolved '$_result', expected 'main'"
@@ -334,7 +339,12 @@ teardown() {
 
   unset RITE_TARGET_BRANCH || true
 
-  _result=$(resolve_target_branch "99" "")
+  # Call in the current shell (not a subshell via $()) so the same-shell
+  # side-effect RESOLVED_TARGET_SOURCE is visible after the call.
+  _tmp_out=$(mktemp)
+  resolve_target_branch "99" "" > "$_tmp_out"
+  _result=$(cat "$_tmp_out")
+  rm -f "$_tmp_out"
 
   [ "$_result" = "release/v2" ] || {
     echo "FAIL: tier-2 resolved '$_result', expected 'release/v2'"
@@ -381,7 +391,12 @@ teardown() {
   unset RITE_STATE_DIR || true
   export RITE_TARGET_BRANCH="integration/canary"
 
-  _result=$(resolve_target_branch "55" "")
+  # Call in the current shell (not a subshell via $()) so the same-shell
+  # side-effect RESOLVED_TARGET_SOURCE is visible after the call.
+  _tmp_out=$(mktemp)
+  resolve_target_branch "55" "" > "$_tmp_out"
+  _result=$(cat "$_tmp_out")
+  rm -f "$_tmp_out"
 
   [ "$_result" = "integration/canary" ] || {
     echo "FAIL: tier-3 resolved '$_result', expected 'integration/canary'"
@@ -429,7 +444,12 @@ teardown() {
   unset RITE_STATE_DIR || true
   export RITE_TARGET_BRANCH="main"  # transport default — must not fire tier 3
 
-  _result=$(resolve_target_branch "77" "")
+  # Call in the current shell (not a subshell via $()) so the same-shell
+  # side-effect RESOLVED_TARGET_SOURCE is visible after the call.
+  _tmp_out=$(mktemp)
+  resolve_target_branch "77" "" > "$_tmp_out"
+  _result=$(cat "$_tmp_out")
+  rm -f "$_tmp_out"
 
   [ "$_result" = "main" ] || {
     echo "FAIL: resolved '$_result', expected 'main' (tier 3 must skip literal main)"
