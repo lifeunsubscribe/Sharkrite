@@ -215,6 +215,11 @@ _file_matches_pattern() {
 check_scope_boundary() {
   local issue_body="${1:-}"
   local worktree_path="${2:-$(pwd)}"
+  # base_ref: the diff base for changed-file detection. Defaults to "origin/main" so
+  # standalone/test callers that pass only 2 args stay byte-identical. Production callers
+  # (claude-workflow.sh) pass the resolved target (e.g. "origin/integration-x").
+  # The default here is a documented #1052 candidate for lint suppression.
+  local base_ref="${3:-origin/main}"
 
   # No issue body → nothing to check
   if [ -z "$issue_body" ] || [ "$issue_body" = "null" ]; then
@@ -279,7 +284,7 @@ check_scope_boundary() {
     done <<< "$(parse_files_to_modify "$issue_body")"
   fi
 
-  # Collect changed files vs origin/main (or all staged/modified if no origin/main).
+  # Collect changed files vs base_ref (or all staged/modified if base_ref not found).
   # Use --name-status to capture per-file status codes (A=added, D=deleted, M=modified,
   # R=renamed, etc.) so the test-path whitelist can be restricted to added files only.
   local _changed_files=()
@@ -287,8 +292,8 @@ check_scope_boundary() {
   # Only added test files are implicitly whitelisted; deleted/modified test files are not.
   local _added_files_set=""
   local _git_diff_status
-  if git -C "$worktree_path" rev-parse --verify origin/main >/dev/null 2>&1; then
-    _git_diff_status=$(git -C "$worktree_path" diff --name-status origin/main...HEAD 2>/dev/null || true)
+  if git -C "$worktree_path" rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+    _git_diff_status=$(git -C "$worktree_path" diff --name-status "${base_ref}...HEAD" 2>/dev/null || true)
   else
     _git_diff_status=$(git -C "$worktree_path" diff --name-status HEAD 2>/dev/null || true)
   fi

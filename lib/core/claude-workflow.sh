@@ -907,14 +907,15 @@ $_fail_summary
 # Guard: ensure Claude dev session produced committed work or fail loud
 # Called after Claude session ends, before PR creation workflow
 check_dev_session_output() {
-  # Count commits on current branch
-  # If origin/main exists, count commits ahead of it
-  # Otherwise, count all commits on HEAD (handles repos without origin/main)
+  # Count commits on current branch vs the resolved target (not always main).
+  # Falls back to counting all commits when origin/$_target is not yet known.
+  # _target is set in the main script body before this function is called.
+  local _cds_target="${_target:-main}"
   local commits_ahead
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+  if git rev-parse --verify "origin/${_cds_target}" >/dev/null 2>&1; then
+    commits_ahead=$(git rev-list --count "origin/${_cds_target}..HEAD" 2>/dev/null || echo "0")
   else
-    # No origin/main - count all commits on this branch
+    # No origin/$_cds_target - count all commits on this branch
     commits_ahead=$(git rev-list --count HEAD 2>/dev/null || echo "0")
   fi
 
@@ -926,10 +927,10 @@ check_dev_session_output() {
     has_real_work=false  # No commits at all
   elif [ "$commits_ahead" -eq 1 ]; then
     # One commit: check if it's the init commit or actual work
-    # Use different range depending on whether origin/main exists
+    # Use different range depending on whether origin/$_cds_target exists
     local commit_range="HEAD~1..HEAD"
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      commit_range="origin/main..HEAD"
+    if git rev-parse --verify "origin/${_cds_target}" >/dev/null 2>&1; then
+      commit_range="origin/${_cds_target}..HEAD"
     fi
     if git log --oneline "$commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
       has_real_work=false  # Only the init commit exists
@@ -937,13 +938,13 @@ check_dev_session_output() {
       has_real_work=true   # One real commit (not init)
     fi
   else
-    # Multiple commits. With an origin/main baseline, commits_ahead already
+    # Multiple commits. With an origin/$_cds_target baseline, commits_ahead already
     # excludes the base, so 2+ means real work beyond init. WITHOUT a baseline,
     # commits_ahead counts the repo's base commit too, so "base + chore-init"
     # is NOT real work — detect that by counting commits that aren't the
     # init placeholder (base alone leaves 1; real work leaves >1).
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      has_real_work=true   # 2+ commits ahead of origin/main => real work
+    if git rev-parse --verify "origin/${_cds_target}" >/dev/null 2>&1; then
+      has_real_work=true   # 2+ commits ahead of origin/$_cds_target => real work
     else
       local non_init_count
       non_init_count=$(git log --oneline HEAD 2>/dev/null | grep -vc "chore: initialize work" || true)
@@ -1090,14 +1091,22 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   # Two signals, either sufficient (per issue #985 scope):
   #   1. ACTIONABLE_NOW_ITEMS text mentions a tests/ path or .bats file
   #      (covers [GATE] bats failures and review findings naming test files)
-  #   2. branch already has tests/ changes relative to origin/main
+  #   2. branch already has tests/ changes relative to origin/$_target
   #      (covers the case where items describe a logic fix but the branch
   #       also carries test edits that the fix session will continue to touch)
   # DO NOT inject when neither signal fires (prompt bloat on non-test fixes).
   # Lookup chain mirrors dev_session_preamble (project override → install-dir doc).
   _fix_test_runbook_section=""
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    _fix_branch_has_tests=$(git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^tests/' && echo "yes" || true)
+  # Resolve target branch locally — the main-body _target assignment at ~1758 is
+  # unreachable from this path (FIX_REVIEW_MODE exits at 1377). Mirror the lazy-source
+  # pattern used at the new-worktree block (~2454) so _fix_tgt is never a stale fallback.
+  # Plain _-prefix assignment (no `local`) — `local` crashes in the top-level script body.
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+  _fix_tgt=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${FIX_PR_NUMBER:-}")
+  if git rev-parse --verify "origin/${_fix_tgt}" >/dev/null 2>&1; then
+    _fix_branch_has_tests=$(git diff --name-only "origin/${_fix_tgt}...HEAD" 2>/dev/null | grep -qE '^tests/' && echo "yes" || true)
   else
     _fix_branch_has_tests=""
   fi
@@ -1737,6 +1746,23 @@ if [ -z "${CONTINUE_ISSUE_NUM:-}" ]; then
   echo ""
 fi
 
+# Resolve target branch once for the whole script body (SC2155: declare-then-assign).
+# _ prefix = main-body-scoped (no local keyword — claude-workflow.sh runs logic
+# in the main script body, and `local` there crashes with bash -n / set -e).
+# Coordinate with sibling #1036: both siblings write to the SAME _target variable
+# so whichever sibling lands second (or runs as a merged PR) naturally reuses it.
+# stale-branch.sh is sourced at the top of this file (via config.sh→stale-branch.sh
+# chain) or lazy-sourced below at the new-worktree block — guard with declare -f.
+if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+fi
+# PR_NUMBER may not be known yet (detected later at ~1800); resolver uses tier 2
+# (state file) or tier 3 (env) / tier 4 (default). The later re-resolution at
+# line ~2703 may upgrade to tier 1 once PR_NUMBER is known — both write _target,
+# which is idempotent if both resolve to the same value, or updates it if the
+# PR base reveals a non-default target (acceptable: PR detection hasn't happened yet).
+_target=$(resolve_target_branch "${ISSUE_NUMBER:-}" "${PR_NUMBER:-}")
+
 # Check dependencies
 if ! command -v gh &> /dev/null; then
   print_error "GitHub CLI required: brew install gh"
@@ -1835,11 +1861,11 @@ if [ -z "$ISSUE_NUMBER" ]; then
     fi
 
     # PR exists but is it just a placeholder? Check for actual file changes.
-    # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+    # Use triple-dot (merge-base diff) so advancing target doesn't false-positive.
+    if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
+      FILE_CHANGES=$(git diff --name-only "origin/${_target:-main}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
     else
-      # No origin/main - count all files in working tree (alternative: could use git ls-files)
+      # No origin/$_target - count all files in working tree (alternative: could use git ls-files)
       FILE_CHANGES=$(git diff --name-only --cached 2>/dev/null | wc -l | tr -d ' ')
       if [ "$FILE_CHANGES" -eq 0 ]; then
         FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
@@ -2322,6 +2348,9 @@ If the changes are unrelated work, answer UNRELATED."
             if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
               UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
             elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
+              # Cross-worktree UNPUSHED guard: OTHER issues' worktrees whose targets are
+              # unknowable here — overcounting vs main errs toward protection. Left as
+              # origin/main intentionally; formal suppression deferred to #1052.
               UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
             else
               # No remote branches exist - count all commits on HEAD
@@ -2399,6 +2428,9 @@ If the changes are unrelated work, answer UNRELATED."
               if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
               elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
+                # Cross-worktree UNPUSHED guard: OTHER issues' worktrees whose targets are
+                # unknowable here — overcounting vs main errs toward protection. Left as
+                # origin/main intentionally; formal suppression deferred to #1052.
                 UNP=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
               else
                 # No remote branches exist - count all commits on HEAD
@@ -2802,11 +2834,11 @@ if [ "$EXISTING_PR" != "{}" ] && [ -n "$EXISTING_PR" ]; then
   echo ""
 else
   # Create empty commit for PR (will be amended later with real changes)
-  # Check commits AHEAD of main only — a "chore: initialize work" on main itself
+  # Check commits AHEAD of target only — a "chore: initialize work" on target itself
   # (from a merged PR) must not suppress creating a new init commit for this branch.
   _commit_range="HEAD"
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    _commit_range="origin/main..HEAD"
+  if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
+    _commit_range="origin/${_target:-main}..HEAD"
   fi
   if ! git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
     if commit_output=$(git commit --allow-empty -m "chore: initialize work on ${ISSUE_NUMBER:+#$ISSUE_NUMBER }${ISSUE_DESC}" 2>&1); then
@@ -3128,7 +3160,7 @@ ${PHASE_0_INSTRUCTIONS}
 Before finishing, you MUST verify that your changes respect it.
 
 1. **Find the Scope Boundary section** in the task description above (look for \"Scope Boundary:\" or \"**Scope Boundary**\").
-2. **List every file you changed** — run: \`git diff --name-only origin/main...HEAD 2>/dev/null || git status --porcelain | grep -v '^\?\?' | sed 's/^...//' \`
+2. **List every file you changed** — run: \`git diff --name-only origin/${_target:-main}...HEAD 2>/dev/null || git status --porcelain | grep -v '^\?\?' | sed 's/^...//' \`
 3. **Check each changed file** against the DO and DO NOT bullets:
    - A file matching a **DO NOT** bullet is a scope violation.
    - A file NOT covered by any **DO** bullet is a potential scope violation.
@@ -3261,11 +3293,11 @@ else
     echo "[DIAG] Working directory: $(pwd)" >> "$RITE_LOG_FILE"
     echo "[DIAG] Git status (porcelain):" >> "$RITE_LOG_FILE"
     git status --porcelain 2>/dev/null | head -20 >> "$RITE_LOG_FILE" || echo "  (none)" >> "$RITE_LOG_FILE"
-    echo "[DIAG] File changes vs origin/main:" >> "$RITE_LOG_FILE"
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      git diff --stat origin/main...HEAD 2>/dev/null >> "$RITE_LOG_FILE" || echo "  (none)" >> "$RITE_LOG_FILE"
+    echo "[DIAG] File changes vs origin/${_target:-main}:" >> "$RITE_LOG_FILE"
+    if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
+      git diff --stat "origin/${_target:-main}...HEAD" 2>/dev/null >> "$RITE_LOG_FILE" || echo "  (none)" >> "$RITE_LOG_FILE"
     else
-      echo "  (origin/main not found)" >> "$RITE_LOG_FILE"
+      echo "  (origin/${_target:-main} not found)" >> "$RITE_LOG_FILE"
     fi
     if [ -f "$CLAUDE_STDERR_FILE" ] && [ -s "$CLAUDE_STDERR_FILE" ]; then
       echo "[DIAG] Provider stderr (last 30 lines):" >> "$RITE_LOG_FILE"
@@ -3295,7 +3327,7 @@ else
         _scope_violations=""
       else
         _scope_violations=""
-        _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" 2>/dev/null || true)
+        _scope_violations=$(check_scope_boundary "${ISSUE_BODY:-}" "$(pwd)" "origin/${_target:-main}" 2>/dev/null || true)
       fi
 
       if [ -n "$_scope_violations" ]; then
@@ -3388,11 +3420,11 @@ if [ $CHANGES_COUNT -eq 0 ]; then
   echo ""
 
   # Check if there are any actual file changes (more reliable than commit message parsing).
-  # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    FILE_CHANGES=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+  # Use triple-dot (merge-base diff) so advancing target doesn't false-positive.
+  if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
+    FILE_CHANGES=$(git diff --name-only "origin/${_target:-main}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
   else
-    # No origin/main - count all tracked files
+    # No origin/$_target - count all tracked files
     FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
   fi
 
@@ -3417,8 +3449,8 @@ if [ $CHANGES_COUNT -eq 0 ]; then
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ]; then
       # Check if this is an empty branch we just created
       _commit_range="HEAD"
-      if git rev-parse --verify origin/main >/dev/null 2>&1; then
-        _commit_range="origin/main..HEAD"
+      if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
+        _commit_range="origin/${_target:-main}..HEAD"
       fi
       if git log --oneline "$_commit_range" 2>/dev/null | grep -q "chore: initialize work"; then
         print_status "Cleaning up empty branch..."
@@ -3654,15 +3686,15 @@ fi
 # Summary
 print_header "🎉 Workflow Complete"
 
-# Summary reports what the BRANCH changes (merge-base diff vs origin/main),
+# Summary reports what the BRANCH changes (merge-base diff vs resolved target),
 # not CHANGES_COUNT — that counts files left uncommitted at session end,
 # which is 0 on every healthy run and reads as "branch changed nothing".
 echo "Summary:"
 echo "  Branch: $BRANCH_NAME"
-if git rev-parse --verify origin/main >/dev/null 2>&1; then
-  echo "  Commits: $(git rev-list --count origin/main..HEAD 2>/dev/null || echo "1")"
-  _summary_files=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ' || true)
-  echo "  Changes: ${_summary_files:-0} files vs origin/main"
+if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
+  echo "  Commits: $(git rev-list --count "origin/${_target:-main}..HEAD" 2>/dev/null || echo "1")"
+  _summary_files=$(git diff --name-only "origin/${_target:-main}...HEAD" 2>/dev/null | wc -l | tr -d ' ' || true)
+  echo "  Changes: ${_summary_files:-0} files vs ${_target:-main}"
 else
   echo "  Commits: $(git rev-list --count HEAD 2>/dev/null || echo "1")"
   echo "  Changes: $CHANGES_COUNT files"
