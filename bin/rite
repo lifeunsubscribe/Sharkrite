@@ -189,6 +189,10 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       export RITE_TARGET_BRANCH="$2"
+      # Also thread target explicitly via workflow-runner.sh's --base arm so the
+      # single-issue execs carry it without relying solely on the env export.
+      # (doc §3.2: single-issue dispatch exercises the --base parser arm)
+      WORKFLOW_FLAGS+=("--base" "$2")
       shift 2
       ;;
     --dry-run)
@@ -1614,7 +1618,9 @@ case "$_DISPATCH_KEY" in
     record_run "$ISSUE_NUMBER" "dev-and-pr"
     print_info "Dev + PR: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
     "$RITE_LIB_DIR/core/claude-workflow.sh" "$ISSUE_NUMBER" --auto
-    "$RITE_LIB_DIR/core/create-pr.sh" --auto
+    # Pass $ISSUE_NUMBER so create-pr.sh's resolver can use the state-file tier
+    # on resume without requiring the --branch/--base flag to be re-supplied.
+    "$RITE_LIB_DIR/core/create-pr.sh" --auto "$ISSUE_NUMBER"
     print_success "Dev + PR complete — PR created, skipping review/merge"
     exit 0
     ;;
@@ -2014,9 +2020,11 @@ case "$_DISPATCH_KEY" in
       fi
 
       # Push fixes and trigger fresh review
+      # Pass $ISSUE_NUMBER so create-pr.sh's resolver can use the state-file tier
+      # on resume without requiring the --branch/--base flag to be re-supplied.
       cd "$WORKTREE_PATH"
       set +e
-      "$CREATE_PR" --auto
+      "$CREATE_PR" --auto "$ISSUE_NUMBER"
       PUSH_EXIT=$?
       set -e
 
@@ -2031,9 +2039,11 @@ case "$_DISPATCH_KEY" in
     elif [ $ASSESS_EXIT -eq 3 ]; then
       # Stale review — push + fresh review, don't increment retry
       print_info "Review is stale — triggering fresh review"
+      # Pass $ISSUE_NUMBER so create-pr.sh's resolver can use the state-file tier
+      # on resume without requiring the --branch/--base flag to be re-supplied.
       cd "$WORKTREE_PATH"
       set +e
-      "$CREATE_PR" --auto
+      "$CREATE_PR" --auto "$ISSUE_NUMBER"
       set -e
 
     else

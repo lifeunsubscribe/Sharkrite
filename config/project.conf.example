@@ -63,6 +63,7 @@
 # Target integration branch for PR base and merge operations (default: main).
 # Override when the project uses a non-main integration branch (e.g. "develop").
 # Consumed by the integration-branch workflow (cluster A issues #1033+).
+# When set, worktrees fork from this branch and PRs target it as their base.
 # RITE_TARGET_BRANCH="main"
 
 # Maximum work-commits on a branch before rebase conflicts attempt LLM resolution
