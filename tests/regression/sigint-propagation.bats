@@ -78,8 +78,14 @@ SCRIPT_EOF
   # a backgrounded child under non-interactive bash shares the parent's PGID,
   # so `kill -INT -<childPID>` fails with 'No such process' and the signal is
   # never delivered.
+  #
+  # Redirect stdin/stdout/stderr to /dev/null so the test script's tee+perl
+  # pipeline (created by `exec > >(tee >(strip_ansi >> ...))`) does NOT inherit
+  # bats' capture pipe FD. Without this, those grandchild processes hold bats'
+  # stdout open until they exit, causing bats to block waiting for EOF and
+  # eventually fire BATS_TEST_TIMEOUT=120.
   set -m
-  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" &
+  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null &
   WORKFLOW_PID=$!
   set +m
 
@@ -172,9 +178,11 @@ SCRIPT_EOF
   chmod +x "$TEST_SCRIPT"
 
   # Start workflow in its own process group so the negative-PID group signal is
-  # deliverable (see comment in the SIGINT test).
+  # deliverable (see comment in the SIGINT test). Redirect to /dev/null to
+  # prevent tee+perl grandchildren from holding bats' capture pipe FD open
+  # (see comment in the SIGINT test for full explanation).
   set -m
-  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" &
+  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null &
   WORKFLOW_PID=$!
   set +m
 
@@ -253,9 +261,11 @@ SCRIPT_EOF
 
   # Start script in its own process group so the in-handler `kill -- -$$`
   # targets the child's own group, not the bats group (see comment in the
-  # SIGINT test).
+  # SIGINT test). Redirect to /dev/null: this test script does NOT use the
+  # tee+perl pipeline but redirecting is consistent and prevents any future
+  # output from the script leaking into bats' capture pipe.
   set -m
-  "$TEST_SCRIPT" &
+  "$TEST_SCRIPT" </dev/null >/dev/null 2>/dev/null &
   PID=$!
   set +m
 
