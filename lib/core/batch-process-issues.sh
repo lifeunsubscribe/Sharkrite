@@ -121,7 +121,7 @@ _update_gate_breaker_counter() {
   # Non-failure outcomes: reset streak, no further action.
   case "$_issue_status" in
     completed|already_closed_at_start|in_progress_elsewhere|pr_number_refused|\
-    in_current_branch|waiting_for_parent|dep_failed|not_found)
+    branch_mismatch|in_current_branch|waiting_for_parent|dep_failed|not_found)
       _gate_consec_count=0
       _gate_consec_sig=""
       return 0
@@ -683,6 +683,7 @@ SKIPPED_ISSUES=()                # Various skip reasons (all counted together fo
 ALREADY_CLOSED_AT_START_ISSUES=() # Exit 12: already closed when batch started, no new work
 IN_PROGRESS_ELSEWHERE_ISSUES=()  # Exit 14: locked by another live session, not a failure
 PR_NUMBER_REFUSED_ISSUES=()      # Exit 15: number refers to a PR, not an issue — refused
+BRANCH_MISMATCH_ISSUES=()        # Exit 19: PR base != effective target — refused, batch skipped
 AUTH_FAILURE_ISSUES=()           # Exit 18: provider auth failure — batch halted, remainder skipped
 
 # Auth-halt flag: set to true when exit 18 triggers a batch halt so the
@@ -1367,6 +1368,25 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     PR_NUMBER_REFUSED_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="pr_number_refused"
+
+  elif [ $_WF_EXIT -eq 19 ]; then
+    # PR base branch differs from the effective target: handle_branch_mismatch()
+    # refused the run. The corrected command was already printed by the handler.
+    # Record as branch_mismatch (SKIPPED class, not FAILED). No dev session
+    # ran and no stat-gathering is needed.
+    # See: docs/architecture/exit-codes.md — exit code 19
+    end_issue_tracking "$ISSUE_NUM"
+    ISSUE_END_TIME=$(date +%s)
+    ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
+    ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
+
+    print_info "⏭️  #$ISSUE_NUM skipped — PR base branch does not match effective target (run the corrected command shown above)"
+    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    echo ""
+
+    SKIPPED_ISSUES+=("$ISSUE_NUM")
+    BRANCH_MISMATCH_ISSUES+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="branch_mismatch"
 
   else
     EXIT_CODE=$_WF_EXIT
