@@ -104,10 +104,10 @@ _docs_cmd_ensure_map() {
     return 0
   fi
 
-  # RITE_DOCS_MAP_AUTO=false and map is missing — prompt (default-no)
+  # RITE_DOCS_MAP_AUTO=false and map is missing — warn and prompt (default-no)
+  print_warning "Docs map is missing and RITE_DOCS_MAP_AUTO=false"
   if [ -t 0 ]; then
     echo ""
-    print_warning "Docs map is missing and RITE_DOCS_MAP_AUTO=false"
     read -p "Rebuild docs map now? [y/N] " -n 1 -r
     echo
     if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
@@ -118,7 +118,7 @@ _docs_cmd_ensure_map() {
   fi
 
   # Non-TTY or declined
-  print_error "Docs map missing — rebuild disabled (RITE_DOCS_MAP_AUTO=false)"
+  print_error "Docs map missing — rebuild disabled (RITE_DOCS_MAP_AUTO=false). Run: rite docs"
   echo "  To rebuild manually: source lib/utils/docs-map.sh && docs_map_build"
   exit 1
 }
@@ -181,11 +181,9 @@ _docs_cmd_enable_flow() {
   echo "  Sharkrite can update files in docs/ when code changes make them inaccurate."
 
   local _answer="n"
-  if [ -t 0 ]; then
-    read -p "  May sharkrite update files in docs/ when code changes make them inaccurate? [y/N] " -n 1 -r
-    echo
-    _answer="${REPLY:-N}"
-  fi
+  read -p "  May sharkrite update files in docs/ when code changes make them inaccurate? [y/N] " -n 1 -r 2>/dev/null || true
+  echo
+  _answer="${REPLY:-N}"
 
   if [[ $_answer =~ ^[Yy]$ ]]; then
     # Yes: scaffold .rite/doc-sync.md if absent, record sync
@@ -296,13 +294,20 @@ ${_doc_sync_content:-  (not configured)}
 EOF
 
   local _audit_output=""
+  local _audit_stderr_file
+  _audit_stderr_file="$(mktemp)"
   _audit_output="$(provider_run_prompt_with_timeout \
     "$(cat "$_prompt_file")" \
     "$(provider_resolve_model doc_assessment)" \
     true \
     "${RITE_ASSESSMENT_TIMEOUT:-300}" \
-    2>/dev/null)" || true
+    2>"$_audit_stderr_file")" || true
   rm -f "$_prompt_file"
+
+  if [ -s "$_audit_stderr_file" ]; then
+    print_warning "Audit provider error: $(cat "$_audit_stderr_file")"
+  fi
+  rm -f "$_audit_stderr_file"
 
   if [ -z "$_audit_output" ]; then
     print_info "Audit returned no output (timeout or empty)"
@@ -353,6 +358,8 @@ EOF
               fi
               if [ -z "$_suspected" ]; then
                 _suspected="$_suspected_line"
+              else
+                _suspected="${_suspected}; ${_suspected_line}"
               fi
               _doc_line=""
               _section_line=""
