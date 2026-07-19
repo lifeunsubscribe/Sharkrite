@@ -179,7 +179,7 @@ EOF
 
   cd "$PROJECT_ROOT"
   export RITE_LINT_EXTRA_DIRS="$RITE_LINT_TEST_DIR"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=15 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -203,7 +203,7 @@ EOF
 
   cd "$PROJECT_ROOT"
   export RITE_LINT_EXTRA_DIRS="$RITE_LINT_TEST_DIR"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=15 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -226,7 +226,7 @@ EOF
   # Only the fixture directory gets scanned — this file is outside it
   # Confirm no violation is flagged for this safe pattern
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=15 run tools/sharkrite-lint.sh
 
   # With no unsafe files in the lint fixture dir, should pass
   [ "$status" -eq 0 ]

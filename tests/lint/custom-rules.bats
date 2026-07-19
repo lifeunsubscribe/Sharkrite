@@ -40,7 +40,7 @@ create_test_script() {
 
   # Should fail (lint script exits non-zero and output contains error)
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
@@ -50,7 +50,7 @@ create_test_script() {
 
   # Should pass (no GREP_C_ECHO_ZERO error)
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=01 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
@@ -60,7 +60,7 @@ create_test_script() {
 
   # Should fail (lint script exits non-zero and output contains error)
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=02 run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
 }
@@ -70,7 +70,7 @@ create_test_script() {
 
   # Should pass
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=02 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
 }
@@ -80,7 +80,7 @@ create_test_script() {
 
   # Should warn (not fail, just warn) — assert on output, not exit status
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=03 run tools/sharkrite-lint.sh
   [[ "$output" =~ "EVAL_UNTRUSTED_DATA" ]]
 }
 
@@ -95,7 +95,7 @@ FIX
 
   # Should fail (lint script exits non-zero and output contains error)
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=04 run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "UNQUOTED_HEREDOC_CMDSUB" ]]
 }
@@ -108,7 +108,7 @@ EOF
 
   # Should pass
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=04 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "UNQUOTED_HEREDOC_CMDSUB" ]]
 }
@@ -120,7 +120,7 @@ EOF
 
   # Should fail (lint script exits non-zero and output contains error)
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=10 run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "BARE_BSD_SED_I" ]]
 }
@@ -134,7 +134,7 @@ fi'
 
   # Should pass
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=05 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "BSD_SED_NO_FALLBACK" ]]
 }
@@ -144,7 +144,7 @@ fi'
 
   # Should fail (lint script exits non-zero and output contains error)
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=06 run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "PIPESTATUS_AFTER_OR_TRUE" ]]
 }
@@ -154,7 +154,7 @@ fi'
 
   # Should pass (the pattern checks for the fallback)
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=06 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "PIPESTATUS_AFTER_OR_TRUE" ]]
 }
@@ -164,7 +164,7 @@ fi'
 
   # Should fail (lint script exits non-zero and output contains error)
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
   [ "$status" -ne 0 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
@@ -177,7 +177,7 @@ fi'
 
   # Should pass
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
@@ -190,7 +190,7 @@ fi'
 }'
 
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
@@ -203,7 +203,7 @@ fi'
 }'
 
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
@@ -216,7 +216,7 @@ fi'
 }'
 
   cd "$TEST_DIR/.."
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07 run "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   [[ ! "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
 }
@@ -245,7 +245,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -275,7 +275,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # Must detect the script-scope local
   [ "$status" -eq 1 ]
@@ -300,7 +300,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
@@ -324,7 +324,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -349,7 +349,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # No violations expected
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -383,7 +383,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -415,7 +415,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -446,7 +446,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -475,7 +475,7 @@ generate_prompt
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=13 run tools/sharkrite-lint.sh
 
   # gh calls inside lowercase heredoc body must not be flagged
   if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
@@ -503,7 +503,7 @@ show_example
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
 
   # pipe expressions inside lowercase heredoc body must not be flagged
   if [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]; then

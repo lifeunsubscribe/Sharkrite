@@ -221,7 +221,7 @@ done
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
@@ -241,7 +241,7 @@ second_copy() { echo "second"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
@@ -258,7 +258,7 @@ do_work() { echo "work"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
@@ -280,7 +280,7 @@ extra_function() { echo "extra"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
@@ -320,7 +320,7 @@ extra_function() { echo "extra"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
@@ -348,7 +348,7 @@ do_work() { echo "work"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
@@ -369,7 +369,7 @@ do_work() { echo "work"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   # Confirm Rule 18 actually executed (not silently skipped due to empty file list)
   [[ "$output" =~ "Checking for unbalanced or duplicated sharkrite-extract marker pairs" ]]
@@ -468,7 +468,7 @@ EOF
 
   cd "$PROJECT_ROOT"
   # Run WITHOUT RITE_LINT_EXTRA_DIRS — the fixture should not be injected
-  run env -u RITE_LINT_EXTRA_DIRS bash -c 'cd "$1" && tools/sharkrite-lint.sh' _ "$PROJECT_ROOT"
+  run env -u RITE_LINT_EXTRA_DIRS SHARKRITE_LINT_ONLY=18 bash -c 'cd "$1" && tools/sharkrite-lint.sh' _ "$PROJECT_ROOT"
 
   # Cleanup before assertions (in case assertions fail, symlink is removed)
   rm -f "$_symlink"
@@ -494,7 +494,7 @@ do_work() { echo "work"; }
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=18 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "UNBALANCED_EXTRACT_MARKERS" ]]
