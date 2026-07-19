@@ -60,6 +60,6 @@ teardown() { rm -rf "${TEST_REPO:-}"; }
   # Structural: ties the speed behavior to the source (run_workflow is a large
   # function that can't be unit-invoked).
   grep -q '_pre_fix_head=$(git -C "$WORKTREE_PATH" rev-parse HEAD' "${RITE_LIB_DIR}/core/workflow-runner.sh"
-  # Fallback is now origin/${_target} (target-aware, not pinned to origin/main) — updated by #1035
+  # Fallback is origin/${_target} (target-aware since #1077), not literal origin/main.
   grep -q 'RITE_TEST_GATE_DIFF_BASE="${_pre_fix_head:-origin/${_target}}" run_test_gate "$_gate_output_file"' "${RITE_LIB_DIR}/core/workflow-runner.sh"
 }

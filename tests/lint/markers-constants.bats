@@ -36,7 +36,7 @@ teardown() {
   # No fixture files — ensure fixture dir is empty so only the real codebase is scanned
   rm -f "$LINT_FIXTURE_DIR"/*.sh 2>/dev/null || true
 
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=19 run tools/sharkrite-lint.sh
 
   if [[ "$output" =~ "RAW_MARKER_LITERAL" ]]; then
     echo "Found raw sharkrite-* marker literal violations:"
@@ -68,7 +68,7 @@ result=$(echo "{}" | jq -r "$_jq_filter" || true)
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=19 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "RAW_MARKER_LITERAL" ]]
@@ -85,7 +85,7 @@ echo "$BODY"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=19 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "RAW_MARKER_LITERAL" ]]
@@ -102,7 +102,7 @@ echo "$NUMS"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=19 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "RAW_MARKER_LITERAL" ]]
@@ -125,7 +125,7 @@ echo "$result"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=19 run tools/sharkrite-lint.sh
 
   # If RAW_MARKER_LITERAL fires, ensure it is not from our good fixture
   if [[ "$output" =~ "RAW_MARKER_LITERAL" ]]; then
@@ -146,7 +146,7 @@ echo "no literal markers in code"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=19 run tools/sharkrite-lint.sh
 
   if [[ "$output" =~ "RAW_MARKER_LITERAL" ]]; then
     [[ ! "$output" =~ good-comment-only\.sh ]] || {

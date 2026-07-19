@@ -56,6 +56,7 @@ fi
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 RESUME_MODE=false
 BYPASS_BLOCKERS=false
+ALLOW_MAIN_BASE=false
 
 # Phase tracking for graceful exit and resume
 CURRENT_PHASE=""
@@ -1806,7 +1807,12 @@ phase_merge_pr() {
   # Always pass --auto when orchestrated. The blocker gate above is the real
   # decision point; by this line, merge is approved. merge-pr.sh's interactive
   # prompts (proceed with merge?, delete branch?, close issue?) are redundant.
-  "$MERGE_PR" "$pr_number" --auto
+  # Forward --allow-main-base when set so the soft guard in merge-pr.sh is skipped.
+  if [ "${ALLOW_MAIN_BASE:-false}" = "true" ]; then
+    "$MERGE_PR" "$pr_number" --auto --allow-main-base
+  else
+    "$MERGE_PR" "$pr_number" --auto
+  fi
 
   local merge_result=$?
 
@@ -3259,7 +3265,7 @@ _check_no_work_invariant() {
 main() {
   # Parse arguments
   if [ $# -lt 1 ]; then
-    echo "Usage: $0 ISSUE_NUMBER [--supervised|--unsupervised|--auto] [--bypass-blockers] [--base <branch>]"
+    echo "Usage: $0 ISSUE_NUMBER [--supervised|--unsupervised|--auto] [--bypass-blockers] [--base <branch>] [--allow-main-base]"
     echo ""
     echo "Options:"
     echo "  --supervised        Requires manual confirmations (default)"
@@ -3269,6 +3275,8 @@ main() {
     echo "  --base <branch>     Target branch for this issue (default: main). Sets"
     echo "                      RITE_TARGET_BRANCH and writes the per-issue state file"
     echo "                      so resumed runs recover the target without re-passing the flag."
+    echo "  --allow-main-base   Allow merging a main-based PR when the session target is non-main"
+    echo "                      (overrides the integration-branch guard in merge-pr.sh)"
     echo ""
     echo "Environment Variables:"
     echo "  WORKFLOW_MODE           supervised or unsupervised (default: supervised)"
@@ -3302,6 +3310,9 @@ main() {
         ;;
       --bypass-blockers)
         BYPASS_BLOCKERS=true
+        ;;
+      --allow-main-base)
+        ALLOW_MAIN_BASE=true
         ;;
       --base)
         # Value-taking flag: validate and export RITE_TARGET_BRANCH. # sharkrite-target-transport
