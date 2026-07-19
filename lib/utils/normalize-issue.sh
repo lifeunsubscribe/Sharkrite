@@ -154,7 +154,7 @@ Rules:
     print_info "  Truncated: $generated_title" >&2
   fi
 
-  # Display for approval (always interactive, even in --auto)
+  # Display the generated issue for review.
   echo "" >&2
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
   echo -e "${BLUE} Generated Issue${NC}" >&2
@@ -168,30 +168,43 @@ Rules:
   echo "" >&2
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 
-  # Approval loop
-  while true; do
-    read -p "Approve and create issue? (y/n/e to edit title) " -n 1 -r </dev/tty
-    echo >&2
+  # Approval loop — INTERACTIVE ONLY. Gate on an interactive stdin ([ -t 0 ]).
+  # A blocking `read </dev/tty` runs even when fd 0 is redirected, so in any
+  # NON-interactive context (--auto, piped input, or the post-commit gate
+  # driving bin/rite) it SIGTTIN-stops a backgrounded process group and hangs
+  # the whole run until the 1800s gate watchdog fires (GATE_TIMEOUT). The
+  # </dev/null on the fd-0 side does NOT protect this — /dev/tty bypasses fd 0.
+  # `[ -t 0 ]` is true only for a genuine foreground terminal invocation, where
+  # reading the tty is safe; otherwise auto-approve. (Live gate freeze:
+  # bare-subcommand-routing.bats stuck the whole group in SIGTTIN 'T' state,
+  # 2026-07-18.)
+  if [ ! -t 0 ]; then
+    print_info "Non-interactive — auto-approving generated issue: $generated_title" >&2
+  else
+    while true; do
+      read -p "Approve and create issue? (y/n/e to edit title) " -n 1 -r </dev/tty
+      echo >&2
 
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      break
-    elif [[ $REPLY =~ ^[Nn]$ ]]; then
-      print_info "Aborted. No issue was created." >&2
-      return 1
-    elif [[ $REPLY =~ ^[Ee]$ ]]; then
-      echo -n "Enter new title: " >&2
-      read -r generated_title </dev/tty
-      # Validate edited title
-      generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\{1,\} //' || true)
-      if [ ${#generated_title} -gt 50 ]; then
-        generated_title=$(_truncate_at_word_boundary "$generated_title" 50)
-        print_warning "Title truncated to 50 chars: $generated_title" >&2
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        break
+      elif [[ $REPLY =~ ^[Nn]$ ]]; then
+        print_info "Aborted. No issue was created." >&2
+        return 1
+      elif [[ $REPLY =~ ^[Ee]$ ]]; then
+        echo -n "Enter new title: " >&2
+        read -r generated_title </dev/tty
+        # Validate edited title
+        generated_title=$(echo "$generated_title" | sed 's/\*\*//g; s/\*//g; s/`//g; s/^#\{1,\} //' || true)
+        if [ ${#generated_title} -gt 50 ]; then
+          generated_title=$(_truncate_at_word_boundary "$generated_title" 50)
+          print_warning "Title truncated to 50 chars: $generated_title" >&2
+        fi
+        echo "" >&2
+        echo -e "New title: ${GREEN}${generated_title}${NC}" >&2
+        echo "" >&2
       fi
-      echo "" >&2
-      echo -e "New title: ${GREEN}${generated_title}${NC}" >&2
-      echo "" >&2
-    fi
-  done
+    done
+  fi
 
   # Create the issue on GitHub
   print_info "Creating GitHub issue..." >&2

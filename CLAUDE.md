@@ -599,6 +599,8 @@ make test               # Run test suite (requires bats)
 bats tests/             # Run test suite directly (bypasses make wrapper)
 ```
 
+**Single-rule mode (`SHARKRITE_LINT_ONLY`)**: `SHARKRITE_LINT_ONLY=15 tools/sharkrite-lint.sh` sources only the named rule fragment(s) (comma list OK: `34,35`) — ~1s instead of the ~85s full 36-rule scan. **A bats test that invokes the linter MUST scope to the rule(s) it asserts** — unscoped full scans under the gate's `bats --jobs 8` starve the CPU, blow the 120s `BATS_TEST_TIMEOUT`, and drag the gate to its 1800s watchdog (live: batch 155134, 2026-07-18 — 15-42min gates, 3 issues failed on this alone). A typo'd rule number fails loudly (exit 1), so a stale scope can't silently pass. Leave a linter invocation unscoped only for a genuine all-rules cleanliness sweep, and serial-mark that file. Contract pinned by `tests/lint/single-rule-knob.bats`.
+
 **Custom lint rules** (in `tools/sharkrite-lint.sh`) catch patterns shellcheck misses:
 - `grep -c ... || echo "0"` — produces double zero (use `|| true`)
 - `git push` without refspec — dangerous in automation

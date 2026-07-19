@@ -36,7 +36,7 @@ teardown() {
   # No fixture files — ensure fixture dir is empty so only the real codebase is scanned
   rm -f "$LINT_FIXTURE_DIR"/*.sh 2>/dev/null || true
 
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # If any LOCAL_OUTSIDE_FUNCTION violations exist, the lint will report and exit non-zero
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -73,7 +73,7 @@ echo "$foo"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
@@ -94,7 +94,7 @@ my_function
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # If it fires LOCAL_OUTSIDE_FUNCTION, ensure it's not on our safe file
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -126,7 +126,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -155,7 +155,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
@@ -179,7 +179,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is valid — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -205,7 +205,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
@@ -227,7 +227,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
     [[ ! "$output" =~ str-close-brace-double\.sh ]] || {
@@ -265,7 +265,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   # The local inside my_func is correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
@@ -298,7 +298,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
     [[ ! "$output" =~ mixedcase-hd-marker\.sh ]] || {
@@ -329,7 +329,7 @@ my_func
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
     [[ ! "$output" =~ dash-lowercase-hd\.sh ]] || {

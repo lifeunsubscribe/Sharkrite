@@ -61,7 +61,7 @@ echo "$RESULT"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=13 run tools/sharkrite-lint.sh
 
   [ "$status" -eq 1 ]
   [[ "$output" =~ "GH_UNSAFE_CALL" ]]
@@ -84,7 +84,7 @@ EOF
   # Clean up any lingering fixtures so only our test files are scanned
   rm -f "$LINT_FIXTURE_DIR"/*.sh 2>/dev/null || true
 
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=13 run tools/sharkrite-lint.sh
 
   # No GH_UNSAFE_CALL violation in output (there may be other violations from
   # other rules on this fixture file — that's fine; we only check GH_UNSAFE_CALL)
@@ -98,7 +98,7 @@ EOF
   cd "$PROJECT_ROOT"
   rm -f "$LINT_FIXTURE_DIR"/*.sh 2>/dev/null || true
 
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=13 run tools/sharkrite-lint.sh
 
   # gh-retry.sh contains raw gh calls by design — should NOT be flagged
   if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
@@ -133,7 +133,7 @@ echo "$PROMPT"
 EOF
 
   cd "$PROJECT_ROOT"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=13 run tools/sharkrite-lint.sh
 
   # Must not flag the heredoc lines as GH_UNSAFE_CALL violations
   if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then
@@ -918,7 +918,7 @@ EOF
   cd "$PROJECT_ROOT"
   rm -f "$LINT_FIXTURE_DIR"/*.sh 2>/dev/null || true
 
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=13 run tools/sharkrite-lint.sh
 
   # If any GH_UNSAFE_CALL violations exist, the lint will report them and exit non-zero
   if [[ "$output" =~ "GH_UNSAFE_CALL" ]]; then

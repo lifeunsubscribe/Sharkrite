@@ -15,6 +15,7 @@ node_modules
 # Test artifacts
 *.log
 tmp/
+lib/test-fixtures-temp/
 
 # Local development state (no trailing slash — matches both dirs and symlinks in worktrees)
 .rite
