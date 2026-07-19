@@ -263,7 +263,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
       echo "  rite --sync <branch>          Git hygiene: merge origin/main into an integration branch (explicit, never automatic)"
       echo "  rite --sync N [M ...]         Git hygiene: rebase feature branch(es) for issue(s) onto their resolver-determined base (rebase rewrites SHAs — review goes stale by design)"
-      echo "  rite --sync                   Git hygiene: sweep all ledger integration branches then all in-flight worktrees"
+      echo "  rite --sync                   # Git hygiene: sweep all ledger integration branches then all in-flight worktrees"
       echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
@@ -397,13 +397,11 @@ if [ "$MODE" = "sync" ]; then
     SYNC_MODE="all"
   else
     _sync_all_numeric=true
-    _sync_has_non_numeric=false
     _sync_non_numeric_count=0
     for _sync_a in "${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}"; do
       if [[ "$_sync_a" =~ ^[0-9]+$ ]]; then
         SYNC_ISSUE_ARGS+=("$_sync_a")
       else
-        _sync_has_non_numeric=true
         _sync_all_numeric=false
         _sync_non_numeric_count=$(( _sync_non_numeric_count + 1 ))
         SYNC_BRANCH_ARG="$_sync_a"

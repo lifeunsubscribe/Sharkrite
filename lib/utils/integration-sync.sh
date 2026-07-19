@@ -324,16 +324,14 @@ sync_issue_branch() {
   # Tier 1: detect_pr_for_issue + detect_worktree_for_pr (uses gh API).
   # Tier 2: lock-dir cwd mapping (network-free fallback).
   local _pr_number=""
-  local _pr_branch=""
   local _worktree_path=""
 
-  # Attempt to detect open PR first (gives us both PR number for resolver and
-  # branch name for worktree discovery).
+  # Attempt to detect open PR first (gives us the PR number for resolver and
+  # worktree discovery).
   local _pr_detect_rc=0
   detect_pr_for_issue "$_issue_number" || _pr_detect_rc=$?
   if [ "$_pr_detect_rc" -eq 0 ]; then
     _pr_number="${PR_NUMBER:-}"
-    _pr_branch="${PR_BRANCH:-}"
   fi
 
   # Try worktree detection via PR number.
@@ -433,8 +431,8 @@ sync_issue_branch() {
   # ── Rebase (in subshell to keep caller cwd unchanged) ────────────────────
   # Deliberately does NOT:
   #   - stash (rail 2 already refused dirty state)
-  #   - call attempt_claude_merge_resolution (no resolver in sync)
-  #   - call verify_post_merge (no test-suite run in sync)
+  #   - invoke the Claude conflict resolver (no resolver in sync; let workflow handle conflicts)
+  #   - run post-merge verification (no test-suite run in sync)
   # Matches the conventions of _stale_rebase_onto_main but omits those paths.
   local _rebase_rc=0
   (
