@@ -351,6 +351,9 @@ _assert_no_dispatch_calls() {
   run resolve_dispatch_key "plan" "" ""
   [ "$status" -eq 0 ]; [ "$output" = "plan" ]
 
+  run resolve_dispatch_key "docs" "" ""
+  [ "$status" -eq 0 ]; [ "$output" = "docs" ]
+
   run resolve_dispatch_key "status" "" ""
   [ "$status" -eq 0 ]; [ "$output" = "status-repo-wide" ]
 
