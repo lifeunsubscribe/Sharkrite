@@ -51,6 +51,7 @@
 #    15. base=main target=big   → returns 19, output contains "rite <N>" (no --branch)
 #    16. base==target           → no refusal (returns 0), workflow continues past check
 #    17. No PR detected         → no refusal (returns 0), fresh issue path unaffected
+#    18. PARENT_ATTACHMENT_MODE=adopt + base != target → no refusal (adopt guard fires)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
@@ -444,6 +445,56 @@ fi
 
 if [ "$_exit" -ne 0 ]; then
   echo "FAIL: expected exit 0 when base==target (no mismatch), got $_exit" >&2
+  exit 1
+fi
+exit 0
+INLINE_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: test script itself failed (status=$status)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: adopted parent PR with base != main is not refused (PARENT_ATTACHMENT_MODE=adopt guard)" {
+  # Regression for #1044 adopt-arm false-mismatch:
+  # When PARENT_ATTACHMENT_MODE=adopt, the adopt arm has already set PR_NUMBER to
+  # the parent PR's number without a --branch flag.  resolve_target_branch falls
+  # through to tier-4 (main) while the parent PR's base may be any non-main
+  # integration branch — a guaranteed false mismatch.
+  # The mismatch check must be skipped entirely for adopted PRs.
+
+  _script="$BATS_TEST_TMPDIR/test-adopt-no-refuse.sh"
+  # pr_base=big, effective_target=main — a combination that WOULD fire the check
+  # for a normal resume.  With PARENT_ATTACHMENT_MODE=adopt it must be bypassed.
+  _write_mismatch_preamble "$_script" "false" "big" "main" "42" "99"
+
+  cat >> "$_script" <<'INLINE_EOF'
+
+# Simulate the adopt arm: PARENT_ATTACHMENT_MODE is set to adopt.
+PARENT_ATTACHMENT_MODE=adopt
+
+_effective_target=$(resolve_target_branch "$ISSUE_NUMBER")
+_pr_base="${PR_BASE_BRANCH:-}"
+
+_exit=0
+# This is the guarded form from workflow-runner.sh (with the adopt exemption).
+if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ] && [ "${PARENT_ATTACHMENT_MODE:-none}" != "adopt" ]; then
+  if [ -n "$_pr_base" ] && [ -n "$_effective_target" ] && [ "$_pr_base" != "$_effective_target" ]; then
+    set +e
+    handle_branch_mismatch "$ISSUE_NUMBER" "${PR_NUMBER:-}" "$_pr_base" "$_effective_target"
+    _exit=$?
+    set -e
+  fi
+fi
+
+if [ "$_exit" -ne 0 ]; then
+  echo "FAIL: expected exit 0 for adopted parent PR (base=big, target=main), got $_exit" >&2
+  echo "      Adopted parent PRs must never be refused by the mismatch check." >&2
   exit 1
 fi
 exit 0

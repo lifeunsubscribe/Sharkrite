@@ -2837,7 +2837,14 @@ run_workflow() {
   #
   # This check fires only when a PR already exists. Fresh issues (no PR_NUMBER)
   # have no prior base to disagree with.
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
+  #
+  # Adoption guard: the parent-PR adopt arm (above) sets PR_NUMBER to the
+  # parent's PR without a --branch flag, so resolve_target_branch returns tier-4
+  # main while the parent PR's base may be a non-main integration branch — a
+  # guaranteed false mismatch. Skip the check for adopted parent PRs; the user
+  # already selected the correct PR by authoring the parent-pr marker.
+  # (behavioral-design.md → "Parent-PR Attachment Contract")
+  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ] && [ "${PARENT_ATTACHMENT_MODE:-none}" != "adopt" ]; then
     # Ensure stale-branch.sh is loaded for resolve_target_branch.
     source "$RITE_LIB_DIR/utils/stale-branch.sh"
 
