@@ -3,13 +3,14 @@
 # Mid-run drift detection and proactive rebase for wide-surface refactor PRs.
 #
 # Problem: wide-surface PRs (touching many files) take 1-2 hours through phases 1-3.
-# By the time phase 4 (merge) fires, main has often moved N commits ahead.  For narrow
-# PRs the pre-merge auto-merge usually succeeds; for wide PRs it fails on content
-# conflicts and the run dies after all the Claude time has been spent.
+# By the time phase 4 (merge) fires, the base branch has often moved N commits ahead.
+# For narrow PRs the pre-merge auto-merge usually succeeds; for wide PRs it fails on
+# content conflicts and the run dies after all the Claude time has been spent.
 #
 # Fix: at the START of phase 3 (assess) — and between fix iterations — ask the only
-# question that matters: does the branch actually CONFLICT with main?  Compute it with
-# `git merge-tree` (a pure in-memory merge; no working-tree, commit, push, or gate).
+# question that matters: does the branch actually CONFLICT with the base branch?
+# Compute it with `git merge-tree` (a pure in-memory merge; no working-tree, commit,
+# push, or gate).
 #   - No conflict → do nothing.  A behind-but-clean branch merges fine in phase 4; a
 #     needless rebase would only churn history and re-trigger the post-commit test gate.
 #   - Conflict    → try Claude-assisted resolution, else print a clear abort message
@@ -57,18 +58,20 @@ fi
 # PUBLIC: Main entry point
 # ===================================================================
 
-# check_and_rebase_against_main WORKTREE_PATH BRANCH_NAME ISSUE_NUMBER PR_NUMBER [WORKFLOW_MODE]
+# check_and_rebase_against_main WORKTREE_PATH BRANCH_NAME ISSUE_NUMBER PR_NUMBER [WORKFLOW_MODE] [BASE_BRANCH]
 #
 # Call this at the start of phase 3 (assess-and-resolve) and between fix iterations.
-# The function fetches origin/main, then decides on CONFLICT, not on distance:
+# The function fetches origin/$base_branch, then decides on CONFLICT, not on distance:
 #
 #   drift == 0            : return 0 silently (no drift)
 #   behind but no conflict: return 0 silently (phase 4 merges it as-is; no rebase)
-#   conflicts with main   : try Claude-assisted resolution; if unresolved, abort, return 1
+#   conflicts with base   : try Claude-assisted resolution; if unresolved, abort, return 1
+#
+# BASE_BRANCH defaults to "main" — all existing callers without a 6th arg are unaffected.
 #
 # Exit codes:
 #   0 = no drift, or branch merges cleanly, or conflict resolved (workflow continues)
-#   1 = unresolved conflict with main — abort BEFORE generating review
+#   1 = unresolved conflict with base branch — abort BEFORE generating review
 #
 # The NO-rebase path (return 1) intentionally fires BEFORE the Claude review
 # session so no Claude time is wasted.  Caller should surface the message and
@@ -80,9 +83,10 @@ check_and_rebase_against_main() {
   local issue_number="${3:-}"
   local pr_number="${4:-}"
   local workflow_mode="${5:-unsupervised}"
+  local base_branch="${6:-main}"
 
-  # Sanity: must be on a feature branch, not main itself
-  if [ -z "$branch_name" ] || [ "$branch_name" = "main" ] || [ "$branch_name" = "master" ]; then
+  # Sanity: must be on a feature branch, not the base branch or main itself
+  if [ -z "$branch_name" ] || [ "$branch_name" = "main" ] || [ "$branch_name" = "master" ] || [ "$branch_name" = "$base_branch" ]; then
     return 0
   fi
 
@@ -91,17 +95,17 @@ check_and_rebase_against_main() {
     return 0
   fi
 
-  # Fetch origin/main to get the latest remote state.
+  # Fetch origin/$base_branch to get the latest remote state.
   # Fetch failure is non-fatal — we warn and skip rather than blocking the workflow.
-  if ! git -C "$worktree_path" fetch origin main 2>/dev/null; then
-    print_warning "mid-run-rebase: Could not fetch origin/main — skipping drift check"
+  if ! git -C "$worktree_path" fetch origin "$base_branch" 2>/dev/null; then
+    print_warning "mid-run-rebase: Could not fetch origin/$base_branch — skipping drift check"
     return 0
   fi
 
-  # Count commits by which the feature branch is behind origin/main.
+  # Count commits by which the feature branch is behind origin/$base_branch.
   # Use merge-base so that commits the branch already has don't inflate the count.
   local merge_base
-  merge_base=$(git -C "$worktree_path" merge-base HEAD origin/main 2>/dev/null || echo "")
+  merge_base=$(git -C "$worktree_path" merge-base HEAD "origin/$base_branch" 2>/dev/null || echo "")
 
   if [ -z "$merge_base" ]; then
     # Unrelated histories — can't count drift; skip silently
@@ -109,7 +113,7 @@ check_and_rebase_against_main() {
   fi
 
   local behind
-  behind=$(git -C "$worktree_path" rev-list --count "${merge_base}..origin/main" 2>/dev/null || echo "0")
+  behind=$(git -C "$worktree_path" rev-list --count "${merge_base}..origin/$base_branch" 2>/dev/null || echo "0")
 
   if [ "${behind:-0}" -eq 0 ]; then
     # Branch is up to date — no action needed
@@ -119,7 +123,7 @@ check_and_rebase_against_main() {
   # Drift alone is harmless.  Commit distance does NOT determine anything here: a
   # branch 50 commits behind that touches isolated files merges instantly, while a
   # branch 2 commits behind editing the same lines conflicts hard.  The only thing
-  # that would make the eventual merge fail is a real CONTENT CONFLICT with main.
+  # that would make the eventual merge fail is a real CONTENT CONFLICT with the base.
   #
   # Compute that directly with `git merge-tree` — a pure in-memory merge that writes
   # NOTHING: no working-tree change, no commit, no force-push, no test-gate re-run.
@@ -132,11 +136,11 @@ check_and_rebase_against_main() {
   #                         spending Claude review time on a PR that cannot merge.
   #   merge-tree error    → fail open (skip), consistent with the fetch-failure path.
   local _mt_rc=0
-  git -C "$worktree_path" merge-tree --write-tree --no-messages origin/main HEAD \
+  git -C "$worktree_path" merge-tree --write-tree --no-messages "origin/$base_branch" HEAD \
     >/dev/null 2>&1 || _mt_rc=$?
 
   if [ "$_mt_rc" -eq 0 ]; then
-    print_info "mid-run: branch is ${behind} commit(s) behind main but merges cleanly — no rebase needed"
+    print_info "mid-run: branch is ${behind} commit(s) behind $base_branch but merges cleanly — no rebase needed"
     return 0
   elif [ "$_mt_rc" -ge 2 ]; then
     # merge-tree unavailable / unexpected error — don't block the workflow on tooling.
@@ -144,23 +148,25 @@ check_and_rebase_against_main() {
     return 0
   fi
 
-  # _mt_rc == 1: real conflict with main.  Resolve it now (or abort) before the review.
-  print_warning "mid-run: branch conflicts with main (${behind} commit(s) behind) — resolving before review"
-  _mid_run_rebase_onto_main "$worktree_path" "$branch_name" "$issue_number" "$pr_number" "$workflow_mode"
+  # _mt_rc == 1: real conflict with base branch.  Resolve it now (or abort) before the review.
+  print_warning "mid-run: branch conflicts with $base_branch (${behind} commit(s) behind) — resolving before review"
+  _mid_run_rebase_onto_main "$worktree_path" "$branch_name" "$issue_number" "$pr_number" "$workflow_mode" "$base_branch"
   return $?
 }
 
 # ===================================================================
-# INTERNAL: Rebase onto main and force-push
+# INTERNAL: Rebase onto base branch and force-push
 # ===================================================================
 
-# _mid_run_rebase_onto_main WORKTREE_PATH BRANCH_NAME ISSUE_NUMBER PR_NUMBER WORKFLOW_MODE
+# _mid_run_rebase_onto_main WORKTREE_PATH BRANCH_NAME ISSUE_NUMBER PR_NUMBER WORKFLOW_MODE [BASE_BRANCH]
 #
 # Performs the actual rebase + force-push.  Unlike the resume-path rebase in
 # stale-branch.sh (_stale_rebase_onto_main), this one is lightweight:
 #   - No post-merge test verification (that would burn the Claude time we're saving)
 #   - No conflict-resolver integration (conflicts abort immediately)
 #   - No stash handling (mid-run worktrees should be clean after a commit push)
+#
+# BASE_BRANCH defaults to "main" — all existing callers without a 6th arg are unaffected.
 #
 # Exit codes:
 #   0 = rebase + push succeeded
@@ -171,18 +177,19 @@ _mid_run_rebase_onto_main() {
   local issue_number="${3:-}"
   local pr_number="${4:-}"
   local workflow_mode="${5:-unsupervised}"
+  local base_branch="${6:-main}"
 
   cd "$worktree_path" || return 1
 
-  # Verify origin/main exists
-  if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-    print_error "mid-run-rebase: origin/main does not exist after fetch — cannot rebase"
+  # Verify origin/$base_branch exists
+  if ! git rev-parse --verify "origin/$base_branch" >/dev/null 2>&1; then
+    print_error "mid-run-rebase: origin/$base_branch does not exist after fetch — cannot rebase"
     return 1
   fi
 
   # Count commits being replayed so the log message is informative
   local commits_ahead
-  commits_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+  commits_ahead=$(git rev-list --count "origin/$base_branch..HEAD" 2>/dev/null || echo "0")
 
   # Save pre-rebase HEAD so we can produce a useful backup ref if the rebase rewrites history.
   # The DO NOT bullet says "do NOT rebase published commits without preserving the original SHAs
@@ -197,10 +204,10 @@ _mid_run_rebase_onto_main() {
   fi
 
   local rebase_output
-  if rebase_output=$(git rebase origin/main 2>&1); then
+  if rebase_output=$(git rebase "origin/$base_branch" 2>&1); then
     # Rebase succeeded — push with --force-with-lease (history was rewritten)
     if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-      print_info "mid-run rebase: rebased ${commits_ahead} commit(s) onto origin/main, pushed"
+      print_info "mid-run rebase: rebased ${commits_ahead} commit(s) onto origin/$base_branch, pushed"
       return 0
     else
       # Push rejected — another concurrent push happened while we were rebasing.
@@ -217,7 +224,7 @@ _mid_run_rebase_onto_main() {
 
         if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ] && [ "$_mid_remote_head" != "$_mid_local_head" ]; then
           # Anchor the emptiness check to merge-base(local,remote) so that
-          # base-branch drift (commits on main that the remote merge brought in)
+          # base-branch drift (commits on the base that the remote merge brought in)
           # does not inflate the diff and falsely classify real code changes as
           # content-empty. git diff merge-base..remote_head is the effective patch
           # introduced by the foreign commits beyond the common ancestor.
@@ -268,7 +275,15 @@ _mid_run_rebase_onto_main() {
       local _resolver_result=0 _cr_start _cr_duration
       _cr_start=$(date +%s)
       _diag "CONFLICT_RESOLVER_START context=mid_run_rebase issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name}"
-      attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      # Named form (precedent: divergence-handler.sh:553-557) so --merge-target can be threaded.
+      # CONTEXT-CORRECT TARGET: this function merges the BASE branch into the feature branch,
+      # so the target is "origin/$base_branch" — NOT "origin/$branch_name" (divergence-handler.sh's
+      # target reconciles a branch with its OWN remote; this is a different context).
+      attempt_claude_merge_resolution \
+        --branch-name "$branch_name" \
+        --issue-number "${issue_number:-}" \
+        --pr-number "${pr_number:-}" \
+        --merge-target "origin/$base_branch" || _resolver_result=$?
       _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
@@ -306,14 +321,14 @@ _mid_run_rebase_onto_main() {
     fi
 
     echo "" >&2
-    print_warning "Mid-run rebase conflict: cannot auto-rebase ${branch_name} onto origin/main"
+    print_warning "Mid-run rebase conflict: cannot auto-rebase ${branch_name} onto origin/$base_branch"
     echo "" >&2
     echo "  Conflicting files need manual resolution before the review can proceed." >&2
     echo "" >&2
     echo "  To resolve:" >&2
     echo "    cd $worktree_path" >&2
-    echo "    git fetch origin main" >&2
-    echo "    git rebase origin/main" >&2
+    echo "    git fetch origin $base_branch" >&2
+    echo "    git rebase origin/$base_branch" >&2
     echo "    # Resolve each conflict, then:" >&2
     echo "    git add <resolved-file>" >&2
     echo "    git rebase --continue" >&2

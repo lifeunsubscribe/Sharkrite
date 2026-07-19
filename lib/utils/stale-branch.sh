@@ -115,7 +115,21 @@ _rite_branch_name_safe() {
 #                               (backward-compatible addition for resolve_target_branch)
 _stale_resolve_base_branch() {
   local pr_number="$1"
-  _STALE_BASE_BRANCH="main"
+
+  # Cold-start env fallback: this function IS resolve_target_branch's tier-1 API reader.
+  # It cannot call resolve_target_branch (infinite recursion), and it has no issue number
+  # for the tier-2 state-file read. The validated RITE_TARGET_BRANCH transport is the
+  # deliberate cold-start fallback for the no-PR case, exactly as design doc §5.2 prescribes.
+  # The PR baseRefName from the API (tier 1 below) still wins whenever a PR exists.
+  local _stale_fallback_base
+  _stale_fallback_base="${RITE_TARGET_BRANCH:-main}"
+  # Validate the env value — same charset pattern as _rite_branch_name_safe uses.
+  # Invalid env value (bad chars, '..' traversal, multi-line, empty) → fall back to "main".
+  if ! _rite_branch_name_safe "$_stale_fallback_base"; then
+    _stale_fallback_base="main"
+  fi
+
+  _STALE_BASE_BRANCH="$_stale_fallback_base"
   _STALE_BASE_BRANCH_SOURCE="fallback"
 
   if [ -z "${pr_number:-}" ] || [ "$pr_number" = "null" ]; then
@@ -125,20 +139,20 @@ _stale_resolve_base_branch() {
   local _raw_base
   _raw_base=$(gh_safe pr view "$pr_number" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
 
-  # Empty response means API unavailable or PR not found — source=fallback.
-  # Must check emptiness BEFORE applying the default ("main") so that a genuine
+  # Empty response means API unavailable or PR not found — use validated env fallback.
+  # Must check emptiness BEFORE applying the default so that a genuine
   # API hit of "main" (which validates cleanly) is distinguishable from a missing
-  # API response that fell through to the default value.
+  # API response that fell through to the fallback value.
   if [ -z "${_raw_base:-}" ]; then
-    _STALE_BASE_BRANCH="main"
+    _STALE_BASE_BRANCH="$_stale_fallback_base"
     _STALE_BASE_BRANCH_SOURCE="fallback"
     return 0
   fi
 
   # Validate non-empty response via the shared helper — one validation invariant.
   if ! _rite_branch_name_safe "$_raw_base"; then
-    _diag "STALE_BASE_BRANCH_INVALID pr=${pr_number} base_branch_raw=${_raw_base} fallback=main"
-    _STALE_BASE_BRANCH="main"
+    _diag "STALE_BASE_BRANCH_INVALID pr=${pr_number} base_branch_raw=${_raw_base} fallback=${_stale_fallback_base}"
+    _STALE_BASE_BRANCH="$_stale_fallback_base"
     _STALE_BASE_BRANCH_SOURCE="fallback"
     return 0
   fi
@@ -1014,7 +1028,14 @@ _stale_rebase_onto_main() {
       local _resolver_result=0 _cr_start _cr_duration
       _cr_start=$(date +%s)
       _diag "CONFLICT_RESOLVER_START context=stale_rebase issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name}"
-      attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      # CONTEXT-CORRECT TARGET: these stale-branch sites merge the BASE branch into
+      # the feature branch, so the target is origin/$base_branch — NOT origin/$branch_name
+      # (which is divergence-handler.sh's target for reconciling a branch with its remote).
+      attempt_claude_merge_resolution \
+        --branch-name "$branch_name" \
+        --issue-number "${issue_number:-}" \
+        --pr-number "${pr_number:-}" \
+        --merge-target "origin/$base_branch" || _resolver_result=$?
       _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
@@ -1166,7 +1187,14 @@ _stale_merge_main_legacy() {
       local _resolver_result=0 _cr_start _cr_duration
       _cr_start=$(date +%s)
       _diag "CONFLICT_RESOLVER_START context=stale_merge issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name}"
-      attempt_claude_merge_resolution "$branch_name" "${issue_number:-}" "${pr_number:-}" || _resolver_result=$?
+      # CONTEXT-CORRECT TARGET: these stale-branch sites merge the BASE branch into
+      # the feature branch, so the target is origin/$base_branch — NOT origin/$branch_name
+      # (which is divergence-handler.sh's target for reconciling a branch with its remote).
+      attempt_claude_merge_resolution \
+        --branch-name "$branch_name" \
+        --issue-number "${issue_number:-}" \
+        --pr-number "${pr_number:-}" \
+        --merge-target "origin/$base_branch" || _resolver_result=$?
       _cr_duration=$(( $(date +%s) - _cr_start ))
       if [ "$_resolver_result" -eq 0 ]; then
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=resolved issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
