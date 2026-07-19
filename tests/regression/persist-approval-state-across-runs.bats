@@ -270,11 +270,13 @@ WORKER_EOF
   chmod +x "$worker_script"
 
   # Launch each worker as a separate process (own $$) so lock.sh PID checks work.
-  # Redirect stdin/stdout/stderr to /dev/null so worker subprocesses do NOT
-  # inherit bats' capture pipe FD — a leaked FD causes bats to block waiting
+  # Redirect stdin/stdout/stderr/FD3 to /dev/null so worker subprocesses do NOT
+  # inherit bats' capture pipe FDs — a leaked FD causes bats to block waiting
   # for EOF, eventually firing BATS_TEST_TIMEOUT=120.
+  # FD 3 is bats' TAP output channel (exec 3<&1 in bats-exec-test) and must be
+  # explicitly redirected; /dev/null on FDs 1+2 alone does not prevent the leak.
   for i in $(seq 1 $num_processes); do
-    bash "$worker_script" "$i" </dev/null >/dev/null 2>/dev/null &
+    bash "$worker_script" "$i" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   done
 
   wait
