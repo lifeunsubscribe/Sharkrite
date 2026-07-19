@@ -226,6 +226,13 @@ while [[ $# -gt 0 ]]; do
       PLAN_ARGS=("$@")
       shift $#
       ;;
+    docs)
+      MODE="docs"
+      shift
+      # Collect remaining args for docs (optional free-text instructions)
+      DOCS_ARGS=("$@")
+      shift $#
+      ;;
     --version|-v)
       echo "rite version $VERSION"
       exit 0
@@ -251,6 +258,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --reset-approval         Clear ALL saved blocker approvals (global reset)"
       echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
       echo "  rite plan --preview [doc]     Preview issues without creating them"
+      echo "  rite docs                     Doc audit/enable: never-run→consent, run-before→drift audit"
+      echo "  rite docs \"<instructions>\"    Directed doc update seam (engine lands in #1049)"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
@@ -463,6 +472,10 @@ resolve_dispatch_key() {
       echo "plan"
       return 0
       ;;
+    docs)
+      echo "docs"
+      return 0
+      ;;
     full|dev-and-pr|review-latest|assess-and-fix|status|undo)
       # Smart-routing modes — tuple-based routing below.
       ;;
@@ -600,6 +613,10 @@ resolve_dispatch_plan() {
       ;;
     plan)
       echo "plan-issues.sh::plan_issues ${PLAN_ARGS[*]:-}  (generate GitHub issues via claude)"
+      return 0
+      ;;
+    docs)
+      echo "docs-command.sh::rite_docs ${DOCS_ARGS[*]:-}  (docs consent/audit/drift via claude)"
       return 0
       ;;
     status-repo-wide)
@@ -859,6 +876,8 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   # "new" — the issue gets created later.
   if [ "$MODE" = "plan" ]; then
     LOG_SLUG="plan"
+  elif [ "$MODE" = "docs" ]; then
+    LOG_SLUG="docs"
   elif [ ${#BATCH_FILTER_ARGS[@]} -gt 0 ]; then
     # Batch mode: e.g., "batch-label-tech-debt"
     LOG_SLUG="batch-${BATCH_FILTER_ARGS[*]}"
@@ -1303,6 +1322,12 @@ fi
 if [ "$MODE" = "plan" ]; then
   source "$RITE_LIB_DIR/core/plan-issues.sh"
   plan_issues "${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}"
+  exit $?
+fi
+
+if [ "$MODE" = "docs" ]; then
+  source "$RITE_LIB_DIR/core/docs-command.sh"
+  rite_docs "${DOCS_ARGS[@]+"${DOCS_ARGS[@]}"}"
   exit $?
 fi
 

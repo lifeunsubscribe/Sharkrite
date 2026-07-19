@@ -264,6 +264,13 @@ _assert_double_source() {
   _assert_double_source "lib/core/batch-reporter.sh"
 }
 
+@test "lib/core/docs-command.sh sources twice without error" {
+  # docs-command.sh uses a declare -f rite_docs function-sentinel guard.
+  # Sources provider-interface.sh + load_provider at top level — both are
+  # re-source safe, so plain double-source works without RITE_SOURCE_FUNCTIONS_ONLY.
+  _assert_double_source "lib/core/docs-command.sh"
+}
+
 # ---------------------------------------------------------------------------
 # lib/core — orchestrators with env-var guards
 #

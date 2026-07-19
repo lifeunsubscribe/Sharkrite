@@ -34,6 +34,7 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
+lib/core/docs-command.sh          # `rite docs` orchestrator — consent/audit/seam dispatch (enable flow, drift audit, #1049 seam)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
 lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
@@ -519,6 +520,8 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
+rite docs                  # Doc audit/enable: never-run→consent, run-before→drift audit
+rite docs "<instructions>" # Directed doc update seam (engine lands in #1049)
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
