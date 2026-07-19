@@ -131,38 +131,43 @@ teardown() {
 # § 2. Discriminating semantic test — target-aware vs main-pinned check
 # ===========================================================================
 #
-# Fixture: a branch that conflicts with origin/feature-x but NOT with origin/main.
-# - check_and_rebase_against_main ... feature-x  → returns 1 (conflict detected)
+# Fixture: a branch that conflicts with origin/<INTEGRATION_BRANCH> but NOT with origin/main.
+# - check_and_rebase_against_main ... $INTEGRATION_BRANCH → returns 1 (conflict detected)
 # - check_and_rebase_against_main ... (no 6th arg, defaults to main) → returns 0 (clean)
 #
 # This proves the parameterization is operative, not cosmetic.
+# INTEGRATION_BRANCH uses a PID-unique name (feature-x-$$) so tests are
+# isolated even when a prior test fails mid-cleanup.
 
 _setup_conflict_with_feature_x_not_main() {
   BRANCH_NAME="fix/target-aware-test-$$"
+  # PID-unique integration branch name prevents collision when a prior test's
+  # assertion fails and cleanup is skipped (MEDIUM #2 fix). See teardown().
+  INTEGRATION_BRANCH="feature-x-$$"
 
-  # Create 'feature-x' integration branch from main and push it as the "target"
-  git checkout -b feature-x main >/dev/null 2>&1
-  echo "# feature-x specific content" > feature-x.txt
-  git add feature-x.txt
-  git commit -m "feature-x: add specific file" >/dev/null 2>&1
-  git push -u origin feature-x >/dev/null 2>&1
+  # Create the integration branch from main and push it as the "target"
+  git checkout -b "$INTEGRATION_BRANCH" main >/dev/null 2>&1
+  echo "# integration branch specific content" > "${INTEGRATION_BRANCH}.txt"
+  git add "${INTEGRATION_BRANCH}.txt"
+  git commit -m "${INTEGRATION_BRANCH}: add specific file" >/dev/null 2>&1
+  git push -u origin "$INTEGRATION_BRANCH" >/dev/null 2>&1
 
-  # Create our feature branch from main (NOT from feature-x)
+  # Create our feature branch from main (NOT from integration branch)
   git checkout main >/dev/null 2>&1
   git checkout -b "$BRANCH_NAME" >/dev/null 2>&1
-  # Modify the same file that feature-x will also modify (to produce a conflict)
+  # Modify the same file that integration branch will also modify (to produce a conflict)
   echo "branch version of conflict-file" > conflict-file.txt
   git add conflict-file.txt
   git commit -m "branch: add conflict-file.txt" >/dev/null 2>&1
   git push -u origin "$BRANCH_NAME" >/dev/null 2>&1
   BRANCH_HEAD=$(git rev-parse HEAD)
 
-  # Advance origin/feature-x with a conflicting change to the SAME file
-  git checkout feature-x >/dev/null 2>&1
-  echo "feature-x version of conflict-file (DIFFERENT content = conflict)" > conflict-file.txt
+  # Advance origin/<integration branch> with a conflicting change to the SAME file
+  git checkout "$INTEGRATION_BRANCH" >/dev/null 2>&1
+  echo "integration-branch version of conflict-file (DIFFERENT content = conflict)" > conflict-file.txt
   git add conflict-file.txt
-  git commit -m "feature-x: advance with conflict on same file" >/dev/null 2>&1
-  git push origin feature-x >/dev/null 2>&1
+  git commit -m "${INTEGRATION_BRANCH}: advance with conflict on same file" >/dev/null 2>&1
+  git push origin "$INTEGRATION_BRANCH" >/dev/null 2>&1
 
   # main stays clean — no changes to conflict-file.txt on main
   git checkout main >/dev/null 2>&1
@@ -180,20 +185,20 @@ _setup_conflict_with_feature_x_not_main() {
 @test "check_and_rebase_against_main: target=feature-x detects conflict (returns 1)" {
   _setup_conflict_with_feature_x_not_main
 
-  # With base=feature-x: branch has content conflict with origin/feature-x
+  # With base=$INTEGRATION_BRANCH: branch has content conflict with origin/$INTEGRATION_BRANCH
   run check_and_rebase_against_main \
-    "$WORKTREE_PATH" "$BRANCH_NAME" "999" "888" "unsupervised" "feature-x"
+    "$WORKTREE_PATH" "$BRANCH_NAME" "999" "888" "unsupervised" "$INTEGRATION_BRANCH"
 
-  [ "$status" -eq 1 ] || {
-    echo "FAIL: expected exit 1 (conflict with feature-x), got $status"
-    return 1
-  }
-
-  # Cleanup
+  # Cleanup runs before assertions so it fires even on failure (MEDIUM #2 fix)
   cd "$FIXTURE_REPO"
   git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
-  git branch -D "$BRANCH_NAME" feature-x >/dev/null 2>&1 || true
-  git push origin --delete "$BRANCH_NAME" feature-x >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" "$INTEGRATION_BRANCH" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" "$INTEGRATION_BRANCH" >/dev/null 2>&1 || true
+
+  [ "$status" -eq 1 ] || {
+    echo "FAIL: expected exit 1 (conflict with $INTEGRATION_BRANCH), got $status"
+    return 1
+  }
 }
 
 @test "check_and_rebase_against_main: default (no 6th arg) — clean against main, returns 0" {
@@ -204,35 +209,39 @@ _setup_conflict_with_feature_x_not_main() {
   run check_and_rebase_against_main \
     "$WORKTREE_PATH" "$BRANCH_NAME" "999" "888" "unsupervised"
 
+  # Cleanup runs before assertions so it fires even on failure (MEDIUM #2 fix)
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" "$INTEGRATION_BRANCH" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" "$INTEGRATION_BRANCH" >/dev/null 2>&1 || true
+
   [ "$status" -eq 0 ] || {
     echo "FAIL: expected exit 0 (clean against main), got $status (discriminating test: main-pinned would be clean)"
     return 1
   }
-
-  # Cleanup
-  cd "$FIXTURE_REPO"
-  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
-  git branch -D "$BRANCH_NAME" feature-x >/dev/null 2>&1 || true
-  git push origin --delete "$BRANCH_NAME" feature-x >/dev/null 2>&1 || true
 }
 
 # ===========================================================================
 # § 3. --merge-target arg invariant — _stale_rebase_onto_main
 # ===========================================================================
 #
-# Recording stub: assert _stale_rebase_onto_main with base=feature-x passes
-# --merge-target "origin/feature-x" to the resolver.
+# Recording stub: assert _stale_rebase_onto_main with base=<INTEGRATION_BRANCH>
+# passes --merge-target "origin/<INTEGRATION_BRANCH>" to the resolver (not origin/main).
 # Pattern mirrors divergence-merge-target-passed-to-resolver.bats Test 1.
+# INTEGRATION_BRANCH uses a PID-unique name so tests are isolated.
 
 _setup_conflicting_branch_against_feature_x() {
   BRANCH_NAME="fix/merge-target-stale-$$"
+  # PID-unique integration branch name prevents collision when a prior test's
+  # assertion fails and cleanup is skipped (MEDIUM #2 fix). See teardown().
+  INTEGRATION_BRANCH="feature-x-$$"
 
-  # Create feature-x as a target integration branch
-  git checkout -b feature-x main >/dev/null 2>&1
+  # Create the integration branch as the target
+  git checkout -b "$INTEGRATION_BRANCH" main >/dev/null 2>&1
   echo "integration content" > integration.txt
   git add integration.txt
-  git commit -m "feature-x: init" >/dev/null 2>&1
-  git push -u origin feature-x >/dev/null 2>&1
+  git commit -m "${INTEGRATION_BRANCH}: init" >/dev/null 2>&1
+  git push -u origin "$INTEGRATION_BRANCH" >/dev/null 2>&1
 
   # Create feature branch from main, modifying the same file
   git checkout main >/dev/null 2>&1
@@ -242,19 +251,19 @@ _setup_conflicting_branch_against_feature_x() {
   git commit -m "branch: modify integration.txt" >/dev/null 2>&1
   git push -u origin "$BRANCH_NAME" >/dev/null 2>&1
 
-  # Advance feature-x with a conflict on the same file
-  git checkout feature-x >/dev/null 2>&1
-  echo "feature-x conflicting version" > integration.txt
+  # Advance integration branch with a conflict on the same file
+  git checkout "$INTEGRATION_BRANCH" >/dev/null 2>&1
+  echo "${INTEGRATION_BRANCH} conflicting version" > integration.txt
   git add integration.txt
-  git commit -m "feature-x: conflicting change" >/dev/null 2>&1
-  git push origin feature-x >/dev/null 2>&1
+  git commit -m "${INTEGRATION_BRANCH}: conflicting change" >/dev/null 2>&1
+  git push origin "$INTEGRATION_BRANCH" >/dev/null 2>&1
 
   git checkout main >/dev/null 2>&1
   WORKTREE_PATH="$RITE_WORKTREE_DIR/issue-merge-target-stale-$$"
   git worktree add "$WORKTREE_PATH" "$BRANCH_NAME" >/dev/null 2>&1
 }
 
-@test "_stale_rebase_onto_main: resolver called with --merge-target origin/feature-x (not origin/main)" {
+@test "_stale_rebase_onto_main: resolver called with --merge-target origin/<INTEGRATION_BRANCH> (not origin/main)" {
   _setup_conflicting_branch_against_feature_x
 
   # Recording stub — captures the --merge-target arg
@@ -273,28 +282,28 @@ _setup_conflicting_branch_against_feature_x() {
   # Must pin restart-max=0 so the small-branch fast-path doesn't preempt the resolver
   export RITE_REBASE_CONFLICT_RESTART_MAX=0
 
-  # Fetch feature-x so _stale_rebase_onto_main can verify origin/feature-x exists
-  git -C "$WORKTREE_PATH" fetch origin feature-x >/dev/null 2>&1
+  # Fetch integration branch so _stale_rebase_onto_main can verify it exists on origin
+  git -C "$WORKTREE_PATH" fetch origin "$INTEGRATION_BRANCH" >/dev/null 2>&1
 
   local exit_code=0
   _stale_rebase_onto_main \
-    "$WORKTREE_PATH" "$BRANCH_NAME" "unsupervised" "999" "888" "feature-x" 2>/dev/null || exit_code=$?
+    "$WORKTREE_PATH" "$BRANCH_NAME" "unsupervised" "999" "888" "$INTEGRATION_BRANCH" 2>/dev/null || exit_code=$?
+
+  # Cleanup runs before assertions so it fires even on failure (MEDIUM #2 fix)
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" "$INTEGRATION_BRANCH" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" "$INTEGRATION_BRANCH" >/dev/null 2>&1 || true
 
   # Resolver was called (exit_code is non-0 since stub returned 1, but stub must have been invoked)
-  # The key assertion is the captured merge target
-  [ "$_captured_merge_target" = "origin/feature-x" ] || {
-    echo "FAIL: expected --merge-target 'origin/feature-x', got '$_captured_merge_target'"
+  # The key assertion: resolver received the PID-unique integration branch, not "main"
+  [ "$_captured_merge_target" = "origin/$INTEGRATION_BRANCH" ] || {
+    echo "FAIL: expected --merge-target 'origin/$INTEGRATION_BRANCH', got '$_captured_merge_target'"
     return 1
   }
 
   # Explicitly assert NOT origin/main (the pre-fix wrong value)
   [ "$_captured_merge_target" != "origin/main" ]
-
-  # Cleanup
-  cd "$FIXTURE_REPO"
-  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
-  git branch -D "$BRANCH_NAME" feature-x >/dev/null 2>&1 || true
-  git push origin --delete "$BRANCH_NAME" feature-x >/dev/null 2>&1 || true
 }
 
 # ===========================================================================
@@ -418,4 +427,68 @@ _setup_conflict_with_main() {
   # Cleanup
   cd "$FIXTURE_REPO"
   git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+}
+
+# ===========================================================================
+# § 6. check_stale_branch composition — API fallback propagates env transport
+# ===========================================================================
+#
+# MEDIUM #1 fix (#1035/1036/1037): check_stale_branch adopts RITE_TARGET_BRANCH
+# on API fallback. When pr_number is set but gh_safe returns empty (API unavailable),
+# _stale_resolve_base_branch falls back to the RITE_TARGET_BRANCH env transport
+# and sets _STALE_BASE_BRANCH=feature-x. check_stale_branch then uses that value
+# as base_branch unconditionally (line 341). This test locks in the composition.
+#
+# Design reference: docs/architecture/branch-flag-design.md §5.2 — env transport
+# is the "cold-start fallback" precisely for this API-fail case.
+
+@test "check_stale_branch: pr set + API empty + RITE_TARGET_BRANCH=feature-x → base_branch=feature-x" {
+  # Stub gh_safe to return empty (simulates API unavailable / PR not found).
+  # Re-defined after all sources so env-var-guarded libs don't overwrite it.
+  gh_safe() { echo ""; }
+
+  export RITE_TARGET_BRANCH="feature-x"
+
+  # Create a real feature branch worktree so check_stale_branch's branch-name
+  # guard (line 333: "not on a feature branch") passes.
+  local _cs_branch="fix/check-stale-composition-$$"
+  local _cs_worktree="$RITE_WORKTREE_DIR/issue-cs-comp-$$"
+  git checkout -b "$_cs_branch" main >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
+  git worktree add "$_cs_worktree" "$_cs_branch" >/dev/null 2>&1
+
+  # Capture the base_branch resolution by intercepting print_status.
+  # check_stale_branch calls: print_status "Checking branch freshness against $base_branch..."
+  # This fires AFTER _stale_resolve_base_branch sets _STALE_BASE_BRANCH but BEFORE
+  # the git fetch (which will fail since "feature-x" is not on the bare remote,
+  # causing an early return 0 — exactly what we want for a unit-level check).
+  local _observed_status=""
+  print_status() { _observed_status="${*:-}"; }
+
+  check_stale_branch "$_cs_worktree" "42" "999" "unsupervised"
+  local _cs_exit=$?
+
+  # Cleanup
+  cd "$FIXTURE_REPO"
+  git worktree remove "$_cs_worktree" --force >/dev/null 2>&1 || true
+  git branch -D "$_cs_branch" >/dev/null 2>&1 || true
+
+  # Function must exit 0: fetch of "feature-x" fails on the bare remote
+  # (branch doesn't exist there), triggering the "skip" early return.
+  [ "$_cs_exit" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (fetch-fail skip path), got $_cs_exit"
+    return 1
+  }
+
+  # The print_status message must name "feature-x" as the base branch —
+  # proving that _stale_resolve_base_branch picked up RITE_TARGET_BRANCH
+  # as the fallback when gh_safe returned empty for pr_number="42".
+  [[ "$_observed_status" == *"feature-x"* ]] || {
+    echo "FAIL: expected base_branch=feature-x (via env transport fallback)"
+    echo "      print_status was called with: '$_observed_status'"
+    echo "      RITE_TARGET_BRANCH=${RITE_TARGET_BRANCH:-<unset>}"
+    echo "      _STALE_BASE_BRANCH=${_STALE_BASE_BRANCH:-<unset>}"
+    echo "      _STALE_BASE_BRANCH_SOURCE=${_STALE_BASE_BRANCH_SOURCE:-<unset>}"
+    return 1
+  }
 }
