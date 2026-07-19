@@ -515,6 +515,13 @@ rite 42 --dev-and-pr       # Phase 1-2: dev + PR only, skip review/merge
 rite 42 --review-latest    # Phase 2 (review only): generate + post review
 rite 42 --assess-and-fix   # Phase 3: assess review + fix loop (up to 3 retries)
 rite 42 --undo             # Cleanup: close PR, delete branch/worktree
+                           # Non-main target: with a non-main PR base, undo closes the PR and
+                           # deletes the branch (no draft preservation; accepted PR-number stacking).
+                           # The next `rite N --branch X` re-branches fresh from origin/<target>.
+                           # Ledger entries (integration-branches/*.log) are never touched.
+                           # If the PR already MERGED to the integration branch, undo hard-stops —
+                           # abandoning the change requires deleting the whole integration branch
+                           # (or reverting the commit on it), since a later promote WILL ship it.
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating

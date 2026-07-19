@@ -2492,6 +2492,18 @@ handle_closed_issue() {
       print_success "Removed session state: session-state-${issue_number}.json"
     fi
 
+    # 4b. Remove target-branch carrier written by claude-workflow.sh (#1033).
+    # GC'd here per design §2.3 cleanup obligation. Guard on RITE_STATE_DIR to
+    # match the handoff-file idiom (workflow-runner.sh:940-946).
+    if [ -n "${RITE_STATE_DIR:-}" ]; then
+      local _target_file="${RITE_STATE_DIR}/target-branch-${issue_number}.txt"
+      if [ -f "$_target_file" ]; then
+        rm -f "$_target_file"
+        [ "$cleaned_anything" = false ] && print_status "Cleaning up artifacts..." && cleaned_anything=true
+        print_success "Removed target-branch state file: target-branch-${issue_number}.txt"
+      fi
+    fi
+
     if [ "$cleaned_anything" = true ]; then
       echo ""
     fi
