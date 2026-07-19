@@ -170,8 +170,48 @@ if [ -n "$_lint_dup_nums" ]; then
   exit 1
 fi
 
+# SHARKRITE_LINT_ONLY (test-only fast path): comma-separated rule NUMBERS (the
+# NN- filename prefix, e.g. "15" or "34,35"). When set, only the named rule
+# fragments are sourced — a rule's own regression test then runs JUST its rule
+# instead of all 36. This cuts a full-codebase custom-lint pass from ~70s to
+# ~2s. It matters because the lint-rule bats tests each shell out to the full
+# linter (some 3-17x per file) and NONE are serial-marked: under the gate's
+# `bats --jobs 8`, ~8 concurrent full-lint scans starve the CPU, each blows the
+# 120s BATS_TEST_TIMEOUT, and the gate drags to its 1800s watchdog (live: the
+# 2026-07-18 batch ran 15-42min gates on this alone). Unset = all rules, so the
+# production/gate lint path is unchanged.
+if [ -n "${SHARKRITE_LINT_ONLY:-}" ]; then
+  # Membership string: ",15,34," so a case-glob can test exact number match.
+  _lint_only_set=",${SHARKRITE_LINT_ONLY//[[:space:]]/},"
+  # Fail loudly if a requested number has no fragment. Otherwise a stale/typo'd
+  # number would source ZERO rules, the driver would exit 0, and a test that
+  # asserts "no violation" would pass spuriously (silent coverage loss).
+  _lint_only_check="${SHARKRITE_LINT_ONLY//[[:space:]]/}"
+  while [ -n "$_lint_only_check" ]; do
+    _lint_only_n="${_lint_only_check%%,*}"
+    if [ "$_lint_only_check" = "$_lint_only_n" ]; then
+      _lint_only_check=""
+    else
+      _lint_only_check="${_lint_only_check#*,}"
+    fi
+    [ -z "$_lint_only_n" ] && continue
+    if ! ls "$_LINT_RULES_DIR/${_lint_only_n}-"*.sh >/dev/null 2>&1; then
+      echo "ERROR: SHARKRITE_LINT_ONLY names rule '$_lint_only_n' but no tools/lint-rules/${_lint_only_n}-*.sh exists" >&2
+      exit 1
+    fi
+  done
+fi
+
 for _rule_file in "$_LINT_RULES_DIR"/*.sh; do
   [ -f "$_rule_file" ] || continue
+  if [ -n "${_lint_only_set:-}" ]; then
+    # Extract the NN- prefix and skip fragments not in the requested set.
+    _rule_num=$(basename "$_rule_file" | sed -E 's/^([0-9]+)-.*/\1/')
+    case "$_lint_only_set" in
+      *",${_rule_num},"*) ;;   # requested — source it
+      *) continue ;;           # not requested — skip
+    esac
+  fi
   # shellcheck source=/dev/null
   source "$_rule_file"
 done

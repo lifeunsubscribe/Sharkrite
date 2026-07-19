@@ -39,7 +39,7 @@ EOF
   # Run the lint rule with the fixture dir injected
   cd "$BATS_TEST_DIRNAME/../.."  # Project root (tests/regression/ → project root)
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   # Should fail with violation
@@ -120,7 +120,7 @@ EOF
   # Run the lint rule with the fixture dir injected
   cd "$BATS_TEST_DIRNAME/../.."  # Project root (tests/regression/ → project root)
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -175,7 +175,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -198,7 +198,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_safe_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [[ ! "$output" =~ "r8-last-line-safe.sh" ]]
@@ -217,7 +217,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -246,7 +246,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -272,7 +272,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_safe_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [[ ! "$output" =~ "r8-multiline-guard-at-eof.sh" ]]
@@ -347,7 +347,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   # The planted file must NOT be flagged (guard is on the closing line)
@@ -378,7 +378,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]
@@ -400,7 +400,7 @@ EOF
 
   cd "$BATS_TEST_DIRNAME/../.."
   export RITE_LINT_EXTRA_DIRS="$_dir"
-  run tools/sharkrite-lint.sh
+  SHARKRITE_LINT_ONLY=08 run tools/sharkrite-lint.sh
   unset RITE_LINT_EXTRA_DIRS
 
   [ "$status" -eq 1 ]

@@ -478,15 +478,16 @@ Only content-aware and practical conditions block merges:
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
   - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
 - **AWS credentials expired** — deployment credentials invalid
+- **Integration-branch guard** — `merge-pr.sh` exits 1 when the PR targets `main` but the session's resolved target (state file → `RITE_TARGET_BRANCH` → default) is a non-main integration branch. Substitutes for GitHub branch protection (unavailable on the free plan). Override with `--allow-main-base`: `rite <issue> --allow-main-base`. Implemented in `lib/core/merge-pr.sh`; forwarded by `lib/core/workflow-runner.sh`.
 - **Supervised mode**: Interactive `read -p` prompt for approval
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
 - Approvals remembered per-issue via `has_approved_blocker()`
 
 ### Stale Branch Handling
 
-When resuming an issue with an existing PR, the branch is checked against `origin/main`. Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
+When resuming an issue with an existing PR, the branch is checked against the PR's base branch (`origin/main` by default). Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
 
-- **Below threshold**: Rebase the feature branch onto `origin/main` (replays branch commits on top of fresh main), then force-push with `--force-with-lease`. Rebase avoids the false conflicts a merge would surface when main has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; otherwise auto mode bails and supervised mode prompts.
+- **Below threshold**: Rebase the feature branch onto the PR's base branch (`origin/main` by default) (replays branch commits on top of fresh base), then force-push with `--force-with-lease`. Rebase avoids the false conflicts a merge would surface when the base has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; otherwise auto mode bails and supervised mode prompts.
 - **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
 - **At/above threshold (supervised)**: Prompt with 5 options (close+restart recommended, rebase onto main, merge main into branch [legacy], continue, abort). The legacy merge path is kept opt-in for cases where rewriting history is unacceptable.
 
@@ -604,6 +605,8 @@ make lint               # Run custom rules only
 make test               # Run test suite (requires bats)
 bats tests/             # Run test suite directly (bypasses make wrapper)
 ```
+
+**Single-rule mode (`SHARKRITE_LINT_ONLY`)**: `SHARKRITE_LINT_ONLY=15 tools/sharkrite-lint.sh` sources only the named rule fragment(s) (comma list OK: `34,35`) — ~1s instead of the ~85s full 36-rule scan. **A bats test that invokes the linter MUST scope to the rule(s) it asserts** — unscoped full scans under the gate's `bats --jobs 8` starve the CPU, blow the 120s `BATS_TEST_TIMEOUT`, and drag the gate to its 1800s watchdog (live: batch 155134, 2026-07-18 — 15-42min gates, 3 issues failed on this alone). A typo'd rule number fails loudly (exit 1), so a stale scope can't silently pass. Leave a linter invocation unscoped only for a genuine all-rules cleanliness sweep, and serial-mark that file. Contract pinned by `tests/lint/single-rule-knob.bats`.
 
 **Custom lint rules** (in `tools/sharkrite-lint.sh`) catch patterns shellcheck misses:
 - `grep -c ... || echo "0"` — produces double zero (use `|| true`)
