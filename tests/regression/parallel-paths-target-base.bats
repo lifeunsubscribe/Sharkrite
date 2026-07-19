@@ -345,6 +345,12 @@ _setup_conflict_with_main() {
   run check_and_rebase_against_main \
     "$WORKTREE_PATH2" "$BRANCH_NAME2" "777" "666" "unsupervised"
 
+  # Cleanup runs before assertions so it fires even on failure (MEDIUM #2 fix)
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH2" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME2" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME2" >/dev/null 2>&1 || true
+
   [ "$status" -eq 1 ] || {
     echo "FAIL: expected exit 1 (conflict with main, default parity), got $status"
     return 1
@@ -355,12 +361,6 @@ _setup_conflict_with_main() {
     echo "FAIL: output should mention 'main' for default base; got: $output"
     return 1
   }
-
-  # Cleanup
-  cd "$FIXTURE_REPO"
-  git worktree remove "$WORKTREE_PATH2" --force >/dev/null 2>&1 || true
-  git branch -D "$BRANCH_NAME2" >/dev/null 2>&1 || true
-  git push origin --delete "$BRANCH_NAME2" >/dev/null 2>&1 || true
 }
 
 @test "check_and_rebase_against_main: default (main) — clean case returns 0 (parity)" {
@@ -391,16 +391,16 @@ _setup_conflict_with_main() {
   run check_and_rebase_against_main \
     "$WORKTREE_CLEAN" "$BRANCH_CLEAN" "555" "444" "unsupervised"
 
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: expected exit 0 (clean against main, default parity), got $status"
-    return 1
-  }
-
-  # Cleanup
+  # Cleanup runs before assertions so it fires even on failure (MEDIUM #2 fix)
   cd "$FIXTURE_REPO"
   git worktree remove "$WORKTREE_CLEAN" --force >/dev/null 2>&1 || true
   git branch -D "$BRANCH_CLEAN" >/dev/null 2>&1 || true
   git push origin --delete "$BRANCH_CLEAN" >/dev/null 2>&1 || true
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (clean against main, default parity), got $status"
+    return 1
+  }
 }
 
 # ===========================================================================
