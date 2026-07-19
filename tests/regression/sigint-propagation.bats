@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/utils/logging.sh, lib/utils/colors.sh
 # sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
 # concurrent-write, and timeout-race tests need the serial group)
 # Regression test for: Make Ctrl-C reliably terminate rite workflow
