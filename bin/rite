@@ -61,7 +61,9 @@ WORKFLOW_FLAGS=()
 LABEL_FILTER=""
 BATCH_FILTER_ARGS=()
 SUPERVISED=false
-SYNC_BRANCH_ARG=""
+SYNC_BRANCH_ARG=""  # set when SYNC_ARGS contains exactly one non-numeric arg (branch form)
+SYNC_ARGS=()        # all post-sync args; typed dispatch sets SYNC_MODE from these
+SYNC_MODE=""        # "branch" | "issue" | "all" — resolved from SYNC_ARGS at parse time
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dev-and-pr)
@@ -115,16 +117,18 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --sync)
-      # Sync an integration branch: fetch origin, merge origin/main into the
-      # branch (never rebase), push. Explicit, never automatic.
+      # Sync verb: typed dispatch based on remaining args.
+      #   zero args       → all-repo form (sweep ledger branches + in-flight worktrees)
+      #   one non-numeric → branch form (merge origin/main into integration branch)
+      #   one or more all-digits → issue form (rebase each feature branch onto its base)
+      #   mixed or multi-branch  → usage error
       MODE="sync"
-      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
-        print_error "--sync requires a branch name"
-        echo "Usage: rite --sync <integration-branch>"
-        exit 1
-      fi
-      SYNC_BRANCH_ARG="$2"
-      shift 2
+      shift
+      # Collect all remaining non-flag args as sync args
+      while [[ $# -gt 0 ]] && [[ "$1" != -* ]]; do
+        SYNC_ARGS+=("$1")
+        shift
+      done
       ;;
     --refresh-encountered-issues)
       MODE="refresh-encountered-issues"
@@ -257,7 +261,9 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --init --backfill-count N Backfill N ADRs (default: 5)"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
-      echo "  rite --sync <branch>          Merge origin/main into an integration branch (explicit, never automatic)"
+      echo "  rite --sync <branch>          Git hygiene: merge origin/main into an integration branch (explicit, never automatic)"
+      echo "  rite --sync N [M ...]         Git hygiene: rebase feature branch(es) for issue(s) onto their resolver-determined base (rebase rewrites SHAs — review goes stale by design)"
+      echo "  rite --sync                   Git hygiene: sweep all ledger integration branches then all in-flight worktrees"
       echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
@@ -350,17 +356,15 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     sync)
-      # Bare-word alias: `rite sync <branch>` → `rite --sync <branch>`.
-      # Mirrors the --sync flag case above, including the required-arg check.
+      # Bare-word alias: `rite sync [args...]` → `rite --sync [args...]`.
+      # Mirrors the --sync flag case above: collect zero-or-more non-flag args,
+      # typed dispatch resolves the form (all-repo / issue / branch) later.
       MODE="sync"
       shift
-      if [ -z "${1:-}" ] || [[ "$1" == -* ]]; then
-        print_error "sync requires a branch name"
-        echo "Usage: rite sync <integration-branch>"
-        exit 1
-      fi
-      SYNC_BRANCH_ARG="$1"
-      shift
+      while [[ $# -gt 0 ]] && [[ "$1" != -* ]]; do
+        SYNC_ARGS+=("$1")
+        shift
+      done
       ;;
     backfill-locks)
       MODE="backfill-locks"
@@ -376,6 +380,48 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# --- Sync arg-type resolution -------------------------------------------------
+# Resolve SYNC_ARGS into SYNC_MODE + SYNC_BRANCH_ARG (branch form) / SYNC_ISSUE_ARGS (issue form).
+# Done after the parse loop so all args are collected before classification.
+#
+# Rules:
+#   zero args                → all-repo form (SYNC_MODE=all)
+#   one or more all-digit args → issue form (SYNC_MODE=issue)
+#   exactly one non-digit arg → branch form (SYNC_MODE=branch), sets SYNC_BRANCH_ARG
+#   multiple non-digit args or mixed → usage error (rejected at dispatch time; SYNC_MODE=invalid)
+SYNC_ISSUE_ARGS=()
+if [ "$MODE" = "sync" ]; then
+  _sync_argc=${#SYNC_ARGS[@]}
+  if [ "$_sync_argc" -eq 0 ]; then
+    SYNC_MODE="all"
+  else
+    _sync_all_numeric=true
+    _sync_has_non_numeric=false
+    _sync_non_numeric_count=0
+    for _sync_a in "${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}"; do
+      if [[ "$_sync_a" =~ ^[0-9]+$ ]]; then
+        SYNC_ISSUE_ARGS+=("$_sync_a")
+      else
+        _sync_has_non_numeric=true
+        _sync_all_numeric=false
+        _sync_non_numeric_count=$(( _sync_non_numeric_count + 1 ))
+        SYNC_BRANCH_ARG="$_sync_a"
+      fi
+    done
+    if [ "$_sync_all_numeric" = "true" ]; then
+      # All digits: issue form
+      SYNC_MODE="issue"
+    elif [ "$_sync_non_numeric_count" -eq 1 ] && [ "${#SYNC_ISSUE_ARGS[@]}" -eq 0 ]; then
+      # Exactly one non-numeric, no numerics: branch form
+      SYNC_MODE="branch"
+    else
+      # Mixed or multiple non-numeric: usage error
+      SYNC_MODE="invalid"
+    fi
+  fi
+fi
+# --- end sync arg-type resolution -------------------------------------------
 
 # --- resolve_dispatch_key (pure) ---------------------------------------------
 # Maps the dispatch tuple (MODE, batch filter, PR input, issue args) to a
@@ -401,7 +447,10 @@ done
 #   "health-report"        rite --health-report
 #   "health-report-latest" rite --health-report --latest
 #   "full-suite"           rite --full-suite
-#   "sync"                 rite --sync <branch>
+#   "sync"                 rite --sync <branch>   (branch form: merge origin/main into integration branch)
+#   "sync-issue"           rite --sync N [M...]   (issue form: rebase feature branches onto resolver base)
+#   "sync-all"             rite --sync            (all-repo: sweep ledger branches then in-flight worktrees)
+#   "sync-invalid"         mixed/multi-branch args — usage error
 #   "refresh-encountered-issues"
 #   "tags"
 #   "backfill-locks"
@@ -432,7 +481,14 @@ resolve_dispatch_key() {
       return 0
       ;;
     sync)
-      echo "sync"
+      # Typed dispatch: key depends on SYNC_MODE resolved from SYNC_ARGS at parse time.
+      case "${SYNC_MODE:-}" in
+        all)     echo "sync-all" ;;
+        issue)   echo "sync-issue" ;;
+        branch)  echo "sync" ;;
+        invalid) echo "sync-invalid" ;;
+        *)       echo "sync-all" ;;  # default: no args = all-repo
+      esac
       return 0
       ;;
     refresh-encountered-issues)
@@ -573,6 +629,23 @@ resolve_dispatch_plan() {
     sync)
       echo "integration-sync.sh::sync_integration_branch ${SYNC_BRANCH_ARG:-<branch>}  (fetch + merge origin/main into branch, push)"
       return 0
+      ;;
+    sync-issue)
+      echo "integration-sync.sh::sync_issue_branch ${SYNC_ISSUE_ARGS[*]+"${SYNC_ISSUE_ARGS[*]}"}  (rebase each feature branch onto resolver-determined base, --force-with-lease)"
+      echo "NOTE: rebasing rewrites SHAs — existing review goes stale and will be regenerated on next 'rite N'"
+      return 0
+      ;;
+    sync-all)
+      echo "integration-sync.sh::sync_all_repos  (Phase A: sync all ledger integration branches; Phase B: rebase all in-flight worktrees via issue paths)"
+      echo "NOTE: rebasing rewrites SHAs — stale reviews will be regenerated on next 'rite N'"
+      return 0
+      ;;
+    sync-invalid)
+      echo "ERROR: mixed or multiple non-numeric args to --sync — provide: a branch name, issue number(s), or no args"
+      echo "Usage: rite --sync <integration-branch>   # merge origin/main into branch"
+      echo "       rite --sync N [M ...]              # rebase feature branch(es) for issue(s)"
+      echo "       rite --sync                        # sweep all ledger branches + in-flight worktrees"
+      return 1
       ;;
     refresh-encountered-issues)
       echo "render_encountered_issues  (fetch closed recurring-pattern issues via gh, rewrite docs/architecture/encountered-issues.md)"
@@ -742,12 +815,38 @@ if [ "$MODE" = "full-suite" ]; then
   exec "$SCRIPT_DIR/rite-full-suite"
 fi
 
-# Integration branch sync: fetch + merge origin/main into the branch, push.
-# Explicit, never automatic. Branch arg was consumed and validated at parse time.
+# Integration sync: typed dispatch based on SYNC_MODE resolved at parse time.
+# Explicit, never automatic. Never entered by the workflow or batch paths.
 if [ "$MODE" = "sync" ]; then
   source "$RITE_LIB_DIR/utils/integration-sync.sh"
-  sync_integration_branch "${SYNC_BRANCH_ARG:-}"
-  exit $?
+  case "${SYNC_MODE:-all}" in
+    branch)
+      # Branch form: merge origin/main into the named integration branch.
+      # Refuses "main" (handled inside sync_integration_branch).
+      sync_integration_branch "${SYNC_BRANCH_ARG:-}"
+      exit $?
+      ;;
+    issue)
+      # Issue form: rebase each in-flight feature branch onto its resolver-determined base.
+      _sync_issue_rc=0
+      for _sync_n in "${SYNC_ISSUE_ARGS[@]+"${SYNC_ISSUE_ARGS[@]}"}"; do
+        sync_issue_branch "$_sync_n" || _sync_issue_rc=$?
+      done
+      exit $_sync_issue_rc
+      ;;
+    all)
+      # All-repo form: Phase A (ledger integration branches) then Phase B (in-flight worktrees).
+      sync_all_repos
+      exit $?
+      ;;
+    invalid)
+      print_error "--sync: mixed or multiple non-numeric args — cannot determine sync type"
+      echo "Usage: rite --sync <integration-branch>   # merge origin/main into branch" >&2
+      echo "       rite --sync N [M ...]              # rebase feature branch(es) for issue(s)" >&2
+      echo "       rite --sync                        # sweep all ledger branches + in-flight worktrees" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
