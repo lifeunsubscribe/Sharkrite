@@ -46,13 +46,16 @@ setup() {
   cd "$FIXTURE_REPO"
 
   # Source stale-branch (provides _stale_resolve_base_branch + _stale_rebase_onto_main)
-  # Stub deps before sourcing to avoid side effects
+  source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
+
+  # Stub side-effect deps AFTER the source so the stubs win (Rule 34: env-var
+  # re-source guards don't check for existing functions — a pre-source stub
+  # would be overwritten by the lib's real definition; post-source, last
+  # definition wins and the transitively-sourced libs still load in full).
   create_sharkrite_stash() { return 0; }
   verify_post_merge()      { return 0; }
   export -f create_sharkrite_stash verify_post_merge
-
-  source "$RITE_LIB_DIR/utils/stale-branch.sh"
-  set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
 teardown() {
