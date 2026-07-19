@@ -411,11 +411,14 @@ _setup_conflict_with_main() {
   # When the branch being checked IS the base branch, the function should skip
   # rather than try to rebase the integration branch onto itself.
   source "$RITE_LIB_DIR/utils/mid-run-rebase.sh"
+  set +u; set +o pipefail  # restore bats error handling after lib source (leaked set -euo pipefail)
 
+  # The skip guard fires at the top of check_and_rebase_against_main (branch_name == base_branch),
+  # before any worktree directory check — no real worktree needed. Use a non-existent path;
+  # the function returns 0 at the guard before checking [ ! -d "$worktree_path" ].
   local worktree_path="$RITE_WORKTREE_DIR/issue-skip-guard-$$"
-  git worktree add "$worktree_path" main >/dev/null 2>&1
 
-  # Call with branch_name == base_branch — should skip (return 0)
+  # Call with branch_name == base_branch — should skip immediately (return 0)
   run check_and_rebase_against_main \
     "$worktree_path" "feature-x" "1" "2" "unsupervised" "feature-x"
 
@@ -423,10 +426,6 @@ _setup_conflict_with_main() {
     echo "FAIL: expected exit 0 (branch == base skip guard), got $status"
     return 1
   }
-
-  # Cleanup
-  cd "$FIXTURE_REPO"
-  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
 }
 
 # ===========================================================================
