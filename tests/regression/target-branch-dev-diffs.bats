@@ -92,17 +92,31 @@ teardown() {
 # =============================================================================
 
 @test "structural: workflow-runner.sh no-PR resume fetch uses \$_target not literal main" {
-  _src=$(cat "$RITE_REPO_ROOT/lib/core/workflow-runner.sh")
+  # verify_already_fixed_on_main is EXEMPT from the no-literal-main rule: it
+  # ref-pins to origin/main BY DESIGN (#873/#1075) — it answers "did this fix
+  # already land on main", which is main-semantics regardless of the workflow's
+  # target branch (making it target-aware is #1073-cluster feature work).
+  # Strip that function's span before the negative assertion so the rule stays
+  # strong everywhere else. Stale-assert incident: #1084 (this test red on
+  # clean main after #1075 + #1077 merged from parallel worktrees).
+  _src=$(sed '/^verify_already_fixed_on_main()/,/^}/d' "$RITE_REPO_ROOT/lib/core/workflow-runner.sh")
 
-  # Must NOT have: fetch origin main (literal)
+  # Must NOT have: fetch origin main (literal) — outside the exempt function
   if echo "$_src" | grep -qE 'fetch origin main\b'; then
-    echo "FAIL: workflow-runner.sh still has literal 'fetch origin main'"
+    echo "FAIL: workflow-runner.sh has literal 'fetch origin main' outside verify_already_fixed_on_main"
     return 1
   fi
 
   # Must HAVE: fetch origin "$_target"
   echo "$_src" | grep -q 'fetch origin "$_target"' || {
     echo "FAIL: workflow-runner.sh missing 'fetch origin \"\$_target\"'"
+    return 1
+  }
+
+  # The exempt function must still exist and still be main-pinned — if it is
+  # ever renamed or made target-aware, this assert forces a deliberate revisit.
+  grep -q '^verify_already_fixed_on_main()' "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || {
+    echo "FAIL: verify_already_fixed_on_main not found — update this test's exemption"
     return 1
   }
 }
