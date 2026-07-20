@@ -25,6 +25,37 @@ source "$RITE_LIB_DIR/utils/issue-lock.sh"
 # test environments where RITE_LIB_DIR points to the install copy also work.
 _repo_status_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_repo_status_dir/markers.sh"
+# Source integration-ledger.sh if available (provides integration_ledger_entries).
+# Guard with declare -f so repeated sources are a no-op (the file has its own guard too).
+if ! declare -f integration_ledger_entries >/dev/null 2>&1; then
+  if [ -f "$_repo_status_dir/integration-ledger.sh" ]; then
+    source "$_repo_status_dir/integration-ledger.sh"
+  fi
+fi
+
+# =============================================================================
+# Shared helpers
+# =============================================================================
+
+# behind_main_count <git_C_path> <local_ref>
+#
+# Returns (via stdout) the number of commits origin/main is ahead of <local_ref>
+# via common ancestor computation.  Uses local refs only — no fetch.
+# Outputs "0" when the common ancestor cannot be computed (detached HEAD, no origin/main).
+#
+# Single authoritative copy of the behind-main math; replaces the two former
+# inline copies in scan_worktrees() — exactly one git ancestor-check call in this file.
+behind_main_count() {
+  local git_path="$1"
+  local ref="$2"
+  local _mb
+  _mb=$(git -C "$git_path" merge-base "$ref" origin/main 2>/dev/null || echo "")
+  if [ -n "$_mb" ]; then
+    git -C "$git_path" rev-list --count "${_mb}..origin/main" 2>/dev/null || echo "0"
+  else
+    echo "0"
+  fi
+}
 
 # =============================================================================
 # Worktree scanning
@@ -108,10 +139,8 @@ scan_worktrees() {
         fi
 
         # Commits behind main (uses local origin/main ref, no fetch)
-        local behind_main=0
-        local _mb
-        _mb=$(git -C "$current_path" merge-base HEAD origin/main 2>/dev/null || echo "")
-        [ -n "$_mb" ] && behind_main=$(git -C "$current_path" rev-list --count "${_mb}..origin/main" 2>/dev/null || echo "0")
+        local behind_main
+        behind_main=$(behind_main_count "$current_path" HEAD)
 
         WT_BRANCHES+=("$branch")
         WT_STATUSES+=("$status_parts")
@@ -164,10 +193,8 @@ scan_worktrees() {
     if [ -z "$status_parts" ]; then
       status_parts="clean"
     fi
-    local behind_main=0
-    local _mb
-    _mb=$(git -C "$current_path" merge-base HEAD origin/main 2>/dev/null || echo "")
-    [ -n "$_mb" ] && behind_main=$(git -C "$current_path" rev-list --count "${_mb}..origin/main" 2>/dev/null || echo "0")
+    local behind_main
+    behind_main=$(behind_main_count "$current_path" HEAD)
 
     WT_BRANCHES+=("$branch")
     WT_STATUSES+=("$status_parts")
@@ -395,6 +422,170 @@ strip_label_prefix_from_title() {
 }
 
 # =============================================================================
+# Integration branches display
+# =============================================================================
+
+# render_integration_branches <open_prs_json> <repo_url>
+#
+# Renders the "Integration branches" section of repo-wide --status.
+# Reads ledger files from $RITE_STATE_DIR/integration-branches/*.log (including
+# nested subdirs for branch names containing '/').
+#
+# Silent when no ledger files exist (or the dir is absent) so repos that only
+# use main see byte-identical output.
+#
+# Per-branch block:
+#   - header with branch name
+#   - in-flight worktrees: open PRs whose baseRefName == this branch
+#   - merged-awaiting-promotion: ledger lines where promoted=false
+#   - behind-main drift count (local refs only, no fetch)
+#   - suggested next command: --sync (behind > 0) or --promote (== 0, unpromoted)
+#
+# Fully-retired ledgers (all entries promoted, no matching worktrees, no
+# origin/<branch> ref) are silently skipped.
+#
+# Bash 3.2 portable: indexed arrays only, no declare -A / mapfile.
+render_integration_branches() {
+  local prs_json="${1:-[]}"
+  local repo_url="${2:-}"
+
+  # Silent when the ledger directory doesn't exist yet
+  [ -d "$RITE_STATE_DIR/integration-branches" ] || return 0
+
+  # Collect ledger files via find (branch names may contain '/', so nested dirs exist)
+  local ledger_files=()
+  local _f
+  while IFS= read -r _f; do
+    ledger_files+=("$_f")
+  done < <(find "$RITE_STATE_DIR/integration-branches" -type f -name '*.log' 2>/dev/null | sort)
+
+  # Silent when no ledger files found
+  [ "${#ledger_files[@]}" -gt 0 ] || return 0
+
+  local _rendered_any="false"
+
+  for _ledger_f in "${ledger_files[@]+"${ledger_files[@]}"}"; do
+    # Recover the branch name: strip ledger dir prefix and .log suffix.
+    # NOT basename — branch names like release/1.2 would be truncated.
+    local _rel="${_ledger_f#"$RITE_STATE_DIR/integration-branches/"}"
+    local _branch="${_rel%.log}"
+
+    # --- Count unpromoted ledger entries ---
+    local _unpromoted_count=0
+    _unpromoted_count=$(grep -c 'promoted=false' "$_ledger_f" 2>/dev/null || true)
+
+    # --- Count in-flight worktrees (open PRs targeting this branch) ---
+    local _inflight_count=0
+    if [ -n "$prs_json" ] && [ "$prs_json" != "[]" ]; then
+      _inflight_count=$(echo "$prs_json" | jq --arg b "$_branch" \
+        '[.[] | select(.baseRefName == $b)] | length' 2>/dev/null || echo "0")
+      _inflight_count="${_inflight_count:-0}"
+    fi
+
+    # --- Check whether origin/<branch> ref exists locally ---
+    local _origin_sha
+    _origin_sha=$(git rev-parse "origin/$_branch" 2>/dev/null || echo "")
+
+    # Skip fully-retired ledgers: all entries promoted, no in-flight worktrees,
+    # and no local origin/<branch> ref (branch was deleted after promotion).
+    if [ "$_unpromoted_count" -eq 0 ] && [ "$_inflight_count" -eq 0 ] && [ -z "$_origin_sha" ]; then
+      continue
+    fi
+
+    # --- We have something to render — emit the section header once ---
+    if [ "$_rendered_any" = "false" ]; then
+      echo -e "  ${CYAN}Integration Branches:${NC}"
+      echo -e "  ${BLUE}─────────────────────────────────────────────────────${NC}"
+      _rendered_any="true"
+    fi
+
+    # --- Behind-main count ---
+    local _behind="?"
+    if [ -n "$_origin_sha" ]; then
+      _behind=$(behind_main_count "$RITE_PROJECT_ROOT" "origin/$_branch")
+    fi
+
+    # --- Branch header line ---
+    local _behind_display=""
+    if [ "$_behind" = "?" ]; then
+      _behind_display="  ${DIM}behind: ?${NC}"
+    elif [ "$_behind" -gt 0 ]; then
+      local _bc="${YELLOW}"
+      [ "$_behind" -ge "${RITE_STALE_BRANCH_THRESHOLD:-10}" ] && _bc="${RED}"
+      _behind_display="  ${_bc}${_behind} behind main${NC}"
+    fi
+    echo -e "  ${CYAN}${_branch}${NC}${_behind_display}"
+
+    # --- In-flight worktrees ---
+    if [ "$_inflight_count" -gt 0 ]; then
+      while IFS= read -r _pr_entry; do
+        [ -n "$_pr_entry" ] || continue
+        local _pr_num _pr_head _pr_body _pr_issue
+        _pr_num=$(echo "$_pr_entry" | jq -r '.number // ""' 2>/dev/null || echo "")
+        _pr_head=$(echo "$_pr_entry" | jq -r '.headRefName // ""' 2>/dev/null || echo "")
+        _pr_body=$(echo "$_pr_entry" | jq -r '.body // ""' 2>/dev/null || echo "")
+        _pr_issue=$(echo "$_pr_body" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' \
+          | head -1 | grep -oE '[0-9]+' || true)
+        if [ -n "$_pr_issue" ]; then
+          local _iref
+          _iref=$(_issue_link "$_pr_issue" 6 "$repo_url")
+          echo -e "    ${_iref}  ${_pr_head}  $(_pr_link "$_pr_num" "$repo_url")  ${DIM}in flight${NC}"
+        else
+          echo -e "    $(_pr_link "$_pr_num" "$repo_url")  ${_pr_head}  ${DIM}in flight${NC}"
+        fi
+      done < <(echo "$prs_json" | jq -c --arg b "$_branch" \
+        '[.[] | select(.baseRefName == $b)] | .[]' 2>/dev/null)
+    fi
+
+    # --- Merged-awaiting-promotion entries ---
+    if [ "$_unpromoted_count" -gt 0 ]; then
+      while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        # Skip promoted entries
+        case "$_line" in *"promoted=true"*) continue ;; esac
+        # Parse tab-separated key=value fields
+        local _iss="" _pr="" _sha=""
+        local _field
+        # Use a subshell-free loop over tab-delimited fields via IFS
+        local _old_ifs="$IFS"
+        IFS=$'\t'
+        # shellcheck disable=SC2086
+        set -- $_line
+        IFS="$_old_ifs"
+        for _field in "$@"; do
+          case "$_field" in
+            issue=*) _iss="${_field#issue=}" ;;
+            pr=*)    _pr="${_field#pr=}"     ;;
+            sha=*)   _sha="${_field#sha=}"   ;;
+          esac
+        done
+        local _short_sha="${_sha:0:7}"
+        if [ -n "$_iss" ]; then
+          local _iref
+          _iref=$(_issue_link "$_iss" 6 "$repo_url")
+          if [ -n "$_pr" ]; then
+            echo -e "    ${_iref}  $(_pr_link "$_pr" "$repo_url")  ${DIM}${_short_sha} awaiting promotion${NC}"
+          else
+            echo -e "    ${_iref}  ${DIM}${_short_sha} awaiting promotion${NC}"
+          fi
+        fi
+      done < "$_ledger_f"
+    fi
+
+    # --- Suggested next command ---
+    if [ "$_behind" = "?" ]; then
+      : # No suggestion when we can't measure drift
+    elif [ "$_behind" -gt 0 ]; then
+      echo -e "    ${DIM}→ rite --sync ${_branch}${NC}"
+    elif [ "$_unpromoted_count" -gt 0 ]; then
+      echo -e "    ${DIM}→ rite --promote ${_branch}${NC}"
+    fi
+
+    echo ""
+  done
+}
+
+# =============================================================================
 # Main display
 # =============================================================================
 
@@ -444,7 +635,7 @@ repo_wide_status() {
 
   # --- Batch-fetch all open PRs (avoid N+1 API calls) ---
   local open_prs_json
-  open_prs_json=$(gh_safe pr list --state open --json number,body,headRefName --limit 200)
+  open_prs_json=$(gh_safe pr list --state open --json number,body,headRefName,baseRefName --limit 200)
   open_prs_json="${open_prs_json:-[]}"
 
   # --- For PRs that exist, batch-fetch comments ---
@@ -854,6 +1045,9 @@ repo_wide_status() {
     done
     echo ""
   fi
+
+  # --- Integration branches ---
+  render_integration_branches "$open_prs_json" "$repo_url"
 
   echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""

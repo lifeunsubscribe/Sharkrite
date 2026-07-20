@@ -535,7 +535,7 @@ rite --sync <branch>       # Merge origin/main into an integration branch (expli
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
 
-**`--status`** (repo-wide, no issue number) shows all worktrees with staleness, open issues with workflow phase (Not started, Dev/PR, Needs review, Review stale, Needs fixes, Ready to merge), and recently closed issues with close dates. Use `--by-label` to group open issues by label.
+**`--status`** (repo-wide, no issue number) shows all worktrees with staleness, open issues with workflow phase (Not started, Dev/PR, Needs review, Review stale, Needs fixes, Ready to merge), recently closed issues with close dates, and (when integration-branch ledger files exist) an **Integration branches** section: per-branch header with behind-main drift, indented in-flight worktrees whose open PR targets that branch, merged-awaiting-promotion issues from the ledger (issue #, PR #, short SHA), and a suggested next command (`rite --sync <branch>` when behind, `rite --promote <branch>` when at parity with unpromoted entries). The section is completely absent when no ledger files exist. Use `--by-label` to group open issues by label.
 
 **`--review-latest`** checks review staleness: no review → generates; stale → regenerates; current → prints existing review and exits (in supervised mode, prompts to re-review).
 
