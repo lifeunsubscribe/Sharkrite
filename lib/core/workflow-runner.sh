@@ -2856,7 +2856,7 @@ run_workflow() {
       # Fallback fetch returned empty (transient gh API error on resume path).
       # The mismatch check cannot run — log a visible warning so the bypass is
       # observable rather than silent. A subsequent run will re-attempt.
-      print_warning "⚠️  #${issue_number}: could not fetch PR #${PR_NUMBER} baseRefName — branch-mismatch check skipped (transient API error?)"
+      print_warning "#${issue_number}: could not fetch PR #${PR_NUMBER} baseRefName — branch-mismatch check skipped (transient API error?)"
       _diag "BRANCH_MISMATCH_CHECK_SKIPPED issue=${issue_number} pr=${PR_NUMBER} reason=empty_base_fetch"
     fi
 
