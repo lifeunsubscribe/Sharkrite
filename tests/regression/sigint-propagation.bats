@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/utils/logging.sh, lib/utils/colors.sh
 # sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
 # concurrent-write, and timeout-race tests need the serial group)
 # Regression test for: Make Ctrl-C reliably terminate rite workflow
@@ -78,8 +78,15 @@ SCRIPT_EOF
   # a backgrounded child under non-interactive bash shares the parent's PGID,
   # so `kill -INT -<childPID>` fails with 'No such process' and the signal is
   # never delivered.
+  #
+  # Redirect stdin/stdout/stderr/FD3 to /dev/null so the test script's tee+perl
+  # pipeline (created by `exec > >(tee >(strip_ansi >> ...))`) does NOT inherit
+  # bats' capture pipe FDs. Without this, those grandchild processes hold bats'
+  # FD 3 (bats TAP channel: exec 3<&1 in bats-exec-test) open until they exit,
+  # causing bats to block waiting for EOF and eventually fire BATS_TEST_TIMEOUT=120.
+  # Redirecting FDs 1+2 alone does not prevent the leak — FD 3 must be explicit.
   set -m
-  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" &
+  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   WORKFLOW_PID=$!
   set +m
 
@@ -172,9 +179,11 @@ SCRIPT_EOF
   chmod +x "$TEST_SCRIPT"
 
   # Start workflow in its own process group so the negative-PID group signal is
-  # deliverable (see comment in the SIGINT test).
+  # deliverable (see comment in the SIGINT test). Redirect FDs 0-3 to /dev/null:
+  # FD 3 is bats' TAP channel (exec 3<&1 in bats-exec-test); without this redirect,
+  # tee+perl grandchildren hold FD 3 open and bats blocks waiting for EOF on it.
   set -m
-  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" &
+  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   WORKFLOW_PID=$!
   set +m
 
@@ -253,9 +262,11 @@ SCRIPT_EOF
 
   # Start script in its own process group so the in-handler `kill -- -$$`
   # targets the child's own group, not the bats group (see comment in the
-  # SIGINT test).
+  # SIGINT test). Redirect FDs 0-3 to /dev/null: FD 3 is bats' TAP channel
+  # (exec 3<&1 in bats-exec-test) and must be explicit to prevent the child
+  # from holding bats' pipe open after being killed (FD 1+2 alone is insufficient).
   set -m
-  "$TEST_SCRIPT" &
+  "$TEST_SCRIPT" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   PID=$!
   set +m
 

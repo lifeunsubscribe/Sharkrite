@@ -82,6 +82,7 @@ STATE_FILE="$RITE_PROJECT_ROOT/${RITE_DATA_DIR:-.rite}/session-state-${ISSUE_NUM
 PR_NUMBER=""
 PR_STATE=""
 PR_BRANCH=""
+UNDO_TARGET_BRANCH="main"
 
 # Try session state first
 if [ -f "$STATE_FILE" ]; then
@@ -114,16 +115,32 @@ if [ -z "$PR_NUMBER" ]; then
 fi
 
 if [ -n "$PR_NUMBER" ]; then
-  PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json state,headRefName,mergedAt)
+  PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json state,headRefName,mergedAt,baseRefName)
   PR_DATA="${PR_DATA:-}"
   if [ -n "$PR_DATA" ]; then
     PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
     PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName' || true)
+    # Extract the PR's base branch — used to decide undo strategy (close+delete vs
+    # draft-preserve+reset). Default to "main" when absent (forward-compat with
+    # older PR data). STAYS-MAIN literal sites (reset push + checkout) remain
+    # pinned to origin/main per design §5.1 and are NOT changed by this var.
+    UNDO_TARGET_BRANCH=$(echo "$PR_DATA" | jq -r '.baseRefName // "main"' || true)
+    UNDO_TARGET_BRANCH="${UNDO_TARGET_BRANCH:-main}"
 
-    # Hard stop if merged
+    # Hard stop if merged — message is target-aware
     if [ "$PR_STATE" = "MERGED" ]; then
-      print_error "Issue #$ISSUE_NUMBER's PR has already been merged"
-      print_info "Cannot undo a merged PR. Use 'git revert' instead."
+      if [ "$UNDO_TARGET_BRANCH" = "main" ]; then
+        print_error "Issue #$ISSUE_NUMBER's PR has already been merged"
+        print_info "Cannot undo a merged PR. Use 'git revert' instead."
+      else
+        print_error "Issue #$ISSUE_NUMBER's PR was merged to integration branch '$UNDO_TARGET_BRANCH'"
+        print_info "Its squash commit stays staged there and a later promote WILL ship it."
+        print_info "To abandon this issue's change, delete the whole integration branch:"
+        print_info "  git push origin --delete $UNDO_TARGET_BRANCH"
+        print_info "  git branch -D $UNDO_TARGET_BRANCH  (and remove its ledger file)"
+        print_info "  Then re-run the remaining staged issues."
+        print_info "Alternatively, revert the commit on $UNDO_TARGET_BRANCH."
+      fi
       exit 1
     fi
   fi
@@ -248,7 +265,11 @@ echo ""
 # PR
 if [ -n "$PR_NUMBER" ]; then
   if [ "$PR_STATE" = "OPEN" ]; then
-    echo "  PR #$PR_NUMBER .............. revert to draft + reset branch to main"
+    if [ "$UNDO_TARGET_BRANCH" = "main" ]; then
+      echo "  PR #$PR_NUMBER .............. revert to draft + reset branch to main"
+    else
+      echo "  PR #$PR_NUMBER .............. close + delete branch (non-main target: $UNDO_TARGET_BRANCH)"
+    fi
   elif [ "$PR_STATE" = "CLOSED" ]; then
     echo "  PR #$PR_NUMBER .............. already closed (skip)"
   fi
@@ -323,34 +344,70 @@ echo "🔒 PR Cleanup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
-  # Revert to draft instead of closing — avoids PR number stacking on rerun.
-  # The next `rite` run finds the existing draft PR and reuses it.
-  if gh_safe pr ready --undo "$PR_NUMBER" 2>/dev/null; then
-    print_success "Reverted issue #$ISSUE_NUMBER's PR to draft"
-  else
-    print_info "Issue #$ISSUE_NUMBER's PR may already be a draft"
-  fi
-
-  # Reset the remote branch to origin/main's HEAD (clean code slate).
-  # The draft PR stays linked to this branch; next run pushes new work to it.
-  # IMPORTANT: Use origin/main (not local main) — local main may be behind after
-  # batch merges that updated remote but never fast-forwarded the local ref.
-  if [ -n "$BRANCH_NAME" ]; then
-    # Fetch with retries — pushing origin/main:refs/heads/$BRANCH_NAME uses the fetched ref;
-    # stale data = resetting to wrong SHA (branch not actually cleaned up)
-    if ! git_fetch_safe origin main; then
-      print_warning "Failed to fetch origin/main — cannot reset remote branch"
-      UNDO_ERRORS=$((UNDO_ERRORS + 1))
-    elif git push origin "origin/main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
-      print_success "Reset remote branch to origin/main (clean slate)"
-      # Update local tracking ref so next run sees the reset (avoids stale origin/branch
-      # causing non-fast-forward push → branch deletion → PR closure → new PR)
-      # Best-effort: if this fetch fails, the tracking ref stays stale but undo still succeeded
-      git_fetch_safe origin "$BRANCH_NAME" || true
+  if [ "$UNDO_TARGET_BRANCH" = "main" ]; then
+    # Main-target path (STAYS-MAIN): revert to draft + reset branch to origin/main.
+    # Avoids PR number stacking — the draft PR is reused on next run.
+    # STAYS-MAIN: these two references to origin/main are intentionally literal per
+    # design §5.1; do NOT convert to resolver calls (#1052 adds RAW_ORIGIN_MAIN_REF suppressions).
+    if gh_safe pr ready --undo "$PR_NUMBER" 2>/dev/null; then
+      print_success "Reverted issue #$ISSUE_NUMBER's PR to draft"
     else
-      print_warning "Failed to reset remote branch"
+      print_info "Issue #$ISSUE_NUMBER's PR may already be a draft"
+    fi
+
+    # Reset the remote branch to origin/main's HEAD (clean code slate).
+    # The draft PR stays linked to this branch; next run pushes new work to it.
+    # IMPORTANT: Use origin/main (not local main) — local main may be behind after
+    # batch merges that updated remote but never fast-forwarded the local ref.
+    if [ -n "$BRANCH_NAME" ]; then
+      # Fetch with retries — pushing origin/main:refs/heads/$BRANCH_NAME uses the fetched ref;
+      # stale data = resetting to wrong SHA (branch not actually cleaned up)
+      if ! git_fetch_safe origin main; then
+        print_warning "Failed to fetch origin/main — cannot reset remote branch"
+        UNDO_ERRORS=$((UNDO_ERRORS + 1))
+      elif git push origin "origin/main:refs/heads/$BRANCH_NAME" --force 2>/dev/null; then
+        print_success "Reset remote branch to origin/main (clean slate)"
+        # Update local tracking ref so next run sees the reset (avoids stale origin/branch
+        # causing non-fast-forward push → branch deletion → PR closure → new PR)
+        # Best-effort: if this fetch fails, the tracking ref stays stale but undo still succeeded
+        git_fetch_safe origin "$BRANCH_NAME" || true
+      else
+        print_warning "Failed to reset remote branch"
+        UNDO_ERRORS=$((UNDO_ERRORS + 1))
+      fi
+    fi
+  else
+    # Non-main target path (EPHEMERAL-lifecycle ruling): close PR + delete remote branch.
+    # Resetting to origin/main would re-anchor a feature-x PR to trunk HEAD — poisoning
+    # the next run's diffs and push. Instead we close and delete so a fresh
+    # `rite N --branch X` re-branches from origin/<target> cleanly.
+    # Accepted cost: PR-number stacking on rerun (new PR is created next time).
+    _undo_close_out=""
+    _undo_close_exit=0
+    _undo_close_out=$(gh_safe pr close "$PR_NUMBER" --comment "Closed by undo of issue #${ISSUE_NUMBER}: PR targeted integration branch '${UNDO_TARGET_BRANCH}' — next \`rite ${ISSUE_NUMBER} --branch ${UNDO_TARGET_BRANCH}\` run re-branches fresh from origin/${UNDO_TARGET_BRANCH}." 2>&1) || _undo_close_exit=$?
+    if [ "${_undo_close_exit:-1}" -eq 0 ]; then
+      print_success "Closed PR #$PR_NUMBER (non-main target: $UNDO_TARGET_BRANCH)"
+    else
+      print_warning "Failed to close PR #$PR_NUMBER: ${_undo_close_out}"
       UNDO_ERRORS=$((UNDO_ERRORS + 1))
     fi
+
+    # Delete the remote branch — use the same verify-after-delete idiom as the CLOSED path below.
+    if [ -n "$BRANCH_NAME" ]; then
+      _undo_del_out=$(git push origin --delete "$BRANCH_NAME" 2>&1) && _undo_del_ok=true || _undo_del_ok=false
+      if [ "$_undo_del_ok" = true ]; then
+        print_success "Deleted remote branch: $BRANCH_NAME (non-main target: $UNDO_TARGET_BRANCH)"
+      elif ! git ls-remote --heads origin "$BRANCH_NAME" 2>/dev/null | grep -q .; then
+        print_info "Remote branch already deleted: $BRANCH_NAME"
+      else
+        print_warning "Failed to delete remote branch '$BRANCH_NAME' — it still exists."
+        print_warning "  Remove it manually: git push origin --delete $BRANCH_NAME"
+        print_warning "  (git: ${_undo_del_out})"
+        UNDO_ERRORS=$((UNDO_ERRORS + 1))
+      fi
+    fi
+
+    print_info "Next run: rite $ISSUE_NUMBER --branch $UNDO_TARGET_BRANCH (re-branches from origin/$UNDO_TARGET_BRANCH)"
   fi
 elif [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "CLOSED" ]; then
   print_info "Issue #$ISSUE_NUMBER's PR already closed"
@@ -492,8 +549,12 @@ fi
 # (live: #649, where undo cleaned the worktree/branch but left issue-649.lock).
 
 _undo_lock_dir="${RITE_LOCK_DIR:-$RITE_PROJECT_ROOT/${RITE_DATA_DIR:-.rite}/locks}/issue-${ISSUE_NUMBER}.lock"
+# Target-branch carrier written by claude-workflow.sh (#1033); GC'd here per design §2.3.
+# Removal is UNCONDITIONAL on session-state existence — a run that died early can leave
+# the target file with no session state (same logic as #649 lock lesson above).
+_undo_target_file="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/${RITE_DATA_DIR:-.rite}/state}/target-branch-${ISSUE_NUMBER}.txt"
 
-if [ "$SESSION_STATE_EXISTS" = true ] || [ -d "$_undo_lock_dir" ]; then
+if [ "$SESSION_STATE_EXISTS" = true ] || [ -d "$_undo_lock_dir" ] || [ -f "$_undo_target_file" ]; then
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "🗑️  State Cleanup"
@@ -507,6 +568,11 @@ if [ "$SESSION_STATE_EXISTS" = true ] || [ -d "$_undo_lock_dir" ]; then
   if [ -d "$_undo_lock_dir" ]; then
     rm -rf "$_undo_lock_dir"
     print_success "Removed issue lock"
+  fi
+
+  if [ -f "$_undo_target_file" ]; then
+    rm -f "$_undo_target_file"
+    print_success "Removed target-branch state file"
   fi
 fi
 
