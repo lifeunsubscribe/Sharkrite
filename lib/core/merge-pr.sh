@@ -46,6 +46,9 @@ source "$RITE_LIB_DIR/utils/gh-retry.sh"
 # Source labels helper (provides ensure_labels_exist — used by reconcile fn)
 source "$RITE_LIB_DIR/utils/labels.sh"
 
+# Source integration ledger helper (provides integration_ledger_append et al.)
+source "$RITE_LIB_DIR/utils/integration-ledger.sh"
+
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
@@ -1095,20 +1098,82 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   # Extract issue number from PR if it exists
   ISSUE_NUMBER=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' | sed -n 's/.*Closes #\([0-9]\{1,\}\).*/\1/p' | head -1 || true)
 
+  # ---------------------------------------------------------------------------
+  # Integration ledger: record merge when PR base is not main.
+  #
+  # Squash-merge subjects are "<PR title> (#PRNUM)" — the issue number is
+  # NOT embedded in git history, so this ledger is the only durable record
+  # of the issue↔SHA binding that later powers --status and --promote.
+  #
+  # Fires unconditionally on merge success (even if the user then declines the
+  # interactive close prompt) — the ledger records merges, not closes.
+  # Skipped with a print_info when ISSUE_NUMBER is empty (PR without Closes #N).
+  # ---------------------------------------------------------------------------
+  if [ "$PR_BASE" != "main" ]; then
+    if [ -z "${ISSUE_NUMBER:-}" ]; then
+      print_info "Non-main merge (base: $PR_BASE): skipping ledger write — PR #$PR_NUMBER has no 'Closes #N' link"
+    else
+      # Extract squash-commit SHA: REST API response is the primary source,
+      # with PR-scoped gh CLI fallbacks and a validated branch-tip last resort.
+      SQUASH_SHA=$(echo "$MERGE_OUTPUT" | grep -oE '"sha": *"[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | head -1 || true)
+
+      if [ -z "${SQUASH_SHA:-}" ]; then
+        # PR-scoped fallback — can never record another PR's commit
+        SQUASH_SHA=$(gh_safe pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || true)
+      fi
+
+      if [ -z "${SQUASH_SHA:-}" ]; then
+        # GitHub read-after-write lag (documented repo failure class): retry once after a short sleep
+        sleep 3
+        SQUASH_SHA=$(gh_safe pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || true)
+      fi
+
+      if [ -z "${SQUASH_SHA:-}" ]; then
+        # Last resort: branch tip — validated as this PR's squash commit to guard
+        # against a concurrent merge having moved the tip.
+        git_fetch_safe origin "$PR_BASE" || true
+        SQUASH_SHA=$(git rev-parse "origin/$PR_BASE" 2>/dev/null || true)
+        _tip_subject=$(git log -1 --format=%s "${SQUASH_SHA:-HEAD}" 2>/dev/null || true)
+        case "$_tip_subject" in
+          *"(#$PR_NUMBER)"*) : ;;          # subject carries (#PRNUM) — tip is this PR's squash commit
+          *) SQUASH_SHA="unknown" ;;       # record sha=unknown rather than a possibly-wrong SHA
+        esac
+      fi
+
+      SQUASH_SHA="${SQUASH_SHA:-unknown}"
+      print_info "Recording ledger entry: issue #$ISSUE_NUMBER pr #$PR_NUMBER sha ${SQUASH_SHA:0:12} → $PR_BASE"
+      integration_ledger_append "$PR_BASE" "$ISSUE_NUMBER" "$PR_NUMBER" "$SQUASH_SHA" || \
+        print_warning "Ledger append failed — merge succeeded; entry missing from integration ledger"
+    fi
+  fi
+
+  # ---------------------------------------------------------------------------
+  # Close linked issue with appropriate comment.
+  # Non-main merges use the annotated form (pending promotion note) so readers
+  # understand the change has not yet reached main.  Main-based merges use the
+  # original "Closed by PR #N" text — byte-identical to pre-ledger behavior.
+  # ---------------------------------------------------------------------------
   if [ ! -z "$ISSUE_NUMBER" ]; then
+    # Select close-comment text based on PR base branch
+    if [ "$PR_BASE" != "main" ]; then
+      _close_comment="Closed by PR #$PR_NUMBER — merged to integration branch '$PR_BASE'; pending promotion to main."
+    else
+      _close_comment="Closed by PR #$PR_NUMBER"
+    fi
+
     if [ "$AUTO_MODE" = false ]; then
       print_info "This PR closes issue #$ISSUE_NUMBER"
       echo ""
       read -p "Close linked issue #$ISSUE_NUMBER? (y/n) " -n 1 -r
       echo
       if [[ $REPLY =~ ^[Yy]$ ]]; then
-        gh_safe issue close "$ISSUE_NUMBER" --comment "Closed by PR #$PR_NUMBER" 2>/dev/null || true
+        gh_safe issue close "$ISSUE_NUMBER" --comment "$_close_comment" 2>/dev/null || true
         print_success "Issue #$ISSUE_NUMBER closed"
       fi
     else
       # Auto mode: automatically close linked issue
       print_info "Auto mode: closing linked issue #$ISSUE_NUMBER"
-      gh_safe issue close "$ISSUE_NUMBER" --comment "Closed by PR #$PR_NUMBER" 2>/dev/null || true
+      gh_safe issue close "$ISSUE_NUMBER" --comment "$_close_comment" 2>/dev/null || true
       print_success "Issue #$ISSUE_NUMBER closed"
     fi
   fi
