@@ -473,6 +473,7 @@ render_integration_branches() {
     # --- Count unpromoted ledger entries ---
     local _unpromoted_count=0
     _unpromoted_count=$(grep -c 'promoted=false' "$_ledger_f" 2>/dev/null || true)
+    _unpromoted_count="${_unpromoted_count:-0}"
 
     # --- Count in-flight worktrees (open PRs targeting this branch) ---
     local _inflight_count=0
