@@ -1141,6 +1141,9 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
       fi
 
       SQUASH_SHA="${SQUASH_SHA:-unknown}"
+      if [ "$SQUASH_SHA" = "unknown" ]; then
+        print_warning "Could not resolve squash-commit SHA for PR #$PR_NUMBER — recording sha=unknown in ledger (--promote and --status will show 'unknown' for this entry)"
+      fi
       print_info "Recording ledger entry: issue #$ISSUE_NUMBER pr #$PR_NUMBER sha ${SQUASH_SHA:0:12} → $PR_BASE"
       integration_ledger_append "$PR_BASE" "$ISSUE_NUMBER" "$PR_NUMBER" "$SQUASH_SHA" || \
         print_warning "Ledger append failed — merge succeeded; entry missing from integration ledger"

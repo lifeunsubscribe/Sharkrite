@@ -94,11 +94,16 @@ integration_ledger_append() {
     return 1
   fi
 
+  # Trap ensures the lock is released even if printf fails under set -e.
+  # shellcheck disable=SC2064
+  trap "lock_release '$lock_path'" RETURN
+
   # Append the ledger entry (tab-separated key=value fields)
   printf 'issue=%s\tpr=%s\tsha=%s\tmerged_at=%s\tpromoted=false\n' \
     "$issue_num" "$pr_num" "$sha" "$merged_at" >> "$ledger_file"
 
   lock_release "$lock_path"
+  trap - RETURN
 }
 
 # ---------------------------------------------------------------------------
@@ -152,6 +157,11 @@ integration_ledger_mark_promoted() {
   local tmp_file
   tmp_file="${ledger_file}.tmp.$$"
 
+  # Trap ensures the lock is released even if the rewrite fails under set -e.
+  # Also cleans up the temp file on unexpected exit.
+  # shellcheck disable=SC2064
+  trap "rm -f '${tmp_file}'; lock_release '$lock_path'" RETURN
+
   while IFS= read -r line; do
     # Match the exact issue field at the start of a tab-separated record
     case "$line" in
@@ -168,4 +178,5 @@ integration_ledger_mark_promoted() {
   mv "$tmp_file" "$ledger_file"
 
   lock_release "$lock_path"
+  trap - RETURN
 }
