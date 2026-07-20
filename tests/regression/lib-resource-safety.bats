@@ -167,6 +167,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/portable-cmds.sh"
 }
 
+@test "lib/utils/promotion-composer.sh sources twice without error" {
+  _assert_double_source "lib/utils/promotion-composer.sh"
+}
+
 @test "lib/utils/post-merge-verify.sh sources twice without error" {
   _assert_double_source "lib/utils/post-merge-verify.sh"
 }
