@@ -393,7 +393,7 @@ compose_promotion_pr_body() {
       # "**Issue labels**:" line — the -A 5 window is too short to reach it
       # because the PR-title/state/body block sits between the header and labels.
       local _section_labels=""
-      _section_labels=$(awk "/^### Issue #${_inum} /{found=1} found && /^\*\*Issue labels\*\*:/{print; exit} found && /^### Issue #[0-9]+ /{exit}" "$context_file" 2>/dev/null || true)
+      _section_labels=$(awk "/^### Issue #${_inum} /{found=1; next} found && /^\*\*Issue labels\*\*:/{print; exit} found && /^### Issue #[0-9]+ /{exit}" "$context_file" 2>/dev/null || true)
       if printf '%s' "${_section_labels:-}" | grep -q "priority-high" 2>/dev/null; then
         priority_high_count=$(( priority_high_count + 1 ))
       fi

@@ -454,6 +454,105 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Test 9: priority-high depth signal — awk must skip past PR block to labels line
+#
+# Regression for the bug where `found=1; exit` (no `next`) caused awk to exit
+# on the issue's own header line, returning empty output and leaving
+# priority_high_count hard-wired to 0.
+#
+# The context file format places **Issue labels**: several lines AFTER the
+# ### Issue #N header (PR title, PR state, PR body block, review summary all
+# appear first). This test seeds a context file with that realistic structure
+# and asserts the composer's prompt scales narrative urgency for priority-high
+# issues — confirmed by verifying the depth signal appears in the prompt output.
+# ---------------------------------------------------------------------------
+
+@test "compose_promotion_pr_body: priority-high label past PR block increments depth signal" {
+  # Build a realistic context file: the labels line is 10+ lines below the header.
+  cat > "$CONTEXT_FILE" << 'CTX'
+## Ledger entries (branch: test-branch)
+
+issue=55	pr=120	sha=aabbcc1234567890abcdef1234567890abcdef	merged_at=2026-07-10T00:00:00Z	promoted=false
+
+## Per-issue context
+
+### Issue #55 (PR #120, sha=aabbcc12, promoted=false)
+
+**PR title**: Add caching layer for session tokens
+
+**PR state**: MERGED
+
+**PR body** (first 60 lines):
+```
+This PR adds an in-memory LRU cache for session tokens to reduce DB load.
+Closes #55
+```
+
+**Review summary**: CRITICAL: 0 | HIGH: 0 | MEDIUM: 1 | LOW: 2
+
+**Issue labels**: phase-2, enhancement, priority-high
+
+**Issue body** (first 20 lines):
+```
+## Description
+Add caching layer.
+```
+
+CTX
+
+  # Write a minimal ledger (the composer reads it, not the context file, for entries).
+  cat > "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" << 'LEDGER'
+issue=55	pr=120	sha=aabbcc1234567890abcdef1234567890abcdef	merged_at=2026-07-10T00:00:00Z	promoted=false
+LEDGER
+
+  run bash << EOF
+set +e
+export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+export RITE_STATE_DIR="$RITE_STATE_DIR"
+export RITE_PROJECT_ROOT="$PROJECT_ROOT"
+export PATH="$FAKE_BIN:\$PATH"
+
+RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
+set +e; set +u; set +o pipefail
+
+integration_ledger_entries() {
+  cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
+}
+gh_safe() {
+  case "\${1:-}" in
+    pr)   printf '{"title":"Add caching layer","body":"Closes #55","state":"MERGED","comments":[]}\n' ;;
+    issue) printf '{"labels":[{"name":"priority-high"},{"name":"phase-2"}],"body":"Add caching layer."}\n' ;;
+  esac
+}
+git_fetch_safe() { return 0; }
+print_warning() { echo "WARNING: \$*" >&2; }
+provider_resolve_model() { echo "claude-opus-4-8"; }
+# Stub: echo the prompt back as the LLM output so the success path fires
+# and the full prompt text (including the depth-signal block) appears in
+# compose_promotion_pr_body's output.  The composer uses non-empty output
+# as the narrative — so "Priority-high issue count: 1" (from the prompt's
+# depth-signal section) will be visible to the test.
+provider_run_prompt_with_timeout() {
+  printf '%s' "\${1:-}"
+  return 0
+}
+
+compose_promotion_pr_body "$TEST_BRANCH" "$CONTEXT_FILE"
+exit 0
+EOF
+
+  [ "$status" -eq 0 ]
+  # The deterministic tail must still be appended (Closes line confirms the issue was found).
+  [[ "$output" == *"Closes #55"* ]]
+  # The depth signal must be non-zero: the composer embeds
+  # "Priority-high issue count: N" in the prompt passed to the LLM.
+  # When the stub echoes the prompt as narrative, this line appears in output.
+  # With the awk bug (no `next`), the awk exits immediately on the header line
+  # and priority_high_count stays 0 — this assertion would fail.
+  [[ "$output" == *"Priority-high issue count: 1"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Test 8: Static -- composer uses provider_resolve_model promote (Rule 31/32)
 # ---------------------------------------------------------------------------
 
