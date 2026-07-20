@@ -2852,6 +2852,14 @@ run_workflow() {
       _pr_base_for_check=$(gh_safe pr view "$PR_NUMBER" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
     fi
 
+    if [ -z "$_pr_base_for_check" ]; then
+      # Fallback fetch returned empty (transient gh API error on resume path).
+      # The mismatch check cannot run — log a visible warning so the bypass is
+      # observable rather than silent. A subsequent run will re-attempt.
+      print_warning "⚠️  #${issue_number}: could not fetch PR #${PR_NUMBER} baseRefName — branch-mismatch check skipped (transient API error?)"
+      _diag "BRANCH_MISMATCH_CHECK_SKIPPED issue=${issue_number} pr=${PR_NUMBER} reason=empty_base_fetch"
+    fi
+
     if [ -n "$_pr_base_for_check" ] && [ "$_pr_base_for_check" != "$_mismatch_target" ]; then
       set +e
       handle_branch_mismatch "$issue_number" "$PR_NUMBER" "$_pr_base_for_check" "$_mismatch_target"

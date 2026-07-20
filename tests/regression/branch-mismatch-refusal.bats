@@ -245,7 +245,7 @@ setup() {
 @test "structural: branch_mismatch status is set in the exit-19 branch" {
   _branch_body=$(awk '
     /elif \[ \$_WF_EXIT -eq 19 \]/ { in_branch=1; next }
-    in_branch && /^[[:space:]]*(elif|else)[[:space:]]/ { exit }
+    in_branch && /^[[:space:]]*(elif|else)([[:space:]]|$)/ { exit }
     in_branch { print $0 }
   ' "$BATCH_PROCESSOR")
 
@@ -262,7 +262,6 @@ setup() {
 }
 
 @test "structural: branch_mismatch is in the gate-breaker non-failure case list" {
-  grep -qE "branch_mismatch" "$BATCH_PROCESSOR" | grep -q "case" || true
   # Check that the _update_gate_breaker_counter case list includes branch_mismatch
   _breaker_body=$(awk '
     /^_update_gate_breaker_counter[(][)]/ { in_func=1; next }
@@ -280,7 +279,7 @@ setup() {
 @test "structural: no gh stat-gathering in exit-19 branch (non-comment)" {
   _branch_body=$(awk '
     /elif \[ \$_WF_EXIT -eq 19 \]/ { in_branch=1; next }
-    in_branch && /^[[:space:]]*(elif|else)[[:space:]]/ { exit }
+    in_branch && /^[[:space:]]*(elif|else)([[:space:]]|$)/ { exit }
     in_branch { print $0 }
   ' "$BATCH_PROCESSOR")
 
