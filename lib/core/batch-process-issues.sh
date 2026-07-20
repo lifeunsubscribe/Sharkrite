@@ -121,7 +121,7 @@ _update_gate_breaker_counter() {
   # Non-failure outcomes: reset streak, no further action.
   case "$_issue_status" in
     completed|already_closed_at_start|in_progress_elsewhere|pr_number_refused|\
-    in_current_branch|waiting_for_parent|dep_failed|not_found)
+    branch_mismatch|in_current_branch|waiting_for_parent|dep_failed|not_found)
       _gate_consec_count=0
       _gate_consec_sig=""
       return 0
@@ -1367,6 +1367,25 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
     SKIPPED_ISSUES+=("$ISSUE_NUM")
     PR_NUMBER_REFUSED_ISSUES+=("$ISSUE_NUM")
     ISSUE_STATUS["$ISSUE_NUM"]="pr_number_refused"
+
+  elif [ $_WF_EXIT -eq 19 ]; then
+    # PR base branch differs from the effective target: handle_branch_mismatch()
+    # refused and already printed the verbose block with the corrected command.
+    # Record as branch_mismatch (SKIPPED class, not FAILED) so the batch does
+    # not count this as an error and the gate-breaker streak resets.
+    # No dev session ran; no stat-gathering is needed.
+    # See: docs/architecture/exit-codes.md — exit code 19
+    end_issue_tracking "$ISSUE_NUM"
+    ISSUE_END_TIME=$(date +%s)
+    ISSUE_DURATION=$((ISSUE_END_TIME - ISSUE_START_TIME))
+    ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
+
+    print_info "⏭️  #$ISSUE_NUM skipped — PR base branch does not match effective target (see corrected command above)"
+    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    echo ""
+
+    SKIPPED_ISSUES+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="branch_mismatch"
 
   else
     EXIT_CODE=$_WF_EXIT

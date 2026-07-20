@@ -46,12 +46,13 @@ CLOSING_ISSUE_GREP_REGEX='(Closes|closes|Fixes|fixes|Resolves|resolves) #[0-9]+'
 # detect_pr_for_issue ISSUE_NUMBER
 #
 # Finds the open PR linked to a GitHub issue.
-# Sets: PR_NUMBER, PR_BRANCH
+# Sets: PR_NUMBER, PR_BRANCH, PR_BASE_BRANCH
 # Returns: 0 if found, 1 if not
 detect_pr_for_issue() {
   local issue_number="$1"
   PR_NUMBER=""
   PR_BRANCH=""
+  PR_BASE_BRANCH=""
 
   # Method 1: Search by issue link in PR body (Closes #N, Fixes #N, etc.)
   # Use sort_by(.number) | last instead of head -1 so the result is deterministic
@@ -75,8 +76,13 @@ detect_pr_for_issue() {
     return 1
   fi
 
-  # Get the branch name for this PR
-  PR_BRANCH=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+  # Get the head and base branch names for this PR in a single API call.
+  # PR_BASE_BRANCH is used by run_workflow()'s branch-mismatch guard (#1044)
+  # to detect when PR.baseRefName != the effective target branch.
+  local _pr_json
+  _pr_json=$(gh_safe pr view "$PR_NUMBER" --json headRefName,baseRefName)
+  PR_BRANCH=$(echo "$_pr_json" | jq -r '.headRefName // ""' || true)
+  PR_BASE_BRANCH=$(echo "$_pr_json" | jq -r '.baseRefName // ""' || true)
 
   return 0
 }
