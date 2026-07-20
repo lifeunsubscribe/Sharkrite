@@ -27,9 +27,15 @@ setup() {
   mkdir -p "$FAKE_BIN"
 
   # Stub: git — return empty output for all calls (diff --stat, show, etc.)
+  # Handles the -C <dir> cwd-override flag that the composer passes for
+  # cwd-robustness (CLAUDE.md: "CWD after worktree removal" convention).
   cat > "$FAKE_BIN/git" << 'GIT_STUB'
 #!/bin/bash
 # Minimal git stub: diff --stat returns a summary line; show returns nothing.
+# Skip leading -C <dir> option pair so the subcommand always lands on $1.
+if [ "${1:-}" = "-C" ]; then
+  shift 2
+fi
 case "${1:-}" in
   diff)   echo " 5 files changed, 42 insertions(+), 7 deletions(-)" ;;
   show)   echo "commit deadbeef" ;;
@@ -112,7 +118,7 @@ _source_with_stubs() {
   # shellcheck source=/dev/null
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" \
     2>/dev/null || true
-  set +u; set +o pipefail  # restore after sourcing (runbook §3)
+  set +e; set +u; set +o pipefail  # restore after sourcing (runbook §3 + set +e)
 
   # Stub: integration_ledger_entries (re-stub after source per runbook §2)
   integration_ledger_entries() {
@@ -176,9 +182,12 @@ export RITE_STATE_DIR="$RITE_STATE_DIR"
 export RITE_PROJECT_ROOT="$PROJECT_ROOT"
 export PATH="$FAKE_BIN:\$PATH"
 
-# Source composer (suppress dependency-load errors in test env)
+# Source composer (suppress dependency-load errors in test env).
+# The source file runs set -euo pipefail; restore ALL three flags afterward
+# so that compose_promotion_pr_body's best-effort guards (|| true) work
+# correctly and don't kill the subshell (runbook §3 + set +e).
 RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
-set +u; set +o pipefail
+set +e; set +u; set +o pipefail
 
 # Stubs (re-defined after source per runbook §2)
 integration_ledger_entries() {
@@ -229,7 +238,7 @@ export RITE_PROJECT_ROOT="$PROJECT_ROOT"
 export PATH="$FAKE_BIN:\$PATH"
 
 RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
-set +u; set +o pipefail
+set +e; set +u; set +o pipefail
 
 integration_ledger_entries() {
   cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
@@ -271,7 +280,7 @@ export RITE_PROJECT_ROOT="$PROJECT_ROOT"
 export PATH="$FAKE_BIN:\$PATH"
 
 RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
-set +u; set +o pipefail
+set +e; set +u; set +o pipefail
 
 integration_ledger_entries() {
   cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
@@ -324,7 +333,7 @@ export RITE_PROJECT_ROOT="$PROJECT_ROOT"
 export PATH="$FAKE_BIN:\$PATH"
 
 RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
-set +u; set +o pipefail
+set +e; set +u; set +o pipefail
 
 integration_ledger_entries() {
   cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
@@ -352,7 +361,100 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: Static -- composer uses provider_resolve_model promote (Rule 31/32)
+# Tests 6-7: gather_promotion_context behavioral coverage
+#
+# gather_promotion_context writes to an output FILE (not stdout), so tests
+# read the file after calling it.  Dependencies are stubbed as shell
+# functions inside _source_with_stubs.
+# ---------------------------------------------------------------------------
+
+@test "gather_promotion_context: writes section headers to output file" {
+  local out_file="${BATS_TEST_TMPDIR}/ctx.txt"
+
+  # Run in a subshell so stubs don't leak.
+  run bash << EOF
+set +e
+export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+export RITE_STATE_DIR="$RITE_STATE_DIR"
+export RITE_PROJECT_ROOT="$PROJECT_ROOT"
+export PATH="$FAKE_BIN:\$PATH"
+
+RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
+set +e; set +u; set +o pipefail
+
+integration_ledger_entries() {
+  cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
+}
+gh_safe() {
+  case "\${1:-}" in
+    pr)   printf '{"title":"Test PR","body":"Body","state":"MERGED","comments":[]}\n' ;;
+    issue) printf '{"labels":[{"name":"priority-high"}],"body":"Issue body"}\n' ;;
+  esac
+}
+git_fetch_safe() { return 0; }
+print_warning() { echo "WARNING: \$*" >&2; }
+
+gather_promotion_context "$TEST_BRANCH" "$out_file"
+# Print the file contents to stdout so 'run' can capture them for assertions.
+cat "$out_file"
+exit 0
+EOF
+
+  [ "$status" -eq 0 ]
+  # Section headers must be present
+  [[ "$output" == *"## Ledger entries"* ]]
+  [[ "$output" == *"## Per-issue context"* ]]
+  [[ "$output" == *"## Aggregate diff stats"* ]]
+  [[ "$output" == *"## Sync-conflict history"* ]]
+  # Per-entry header present (issue 42 from the ledger)
+  [[ "$output" == *"### Issue #42"* ]]
+}
+
+@test "gather_promotion_context: patch snips are truncated when context cap is hit" {
+  local out_file="${BATS_TEST_TMPDIR}/ctx-cap.txt"
+
+  run bash << EOF
+set +e
+export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+export RITE_STATE_DIR="$RITE_STATE_DIR"
+export RITE_PROJECT_ROOT="$PROJECT_ROOT"
+export PATH="$FAKE_BIN:\$PATH"
+
+RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
+set +e; set +u; set +o pipefail
+
+integration_ledger_entries() {
+  cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
+}
+gh_safe() {
+  case "\${1:-}" in
+    pr)   printf '{"title":"Cap Test PR","body":"Body","state":"MERGED","comments":[]}\n' ;;
+    issue) printf '{"labels":[],"body":"body"}\n' ;;
+  esac
+}
+git_fetch_safe() { return 0; }
+print_warning() { echo "WARNING: \$*" >&2; }
+
+# Set a tiny cap so the snip section is guaranteed to exceed it.
+# The per-issue context (headers + PR info) already fills several hundred
+# bytes; a 512-byte cap forces the truncation branch.
+_PROMOTION_CONTEXT_CAP_BYTES=512
+
+gather_promotion_context "$TEST_BRANCH" "$out_file"
+cat "$out_file"
+exit 0
+EOF
+
+  [ "$status" -eq 0 ]
+  # Required section headers still appear (written before snips)
+  [[ "$output" == *"## Ledger entries"* ]]
+  [[ "$output" == *"## Per-issue context"* ]]
+  # Truncation marker or omission notice must appear — confirms cap branch ran
+  { [[ "$output" == *"truncated at context cap"* ]] || [[ "$output" == *"context cap reached"* ]]; }
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: Static -- composer uses provider_resolve_model promote (Rule 31/32)
 # ---------------------------------------------------------------------------
 
 @test "promotion-composer.sh: uses provider_resolve_model promote, never bare \"\" model" {

@@ -227,9 +227,9 @@ gather_promotion_context() {
       if [ -n "${entry_sha:-}" ]; then
         {
           printf '### Patch snip: sha=%s (issue #%s)\n' "$entry_sha" "${issue_num:-?}"
-          git show --stat "$entry_sha" 2>/dev/null || true
+          git -C "${RITE_PROJECT_ROOT:-.}" show --stat "$entry_sha" 2>/dev/null || true
           printf '\n--- patch (first 120 lines) ---\n'
-          git show "$entry_sha" 2>/dev/null | head -120 || true
+          git -C "${RITE_PROJECT_ROOT:-.}" show "$entry_sha" 2>/dev/null | head -120 || true
           printf '\n'
         } >> "$snips_file"
       fi
@@ -245,7 +245,7 @@ gather_promotion_context() {
     # Fetch both refs best-effort; single ref per call per git-helpers.sh contract
     git_fetch_safe origin main 2>/dev/null || true
     git_fetch_safe origin "$branch" 2>/dev/null || true
-    git diff --stat "origin/main...origin/${branch}" 2>/dev/null || true
+    git -C "${RITE_PROJECT_ROOT:-.}" diff --stat "origin/main...origin/${branch}" 2>/dev/null || true
     printf '\n'
   } >> "$out_file"
 
@@ -266,7 +266,7 @@ gather_promotion_context() {
     if [ "$available_bytes" -gt 0 ]; then
       {
         printf '## Patch snips (truncated to fit ~50 KB context cap)\n\n'
-        dd if="$snips_file" bs=1 count="$available_bytes" 2>/dev/null || true
+        head -c "$available_bytes" "$snips_file" 2>/dev/null || true
         printf '\n[... patch snips truncated at context cap ...]\n'
       } >> "$out_file" || true
     else
@@ -387,14 +387,15 @@ compose_promotion_pr_body() {
 }${_closes_line}"
       unpromoted_count=$(( unpromoted_count + 1 ))
 
-      # Count priority-high issues for depth signal
-      # Look for "priority-high" label in the context file (populated by gather step)
-      if grep -q "priority-high" "$context_file" 2>/dev/null; then
-        # Narrow to entries for this specific issue number
-        if grep -A 5 "Issue #${_inum} " "$context_file" 2>/dev/null | \
-           grep -q "priority-high"; then
-          priority_high_count=$(( priority_high_count + 1 ))
-        fi
+      # Count priority-high issues for depth signal.
+      # The issue's section in the context file spans from its ### header to the
+      # next ### header (or EOF).  Extract that section and check the
+      # "**Issue labels**:" line — the -A 5 window is too short to reach it
+      # because the PR-title/state/body block sits between the header and labels.
+      local _section_labels=""
+      _section_labels=$(awk "/^### Issue #${_inum} /{found=1} found && /^\*\*Issue labels\*\*:/{print; exit} found && /^### Issue #[0-9]+ /{exit}" "$context_file" 2>/dev/null || true)
+      if printf '%s' "${_section_labels:-}" | grep -q "priority-high" 2>/dev/null; then
+        priority_high_count=$(( priority_high_count + 1 ))
       fi
     done <<< "$ledger_entries"
   fi
@@ -403,12 +404,12 @@ compose_promotion_pr_body() {
   # 2. Compute aggregate diff depth signals
   # -------------------------------------------------------------------------
   local total_diff_lines=0
-  total_diff_lines=$(git diff --stat "origin/main...origin/${branch}" 2>/dev/null | \
+  total_diff_lines=$(git -C "${RITE_PROJECT_ROOT:-.}" diff --stat "origin/main...origin/${branch}" 2>/dev/null | \
     tail -1 | grep -oE '[0-9]+ insertion|[0-9]+ deletion' | \
     grep -oE '[0-9]+' | paste -sd+ - | bc 2>/dev/null || echo 0) || total_diff_lines=0
 
   local sync_conflict_count=0
-  sync_conflict_count=$(grep -c "INTEGRATION_SYNC" "$context_file" 2>/dev/null || true)
+  sync_conflict_count=$(grep -c "INTEGRATION_SYNC.*outcome=conflict" "$context_file" 2>/dev/null || true)
   sync_conflict_count="${sync_conflict_count:-0}"
 
   # -------------------------------------------------------------------------
@@ -538,7 +539,7 @@ _emit_fallback_body() {
 
   printf '## Aggregate diff stats\n\n'
   printf '```\n'
-  git diff --stat "origin/main...origin/${branch}" 2>/dev/null || true
+  git -C "${RITE_PROJECT_ROOT:-.}" diff --stat "origin/main...origin/${branch}" 2>/dev/null || true
   printf '```\n\n'
 
   printf '## Sync history\n\n'
