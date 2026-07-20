@@ -2000,6 +2000,55 @@ handle_pr_number_refused() {
 }
 
 # ---------------------------------------------------------------------------
+# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET
+#
+# Refusal handler when an existing PR's baseRefName differs from the effective
+# target branch resolved for this issue. Prints a verbose block naming the
+# issue, PR number, the PR's actual base, the current effective target, and
+# the exact corrected command the user should run.
+#
+# NO auto-adopt: never assigns RITE_TARGET_BRANCH or switches targets silently.
+# The user must re-run with the correct --branch flag (or without one when the
+# PR base is main and main is the intended target).
+#
+# Returns: 19 — sentinel meaning "PR base != effective target; manual action required".
+#   Both single-issue and batch mode propagate exit 19 through main() without
+#   printing "Workflow failed". Batch records branch_mismatch (SKIPPED class).
+#   See: docs/architecture/exit-codes.md — exit code 19
+#   See: tests/regression/branch-mismatch-refusal.bats
+# ---------------------------------------------------------------------------
+handle_branch_mismatch() {
+  local issue_number="$1"
+  local pr_number="$2"
+  local pr_base="$3"
+  local effective_target="$4"
+
+  # Build the corrected command:
+  #   - If the PR's base is "main", the user should omit --branch (default target).
+  #   - Otherwise, the user should pass --branch <pr_base> to match the PR.
+  local _corrected_cmd
+  if [ "$pr_base" = "main" ]; then
+    _corrected_cmd="rite ${issue_number}"
+  else
+    _corrected_cmd="rite --branch ${pr_base} ${issue_number}"
+  fi
+
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "PR #${pr_number} base mismatch for issue #${issue_number}"
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "  PR #${pr_number} is based on:  ${pr_base}"
+  print_error "  Current effective target:       ${effective_target}"
+  print_error ""
+  print_error "  rite will not silently switch targets. Re-run with the correct command:"
+  print_error ""
+  print_error "    ${_corrected_cmd}"
+  print_error ""
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  return 19
+}
+
+# ---------------------------------------------------------------------------
 # verify_already_fixed_on_main ISSUE_NUMBER [PR_NUMBER_TO_CLOSE]
 #
 # Called after two consecutive no-change dev sessions (#821). Attempts to
@@ -2761,10 +2810,15 @@ run_workflow() {
 
   # ── Detect worktree for this PR's branch (if not already known) ──
   # Skip if WORKTREE_PATH is already resolved (e.g., by the adopt arm above).
+  # Also fetches baseRefName in the same API call so handle_branch_mismatch()
+  # has PR_BASE_BRANCH without an extra round-trip (#1044).
   if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
     if [ -z "${WORKTREE_PATH:-}" ] || [ ! -d "${WORKTREE_PATH:-}" ]; then
+      local _pr_json_wt
+      _pr_json_wt=$(gh_safe pr view "$PR_NUMBER" --json headRefName,baseRefName)
       local _pr_branch
-      _pr_branch=$(gh_safe pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+      _pr_branch=$(echo "$_pr_json_wt" | jq -r '.headRefName // ""' || true)
+      PR_BASE_BRANCH=$(echo "$_pr_json_wt" | jq -r '.baseRefName // ""' || true)
       if [ -n "$_pr_branch" ]; then
         local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
@@ -2776,6 +2830,40 @@ run_workflow() {
           fi
         fi
       fi
+    fi
+  fi
+
+  # ── Branch-mismatch guard: refuse before stale-branch check (#1044) ──
+  # Check must run BEFORE check_stale_branch so no rebase/close/merge ever
+  # touches a PR that targets the wrong base branch.
+  # Compares PR.baseRefName against the effective target resolved WITHOUT the
+  # PR number — passing the PR would make tier 1 return baseRefName itself
+  # (circular comparison that always matches).
+  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
+    # Resolve effective target independently (no PR arg — avoids circular match).
+    local _mismatch_target
+    _mismatch_target=$(resolve_target_branch "$issue_number" 2>/dev/null || echo "main")
+
+    # Fetch baseRefName if not already set by the worktree-detection block above
+    # (resume path: PR and worktree were both known from session state, so the
+    # worktree-detection block's API call was skipped).
+    local _pr_base_for_check="${PR_BASE_BRANCH:-}"
+    if [ -z "$_pr_base_for_check" ]; then
+      _pr_base_for_check=$(gh_safe pr view "$PR_NUMBER" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
+    fi
+
+    if [ -n "$_pr_base_for_check" ] && [ "$_pr_base_for_check" != "$_mismatch_target" ]; then
+      set +e
+      handle_branch_mismatch "$issue_number" "$PR_NUMBER" "$_pr_base_for_check" "$_mismatch_target"
+      set -e
+      # Return 19 in both single-issue and batch mode so main() routes to the
+      # dedicated branch_mismatch path without printing "Workflow failed".
+      # Batch: batch-process-issues.sh captures 19 to record branch_mismatch
+      #        (SKIPPED class) and continues remaining issues.
+      # Single: exit 19 is non-zero (refusal) and avoids the misleading
+      #         "Workflow failed" line that the generic else branch would print.
+      # See: docs/architecture/exit-codes.md — exit code 19
+      return 19
     fi
   fi
 
@@ -3533,6 +3621,17 @@ main() {
     #     misleading "Workflow failed" line that the else branch would print.
     # See: docs/architecture/exit-codes.md — exit code 15
     exit 15
+  elif [ $workflow_exit -eq 19 ]; then
+    # PR base branch differs from the effective target branch.
+    # The refusal message was already printed by handle_branch_mismatch().
+    # run_workflow() returns 19 in both single-issue and batch modes.
+    # Propagate exit 19 so:
+    #   - Batch: batch-process-issues.sh records branch_mismatch (SKIPPED
+    #     class, not FAILED) and prints the corrected command.
+    #   - Single: exit 19 is non-zero (refusal) and avoids the misleading
+    #     "Workflow failed" line that the else branch would print.
+    # See: docs/architecture/exit-codes.md — exit code 19
+    exit 19
   elif [ $workflow_exit -eq 6 ]; then
     # Merge succeeded but cleanup failed — propagate exit 6 to batch reporter
     exit 6
