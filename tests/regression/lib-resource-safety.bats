@@ -131,6 +131,10 @@ _assert_double_source() {
   _assert_double_source "lib/utils/issue-lock.sh"
 }
 
+@test "lib/utils/integration-ledger.sh sources twice without error" {
+  _assert_double_source "lib/utils/integration-ledger.sh"
+}
+
 @test "lib/utils/integration-sync.sh sources twice without error" {
   _assert_double_source "lib/utils/integration-sync.sh"
 }

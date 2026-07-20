@@ -110,10 +110,12 @@ EOF
   }
 }
 
-@test "structural: three 'git_fetch_safe origin \"\$PR_BASE\"' in merge-pr.sh" {
+@test "structural: four 'git_fetch_safe origin \"\$PR_BASE\"' in merge-pr.sh" {
+  # Three conflict-site fetches (stale-branch rebase paths) + one ledger SHA-extraction
+  # last-resort fetch added by the integration-ledger feature (#1043).
   count=$(grep -cE 'git_fetch_safe origin "\$PR_BASE"' "$PROJECT_ROOT/lib/core/merge-pr.sh" || true)
-  [ "$count" -eq 3 ] || {
-    echo "FAIL: expected 3 conflict-site fetches, found $count"
+  [ "$count" -eq 4 ] || {
+    echo "FAIL: expected 4 PR_BASE fetches (3 conflict-site + 1 ledger SHA fallback), found $count"
     grep -nE 'git_fetch_safe origin "\$PR_BASE"' "$PROJECT_ROOT/lib/core/merge-pr.sh"
     false
   }
