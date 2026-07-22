@@ -530,7 +530,9 @@ rite plan --preview        # Preview issues without creating
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
-rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
+rite --sync <branch>       # Git hygiene: merge origin/main into an integration branch (explicit, never automatic)
+rite --sync <issue> [...]  # Git hygiene: rebase feature branch(es) for issue(s) onto their resolver-determined base (rebase rewrites SHAs — review goes stale by design)
+rite --sync                # Git hygiene: sweep all ledger integration branches (Phase A) then all in-flight worktrees (Phase B)
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
