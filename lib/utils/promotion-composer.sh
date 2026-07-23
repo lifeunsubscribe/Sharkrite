@@ -292,8 +292,12 @@ gather_promotion_context() {
         local _hits
         _hits=$(grep -E "INTEGRATION_SYNC branch=${branch}( |$)" "$_log" 2>/dev/null || true)
         if [ -n "$_hits" ]; then
-          sync_lines="${sync_lines:+${sync_lines}
-}${_hits}"
+          if [ -n "$sync_lines" ]; then
+            sync_lines="${sync_lines}
+${_hits}"
+          else
+            sync_lines="$_hits"
+          fi
           found_any=true
         fi
       done
