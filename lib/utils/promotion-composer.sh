@@ -282,6 +282,7 @@ gather_promotion_context() {
     printf '## Sync-conflict history\n\n'
     # The --sync command emits [diag] INTEGRATION_SYNC branch=<branch> ... lines.
     # Grep .rite/logs/*.log for lines matching this branch (best-effort).
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_LOG_DIR is an internal path set by bin/rite (not user-configurable); _RITE_ prefix cannot be used for exported env vars set outside lib/
     local log_dir="${RITE_LOG_DIR:-${RITE_STATE_DIR:+$(dirname "$RITE_STATE_DIR")/logs}}"
     local sync_lines=""
     if [ -n "${log_dir:-}" ] && [ -d "$log_dir" ]; then
@@ -548,6 +549,7 @@ _emit_fallback_body() {
 
   printf '## Sync history\n\n'
   local sync_count=0
+  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_LOG_DIR is an internal path set by bin/rite (not user-configurable); _RITE_ prefix cannot be used for exported env vars set outside lib/
   local log_dir="${RITE_LOG_DIR:-${RITE_STATE_DIR:+$(dirname "$RITE_STATE_DIR")/logs}}"
   if [ -n "${log_dir:-}" ] && [ -d "$log_dir" ]; then
     for _log in "$log_dir"/*.log; do
