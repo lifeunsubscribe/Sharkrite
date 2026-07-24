@@ -565,6 +565,15 @@ claude_provider_resolve_model() {
     # invisibly coupling the two. See: "Model Selection Per Task" in
     # docs/architecture/behavioral-design.md.
     plan)           echo "${RITE_PLAN_MODEL:-claude-opus-4-8}" ;;
+    # promote synthesises a narrative PR body from ledger entries, constituent
+    # PR titles/bodies/review summaries, aggregate diff stats, and optional
+    # doc-drift context — narrative synthesis for a production-code-review
+    # audience across many issues. Opus because the output quality directly
+    # affects the human/management review of the entire integration branch.
+    # Own var: moving review off opus must never silently downgrade promotion
+    # narratives with it. See: "Model Selection Per Task" in
+    # docs/architecture/behavioral-design.md (entry added when #1028 lands).
+    promote)        echo "${RITE_PROMOTE_MODEL:-claude-opus-4-8}" ;;
     # triage classifies a diff as trivial-vs-substantive to route the (expensive)
     # opus review. It's a narrow binary classification, not deep reasoning —
     # haiku's job. Decoupled from every other var. See: "Triage Gate" in

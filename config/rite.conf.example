@@ -77,6 +77,7 @@
 # Claude models
 # RITE_CLAUDE_MODEL="claude-sonnet-4-5"
 # RITE_REVIEW_MODEL="claude-opus-4-5"
+# RITE_PROMOTE_MODEL="claude-opus-4-8"
 
 # =============================================================================
 # Test Gate
