@@ -405,7 +405,7 @@ EOF
   # Lint should flag our fixture with MISSING_RESOURCE_GUARD.
   # We check for the rule name in output, not overall exit status — other pre-existing
   # lint rules (UNSAFE_PIPE_IN_CMDSUB, etc.) may also fire and that's expected.
-  run bash "${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
+  SHARKRITE_LINT_ONLY=16 run bash "${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
 
   rm -f "$fixture_dir/unguarded.sh"
   rmdir "$fixture_dir" 2>/dev/null || true
@@ -435,7 +435,7 @@ EOF
 
   # Lint should NOT flag our guarded fixture with MISSING_RESOURCE_GUARD.
   # (Other pre-existing lint rules may still fire — that's expected and unrelated.)
-  run bash "${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
+  SHARKRITE_LINT_ONLY=16 run bash "${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
   local lint_output="$output"
 
   rm -f "$fixture_dir/guarded.sh"
@@ -454,7 +454,7 @@ EOF
   # Other pre-existing lint violations (UNSAFE_PIPE_IN_CMDSUB, etc.) are
   # ignored here — they are tracked by their own regression tests.
   run bash -c "
-    bash '${RITE_REPO_ROOT}/tools/sharkrite-lint.sh' 2>/dev/null \
+    SHARKRITE_LINT_ONLY=16 bash '${RITE_REPO_ROOT}/tools/sharkrite-lint.sh' 2>/dev/null \
       | grep 'MISSING_RESOURCE_GUARD' || true
   "
 
