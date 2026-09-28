@@ -61,6 +61,16 @@ if ! declare -f integration_ledger_entries >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/integration-ledger.sh"
 fi
 
+if ! declare -f rite_markers_loaded >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  source "$RITE_LIB_DIR/utils/markers.sh"
+fi
+
+if ! declare -f drift_log_path >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  source "$RITE_LIB_DIR/utils/drift-log.sh"
+fi
+
 if ! declare -f print_warning >/dev/null 2>&1; then
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/colors.sh"
@@ -186,7 +196,7 @@ gather_promotion_context() {
           local review_comment findings_line
           review_comment=$(gh_safe pr view "$pr_num" \
             --json comments \
-            --jq '[.comments[] | select(.body | contains("<!-- sharkrite-local-review"))] | last | .body // ""' \
+            --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | last | .body // \"\"" \
             2>/dev/null || true)
           if [ -n "${review_comment:-}" ]; then
             findings_line=$(printf '%s' "$review_comment" | \
@@ -315,7 +325,8 @@ ${_hits}"
   # -------------------------------------------------------------------------
   # 6. Doc drift log (verbatim when present)
   # -------------------------------------------------------------------------
-  local drift_log="${RITE_PROJECT_ROOT:-.}/docs/sharkrite-drift-log.md"
+  local drift_log
+  drift_log="$(drift_log_path)"
   if [ -f "$drift_log" ]; then
     {
       printf '## Known doc drift (docs/sharkrite-drift-log.md)\n\n'
@@ -388,8 +399,11 @@ compose_promotion_pr_body() {
         _closes_line="Closes #${_inum:-?} (PR #${_pnum:-?}, ${_short_sha:-?})"
       fi
 
-      unpromoted_issues="${unpromoted_issues:+${unpromoted_issues}
-}${_closes_line}"
+      if [ -n "${unpromoted_issues:-}" ]; then
+        unpromoted_issues="${unpromoted_issues}"$'\n'"${_closes_line}"
+      else
+        unpromoted_issues="${_closes_line}"
+      fi
       unpromoted_count=$(( unpromoted_count + 1 ))
 
       # Count priority-high issues for depth signal.
@@ -501,7 +515,8 @@ SIGNALS_EOF
   printf '\n'
 
   # Drift log section (deterministic — verbatim from file when present)
-  local drift_log="${RITE_PROJECT_ROOT:-.}/docs/sharkrite-drift-log.md"
+  local drift_log
+  drift_log="$(drift_log_path)"
   if [ -f "$drift_log" ]; then
     printf '## Known doc drift\n\n'
     cat "$drift_log" 2>/dev/null || true
