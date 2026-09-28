@@ -322,7 +322,7 @@ exit $?
 HARNESS
   chmod +x "$_harness"
 
-  run bash "$_harness" "$RITE_REPO_ROOT/lib" 2>&1
+  run env RITE_PROJECT_ROOT="$_FAKE_PROJECT" bash "$_harness" "$RITE_REPO_ROOT/lib" 2>&1
   set +u; set +o pipefail
 
   # Rail fires → exit 0 (skip is informational)
@@ -384,14 +384,15 @@ exit \$?
 HARNESS
   chmod +x "$_harness"
 
-  run bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_wt" 2>&1
+  run env RITE_PROJECT_ROOT="$_FAKE_PROJECT" bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_wt" 2>&1
   set +u; set +o pipefail
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi "uncommitted\|dirty\|WIP\|skipped"
   echo "$output" | grep -q "DIAG:.*SYNC_ISSUE.*skipped-dirty"
-  # No stash must have been called
-  ! echo "$output" | grep -qi "stash"
+  # No stash must have been called. Match the git stub's call record, not the
+  # word "stash" — the next-step hint legitimately says "commit or stash manually".
+  ! echo "$output" | grep -q "STUB_GIT stash"
 }
 
 # ---------------------------------------------------------------------------
@@ -434,7 +435,7 @@ exit \$?
 HARNESS
   chmod +x "$_harness"
 
-  run bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_wt" 2>&1
+  run env RITE_PROJECT_ROOT="$_FAKE_PROJECT" bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_wt" 2>&1
   set +u; set +o pipefail
 
   [ "$status" -eq 0 ]
@@ -467,7 +468,7 @@ detect_pr_for_issue() { PR_NUMBER="88"; PR_BRANCH="feature-88"; return 0; }
 detect_worktree_for_pr() { WORKTREE_PATH="\$FAKE_WT"; return 0; }
 git() {
   # Normalize: strip leading -C <path> so stub works for both
-  # `git <cmd>` and `git -C <path> <cmd>` forms.
+  # "git CMD" and "git -C PATH CMD" forms (no backticks: this heredoc is unquoted).
   local _args=("\$@")
   if [ "\${1:-}" = "-C" ]; then
     shift 2  # skip -C and path
@@ -495,7 +496,7 @@ exit \$?
 HARNESS
   chmod +x "$_harness"
 
-  run bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_wt" "$_git_log" 2>&1
+  run env RITE_PROJECT_ROOT="$_FAKE_PROJECT" bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_wt" "$_git_log" 2>&1
   set +u; set +o pipefail
 
   # Conflict is a skip (exit 0 — composable)
@@ -550,7 +551,7 @@ exit \$?
 HARNESS
   chmod +x "$_harness"
 
-  run bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_state" 2>&1
+  run env RITE_PROJECT_ROOT="$_FAKE_PROJECT" bash "$_harness" "$RITE_REPO_ROOT/lib" "$_fake_state" 2>&1
   set +u; set +o pipefail
 
   [ "$status" -eq 0 ]
