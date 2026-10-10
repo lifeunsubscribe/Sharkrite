@@ -272,3 +272,111 @@ _run_gate() {
     false
   }
 }
+
+# ===========================================================================
+# #1097: pnpm workspaces — detection, pattern parsing, and install routing.
+# A pnpm repo declares workspaces in pnpm-workspace.yaml (root package.json
+# has NO .workspaces key) and must be bootstrapped with pnpm, never npm.
+# ===========================================================================
+
+# A pnpm workspaces monorepo mirroring _make_workspaces_repo: workspace
+# packages/api runs jest; pnpm markers are pnpm-workspace.yaml + pnpm-lock.yaml.
+_make_pnpm_workspaces_repo() {
+  printf '%s\n' '{"name":"mono","version":"1.0.0","private":true,"packageManager":"pnpm@10.15.1","scripts":{"test":"jest --ci"}}' > "$TEST_REPO/package.json"
+  printf 'packages:\n  - "packages/*"  # workspace globs\n\nignoredBuiltDependencies:\n  - sharp\n' > "$TEST_REPO/pnpm-workspace.yaml"
+  printf 'lockfileVersion: 9.0\n' > "$TEST_REPO/pnpm-lock.yaml"
+  printf 'export const x = 1;\n' > "$TEST_REPO/index.js"
+  mkdir -p "$TEST_REPO/packages/api"
+  printf '%s\n' '{"name":"api","version":"1.0.0","scripts":{"test":"jest --ci"}}' > "$TEST_REPO/packages/api/package.json"
+  printf 'export const y = 1;\n' > "$TEST_REPO/packages/api/index.js"
+}
+
+# pnpm stub: records every install invocation; `install` makes jest resolvable
+# (simulates a successful workspace install).
+_write_pnpm_stub() {
+  cat > "$STUB_DIR/pnpm" <<STUB
+#!/bin/bash
+case "\$1" in
+  install)
+    touch "$PNPM_MARKER"
+    mkdir -p "$TEST_REPO/node_modules/.bin"
+    printf '#!/bin/bash\necho "PASS all tests"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
+    chmod +x "$TEST_REPO/node_modules/.bin/jest"
+    exit 0
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$STUB_DIR/pnpm"
+}
+
+@test "(#1097) pnpm-workspace.yaml (no .workspaces key) detected as workspaces monorepo" {
+  _make_pnpm_workspaces_repo
+  _node_is_workspaces_monorepo "$TEST_REPO"
+}
+
+@test "(#1097) _node_workspace_patterns parses pnpm-workspace.yaml (quotes stripped, later top-level keys not leaked)" {
+  _make_pnpm_workspaces_repo
+  run _node_workspace_patterns "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"packages/*"* ]]
+  # The ignoredBuiltDependencies list must not leak into the patterns.
+  [[ "$output" != *"sharp"* ]]
+  # Quotes and the trailing comment are stripped.
+  [[ "$output" != *'"'* ]]
+  [[ "$output" != *"#"* ]]
+}
+
+@test "(#1097) _node_pkg_manager: pnpm markers → pnpm; plain npm repo → npm" {
+  _make_pnpm_workspaces_repo
+  run _node_pkg_manager "$TEST_REPO"
+  [ "$output" = "pnpm" ]
+  rm -f "$TEST_REPO/pnpm-workspace.yaml" "$TEST_REPO/pnpm-lock.yaml"
+  printf '%s\n' '{"name":"single","version":"1.0.0","scripts":{"test":"jest --ci"}}' > "$TEST_REPO/package.json"
+  run _node_pkg_manager "$TEST_REPO"
+  [ "$output" = "npm" ]
+}
+
+@test "(#1097) pnpm monorepo, runner unresolvable → bootstrap routes to pnpm, never npm; no package-lock.json" {
+  _make_pnpm_workspaces_repo
+  _init_git
+  _seed_root_bin_without_jest
+  PNPM_MARKER="$TEST_REPO/pnpm-was-invoked"; export PNPM_MARKER
+  _write_pnpm_stub
+  _write_npm_stub "noop"   # npm `test` runs jest; its ci/install would touch BOOTSTRAP_MARKER
+
+  _run_gate
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # Bootstrap must have gone through pnpm...
+  [ -f "$PNPM_MARKER" ] || {
+    echo "FAIL: pnpm was never invoked for a pnpm workspaces monorepo"
+    false
+  }
+  # ...and never through npm ci/install (which would break workspace links
+  # and write a stray package-lock.json).
+  [ ! -f "$BOOTSTRAP_MARKER" ]
+  [ ! -f "$TEST_REPO/package-lock.json" ]
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+}
+
+@test "(#1097) pnpm repo with pnpm missing from PATH → loud skip, npm NOT invoked" {
+  _make_pnpm_workspaces_repo
+  _sink="$TEST_REPO/install-sink.log"
+  _write_npm_stub "noop"
+  # Constrained PATH: stub dir (npm only — no pnpm stub written) + system dirs.
+  # Real pnpm lives under ~/.nvm and is not reachable from this PATH.
+  run bash -c "
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    _diag() { true; }
+    source '$RITE_LIB_DIR/utils/test-gate.sh'
+    PATH='$STUB_DIR:/usr/bin:/bin' _node_install_deps '$TEST_REPO' '$_sink'
+  " </dev/null
+  [ "$status" -eq 0 ]
+  grep -q "pnpm is not on PATH" "$_sink"
+  # npm must not have been invoked as a fallback.
+  [ ! -f "$BOOTSTRAP_MARKER" ]
+  [ ! -f "$TEST_REPO/package-lock.json" ]
+}

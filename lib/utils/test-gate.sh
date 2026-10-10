@@ -1194,6 +1194,98 @@ _node_desymlink_node_modules() {
 }
 
 # ---------------------------------------------------------------------------
+# _node_pkg_manager — which package manager owns this node project? (issue #1097)
+# Args: $1=project_root
+# Echoes "pnpm" or "npm".
+#
+# pnpm signals (any one suffices): pnpm-lock.yaml, pnpm-workspace.yaml, or
+# package.json `.packageManager` beginning "pnpm@" (corepack pin).
+# Everything else is npm. npm must NEVER be run against a pnpm repo: npm
+# ignores pnpm-workspace.yaml (workspace packages are left uninstalled and
+# unlinked) and writes a stray package-lock.json into the worktree.
+# ---------------------------------------------------------------------------
+_node_pkg_manager() {
+  local _pr="$1"
+  if [ -f "$_pr/pnpm-lock.yaml" ] || [ -f "$_pr/pnpm-workspace.yaml" ]; then
+    echo "pnpm"
+    return 0
+  fi
+  if [ -f "$_pr/package.json" ] && command -v jq >/dev/null 2>&1; then
+    local _pm_field
+    _pm_field=$(jq -r '.packageManager // ""' "$_pr/package.json" 2>/dev/null || true)
+    case "$_pm_field" in
+      pnpm@*) echo "pnpm"; return 0 ;;
+    esac
+  fi
+  echo "npm"
+}
+
+# ---------------------------------------------------------------------------
+# _node_workspace_patterns — emit workspace glob patterns, one per line (#1097)
+# Args: $1=project_root
+# Sources, in priority order:
+#   - pnpm-workspace.yaml `packages:` list (quotes and trailing comments
+#     stripped; parsing stops at the next top-level key)
+#   - package.json `.workspaces` (array OR {packages:[...]} object form) via jq
+# Echoes nothing when neither source yields patterns.
+# ---------------------------------------------------------------------------
+_node_workspace_patterns() {
+  local _pr="$1"
+  if [ -f "$_pr/pnpm-workspace.yaml" ]; then
+    # BSD+GNU-portable: select the packages: block (range ends at the next
+    # top-level key), keep "- pattern" entries, strip list dash/quotes/comments.
+    sed -n '/^packages:/,/^[A-Za-z_]/p' "$_pr/pnpm-workspace.yaml" 2>/dev/null \
+      | grep -E '^[[:space:]]*-[[:space:]]*' \
+      | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/#.*$//; s/["'"'"']//g; s/[[:space:]]*$//' \
+      | grep -v '^$' || true
+    return 0
+  fi
+  [ -f "$_pr/package.json" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -r '
+    (.workspaces // empty) as $w
+    | if ($w | type) == "array" then $w[]
+      elif ($w | type) == "object" then (($w.packages // [])[])
+      else empty end
+  ' "$_pr/package.json" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# _node_install_deps — package-manager-aware dependency install (issue #1097)
+# Args: $1=project_root  $2=sink file for installer output (default /dev/null)
+# Best-effort by contract (mirrors the historical inline npm block): a failed
+# install is caught by the exit-127 hard-block when the runner stays
+# unresolvable, not by aborting here. Callers run _node_desymlink_node_modules
+# first.
+# ---------------------------------------------------------------------------
+_node_install_deps() {
+  local _pr="$1"
+  local _sink="${2:-/dev/null}"
+  local _pm
+  _pm=$(_node_pkg_manager "$_pr")
+  if [ "$_pm" = "pnpm" ]; then
+    if ! command -v pnpm >/dev/null 2>&1; then
+      echo "[test-gate] pnpm project detected but pnpm is not on PATH — skipping dependency bootstrap. Install pnpm (e.g. corepack enable); npm is never run against a pnpm repo (it ignores pnpm-workspace.yaml and writes a stray package-lock.json)." >> "$_sink"
+      return 0
+    fi
+    if [ -f "$_pr/pnpm-lock.yaml" ]; then
+      # --frozen-lockfile mirrors `npm ci`; fall back to a plain install when
+      # the lockfile is out of sync with package.json (the ci→install split).
+      (cd "$_pr" && pnpm install --frozen-lockfile --silent) >> "$_sink" 2>&1 \
+        || (cd "$_pr" && pnpm install --silent) >> "$_sink" 2>&1 || true
+    else
+      (cd "$_pr" && pnpm install --silent) >> "$_sink" 2>&1 || true
+    fi
+    return 0
+  fi
+  if [ -f "$_pr/package-lock.json" ]; then
+    (cd "$_pr" && npm ci --silent) >> "$_sink" 2>&1 || true
+  else
+    (cd "$_pr" && npm install --silent) >> "$_sink" 2>&1 || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # _node_is_workspaces_monorepo — is this an npm-workspaces monorepo? (issue #818)
 # Args: $1=project_root
 # Returns 0 (yes) / 1 (no).
@@ -1210,6 +1302,18 @@ _node_desymlink_node_modules() {
 _node_is_workspaces_monorepo() {
   local _pr="$1"
   local _pkg="$_pr/package.json"
+
+  # pnpm workspaces (issue #1097): pnpm-workspace.yaml with >=1 pattern is a
+  # monorepo signal independent of package.json .workspaces (pnpm repos don't
+  # set that key) and needs no jq.
+  if [ -f "$_pr/pnpm-workspace.yaml" ]; then
+    local _pnpm_patterns
+    _pnpm_patterns=$(_node_workspace_patterns "$_pr")
+    if [ -n "$_pnpm_patterns" ]; then
+      return 0
+    fi
+  fi
+
   [ -f "$_pkg" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
@@ -1265,13 +1369,9 @@ _node_workspace_runners_resolvable() {
 
   # Expand the workspace glob patterns to concrete directories. jq emits one
   # pattern per line (array or object form); the shell expands each glob.
+  # Workspace patterns from pnpm-workspace.yaml or package.json (issue #1097).
   local _patterns
-  _patterns=$(jq -r '
-    (.workspaces // empty) as $w
-    | if ($w | type) == "array" then $w[]
-      elif ($w | type) == "object" then (($w.packages // [])[])
-      else empty end
-  ' "$_root_pkg" 2>/dev/null || echo "")
+  _patterns=$(_node_workspace_patterns "$_pr")
   [ -n "$_patterns" ] || return 1
 
   local _saw_any_ws=false
@@ -1335,13 +1435,9 @@ _node_workspace_has_missing_entry_points() {
   [ -f "$_root_pkg" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
+  # Workspace patterns from pnpm-workspace.yaml or package.json (issue #1097).
   local _patterns
-  _patterns=$(jq -r '
-    (.workspaces // empty) as $w
-    | if ($w | type) == "array" then $w[]
-      elif ($w | type) == "object" then (($w.packages // [])[])
-      else empty end
-  ' "$_root_pkg" 2>/dev/null || echo "")
+  _patterns=$(_node_workspace_patterns "$_pr")
   [ -n "$_patterns" ] || return 1
 
   local _found_missing=false
@@ -2386,11 +2482,11 @@ run_test_gate() {
         # symlinked node_modules destroys the symlink TARGET (main's
         # node_modules) before reifying a real dir in its place.
         _node_desymlink_node_modules "$project_root"
-        if [ -f "$project_root/package-lock.json" ]; then
-          (cd "$project_root" && npm ci --silent) >> "$_gate_raw_sink" 2>&1 || true
-        else
-          (cd "$project_root" && npm install --silent) >> "$_gate_raw_sink" 2>&1 || true
-        fi
+        # Package-manager-aware install (issue #1097): pnpm repos get
+        # `pnpm install --frozen-lockfile` (never npm — it ignores
+        # pnpm-workspace.yaml and writes a stray package-lock.json);
+        # npm repos keep the historical ci/install split.
+        _node_install_deps "$project_root" "$_gate_raw_sink"
         # Re-check after the bootstrap (informational). If still unresolvable we do
         # nothing special here — `npm test` runs below and the existing 127
         # hard-block fires, blocking the merge. No new block path is added. For a
