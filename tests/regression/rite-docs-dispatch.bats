@@ -193,6 +193,7 @@ DOCSSTUB
     set -euo pipefail
     export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
     export RITE_PROJECT_ROOT='${_FAKE_PROJECT}'
+    export RITE_STATE_DIR='${_FAKE_PROJECT}/.rite/state'
     source '${RITE_REPO_ROOT}/lib/core/docs-command.sh' 2>/dev/null
     source '${RITE_REPO_ROOT}/lib/core/docs-command.sh' 2>/dev/null
     declare -f rite_docs >/dev/null && echo OK
@@ -246,6 +247,10 @@ PSTUB
       set -euo pipefail
       export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
       export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+      # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+      # repo .rite/state); config.sh preserves pre-set values, so pin it
+      # to the fixture.
+      export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
       # Override load_provider to use stub
       load_provider() {
         source "'"$_FAKE_BIN/providers-stub/claude.sh"'"
@@ -314,6 +319,10 @@ PSTUB
     set -euo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     load_provider() {
       source "'"$_FAKE_BIN/providers-stub/claude.sh"'"
       local fn
@@ -389,6 +398,10 @@ PSTUB
     set -euo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     export RITE_DOC_MODE="changelog"
     load_provider() {
       source "'"$_FAKE_BIN/providers-stub/claude.sh"'"
@@ -458,6 +471,10 @@ PSTUB
     set -euo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     export RITE_DOC_MODE="sync"
     load_provider() {
       source "'"$_FAKE_BIN/providers-stub/claude.sh"'"
@@ -495,6 +512,10 @@ PSTUB
     set -euo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     # Source only the parts needed for the stub function
     source "'"$RITE_REPO_ROOT/lib"'/utils/config.sh"
     source "'"$RITE_REPO_ROOT/lib"'/utils/colors.sh"
@@ -546,6 +567,10 @@ PSTUB
     set -euo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     export RITE_DOC_MODE="changelog"
     export RITE_DOCS_MAP_AUTO=true
     load_provider() {
@@ -608,6 +633,10 @@ PSTUB
     set -uo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     export RITE_DOC_MODE="changelog"
     export RITE_DOCS_MAP_AUTO=false
     load_provider() {
@@ -670,6 +699,10 @@ PSTUB
     set -uo pipefail
     export RITE_LIB_DIR="'"$RITE_REPO_ROOT/lib"'"
     export RITE_PROJECT_ROOT="'"$_FAKE_PROJECT"'"
+    # Gate sessions export an absolute RITE_STATE_DIR (the orchestrating
+    # repo .rite/state); config.sh preserves pre-set values, so pin it
+    # to the fixture.
+    export RITE_STATE_DIR="'"$_FAKE_PROJECT/.rite/state"'"
     export RITE_DOC_MODE="sync"
     load_provider() {
       source "'"$_FAKE_BIN/providers-stub/claude.sh"'"
