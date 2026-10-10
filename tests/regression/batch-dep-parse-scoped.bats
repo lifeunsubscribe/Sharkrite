@@ -866,7 +866,19 @@ After: #88"
 
 # =============================================================================
 # DEP_IN_QUEUE: defer dependent when dep is queued later (issue #1022)
+#
+# These tests source the REAL _check_dep_queued_later function from the batch
+# file via awk extraction, so they bind to the shipped implementation and
+# cannot drift silently.
 # =============================================================================
+
+_load_check_dep_queued_later() {
+  eval "$(awk '
+    /_check_dep_queued_later[(][)]/ { in_fn=1 }
+    in_fn { print }
+    in_fn && /^}$/ { exit }
+  ' "$BATCH_PROCESSOR")"
+}
 
 @test "dep-in-queue: N2 depends on open N1 queued later → N2 deferred, not dep_failed" {
   # Reproduces the core gap: `rite N2 N1` where N2→N1 and N1 is still OPEN.
@@ -878,44 +890,37 @@ After: #88"
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Load the real _check_dep_queued_later from the batch file
+eval "$(awk '
+  /_check_dep_queued_later[(][)]/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
 declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
 ISSUE_LIST=(2 1)    # N2 listed first, N1 queued later
+_batch_qi=1         # incremented past index 0 (N2 is current); N1 is at index 1
 
 ISSUE_NUM=2
-DEP_ISSUES="1"
 DEP_FAILED=false
 DEP_IN_QUEUE=false
 DEP_IN_QUEUE_NUM=""
-FAILED_DEP=""
-DEP_REASON=""
 
-for dep_num in $DEP_ISSUES; do
-  dep_status="${ISSUE_STATUS[$dep_num]:-}"
-  if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
-     [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
-    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="$dep_status in this batch"; break
+# Simulate dep issue #1 is OPEN and not in failure list
+dep_issue_state="OPEN"
+if [ "$dep_issue_state" = "OPEN" ]; then
+  _check_dep_queued_later 1 "$ISSUE_NUM" "$_batch_qi"
+  if [ "$DEP_IN_QUEUE" = false ]; then
+    DEP_FAILED=true
   fi
-  # Simulate dep issue #1 is OPEN
-  dep_issue_state="OPEN"
-  if [ "$dep_issue_state" = "OPEN" ]; then
-    if [ "${ISSUE_STATUS[$ISSUE_NUM]:-}" != "deferred_for_dep" ]; then
-      for _queued_issue in "${ISSUE_LIST[@]}"; do
-        if [ "$_queued_issue" = "$dep_num" ]; then
-          DEP_IN_QUEUE=true; DEP_IN_QUEUE_NUM="$dep_num"; break
-        fi
-      done
-    fi
-    if [ "$DEP_IN_QUEUE" = false ]; then
-      DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="issue still open (PR not merged)"
-    fi
-    break
-  fi
-done
+fi
 
 if [ "$DEP_IN_QUEUE" = true ]; then
+  _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
   ISSUE_LIST+=("$ISSUE_NUM")
   ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_dep"
-  echo "DEFERRED: issue $ISSUE_NUM (dep $DEP_IN_QUEUE_NUM queued later)"
+  echo "DEFERRED: issue $ISSUE_NUM (dep 1 queued later)"
 elif [ "$DEP_FAILED" = true ]; then
   echo "SKIPPED: issue $ISSUE_NUM (dep_failed)"
 else
@@ -923,6 +928,8 @@ else
 fi
 echo "QUEUE:${ISSUE_LIST[*]}"
 SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
   chmod +x "$_script"
   run bash "$_script"
 
@@ -958,47 +965,40 @@ SCRIPT_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
+eval "$(awk '
+  /_check_dep_queued_later[(][)]/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
 declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
 ISSUE_LIST=(2 3 4)   # dep #1 is NOT in this list
+_batch_qi=1          # past index 0 (N2 is current)
 
 ISSUE_NUM=2
-DEP_ISSUES="1"
 DEP_FAILED=false
 DEP_IN_QUEUE=false
 DEP_IN_QUEUE_NUM=""
-FAILED_DEP=""
-DEP_REASON=""
 
-for dep_num in $DEP_ISSUES; do
-  dep_status="${ISSUE_STATUS[$dep_num]:-}"
-  if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
-     [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
-    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="$dep_status in this batch"; break
+dep_issue_state="OPEN"
+if [ "$dep_issue_state" = "OPEN" ]; then
+  _check_dep_queued_later 1 "$ISSUE_NUM" "$_batch_qi"
+  if [ "$DEP_IN_QUEUE" = false ]; then
+    DEP_FAILED=true
   fi
-  dep_issue_state="OPEN"
-  if [ "$dep_issue_state" = "OPEN" ]; then
-    if [ "${ISSUE_STATUS[$ISSUE_NUM]:-}" != "deferred_for_dep" ]; then
-      for _queued_issue in "${ISSUE_LIST[@]}"; do
-        if [ "$_queued_issue" = "$dep_num" ]; then
-          DEP_IN_QUEUE=true; DEP_IN_QUEUE_NUM="$dep_num"; break
-        fi
-      done
-    fi
-    if [ "$DEP_IN_QUEUE" = false ]; then
-      DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="issue still open (PR not merged)"
-    fi
-    break
-  fi
-done
+fi
 
 if [ "$DEP_IN_QUEUE" = true ]; then
   echo "DEFERRED: issue $ISSUE_NUM"
 elif [ "$DEP_FAILED" = true ]; then
-  echo "SKIPPED: issue $ISSUE_NUM (dep $FAILED_DEP — $DEP_REASON)"
+  echo "SKIPPED: issue $ISSUE_NUM (dep 1 — issue still open)"
 else
   echo "PROCEEDED: issue $ISSUE_NUM"
 fi
 SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
   chmod +x "$_script"
   run bash "$_script"
 
@@ -1027,39 +1027,38 @@ SCRIPT_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
+eval "$(awk '
+  /_check_dep_queued_later[(][)]/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
 declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
 ISSUE_LIST=(2 1)
+_batch_qi=1
 
 ISSUE_NUM=2
-DEP_ISSUES="1"
 DEP_FAILED=false
 DEP_IN_QUEUE=false
-DEP_IN_QUEUE_NUM=""
-FAILED_DEP=""
-DEP_REASON=""
 
-for dep_num in $DEP_ISSUES; do
-  dep_status="${ISSUE_STATUS[$dep_num]:-}"
-  if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
-     [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
-    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="$dep_status in this batch"; break
-  fi
-  # Simulate dep issue #1 is CLOSED (already merged)
-  dep_issue_state="CLOSED"
-  if [ "$dep_issue_state" = "OPEN" ]; then
-    # This block is NOT entered — dep is closed
-    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="issue still open (PR not merged)"; break
-  fi
-done
+# dep issue #1 is CLOSED — OPEN block never entered
+dep_issue_state="CLOSED"
+if [ "$dep_issue_state" = "OPEN" ]; then
+  _check_dep_queued_later 1 "$ISSUE_NUM" "$_batch_qi"
+  [ "$DEP_IN_QUEUE" = false ] && DEP_FAILED=true
+fi
 
 if [ "$DEP_IN_QUEUE" = true ]; then
   echo "DEFERRED: issue $ISSUE_NUM"
 elif [ "$DEP_FAILED" = true ]; then
-  echo "SKIPPED: issue $ISSUE_NUM (dep $FAILED_DEP)"
+  echo "SKIPPED: issue $ISSUE_NUM"
 else
   echo "PROCEEDED: issue $ISSUE_NUM"
 fi
 SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
   chmod +x "$_script"
   run bash "$_script"
 
@@ -1079,11 +1078,249 @@ SCRIPT_EOF
   }
 }
 
-@test "structural: DEP_IN_QUEUE membership check uses same pattern as PARENT_IN_QUEUE" {
-  # Pin the reuse contract from issue #1022's Done Definition:
-  # "the reorder path reuses the PARENT_IN_QUEUE membership-check pattern."
-  # Both checks iterate ISSUE_LIST with a for-in loop looking for the dep number.
-  grep -q "DEP_IN_QUEUE=true" "$BATCH_PROCESSOR" || {
+@test "dep-in-queue: ≥3-issue chain (N3→N2→N1) — second deferral of N3 works (anti-cycle fix)" {
+  # Finding #1: a reprocessed issue (deferred once, status=deferred_for_dep)
+  # must still be deferred again when its dep is still queued later.
+  # Old code: status=deferred_for_dep skipped the scan → N3 got dep_failed
+  # even though N2 was still queued after N3 (correct: N3 should defer again).
+  #
+  # Setup: queue [N3, N2, N1, N3] (N3 already appended from first deferral)
+  # _batch_qi=3 (next to process is the re-queued N3 at index 3)
+  # N2 is at index 1 — BEFORE current position → not visible to positional scan
+  # Wait, that's wrong. Let me re-think.
+  #
+  # Actually the scenario is: after N1 runs (index 2), N3 is re-processed (index 3).
+  # At that point, N3's dep is N2. N2 ran at index 1 but left the issue OPEN
+  # (e.g. branch_mismatch). N2 was NOT re-appended. So N2 is only at index 1,
+  # which is BEFORE _batch_qi=3. The positional scan (from index 3) sees no N2
+  # → no false deferral. N3 gets dep_failed (correct, N2 really did fail).
+  #
+  # The chain that NEEDS the second deferral: queue [N3, N2, N1, N3, N2]
+  # _batch_qi=3 (re-processing N3 at index 3), N2 is at index 4 (still queued)
+  # → positional scan finds N2 at index 4 → DEP_IN_QUEUE=true → N3 deferred again.
+  # Old code would skip the scan (deferred_for_dep) → N3 dep_failed incorrectly.
+
+  _script="$BATS_TEST_TMPDIR/test-chain-second-defer.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+eval "$(awk '
+  /_check_dep_queued_later[(][)]/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
+declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
+# Simulate queue after first deferral of N3 and first deferral of N2:
+# [N3, N2, N1, N3, N2] — both N3 and N2 were deferred once
+ISSUE_LIST=(3 2 1 3 2)
+_DEFER_COUNT[3]=1   # N3 was deferred once already
+_DEFER_COUNT[2]=1   # N2 was deferred once already
+ISSUE_STATUS[3]="deferred_for_dep"
+ISSUE_STATUS[2]="deferred_for_dep"
+
+# N3 is being re-processed at index 3 (_batch_qi=4, already incremented past index 3)
+_batch_qi=4
+ISSUE_NUM=3
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+DEP_IN_QUEUE_NUM=""
+
+# Simulate dep N2 is still OPEN
+dep_issue_state="OPEN"
+if [ "$dep_issue_state" = "OPEN" ]; then
+  _check_dep_queued_later 2 "$ISSUE_NUM" "$_batch_qi"
+  if [ "$DEP_IN_QUEUE" = false ]; then
+    DEP_FAILED=true
+  fi
+fi
+
+if [ "$DEP_IN_QUEUE" = true ]; then
+  _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
+  ISSUE_LIST+=("$ISSUE_NUM")
+  ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_dep"
+  echo "DEFERRED: issue $ISSUE_NUM (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+elif [ "$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue $ISSUE_NUM (dep_failed)"
+else
+  echo "PROCEEDED: issue $ISSUE_NUM"
+fi
+echo "QUEUE:${ISSUE_LIST[*]}"
+SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "DEFERRED: issue 3" || {
+    echo "FAIL: N3 should be DEFERRED again (dep N2 at index 4 is still queued)" >&2
+    echo "      Old code: deferred_for_dep status skipped scan → dep_failed incorrectly" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "SKIPPED" || {
+    echo "FAIL: N3 must NOT be dep_failed when N2 is still queued after current pos" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "dep-in-queue: already-processed dep (index < _batch_qi) does NOT trigger false deferral" {
+  # Finding #2: the scan must be positional (from _batch_qi) not over the full list.
+  # An issue that already ran but left its issue OPEN (e.g. waiting_for_parent,
+  # branch_mismatch) is at an index BEFORE _batch_qi and must not cause a false
+  # "queued later" deferral.
+  #
+  # Setup: ISSUE_LIST=(1 2), _batch_qi=2 (N2 is current, index 1; qi incremented to 2)
+  # Dep #1 was at index 0 — already processed, left OPEN (e.g. waiting_for_parent).
+  # Positional scan from index 2 sees no entry for dep #1 → DEP_IN_QUEUE=false → dep_failed.
+  # Old code: full list scan finds #1 at index 0 → false DEP_IN_QUEUE=true.
+
+  _script="$BATS_TEST_TMPDIR/test-already-processed-dep.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+eval "$(awk '
+  /_check_dep_queued_later[(][)]/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
+declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
+ISSUE_LIST=(1 2)
+# Dep #1 ran at index 0, left the issue OPEN (waiting_for_parent)
+ISSUE_STATUS[1]="waiting_for_parent"
+_batch_qi=2    # N2 is current (index 1); qi incremented to 2; scan starts at 2
+
+ISSUE_NUM=2
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+
+dep_issue_state="OPEN"
+if [ "$dep_issue_state" = "OPEN" ]; then
+  _check_dep_queued_later 1 "$ISSUE_NUM" "$_batch_qi"
+  if [ "$DEP_IN_QUEUE" = false ]; then
+    DEP_FAILED=true
+  fi
+fi
+
+if [ "$DEP_IN_QUEUE" = true ]; then
+  echo "DEFERRED: issue $ISSUE_NUM"
+elif [ "$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue $ISSUE_NUM (dep_failed — dep already ran, issue still open)"
+else
+  echo "PROCEEDED: issue $ISSUE_NUM"
+fi
+SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "SKIPPED: issue 2" || {
+    echo "FAIL: N2 should be SKIPPED (dep #1 already ran, still OPEN, not re-queued)" >&2
+    echo "      Old code: full-list scan found #1 at index 0 → false DEFERRED" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "DEFERRED" || {
+    echo "FAIL: N2 must NOT be deferred (dep #1 is before current queue position)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "dep-in-queue: anti-cycle cap — defer count at max prevents further deferral" {
+  # When _DEFER_COUNT[ISSUE_NUM] >= ${#ISSUE_LIST[@]}, _check_dep_queued_later
+  # must refuse to scan (return without setting DEP_IN_QUEUE) so the issue
+  # falls through to dep_failed instead of deferring forever.
+
+  _script="$BATS_TEST_TMPDIR/test-anti-cycle-cap.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+eval "$(awk '
+  /_check_dep_queued_later[(][)]/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^}$/ { exit }
+' "BATCH_PROCESSOR_PATH")"
+
+declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
+ISSUE_LIST=(2 1 2 1 2 1)  # 6 entries
+# _DEFER_COUNT[2]=6 >= ${#ISSUE_LIST[@]}=6 → cap exceeded
+_DEFER_COUNT[2]=6
+ISSUE_STATUS[2]="deferred_for_dep"
+_batch_qi=5    # dep #1 is at index 5, after current position
+
+ISSUE_NUM=2
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+
+dep_issue_state="OPEN"
+if [ "$dep_issue_state" = "OPEN" ]; then
+  _check_dep_queued_later 1 "$ISSUE_NUM" "$_batch_qi"
+  if [ "$DEP_IN_QUEUE" = false ]; then
+    DEP_FAILED=true
+  fi
+fi
+
+if [ "$DEP_IN_QUEUE" = true ]; then
+  echo "DEFERRED: issue $ISSUE_NUM"
+elif [ "$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue $ISSUE_NUM (cap exceeded)"
+else
+  echo "PROCEEDED: issue $ISSUE_NUM"
+fi
+SCRIPT_EOF
+
+  sed -i.bak "s|BATCH_PROCESSOR_PATH|$BATCH_PROCESSOR|g" "$_script"
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "SKIPPED: issue 2" || {
+    echo "FAIL: N2 should be SKIPPED when defer cap is exceeded" >&2
+    echo "      The cap prevents infinite deferral loops" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "DEFERRED" || {
+    echo "FAIL: N2 must NOT be deferred when defer count >= list length" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "structural: _check_dep_queued_later defined in batch-process-issues.sh" {
+  grep -q '_check_dep_queued_later()' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _check_dep_queued_later() not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+}
+
+@test "structural: DEP_IN_QUEUE uses _check_dep_queued_later (not for-in scan)" {
+  grep -q '_check_dep_queued_later' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _check_dep_queued_later not called in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  grep -q 'DEP_IN_QUEUE=true' "$BATCH_PROCESSOR" || {
     echo "FAIL: DEP_IN_QUEUE=true not found — queue-membership deferral not implemented" >&2
     return 1
   }
@@ -1094,6 +1331,20 @@ SCRIPT_EOF
   # The main loop must use a while-index pattern (not for-in) to support live appends
   grep -q '_batch_qi' "$BATCH_PROCESSOR" || {
     echo "FAIL: _batch_qi not found — main loop may still be a for-in snapshot" >&2
+    return 1
+  }
+}
+
+@test "structural: _DEFER_COUNT declared in batch-process-issues.sh" {
+  grep -q '_DEFER_COUNT' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _DEFER_COUNT not found — positional anti-cycle counter missing" >&2
+    return 1
+  }
+}
+
+@test "structural: _UNIQUE_ISSUE_COUNT frozen before main loop" {
+  grep -q '_UNIQUE_ISSUE_COUNT' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _UNIQUE_ISSUE_COUNT not found — TOTAL_ISSUES inflation fix missing" >&2
     return 1
   }
 }
