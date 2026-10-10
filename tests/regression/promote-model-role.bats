@@ -68,7 +68,7 @@ teardown() {
 
 @test "claude_provider_resolve_model: RITE_REVIEW_MODEL=sonnet does not affect promote" {
   # review switched to sonnet, promote var unset -> promote must still be opus
-  run env RITE_REVIEW_MODEL=claude-sonnet-4-6 bash "$_helper_script" "promote"
+  run env -u RITE_PROMOTE_MODEL RITE_REVIEW_MODEL=claude-sonnet-4-6 bash "$_helper_script" "promote"
   [ "$status" -eq 0 ]
   [ "$output" = "claude-opus-4-8" ]
 }

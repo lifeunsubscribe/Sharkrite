@@ -131,7 +131,7 @@ TWO_ROLE_EOF
   chmod +x "$two_role_script"
 
   # RITE_REVIEW_MODEL=opus, but RITE_DOC_ASSESSMENT_MODEL is unset -> doc still uses sonnet default
-  run env RITE_REVIEW_MODEL=claude-opus-4-8 bash "$two_role_script"
+  run env -u RITE_DOC_ASSESSMENT_MODEL RITE_REVIEW_MODEL=claude-opus-4-8 bash "$two_role_script"
   rm -f "$two_role_script"
 
   [ "$status" -eq 0 ]
