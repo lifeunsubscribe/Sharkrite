@@ -1112,7 +1112,8 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         # _batch_qi) are excluded so an OPEN dep that already ran (e.g.
         # waiting_for_parent, branch_mismatch) does not trigger a false deferral.
         # Anti-cycle cap: _check_dep_queued_later refuses to scan when
-        # _DEFER_COUNT[ISSUE_NUM] >= ${#ISSUE_LIST[@]}, preventing infinite loops.
+        # _DEFER_COUNT[ISSUE_NUM] >= _UNIQUE_ISSUE_COUNT (the frozen operator-supplied
+        # count, not the live list length which grows with every deferral).
         _check_dep_queued_later "$dep_num" "$ISSUE_NUM" "$_batch_qi"
         if [ "$DEP_IN_QUEUE" = false ]; then
           DEP_FAILED=true

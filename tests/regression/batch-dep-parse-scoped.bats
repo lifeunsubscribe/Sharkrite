@@ -1337,3 +1337,41 @@ SCRIPT_EOF
     return 1
   }
 }
+
+@test "structural: _active_skipped filter block re-freezes _UNIQUE_ISSUE_COUNT after filtering" {
+  # The _active_skipped filter (run-collision guard) reassigns ISSUE_LIST to the
+  # filtered subset. _UNIQUE_ISSUE_COUNT must be updated in the same block so the
+  # anti-cycle cap in _check_dep_queued_later reflects the post-filter count, not
+  # the inflated pre-filter count.
+  #
+  # A bare grep for '_UNIQUE_ISSUE_COUNT' would pass even if both freeze sites were
+  # deleted (the identifier appears inside the function body too). This test anchors
+  # to the _active_skipped branch specifically.
+  #
+  # We extract the _active_skipped if-block and assert _UNIQUE_ISSUE_COUNT= is
+  # inside it — not just anywhere in the file.
+  _block=$(awk '
+    /if \[ \$\{#_active_skipped\[@\]\}/ { in_block=1; depth=1 }
+    in_block {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") depth--
+      }
+      print
+      if (depth==0) { in_block=0 }
+    }
+  ' "$BATCH_PROCESSOR" || true)
+
+  [ -n "$_block" ] || {
+    echo "FAIL: could not find _active_skipped if-block in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+
+  echo "$_block" | grep -q '_UNIQUE_ISSUE_COUNT=' || {
+    echo "FAIL: _active_skipped filter block does not re-freeze _UNIQUE_ISSUE_COUNT" >&2
+    echo "      Without this, the anti-cycle cap reads the inflated pre-filter count" >&2
+    echo "      and a deferred issue from a filtered batch can loop past the cap" >&2
+    return 1
+  }
+}
