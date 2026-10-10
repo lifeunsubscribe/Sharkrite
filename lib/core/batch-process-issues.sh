@@ -917,7 +917,14 @@ send_notification_all "🚀 *Batch Processing Started*
 *Mode:* Unsupervised" "normal"
 
 # Process each issue
-for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
+# Use a while-index loop instead of `for x in "${arr[@]}"` so that appending a
+# deferred issue to ISSUE_LIST (DEP_IN_QUEUE path below) is visible to
+# subsequent iterations — a for-in snapshot would miss newly appended elements.
+_batch_qi=0
+while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
+  ISSUE_NUM="${ISSUE_LIST[$_batch_qi]}"
+  _batch_qi=$((_batch_qi + 1))
+  TOTAL_ISSUES=${#ISSUE_LIST[@]}
   ISSUE_START_TIME=$(date +%s)
   CURRENT_ISSUE=$((COMPLETED_ISSUES + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]} + ${#SKIPPED_ISSUES[@]} + 1))
 
@@ -1032,6 +1039,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   DEP_ISSUES=$(_extract_dep_issues_from_body "$ISSUE_BODY" || true)
   if [ -n "$DEP_ISSUES" ]; then
     DEP_FAILED=false
+    DEP_IN_QUEUE=false
+    DEP_IN_QUEUE_NUM=""
     FAILED_DEP=""
     DEP_REASON=""
     for dep_num in $DEP_ISSUES; do
@@ -1046,12 +1055,39 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       dep_issue_state=$(gh_safe issue view "$dep_num" --json state --jq '.state')
       dep_issue_state="${dep_issue_state:-}"
       if [ "$dep_issue_state" = "OPEN" ]; then
-        DEP_FAILED=true
-        FAILED_DEP="$dep_num"
-        DEP_REASON="issue still open (PR not merged)"
+        # If dep is queued later in this batch and we haven't already deferred
+        # this issue once, defer rather than fail — mirrors PARENT_IN_QUEUE check.
+        # Anti-cycle: if already deferred once (status="deferred_for_dep"), fall
+        # through to dep_failed so the issue doesn't loop in the queue forever.
+        if [ "${ISSUE_STATUS[$ISSUE_NUM]:-}" != "deferred_for_dep" ]; then
+          for _queued_issue in "${ISSUE_LIST[@]}"; do
+            if [ "$_queued_issue" = "$dep_num" ]; then
+              DEP_IN_QUEUE=true
+              DEP_IN_QUEUE_NUM="$dep_num"
+              break
+            fi
+          done
+        fi
+        if [ "$DEP_IN_QUEUE" = false ]; then
+          DEP_FAILED=true
+          FAILED_DEP="$dep_num"
+          DEP_REASON="issue still open (PR not merged)"
+        fi
         break
       fi
     done
+    if [ "$DEP_IN_QUEUE" = true ]; then
+      # Dep is open but queued later in this batch — append current issue to the
+      # end of the queue so it runs after the dep. The while-index loop (not a
+      # for-in snapshot) picks up the newly appended element.
+      print_info "Dependency #$DEP_IN_QUEUE_NUM is queued later — deferring issue #$ISSUE_NUM to after dep"
+      ISSUE_LIST+=("$ISSUE_NUM")
+      TOTAL_ISSUES=${#ISSUE_LIST[@]}
+      ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_dep"
+      echo ""
+      _gate_consec_count=0; _gate_consec_sig=""
+      continue
+    fi
     if [ "$DEP_FAILED" = true ]; then
       # Deliberate divergence from single-issue mode: batch skips dependent issues
       # when a dependency failed/was blocked/is still open within the same batch.

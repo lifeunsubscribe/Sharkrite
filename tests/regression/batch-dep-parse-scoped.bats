@@ -863,3 +863,237 @@ After: #88"
     return 1
   }
 }
+
+# =============================================================================
+# DEP_IN_QUEUE: defer dependent when dep is queued later (issue #1022)
+# =============================================================================
+
+@test "dep-in-queue: N2 depends on open N1 queued later → N2 deferred, not dep_failed" {
+  # Reproduces the core gap: `rite N2 N1` where N2→N1 and N1 is still OPEN.
+  # Before the fix: N2 was skipped with dep_failed immediately.
+  # After the fix:  N2 is appended to the queue and processed after N1.
+
+  _script="$BATS_TEST_TMPDIR/test-dep-in-queue-defer.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+declare -A ISSUE_STATUS
+ISSUE_LIST=(2 1)    # N2 listed first, N1 queued later
+
+ISSUE_NUM=2
+DEP_ISSUES="1"
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+DEP_IN_QUEUE_NUM=""
+FAILED_DEP=""
+DEP_REASON=""
+
+for dep_num in $DEP_ISSUES; do
+  dep_status="${ISSUE_STATUS[$dep_num]:-}"
+  if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
+     [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
+    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="$dep_status in this batch"; break
+  fi
+  # Simulate dep issue #1 is OPEN
+  dep_issue_state="OPEN"
+  if [ "$dep_issue_state" = "OPEN" ]; then
+    if [ "${ISSUE_STATUS[$ISSUE_NUM]:-}" != "deferred_for_dep" ]; then
+      for _queued_issue in "${ISSUE_LIST[@]}"; do
+        if [ "$_queued_issue" = "$dep_num" ]; then
+          DEP_IN_QUEUE=true; DEP_IN_QUEUE_NUM="$dep_num"; break
+        fi
+      done
+    fi
+    if [ "$DEP_IN_QUEUE" = false ]; then
+      DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="issue still open (PR not merged)"
+    fi
+    break
+  fi
+done
+
+if [ "$DEP_IN_QUEUE" = true ]; then
+  ISSUE_LIST+=("$ISSUE_NUM")
+  ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_dep"
+  echo "DEFERRED: issue $ISSUE_NUM (dep $DEP_IN_QUEUE_NUM queued later)"
+elif [ "$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue $ISSUE_NUM (dep_failed)"
+else
+  echo "PROCEEDED: issue $ISSUE_NUM"
+fi
+echo "QUEUE:${ISSUE_LIST[*]}"
+SCRIPT_EOF
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "DEFERRED: issue 2" || {
+    echo "FAIL: N2 should be DEFERRED when dep N1 is in queue" >&2
+    echo "      Before fix: N2 was SKIPPED with dep_failed immediately" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "SKIPPED" || {
+    echo "FAIL: N2 was incorrectly skipped (old dep_failed behaviour still active)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  # N2 should have been appended to the queue for later processing
+  echo "$output" | grep -qE "QUEUE:.*2 1 2|QUEUE:2 1 2" || {
+    echo "FAIL: N2 should appear at end of queue after N1" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "dep-in-queue: N2 depends on open N1 NOT in queue → dep_failed (existing behavior pinned)" {
+  # When the dep is OPEN but is NOT in the current batch, the old dep_failed
+  # skip must still apply — the deferral only fires for queue-members.
+
+  _script="$BATS_TEST_TMPDIR/test-dep-not-in-queue.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+declare -A ISSUE_STATUS
+ISSUE_LIST=(2 3 4)   # dep #1 is NOT in this list
+
+ISSUE_NUM=2
+DEP_ISSUES="1"
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+DEP_IN_QUEUE_NUM=""
+FAILED_DEP=""
+DEP_REASON=""
+
+for dep_num in $DEP_ISSUES; do
+  dep_status="${ISSUE_STATUS[$dep_num]:-}"
+  if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
+     [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
+    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="$dep_status in this batch"; break
+  fi
+  dep_issue_state="OPEN"
+  if [ "$dep_issue_state" = "OPEN" ]; then
+    if [ "${ISSUE_STATUS[$ISSUE_NUM]:-}" != "deferred_for_dep" ]; then
+      for _queued_issue in "${ISSUE_LIST[@]}"; do
+        if [ "$_queued_issue" = "$dep_num" ]; then
+          DEP_IN_QUEUE=true; DEP_IN_QUEUE_NUM="$dep_num"; break
+        fi
+      done
+    fi
+    if [ "$DEP_IN_QUEUE" = false ]; then
+      DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="issue still open (PR not merged)"
+    fi
+    break
+  fi
+done
+
+if [ "$DEP_IN_QUEUE" = true ]; then
+  echo "DEFERRED: issue $ISSUE_NUM"
+elif [ "$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue $ISSUE_NUM (dep $FAILED_DEP — $DEP_REASON)"
+else
+  echo "PROCEEDED: issue $ISSUE_NUM"
+fi
+SCRIPT_EOF
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "SKIPPED: issue 2" || {
+    echo "FAIL: N2 should be SKIPPED when dep N1 is OPEN but NOT in queue" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "DEFERRED" || {
+    echo "FAIL: N2 must NOT be deferred when dep is not in queue" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "dep-in-queue: dep already CLOSED → runs immediately (existing behavior pinned)" {
+  # When the dep issue is CLOSED (already merged), the OPEN check is never
+  # entered — the dependent issue should proceed to the workflow normally.
+
+  _script="$BATS_TEST_TMPDIR/test-dep-closed.sh"
+  cat > "$_script" <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+declare -A ISSUE_STATUS
+ISSUE_LIST=(2 1)
+
+ISSUE_NUM=2
+DEP_ISSUES="1"
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+DEP_IN_QUEUE_NUM=""
+FAILED_DEP=""
+DEP_REASON=""
+
+for dep_num in $DEP_ISSUES; do
+  dep_status="${ISSUE_STATUS[$dep_num]:-}"
+  if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || \
+     [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
+    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="$dep_status in this batch"; break
+  fi
+  # Simulate dep issue #1 is CLOSED (already merged)
+  dep_issue_state="CLOSED"
+  if [ "$dep_issue_state" = "OPEN" ]; then
+    # This block is NOT entered — dep is closed
+    DEP_FAILED=true; FAILED_DEP="$dep_num"; DEP_REASON="issue still open (PR not merged)"; break
+  fi
+done
+
+if [ "$DEP_IN_QUEUE" = true ]; then
+  echo "DEFERRED: issue $ISSUE_NUM"
+elif [ "$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue $ISSUE_NUM (dep $FAILED_DEP)"
+else
+  echo "PROCEEDED: issue $ISSUE_NUM"
+fi
+SCRIPT_EOF
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PROCEEDED: issue 2" || {
+    echo "FAIL: N2 should PROCEED when dep N1 is CLOSED" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "SKIPPED\|DEFERRED" || {
+    echo "FAIL: N2 must not be skipped/deferred when dep is CLOSED" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "structural: DEP_IN_QUEUE membership check uses same pattern as PARENT_IN_QUEUE" {
+  # Pin the reuse contract from issue #1022's Done Definition:
+  # "the reorder path reuses the PARENT_IN_QUEUE membership-check pattern."
+  # Both checks iterate ISSUE_LIST with a for-in loop looking for the dep number.
+  grep -q "DEP_IN_QUEUE=true" "$BATCH_PROCESSOR" || {
+    echo "FAIL: DEP_IN_QUEUE=true not found — queue-membership deferral not implemented" >&2
+    return 1
+  }
+  grep -q 'deferred_for_dep' "$BATCH_PROCESSOR" || {
+    echo "FAIL: 'deferred_for_dep' status not found — anti-cycle guard missing" >&2
+    return 1
+  }
+  # The main loop must use a while-index pattern (not for-in) to support live appends
+  grep -q '_batch_qi' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _batch_qi not found — main loop may still be a for-in snapshot" >&2
+    return 1
+  }
+}
