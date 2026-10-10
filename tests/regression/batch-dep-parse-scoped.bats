@@ -872,14 +872,6 @@ After: #88"
 # cannot drift silently.
 # =============================================================================
 
-_load_check_dep_queued_later() {
-  eval "$(awk '
-    /_check_dep_queued_later[(][)]/ { in_fn=1 }
-    in_fn { print }
-    in_fn && /^}$/ { exit }
-  ' "$BATCH_PROCESSOR")"
-}
-
 @test "dep-in-queue: N2 depends on open N1 queued later → N2 deferred, not dep_failed" {
   # Reproduces the core gap: `rite N2 N1` where N2→N1 and N1 is still OPEN.
   # Before the fix: N2 was skipped with dep_failed immediately.
@@ -1079,21 +1071,10 @@ SCRIPT_EOF
 }
 
 @test "dep-in-queue: ≥3-issue chain (N3→N2→N1) — second deferral of N3 works (anti-cycle fix)" {
-  # Finding #1: a reprocessed issue (deferred once, status=deferred_for_dep)
-  # must still be deferred again when its dep is still queued later.
+  # A reprocessed issue (deferred once, status=deferred_for_dep) must still be
+  # deferred again when its dep is still queued later.
   # Old code: status=deferred_for_dep skipped the scan → N3 got dep_failed
   # even though N2 was still queued after N3 (correct: N3 should defer again).
-  #
-  # Setup: queue [N3, N2, N1, N3] (N3 already appended from first deferral)
-  # _batch_qi=3 (next to process is the re-queued N3 at index 3)
-  # N2 is at index 1 — BEFORE current position → not visible to positional scan
-  # Wait, that's wrong. Let me re-think.
-  #
-  # Actually the scenario is: after N1 runs (index 2), N3 is re-processed (index 3).
-  # At that point, N3's dep is N2. N2 ran at index 1 but left the issue OPEN
-  # (e.g. branch_mismatch). N2 was NOT re-appended. So N2 is only at index 1,
-  # which is BEFORE _batch_qi=3. The positional scan (from index 3) sees no N2
-  # → no false deferral. N3 gets dep_failed (correct, N2 really did fail).
   #
   # The chain that NEEDS the second deferral: queue [N3, N2, N1, N3, N2]
   # _batch_qi=3 (re-processing N3 at index 3), N2 is at index 4 (still queued)
@@ -1242,10 +1223,18 @@ SCRIPT_EOF
   }
 }
 
-@test "dep-in-queue: anti-cycle cap — defer count at max prevents further deferral" {
-  # When _DEFER_COUNT[ISSUE_NUM] >= ${#ISSUE_LIST[@]}, _check_dep_queued_later
-  # must refuse to scan (return without setting DEP_IN_QUEUE) so the issue
-  # falls through to dep_failed instead of deferring forever.
+@test "dep-in-queue: anti-cycle cap — 2-cycle terminates after _UNIQUE_ISSUE_COUNT deferrals" {
+  # The cap uses _UNIQUE_ISSUE_COUNT (frozen operator-supplied count), not
+  # ${#ISSUE_LIST[@]} (live length, which grows with every deferral). With the
+  # live length, a 2-cycle counter trails the bound every round and the cap
+  # never fires. With _UNIQUE_ISSUE_COUNT=2, after N2 is deferred twice the
+  # cap fires on the third encounter — a reachable, cycle-terminating state.
+  #
+  # Simulates state after two full rounds of a 2-cycle (N2↔N1):
+  #   Original list [2, 1] → _UNIQUE_ISSUE_COUNT=2
+  #   Both deferred twice → ISSUE_LIST=[2,1,2,1,2,1]; _DEFER_COUNT[2]=2
+  #   Third encounter of N2 (index 4, qi=5): dep N1 still queued at index 5
+  #   but _DEFER_COUNT[2]=2 >= _UNIQUE_ISSUE_COUNT=2 → cap fires → dep_failed.
 
   _script="$BATS_TEST_TMPDIR/test-anti-cycle-cap.sh"
   cat > "$_script" <<'SCRIPT_EOF'
@@ -1260,11 +1249,11 @@ eval "$(awk '
 
 declare -A ISSUE_STATUS
 declare -A _DEFER_COUNT
-ISSUE_LIST=(2 1 2 1 2 1)  # 6 entries
-# _DEFER_COUNT[2]=6 >= ${#ISSUE_LIST[@]}=6 → cap exceeded
-_DEFER_COUNT[2]=6
+_UNIQUE_ISSUE_COUNT=2          # original operator-supplied count (frozen)
+ISSUE_LIST=(2 1 2 1 2 1)      # after 2 rounds of mutual deferral (6 entries)
+_DEFER_COUNT[2]=2              # N2 deferred twice; 2 >= _UNIQUE_ISSUE_COUNT=2 → cap
 ISSUE_STATUS[2]="deferred_for_dep"
-_batch_qi=5    # dep #1 is at index 5, after current position
+_batch_qi=5    # N2 at index 4; dep N1 is at index 5 (still queued after current)
 
 ISSUE_NUM=2
 DEP_FAILED=false
@@ -1296,13 +1285,13 @@ SCRIPT_EOF
     return 1
   }
   echo "$output" | grep -q "SKIPPED: issue 2" || {
-    echo "FAIL: N2 should be SKIPPED when defer cap is exceeded" >&2
-    echo "      The cap prevents infinite deferral loops" >&2
+    echo "FAIL: N2 should be SKIPPED when defer count >= _UNIQUE_ISSUE_COUNT" >&2
+    echo "      The cap prevents infinite deferral loops in dependency cycles" >&2
     echo "Output: $output" >&2
     return 1
   }
   ! echo "$output" | grep -q "DEFERRED" || {
-    echo "FAIL: N2 must NOT be deferred when defer count >= list length" >&2
+    echo "FAIL: N2 must NOT be deferred when defer count >= _UNIQUE_ISSUE_COUNT" >&2
     echo "Output: $output" >&2
     return 1
   }

@@ -388,12 +388,14 @@ _extract_dep_issues_from_body() {
 # DEP_NUM. Only entries at CURRENT_QI+ are unprocessed; entries before that
 # index have already run and must not trigger a false "queued later" deferral.
 #
-# Anti-cycle cap: if _DEFER_COUNT[ISSUE_NUM] >= ${#ISSUE_LIST[@]}, fall
+# Anti-cycle cap: if _DEFER_COUNT[ISSUE_NUM] >= _UNIQUE_ISSUE_COUNT, fall
 # through without scanning — prevents infinite deferral loops when the dep
-# never closes. The cap is intentionally loose (list length, not a fixed
-# constant) so legitimate ≥3-issue chains still get deferred correctly.
+# never closes. The cap uses _UNIQUE_ISSUE_COUNT (the operator-supplied count,
+# frozen before any deferrals) rather than ${#ISSUE_LIST[@]} (which grows
+# with every deferral). Using the live list length would let the counter trail
+# the bound forever in a k-cycle — the cap would never fire.
 #
-# Globals read:  ISSUE_LIST, _DEFER_COUNT
+# Globals read:  ISSUE_LIST, _DEFER_COUNT, _UNIQUE_ISSUE_COUNT
 # Globals written (on match): DEP_IN_QUEUE=true, DEP_IN_QUEUE_NUM=DEP_NUM
 # Returns: 0 in all cases (caller checks DEP_IN_QUEUE, not the exit code)
 #
@@ -405,8 +407,9 @@ _check_dep_queued_later() {
   local _current_qi="$3"
 
   local _defer_count="${_DEFER_COUNT[$_issue_num]:-0}"
-  # Cap: cannot defer more times than there are entries in the queue.
-  local _max_defer="${#ISSUE_LIST[@]}"
+  # Cap: frozen unique-issue count bounds cycles; falls back to live length for
+  # tests that inline-source only this function without the full batch preamble.
+  local _max_defer="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
   if [ "$_defer_count" -ge "$_max_defer" ]; then
     return 0
   fi
@@ -858,6 +861,7 @@ if [ ${#_active_skipped[@]} -gt 0 ]; then
   done
   ISSUE_LIST=("${_filtered_list[@]}")
   TOTAL_ISSUES=${#ISSUE_LIST[@]}
+  _UNIQUE_ISSUE_COUNT=${#ISSUE_LIST[@]}
 fi
 
 # Check session limits upfront
