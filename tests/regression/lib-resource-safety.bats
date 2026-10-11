@@ -272,6 +272,12 @@ _assert_double_source() {
   _assert_double_source "lib/core/batch-reporter.sh"
 }
 
+@test "lib/core/docs-command.sh sources twice without error" {
+  # Re-source guard uses declare -f rite_docs sentinel; second source returns 0
+  # immediately without re-running load_provider or other top-level side effects.
+  _assert_double_source "lib/core/docs-command.sh"
+}
+
 # ---------------------------------------------------------------------------
 # lib/core — orchestrators with env-var guards
 #
