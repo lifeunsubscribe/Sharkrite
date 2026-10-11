@@ -809,3 +809,75 @@ _simulate_runner_main_dispatcher() {
     return 1
   }
 }
+
+# ===========================================================================
+# #1107: CLI phrasing drift — "You've hit your session limit · resets …"
+# must classify as usage cap (exit 5), not a generic dev-session failure.
+# ===========================================================================
+
+@test "structural: usage-cap pattern covers 'hit your session limit' live phrasing" {
+  # Live phrasing from batch rite-1045-1048-1022-1050-1054-1021-999-1073 (2026-10-10).
+  grep -qiE 'hit your \(session\|usage\|weekly\) limit' "$CLAUDE_PROVIDER" || {
+    echo "FAIL: 'hit your (session|usage|weekly) limit' not in usage-cap pattern in claude.sh" >&2
+    return 1
+  }
+}
+
+@test "unit: 'You've hit your session limit' detected → exit 5 (usage cap, not generic)" {
+  _tmpdir=$(mktemp -d)
+
+  # Stub claude that prints the 2026-10 session-limit phrasing and exits 1
+  cat > "$_tmpdir/claude" <<'STUB'
+#!/bin/bash
+echo "You've hit your session limit · resets 9:20pm (America/Denver)"
+exit 1
+STUB
+  chmod +x "$_tmpdir/claude"
+
+  cat > "$_tmpdir/jq" <<'STUB'
+#!/bin/bash
+cat >/dev/null
+STUB
+  chmod +x "$_tmpdir/jq"
+
+  cat > "$_tmpdir/tee" <<'STUB'
+#!/bin/bash
+_cap="${@: -1}"
+while IFS= read -r _line; do
+  printf '%s\n' "$_line" >> "$_cap"
+  printf '%s\n' "$_line"
+done
+STUB
+  chmod +x "$_tmpdir/tee"
+
+  run bash -c "
+    set -euo pipefail
+    export PATH='$_tmpdir:/usr/bin:/bin'
+    export RITE_LIB_DIR='$REPO_ROOT/lib'
+    export RITE_CLAUDE_TIMEOUT_PROMPT=10
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    _stderr_capture=\$(mktemp)
+    export RITE_CLAUDE_TIMEOUT_AGENTIC=10
+
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$CLAUDE_PROVIDER' || true
+    set +u; set +o pipefail
+
+    run_with_timeout() { shift; \"\$@\"; }
+    claude_provider_detect_cli
+    _claude_write_hook_settings() { echo ''; }
+    _claude_pretooluse_hook_path() { echo ''; }
+    claude_provider_build_tool_restrictions() { echo 'none'; }
+    claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
+
+    _exit=0
+    claude_provider_run_agentic_session 'test prompt' 10 true "\$_stderr_capture" || _exit=\$?
+    exit \$_exit
+  "
+
+  [ "$status" -eq 5 ] || {
+    echo "FAIL: expected exit 5 for session-limit phrasing, got: $status" >&2
+    echo "      output: $output" >&2
+    return 1
+  }
+}
