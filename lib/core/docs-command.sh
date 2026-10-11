@@ -352,8 +352,12 @@ AUDIT_EOF
         local _drift_path="${_rest%% —*}"
         local _drift_rest="${_rest#*— }"
         local _section="${_drift_rest%% —*}"
-        _section="${_section#\"}"
-        _section="${_section%\"}"
+        # Quoted-pattern form ('"' not \") — a backslash-escaped quote inside
+        # ${} inside "" leaves a stray } after the lint brace-counter's quote
+        # stripping, false-flagging every later `local` as outside-function
+        # (Rule 07 heuristic gap; same class as promotion-composer, #1095).
+        _section="${_section#'"'}"
+        _section="${_section%'"'}"
         local _suspected="${_drift_rest#*— }"
         _implicated_docs_block="${_implicated_docs_block}- ${_drift_path} — \"${_section}\""$'\n'
         if [ -n "$_suspected_all" ]; then
