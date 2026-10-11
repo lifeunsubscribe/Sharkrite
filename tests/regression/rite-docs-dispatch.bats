@@ -188,11 +188,15 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "never-run + non-TTY (consent-no branch) records changelog mode" {
+  # Explicitly clear RITE_DOC_MODE: the gate runs bats in a shell that may have
+  # RITE_DOC_MODE=changelog exported (set by ensure_doc_mode in workflow-runner),
+  # which would redirect to the audit path and never call record_doc_mode.
   run env \
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
     RITE_DATA_DIR=".rite" \
     RITE_LOG_AUTO=false \
+    RITE_DOC_MODE= \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]
   [ -f "$FAKE_PROJECT/.rite/state/recorded-mode.log" ]
@@ -294,4 +298,64 @@ teardown() {
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Audit DRIFT-parsing and drift-log appender tests (#1045 acceptance criteria)
+# ---------------------------------------------------------------------------
+
+@test "audit: DRIFT line from provider appended via drift-log stub" {
+  # Minimal map with one doc entry so the inventory is non-empty
+  mkdir -p "$FAKE_PROJECT/docs"
+  printf 'docs/arch.md\t1\t## Overview\t3\tOverview\n' \
+    > "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf '# Arch\n\n## Overview\ncontent\n' > "$FAKE_PROJECT/docs/arch.md"
+
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="changelog" \
+    DOCS_AUDIT_OUTPUT='DRIFT: docs/arch.md — "Overview" — section describes old behavior' \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "$FAKE_PROJECT/.rite/state/drift-log.calls" ]
+  grep -q "drift_log_append" "$FAKE_PROJECT/.rite/state/drift-log.calls"
+}
+
+@test "audit: suspected inaccuracy text is passed to drift_log_append" {
+  mkdir -p "$FAKE_PROJECT/docs"
+  printf 'docs/arch.md\t1\t## Overview\t3\tOverview\n' \
+    > "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf '# Arch\n\n## Overview\ncontent\n' > "$FAKE_PROJECT/docs/arch.md"
+
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="changelog" \
+    DOCS_AUDIT_OUTPUT='DRIFT: docs/arch.md — "Overview" — section describes old behavior' \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  grep -q "section describes old behavior" "$FAKE_PROJECT/.rite/state/drift-log.calls"
+}
+
+@test "audit: NOTHING_FOUND from provider skips drift_log_append" {
+  mkdir -p "$FAKE_PROJECT/docs"
+  printf 'docs/arch.md\t1\t## Overview\t3\tOverview\n' \
+    > "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf '# Arch\n\n## Overview\ncontent\n' > "$FAKE_PROJECT/docs/arch.md"
+
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="changelog" \
+    DOCS_AUDIT_OUTPUT="NOTHING_FOUND" \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "$FAKE_PROJECT/.rite/state/drift-log.calls" ]
 }

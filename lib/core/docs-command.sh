@@ -93,7 +93,7 @@ _docs_ensure_map() {
   if [ "$auto_enabled" = "false" ] || [ "$auto_enabled" = "0" ]; then
     local reply_val="N"
     if [ -t 0 ]; then
-      echo ""
+      echo "" >&2
       read -p "  Docs map missing and auto-rebuild disabled — rebuild now? [y/N] " -n 1 -r
       echo
       reply_val="${REPLY:-N}"
@@ -141,8 +141,8 @@ _docs_enable_flow() {
   local doc_sync_example_local="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md.example"
   local doc_sync_example_install="${RITE_INSTALL_DIR:-${RITE_LIB_DIR%/lib}}/templates/doc-sync.md.example"
 
-  echo ""
-  echo "  Sharkrite can update files in docs/ when code changes make them inaccurate."
+  echo "" >&2
+  echo "  Sharkrite can update files in docs/ when code changes make them inaccurate." >&2
 
   local reply_val="N"
   if [ -t 0 ]; then
@@ -158,6 +158,9 @@ _docs_enable_flow() {
         cp "$doc_sync_example_local" "$doc_sync_file"
       elif [ -f "$doc_sync_example_install" ]; then
         cp "$doc_sync_example_install" "$doc_sync_file"
+      else
+        print_warning "No template found — create .rite/doc-sync.md manually"
+        return 1
       fi
     fi
     record_doc_mode "sync"
@@ -223,9 +226,9 @@ _docs_run_audit() {
     local _path
     _path="$(echo "$_line" | cut -f1 || true)"
     [ -z "$_path" ] && continue
-    # Add only new paths (de-duplicate)
-    case "$_inventory_paths" in
-      *"$_path"*) ;;
+    # Add only new paths (whole-line de-duplicate — newline anchors prevent substring collision)
+    case $'\n'"$_inventory_paths"$'\n' in
+      *$'\n'"$_path"$'\n'*) ;;
       *) _inventory_paths="${_inventory_paths}${_path}"$'\n' ;;
     esac
   done < "$map_file"
@@ -306,13 +309,25 @@ Documentation inventory:
 ${_map_context}
 AUDIT_EOF
 
-  print_info "Auditing ${#_inventory_paths} docs via doc_assessment model..."
+  local _doc_count
+  _doc_count=$(printf '%s\n' "$_inventory_paths" | grep -c '.' || true)
+  print_info "Auditing ${_doc_count} doc(s) via doc_assessment model..."
 
-  local _timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-180}"
-  local _audit_output
+  local _timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+  local _audit_output _audit_exit
+  _audit_exit=0
   _audit_output="$(provider_run_prompt_with_timeout "$(cat "$_prompt_file")" \
-    "$(provider_resolve_model doc_assessment)" true "$_timeout" 2>/dev/null)" || true
+    "$(provider_resolve_model doc_assessment)" true "$_timeout" 2>/dev/null)" \
+    || _audit_exit=$?
   rm -f "$_prompt_file"
+
+  if [ "$_audit_exit" -eq 124 ]; then
+    print_warning "Audit timed out after ${_timeout}s — cannot determine drift" >&2
+    return 1
+  elif [ "$_audit_exit" -ne 0 ]; then
+    print_warning "Audit provider call failed (exit ${_audit_exit}) — cannot determine drift" >&2
+    return 1
+  fi
 
   if [ -z "$_audit_output" ] || echo "$_audit_output" | grep -q "^NOTHING_FOUND"; then
     print_info "Audit complete — no drift detected"
@@ -322,7 +337,7 @@ AUDIT_EOF
   # Parse DRIFT: lines into structured findings
   local _finding_count=0
   local _implicated_docs_block=""
-  local _suspected=""
+  local _suspected_all=""
   local _audit_line
   while IFS= read -r _audit_line || [ -n "$_audit_line" ]; do
     case "$_audit_line" in
@@ -334,8 +349,13 @@ AUDIT_EOF
         local _section="${_drift_rest%% —*}"
         _section="${_section#\"}"
         _section="${_section%\"}"
-        _suspected="${_drift_rest#*— }"
+        local _suspected="${_drift_rest#*— }"
         _implicated_docs_block="${_implicated_docs_block}- ${_drift_path} — \"${_section}\""$'\n'
+        if [ -n "$_suspected_all" ]; then
+          _suspected_all="${_suspected_all}; ${_suspected}"
+        else
+          _suspected_all="$_suspected"
+        fi
         _finding_count=$((_finding_count + 1))
         ;;
     esac
@@ -359,7 +379,7 @@ EOF_AUDIT
   if [ "$state" = "changelog" ]; then
     # Append to drift log (pr:0 = audit-triggered, not PR-triggered)
     drift_log_append "0" "-" "(on-demand audit)" "$_implicated_docs_block" \
-      "On-demand audit via rite docs — $_finding_count potential inaccuracy(ies)" || true
+      "${_suspected_all:-On-demand audit via rite docs — $_finding_count potential inaccuracy(ies)}" || true
     print_info "Findings recorded in drift log"
 
     # Tail-offer: enable doc-sync and reconcile?
