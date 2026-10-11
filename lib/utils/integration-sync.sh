@@ -174,6 +174,8 @@ sync_integration_branch() {
     if ! git -C "$_sync_wt" push origin "HEAD:refs/heads/$SYNC_BRANCH"; then
       print_error "Push failed after successful merge"
       _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=push_failed"
+      trap - EXIT
+      git worktree remove --force "$_sync_wt" 2>/dev/null || true
       return 1
     fi
     print_success "Branch '$SYNC_BRANCH' synced successfully"
@@ -463,9 +465,24 @@ sync_all_repos() {
       # truncate slash-containing names ("release/1.2" → "1.2").
       local _branch="${_rel%.log}"
       _branch_count=$((_branch_count + 1))
+
+      # Detect a promoted-and-deleted remote branch before calling
+      # sync_integration_branch.  Ledger files are never pruned; a gone remote
+      # is a completed lifecycle, not an operational failure.
+      local _remote_check_rc=0
+      git ls-remote --exit-code --heads origin "$_branch" >/dev/null 2>&1 || _remote_check_rc=$?
+      if [ "$_remote_check_rc" -ne 0 ]; then
+        print_info "Phase A — branch '${_branch}': skipped (remote branch gone — promoted and deleted)"
+        _report+=("  branch '${_branch}': skipped-gone")
+        continue
+      fi
+
       print_status "Phase A — integration branch: ${_branch}"
       local _branch_rc=0
-      sync_integration_branch "$_branch" || _branch_rc=$?
+      # Redirect stdin to /dev/null so the conflict resolver (which reads from
+      # stdin) cannot consume the find-pipe stream and cause the loop to skip
+      # subsequent ledger entries.
+      sync_integration_branch "$_branch" </dev/null || _branch_rc=$?
       if [ "$_branch_rc" -ne 0 ]; then
         _overall_rc=1
         _report+=("  branch '${_branch}': FAILED (exit ${_branch_rc})")
