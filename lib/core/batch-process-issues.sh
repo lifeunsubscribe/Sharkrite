@@ -382,6 +382,51 @@ _extract_dep_issues_from_body() {
 }
 
 # ---------------------------------------------------------------------------
+# _check_dep_queued_later DEP_NUM ISSUE_NUM CURRENT_QI
+#
+# Scan ISSUE_LIST from index CURRENT_QI onwards (not from the beginning) for
+# DEP_NUM. Only entries at CURRENT_QI+ are unprocessed; entries before that
+# index have already run and must not trigger a false "queued later" deferral.
+#
+# Anti-cycle cap: if _DEFER_COUNT[ISSUE_NUM] >= _UNIQUE_ISSUE_COUNT, fall
+# through without scanning — prevents infinite deferral loops when the dep
+# never closes. The cap uses _UNIQUE_ISSUE_COUNT (the operator-supplied count,
+# frozen before any deferrals) rather than ${#ISSUE_LIST[@]} (which grows
+# with every deferral). Using the live list length would let the counter trail
+# the bound forever in a k-cycle — the cap would never fire.
+#
+# Globals read:  ISSUE_LIST, _DEFER_COUNT, _UNIQUE_ISSUE_COUNT
+# Globals written (on match): DEP_IN_QUEUE=true, DEP_IN_QUEUE_NUM=DEP_NUM
+# Returns: 0 in all cases (caller checks DEP_IN_QUEUE, not the exit code)
+#
+# Sourceable by tests via awk extraction (same pattern as
+# _extract_dep_issues_from_body).
+_check_dep_queued_later() {
+  local _dep_num="$1"
+  local _issue_num="$2"
+  local _current_qi="$3"
+
+  local _defer_count="${_DEFER_COUNT[$_issue_num]:-0}"
+  # Cap: frozen unique-issue count bounds cycles; falls back to live length for
+  # tests that inline-source only this function without the full batch preamble.
+  local _max_defer="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+  if [ "$_defer_count" -ge "$_max_defer" ]; then
+    return 0
+  fi
+
+  local _qi_scan=$_current_qi
+  while [ "$_qi_scan" -lt "${#ISSUE_LIST[@]}" ]; do
+    if [ "${ISSUE_LIST[$_qi_scan]}" = "$_dep_num" ]; then
+      DEP_IN_QUEUE=true
+      DEP_IN_QUEUE_NUM="$_dep_num"
+      return 0
+    fi
+    _qi_scan=$((_qi_scan + 1))
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
@@ -675,6 +720,10 @@ init_session "batch-${ISSUE_LIST[0]}-$(date +%s)"
 # Batch processing state
 BATCH_START_TIME=$(date +%s)
 TOTAL_ISSUES=${#ISSUE_LIST[@]}
+# Freeze unique-issue count for reporting. TOTAL_ISSUES may grow as deferred
+# issues are appended to ISSUE_LIST — _UNIQUE_ISSUE_COUNT stays at the
+# operator-supplied count so summaries and success rates are never inflated.
+_UNIQUE_ISSUE_COUNT=${#ISSUE_LIST[@]}
 COMPLETED_ISSUES=0
 MERGED_CLEANUP_FAILED=()         # Exit 6: merged but cleanup crashed
 FAILED_ISSUES=()                 # Exit 1: genuine failure (dev or merge)
@@ -707,6 +756,7 @@ declare -A ISSUE_TIME
 declare -A ISSUE_PR
 declare -A ISSUE_BRANCH
 declare -A PR_CHANGES
+declare -A _DEFER_COUNT  # defer counter per issue; anti-cycle cap for DEP_IN_QUEUE path
 
 # Summary arrays
 SECURITY_UPDATES=()
@@ -811,6 +861,7 @@ if [ ${#_active_skipped[@]} -gt 0 ]; then
   done
   ISSUE_LIST=("${_filtered_list[@]}")
   TOTAL_ISSUES=${#ISSUE_LIST[@]}
+  _UNIQUE_ISSUE_COUNT=${#ISSUE_LIST[@]}
 fi
 
 # Check session limits upfront
@@ -917,7 +968,14 @@ send_notification_all "🚀 *Batch Processing Started*
 *Mode:* Unsupervised" "normal"
 
 # Process each issue
-for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
+# Use a while-index loop instead of `for x in "${arr[@]}"` so that appending a
+# deferred issue to ISSUE_LIST (DEP_IN_QUEUE path below) is visible to
+# subsequent iterations — a for-in snapshot would miss newly appended elements.
+_batch_qi=0
+while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
+  ISSUE_NUM="${ISSUE_LIST[$_batch_qi]}"
+  _batch_qi=$((_batch_qi + 1))
+  TOTAL_ISSUES=${#ISSUE_LIST[@]}
   ISSUE_START_TIME=$(date +%s)
   CURRENT_ISSUE=$((COMPLETED_ISSUES + ${#FAILED_ISSUES[@]} + ${#BLOCKED_ISSUES[@]} + ${#SKIPPED_ISSUES[@]} + 1))
 
@@ -1032,6 +1090,8 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
   DEP_ISSUES=$(_extract_dep_issues_from_body "$ISSUE_BODY" || true)
   if [ -n "$DEP_ISSUES" ]; then
     DEP_FAILED=false
+    DEP_IN_QUEUE=false
+    DEP_IN_QUEUE_NUM=""
     FAILED_DEP=""
     DEP_REASON=""
     for dep_num in $DEP_ISSUES; do
@@ -1046,12 +1106,37 @@ for ISSUE_NUM in "${ISSUE_LIST[@]}"; do
       dep_issue_state=$(gh_safe issue view "$dep_num" --json state --jq '.state')
       dep_issue_state="${dep_issue_state:-}"
       if [ "$dep_issue_state" = "OPEN" ]; then
-        DEP_FAILED=true
-        FAILED_DEP="$dep_num"
-        DEP_REASON="issue still open (PR not merged)"
+        # If dep is queued AFTER the current position in this batch, defer rather
+        # than fail — mirrors PARENT_IN_QUEUE check.
+        # Positional scan (from _batch_qi): already-processed entries (index <
+        # _batch_qi) are excluded so an OPEN dep that already ran (e.g.
+        # waiting_for_parent, branch_mismatch) does not trigger a false deferral.
+        # Anti-cycle cap: _check_dep_queued_later refuses to scan when
+        # _DEFER_COUNT[ISSUE_NUM] >= _UNIQUE_ISSUE_COUNT (the frozen operator-supplied
+        # count, not the live list length which grows with every deferral).
+        _check_dep_queued_later "$dep_num" "$ISSUE_NUM" "$_batch_qi"
+        if [ "$DEP_IN_QUEUE" = false ]; then
+          DEP_FAILED=true
+          FAILED_DEP="$dep_num"
+          DEP_REASON="issue still open (PR not merged)"
+        fi
         break
       fi
     done
+    if [ "$DEP_IN_QUEUE" = true ]; then
+      # Dep is open but queued later in this batch — append current issue to the
+      # end of the queue so it runs after the dep. The while-index loop (not a
+      # for-in snapshot) picks up the newly appended element.
+      _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
+      print_info "Dependency #$DEP_IN_QUEUE_NUM is queued later — deferring issue #$ISSUE_NUM to after dep (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      ISSUE_LIST+=("$ISSUE_NUM")
+      # Do NOT update TOTAL_ISSUES here — live length is for the loop bound only
+      # (line 927 re-computes it each iteration). Reporting uses _UNIQUE_ISSUE_COUNT.
+      ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_dep"
+      echo ""
+      _gate_consec_count=0; _gate_consec_sig=""
+      continue
+    fi
     if [ "$DEP_FAILED" = true ]; then
       # Deliberate divergence from single-issue mode: batch skips dependent issues
       # when a dependency failed/was blocked/is still open within the same batch.
@@ -1568,6 +1653,23 @@ if [ "$_BATCH_AUTH_HALT" = "true" ]; then
   done
 fi
 
+# Post-loop: issues still in deferred_for_dep state were never retried because
+# the batch halted early (circuit-breaker, session-hours, auth halt, or error).
+# Move each unique such issue to SKIPPED so it appears in summary accounting.
+# ISSUE_LIST may contain the same issue multiple times (one entry per defer);
+# track seen numbers to add each exactly once.
+_seen_deferred=""
+for _deferred_num in "${ISSUE_LIST[@]}"; do
+  if [ "${ISSUE_STATUS[$_deferred_num]:-}" = "deferred_for_dep" ]; then
+    case " $_seen_deferred " in
+      *" $_deferred_num "*) continue ;;
+    esac
+    _seen_deferred="$_seen_deferred $_deferred_num"
+    SKIPPED_ISSUES+=("$_deferred_num")
+    ISSUE_STATUS["$_deferred_num"]="dep_deferred_incomplete"
+  fi
+done
+
 # Calculate final stats
 # TOTAL_PROCESSED = issues that actually ran through the workflow (completed, failed, or blocked).
 # Skipped issues (waiting_for_parent, already_closed, dep_failed, etc.) are intentionally
@@ -1575,6 +1677,12 @@ fi
 BATCH_END_TIME=$(date +%s)
 TOTAL_DURATION=$((BATCH_END_TIME - BATCH_START_TIME))
 _batch_compute_totals
+
+# Restore TOTAL_ISSUES to the frozen unique-issue count for all reporting.
+# The loop re-computed TOTAL_ISSUES each iteration (line below ISSUE_NUM=...) so
+# it grew to include deferred-append entries. Reporting must show the operator-
+# supplied count, not the inflated queue length.
+TOTAL_ISSUES=$_UNIQUE_ISSUE_COUNT
 
 # Generate summary report
 # Retry blocked issues (they may have follow-up issues created now)
