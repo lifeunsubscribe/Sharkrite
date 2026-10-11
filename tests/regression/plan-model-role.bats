@@ -79,7 +79,7 @@ teardown() {
 
 @test "claude_provider_resolve_model: RITE_REVIEW_MODEL=sonnet does not affect plan" {
   # review switched to sonnet, plan var unset -> plan must still be opus (its own default)
-  run env RITE_REVIEW_MODEL=claude-sonnet-4-6 bash "$_helper_script" "plan"
+  run env -u RITE_PLAN_MODEL RITE_REVIEW_MODEL=claude-sonnet-4-6 bash "$_helper_script" "plan"
   [ "$status" -eq 0 ]
   [ "$output" = "claude-opus-4-8" ]
 }
