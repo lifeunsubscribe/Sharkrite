@@ -61,7 +61,7 @@ WORKFLOW_FLAGS=()
 LABEL_FILTER=""
 BATCH_FILTER_ARGS=()
 SUPERVISED=false
-SYNC_BRANCH_ARG=""
+SYNC_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dev-and-pr)
@@ -115,16 +115,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --sync)
-      # Sync an integration branch: fetch origin, merge origin/main into the
-      # branch (never rebase), push. Explicit, never automatic.
+      # Typed sync: zero args = all-repo sweep; digit args = issue form (rebase);
+      # one non-numeric arg = branch form (merge, #1041); mixed = error.
       MODE="sync"
-      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
-        print_error "--sync requires a branch name"
-        echo "Usage: rite --sync <integration-branch>"
-        exit 1
-      fi
-      SYNC_BRANCH_ARG="$2"
-      shift 2
+      shift
+      while [[ $# -gt 0 ]] && [[ "${1:-}" != -* ]]; do
+        SYNC_ARGS+=("$1")
+        shift
+      done
       ;;
     --refresh-encountered-issues)
       MODE="refresh-encountered-issues"
@@ -226,6 +224,13 @@ while [[ $# -gt 0 ]]; do
       PLAN_ARGS=("$@")
       shift $#
       ;;
+    docs)
+      MODE="docs"
+      shift
+      # Collect remaining args for docs (optional directed-update instructions)
+      DOCS_ARGS=("$@")
+      shift $#
+      ;;
     --version|-v)
       echo "rite version $VERSION"
       exit 0
@@ -251,6 +256,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --reset-approval         Clear ALL saved blocker approvals (global reset)"
       echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
       echo "  rite plan --preview [doc]     Preview issues without creating them"
+      echo "  rite docs                     Doc consent/audit: enable sync, audit drift, or report"
+      echo "  rite docs \"<instructions>\"    Directed doc update (routes to engine in #1049)"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --init --no-backfill-adrs Skip ADR backfill during init"
@@ -258,6 +265,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
       echo "  rite --refresh-encountered-issues  Refresh docs/architecture/encountered-issues.md"
       echo "  rite --sync <branch>          Merge origin/main into an integration branch (explicit, never automatic)"
+      echo "  rite --sync <N> [<N>...]      Rebase issue feature branches onto their base (rebase goes stale-review by design)"
+      echo "  rite --sync                   Bare sweep: sync all ledger branches + in-flight worktrees"
       echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
@@ -302,6 +311,8 @@ while [[ $# -gt 0 ]]; do
       echo "  rite plan docs/phases.md   # Generate issues from doc"
       echo "  rite plan \"phases 2-4\"     # Natural language filtering"
       echo "  rite plan --preview        # Preview without creating"
+      echo "  rite docs                  # Enable doc-sync or audit drift (first-time: consent flow)"
+      echo "  rite docs \"update arch\"    # Directed doc update (engine lands in #1049)"
       echo "  rite --status              # Repo-wide status overview"
       echo "  rite --status --by-label   # Status grouped by label"
       echo "  rite 21 --dry-run          # See what would happen"
@@ -350,17 +361,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     sync)
-      # Bare-word alias: `rite sync <branch>` → `rite --sync <branch>`.
-      # Mirrors the --sync flag case above, including the required-arg check.
+      # Bare-word alias: `rite sync [args]` mirrors `rite --sync [args]`.
+      # Zero args = all-repo sweep; digits = issue form; one non-numeric = branch form.
       MODE="sync"
       shift
-      if [ -z "${1:-}" ] || [[ "$1" == -* ]]; then
-        print_error "sync requires a branch name"
-        echo "Usage: rite sync <integration-branch>"
-        exit 1
-      fi
-      SYNC_BRANCH_ARG="$1"
-      shift
+      while [[ $# -gt 0 ]] && [[ "${1:-}" != -* ]]; do
+        SYNC_ARGS+=("$1")
+        shift
+      done
       ;;
     backfill-locks)
       MODE="backfill-locks"
@@ -461,6 +469,10 @@ resolve_dispatch_key() {
       ;;
     plan)
       echo "plan"
+      return 0
+      ;;
+    docs)
+      echo "docs"
       return 0
       ;;
     full|dev-and-pr|review-latest|assess-and-fix|status|undo)
@@ -571,7 +583,24 @@ resolve_dispatch_plan() {
       return 0
       ;;
     sync)
-      echo "integration-sync.sh::sync_integration_branch ${SYNC_BRANCH_ARG:-<branch>}  (fetch + merge origin/main into branch, push)"
+      # Typed plan based on SYNC_ARGS
+      local _sp_count=${#SYNC_ARGS[@]}
+      local _sp_all_numeric=true
+      local _sp_all_branch=true
+      local _sp_a
+      for _sp_a in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
+        if [[ "$_sp_a" =~ ^[0-9]+$ ]]; then _sp_all_branch=false; else _sp_all_numeric=false; fi
+      done
+      if [ "$_sp_count" -eq 0 ]; then
+        echo "integration-sync.sh::sync_all_repos  (bare: sync all ledger branches + in-flight worktrees)"
+      elif [ "$_sp_all_numeric" = true ]; then
+        echo "integration-sync.sh::sync_issue_branch ${SYNC_ARGS[*]:-}  (rebase issue feature branches onto resolver-determined base, push --force-with-lease; rebase goes stale-review by design)"
+      elif [ "$_sp_count" -eq 1 ] && [ "$_sp_all_branch" = true ]; then
+        echo "integration-sync.sh::sync_integration_branch ${SYNC_ARGS[0]}  (fetch + merge origin/main into branch, push)"
+      else
+        echo "ERROR: --sync: mixed or multiple non-numeric args — use: rite --sync, rite --sync <branch>, or rite --sync <N>..."
+        return 1
+      fi
       return 0
       ;;
     refresh-encountered-issues)
@@ -600,6 +629,10 @@ resolve_dispatch_plan() {
       ;;
     plan)
       echo "plan-issues.sh::plan_issues ${PLAN_ARGS[*]:-}  (generate GitHub issues via claude)"
+      return 0
+      ;;
+    docs)
+      echo "docs-command.sh::rite_docs ${DOCS_ARGS[*]:-}  (docs consent/audit/drift via claude)"
       return 0
       ;;
     status-repo-wide)
@@ -742,12 +775,55 @@ if [ "$MODE" = "full-suite" ]; then
   exec "$SCRIPT_DIR/rite-full-suite"
 fi
 
-# Integration branch sync: fetch + merge origin/main into the branch, push.
-# Explicit, never automatic. Branch arg was consumed and validated at parse time.
+# Integration branch / issue branch / all-repo sync.
+# Explicit, never automatic. SYNC_ARGS were collected at parse time.
 if [ "$MODE" = "sync" ]; then
   source "$RITE_LIB_DIR/utils/integration-sync.sh"
-  sync_integration_branch "${SYNC_BRANCH_ARG:-}"
-  exit $?
+
+  # Typed arg validation: all-digits → issue form; one non-numeric → branch form;
+  # zero args → bare all-repo form; mixed/multiple non-numeric → usage error.
+  _sync_argc=${#SYNC_ARGS[@]}
+  _sync_all_numeric=true
+  _sync_all_branch=true
+  for _sync_a in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
+    if [[ "$_sync_a" =~ ^[0-9]+$ ]]; then _sync_all_branch=false; else _sync_all_numeric=false; fi
+  done
+
+  if [ "$_sync_argc" -eq 0 ]; then
+    # Bare form: sweep all integration branches then all in-flight worktrees
+    sync_all_repos
+    exit $?
+
+  elif [ "$_sync_all_numeric" = true ]; then
+    # Issue form: rebase each feature branch onto its resolver-determined base
+    _sync_overall_rc=0
+    _sync_report=()
+    for _sync_n in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
+      _sync_item_rc=0
+      sync_issue_branch "$_sync_n" || _sync_item_rc=$?
+      [ "$_sync_item_rc" -ne 0 ] && _sync_overall_rc=1
+      _sync_report+=("  issue #${_sync_n}: ${_SYNC_ISSUE_OUTCOME:-?}")
+    done
+    echo ""
+    print_header "Sync Report"
+    for _sync_line in ${_sync_report[@]+"${_sync_report[@]}"}; do
+      echo "$_sync_line"
+    done
+    exit $_sync_overall_rc
+
+  elif [ "$_sync_argc" -eq 1 ] && [ "$_sync_all_branch" = true ]; then
+    # Branch form: #1041 behavior — merge origin/main into integration branch
+    sync_integration_branch "${SYNC_ARGS[0]}"
+    exit $?
+
+  else
+    # Mixed or multiple non-numeric args
+    print_error "--sync: invalid arguments — use one of:"
+    echo "  rite --sync                      # sweep all ledger branches + in-flight worktrees"
+    echo "  rite --sync <branch>             # merge origin/main into integration branch"
+    echo "  rite --sync <N> [<N>...]         # rebase issue feature branches onto their base"
+    exit 1
+  fi
 fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
@@ -859,6 +935,8 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   # "new" — the issue gets created later.
   if [ "$MODE" = "plan" ]; then
     LOG_SLUG="plan"
+  elif [ "$MODE" = "docs" ]; then
+    LOG_SLUG="docs"
   elif [ ${#BATCH_FILTER_ARGS[@]} -gt 0 ]; then
     # Batch mode: e.g., "batch-label-tech-debt"
     LOG_SLUG="batch-${BATCH_FILTER_ARGS[*]}"
@@ -1303,6 +1381,13 @@ fi
 if [ "$MODE" = "plan" ]; then
   source "$RITE_LIB_DIR/core/plan-issues.sh"
   plan_issues "${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}"
+  exit $?
+fi
+
+# Handle docs mode (before normalize — rite docs dispatches on doc state, not issue)
+if [ "$MODE" = "docs" ]; then
+  source "$RITE_LIB_DIR/core/docs-command.sh"
+  rite_docs "${DOCS_ARGS[@]+"${DOCS_ARGS[@]}"}"
   exit $?
 fi
 
