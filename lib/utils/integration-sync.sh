@@ -469,11 +469,19 @@ sync_all_repos() {
       # Detect a promoted-and-deleted remote branch before calling
       # sync_integration_branch.  Ledger files are never pruned; a gone remote
       # is a completed lifecycle, not an operational failure.
+      # git ls-remote --exit-code exits 2 when the pattern matches nothing
+      # (branch gone) and non-zero/non-2 on transport failures.  Treat only
+      # exit 2 as a completed lifecycle; any other failure is operational.
       local _remote_check_rc=0
       git ls-remote --exit-code --heads origin "$_branch" >/dev/null 2>&1 || _remote_check_rc=$?
-      if [ "$_remote_check_rc" -ne 0 ]; then
+      if [ "$_remote_check_rc" -eq 2 ]; then
         print_info "Phase A — branch '${_branch}': skipped (remote branch gone — promoted and deleted)"
         _report+=("  branch '${_branch}': skipped-gone")
+        continue
+      elif [ "$_remote_check_rc" -ne 0 ]; then
+        print_warning "Phase A — branch '${_branch}': FAILED (ls-remote exit ${_remote_check_rc} — transport error?)"
+        _overall_rc=1
+        _report+=("  branch '${_branch}': FAILED (ls-remote exit ${_remote_check_rc})")
         continue
       fi
 
