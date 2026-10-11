@@ -185,13 +185,15 @@ claude_provider_run_agentic_session() {
   # Detect usage-cap exhaustion in stdout or stderr. Live phrasings observed:
   #   - "Spending cap reached resets 11:20pm"      (claude --print on stdout)
   #   - "5-hour limit reached"                     (rate-limit variant)
+  #   - "You've hit your session limit · resets 9:20pm (America/Denver)"
+  #     (phrasing drift, live 2026-10-10 batch rite-1045-...-171345 — issue #1107)
   #   - "Claude usage limit reached"               (defensive — any future phrasing)
   # Emit exit 5 so the batch processor's existing usage-cap path aborts the
   # rest of the batch instead of cascading the cap across the remaining
   # issues at ~40s wasted per issue. See: lib/core/batch-process-issues.sh
   # exit-5 handler.
   if [ "$_exit_code" -ne 0 ] && \
-     grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached" \
+     grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|hit your (session|usage|weekly) limit|session limit reached" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
     _exit_code=5
   # Detect provider auth failure in stdout or stderr. Live phrasings observed
