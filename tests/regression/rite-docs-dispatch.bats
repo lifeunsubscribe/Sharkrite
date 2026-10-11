@@ -208,6 +208,7 @@ teardown() {
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
     RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE= \
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]
@@ -220,6 +221,7 @@ teardown() {
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
     RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE= \
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]

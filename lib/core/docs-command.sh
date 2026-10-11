@@ -329,7 +329,12 @@ AUDIT_EOF
     return 1
   fi
 
-  if [ -z "$_audit_output" ] || echo "$_audit_output" | grep -q "^NOTHING_FOUND"; then
+  if [ -z "$_audit_output" ]; then
+    print_warning "Audit returned empty output (exit 0) — cannot determine drift" >&2
+    return 1
+  fi
+
+  if echo "$_audit_output" | grep -q "^NOTHING_FOUND"; then
     print_info "Audit complete — no drift detected"
     return 0
   fi
