@@ -519,7 +519,7 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — the post-commit gate owns test execution (Phase 4 contract); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
 
-**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — y/n/e paths, "Run tests before committing?" absent, auto mode unchanged.
+**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a function — deferred to a future refactoring issue; structural verification is the current coverage.
 
 ### Dev test gate is skipped under orchestration (CRITICAL)
 

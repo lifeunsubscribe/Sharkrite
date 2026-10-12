@@ -105,9 +105,9 @@ cleanup_on_interrupt() {
     local main_repo
     main_repo=$(git worktree list | head -1 | awk '{print $1}' || true)
 
-    # Check for uncommitted changes (exclude untracked files)
+    # Check for uncommitted changes (include untracked files — git add -A will commit them)
     local uncommitted
-    uncommitted=$(git status --porcelain | grep -vE "^\?\?" | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')
+    uncommitted=$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')
 
     if [ "$uncommitted" -gt 0 ]; then
       echo -e "\033[0;34mℹ️  Found $uncommitted uncommitted change(s)\033[0m"
@@ -135,7 +135,7 @@ cleanup_on_interrupt() {
         local commit_msg="WIP: interrupted work on ${branch_name}"
         local _salvage_choice
         while true; do
-          read -p "Commit and push $uncommitted change(s) before exiting? [y/n/e] " -r _salvage_choice
+          read -p "Commit and push $uncommitted change(s) before exiting? [y/n/e] " -r _salvage_choice || true
           case "$_salvage_choice" in
             y|Y) break ;;
             n|N) _salvage_choice=n; break ;;
@@ -143,7 +143,7 @@ cleanup_on_interrupt() {
               echo "Current message: $commit_msg"
               echo "Enter new commit message (empty to keep):"
               local _edited_msg
-              read -e _edited_msg
+              read -re _edited_msg || true
               if [ -n "$_edited_msg" ]; then
                 commit_msg="$_edited_msg"
               fi
@@ -655,8 +655,12 @@ _run_dev_test_gate() {
   # (a test that blocks on stdin hangs the whole run — live: issue 649's dev
   # session wedged 78m on a tty-stdin deadlock in the lint suite), and it spawns
   # a SECOND auto-fix session that churns on phantom failures. Verification is
-  # the orchestrator's job. Standalone claude-workflow.sh runs (no orchestrator)
-  # keep this as their only pre-commit verification.
+  # the orchestrator's job.
+  #
+  # Standalone auto-mode runs (RITE_ORCHESTRATED unset, AUTO_MODE=true) keep
+  # this as their only pre-commit verification. Standalone supervised runs also
+  # skip here — the post-commit gate (Phase 2/3) is the shared verification
+  # channel for both orchestrated and supervised standalone invocations.
   if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
     _diag "DEV_TEST_GATE skipped=orchestrated"
     return 0
@@ -3661,7 +3665,7 @@ if [ "$AUTO_MODE" = false ]; then
   echo ""
   _commit_choice=""
   while true; do
-    read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice
+    read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice || true
     case "$_commit_choice" in
       y|Y) break ;;
       n|N)
@@ -3671,7 +3675,7 @@ if [ "$AUTO_MODE" = false ]; then
       e|E)
         echo "Enter custom commit message (empty to keep current):"
         CUSTOM_MSG=""
-        read -e CUSTOM_MSG
+        read -re CUSTOM_MSG || true
         if [ -n "$CUSTOM_MSG" ]; then
           COMMIT_MSG="$CUSTOM_MSG"
         fi
@@ -3768,6 +3772,14 @@ if ! git push -u origin "$BRANCH_NAME" >/dev/null 2>&1; then
       exit 1
     fi
   else
+    if [ "$AUTO_MODE" = false ]; then
+      # Supervised: commit landed locally, push failed for a non-divergence reason
+      # (offline, auth expired, etc.). The commit is preserved — same outcome as
+      # the old "Push to remote? n" path. Let the user push later manually.
+      print_info "Changes committed locally. Push when ready with:"
+      echo "  git push -u origin $BRANCH_NAME"
+      exit 0
+    fi
     print_error "Push failed (not a divergence issue)"
     exit 1
   fi

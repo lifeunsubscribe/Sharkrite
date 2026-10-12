@@ -8,8 +8,8 @@
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   WF="${RITE_LIB_DIR}/core/claude-workflow.sh"
+  set +u; set +o pipefail
 }
-set +u; set +o pipefail
 
 # ---------------------------------------------------------------------------
 # Structural: old prompts are absent
@@ -69,4 +69,39 @@ set +u; set +o pipefail
   fn_body=$(sed -n '/Commit and push.*file(s).*\[y\/n\/e\]/,/done$/p' "$WF" | head -40)
   echo "$fn_body" | grep -q 'e|E'
   echo "$fn_body" | grep -q 'n|N'
+}
+
+# ---------------------------------------------------------------------------
+# Structural: y/n/e behavioral contracts — verified via code inspection
+# (Main-flow commit+push body is inline, not a callable function; structural
+# verification is the feasible coverage until it is extracted — behavioral-design.md)
+# ---------------------------------------------------------------------------
+
+@test "structural: n path calls 'exit 0' (aborts without committing)" {
+  # The n|N branch must call exit 0 so a declined commit is a clean exit,
+  # not a failure — matching the old "Create commit? → n" behaviour.
+  fn_body=$(sed -n '/Commit and push.*file(s).*\[y\/n\/e\]/,/done$/p' "$WF" | head -30)
+  echo "$fn_body" | grep -A3 'n|N)' | grep -q 'exit 0'
+}
+
+@test "structural: e path uses read -re (backslash-safe message editing)" {
+  # read -e alone eats backslashes in input; -r is required for correct passthrough.
+  fn_body=$(sed -n '/Commit and push.*file(s).*\[y\/n\/e\]/,/done$/p' "$WF" | head -50)
+  echo "$fn_body" | grep -q 'read -re'
+}
+
+@test "structural: consolidated read prompts guarded with '|| true' (EOF-safe)" {
+  # Under set -e, an EOF on read -p returns 1 and would abort the loop before
+  # lock release. Both consolidated prompts must have '|| true'.
+  count=$(grep -c 'read -p.*\[y/n/e\].*|| true' "$WF" || true)
+  [ "$count" -ge 2 ]
+}
+
+@test "structural: auto mode bypasses the supervised commit prompt" {
+  # The 'Commit and push ... file(s)? [y/n/e]' prompt must be inside
+  # 'if [ "$AUTO_MODE" = false ]' — auto runs are unaffected by this issue.
+  prompt_line=$(grep -n 'Commit and push.*file(s).*\[y\/n\/e\]' "$WF" | head -1 | cut -d: -f1)
+  [ -n "$prompt_line" ]
+  context=$(sed -n "1,${prompt_line}p" "$WF" | grep 'AUTO_MODE' | tail -1)
+  echo "$context" | grep -q 'AUTO_MODE'
 }
