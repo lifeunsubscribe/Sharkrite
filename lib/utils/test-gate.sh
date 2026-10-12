@@ -1724,6 +1724,93 @@ _maybe_warn_unscoped_suite() {
 }
 
 # ---------------------------------------------------------------------------
+# _detect_workspace_runner — detect test runner for a workspace package (#975)
+# Args: $1=ws_dir (absolute path)
+# Returns: "jest" | "vitest" | "unknown" on stdout.
+# Priority: devDependencies/dependencies key > test-script first token.
+# ---------------------------------------------------------------------------
+_detect_workspace_runner() {
+  local _dwr_dir="$1"
+  local _dwr_pkg="$_dwr_dir/package.json"
+  [ -f "$_dwr_pkg" ] || { echo "unknown"; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo "unknown"; return 0; }
+  local _dwr_has_jest _dwr_has_vitest
+  _dwr_has_jest=$(jq -r '((.devDependencies // {}) + (.dependencies // {})) | has("jest")' \
+    "$_dwr_pkg" 2>/dev/null || echo "false")
+  _dwr_has_vitest=$(jq -r '((.devDependencies // {}) + (.dependencies // {})) | has("vitest")' \
+    "$_dwr_pkg" 2>/dev/null || echo "false")
+  [ "$_dwr_has_jest" = "true" ] && { echo "jest"; return 0; }
+  [ "$_dwr_has_vitest" = "true" ] && { echo "vitest"; return 0; }
+  local _dwr_first
+  _dwr_first=$(_resolve_node_test_runner "$_dwr_dir")
+  case "${_dwr_first:-}" in
+    jest|vitest) echo "$_dwr_first" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# _changed_files_to_workspace_dirs — map diff paths to affected workspace dirs (#975)
+# Args: $1=project_root  $2=changed_files (newline-separated, relative to root)
+# Stdout: deduplicated workspace-relative dirs with at least one changed file.
+# ---------------------------------------------------------------------------
+_changed_files_to_workspace_dirs() {
+  local _cfd_root="$1"
+  local _cfd_files="$2"
+  [ -n "$_cfd_files" ] || return 0
+  local _cfd_patterns
+  _cfd_patterns=$(_node_workspace_patterns "$_cfd_root")
+  [ -n "$_cfd_patterns" ] || return 0
+  local _cfd_seen="" _cfd_pattern _cfd_dir _cfd_rel
+  while IFS= read -r _cfd_pattern; do
+    [ -n "$_cfd_pattern" ] || continue
+    for _cfd_dir in "$_cfd_root/"$_cfd_pattern; do
+      [ -d "$_cfd_dir" ] || continue
+      [ -f "$_cfd_dir/package.json" ] || continue
+      _cfd_rel="${_cfd_dir#"$_cfd_root/"}"
+      case "$_cfd_seen" in *":${_cfd_rel}:"*) continue ;; esac
+      if printf '%s\n' "$_cfd_files" | grep -q "^${_cfd_rel}/"; then
+        echo "$_cfd_rel"
+        _cfd_seen="${_cfd_seen}:${_cfd_rel}:"
+      fi
+    done
+  done < <(printf '%s\n' "$_cfd_patterns")
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _diff_has_cdk_paths — return 0 when changed files include CDK/infra/api-handler
+# paths (#975 CDK workspace skip guard).
+# Args: $1=changed_files (newline-separated)
+# ---------------------------------------------------------------------------
+_diff_has_cdk_paths() {
+  printf '%s\n' "$1" \
+    | grep -qE '(^cdk/|/cdk/|^infrastructure/|/infrastructure/|^infra/|/infra/|/api/|^api/|/lambda/|/handler[s]?/)' \
+    2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# _is_cdk_workspace — return 0 when a workspace directory contains cdk.json (#975)
+# Args: $1=ws_dir (absolute path)
+# ---------------------------------------------------------------------------
+_is_cdk_workspace() {
+  [ -f "$1/cdk.json" ]
+}
+
+# ---------------------------------------------------------------------------
+# _node_scope_zero_tests — detect when a scoped test run selected 0 tests (#975)
+# Args: $1=raw_output_file
+# Sanity valve: when the scoped run produces 0 tests but non-test source was
+# changed, the per-cycle path falls back to the workspace full suite.
+# ---------------------------------------------------------------------------
+_node_scope_zero_tests() {
+  local _nszt_file="$1"
+  [ -f "$_nszt_file" ] || return 0
+  grep -qE '(No tests found|Tests:[[:space:]]+0 total|Test Suites:[[:space:]]+0 total|No test files found)' \
+    "$_nszt_file" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1747,6 +1834,9 @@ run_test_gate() {
      && grep -q "^lint:" "$project_root/Makefile" 2>/dev/null; then
     _is_sharkrite=true
   fi
+  # Set to true when the per-cycle workspace path ran — suppresses the
+  # unscoped-suite warning (#975: scoped cycling IS the solution the warning recommends).
+  local _ran_scoped_cycle=false
 
   # --- Worktree existence guard ---
   # If project_root was removed between gate launch and execution (e.g. worktree deleted
@@ -2699,21 +2789,161 @@ run_test_gate() {
           echo "[test-gate] workspaces monorepo: all workspace builds succeeded" >> "$_gate_raw_sink"
         fi
       fi
-      echo "[test-gate] Running npm test..."
-      # Preserve any non-zero _tests_exit from the workspace build step above:
-      # merge rather than overwrite so both build failures and test failures block.
-      local _npm_test_prior_exit="$_tests_exit"
-      { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
-      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
-      [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
-      # jest/vitest never emit TAP: without normalization a real failure
-      # yields test_count=0 and an empty tests[] array, so the fix session
-      # gets no failing test names (LeadFlow PR #587). Synthesize not-ok
-      # lines so the ^not ok count and JSON loop below see the failures.
-      if [ "$_tests_exit" -ne 0 ]; then
-        _normalize_node_test_output "$_tests_raw_file" "$project_root"
+      # #975: Per-cycle tiered gating for workspaces monorepos.
+      # RITE_GATE_TIER=cycle (default): scoped per-workspace run — only changed workspaces;
+      #   framework-native diff scoping (jest --findRelatedTests / vitest related).
+      # RITE_GATE_TIER=merge: full root npm test (blast-radius, one pass before merge).
+      #   workflow-runner passes this flag for its pre-merge gate call.
+      local _skip_root_npm_test=false
+      if [ "${RITE_GATE_TIER:-cycle}" = "cycle" ] \
+         && _node_is_workspaces_monorepo "$project_root" \
+         && [ "${_gate_reason:-}" != "workspace_build_failed" ]; then
+        _skip_root_npm_test=true
+        _ran_scoped_cycle=true
+        local _ws_pm
+        _ws_pm=$(_node_pkg_manager "$project_root")
+        local _ws_affected
+        _ws_affected=$(_changed_files_to_workspace_dirs "$project_root" "$_nonsr_changed_files")
+        if [ -z "$_ws_affected" ]; then
+          echo "[test-gate] per-cycle: no workspace source changed — skipping workspace tests" >> "$_gate_raw_sink"
+        else
+          local _ws_any_fail=false _ws_item
+          while IFS= read -r _ws_item; do
+            [ -n "$_ws_item" ] || continue
+            local _ws_rel="$_ws_item"
+            local _ws_dir="$project_root/$_ws_rel"
+            [ -d "$_ws_dir" ] || continue
+            # CDK skip: skip CDK workspaces when diff has no infrastructure/api/lambda paths.
+            if _is_cdk_workspace "$_ws_dir" && ! _diff_has_cdk_paths "$_nonsr_changed_files"; then
+              echo "[test-gate] per-cycle: CDK workspace '$_ws_rel' skipped (no infra/api/lambda paths in diff)" >> "$_gate_raw_sink"
+              continue
+            fi
+            local _ws_rel_files
+            _ws_rel_files=$(printf '%s\n' "$_nonsr_changed_files" | grep "^${_ws_rel}/" | grep -v '^$' || true)
+            local _ws_runner
+            _ws_runner=$(_detect_workspace_runner "$_ws_dir")
+            local _ws_exit_f _ws_raw_f
+            _ws_exit_f=$(mktemp "/tmp/rite_gate_wsex_${PR_NUMBER:-0}_$$_XXXXXX")
+            _ws_raw_f=$(mktemp "/tmp/rite_gate_wsraw_${PR_NUMBER:-0}_$$_XXXXXX")
+            local _ws_test_exit=0
+            if [ "${RITE_GATE_NATIVE_SCOPING:-true}" != "false" ] && [ "$_ws_runner" != "unknown" ]; then
+              case "$_ws_runner" in
+                jest)
+                  echo "[test-gate] per-cycle: jest --findRelatedTests for workspace '$_ws_rel'" >> "$_gate_raw_sink"
+                  local _ws_abs_files="" _wfa
+                  while IFS= read -r _wfa; do
+                    [ -n "$_wfa" ] || continue
+                    _ws_abs_files="${_ws_abs_files} ${project_root}/${_wfa}"
+                  done < <(printf '%s\n' "$_ws_rel_files")
+                  _ws_abs_files="${_ws_abs_files## }"
+                  if [ "$_ws_pm" = "pnpm" ]; then
+                    # shellcheck disable=SC2086
+                    { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  else
+                    # shellcheck disable=SC2086
+                    { (cd "$project_root" && npm test --workspace="$_ws_rel" -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  fi
+                  _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                  _ws_test_exit=${_ws_test_exit:-1}
+                  # Sanity valve: 0 tests selected with non-test source → workspace full suite.
+                  if [ "$_ws_test_exit" -eq 0 ] && _node_scope_zero_tests "$_ws_raw_f"; then
+                    local _ws_nts
+                    _ws_nts=$(printf '%s\n' "$_ws_rel_files" \
+                      | grep -vE '(\.(test|spec)\.(ts|tsx|js|jsx)$|/__tests__/|/tests?/)' \
+                      | grep -v '^$' || true)
+                    if [ -n "$_ws_nts" ]; then
+                      echo "[test-gate] per-cycle: jest selected 0 tests with non-test source — falling back to workspace full suite" >> "$_gate_raw_sink"
+                      : > "$_ws_raw_f"
+                      if [ "$_ws_pm" = "pnpm" ]; then
+                        { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      else
+                        { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      fi
+                      _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                      _ws_test_exit=${_ws_test_exit:-1}
+                    fi
+                  fi
+                  ;;
+                vitest)
+                  echo "[test-gate] per-cycle: vitest related for workspace '$_ws_rel'" >> "$_gate_raw_sink"
+                  local _ws_vf_files="" _wfv
+                  while IFS= read -r _wfv; do
+                    [ -n "$_wfv" ] || continue
+                    _ws_vf_files="${_ws_vf_files} ${_wfv#"${_ws_rel}/"}"
+                  done < <(printf '%s\n' "$_ws_rel_files")
+                  _ws_vf_files="${_ws_vf_files## }"
+                  # shellcheck disable=SC2086
+                  { (cd "$_ws_dir" && npx vitest related $_ws_vf_files --run 2>&1); echo $? > "$_ws_exit_f"; } \
+                    | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                  _ws_test_exit=${_ws_test_exit:-1}
+                  # Sanity valve
+                  if [ "$_ws_test_exit" -eq 0 ] && _node_scope_zero_tests "$_ws_raw_f"; then
+                    local _ws_nts2
+                    _ws_nts2=$(printf '%s\n' "$_ws_rel_files" \
+                      | grep -vE '(\.(test|spec)\.(ts|tsx|js|jsx)$|/__tests__/|/tests?/)' \
+                      | grep -v '^$' || true)
+                    if [ -n "$_ws_nts2" ]; then
+                      echo "[test-gate] per-cycle: vitest selected 0 tests with non-test source — falling back to workspace full suite" >> "$_gate_raw_sink"
+                      : > "$_ws_raw_f"
+                      if [ "$_ws_pm" = "pnpm" ]; then
+                        { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      else
+                        { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      fi
+                      _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                      _ws_test_exit=${_ws_test_exit:-1}
+                    fi
+                  fi
+                  ;;
+              esac
+            else
+              # Unknown runner or native scoping disabled — workspace full suite.
+              echo "[test-gate] per-cycle: workspace '$_ws_rel' full suite (runner: ${_ws_runner}, native-scoping: ${RITE_GATE_NATIVE_SCOPING:-true})" >> "$_gate_raw_sink"
+              if [ "$_ws_pm" = "pnpm" ]; then
+                { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" 2>&1); echo $? > "$_ws_exit_f"; } \
+                  | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+              else
+                { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                  | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+              fi
+              _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+              _ws_test_exit=${_ws_test_exit:-1}
+            fi
+            rm -f "$_ws_exit_f"
+            if [ "$_ws_test_exit" -ne 0 ]; then
+              _normalize_node_test_output "$_ws_raw_f" "$project_root"
+            fi
+            cat "$_ws_raw_f" >> "$_tests_raw_file"
+            rm -f "$_ws_raw_f"
+            [ "$_ws_test_exit" -ne 0 ] && _ws_any_fail=true
+          done < <(printf '%s\n' "$_ws_affected")
+          [ "$_ws_any_fail" = "true" ] && _tests_exit=1
+        fi
+      fi
+      if [ "$_skip_root_npm_test" = "false" ]; then
+        echo "[test-gate] Running npm test..."
+        # Preserve any non-zero _tests_exit from the workspace build step above:
+        # merge rather than overwrite so both build failures and test failures block.
+        local _npm_test_prior_exit="$_tests_exit"
+        { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
+          | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
+        _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+        _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
+        [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
+        # jest/vitest never emit TAP: without normalization a real failure
+        # yields test_count=0 and an empty tests[] array, so the fix session
+        # gets no failing test names (LeadFlow PR #587). Synthesize not-ok
+        # lines so the ^not ok count and JSON loop below see the failures.
+        if [ "$_tests_exit" -ne 0 ]; then
+          _normalize_node_test_output "$_tests_raw_file" "$project_root"
+        fi
       fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       echo "[test-gate] Running pytest..."
@@ -2941,7 +3171,9 @@ run_test_gate() {
   # (TEST_GATE_SELECTION mode=targeted is only emitted from the _is_sharkrite path).
   # For target repos there is no scoped runner today; this signals when the full
   # suite cost is becoming measurable so the operator can act before it hurts.
-  _maybe_warn_unscoped_suite "$_duration" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "$_is_sharkrite"
+  # Suppress when the #975 per-cycle path ran — scoped cycling IS the solution.
+  [ "${_ran_scoped_cycle:-false}" = "false" ] && \
+    _maybe_warn_unscoped_suite "$_duration" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "$_is_sharkrite"
 
   # --- Compact terminal digest ---
   # Raw runner output went to _gate_raw_sink (summary mode → log only; verbose →

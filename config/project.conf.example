@@ -124,6 +124,39 @@
 # runs are exempt by construction.
 # RITE_GATE_SCOPE_WARN_SECONDS=300
 
+# Gate tier for target-repo node workspaces monorepo tests (default: "cycle").
+# Only affects npm/pnpm workspaces repos; single-package and non-node repos
+# are unaffected.
+#
+# "cycle" — per-cycle tier (default): for each fix iteration, run only the
+#   workspace(s) that have changed source files, using framework-native diff
+#   scoping (jest --findRelatedTests / vitest related) when a known runner is
+#   detected. CDK/infra workspaces are skipped when the diff has no
+#   infrastructure, api, lambda, or handler paths. If a scoped run selects
+#   0 test files while non-test source changed, falls back to that workspace's
+#   full suite (sanity valve). Zero target-repo configuration required: runner
+#   auto-detected from each workspace's package.json devDependencies (or test
+#   script token), package manager from lock file markers.
+#
+# "merge" — merge-decision tier: full root npm/pnpm test (blast-radius pass,
+#   run exactly once per issue lifecycle by workflow-runner's pre-merge gate
+#   call). This is the value workflow-runner sets internally; you normally do
+#   not need to override it here. Set to "merge" to always run the full suite
+#   (disables workspace scoping for all gate calls in this project).
+#
+# See: docs/architecture/behavioral-design.md → "Tiered Gating"
+# RITE_GATE_TIER=cycle
+
+# Native diff scoping for node workspaces monorepo tests (default: true).
+# When true, the per-cycle tier uses jest --findRelatedTests (or vitest related)
+# to select only the test files that import/require the changed source files.
+# When false, the per-cycle tier still restricts runs to changed workspace
+# directories, but each affected workspace runs its full suite without
+# framework-native file filtering. Set to false when the auto-detected
+# framework-native scoping causes false passes (e.g. integration tests whose
+# file is not reachable via the changed source's import graph).
+# RITE_GATE_NATIVE_SCOPING=true
+
 # Green-main preflight behavior when main is red (default: not set — halt).
 # When unset or "0", a batch run halts with exit 20 if the full gate on
 # origin/main finds failures. This guards gate block-on-any soundness:

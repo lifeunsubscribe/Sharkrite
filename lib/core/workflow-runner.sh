@@ -1858,6 +1858,29 @@ phase_merge_pr() {
     fi
   fi
 
+  # Merge-decision gate (#975): full root suite once per issue lifecycle.
+  # Catches blast-radius failures outside the changed workspace scope
+  # (motivating case: LeadFlow #131 — 51 tests failed in an unrelated workspace).
+  # RITE_GATE_TIER=merge tells test-gate.sh to run the full root npm test instead
+  # of the per-cycle workspace-scoped run. For Sharkrite itself (bats path) the
+  # tier flag is a no-op — targeted bats selection already covers the full
+  # relevant subset.
+  # Runs synchronously here so any blast-radius failure surfaces before the merge.
+  if declare -f run_test_gate >/dev/null 2>&1 \
+     && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
+    local _merge_gate_file=""
+    _merge_gate_file=$(mktemp "/tmp/rite_merge_gate_${issue_number:-0}_$$_XXXXXX")
+    print_info "Running merge-decision gate (full suite, blast-radius pass)..."
+    export PR_NUMBER="${pr_number:-}"
+    local _merge_gate_exit=0
+    RITE_GATE_TIER=merge run_test_gate "$_merge_gate_file" "$WORKTREE_PATH" || _merge_gate_exit=$?
+    rm -f "$_merge_gate_file"
+    if [ "$_merge_gate_exit" -ne 0 ]; then
+      print_error "Merge-decision gate failed — full suite has failures; fix before merging"
+      return 1
+    fi
+  fi
+
   # Wait for the background doc assessment (spawned in Phase 3) to finish before
   # invoking merge-pr.sh. Its Layer 2 commits land on this feature branch; we
   # need them on the remote before the squash merge so they ride along atomically.
