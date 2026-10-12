@@ -543,6 +543,8 @@ _init_git_origin() {
   # Bare repo acts as origin
   local bare="${fake_root}/.rite/bare-origin"
   git init --bare "$bare" >/dev/null 2>&1
+  # Point default branch to main so clones and pushes use main, not master.
+  git -C "$bare" symbolic-ref HEAD refs/heads/main
 
   # Seeded working clone that has origin set to the bare repo
   local seed="${fake_root}/.rite/seed-clone"
@@ -676,8 +678,10 @@ _init_git_origin() {
     }
 
     _docs_apply_approved 'burn-down test' '${prop_dir}' 1
-  "
+  " 2>&1
   [ "$status" -eq 0 ]
+  # Burn-down must have executed — a silently-skipped block would never print this.
+  echo "$output" | grep -q "Drift log fully drained"
 
   # Verify the docs branch does NOT contain the drift log (it was fully drained).
   local branch
