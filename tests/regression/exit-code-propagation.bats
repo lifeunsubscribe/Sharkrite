@@ -955,16 +955,22 @@ EOF
 @test "structural: workflow-runner.sh assess-resolve arm has _phase3_exit -eq 5 branch (#1146)" {
   _count=$(grep -cE "_phase3_exit -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 5, not fall through to the generic failure:
+  grep -A3 "_phase3_exit -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 5"
 }
 
 @test "structural: workflow-runner.sh assess-resolve arm has _phase3_exit -eq 18 branch (#1146)" {
   _count=$(grep -cE "_phase3_exit -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 18, not fall through to the generic failure:
+  grep -A3 "_phase3_exit -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 18"
 }
 
 @test "structural: workflow-runner.sh phase_assess_and_resolve propagates fix_result -eq 18 (auth failure)" {
   _count=$(grep -cE "fix_result -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 18 (comments between condition and return need -A6):
+  grep -A6 "fix_result -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 18"
 }
 
 @test "structural: workflow-runner.sh Phase 1 arm propagates exit 5 (usage cap) — not collapsed to 1" {
@@ -973,11 +979,15 @@ EOF
   # code; this structural grep is the binding assertion.
   _count=$(grep -cE "_phase1_exit -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 5, not fall through to the generic failure:
+  grep -A3 "_phase1_exit -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 5"
 }
 
 @test "structural: workflow-runner.sh Phase 1 arm propagates exit 18 (auth failure) — not collapsed to 1" {
   _count=$(grep -cE "_phase1_exit -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 18, not fall through to the generic failure:
+  grep -A3 "_phase1_exit -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 18"
 }
 
 @test "structural: workflow-runner.sh fix-loop phase_create_pr --loop propagates exit 5 (usage cap)" {
@@ -985,9 +995,13 @@ EOF
   # on usage cap — `if ! phase_create_pr` would collapse 5 to 1 silently.
   _count=$(grep -cE "_loop_create_pr_rc -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 5, not fall through to the generic failure:
+  grep -A3 "_loop_create_pr_rc -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 5"
 }
 
 @test "structural: workflow-runner.sh stale-reroute phase_create_pr --loop propagates exit 5 (usage cap)" {
   _count=$(grep -cE "_reroute_create_pr_rc -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
+  # Branch must actually return 5, not fall through to the generic failure:
+  grep -A3 "_reroute_create_pr_rc -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" | grep -q "return 5"
 }
