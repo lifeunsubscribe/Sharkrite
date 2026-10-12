@@ -712,7 +712,6 @@ This ensures nothing is silently dropped. If the doc mentions an entity, endpoin
 - **"Files to Read" must only list files that currently exist.** If a file is created by a dependency issue, do not list it there — reference the dependency issue in "Related Issues" instead
 - Acceptance criteria must have verification commands
 - Done definitions must be concrete and bounded (no "when it works" or "when it's clean")
-- Scope boundaries must have explicit DO / DO NOT
 - If user instructions mention specific sections/phases, ONLY generate issues for those
 - If user instructions exclude something, skip it entirely
 
@@ -800,9 +799,6 @@ Use these baselines before setting TIME fields:
 
 **G2. Schema field defaults for phased features.**
 If an enum field only has one valid value in the current phase (e.g., source can only be "manual" because all other sources are system-generated and deferred), it should default to that value in the Create schema -- not be required. Users should not be forced to pass a constant on every request. Later phases add the other enum values via system-generated code paths, not user input.
-
-**H. Acceptance criteria deduplication.**
-After drafting all issues, scan for criteria that describe the same behavior across multiple issues (e.g., "all recipe tests pass" in both a feature issue and a separate test issue). Each criterion must appear in exactly one issue.
 
 **I. ADR coverage regression check (feedback iterations only).**
 If a prior iteration coverage checklist was provided above, compare the current issue set against it. Every feature that had a ✅ entry in the prior checklist must either have a corresponding issue in the current set OR appear in the deferrals list with an explanation. A feature that was covered before and is simply absent now is a regression — not a deliberate scope change. Do not silently drop ADR bullets between iterations. If the user's feedback caused a feature to be removed, it must appear in deferrals with the note "(removed per user feedback)".
@@ -2290,8 +2286,8 @@ _lint_issues_strict() {
   #
   # When the same non-trivial verification command appears in two or more issues
   # it is a deterministic signal that both issues claim the same deliverable.
-  # The model-side prompt guidance (section H) is insufficient alone — this
-  # check provides a deterministic backstop.
+  # The model-side prompt guidance (section H, now retired) was insufficient alone —
+  # this check is the deterministic detector; WARNs at the preview seam rather than blocking.
   #
   # Allowlisted shared setup commands (legitimate in every issue):
   #   make check      — project-wide lint/type-check
