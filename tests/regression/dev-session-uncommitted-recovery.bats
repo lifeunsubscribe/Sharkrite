@@ -497,3 +497,57 @@ _setup_npm_stub_fail() {
   # Either way the symlink itself must be gone.
   [ ! -L "$TEST_REPO/node_modules" ]
 }
+
+# ===========================================================================
+# #1097: pnpm repos — _regen_lockfiles_if_needed must regenerate and stage
+# pnpm-lock.yaml, and must NEVER create or stage a package-lock.json.
+# ===========================================================================
+
+# Helper: stub pnpm that succeeds and (re)writes pnpm-lock.yaml, plus a
+# poison-detector npm stub that writes package-lock.json if ever invoked.
+_setup_pnpm_stub_success() {
+  local stub_dir="$TEST_REPO/stub-pnpm-ok"
+  mkdir -p "$stub_dir"
+  printf '#!/bin/sh\n# pnpm stub: succeeds and writes pnpm-lock.yaml (lockfile-only resolve)\nprintf '"'"'lockfileVersion: 9.0\nregenerated: true\n'"'"' > "$(pwd)/pnpm-lock.yaml"\nexit 0\n' > "$stub_dir/pnpm"
+  chmod +x "$stub_dir/pnpm"
+  printf '#!/bin/sh\n# npm poison stub: proves npm ran where it must not\nprintf '"'"'{"lockfileVersion":3}\n'"'"' > "$(pwd)/package-lock.json"\nexit 0\n' > "$stub_dir/npm"
+  chmod +x "$stub_dir/npm"
+  export PATH="$stub_dir:$PATH"
+}
+
+@test "_regen_lockfiles_if_needed: pnpm repo regenerates and stages pnpm-lock.yaml, never package-lock.json" {
+  # A pnpm repo: stale committed lockfile + changed package.json staged.
+  printf '{"name":"test","version":"1.0.0","dependencies":{}}\n' > package.json
+  printf 'lockfileVersion: 9.0\nstale: true\n' > pnpm-lock.yaml
+  git add package.json pnpm-lock.yaml
+  git commit -qm "add pnpm project files"
+  printf '{"name":"test","version":"1.0.1","dependencies":{}}\n' > package.json
+  git add package.json
+
+  _setup_pnpm_stub_success
+
+  run _regen_lockfiles_if_needed
+
+  [ "$status" -eq 0 ]
+  # pnpm-lock.yaml regenerated and staged
+  grep -q "regenerated: true" pnpm-lock.yaml
+  git diff --cached --name-only | grep -q '^pnpm-lock.yaml$'
+  # npm never ran: no package-lock.json anywhere
+  [ ! -f package-lock.json ]
+}
+
+@test "_regen_lockfiles_if_needed: pnpm repo warns and skips when pnpm not on PATH" {
+  printf '{"name":"test","version":"1.0.0"}\n' > package.json
+  printf 'lockfileVersion: 9.0\n' > pnpm-lock.yaml
+  git add package.json
+
+  # Minimal PATH: no pnpm (real pnpm lives under ~/.nvm), no stub.
+  export PATH="/usr/bin:/bin"
+
+  run _regen_lockfiles_if_needed
+
+  # Must succeed (don't block the commit) with a pnpm-specific warning.
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "pnpm not found" ]]
+  [ ! -f package-lock.json ]
+}

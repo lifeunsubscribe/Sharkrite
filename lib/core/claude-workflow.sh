@@ -411,11 +411,6 @@ _regen_lockfiles_if_needed() {
     return 0
   fi
 
-  if ! command -v npm >/dev/null 2>&1; then
-    print_warning "package.json changed but npm not found on PATH — skipping lockfile regeneration"
-    return 0
-  fi
-
   # Resolve repo root once (used for all directories and the monorepo check).
   # Guard: git rev-parse can fail when cwd was deleted (post-worktree-removal
   # hazard, CLAUDE.md → "CWD after worktree removal"). Capture with || true,
@@ -424,6 +419,59 @@ _regen_lockfiles_if_needed() {
   _repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -z "$_repo_root" ]; then
     print_warning "git rev-parse --show-toplevel failed — skipping lockfile regeneration"
+    return 0
+  fi
+
+  # pnpm repo (issue #1097): the authoritative lockfile is the root
+  # pnpm-lock.yaml — regenerate it in place and stage it. npm must never run
+  # here: it would create AND STAGE a package-lock.json into a pnpm repo.
+  local _pkg_mgr="npm"
+  if declare -f _node_pkg_manager >/dev/null 2>&1; then
+    _pkg_mgr=$(_node_pkg_manager "$_repo_root")
+  elif [ -f "$_repo_root/pnpm-lock.yaml" ] || [ -f "$_repo_root/pnpm-workspace.yaml" ]; then
+    _pkg_mgr="pnpm"
+  fi
+
+  if [ "$_pkg_mgr" = "pnpm" ]; then
+    if ! command -v pnpm >/dev/null 2>&1; then
+      print_warning "package.json changed in a pnpm repo but pnpm not found on PATH — skipping lockfile regeneration"
+      return 0
+    fi
+    if declare -f _node_desymlink_node_modules >/dev/null 2>&1; then
+      _node_desymlink_node_modules "$_repo_root"
+    elif [ -L "${_repo_root}/node_modules" ]; then
+      rm "${_repo_root}/node_modules"
+    fi
+    print_status "Regenerating pnpm-lock.yaml at repo root (package.json changed)..."
+    local _pnpm_exit=0
+    # --lockfile-only mirrors npm's --package-lock-only: resolve and write the
+    # lockfile without installing. Same 120s bound as the npm branch below.
+    if declare -f run_with_timeout >/dev/null 2>&1; then
+      (cd "$_repo_root" && run_with_timeout 120 pnpm install --lockfile-only --silent 2>&1) || _pnpm_exit=$?
+    else
+      (cd "$_repo_root" && pnpm install --lockfile-only --silent 2>&1) || _pnpm_exit=$?
+    fi
+    if [ "$_pnpm_exit" -eq 124 ]; then
+      print_error "pnpm install timed out after 120s — skipping lockfile regeneration (registry stall?)"
+      print_info "The committed pnpm-lock.yaml may be stale; re-run or fix the registry connection"
+      return 1
+    fi
+    if [ "$_pnpm_exit" -ne 0 ]; then
+      print_error "pnpm install failed (exit ${_pnpm_exit}) — cannot regenerate pnpm-lock.yaml"
+      print_info "Fix the pnpm error and re-run, or check package.json for syntax errors"
+      return 1
+    fi
+    if [ -f "${_repo_root}/pnpm-lock.yaml" ]; then
+      git add "${_repo_root}/pnpm-lock.yaml"
+      print_success "Staged regenerated pnpm-lock.yaml"
+    else
+      print_warning "pnpm install ran but pnpm-lock.yaml was not created — skipping stage"
+    fi
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    print_warning "package.json changed but npm not found on PATH — skipping lockfile regeneration"
     return 0
   fi
 

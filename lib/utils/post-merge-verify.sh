@@ -266,18 +266,19 @@ verify_post_merge() {
           $_pip install -q -r requirements.txt 2>&1 | tail -3 | sed 's/^/  /' >&2 || true
         fi
       fi
-      # Node: npm ci or npm install
-      if [ -f "package-lock.json" ] || [ -f "package.json" ]; then
-        # npm ci/install through a symlinked node_modules (rite worktree
-        # layout) destroys the symlink TARGET — remove the LINK first
-        # (plain rm, never rm -rf) so npm builds a worktree-local real dir.
-        [ -L node_modules ] && rm node_modules
-        [ -L backend/node_modules ] && rm backend/node_modules
-        if [ -f "package-lock.json" ]; then
-          npm ci --silent 2>&1 | tail -3 | sed 's/^/  /' >&2 || true
-        else
-          npm install --silent 2>&1 | tail -3 | sed 's/^/  /' >&2 || true
+      # Node: package-manager-aware install (issue #1097). The helpers live in
+      # test-gate.sh (guarded source — precedent: claude-workflow.sh's
+      # _regen_lockfiles_if_needed). _node_desymlink_node_modules removes any
+      # symlinked node_modules first (install through a symlink destroys the
+      # TARGET), then _node_install_deps picks pnpm or npm from the repo's own
+      # markers — npm is never run against a pnpm repo.
+      if [ -f "package.json" ]; then
+        if ! declare -f _node_install_deps >/dev/null 2>&1; then
+          # shellcheck source=/dev/null
+          source "${RITE_LIB_DIR}/utils/test-gate.sh"
         fi
+        _node_desymlink_node_modules "$PWD"
+        _node_install_deps "$PWD" /dev/stderr
       fi
     ) || echo "Warning: dependency reinstall had errors (continuing with tests)" >&2
   fi
