@@ -347,8 +347,9 @@ The old section argued that having Claude run tests INSIDE the session is defens
 - 6 findings → 300 + 1440 = 1740s (~29 min)
 - 10+ findings → capped at 1800s (30 min)
 - `RITE_FIX_TIMEOUT` env var overrides (operator escape hatch)
+- **Single retry on no-commit timeout (issue #1172):** when a fix session times out with zero commits *and* the budget is below 1800s, the session is retried exactly once at `min(2 × budget, 1800s)`; a `FIX_TIMEOUT_RETRY` diag line is emitted. A second no-commit timeout, a timeout with commits present, and budgets already at 1800s all follow today's behavior unchanged.
 
-**Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`.
+**Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`, `tests/regression/fix-timeout-retry.bats`.
 
 ### Test Selection by Changed Paths
 

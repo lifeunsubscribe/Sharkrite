@@ -1322,41 +1322,59 @@ $EXIT_INSTRUCTION"
     fi
 
     _timer_start "claude_fix_session"
-    print_status "Auto mode: $(provider_name) will exit automatically when fixes complete (timeout: ${FIX_TIMEOUT}s)"
-    set +e
-    FIX_STDERR_FILE=$(mktemp)
+    _fix_attempt=0
+    while true; do
+      _fix_attempt=$(( _fix_attempt + 1 ))
+      print_status "Auto mode: $(provider_name) will exit automatically when fixes complete (timeout: ${FIX_TIMEOUT}s)"
+      set +e
+      FIX_STDERR_FILE=$(mktemp)
 
-    provider_run_agentic_session "$FIX_PROMPT" "$FIX_TIMEOUT" true "$FIX_STDERR_FILE"
-    FIX_EXIT_CODE=$?
+      provider_run_agentic_session "$FIX_PROMPT" "$FIX_TIMEOUT" true "$FIX_STDERR_FILE"
+      FIX_EXIT_CODE=$?
 
-    rm -f "$FIX_STDERR_FILE"
-    set -e
+      rm -f "$FIX_STDERR_FILE"
+      set -e
 
-    if [ $FIX_EXIT_CODE -eq 124 ]; then
-      print_warning "Fix timeout reached (${FIX_TIMEOUT}s) - checking for changes..."
-      # Even on timeout, we might have partial fixes
-      if [ "$(git status --porcelain | grep -vE '^\?\?' | { grep -v '\.gitignore$' || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
-        print_info "Found uncommitted changes - will commit what we have"
-      else
-        print_error "No fixes made before timeout"
-        exit 1
+      if [ $FIX_EXIT_CODE -eq 124 ]; then
+        print_warning "Fix timeout reached (${FIX_TIMEOUT}s) - checking for changes..."
+        # Even on timeout, we might have partial fixes
+        if [ "$(git status --porcelain | grep -vE '^\?\?' | { grep -v '\.gitignore$' || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
+          print_info "Found uncommitted changes - will commit what we have"
+          break
+        else
+          # No commits: retry once at double budget when below the cap.
+          # Context-heavy fixes (test rewrites, broad refactors) can exhaust their
+          # budget loading context before making a single edit; a doubled budget
+          # recovers these without requiring manual re-runs.
+          if [ "$_fix_attempt" -eq 1 ] && [ "$FIX_TIMEOUT" -lt 1800 ]; then
+            _retry_budget=$(( FIX_TIMEOUT * 2 ))
+            [ "$_retry_budget" -gt 1800 ] && _retry_budget=1800
+            _diag "FIX_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
+            print_info "No fixes before timeout — retrying at double budget (${_retry_budget}s)..."
+            FIX_TIMEOUT=$_retry_budget
+            continue
+          fi
+          print_error "No fixes made before timeout"
+          exit 1
+        fi
+      elif [ $FIX_EXIT_CODE -eq 5 ]; then
+        # Usage cap reached during fix session — propagate so batch aborts.
+        # The provider session function detected the cap message internally
+        # and returned 5; here we just surface it cleanly instead of letting
+        # the generic non-zero handler treat it as an ordinary fix failure.
+        print_error "Claude usage cap reached during fix session — aborting batch"
+        exit 5
+      elif [ $FIX_EXIT_CODE -eq 18 ]; then
+        # Auth failure during fix session — propagate so batch halts.
+        # Mirrors the exit-5 branch above; a mid-batch auth expiry must stop
+        # the whole run rather than being swallowed as a generic fix failure.
+        print_error "Provider auth failure during fix session — aborting batch"
+        exit 18
+      elif [ $FIX_EXIT_CODE -ne 0 ]; then
+        print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
       fi
-    elif [ $FIX_EXIT_CODE -eq 5 ]; then
-      # Usage cap reached during fix session — propagate so batch aborts.
-      # The provider session function detected the cap message internally
-      # and returned 5; here we just surface it cleanly instead of letting
-      # the generic non-zero handler treat it as an ordinary fix failure.
-      print_error "Claude usage cap reached during fix session — aborting batch"
-      exit 5
-    elif [ $FIX_EXIT_CODE -eq 18 ]; then
-      # Auth failure during fix session — propagate so batch halts.
-      # Mirrors the exit-5 branch above; a mid-batch auth expiry must stop
-      # the whole run rather than being swallowed as a generic fix failure.
-      print_error "Provider auth failure during fix session — aborting batch"
-      exit 18
-    elif [ $FIX_EXIT_CODE -ne 0 ]; then
-      print_warning "$(provider_name) exited with code $FIX_EXIT_CODE - checking for changes..."
-    fi
+      break
+    done
   else
     SUPERVISED_TIMEOUT=${RITE_SUPERVISED_TIMEOUT:-3600}  # Default 1 hour
     print_info "Supervised mode: Interactive fix session (timeout: ${SUPERVISED_TIMEOUT}s)"
