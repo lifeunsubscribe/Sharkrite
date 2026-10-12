@@ -881,3 +881,56 @@ STUB
     return 1
   }
 }
+
+# ===========================================================================
+# #1121: the CLI prints the session-limit notice and exits 0 in stream-json
+# mode — detection must convert 0 → 5 on a bare-line match, and must NOT
+# fire when the phrase only appears inside a JSON transcript line.
+# ===========================================================================
+
+_run_cap0_session() {
+  # $1 = stub claude body (printf-ready single line), $2 = stub exit code
+  _tmpdir=$(mktemp -d)
+  printf '#!/bin/bash\n%s\nexit %s\n' "$1" "$2" > "$_tmpdir/claude"
+  chmod +x "$_tmpdir/claude"
+  run bash -c "
+    set -euo pipefail
+    export PATH='$_tmpdir:/usr/bin:/bin'
+    export RITE_LIB_DIR='$REPO_ROOT/lib'
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    export RITE_CLAUDE_TIMEOUT_AGENTIC=10
+    _stderr_capture=\$(mktemp)
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$CLAUDE_PROVIDER' || true
+    set +u; set +o pipefail
+    run_with_timeout() { shift; \"\$@\"; }
+    claude_provider_detect_cli
+    _claude_write_hook_settings() { echo ''; }
+    _claude_pretooluse_hook_path() { echo ''; }
+    claude_provider_build_tool_restrictions() { echo 'none'; }
+    claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
+    _exit=0
+    claude_provider_run_agentic_session 'test prompt' 10 true \"\$_stderr_capture\" || _exit=\$?
+    exit \$_exit
+  "
+}
+
+@test "unit: session-limit bare line + CLI exit 0 → exit 5 (live 2026-10-11 cascade shape)" {
+  # Real tee and jq deliberately: the #1108 unit stubbed tee, which masked
+  # this exact bug. /usr/bin:/bin provides both on macOS and Linux CI.
+  _run_cap0_session 'echo "You'"'"'ve hit your session limit · resets 6:10pm (America/Denver)"' 0
+  [ "$status" -eq 5 ] || {
+    echo "FAIL: expected exit 5 for exit-0 session-limit, got: $status" >&2
+    return 1
+  }
+}
+
+@test "unit: cap phrase INSIDE a JSON transcript line + exit 0 → stays 0 (no false abort)" {
+  # A dev session editing this detection (or these tests) legitimately emits
+  # the phrase inside stream-json events; anchored matching must ignore it.
+  _run_cap0_session 'echo "{\"type\":\"text\",\"text\":\"note: You'"'"'ve hit your session limit is the cap phrasing\"}"' 0
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: JSON-embedded phrase false-aborted (exit $status)" >&2
+    return 1
+  }
+}

@@ -196,6 +196,20 @@ claude_provider_run_agentic_session() {
      grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|hit your (session|usage|weekly) limit|session limit reached" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
     _exit_code=5
+  # Exit-0 cap (issue #1121, live 2026-10-11): in --print --output-format
+  # stream-json mode the CLI prints the session-limit notice and exits 0, so
+  # the nonzero guard above never fires and the cap cascades across the batch
+  # as generic no-change failures (the exact outcome #1108 was built to stop).
+  # Convert 0 -> 5 ONLY on a line-anchored bare-line match: every legitimate
+  # transcript line in stream-json is a JSON object starting with "{", so a
+  # cap phrase at column 0 can only be the CLI's own out-of-envelope notice.
+  # A substring match here would false-abort any dev session whose transcript
+  # merely CONTAINS the phrase (e.g. sessions editing this detection or its
+  # tests, which embed the literal string).
+  elif [ "$_exit_code" -eq 0 ] && \
+     grep -qiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" \
+       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+    _exit_code=5
   # Detect provider auth failure in stdout or stderr. Live phrasings observed
   # (Pilot 2026-07-05/06, rite-855-871-872 batch):
   #   - "Invalid API key · Please run /login"
