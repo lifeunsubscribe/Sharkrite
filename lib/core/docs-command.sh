@@ -648,8 +648,8 @@ _docs_apply_approved() {
 
   # Trap: clean up worktree on interrupt so the registered branch does not orphan.
   # Variable-scoped (non-glob) per project trap conventions.
-  trap "git -C \"${RITE_PROJECT_ROOT}\" worktree remove --force \"${wt_dir}\" 2>/dev/null || true; rm -rf \"${wt_dir}\" 2>/dev/null || true; exit 130" INT
-  trap "git -C \"${RITE_PROJECT_ROOT}\" worktree remove --force \"${wt_dir}\" 2>/dev/null || true; rm -rf \"${wt_dir}\" 2>/dev/null || true; exit 143" TERM
+  trap 'git -C "${RITE_PROJECT_ROOT:-}" worktree remove --force "${wt_dir:-}" 2>/dev/null || true; rm -rf "${wt_dir:-}" 2>/dev/null || true; exit 130' INT
+  trap 'git -C "${RITE_PROJECT_ROOT:-}" worktree remove --force "${wt_dir:-}" 2>/dev/null || true; rm -rf "${wt_dir:-}" 2>/dev/null || true; exit 143' TERM
 
   # Fetch the target branch so the worktree fork is current.
   git -C "$RITE_PROJECT_ROOT" fetch origin "$base_branch" 2>/dev/null \
@@ -857,8 +857,8 @@ docs_directed_update() {
   local _du_proposal_dir="${_du_tmpdir}/proposals"
   mkdir -p "$_du_proposal_dir"
   # Cleanup trap (variable-scoped, non-glob per project conventions).
-  trap "rm -rf \"${_du_tmpdir}\" 2>/dev/null || true; exit 130" INT
-  trap "rm -rf \"${_du_tmpdir}\" 2>/dev/null || true; exit 143" TERM
+  trap 'rm -rf "${_du_tmpdir:-}" 2>/dev/null || true; exit 130' INT
+  trap 'rm -rf "${_du_tmpdir:-}" 2>/dev/null || true; exit 143' TERM
 
   # Load drift log entries into numbered files for prompt context.
   local _drift_log
@@ -1025,8 +1025,8 @@ docs_reconcile_drift() {
   local _rc_proposal_dir="${_rc_tmpdir}/proposals"
   mkdir -p "$_rc_proposal_dir"
   # Cleanup trap (variable-scoped, non-glob per project conventions).
-  trap "rm -rf \"${_rc_tmpdir}\" 2>/dev/null || true; exit 130" INT
-  trap "rm -rf \"${_rc_tmpdir}\" 2>/dev/null || true; exit 143" TERM
+  trap 'rm -rf "${_rc_tmpdir:-}" 2>/dev/null || true; exit 130' INT
+  trap 'rm -rf "${_rc_tmpdir:-}" 2>/dev/null || true; exit 143' TERM
 
   local _entry_count
   _entry_count="$(_docs_drift_load_entries "$_drift_log" "$_rc_tmpdir")"
