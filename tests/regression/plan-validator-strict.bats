@@ -1739,16 +1739,15 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
-# Fixture P — Check 7: parallel-claim + overlapping files → log note only
+# Fixture P — Check 7: parallel-claim + overlapping files → visible WARNING
 #
 # Issue #1 and #2 both modify the same file AND #2 declares itself parallel
-# with #1. This should produce a [plan-lint-diag] log note on stderr but
-# NO print_warning-style warning, and exit 0.
-# The [plan-lint-diag] note is informational — same-file parallelism can be
-# legitimate (disjoint functions), so it should not cause noise.
+# with #1. This should emit a print_warning on stderr and exit 0.
+# File-level overlap is not always a conflict (disjoint functions), so it is
+# a WARNING not an error — but the human approving the plan must see it.
 # ---------------------------------------------------------------------------
 
-@test "Fixture P: parallel-claim + overlapping files — log note only, no WARNING, exit 0" {
+@test "Fixture P: parallel-claim + overlapping files — WARNING visible in preview, exit 0" {
   local issues_file="$RITE_TEST_TMPDIR/issues-p.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -1797,31 +1796,42 @@ FIXTURE
   local exit_code=0
   _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
 
-  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  # Must exit 0 (parallel-file-overlap is a warning, never aborts)
   [ "$exit_code" -eq 0 ] || {
     echo "FAIL: expected exit 0 for parallel-claim overlap, got $exit_code" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # Must NOT emit a print_warning-style WARNING for parallel-file-overlap
-  # (i.e. no "WARNING: parallel-file-overlap" or "strict-lint: WARNING: ... parallel")
-  grep -qE "WARNING:.*parallel-file-overlap|strict-lint: WARNING:.*parallel" "$stderr_out" && {
-    echo "FAIL: unexpected terminal WARNING for parallel-file-overlap (should be log-only)" >&2
+  # Must emit a print_warning for parallel-file-overlap
+  grep -q "parallel-file-overlap:" "$stderr_out" || {
+    echo "FAIL: expected parallel-file-overlap WARNING in stderr" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # The log note ([plan-lint-diag]) SHOULD appear in stderr
-  grep -q "\[plan-lint-diag\]" "$stderr_out" || {
-    echo "FAIL: expected [plan-lint-diag] log note for parallel file overlap in stderr" >&2
-    cat "$stderr_out" >&2
-    false
-  }
-
-  # The log note must mention the shared file
+  # The warning must mention the shared file
   grep -q "src/parser.cpp" "$stderr_out" || {
-    echo "FAIL: expected shared file mentioned in [plan-lint-diag] note" >&2
+    echo "FAIL: expected shared file 'src/parser.cpp' in parallel-file-overlap warning" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The warning must mention both issue titles
+  grep -q "Parse loop alpha" "$stderr_out" || {
+    echo "FAIL: expected title 'Parse loop alpha' in parallel-file-overlap warning" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  grep -q "Parse loop beta" "$stderr_out" || {
+    echo "FAIL: expected title 'Parse loop beta' in parallel-file-overlap warning" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The warning must mention "After #" (the suggested fix)
+  grep -q "After #" "$stderr_out" || {
+    echo "FAIL: expected 'After #N' chain suggestion in parallel-file-overlap warning" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -1831,11 +1841,11 @@ FIXTURE
 
 # ---------------------------------------------------------------------------
 # Fixture P2 — Check 6 + 7 interaction: same-file, different category,
-# AND declared parallel — one WARNING (from label-consistency) plus one
-# [plan-lint-diag] log note (from parallel-file-overlap), exit 0.
+# AND declared parallel — WARNING from label-consistency AND WARNING from
+# parallel-file-overlap, exit 0.
 # ---------------------------------------------------------------------------
 
-@test "Fixture P2: same-file diff-category + parallel — WARNING from label-consistency, log note from parallel-file-overlap, exit 0" {
+@test "Fixture P2: same-file diff-category + parallel — WARNING from label-consistency and parallel-file-overlap, exit 0" {
   local issues_file="$RITE_TEST_TMPDIR/issues-p2.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -1898,9 +1908,9 @@ FIXTURE
     false
   }
 
-  # Must have a [plan-lint-diag] note (parallel + overlapping files)
-  grep -q "\[plan-lint-diag\]" "$stderr_out" || {
-    echo "FAIL: expected [plan-lint-diag] log note" >&2
+  # Must have a parallel-file-overlap WARNING (parallel + overlapping files)
+  grep -q "parallel-file-overlap:" "$stderr_out" || {
+    echo "FAIL: expected parallel-file-overlap WARNING" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2206,7 +2216,7 @@ FIXTURE
 
 # ---------------------------------------------------------------------------
 # Fix 1 — parallel-ref in prose body (not in Dependencies section) must NOT
-# trigger a [plan-lint-diag] note.
+# trigger a parallel-file-overlap WARNING.
 #
 # Issue #1 has "(can run in parallel with #2)" in its Description body text,
 # NOT in its Dependencies section. Issue #2 has no parallel annotation at all.
@@ -2215,7 +2225,7 @@ FIXTURE
 # Both issues modify the same file to make the overlap check relevant.
 # ---------------------------------------------------------------------------
 
-@test "Fix 1: parallel-ref in prose body (not Dependencies) — no [plan-lint-diag] emitted" {
+@test "Fix 1: parallel-ref in prose body (not Dependencies) — no parallel-file-overlap WARNING emitted" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix1.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -2272,10 +2282,10 @@ FIXTURE
     false
   }
 
-  # Must NOT emit a [plan-lint-diag] note — the parallel annotation lives in
+  # Must NOT emit a parallel-file-overlap WARNING — the parallel annotation lives in
   # the Description body, not in the Dependencies section.
-  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
-    echo "FAIL: unexpected [plan-lint-diag] note from prose-body parallel mention" >&2
+  grep -q "parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected parallel-file-overlap WARNING from prose-body parallel mention" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2285,15 +2295,15 @@ FIXTURE
 
 # ---------------------------------------------------------------------------
 # Fix 2 — self-reference guard: issue declaring itself parallel with its own
-# ordinal must NOT emit a spurious [plan-lint-diag] note.
+# ordinal must NOT emit a spurious parallel-file-overlap WARNING.
 #
 # Issue #1 declares "(can run in parallel with #1)" in its Dependencies line —
 # a degenerate annotation. Without the self-reference guard, _pj == _pi == 0,
 # the file-overlap check always finds a shared path (the issue's own files),
-# and emits a false note.
+# and emits a false warning.
 # ---------------------------------------------------------------------------
 
-@test "Fix 2: self-referential parallel annotation — no [plan-lint-diag] emitted" {
+@test "Fix 2: self-referential parallel annotation — no parallel-file-overlap WARNING emitted" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix2.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -2330,9 +2340,9 @@ FIXTURE
     false
   }
 
-  # Must NOT emit a [plan-lint-diag] note for self-reference
-  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
-    echo "FAIL: unexpected [plan-lint-diag] note from self-referential parallel annotation" >&2
+  # Must NOT emit a parallel-file-overlap WARNING for self-reference
+  grep -q "parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected parallel-file-overlap WARNING from self-referential parallel annotation" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2341,15 +2351,15 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
-# Fix 3 — bidirectional parallel declarations produce exactly one diag note.
+# Fix 3 — bidirectional parallel declarations produce exactly one warning.
 #
 # Issue #1 declares "(can run in parallel with #2)" and issue #2 declares
 # "(can run in parallel with #1)". Both modify the same file. Without the
-# ordering guard, Check 7 emits two [plan-lint-diag] notes (one from each
-# side of the pair). With the fix, only the lower-ordinal reporter (#1) emits.
+# ordering guard, Check 7 emits two warnings (one from each side of the pair).
+# With the fix, only the lower-ordinal reporter (#1) emits.
 # ---------------------------------------------------------------------------
 
-@test "Fix 3: bidirectional parallel declarations — exactly one [plan-lint-diag] note, exit 0" {
+@test "Fix 3: bidirectional parallel declarations — exactly one parallel-file-overlap WARNING, exit 0" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix3.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -2405,18 +2415,25 @@ FIXTURE
     false
   }
 
-  # Must emit exactly ONE [plan-lint-diag] note (not two)
-  local diag_count
-  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
-  [ "$diag_count" -eq 1 ] || {
-    echo "FAIL: expected exactly 1 [plan-lint-diag] note, got $diag_count" >&2
+  # Must emit exactly ONE parallel-file-overlap WARNING (not two)
+  local warn_count
+  warn_count=$(grep -c "parallel-file-overlap:" "$stderr_out" || true)
+  [ "$warn_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 parallel-file-overlap WARNING, got $warn_count" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # The one note must mention the shared file
+  # The warning must mention the shared file
   grep -q "src/renderer.cpp" "$stderr_out" || {
-    echo "FAIL: expected 'src/renderer.cpp' mentioned in [plan-lint-diag] note" >&2
+    echo "FAIL: expected 'src/renderer.cpp' mentioned in parallel-file-overlap WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The warning must include the suggested dependency fix ("After #1")
+  grep -q "After #1" "$stderr_out" || {
+    echo "FAIL: expected 'After #1' in parallel-file-overlap WARNING (ordinal fix)" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2428,12 +2445,12 @@ FIXTURE
 # Fix 3 (unidirectional) — only the higher-ordinal issue declares parallel.
 #
 # Issue #2 declares "(can run in parallel with #1)" but issue #1 does NOT
-# declare parallel with #2.  The dedup guard must NOT suppress the note in
+# declare parallel with #2.  The dedup guard must NOT suppress the warning in
 # this case — there is no lower-ordinal reporter, so #2 is the sole emitter.
-# Exactly one [plan-lint-diag] note must appear.
+# Exactly one parallel-file-overlap WARNING must appear.
 # ---------------------------------------------------------------------------
 
-@test "Fix 3 (unidirectional): higher-ordinal parallel declaration — exactly one [plan-lint-diag] note, exit 0" {
+@test "Fix 3 (unidirectional): higher-ordinal parallel declaration — exactly one parallel-file-overlap WARNING, exit 0" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix3-uni.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -2482,33 +2499,26 @@ FIXTURE
   local exit_code=0
   _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
 
-  # Must exit 0 (parallel-file-overlap is informational, never aborts)
+  # Must exit 0 (parallel-file-overlap is a warning, never aborts)
   [ "$exit_code" -eq 0 ] || {
     echo "FAIL: expected exit 0 for unidirectional parallel, got $exit_code" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # Must NOT emit a terminal WARNING for parallel-file-overlap
-  grep -qE "WARNING:.*parallel-file-overlap|strict-lint: WARNING:.*parallel" "$stderr_out" && {
-    echo "FAIL: unexpected terminal WARNING for parallel-file-overlap (should be log-only)" >&2
+  # Must emit exactly ONE parallel-file-overlap WARNING (the higher-ordinal issue #2
+  # is the sole reporter — the dedup guard must not suppress unidirectional warnings)
+  local warn_count
+  warn_count=$(grep -c "parallel-file-overlap:" "$stderr_out" || true)
+  [ "$warn_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 parallel-file-overlap WARNING for unidirectional parallel, got $warn_count" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # Must emit exactly ONE [plan-lint-diag] note (the higher-ordinal issue #2 is
-  # the sole reporter — the dedup guard must not suppress unidirectional notes)
-  local diag_count
-  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
-  [ "$diag_count" -eq 1 ] || {
-    echo "FAIL: expected exactly 1 [plan-lint-diag] note for unidirectional parallel, got $diag_count" >&2
-    cat "$stderr_out" >&2
-    false
-  }
-
-  # The note must mention the shared file
+  # The warning must mention the shared file
   grep -q "src/renderer.cpp" "$stderr_out" || {
-    echo "FAIL: expected 'src/renderer.cpp' mentioned in [plan-lint-diag] note" >&2
+    echo "FAIL: expected 'src/renderer.cpp' mentioned in parallel-file-overlap WARNING" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2527,10 +2537,10 @@ FIXTURE
 # then _pi=1 defers to the "lower-ordinal canonical reporter" and also
 # continues — no diag is ever emitted. With the fix, _pi=1 detects that
 # _pj=0 is suppressed and steps up as the emitter.
-# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# Expected: exactly ONE parallel-file-overlap WARNING, exit 0.
 # ---------------------------------------------------------------------------
 
-@test "Fix 3b: suppression on canonical lower-ordinal reporter — higher-ordinal steps up, one diag emitted" {
+@test "Fix 3b: suppression on canonical lower-ordinal reporter — higher-ordinal steps up, one WARNING emitted" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix3b.txt"
 
   cat > "$issues_file" <<FIXTURE
@@ -2588,20 +2598,21 @@ FIXTURE
     false
   }
 
-  # Must emit exactly ONE [plan-lint-diag] note.
-  # Without the fix: 0 notes (canonical suppressed, higher deferred — silent).
-  # With the fix:    1 note  (higher-ordinal steps up as emitter).
-  local diag_count
-  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
-  [ "$diag_count" -eq 1 ] || {
-    echo "FAIL: expected exactly 1 [plan-lint-diag] note (higher-ordinal steps up), got $diag_count" >&2
+  # Must emit exactly ONE parallel-file-overlap WARNING.
+  # Without the fix: 0 warnings (canonical suppressed, higher deferred — silent).
+  # With the fix:    1 warning (higher-ordinal steps up as emitter).
+  # grep only for the WARNING: prefix to avoid matching [suppressed] INFO lines.
+  local warn_count
+  warn_count=$(grep -c "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" || true)
+  [ "$warn_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 parallel-file-overlap WARNING (higher-ordinal steps up), got $warn_count" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # The note must mention the shared file
+  # The warning must mention the shared file
   grep -q "src/renderer.cpp" "$stderr_out" || {
-    echo "FAIL: expected 'src/renderer.cpp' in [plan-lint-diag] note" >&2
+    echo "FAIL: expected 'src/renderer.cpp' in parallel-file-overlap WARNING" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2613,11 +2624,11 @@ FIXTURE
 # Fix 3b (both suppressed) — when BOTH sides have parallel-file-overlap
 # suppressed, no diag should be emitted.
 #
-# Both issues have the suppression marker. No [plan-lint-diag] note.
+# Both issues have the suppression marker. No parallel-file-overlap WARNING.
 # Exit 0.
 # ---------------------------------------------------------------------------
 
-@test "Fix 3b: both sides suppressed — no [plan-lint-diag] emitted, exit 0" {
+@test "Fix 3b: both sides suppressed — no parallel-file-overlap WARNING, exit 0" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-both.txt"
 
   cat > "$issues_file" <<FIXTURE
@@ -2677,9 +2688,10 @@ FIXTURE
     false
   }
 
-  # Must NOT emit any [plan-lint-diag] note — both sides suppressed
-  grep -q "\[plan-lint-diag\]" "$stderr_out" && {
-    echo "FAIL: unexpected [plan-lint-diag] note when both sides are suppressed" >&2
+  # Must NOT emit any parallel-file-overlap WARNING — both sides suppressed
+  # grep only for the WARNING: prefix to avoid false-matching [suppressed] INFO lines.
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected parallel-file-overlap WARNING when both sides are suppressed" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -2694,10 +2706,10 @@ FIXTURE
 # Issue #2 (ordinal 1) has suppression, issue #1 (ordinal 0) does NOT.
 # The canonical reporter for bidirectional pairs is the lower-ordinal issue.
 # Since _pi=0 is not suppressed, it emits. _pi=1 is suppressed → skipped.
-# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# Expected: exactly ONE parallel-file-overlap WARNING, exit 0.
 # ---------------------------------------------------------------------------
 
-@test "Fix 3b: suppression on higher-ordinal only — canonical lower-ordinal still emits one diag" {
+@test "Fix 3b: suppression on higher-ordinal only — canonical lower-ordinal still emits one WARNING" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-higher.txt"
 
   cat > "$issues_file" <<FIXTURE
@@ -2755,18 +2767,90 @@ FIXTURE
     false
   }
 
-  # Must emit exactly ONE [plan-lint-diag] note (from the canonical lower-ordinal)
-  local diag_count
-  diag_count=$(grep -c "\[plan-lint-diag\]" "$stderr_out" || true)
-  [ "$diag_count" -eq 1 ] || {
-    echo "FAIL: expected exactly 1 [plan-lint-diag] note from canonical lower-ordinal, got $diag_count" >&2
+  # Must emit exactly ONE parallel-file-overlap WARNING (from the canonical lower-ordinal)
+  # grep only for the WARNING: prefix to avoid matching [suppressed] INFO lines.
+  local warn_count
+  warn_count=$(grep -c "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" || true)
+  [ "$warn_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 parallel-file-overlap WARNING from canonical lower-ordinal, got $warn_count" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # The note must mention the shared file
+  # The warning must mention the shared file
   grep -q "src/renderer.cpp" "$stderr_out" || {
-    echo "FAIL: expected 'src/renderer.cpp' in [plan-lint-diag] note" >&2
+    echo "FAIL: expected 'src/renderer.cpp' in parallel-file-overlap WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Non-overlapping parallel — issues that are parallel but modify DIFFERENT
+# files must produce no parallel-file-overlap WARNING.
+# ---------------------------------------------------------------------------
+
+@test "Non-overlapping parallel issues — no parallel-file-overlap WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nooverlap.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Widget alpha
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Alpha widget in its own file.
+
+**Claude Context**:
+Files to Modify:
+- src/widget_alpha.cpp
+
+**Acceptance Criteria**:
+- [ ] Alpha passes: `make test`
+
+**Done Definition**: Done when alpha passes.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Widget beta
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Beta widget in a different file.
+
+**Claude Context**:
+Files to Modify:
+- src/widget_beta.cpp
+
+**Acceptance Criteria**:
+- [ ] Beta passes: `make test`
+
+**Done Definition**: Done when beta passes.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for non-overlapping parallel, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a parallel-file-overlap WARNING (files are disjoint)
+  grep -q "parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected parallel-file-overlap WARNING for non-overlapping parallel issues" >&2
     cat "$stderr_out" >&2
     false
   }
