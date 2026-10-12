@@ -2182,17 +2182,15 @@ _lint_issues_strict() {
     done
   done
 
-  # Check 7: Parallel-claim file overlap (LOG ONLY — not a terminal warning)
+  # Check 7: Parallel-claim file overlap (visible WARNING)
   #
   # Issues that declare themselves parallel via "(can run in parallel with #N)"
-  # annotations AND share files in their Files to Modify are flagged informally.
+  # annotations AND share files in their Files to Modify emit a print_warning
+  # so the human approving the plan sees it before creation.
   # Same-file-different-function parallelism is legitimate (e.g. three draw
-  # functions in one .cpp), so this is informational only — a terminal warning
-  # here would generate benign-warning noise (explicit user feedback).
-  #
-  # Output goes to stderr with a [plan-lint-diag] prefix (not print_warning)
-  # so it does NOT increment _warning_count and does NOT appear as a "Warning"
-  # in the terminal summary. The prefix makes it greppable in log files.
+  # functions in one .cpp), so this is a WARNING (not an error) — file-level
+  # overlap genuinely isn't always a conflict. Suppressed per-issue with
+  # <!-- sharkrite-plan-lint disable parallel-file-overlap -->.
   local _pi=0
   for _pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     local _pi_title="${_titles[$_pi]}"
@@ -2218,7 +2216,7 @@ _lint_issues_strict() {
         local _pj=$((_prefnum - 1))
         # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
         # annotation that includes its own ordinal would always find a shared
-        # file and emit a spurious self-referential diag note.
+        # file and emit a spurious self-referential warning.
         [ "$_pj" -eq "$_pi" ] && continue
         # Fix 3: only report each (i,j) pair once for bidirectional annotations.
         # When BOTH sides declare the parallel (A→B and B→A), the lower-ordinal
@@ -2258,7 +2256,8 @@ _lint_issues_strict() {
         done <<< "$_pi_modify"
 
         if [ -n "$_par_shared" ]; then
-          echo "[plan-lint-diag] parallel-file-overlap: issue '$_pi_title' is parallel with '#${_prefnum} ${_pj_title}' and both modify '${_par_shared}' — verify these edit disjoint functions (file-level overlap is not a hard conflict)" >&2
+          print_warning "strict-lint: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_prefnum}) or suppress with parallel-file-overlap if they edit disjoint functions" >&2
+          _warning_count=$((_warning_count + 1))
         fi
       fi
     done <<< "$_pi_parallel"
