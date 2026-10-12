@@ -141,3 +141,11 @@ _count_trailing_spaces() {
   run grep -F '_pr_link "$closed_pr_num" "$repo_url" 10' "$REPO_STATUS"
   [ "$status" -eq 0 ]
 }
+
+@test "repo-status.sh: zero-open-issues branch suggests rite plan" {
+  # Wording contract: when no issues are open, the status display must point
+  # users at 'rite plan' so they know how to generate issues from their docs.
+  run grep -A3 '"  No open issues"' "$REPO_STATUS"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "rite plan"
+}

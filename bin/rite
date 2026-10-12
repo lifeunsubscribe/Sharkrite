@@ -1395,11 +1395,18 @@ CLASSIFY_EOF
     fi
   fi
 
+  # If RITE_PLAN_DOCS is already configured (re-init) or doc discovery selected
+  # docs this session, bare 'rite plan' will work; otherwise show the explicit form.
+  _plan_cmd="rite plan <doc>"
+  if [ "${_plan_docs_configured:-false}" = true ] || { declare -p _selected_docs &>/dev/null && [ "${#_selected_docs[@]}" -gt 0 ]; }; then
+    _plan_cmd="rite plan"
+  fi
   echo ""
   print_info "Next steps:"
   echo "  1. Edit .rite/config with project-specific settings"
   echo "  2. Edit .rite/blockers.conf to customize blocker path patterns"
-  echo "  3. Run 'rite 21' to process your first issue"
+  echo "  3. Run '$_plan_cmd' to generate issues from your docs"
+  echo "  4. Run 'rite <issue-number>' to process your first issue"
   echo ""
   exit 0
 fi
