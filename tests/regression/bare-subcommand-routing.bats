@@ -354,8 +354,10 @@ STUB
 }
 
 @test "bin/rite init: Next steps block points at rite plan" {
-  # Wording contract: init's Next steps must mention 'rite plan' so users
-  # know to generate issues from their docs before running a first issue.
-  _next_steps=$(awk '/Next steps:/,/exit 0/' "$RITE_REPO_ROOT/bin/rite")
-  echo "$_next_steps" | grep -q "rite plan"
+  # Wording contract: init's _plan_cmd must resolve to 'rite plan' (with or
+  # without a doc argument) so users know to generate issues from their docs.
+  # Anchored at _plan_cmd= to capture the literal assignment values rather
+  # than the variable reference in the echo line.
+  _plan_cmd_block=$(awk '/_plan_cmd=/,/exit 0/' "$RITE_REPO_ROOT/bin/rite")
+  echo "$_plan_cmd_block" | grep -q "rite plan"
 }

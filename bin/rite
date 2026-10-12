@@ -1395,10 +1395,10 @@ CLASSIFY_EOF
     fi
   fi
 
-  # If doc discovery configured RITE_PLAN_DOCS this session, bare 'rite plan' uses it;
-  # otherwise point the user at the explicit form.
+  # If RITE_PLAN_DOCS is already configured (re-init) or doc discovery selected
+  # docs this session, bare 'rite plan' will work; otherwise show the explicit form.
   _plan_cmd="rite plan <doc>"
-  if declare -p _selected_docs &>/dev/null && [ "${#_selected_docs[@]}" -gt 0 ]; then
+  if [ "${_plan_docs_configured:-false}" = true ] || { declare -p _selected_docs &>/dev/null && [ "${#_selected_docs[@]}" -gt 0 ]; }; then
     _plan_cmd="rite plan"
   fi
   echo ""
