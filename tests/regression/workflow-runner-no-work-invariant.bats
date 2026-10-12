@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh, docs/architecture/exit-codes.md
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/claude-workflow.sh, lib/core/batch-process-issues.sh, docs/architecture/exit-codes.md
 # tests/regression/workflow-runner-no-work-invariant.bats
 #
 # Regression test for: workflow-runner.sh should fail loud when no work produced
@@ -203,6 +203,7 @@ _setup_stub_lib() {
     utils/pr-detection.sh utils/date-helpers.sh utils/stash-manager.sh \
     utils/mid-run-rebase.sh utils/review-helper.sh utils/colors.sh \
     utils/logging.sh utils/timeout.sh utils/test-gate.sh \
+    utils/doc-consent.sh utils/pr-refusal.sh utils/git-helpers.sh \
     providers/provider-interface.sh; do
     printf '#!/usr/bin/env bash\n# stub\n' > "$_stub_lib/$_mod"
   done
@@ -507,6 +508,223 @@ EOF
   # 13 must be in the set
   [ -n "${_seen[13]+x}" ] || {
     echo "FAIL: exit 13 not in the uniqueness table"
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: count_changed_files helper (issue #1124)
+#
+# Tests the retry-once logic and fail-loud-on-double-failure contract.
+# The helper lives in workflow-runner.sh (sourced via _setup_stub_lib pattern).
+# =============================================================================
+
+@test "behavioral: count_changed_files retries once on first failure and returns real count" {
+  # Stub git: first diff call fails (exit 128), second diff call succeeds (2 files).
+  # Helper must return 0 and echo the count from the second attempt.
+  _stub_lib=$(_setup_stub_lib)
+
+  _fake_bin="$RITE_TEST_TMPDIR/fake-bin-retry"
+  mkdir -p "$_fake_bin"
+  _counter="$RITE_TEST_TMPDIR/git-call-count"
+  echo "0" > "$_counter"
+
+  # Write the fake git binary
+  cat > "$_fake_bin/git" <<STUBEOF
+#!/bin/bash
+case "\$*" in
+  *"diff --name-only"*)
+    _n=\$(cat "$_counter" 2>/dev/null || echo 0)
+    _n=\$((_n + 1))
+    echo "\$_n" > "$_counter"
+    if [ "\$_n" -eq 1 ]; then
+      echo "fatal: not a git repository" >&2
+      exit 128
+    fi
+    echo "lib/core/workflow-runner.sh"
+    echo "lib/core/claude-workflow.sh"
+    exit 0
+    ;;
+esac
+exit 0
+STUBEOF
+  chmod +x "$_fake_bin/git"
+
+  _result=0
+  _output=""
+  _output=$(
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    export PATH="$_fake_bin:$PATH"
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*" >&2; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
+
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+    count_changed_files "" "main"
+  ) || _result=$?
+
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (retry succeeded), got $_result"
+    echo "output: $_output"
+    return 1
+  }
+  [ "$_output" = "2" ] || {
+    echo "FAIL: expected count 2 (two files from retry), got: $_output"
+    return 1
+  }
+}
+
+@test "behavioral: count_changed_files fails loud on double failure — no 'No work was produced'" {
+  # Stub git: all diff calls fail (exit 128 with stderr).
+  # Helper must return 1, emit 'could not determine', and NOT emit 'No work was produced'.
+  _stub_lib=$(_setup_stub_lib)
+
+  _fake_bin="$RITE_TEST_TMPDIR/fake-bin-double-fail"
+  mkdir -p "$_fake_bin"
+
+  cat > "$_fake_bin/git" <<'STUBEOF'
+#!/bin/bash
+case "$*" in
+  *"diff --name-only"*)
+    echo "fatal: bad object origin/main...HEAD" >&2
+    exit 128
+    ;;
+esac
+exit 0
+STUBEOF
+  chmod +x "$_fake_bin/git"
+
+  _result=0
+  _stderr_cap="$RITE_TEST_TMPDIR/stderr-cap.txt"
+
+  (
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    export PATH="$_fake_bin:$PATH"
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*"; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
+
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+    count_changed_files "" "main"
+  ) > "$_stderr_cap" 2>&1 || _result=$?
+
+  [ "$_result" -eq 1 ] || {
+    echo "FAIL: expected exit 1 (infrastructure error), got $_result"
+    cat "$_stderr_cap"
+    return 1
+  }
+
+  _cap=$(cat "$_stderr_cap")
+
+  echo "$_cap" | grep -qi "could not determine" || {
+    echo "FAIL: expected 'could not determine' in output (infrastructure error message)"
+    echo "output: $_cap"
+    return 1
+  }
+
+  echo "$_cap" | grep -qi "no work was produced" && {
+    echo "FAIL: must NOT emit 'no work was produced' for a failed diff"
+    echo "output: $_cap"
+    return 1
+  }
+
+  echo "$_cap" | grep -qi "bad object" || {
+    echo "FAIL: captured git stderr 'bad object' not surfaced in error output"
+    echo "output: $_cap"
+    return 1
+  }
+}
+
+@test "behavioral: count_changed_files with empty diff returns 0 (genuine no-work path unchanged)" {
+  # Stub git: diff succeeds with no output (empty diff — no files changed).
+  # Helper must return 0 and echo "0". The empty-diff → no-work path is preserved.
+  _stub_lib=$(_setup_stub_lib)
+
+  _fake_bin="$RITE_TEST_TMPDIR/fake-bin-empty"
+  mkdir -p "$_fake_bin"
+
+  cat > "$_fake_bin/git" <<'STUBEOF'
+#!/bin/bash
+case "$*" in
+  *"diff --name-only"*)
+    # Succeed with empty output (no changed files)
+    exit 0
+    ;;
+esac
+exit 0
+STUBEOF
+  chmod +x "$_fake_bin/git"
+
+  _result=0
+  _output=""
+  _output=$(
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+    export RITE_DATA_DIR=".rite"
+    export RITE_LOG_FILE=""
+    export PATH="$_fake_bin:$PATH"
+    WORKFLOW_MODE="unsupervised"
+    CURRENT_RETRY=0
+    INTERRUPT_RECEIVED=false
+    GREEN=""; NC=""; BLUE=""; RED=""; YELLOW=""
+    print_status()  { :; }
+    print_info()    { :; }
+    print_warning() { :; }
+    print_error()   { echo "ERROR: $*" >&2; }
+    print_success() { :; }
+    print_header()  { :; }
+    _diag()         { :; }
+    _timer_start()  { :; }
+    _timer_end()    { :; }
+    ensure_timeout_cmd() { :; }
+
+    # shellcheck disable=SC1090
+    source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+
+    count_changed_files "" "main"
+  ) || _result=$?
+
+  [ "$_result" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (empty diff is not an error), got $_result"
+    return 1
+  }
+  [ "$_output" = "0" ] || {
+    echo "FAIL: expected count '0' for empty diff, got: '$_output'"
     return 1
   }
 }
