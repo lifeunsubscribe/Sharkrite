@@ -2796,28 +2796,25 @@ run_test_gate() {
       #   workflow-runner passes this flag for its pre-merge gate call.
       local _skip_root_npm_test=false
       if [ "${RITE_GATE_TIER:-cycle}" = "cycle" ] \
+         && [ "${RITE_GATE_FORCE_FULL:-}" != "1" ] \
          && _node_is_workspaces_monorepo "$project_root" \
          && [ "${_gate_reason:-}" != "workspace_build_failed" ]; then
-        _skip_root_npm_test=true
-        _ran_scoped_cycle=true
         local _ws_pm
         _ws_pm=$(_node_pkg_manager "$project_root")
         local _ws_affected
         _ws_affected=$(_changed_files_to_workspace_dirs "$project_root" "$_nonsr_changed_files")
         if [ -z "$_ws_affected" ]; then
           echo "[test-gate] per-cycle: no workspace source changed — skipping workspace tests" >> "$_gate_raw_sink"
+          # _skip_root_npm_test remains false — root npm test still runs for non-workspace changes
         else
+          _skip_root_npm_test=true
+          _ran_scoped_cycle=true
           local _ws_any_fail=false _ws_item
           while IFS= read -r _ws_item; do
             [ -n "$_ws_item" ] || continue
             local _ws_rel="$_ws_item"
             local _ws_dir="$project_root/$_ws_rel"
             [ -d "$_ws_dir" ] || continue
-            # CDK skip: skip CDK workspaces when diff has no infrastructure/api/lambda paths.
-            if _is_cdk_workspace "$_ws_dir" && ! _diff_has_cdk_paths "$_nonsr_changed_files"; then
-              echo "[test-gate] per-cycle: CDK workspace '$_ws_rel' skipped (no infra/api/lambda paths in diff)" >> "$_gate_raw_sink"
-              continue
-            fi
             local _ws_rel_files
             _ws_rel_files=$(printf '%s\n' "$_nonsr_changed_files" | grep "^${_ws_rel}/" | grep -v '^$' || true)
             local _ws_runner
@@ -2838,7 +2835,7 @@ run_test_gate() {
                   _ws_abs_files="${_ws_abs_files## }"
                   if [ "$_ws_pm" = "pnpm" ]; then
                     # shellcheck disable=SC2086
-                    { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                    { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
                       | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
                   else
                     # shellcheck disable=SC2086
@@ -2857,7 +2854,7 @@ run_test_gate() {
                       echo "[test-gate] per-cycle: jest selected 0 tests with non-test source — falling back to workspace full suite" >> "$_gate_raw_sink"
                       : > "$_ws_raw_f"
                       if [ "$_ws_pm" = "pnpm" ]; then
-                        { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" 2>&1); echo $? > "$_ws_exit_f"; } \
+                        { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
                           | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
                       else
                         { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
@@ -2891,7 +2888,7 @@ run_test_gate() {
                       echo "[test-gate] per-cycle: vitest selected 0 tests with non-test source — falling back to workspace full suite" >> "$_gate_raw_sink"
                       : > "$_ws_raw_f"
                       if [ "$_ws_pm" = "pnpm" ]; then
-                        { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" 2>&1); echo $? > "$_ws_exit_f"; } \
+                        { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
                           | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
                       else
                         { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
@@ -2907,7 +2904,7 @@ run_test_gate() {
               # Unknown runner or native scoping disabled — workspace full suite.
               echo "[test-gate] per-cycle: workspace '$_ws_rel' full suite (runner: ${_ws_runner}, native-scoping: ${RITE_GATE_NATIVE_SCOPING:-true})" >> "$_gate_raw_sink"
               if [ "$_ws_pm" = "pnpm" ]; then
-                { (cd "$project_root" && pnpm test --filter="./${_ws_rel}" 2>&1); echo $? > "$_ws_exit_f"; } \
+                { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
                   | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
               else
                 { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \

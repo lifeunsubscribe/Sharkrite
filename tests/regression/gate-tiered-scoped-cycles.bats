@@ -294,11 +294,11 @@ _run_gate_with_env() {
     false
   }
   # packages/cdk (no source change) must NOT have been tested.
-  grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log" && {
+  if grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
     echo "FAIL: unchanged CDK workspace packages/cdk was tested unexpectedly"
     cat "$TEST_REPO/invocations.log" || true
     false
-  } || true
+  fi
 
   [ "$status" -eq 0 ]
   run jq -r '.exit_code' "$TEST_REPO/gate.json"
@@ -350,11 +350,11 @@ _run_gate_with_env() {
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # CDK workspace must NOT have been tested.
-  grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log" && {
+  if grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
     echo "FAIL: CDK workspace was tested despite no infra/api/lambda paths in diff"
     cat "$TEST_REPO/invocations.log" || true
     false
-  } || true
+  fi
 
   [ "$status" -eq 0 ]
 }
@@ -381,11 +381,11 @@ _run_gate_with_env() {
     false
   }
   # --findRelatedTests must NOT appear (workspace full suite, not scoped)
-  grep -q -- "--findRelatedTests" "$TEST_REPO/invocations.log" && {
+  if grep -q -- "--findRelatedTests" "$TEST_REPO/invocations.log"; then
     echo "FAIL: --findRelatedTests was used despite RITE_GATE_NATIVE_SCOPING=false"
     cat "$TEST_REPO/invocations.log" || true
     false
-  } || true
+  fi
 
   [ "$status" -eq 0 ]
 }
@@ -409,11 +409,11 @@ _run_gate_with_env() {
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # No workspace tests run when only root files changed.
-  grep -q "npm:test:--workspace=" "$TEST_REPO/invocations.log" && {
+  if grep -q "npm:test:--workspace=" "$TEST_REPO/invocations.log"; then
     echo "FAIL: workspace tests ran despite no workspace source changes"
     cat "$TEST_REPO/invocations.log" || true
     false
-  } || true
+  fi
 
   [ "$status" -eq 0 ]
   run jq -r '.exit_code' "$TEST_REPO/gate.json"
@@ -443,4 +443,98 @@ _run_gate_with_env() {
   }
   run jq -r '.exit_code' "$TEST_REPO/gate.json"
   [ "$output" = "1" ]
+}
+
+# ===========================================================================
+# workflow-runner.sh wiring: phase_merge_pr invokes run_test_gate with
+# RITE_GATE_TIER=merge and returns 1 on gate failure (#975 acceptance criterion:
+# "merge-decision gate runs the full root suite; exactly one full pass per issue").
+# ===========================================================================
+
+@test "(#975) phase_merge_pr: invokes run_test_gate with RITE_GATE_TIER=merge; returns 1 on gate failure" {
+  local _tier_file="$TEST_REPO/gate_tier.txt"
+  local _stub_lib="$TEST_REPO/wf-stub-lib"
+  for _subdir in utils providers core; do
+    mkdir -p "$_stub_lib/$_subdir"
+  done
+  # Stub every module sourced by workflow-runner.sh at top level.
+  for _mod in \
+    utils/doc-consent.sh \
+    utils/notifications.sh \
+    utils/blocker-rules.sh \
+    utils/session-tracker.sh \
+    utils/pr-summary.sh \
+    utils/normalize-issue.sh \
+    utils/markers.sh \
+    utils/pr-detection.sh \
+    utils/pr-refusal.sh \
+    utils/git-helpers.sh \
+    utils/date-helpers.sh \
+    utils/stash-manager.sh \
+    utils/mid-run-rebase.sh \
+    utils/review-helper.sh \
+    utils/divergence-handler.sh \
+    utils/test-gate.sh \
+    utils/colors.sh \
+    utils/logging.sh \
+    providers/provider-interface.sh; do
+    printf '#!/usr/bin/env bash\n# stub\n' > "$_stub_lib/$_mod"
+  done
+  # timeout.sh is sourced + called immediately; stub must define ensure_timeout_cmd.
+  printf '#!/usr/bin/env bash\nensure_timeout_cmd() { true; }\n' > "$_stub_lib/utils/timeout.sh"
+
+  local _repo_root
+  _repo_root="$(cd "$RITE_LIB_DIR/.." && pwd)"
+
+  _result=0
+  (
+    set +e
+    export RITE_LIB_DIR="$_stub_lib"
+    export WORKTREE_PATH="$TEST_REPO"
+    export WORKFLOW_MODE=unsupervised
+    export STASHED_UNRELATED_WORK=false
+
+    print_header()  { true; }
+    print_info()    { true; }
+    print_step()    { true; }
+    print_warning() { true; }
+    print_error()   { true; }
+    print_success() { true; }
+
+    # Source real workflow-runner.sh (all deps replaced by noop stubs above).
+    # shellcheck disable=SC1090
+    source "$_repo_root/lib/core/workflow-runner.sh"
+
+    # run_test_gate: stub records RITE_GATE_TIER and fails (gate failure scenario).
+    run_test_gate() {
+      echo "${RITE_GATE_TIER:-}" > "$_tier_file"
+      return 1
+    }
+
+    # Stubs for functions called before the merge-decision gate.
+    gh_safe()               { echo '{}'; }
+    jq()                    { echo ''; }
+    extract_changes_summary() { echo ''; }
+    check_blockers()        { return 0; }
+    handle_blocker()        { return 0; }
+    verify_pr_head()        { return 0; }
+    detect_divergence()     { return 1; }
+
+    phase_merge_pr 42 101
+  ) || _result=$?
+
+  # run_test_gate was called with RITE_GATE_TIER=merge
+  [ -f "$_tier_file" ] || {
+    echo "FAIL: run_test_gate was never called (phase_merge_pr did not reach merge-gate block)"
+    false
+  }
+  [ "$(cat "$_tier_file")" = "merge" ] || {
+    echo "FAIL: run_test_gate called with RITE_GATE_TIER=$(cat "$_tier_file"), expected merge"
+    false
+  }
+  # phase_merge_pr must return 1 when the merge gate fails
+  [ "$_result" -eq 1 ] || {
+    echo "FAIL: phase_merge_pr returned $_result, expected 1 on gate failure"
+    false
+  }
 }

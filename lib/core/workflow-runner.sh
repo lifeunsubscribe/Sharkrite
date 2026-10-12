@@ -1874,11 +1874,16 @@ phase_merge_pr() {
     export PR_NUMBER="${pr_number:-}"
     local _merge_gate_exit=0
     RITE_GATE_TIER=merge run_test_gate "$_merge_gate_file" "$WORKTREE_PATH" || _merge_gate_exit=$?
-    rm -f "$_merge_gate_file"
     if [ "$_merge_gate_exit" -ne 0 ]; then
+      if [ -s "$_merge_gate_file" ]; then
+        print_error "Merge-decision gate failed — failing tests:"
+        jq -r '.tests[]? | select(.status == "failed") | "  - " + .name' "$_merge_gate_file" 2>/dev/null >&2 || true
+      fi
+      rm -f "$_merge_gate_file"
       print_error "Merge-decision gate failed — full suite has failures; fix before merging"
       return 1
     fi
+    rm -f "$_merge_gate_file"
   fi
 
   # Wait for the background doc assessment (spawned in Phase 3) to finish before
