@@ -344,3 +344,18 @@ STUB
   echo "$output"       | grep -q "FULL_SUITE_STUB_CALLED"
   [ "$_bare_status" -eq "$status" ]
 }
+
+@test "bin/rite init: Next steps block contains no literal issue number" {
+  # Wording contract: init's Next steps must not reference a hardcoded issue
+  # number (the FlowForge-era 'rite 21' placeholder predates rite plan).
+  _next_steps=$(awk '/Next steps:/,/exit 0/' "$RITE_REPO_ROOT/bin/rite")
+  count=$(echo "$_next_steps" | grep -c "rite 21" || true)
+  [ "$count" -eq 0 ]
+}
+
+@test "bin/rite init: Next steps block points at rite plan" {
+  # Wording contract: init's Next steps must mention 'rite plan' so users
+  # know to generate issues from their docs before running a first issue.
+  _next_steps=$(awk '/Next steps:/,/exit 0/' "$RITE_REPO_ROOT/bin/rite")
+  echo "$_next_steps" | grep -q "rite plan"
+}
