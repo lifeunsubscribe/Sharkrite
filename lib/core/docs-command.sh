@@ -648,7 +648,8 @@ _docs_apply_approved() {
 
   # Trap: clean up worktree on interrupt so the registered branch does not orphan.
   # Variable-scoped (non-glob) per project trap conventions.
-  trap "git -C \"${RITE_PROJECT_ROOT}\" worktree remove --force \"${wt_dir}\" 2>/dev/null || true; rm -rf \"${wt_dir}\" 2>/dev/null || true" INT TERM
+  trap "git -C \"${RITE_PROJECT_ROOT}\" worktree remove --force \"${wt_dir}\" 2>/dev/null || true; rm -rf \"${wt_dir}\" 2>/dev/null || true; exit 130" INT
+  trap "git -C \"${RITE_PROJECT_ROOT}\" worktree remove --force \"${wt_dir}\" 2>/dev/null || true; rm -rf \"${wt_dir}\" 2>/dev/null || true; exit 143" TERM
 
   # Fetch the target branch so the worktree fork is current.
   git -C "$RITE_PROJECT_ROOT" fetch origin "$base_branch" 2>/dev/null \
@@ -856,7 +857,8 @@ docs_directed_update() {
   local _du_proposal_dir="${_du_tmpdir}/proposals"
   mkdir -p "$_du_proposal_dir"
   # Cleanup trap (variable-scoped, non-glob per project conventions).
-  trap "rm -rf \"${_du_tmpdir}\" 2>/dev/null || true" INT TERM
+  trap "rm -rf \"${_du_tmpdir}\" 2>/dev/null || true; exit 130" INT
+  trap "rm -rf \"${_du_tmpdir}\" 2>/dev/null || true; exit 143" TERM
 
   # Load drift log entries into numbered files for prompt context.
   local _drift_log
@@ -871,52 +873,61 @@ docs_directed_update() {
 
   local _accumulated_feedback=""
   local _iteration=0
+  local _du_regenerate=1
 
   while true; do
     _iteration=$((_iteration + 1))
 
-    # Build prompt.
-    local _du_prompt_file
-    _du_prompt_file="$(mktemp "${_du_tmpdir}/prompt_XXXXXX")"
-    _docs_write_update_prompt "$_du_prompt_file" "$instruction" "$_du_tmpdir" \
-      "$_entry_count" "$_map_ctx" "$_accumulated_feedback"
+    if [ "$_du_regenerate" -eq 1 ]; then
+      _du_regenerate=0
 
-    print_info "Requesting doc proposals (round ${_iteration})…"
-    local _du_llm_out _du_llm_rc
-    _du_llm_rc=0
-    _du_llm_out="$(provider_run_prompt_with_timeout \
-      "$(cat "$_du_prompt_file")" \
-      "$(provider_resolve_model doc_assessment)" \
-      true \
-      "${RITE_DOC_ASSESSMENT_TIMEOUT:-300}" 2>/dev/null)" \
-      || _du_llm_rc=$?
-    rm -f "$_du_prompt_file"
+      # Build prompt.
+      local _du_prompt_file
+      _du_prompt_file="$(mktemp "${_du_tmpdir}/prompt_XXXXXX")"
+      _docs_write_update_prompt "$_du_prompt_file" "$instruction" "$_du_tmpdir" \
+        "$_entry_count" "$_map_ctx" "$_accumulated_feedback"
 
-    if [ "$_du_llm_rc" -eq 124 ]; then
-      print_warning "Doc update: provider timed out after ${RITE_DOC_ASSESSMENT_TIMEOUT:-300}s"
-      rm -rf "$_du_tmpdir" 2>/dev/null || true
-      return 1
-    elif [ "$_du_llm_rc" -ne 0 ]; then
-      print_warning "Doc update: provider call failed (exit ${_du_llm_rc})"
-      rm -rf "$_du_tmpdir" 2>/dev/null || true
-      return 1
-    fi
+      print_info "Requesting doc proposals (round ${_iteration})…"
+      local _du_llm_out _du_llm_rc
+      _du_llm_rc=0
+      _du_llm_out="$(provider_run_prompt_with_timeout \
+        "$(cat "$_du_prompt_file")" \
+        "$(provider_resolve_model doc_assessment)" \
+        true \
+        "${RITE_DOC_ASSESSMENT_TIMEOUT:-300}" 2>/dev/null)" \
+        || _du_llm_rc=$?
+      rm -f "$_du_prompt_file"
 
-    if echo "$_du_llm_out" | grep -q "^NO_CHANGES_NEEDED"; then
-      print_info "No documentation changes needed for this instruction"
-      rm -rf "$_du_tmpdir" 2>/dev/null || true
-      return 0
-    fi
+      if [ "$_du_llm_rc" -eq 124 ]; then
+        print_warning "Doc update: provider timed out after ${RITE_DOC_ASSESSMENT_TIMEOUT:-300}s"
+        trap - INT TERM
+        rm -rf "$_du_tmpdir" 2>/dev/null || true
+        return 1
+      elif [ "$_du_llm_rc" -ne 0 ]; then
+        print_warning "Doc update: provider call failed (exit ${_du_llm_rc})"
+        trap - INT TERM
+        rm -rf "$_du_tmpdir" 2>/dev/null || true
+        return 1
+      fi
 
-    # Parse proposals into structured temp files.
-    rm -f "${_du_proposal_dir}"/proposal_* 2>/dev/null || true
-    local _du_prop_count
-    _du_prop_count="$(_docs_parse_proposals "$_du_llm_out" "$_du_proposal_dir")"
+      if echo "$_du_llm_out" | grep -q "^NO_CHANGES_NEEDED"; then
+        print_info "No documentation changes needed for this instruction"
+        trap - INT TERM
+        rm -rf "$_du_tmpdir" 2>/dev/null || true
+        return 0
+      fi
 
-    if [ "$_du_prop_count" -eq 0 ]; then
-      print_warning "No proposals found in provider response — try a more specific instruction"
-      rm -rf "$_du_tmpdir" 2>/dev/null || true
-      return 0
+      # Parse proposals into structured temp files.
+      rm -f "${_du_proposal_dir}"/proposal_* 2>/dev/null || true
+      local _du_prop_count
+      _du_prop_count="$(_docs_parse_proposals "$_du_llm_out" "$_du_proposal_dir")"
+
+      if [ "$_du_prop_count" -eq 0 ]; then
+        print_warning "No proposals found in provider response — try a more specific instruction"
+        trap - INT TERM
+        rm -rf "$_du_tmpdir" 2>/dev/null || true
+        return 0
+      fi
     fi
 
     # Show all proposals to the user.
@@ -969,7 +980,8 @@ docs_directed_update() {
         fi
 
         if [ -z "$_du_fb" ]; then
-          print_warning "No feedback provided — showing proposals again"
+          # Empty input (bare Enter): re-display proposals without a provider call.
+          print_info "Showing proposals again…"
           continue
         fi
 
@@ -983,6 +995,7 @@ ${_du_fb}"
           _accumulated_feedback="$_du_fb"
         fi
 
+        _du_regenerate=1
         print_status "Regenerating with feedback…"
         ;;
     esac
@@ -1012,13 +1025,15 @@ docs_reconcile_drift() {
   local _rc_proposal_dir="${_rc_tmpdir}/proposals"
   mkdir -p "$_rc_proposal_dir"
   # Cleanup trap (variable-scoped, non-glob per project conventions).
-  trap "rm -rf \"${_rc_tmpdir}\" 2>/dev/null || true" INT TERM
+  trap "rm -rf \"${_rc_tmpdir}\" 2>/dev/null || true; exit 130" INT
+  trap "rm -rf \"${_rc_tmpdir}\" 2>/dev/null || true; exit 143" TERM
 
   local _entry_count
   _entry_count="$(_docs_drift_load_entries "$_drift_log" "$_rc_tmpdir")"
 
   if [ "$_entry_count" -eq 0 ]; then
     print_info "Drift log has no entries — nothing to reconcile"
+    trap - INT TERM
     rm -rf "$_rc_tmpdir" 2>/dev/null || true
     return 0
   fi
@@ -1028,6 +1043,7 @@ docs_reconcile_drift() {
   # Ensure docs map is current.
   docs_map_ensure || {
     print_warning "docs map unavailable — cannot proceed with reconcile"
+    trap - INT TERM
     rm -rf "$_rc_tmpdir" 2>/dev/null || true
     return 1
   }
@@ -1039,50 +1055,59 @@ docs_reconcile_drift() {
 
   local _accumulated_feedback=""
   local _rc_iteration=0
+  local _rc_regenerate=1
 
   while true; do
     _rc_iteration=$((_rc_iteration + 1))
 
-    local _rc_prompt_file
-    _rc_prompt_file="$(mktemp "${_rc_tmpdir}/prompt_XXXXXX")"
-    _docs_write_reconcile_prompt "$_rc_prompt_file" "$_rc_tmpdir" "$_entry_count" \
-      "$_map_ctx" "$_accumulated_feedback"
+    if [ "$_rc_regenerate" -eq 1 ]; then
+      _rc_regenerate=0
 
-    print_info "Requesting reconcile proposals (round ${_rc_iteration})…"
-    local _rc_llm_out _rc_llm_rc
-    _rc_llm_rc=0
-    _rc_llm_out="$(provider_run_prompt_with_timeout \
-      "$(cat "$_rc_prompt_file")" \
-      "$(provider_resolve_model doc_assessment)" \
-      true \
-      "${RITE_DOC_ASSESSMENT_TIMEOUT:-300}" 2>/dev/null)" \
-      || _rc_llm_rc=$?
-    rm -f "$_rc_prompt_file"
+      local _rc_prompt_file
+      _rc_prompt_file="$(mktemp "${_rc_tmpdir}/prompt_XXXXXX")"
+      _docs_write_reconcile_prompt "$_rc_prompt_file" "$_rc_tmpdir" "$_entry_count" \
+        "$_map_ctx" "$_accumulated_feedback"
 
-    if [ "$_rc_llm_rc" -eq 124 ]; then
-      print_warning "Doc reconcile: provider timed out after ${RITE_DOC_ASSESSMENT_TIMEOUT:-300}s"
-      rm -rf "$_rc_tmpdir" 2>/dev/null || true
-      return 1
-    elif [ "$_rc_llm_rc" -ne 0 ]; then
-      print_warning "Doc reconcile: provider call failed (exit ${_rc_llm_rc})"
-      rm -rf "$_rc_tmpdir" 2>/dev/null || true
-      return 1
-    fi
+      print_info "Requesting reconcile proposals (round ${_rc_iteration})…"
+      local _rc_llm_out _rc_llm_rc
+      _rc_llm_rc=0
+      _rc_llm_out="$(provider_run_prompt_with_timeout \
+        "$(cat "$_rc_prompt_file")" \
+        "$(provider_resolve_model doc_assessment)" \
+        true \
+        "${RITE_DOC_ASSESSMENT_TIMEOUT:-300}" 2>/dev/null)" \
+        || _rc_llm_rc=$?
+      rm -f "$_rc_prompt_file"
 
-    if echo "$_rc_llm_out" | grep -q "^NO_CHANGES_NEEDED"; then
-      print_info "No changes needed — drift entries may already be resolved"
-      rm -rf "$_rc_tmpdir" 2>/dev/null || true
-      return 0
-    fi
+      if [ "$_rc_llm_rc" -eq 124 ]; then
+        print_warning "Doc reconcile: provider timed out after ${RITE_DOC_ASSESSMENT_TIMEOUT:-300}s"
+        trap - INT TERM
+        rm -rf "$_rc_tmpdir" 2>/dev/null || true
+        return 1
+      elif [ "$_rc_llm_rc" -ne 0 ]; then
+        print_warning "Doc reconcile: provider call failed (exit ${_rc_llm_rc})"
+        trap - INT TERM
+        rm -rf "$_rc_tmpdir" 2>/dev/null || true
+        return 1
+      fi
 
-    rm -f "${_rc_proposal_dir}"/proposal_* 2>/dev/null || true
-    local _rc_prop_count
-    _rc_prop_count="$(_docs_parse_proposals "$_rc_llm_out" "$_rc_proposal_dir")"
+      if echo "$_rc_llm_out" | grep -q "^NO_CHANGES_NEEDED"; then
+        print_info "No changes needed — drift entries may already be resolved"
+        trap - INT TERM
+        rm -rf "$_rc_tmpdir" 2>/dev/null || true
+        return 0
+      fi
 
-    if [ "$_rc_prop_count" -eq 0 ]; then
-      print_warning "No proposals generated for drift reconcile"
-      rm -rf "$_rc_tmpdir" 2>/dev/null || true
-      return 0
+      rm -f "${_rc_proposal_dir}"/proposal_* 2>/dev/null || true
+      local _rc_prop_count
+      _rc_prop_count="$(_docs_parse_proposals "$_rc_llm_out" "$_rc_proposal_dir")"
+
+      if [ "$_rc_prop_count" -eq 0 ]; then
+        print_warning "No proposals generated for drift reconcile"
+        trap - INT TERM
+        rm -rf "$_rc_tmpdir" 2>/dev/null || true
+        return 0
+      fi
     fi
 
     _docs_show_all_proposals "$_rc_proposal_dir" "$_rc_prop_count" "$RITE_PROJECT_ROOT"
@@ -1132,7 +1157,8 @@ docs_reconcile_drift() {
         fi
 
         if [ -z "$_rc_fb" ]; then
-          print_warning "No feedback provided — showing proposals again"
+          # Empty input (bare Enter): re-display proposals without a provider call.
+          print_info "Showing proposals again…"
           continue
         fi
 
@@ -1145,6 +1171,7 @@ ${_rc_fb}"
           _accumulated_feedback="$_rc_fb"
         fi
 
+        _rc_regenerate=1
         print_status "Regenerating with feedback…"
         ;;
     esac

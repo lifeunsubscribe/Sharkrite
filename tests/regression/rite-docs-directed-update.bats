@@ -554,7 +554,7 @@ _init_git_origin() {
   printf '# Test Fixture Doc\nOriginal content.\n' > "${seed}/docs/test-fixture.md"
   git -C "$seed" add . >/dev/null 2>&1
   git -C "$seed" commit -m "seed" >/dev/null 2>&1
-  git -C "$seed" push origin main >/dev/null 2>&1
+  git -C "$seed" push origin HEAD:main >/dev/null 2>&1
 
   # Point FAKE_PROJECT's origin remote at the bare repo
   git -C "$fake_root" init >/dev/null 2>&1
@@ -640,7 +640,7 @@ _init_git_origin() {
   cp "$FAKE_PROJECT/docs/drift-log.md" "${seed_clone}/docs/drift-log.md"
   git -C "$seed_clone" add . >/dev/null 2>&1
   git -C "$seed_clone" commit -m "add drift log" >/dev/null 2>&1
-  git -C "$seed_clone" push origin main >/dev/null 2>&1
+  git -C "$seed_clone" push origin HEAD:main >/dev/null 2>&1
   rm -rf "$seed_clone"
 
   local prop_dir
