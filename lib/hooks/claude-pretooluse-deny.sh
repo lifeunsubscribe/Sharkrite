@@ -49,20 +49,9 @@ _rite_hook_denial_reason() {
   if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])gh([[:space:]]|$)'; then
     echo "gh commands are handled by the rite workflow, not the session"; return 0
   fi
-  # tools/sharkrite-lint.sh is explicitly permitted for in-session static
-  # analysis. It is deterministic (not a test runner) and is the only project
-  # check tool allowed in-session. This allowance must sit before the
-  # make/bats/pytest block so future additions to that block cannot
-  # accidentally deny it. Matches bare invocations and SHARKRITE_LINT_ONLY=N
-  # prefixed invocations (both with and without a leading ./).
-  # (_lint_pat is split across two tokens to avoid the RAW_MARKER_LITERAL lint
-  # false positive: sharkrite-lint.sh is a file path, not a protocol marker.)
-  _lint_pat='tools/sharkrite'
-  _lint_re="(^|[[:space:];|&(]|[\$][(]|\`)[[:space:]]*(SHARKRITE_LINT_ONLY=[^[:space:]]* +)?([.]/)?${_lint_pat}-lint[.]sh([[:space:]]|\$)"
-  if printf '%s' "$_cmd" | grep -qE "$_lint_re"; then
-    return 1
-  fi
   # test/lint runners — these run in the post-commit gate, not in-session.
+  # tools/sharkrite-lint.sh is permitted in-session: it matches none of the
+  # deny patterns below (make|bats|pytest) so it falls through to return 1.
   # Command-position anchored (issue #994): a .bats/make/pytest path argument
   # (cp/ls/bash -n/git add on a test file) must not deny. ([^[:space:];&|]*/)?
   # keeps path-INVOKED runners denied (/usr/local/bin/bats, node_modules/.bin/

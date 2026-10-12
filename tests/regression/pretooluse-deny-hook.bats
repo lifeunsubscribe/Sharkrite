@@ -55,6 +55,20 @@ _denied() { echo "$1" | grep -q '"permissionDecision":"deny"'; }
 @test "deny: make check still denied when sharkrite-lint.sh is allowed" { run _hook "make check"; _denied "$output"; }
 @test "deny: bats still denied when sharkrite-lint.sh is allowed"       { run _hook "bats tests/"; _denied "$output"; }
 
+# Chained commands: the lint allowance must NOT bypass downstream deny rules.
+@test "deny: sharkrite-lint.sh && bats (lint then bats)" {
+  run _hook "tools/sharkrite-lint.sh && bats -r tests/"
+  _denied "$output"
+}
+@test "deny: bats && sharkrite-lint.sh (bats then lint)" {
+  run _hook "bats -r tests/ && tools/sharkrite-lint.sh"
+  _denied "$output"
+}
+@test "deny: sharkrite-lint.sh; make check (lint then make)" {
+  run _hook "tools/sharkrite-lint.sh; make check"
+  _denied "$output"
+}
+
 # ---- ALLOW: read-only git + normal dev commands (no output) ----
 @test "allow: git status" { run _hook "git status"; [ -z "$output" ]; }
 @test "allow: git diff"   { run _hook "git diff"; [ -z "$output" ]; }
