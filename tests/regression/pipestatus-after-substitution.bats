@@ -128,6 +128,11 @@ provider_run_prompt_with_timeout() {
 provider_detect_error() {
   echo "UNKNOWN_ERROR"
 }
+# provider_resolve_model: the script resolves EFFECTIVE_MODEL via the
+# assessment role since #1187. Mirror the real resolver's fallback shape.
+provider_resolve_model() {
+  echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}"
+}
 PROVIDER_EOF
 
   # Stub assess-and-resolve.sh — the script functions-only-sources it since
