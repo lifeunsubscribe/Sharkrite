@@ -2055,7 +2055,7 @@ handle_pr_number_refused() {
 }
 
 # ---------------------------------------------------------------------------
-# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET
+# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET [MODE_SUFFIX]
 #
 # Refusal handler when an existing PR's baseRefName differs from the effective
 # target branch resolved for this issue. Prints a verbose block naming the
@@ -2065,6 +2065,10 @@ handle_pr_number_refused() {
 # NO auto-adopt: never assigns RITE_TARGET_BRANCH or switches targets silently.
 # The user must re-run with the correct --branch flag (or without one when the
 # PR base is main and main is the intended target).
+#
+# Optional MODE_SUFFIX (e.g. "--dev-and-pr") is appended to the corrected
+# command so callers invoked with a mode flag get a refusal that preserves
+# their original invocation form.
 #
 # Returns: 19 — sentinel meaning "PR base != effective target; manual action required".
 #   Both single-issue and batch mode propagate exit 19 through main() without
@@ -2077,15 +2081,17 @@ handle_branch_mismatch() {
   local pr_number="$2"
   local pr_base="$3"
   local effective_target="$4"
+  local _mode_suffix="${5:-}"
 
   # Build the corrected command:
   #   - If the PR's base is "main", the user should omit --branch (default target).
   #   - Otherwise, the user should pass --branch <pr_base> to match the PR.
+  # Append optional mode suffix to preserve the caller's invocation form.
   local _corrected_cmd
   if [ "$pr_base" = "main" ]; then
-    _corrected_cmd="rite ${issue_number}"
+    _corrected_cmd="rite ${issue_number}${_mode_suffix:+ $_mode_suffix}"
   else
-    _corrected_cmd="rite --branch ${pr_base} ${issue_number}"
+    _corrected_cmd="rite --branch ${pr_base} ${issue_number}${_mode_suffix:+ $_mode_suffix}"
   fi
 
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -2101,6 +2107,72 @@ handle_branch_mismatch() {
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   return 19
+}
+
+# ---------------------------------------------------------------------------
+# check_branch_mismatch ISSUE_NUMBER PR_NUMBER [PR_BASE_BRANCH] [MODE_SUFFIX]
+#
+# Single-source guard: detect and refuse when an existing PR's baseRefName
+# differs from the effective target branch. Called by run_workflow() and by
+# bin/rite's dev-and-pr dispatch — the only two entry points that fork a
+# worktree and could observe divergent resolver results for the same issue.
+#
+# Compares PR.baseRefName against the effective target resolved WITHOUT the
+# PR number — passing the PR triggers tier-1 (circular: tier-1 returns the
+# PR's own baseRefName, so the comparison always matches).
+#
+# Arguments:
+#   ISSUE_NUMBER   — the issue being processed
+#   PR_NUMBER      — the existing PR for this issue (empty/null = skip check)
+#   PR_BASE_BRANCH — baseRefName already fetched (empty = fetch inline)
+#   MODE_SUFFIX    — optional flag appended to corrected command (e.g. "--dev-and-pr")
+#
+# Returns: 0  — no mismatch; caller may proceed
+#          19 — PR base != effective target; handle_branch_mismatch printed
+#               the refusal block; caller must propagate 19 immediately
+#
+# See: docs/architecture/exit-codes.md — exit code 19
+# See: tests/regression/branch-mismatch-refusal.bats
+# ---------------------------------------------------------------------------
+check_branch_mismatch() {
+  local _cbm_issue="$1"
+  local _cbm_pr="${2:-}"
+  local _cbm_base="${3:-}"
+  local _cbm_mode_suffix="${4:-}"
+
+  [ -n "$_cbm_pr" ] && [ "$_cbm_pr" != "null" ] || return 0
+
+  # Lazy-source stale-branch.sh for resolve_target_branch. run_workflow() loads
+  # it early (before this guard), so the declare -f check is a no-op there.
+  # bin/rite's dev-and-pr path may not have it loaded yet.
+  if ! declare -f resolve_target_branch >/dev/null 2>&1; then
+    source "$RITE_LIB_DIR/utils/stale-branch.sh"
+  fi
+
+  local _mismatch_target
+  _mismatch_target=$(resolve_target_branch "$_cbm_issue" 2>/dev/null || echo "main")
+
+  local _pr_base_for_check="${_cbm_base:-}"
+  if [ -z "$_pr_base_for_check" ]; then
+    _pr_base_for_check=$(gh_safe pr view "$_cbm_pr" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
+  fi
+
+  if [ -z "$_pr_base_for_check" ]; then
+    # Fallback fetch returned empty (transient gh API error). Log it so the
+    # bypass is observable; caller proceeds (re-attempt on next run).
+    print_warning "#${_cbm_issue}: could not fetch PR #${_cbm_pr} baseRefName — branch-mismatch check skipped (transient API error?)"
+    _diag "BRANCH_MISMATCH_CHECK_SKIPPED issue=${_cbm_issue} pr=${_cbm_pr} reason=empty_base_fetch"
+    return 0
+  fi
+
+  if [ "$_pr_base_for_check" != "$_mismatch_target" ]; then
+    set +e
+    handle_branch_mismatch "$_cbm_issue" "$_cbm_pr" "$_pr_base_for_check" "$_mismatch_target" "$_cbm_mode_suffix"
+    set -e
+    return 19
+  fi
+
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -2890,45 +2962,23 @@ run_workflow() {
   fi
 
   # ── Branch-mismatch guard: refuse before stale-branch check (#1044) ──
-  # Check must run BEFORE check_stale_branch so no rebase/close/merge ever
-  # touches a PR that targets the wrong base branch.
-  # Compares PR.baseRefName against the effective target resolved WITHOUT the
-  # PR number — passing the PR would make tier 1 return baseRefName itself
-  # (circular comparison that always matches).
-  if [ -n "${PR_NUMBER:-}" ] && [ "${PR_NUMBER:-}" != "null" ]; then
-    # Resolve effective target independently (no PR arg — avoids circular match).
-    local _mismatch_target
-    _mismatch_target=$(resolve_target_branch "$issue_number" 2>/dev/null || echo "main")
-
-    # Fetch baseRefName if not already set by the worktree-detection block above
-    # (resume path: PR and worktree were both known from session state, so the
-    # worktree-detection block's API call was skipped).
-    local _pr_base_for_check="${PR_BASE_BRANCH:-}"
-    if [ -z "$_pr_base_for_check" ]; then
-      _pr_base_for_check=$(gh_safe pr view "$PR_NUMBER" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
-    fi
-
-    if [ -z "$_pr_base_for_check" ]; then
-      # Fallback fetch returned empty (transient gh API error on resume path).
-      # The mismatch check cannot run — log a visible warning so the bypass is
-      # observable rather than silent. A subsequent run will re-attempt.
-      print_warning "#${issue_number}: could not fetch PR #${PR_NUMBER} baseRefName — branch-mismatch check skipped (transient API error?)"
-      _diag "BRANCH_MISMATCH_CHECK_SKIPPED issue=${issue_number} pr=${PR_NUMBER} reason=empty_base_fetch"
-    fi
-
-    if [ -n "$_pr_base_for_check" ] && [ "$_pr_base_for_check" != "$_mismatch_target" ]; then
-      set +e
-      handle_branch_mismatch "$issue_number" "$PR_NUMBER" "$_pr_base_for_check" "$_mismatch_target"
-      set -e
-      # Return 19 in both single-issue and batch mode so main() routes to the
-      # dedicated branch_mismatch path without printing "Workflow failed".
-      # Batch: batch-process-issues.sh captures 19 to record branch_mismatch
-      #        (SKIPPED class) and continues remaining issues.
-      # Single: exit 19 is non-zero (refusal) and avoids the misleading
-      #         "Workflow failed" line that the generic else branch would print.
-      # See: docs/architecture/exit-codes.md — exit code 19
-      return 19
-    fi
+  # check_branch_mismatch() is the single source of truth for this logic —
+  # also called from bin/rite's dev-and-pr dispatch. Must run BEFORE
+  # check_stale_branch so no rebase/close/merge ever touches a wrong-base PR.
+  local _cbm_result=0
+  set +e
+  check_branch_mismatch "$issue_number" "${PR_NUMBER:-}" "${PR_BASE_BRANCH:-}"
+  _cbm_result=$?
+  set -e
+  if [ $_cbm_result -eq 19 ]; then
+    # Return 19 in both single-issue and batch mode so main() routes to the
+    # dedicated branch_mismatch path without printing "Workflow failed".
+    # Batch: batch-process-issues.sh captures 19 to record branch_mismatch
+    #        (SKIPPED class) and continues remaining issues.
+    # Single: exit 19 is non-zero (refusal) and avoids the misleading
+    #         "Workflow failed" line that the generic else branch would print.
+    # See: docs/architecture/exit-codes.md — exit code 19
+    return 19
   fi
 
   # ── Stale branch check (before inspecting PR state — avoid wasted API calls on stale PRs) ──
