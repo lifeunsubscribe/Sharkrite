@@ -1877,7 +1877,7 @@ phase_merge_pr() {
     if [ "$_merge_gate_exit" -ne 0 ]; then
       if [ -s "$_merge_gate_file" ]; then
         print_error "Merge-decision gate failed — failing tests:"
-        jq -r '.tests[]? | select(.status == "failed") | "  - " + .name' "$_merge_gate_file" 2>/dev/null >&2 || true
+        jq -r '(.tests // [])[:20][] | "  - " + (.test_name // "unknown")' "$_merge_gate_file" 2>/dev/null >&2 || true
       fi
       rm -f "$_merge_gate_file"
       print_error "Merge-decision gate failed — full suite has failures; fix before merging"

@@ -4,11 +4,10 @@
 # full suite.  Covers:
 #   - _detect_workspace_runner: jest/vitest from devDependencies, fallback unknown
 #   - _changed_files_to_workspace_dirs: maps diff paths to workspace dirs
-#   - _diff_has_cdk_paths / _is_cdk_workspace: CDK skip guard
 #   - _node_scope_zero_tests: sanity-valve zero-test detection
 #   - per-cycle tier (default RITE_GATE_TIER=cycle): only changed workspace tested
 #   - RITE_GATE_TIER=merge: full root npm test (bypasses workspace scoping)
-#   - CDK workspace skipped when diff has no infra/api/lambda paths
+#   - unchanged workspace not tested when only affected workspace changed
 #   - RITE_GATE_NATIVE_SCOPING=false: workspace full suite (no findRelatedTests)
 #   - sanity valve: jest 0 tests + non-test source → workspace full suite
 
@@ -225,29 +224,6 @@ _run_gate_with_env() {
   [[ "$output" == *"packages/cdk"* ]]
 }
 
-@test "(#975) _diff_has_cdk_paths: /lambda/ path → returns 0" {
-  run _diff_has_cdk_paths "$(printf '%s\n' "packages/api/src/foo.ts" "packages/cdk/lambda/handler.ts")"
-  [ "$status" -eq 0 ]
-}
-
-@test "(#975) _diff_has_cdk_paths: no infra/api/lambda → returns 1" {
-  run _diff_has_cdk_paths "$(printf '%s\n' "packages/api/src/foo.ts" "packages/api/tests/foo.test.ts")"
-  [ "$status" -ne 0 ]
-}
-
-@test "(#975) _is_cdk_workspace: dir with cdk.json → returns 0" {
-  mkdir -p "$TEST_REPO/packages/infra"
-  printf '{"app":"npx ts-node bin/app.ts"}\n' > "$TEST_REPO/packages/infra/cdk.json"
-  run _is_cdk_workspace "$TEST_REPO/packages/infra"
-  [ "$status" -eq 0 ]
-}
-
-@test "(#975) _is_cdk_workspace: dir without cdk.json → returns 1" {
-  mkdir -p "$TEST_REPO/packages/api"
-  run _is_cdk_workspace "$TEST_REPO/packages/api"
-  [ "$status" -ne 0 ]
-}
-
 @test "(#975) _node_scope_zero_tests: jest 'No tests found' output → returns 0" {
   local f
   f=$(mktemp)
@@ -333,9 +309,9 @@ _run_gate_with_env() {
   [ "$output" = "0" ]
 }
 
-@test "(#975) CDK workspace skipped when diff has no infra/api/lambda paths" {
+@test "(#975) per-cycle: unchanged workspace not tested when only one workspace changed" {
   _make_two_ws_repo
-  # Change only packages/api (no infra paths)
+  # Change only packages/api — packages/cdk has no changed source files
   _init_git_with_ws_change "packages/api" "packages/api/src/new-feature.ts"
   mkdir -p "$TEST_REPO/node_modules/.bin"
   printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
@@ -349,9 +325,10 @@ _run_gate_with_env() {
   _run_gate_with_env "RITE_GATE_TIER=cycle"
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
-  # CDK workspace must NOT have been tested.
+  # packages/cdk must NOT have been tested (_changed_files_to_workspace_dirs
+  # only returns workspaces with changed source files).
   if grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
-    echo "FAIL: CDK workspace was tested despite no infra/api/lambda paths in diff"
+    echo "FAIL: unchanged workspace packages/cdk was tested unexpectedly"
     cat "$TEST_REPO/invocations.log" || true
     false
   fi
@@ -537,4 +514,81 @@ _run_gate_with_env() {
     echo "FAIL: phase_merge_pr returned $_result, expected 1 on gate failure"
     false
   }
+}
+
+@test "(#975) RITE_GATE_FORCE_FULL=1: full root npm test runs even with empty diff" {
+  _make_two_ws_repo
+  # No second commit — empty diff (origin/main == HEAD)
+  (cd "$TEST_REPO" \
+     && git init -q && git config user.email t@t && git config user.name t \
+     && git add -A && git commit -qm base \
+     && git update-ref refs/remotes/origin/main HEAD) >/dev/null 2>&1
+  mkdir -p "$TEST_REPO/node_modules/.bin"
+  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
+  chmod +x "$TEST_REPO/node_modules/.bin/jest"
+  : > "$TEST_REPO/invocations.log"
+  _write_tracking_npm_stub
+
+  _run_gate_with_env "RITE_GATE_TIER=cycle RITE_GATE_FORCE_FULL=1"
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # With RITE_GATE_FORCE_FULL=1, per-cycle scoping is bypassed;
+  # root npm test must run.
+  grep -q "npm:test:$" "$TEST_REPO/invocations.log" || {
+    echo "FAIL: root npm test not invoked with RITE_GATE_FORCE_FULL=1"
+    cat "$TEST_REPO/invocations.log" || true
+    false
+  }
+
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+}
+
+@test "(#975) pnpm monorepo: --filter=./<ws> flag precedes test subcommand" {
+  # Verify pnpm is invoked as `pnpm --filter=./packages/api test` (not
+  # `pnpm test --filter=...`). Argument ordering matters for pnpm.
+  _make_two_ws_repo
+  # Replace package-lock.json with pnpm-lock.yaml to trigger pnpm path.
+  rm -f "$TEST_REPO/package-lock.json"
+  printf 'lockfileVersion: '"'"'9.0'"'"'\n' > "$TEST_REPO/pnpm-lock.yaml"
+  _init_git_with_ws_change "packages/api" "packages/api/src/new-feature.ts"
+
+  # pnpm stub that records invocations in the same format as the npm stub.
+  # For pnpm, args arrive as: --filter=./<ws> test [-- <test args>...]
+  cat > "$STUB_DIR/pnpm" <<'PNPMSTUB'
+#!/bin/bash
+LOG="${INVOCATION_LOG:-/dev/null}"
+FILTER_ARG=""
+SUBCMD=""
+for a in "$@"; do
+  case "$a" in
+    --filter=*) FILTER_ARG="$a" ;;
+    test|install|run) [ -z "$SUBCMD" ] && SUBCMD="$a" ;;
+  esac
+done
+echo "pnpm:${SUBCMD}:${FILTER_ARG}" >> "$LOG"
+echo "PASS"
+exit 0
+PNPMSTUB
+  chmod +x "$STUB_DIR/pnpm"
+
+  mkdir -p "$TEST_REPO/node_modules/.bin"
+  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
+  chmod +x "$TEST_REPO/node_modules/.bin/jest"
+  : > "$TEST_REPO/invocations.log"
+
+  _run_gate_with_env "RITE_GATE_TIER=cycle RITE_GATE_NATIVE_SCOPING=false"
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # pnpm must have been invoked with --filter=./packages/api for the workspace test.
+  grep -q "pnpm:test:--filter=\./packages/api" "$TEST_REPO/invocations.log" || {
+    echo "FAIL: pnpm was not invoked with --filter=./packages/api"
+    cat "$TEST_REPO/invocations.log" || true
+    false
+  }
+
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
 }

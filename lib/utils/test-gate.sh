@@ -1779,25 +1779,6 @@ _changed_files_to_workspace_dirs() {
 }
 
 # ---------------------------------------------------------------------------
-# _diff_has_cdk_paths — return 0 when changed files include CDK/infra/api-handler
-# paths (#975 CDK workspace skip guard).
-# Args: $1=changed_files (newline-separated)
-# ---------------------------------------------------------------------------
-_diff_has_cdk_paths() {
-  printf '%s\n' "$1" \
-    | grep -qE '(^cdk/|/cdk/|^infrastructure/|/infrastructure/|^infra/|/infra/|/api/|^api/|/lambda/|/handler[s]?/)' \
-    2>/dev/null
-}
-
-# ---------------------------------------------------------------------------
-# _is_cdk_workspace — return 0 when a workspace directory contains cdk.json (#975)
-# Args: $1=ws_dir (absolute path)
-# ---------------------------------------------------------------------------
-_is_cdk_workspace() {
-  [ -f "$1/cdk.json" ]
-}
-
-# ---------------------------------------------------------------------------
 # _node_scope_zero_tests — detect when a scoped test run selected 0 tests (#975)
 # Args: $1=raw_output_file
 # Sanity valve: when the scoped run produces 0 tests but non-test source was

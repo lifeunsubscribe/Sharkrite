@@ -131,8 +131,7 @@
 # "cycle" — per-cycle tier (default): for each fix iteration, run only the
 #   workspace(s) that have changed source files, using framework-native diff
 #   scoping (jest --findRelatedTests / vitest related) when a known runner is
-#   detected. CDK/infra workspaces are skipped when the diff has no
-#   infrastructure, api, lambda, or handler paths. If a scoped run selects
+#   detected. If a scoped run selects
 #   0 test files while non-test source changed, falls back to that workspace's
 #   full suite (sanity valve). Zero target-repo configuration required: runner
 #   auto-detected from each workspace's package.json devDependencies (or test
