@@ -173,10 +173,17 @@ teardown() {
 @test "structural: workflow-runner.sh FILE_CHANGES diffs use origin/\${_target} not origin/main" {
   _src=$(cat "$RITE_REPO_ROOT/lib/core/workflow-runner.sh")
 
-  # Count diffs using origin/${_target}...HEAD
-  _diff_count=$(echo "$_src" | grep -c 'diff --name-only "origin/${_target}' || true)
-  if [ "$_diff_count" -lt 3 ]; then
-    echo "FAIL: workflow-runner.sh has only $_diff_count diff sites using origin/\${_target} (expected >= 3)"
+  # Diffs are centralized in count_changed_files() — callers must pass "${_target}" not literal "main"
+  _call_count=$(echo "$_src" | grep -c 'count_changed_files.*"${_target}"' || true)
+  if [ "$_call_count" -lt 3 ]; then
+    echo "FAIL: workflow-runner.sh has only $_call_count count_changed_files calls passing \"\${_target}\" (expected >= 3)"
+    return 1
+  fi
+
+  # count_changed_files itself must diff against origin/${_cfc_target} (not hardcoded origin/main)
+  _diff_count=$(echo "$_src" | grep -c 'diff --name-only "origin/${_cfc_target}' || true)
+  if [ "$_diff_count" -lt 2 ]; then
+    echo "FAIL: count_changed_files has only $_diff_count diff sites using origin/\${_cfc_target} (expected >= 2)"
     return 1
   fi
 }
