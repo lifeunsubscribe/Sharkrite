@@ -406,6 +406,25 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Merge boundary (#718).** Block-on-any now extends to the **merge boundary** as well as the fix loop. Gate findings are injected into the assessment as `### [GATE] … - ACTIONABLE_NOW` items (structured header prefix). At the 3/3 retry cap, `assess-and-resolve.sh` distinguishes `[GATE]`-tagged items (objective test/lint failures) from LLM-severity HIGH review findings: gate-origin items that survive all retries are treated as non-deferrable — they block the merge (`exit 1`, same path as CRITICAL) rather than being filed as tech-debt and merged. Non-gate HIGH review findings continue to follow the existing retry-cap defer+tech-debt path. Live regression: issue #649 — 2 gate failures, loop hit 3/3, HIGH `[GATE]` deferred to #714, PR #712 merged red.
 
+**Red-Main Degradation Contract (#1149).** The block-on-any soundness argument has a precondition: **main must be green**. In target repos that invariant may not hold. Live failure (LeadFlow 2026-07-05, batch rite 401 128 383 340 113 435 431): main had 18+ failing dashboard tests; 51 main-inherited failures fed into `ACTIONABLE_NOW` for issue #401; the fix loop began a capped 30-min attempt to repair the repo's red main inside one issue's PR — and projected the same churn across all 7 batch issues.
+
+The fix is a two-layer defense:
+
+1. **Batch preflight** (`lib/core/batch-process-issues.sh`): before processing any issue, the batch runs the full gate once against a detached `origin/main` worktree (`RITE_GATE_FORCE_FULL=1`). If main is red:
+   - **Without `RITE_ACCEPT_RED_MAIN=1`**: halt immediately (exit 20) with the failing test/lint list and explicit options — fix main, or re-run with `RITE_ACCEPT_RED_MAIN=1` to proceed with attribution.
+   - **With `RITE_ACCEPT_RED_MAIN=1`**: save the baseline gate findings as `${RITE_STATE_DIR}/gate-main-baseline.json`, export `RITE_MAIN_BASELINE_FILE`, and proceed with the attribution path.
+
+2. **Attribution subtraction** (`lib/core/assess-and-resolve.sh`): when `RITE_ACCEPT_RED_MAIN=1` and `RITE_MAIN_BASELINE_FILE` exists, per-issue gate findings are split:
+   - Failures also present in the baseline (`test_name` exact match for tests; `file+rule` match for lint, line-number-agnostic) → `INFO_ONLY` (not counted toward `GATE_NOW_COUNT`, not entered in the fix loop, visible in the assessment but not blocking).
+   - Branch-only failures → `ACTIONABLE_NOW` as usual.
+   - When ALL failures are inherited, the synthetic empty-findings block is suppressed (no phantom "gate exited non-zero but no findings" item fires).
+
+**Green-main repos:** zero behavior change. The preflight is one additional targeted gate run; it exits 0 fast and the rest of the batch proceeds normally.
+
+**Why not delete baseline-diff machinery again?** The deleted baseline-diff (`_compute_baseline_red_names`, #699→Phase 3) was a per-issue per-gate-round probe — it re-ran failing files at the diff base every fix loop iteration to suppress pre-existing reds. The attribution here is a single preflight + one baseline comparison per issue assessment: no per-round probe, no worktree per issue, no per-SHA cache. The cost is one full-suite run per batch start on `origin/main` — paid once, not per-issue, and only when main is actually red.
+
+**Enforcement:** `tests/regression/batch-preflight-green-main.bats`.
+
 ### Full-suite is OPT-IN; the probe is capped (CRITICAL — the "full suite every time" fix)
 
 **2026-06-24.** A 10-agent audit traced the recurring "the full/near-full bats suite runs every time" complaint to **two independent escalations**, both now bounded. The recurrence pattern was always the same: a fix closed one path, a *different* path stayed open, so it "regressed."

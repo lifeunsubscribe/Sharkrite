@@ -124,6 +124,23 @@
 # runs are exempt by construction.
 # RITE_GATE_SCOPE_WARN_SECONDS=300
 
+# Green-main preflight behavior when main is red (default: not set — halt).
+# When unset or "0", a batch run halts with exit 20 if the full gate on
+# origin/main finds failures. This guards gate block-on-any soundness:
+# any failure in the targeted selection is this change's to fix — only valid
+# when main is green.
+#
+# Set to "1" to proceed despite a red main. Sharkrite saves the failing
+# tests/lint items as a baseline and subtracts them from each issue's
+# assessment: failures also present on main become INFO_ONLY (not ACTIONABLE_NOW);
+# branch-only failures remain ACTIONABLE_NOW.
+#
+# Intended for: repos where fixing main is blocked but branch work must continue.
+# Live motivating case: LeadFlow 2026-07-05 (18 failing dashboard tests on main,
+# 51 inherited ACTIONABLE_NOW items per issue, 30-minute wasted fix-loop).
+# See: docs/architecture/behavioral-design.md → "Red-Main Degradation Contract"
+# RITE_ACCEPT_RED_MAIN=0
+
 # =============================================================================
 # Plan Command (rite plan)
 # =============================================================================
