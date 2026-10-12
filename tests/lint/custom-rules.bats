@@ -533,6 +533,7 @@ EOF
   cd "$PROJECT_ROOT"
   SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
+  [ "$status" -eq 0 ]
   # Both locals inside my_func are correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
     [[ ! "$output" =~ nested-quoted-default\.sh ]] || {
