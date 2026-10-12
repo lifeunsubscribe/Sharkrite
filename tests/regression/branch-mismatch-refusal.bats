@@ -50,7 +50,7 @@
 #    15.  exit-19 documented in the key-codes bullet
 #
 #   BEHAVIORAL (subprocess execution with stubs):
-#    16.  base=big, target=main  → exits 19, output contains "rite --branch big"
+#    16.  base=big, target=main  → exits 19, output contains "rite --branch big", "--dev-and-pr" mode suffix preserved
 #    17.  base=main, target=big  → exits 19, output contains "rite 42" (no --branch)
 #    18.  base == target         → no refusal, exits 0 (workflow continues)
 #    19.  batch _WF_EXIT=19      → branch_mismatch in ISSUE_STATUS, in SKIPPED_ISSUES
@@ -791,7 +791,6 @@ source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 ISSUE_NUMBER="42"
 PR_NUMBER="456"
 PR_BASE_BRANCH="bigbranch"
-CLAUDE_WORKFLOW_CALLED=false
 
 # Post-source stubs: deps only — check_branch_mismatch stays real.
 detect_pr_for_issue() {
@@ -802,15 +801,17 @@ detect_pr_for_issue() {
 resolve_target_branch() { echo "main"; }
 
 _dev_pr_cbm=0
+_dev_pr_output=""
 if detect_pr_for_issue "$ISSUE_NUMBER"; then
   set +e
-  check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}"
+  _dev_pr_output=$(check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}" "--dev-and-pr" 2>&1)
   _dev_pr_cbm=$?
   set -e
 fi
 if [ "$_dev_pr_cbm" -eq 19 ]; then
-  if [ "$CLAUDE_WORKFLOW_CALLED" = "true" ]; then
-    echo "FAIL: claude-workflow.sh was called despite mismatch" >&2
+  if ! echo "$_dev_pr_output" | grep -qF -- "--dev-and-pr"; then
+    echo "FAIL: corrected command does not contain '--dev-and-pr' in refusal output" >&2
+    echo "Output was: $_dev_pr_output" >&2
     exit 1
   fi
   exit 19
