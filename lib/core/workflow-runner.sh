@@ -248,6 +248,61 @@ setup_interrupt_handlers() {
 }
 
 # ===================================================================
+# DIFF COUNT HELPER
+# ===================================================================
+
+# count_changed_files WORKTREE TARGET
+# Echoes the number of files changed vs origin/TARGET (triple-dot diff).
+# On first failure retries once after 0.5s (post-commit lock/teardown race).
+# On second failure: prints captured stderr via print_error, echoes -1, returns 1.
+# Callers must treat return 1 as an infrastructure error — NEVER as "no work produced".
+count_changed_files() {
+  local _cfc_worktree="${1:-}"
+  local _cfc_target="${2:-main}"
+  local _cfc_stderr
+  _cfc_stderr=$(mktemp)
+  local _cfc_count _cfc_exit
+
+  # First attempt
+  _cfc_exit=0
+  if [ -n "$_cfc_worktree" ]; then
+    _cfc_count=$(git -C "$_cfc_worktree" diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  else
+    _cfc_count=$(git diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  fi
+
+  if [ "$_cfc_exit" -eq 0 ]; then
+    rm -f "$_cfc_stderr"
+    echo "${_cfc_count:-0}"
+    return 0
+  fi
+
+  # Retry: post-commit lock/teardown races settle within a second
+  sleep 0.5
+  _cfc_exit=0
+  if [ -n "$_cfc_worktree" ]; then
+    _cfc_count=$(git -C "$_cfc_worktree" diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  else
+    _cfc_count=$(git diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  fi
+
+  if [ "$_cfc_exit" -eq 0 ]; then
+    rm -f "$_cfc_stderr"
+    echo "${_cfc_count:-0}"
+    return 0
+  fi
+
+  # Infrastructure error: git diff failed twice — NEVER "no work produced"
+  print_error "could not determine changes: git diff failed (target=origin/${_cfc_target})"
+  if [ -s "$_cfc_stderr" ]; then
+    print_error "git stderr: $(cat "$_cfc_stderr")"
+  fi
+  rm -f "$_cfc_stderr"
+  echo "-1"
+  return 1
+}
+
+# ===================================================================
 # BLOCKER HANDLING
 # ===================================================================
 
@@ -805,7 +860,7 @@ EOF
         # Check if PR has actual file changes (not just placeholder commit).
         # Use triple-dot (merge-base diff) so advancing main doesn't false-positive.
         cd "$WORKTREE_PATH" || exit 1
-        FILE_CHANGES=$(git diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+        FILE_CHANGES=$(count_changed_files "" "${_target}") || return 1
 
         if [ "$FILE_CHANGES" -gt 0 ]; then
           print_info "Issue #$issue_number has $FILE_CHANGES file(s) changed — skipping development phase"
@@ -870,7 +925,7 @@ EOF
 
           # Re-check if development actually produced work
           local post_dev_changes
-          post_dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+          post_dev_changes=$(count_changed_files "$WORKTREE_PATH" "${_target}") || return 1
           if [ "${post_dev_changes:-0}" -eq 0 ]; then
             print_warning "No work was produced in the development phase"
             print_info "Aborting workflow — nothing to push or review"
@@ -1049,7 +1104,7 @@ EOF
       # Verify development actually produced work (file changes vs target).
       # Use triple-dot (merge-base diff) so advancing target doesn't false-positive.
       local file_changes
-      file_changes=$(git -C "$WORKTREE_PATH" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+      file_changes=$(count_changed_files "$WORKTREE_PATH" "${_target}") || return 1
 
       if [ "$file_changes" -eq 0 ]; then
         print_warning "No work was produced in the development phase"
@@ -2822,7 +2877,8 @@ run_workflow() {
       if [ -n "$_pr_branch" ]; then
         local _wt_path=$(git worktree list | grep "\[$_pr_branch\]" | awk '{print $1}' || true)
         if [ -n "$_wt_path" ] && [ -d "$_wt_path" ]; then
-          local _file_changes=$(git -C "$_wt_path" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+          local _file_changes
+          _file_changes=$(count_changed_files "$_wt_path" "${_target}") || return 1
           if [ "$_file_changes" -gt 0 ]; then
             WORKTREE_PATH="$_wt_path"
             set_current_worktree "$WORKTREE_PATH"
@@ -3040,7 +3096,8 @@ run_workflow() {
       print_info "Review current, no assessment → running assessment"
     else
       # Review stale or missing — skip dev if work exists, run from push/review
-      local _dev_changes=$(git -C "$WORKTREE_PATH" diff --name-only "origin/${_target}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+      local _dev_changes
+      _dev_changes=$(count_changed_files "$WORKTREE_PATH" "${_target}") || return 1
       if [ "${_dev_changes:-0}" -gt 0 ]; then
         skip_to_phase="create-pr"
         print_info "Dev complete, review needs refresh → running from push/review"
