@@ -1856,6 +1856,8 @@ run_test_gate() {
   # Propagated to the gate JSON so assess-and-resolve.sh can name the cause
   # in its synthetic blocking [GATE] item.  Empty string = no named reason.
   local _gate_reason=""
+  local _fr_watchdog=false
+  local _watchdog_group=""
 
   # _gate_verbose and _gate_raw_sink are resolved above (before RITE_TEST_COMMAND
   # early-return) so the same sink is used by every runner path uniformly.
@@ -2223,6 +2225,7 @@ run_test_gate() {
           _gate_status "[test-gate] bats (parallel group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=parallel timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
           _fr_watchdog=true
+          _watchdog_group="${_watchdog_group:+${_watchdog_group}+}parallel"
         fi
         echo 0 > "$_bats_exit_file"
       fi
@@ -2257,6 +2260,7 @@ run_test_gate() {
           _gate_status "[test-gate] bats (serial group) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
           _diag "TEST_GATE_WATCHDOG_KILL group=serial timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
           _fr_watchdog=true
+          _watchdog_group="${_watchdog_group:+${_watchdog_group}+}serial"
         fi
       fi
 
@@ -2275,6 +2279,9 @@ run_test_gate() {
     if [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; then
       _gate_status "[test-gate] bats (full suite) killed by whole-run watchdog after ${_gate_bats_timeout}s (RITE_GATE_BATS_TIMEOUT)"
       _diag "TEST_GATE_WATCHDOG_KILL group=full timeout_s=${_gate_bats_timeout} pr=${PR_NUMBER:-?}"
+      _fr_watchdog=true
+      _watchdog_group="full"
+      _tests_exit=1
     fi
 
     # --- Flake retry (#938): one bounded serial re-run of failing files ------
@@ -2319,36 +2326,58 @@ run_test_gate() {
         _notrun_warning=$(grep -oE 'Executed [0-9]+ instead of expected [0-9]+ tests' \
           "$_bats_pretty_capture" | head -1 || true)
       fi
-      if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ]; then
-        # Not-run names come from a set difference of planned @test
-        # descriptions (from the SELECTED bats files) minus TAP result lines —
-        # never from the pretty stream, whose width-truncated begin lines
-        # produced the 130-phantom event (PR #852) and which interleaves under
-        # --jobs and mismatched begin/result pairs (130 phantom findings for a
-        # deficit of 1 on PR #852; issue #862). Finding count is capped at the
-        # bats-reported deficit inside _synthesize_notrun_findings.
-        local _notrun_files_list _notrun_summary
-        _notrun_files_list=$(mktemp "/tmp/rite_gate_notrun_f_${PR_NUMBER:-0}_$$_XXXXXX")
-        if [ "$_selection" = "FORCE_FULL" ]; then
-          # Mirror `bats -r tests/`: every .bats file under tests/ was planned.
-          (cd "$project_root" && find tests -name '*.bats' -type f 2>/dev/null | sort) \
-            > "$_notrun_files_list" || true
+      if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ] || [ "${_fr_watchdog:-false}" = "true" ]; then
+        if [ "${_fr_watchdog:-false}" = "true" ]; then
+          # Watchdog kill: collapse all not-run tests into ONE finding.
+          # Genuinely failed tests from completed bats sections keep their
+          # per-test findings (already in _tests_raw_file). The N not-run
+          # tests become a single item so the fix session's proportional
+          # timeout math (300+240×count) sees the real actionable count,
+          # not a synthetic flood (issue #1130, live: batch 20261011-174713
+          # slot #1021 — 690 not-run findings buried 5 real ones).
+          local _wdog_n _eff_deficit
+          _wdog_n=$(grep -c "^not ok " "$_tests_raw_file" || true)
+          _wdog_n=$(( _wdog_n + 1 ))
+          _eff_deficit="${_notrun_deficit:-0}"
+          [ "$_eff_deficit" -le 0 ] && _eff_deficit=1
+          printf 'not ok %s [tests_not_run] watchdog killed %s group after %ss — %s tests not run; root cause is gate runtime, not the tests (reduce selection cost: add # sharkrite-gate-serial to load-heavy files, or scope lint rules with SHARKRITE_LINT_ONLY=N)\n' \
+            "$_wdog_n" "${_watchdog_group:-bats}" "$_gate_bats_timeout" "$_eff_deficit" \
+            >> "$_tests_raw_file"
+          _gate_status "[test-gate] bats: watchdog killed ${_watchdog_group:-bats} group after ${_gate_bats_timeout}s — ${_eff_deficit} not-run tests collapsed into 1 [GATE] finding (root cause: gate timeout, not the tests)"
+          _gate_reason="tests_not_run"
+          _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=0 emitted=1 pr=${PR_NUMBER:-?}"
+          _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
         else
-          printf '%s\n' "$_selection" > "$_notrun_files_list"
+          # Normal not-run path: names come from a set difference of planned
+          # @test descriptions (from the SELECTED bats files) minus TAP result
+          # lines — never from the pretty stream, whose width-truncated begin
+          # lines produced the 130-phantom event (PR #852) and which interleaves
+          # under --jobs and mismatched begin/result pairs (130 phantom findings
+          # for a deficit of 1 on PR #852; issue #862). Finding count is capped
+          # at the bats-reported deficit inside _synthesize_notrun_findings.
+          local _notrun_files_list _notrun_summary
+          _notrun_files_list=$(mktemp "/tmp/rite_gate_notrun_f_${PR_NUMBER:-0}_$$_XXXXXX")
+          if [ "$_selection" = "FORCE_FULL" ]; then
+            # Mirror `bats -r tests/`: every .bats file under tests/ was planned.
+            (cd "$project_root" && find tests -name '*.bats' -type f 2>/dev/null | sort) \
+              > "$_notrun_files_list" || true
+          else
+            printf '%s\n' "$_selection" > "$_notrun_files_list"
+          fi
+          _notrun_summary=$(_synthesize_notrun_findings "$_tests_raw_file" \
+            "$_notrun_files_list" "$_notrun_deficit" "$project_root" "$_notrun_warning")
+          rm -f "$_notrun_files_list"
+          _notrun_named=$(echo "$_notrun_summary" | grep -oE 'named=[0-9]+' | cut -d= -f2 || true)
+          _notrun_emitted=$(echo "$_notrun_summary" | grep -oE 'emitted=[0-9]+' | cut -d= -f2 || true)
+          if [ "${_notrun_named:-0}" -gt 0 ]; then
+            _gate_status "[test-gate] bats: ${_notrun_named} planned test(s) never ran (${_notrun_warning:-plan/executed mismatch}) — emitting synthetic tests_not_run finding(s)"
+          else
+            _gate_status "[test-gate] bats: plan/executed mismatch with unresolvable test names — emitting ${_notrun_emitted:-0} synthetic tests_not_run finding(s) capped at the reported deficit"
+          fi
+          _gate_reason="tests_not_run"
+          _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=${_notrun_named:-0} emitted=${_notrun_emitted:-0} pr=${PR_NUMBER:-?}"
+          _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
         fi
-        _notrun_summary=$(_synthesize_notrun_findings "$_tests_raw_file" \
-          "$_notrun_files_list" "$_notrun_deficit" "$project_root" "$_notrun_warning")
-        rm -f "$_notrun_files_list"
-        _notrun_named=$(echo "$_notrun_summary" | grep -oE 'named=[0-9]+' | cut -d= -f2 || true)
-        _notrun_emitted=$(echo "$_notrun_summary" | grep -oE 'emitted=[0-9]+' | cut -d= -f2 || true)
-        if [ "${_notrun_named:-0}" -gt 0 ]; then
-          _gate_status "[test-gate] bats: ${_notrun_named} planned test(s) never ran (${_notrun_warning:-plan/executed mismatch}) — emitting synthetic tests_not_run finding(s)"
-        else
-          _gate_status "[test-gate] bats: plan/executed mismatch with unresolvable test names — emitting ${_notrun_emitted:-0} synthetic tests_not_run finding(s) capped at the reported deficit"
-        fi
-        _gate_reason="tests_not_run"
-        _diag "TEST_GATE_NOTRUN deficit=${_notrun_deficit} named=${_notrun_named:-0} emitted=${_notrun_emitted:-0} pr=${PR_NUMBER:-?}"
-        _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
       fi
     fi
   else
