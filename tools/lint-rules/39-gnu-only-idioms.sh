@@ -8,7 +8,8 @@
 # patterns. The rule fires at authoring time so these never reach CI.
 #
 # Sub-checks (all suppressed with the same marker):
-#   A. sed BRE alternation (\|) — GNU BRE extension; BSD treats \| as literals
+#   A. sed BRE alternation/quantifiers (\|/\+/\?) — GNU BRE extensions; BSD treats as literals
+#      (sed Q / \w / \W are out of scope — distinct classes, tracked separately)
 #   B. sed case-conversion (\u \l \U \L) — GNU replacement extension; BSD: garbage
 #   C. date -d without BSD fallback (|| date -v or date -j, or date --version guard)
 #   D. grep -P / --perl-regexp — PCRE mode; absent on stock macOS grep
@@ -27,7 +28,9 @@
 
 _gnu_check_suppressed() {
   local _gc_file="$1" _gc_line="$2"
-  local _gc_start=$(( _gc_line - 2 ))
+  # Line 1 has no preceding lines; suppression impossible
+  [ "$_gc_line" -le 1 ] && return 1
+  local _gc_start=$(( _gc_line > 2 ? _gc_line - 2 : 1 ))
   local _gc_end=$(( _gc_line - 1 ))
   local _gc_prev_text
   # Look back 2 lines: handles both single-line (comment on line N-1) and
@@ -38,13 +41,16 @@ _gnu_check_suppressed() {
 }
 
 # ---------------------------------------------------------------------------
-# A. sed BRE alternation (\|)
+# A. sed BRE alternation/quantifiers (\|/\+/\?)
 # ---------------------------------------------------------------------------
-# GNU BRE extension: \| is alternation. BSD sed treats \| as literal characters
-# (backslash then pipe), so the pattern silently matches the wrong text or nothing.
-# Fix: use sed -E (ERE) with unescaped | for alternation.
-# NOT flagged: sed -E / sed -nE (ERE mode — \| in ERE means literal backslash+pipe)
-echo "Rule 39A: Checking for sed BRE alternation (\\|) — GNU-only..."
+# GNU BRE extensions: \| is alternation, \+ is one-or-more, \? is zero-or-one.
+# BSD sed treats all three as literal characters (backslash then |/+/?), so
+# patterns silently match the wrong text or nothing.
+# Fix: use sed -E (ERE) with unescaped |/+/? for alternation/quantifiers.
+# NOT flagged: sed -E / sed -nE (ERE mode)
+# NOT flagged: \| that appears only in a s/// replacement (e.g. sed 's/|/\\|/g'
+#              escapes | in output — the \\| in the replacement is not BRE alternation)
+echo "Rule 39A: Checking for sed BRE extensions (\\|/\\+/\\?) — GNU-only..."
 for _r39_file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r _r39_lnum _r39_ltext; do
     # Skip full-line comments
@@ -53,10 +59,16 @@ for _r39_file in "${SHELL_FILES[@]}"; do
     echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
     # Skip if sed is in ERE mode (-E or any flag cluster containing E)
     echo "$_r39_ltext" | grep -qE '\bsed\b[^|&;#]*-[a-zA-Z]*E' && continue
+    # For \|: skip if \| only appears as \\| — escaped pipe in s/// replacement
+    # (not BRE alternation). Strip all \\| occurrences; if no bare \| remains, skip.
+    if echo "$_r39_ltext" | grep -qF '\|'; then
+      _r39_stripped=$(echo "$_r39_ltext" | sed 's/\\\\|//g' || true)
+      echo "$_r39_stripped" | grep -qF '\|' || continue
+    fi
     _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
     print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
-      "sed BRE alternation (\\|) is a GNU extension — BSD treats \\| as literals (silent wrong match); use sed -E with unescaped | for alternation"
-  done < <(grep -nF '\|' "$_r39_file" 2>/dev/null || true)
+      "sed BRE extension (\\|/\\+/\\?) is GNU-only — BSD treats as literals (silent wrong match); use sed -E with unescaped |/+/? for ERE alternation/quantifiers"
+  done < <(grep -nE '\\[|+?]' "$_r39_file" 2>/dev/null || true)
 done
 
 # ---------------------------------------------------------------------------
@@ -92,9 +104,13 @@ for _r39_file in "${SHELL_FILES[@]}"; do
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
     # Same-line BSD fallback: || date -v (offset) or || date -j (custom format)
     echo "$_r39_ltext" | grep -qE '\|\|[[:space:]]*date[[:space:]]+-[vj]' && continue
-    # date --version guard in the preceding 3 lines
-    _r39_prev3=$(sed -n "$(( _r39_lnum - 3 )),$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
-    echo "$_r39_prev3" | grep -qE 'date --version' && continue
+    # BSD or GNU date guard in the preceding 3 lines:
+    #   date --version (GNU check — if branch uses date -d, else uses date -v/-j)
+    #   date -v / date -j (BSD-first guard — if branch uses BSD form, else uses date -d)
+    _r39_start=$(( _r39_lnum > 3 ? _r39_lnum - 3 : 1 ))
+    _r39_prev3=""
+    [ "$_r39_lnum" -gt 1 ] && _r39_prev3=$(sed -n "${_r39_start},$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
+    echo "$_r39_prev3" | grep -qE 'date (--version|-[vj])' && continue
     _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
     print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
       "'date -d' is a GNU date extension for parsing date expressions; BSD date interprets -d as day-of-month — add a same-line '|| date -v' fallback or wrap in a 'date --version' guard"
@@ -129,7 +145,9 @@ echo "Rule 39E: Checking for stat -c without stat --version guard — GNU-only..
 for _r39_file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r _r39_lnum _r39_ltext; do
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
-    _r39_prev3=$(sed -n "$(( _r39_lnum - 3 )),$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
+    _r39_start=$(( _r39_lnum > 3 ? _r39_lnum - 3 : 1 ))
+    _r39_prev3=""
+    [ "$_r39_lnum" -gt 1 ] && _r39_prev3=$(sed -n "${_r39_start},$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
     echo "$_r39_prev3" | grep -qE 'stat --version' && continue
     _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
     print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
@@ -158,7 +176,9 @@ for _r39_file in "${SHELL_FILES[@]}"; do
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*(echo|print_[a-zA-Z_]+)[[:space:]]+"[^"]*\btimeout\b' && continue
     # command -v timeout / gtimeout guard on this line
     echo "$_r39_ltext" | grep -qE 'command -v (timeout|gtimeout)' && continue
-    _r39_prev3=$(sed -n "$(( _r39_lnum - 3 )),$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
+    _r39_start=$(( _r39_lnum > 3 ? _r39_lnum - 3 : 1 ))
+    _r39_prev3=""
+    [ "$_r39_lnum" -gt 1 ] && _r39_prev3=$(sed -n "${_r39_start},$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
     echo "$_r39_prev3" | grep -qE 'command -v (timeout|gtimeout)' && continue
     _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
     print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \

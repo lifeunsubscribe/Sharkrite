@@ -35,7 +35,9 @@ _run_lint_with_fixture() {
 set -euo pipefail
 result=$(echo "commit conventions" | sed -n '"'"'/Commit Conventions\|Git Conventions/p'"'"')
 echo "$result"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-sed-bre-alt"* ]]
 }
 
 @test "39A fires: sed -n with BRE alternation in range address" {
@@ -43,7 +45,9 @@ echo "$result"'
 set -euo pipefail
 body=$(echo "$block" | sed -n '"'"'/Files to Modify/,/^\*\*\|^##\|^Related\|^$/p'"'"')
 echo "$body"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-sed-range-alt"* ]]
 }
 
 @test "39A passes: sed -E uses ERE alternation (unescaped pipe)" {
@@ -77,6 +81,46 @@ echo "$result"'
   [[ "$r39" != *"good-no-sed-backslash-pipe"* ]]
 }
 
+@test "39A passes: sed replacing pipe with backslash-pipe in replacement (not BRE alternation)" {
+  _run_lint_with_fixture "good-sed-replace-pipe-escape" '#!/usr/bin/env bash
+set -euo pipefail
+title=$(echo "$pr_data" | jq -r '"'"'.title'"'"' | sed '"'"'s/|/\\|/g'"'"' || true)
+echo "$title"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" != *"good-sed-replace-pipe-escape"* ]]
+}
+
+@test "39A fires: sed with \\+ one-or-more quantifier (GNU BRE extension)" {
+  _run_lint_with_fixture "bad-sed-bre-plus" '#!/usr/bin/env bash
+set -euo pipefail
+result=$(echo "fooo" | sed '"'"'s/fo\+/bar/'"'"')
+echo "$result"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-sed-bre-plus"* ]]
+}
+
+@test "39A fires: sed with \\? zero-or-one quantifier (GNU BRE extension)" {
+  _run_lint_with_fixture "bad-sed-bre-question" '#!/usr/bin/env bash
+set -euo pipefail
+result=$(echo "color" | sed '"'"'s/colou\?r/color/'"'"')
+echo "$result"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-sed-bre-question"* ]]
+}
+
+@test "39A passes: sed -E uses ERE + (unescaped, not BRE \\+)" {
+  _run_lint_with_fixture "good-sed-ere-plus" '#!/usr/bin/env bash
+set -euo pipefail
+result=$(echo "fooo" | sed -E '"'"'s/fo+/bar/'"'"')
+echo "$result"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" != *"good-sed-ere-plus"* ]]
+}
+
 # ===========================================================================
 # B. sed case-conversion (\u \l \U \L)
 # ===========================================================================
@@ -86,7 +130,9 @@ echo "$result"'
 set -euo pipefail
 title=$(echo "foo bar" | tr '"'"'-'"'"' '"'"' '"'"' | sed '"'"'s/\b\(.\)/\u\1/g'"'"')
 echo "$title"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-sed-title-case"* ]]
 }
 
 @test "39B fires: sed with \\U uppercase-all in replacement" {
@@ -94,7 +140,9 @@ echo "$title"'
 set -euo pipefail
 upper=$(echo "hello" | sed '"'"'s/.*/\U&/'"'"')
 echo "$upper"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-sed-upper-all"* ]]
 }
 
 @test "39B passes: awk toupper() as portable replacement" {
@@ -116,7 +164,9 @@ echo "$title"'
 set -euo pipefail
 cutoff=$(date -d "30 days ago" +%Y-%m-%d)
 echo "$cutoff"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-date-d-bare"* ]]
 }
 
 @test "39C passes: date -d with same-line BSD date -v fallback" {
@@ -162,7 +212,9 @@ echo "$result"'
 set -euo pipefail
 result=$(echo "foo123bar" | grep -P '"'"'\d+'"'"')
 echo "$result"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-grep-P"* ]]
 }
 
 @test "39D fires: grep -nP combined flags" {
@@ -170,7 +222,9 @@ echo "$result"'
 set -euo pipefail
 result=$(grep -nP '"'"'\d+'"'"' file.txt || true)
 echo "$result"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-grep-nP"* ]]
 }
 
 @test "39D fires: grep --perl-regexp long form" {
@@ -178,7 +232,9 @@ echo "$result"'
 set -euo pipefail
 result=$(grep --perl-regexp '"'"'\d+'"'"' file.txt || true)
 echo "$result"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-grep-perl-regexp"* ]]
 }
 
 @test "39D passes: grep -E (ERE) is portable" {
@@ -211,7 +267,9 @@ echo "$children"'
 set -euo pipefail
 mtime=$(stat -c "%Y" "$file")
 echo "$mtime"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-stat-c-bare"* ]]
 }
 
 @test "39E passes: stat -c inside a stat --version guard block" {
@@ -249,7 +307,9 @@ set -euo pipefail
 if timeout 10 git fetch --prune origin >/dev/null 2>&1; then
   echo "fetched"
 fi'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-timeout-bare"* ]]
 }
 
 @test "39F fires: timeout with -k flag, no guard" {
@@ -257,7 +317,9 @@ fi'
 set -euo pipefail
 result=$(timeout -k 5 30 some_cmd || true)
 echo "$result"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-timeout-k"* ]]
 }
 
 @test "39F passes: run_with_timeout (portable wrapper)" {
@@ -306,7 +368,9 @@ fi'
 set -euo pipefail
 tmpfile=$(mktemp "${TMPDIR:-/tmp}/rite_log_$$_XXXXXX.txt")
 echo "log" >> "$tmpfile"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-mktemp-suffix"* ]]
 }
 
 @test "39G fires: mktemp template with extension after XXXXXX" {
@@ -314,7 +378,9 @@ echo "log" >> "$tmpfile"'
 set -euo pipefail
 raw=$(mktemp "${TMPDIR:-/tmp}/rite_lint_stripped_$$_XXXXXX.txt")
 echo "raw" >> "$raw"'
-  [[ "$output" == *"GNU_ONLY_IDIOM"* ]]
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"bad-mktemp-ext"* ]]
 }
 
 @test "39G passes: mktemp with terminal XXXXXX (no suffix)" {
