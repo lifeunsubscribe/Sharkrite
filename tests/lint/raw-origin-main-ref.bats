@@ -18,7 +18,7 @@
 
 setup() {
   LINT_SCRIPT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)/tools/sharkrite-lint.sh"
-  PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  export SHARKRITE_LINT_ONLY=38
 
   FIXTURE_ROOT="${BATS_TEST_TMPDIR}/raw-main-ref-fixtures"
   mkdir -p "$FIXTURE_ROOT/lib/core"
@@ -29,6 +29,7 @@ setup() {
 teardown() {
   rm -rf "${BATS_TEST_TMPDIR}/raw-main-ref-fixtures"
   unset RITE_LINT_EXTRA_DIRS
+  unset SHARKRITE_LINT_ONLY
 }
 
 # Helper: write a fixture at the given relative path and run lint.
@@ -162,6 +163,19 @@ do_fetch() {
   local r38_lines
   r38_lines=$(echo "$output" | grep "RAW_ORIGIN_MAIN_REF" || true)
   [[ -z "$r38_lines" ]]
+}
+
+@test "rule fires: suppression on non-adjacent line (intervening comment) does NOT suppress" {
+  # The suppression contract is immediately-preceding-line only.
+  # An ordinary comment between the marker and the flagged code must not block the violation.
+  _run_lint_with_fixture "lib/core/claude-workflow.sh" '#!/bin/bash
+set -euo pipefail
+do_diff() {
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: trunk-health
+  # This is an intervening comment, not the suppression target
+  git diff origin/main...HEAD
+}'
+  [[ "$output" == *"RAW_ORIGIN_MAIN_REF"* ]]
 }
 
 @test "rule fires: 'origin main failed' matches (space after main is non-alnum)" {
