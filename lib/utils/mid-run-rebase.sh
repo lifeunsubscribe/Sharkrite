@@ -222,31 +222,69 @@ _mid_run_rebase_onto_main() {
         local _mid_local_head
         _mid_local_head=$(git rev-parse HEAD 2>/dev/null || true)
 
-        if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ] && [ "$_mid_remote_head" != "$_mid_local_head" ]; then
-          # Anchor the emptiness check to merge-base(local,remote) so that
-          # base-branch drift (commits on the base that the remote merge brought in)
-          # does not inflate the diff and falsely classify real code changes as
-          # content-empty. git diff merge-base..remote_head is the effective patch
-          # introduced by the foreign commits beyond the common ancestor.
-          local _mid_merge_base
-          _mid_merge_base=$(git merge-base "${_mid_local_head}" "${_mid_remote_head}" 2>/dev/null || true)
-          local _mid_foreign_diff
-          _mid_foreign_diff=$(git diff "${_mid_merge_base:-${_mid_local_head}}..${_mid_remote_head}" 2>/dev/null || true)
-          if [ -z "$_mid_foreign_diff" ]; then
-            # Content-empty vs merge-base (pure mainline-sync merge). Safe to
-            # discard by re-fetching the lease ref and retrying the push.
-            print_info "mid-run-rebase: foreign commits are content-empty — retrying push after lease refresh"
+        if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ]; then
+          # Equal-head: another process already resolved the same race and the
+          # remote is now pointing at our commit. (Mirrors stale-branch.sh:510-512.)
+          if [ "$_mid_remote_head" = "$_mid_local_head" ]; then
+            print_info "mid-run-rebase: remote is now at our commit — no foreign commits to classify"
+            return 0
+          fi
+
+          # Anchor to pre_rebase_head: the rebase rewrote local history, so
+          # merge-base(post-rebase, remote) regresses to the old fork point and
+          # pulls the branch's own feature diff into the check — making the
+          # content-empty discard path unreachable. pre_rebase_head is the tip
+          # the force-with-lease lease ref knew about. (Mirrors stale-branch.sh:506.)
+          local _mid_foreign_anchor="${pre_rebase_head:-$_mid_local_head}"
+          local _mid_foreign_commits
+          _mid_foreign_commits=$(git log --oneline "${_mid_foreign_anchor}..${_mid_remote_head}" 2>/dev/null || true)
+          if [ -z "$_mid_foreign_commits" ]; then
+            # Remote is at/behind our last-pushed tip (stale lease or ref rewind).
+            # Nothing foreign to preserve — retry now that the fetch has refreshed
+            # the lease. (Mirrors stale-branch.sh:519-531, #1012 scenario.)
+            print_info "mid-run-rebase: no foreign commits beyond our last-pushed tip — retrying push after lease refresh"
             if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-              print_info "mid-run rebase: push succeeded after lease refresh (content-empty foreign commits discarded)"
+              print_info "mid-run rebase: push succeeded after lease refresh (no foreign commits)"
               return 0
             fi
+            # Retry also rejected — a third concurrent push happened; its content
+            # is unknown and must not be force-overwritten. (Mirrors stale-branch.sh:530.)
+            print_error "mid-run-rebase: push still rejected after lease refresh — another concurrent push occurred"
+            if [ -n "$pre_rebase_head" ]; then
+              git reset --hard "$pre_rebase_head" 2>/dev/null || true
+              print_info "Branch restored to pre-rebase HEAD. Run 'rite ${issue_number:-<issue>} --supervised' to resolve."
+            fi
+            return 1
           fi
-          # Non-empty foreign commits (code changes). Halt loudly — do NOT push.
+          # Stage 2: foreign commits exist — check whether any contain content
+          # changes. An empty-tree commit (e.g., a pure sync merge) carries no
+          # code and can be discarded safely; only commits with real diffs halt.
+          local _mid_foreign_diff
+          _mid_foreign_diff=$(git diff "${_mid_foreign_anchor}..${_mid_remote_head}" 2>/dev/null || true)
+          if [ -z "$_mid_foreign_diff" ]; then
+            # Content-empty foreign commit(s): discard and retry (mirrors the log-empty path above).
+            print_info "mid-run-rebase: foreign commit(s) are content-empty — discarding and retrying push"
+            if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+              print_info "mid-run-rebase: push succeeded after discard of content-empty foreign commit(s)"
+              return 0
+            fi
+            # Triple-race: the retry push was also rejected by another concurrent push.
+            # Mirrors stale-branch.sh:530 — emit the accurate error, not "foreign code".
+            print_error "mid-run-rebase: push still rejected after lease refresh — another concurrent push occurred"
+            if [ -n "$pre_rebase_head" ]; then
+              git reset --hard "$pre_rebase_head" 2>/dev/null || true
+              print_info "Branch restored to pre-rebase HEAD. Run 'rite ${issue_number:-<issue>} --supervised' to resolve."
+            fi
+            return 1
+          fi
+          # Non-empty diff: foreign commits contain code changes. Halt loudly — do NOT push.
           # Preserve-or-halt contract: a push here would clobber foreign code commits.
-          print_error "mid-run-rebase: push rejected — remote has foreign code commits that would be lost by force-push"
+          local _mid_foreign_count
+          _mid_foreign_count=$(echo "$_mid_foreign_commits" | grep -c '.' || true)
+          print_error "mid-run-rebase: push rejected — remote has $_mid_foreign_count foreign commit(s) that would be clobbered by force-push"
           print_error "Foreign commits contain code changes — halting to prevent data loss"
           print_info "Foreign commits on remote:"
-          git log --oneline "${_mid_local_head}..${_mid_remote_head}" 2>/dev/null | sed 's/^/  /' >&2
+          echo "$_mid_foreign_commits" | sed 's/^/  /' >&2
           print_info "Run 'rite ${issue_number:-<issue>} --supervised' to integrate and resolve manually"
           if [ -n "$pre_rebase_head" ]; then
             git reset --hard "$pre_rebase_head" 2>/dev/null || true
