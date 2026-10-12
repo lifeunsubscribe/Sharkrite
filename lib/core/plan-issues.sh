@@ -2386,8 +2386,8 @@ _regen_block_sections() {
   local _regen_existing_block="$2"
   local _regen_base_prompt="$3"
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - variables must be expanded (title, block)
   local _regen_prompt
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block)
   _regen_prompt=$(cat <<REGEN_PROMPT_EOF
 ${_regen_base_prompt}
 
