@@ -35,7 +35,7 @@ lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides ac
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
 lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + full-suite + merge + cleanup)
-lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update seam — cluster-B entry point)
+lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
 lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
@@ -530,8 +530,16 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
-rite docs                  # Doc consent/audit: enable doc-sync or audit drift on demand
-rite docs "<instructions>" # Directed doc update (engine lands in #1049)
+rite docs                  # Doc consent/audit: enable doc-sync or audit drift on demand;
+                           # after consent, if drift entries exist, offers to reconcile them
+                           # via the same per-entry preview loop (zero entries → no-op)
+rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
+                           # per-proposal preview → (y)approve / (n)skip / (f)eedback loop;
+                           # approved changes applied as a dedicated docs PR on
+                           # ${RITE_TARGET_BRANCH:-main} — NO auto-merge (human review required).
+                           # Works in both doc-sync and changelog consent modes — explicit
+                           # command + preview approval IS consent (Layer 2 gate not checked
+                           # on the approved-apply path). Can CREATE new docs (e.g. ADRs).
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
