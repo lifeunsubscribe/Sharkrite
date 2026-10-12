@@ -1148,6 +1148,16 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
     return "$_strict_lint_rc"
   fi
 
+  # Section-completeness lint: every block must carry all required runbook
+  # sections. Attempts targeted per-block regeneration on failure (bounded:
+  # 2 attempts). Still-incomplete blocks abort with title + missing section(s).
+  _sections_lint_rc=0
+  _lint_issues_sections "$temp_file" "$prompt" || _sections_lint_rc=$?
+  if [ "$_sections_lint_rc" -ne 0 ]; then
+    rm -f "$temp_file"
+    return "$_sections_lint_rc"
+  fi
+
   echo "$temp_file"
 }
 
@@ -2266,6 +2276,284 @@ _lint_issues_strict() {
   fi
 
   return "$_strict_exit"
+}
+
+# =============================================================================
+# Section-completeness lint: every block must carry all required runbook sections
+# =============================================================================
+# Required always: LABELS, TIME, Description, Claude Context (Files to Read +
+# Files to Modify), Acceptance Criteria, Done Definition, Scope Boundary (DO +
+# DO NOT), Dependencies, Documentation Impact.
+# Required for bug-labeled issues only: Bug Class Analysis.
+#
+# On a missing section: _regen_block_sections requests a targeted single-block
+# regeneration (bounded: 2 attempts). Still missing after retries → non-zero
+# exit naming the issue title and missing section(s). Runs for every block
+# regardless of provenance (first pass, recovery, feedback loop).
+# =============================================================================
+
+# Check a single issue block for required sections.
+# Outputs a comma-separated list of missing section names to stdout.
+# Empty output means all required sections are present.
+_check_block_sections() {
+  local _blk_title="$1"
+  local _blk_text="$2"
+  local _missing=""
+
+  # LABELS: non-empty
+  if ! printf '%s' "$_blk_text" | grep -qE "^LABELS:[[:space:]]+\S"; then
+    _missing="${_missing}Labels, "
+  fi
+
+  # TIME: non-empty
+  if ! printf '%s' "$_blk_text" | grep -qE "^TIME:[[:space:]]+\S"; then
+    _missing="${_missing}Time Estimate, "
+  fi
+
+  # **Description**
+  if ! printf '%s' "$_blk_text" | grep -qE "^\*\*Description\*\*"; then
+    _missing="${_missing}Description, "
+  fi
+
+  # **Claude Context** with "Files to Read:" subsection
+  if ! printf '%s' "$_blk_text" | grep -q "Files to Read:"; then
+    _missing="${_missing}Claude Context (Files to Read), "
+  fi
+
+  # **Claude Context** with "Files to Modify:" subsection
+  if ! printf '%s' "$_blk_text" | grep -q "Files to Modify:"; then
+    _missing="${_missing}Claude Context (Files to Modify), "
+  fi
+
+  # **Acceptance Criteria**
+  if ! printf '%s' "$_blk_text" | grep -qE "^\*\*Acceptance Criteria\*\*"; then
+    _missing="${_missing}Acceptance Criteria, "
+  fi
+
+  # **Done Definition**
+  if ! printf '%s' "$_blk_text" | grep -qE "^\*\*Done Definition\*\*"; then
+    _missing="${_missing}Done Definition, "
+  fi
+
+  # **Scope Boundary** with a "DO:" line (not "DO NOT:") and a "DO NOT:" line
+  local _scope_present _has_do _has_do_not
+  _scope_present=$(printf '%s' "$_blk_text" | grep -ci "Scope Boundary" || true)
+  # Count lines containing "DO:" that do NOT also contain "DO NOT:"
+  _has_do=$(printf '%s' "$_blk_text" | grep -i "DO:" | grep -cv "DO NOT" || true)
+  _has_do_not=$(printf '%s' "$_blk_text" | grep -ci "DO NOT" || true)
+  if [ "${_scope_present:-0}" -eq 0 ] || [ "${_has_do:-0}" -eq 0 ]; then
+    _missing="${_missing}Scope Boundary (DO), "
+  fi
+  if [ "${_scope_present:-0}" -eq 0 ] || [ "${_has_do_not:-0}" -eq 0 ]; then
+    _missing="${_missing}Scope Boundary (DO NOT), "
+  fi
+
+  # **Dependencies**
+  if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Dependencies\*\*|^Dependencies:"; then
+    _missing="${_missing}Dependencies, "
+  fi
+
+  # **Documentation Impact**
+  if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Documentation Impact\*\*"; then
+    _missing="${_missing}Documentation Impact, "
+  fi
+
+  # **Bug Class Analysis** — required only when labels include the word "bug"
+  local _blk_labels
+  _blk_labels=$(printf '%s' "$_blk_text" | grep "^LABELS: " | head -1 | sed 's/^LABELS: //' || true)
+  if echo "$_blk_labels" | grep -qiw "bug"; then
+    if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Bug Class Analysis\*\*"; then
+      _missing="${_missing}Bug Class Analysis, "
+    fi
+  fi
+
+  # Trim trailing ", "
+  _missing=$(printf '%s' "$_missing" | sed 's/, $//' || true)
+  printf '%s' "$_missing"
+}
+
+# Request a targeted regeneration of one incomplete issue block.
+# Calls the plan-model provider asking for the same issue with all required
+# sections present. Returns the repaired ---ISSUE---...---END--- block via
+# stdout; empty stdout means the provider returned nothing usable.
+_regen_block_sections() {
+  local _regen_title="$1"
+  local _regen_existing_block="$2"
+  local _regen_base_prompt="$3"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - variables must be expanded (title, block)
+  local _regen_prompt
+  _regen_prompt=$(cat <<REGEN_PROMPT_EOF
+${_regen_base_prompt}
+
+**SECTION-REPAIR PASS — REGENERATE ONE ISSUE BLOCK.** The following issue block is incomplete (missing required runbook sections):
+
+${_regen_existing_block}
+
+Regenerate the above block for issue title: "${_regen_title}"
+
+The output block MUST include ALL of the following required sections:
+- LABELS: line (phase + category + priority, e.g. LABELS: phase-2,backend,priority-high)
+- TIME: line (Fibonacci: 15min|30min|45min|1hr|2hr)
+- **Description**: (1-2 sentences: what + why)
+- **Claude Context**: with both "Files to Read:" and "Files to Modify:" subsections (each with at least one bullet)
+- **Acceptance Criteria**: (checkboxes with copy-pasteable verification commands)
+- **Done Definition**: (ONE bounded sentence — no "done when it works")
+- **Scope Boundary**: with BOTH a "- DO:" line and a "- DO NOT:" line
+- **Dependencies**: (After: #N / Blocked by: #N / None)
+- **Documentation Impact**: (artifact checked + verification grep, or N/A with justification)
+
+If the LABELS line includes the word "bug", also include:
+- **Bug Class Analysis**: (sibling instances, reuse check)
+
+Preserve the issue's original intent and existing valid fields from the block above.
+Output ONLY the single ---ISSUE--- ... ---END--- block. Start with ---ISSUE--- and end with ---END---. No commentary before or after.
+REGEN_PROMPT_EOF
+)
+
+  local _regen_out _regen_err
+  _regen_out=$(mktemp)
+  _regen_err=$(mktemp)
+
+  # Explicit "plan" role — same reasoning stage as the primary generation call.
+  if ! provider_run_streaming_prompt "$_regen_prompt" "$(provider_resolve_model plan)" \
+       2>"$_regen_err" | tee "$_regen_out" >&2; then
+    print_warning "sections-lint: section-repair provider call failed for '${_regen_title}'" >&2
+  fi
+
+  if [ -s "$_regen_err" ]; then
+    print_warning "sections-lint: provider stderr (section repair '${_regen_title}'):" >&2
+    cat "$_regen_err" >&2
+  fi
+  rm -f "$_regen_err"
+
+  if [ ! -s "$_regen_out" ]; then
+    print_warning "sections-lint: section-repair returned no output for '${_regen_title}'" >&2
+    rm -f "$_regen_out"
+    printf ''
+    return 0
+  fi
+
+  _normalize_issue_markers "$_regen_out"
+
+  # Extract the first well-formed ---ISSUE---...---END--- block; discard prose.
+  local _extracted_block
+  _extracted_block=$(awk '
+    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf=""; exit }
+      next
+    }
+  ' "$_regen_out" || true)
+  rm -f "$_regen_out"
+
+  if [ -z "$_extracted_block" ]; then
+    print_warning "sections-lint: section-repair returned no well-formed block for '${_regen_title}'" >&2
+    printf ''
+    return 0
+  fi
+
+  printf '%s' "$_extracted_block"
+}
+
+# Lint all issue blocks for required-section completeness.
+# For each block missing a required section: attempts up to 2 targeted
+# regenerations via _regen_block_sections. Still-incomplete blocks after
+# retries cause a non-zero return naming the issue title and missing section(s).
+# Rewrites issues_file in-place when any blocks are repaired.
+_lint_issues_sections() {
+  local issues_file="$1"
+  local base_prompt="$2"
+
+  local _fail_count=0
+  local _fail_details=""
+  local _any_repaired=false
+
+  # Parse all ---ISSUE---...---END--- blocks into an array
+  local -a _sblocks=()
+  local _scur_block=""
+  local _sin_block=false
+
+  while IFS= read -r _sline; do
+    if [ "$_sline" = "---ISSUE---" ]; then
+      _sin_block=true
+      _scur_block="$_sline"$'\n'
+      continue
+    fi
+    if [ "$_sin_block" = true ]; then
+      _scur_block="${_scur_block}${_sline}"$'\n'
+      if [ "$_sline" = "---END---" ]; then
+        _sin_block=false
+        _sblocks+=("$_scur_block")
+        _scur_block=""
+      fi
+    fi
+  done < "$issues_file"
+
+  local _sblock_count=${#_sblocks[@]}
+  [ "$_sblock_count" -eq 0 ] && return 0
+
+  local _sidx=0
+  for _sidx in $([ "$_sblock_count" -gt 0 ] && seq 0 $((_sblock_count - 1)) || true); do
+    local _sblk="${_sblocks[$_sidx]}"
+    local _stitle
+    _stitle=$(printf '%s' "$_sblk" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+
+    local _smissing
+    _smissing=$(_check_block_sections "$_stitle" "$_sblk")
+    [ -z "$_smissing" ] && continue
+
+    print_warning "sections-lint: '${_stitle}' missing required sections: ${_smissing} — attempting targeted regeneration..." >&2
+
+    local _sattempt=1
+    local _srepaired=false
+    while [ "$_sattempt" -le 2 ]; do
+      local _snew_blk
+      _snew_blk=$(_regen_block_sections "$_stitle" "$_sblk" "$base_prompt")
+      if [ -n "$_snew_blk" ]; then
+        local _sstill_missing
+        _sstill_missing=$(_check_block_sections "$_stitle" "$_snew_blk")
+        if [ -z "$_sstill_missing" ]; then
+          _sblocks[$_sidx]="$_snew_blk"
+          _any_repaired=true
+          _srepaired=true
+          print_success "sections-lint: '${_stitle}' repaired on attempt ${_sattempt}" >&2
+          break
+        fi
+        _smissing="$_sstill_missing"
+        _sblk="$_snew_blk"
+      fi
+      _sattempt=$((_sattempt + 1))
+    done
+
+    if [ "$_srepaired" = false ]; then
+      print_warning "sections-lint: ERROR: '${_stitle}' still missing required sections after 2 attempts: ${_smissing}" >&2
+      _fail_count=$((_fail_count + 1))
+      _fail_details="${_fail_details}  - '${_stitle}': ${_smissing}"$'\n'
+    fi
+  done
+
+  if [ "$_fail_count" -gt 0 ]; then
+    print_warning "sections-lint: ${_fail_count} block(s) incomplete — missing required sections:" >&2
+    printf '%s' "$_fail_details" >&2
+    return 1
+  fi
+
+  # Rewrite the file only when at least one block was repaired (avoids an
+  # unnecessary write on the fast-path where all blocks pass first time).
+  if [ "$_any_repaired" = true ]; then
+    local _stmp_out
+    _stmp_out=$(mktemp)
+    # Preserve the preamble (coverage checklist, etc.) before the first block
+    awk '/^---ISSUE---$/{exit} {print}' "$issues_file" > "$_stmp_out"
+    for _sidx in $([ "$_sblock_count" -gt 0 ] && seq 0 $((_sblock_count - 1)) || true); do
+      printf '%s' "${_sblocks[$_sidx]}" >> "$_stmp_out"
+    done
+    mv "$_stmp_out" "$issues_file"
+  fi
+
+  return 0
 }
 
 # =============================================================================

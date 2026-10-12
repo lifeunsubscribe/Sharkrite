@@ -10,6 +10,8 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
 
 ### Required Sections
 
+> **Machine-enforced at plan time:** `rite plan` runs a section-completeness check on every generated issue block — any block missing a required section is automatically regenerated (up to 2 attempts), and the run fails naming the issue title and missing section if it cannot be completed.
+
 1. **Title Format**: `[Phase X] Verb Noun - Specific Component`
    - Imperative mood, ≤50 characters (git subject line limit)
    - Examples: `[Phase 0] Configure billing alerts`, `[Phase 2] Add rate limiting to login endpoint`
