@@ -2431,6 +2431,13 @@ FIXTURE
     false
   }
 
+  # The warning must include the suggested dependency fix ("After #1")
+  grep -q "After #1" "$stderr_out" || {
+    echo "FAIL: expected 'After #1' in parallel-file-overlap WARNING (ordinal fix)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
   rm -f "$stderr_out"
 }
 
