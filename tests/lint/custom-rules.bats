@@ -458,11 +458,11 @@ EOF
 
 @test "LOCAL_OUTSIDE_FUNCTION: escaped quote inside expansion does not orphan closing brace" {
   # Regression (#1116): _section="${_section#\"}" contains an escaped quote inside
-  # a parameter expansion. With the old strip order (double-quote before ${...}),
-  # the "[^"]*" pattern consumed up to the escaped quote and left a stray } that
+  # a parameter expansion. Without stripping \" before the double-quote pass, the
+  # "[^"]*" pattern consumed up to the escaped quote and left a stray } that
   # decremented depth, causing subsequent 'local' inside the same function to appear
-  # outside scope. Stripping ${...} first fixes this: [^}]* in \$\{[^}]*\} consumes
-  # x#\" so the double-quote pass sees balanced "" and strips cleanly.
+  # outside scope. Stripping \" first fixes this: "[^"]*" then sees balanced outer
+  # quotes and strips the expansion cleanly — no orphaned } for the brace counter.
 
   cat > "$LINT_FIXTURE_DIR/escaped-quote-in-expansion.sh" <<'EOF'
 #!/bin/bash
@@ -479,6 +479,7 @@ EOF
   cd "$PROJECT_ROOT"
   SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
 
+  [ "$status" -eq 0 ]
   # Both locals inside my_func are correct — must not be flagged
   if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
     [[ ! "$output" =~ escaped-quote-in-expansion\.sh ]] || {

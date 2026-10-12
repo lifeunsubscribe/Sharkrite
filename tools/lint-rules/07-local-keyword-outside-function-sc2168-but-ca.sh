@@ -34,17 +34,18 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   # Count { and } on this line to track nesting depth.
   # gsub returns the replacement count, allowing us to count characters without
   # a per-char loop (fast, BSD AWK compatible, heredoc-safe).
-  # Strip string literals before counting so braces inside strings, ${param}
-  # expansions, and {a,b} brace-expansions in quoted arguments do not skew depth.
-  # Strip order: single-quoted strings, then ${...} expansions, then double-quoted strings.
-  # Stripping ${...} BEFORE "..." handles escaped quotes inside expansions: the
-  # pattern "x#\"}" in "${x#\"}" is consumed by [^}]* so no orphan } is left for
-  # the double-quote pass. Accepted gaps: backslash-escaped quotes in plain
-  # double-quoted strings (no expansion wrapper), and } at the start of a line
-  # inside a multi-line string assignment — both require a full parser to fix.
+  # Strip string literals before counting so braces inside strings and
+  # {a,b} brace-expansions in quoted arguments do not skew depth.
+  # Strip order: single-quoted strings, then backslash-escaped quotes, then
+  # double-quoted strings.
+  # Removing \" before the double-quote pass fixes "${x#\"}" false-positives:
+  # after stripping the escaped quote, "[^"]*" sees balanced outer quotes and
+  # strips the whole expansion cleanly — no orphaned } for the brace counter.
+  # Accepted gap: } at the start of a line inside a multi-line string assignment
+  # — requires a full parser to fix.
   _stripped = $0
   gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
-  gsub(/\$\{[^}]*\}/, "", _stripped)
+  gsub(/\\"/, "", _stripped)
   gsub(/"[^"]*"/, "", _stripped)
   # Use _stripped copies so $0 is not modified (detection check still uses $0).
   _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
