@@ -588,6 +588,9 @@ _init_git_origin() {
     export RITE_PROJECT_ROOT='${FAKE_PROJECT}'
     export RITE_DATA_DIR='.rite'
     export RITE_MARKER_DOC_DRIFT='sharkrite-doc-drift'
+    # Pin: the gate inherits the session's RITE_TARGET_BRANCH (e.g. an integration
+    # branch under --branch); the fork must target the fixture's main (issue #1049 review Item 1).
+    export RITE_TARGET_BRANCH=main
     source '${DOCS_CMD}'
     set +u; set +o pipefail
 
@@ -661,6 +664,8 @@ _init_git_origin() {
     export RITE_PROJECT_ROOT='${FAKE_PROJECT}'
     export RITE_DATA_DIR='.rite'
     export RITE_MARKER_DOC_DRIFT='sharkrite-doc-drift'
+    # Pin: the gate inherits the session's RITE_TARGET_BRANCH (see section-10 sibling above).
+    export RITE_TARGET_BRANCH=main
     source '${DOCS_CMD}'
     set +u; set +o pipefail
 
