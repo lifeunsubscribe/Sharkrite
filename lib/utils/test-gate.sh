@@ -1598,6 +1598,24 @@ _gate_status() {
 }
 
 # ---------------------------------------------------------------------------
+# _maybe_warn_unscoped_suite — emit the scope warning + diag when applicable.
+# Args: $1=duration_s $2=scope_warn_threshold $3=is_sharkrite
+# Called from both the RITE_TEST_COMMAND path and the common tail so the
+# format is guaranteed identical in both sites (behavioral-design.md → #495).
+# ---------------------------------------------------------------------------
+_maybe_warn_unscoped_suite() {
+  local _duration="$1"
+  local _scope_warn_threshold="$2"
+  local _is_sharkrite="$3"
+  if [ "$_is_sharkrite" = "false" ] \
+      && [ "$_scope_warn_threshold" -gt 0 ] \
+      && [ "$_duration" -ge "$_scope_warn_threshold" ]; then
+    print_warning "[test-gate] This repo runs its full test suite every fix cycle (${_duration}s); scoped selection would pay only the diff — see sharkrite #975 / framework-native options (jest --findRelatedTests, vitest related, pytest --testmon)"
+    _diag "GATE_SCOPE_UNSCOPED duration_s=${_duration} pr=${PR_NUMBER:-?}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1769,6 +1787,7 @@ run_test_gate() {
     local _outcome_cmd="passed"
     [ "$_cmd_overall_exit" -ne 0 ] && _outcome_cmd="failed"
     _diag "TEST_GATE outcome=${_outcome_cmd} lint_count=0 test_count=${_cmd_tests_count} duration_s=${_duration_cmd} pr=${PR_NUMBER:-?}"
+    _maybe_warn_unscoped_suite "$_duration_cmd" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "false"
     # Console digest for the RITE_TEST_COMMAND path (summary mode hides raw output above).
     if [ "$_cmd_overall_exit" -ne 0 ]; then
       echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
@@ -2763,6 +2782,13 @@ run_test_gate() {
   fi
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
+
+  # --- Unscoped suite warning (target repos only) ---
+  # Sharkrite's own runs always use targeted selection and are exempt by construction
+  # (TEST_GATE_SELECTION mode=targeted is only emitted from the _is_sharkrite path).
+  # For target repos there is no scoped runner today; this signals when the full
+  # suite cost is becoming measurable so the operator can act before it hurts.
+  _maybe_warn_unscoped_suite "$_duration" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "$_is_sharkrite"
 
   # --- Compact terminal digest ---
   # Raw runner output went to _gate_raw_sink (summary mode → log only; verbose →
