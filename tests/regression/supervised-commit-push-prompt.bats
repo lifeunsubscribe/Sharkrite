@@ -90,10 +90,12 @@ setup() {
   echo "$fn_body" | grep -q 'read -re'
 }
 
-@test "structural: consolidated read prompts guarded with '|| true' (EOF-safe)" {
-  # Under set -e, an EOF on read -p returns 1 and would abort the loop before
-  # lock release. Both consolidated prompts must have '|| true'.
-  count=$(grep -c 'read -p.*\[y/n/e\].*|| true' "$WF" || true)
+@test "structural: consolidated read prompts default to n on EOF (EOF-safe)" {
+  # Under set -e, an EOF on read -p returns 1; guarding with 'if ! read' and
+  # defaulting to 'n' ensures the loop exits cleanly instead of busy-looping
+  # or aborting the handler before lock release. Both consolidated prompts
+  # must use the if-not-read pattern.
+  count=$(grep -c 'if ! read -p.*\[y/n/e\]' "$WF" || true)
   [ "$count" -ge 2 ]
 }
 
@@ -102,6 +104,9 @@ setup() {
   # 'if [ "$AUTO_MODE" = false ]' — auto runs are unaffected by this issue.
   prompt_line=$(grep -n 'Commit and push.*file(s).*\[y\/n\/e\]' "$WF" | head -1 | cut -d: -f1)
   [ -n "$prompt_line" ]
+  # Find the nearest preceding guard line — it must test AUTO_MODE = false, not
+  # just reference AUTO_MODE (which would be vacuous since any earlier reference
+  # to AUTO_MODE passes the grep even without the = false guard).
   context=$(sed -n "1,${prompt_line}p" "$WF" | grep 'AUTO_MODE' | tail -1)
-  echo "$context" | grep -q 'AUTO_MODE'
+  echo "$context" | grep -q 'AUTO_MODE.*=.*false\|=.*false.*AUTO_MODE'
 }

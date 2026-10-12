@@ -135,7 +135,7 @@ cleanup_on_interrupt() {
         local commit_msg="WIP: interrupted work on ${branch_name}"
         local _salvage_choice
         while true; do
-          read -p "Commit and push $uncommitted change(s) before exiting? [y/n/e] " -r _salvage_choice || true
+          if ! read -p "Commit and push $uncommitted change(s) before exiting? [y/n/e] " -r _salvage_choice; then _salvage_choice=n; fi
           case "$_salvage_choice" in
             y|Y) break ;;
             n|N) _salvage_choice=n; break ;;
@@ -143,7 +143,7 @@ cleanup_on_interrupt() {
               echo "Current message: $commit_msg"
               echo "Enter new commit message (empty to keep):"
               local _edited_msg
-              read -re _edited_msg || true
+              if ! read -re _edited_msg; then _edited_msg=""; fi
               if [ -n "$_edited_msg" ]; then
                 commit_msg="$_edited_msg"
               fi
@@ -3665,7 +3665,7 @@ if [ "$AUTO_MODE" = false ]; then
   echo ""
   _commit_choice=""
   while true; do
-    read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice || true
+    if ! read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice; then _commit_choice=n; fi
     case "$_commit_choice" in
       y|Y) break ;;
       n|N)
@@ -3675,7 +3675,7 @@ if [ "$AUTO_MODE" = false ]; then
       e|E)
         echo "Enter custom commit message (empty to keep current):"
         CUSTOM_MSG=""
-        read -re CUSTOM_MSG || true
+        if ! read -re CUSTOM_MSG; then CUSTOM_MSG=""; fi
         if [ -n "$CUSTOM_MSG" ]; then
           COMMIT_MSG="$CUSTOM_MSG"
         fi
