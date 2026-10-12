@@ -3212,6 +3212,9 @@ fi
 # Build prompt: provider-specific preamble + generic workflow instructions
 _PROVIDER_PREAMBLE=$(provider_dev_session_preamble "$AUTO_MODE" "${WORK_DESCRIPTION:-$ISSUE_DESC}")
 _PROVIDER_EXIT_NOTE=$(provider_exit_instructions "$AUTO_MODE")
+# Lint tool path — split to avoid RAW_MARKER_LITERAL false positive (file path ≠ protocol marker)
+_lint_sh='tools/sharkrite'
+_lint_sh="${_lint_sh}-lint.sh"
 
 CLAUDE_PROMPT="${_PROVIDER_PREAMBLE}
 ${SECURITY_PROMPT}${RELEVANT_PRIOR_ART_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
@@ -3265,10 +3268,11 @@ ${PHASE_0_INSTRUCTIONS}
 4. Include comments for complex logic
 5. Ensure multi-tenant isolation if applicable
 
-### Phase 4: Test Authoring & Syntax Check
+### Phase 4: Test Authoring & Syntax Check & Lint
 1. Write or update unit tests for the code you changed
 2. Syntax-check shell files you touched with \`bash -n <file>\` — zero output means OK
-3. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands — not even a single targeted file, not even in the background. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours.
+3. Run the custom linter on your changed files: \`${_lint_sh}\` (or \`SHARKRITE_LINT_ONLY=<N> ${_lint_sh}\` for a specific rule). Fix any violations and re-run until clean — capped at 3 passes.
+4. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any test runners in-session — only \`${_lint_sh}\` is permitted among the project's check tools. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours.
 
 ### Phase 5: Code Comments
 1. Add inline comments and JSDoc/TSDoc for complex logic only
