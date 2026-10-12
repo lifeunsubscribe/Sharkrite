@@ -28,6 +28,13 @@ setup() {
   FIXTURE_DIR="${BATS_TEST_TMPDIR}/lint-targeted-fixtures"
   mkdir -p "$FIXTURE_DIR"
   export RITE_LINT_EXTRA_DIRS="$FIXTURE_DIR"
+
+  # Hermetic default-mode assertions: post-merge-verify.sh exports
+  # RITE_TEST_GATE_SKIP_TRIGGERS=true for its gate run and bats inherits it,
+  # which flipped the three FORCE_FULL trigger tests inside every post-merge/
+  # post-rebase verification (issue #1182). The =true test exports it on its
+  # own invocation, so it is unaffected by this unset.
+  unset RITE_TEST_GATE_SKIP_TRIGGERS
 }
 
 teardown() {
