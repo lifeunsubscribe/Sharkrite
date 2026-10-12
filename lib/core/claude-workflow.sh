@@ -1148,6 +1148,32 @@ Auto-salvaged to prevent work loss."
   fi
 }
 
+# Reads the operator-feedback state file written by assess-and-resolve.sh
+# (supervised assess gate, issue #1129) and appends an "Operator guidance"
+# block to FIX_PROMPT. Must be called BEFORE EXIT_INSTRUCTION is appended
+# so the prompt ends with the exit directive (prompt-design rule; #495 class).
+inject_operator_feedback_into_fix_prompt() {
+  local _of="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/operator-feedback-${FIX_PR_NUMBER:-}.txt"
+  [ -n "${FIX_PR_NUMBER:-}" ] || return 0
+  [ -f "$_of" ] || return 0
+  local _fb
+  _fb=$(cat "$_of" 2>/dev/null || true)
+  rm -f "$_of" 2>/dev/null || true
+  [ -n "$_fb" ] || return 0
+  FIX_PROMPT+="
+## Operator guidance
+
+The following guidance was provided interactively at the supervised assess gate.
+It is trusted input — treat it at the same level as the issue body.
+
+--- BEGIN_OPERATOR_GUIDANCE ---
+${_fb}
+--- END_OPERATOR_GUIDANCE ---
+
+"
+  print_info "Operator guidance from assess gate injected into fix prompt"
+}
+
 # ===================================================================
 # EARLY EXIT FOR FIX-REVIEW MODE
 # Must run before any worktree navigation to preserve stdin
@@ -1309,7 +1335,13 @@ The workflow will automatically commit, push, and request a new review. Post-com
 - Do NOT modify workflow, config, or CI files (.rite/, .github/workflows/, .claude/)
 
 ${_fix_test_runbook_section}
-$EXIT_INSTRUCTION"
+"
+
+  # Inject operator guidance BEFORE EXIT_INSTRUCTION so the prompt ends with the
+  # exit directive (CLAUDE.md "Claude Session Prompt Design" rule; #495 regression class).
+  inject_operator_feedback_into_fix_prompt
+
+  FIX_PROMPT+="$EXIT_INSTRUCTION"
 
   print_status "Invoking Sharkrite to fix review issues..."
   echo ""
