@@ -1703,10 +1703,9 @@ _lint_issues_strict() {
           fi
           # Also capture backtick commands from acceptance criteria lines
           # Format: - [ ] criterion: `command`
-          # Single-token captures (no space) are identifiers/paths, not commands — skip them.
           if echo "$_vline" | grep -qE '^\s*-\s*\['; then
             local _backtick_cmds
-            _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' | grep ' ' || true)
+            _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
             [ -n "$_backtick_cmds" ] && _issue_verif="${_issue_verif}${_backtick_cmds}"$'\n'
           fi
         done <<< "$_issue_block"
@@ -2326,6 +2325,8 @@ pytest"
         local _vcmd_norm
         _vcmd_norm=$(echo "$_vcmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s '[:blank:]' ' ' || true)
         [ -z "$_vcmd_norm" ] && continue
+        # Single-token entries (no space after normalization) are identifiers/paths, not commands — skip duplicate check
+        case "$_vcmd_norm" in *' '*) ;; *) continue ;; esac
 
         # Skip allowlisted shared setup commands
         if echo "$_VERIF_ALLOWLIST" | grep -qxF "$_vcmd_norm"; then

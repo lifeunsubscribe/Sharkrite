@@ -3225,3 +3225,106 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Regression: Check 4 receives single-token backtick paths from acceptance criteria
+#
+# A single-token backtick entry (no space) in acceptance criteria — e.g.
+# `src/handler.ts` — must reach Check 4 and trigger a path warning when the
+# file is not in Files to Modify or the repo. Before the fix, `grep ' '` at
+# extraction silently dropped these, making Check 4 blind to typo'd paths.
+# ---------------------------------------------------------------------------
+
+@test "regression: single-token backtick path in acceptance criteria reaches Check 4 — WARNING emitted" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-check4-backtick.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add handler module
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Add a handler module.
+
+**Claude Context**:
+Files to Modify:
+- src/router.py
+
+**Acceptance Criteria**:
+- [ ] Handler module exists: `src/handler.ts`
+
+**Done Definition**: Done when handler is added.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (Check 4 is a warning, not an error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for Check 4 path warning, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING mentioning the single-token path
+  grep -q "src/handler.ts" "$stderr_out" || {
+    echo "FAIL: expected Check 4 WARNING for single-token backtick path 'src/handler.ts'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "regression: single-token backtick path that exists in Files to Modify — no Check 4 warning" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-check4-backtick-ok.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add handler module
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Add a handler module.
+
+**Claude Context**:
+Files to Modify:
+- src/handler.ts
+
+**Acceptance Criteria**:
+- [ ] Handler module exists: `src/handler.ts`
+
+**Done Definition**: Done when handler is added.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 when single-token backtick path is in Files to Modify, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT warn about handler.ts since it is in Files to Modify
+  grep -q "verification path not produced\|not in Files to Modify" "$stderr_out" && {
+    echo "FAIL: unexpected Check 4 warning for path that is in Files to Modify" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
