@@ -69,7 +69,10 @@ run_promote() {
   print_step "Fetching latest state from origin..."
   git_fetch_safe origin main
   git_fetch_safe origin "$BRANCH" || {
-    if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/$BRANCH"; then
+    local _lsremote_exit=0
+    local _lsremote_out=""
+    _lsremote_out=$(git ls-remote --heads origin "$BRANCH" 2>/dev/null) || _lsremote_exit=$?
+    if [ "$_lsremote_exit" -ne 0 ] || printf '%s' "${_lsremote_out:-}" | grep -q "refs/heads/${BRANCH}$"; then
       print_error "Failed to fetch '$BRANCH' from origin — network error?"
       echo "  Re-run after checking network:  rite --promote $BRANCH" >&2
     else
@@ -123,8 +126,9 @@ run_promote() {
         # shellcheck source=/dev/null
         source "$RITE_LIB_DIR/utils/integration-sync.sh"
         sync_integration_branch "$BRANCH" || true
-        # Re-fetch and re-check after sync
+        # Re-fetch and re-check after sync; also re-capture SHA so Phase 6 sees the post-sync tip
         git_fetch_safe origin "$BRANCH" || true
+        _branch_sha=$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)
         _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
         _behind="${_behind:-0}"
         if [ "$_behind" -gt 0 ]; then
@@ -215,8 +219,8 @@ run_promote() {
   # Remove a stale worktree from a prior aborted run
   if [ -d "$_wt" ]; then
     git worktree remove "$_wt" --force 2>/dev/null || rm -rf "$_wt"
-    git worktree prune 2>/dev/null || true
   fi
+  git worktree prune 2>/dev/null || true
 
   git worktree add "$_wt" "origin/$BRANCH"
 
@@ -263,6 +267,10 @@ run_promote() {
   # mid-promote — abort with a re-run instruction, do NOT auto-resolve.
 
   print_step "Merging promotion PR #$PROMO_PR (squash, SHA-verified)..."
+  if [ -z "${_branch_sha:-}" ]; then
+    print_error "Branch HEAD SHA could not be resolved — re-run: rite --promote $BRANCH"
+    exit 1
+  fi
   local _expected_head="${_branch_sha}"
   local _repo_name=""
   _repo_name=$(gh_safe repo view --json nameWithOwner --jq '.nameWithOwner')
@@ -330,7 +338,7 @@ run_promote() {
 
   # Step 3: Delete the integration branch (remote, then local)
   print_step "Deleting integration branch '$BRANCH'..."
-  if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/$BRANCH"; then
+  if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/${BRANCH}$"; then
     if git push origin --delete "$BRANCH" 2>/dev/null; then
       print_info "Deleted remote branch origin/$BRANCH"
     else
