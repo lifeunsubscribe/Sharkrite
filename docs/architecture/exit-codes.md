@@ -47,7 +47,8 @@ These codes cross script boundaries and must be kept unambiguous.
 | `1`  | Manual intervention needed (CRITICAL findings, unresolvable issues, or follow-up creation failure) |
 | `2`  | Loop to fix — ACTIONABLE_NOW items remain, retry |
 | `3`  | Review stale — route back to Phase 2 (re-review) |
-| `5`  | **Composite phase only** (`phase_assess_and_resolve` in `workflow-runner.sh`): usage cap reached during the embedded fix session — propagated verbatim so the batch aborts cleanly. The standalone script does not emit this code. |
+| `5`  | **Composite phase only** (`phase_assess_and_resolve` in `workflow-runner.sh`): usage cap reached during the embedded fix session or review regeneration — propagated verbatim so the batch aborts cleanly. The standalone script does not emit this code. |
+| `18` | **Composite phase only** (`phase_assess_and_resolve` in `workflow-runner.sh`): provider auth failure during the embedded fix session — propagated verbatim so the batch halts immediately. The standalone script does not emit this code. |
 
 > **Follow-up creation failure halts the merge.** If `gh issue create` fails during follow-up creation, the script
 > saves items to `.rite/orphaned-followup-items.md`, emits an error, and exits `1` — even when no CRITICAL

@@ -937,8 +937,10 @@ EOF
   _proc=$(echo "$_out" | grep "^processed:" | sed 's/processed://')
   echo "$_proc" | grep -q "1"
   # Slots 2 and 3 must NOT appear in the processed list (loop broke on slot 1)
-  ! echo "$_proc" | grep -q "2"
-  ! echo "$_proc" | grep -q "3"
+  # Use if/false instead of `! cmd` — `! pipeline` suppresses set -e under bats,
+  # making the assertion a no-op when the pattern IS found.
+  if echo "$_proc" | grep -q "2"; then false; fi
+  if echo "$_proc" | grep -q "3"; then false; fi
   # Slot 1 in failed list
   echo "$_out" | grep -q "failed:.*1"
   # Zero completions (slot 1 failed with cap, 2 and 3 never ran)
@@ -962,5 +964,30 @@ EOF
 
 @test "structural: workflow-runner.sh phase_assess_and_resolve propagates fix_result -eq 18 (auth failure)" {
   _count=$(grep -cE "fix_result -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
+  [ "$_count" -ge 1 ]
+}
+
+@test "structural: workflow-runner.sh Phase 1 arm propagates exit 5 (usage cap) — not collapsed to 1" {
+  # Verify the Phase 1 arm explicitly checks _phase1_exit -eq 5 and returns 5.
+  # The _simulate_* helpers in Layer A/B do not exercise this path in production
+  # code; this structural grep is the binding assertion.
+  _count=$(grep -cE "_phase1_exit -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
+  [ "$_count" -ge 1 ]
+}
+
+@test "structural: workflow-runner.sh Phase 1 arm propagates exit 18 (auth failure) — not collapsed to 1" {
+  _count=$(grep -cE "_phase1_exit -eq 18" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
+  [ "$_count" -ge 1 ]
+}
+
+@test "structural: workflow-runner.sh fix-loop phase_create_pr --loop propagates exit 5 (usage cap)" {
+  # Verify the fix-loop re-review call site captures the exit code and returns 5
+  # on usage cap — `if ! phase_create_pr` would collapse 5 to 1 silently.
+  _count=$(grep -cE "_loop_create_pr_rc -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
+  [ "$_count" -ge 1 ]
+}
+
+@test "structural: workflow-runner.sh stale-reroute phase_create_pr --loop propagates exit 5 (usage cap)" {
+  _count=$(grep -cE "_reroute_create_pr_rc -eq 5" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" || true)
   [ "$_count" -ge 1 ]
 }
