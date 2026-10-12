@@ -69,10 +69,20 @@ run_promote() {
   print_step "Fetching latest state from origin..."
   git_fetch_safe origin main
   git_fetch_safe origin "$BRANCH" || {
-    print_error "Branch '$BRANCH' not found on origin — nothing to promote"
-    echo "  Create it first:  rite --branch $BRANCH <issue>" >&2
+    if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/$BRANCH"; then
+      print_error "Failed to fetch '$BRANCH' from origin — network error?"
+      echo "  Re-run after checking network:  rite --promote $BRANCH" >&2
+    else
+      print_error "Branch '$BRANCH' not found on origin — nothing to promote"
+      echo "  Create it first:  rite --branch $BRANCH <issue>" >&2
+    fi
     exit 1
   }
+
+  # Capture branch HEAD SHA at preflight; passed to the merge API in Phase 6 so any
+  # push during review/suite triggers a 409 abort rather than merging unreviewed code.
+  local _branch_sha=""
+  _branch_sha=$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)
 
   # Ledger must exist with >= 1 promoted=false entry.
   local _ledger_entries=""
@@ -150,6 +160,7 @@ run_promote() {
   rm -f "$_ctx_file"
 
   if [ -z "${_pr_body:-}" ]; then
+    print_warning "Promotion PR body composer failed — using placeholder body (re-run after fixing composer)"
     _pr_body="Promotion of integration branch '${BRANCH}' to main."
   fi
 
@@ -166,13 +177,13 @@ run_promote() {
   else
     print_step "Creating promotion PR..."
     local _pr_title="Promote '$BRANCH' to main"
-    PROMO_PR=$(gh_safe pr create \
+    local _pr_url=""
+    _pr_url=$(gh_safe pr create \
       --base main \
       --head "$BRANCH" \
       --title "$_pr_title" \
-      --body "$_pr_body" \
-      --json number \
-      --jq '.number' 2>/dev/null || true)
+      --body "$_pr_body" 2>/dev/null || true)
+    PROMO_PR=$(printf '%s' "${_pr_url:-}" | grep -oE '[0-9]+$' || true)
     PROMO_PR="${PROMO_PR:-}"
     if [ -z "$PROMO_PR" ]; then
       print_error "Failed to create promotion PR for branch '$BRANCH'"
@@ -204,6 +215,7 @@ run_promote() {
   # Remove a stale worktree from a prior aborted run
   if [ -d "$_wt" ]; then
     git worktree remove "$_wt" --force 2>/dev/null || rm -rf "$_wt"
+    git worktree prune 2>/dev/null || true
   fi
 
   git worktree add "$_wt" "origin/$BRANCH"
@@ -251,8 +263,7 @@ run_promote() {
   # mid-promote — abort with a re-run instruction, do NOT auto-resolve.
 
   print_step "Merging promotion PR #$PROMO_PR (squash, SHA-verified)..."
-  local _expected_head=""
-  _expected_head=$(gh_safe pr view "$PROMO_PR" --json headRefOid --jq '.headRefOid')
+  local _expected_head="${_branch_sha}"
   local _repo_name=""
   _repo_name=$(gh_safe repo view --json nameWithOwner --jq '.nameWithOwner')
 

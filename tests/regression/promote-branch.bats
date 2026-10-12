@@ -351,6 +351,83 @@ RUNEOF
 }
 
 # ===========================================================================
+# Group 3b: PR-creation argument shape — no --json flag; URL parsing
+# ===========================================================================
+
+@test "first-time promotion: gh pr create called without --json, PR number parsed from URL" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/pr_shape.log"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-shape"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  ls-remote) echo "abc refs/heads/shape-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create)
+          echo "GH_PR_CREATE_ARGS: \$*" >> "$_call_log"
+          echo "https://github.com/owner/repo/pull/88"
+          return 0 ;;
+        edit)   return 0 ;;
+        view)   return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_promote "shape-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+
+  # gh pr create must NOT use --json flag
+  ! grep -q "\-\-json" "$_call_log"
+
+  # PR number must be correctly extracted from the URL output
+  echo "$output" | grep -q "PR #88"
+}
+
+# ===========================================================================
 # Group 4: Full-suite failure aborts before merge API call
 # ===========================================================================
 

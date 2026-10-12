@@ -279,7 +279,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --sync <N> [<N>...]      Rebase issue feature branches onto their base (rebase goes stale-review by design)"
       echo "  rite --sync                   Bare sweep: sync all ledger branches + in-flight worktrees"
       echo "  rite --promote <branch>       Promote integration branch to main (PR + review + full-suite + merge)"
-  echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
+      echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
       echo "  rite --tags --orphans         Show catalog entries with no tag pointers"
