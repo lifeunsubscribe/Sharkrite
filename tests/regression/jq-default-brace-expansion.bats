@@ -69,7 +69,7 @@ VAR=$(some_command)
 VAR="${VAR:-{}}"
 SH
 
-  run env RITE_LINT_EXTRA_DIRS="$fixture_dir" bash "${BATS_TEST_DIRNAME}/../../tools/sharkrite-lint.sh"
+  SHARKRITE_LINT_ONLY=14 run env RITE_LINT_EXTRA_DIRS="$fixture_dir" bash "${BATS_TEST_DIRNAME}/../../tools/sharkrite-lint.sh"
   [[ "$output" == *"JQ_DEFAULT_BRACE"* ]]
 }
 
