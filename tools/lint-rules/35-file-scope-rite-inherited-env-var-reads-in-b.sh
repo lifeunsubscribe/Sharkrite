@@ -67,8 +67,14 @@ while IFS= read -r bats_file; do
       }
       # ---- track brace depth (to detect file-scope vs inside-function) ----
       # Strip string literals and ${} expansions to avoid counting braces inside them.
+      # Strip order: single-quoted strings, then backslash-escaped quotes, then
+      # double-quoted strings, then ${} expansions.
+      # Removing \" before the double-quote pass fixes "${x#\"}" false-positives:
+      # after stripping the escaped quote, "[^"]*" sees balanced outer quotes and
+      # strips the whole expansion cleanly — no orphaned } for the brace counter.
       _stripped = $0
       gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
+      gsub(/\\"/, "", _stripped)
       gsub(/"[^"]*"/, "", _stripped)
       gsub(/\$\{[^}]*\}/, "", _stripped)
       _tmp = _stripped; _ob = gsub(/{/, "", _tmp)

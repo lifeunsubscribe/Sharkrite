@@ -423,6 +423,51 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   ! echo "$output" | grep -q "file-scope-rite-safe.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
 
+@test "BATS_FILE_SCOPE_ENV_READ: escaped quote inside expansion does not orphan closing brace" {
+  # Regression (#1149): _section="${_section#\"}" contains an escaped quote inside
+  # a parameter expansion. Without stripping \" before the double-quote pass, the
+  # "[^"]*" pattern consumed up to the escaped quote and left a stray } that
+  # decremented depth, causing a subsequent RITE_* assignment inside the same
+  # function to appear at depth 0 (file scope) and get falsely flagged.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  local _section="heading"'
+    echo '  _section="${_section#\"}"'
+    echo '  MY_PATH="${RITE_REPO_ROOT}/tests/helpers/setup.bash"'
+    echo '}'
+    _emit_test_open "escaped-quote depth safe"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-escaped-quote.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-escaped-quote.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: escaped-quote expansion fix does not suppress real violation" {
+  # Sensitivity check: the expansion-strip reorder must not create blind spots.
+  # A file that uses an escaped-quote-in-expansion AND has a genuine file-scope
+  # RITE_* assignment must still be flagged.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  local _section="heading"'
+    echo '  _section="${_section#\"}"'
+    echo '}'
+    echo 'MY_PATH="${RITE_REPO_ROOT}/tests/helpers/setup.bash"'
+    _emit_test_open "escaped-quote with bad file-scope"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-escaped-quote-bad.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+  echo "$output" | grep -q "file-scope-escaped-quote-bad.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
 @test "BATS_FILE_SCOPE_ENV_READ: does not flag BATS_TEST_DIRNAME-derived assignments at file scope" {
   # Assignments that reference BATS_TEST_DIRNAME (a bats builtin always set at
   # parse time) are safe patterns and must not be flagged.
