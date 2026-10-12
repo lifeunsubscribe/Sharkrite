@@ -238,6 +238,9 @@ _docs_apply_approved() {
 
     [ -n "$_aa_file" ] || continue
     # Reject absolute paths and directory traversal to prevent writes outside the worktree
+    # shellcheck disable=SC2221,SC2222
+    # SC2221/2222: patterns are distinct — *../* matches mid-traversal (foo/../bar),
+    # */.. matches end-traversal (foo/..) which has no / after .. and is not covered by *../*
     case "$_aa_file" in
       /*|*../*|*/..|../*|..)
         print_warning "Rejected proposal: unsafe FILE path '$_aa_file'" >&2
@@ -605,6 +608,9 @@ DOC_UPDATE_EOF
       done < "$_ue_pf"
 
       # Reject unsafe paths before preview (absolute or directory traversal)
+      # shellcheck disable=SC2221,SC2222
+      # SC2221/2222: patterns are distinct — *../* matches mid-traversal (foo/../bar),
+      # */.. matches end-traversal (foo/..) which has no / after .. and is not covered by *../*
       case "$_ue_p_file" in
         /*|*../*|*/..|../*|..)
           print_warning "  Skipping proposal with unsafe FILE path: '$_ue_p_file'" >&2
