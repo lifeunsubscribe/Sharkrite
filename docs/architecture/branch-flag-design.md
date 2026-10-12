@@ -1,6 +1,6 @@
 # Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow
 
-**Status:** Final — design closed per 2026-07 rulings. The `--branch` / `--promote` / `--sync` cluster (#1031–#1052) is implemented; cherry-pick promote (#1047/#1050/#1051) is designed but not yet shipped. See the [phase-integration-branches issue list](https://github.com/lifeunsubscribe/Sharkrite/issues?q=is%3Aissue+label%3Aphase-integration-branches) for open cleanup items.
+**Status:** Final — design closed per 2026-07 rulings. The `--branch` / `--promote` / `--sync` cluster (#1031–#1052) is implemented; cherry-pick promote (#1051) is designed but not yet shipped (promote orchestrator shipped in #1047/#1050). See the [phase-integration-branches issue list](https://github.com/lifeunsubscribe/Sharkrite/issues?q=is%3Aissue+label%3Aphase-integration-branches) for open cleanup items.
 **Date:** 2026-06-23 (design) / 2026-07-07 (rulings finalized)
 **Provenance:** Generated via a multi-agent design workflow (5 parallel subsystem readers → synthesis). Every `file:line` below was re-verified against source at ruling time (2026-07-07) and again at worktree creation (2026-10-11).
 
@@ -272,7 +272,7 @@ Chunk 6 (lint backstop)  ── land LAST, after 3+4 ── [SEPARABLE, ordering
 
 **Aggregated `Closes #N` block** — the promotion PR body lists all constituent issues from the ledger (§9), not extracted from the squash commit subject (which only carries the PR title). See §9 for the rationale.
 
-**Single-issue cherry-pick promote** — `rite --promote <branch> --cherry-pick <issue>` promotes one issue from the integration branch by cherry-picking its squash SHA from the ledger onto a temporary branch targeting `main`, then running the full promote pipeline on that temp branch. Conflicts abort (never auto-resolved). Designed; not yet implemented — tracked in #1047 + #1050 + #1051.
+**Single-issue cherry-pick promote** — `rite --promote <branch> --cherry-pick <issue>` promotes one issue from the integration branch by cherry-picking its squash SHA from the ledger onto a temporary branch targeting `main`, then running the full promote pipeline on that temp branch. Conflicts abort (never auto-resolved). Designed; not yet implemented — tracked in #1051 (promote orchestrator shipped in #1047/#1050).
 
 ### 8.2 Why not `merge-pr.sh`
 
