@@ -75,6 +75,13 @@
 # Set to 0 to disable the fast-path (always attempt LLM resolution).
 # RITE_REBASE_CONFLICT_RESTART_MAX=3
 
+# Absurd-divergence threshold for stale-branch auto mode (default: 100 commits).
+# When a branch is MORE THAN this many commits behind its base (strict >), auto mode
+# skips the rebase attempt and closes+restarts immediately. Prevents replaying truly
+# enormous histories that signal an abandoned branch rather than normal main drift.
+# Set to 0 to disable the guard (always attempt rebase regardless of distance).
+# RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD=100
+
 # Assessment timeout for this project (complex projects may need longer)
 # Default is 300s. Raise to 600 if assessments time out during heavy provider load.
 # RITE_ASSESSMENT_TIMEOUT=300

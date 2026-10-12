@@ -489,11 +489,21 @@ Only content-aware and practical conditions block merges:
 
 ### Stale Branch Handling
 
-When resuming an issue with an existing PR, the branch is checked against the PR's base branch (`origin/main` by default). Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
+When resuming an issue with an existing PR, the branch is checked against the PR's base branch (`origin/main` by default).
 
-- **Below threshold**: Rebase the feature branch onto the PR's base branch (`origin/main` by default) (replays branch commits on top of fresh base), then force-push with `--force-with-lease`. Rebase avoids the false conflicts a merge would surface when the base has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; otherwise auto mode bails and supervised mode prompts.
-- **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
-- **At/above threshold (supervised)**: Prompt with 5 options (close+restart recommended, rebase onto main, merge main into branch [legacy], continue, abort). The legacy merge path is kept opt-in for cases where rewriting history is unacceptable.
+**Auto mode** — stale branch resume decision is conflict-based, not distance-based (same ruling as mid-run drift #433/#439; extended to stale-branch resume path by #1137):
+- Always attempts rebase onto the PR's base branch first, regardless of how many commits behind.
+- Rebase succeeds → continue workflow (PR preserved, no restart).
+- Rebase conflicts + resolver fails (or post-rebase verification fails) → close PR with summary comment, cleanup branch/worktree, restart fresh (exit 11).
+- Absurd-divergence guard: `RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD` (default: 100 commits) → close and restart directly when **more than** 100 commits behind (strict `>`; exactly 100 still rebases), skipping the rebase attempt. Prevents replaying truly enormous histories.
+
+**Supervised mode** — uses `RITE_STALE_BRANCH_THRESHOLD` (default: 10) as the decision point:
+- Below threshold → rebase directly (fast-path, no prompt).
+- At/above threshold → prompt with 5 options (close+restart recommended, rebase onto base, merge base into branch [legacy], continue, abort). The legacy merge path is kept opt-in for cases where rewriting history is unacceptable.
+
+`RITE_STALE_BRANCH_THRESHOLD` is retained as supervised mode's prompt threshold and recommendation heuristic. It no longer gates the auto-mode rebase attempt.
+
+Rebase avoids the false conflicts a merge would surface when the base has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; on resolver failure, auto mode falls back to close+restart and supervised mode prompts.
 
 Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 11 to signal "restarted fresh" — caller resets all resume state variables.
 
