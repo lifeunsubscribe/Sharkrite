@@ -880,6 +880,128 @@ ELAPSED_HOURS=$(( CUMULATIVE_SECS / 3600 ))
 print_success "Pre-start checks passed"
 echo ""
 
+# ---------------------------------------------------------------------------
+# Green-main preflight (issue #1149)
+#
+# Gate block-on-any is sound only under a green main invariant: "any failure in
+# the targeted selection is this change's to fix." In target repos that
+# invariant may not hold — LeadFlow 2026-07-05 had 18+ failing dashboard tests
+# on main; 51 main-inherited failures fed into ACTIONABLE_NOW for issue #401.
+#
+# Precondition check: run the full gate once against origin/main before any
+# issue processing.
+#   - Green → proceed; invariant holds.
+#   - Red + RITE_ACCEPT_RED_MAIN not set → halt (exit 20) with failing list +
+#     explicit options. Fix main first.
+#   - Red + RITE_ACCEPT_RED_MAIN=1 → save baseline to RITE_STATE_DIR and
+#     export _RITE_MAIN_BASELINE_FILE so assess-and-resolve.sh can subtract
+#     main-inherited failures from ACTIONABLE_NOW (attribution subtraction).
+#
+# The worktree is detached and removed immediately after the gate run so it
+# never participates in any subsequent workflow phase.
+# ---------------------------------------------------------------------------
+print_header "🔍 Green-Main Preflight"
+print_info "Verifying main is green (gate block-on-any precondition)..."
+echo ""
+
+# Source test-gate functions if not already loaded
+if ! declare -f run_test_gate >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/test-gate.sh"
+fi
+
+_gmp_wt=""
+_gmp_gate_file=""
+_gmp_gate_exit=0
+_gmp_skip=false
+
+# Check whether a test runner is available at all; skip preflight silently
+# when neither make nor RITE_TEST_COMMAND exists (e.g. a repo with no tests).
+if ! command -v make >/dev/null 2>&1 && [ -z "${RITE_TEST_COMMAND:-}" ]; then
+  _gmp_skip=true
+  print_info "No test runner available — skipping green-main preflight"
+  echo ""
+fi
+
+if [ "$_gmp_skip" = "false" ]; then
+  _gmp_gate_file=$(mktemp "/tmp/rite_gmp_gate_$$_XXXXXX")
+  _gmp_wt=$(mktemp -d "/tmp/rite_gmp_wt_$$_XXXXXX")
+  rmdir "$_gmp_wt"   # mktemp -d creates the dir; worktree add needs the path absent
+
+  if ! git -C "$RITE_PROJECT_ROOT" worktree add --detach --quiet "$_gmp_wt" origin/main 2>/dev/null; then
+    print_warning "Could not create origin/main worktree for preflight — skipping green-main check"
+    print_info "(Ensure origin/main is fetched: git fetch origin main)"
+    rm -f "$_gmp_gate_file"
+    _gmp_skip=true
+    echo ""
+  fi
+fi
+
+if [ "$_gmp_skip" = "false" ]; then
+  # RITE_GATE_FORCE_FULL=1: run the full suite, not a diff-based subset.
+  # The diff base on a detached-HEAD worktree resolves to empty → targeted
+  # selection would run zero files. FORCE_FULL explicitly runs everything.
+  # Unset PR_NUMBER so temp files don't collide with a live in-flight gate.
+  PR_NUMBER="" RITE_GATE_FORCE_FULL=1 run_test_gate "$_gmp_gate_file" "$_gmp_wt" \
+    || _gmp_gate_exit=$?
+
+  git -C "$RITE_PROJECT_ROOT" worktree remove --force "$_gmp_wt" 2>/dev/null \
+    || rm -rf "$_gmp_wt"
+  _gmp_wt=""
+
+  if [ "$_gmp_gate_exit" -eq 0 ]; then
+    print_success "Main is green — gate block-on-any soundness invariant holds"
+    rm -f "$_gmp_gate_file"
+    echo ""
+  else
+    # Main is red: extract failure counts from the gate JSON.
+    _gmp_test_count=$(jq -r '(.tests // []) | length' "$_gmp_gate_file" 2>/dev/null || echo "?")
+    _gmp_lint_count=$(jq -r '(.lint // []) | length' "$_gmp_gate_file" 2>/dev/null || echo "?")
+
+    echo ""
+    print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_warning "🔴 Main is red — gate block-on-any precondition NOT met"
+    print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    print_info "Failing on main: ${_gmp_test_count} test failure(s), ${_gmp_lint_count} lint item(s)"
+    echo ""
+
+    # List failing tests (up to 20 for readability)
+    jq -r '(.tests // [])[:20][].test_name // empty' "$_gmp_gate_file" 2>/dev/null \
+      | while IFS= read -r _t; do
+          echo "  • [test] ${_t}"
+        done
+    jq -r '(.lint // [])[:10][] | "  • [lint] \(.file):\(.line): \(.rule)"' \
+        "$_gmp_gate_file" 2>/dev/null || true
+
+    echo ""
+
+    if [ "${RITE_ACCEPT_RED_MAIN:-0}" = "1" ]; then
+      print_info "RITE_ACCEPT_RED_MAIN=1 — saving main baseline for attribution subtraction"
+      mkdir -p "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+      cp "$_gmp_gate_file" "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/gate-main-baseline.json"
+      export _RITE_MAIN_BASELINE_FILE="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/gate-main-baseline.json"
+      rm -f "$_gmp_gate_file"
+      echo ""
+      print_warning "Proceeding with red main. Gate failures also present on main will be"
+      print_warning "reported as INFO_ONLY — not ACTIONABLE_NOW — in each issue's assessment."
+      echo ""
+    else
+      rm -f "$_gmp_gate_file"
+      print_error "Halting batch — main is red. Fix main first, then retry."
+      echo ""
+      print_info "Options:"
+      print_info "  1. Fix the failing tests/lint on main, push, then retry this batch."
+      print_info "  2. To proceed with attribution subtraction (branch-only failures"
+      print_info "     become ACTIONABLE_NOW; inherited failures are reported as INFO_ONLY):"
+      # sharkrite-lint disable BARE_VAR_REFERENCE - Reason: ISSUE_LIST is a bash array expanded here at print time, safely initialized above
+      print_info "     RITE_ACCEPT_RED_MAIN=1 rite ${ISSUE_LIST[*]}"
+      echo ""
+      exit 20  # exit 20: green-main preflight halt (see docs/architecture/exit-codes.md)
+    fi
+  fi
+fi
+unset _gmp_wt _gmp_gate_file _gmp_gate_exit _gmp_skip _gmp_test_count _gmp_lint_count
+
 print_header "🚀 Batch Processing Started"
 echo "Issues: ${ISSUE_LIST[*]} ($TOTAL_ISSUES total)"
 echo "Mode: Unsupervised (--auto)"
