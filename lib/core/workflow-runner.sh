@@ -1526,6 +1526,12 @@ phase_assess_and_resolve() {
         # Usage cap reached during fix-review push — propagate so batch aborts cleanly
         print_warning "Usage cap reached during fix-review — aborting batch"
         return 5
+      elif [ $fix_result -eq 18 ]; then
+        # Auth failure during fix session — propagate so batch halts.
+        # Mirrors the exit-5 branch above; a mid-batch auth expiry must stop
+        # the whole run rather than being swallowed as a generic fix failure.
+        print_error "Provider auth failure during fix session — aborting batch"
+        return 18
       elif [ $fix_result -eq 2 ]; then
         # Divergence was resolved by pulling foreign commits (handle_push_divergence exit 2).
         # The push succeeded inside the handler; the HEAD now includes foreign commits.
@@ -1580,8 +1586,9 @@ phase_assess_and_resolve() {
     phase_spawn_doc_assessment "$pr_number" "$WORKTREE_PATH"
 
     # Phase 2 (push + review generation) runs in foreground
-    if ! phase_create_pr "$issue_number" --loop; then
-      print_error "Failed to push fixes and regenerate review"
+    local _loop_create_pr_rc=0
+    phase_create_pr "$issue_number" --loop || _loop_create_pr_rc=$?
+    if [ $_loop_create_pr_rc -ne 0 ]; then
       # Gate is still running — kill its whole process tree (a bare kill leaves
       # leaked bats/tee children that can keep the pipe open) and reap, bounded
       # so a wedged gate can't hang this error path either (issue #654).
@@ -1591,6 +1598,11 @@ phase_assess_and_resolve() {
       # Doc assessment may also still be running — kill it so it doesn't
       # outlive the workflow as a zombie writing to .rite/docs/ after we fail.
       phase_kill_doc_assessment
+      if [ $_loop_create_pr_rc -eq 5 ]; then
+        print_warning "Usage cap reached during fix-loop review regeneration — aborting batch"
+        return 5
+      fi
+      print_error "Failed to push fixes and regenerate review"
       return 1
     fi
 
@@ -1651,7 +1663,13 @@ phase_assess_and_resolve() {
     print_warning "Review is stale — routing back to Phase 2 for fresh review (reroute $((stale_reroute_count + 1))/2)"
     rm -f "$assess_stderr"
 
-    if ! phase_create_pr "$issue_number" --loop; then
+    local _reroute_create_pr_rc=0
+    phase_create_pr "$issue_number" --loop || _reroute_create_pr_rc=$?
+    if [ $_reroute_create_pr_rc -ne 0 ]; then
+      if [ $_reroute_create_pr_rc -eq 5 ]; then
+        print_warning "Usage cap reached during stale-reroute review regeneration — aborting batch"
+        return 5
+      fi
       print_error "Failed to regenerate review during stale reroute"
       return 1
     fi
@@ -3246,6 +3264,18 @@ run_workflow() {
       if [ $_phase1_exit -eq 14 ]; then
         return 14
       fi
+      # Preserve exit 5 (usage cap) and exit 18 (auth failure) so
+      # batch-process-issues.sh can halt cleanly — collapsing these to exit 1
+      # causes the batch to continue through subsequent issues despite a
+      # session-fatal condition (same class as the #1146 Phase 3 fix).
+      if [ $_phase1_exit -eq 5 ]; then
+        print_warning "Usage cap reached during development phase — aborting batch"
+        return 5
+      fi
+      if [ $_phase1_exit -eq 18 ]; then
+        print_error "Provider auth failure during development phase — aborting batch"
+        return 18
+      fi
       print_error "Workflow phase failed"
       return 1
     fi
@@ -3360,10 +3390,21 @@ run_workflow() {
     _timer_start "phase3_assess_resolve"
     # Pass RESUME_RETRY if resuming mid-loop (ensures follow-up creation happens)
     local start_retry="${RESUME_RETRY:-0}"
-    if ! phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$start_retry"; then
+    local _phase3_exit=0
+    phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$start_retry" || _phase3_exit=$?
+    if [ $_phase3_exit -ne 0 ]; then
       _timer_end "phase3_assess_resolve"
       _rtk_snapshot "phase3_end"
       _diag "PHASE_FAILED issue=${issue_number} phase=assess-resolve"
+      # Preserve batch-fatal sentinel codes so the batch dispatcher can abort cleanly.
+      # Using "if !" would collapse exit 5 (usage cap) and exit 18 (auth) to exit 1,
+      # causing the batch to march on rather than stopping immediately (live: 2026-10-11).
+      if [ $_phase3_exit -eq 5 ]; then
+        return 5
+      fi
+      if [ $_phase3_exit -eq 18 ]; then
+        return 18
+      fi
       print_error "Assessment phase failed"
       echo ""
       echo "The workflow stopped during Phase 3 (Assess & Resolve)."
