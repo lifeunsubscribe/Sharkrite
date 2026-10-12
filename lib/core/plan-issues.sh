@@ -4058,7 +4058,7 @@ create_issues() {
         # recorded due to a title mismatch). Strip the whole "Blocked by: #SPIKE-…"
         # clause rather than leaving a broken reference in the created issue.
         current_body=$(echo "$current_body" | \
-          sed 's|,\? *Blocked by: #SPIKE-[a-zA-Z0-9-]*||g; s|^[[:space:]]*Blocked by: #SPIKE-[a-zA-Z0-9-]*[[:space:]]*$||g' || true)
+          sed -E 's|,? *Blocked by: #SPIKE-[a-zA-Z0-9-]*||g; s|^[[:space:]]*Blocked by: #SPIKE-[a-zA-Z0-9-]*[[:space:]]*$||g' || true)
         # Clean up an empty Dependencies line that results from stripping all refs
         current_body=$(echo "$current_body" | \
           sed 's|^\*\*Dependencies\*\*:[[:space:]]*$||g' || true)

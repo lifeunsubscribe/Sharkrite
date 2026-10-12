@@ -1554,6 +1554,7 @@ build_relevant_prior_art() {
   local _close_marker="<!-- /${_marker_name} -->"
   if [ -n "$_marker_name" ] && [ -n "$issue_body" ] && echo "$issue_body" | grep -qF "$_open_marker"; then
     local _raw_tags
+    # sharkrite-lint disable GNU_ONLY_IDIOM - Reason: \|...|p is the POSIX-standard address delimiter form (not GNU BRE alternation); rule cannot yet distinguish address-delimiter \| from BRE alternation \| at authoring time
     _raw_tags=$(echo "$issue_body" \
       | sed -n "\|${_open_marker}|,\|${_close_marker}|p" \
       | grep '^tags:' \
