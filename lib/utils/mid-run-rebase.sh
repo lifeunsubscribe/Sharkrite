@@ -256,7 +256,28 @@ _mid_run_rebase_onto_main() {
             fi
             return 1
           fi
-          # Non-empty foreign commits (code changes). Halt loudly — do NOT push.
+          # Stage 2: foreign commits exist — check whether any contain content
+          # changes. An empty-tree commit (e.g., a pure sync merge) carries no
+          # code and can be discarded safely; only commits with real diffs halt.
+          local _mid_foreign_diff
+          _mid_foreign_diff=$(git diff "${_mid_foreign_anchor}..${_mid_remote_head}" 2>/dev/null || true)
+          if [ -z "$_mid_foreign_diff" ]; then
+            # Content-empty foreign commit(s): discard and retry (mirrors the log-empty path above).
+            print_info "mid-run-rebase: foreign commit(s) are content-empty — discarding and retrying push"
+            if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
+              print_info "mid-run-rebase: push succeeded after discard of content-empty foreign commit(s)"
+              return 0
+            fi
+            # Triple-race: the retry push was also rejected by another concurrent push.
+            # Mirrors stale-branch.sh:530 — emit the accurate error, not "foreign code".
+            print_error "mid-run-rebase: push still rejected after lease refresh — another concurrent push occurred"
+            if [ -n "$pre_rebase_head" ]; then
+              git reset --hard "$pre_rebase_head" 2>/dev/null || true
+              print_info "Branch restored to pre-rebase HEAD. Run 'rite ${issue_number:-<issue>} --supervised' to resolve."
+            fi
+            return 1
+          fi
+          # Non-empty diff: foreign commits contain code changes. Halt loudly — do NOT push.
           # Preserve-or-halt contract: a push here would clobber foreign code commits.
           local _mid_foreign_count
           _mid_foreign_count=$(echo "$_mid_foreign_commits" | grep -c '.' || true)
