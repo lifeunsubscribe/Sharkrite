@@ -1744,7 +1744,7 @@ case "$_DISPATCH_KEY" in
     _dev_pr_cbm=0
     if detect_pr_for_issue "$ISSUE_NUMBER"; then
       set +e
-      check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}"
+      check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}" "--dev-and-pr"
       _dev_pr_cbm=$?
       set -e
     fi

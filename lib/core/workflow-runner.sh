@@ -2055,7 +2055,7 @@ handle_pr_number_refused() {
 }
 
 # ---------------------------------------------------------------------------
-# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET
+# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET [MODE_SUFFIX]
 #
 # Refusal handler when an existing PR's baseRefName differs from the effective
 # target branch resolved for this issue. Prints a verbose block naming the
@@ -2065,6 +2065,10 @@ handle_pr_number_refused() {
 # NO auto-adopt: never assigns RITE_TARGET_BRANCH or switches targets silently.
 # The user must re-run with the correct --branch flag (or without one when the
 # PR base is main and main is the intended target).
+#
+# Optional MODE_SUFFIX (e.g. "--dev-and-pr") is appended to the corrected
+# command so callers invoked with a mode flag get a refusal that preserves
+# their original invocation form.
 #
 # Returns: 19 — sentinel meaning "PR base != effective target; manual action required".
 #   Both single-issue and batch mode propagate exit 19 through main() without
@@ -2077,15 +2081,17 @@ handle_branch_mismatch() {
   local pr_number="$2"
   local pr_base="$3"
   local effective_target="$4"
+  local _mode_suffix="${5:-}"
 
   # Build the corrected command:
   #   - If the PR's base is "main", the user should omit --branch (default target).
   #   - Otherwise, the user should pass --branch <pr_base> to match the PR.
+  # Append optional mode suffix to preserve the caller's invocation form.
   local _corrected_cmd
   if [ "$pr_base" = "main" ]; then
-    _corrected_cmd="rite ${issue_number}"
+    _corrected_cmd="rite ${issue_number}${_mode_suffix:+ $_mode_suffix}"
   else
-    _corrected_cmd="rite --branch ${pr_base} ${issue_number}"
+    _corrected_cmd="rite --branch ${pr_base} ${issue_number}${_mode_suffix:+ $_mode_suffix}"
   fi
 
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -2104,7 +2110,7 @@ handle_branch_mismatch() {
 }
 
 # ---------------------------------------------------------------------------
-# check_branch_mismatch ISSUE_NUMBER PR_NUMBER [PR_BASE_BRANCH]
+# check_branch_mismatch ISSUE_NUMBER PR_NUMBER [PR_BASE_BRANCH] [MODE_SUFFIX]
 #
 # Single-source guard: detect and refuse when an existing PR's baseRefName
 # differs from the effective target branch. Called by run_workflow() and by
@@ -2119,6 +2125,7 @@ handle_branch_mismatch() {
 #   ISSUE_NUMBER   — the issue being processed
 #   PR_NUMBER      — the existing PR for this issue (empty/null = skip check)
 #   PR_BASE_BRANCH — baseRefName already fetched (empty = fetch inline)
+#   MODE_SUFFIX    — optional flag appended to corrected command (e.g. "--dev-and-pr")
 #
 # Returns: 0  — no mismatch; caller may proceed
 #          19 — PR base != effective target; handle_branch_mismatch printed
@@ -2131,6 +2138,7 @@ check_branch_mismatch() {
   local _cbm_issue="$1"
   local _cbm_pr="${2:-}"
   local _cbm_base="${3:-}"
+  local _cbm_mode_suffix="${4:-}"
 
   [ -n "$_cbm_pr" ] && [ "$_cbm_pr" != "null" ] || return 0
 
@@ -2159,7 +2167,7 @@ check_branch_mismatch() {
 
   if [ "$_pr_base_for_check" != "$_mismatch_target" ]; then
     set +e
-    handle_branch_mismatch "$_cbm_issue" "$_cbm_pr" "$_pr_base_for_check" "$_mismatch_target"
+    handle_branch_mismatch "$_cbm_issue" "$_cbm_pr" "$_pr_base_for_check" "$_mismatch_target" "$_cbm_mode_suffix"
     set -e
     return 19
   fi
