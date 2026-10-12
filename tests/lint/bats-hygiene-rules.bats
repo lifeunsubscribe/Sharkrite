@@ -468,6 +468,27 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   echo "$output" | grep -q "file-scope-escaped-quote-bad.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
 
+@test "BATS_FILE_SCOPE_ENV_READ: escaped-backslash before closing quote does not orphan depth counter" {
+  # Regression: a string ending in \\ immediately before the closing " — e.g.
+  # "${_var:-"\\"}" — caused gsub(/\\"/) to consume the real closing delimiter.
+  # The unmatched " left the } from the expansion unstripped, decrementing depth
+  # to 0 and falsely flagging the next RITE_* assignment as file-scope.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  local _default="${_var:-"\\"}"'
+    echo '  MY_PATH="${RITE_REPO_ROOT}/tests/helpers/setup.bash"'
+    echo '}'
+    _emit_test_open "escaped-backslash depth safe"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-escaped-backslash.bats"
+  cd "$TEST_REPO"
+  run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-escaped-backslash.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
 @test "BATS_FILE_SCOPE_ENV_READ: does not flag BATS_TEST_DIRNAME-derived assignments at file scope" {
   # Assignments that reference BATS_TEST_DIRNAME (a bats builtin always set at
   # parse time) are safe patterns and must not be flagged.
