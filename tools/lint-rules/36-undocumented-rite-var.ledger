@@ -14,7 +14,6 @@
 #     | comm -23 - <(grep -hoE 'RITE_[A-Z0-9_]+' \
 #         config/project.conf.example config/rite.conf.example | sort -u)
 RITE_APPROVAL_LOCK_TIMEOUT
-RITE_ASSESSMENT_MODEL
 RITE_AUTO_STASH_CLEANUP
 RITE_AWS_PROJECT
 RITE_BACKFILL_ADR_COUNT
