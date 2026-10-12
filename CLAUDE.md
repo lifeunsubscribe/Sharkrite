@@ -34,6 +34,7 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
+lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + full-suite + merge + cleanup)
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update seam — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
@@ -537,6 +538,7 @@ rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodi
 rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
 rite --sync <N> [<N>...]  # Rebase issue feature branches onto their resolver-determined base (rebase goes stale-review by design)
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
+rite --promote <branch>    # Promote integration branch to main (PR + review + full-suite + squash-merge + cleanup)
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.

@@ -62,6 +62,7 @@ LABEL_FILTER=""
 BATCH_FILTER_ARGS=()
 SUPERVISED=false
 SYNC_ARGS=()
+PROMOTE_BRANCH=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dev-and-pr)
@@ -197,6 +198,16 @@ while [[ $# -gt 0 ]]; do
       WORKFLOW_FLAGS+=("--base" "$2")
       shift 2
       ;;
+    --promote)
+      # Open a promotion PR for an integration branch and merge it to main
+      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        print_error "--promote requires a branch name"
+        exit 1
+      fi
+      PROMOTE_BRANCH="$2"
+      MODE="promote"
+      shift 2
+      ;;
     --dry-run)
       # Already parsed above
       shift
@@ -267,6 +278,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --sync <branch>          Merge origin/main into an integration branch (explicit, never automatic)"
       echo "  rite --sync <N> [<N>...]      Rebase issue feature branches onto their base (rebase goes stale-review by design)"
       echo "  rite --sync                   Bare sweep: sync all ledger branches + in-flight worktrees"
+      echo "  rite --promote <branch>       Promote integration branch to main (PR + review + full-suite + merge)"
       echo "  rite --full-suite             Run unfiltered make check + bats -r tests/ (periodic safety net)"
       echo "  rite --tags                   Show full tag index"
       echo "  rite --tags <tag>             Show pointers for a specific tag"
@@ -455,6 +467,10 @@ resolve_dispatch_key() {
       echo "backfill-locks"
       return 0
       ;;
+    promote)
+      echo "promote"
+      return 0
+      ;;
     reset-approval)
       if [ $_argc -ge 1 ]; then
         echo "reset-approval-issue"
@@ -613,6 +629,10 @@ resolve_dispatch_plan() {
       ;;
     backfill-locks)
       echo "backfill_worktree_locks  (write lock dirs for legacy worktrees)"
+      return 0
+      ;;
+    promote)
+      echo "promote-branch.sh::run_promote ${PROMOTE_BRANCH:-<branch>}  (promotion PR + review + full-suite + merge + cleanup)"
       return 0
       ;;
     reset-approval-issue)
@@ -824,6 +844,13 @@ if [ "$MODE" = "sync" ]; then
     echo "  rite --sync <N> [<N>...]         # rebase issue feature branches onto their base"
     exit 1
   fi
+fi
+
+# Integration branch promotion: open promotion PR, review, full-suite, merge, cleanup.
+if [ "$MODE" = "promote" ]; then
+  source "$RITE_LIB_DIR/core/promote-branch.sh"
+  run_promote "${PROMOTE_BRANCH}"
+  exit $?
 fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
