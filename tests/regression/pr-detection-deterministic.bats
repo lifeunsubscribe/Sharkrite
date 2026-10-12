@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/pr-detection.sh
+# sharkrite-test-covers: lib/utils/pr-detection.sh, lib/core/workflow-runner.sh
 # tests/regression/pr-detection-deterministic.bats
 #
 # Regression test for: PR detection non-determinism across duplicate PRs
@@ -396,6 +396,136 @@ write_gh_response() {
   }
   [ "$PARENT_PR_NUMBER" = "55" ] || {
     echo "FAIL: expected PARENT_PR_NUMBER=55 (marker was parsed), got: $PARENT_PR_NUMBER"
+    return 1
+  }
+}
+
+# ===========================================================================
+# Adopt-arm WORKTREE_PATH wiring (workflow-runner.sh) — issue #1054
+#
+# The resolver (detect_parent_pr_attachment) is tested above.  These tests
+# cover the orchestrator-level adoption branch that CONSUMES the resolver's
+# output: workflow-runner.sh lines ~2790-2800.
+#
+# After mode=adopt is returned, the orchestrator runs:
+#   _parent_wt_path=$(git worktree list | grep "[BRANCH]" | awk '{print $1}')
+#   if [ -n "$_parent_wt_path" ] && [ -d "$_parent_wt_path" ]; then
+#     WORKTREE_PATH="$_parent_wt_path"; RESUME_MODE=true
+#   fi
+#
+# Two branches:
+#   present  — worktree exists locally  → WORKTREE_PATH set + RESUME_MODE=true
+#   absent   — worktree not local       → both unset, Phase 1 will re-create
+#
+# Reference: docs/architecture/behavioral-design.md → "Parent-PR Attachment Contract"
+# ===========================================================================
+
+@test "adopt-arm: worktree present → WORKTREE_PATH set and RESUME_MODE=true" {
+  # Replicates the adopt-arm wiring from workflow-runner.sh in an isolated script
+  # with a real git worktree so [ -d ] passes.
+  _script="$RITE_TEST_TMPDIR/test-adopt-arm-wt-present.sh"
+  cat > "$_script" <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+TMPDIR_LOCAL="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_LOCAL"' EXIT
+
+MAIN_REPO="$TMPDIR_LOCAL/main"
+WORKTREE_DIR="$TMPDIR_LOCAL/worktrees"
+mkdir -p "$MAIN_REPO" "$WORKTREE_DIR"
+
+cd "$MAIN_REPO"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "init" > config.sh
+git add .
+git commit -qm "init"
+
+git branch feat/parent-pr-branch
+git worktree add "$WORKTREE_DIR/parent-pr" feat/parent-pr-branch -q
+
+# Adopt-arm wiring (workflow-runner.sh ~2790-2800)
+PARENT_PR_BRANCH="feat/parent-pr-branch"
+WORKTREE_PATH=""
+RESUME_MODE=false
+
+_parent_wt_path=$(git worktree list | grep "\[$PARENT_PR_BRANCH\]" | awk '{print $1}' || true)
+if [ -n "$_parent_wt_path" ] && [ -d "$_parent_wt_path" ]; then
+  WORKTREE_PATH="$_parent_wt_path"
+  RESUME_MODE=true
+fi
+
+echo "WORKTREE_PATH=${WORKTREE_PATH:-}"
+echo "RESUME_MODE=${RESUME_MODE:-false}"
+OUTER
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "RESUME_MODE=true" ]] || {
+    echo "FAIL: expected RESUME_MODE=true (worktree present), output: $output"
+    return 1
+  }
+  _wt_line=$(echo "$output" | grep "^WORKTREE_PATH=" || true)
+  _wt_value="${_wt_line#WORKTREE_PATH=}"
+  [ -n "$_wt_value" ] || {
+    echo "FAIL: expected WORKTREE_PATH to be set, output: $output"
+    return 1
+  }
+}
+
+@test "adopt-arm: worktree absent → WORKTREE_PATH and RESUME_MODE left unset" {
+  # No worktree exists for the parent branch (cross-machine / already removed).
+  # The adopt arm must leave WORKTREE_PATH empty and RESUME_MODE false so Phase 1
+  # creates a fresh worktree on the parent branch.
+  _script="$RITE_TEST_TMPDIR/test-adopt-arm-wt-absent.sh"
+  cat > "$_script" <<'OUTER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+TMPDIR_LOCAL="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_LOCAL"' EXIT
+
+MAIN_REPO="$TMPDIR_LOCAL/main"
+mkdir -p "$MAIN_REPO"
+
+cd "$MAIN_REPO"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "init" > config.sh
+git add .
+git commit -qm "init"
+
+# No worktree for feat/parent-pr-branch — only the main checkout exists
+
+PARENT_PR_BRANCH="feat/parent-pr-branch"
+WORKTREE_PATH=""
+RESUME_MODE=false
+
+_parent_wt_path=$(git worktree list | grep "\[$PARENT_PR_BRANCH\]" | awk '{print $1}' || true)
+if [ -n "$_parent_wt_path" ] && [ -d "$_parent_wt_path" ]; then
+  WORKTREE_PATH="$_parent_wt_path"
+  RESUME_MODE=true
+fi
+
+echo "WORKTREE_PATH=${WORKTREE_PATH:-}"
+echo "RESUME_MODE=${RESUME_MODE:-false}"
+OUTER
+  chmod +x "$_script"
+  run bash "$_script"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "RESUME_MODE=false" ]] || {
+    echo "FAIL: expected RESUME_MODE=false (worktree absent), output: $output"
+    return 1
+  }
+  _wt_line=$(echo "$output" | grep "^WORKTREE_PATH=" || true)
+  _wt_value="${_wt_line#WORKTREE_PATH=}"
+  [ -z "$_wt_value" ] || {
+    echo "FAIL: expected WORKTREE_PATH to be empty (no local worktree), got: $_wt_value"
     return 1
   }
 }
