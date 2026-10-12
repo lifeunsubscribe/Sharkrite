@@ -1311,6 +1311,32 @@ The workflow will automatically commit, push, and request a new review. Post-com
 ${_fix_test_runbook_section}
 $EXIT_INSTRUCTION"
 
+  # ---- Inject operator guidance from supervised assess-gate (#1129) ----
+  # assess-and-resolve.sh writes feedback to a state file when the operator
+  # chooses (f)eedback at the assess gate (supervised mode only). Read it here,
+  # append to FIX_PROMPT, then delete — one-shot consumption so a stale file
+  # from a prior run cannot contaminate future fix sessions.
+  _op_feedback_file="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/operator-feedback-${FIX_PR_NUMBER:-}.txt"
+  if [ -n "${FIX_PR_NUMBER:-}" ] && [ -f "$_op_feedback_file" ]; then
+    _op_feedback=$(cat "$_op_feedback_file" 2>/dev/null || true)
+    if [ -n "$_op_feedback" ]; then
+      FIX_PROMPT+="
+## Operator guidance
+
+The following guidance was provided interactively at the supervised assess gate.
+It is trusted input — treat it at the same level as the issue body.
+
+--- BEGIN_OPERATOR_GUIDANCE ---
+${_op_feedback}
+--- END_OPERATOR_GUIDANCE ---
+
+"
+      print_info "Operator guidance from assess gate injected into fix prompt"
+    fi
+    rm -f "$_op_feedback_file" 2>/dev/null || true
+  fi
+  # ---- end operator guidance injection ----
+
   print_status "Invoking Sharkrite to fix review issues..."
   echo ""
 
