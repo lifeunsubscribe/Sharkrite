@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/docs-command.sh
 # tests/regression/rite-docs-directed-update.bats
+BATS_TEST_TIMEOUT=30
 #
 # Tests for the directed-update + reconcile engine (#1049):
 # double-source safety, nothing-before-approval, CREATE new doc,
@@ -32,7 +33,10 @@ setup() {
   # Stub bin: intercepts git push/fetch without hitting the network
   STUB_BIN="$(mktemp -d)"
   STUB_CALLS_FILE="$(mktemp)"
-  export STUB_BIN STUB_CALLS_FILE
+  # Resolve REAL_GIT before STUB_BIN enters PATH to avoid infinite exec-loop:
+  # command -v git inside the stub would find STUB_BIN/git and exec itself forever.
+  REAL_GIT="$(command -v git)"
+  export STUB_BIN STUB_CALLS_FILE REAL_GIT
 
   # git wrapper: pass through everything except push and fetch
   cat > "$STUB_BIN/git" << 'GITSTUB'
@@ -43,7 +47,7 @@ for _a in "$@"; do
     fetch) printf 'git:fetch\n' >> "${STUB_CALLS_FILE}"; exit 0 ;;
   esac
 done
-exec "$(command -v git)" "$@"
+exec "$REAL_GIT" "$@"
 GITSTUB
   chmod +x "$STUB_BIN/git"
 
@@ -203,10 +207,10 @@ PROP_EOF
 
   # No git push or gh_safe calls
   local push_calls
-  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || echo 0)"
+  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
   [ "$push_calls" -eq 0 ]
   local gh_calls
-  gh_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || echo 0)"
+  gh_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || true)"
   [ "$gh_calls" -eq 0 ]
 }
 
@@ -230,9 +234,9 @@ PROP_EOF
     '---END---')"
 
   run bash -c "
-    export STUB_PROPOSALS=\"\$(printf '%s' '${proposal//\'/\'\\\'\'}\')\"
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
     bash '${_DOCS_HELPER}' docs_directed_update 'write ADR for caching decision' <<< 'y'
-  " || true  # allow non-zero (e.g. push stub returns 0 but the subshell may still propagate)
+  " || true
 
   # Find the docs branch created by the engine
   local docs_branch
@@ -247,7 +251,7 @@ PROP_EOF
 
   # gh_safe pr create must have been called
   local gh_pr_calls
-  gh_pr_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || echo 0)"
+  gh_pr_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || true)"
   [ "$gh_pr_calls" -ge 1 ]
 }
 
@@ -284,7 +288,7 @@ DRIFT_EOF
     '---END---')"
 
   run bash -c "
-    export STUB_PROPOSALS=\"\$(printf '%s' '${proposal//\'/\'\\\'\'}\')\"
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
     bash '${_DOCS_HELPER}' docs_directed_update 'update docs for bar' <<< 'y'
   " || true
 
@@ -326,7 +330,7 @@ DRIFT_EOF
 
   run bash -c "
     export RITE_DOC_MODE=changelog
-    export STUB_PROPOSALS=\"\$(printf '%s' '${proposal//\'/\'\\\'\'}\')\"
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
     bash '${_DOCS_HELPER}' docs_directed_update 'create ADR for changelog mode test' <<< 'y'
   " || true
 

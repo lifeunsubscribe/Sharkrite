@@ -258,7 +258,7 @@ teardown() {
   ! echo "$output" | grep -q "Directed doc updates land"
 }
 
-@test "any state + instructions routes to rite_docs_directed_update stub" {
+@test "any state + instructions routes to docs_directed_update engine" {
   touch "$FAKE_PROJECT/.rite/state/docs-map.tsv"
   run env \
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
@@ -267,10 +267,11 @@ teardown() {
     RITE_DOC_MODE="changelog" \
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" "update the architecture section" < /dev/null 2>&1
-  # rite_docs_directed_update stub prints the #1049 pointer and returns 1.
-  # rite_docs calls it with || true so the overall exit is 0.
+  # docs_directed_update routes to the engine; the provider stub returns NOTHING_FOUND
+  # (not NO_PROPOSALS_NEEDED) so the engine prints "Generating doc proposals" and
+  # "No actionable proposals". rite_docs calls it with || true so exit is 0.
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "1049"
+  echo "$output" | grep -q "Generating doc proposals"
 }
 
 # ---------------------------------------------------------------------------

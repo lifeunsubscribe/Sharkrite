@@ -11,7 +11,7 @@
 #
 # Public API:
 #   rite_docs [instructions]       — main entry point; called by bin/rite
-#   rite_docs_directed_update      — stub; replaced by #1049
+#   docs_directed_update           — directed-update engine entry point
 
 set -euo pipefail
 
@@ -205,12 +205,11 @@ _docs_apply_approved() {
   # Fetch best-effort (network call, non-fatal)
   git -C "$RITE_PROJECT_ROOT" fetch origin "$_aa_target" 2>/dev/null || true
 
-  # Create worktree from origin/$target — the two ${RITE_TARGET_BRANCH:-main} references
-  # below satisfy the acceptance criterion (≥2 sites).
+  # Create worktree forked from origin/$_aa_target
   if ! git -C "$RITE_PROJECT_ROOT" worktree add \
     "$_aa_wt_path" -b "$_aa_branch" \
-    "origin/${RITE_TARGET_BRANCH:-main}" 2>/dev/null; then
-    print_warning "Could not create docs worktree on 'origin/${RITE_TARGET_BRANCH:-main}' — check that the branch exists and has been fetched" >&2
+    "origin/${_aa_target}" 2>/dev/null; then
+    print_warning "Could not create docs worktree on 'origin/${_aa_target}' — check that the branch exists and has been fetched" >&2
     return 1
   fi
 
@@ -238,6 +237,13 @@ _docs_apply_approved() {
     done < "$_aa_pf"
 
     [ -n "$_aa_file" ] || continue
+    # Reject absolute paths and directory traversal to prevent writes outside the worktree
+    case "$_aa_file" in
+      /*|*../*|*/..|../*|..)
+        print_warning "Rejected proposal: unsafe FILE path '$_aa_file'" >&2
+        continue
+        ;;
+    esac
 
     local _aa_target_file="${_aa_wt_path}/${_aa_file}"
     mkdir -p "$(dirname "$_aa_target_file")"
@@ -279,11 +285,27 @@ _docs_apply_approved() {
   fi
   _aa_commit_msg="$(printf '%s' "$_aa_commit_msg" | cut -c1-72)"
 
-  git -C "$_aa_wt_path" commit -m "$_aa_commit_msg" 2>/dev/null
+  local _aa_commit_err="" _aa_commit_rc=0
+  _aa_commit_err="$(git -C "$_aa_wt_path" commit -m "$_aa_commit_msg" 2>&1)" || _aa_commit_rc=$?
+  if [ "$_aa_commit_rc" -ne 0 ]; then
+    print_warning "Docs commit failed (exit ${_aa_commit_rc}): ${_aa_commit_err}" >&2
+    git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" branch -D "$_aa_branch" 2>/dev/null || true
+    return 1
+  fi
 
-  # Push docs branch (best-effort; gh pr create will fail loudly if push failed)
-  git -C "$_aa_wt_path" push origin "$_aa_branch" 2>/dev/null || \
-    git -C "$RITE_PROJECT_ROOT" push origin "$_aa_branch" 2>/dev/null || true
+  # Push docs branch
+  local _aa_push_rc=0
+  git -C "$_aa_wt_path" push origin "$_aa_branch" 2>&1 || \
+    { git -C "$RITE_PROJECT_ROOT" push origin "$_aa_branch" 2>&1 || _aa_push_rc=$?; }
+  if [ "$_aa_push_rc" -ne 0 ]; then
+    print_warning "Push failed (exit ${_aa_push_rc}) — branch '${_aa_branch}' exists locally only" >&2
+    print_warning "  To push manually: git push origin '${_aa_branch}'" >&2
+    git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
+    return 1
+  fi
 
   # PR title (70-char cap)
   local _aa_pr_title
@@ -301,7 +323,7 @@ _docs_apply_approved() {
 
 **Mode**: ${_aa_mode}
 **Instructions**: ${_aa_instructions:-reconcile drift backlog}
-**Base branch**: \`${RITE_TARGET_BRANCH:-main}\`
+**Base branch**: \`${_aa_target}\`
 
 This PR was created by \`rite docs\`. Review and merge when ready.
 **No auto-merge** — this PR requires human review before merging.
@@ -311,11 +333,11 @@ PR_BODY_EOF
 )"
 
   echo "" >&2
-  print_info "Creating docs PR targeting '${RITE_TARGET_BRANCH:-main}'..."
+  print_info "Creating docs PR targeting '${_aa_target}'..."
 
   # gh_safe must be called from within the worktree so gh can detect the repo remote
   ( cd "$_aa_wt_path" && gh_safe pr create \
-    --base "${RITE_TARGET_BRANCH:-main}" \
+    --base "${_aa_target}" \
     --title "$_aa_pr_title" \
     --body "$_aa_pr_body" ) || \
     print_warning "PR creation failed — branch '${_aa_branch}' was pushed; create PR manually" >&2
@@ -324,7 +346,7 @@ PR_BODY_EOF
   git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
   git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
 
-  print_success "Docs PR created on base '${RITE_TARGET_BRANCH:-main}' — review and merge when ready"
+  print_success "Docs PR created on base '${_aa_target}' — review and merge when ready"
   return 0
 }
 
@@ -582,6 +604,30 @@ DOC_UPDATE_EOF
         fi
       done < "$_ue_pf"
 
+      # Reject unsafe paths before preview (absolute or directory traversal)
+      case "$_ue_p_file" in
+        /*|*../*|*/..|../*|..)
+          print_warning "  Skipping proposal with unsafe FILE path: '$_ue_p_file'" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
+          ;;
+      esac
+
+      # Refuse EDIT proposals when the file exceeds the 2000-byte excerpt cap:
+      # the model never saw the full content, so accepting would truncate unseen text.
+      if [ "$_ue_p_action" = "EDIT" ]; then
+        local _ue_abs_size_check="${RITE_PROJECT_ROOT}/${_ue_p_file}"
+        if [ -f "$_ue_abs_size_check" ]; then
+          local _ue_file_size
+          _ue_file_size="$(wc -c < "$_ue_abs_size_check" 2>/dev/null || echo 0)"
+          if [ "$_ue_file_size" -gt 2000 ]; then
+            print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file is ${_ue_file_size} bytes but model only saw first 2,000 bytes — accepting would truncate unseen content" >&2
+            _ue_pi=$((_ue_pi + 1))
+            continue
+          fi
+        fi
+      fi
+
       # Show preview header
       echo "" >&2
       echo "──────────────────────────────────────────────" >&2
@@ -599,15 +645,19 @@ DOC_UPDATE_EOF
         [ "$_ue_total_lines" -gt 40 ] && \
           printf '  ... (%d lines total)\n' "$_ue_total_lines" >&2
       else
-        # EDIT: show unified diff (old content vs proposed new content)
+        # EDIT: show unified diff against origin/<target> content (what the worktree
+        # forks from) — not the local checkout, which may diverge from origin and
+        # would show the user a delta that doesn't match what gets committed.
         local _ue_old_tmp _ue_new_tmp
         _ue_old_tmp="$(mktemp)"
         _ue_new_tmp="$(mktemp)"
-        local _ue_abs_path="${RITE_PROJECT_ROOT}/${_ue_p_file}"
-        if [ -f "$_ue_abs_path" ]; then
-          cat "$_ue_abs_path" > "$_ue_old_tmp"
-        else
-          printf '' > "$_ue_old_tmp"
+        if ! git -C "$RITE_PROJECT_ROOT" show "origin/${_ue_target}:${_ue_p_file}" > "$_ue_old_tmp" 2>/dev/null; then
+          local _ue_abs_path="${RITE_PROJECT_ROOT}/${_ue_p_file}"
+          if [ -f "$_ue_abs_path" ]; then
+            cat "$_ue_abs_path" > "$_ue_old_tmp"
+          else
+            printf '' > "$_ue_old_tmp"
+          fi
         fi
         printf '%s' "$_ue_p_content" > "$_ue_new_tmp"
         diff -u "$_ue_old_tmp" "$_ue_new_tmp" >&2 || true
@@ -626,6 +676,10 @@ DOC_UPDATE_EOF
           print_info "  Approved: ${_ue_p_file}"
           ;;
         [Nn]|[Nn][Oo])
+          print_info "  Skipped: ${_ue_p_file}"
+          ;;
+        "")
+          # Empty input (bare Enter) skips this proposal only, same as 'n'
           print_info "  Skipped: ${_ue_p_file}"
           ;;
         *)
@@ -750,7 +804,7 @@ docs_reconcile_drift() {
 #
 # Never-run path: ask the consent question, scaffold .rite/doc-sync.md on yes,
 # record RITE_DOC_MODE, and build the docs map.
-# If instructions are also provided, they are passed to rite_docs_directed_update
+# If instructions are also provided, they are passed to docs_directed_update
 # after the enable flow completes.
 #
 # Prompt is default-no; non-TTY takes the "no" branch (never hangs).
