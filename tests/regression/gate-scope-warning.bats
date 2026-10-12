@@ -82,8 +82,9 @@ STUB
 
   # Stub bats: sleep so the gate duration reliably exceeds a threshold of 1s,
   # then emit a passing TAP and exit 0.  The sleep makes the exemption guard
-  # load-bearing: without it the run would finish in ~0s and RITE_GATE_SCOPE_WARN_SECONDS=0
-  # would suppress the warning before _is_sharkrite is ever evaluated.
+  # load-bearing: test 2 exports RITE_GATE_SCOPE_WARN_SECONDS=1, so a ~0s run
+  # would fail the "duration >= threshold" check and suppress the warning
+  # before _is_sharkrite is ever evaluated.
   cat > "$STUB_DIR/bats" <<'STUB'
 #!/bin/bash
 sleep 2
