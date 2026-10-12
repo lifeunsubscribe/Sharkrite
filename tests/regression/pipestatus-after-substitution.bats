@@ -129,9 +129,13 @@ provider_detect_error() {
   echo "UNKNOWN_ERROR"
 }
 # provider_resolve_model: the script resolves EFFECTIVE_MODEL via the
-# assessment role since #1187. Mirror the real resolver's fallback shape.
+# assessment role since #1187. Dispatch on role and fail loud on anything
+# else so a future role mix-up can't silently ride the assessment default.
 provider_resolve_model() {
-  echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}"
+  case "$1" in
+    assessment) echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    *) echo "unexpected role: $1" >&2; exit 1 ;;
+  esac
 }
 PROVIDER_EOF
 
