@@ -111,11 +111,39 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# 7. State file is deleted after consumption
+# 7. State file is deleted after consumption (behavioral — the delete happens
+#    via `rm -f "$_of"`, so a literal grep for the filename cannot pin it;
+#    run the real function and assert the file is gone afterwards)
 # ---------------------------------------------------------------------------
 @test "assess-feedback: claude-workflow.sh deletes operator-feedback state file after use" {
-  run grep -n 'rm.*operator-feedback' "$CLAUDE_WORKFLOW"
+  local _state_dir="$RITE_TEST_TMPDIR/state-del"
+  mkdir -p "$_state_dir"
+  printf '%s' "guidance to consume" > "$_state_dir/operator-feedback-78.txt"
+
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    print_info()    { :; }
+    print_status()  { :; }
+    print_success() { :; }
+    print_warning() { :; }
+    print_error()   { echo \"\$*\" >&2; }
+    gh_safe()       { echo ''; }
+    export -f print_info print_status print_success print_warning print_error gh_safe
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_LIB_DIR/core/claude-workflow.sh'
+    set +u; set +o pipefail
+    FIX_PROMPT='base prompt'
+    FIX_PR_NUMBER=78
+    RITE_STATE_DIR='$_state_dir'
+    inject_operator_feedback_into_fix_prompt
+  " </dev/null
   [ "$status" -eq 0 ]
+
+  # The state file must be consumed exactly once — gone after injection.
+  [ ! -f "$_state_dir/operator-feedback-78.txt" ]
 }
 
 # ---------------------------------------------------------------------------
