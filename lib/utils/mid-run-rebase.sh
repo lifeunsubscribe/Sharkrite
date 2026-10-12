@@ -222,25 +222,33 @@ _mid_run_rebase_onto_main() {
         local _mid_local_head
         _mid_local_head=$(git rev-parse HEAD 2>/dev/null || true)
 
-        if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ] && [ "$_mid_remote_head" != "$_mid_local_head" ]; then
+        if [ -n "$_mid_remote_head" ] && [ -n "$_mid_local_head" ]; then
+          # Equal-head: another process already resolved the same race and the
+          # remote is now pointing at our commit. (Mirrors stale-branch.sh:510-512.)
+          if [ "$_mid_remote_head" = "$_mid_local_head" ]; then
+            print_info "mid-run-rebase: remote is now at our commit — no foreign commits to classify"
+            return 0
+          fi
+
           # Anchor to pre_rebase_head: the rebase rewrote local history, so
           # merge-base(post-rebase, remote) regresses to the old fork point and
           # pulls the branch's own feature diff into the check — making the
           # content-empty discard path unreachable. pre_rebase_head is the tip
           # the force-with-lease lease ref knew about. (Mirrors stale-branch.sh:506.)
           local _mid_foreign_anchor="${pre_rebase_head:-$_mid_local_head}"
-          local _mid_foreign_diff
-          _mid_foreign_diff=$(git diff "${_mid_foreign_anchor}..${_mid_remote_head}" 2>/dev/null || true)
-          if [ -z "$_mid_foreign_diff" ]; then
-            # Content-empty vs our last-pushed tip (pure mainline-sync merge). Safe to
-            # discard by re-fetching the lease ref and retrying the push.
-            print_info "mid-run-rebase: foreign commits are content-empty — retrying push after lease refresh"
+          local _mid_foreign_commits
+          _mid_foreign_commits=$(git log --oneline "${_mid_foreign_anchor}..${_mid_remote_head}" 2>/dev/null || true)
+          if [ -z "$_mid_foreign_commits" ]; then
+            # Remote is at/behind our last-pushed tip (stale lease or ref rewind).
+            # Nothing foreign to preserve — retry now that the fetch has refreshed
+            # the lease. (Mirrors stale-branch.sh:519-531, #1012 scenario.)
+            print_info "mid-run-rebase: no foreign commits beyond our last-pushed tip — retrying push after lease refresh"
             if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
-              print_info "mid-run rebase: push succeeded after lease refresh (content-empty foreign commits discarded)"
+              print_info "mid-run rebase: push succeeded after lease refresh (no foreign commits)"
               return 0
             fi
-            # Retry also rejected — a third concurrent push happened. This is still
-            # a harmless race, not foreign code. Report accurately. (Mirrors stale-branch.sh:530.)
+            # Retry also rejected — a third concurrent push happened; its content
+            # is unknown and must not be force-overwritten. (Mirrors stale-branch.sh:530.)
             print_error "mid-run-rebase: push still rejected after lease refresh — another concurrent push occurred"
             if [ -n "$pre_rebase_head" ]; then
               git reset --hard "$pre_rebase_head" 2>/dev/null || true
@@ -250,10 +258,12 @@ _mid_run_rebase_onto_main() {
           fi
           # Non-empty foreign commits (code changes). Halt loudly — do NOT push.
           # Preserve-or-halt contract: a push here would clobber foreign code commits.
-          print_error "mid-run-rebase: push rejected — remote has foreign code commits that would be lost by force-push"
+          local _mid_foreign_count
+          _mid_foreign_count=$(echo "$_mid_foreign_commits" | grep -c '.' || true)
+          print_error "mid-run-rebase: push rejected — remote has $_mid_foreign_count foreign commit(s) that would be clobbered by force-push"
           print_error "Foreign commits contain code changes — halting to prevent data loss"
           print_info "Foreign commits on remote:"
-          git log --oneline "${_mid_foreign_anchor}..${_mid_remote_head}" 2>/dev/null | sed 's/^/  /' >&2
+          echo "$_mid_foreign_commits" | sed 's/^/  /' >&2
           print_info "Run 'rite ${issue_number:-<issue>} --supervised' to integrate and resolve manually"
           if [ -n "$pre_rebase_head" ]; then
             git reset --hard "$pre_rebase_head" 2>/dev/null || true
