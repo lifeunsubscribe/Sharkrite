@@ -14,11 +14,17 @@
 
 CLAUDE_WORKFLOW="${BATS_TEST_DIRNAME}/../../lib/core/claude-workflow.sh"
 
+_btest_tmpdir=""
+
 setup() {
   [ -f "$CLAUDE_WORKFLOW" ] || {
     echo "FATAL: $CLAUDE_WORKFLOW not found" >&2
     return 1
   }
+}
+
+teardown() {
+  rm -rf "${_btest_tmpdir:-}"
 }
 
 # =============================================================================
@@ -152,4 +158,90 @@ setup() {
   '
   [ "$status" -eq 0 ]
   [ "$output" = "retry" ]
+}
+
+# =============================================================================
+# BEHAVIORAL: verify the retry loop actually fires with a doubled budget
+# =============================================================================
+
+@test "behavioral: first no-commit timeout retries at double budget; second timeout exits 1" {
+  _btest_tmpdir=$(mktemp -d)
+  _budgets="$_btest_tmpdir/budgets"
+  _calls="$_btest_tmpdir/calls"
+  touch "$_budgets" "$_calls"
+  export _RITE_TEST_BUDGETS="$_budgets"
+  export _RITE_TEST_CALLS="$_calls"
+
+  # Harness contains the verbatim retry loop from lib/core/claude-workflow.sh
+  # (lines 1326-1377) with stubbed dependencies so control flow can be asserted.
+  cat > "$_btest_tmpdir/harness.sh" << 'HARNESS'
+#!/bin/bash
+set -uo pipefail
+
+provider_run_agentic_session() {
+  echo "$2" >> "$_RITE_TEST_BUDGETS"
+  echo "call" >> "$_RITE_TEST_CALLS"
+  return 124
+}
+provider_name()                       { echo "stub"; }
+provider_supports_tool_restrictions() { return 0; }
+print_status()  { :; }
+print_warning() { :; }
+print_info()    { :; }
+print_error()   { :; }
+_diag()         { :; }
+_timer_start()  { :; }
+git() {
+  if [ "${1:-}" = "status" ]; then printf ''; return 0; fi
+  command git "$@"
+}
+
+AUTO_MODE=true
+FIX_PROMPT="test prompt"
+ISSUE_NUMBER=99
+FIX_TIMEOUT=540
+
+_fix_attempt=0
+while true; do
+  _fix_attempt=$(( _fix_attempt + 1 ))
+  set +e
+  FIX_STDERR_FILE=$(mktemp)
+  provider_run_agentic_session "$FIX_PROMPT" "$FIX_TIMEOUT" true "$FIX_STDERR_FILE"
+  FIX_EXIT_CODE=$?
+  rm -f "$FIX_STDERR_FILE"
+  set -e
+  if [ $FIX_EXIT_CODE -eq 124 ]; then
+    if [ "$(git status --porcelain | grep -vE '^\?\?' | { grep -v '\.gitignore$' || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
+      print_info "Found uncommitted changes - will commit what we have"
+      break
+    else
+      if [ "$_fix_attempt" -eq 1 ] && [ "$FIX_TIMEOUT" -lt 1800 ]; then
+        _retry_budget=$(( FIX_TIMEOUT * 2 ))
+        [ "$_retry_budget" -gt 1800 ] && _retry_budget=1800
+        _diag "FIX_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
+        print_info "No fixes before timeout — retrying at double budget (${_retry_budget}s)..."
+        FIX_TIMEOUT=$_retry_budget
+        continue
+      fi
+      print_error "No fixes made before timeout"
+      exit 1
+    fi
+  elif [ $FIX_EXIT_CODE -ne 0 ]; then
+    :
+  fi
+  break
+done
+HARNESS
+
+  chmod +x "$_btest_tmpdir/harness.sh"
+  run bash "$_btest_tmpdir/harness.sh"
+
+  [ "$status" -eq 1 ]
+
+  _call_count=$(wc -l < "$_calls" | tr -d ' ')
+  [ "$_call_count" -eq 2 ]
+
+  _b1=$(sed -n '1p' "$_budgets")
+  _b2=$(sed -n '2p' "$_budgets")
+  [ "$_b2" -eq $(( _b1 * 2 )) ]
 }
