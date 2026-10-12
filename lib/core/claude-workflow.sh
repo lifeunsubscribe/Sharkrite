@@ -354,6 +354,57 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 # _run_dev_test_gate calls (fix-loop retries, multiple commits in one session).
 _RITE_PIP_TIMEOUT_WARNED=false
 
+# count_changed_files WORKTREE TARGET
+# Echoes the number of files changed vs origin/TARGET (triple-dot diff).
+# On first failure retries once after 0.5s (post-commit lock/teardown race).
+# On second failure: prints captured stderr via print_error, echoes -1, returns 1.
+# Callers must treat return 1 as an infrastructure error — NEVER as "no work produced".
+count_changed_files() {
+  local _cfc_worktree="${1:-}"
+  local _cfc_target="${2:-main}"
+  local _cfc_stderr
+  _cfc_stderr=$(mktemp)
+  local _cfc_count _cfc_exit
+
+  # First attempt
+  _cfc_exit=0
+  if [ -n "$_cfc_worktree" ]; then
+    _cfc_count=$(git -C "$_cfc_worktree" diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  else
+    _cfc_count=$(git diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  fi
+
+  if [ "$_cfc_exit" -eq 0 ]; then
+    rm -f "$_cfc_stderr"
+    echo "${_cfc_count:-0}"
+    return 0
+  fi
+
+  # Retry: post-commit lock/teardown races settle within a second
+  sleep 0.5
+  _cfc_exit=0
+  if [ -n "$_cfc_worktree" ]; then
+    _cfc_count=$(git -C "$_cfc_worktree" diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  else
+    _cfc_count=$(git diff --name-only "origin/${_cfc_target}...HEAD" 2>"$_cfc_stderr" | wc -l | tr -d ' ') || _cfc_exit=$?
+  fi
+
+  if [ "$_cfc_exit" -eq 0 ]; then
+    rm -f "$_cfc_stderr"
+    echo "${_cfc_count:-0}"
+    return 0
+  fi
+
+  # Infrastructure error: git diff failed twice — NEVER "no work produced"
+  print_error "could not determine changes: git diff failed (target=origin/${_cfc_target})"
+  if [ -s "$_cfc_stderr" ]; then
+    print_error "git stderr: $(cat "$_cfc_stderr")"
+  fi
+  rm -f "$_cfc_stderr"
+  echo "-1"
+  return 1
+}
+
 # ===================================================================
 # _regen_lockfiles_if_needed — regenerate package-lock.json after dev sessions
 #
@@ -1912,10 +1963,19 @@ if [ -z "$ISSUE_NUMBER" ]; then
     # PR exists but is it just a placeholder? Check for actual file changes.
     # Use triple-dot (merge-base diff) so advancing target doesn't false-positive.
     if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
-      FILE_CHANGES=$(git diff --name-only "origin/${_target:-main}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+      FILE_CHANGES=$(count_changed_files "" "${_target:-main}") || exit 1
     else
-      # No origin/$_target - count all files in working tree (alternative: could use git ls-files)
-      FILE_CHANGES=$(git diff --name-only --cached 2>/dev/null | wc -l | tr -d ' ')
+      # No origin/$_target - count staged files (rare: fresh repo without upstream)
+      _cw_cached_stderr=$(mktemp)
+      _cw_cached_exit=0
+      FILE_CHANGES=$(git diff --name-only --cached 2>"$_cw_cached_stderr" | wc -l | tr -d ' ') || _cw_cached_exit=$?
+      if [ "$_cw_cached_exit" -ne 0 ]; then
+        print_error "could not determine staged changes: git diff --cached failed"
+        [ -s "$_cw_cached_stderr" ] && print_error "git stderr: $(cat "$_cw_cached_stderr")"
+        rm -f "$_cw_cached_stderr"
+        exit 1
+      fi
+      rm -f "$_cw_cached_stderr"
       if [ "$FILE_CHANGES" -eq 0 ]; then
         FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
       fi
@@ -3471,7 +3531,7 @@ if [ $CHANGES_COUNT -eq 0 ]; then
   # Check if there are any actual file changes (more reliable than commit message parsing).
   # Use triple-dot (merge-base diff) so advancing target doesn't false-positive.
   if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
-    FILE_CHANGES=$(git diff --name-only "origin/${_target:-main}...HEAD" 2>/dev/null | wc -l | tr -d ' ')
+    FILE_CHANGES=$(count_changed_files "" "${_target:-main}") || exit 1
   else
     # No origin/$_target - count all tracked files
     FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
@@ -3742,7 +3802,7 @@ echo "Summary:"
 echo "  Branch: $BRANCH_NAME"
 if git rev-parse --verify "origin/${_target:-main}" >/dev/null 2>&1; then
   echo "  Commits: $(git rev-list --count "origin/${_target:-main}..HEAD" 2>/dev/null || echo "1")"
-  _summary_files=$(git diff --name-only "origin/${_target:-main}...HEAD" 2>/dev/null | wc -l | tr -d ' ' || true)
+  _summary_files=$(count_changed_files "" "${_target:-main}") || _summary_files="?"
   echo "  Changes: ${_summary_files:-0} files vs ${_target:-main}"
 else
   echo "  Commits: $(git rev-list --count HEAD 2>/dev/null || echo "1")"
