@@ -478,7 +478,7 @@ exit 0
 INLINE_EOF
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: test script exited $status" >&2
     echo "$output" >&2
@@ -527,7 +527,7 @@ exit 0
 INLINE_EOF
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: test script exited $status" >&2
     echo "$output" >&2
@@ -565,7 +565,7 @@ exit 0
 INLINE_EOF
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: test script exited $status" >&2
     echo "$output" >&2
@@ -635,7 +635,7 @@ exit 0
 INLINE_EOF
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: test script exited $status" >&2
     echo "$output" >&2
@@ -774,60 +774,42 @@ INLINE_EOF
 @test "behavioral: dev-and-pr — mismatched PR exits 19, never reaches claude-workflow.sh" {
   _script="$BATS_TEST_TMPDIR/test-devpr-mismatch.sh"
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  cat > "$_script" <<STUB_EOF
+  cat > "$_script" <<'STUB_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# Exercise the SHIPPED check_branch_mismatch(), not a reimplementation
+# (review finding: behavioral tests must not test heredoc copies).
+# RITE_REPO_ROOT arrives via env from the bats invocation.
+export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+export RITE_PROJECT_ROOT="$RITE_REPO_ROOT"
+export _RITE_TIMEOUT_CHECKED=true
+export RITE_TIMEOUT_CMD=timeout
+# workflow-runner.sh BASH_SOURCE-guards main(); its env-var re-source guard
+# means stubs must be defined AFTER this source (lint Rule 34).
+source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
 ISSUE_NUMBER="42"
 PR_NUMBER="456"
 PR_BASE_BRANCH="bigbranch"
 CLAUDE_WORKFLOW_CALLED=false
 
+# Post-source stubs: deps only — check_branch_mismatch stays real.
 detect_pr_for_issue() {
   PR_NUMBER="456"
   PR_BASE_BRANCH="bigbranch"
   return 0
 }
-
 resolve_target_branch() { echo "main"; }
 
-handle_branch_mismatch() {
-  local _base="\$3" _target="\$4"
-  echo "ERROR: PR base mismatch: \${_base} != \${_target}" >&2
-  if [ "\$_base" = "main" ]; then
-    echo "ERROR: Re-run: rite \$1" >&2
-  else
-    echo "ERROR: Re-run: rite --branch \${_base} \$1" >&2
-  fi
-  return 19
-}
-
-check_branch_mismatch() {
-  local _issue="\$1" _pr="\${2:-}" _base="\${3:-}"
-  [ -n "\$_pr" ] && [ "\$_pr" != "null" ] || return 0
-  local _target
-  _target=\$(resolve_target_branch "\$_issue" 2>/dev/null || echo "main")
-  local _pbase="\${_base:-}"
-  [ -n "\$_pbase" ] || return 0
-  if [ "\$_pbase" != "\$_target" ]; then
-    set +e
-    handle_branch_mismatch "\$_issue" "\$_pr" "\$_pbase" "\$_target"
-    set -e
-    return 19
-  fi
-  return 0
-}
-
 _dev_pr_cbm=0
-if detect_pr_for_issue "\$ISSUE_NUMBER"; then
+if detect_pr_for_issue "$ISSUE_NUMBER"; then
   set +e
-  check_branch_mismatch "\$ISSUE_NUMBER" "\$PR_NUMBER" "\${PR_BASE_BRANCH:-}"
-  _dev_pr_cbm=\$?
+  check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}"
+  _dev_pr_cbm=$?
   set -e
 fi
-if [ "\$_dev_pr_cbm" -eq 19 ]; then
-  if [ "\$CLAUDE_WORKFLOW_CALLED" = "true" ]; then
+if [ "$_dev_pr_cbm" -eq 19 ]; then
+  if [ "$CLAUDE_WORKFLOW_CALLED" = "true" ]; then
     echo "FAIL: claude-workflow.sh was called despite mismatch" >&2
     exit 1
   fi
@@ -839,7 +821,7 @@ exit 1
 STUB_EOF
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 19 ] || {
     echo "FAIL: expected exit 19, got $status" >&2
     echo "$output" >&2
@@ -853,18 +835,27 @@ STUB_EOF
   cat > "$_script" <<'INLINE_EOF_NOPR'
 #!/usr/bin/env bash
 set -euo pipefail
+# Exercise the SHIPPED check_branch_mismatch(), not a reimplementation
+# (review finding: behavioral tests must not test heredoc copies).
+# RITE_REPO_ROOT arrives via env from the bats invocation.
+export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+export RITE_PROJECT_ROOT="$RITE_REPO_ROOT"
+export _RITE_TIMEOUT_CHECKED=true
+export RITE_TIMEOUT_CMD=timeout
+# workflow-runner.sh BASH_SOURCE-guards main(); its env-var re-source guard
+# means stubs must be defined AFTER this source (lint Rule 34).
+source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
 ISSUE_NUMBER="42"
 PR_NUMBER=""
 PR_BASE_BRANCH=""
 
+# Post-source stub: no PR exists — the real guard must never be consulted.
 detect_pr_for_issue() {
   PR_NUMBER=""
   PR_BASE_BRANCH=""
   return 1
 }
-
-check_branch_mismatch() { return 0; }
 
 _dev_pr_cbm=0
 if detect_pr_for_issue "$ISSUE_NUMBER"; then
@@ -883,7 +874,7 @@ exit 0
 INLINE_EOF_NOPR
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: expected exit 0 (proceed), got $status" >&2
     echo "$output" >&2
@@ -897,29 +888,28 @@ INLINE_EOF_NOPR
   cat > "$_script" <<'INLINE_EOF_MATCH'
 #!/usr/bin/env bash
 set -euo pipefail
+# Exercise the SHIPPED check_branch_mismatch(), not a reimplementation
+# (review finding: behavioral tests must not test heredoc copies).
+# RITE_REPO_ROOT arrives via env from the bats invocation.
+export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+export RITE_PROJECT_ROOT="$RITE_REPO_ROOT"
+export _RITE_TIMEOUT_CHECKED=true
+export RITE_TIMEOUT_CMD=timeout
+# workflow-runner.sh BASH_SOURCE-guards main(); its env-var re-source guard
+# means stubs must be defined AFTER this source (lint Rule 34).
+source "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
 
 ISSUE_NUMBER="42"
 PR_NUMBER="456"
 PR_BASE_BRANCH="main"
 
+# Post-source stubs: deps only — check_branch_mismatch stays real.
 detect_pr_for_issue() {
   PR_NUMBER="456"
   PR_BASE_BRANCH="main"
   return 0
 }
-
 resolve_target_branch() { echo "main"; }
-
-check_branch_mismatch() {
-  local _issue="$1" _pr="${2:-}" _base="${3:-}"
-  [ -n "$_pr" ] && [ "$_pr" != "null" ] || return 0
-  local _target
-  _target=$(resolve_target_branch "$_issue" 2>/dev/null || echo "main")
-  local _pbase="${_base:-}"
-  [ -n "$_pbase" ] || return 0
-  [ "$_pbase" = "$_target" ] && return 0
-  return 19
-}
 
 _dev_pr_cbm=0
 if detect_pr_for_issue "$ISSUE_NUMBER"; then
@@ -938,7 +928,7 @@ exit 0
 INLINE_EOF_MATCH
 
   chmod +x "$_script"
-  run bash "$_script"
+  run env RITE_REPO_ROOT="$REPO_ROOT" bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: expected exit 0 (proceed), got $status" >&2
     echo "$output" >&2
