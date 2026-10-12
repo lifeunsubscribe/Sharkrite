@@ -410,7 +410,7 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 *Attribution mode* (`lib/core/assess-and-resolve.sh`): when `_RITE_MAIN_FAILING_TESTS_FILE` is exported by the preflight, the test-failure loop in `assess-and-resolve.sh` checks each failing test name against the file. Matches are surfaced as `### [GATE-INHERITED] … - INFO` (not `ACTIONABLE_NOW`) and excluded from `GATE_NOW_COUNT`. Branch-only failures still block as `ACTIONABLE_NOW`. When ALL gate failures are inherited (all in the file), the synthetic "zero findings but gate exited non-zero" block is suppressed — the gate did complete; main is just red.
 
-*Green-main repos* (sharkrite's own gate): zero behavior change. The preflight gate pass exits 0, proceeds in <5s (targeted selection), and the attribution file is never written. Attribution checks in the test loop are no-ops when `_RITE_MAIN_FAILING_TESTS_FILE` is unset.
+*Green-main repos* (sharkrite's own gate): the preflight runs the full suite once on origin/main (`RITE_TEST_GATE_DIFF_BASE=HEAD` → `FORCE_FULL`), then exits 0 and proceeds. The attribution file is never written. Attribution checks in the test loop are no-ops when `_RITE_MAIN_FAILING_TESTS_FILE` is unset. Cost: one full-suite run added before the batch starts (same order as `rite --full-suite`).
 
 *Live incident that drove this:* LeadFlow batch 2026-07-05 (rite 401 128 383 340 113 435 431) — main had 18+ failing dashboard tests. `post-merge-verify` correctly printed "Fix main first" but **allowed the workflow to proceed** (return 0). The gate fed 51 inherited failures into issue #401's assessment as `ACTIONABLE_NOW`; the fix loop spent 30 min on breakage the batch never caused, with every subsequent issue projected to inherit the same 51.
 
