@@ -36,15 +36,16 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   # a per-char loop (fast, BSD AWK compatible, heredoc-safe).
   # Strip string literals before counting so braces inside strings, ${param}
   # expansions, and {a,b} brace-expansions in quoted arguments do not skew depth.
-  # Single-quoted strings have no escape sequences in bash, so the regex is exact.
-  # Double-quoted strings use a heuristic that misses backslash-escaped quotes --
-  # accepted for a lint heuristic; a full parser is out of scope.
-  # ${...} parameter expansions are also stripped: their braces always net to zero
-  # but stripping them avoids false depth drift on complex default expansions.
+  # Strip order: single-quoted strings, then ${...} expansions, then double-quoted strings.
+  # Stripping ${...} BEFORE "..." handles escaped quotes inside expansions: the
+  # pattern "x#\"}" in "${x#\"}" is consumed by [^}]* so no orphan } is left for
+  # the double-quote pass. Accepted gaps: backslash-escaped quotes in plain
+  # double-quoted strings (no expansion wrapper), and } at the start of a line
+  # inside a multi-line string assignment — both require a full parser to fix.
   _stripped = $0
   gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
-  gsub(/"[^"]*"/, "", _stripped)
   gsub(/\$\{[^}]*\}/, "", _stripped)
+  gsub(/"[^"]*"/, "", _stripped)
   # Use _stripped copies so $0 is not modified (detection check still uses $0).
   _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
   _tmp = _stripped; _cb = gsub(/}/, "", _tmp)

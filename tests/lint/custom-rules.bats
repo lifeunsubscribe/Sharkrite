@@ -456,6 +456,62 @@ EOF
   fi
 }
 
+@test "LOCAL_OUTSIDE_FUNCTION: escaped quote inside expansion does not orphan closing brace" {
+  # Regression (#1116): _section="${_section#\"}" contains an escaped quote inside
+  # a parameter expansion. With the old strip order (double-quote before ${...}),
+  # the "[^"]*" pattern consumed up to the escaped quote and left a stray } that
+  # decremented depth, causing subsequent 'local' inside the same function to appear
+  # outside scope. Stripping ${...} first fixes this: [^}]* in \$\{[^}]*\} consumes
+  # x#\" so the double-quote pass sees balanced "" and strips cleanly.
+
+  cat > "$LINT_FIXTURE_DIR/escaped-quote-in-expansion.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local _section="heading"
+  _section="${_section#\"}"
+  local result="done"
+  echo "$result"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
+
+  # Both locals inside my_func are correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ escaped-quote-in-expansion\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local after escaped-quote-in-expansion
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: escaped-quote expansion fix does not suppress real violation" {
+  # Sensitivity check: the expansion-strip reorder must not create blind spots.
+  # A file that uses an escaped-quote-in-expansion AND has a genuine top-level
+  # 'local' must still be flagged.
+
+  cat > "$LINT_FIXTURE_DIR/escaped-quote-with-bad-local.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local _section="heading"
+  _section="${_section#\"}"
+}
+# script-scope local — real violation
+local bad="oops"
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+  [[ "$output" =~ escaped-quote-with-bad-local\.sh ]]
+}
+
 @test "GH_UNSAFE_CALL: lowercase heredoc body lines are not scanned for gh calls" {
   # Regression: if the state machine doesn't recognize a lowercase heredoc marker,
   # gh commands in the heredoc body (e.g., prompt text or documentation) get
