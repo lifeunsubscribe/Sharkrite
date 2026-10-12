@@ -142,11 +142,11 @@ lint:
 	@echo "lint OK"
 EOF
 
-  # Create a minimal passing bats test
-  cat > "$_mock_dir/tests/regression/smoke.bats" << 'EOF'
-#!/usr/bin/env bats
-@test "smoke" { true; }
-EOF
+  # Create a minimal passing bats test.
+  # Use printf to avoid the @test line being parsed by bats' own preprocessor as a
+  # real test definition (Rule 7: heredocs inflate the planned set — use printf instead).
+  printf '#!/usr/bin/env bats\n@test "smoke" { true; }\n' \
+    > "$_mock_dir/tests/regression/smoke.bats"
 
   _gate_output="$_mock_dir/gate.json"
 

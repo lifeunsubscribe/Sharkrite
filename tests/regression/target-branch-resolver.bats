@@ -69,6 +69,11 @@ setup() {
   mkdir -p "$RITE_TEST_TMPDIR/.rite/state"
   export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 
+  # Unset RITE_TARGET_BRANCH so _stale_resolve_base_branch fallback tests that
+  # assert _STALE_BASE_BRANCH="main" are environment-agnostic. Tests that need
+  # a specific value set it themselves.
+  unset RITE_TARGET_BRANCH || true
+
   # Source stale-branch.sh — defines _rite_branch_name_safe, _stale_resolve_base_branch,
   # resolve_target_branch, ensure_target_branch_exists. Stub gh_safe BEFORE sourcing
   # (lib uses declare -f guard, so we must define it before the guard check runs).
