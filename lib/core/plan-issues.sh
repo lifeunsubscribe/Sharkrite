@@ -2296,8 +2296,7 @@ _lint_issues_strict() {
 # Outputs a comma-separated list of missing section names to stdout.
 # Empty output means all required sections are present.
 _check_block_sections() {
-  local _blk_title="$1"
-  local _blk_text="$2"
+  local _blk_text="$1"
   local _missing=""
 
   # LABELS: non-empty
@@ -2335,12 +2334,13 @@ _check_block_sections() {
     _missing="${_missing}Done Definition, "
   fi
 
-  # **Scope Boundary** with a "DO:" line (not "DO NOT:") and a "DO NOT:" line
+  # **Scope Boundary** with an anchored "- DO:" line and a "- DO NOT:" line.
+  # Anchored to line start prevents TODO: and prose matches; consistent
+  # case-insensitive patterns across both checks.
   local _scope_present _has_do _has_do_not
-  _scope_present=$(printf '%s' "$_blk_text" | grep -ci "Scope Boundary" || true)
-  # Count lines containing "DO:" that do NOT also contain "DO NOT:"
-  _has_do=$(printf '%s' "$_blk_text" | grep -i "DO:" | grep -cv "DO NOT" || true)
-  _has_do_not=$(printf '%s' "$_blk_text" | grep -ci "DO NOT" || true)
+  _scope_present=$(printf '%s' "$_blk_text" | grep -cE "^\*\*Scope Boundary\*\*" || true)
+  _has_do=$(printf '%s' "$_blk_text" | grep -ciE "^[[:space:]]*-[[:space:]]+DO:" || true)
+  _has_do_not=$(printf '%s' "$_blk_text" | grep -ciE "^[[:space:]]*-[[:space:]]+DO NOT:" || true)
   if [ "${_scope_present:-0}" -eq 0 ] || [ "${_has_do:-0}" -eq 0 ]; then
     _missing="${_missing}Scope Boundary (DO), "
   fi
@@ -2360,7 +2360,7 @@ _check_block_sections() {
 
   # **Bug Class Analysis** — required only when labels include the word "bug"
   local _blk_labels
-  _blk_labels=$(printf '%s' "$_blk_text" | grep "^LABELS: " | head -1 | sed 's/^LABELS: //' || true)
+  _blk_labels=$(printf '%s' "$_blk_text" | grep -E "^LABELS:[[:space:]]+" | head -1 | sed 's/^LABELS:[[:space:]]*//' || true)
   if echo "$_blk_labels" | grep -qiw "bug"; then
     if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Bug Class Analysis\*\*"; then
       _missing="${_missing}Bug Class Analysis, "
@@ -2501,7 +2501,7 @@ _lint_issues_sections() {
     _stitle=$(printf '%s' "$_sblk" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
 
     local _smissing
-    _smissing=$(_check_block_sections "$_stitle" "$_sblk")
+    _smissing=$(_check_block_sections "$_sblk")
     [ -z "$_smissing" ] && continue
 
     print_warning "sections-lint: '${_stitle}' missing required sections: ${_smissing} — attempting targeted regeneration..." >&2
@@ -2513,9 +2513,18 @@ _lint_issues_sections() {
       _snew_blk=$(_regen_block_sections "$_stitle" "$_sblk" "$base_prompt")
       if [ -n "$_snew_blk" ]; then
         local _sstill_missing
-        _sstill_missing=$(_check_block_sections "$_stitle" "$_snew_blk")
+        _sstill_missing=$(_check_block_sections "$_snew_blk")
         if [ -z "$_sstill_missing" ]; then
-          _sblocks[$_sidx]="$_snew_blk"
+          # Validate the regen preserved the original TITLE
+          local _snew_title
+          _snew_title=$(printf '%s' "$_snew_blk" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+          if [ "$_snew_title" != "$_stitle" ]; then
+            print_warning "sections-lint: regen changed title '${_stitle}' → '${_snew_title}' — rejecting, retrying..." >&2
+            _sattempt=$((_sattempt + 1))
+            continue
+          fi
+          # Append $'\n': $() strips the trailing newline the regen returns
+          _sblocks[$_sidx]="${_snew_blk}"$'\n'
           _any_repaired=true
           _srepaired=true
           print_success "sections-lint: '${_stitle}' repaired on attempt ${_sattempt}" >&2

@@ -563,7 +563,7 @@ REGEN
   local blk
   blk=$(_complete_block)
   local result
-  result=$(_check_block_sections "Add request validation" "$blk")
+  result=$(_check_block_sections "$blk")
   [ -z "$result" ] || {
     echo "FAIL: expected empty missing list for complete block, got: $result" >&2
     false
@@ -601,7 +601,7 @@ Files to Modify:
 BLOCK
 )
   local result
-  result=$(_check_block_sections "Add cache layer" "$blk")
+  result=$(_check_block_sections "$blk")
   echo "$result" | grep -qi "Documentation Impact" || {
     echo "FAIL: expected 'Documentation Impact' in result '$result'" >&2
     false
@@ -646,7 +646,7 @@ Files to Modify:
 BLOCK
 )
   local result
-  result=$(_check_block_sections "Fix crash" "$blk")
+  result=$(_check_block_sections "$blk")
   echo "$result" | grep -qi "Bug Class Analysis" || {
     echo "FAIL: expected 'Bug Class Analysis' in result for bug-labeled block missing it, got: $result" >&2
     false
@@ -685,9 +685,161 @@ Files to Modify:
 BLOCK
 )
   local result
-  result=$(_check_block_sections "Fix scope test" "$blk")
+  result=$(_check_block_sections "$blk")
   echo "$result" | grep -qi "Scope Boundary (DO)" || {
     echo "FAIL: expected 'Scope Boundary (DO)' flagged when only DO NOT present, got: $result" >&2
     false
   }
+}
+
+# ---------------------------------------------------------------------------
+# Multi-block reparse: repaired block + intact block — structural integrity
+#
+# Regression for CRITICAL item: _lint_issues_sections was storing repaired
+# blocks without a trailing newline ($() strips it), causing the next block's
+# ---ISSUE--- marker to be concatenated onto the last line of the repaired block.
+# The rewrite loop writes all blocks via printf '%s'; without the $'\n' suffix
+# on the repaired block, block 2 starts immediately after block 1's last char.
+# ---------------------------------------------------------------------------
+
+@test "multi-block file: repaired block 1 + intact block 2 — both blocks structurally intact after rewrite" {
+  local slate="$RITE_TEST_TMPDIR/slate-multi.txt"
+
+  # Block 1: missing Documentation Impact (needs repair)
+  # Block 2: complete (should be written verbatim, untouched)
+  cat > "$slate" <<'FIXTURE'
+---ISSUE---
+TITLE: Add cache layer
+LABELS: phase-3,backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: Add an in-memory cache.
+
+**Claude Context**:
+Files to Read:
+- lib/core/db.sh
+
+Files to Modify:
+- lib/core/db.sh
+
+**Acceptance Criteria**:
+- [ ] Cache works: `grep -n "cache" lib/core/db.sh`
+
+**Done Definition**: Done when cache is wired.
+
+**Scope Boundary**:
+- DO: add cache
+- DO NOT: change schema
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add request validation
+LABELS: phase-2,backend,priority-high
+TIME: 1hr
+BODY:
+**Description**: Add input validation.
+
+**Claude Context**:
+Files to Read:
+- lib/core/auth.sh
+
+Files to Modify:
+- lib/core/auth.sh
+
+**Acceptance Criteria**:
+- [ ] Validated: `bash -n lib/core/auth.sh`
+
+**Done Definition**: Done when malformed input is rejected.
+
+**Scope Boundary**:
+- DO: add validation to auth.sh
+- DO NOT: change token format
+
+**Dependencies**: None
+
+**Documentation Impact**: None — internal change only.
+---END---
+FIXTURE
+
+  # Provider returns block 1 repaired (with Documentation Impact added)
+  cat > "$STUB_RESPONSE_FILE" <<'REGEN'
+---ISSUE---
+TITLE: Add cache layer
+LABELS: phase-3,backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: Add an in-memory cache.
+
+**Claude Context**:
+Files to Read:
+- lib/core/db.sh
+
+Files to Modify:
+- lib/core/db.sh
+
+**Acceptance Criteria**:
+- [ ] Cache works: `grep -n "cache" lib/core/db.sh`
+
+**Done Definition**: Done when cache is wired.
+
+**Scope Boundary**:
+- DO: add cache
+- DO NOT: change schema
+
+**Dependencies**: None
+
+**Documentation Impact**: No user-facing surface — verify: `grep -n "cache" docs/architecture/behavioral-design.md`.
+---END---
+REGEN
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_sections "$slate" "BASE PROMPT" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 after multi-block repair, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Re-parse: exactly 2 ---ISSUE--- markers and 2 ---END--- markers
+  local issue_count end_count
+  issue_count=$(grep -c "^---ISSUE---$" "$slate" || true)
+  end_count=$(grep -c "^---END---$" "$slate" || true)
+
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 ---ISSUE--- markers after rewrite, got $issue_count" >&2
+    cat "$slate" >&2
+    false
+  }
+  [ "$end_count" -eq 2 ] || {
+    echo "FAIL: expected 2 ---END--- markers after rewrite, got $end_count" >&2
+    cat "$slate" >&2
+    false
+  }
+
+  # Each ---ISSUE--- and ---END--- must be on its own line (no concatenation)
+  grep -q "^---END------ISSUE---" "$slate" && {
+    echo "FAIL: ---END--- and ---ISSUE--- concatenated — missing newline after repaired block" >&2
+    cat "$slate" >&2
+    false
+  }
+
+  # Block 2's title still present and intact
+  grep -q "TITLE: Add request validation" "$slate" || {
+    echo "FAIL: block 2 title missing after rewrite" >&2
+    cat "$slate" >&2
+    false
+  }
+
+  # Repaired block 1 now has Documentation Impact
+  grep -q "Documentation Impact" "$slate" || {
+    echo "FAIL: Documentation Impact not present in repaired block 1" >&2
+    cat "$slate" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
 }
