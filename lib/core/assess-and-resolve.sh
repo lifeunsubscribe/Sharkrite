@@ -1228,7 +1228,7 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       _test_name=$(echo "$_test_item" | jq -r '.test_name // "unknown test"' 2>/dev/null || true)
       _test_reason=$(echo "$_test_item" | jq -r '.reason // "assertion failed"' 2>/dev/null || true)
       if [ -n "$_test_name" ]; then
-        GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_file} - ACTIONABLE_NOW
+        GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_name} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Test failure (objective — no LLM categorization needed)
 **Location:** ${_test_file}
