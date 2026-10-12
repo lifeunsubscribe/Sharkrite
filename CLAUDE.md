@@ -888,5 +888,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

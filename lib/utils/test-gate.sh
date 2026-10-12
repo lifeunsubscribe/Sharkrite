@@ -1769,6 +1769,13 @@ run_test_gate() {
     local _outcome_cmd="passed"
     [ "$_cmd_overall_exit" -ne 0 ] && _outcome_cmd="failed"
     _diag "TEST_GATE outcome=${_outcome_cmd} lint_count=0 test_count=${_cmd_tests_count} duration_s=${_duration_cmd} pr=${PR_NUMBER:-?}"
+    # Unscoped suite warning: target repos run their full suite on every fix cycle.
+    # Threshold of 0 disables the warning entirely.
+    local _scope_warn_threshold_cmd="${RITE_GATE_SCOPE_WARN_SECONDS:-300}"
+    if [ "$_scope_warn_threshold_cmd" -gt 0 ] && [ "$_duration_cmd" -ge "$_scope_warn_threshold_cmd" ]; then
+      print_warning "[test-gate] This repo runs its full test suite every fix cycle (${_duration_cmd}s); scoped selection would pay only the diff — see sharkrite #975 / framework-native options (jest --findRelatedTests, vitest related, pytest --testmon)"
+      _diag "GATE_SCOPE_UNSCOPED duration_s=${_duration_cmd} pr=${PR_NUMBER:-?}"
+    fi
     # Console digest for the RITE_TEST_COMMAND path (summary mode hides raw output above).
     if [ "$_cmd_overall_exit" -ne 0 ]; then
       echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
@@ -2763,6 +2770,19 @@ run_test_gate() {
   fi
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
+
+  # --- Unscoped suite warning (target repos only) ---
+  # Sharkrite's own runs always use targeted selection and are exempt by construction
+  # (TEST_GATE_SELECTION mode=targeted is only emitted from the _is_sharkrite path).
+  # For target repos there is no scoped runner today; this signals when the full
+  # suite cost is becoming measurable so the operator can act before it hurts.
+  if [ "$_is_sharkrite" = "false" ]; then
+    local _scope_warn_threshold="${RITE_GATE_SCOPE_WARN_SECONDS:-300}"
+    if [ "$_scope_warn_threshold" -gt 0 ] && [ "$_duration" -ge "$_scope_warn_threshold" ]; then
+      print_warning "[test-gate] This repo runs its full test suite every fix cycle (${_duration}s); scoped selection would pay only the diff — see sharkrite #975 / framework-native options (jest --findRelatedTests, vitest related, pytest --testmon)"
+      _diag "GATE_SCOPE_UNSCOPED duration_s=${_duration} pr=${PR_NUMBER:-?}"
+    fi
+  fi
 
   # --- Compact terminal digest ---
   # Raw runner output went to _gate_raw_sink (summary mode → log only; verbose →
