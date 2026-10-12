@@ -171,6 +171,7 @@ _docs_build_map_context() {
         _total=$((_total + ${#_entry}))
         if [ "$_total" -gt "$byte_cap" ]; then
           _ctx="${_ctx}(additional docs omitted — byte cap reached)"$'\n'
+          _cur_file=""  # Prevent final-flush from re-appending this file after the omitted marker
           break
         fi
         _ctx="${_ctx}${_entry}"$'\n'
@@ -188,11 +189,16 @@ _docs_build_map_context() {
     fi
   done < "$map_file"
 
-  # Flush the final file.
+  # Flush the final file (cap check prevents over-budget appends on normal loop exit).
   if [ -n "$_cur_file" ]; then
     local _last_entry="- ${_cur_file}"
     [ -n "$_cur_headings" ] && _last_entry="${_last_entry} (${_cur_headings})"
-    _ctx="${_ctx}${_last_entry}"$'\n'
+    _total=$((_total + ${#_last_entry}))
+    if [ "$_total" -gt "$byte_cap" ]; then
+      _ctx="${_ctx}(additional docs omitted — byte cap reached)"$'\n'
+    else
+      _ctx="${_ctx}${_last_entry}"$'\n'
+    fi
   fi
 
   printf '%s' "$_ctx"
@@ -538,6 +544,10 @@ _docs_parse_proposals() {
             FILE:*)
               _prop_file="${_line#FILE:}"
               _prop_file="${_prop_file# }"
+              # Reject absolute paths and traversal attempts — flag early so preview omits them.
+              case "$_prop_file" in
+                /*|*..*) print_warning "Unsafe path rejected from LLM proposal: ${_prop_file}" >&2; _prop_file="" ;;
+              esac
               ;;
             ACTION:*)
               _prop_action="${_line#ACTION:}"
@@ -636,6 +646,10 @@ _docs_apply_approved() {
   local docs_branch="docs/directed-update-${_ts}-$$"
   local wt_dir="${RITE_PROJECT_ROOT}/.rite/worktrees/docs-update-$$-${_ts}"
 
+  # Trap: clean up worktree on interrupt so the registered branch does not orphan.
+  # Variable-scoped (non-glob) per project trap conventions.
+  trap "git -C \"${RITE_PROJECT_ROOT}\" worktree remove --force \"${wt_dir}\" 2>/dev/null || true; rm -rf \"${wt_dir}\" 2>/dev/null || true" INT TERM
+
   # Fetch the target branch so the worktree fork is current.
   git -C "$RITE_PROJECT_ROOT" fetch origin "$base_branch" 2>/dev/null \
     || print_warning "Could not fetch origin/${base_branch} — using local state"
@@ -661,6 +675,16 @@ _docs_apply_approved() {
       continue
     fi
 
+    # Validate path: reject absolute paths and traversal attempts to prevent
+    # writes outside the worktree (the sandboxing guarantee of this function).
+    case "$_pfile" in
+      /*|*..*)
+        print_warning "  Rejected unsafe path: ${_pfile} — skipping"
+        _i=$((_i + 1))
+        continue
+        ;;
+    esac
+
     local _target="${wt_dir}/${_pfile}"
     mkdir -p "$(dirname "$_target")"
     cp "${proposal_dir}/proposal_${_i}_content.txt" "$_target"
@@ -682,14 +706,23 @@ _docs_apply_approved() {
   _drift_log_rel="${_source_drift_log#"${RITE_PROJECT_ROOT}/"}"
   _wt_drift_log="${wt_dir}/${_drift_log_rel}"
   if [ -n "$_all_drift_indices" ] && [ -f "$_wt_drift_log" ]; then
-    local _remaining
-    _remaining="$(_docs_drift_burn_entries "$_wt_drift_log" "$_all_drift_indices")"
-    if [ "$_remaining" -eq 0 ]; then
-      # _docs_drift_burn_entries deleted the file; stage the deletion.
-      git -C "$wt_dir" rm --force "$_drift_log_rel" 2>/dev/null || true
-      print_info "  Drift log fully drained — ${_drift_log_rel} deleted"
+    # Verify the worktree log has the same entry count as the local log before
+    # burning by positional index — a diverged count means positions would be wrong.
+    local _local_entry_count _wt_entry_count
+    _local_entry_count="$(drift_log_entry_count "$_source_drift_log" 2>/dev/null || echo "0")"
+    _wt_entry_count="$(drift_log_entry_count "$_wt_drift_log" 2>/dev/null || echo "0")"
+    if [ "$_local_entry_count" != "$_wt_entry_count" ]; then
+      print_warning "  Drift log diverged (local: ${_local_entry_count}, worktree: ${_wt_entry_count}) — skipping burn-down to prevent wrong-entry removal"
     else
-      print_info "  Drift log: ${_remaining} entries remain after burn-down"
+      local _remaining
+      _remaining="$(_docs_drift_burn_entries "$_wt_drift_log" "$_all_drift_indices")"
+      if [ "$_remaining" -eq 0 ]; then
+        # _docs_drift_burn_entries deleted the file; stage the deletion.
+        git -C "$wt_dir" rm --force "$_drift_log_rel" 2>/dev/null || true
+        print_info "  Drift log fully drained — ${_drift_log_rel} deleted"
+      else
+        print_info "  Drift log: ${_remaining} entries remain after burn-down"
+      fi
     fi
   fi
 
@@ -706,6 +739,7 @@ _docs_apply_approved() {
 
   if ! git -C "$wt_dir" commit -m "$_commit_title" 2>/dev/null; then
     print_warning "Nothing to commit — proposals produced no file changes"
+    trap - INT TERM
     git -C "$RITE_PROJECT_ROOT" worktree remove --force "$wt_dir" 2>/dev/null || true
     rm -rf "$wt_dir" 2>/dev/null || true
     return 0
@@ -715,6 +749,7 @@ _docs_apply_approved() {
   # name is self-descriptive for the docs PR).
   if ! git -C "$wt_dir" push origin "$docs_branch" 2>/dev/null; then
     print_warning "Push failed — branch '${docs_branch}' committed locally but not pushed"
+    trap - INT TERM
     git -C "$RITE_PROJECT_ROOT" worktree remove --force "$wt_dir" 2>/dev/null || true
     rm -rf "$wt_dir" 2>/dev/null || true
     return 1
@@ -754,25 +789,30 @@ PR_BODY_EOF
   # Create the PR with the integration-aware base.
   # gh_safe wraps gh with retry; use --base ${RITE_TARGET_BRANCH:-main} (same
   # variable as the worktree fork point above — both must stay in sync).
+  # The --label flag is intentionally absent: repos without a 'documentation' label
+  # would fail the create. Instead, attach the label as a best-effort post-create edit.
   local _pr_url
   if ! _pr_url="$(gh_safe pr create \
     --base "${RITE_TARGET_BRANCH:-main}" \
     --head "$docs_branch" \
     --title "$_commit_title" \
-    --body-file "$_pr_body_file" \
-    --label "documentation" 2>/dev/null)"; then
+    --body-file "$_pr_body_file" 2>/dev/null)"; then
     print_warning "PR creation failed — branch '${docs_branch}' is pushed; create the PR manually"
     rm -f "$_pr_body_file"
+    trap - INT TERM
     git -C "$RITE_PROJECT_ROOT" worktree remove --force "$wt_dir" 2>/dev/null || true
     rm -rf "$wt_dir" 2>/dev/null || true
     return 1
   fi
   rm -f "$_pr_body_file"
+  # Best-effort label — ignored for repos without a 'documentation' label.
+  gh_safe pr edit "$_pr_url" --add-label "documentation" 2>/dev/null || true
 
   print_success "Docs PR created: ${_pr_url}"
   print_info "Review and merge manually — no auto-merge."
 
   # Clean up the temporary worktree.
+  trap - INT TERM
   git -C "$RITE_PROJECT_ROOT" worktree remove --force "$wt_dir" 2>/dev/null || true
   rm -rf "$wt_dir" 2>/dev/null || true
 }
@@ -815,6 +855,8 @@ docs_directed_update() {
   _du_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/rite_docs_du_$$_XXXXXX")"
   local _du_proposal_dir="${_du_tmpdir}/proposals"
   mkdir -p "$_du_proposal_dir"
+  # Cleanup trap (variable-scoped, non-glob per project conventions).
+  trap "rm -rf \"${_du_tmpdir}\" 2>/dev/null || true" INT TERM
 
   # Load drift log entries into numbered files for prompt context.
   local _drift_log
@@ -881,17 +923,27 @@ docs_directed_update() {
     _docs_show_all_proposals "$_du_proposal_dir" "$_du_prop_count" "$RITE_PROJECT_ROOT"
 
     echo ""
-    read -p "Apply these doc changes? (y)es / (n)o / (f)eedback: " -r _DU_RESP
+    local _DU_RESP=""
+    # EOF on non-interactive stdin (e.g. piped /dev/null): read returns non-zero.
+    # Treat EOF as cancel to avoid an unbounded loop of paid LLM calls.
+    if ! read -p "Apply these doc changes? (y)es / (n)o / (f)eedback: " -r _DU_RESP; then
+      print_info "Non-interactive — no changes applied"
+      trap - INT TERM
+      rm -rf "$_du_tmpdir" 2>/dev/null || true
+      return 0
+    fi
 
     case "$_DU_RESP" in
       [Yy]|[Yy]es|yes)
         _docs_apply_approved "$instruction" "$_du_proposal_dir" "$_du_prop_count"
         local _du_apply_rc=$?
+        trap - INT TERM
         rm -rf "$_du_tmpdir" 2>/dev/null || true
         return $_du_apply_rc
         ;;
       [Nn]|[Nn]o|no)
         print_info "Cancelled — no changes applied"
+        trap - INT TERM
         rm -rf "$_du_tmpdir" 2>/dev/null || true
         return 0
         ;;
@@ -959,6 +1011,8 @@ docs_reconcile_drift() {
   _rc_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/rite_docs_rc_$$_XXXXXX")"
   local _rc_proposal_dir="${_rc_tmpdir}/proposals"
   mkdir -p "$_rc_proposal_dir"
+  # Cleanup trap (variable-scoped, non-glob per project conventions).
+  trap "rm -rf \"${_rc_tmpdir}\" 2>/dev/null || true" INT TERM
 
   local _entry_count
   _entry_count="$(_docs_drift_load_entries "$_drift_log" "$_rc_tmpdir")"
@@ -1034,17 +1088,26 @@ docs_reconcile_drift() {
     _docs_show_all_proposals "$_rc_proposal_dir" "$_rc_prop_count" "$RITE_PROJECT_ROOT"
 
     echo ""
-    read -p "Apply these reconcile changes? (y)es / (n)o / (f)eedback: " -r _RC_RESP
+    local _RC_RESP=""
+    # EOF on non-interactive stdin: treat as cancel to avoid an unbounded loop of LLM calls.
+    if ! read -p "Apply these reconcile changes? (y)es / (n)o / (f)eedback: " -r _RC_RESP; then
+      print_info "Non-interactive — no changes applied"
+      trap - INT TERM
+      rm -rf "$_rc_tmpdir" 2>/dev/null || true
+      return 0
+    fi
 
     case "$_RC_RESP" in
       [Yy]|[Yy]es|yes)
         _docs_apply_approved "reconcile" "$_rc_proposal_dir" "$_rc_prop_count"
         local _rc_apply_rc=$?
+        trap - INT TERM
         rm -rf "$_rc_tmpdir" 2>/dev/null || true
         return $_rc_apply_rc
         ;;
       [Nn]|[Nn]o|no)
         print_info "Cancelled — no reconcile changes applied"
+        trap - INT TERM
         rm -rf "$_rc_tmpdir" 2>/dev/null || true
         return 0
         ;;
@@ -1375,10 +1438,9 @@ EOF_AUDIT
       _enable_reply="${REPLY:-N}"
     fi
     if [[ "$_enable_reply" =~ ^[Yy]$ ]]; then
+      # _docs_enable_flow already contains its own reconcile offer — let that
+      # single site own the decision; do NOT add a second unconditional call here.
       _docs_enable_flow ""
-      # Wire the deferred reconcile offer: run the reconcile engine now that
-      # enable-flow has scaffolded doc-sync.md and built the map.
-      docs_reconcile_drift || true
     fi
   else
     # sync mode: report only (applying updates is the directed-update engine)
@@ -1434,7 +1496,7 @@ rite_docs() {
         print_success ".rite/doc-sync.md re-scaffolded from template"
         # After scaffolding, route to directed-update or audit.
         if [ -n "$instructions" ]; then
-          docs_directed_update "$instructions" || true
+          rite_docs_directed_update "$instructions" || true
         else
           _docs_run_audit "sync"
         fi
@@ -1449,8 +1511,8 @@ rite_docs() {
       _docs_ensure_map || exit 1
 
       if [ -n "$instructions" ]; then
-        # Input present → directed-update engine
-        docs_directed_update "$instructions" || true
+        # Input present → directed-update engine (via public API name for stub-ability)
+        rite_docs_directed_update "$instructions" || true
       else
         # No input → audit
         _docs_run_audit "$state"

@@ -56,6 +56,12 @@ drift_log_append() {
   echo "drift_log_append:$*" >> "${RITE_PROJECT_ROOT}/.rite/state/drift-log.calls"
 }
 drift_log_entry_count() { echo "0"; }
+rite_docs_directed_update() {
+  # Stub: prints the #1049 pointer so tests can assert routing; returns 1 so
+  # rite_docs's `|| true` keeps the overall exit 0.
+  echo "Directed doc updates — #1049"
+  return 1
+}
 
 rite_docs "$@"
 HELPER_EOF

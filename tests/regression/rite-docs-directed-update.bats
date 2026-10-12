@@ -415,7 +415,7 @@ TWOENTRY_EOF
     echo 'n' | bash '${_DOCS_HELPER}' docs_directed_update 'create ADR'
   " 2>&1
   # The preview is printed on stderr; we check the combined output here.
-  echo "$output" | grep -q "NEW FILE\|adr-999-fixture.md"
+  echo "$output" | grep -qE "NEW FILE|adr-999-fixture.md"
 }
 
 # ===========================================================================
@@ -530,4 +530,162 @@ EMPTY_LOG_EOF
   [ "$status" -eq 0 ]
   [ -f "$FAKE_PROJECT/.rite/state/apply.calls" ]
   grep -q "APPLY_CALLED:reconcile" "$FAKE_PROJECT/.rite/state/apply.calls"
+}
+
+# ===========================================================================
+# 10. _docs_apply_approved integration: real git worktree + stubbed gh_safe
+# ===========================================================================
+
+# Helper: initialise FAKE_PROJECT as a bare-clone "origin" so _docs_apply_approved
+# can fork a worktree from origin/main, commit, and push back.
+_init_git_origin() {
+  local fake_root="$1"
+  # Bare repo acts as origin
+  local bare="${fake_root}/.rite/bare-origin"
+  git init --bare "$bare" >/dev/null 2>&1
+
+  # Seeded working clone that has origin set to the bare repo
+  local seed="${fake_root}/.rite/seed-clone"
+  git clone "$bare" "$seed" >/dev/null 2>&1
+  git -C "$seed" config user.email "test@example.com"
+  git -C "$seed" config user.name "Test"
+  # Commit a minimal docs file so main is non-empty
+  mkdir -p "${seed}/docs"
+  printf '# Test Fixture Doc\nOriginal content.\n' > "${seed}/docs/test-fixture.md"
+  git -C "$seed" add . >/dev/null 2>&1
+  git -C "$seed" commit -m "seed" >/dev/null 2>&1
+  git -C "$seed" push origin main >/dev/null 2>&1
+
+  # Point FAKE_PROJECT's origin remote at the bare repo
+  git -C "$fake_root" init >/dev/null 2>&1
+  git -C "$fake_root" config user.email "test@example.com"
+  git -C "$fake_root" config user.name "Test"
+  git -C "$fake_root" remote add origin "$bare" 2>/dev/null || true
+  git -C "$fake_root" fetch origin >/dev/null 2>&1
+}
+
+@test "_docs_apply_approved: writes proposal to docs branch and creates PR" {
+  # Set up a local bare-clone origin so push succeeds without network.
+  _init_git_origin "$FAKE_PROJECT"
+
+  # Build a minimal proposal directory with one UPDATE proposal.
+  local prop_dir
+  prop_dir="$(mktemp -d)"
+  printf 'docs/test-fixture.md' > "${prop_dir}/proposal_1_file.txt"
+  printf 'UPDATE'               > "${prop_dir}/proposal_1_action.txt"
+  printf ''                     > "${prop_dir}/proposal_1_drift.txt"
+  printf '# Test Fixture Doc\nUpdated content by apply test.\n' \
+    > "${prop_dir}/proposal_1_content.txt"
+
+  # Capture gh_safe pr create args without hitting GitHub.
+  local gh_call_log="${FAKE_PROJECT}/.rite/state/gh.calls"
+
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${PROJECT_ROOT}/lib'
+    export RITE_PROJECT_ROOT='${FAKE_PROJECT}'
+    export RITE_DATA_DIR='.rite'
+    export RITE_MARKER_DOC_DRIFT='sharkrite-doc-drift'
+    source '${DOCS_CMD}'
+    set +u; set +o pipefail
+
+    # Stubs — defined after source so env-guarded re-source guards don't overwrite them.
+    # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs defined post-source to win
+    drift_log_path()       { echo '${FAKE_PROJECT}/docs/drift-log.md'; }
+    drift_log_entry_count(){ echo '0'; }
+    print_info()    { printf '[info] %s\n' \"\$*\" >&2; }
+    print_warning() { printf '[warn] %s\n' \"\$*\" >&2; }
+    print_success() { printf '[ok]   %s\n' \"\$*\" >&2; }
+    gh_safe() {
+      printf 'gh_safe:%s\n' \"\$*\" >> '${gh_call_log}'
+      # Simulate 'pr create' returning a URL; 'pr edit' is a no-op.
+      case \"\$1 \$2\" in
+        'pr create') echo 'https://github.com/test/repo/pull/99' ;;
+      esac
+    }
+
+    _docs_apply_approved 'test instruction' '${prop_dir}' 1
+  "
+  [ "$status" -eq 0 ]
+
+  # The docs branch must contain the updated file content.
+  local branch
+  branch="$(git -C "$FAKE_PROJECT" branch -r --list 'origin/docs/directed-update-*' | head -1 | tr -d ' ')"
+  [ -n "$branch" ]
+  local content
+  content="$(git -C "$FAKE_PROJECT" show "${branch}:docs/test-fixture.md" 2>/dev/null || true)"
+  echo "$content" | grep -q "Updated content by apply test"
+
+  # gh_safe must have been called with pr create (no --label in the create call).
+  [ -f "$gh_call_log" ]
+  grep -q "pr create" "$gh_call_log"
+  # --label must NOT appear on the create line (best-effort edit handles it separately).
+  ! grep "pr create" "$gh_call_log" | grep -q -- "--label"
+  # Best-effort label edit must have been attempted.
+  grep -q "pr edit" "$gh_call_log"
+
+  rm -rf "$prop_dir"
+}
+
+@test "_docs_apply_approved: drift log burn-down deletes log when last entry drained" {
+  _init_git_origin "$FAKE_PROJECT"
+  _make_drift_log "$FAKE_PROJECT/docs/drift-log.md"
+  # Also seed the drift log into the bare origin so the worktree clone has it.
+  local seed_clone
+  seed_clone="$(mktemp -d)"
+  git clone "${FAKE_PROJECT}/.rite/bare-origin" "$seed_clone" >/dev/null 2>&1
+  git -C "$seed_clone" config user.email "test@example.com"
+  git -C "$seed_clone" config user.name "Test"
+  mkdir -p "${seed_clone}/docs"
+  cp "$FAKE_PROJECT/docs/drift-log.md" "${seed_clone}/docs/drift-log.md"
+  git -C "$seed_clone" add . >/dev/null 2>&1
+  git -C "$seed_clone" commit -m "add drift log" >/dev/null 2>&1
+  git -C "$seed_clone" push origin main >/dev/null 2>&1
+  rm -rf "$seed_clone"
+
+  local prop_dir
+  prop_dir="$(mktemp -d)"
+  printf 'docs/test-fixture.md' > "${prop_dir}/proposal_1_file.txt"
+  printf 'UPDATE'               > "${prop_dir}/proposal_1_action.txt"
+  printf '1'                    > "${prop_dir}/proposal_1_drift.txt"
+  printf '# Test Fixture Doc\nBurn-down test.\n' \
+    > "${prop_dir}/proposal_1_content.txt"
+
+  local gh_call_log="${FAKE_PROJECT}/.rite/state/gh-burn.calls"
+
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${PROJECT_ROOT}/lib'
+    export RITE_PROJECT_ROOT='${FAKE_PROJECT}'
+    export RITE_DATA_DIR='.rite'
+    export RITE_MARKER_DOC_DRIFT='sharkrite-doc-drift'
+    source '${DOCS_CMD}'
+    set +u; set +o pipefail
+
+    # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs defined post-source to win
+    drift_log_path()       { echo '${FAKE_PROJECT}/docs/drift-log.md'; }
+    drift_log_entry_count(){ local _f=\"\${1:-}\"; [ -f \"\$_f\" ] || { echo '0'; return 0; }; grep -c 'sharkrite-doc-drift pr:[0-9]' \"\$_f\" || true; }
+    print_info()    { printf '[info] %s\n' \"\$*\" >&2; }
+    print_warning() { printf '[warn] %s\n' \"\$*\" >&2; }
+    print_success() { printf '[ok]   %s\n' \"\$*\" >&2; }
+    gh_safe() {
+      printf 'gh_safe:%s\n' \"\$*\" >> '${gh_call_log}'
+      case \"\$1 \$2\" in
+        'pr create') echo 'https://github.com/test/repo/pull/100' ;;
+      esac
+    }
+
+    _docs_apply_approved 'burn-down test' '${prop_dir}' 1
+  "
+  [ "$status" -eq 0 ]
+
+  # Verify the docs branch does NOT contain the drift log (it was fully drained).
+  local branch
+  branch="$(git -C "$FAKE_PROJECT" branch -r --list 'origin/docs/directed-update-*' | tail -1 | tr -d ' ')"
+  [ -n "$branch" ]
+  # drift-log.md should be absent from the docs branch (deleted by burn-down).
+  run git -C "$FAKE_PROJECT" show "${branch}:docs/drift-log.md" 2>&1
+  [ "$status" -ne 0 ]
+
+  rm -rf "$prop_dir"
 }
