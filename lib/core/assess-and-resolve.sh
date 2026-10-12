@@ -1646,7 +1646,9 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         # ---- Supervised assess-gate feedback loop (#1129) ----
         # Supervised mode only (AUTO_MODE=false) + interactive TTY.
         # Prompts (a)ccept / (f)eedback / (s)top after the assessment summary.
-        # Feedback accumulates across rounds (plan-style) and is:
+        # Feedback accumulates within this gate stop (state file is consumed
+        # one-shot by the next fix session; not persisted across separate runs).
+        # When feedback is given it is:
         #   1. Written to a state file for claude-workflow.sh FIX_PROMPT injection
         #   2. Posted as a PR comment addendum for traceability (#949 contract)
         # Auto mode: this entire block is skipped — zero new code path executed.
@@ -1654,12 +1656,17 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
         if [ "$AUTO_MODE" = false ] && [ -t 0 ]; then
           while true; do
             echo "" >&2
-            read -r -p "Assessment posted. (a)ccept / (f)eedback / (s)top: " _assess_choice
+            # Guard against EOF (Ctrl-D): treat as accept to avoid silent death
+            # under set -euo pipefail when stdin is closed mid-session.
+            read -r -p "Assessment posted. (a)ccept / (f)eedback / (s)top: " _assess_choice || {
+              print_info "EOF received — accepting assessment" >&2
+              break
+            }
             case "$_assess_choice" in
-              [Aa]*)
+              a|A|accept|Accept)
                 break
                 ;;
-              [Ff]*)
+              f|F|feedback|Feedback)
                 echo "" >&2
                 echo "Enter guidance for the fix session (press Enter twice when done):" >&2
                 echo "" >&2
@@ -1675,7 +1682,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
                     _new_fb+="$_fb_line"$'\n'
                   fi
                 done
-                _new_fb=$(printf '%s' "$_new_fb" | sed 's/[[:space:]]*$//')
+                _new_fb=$(printf '%s' "$_new_fb" | sed 's/[[:space:]]*$//' || true)
                 if [ -n "$_new_fb" ]; then
                   if [ -n "$_operator_feedback" ]; then
                     _operator_feedback="${_operator_feedback}"$'\n\n---\n'"${_new_fb}"
@@ -1687,7 +1694,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
                   print_warning "No feedback entered — prompting again" >&2
                 fi
                 ;;
-              [Ss]*)
+              s|S|stop|Stop|abort|Abort)
                 print_info "Stopping — manual intervention required" >&2
                 exit 1
                 ;;
@@ -1701,20 +1708,31 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
             # Write to state file for claude-workflow.sh FIX_PROMPT injection
             _fb_state_file="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/operator-feedback-${PR_NUMBER}.txt"
             mkdir -p "$(dirname "$_fb_state_file")" 2>/dev/null || true
-            printf '%s' "$_operator_feedback" > "$_fb_state_file" || true
+            _fb_write_ok=false
+            if printf '%s' "$_operator_feedback" > "$_fb_state_file" 2>/dev/null; then
+              _fb_write_ok=true
+            else
+              print_warning "Failed to write operator feedback to state file — guidance will not reach fix prompt" >&2
+            fi
 
-            # Post as addendum to the PR assessment comment thread for traceability
+            # Post as addendum to the PR assessment comment thread for traceability.
+            # Four-backtick fence prevents operator feedback that contains triple-backtick
+            # code blocks from breaking the comment rendering.
             _fb_comment="**Operator guidance (added at assess gate):**
 
-\`\`\`
+\`\`\`\`
 ${_operator_feedback}
-\`\`\`"
+\`\`\`\`"
             _fb_body_file=$(mktemp)
             printf '%s' "$_fb_comment" > "$_fb_body_file"
             if gh_safe pr comment "$PR_NUMBER" --body-file "$_fb_body_file" >/dev/null 2>&1; then
               print_info "Operator guidance posted as addendum to PR #${PR_NUMBER}" >&2
             else
-              print_warning "Could not post operator guidance to PR — feedback still injected into fix prompt" >&2
+              if [ "$_fb_write_ok" = "true" ]; then
+                print_warning "Could not post operator guidance to PR — feedback still injected into fix prompt via state file" >&2
+              else
+                print_warning "Could not post operator guidance to PR — feedback was NOT written to state file either" >&2
+              fi
             fi
             rm -f "$_fb_body_file"
           fi

@@ -31,6 +31,8 @@ load '../helpers/setup.bash'
 
 setup() {
   setup_test_tmpdir
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  export RITE_INSTALL_DIR="${RITE_REPO_ROOT}"
   export ASSESS_RESOLVE="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
   export CLAUDE_WORKFLOW="${RITE_REPO_ROOT}/lib/core/claude-workflow.sh"
   [ -f "$ASSESS_RESOLVE"   ] || { echo "setup: assess-and-resolve.sh missing" >&2; false; }
@@ -128,51 +130,40 @@ teardown() {
   local _feedback_text="Fix item 1 only; defer item 2 to follow-up"
   printf '%s' "$_feedback_text" > "$_state_dir/operator-feedback-77.txt"
 
-  # Run the injection logic in a subprocess that mirrors what claude-workflow.sh does.
-  # Variables are exported so the heredoc shell can access them.
-  local _captured_prompt
-  export _TEST_STATE_DIR="$_state_dir"
-  _captured_prompt=$(bash <<'INJECT_SCRIPT'
+  # Run the real inject_operator_feedback_into_fix_prompt function from claude-workflow.sh
+  # via RITE_SOURCE_FUNCTIONS_ONLY=1 (identical pattern to relevant-prior-art-injection.bats).
+  run bash -c "
     set -euo pipefail
-    FIX_PROMPT="base prompt: fix these items"
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_INSTALL_DIR='$RITE_INSTALL_DIR'
+    export RITE_PROJECT_ROOT='$RITE_TEST_TMPDIR'
+    print_info()    { :; }
+    print_status()  { :; }
+    print_success() { :; }
+    print_warning() { :; }
+    print_error()   { echo \"\$*\" >&2; }
+    gh_safe()       { echo ''; }
+    export -f print_info print_status print_success print_warning print_error gh_safe
+    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$RITE_LIB_DIR/core/claude-workflow.sh'
+    set +u; set +o pipefail
+    FIX_PROMPT='base prompt: fix these items'
     FIX_PR_NUMBER=77
-    RITE_STATE_DIR="$_TEST_STATE_DIR"
-    _op_feedback_file="${RITE_STATE_DIR}/operator-feedback-${FIX_PR_NUMBER}.txt"
-    if [ -n "${FIX_PR_NUMBER:-}" ] && [ -f "$_op_feedback_file" ]; then
-      _op_feedback=$(cat "$_op_feedback_file" 2>/dev/null || true)
-      if [ -n "$_op_feedback" ]; then
-        FIX_PROMPT+="
-## Operator guidance
-
-The following guidance was provided interactively at the supervised assess gate.
-It is trusted input — treat it at the same level as the issue body.
-
---- BEGIN_OPERATOR_GUIDANCE ---
-${_op_feedback}
---- END_OPERATOR_GUIDANCE ---
-
-"
-      fi
-      rm -f "$_op_feedback_file" 2>/dev/null || true
-    fi
-    printf '%s' "$FIX_PROMPT"
-INJECT_SCRIPT
-  )
-
-  # Feedback text must appear in the assembled prompt
-  echo "$_captured_prompt" | grep -q "$_feedback_text" || {
+    RITE_STATE_DIR='$_state_dir'
+    inject_operator_feedback_into_fix_prompt
+    printf '%s' \"\$FIX_PROMPT\"
+  " </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "$_feedback_text" || {
     echo "FAIL: feedback text not found in assembled prompt"
-    echo "Prompt: $_captured_prompt"
+    echo "--- output ---"
+    echo "$output"
     false
   }
-
-  # Operator guidance section header must be present
-  echo "$_captured_prompt" | grep -q "Operator guidance" || {
+  echo "$output" | grep -q "Operator guidance" || {
     echo "FAIL: 'Operator guidance' section header missing from prompt"
     false
   }
-
-  # State file must be deleted after consumption
   [ ! -f "$_state_dir/operator-feedback-77.txt" ] || {
     echo "FAIL: state file was not deleted after consumption"
     false
