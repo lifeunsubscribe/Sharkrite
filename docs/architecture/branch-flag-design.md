@@ -1,6 +1,6 @@
 # Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow
 
-**Status:** Final — design closed per 2026-07 rulings. The `--branch` / `--promote` / `--sync` cluster (#1031–#1052) is fully implemented. See the [phase-integration-branches issue list](https://github.com) for open cleanup items.
+**Status:** Final — design closed per 2026-07 rulings. The `--branch` / `--promote` / `--sync` cluster (#1031–#1052) is implemented; cherry-pick promote (#1047/#1050/#1051) is designed but not yet shipped. See the [phase-integration-branches issue list](https://github.com/lifeunsubscribe/Sharkrite/issues?q=is%3Aissue+label%3Aphase-integration-branches) for open cleanup items.
 **Date:** 2026-06-23 (design) / 2026-07-07 (rulings finalized)
 **Provenance:** Generated via a multi-agent design workflow (5 parallel subsystem readers → synthesis). Every `file:line` below was re-verified against source at ruling time (2026-07-07) and again at worktree creation (2026-10-11).
 
@@ -54,9 +54,9 @@ Introduce `resolve_target_branch ISSUE_NUMBER [PR_NUMBER]` (`stale-branch.sh:186
 
 ### 2.4 Underspecified / risky — call-outs
 
-- **Branch pre-existence — RESOLVED (2026-07-07 ruling).** A branch missing on `origin` is **auto-created from `origin/main`** with a single `print_info` line. The preflight (`bin/rite:184` → `ensure_target_branch_exists`) handles this: if `git ls-remote --heads origin "$BRANCH"` returns nothing, it pushes a fresh branch from `origin/main` and prints one informational line. Silent-Recovery-Over-Bailout applies here because we *can* invent the correct base (it is always `origin/main` for a brand-new integration branch). The exit-19 mismatch block described next is scoped to **issue↔branch mismatch ONLY — never to branch non-existence.**
+- **Branch pre-existence — RESOLVED (2026-07-07 ruling).** A branch missing on `origin` is **auto-created from `origin/main`** with a single `print_info` line. The preflight (`bin/rite:1682` → `ensure_target_branch_exists`) handles this: if `git ls-remote --heads origin "$BRANCH"` returns nothing, it pushes a fresh branch from `origin/main` and prints one informational line. Silent-Recovery-Over-Bailout applies here because we *can* invent the correct base (it is always `origin/main` for a brand-new integration branch). The exit-19 mismatch block described next is scoped to **issue↔branch mismatch ONLY — never to branch non-existence.**
 
-- **PR base mismatch — RESOLVED (2026-07-07 ruling, implemented by #1044).** If a resumed run resolves a *different* target than the PR was created with, this is a **hard stop** (exit code 19). `workflow-runner.sh::handle_branch_mismatch` prints a verbose block that includes the exact corrected command (`rite N --branch <correct-branch>`) and exits 19. In batch mode, the issue is recorded with a `branch_mismatch` SKIPPED class and the batch continues. Exit 19 is NOT yet in `docs/architecture/exit-codes.md` — that row lands with the #1044 code PR.
+- **PR base mismatch — RESOLVED (2026-07-07 ruling, implemented by #1044).** If a resumed run resolves a *different* target than the PR was created with, this is a **hard stop** (exit code 19). `workflow-runner.sh::handle_branch_mismatch` prints a verbose block that includes the exact corrected command (`rite N --branch <correct-branch>`) and exits 19. In batch mode, the issue is recorded with a `branch_mismatch` SKIPPED class and the batch continues. Exit 19 is not yet documented in `docs/architecture/exit-codes.md` — the row is missing and tracked separately.
 
 - **Mixed targets in one command** are not supported — all issues in one `--branch` invocation share the value; each then persists its own file. Document it.
 
@@ -75,10 +75,9 @@ Introduce `resolve_target_branch ISSUE_NUMBER [PR_NUMBER]` (`stale-branch.sh:186
   ;;
 ```
 
-**Edits:**
+**Shipped implementation (as of #1033):**
 
-1. **Declare** alongside the filter vars: `BRANCH_FILTER=""`.
-2. **Parse** immediately after the `--label)` case (`bin/rite:184`):
+1. **Parse** the `--branch)` case (around `bin/rite:184`): validates `$2` non-empty and no whitespace, then `export RITE_TARGET_BRANCH="$2"` and `WORKFLOW_FLAGS+=("--base" "$2")`.
    ```bash
    --branch)
      export RITE_TARGET_BRANCH="$2"
@@ -86,7 +85,7 @@ Introduce `resolve_target_branch ISSUE_NUMBER [PR_NUMBER]` (`stale-branch.sh:186
      shift 2
      ;;
    ```
-3. **Validate + export + auto-create** (after the parse loop): when `BRANCH_FILTER` is non-empty, `ensure_target_branch_exists "$BRANCH_FILTER"` (auto-creates from `origin/main` with a `print_info` if absent), then `export RITE_TARGET_BRANCH="$BRANCH_FILTER"`. The env var is only a *default seed*; the per-issue state file is the durable carrier. Leak concern mitigated by name-scoping and by consumers always resolving through `resolve_target_branch`, never reading the env var raw.
+2. **Validate + auto-create** (after the dispatch key is determined, `bin/rite:1682`): when `RITE_TARGET_BRANCH` is non-main, `ensure_target_branch_exists "$RITE_TARGET_BRANCH"` auto-creates the branch from `origin/main` with a `print_info` if absent. The env var is only a *default seed*; the per-issue state file is the durable carrier. Leak concern mitigated by name-scoping and by consumers always resolving through `resolve_target_branch`, never reading the env var raw.
 
 ### 3.2 Propagation through the three routing exits
 
@@ -94,9 +93,9 @@ Introduce `resolve_target_branch ISSUE_NUMBER [PR_NUMBER]` (`stale-branch.sh:186
 
 | Exit | Required |
 |---|---|
-| Single-issue full | `WORKFLOW_FLAGS` includes `--base "$BRANCH_FILTER"`. `RITE_TARGET_BRANCH` is also exported, so resume-from-state works. |
+| Single-issue full | `WORKFLOW_FLAGS` includes `--base "$RITE_TARGET_BRANCH"`. `RITE_TARGET_BRANCH` is also exported, so resume-from-state works. |
 | Batch / `--label` | Relies on the exported `RITE_TARGET_BRANCH` (env survives exec); regression test asserts the batch path sees the target (§6.1). |
-| `--dev-and-pr` standalone | Pass `--base "$BRANCH_FILTER"` to the direct `create-pr.sh` call (or rely on the env default in `create-pr.sh:38`). |
+| `--dev-and-pr` standalone | Pass `--base "$RITE_TARGET_BRANCH"` to the direct `create-pr.sh` call (or rely on the env default in `create-pr.sh:38`). |
 
 ### 3.3 `workflow-runner.sh` flag parser
 
@@ -211,7 +210,7 @@ The dangerous failure mode is a *missed* `origin/main` literal that should have 
 Six chunks, dependency-ordered, each ≤2hr (runbook cap), each a `rite plan` issue. **TIGHTLY-COUPLED** = same files / shared parity contract; **SEPARABLE** = independently landable.
 
 **Chunk 1 — Flag parsing + resolver + state file** `[FOUNDATION]`
-`bin/rite`: declare `BRANCH_FILTER`, parse `--branch` (`bin/rite:184`), pre-exist preflight + `export RITE_TARGET_BRANCH`. `config.sh`: default + export. New `resolve_target_branch` (reuses `_stale_resolve_base_branch`); state-file write in `claude-workflow.sh:2756`. `workflow-runner.sh`: `--base` case. Tests: resolver precedence; absolute `RITE_STATE_DIR`; re-source-twice clean. **TIGHTLY-COUPLED** with Chunk 2. **Land first.**
+`bin/rite`: parse `--branch` (exports `RITE_TARGET_BRANCH`; threads `--base` via `WORKFLOW_FLAGS`), pre-exist preflight at `:1682` + `ensure_target_branch_exists`. `config.sh`: default + export. New `resolve_target_branch` (reuses `_stale_resolve_base_branch`); state-file write in `claude-workflow.sh:2756`. `workflow-runner.sh`: `--base` case. Tests: resolver precedence; absolute `RITE_STATE_DIR`; re-source-twice clean. **TIGHTLY-COUPLED** with Chunk 2. **Land first.**
 
 **Chunk 2 — Propagation through all three exits + PR base at creation** `[CORE]`
 `bin/rite` threading; `create-pr.sh:38` default (empty sentinel, resolver fills); `workflow-runner.sh` `phase_create_pr` pass `--base`; `claude-workflow.sh:2638` + `trivial-fix-fastpath.sh:127` worktree base. Tests: correct `baseRefName` in single+batch+dev-and-pr; **parity test** (§6.1). **TIGHTLY-COUPLED** with Chunk 1. **Follows Chunk 1.**
@@ -273,7 +272,7 @@ Chunk 6 (lint backstop)  ── land LAST, after 3+4 ── [SEPARABLE, ordering
 
 **Aggregated `Closes #N` block** — the promotion PR body lists all constituent issues from the ledger (§9), not extracted from the squash commit subject (which only carries the PR title). See §9 for the rationale.
 
-**Single-issue cherry-pick promote** — `rite --promote <branch> --cherry-pick <issue>` promotes one issue from the integration branch by cherry-picking its squash SHA from the ledger onto a temporary branch targeting `main`, then running the full promote pipeline on that temp branch. Conflicts abort (never auto-resolved). Implemented by #1047 + #1050 + #1051.
+**Single-issue cherry-pick promote** — `rite --promote <branch> --cherry-pick <issue>` promotes one issue from the integration branch by cherry-picking its squash SHA from the ledger onto a temporary branch targeting `main`, then running the full promote pipeline on that temp branch. Conflicts abort (never auto-resolved). Designed; not yet implemented — tracked in #1047 + #1050 + #1051.
 
 ### 8.2 Why not `merge-pr.sh`
 
@@ -327,7 +326,7 @@ Fields are tab-separated key=value pairs (greppable, forward-compatible). The le
 
 When an issue's PR merges into the integration branch (not into `main`), the issue is closed with an **annotated close comment**:
 
-> Merged to `feature-x` (integration branch) in PR #97. Not yet on `main` — will reach `main` when `feature-x` is promoted via `rite --promote feature-x`.
+> Closed by PR #97 — merged to integration branch 'feature-x'; pending promotion to main.
 
 **Rationale:** the issue is *done* — its work landed. The annotation prevents confusion ("wait, why is this closed if the branch wasn't promoted yet?"). The `rite --status` Integration branches section shows it as "merged, awaiting promotion," consistent with the ledger's `promoted=false` state.
 
