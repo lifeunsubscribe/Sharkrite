@@ -102,6 +102,15 @@
 # Set to 0 to disable the cap entirely (unbounded — original behavior).
 # RITE_MAX_FINDINGS_PER_RUN=20
 
+# Green-main preflight override (default: unset — halt on red main).
+# Before starting a batch, rite runs the full test suite on origin/main.
+# A red main halts the batch because gate block-on-any requires a green base.
+# Set to 1 to proceed anyway: main-inherited test failures are excluded from
+# ACTIONABLE_NOW in each issue's assessment (attribution mode — only failures
+# introduced by the branch are actionable). See: behavioral-design.md →
+# "Gate Block-on-Any: Red-Main Degradation Contract".
+# RITE_ACCEPT_RED_MAIN=1
+
 # Batch gate circuit-breaker threshold (default: 3).
 # When this many consecutive issues fail their post-commit gate with the same
 # normalized failure signature (sorted unique failing-file set), the batch halts

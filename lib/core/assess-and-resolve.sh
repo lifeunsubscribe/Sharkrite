@@ -1236,12 +1236,34 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       fi
     done < <(jq -c '.lint[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
 
-    # Build [GATE] ACTIONABLE_NOW items from test failures
+    # Build [GATE] ACTIONABLE_NOW items from test failures.
+    # Attribution: when _RITE_MAIN_FAILING_TESTS_FILE is set (batch preflight
+    # ran and RITE_ACCEPT_RED_MAIN=1 accepted a red main), tests whose names
+    # appear in that file are inherited from main — they are surfaced as
+    # [GATE-INHERITED] INFO items and excluded from ACTIONABLE_NOW so the fix
+    # loop only acts on failures actually introduced by this branch.
+    _gate_main_fail_file="${_RITE_MAIN_FAILING_TESTS_FILE:-}"
+    _gate_inherited_count=0
+
     while IFS= read -r _test_item; do
       _test_file=$(echo "$_test_item" | jq -r '.file // "bats"' 2>/dev/null || true)
       _test_name=$(echo "$_test_item" | jq -r '.test_name // "unknown test"' 2>/dev/null || true)
       _test_reason=$(echo "$_test_item" | jq -r '.reason // "assertion failed"' 2>/dev/null || true)
       if [ -n "$_test_name" ]; then
+        # Attribution subtraction (issue #916): skip inherited main failures.
+        # grep -qxF: exact full-line match (no glob/regex expansion, handles
+        # test names that contain regex metacharacters).
+        if [ -n "$_gate_main_fail_file" ] && [ -f "$_gate_main_fail_file" ] \
+           && grep -qxF "$_test_name" "$_gate_main_fail_file" 2>/dev/null; then
+          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
+          GATE_PREPEND_ITEMS+="### [GATE-INHERITED] test failure: ${_test_file} - INFO
+**Info:** This test also fails on origin/main — inherited, not introduced by this change.
+**Test:** ${_test_name}
+**Reason:** ${_test_reason}
+
+"
+          continue
+        fi
         GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_file} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Test failure (objective — no LLM categorization needed)
@@ -1268,27 +1290,40 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
     # 2026-06-30): jest 127 × 3 retries → empty arrays → "ready to merge".
     # The same hole opens for any non-bats runner (pytest/cargo/go) on a plain
     # non-TAP exit-1. (Issue #799)
+    #
+    # Attribution exception (issue #916): when ALL gate failures are inherited
+    # from main (attribution mode), the non-zero exit is expected and DOES NOT
+    # mean verification is incomplete — the gate ran and found only inherited
+    # failures. Skip the synthetic block in that case.
     if [ "$GATE_NOW_COUNT" -eq 0 ]; then
-      # Read the reason field from the gate JSON if present (e.g. "runner_unavailable").
-      # Falls back to a generic description naming the raw exit code.
-      _gate_reason_field=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
-      if [ -n "$_gate_reason_field" ]; then
-        _gate_failure_desc="gate failure: ${_gate_reason_field} (exit_code=${_gate_exit_code})"
+      if [ "${_gate_inherited_count:-0}" -gt 0 ]; then
+        # All gate failures are inherited: gate did complete, main is just red.
+        print_info "${_gate_inherited_count} test failure(s) attributed to origin/main (inherited — excluded from ACTIONABLE_NOW)"
       else
-        _gate_failure_desc="gate failure: non-zero exit (exit_code=${_gate_exit_code}) with no parseable findings"
-      fi
-      GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
+        # Read the reason field from the gate JSON if present (e.g. "runner_unavailable").
+        # Falls back to a generic description naming the raw exit code.
+        _gate_reason_field=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
+        if [ -n "$_gate_reason_field" ]; then
+          _gate_failure_desc="gate failure: ${_gate_reason_field} (exit_code=${_gate_exit_code})"
+        else
+          _gate_failure_desc="gate failure: non-zero exit (exit_code=${_gate_exit_code}) with no parseable findings"
+        fi
+        GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Gate failure (objective — no LLM categorization needed)
 **Fix Effort:** Medium (investigate why the test runner produced no parseable output)
 **Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging.
 
 "
-      GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+      fi
     fi
 
     if [ "$GATE_NOW_COUNT" -gt 0 ]; then
       print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
+    fi
+    if [ "${_gate_inherited_count:-0}" -gt 0 ] && [ "$GATE_NOW_COUNT" -gt 0 ]; then
+      print_info "${_gate_inherited_count} additional test failure(s) attributed to origin/main (inherited — excluded from ACTIONABLE_NOW)"
     fi
   elif [ "$_gate_skipped" = "true" ]; then
     # ---- Unverified-skip blocking (issue #1014) ----
