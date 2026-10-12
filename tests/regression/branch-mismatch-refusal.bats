@@ -191,21 +191,23 @@ setup() {
   # making the comparison always match (circular).
   # The guard uses a local variable (_mismatch_target) to hold the result and
   # calls resolve_target_branch with only the issue number.
+  # The guard logic lives in check_branch_mismatch() (extracted by #1073 so
+  # bin/rite dev-and-pr can reuse it) — extract THAT body, not run_workflow.
   _func_body=$(awk '
-    /^run_workflow[(][)]/ { in_func=1; next }
+    /^check_branch_mismatch[(][)]/ { in_func=1; next }
     in_func && /^\}$/ { exit }
     in_func { print $0 }
   ' "$WORKFLOW_RUNNER")
 
   [ -n "$_func_body" ] || {
-    echo "FAIL: Could not extract run_workflow function body" >&2
+    echo "FAIL: Could not extract check_branch_mismatch function body" >&2
     return 1
   }
 
   # The line that assigns _mismatch_target must call resolve_target_branch
   _mismatch_resolve=$(echo "$_func_body" | grep -E "_mismatch_target" | grep "resolve_target_branch" || true)
   [ -n "$_mismatch_resolve" ] || {
-    echo "FAIL: No '_mismatch_target=\$(resolve_target_branch...)' assignment found in run_workflow()" >&2
+    echo "FAIL: No '_mismatch_target=\$(resolve_target_branch...)' assignment found in check_branch_mismatch()" >&2
     echo "      The guard must store the resolver result in _mismatch_target" >&2
     return 1
   }
@@ -712,14 +714,18 @@ INLINE_EOF
 }
 
 @test "structural: bin/rite dev-and-pr case calls detect_pr_for_issue before check_branch_mismatch" {
+  # Anchor on the execution case via its record_run line — "dev-and-pr)" labels
+  # also exist in the dispatch-key and dry-run case statements, and the case
+  # label indentation is not stable; the record_run call is unique to the
+  # execution arm.
   _case_body=$(awk '
-    /^  dev-and-pr[)]$/ { in_case=1; next }
-    in_case && /^    ;;$/ { exit }
+    /record_run .*"dev-and-pr"/ { in_case=1; next }
+    in_case && /^[[:space:]]*;;[[:space:]]*$/ { exit }
     in_case { print NR": "$0 }
   ' "$RITE_BIN")
 
   [ -n "$_case_body" ] || {
-    echo "FAIL: Could not extract dev-and-pr case body from bin/rite" >&2
+    echo "FAIL: Could not extract dev-and-pr execution case body from bin/rite" >&2
     return 1
   }
 
@@ -729,7 +735,9 @@ INLINE_EOF
     return 1
   }
 
-  _cbm_line=$(echo "$_case_body" | grep "check_branch_mismatch" | head -1 | grep -oE '^[0-9]+' || true)
+  # Skip comment lines — the sourcing comment names check_branch_mismatch()
+  # four lines before the call.
+  _cbm_line=$(echo "$_case_body" | grep "check_branch_mismatch" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | grep -oE '^[0-9]+' || true)
   [ -n "$_cbm_line" ] || {
     echo "FAIL: check_branch_mismatch call not found in dev-and-pr case" >&2
     return 1
