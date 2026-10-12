@@ -371,6 +371,7 @@ RUNEOF
 #!/bin/bash
 for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
 case "${1:-}" in
+  rev-parse) echo "abc1234567890123456789012345678901234abcd"; exit 0 ;;
   ls-remote) echo "abc refs/heads/shape-branch"; exit 0 ;;
   worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
   push|branch) exit 0 ;;
@@ -591,6 +592,7 @@ RUNEOF
 #!/bin/bash
 for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
 case "${1:-}" in
+  rev-parse) echo "deadbeef123456789012345678901234deadbeef"; exit 0 ;;
   ls-remote) echo "abc refs/heads/own-branch"; exit 0 ;;
   worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
   push)  echo "GIT_PUSH $*" >> "${_PROMOTE_CALLLOG:-/dev/null}"; exit 0 ;;
@@ -678,6 +680,7 @@ RUNEOF
 #!/bin/bash
 for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
 case "${1:-}" in
+  rev-parse) echo "deadbeef123456789012345678901234deadbeef"; exit 0 ;;
   ls-remote) echo "abc refs/heads/pm-branch"; exit 0 ;;
   worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
   push)
@@ -752,6 +755,188 @@ RUNEOF
   # Per-issue "Promoted to main" comments must be attempted for both issues
   grep -q "ISSUE_COMMENT issue=42" "$_call_log"
   grep -q "ISSUE_COMMENT issue=55" "$_call_log"
+}
+
+# ===========================================================================
+# Group 8: Placement pin — git worktree prune is unconditional
+# ===========================================================================
+
+@test "git worktree prune is called regardless of whether a stale worktree existed" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/prune_pin.log"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-prune"
+  mkdir -p "$_fake_bin"
+  # Records every `git worktree *` call to the call log so we can assert prune ran
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "abc1234567890123456789012345678901234abcd"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/prune-branch"; exit 0 ;;
+  worktree)
+    printf 'GIT_WORKTREE %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    [ "${2:-}" = "add" ] && mkdir -p "${3:-}"
+    exit 0 ;;
+  push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt"
+export PATH="$_fake_bin:\$PATH"
+export _PROMOTE_CALLLOG="$_call_log"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        view)   return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_promote "prune-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+
+  # git worktree prune must have been called even though no stale worktree existed
+  grep -qE "GIT_WORKTREE.*prune" "$_call_log"
+}
+
+# ===========================================================================
+# Group 9: SHA re-capture after supervised sync
+# ===========================================================================
+
+@test "supervised sync re-captures _branch_sha before passing to merge API" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs "$_lib"
+
+  # integration-sync.sh stub needed for the supervised sync code path
+  cat > "$_lib/utils/integration-sync.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f sync_integration_branch >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+sync_integration_branch() { return 0; }
+STUB
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/sha_recp.log"
+  # State file: tracks how many rev-list calls have fired; used by rev-parse too
+  local _git_state="$RITE_TEST_TMPDIR/git_revlist_state.txt"
+  printf '0\n' > "$_git_state"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-sha-recp"
+  mkdir -p "$_fake_bin"
+  # Stateful stub: first rev-list returns 1 (behind main); after state flips, returns 0.
+  # rev-parse returns sha-pre-sync before state flips, sha-post-sync after.
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+_state="${_GIT_STATE_FILE:-/dev/null}"
+_n=0
+[ -f "$_state" ] && _n=$(cat "$_state" 2>/dev/null || echo 0)
+for _a in "$@"; do
+  [ "$_a" = "rev-list" ] && {
+    if [ "$_n" -eq 0 ]; then
+      printf '1\n'
+      printf '1\n' > "$_state"
+    else
+      printf '0\n'
+    fi
+    exit 0
+  }
+done
+case "${1:-}" in
+  rev-parse)
+    _nc=0; [ -f "$_state" ] && _nc=$(cat "$_state" 2>/dev/null || echo 0)
+    [ "$_nc" -gt 0 ] && printf 'sha-post-sync\n' || printf 'sha-pre-sync\n'
+    exit 0 ;;
+  ls-remote) echo "abc refs/heads/sha-recp-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt"
+export RITE_SUPERVISED=true
+export PATH="$_fake_bin:\$PATH"
+export _GIT_STATE_FILE="$_git_state"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        view)   return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  printf 'MERGE_API: %s\n' "\$*" >> "$_call_log"; echo '{"merged":true}'; return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_promote "sha-recp-branch" 2>&1
+RUNEOF
+)
+
+  # Pipe 'y' to answer the supervised sync prompt
+  run bash "$_runner" <<< "y" 2>&1
+  [ "$status" -eq 0 ]
+
+  # The merge API must have been called with the post-sync SHA, not the pre-sync SHA
+  grep -q "sha=sha-post-sync" "$_call_log"
+  ! grep -q "sha=sha-pre-sync" "$_call_log"
 }
 
 # ===========================================================================
