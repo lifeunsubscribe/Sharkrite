@@ -531,7 +531,9 @@ rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
 rite docs                  # Doc consent/audit: enable doc-sync or audit drift on demand
-rite docs "<instructions>" # Directed doc update (engine lands in #1049)
+rite docs "<instructions>" # Directed doc update: LLM-proposed edits/creates → preview → approve → dedicated docs PR (no auto-merge)
+                           # Reconcile mode: when drift entries exist and user accepts the reconcile offer,
+                           # runs the same preview loop over all drift entries and drains them in one PR
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
