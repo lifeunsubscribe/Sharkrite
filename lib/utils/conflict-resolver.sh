@@ -187,6 +187,7 @@ attempt_claude_merge_resolution() {
   local _cr_issue_desc=""
   local _cr_pr_number=""
   local _cr_branch_name=""
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: positional-caller cold-start default; all rite callers pass --merge-target explicitly per #1039
   local _cr_merge_target="origin/main"
   local _cr_timeout="${RITE_FIX_TIMEOUT:-1800}"
   local _cr_diff_lines="${RITE_CONFLICT_DIFF_LINES:-200}"

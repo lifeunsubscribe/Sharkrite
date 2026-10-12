@@ -2456,10 +2456,11 @@ If the changes are unrelated work, answer UNRELATED."
             # Hard guard 3: skip if local commits are ahead of remote (unpushed work).
             if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
               UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
+            # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cross-worktree cleanup guard — peer worktrees' targets are unknowable here and overcounting vs main errs toward protection (#1037 handoff)
             elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
               # Cross-worktree UNPUSHED guard: OTHER issues' worktrees whose targets are
-              # unknowable here — overcounting vs main errs toward protection. Left as
-              # origin/main intentionally; formal suppression deferred to #1052.
+              # unknowable here — overcounting vs main errs toward protection.
+              # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cross-worktree cleanup guard — peer worktrees' targets are unknowable here and overcounting vs main errs toward protection (#1037 handoff)
               UNPUSHED=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
             else
               # No remote branches exist - count all commits on HEAD
@@ -2536,10 +2537,11 @@ If the changes are unrelated work, answer UNRELATED."
               fi
               if git -C "$wt_path" rev-parse --verify "origin/$WT_BRANCH" >/dev/null 2>&1; then
                 UNP=$(git -C "$wt_path" rev-list --count "origin/$WT_BRANCH..HEAD" 2>/dev/null || echo "0")
+              # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cross-worktree cleanup guard — peer worktrees' targets are unknowable here and overcounting vs main errs toward protection (#1037 handoff)
               elif git -C "$wt_path" rev-parse --verify origin/main >/dev/null 2>&1; then
                 # Cross-worktree UNPUSHED guard: OTHER issues' worktrees whose targets are
-                # unknowable here — overcounting vs main errs toward protection. Left as
-                # origin/main intentionally; formal suppression deferred to #1052.
+                # unknowable here — overcounting vs main errs toward protection.
+                # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cross-worktree cleanup guard — peer worktrees' targets are unknowable here and overcounting vs main errs toward protection (#1037 handoff)
                 UNP=$(git -C "$wt_path" rev-list --count "origin/main..HEAD" 2>/dev/null || echo "0")
               else
                 # No remote branches exist - count all commits on HEAD

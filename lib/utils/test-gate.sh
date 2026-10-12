@@ -1854,6 +1854,7 @@ run_test_gate() {
     _bats_exit_file=$(mktemp "/tmp/rite_gate_bats_exit_${PR_NUMBER:-0}_$$_XXXXXX")
 
     # --- Compute changed-file set once for both lint and bats selection ---
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cold-start default for direct/CI invocation; run_workflow seeds origin/<target> per #1037, operator env (RITE_TEST_GATE_DIFF_BASE) still wins
     local _diff_base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
     local _changed_files
     _changed_files=$(cd "$project_root" && git diff --name-only "$_diff_base"...HEAD 2>/dev/null || true)
@@ -2340,6 +2341,7 @@ run_test_gate() {
     # Detect whether this PR touched source files for use in loud-skip below.
     # Source = any non-docs/non-config change. A simple heuristic: any changed
     # path that isn't docs/, README, LICENSE, *.md, *.txt, *.conf, .gitignore.
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cold-start default for direct/CI invocation; run_workflow seeds origin/<target> per #1037, operator env (RITE_TEST_GATE_DIFF_BASE) still wins
     local _nonsr_diff_base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
     local _nonsr_changed_files _nonsr_source_touched=false
     _nonsr_changed_files=$(cd "$project_root" && git diff --name-only "$_nonsr_diff_base"...HEAD 2>/dev/null || true)

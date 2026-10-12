@@ -218,7 +218,7 @@ check_scope_boundary() {
   # base_ref: the diff base for changed-file detection. Defaults to "origin/main" so
   # standalone/test callers that pass only 2 args stay byte-identical. Production callers
   # (claude-workflow.sh) pass the resolved target (e.g. "origin/integration-x").
-  # The default here is a documented #1052 candidate for lint suppression.
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: leaf-utility cold-start default; production caller passes the resolved base per #1037
   local base_ref="${3:-origin/main}"
 
   # No issue body → nothing to check

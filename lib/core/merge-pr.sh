@@ -1341,15 +1341,20 @@ EOF
   #   2. main not checked out anywhere — git fetch origin main:main updates the ref directly
   MAIN_CHECKOUT_PATH=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree / { p = substr($0, 10) } /^branch refs\/heads\/main$/ { print p; exit }' || true)
   if [ -n "$MAIN_CHECKOUT_PATH" ]; then
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: trunk housekeeping, intentionally main (§5.1/#1038 local-main ff-block — always updates trunk regardless of PR_BASE)
     if (cd "$MAIN_CHECKOUT_PATH" && git pull --ff-only origin main >/dev/null 2>&1); then
+      # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: trunk housekeeping, intentionally main (success message for local-main ff-block)
       print_success "Local main fast-forwarded to origin/main"
     else
       print_warning "Could not fast-forward local main in $MAIN_CHECKOUT_PATH — run 'git pull --ff-only' there manually"
     fi
   else
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: trunk housekeeping, intentionally main (§5.1/#1038 local-main ff-block — updates ref when main not checked out)
     if git fetch origin main:main >/dev/null 2>&1; then
+      # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: trunk housekeeping, intentionally main (success message for fetch-based ff-block)
       print_success "Local main fast-forwarded to origin/main"
     else
+      # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: trunk housekeeping, intentionally main (warning message for local-main ff-block)
       print_warning "Could not update local main — run 'git pull --ff-only origin main' manually"
     fi
   fi
