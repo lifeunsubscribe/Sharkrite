@@ -2287,7 +2287,7 @@ _lint_issues_strict() {
   # When the same non-trivial verification command appears in two or more issues
   # it is a deterministic signal that both issues claim the same deliverable.
   # The model-side prompt guidance (section H, now retired) was insufficient alone —
-  # this check is the deterministic enforcer.
+  # this check is the deterministic detector; WARNs at the preview seam rather than blocking.
   #
   # Allowlisted shared setup commands (legitimate in every issue):
   #   make check      — project-wide lint/type-check
