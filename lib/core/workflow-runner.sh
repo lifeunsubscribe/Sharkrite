@@ -1526,6 +1526,12 @@ phase_assess_and_resolve() {
         # Usage cap reached during fix-review push — propagate so batch aborts cleanly
         print_warning "Usage cap reached during fix-review — aborting batch"
         return 5
+      elif [ $fix_result -eq 18 ]; then
+        # Auth failure during fix session — propagate so batch halts.
+        # Mirrors the exit-5 branch above; a mid-batch auth expiry must stop
+        # the whole run rather than being swallowed as a generic fix failure.
+        print_error "Provider auth failure during fix session — aborting batch"
+        return 18
       elif [ $fix_result -eq 2 ]; then
         # Divergence was resolved by pulling foreign commits (handle_push_divergence exit 2).
         # The push succeeded inside the handler; the HEAD now includes foreign commits.
@@ -3360,10 +3366,21 @@ run_workflow() {
     _timer_start "phase3_assess_resolve"
     # Pass RESUME_RETRY if resuming mid-loop (ensures follow-up creation happens)
     local start_retry="${RESUME_RETRY:-0}"
-    if ! phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$start_retry"; then
+    local _phase3_exit=0
+    phase_assess_and_resolve "$issue_number" "$PR_NUMBER" "$start_retry" || _phase3_exit=$?
+    if [ $_phase3_exit -ne 0 ]; then
       _timer_end "phase3_assess_resolve"
       _rtk_snapshot "phase3_end"
       _diag "PHASE_FAILED issue=${issue_number} phase=assess-resolve"
+      # Preserve batch-fatal sentinel codes so the batch dispatcher can abort cleanly.
+      # Using "if !" would collapse exit 5 (usage cap) and exit 18 (auth) to exit 1,
+      # causing the batch to march on rather than stopping immediately (live: 2026-10-11).
+      if [ $_phase3_exit -eq 5 ]; then
+        return 5
+      fi
+      if [ $_phase3_exit -eq 18 ]; then
+        return 18
+      fi
       print_error "Assessment phase failed"
       echo ""
       echo "The workflow stopped during Phase 3 (Assess & Resolve)."

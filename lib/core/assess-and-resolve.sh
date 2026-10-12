@@ -4,11 +4,15 @@
 # Usage:
 #   ./scripts/assess-and-resolve.sh PR_NUMBER [ISSUE_NUMBER] [--auto]
 #
-# Exit codes:
+# Exit codes (this script):
 #   0 - All issues resolved or tracked
 #   1 - Manual intervention required (supervisor decision needed)
 #   2 - Critical issues require fixes (restart PR cycle, outputs filtered review to stdout)
 #   3 - Review is stale (commits newer than review — route back to Phase 2 for fresh review)
+#
+# Exit codes (composite phase_assess_and_resolve in workflow-runner.sh):
+#   5 - Usage cap reached during embedded fix session — propagated verbatim so batch aborts
+#   18 - Provider auth failure during embedded fix session — propagated verbatim so batch halts
 #
 # Data flow (auto mode):
 #   - Calls assess-review-issues.sh to filter ACTIONABLE items
