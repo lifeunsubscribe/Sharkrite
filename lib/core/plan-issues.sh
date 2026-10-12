@@ -702,8 +702,9 @@ This ensures nothing is silently dropped. If the doc mentions an entity, endpoin
 
 **Step 2 — Issue Generation Rules:**
 - Generate well-structured issues following the runbook template exactly (no fixed min/max — generate as many as the spec requires)
-- Time estimates use Fibonacci scale: 15min, 30min, 45min, 1hr, 2hr
+- Time estimates use Fibonacci scale: 15min, 30min, 45min, 1hr, 2hr — **prefer ≤1hr**
 - Any issue that would take >$max_estimate MUST be split into smaller issues
+- **If an issue estimates 2hr, include one line \`Split rationale: <why no clean seam exists>\` in the BODY** — the plan validator warns if it is absent; prefer two 1hr issues unless a seam genuinely does not exist
 - Dependencies must reflect actual code dependencies, not issue ordering. Use \`#PREV\` ONLY when an issue genuinely depends on the immediately preceding issue's code. Use \`After #N\` to reference any specific issue. Use \`After #N (can run in parallel with #M)\` when multiple issues share a common dependency but not each other
 - First issue should have \`Dependencies: None\`
 - Prefer parallel-friendly ordering: infrastructure → data models → then group parallelizable issues together (e.g., independent endpoints that all depend on the same CRUD base)
@@ -716,6 +717,7 @@ This ensures nothing is silently dropped. If the doc mentions an entity, endpoin
 - If user instructions exclude something, skip it entirely
 
 **Issue sizing guidance:**
+- **Target 15min-1hr per issue.** Issues in that range converge in 0-1 fix rounds. A 2hr issue that needs 3-4 rounds costs more in loop overhead than two 1hr slots would. Default to splitting; justify 2hr with an explicit \`Split rationale: <why no clean seam exists>\` line in the BODY.
 - If two issues share the same file, router, or schema AND together total ≤2hr, consider merging them into one issue. Separate PRs for 20 lines of code in the same file add overhead without value.
 - If an issue contains both a trivial part (e.g., GET endpoint) and a non-trivial part (e.g., complex CRUD with relationships), consider splitting them. The trivial part ships fast; the complex part gets proper scope.
 - When a field references an entity/table that doesn't exist yet, state the interim approach explicitly (e.g., "store as JSON array for now, formalize FK relationship in Phase X").
@@ -1514,6 +1516,8 @@ _lint_issues_strict() {
   local -a _suppressions=()    # per-issue: space-separated suppressed rule names
   local -a _labels=()          # per-issue: raw LABELS value (comma-separated string)
   local -a _parallel_with=()   # per-issue: newline-separated #N refs from "(can run in parallel with #N)" annotations
+  local -a _times=()           # per-issue: raw TIME value (e.g. "2hr", "30min")
+  local -a _has_rationale=()   # per-issue: "true" if Split rationale: line present, "false" otherwise
 
   local _in_issue=false
   local _issue_block=""
@@ -1547,6 +1551,18 @@ _lint_issues_strict() {
         local _issue_labels=""
         _issue_labels=$(echo "$_issue_block" | grep "^LABELS: " | head -1 | sed 's/^LABELS: //' || true)
         _labels+=("${_issue_labels:-}")
+
+        # --- Extract TIME line ---
+        local _issue_time=""
+        _issue_time=$(echo "$_issue_block" | grep "^TIME: " | head -1 | sed 's/^TIME: //' || true)
+        _times+=("${_issue_time:-}")
+
+        # --- Extract Split rationale presence ---
+        local _issue_has_rationale="false"
+        if echo "$_issue_block" | grep -qiE '^\**Split rationale\**:'; then
+          _issue_has_rationale="true"
+        fi
+        _has_rationale+=("${_issue_has_rationale}")
 
         # --- Extract suppression rules ---
         # Pattern: <!-- sharkrite-plan-lint disable <rule> - Reason: <text> -->
@@ -2345,6 +2361,30 @@ pytest"
         done <<< "$_vj_cmds"
       done <<< "$_vi_cmds"
     done
+  done
+
+  # Check 9: 2hr estimates require a Split rationale line (WARNING)
+  #
+  # A TIME: 2hr issue without a "Split rationale:" line signals an unexamined
+  # decomposition choice. Prefer two 1hr issues; justify 2hr when no clean seam
+  # exists. Suppressed per-issue with:
+  #   <!-- sharkrite-plan-lint disable 2hr-split-rationale - Reason: <text> -->
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _issue_title="${_titles[$_i]}"
+    local _issue_supps="${_suppressions[$_i]}"
+    local _issue_time="${_times[$_i]:-}"
+    local _issue_has_rat="${_has_rationale[$_i]:-false}"
+
+    if echo "$_issue_supps" | grep -qw "2hr-split-rationale"; then
+      continue
+    fi
+
+    [ "$_issue_time" = "2hr" ] || continue
+
+    if [ "$_issue_has_rat" != "true" ]; then
+      print_warning "strict-lint: WARNING: 2hr-split-rationale: '${_issue_title}' estimates 2hr without a \`Split rationale:\` line — prefer two 1hr issues or state why no clean seam exists" >&2
+      _warning_count=$((_warning_count + 1))
+    fi
   done
 
   # Summary
