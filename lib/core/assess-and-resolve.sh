@@ -897,27 +897,13 @@ else
 fi
 echo ""
 
-# =============================================================================
-# Extract model from review metadata for assessment consistency
-# =============================================================================
-
-extract_review_model() {
-  local review_body="$1"
-  local model=$(echo "$review_body" | grep -oE "${RITE_MARKER_REVIEW} model:[a-z0-9-]+" | sed 's/.*model://' | head -1 || true)
-  if [ -n "$model" ]; then
-    echo "$model"
-  else
-    echo "$RITE_REVIEW_MODEL"
-  fi
-}
-
 # extract_review_sha and resolve_pr_head_sha are shared helpers defined in
 # lib/utils/review-helper.sh (sourced above). They are NOT defined inline here —
 # see review-helper.sh for the canonical implementations.
-
-REVIEW_MODEL=$(extract_review_model "$REVIEW_BODY")
-print_info "Review model: $REVIEW_MODEL"
-export RITE_ASSESSMENT_MODEL="$REVIEW_MODEL"
+#
+# NOTE (#1187): the assessment model is NO LONGER inherited from the review
+# marker. assess-review-issues.sh resolves it via the `assessment` role
+# (RITE_ASSESSMENT_MODEL, default sonnet) — do not reintroduce an export here.
 
 # =============================================================================
 # Extract structured JSON from review (new format with sharkrite-review-data)

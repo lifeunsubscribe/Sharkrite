@@ -79,6 +79,11 @@
 # RITE_REVIEW_MODEL="claude-opus-4-5"
 # RITE_PROMOTE_MODEL="claude-opus-4-8"
 
+# Assessment model: classifies review findings into NOW/LATER/DISMISSED.
+# Structured three-state classification — sonnet's job. Independent of
+# RITE_REVIEW_MODEL (upgrading review must not upgrade assessment with it).
+# RITE_ASSESSMENT_MODEL="claude-sonnet-4-6"
+
 # =============================================================================
 # Test Gate
 # =============================================================================

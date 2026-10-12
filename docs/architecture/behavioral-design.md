@@ -675,7 +675,8 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 
 | Task | Nature | Model | Why |
 |------|--------|-------|-----|
-| Code review (`assess-review-issues.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
+| Code review (`local-review.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
+| Finding assessment (`assess-review-issues.sh`) | Classifying each review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED | `RITE_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Three-state classification of already-structured findings — not the reasoning that generated them. Before #1187 it inherited the review model from the review marker, so pinning review to fable-5 silently ran every assessment (the highest-count LLM call in the loop) on fable too |
 | Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
 | Doc assessment (`assess-documentation.sh`) | "Did this diff change API surface X? Update api.md accordingly." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
@@ -689,6 +690,7 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 claude_provider_resolve_model() {
   case "$1" in
     review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    assessment)     echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     plan)           echo "${RITE_PLAN_MODEL:-claude-opus-4-8}" ;;
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;

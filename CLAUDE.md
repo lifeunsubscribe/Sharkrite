@@ -105,6 +105,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Task | Var | Default | Why |
 |------|-----|---------|-----|
 | Code review | `RITE_REVIEW_MODEL` | `claude-opus-4-8` | Deep reasoning, broad context — catches edge cases that matter |
+| Finding assessment | `RITE_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Classifies review findings NOW/LATER/DISMISSED — three-state classification of structured findings, sonnet's job. Own var (#1187): it previously inherited the review model from the review marker, so pinning review to fable silently ran the loop's highest-count LLM call on fable too. |
 | Issue planning | `RITE_PLAN_MODEL` | `claude-opus-4-8` | Generates issues from ADRs — highest-stakes reasoning (must honor ADRs, never hallucinate fixtures). Its own var, decoupled from review so moving review off opus can't silently downgrade planning. Before this role existed, `plan-issues.sh` passed `""` and rode `RITE_REVIEW_MODEL` invisibly. |
 | Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |

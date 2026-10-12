@@ -573,6 +573,15 @@ claude_provider_resolve_model() {
   case "$role" in
     dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
     review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    # assessment classifies review findings into NOW/LATER/DISMISSED — three-state
+    # classification of already-structured findings, not the deep reasoning that
+    # generated them. Sonnet per the Model Selection table. Its OWN var: it
+    # previously inherited the review model via the review-marker extract in
+    # assess-and-resolve.sh, so pinning review to an expensive model silently ran
+    # every assessment on it too (fable-5, 2026-10: more assessment calls than
+    # review generations). Same bug class as #341 (doc_assessment); fixed in #1187.
+    # See: "Model Selection Per Task" in docs/architecture/behavioral-design.md.
+    assessment)     echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     # doc_assessment uses its own var, independent of RITE_REVIEW_MODEL.
     # Sonnet is the right tool here: doc reconciliation is structured pattern
     # matching and comparison, not the deep reasoning needed for code review.
