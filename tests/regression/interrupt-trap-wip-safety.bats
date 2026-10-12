@@ -86,3 +86,83 @@ _in_wf() {
   [ -n "$_commit_line" ]
   [ "$_guard_line" -lt "$_commit_line" ]
 }
+
+# ---------------------------------------------------------------------------
+# Consolidated salvage prompt (#1128): n aborts, y commits+pushes together,
+# e edits message before committing. Behavioral tests run cleanup_on_interrupt
+# in a real git feature-branch worktree with piped stdin.
+# ---------------------------------------------------------------------------
+
+# Set up a minimal git repo on a feature branch with one uncommitted file.
+# Returns repo path in $BATS_TEST_TMPDIR/wip-repo.
+_setup_wip_repo() {
+  local _repo="$BATS_TEST_TMPDIR/wip-repo"
+  mkdir -p "$_repo"
+  (
+    cd "$_repo"
+    git init -q
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    # Initial commit on main so we can branch
+    echo "init" > init.txt
+    git add init.txt
+    git commit -q -m "init"
+    git checkout -q -b feat/test-wip
+    # Uncommitted change
+    echo "wip" > wip.txt
+  )
+  echo "$_repo"
+}
+
+# Call cleanup_on_interrupt in the wip repo with given stdin.
+# Args: $1 = stdin string, $2 = repo path
+_run_salvage() {
+  local _stdin="$1"
+  local _repo="$2"
+  run env \
+    RITE_LIB_DIR="$RITE_LIB_DIR" \
+    RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    RITE_LOG_FILE=/dev/null \
+    bash -c "
+      cd '$_repo'
+      source \"\$RITE_LIB_DIR/core/claude-workflow.sh\"
+      AUTO_MODE=false
+      cleanup_on_interrupt
+    " <<< "$_stdin"
+}
+
+@test "salvage n: no commit created" {
+  _repo=$(_setup_wip_repo)
+  _run_salvage "n" "$_repo"
+  [ "$status" -eq 0 ]
+  # No commits beyond the initial one
+  _count=$(git -C "$_repo" log --oneline feat/test-wip | wc -l | tr -d ' ')
+  [ "$_count" -eq 1 ]
+}
+
+@test "salvage y: creates a commit" {
+  _repo=$(_setup_wip_repo)
+  _run_salvage "y" "$_repo"
+  [ "$status" -eq 0 ]
+  # A WIP commit was created (push may fail without remote — that's ok)
+  _last=$(git -C "$_repo" log --oneline feat/test-wip | head -1)
+  echo "$_last" | grep -q "WIP:"
+}
+
+@test "salvage e then y: commits with edited message" {
+  _repo=$(_setup_wip_repo)
+  # e = edit, custom message, then y to confirm
+  _run_salvage $'e\ncustom wip message\ny' "$_repo"
+  [ "$status" -eq 0 ]
+  _last=$(git -C "$_repo" log --oneline feat/test-wip | head -1)
+  echo "$_last" | grep -q "custom wip message"
+}
+
+@test "salvage e with empty edit keeps original WIP message" {
+  _repo=$(_setup_wip_repo)
+  # e = edit with empty message (keep original), then y
+  _run_salvage $'e\n\ny' "$_repo"
+  [ "$status" -eq 0 ]
+  _last=$(git -C "$_repo" log --oneline feat/test-wip | head -1)
+  echo "$_last" | grep -q "WIP:"
+}

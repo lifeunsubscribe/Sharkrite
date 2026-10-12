@@ -131,22 +131,32 @@ cleanup_on_interrupt() {
         # Push in auto mode
         git push -u origin "$branch_name" 2>/dev/null || echo -e "\033[1;33m⚠️  Push failed (changes are committed locally)\033[0m"
       else
-        # In supervised mode, ask the user
-        read -p "Commit changes before exiting? (y/n) " -n 1 -r
-        echo
+        # In supervised mode: one prompt — commit+push together.
+        local commit_msg="WIP: interrupted work on ${branch_name}"
+        local _salvage_choice
+        while true; do
+          read -p "Commit and push $uncommitted change(s) before exiting? [y/n/e] " -r _salvage_choice
+          case "$_salvage_choice" in
+            y|Y) break ;;
+            n|N) _salvage_choice=n; break ;;
+            e|E)
+              echo "Current message: $commit_msg"
+              echo "Enter new commit message (empty to keep):"
+              local _edited_msg
+              read -e _edited_msg
+              if [ -n "$_edited_msg" ]; then
+                commit_msg="$_edited_msg"
+              fi
+              ;;
+            *) echo "Please enter y, n, or e" ;;
+          esac
+        done
 
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-          local commit_msg="WIP: interrupted work on ${branch_name}"
-
+        if [[ "$_salvage_choice" =~ ^[Yy]$ ]]; then
           git add -A
           git commit -m "$commit_msg" 2>/dev/null || true
           echo -e "\033[0;32m✅ Changes committed\033[0m"
-
-          read -p "Push to remote? (y/n) " -n 1 -r
-          echo
-          if [[ $REPLY =~ ^[Yy]$ ]]; then
-            git push -u origin "$branch_name" 2>/dev/null || echo -e "\033[1;33m⚠️  Push failed\033[0m"
-          fi
+          git push -u origin "$branch_name" 2>/dev/null || echo -e "\033[1;33m⚠️  Push failed\033[0m"
         fi
       fi
     fi
@@ -659,11 +669,8 @@ _run_dev_test_gate() {
       return 0
     fi
     _should_run=true
-  else
-    read -p "🧪 Run tests before committing? (y/n) " -n 1 -r
-    echo
-    [[ $REPLY =~ ^[Yy]$ ]] && _should_run=true
   fi
+  # Supervised mode: post-commit gate owns test execution — no prompt here.
 
   if [ "$_should_run" != true ]; then
     return 0
@@ -3594,17 +3601,6 @@ else
   # Uses _run_dev_test_gate (not run_test_gate from test-gate.sh — that one takes args and emits JSON)
   _run_dev_test_gate
 
-# Commit workflow
-if [ "$AUTO_MODE" = false ]; then
-  echo ""
-  read -p "📝 Create commit? (y/n) " -n 1 -r
-  echo
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    print_info "Skipped commit. Run rite --continue to resume."
-    exit 0
-  fi
-fi
-
 # Smart commit message generation
 if [ "$AUTO_MODE" = false ]; then
   print_status "Generating commit message..."
@@ -3655,6 +3651,7 @@ fi
 COMMIT_MSG="${COMMIT_SUBJECT}${COMMIT_BODY}"
 
 if [ "$AUTO_MODE" = false ]; then
+  # One prompt: show message then ask commit+push together (y=proceed, n=abort, e=edit message).
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "Suggested commit message:"
@@ -3662,17 +3659,33 @@ if [ "$AUTO_MODE" = false ]; then
   echo "$COMMIT_MSG"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
-  read -p "Accept this message? (y/n) " -n 1 -r
-  echo
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Enter custom commit message:"
-    read -e CUSTOM_MSG
-    if [ -z "$CUSTOM_MSG" ]; then
-      print_info "Empty message — skipping commit. Changes preserved in worktree."
-      exit 0
-    fi
-    COMMIT_MSG="$CUSTOM_MSG"
-  fi
+  _commit_choice=""
+  while true; do
+    read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice
+    case "$_commit_choice" in
+      y|Y) break ;;
+      n|N)
+        print_info "Skipped commit. Run rite --continue to resume."
+        exit 0
+        ;;
+      e|E)
+        echo "Enter custom commit message (empty to keep current):"
+        CUSTOM_MSG=""
+        read -e CUSTOM_MSG
+        if [ -n "$CUSTOM_MSG" ]; then
+          COMMIT_MSG="$CUSTOM_MSG"
+        fi
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "$COMMIT_MSG"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        ;;
+      *)
+        echo "Please enter y, n, or e"
+        ;;
+    esac
+  done
 else
   verbose_info "Using auto-generated commit message: $COMMIT_MSG"
 fi
@@ -3725,16 +3738,8 @@ else
   echo ""
 fi
 
-# Push workflow
-if [ "$AUTO_MODE" = false ]; then
-  read -p "🚀 Push to remote? (y/n) " -n 1 -r
-  echo
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    print_info "Changes committed locally. Push later with:"
-    echo "  git push -u origin $BRANCH_NAME"
-    exit 0
-  fi
-else
+# Push (supervised mode already confirmed push via the single commit+push prompt above)
+if [ "$AUTO_MODE" = true ]; then
   echo "🚀 Pushing to remote..."
 fi
 

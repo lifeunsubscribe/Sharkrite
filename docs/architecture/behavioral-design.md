@@ -515,6 +515,12 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 **Fix direction (confirmed working):** a **PreToolUse hook** (passed via `--settings`) *is* enforced under stream-json — verified: a hook returning `permissionDecision: deny` for `make`/`bats`/`pytest` blocks the command in the same stream-json invocation where `--disallowedTools` fails. Migrating the deny list to a sharkrite-managed PreToolUse hook restores a real deterministic backstop. The Phase 4 prompt-framing fix above removes the *invitation* to run the suite; the hook would restore *enforcement*. Until the hook lands, treat the prompt framing as the only active control.
 
+### Supervised commit/push is a single prompt (2026-10-11, issue #1128)
+
+The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — the post-commit gate owns test execution (Phase 4 contract); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
+
+**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — y/n/e paths, "Run tests before committing?" absent, auto mode unchanged.
+
 ### Dev test gate is skipped under orchestration (CRITICAL)
 
 **2026-06-24.** `_run_dev_test_gate` in [claude-workflow.sh](../../lib/core/claude-workflow.sh) — the dev/initial-commit test runner — now returns immediately when `RITE_ORCHESTRATED=true`.
