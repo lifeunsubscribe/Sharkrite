@@ -216,7 +216,7 @@ _recorded_comments_for_pr() {
   }
 
   # The fd-3 stdout contract must still hold (workflow-runner pipes this).
-  echo "$output" | grep -q "^### \[GATE\] bats failure: tests/regression/example.bats - ACTIONABLE_NOW$" || {
+  echo "$output" | grep -q "^### \[GATE\] bats failure: add_approved_blocker concurrency timeout - ACTIONABLE_NOW$" || {
     echo "FAIL: exit-2 stdout missing the [GATE] ACTIONABLE_NOW item"
     echo "Output: ${output:0:1500}"
     false
@@ -238,7 +238,7 @@ _recorded_comments_for_pr() {
   }
 
   # Comment must carry the [GATE] item in the structured format fix mode parses.
-  echo "$_bodies" | grep -q "^### \[GATE\] bats failure: tests/regression/example.bats - ACTIONABLE_NOW$" || {
+  echo "$_bodies" | grep -q "^### \[GATE\] bats failure: add_approved_blocker concurrency timeout - ACTIONABLE_NOW$" || {
     echo "FAIL: posted comment missing the structured [GATE] ACTIONABLE_NOW item"
     echo "Comment: ${_bodies:0:800}"
     false
@@ -533,7 +533,7 @@ FORMAT_STUB_EOF
     echo "Comment: ${_last_comment:0:800}"
     false
   }
-  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure: tests/regression/example.bats - ACTIONABLE_NOW$" || {
+  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure: add_approved_blocker concurrency timeout - ACTIONABLE_NOW$" || {
     echo "FAIL: last comment missing the structured [GATE] ACTIONABLE_NOW item"
     echo "Comment: ${_last_comment:0:800}"
     false
@@ -585,7 +585,7 @@ FORMAT_STUB_EOF
     echo "Comment: ${_last_comment:0:800}"
     false
   }
-  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure: tests/regression/example.bats - ACTIONABLE_NOW$" || {
+  echo "$_last_comment" | grep -q "^### \[GATE\] bats failure: add_approved_blocker concurrency timeout - ACTIONABLE_NOW$" || {
     echo "FAIL: last comment missing the structured [GATE] ACTIONABLE_NOW item"
     echo "Comment: ${_last_comment:0:800}"
     false
