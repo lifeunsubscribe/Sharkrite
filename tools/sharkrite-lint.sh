@@ -138,7 +138,7 @@ if [ -n "${RITE_LINT_FILES:-}" ]; then
     # empty so all SHELL_FILES-iterating rules are no-ops; only rules with
     # their own find loop (Rules 34/35) do real work.
     if printf '%s\n' "$RITE_LINT_FILES" | grep -qE '\.bats$'; then
-      echo "Sharkrite custom lint: targeted scope (bats-only — running Rules 34/35)"
+      echo "Sharkrite custom lint: targeted scope (bats-only — running Rules 34/35/40)"
     else
       echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
       exit 0
@@ -183,7 +183,7 @@ fi
 # SHARKRITE_LINT_ONLY (test-only fast path): comma-separated rule NUMBERS (the
 # NN- filename prefix, e.g. "15" or "34,35"). When set, only the named rule
 # fragments are sourced — a rule's own regression test then runs JUST its rule
-# instead of all 36. This cuts a full-codebase custom-lint pass from ~70s to
+# instead of all rules. This cuts a full-codebase custom-lint pass from ~70s to
 # ~2s. It matters because the lint-rule bats tests each shell out to the full
 # linter (some 3-17x per file) and NONE are serial-marked: under the gate's
 # `bats --jobs 8`, ~8 concurrent full-lint scans starve the CPU, each blows the

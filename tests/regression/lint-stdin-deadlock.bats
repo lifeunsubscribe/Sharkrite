@@ -32,6 +32,7 @@ setup() {
   # awk (empty CORE_FILES) reads it and hangs → timeout kills it → status 124.
   # Post-fix, the `</dev/null` on the array-fed awk makes it ignore stdin → the
   # linter finishes (any exit code) well within the bound.
+  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: stdin-deadlock regression test; must run the full scan to verify ALL awk-using rules include </dev/null; SHARKRITE_LINT_ONLY defeats the test purpose; serial-marked
   run "$TO" 20 bash "$fixture/tools/sharkrite-lint.sh" < <(sleep 45)
 
   # The only failure we care about is a timeout (124 from timeout, or 137/143 if

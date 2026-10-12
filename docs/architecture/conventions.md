@@ -181,3 +181,173 @@ fi
 ```
 
 **References:** 206f2be, #34, #90
+
+## No `sleep infinity` (BSD /bin/sleep rejects it)
+
+**Rule:** Never use `sleep infinity` / `sleep inf`; use a large finite value like `sleep 2147483647`.
+
+**Why:** GNU coreutils accepts `infinity`, but BSD/macOS /bin/sleep rejects any non-numeric duration and exits immediately (never sleeps) — hang simulators / hold-open patterns silently fail on macOS. Enforced by lint Rule 26 (SLEEP_INFINITY_NOT_PORTABLE).
+
+**Example:**
+```bash
+# BAD
+sleep infinity
+# GOOD
+sleep 2147483647   # ~68 years; both GNU and BSD accept
+```
+
+**References:** #707, #707
+
+---
+
+## tr cannot emit a multibyte UTF-8 replacement
+
+**Rule:** Don't map a byte to a multibyte UTF-8 char with `tr`; use bash parameter expansion instead.
+
+**Why:** tr is byte-oriented — a multibyte replacement (e.g. `tr '\n' '↵'`) emits only the first byte of the 3-byte char, producing garbage. Enforced by lint Rule 27 (TR_MULTIBYTE_REPLACEMENT).
+
+**Example:**
+```bash
+# BAD
+vis=$(printf '%s' "$x" | tr '\n' '↵')
+# GOOD
+vis="${x//$'\n'/↵}"
+```
+
+**References:** #707, #707
+
+---
+
+## BSD `date -jf` parsing a UTC timestamp needs `-u`
+
+**Rule:** When parsing a Z/UTC timestamp to epoch with BSD `date -jf "...Z" +%s`, include `-u`.
+
+**Why:** Without `-u`, BSD date parses the input in local time (the trailing Z is a literal), skewing the epoch by the local offset. Enforced by lint Rule 28 (BSD_DATE_PARSE_Z_WITHOUT_U).
+
+**Example:**
+```bash
+# BAD
+date -jf "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s
+# GOOD
+date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s
+```
+
+**References:** #707, #707
+
+---
+
+## Escape `/` inside an awk regex character class
+
+**Rule:** Inside an awk `/regex/` literal, escape `/` within a character class — write `[^\/]`, not `[^/]`.
+
+**Why:** BSD/macOS awk parses an unescaped `/` inside `[...]` as the regex-literal delimiter → "nonterminated character class", exit 2. Not auto-linted — the awk-literal context can't be established by a line-grep without false positives.
+
+**Example:**
+```bash
+# BAD  (BSD awk: exit 2)
+awk '/^diff --git a\/[^/]+\.md /'
+# GOOD
+awk '/^diff --git a\/[^\/]+\.md /'
+```
+
+**References:** #707, #707
+
+---
+
+## Guard bare RITE_* path vars under set -u
+
+**Rule:** Reference optional RITE_* path vars as `${RITE_INSTALL_DIR:-}` (or with a default), never bare, in files sourceable standalone.
+
+**Why:** A bare `$RITE_INSTALL_DIR` crashes under `set -u` when unset (standalone source), making fallback paths unreachable. Not auto-linted as a rule — too broad (17 false positives on the tree); watch for it in review.
+
+**Example:**
+```bash
+# BAD
+if [ -f "$RITE_INSTALL_DIR/templates/x.md" ]; then
+# GOOD
+if [ -f "${RITE_INSTALL_DIR:-}/templates/x.md" ]; then
+```
+
+**References:** #707, #707
+
+---
+
+## Variable-sentinel re-source guards for lib files that export -f
+
+**Rule:** A lib/ file that `export -f`s any function MUST use a variable-sentinel re-source guard (`_RITE_<NAME>_LOADED`, deliberately NOT exported), never a function-sentinel guard.
+
+**Why:** Subprocesses inherit `export -f`'d functions but not unexported variables. A function-sentinel guard sees the inherited stale function and short-circuits, so functions added after the parent started are never defined in the subprocess. The variable form re-sources against the current on-disk file. Enforced by lint rule FUNCTION_SENTINEL_GUARD_WITH_EXPORT_F; canonical example lib/utils/blocker-rules.sh; contract test tests/regression/blocker-rules-stale-inherited-functions.bats.
+
+**Example:**
+```bash
+if [ "${_RITE_FOO_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_FOO_LOADED=true   # NO `export` — that defeats the whole point
+```
+
+**References:** #396, #396
+
+---
+
+## CRLF-robust grep - strip CR, never \r?
+
+**Rule:** When a grep pattern anchors to end-of-line (`$`) for a marker that must be alone on its line, strip CR first (`tr -d '\r' < file | grep ...`) instead of relaxing the regex.
+
+**Why:** CRLF files end the line with `<marker>\r` before the `$`, breaking the anchor. `\r?$` is NOT a fix - GNU grep -E treats `\r` as a literal `r` (only PCRE -P interprets it), so it silently no-ops on Linux/CI while appearing to work under CRLF-aware greps. CR-strip keeps the anchored regex unchanged and avoids false positives.
+
+**Example:**
+```bash
+# BAD: silently matches nothing on GNU grep -E
+grep -E '^=======\r?$' file
+# GOOD
+tr -d '\r' < file | grep -E '^=======$'
+```
+
+**References:** #698, #698
+
+---
+
+## Never auto-push WIP to a shared default branch
+
+**Rule:** An interrupt/cleanup trap that auto-commits work-in-progress may push only to a feature branch, never main/master/detached HEAD; and arm such a trap only for real execution, never when the file is sourced for its functions.
+
+**Why:** A trap firing on a default branch would publish half-done work to the shared branch; gate it on the branch name and leave changes uncommitted in the working tree there. A sourced-then-killed process (RITE_SOURCE_FUNCTIONS_ONLY=1 loads) must not trigger commit/push side effects it never owned.
+
+**References:** #700, #700
+
+---
+
+## Array-fed awk/grep must never fall through to stdin
+
+**Rule:** `awk '...' "${ARR[@]}"` (or grep) with an empty array passes zero file args and reads stdin - guard with `[ "${#ARR[@]}" -gt 0 ]` or redirect `</dev/null`.
+
+**Why:** If stdin is an inherited tty the tool blocks forever. This is a deadlock class, not cosmetic - it wedged a full workflow run for 78 minutes.
+
+**Example:**
+```bash
+# BAD: empty ARR → awk reads the inherited tty and hangs
+awk '{print}' "${ARR[@]}"
+# GOOD
+[ "${#ARR[@]}" -gt 0 ] && awk '{print}' "${ARR[@]}"
+```
+
+**References:** #701, #701
+
+---
+
+## Lint-rule bats tests must scope to their rule
+
+**Rule:** A test invoking tools/sharkrite-lint.sh MUST set SHARKRITE_LINT_ONLY=<NN> for the rule(s) its assertions name; unscoped is allowed only for a genuine all-rules sweep in a serial-marked file.
+
+**Why:** Unscoped full scans under the gate's `bats --jobs 8` starve the CPU, exceed BATS_TEST_TIMEOUT, and hang the gate to its watchdog (live: batch 155134, 2026-07-18). A typo'd rule number fails loudly, so a stale scope cannot silently pass.
+
+**Example:**
+```bash
+# GOOD
+SHARKRITE_LINT_ONLY=34 run tools/sharkrite-lint.sh "$f"
+```
+
+**References:** #1088, #1088
+
+---

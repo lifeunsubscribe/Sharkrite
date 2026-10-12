@@ -4,6 +4,13 @@
 # Rule 9: Claude-specific tokens in lib/core/ (Provider Agnosticism)
 echo "Checking for Claude-specific tokens in lib/core/ (provider agnosticism)..."
 mapfile -t CORE_FILES < <(find "$PROJECT_ROOT/lib/core" -type f -name "*.sh" 2>/dev/null)
+# Fixture injection for tests (same contract as the driver's SHELL_FILES):
+# RITE_LINT_EXTRA_DIRS adds directories to this rule's scan set.
+if [ -n "${RITE_LINT_EXTRA_DIRS:-}" ]; then
+  while IFS= read -r _r9_extra; do
+    CORE_FILES+=("$_r9_extra")
+  done < <(find ${RITE_LINT_EXTRA_DIRS} -type f -name "*.sh" 2>/dev/null)
+fi
 
 # Convert per-file bash while+grep loops to a single AWK pass over all core files.
 # AWK processes all files in one invocation, reporting violations as FILE\tLINE\tMSG.
@@ -29,7 +36,10 @@ FNR == 1 { in_heredoc = 0; hd_marker = "" }
     }
   }
   if ($0 ~ /^[[:space:]]*#/) next
-  if (index($0, "/exit") > 0) print FILENAME "\t" FNR "\tSLASH_EXIT"
+  # Boundary-guarded: bare substring match flagged "/exit-codes.md" doc
+  # references in trailing comments (live FP: batch-process-issues.sh:999,
+  # 2026-10-12). Require the token to end at a non-word, non-hyphen char.
+  if ($0 ~ /\/exit([^A-Za-z0-9_-]|$)/) print FILENAME "\t" FNR "\tSLASH_EXIT"
   if (index($0, "--print") > 0) print FILENAME "\t" FNR "\tPRINT_FLAG"
   if (index($0, "--dangerously-skip-permissions") > 0) print FILENAME "\t" FNR "\tDANG_SKIP"
   if (index($0, "--disallowedTools") > 0) print FILENAME "\t" FNR "\tDISALLOWED"

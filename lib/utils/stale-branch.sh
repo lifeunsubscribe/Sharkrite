@@ -1,11 +1,13 @@
 #!/bin/bash
 # lib/utils/stale-branch.sh
 # Stale branch detection and handling.
-# Checks how far a feature branch is behind origin/main and responds:
-#   - Below threshold: rebase branch onto origin/main (replays commits on fresh main)
-#   - At/above threshold: close PR, cleanup, signal fresh restart
-#
-# Threshold controlled by RITE_STALE_BRANCH_THRESHOLD (default: 10 commits).
+# Auto mode: always attempts rebase first regardless of commit distance (#1137).
+#   Decision is conflict-based (same ruling as mid-run drift #433/#439):
+#   - Rebase succeeds → continue workflow
+#   - Rebase conflicts + resolver fails → close PR, cleanup, signal fresh restart (exit 11)
+#   - Distance > RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD (default: 100) → restart directly
+# Supervised mode: uses RITE_STALE_BRANCH_THRESHOLD (default: 10) to decide
+#   fast-path-rebase (below) vs 5-option prompt (at/above).
 # Rebase avoids false conflicts from merge when main has added files since branch creation.
 
 set -euo pipefail
@@ -273,8 +275,11 @@ ensure_target_branch_exists() {
     return 0   # exists — zero writes, zero output
   fi
 
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: creating a missing target branch FROM main is intentionally main-relative (§5.1 — the point is to seed from trunk)
   git_fetch_safe origin main || return 1
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: creating a missing target branch FROM main is intentionally main-relative (refspec seeds new branch from trunk)
   if git push origin "origin/main:refs/heads/$branch" >/dev/null 2>&1; then
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: creating a missing target branch FROM main is intentionally main-relative (informational message naming the seed ref)
     print_info "Target branch '$branch' not on origin — created from origin/main"
     return 0
   fi
@@ -357,29 +362,73 @@ check_stale_branch() {
 
   local threshold="${RITE_STALE_BRANCH_THRESHOLD:-10}"
 
-  if [ "$behind" -lt "$threshold" ]; then
-    # Below threshold: rebase branch onto base (replays branch commits on top of current base)
-    # This avoids false conflicts from merge when base has added new files since branch creation
-    print_info "Branch is $behind commit(s) behind $base_branch (threshold: $threshold) — rebasing onto $base_branch"
-    _stale_rebase_onto_main "$worktree_path" "$branch_name" "$workflow_mode" "$issue_number" "$pr_number" "$base_branch"
+  if [ "$workflow_mode" = "supervised" ]; then
+    # Supervised: threshold controls fast-path-rebase vs 5-option prompt.
+    if [ "$behind" -lt "$threshold" ]; then
+      print_info "Branch is $behind commit(s) behind $base_branch (threshold: $threshold) — rebasing onto $base_branch"
+      _stale_rebase_onto_main "$worktree_path" "$branch_name" "supervised" "$issue_number" "$pr_number" "$base_branch"
+      return $?
+    fi
+    print_warning "Branch is $behind commit(s) behind $base_branch (threshold: $threshold)"
+    _stale_supervised_prompt "$worktree_path" "$pr_number" "$issue_number" "$branch_name" "$behind" "$base_branch"
     return $?
   fi
 
-  # At or above threshold
-  print_warning "Branch is $behind commit(s) behind $base_branch (threshold: $threshold)"
-
-  if [ "$workflow_mode" = "supervised" ]; then
-    _stale_supervised_prompt "$worktree_path" "$pr_number" "$issue_number" "$branch_name" "$behind" "$base_branch"
-    return $?
-  else
-    # Auto mode: close and restart
-    print_status "Closing stale PR and restarting fresh..."
+  # Auto mode: attempt rebase first regardless of distance (#1137).
+  # Decision is conflict-based, not distance-based — same ruling as mid-run drift (#433/#439).
+  # A branch 50 commits behind that touches isolated files rebases instantly;
+  # a branch 2 commits behind editing the same line needs the resolver.
+  # Close-and-restart fires only when the rebase conflicts AND the resolver fails
+  # (or post-rebase verification fails) — not on distance alone.
+  #
+  # Absurd-divergence guard: RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD (default: 100).
+  # Replaying 100+ commits would be extraordinarily slow and typically signals an
+  # abandoned-and-forgotten branch rather than normal main drift — restart directly.
+  # RITE_STALE_BRANCH_THRESHOLD is kept for supervised's prompt threshold only.
+  local hard_threshold="${RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD:-100}"
+  # Guard: non-numeric value falls back to default.
+  case "$hard_threshold" in
+    ''|*[!0-9]*) hard_threshold=100 ;;
+  esac
+  if [ "$behind" -gt "$hard_threshold" ]; then
+    print_warning "Branch is $behind commit(s) behind $base_branch — exceeds hard restart threshold ($hard_threshold); restarting fresh"
     _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind" "$base_branch"
-    # Exit code 11: stale-branch restarted fresh — caller must reset all resume state
-    # and fall through to phase 1 (distinct from exit 10 = blocker-detected in batch).
+    # Exit code 11: stale-branch restarted fresh — caller must reset all resume state.
     # See docs/architecture/exit-codes.md for the canonical exit-code table.
     return 11
   fi
+
+  print_info "Branch is $behind commit(s) behind $base_branch — attempting rebase (auto mode, conflict-based decision)"
+  _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto" "$issue_number" "$pr_number" "$base_branch"
+  local _auto_rebase_result=$?
+  case "$_auto_rebase_result" in
+    0|2) return "$_auto_rebase_result" ;;  # rebase succeeded or foreign commits integrated
+    11)  return 11 ;;                       # small-branch conflict fast-path already restarted
+    5)   return 5 ;;                        # usage cap — propagate batch-blocking
+    7)
+      # Push rejected (force-with-lease): remote has foreign commits the lease refused to overwrite.
+      # Do NOT call _stale_close_and_cleanup — deleting the remote branch would destroy those
+      # foreign commits (violates #1012 never-silently-discard contract). Surface error to caller.
+      return 1
+      ;;
+    1)
+      # Rebase conflict unresolved (resolver failed or unavailable) or post-rebase
+      # verification failure. Rebase was aborted cleanly, no local changes stranded;
+      # remote is intact with original feature commits.
+      # Fall back to close-and-restart so the issue re-runs from a fresh base.
+      print_status "Rebase conflict unresolved — closing PR and restarting fresh..."
+      _diag "STALE_REBASE_CONFLICT_RESTART issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name} behind=${behind} rebase_result=${_auto_rebase_result}"
+      _stale_close_and_cleanup "$pr_number" "$issue_number" "$worktree_path" "$branch_name" "$behind" "$base_branch"
+      # Exit code 11: stale-branch restarted fresh — caller must reset all resume state.
+      # See docs/architecture/exit-codes.md for the canonical exit-code table.
+      return 11
+      ;;
+    *)
+      # Unknown exit code — bail without cleanup to avoid destroying unknown state.
+      print_error "Unexpected result from stale rebase (exit ${_auto_rebase_result}) — aborting"
+      return 1
+      ;;
+  esac
 }
 
 # ===================================================================
@@ -592,6 +641,7 @@ _stale_classify_after_push_rejection() {
             # origin/main base: three-dot selection covers branch-only files. The rebased-in
             # main delta was already gated per-merge (green-main invariant) — re-verifying its
             # full coverage union cost 180+ bats files per resume (issue #854).
+            # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
             if ! verify_post_merge "$worktree_path" "origin/main"; then
               git rebase --abort 2>/dev/null || true
               print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
@@ -734,6 +784,7 @@ EOF_FOREIGN_SHAS
           fi
 
           # Cherry-picks succeeded — verify and push
+          # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
           if ! verify_post_merge "$worktree_path" "origin/main"; then
             print_error "Post-rebase+replay verification failed — cannot proceed"
             git reset --hard "${_preserve_pre_rebase_head:-HEAD}" 2>/dev/null || true
@@ -946,6 +997,7 @@ _stale_rebase_onto_main() {
     fi
 
     # Verify rebase didn't introduce silent semantic conflicts (tests pass)
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
     if ! verify_post_merge "$worktree_path" "origin/main"; then
       print_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
       git reset --hard "$pre_rebase_head" 2>/dev/null || true
@@ -1053,6 +1105,7 @@ _stale_rebase_onto_main() {
           return 1
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
+        # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
         if ! verify_post_merge "$worktree_path" "origin/main"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
@@ -1063,8 +1116,12 @@ _stale_rebase_onto_main() {
           print_success "Branch rebased onto origin/$base_branch (with conflict resolution)"
           return 0
         else
-          print_error "Push failed after conflict resolution (force-with-lease rejected)"
-          return 1
+          print_error "Push failed after conflict resolution (force-with-lease rejected — remote has foreign commits; cannot auto-restart without data loss)"
+          # Return 7 (not 1): signals push-rejection to check_stale_branch so it
+          # bails without calling _stale_close_and_cleanup. Deleting the remote branch
+          # would destroy the foreign commits whose presence caused the lease rejection,
+          # violating the #1012 never-silently-discard contract.
+          return 7
         fi
       elif [ "$_resolver_result" -eq 5 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"

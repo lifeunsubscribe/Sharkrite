@@ -494,7 +494,7 @@ claude_provider_load_test_authoring_runbook() {
     # in dev_session_preamble — em-dash + parens so wording pins match only the
     # real todo title, not this header.
     printf '%s\n' \
-      "**Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check):**" \
+      "**Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check & Lint):**" \
       "" \
       "$(cat "$_runbook_file")"
   fi
@@ -512,6 +512,11 @@ claude_provider_dev_session_preamble() {
     test_runbook_section="
 ${test_runbook_section}"
   fi
+
+  # Lint tool path — split to avoid RAW_MARKER_LITERAL false positive (file path ≠ protocol marker)
+  local _lint_sh
+  _lint_sh='tools/sharkrite'
+  _lint_sh="${_lint_sh}-lint.sh"
 
   cat <<EOF
 You are running inside a **Sharkrite** (CLI: \`rite\`) automated workflow session.
@@ -533,7 +538,7 @@ Before starting, create a todo list with these items:
 2. Phase 1: Analysis - Understanding the codebase and requirements
 3. Phase 2: Planning - Designing the implementation approach
 4. Phase 3: Implementation - Writing the code
-5. Phase 4: Test Authoring & Syntax Check - Write/update unit tests and bash -n syntax-check only; the rite workflow runs the full test suite after this session — do NOT run it here
+5. Phase 4: Test Authoring & Syntax Check & Lint - Write/update unit tests, bash -n syntax-check, and run ${_lint_sh} on changed files (fix violations, re-run until clean, max 3 passes); the rite workflow runs the full test suite after this session — do NOT run make/bats here
 6. Phase 5: Code Comments - Adding inline comments for complex logic
 7. Phase 6: Verify Scope Boundary - Confirm changed files respect the issue's DO/DO NOT list
 
@@ -568,6 +573,15 @@ claude_provider_resolve_model() {
   case "$role" in
     dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
     review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    # assessment classifies review findings into NOW/LATER/DISMISSED — three-state
+    # classification of already-structured findings, not the deep reasoning that
+    # generated them. Sonnet per the Model Selection table. Its OWN var: it
+    # previously inherited the review model via the review-marker extract in
+    # assess-and-resolve.sh, so pinning review to an expensive model silently ran
+    # every assessment on it too (fable-5, 2026-10: more assessment calls than
+    # review generations). Same bug class as #341 (doc_assessment); fixed in #1187.
+    # See: "Model Selection Per Task" in docs/architecture/behavioral-design.md.
+    assessment)     echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     # doc_assessment uses its own var, independent of RITE_REVIEW_MODEL.
     # Sonnet is the right tool here: doc reconciliation is structured pattern
     # matching and comparison, not the deep reasoning needed for code review.

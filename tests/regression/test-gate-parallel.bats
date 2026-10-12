@@ -265,6 +265,88 @@ EOF
   [[ "$output" == *"GATE_NOW_COUNT"* ]]
 }
 
+@test "assess-and-resolve.sh: gate test-failure title interpolates _test_name (not _test_file)" {
+  # Title must use _test_name so two tests with identical file field ("bats")
+  # produce distinct headers. The body **Test:** line may still use _test_name.
+  run grep -nE '\[GATE\] bats failure:.*_test_name' "${RITE_LIB_DIR}/core/assess-and-resolve.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"_test_name"* ]]
+}
+
+@test "assess-and-resolve.sh: gate test-failure title does NOT interpolate _test_file" {
+  # Regression guard: _test_file is always hardcoded "bats" — it must not appear
+  # in the ### [GATE] title line.
+  run grep -nE '\[GATE\] bats failure:.*_test_file' "${RITE_LIB_DIR}/core/assess-and-resolve.sh"
+  [ "$status" -ne 0 ]
+}
+
+@test "gate test-failure builder: two distinct test_names produce distinct ACTIONABLE_NOW headers" {
+  # Two findings with the same file ("bats") but different test_names must emit
+  # two distinct ### headers — each keyed by test_name, not the constant "bats".
+  if ! command -v jq >/dev/null 2>&1; then
+    skip "jq not available"
+  fi
+  _gate_json=$(mktemp)
+  printf '%s\n' '{"exit_code":1,"tests":[{"file":"bats","test_name":"first failing test","reason":"assertion failed"},{"file":"bats","test_name":"second failing test","reason":"unexpected output"}],"lint":[]}' > "$_gate_json"
+
+  run bash -c "
+    set +u
+    _GATE_FINDINGS_FILE='$_gate_json'
+    GATE_NOW_COUNT=0
+    GATE_PREPEND_ITEMS=''
+    while IFS= read -r _test_item; do
+      _test_name=\$(echo \"\$_test_item\" | jq -r '.test_name // \"unknown test\"' 2>/dev/null || true)
+      if [ -n \"\$_test_name\" ]; then
+        GATE_PREPEND_ITEMS+=\"### [GATE] bats failure: \${_test_name} - ACTIONABLE_NOW
+\"
+        GATE_NOW_COUNT=\$(( GATE_NOW_COUNT + 1 ))
+      fi
+    done < <(jq -c '.tests[]' \"\$_GATE_FINDINGS_FILE\" 2>/dev/null || true)
+    printf '%s' \"\$GATE_PREPEND_ITEMS\"
+    echo \"COUNT:\$GATE_NOW_COUNT\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"### [GATE] bats failure: first failing test - ACTIONABLE_NOW"* ]]
+  [[ "$output" == *"### [GATE] bats failure: second failing test - ACTIONABLE_NOW"* ]]
+  [[ "$output" == *"COUNT:2"* ]]
+
+  rm -f "$_gate_json"
+}
+
+@test "gate test-failure builder: test_name with quotes and brackets survives header regex" {
+  # A test name like 'foo \"bar\" [baz]' must still match ^### .* - ACTIONABLE_NOW
+  # (the structured-header regex used by dedup, carryover, and dismissal checks).
+  if ! command -v jq >/dev/null 2>&1; then
+    skip "jq not available"
+  fi
+  _gate_json=$(mktemp)
+  # Use a test_name with embedded quotes and brackets (already escaped in JSON)
+  printf '%s\n' '{"exit_code":1,"tests":[{"file":"bats","test_name":"foo \"bar\" [baz]","reason":"failed"}],"lint":[]}' > "$_gate_json"
+
+  run bash -c "
+    set +u
+    _GATE_FINDINGS_FILE='$_gate_json'
+    GATE_NOW_COUNT=0
+    GATE_PREPEND_ITEMS=''
+    while IFS= read -r _test_item; do
+      _test_name=\$(echo \"\$_test_item\" | jq -r '.test_name // \"unknown test\"' 2>/dev/null || true)
+      if [ -n \"\$_test_name\" ]; then
+        GATE_PREPEND_ITEMS+=\"### [GATE] bats failure: \${_test_name} - ACTIONABLE_NOW
+\"
+        GATE_NOW_COUNT=\$(( GATE_NOW_COUNT + 1 ))
+      fi
+    done < <(jq -c '.tests[]' \"\$_GATE_FINDINGS_FILE\" 2>/dev/null || true)
+    printf '%s' \"\$GATE_PREPEND_ITEMS\"
+    echo \"COUNT:\$GATE_NOW_COUNT\"
+  "
+  [ "$status" -eq 0 ]
+  # The header must still match the structured regex ^### .* - ACTIONABLE_NOW
+  echo "$output" | grep -qE '^### .* - ACTIONABLE_NOW'
+  [[ "$output" == *"COUNT:1"* ]]
+
+  rm -f "$_gate_json"
+}
+
 # ---------------------------------------------------------------------------
 # workflow-runner.sh sources test-gate.sh and starts it in parallel
 # ---------------------------------------------------------------------------

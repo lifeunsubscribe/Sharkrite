@@ -50,6 +50,8 @@ _rite_hook_denial_reason() {
     echo "gh commands are handled by the rite workflow, not the session"; return 0
   fi
   # test/lint runners — these run in the post-commit gate, not in-session.
+  # tools/sharkrite-lint.sh is permitted in-session: it matches none of the
+  # deny patterns below (make|bats|pytest) so it falls through to return 1.
   # Command-position anchored (issue #994): a .bats/make/pytest path argument
   # (cp/ls/bash -n/git add on a test file) must not deny. ([^[:space:];&|]*/)?
   # keeps path-INVOKED runners denied (/usr/local/bin/bats, node_modules/.bin/

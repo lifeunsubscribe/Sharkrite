@@ -97,8 +97,9 @@ fi
 # --- Model Resolution ---
 #
 # provider_resolve_model(role)
-#   Map a role ("dev" or "review") to the provider-specific model name.
-#   Returns the model name on stdout.
+#   Map a role ("dev", "review", "assessment", "doc_assessment", "plan",
+#   "promote", "triage") to the provider-specific model name.
+#   Returns the model name on stdout. Unknown roles fall back to the dev model.
 #
 # provider_name()
 #   Return the provider display name on stdout (e.g., "claude").

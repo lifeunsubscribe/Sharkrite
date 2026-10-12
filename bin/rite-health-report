@@ -283,6 +283,19 @@ if [ -f "$_fsr_flag" ]; then
   FSR_FAILURE_FLAG_CONTENT=$(cat "$_fsr_flag" 2>/dev/null || true)
 fi
 
+# --- Pre-parse unscoped suite warning stats ---
+# GATE_SCOPE_UNSCOPED diag format: "GATE_SCOPE_UNSCOPED duration_s=N pr=N"
+# Emitted once per gate run when a target repo's full suite exceeds RITE_GATE_SCOPE_WARN_SECONDS.
+GSU_LINES=$(echo "$DIAG_LINES" | grep 'GATE_SCOPE_UNSCOPED ' || true)
+GSU_COUNT=$(echo "$GSU_LINES" | grep -c 'GATE_SCOPE_UNSCOPED ' || true)
+# Average duration across unscoped runs (arithmetic in bash, not LLM)
+GSU_AVG_DURATION_S="N/A"
+if [ "${GSU_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+  _gsu_dur_sum=$(echo "$GSU_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+  _gsu_dur_sum=${_gsu_dur_sum:-0}
+  GSU_AVG_DURATION_S="$(( _gsu_dur_sum / GSU_COUNT ))s"
+fi
+
 # --- Count workflow completions (minimum data gate) ---
 WORKFLOW_COUNT=$(echo "$DIAG_LINES" | grep -c 'WORKFLOW_COMPLETE' || true)
 
@@ -431,6 +444,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
      - gate failure rate > 30% → **WARNING**: "Fix sessions introducing regressions frequently"
      - `skipped` > 0 → **WATCH**: "Gate skipped (bats/make missing on some runners)"
      - TG_LINT_TOTAL > 0 → flag which fix iterations introduced lint violations
+     - GSU_COUNT >= 3 → **WARNING**: "Target repo running full suite on every fix cycle (avg GSU_AVG_DURATION_S per run, N occurrences this week); scoped selection would pay only the diff — see sharkrite #975 / framework-native options (jest --findRelatedTests, vitest related, pytest --testmon)"
    - If TG_TOTAL is 0, say "No post-commit gate runs recorded this week (feature new or gate not yet active)."
    - **Test Selection** (issue #462) sub-section: report from TGS_* stats provided:
      - Show: total gate invocations, targeted-vs-full breakdown, average targeted-selection ratio (use TGS_AVG_RATIO_PCT directly — do not recompute)
@@ -470,6 +484,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 - Pre-parsed test gate stats: TG_TOTAL, TG_PASSED, TG_FAILED, TG_SKIPPED, TG_LINT_TOTAL, TG_TEST_TOTAL (counts)
 - Pre-parsed test gate selection stats: TGS_TOTAL_RUNS, TGS_TARGETED_RUNS, TGS_FULL_RUNS, TGS_SELECTED_SUM, TGS_TOTAL_SUM (counts)
 - Pre-parsed full-suite run stats: FSR_TOTAL, FSR_PASSED, FSR_FAILED (counts); FSR_LINT_TOTAL, FSR_TEST_TOTAL (aggregate failures); FSR_AVG_DURATION_S (formatted string); FSR_FAILURE_FLAG_EXISTS (true/false); FSR_FAILING_TESTS (raw text)
+- Pre-parsed unscoped suite warning stats: GSU_COUNT (occurrences in period); GSU_AVG_DURATION_S (average full-suite duration)
 
 ## Constraints
 
@@ -502,6 +517,14 @@ $TIMING_LINES
 
 Raw TEST_GATE diag lines for per-run details:
 $TG_LINES
+
+## Unscoped Suite Warning Stats (pre-parsed, past 7 days)
+
+- GSU_COUNT (gate runs emitting GATE_SCOPE_UNSCOPED — full suite cost exceeded threshold): $GSU_COUNT
+- GSU_AVG_DURATION_S (pre-computed avg full-suite duration): $GSU_AVG_DURATION_S
+
+Raw GATE_SCOPE_UNSCOPED diag lines:
+$GSU_LINES
 
 ## Test Gate Selection Stats (pre-parsed, past 7 days)
 

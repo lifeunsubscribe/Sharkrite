@@ -63,7 +63,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/trap-in-test.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "TRAP_EXIT_IN_BATS_TEST"
   echo "$output" | grep -q "trap-in-test.bats:5 - TRAP_EXIT_IN_BATS_TEST"
 }
@@ -81,7 +81,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/trap-in-teardown.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "trap-in-teardown.bats.*TRAP_EXIT_IN_BATS_TEST"
 }
 
@@ -99,7 +99,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/trap-in-heredoc.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "trap-in-heredoc.bats.*TRAP_EXIT_IN_BATS_TEST"
 }
 
@@ -113,7 +113,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/trap-non-exit.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "trap-non-exit.bats.*TRAP_EXIT_IN_BATS_TEST"
 }
 
@@ -128,7 +128,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/trap-suppressed.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "trap-suppressed.bats.*TRAP_EXIT_IN_BATS_TEST"
 }
 
@@ -148,7 +148,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-leak.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_SETUP_STRICT_LEAK"
   echo "$output" | grep -q "setup-leak.bats:4 - BATS_SETUP_STRICT_LEAK"
 }
@@ -166,7 +166,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-guarded.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "setup-guarded.bats.*BATS_SETUP_STRICT_LEAK"
 }
 
@@ -183,7 +183,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-guard-early.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "setup-guard-early.bats:5 - BATS_SETUP_STRICT_LEAK"
 }
 
@@ -199,7 +199,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-file-leak.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "setup-file-leak.bats:4 - BATS_SETUP_STRICT_LEAK"
 }
 
@@ -218,7 +218,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-heredoc.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "setup-heredoc.bats.*BATS_SETUP_STRICT_LEAK"
 }
 
@@ -235,7 +235,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-helper.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "setup-helper.bats.*BATS_SETUP_STRICT_LEAK"
 }
 
@@ -252,7 +252,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/test-body-source.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "test-body-source.bats.*BATS_SETUP_STRICT_LEAK"
 }
 
@@ -269,7 +269,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/setup-suppressed.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "setup-suppressed.bats.*BATS_SETUP_STRICT_LEAK"
 }
 
@@ -293,7 +293,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/pre-source-stub-no-restub.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_PRE_SOURCE_STUB_OVERWRITE"
   echo "$output" | grep -q "pre-source-stub-no-restub.bats:5 - BATS_PRE_SOURCE_STUB_OVERWRITE"
 }
@@ -314,7 +314,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/pre-source-stub-with-restub.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "pre-source-stub-with-restub.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
 }
 
@@ -333,7 +333,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/pre-source-post-only.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "pre-source-post-only.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
 }
 
@@ -352,7 +352,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/pre-source-stub-suppressed.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "pre-source-stub-suppressed.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
 }
 
@@ -375,7 +375,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/pre-source-heredoc-stub.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "pre-source-heredoc-stub.bats.*BATS_PRE_SOURCE_STUB_OVERWRITE"
 }
 
@@ -399,7 +399,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/file-scope-rite-read.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
   echo "$output" | grep -q "file-scope-rite-read.bats:4 - BATS_FILE_SCOPE_ENV_READ"
 }
@@ -419,8 +419,74 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/file-scope-rite-safe.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "file-scope-rite-safe.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: escaped quote inside expansion does not orphan closing brace" {
+  # Regression (#1149): _section="${_section#\"}" contains an escaped quote inside
+  # a parameter expansion. Without stripping \" before the double-quote pass, the
+  # "[^"]*" pattern consumed up to the escaped quote and left a stray } that
+  # decremented depth, causing a subsequent RITE_* assignment inside the same
+  # function to appear at depth 0 (file scope) and get falsely flagged.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  local _section="heading"'
+    echo '  _section="${_section#\"}"'
+    echo '  MY_PATH="${RITE_REPO_ROOT}/tests/helpers/setup.bash"'
+    echo '}'
+    _emit_test_open "escaped-quote depth safe"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-escaped-quote.bats"
+  cd "$TEST_REPO"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-escaped-quote.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: escaped-quote expansion fix does not suppress real violation" {
+  # Sensitivity check: the expansion-strip reorder must not create blind spots.
+  # A file that uses an escaped-quote-in-expansion AND has a genuine file-scope
+  # RITE_* assignment must still be flagged.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  local _section="heading"'
+    echo '  _section="${_section#\"}"'
+    echo '}'
+    echo 'MY_PATH="${RITE_REPO_ROOT}/tests/helpers/setup.bash"'
+    _emit_test_open "escaped-quote with bad file-scope"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-escaped-quote-bad.bats"
+  cd "$TEST_REPO"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
+  echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
+  echo "$output" | grep -q "file-scope-escaped-quote-bad.bats.*BATS_FILE_SCOPE_ENV_READ"
+}
+
+@test "BATS_FILE_SCOPE_ENV_READ: escaped-backslash before closing quote does not orphan depth counter" {
+  # Regression: a string ending in \\ immediately before the closing " — e.g.
+  # "${_var:-"\\"}" — caused gsub(/\\"/) to consume the real closing delimiter.
+  # The unmatched " left the } from the expansion unstripped, decrementing depth
+  # to 0 and falsely flagging the next RITE_* assignment as file-scope.
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/utils/foo.sh'
+    echo 'setup() {'
+    echo '  local _default="${_var:-"\\"}"'
+    echo '  MY_PATH="${RITE_REPO_ROOT}/tests/helpers/setup.bash"'
+    echo '}'
+    _emit_test_open "escaped-backslash depth safe"
+    echo '  true'
+    echo '}'
+  } > "$TEST_REPO/tests/regression/file-scope-escaped-backslash.bats"
+  cd "$TEST_REPO"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
+  ! echo "$output" | grep -q "file-scope-escaped-backslash.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
 
 @test "BATS_FILE_SCOPE_ENV_READ: does not flag BATS_TEST_DIRNAME-derived assignments at file scope" {
@@ -438,7 +504,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/file-scope-bats-builtin.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "file-scope-bats-builtin.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
 
@@ -457,7 +523,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
     echo '}'
   } > "$TEST_REPO/tests/regression/file-scope-rite-suppressed.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25,29,30,34,35 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "file-scope-rite-suppressed.bats.*BATS_FILE_SCOPE_ENV_READ"
 }
 
@@ -472,7 +538,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   # RITE_LINT_FILES is intentionally NOT passed so the bats-file rules
   # (find tests -name '*.bats') scan the full real tests/ tree.
   cd "$RITE_REPO_ROOT"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=34 run bash "$LINT_SCRIPT"
   # Assert no BATS_PRE_SOURCE_STUB_OVERWRITE violations in the output.
   ! echo "$output" | grep -q "BATS_PRE_SOURCE_STUB_OVERWRITE"
 }
@@ -480,7 +546,7 @@ _emit_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
 @test "BATS_FILE_SCOPE_ENV_READ: zero hits on the real repo tree" {
   # Run the full lint from the actual repo root (not TEST_REPO).
   cd "$RITE_REPO_ROOT"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=35 run bash "$LINT_SCRIPT"
   # Assert no BATS_FILE_SCOPE_ENV_READ violations in the output.
   ! echo "$output" | grep -q "BATS_FILE_SCOPE_ENV_READ"
 }

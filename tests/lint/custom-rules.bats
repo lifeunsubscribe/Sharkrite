@@ -456,6 +456,92 @@ EOF
   fi
 }
 
+@test "LOCAL_OUTSIDE_FUNCTION: escaped quote inside expansion does not orphan closing brace" {
+  # Regression (#1116): _section="${_section#\"}" contains an escaped quote inside
+  # a parameter expansion. Without stripping \" before the double-quote pass, the
+  # "[^"]*" pattern consumed up to the escaped quote and left a stray } that
+  # decremented depth, causing subsequent 'local' inside the same function to appear
+  # outside scope. Stripping \" first fixes this: "[^"]*" then sees balanced outer
+  # quotes and strips the expansion cleanly — no orphaned } for the brace counter.
+
+  cat > "$LINT_FIXTURE_DIR/escaped-quote-in-expansion.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local _section="heading"
+  _section="${_section#\"}"
+  local result="done"
+  echo "$result"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 0 ]
+  # Both locals inside my_func are correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ escaped-quote-in-expansion\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local after escaped-quote-in-expansion
+    }
+  fi
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: escaped-quote expansion fix does not suppress real violation" {
+  # Sensitivity check: the expansion-strip reorder must not create blind spots.
+  # A file that uses an escaped-quote-in-expansion AND has a genuine top-level
+  # 'local' must still be flagged.
+
+  cat > "$LINT_FIXTURE_DIR/escaped-quote-with-bad-local.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local _section="heading"
+  _section="${_section#\"}"
+}
+# script-scope local — real violation
+local bad="oops"
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]
+  [[ "$output" =~ escaped-quote-with-bad-local\.sh ]]
+}
+
+@test "LOCAL_OUTSIDE_FUNCTION: nested-quoted default expansion does not skew depth" {
+  # Regression (#1116 first attempt): "${a:-"{}"}" embeds a double-quoted string
+  # inside the default value of a parameter expansion. The gsub(/\\"/) pre-strip
+  # must not consume the outer closing quote, or the unmatched } in the default
+  # value will decrement depth and make subsequent 'local' appear outside scope.
+
+  cat > "$LINT_FIXTURE_DIR/nested-quoted-default.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local a="x"
+  a="${a:-"{}"}"
+  local b="y"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
+
+  [ "$status" -eq 0 ]
+  # Both locals inside my_func are correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ nested-quoted-default\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local after nested-quoted default expansion
+    }
+  fi
+}
+
 @test "GH_UNSAFE_CALL: lowercase heredoc body lines are not scanned for gh calls" {
   # Regression: if the state machine doesn't recognize a lowercase heredoc marker,
   # gh commands in the heredoc body (e.g., prompt text or documentation) get

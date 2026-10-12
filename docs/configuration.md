@@ -22,6 +22,14 @@ RITE_MAX_ISSUE_HOURS=4      # Per-issue cap — fires if a single issue runs >4h
 # Claude assessment timeout (seconds)
 RITE_ASSESSMENT_TIMEOUT=300
 
+# Review-finding assessment model (default: sonnet). Assessment classifies each
+# review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED — structured
+# three-state classification of already-structured findings, not review-grade
+# reasoning. Its own var, independent of RITE_REVIEW_MODEL: before #1187 it
+# inherited the review model from the review marker, so pinning review to an
+# expensive model silently ran every assessment on it too.
+RITE_ASSESSMENT_MODEL=claude-sonnet-4-6
+
 # Doc assessment model (default: sonnet for structured pattern matching tasks).
 # Doc reconciliation is "did this diff change API surface X? Update accordingly" —
 # pattern matching and structured comparison, sonnet's sweet spot.
@@ -94,6 +102,7 @@ Control how Claude assesses PR review issues:
 | `RITE_MAX_ISSUE_HOURS` | Max hours for a **single issue**. Fires when a single `rite N` invocation exceeds this threshold — protects against fix-loop runaway and yak-shaves. | `4` |
 | `RITE_MAX_RETRIES` | Fix loop attempts | `3` |
 | `RITE_ASSESSMENT_TIMEOUT` | Claude assessment timeout (seconds) for the review-issue assessment phase | `300` |
+| `RITE_ASSESSMENT_MODEL` | Claude model for review-finding assessment (ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED classification). Defaults to sonnet: three-state classification of structured findings, not review-grade reasoning. Independent of `RITE_REVIEW_MODEL` — before #1187 it inherited the review model from the review marker. | `claude-sonnet-4-6` |
 | `RITE_PLAN_MODEL` | Claude model for `rite plan` issue generation. Defaults to opus: planning is the highest-stakes reasoning stage (honor ADRs, don't hallucinate fixtures). Its own var, fully independent of `RITE_REVIEW_MODEL` — so moving review off opus can't silently downgrade planning. | `claude-opus-4-8` |
 | `RITE_DOC_ASSESSMENT_MODEL` | Claude model for doc assessment tasks (security, arch, api, ADR reconciliation). Defaults to sonnet: doc reconciliation is structured pattern matching ("did this diff change API surface X?"), sonnet's sweet spot. Fully independent of `RITE_REVIEW_MODEL` — changing one does not affect the other. Override to `claude-opus-4-8` only if you need deeper reasoning on unusually large diffs. | `claude-sonnet-4-6` |
 | `RITE_TRIAGE_MODEL` | Claude model for narrow classification (trivial-vs-substantive diff triage; doc auto-discovery categorization). Defaults to haiku: bucket classification, not deep reasoning. Independent of every other model var. | `claude-haiku-4-5` |

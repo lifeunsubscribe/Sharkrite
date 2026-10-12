@@ -649,6 +649,11 @@ repo_wide_status() {
 
   if [ "$open_count" -eq 0 ]; then
     echo "  No open issues"
+    if [ -n "${RITE_PLAN_DOCS:-}" ]; then
+      echo "  Generate some: rite plan"
+    else
+      echo "  Generate some: rite plan <doc>"
+    fi
     echo ""
   else
     # Build parallel arrays for open issues

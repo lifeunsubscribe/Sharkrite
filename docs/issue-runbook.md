@@ -22,9 +22,10 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
    - Category: `infrastructure`, `backend`, `frontend`, `database`, `testing`, `docs`, `security`, `devops`
    - Priority: `priority-high`, `priority-medium`, `priority-low`
 
-3. **Time Estimate**: Fibonacci scale, hard cap at 2hr
+3. **Time Estimate**: Fibonacci scale, hard cap at 2hr; **prefer ≤1hr**
    - `15min`, `30min`, `45min`, `1hr`, `2hr`
    - If an issue would take >2hr, it MUST be decomposed into smaller issues
+   - **If 2hr: include one line `Split rationale: <why no clean seam exists>`** — the strict lint validator warns if it is absent
    - High priority items: add 50% buffer
 
 4. **Description**: 1-2 sentences explaining WHAT and WHY
@@ -140,13 +141,15 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
 
 ## Issue Sizing Guidelines
 
-### Good Size (30min-2hr per issue)
+### Good Size (15min-1hr per issue; 2hr allowed with Split rationale)
 - Single endpoint or API handler
 - One service layer function with tests
 - Database migration + model changes
 - Test suite for one feature
 - Configuration for one service or tool
 - Single component or page
+
+**Target 15min-1hr.** Issues in that range converge in 0-1 fix rounds; a 2hr issue that needs 3-4 rounds costs more in loop overhead than splitting into two 1hr slots would. If an issue genuinely has no clean seam and must estimate 2hr, state why on a `Split rationale:` line in the issue body. The plan validator warns when the line is absent.
 
 ### Too Large (must split)
 - "Implement authentication system" → split into: register, login, verify, profile, tests

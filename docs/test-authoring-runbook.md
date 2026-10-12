@@ -3,9 +3,9 @@
 
 ### Purpose
 
-Phase 4 of a dev session is Test Authoring & Syntax Check: write/update tests plus
-`bash -n` only — the rite workflow runs the full suite after the session, never
-inside it. This runbook encodes the authoring craft learned from live incidents
+Phase 4 of a dev session is Test Authoring & Syntax Check & Lint: write/update
+tests, run `bash -n`, and run `tools/sharkrite-lint.sh` — the rite workflow runs
+the full suite after the session, never inside it. This runbook encodes the authoring craft learned from live incidents
 (2026-07): where to put tests, how to stub, how to source, and which markers to
 carry. Each rule names its deterministic enforcer (lint rule in
 `tools/sharkrite-lint.sh`) where one exists; rules without one are marked

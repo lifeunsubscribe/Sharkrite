@@ -54,7 +54,7 @@ FIXTURE_EOF
 
 # Helper: run the linter (RITE_TAG_INDEX_PATH_OVERRIDE is already exported by setup())
 _run_linter() {
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=23 run bash "$LINT_SCRIPT"
 }
 
 # Helper: seed the per-test tag-index temp file with fixture content

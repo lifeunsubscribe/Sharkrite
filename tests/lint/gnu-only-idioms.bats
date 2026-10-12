@@ -23,7 +23,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=39 run bash "$LINT_SCRIPT"
 }
 
 # ===========================================================================
@@ -471,7 +471,7 @@ echo "$_raw"'
 
 @test "codebase: no GNU_ONLY_IDIOM violations in lib/ bin/ tools/" {
   unset RITE_LINT_EXTRA_DIRS
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=39 run bash "$LINT_SCRIPT"
   local r39_violations
   r39_violations=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
   if [ -n "$r39_violations" ]; then

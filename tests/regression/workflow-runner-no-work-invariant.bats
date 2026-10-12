@@ -728,3 +728,41 @@ STUBEOF
     return 1
   }
 }
+
+# =============================================================================
+# STRUCTURAL: claude-workflow.sh — git ls-files no-origin fallbacks (issue #1149)
+#
+# Both no-origin fallback branches that previously used
+#   git ls-files 2>/dev/null | wc -l
+# must now capture stderr + exit code and fail loud on error.
+# =============================================================================
+
+@test "structural: claude-workflow.sh no-origin ls-files fallbacks do not suppress errors with 2>/dev/null" {
+  _src=$(cat "$RITE_REPO_ROOT/lib/core/claude-workflow.sh")
+
+  # The old silent pattern must be gone from the no-origin branches.
+  # (ls-files --stage 2>/dev/null for symlink detection is out of scope — it uses --stage.)
+  _silent_count=$(echo "$_src" | grep -c 'git ls-files 2>/dev/null | wc -l' || true)
+  if [ "$_silent_count" -gt 0 ]; then
+    echo "FAIL: claude-workflow.sh still has $_silent_count silent 'git ls-files 2>/dev/null | wc -l' site(s) — must use stderr-capturing pattern"
+    return 1
+  fi
+}
+
+@test "structural: claude-workflow.sh no-origin ls-files fallbacks capture stderr and exit-code" {
+  _src=$(cat "$RITE_REPO_ROOT/lib/core/claude-workflow.sh")
+
+  # Both fixed sites must have the _cw_ls_exit guard.
+  _guard_count=$(echo "$_src" | grep -c '_cw_ls_exit' || true)
+  if [ "$_guard_count" -lt 4 ]; then
+    echo "FAIL: claude-workflow.sh has only $_guard_count _cw_ls_exit references (expected >= 4, two per site)"
+    return 1
+  fi
+
+  # Both sites must surface the error message.
+  _err_count=$(echo "$_src" | grep -c 'could not determine tracked files: git ls-files failed' || true)
+  if [ "$_err_count" -lt 2 ]; then
+    echo "FAIL: claude-workflow.sh has only $_err_count 'could not determine tracked files' error message(s) (expected >= 2)"
+    return 1
+  fi
+}

@@ -167,7 +167,7 @@ Before starting, plan your work with these phases:
 2. Phase 1: Analysis - Understanding the codebase and requirements
 3. Phase 2: Planning - Designing the implementation approach
 4. Phase 3: Implementation - Writing the code
-5. Phase 4: Test Authoring & Syntax Check - Write/update unit tests and bash -n syntax-check only; the rite workflow runs the full test suite after this session — do NOT run it here
+5. Phase 4: Test Authoring & Syntax Check & Lint - Write/update unit tests, run bash -n syntax-check, and run tools/sharkrite-lint.sh only; the rite workflow runs the full test suite after this session — do NOT run it here
 6. Phase 5: Code Comments - Adding inline comments for complex logic
 7. Phase 6: Verify Scope Boundary - Confirm changed files respect the issue's DO/DO NOT list
 EOF
