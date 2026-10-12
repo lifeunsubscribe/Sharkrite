@@ -607,10 +607,10 @@ BLOCK
     false
   }
   # Should NOT report other sections as missing
-  echo "$result" | grep -qi "Acceptance Criteria" && {
+  if echo "$result" | grep -qi "Acceptance Criteria"; then
     echo "FAIL: 'Acceptance Criteria' should not be missing, result: $result" >&2
     false
-  }
+  fi
 }
 
 @test "_check_block_sections: bug label without Bug Class Analysis fails" {
@@ -821,11 +821,11 @@ REGEN
   }
 
   # Each ---ISSUE--- and ---END--- must be on its own line (no concatenation)
-  grep -q "^---END------ISSUE---" "$slate" && {
+  if grep -q "^---END------ISSUE---" "$slate"; then
     echo "FAIL: ---END--- and ---ISSUE--- concatenated — missing newline after repaired block" >&2
     cat "$slate" >&2
     false
-  }
+  fi
 
   # Block 2's title still present and intact
   grep -q "TITLE: Add request validation" "$slate" || {
