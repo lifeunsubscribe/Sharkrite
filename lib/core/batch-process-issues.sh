@@ -959,7 +959,7 @@ if [ "$_gmp_skip" = "false" ]; then
 
     echo ""
     print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    print_warning "🔴 Main is red — gate block-on-any precondition NOT met"
+    print_warning "Main is red — gate block-on-any precondition NOT met"
     print_warning "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     print_info "Failing on main: ${_gmp_test_count} test failure(s), ${_gmp_lint_count} lint item(s)"
