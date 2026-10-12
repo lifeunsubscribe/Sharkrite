@@ -489,11 +489,21 @@ Only content-aware and practical conditions block merges:
 
 ### Stale Branch Handling
 
-When resuming an issue with an existing PR, the branch is checked against the PR's base branch (`origin/main` by default). Controlled by `RITE_STALE_BRANCH_THRESHOLD` (default: 10 commits).
+When resuming an issue with an existing PR, the branch is checked against the PR's base branch (`origin/main` by default).
 
-- **Below threshold**: Rebase the feature branch onto the PR's base branch (`origin/main` by default) (replays branch commits on top of fresh base), then force-push with `--force-with-lease`. Rebase avoids the false conflicts a merge would surface when the base has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; otherwise auto mode bails and supervised mode prompts.
-- **At/above threshold (auto)**: Close PR with summary comment, cleanup branch/worktree, continue workflow fresh (no restart needed — falls through to development phase).
-- **At/above threshold (supervised)**: Prompt with 5 options (close+restart recommended, rebase onto main, merge main into branch [legacy], continue, abort). The legacy merge path is kept opt-in for cases where rewriting history is unacceptable.
+**Auto mode** — stale branch resume decision is conflict-based, not distance-based (same ruling as mid-run drift #433/#439; extended to stale-branch resume path by #1137):
+- Always attempts rebase onto the PR's base branch first, regardless of how many commits behind.
+- Rebase succeeds → continue workflow (PR preserved, no restart).
+- Rebase conflicts + resolver fails (or post-rebase verification fails) → close PR with summary comment, cleanup branch/worktree, restart fresh (exit 11).
+- Absurd-divergence guard: `RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD` (default: 100 commits) → close and restart directly when **more than** 100 commits behind (strict `>`; exactly 100 still rebases), skipping the rebase attempt. Prevents replaying truly enormous histories.
+
+**Supervised mode** — uses `RITE_STALE_BRANCH_THRESHOLD` (default: 10) as the decision point:
+- Below threshold → rebase directly (fast-path, no prompt).
+- At/above threshold → prompt with 5 options (close+restart recommended, rebase onto base, merge base into branch [legacy], continue, abort). The legacy merge path is kept opt-in for cases where rewriting history is unacceptable.
+
+`RITE_STALE_BRANCH_THRESHOLD` is retained as supervised mode's prompt threshold and recommendation heuristic. It no longer gates the auto-mode rebase attempt.
+
+Rebase avoids the false conflicts a merge would surface when the base has added files since branch creation. If the rebase conflicts, `attempt_claude_merge_resolution` is invoked when available; on resolver failure, auto mode falls back to close+restart and supervised mode prompts.
 
 Check runs in `workflow-runner.sh` after PR/worktree detection, before phase-skip logic. Returns exit code 11 to signal "restarted fresh" — caller resets all resume state variables.
 
@@ -615,7 +625,7 @@ make test               # Run test suite (requires bats)
 bats tests/             # Run test suite directly (bypasses make wrapper)
 ```
 
-**Single-rule mode (`SHARKRITE_LINT_ONLY`)**: `SHARKRITE_LINT_ONLY=15 tools/sharkrite-lint.sh` sources only the named rule fragment(s) (comma list OK: `34,35`) — ~1s instead of the ~85s full 36-rule scan. **A bats test that invokes the linter MUST scope to the rule(s) it asserts** — unscoped full scans under the gate's `bats --jobs 8` starve the CPU, blow the 120s `BATS_TEST_TIMEOUT`, and drag the gate to its 1800s watchdog (live: batch 155134, 2026-07-18 — 15-42min gates, 3 issues failed on this alone). A typo'd rule number fails loudly (exit 1), so a stale scope can't silently pass. Leave a linter invocation unscoped only for a genuine all-rules cleanliness sweep, and serial-mark that file. Contract pinned by `tests/lint/single-rule-knob.bats`.
+**Single-rule mode (`SHARKRITE_LINT_ONLY`)**: `SHARKRITE_LINT_ONLY=15 tools/sharkrite-lint.sh` sources only the named rule fragment(s) (comma list OK: `34,35`) — ~1s instead of the ~85s full 40-rule scan. **A bats test that invokes the linter MUST scope to the rule(s) it asserts** — unscoped full scans under the gate's `bats --jobs 8` starve the CPU, blow the 120s `BATS_TEST_TIMEOUT`, and drag the gate to its 1800s watchdog (live: batch 155134, 2026-07-18 — 15-42min gates, 3 issues failed on this alone; slot #1021 2026-10-11: 1800s watchdog kill). A typo'd rule number fails loudly (exit 1), so a stale scope can't silently pass. Leave a linter invocation unscoped only for a genuine all-rules cleanliness sweep, and serial-mark that file. **Deterministic enforcement: `UNSCOPED_LINTER_IN_BATS` (Rule 40) rejects unscoped invocations at `make check`** — a bats test that adds an unscoped run will fail CI before merge. Contract pinned by `tests/lint/single-rule-knob.bats`; Rule 40 tests in `tests/lint/unscoped-linter-in-bats.bats`.
 
 **Custom lint rules** (in `tools/sharkrite-lint.sh`) catch patterns shellcheck misses:
 - `grep -c ... || echo "0"` — produces double zero (use `|| true`)
@@ -632,6 +642,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `BATS_FILE_SCOPE_ENV_READ` (Rule 35) — an assignment at the true file scope of a `.bats` file (outside any function or `@test` block) references a `$RITE_*` environment variable. These execute when bats parses the file — before `setup()` runs — so vars like `RITE_LIB_DIR` or `RITE_REPO_ROOT` may be unset. Move the assignment inside `setup()` or `setup_file()`. Suppress with `# sharkrite-lint disable BATS_FILE_SCOPE_ENV_READ - Reason: ...` on the preceding line only when the variable is guaranteed to be exported before bats parses the file (e.g. by a `setup.bash` loader).
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — a `RITE_*` variable is read in `lib/` but is absent from both `config/project.conf.example` and `config/rite.conf.example`. Pre-existing undocumented vars are exempted via `tools/lint-rules/36-undocumented-rite-var.ledger` (frozen count as of 2026-07-14 — DO NOT add new ledger entries). New vars must be documented with a commented-out option entry in one of the config examples. Genuinely internal (non-config) new variables should use the `_RITE_` prefix, which falls outside this rule's pattern by construction. Suppress with `# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: ...` on the preceding line for the rare internal var that must keep a bare `RITE_` name.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — a literal `origin/main` (slash form) or `origin main` (two-word form) appears on a non-comment line in one of the ten §5.2 BECOMES-TARGET files (`lib/core/claude-workflow.sh`, `workflow-runner.sh`, `create-pr.sh`, `merge-pr.sh`, `lib/utils/trivial-fix-fastpath.sh`, `mid-run-rebase.sh`, `conflict-resolver.sh`, `scope-checker.sh`, `test-gate.sh`, `stale-branch.sh`). These files are target-branch-aware: they should resolve the target via `resolve_target_branch` (#1033). A hardcoded `origin/main` silently mixes trunk code into integration-branch worktrees. Suppress with `# sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: ...` on the preceding line for sites that are genuinely trunk-relative (§5.1 STAYS-MAIN survivors: local-main housekeeping, cold-start function defaults, gate-selection hints where over-selecting vs main errs safe). See: `docs/architecture/branch-flag-design.md` §5/§6.4.
+- `UNSCOPED_LINTER_IN_BATS` (Rule 40) — a `.bats` file invokes `sharkrite-lint.sh` (or a `$*LINT_SCRIPT` variable) via `bash` without `SHARKRITE_LINT_ONLY` scoping on the same line or any of the 3 preceding lines. An unscoped full-scan per `@test` under `bats --jobs 8` starves the CPU, blows the 120s `BATS_TEST_TIMEOUT`, and drags the gate to its 1800s watchdog (live: batch 155134 2026-07-18, slot #1021 2026-10-11). Fix: add `SHARKRITE_LINT_ONLY=NN run bash "$LINT_SCRIPT"` (inline prefix) to scope to the rule(s) under test. Genuine all-rules sweeps must carry a suppression and be serial-marked. Suppress with `# sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: ...` on the preceding line; state why scoping would defeat the test purpose and confirm the file is serial-marked.
 
 **Suppressing false positives:**
 
@@ -654,6 +665,7 @@ Supported suppression rules:
 - `BATS_FILE_SCOPE_ENV_READ` (Rule 35) — for `.bats` files where a `setup.bash` or equivalent loader exports the referenced `RITE_*` variable before bats parses the file. State the loader that guarantees availability.
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — for the rare internal `RITE_*` variable that must keep a bare `RITE_` name despite not being a user-facing config var. State why the `_RITE_` prefix cannot be used and why the var does not belong in either config example.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — for sites in the ten BECOMES-TARGET files where `origin/main` is genuinely trunk-relative: local-main housekeeping in `merge-pr.sh`, already-fixed trunk-health verification in `workflow-runner.sh`, cold-start function defaults in `conflict-resolver.sh`/`scope-checker.sh`/`test-gate.sh`, gate-selection hints in `stale-branch.sh`, and cross-worktree protection fallbacks in `claude-workflow.sh`. State the specific §5.1 reason (trunk housekeeping / cold-start default / gate-selection hint / etc.).
+- `UNSCOPED_LINTER_IN_BATS` (Rule 40) — for genuine all-rules sweeps in `.bats` files where `SHARKRITE_LINT_ONLY` would defeat the test purpose (e.g. stdin-safety tests, structural grep tests). State why scoping is inappropriate and confirm the file carries a `# sharkrite-gate-serial` marker. Note: Rule 40's static analysis cannot see `SHARKRITE_LINT_ONLY` exported in `setup()` — a helper function's invocation may also need suppression even when setup exports the var; document which setup function provides the scoping.
 
 **Pre-push hook** (optional):
 ```bash
@@ -876,5 +888,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

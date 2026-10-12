@@ -31,7 +31,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=27 run bash "$LINT_SCRIPT"
 }
 
 # --------------------------------------------------------------------------
@@ -123,7 +123,7 @@ vis=$(echo "$raw" | tr '"'"'\n'"'"' '"'"'↵'"'"')'
 
 @test "codebase: zero TR_MULTIBYTE_REPLACEMENT violations in the project tree" {
   unset RITE_LINT_EXTRA_DIRS
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=27 run bash "$LINT_SCRIPT"
   local v; v=$(echo "$output" | grep "TR_MULTIBYTE_REPLACEMENT" || true)
   if [ -n "$v" ]; then echo "$v" >&3; false; fi
 }

@@ -43,7 +43,7 @@ _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
     _emit_test_line
   } > "$TEST_REPO/tests/regression/no-header.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25 run bash "$LINT_SCRIPT"
   echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER"
   echo "$output" | grep -q "no-header.bats"
 }
@@ -55,7 +55,7 @@ _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
     _emit_test_line
   } > "$TEST_REPO/tests/regression/with-header.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*with-header.bats"
 }
 
@@ -65,7 +65,7 @@ _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
     _emit_test_line helper
   } > "$TEST_REPO/tests/helpers/helper.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*tests/helpers/helper.bats"
 }
 
@@ -75,7 +75,7 @@ _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
     _emit_test_line
   } > "$TEST_REPO/tests/fixtures/fixture.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*tests/fixtures/fixture.bats"
 }
 
@@ -88,6 +88,6 @@ _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
     _emit_test_line
   } > "$TEST_REPO/tests/regression/header-line-4.bats"
   cd "$TEST_REPO"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=25 run bash "$LINT_SCRIPT"
   ! echo "$output" | grep -q "MISSING_TEST_COVERAGE_HEADER.*header-line-4.bats"
 }

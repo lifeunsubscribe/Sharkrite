@@ -37,7 +37,7 @@ _run_lint_with_fixture() {
   local rel_path="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_ROOT/$rel_path"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=38 run bash "$LINT_SCRIPT"
 }
 
 # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ do_thing() {
   # is fully annotated — a missing suppression turns CI red immediately.
   unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
 
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=38 run bash "$LINT_SCRIPT"
 
   local r38_violations
   r38_violations=$(echo "$output" | grep "RAW_ORIGIN_MAIN_REF" || true)
