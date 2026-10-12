@@ -71,7 +71,7 @@ _run_gate() {
     _diag() { true; }; export -f _diag 2>/dev/null || true
     source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
     source '$RITE_LIB_DIR/utils/test-gate.sh'
-    PATH='$STUB_DIR:\$PATH' run_test_gate '$_out' '$TEST_REPO'
+    PATH=\"$STUB_DIR:\$PATH\" run_test_gate \"$_out\" \"$TEST_REPO\"
   " </dev/null
 }
 
@@ -85,6 +85,7 @@ _run_gate() {
   _out="$TEST_REPO/gate.json"
   _run_gate "$_out"
 
+  [ "$status" -ne 127 ] || fail "run bash exited 127 (command not found) — PATH quoting bug or missing tool: $output"
   [ -f "$_out" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # Gate still fails — block-on-any outcome=failed unchanged
@@ -113,6 +114,7 @@ _run_gate() {
   _out="$TEST_REPO/gate.json"
   _run_gate "$_out"
 
+  [ "$status" -ne 127 ] || fail "run bash exited 127 (command not found) — PATH quoting bug or missing tool: $output"
   [ -f "$_out" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # Gate still fails
@@ -134,6 +136,28 @@ _run_gate() {
   [[ "$output" == *"4 tests not run"* ]]
 }
 
+@test "watchdog kill with no TAP plan — gate produces exactly 1 not-run finding" {
+  # Stub: bats killed before emitting the plan line (SIGKILL = exit 137), empty TAP.
+  # _notrun_deficit is 0 and _notrun_warning is empty — the only trigger is _fr_watchdog.
+  _make_bats_stub '' 137
+  _out="$TEST_REPO/gate.json"
+  _run_gate "$_out"
+
+  [ "$status" -ne 127 ] || fail "run bash exited 127 (command not found) — PATH quoting bug or missing tool: $output"
+  [ -f "$_out" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # Gate fails
+  run jq -r '.exit_code' "$_out"
+  [ "$output" = "1" ]
+
+  # Exactly ONE collapsed finding (not zero) even with no plan deficit
+  run jq -r '.tests | length' "$_out"
+  [ "$output" = "1" ]
+
+  run jq -r '.tests[0].reason' "$_out"
+  [ "$output" = "tests_not_run" ]
+}
+
 @test "no watchdog kill — normal exit 1 still uses per-test not-run synthesis" {
   # Stub: plan/executed mismatch but no watchdog (exits 1, not 124). The
   # existing _synthesize_notrun_findings path must still emit per-test findings.
@@ -142,6 +166,7 @@ _run_gate() {
   _out="$TEST_REPO/gate.json"
   _run_gate "$_out"
 
+  [ "$status" -ne 127 ] || fail "run bash exited 127 (command not found) — PATH quoting bug or missing tool: $output"
   [ -f "$_out" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # Gate still fails
@@ -150,7 +175,7 @@ _run_gate() {
 
   # With no watchdog, per-test synthesis runs: deficit=2 → 2 findings (not collapsed)
   run jq -r '.tests | length' "$_out"
-  [ "$output" -ge 1 ]
+  [ "$output" = "2" ]
 
   # No "watchdog killed" text in any finding (this is NOT a watchdog-collapse run)
   run jq -r '[.tests[].test_name] | join(" ")' "$_out"

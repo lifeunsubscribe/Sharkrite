@@ -1856,6 +1856,8 @@ run_test_gate() {
   # Propagated to the gate JSON so assess-and-resolve.sh can name the cause
   # in its synthetic blocking [GATE] item.  Empty string = no named reason.
   local _gate_reason=""
+  local _fr_watchdog=false
+  local _watchdog_group=""
 
   # _gate_verbose and _gate_raw_sink are resolved above (before RITE_TEST_COMMAND
   # early-return) so the same sink is used by every runner path uniformly.
@@ -2324,7 +2326,7 @@ run_test_gate() {
         _notrun_warning=$(grep -oE 'Executed [0-9]+ instead of expected [0-9]+ tests' \
           "$_bats_pretty_capture" | head -1 || true)
       fi
-      if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ]; then
+      if [ "$_notrun_deficit" -gt 0 ] || [ -n "$_notrun_warning" ] || [ "${_fr_watchdog:-false}" = "true" ]; then
         if [ "${_fr_watchdog:-false}" = "true" ]; then
           # Watchdog kill: collapse all not-run tests into ONE finding.
           # Genuinely failed tests from completed bats sections keep their
