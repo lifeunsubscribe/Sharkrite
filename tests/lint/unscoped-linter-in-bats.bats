@@ -44,6 +44,43 @@ EOF
   [[ "$output" =~ "bad.bats" ]]
 }
 
+@test "UNSCOPED_LINTER_IN_BATS: fires on bare 'run \$LINT_SCRIPT' (no leading bash)" {
+  cat > "$FIXTURE_DIR/tests/regression/bare-run.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: tools/sharkrite-lint.sh
+setup() {
+  LINT_SCRIPT="/some/path/tools/sharkrite-lint.sh"
+}
+@test "bare run invocation" {
+  run "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+EOF
+  cd "$FIXTURE_DIR"
+  SHARKRITE_LINT_ONLY=40 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "UNSCOPED_LINTER_IN_BATS" ]]
+  [[ "$output" =~ "bare-run.bats" ]]
+}
+
+@test "UNSCOPED_LINTER_IN_BATS: silent on 'run grep ... \$LINT_SCRIPT' (LINT_SCRIPT is arg, not command)" {
+  cat > "$FIXTURE_DIR/tests/regression/grep-arg.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: tools/sharkrite-lint.sh
+setup() {
+  LINT_SCRIPT="/some/path/tools/sharkrite-lint.sh"
+}
+@test "grep uses LINT_SCRIPT as arg" {
+  run grep -q "SOME_RULE" "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+EOF
+  cd "$FIXTURE_DIR"
+  SHARKRITE_LINT_ONLY=40 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "UNSCOPED_LINTER_IN_BATS" ]]
+}
+
 @test "UNSCOPED_LINTER_IN_BATS: fires on direct path 'bash tools/sharkrite-lint.sh'" {
   cat > "$FIXTURE_DIR/tests/regression/direct.bats" <<'EOF'
 #!/usr/bin/env bats

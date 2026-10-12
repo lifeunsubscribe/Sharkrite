@@ -246,7 +246,7 @@ local foo="bar"
 echo "$foo"
 EOF
 
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07 run bash "$LINT_SCRIPT"
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]] || {
@@ -275,7 +275,7 @@ set -euo pipefail
 VAR=$(git log | grep "pattern")
 EOF
 
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=08 run bash "$LINT_SCRIPT"
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "UNSAFE_PIPE_IN_CMDSUB" ]]
@@ -297,7 +297,7 @@ set -euo pipefail
 gh pr list
 EOF
 
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=13 run bash "$LINT_SCRIPT"
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GH_UNSAFE_CALL" ]]

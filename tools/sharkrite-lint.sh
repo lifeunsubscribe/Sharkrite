@@ -183,7 +183,7 @@ fi
 # SHARKRITE_LINT_ONLY (test-only fast path): comma-separated rule NUMBERS (the
 # NN- filename prefix, e.g. "15" or "34,35"). When set, only the named rule
 # fragments are sourced — a rule's own regression test then runs JUST its rule
-# instead of all 36. This cuts a full-codebase custom-lint pass from ~70s to
+# instead of all rules. This cuts a full-codebase custom-lint pass from ~70s to
 # ~2s. It matters because the lint-rule bats tests each shell out to the full
 # linter (some 3-17x per file) and NONE are serial-marked: under the gate's
 # `bats --jobs 8`, ~8 concurrent full-lint scans starve the CPU, each blows the
