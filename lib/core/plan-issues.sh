@@ -1554,7 +1554,7 @@ _lint_issues_strict() {
 
         # --- Extract TIME line ---
         local _issue_time=""
-        _issue_time=$(echo "$_issue_block" | grep "^TIME: " | head -1 | sed 's/^TIME: //' || true)
+        _issue_time=$(echo "$_issue_block" | grep "^TIME:" | head -1 | sed 's/^TIME:[[:space:]]*//' | sed 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
         _times+=("${_issue_time:-}")
 
         # --- Extract Split rationale presence ---
@@ -1573,12 +1573,12 @@ _lint_issues_strict() {
           local _rule=""
           local _has_reason=false
           # Match: <!-- sharkrite-plan-lint disable RULE - Reason: ... -->
-          if echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z-]+\s+-\s+Reason:"; then
-            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z-]+' | sed 's/disable[[:space:]]*//' || true)
+          if echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z0-9-]+\s+-\s+Reason:"; then
+            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=true
           # Match: <!-- sharkrite-plan-lint disable RULE --> (no Reason)
-          elif echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z-]+"; then
-            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z-]+' | sed 's/disable[[:space:]]*//' || true)
+          elif echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z0-9-]+"; then
+            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=false
           fi
 
