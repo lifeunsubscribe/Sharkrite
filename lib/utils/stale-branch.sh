@@ -273,8 +273,11 @@ ensure_target_branch_exists() {
     return 0   # exists — zero writes, zero output
   fi
 
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: creating a missing target branch FROM main is intentionally main-relative (§5.1 — the point is to seed from trunk)
   git_fetch_safe origin main || return 1
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: creating a missing target branch FROM main is intentionally main-relative (refspec seeds new branch from trunk)
   if git push origin "origin/main:refs/heads/$branch" >/dev/null 2>&1; then
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: creating a missing target branch FROM main is intentionally main-relative (informational message naming the seed ref)
     print_info "Target branch '$branch' not on origin — created from origin/main"
     return 0
   fi
@@ -592,6 +595,7 @@ _stale_classify_after_push_rejection() {
             # origin/main base: three-dot selection covers branch-only files. The rebased-in
             # main delta was already gated per-merge (green-main invariant) — re-verifying its
             # full coverage union cost 180+ bats files per resume (issue #854).
+            # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
             if ! verify_post_merge "$worktree_path" "origin/main"; then
               git rebase --abort 2>/dev/null || true
               print_error "Post-rebase verification failed after discarding TRIVIAL commits — cannot proceed"
@@ -734,6 +738,7 @@ EOF_FOREIGN_SHAS
           fi
 
           # Cherry-picks succeeded — verify and push
+          # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
           if ! verify_post_merge "$worktree_path" "origin/main"; then
             print_error "Post-rebase+replay verification failed — cannot proceed"
             git reset --hard "${_preserve_pre_rebase_head:-HEAD}" 2>/dev/null || true
@@ -946,6 +951,7 @@ _stale_rebase_onto_main() {
     fi
 
     # Verify rebase didn't introduce silent semantic conflicts (tests pass)
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
     if ! verify_post_merge "$worktree_path" "origin/main"; then
       print_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
       git reset --hard "$pre_rebase_head" 2>/dev/null || true
@@ -1053,6 +1059,7 @@ _stale_rebase_onto_main() {
           return 1
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
+        # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
         if ! verify_post_merge "$worktree_path" "origin/main"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
           print_error "Post-resolution verification failed — cannot proceed in auto mode"

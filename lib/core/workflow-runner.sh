@@ -2279,21 +2279,26 @@ verify_already_fixed_on_main() {
 
   # --- 4. Ref-pin the checkout to origin/main (ported from #873 branch) ----
   local _fetch_exit=0
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: already-fixed evidence is deliberately ref-pinned to origin/main (#821/#873 — trunk health; this site verifies the worktree IS on trunk)
   git -C "$RITE_PROJECT_ROOT" fetch origin main --quiet 2>/dev/null || _fetch_exit=$?
   if [ "$_fetch_exit" -ne 0 ]; then
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: already-fixed evidence is deliberately ref-pinned to origin/main (#821/#873 — trunk health; message names the fetch target)
     print_info "git fetch origin main failed (exit ${_fetch_exit}) — cannot verify against current main; failing loud instead of guessing"
     return 1
   fi
   local _main_sha _head_sha
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: already-fixed evidence is deliberately ref-pinned to origin/main (#821/#873 — trunk health)
   _main_sha=$(git -C "$RITE_PROJECT_ROOT" rev-parse origin/main 2>/dev/null || true)
   _head_sha=$(git -C "$RITE_PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)
   if [ -z "${_main_sha:-}" ] || [ -z "${_head_sha:-}" ] || [ "$_head_sha" != "$_main_sha" ]; then
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: already-fixed evidence is deliberately ref-pinned to origin/main (#821/#873 — trunk health; message names the pinned ref)
     print_info "Checkout is not pinned to origin/main — skipping already-fixed verification"
     return 1
   fi
   local _dirty
   _dirty=$(git -C "$RITE_PROJECT_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)
   if [ -n "${_dirty:-}" ]; then
+    # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: already-fixed evidence is deliberately ref-pinned to origin/main (#821/#873 — trunk health; message names the pinned ref)
     print_info "Working tree is dirty — cannot reliably verify against origin/main; skipping"
     return 1
   fi
