@@ -495,7 +495,7 @@ When resuming an issue with an existing PR, the branch is checked against the PR
 - Always attempts rebase onto the PR's base branch first, regardless of how many commits behind.
 - Rebase succeeds → continue workflow (PR preserved, no restart).
 - Rebase conflicts + resolver fails (or post-rebase verification fails) → close PR with summary comment, cleanup branch/worktree, restart fresh (exit 11).
-- Absurd-divergence guard: `RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD` (default: 100 commits) → close and restart directly, skipping the rebase attempt. Prevents replaying truly enormous histories.
+- Absurd-divergence guard: `RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD` (default: 100 commits) → close and restart directly when **more than** 100 commits behind (strict `>`; exactly 100 still rebases), skipping the rebase attempt. Prevents replaying truly enormous histories.
 
 **Supervised mode** — uses `RITE_STALE_BRANCH_THRESHOLD` (default: 10) as the decision point:
 - Below threshold → rebase directly (fast-path, no prompt).

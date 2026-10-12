@@ -748,7 +748,7 @@ Tests: `tests/regression/mid-run-rebase.bats` (clean drift → no-op, including 
 
 **Resume path — same ruling extended (#1137):** The original `check_stale_branch` (stale-branch.sh) used `RITE_STALE_BRANCH_THRESHOLD` (default: 10) to decide in auto mode whether to attempt a rebase or close-and-restart: branches at/above the threshold were closed immediately without a rebase attempt. Issue #1045 (2026-10-11, batch 135719 slot): a finished, cleanly-rebasable PR sat at exactly 10 commits behind after an evening of unrelated merges — auto-closed, and the entire feature was re-implemented from scratch (~19 min dev + full review cycle) — then that rerun died for separate reasons. The distance-as-proxy flaw is identical: a 10-behind clean branch rebases in sub-second git; a 2-behind conflicted branch is what actually needs the resolver. The ruling is extended: **auto mode always attempts rebase first, regardless of distance. Close-and-restart fires only when the rebase conflicts AND the resolver fails** (or post-rebase verification fails). `RITE_STALE_BRANCH_THRESHOLD` is retained for supervised mode's 5-option prompt threshold. An absurd-divergence guard (`RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD`, default: 100) caps the rebase-first path for truly enormous histories that signal an abandoned branch rather than normal drift.
 
-Tests: `tests/regression/stale-branch-rebase.bats` (clean branch at 2× threshold → rebased, no restart) and `stale-branch-conflict-restart.bats` (conflict → resolver → fallback path preserved).
+Tests: `tests/regression/stale-branch-rebase.bats` (clean branch at 2× threshold → rebased, no restart; conflict → resolver → fallback path preserved; hard-restart threshold → exit 11 without rebase attempt).
 
 ---
 

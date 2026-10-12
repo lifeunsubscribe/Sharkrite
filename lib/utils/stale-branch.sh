@@ -405,9 +405,16 @@ check_stale_branch() {
     0|2) return "$_auto_rebase_result" ;;  # rebase succeeded or foreign commits integrated
     11)  return 11 ;;                       # small-branch conflict fast-path already restarted
     5)   return 5 ;;                        # usage cap — propagate batch-blocking
-    *)
+    7)
+      # Push rejected (force-with-lease): remote has foreign commits the lease refused to overwrite.
+      # Do NOT call _stale_close_and_cleanup — deleting the remote branch would destroy those
+      # foreign commits (violates #1012 never-silently-discard contract). Surface error to caller.
+      return 1
+      ;;
+    1)
       # Rebase conflict unresolved (resolver failed or unavailable) or post-rebase
-      # verification failure (exit 1). The branch is clean (rebase aborted, stash restored).
+      # verification failure. Rebase was aborted cleanly, no local changes stranded;
+      # remote is intact with original feature commits.
       # Fall back to close-and-restart so the issue re-runs from a fresh base.
       print_status "Rebase conflict unresolved — closing PR and restarting fresh..."
       _diag "STALE_REBASE_CONFLICT_RESTART issue=${issue_number:-} pr=${pr_number:-} branch=${branch_name} behind=${behind} rebase_result=${_auto_rebase_result}"
@@ -415,6 +422,11 @@ check_stale_branch() {
       # Exit code 11: stale-branch restarted fresh — caller must reset all resume state.
       # See docs/architecture/exit-codes.md for the canonical exit-code table.
       return 11
+      ;;
+    *)
+      # Unknown exit code — bail without cleanup to avoid destroying unknown state.
+      print_error "Unexpected result from stale rebase (exit ${_auto_rebase_result}) — aborting"
+      return 1
       ;;
   esac
 }
@@ -1104,8 +1116,12 @@ _stale_rebase_onto_main() {
           print_success "Branch rebased onto origin/$base_branch (with conflict resolution)"
           return 0
         else
-          print_error "Push failed after conflict resolution (force-with-lease rejected)"
-          return 1
+          print_error "Push failed after conflict resolution (force-with-lease rejected — remote has foreign commits; cannot auto-restart without data loss)"
+          # Return 7 (not 1): signals push-rejection to check_stale_branch so it
+          # bails without calling _stale_close_and_cleanup. Deleting the remote branch
+          # would destroy the foreign commits whose presence caused the lease rejection,
+          # violating the #1012 never-silently-discard contract.
+          return 7
         fi
       elif [ "$_resolver_result" -eq 5 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
