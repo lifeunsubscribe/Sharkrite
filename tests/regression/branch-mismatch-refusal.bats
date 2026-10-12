@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh, lib/utils/pr-detection.sh
+# sharkrite-test-covers: lib/core/workflow-runner.sh, lib/core/batch-process-issues.sh, lib/utils/pr-detection.sh, bin/rite
 # tests/regression/branch-mismatch-refusal.bats
 #
 # Regression test: rite must refuse early (exit 19) when an existing PR's
@@ -60,6 +60,7 @@ WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 PR_DETECTION="$REPO_ROOT/lib/utils/pr-detection.sh"
 CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
+RITE_BIN="$REPO_ROOT/bin/rite"
 
 setup() {
   [ -f "$WORKFLOW_RUNNER" ] || {
@@ -76,6 +77,10 @@ setup() {
   }
   [ -f "$CLAUDE_MD" ] || {
     echo "FATAL: $CLAUDE_MD not found" >&2
+    return 1
+  }
+  [ -f "$RITE_BIN" ] || {
+    echo "FATAL: $RITE_BIN not found" >&2
     return 1
   }
 }
@@ -631,6 +636,303 @@ INLINE_EOF
   run bash "$_script"
   [ "$status" -eq 0 ] || {
     echo "FAIL: test script exited $status" >&2
+    echo "$output" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL: check_branch_mismatch() extraction (#1073)
+# =============================================================================
+
+@test "structural: check_branch_mismatch() function exists in workflow-runner.sh" {
+  grep -q "^check_branch_mismatch()" "$WORKFLOW_RUNNER" || {
+    echo "FAIL: check_branch_mismatch() function not found in workflow-runner.sh" >&2
+    echo "      Expected: extracted from the inline guard block in run_workflow()" >&2
+    return 1
+  }
+}
+
+@test "structural: _mismatch_target=\$(resolve_target_branch appears exactly once in workflow-runner.sh" {
+  _count=$(grep -c '_mismatch_target=$(resolve_target_branch' "$WORKFLOW_RUNNER" || true)
+  [ "$_count" -eq 1 ] || {
+    echo "FAIL: '_mismatch_target=\$(resolve_target_branch' found ${_count} times in workflow-runner.sh (expected 1)" >&2
+    echo "      One occurrence must be inside check_branch_mismatch(); run_workflow() must delegate." >&2
+    return 1
+  }
+}
+
+@test "structural: run_workflow() delegates to check_branch_mismatch() without inline guard" {
+  _func_body=$(awk '
+    /^run_workflow[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print $0 }
+  ' "$WORKFLOW_RUNNER")
+
+  [ -n "$_func_body" ] || {
+    echo "FAIL: Could not extract run_workflow function body" >&2
+    return 1
+  }
+
+  echo "$_func_body" | grep -q "check_branch_mismatch" || {
+    echo "FAIL: run_workflow() does not call check_branch_mismatch()" >&2
+    echo "      The guard must be delegated, not inlined again" >&2
+    return 1
+  }
+
+  if echo "$_func_body" | grep -q '_mismatch_target=$(resolve_target_branch'; then
+    echo "FAIL: run_workflow() still contains the inline '_mismatch_target=\$(resolve_target_branch' pattern" >&2
+    echo "      Guard logic must live in check_branch_mismatch() only" >&2
+    return 1
+  fi
+}
+
+@test "structural: bin/rite dev-and-pr case sources workflow-runner.sh for check_branch_mismatch" {
+  _case_body=$(awk '
+    /^  dev-and-pr[)]$/ { in_case=1; next }
+    in_case && /^    ;;$/ { exit }
+    in_case { print $0 }
+  ' "$RITE_BIN")
+
+  [ -n "$_case_body" ] || {
+    echo "FAIL: Could not extract dev-and-pr case body from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_case_body" | grep -q "workflow-runner.sh" || {
+    echo "FAIL: dev-and-pr case does not source workflow-runner.sh" >&2
+    echo "      Sourcing is required to access check_branch_mismatch()" >&2
+    return 1
+  }
+
+  echo "$_case_body" | grep -q "check_branch_mismatch" || {
+    echo "FAIL: dev-and-pr case does not call check_branch_mismatch()" >&2
+    return 1
+  }
+}
+
+@test "structural: bin/rite dev-and-pr case calls detect_pr_for_issue before check_branch_mismatch" {
+  _case_body=$(awk '
+    /^  dev-and-pr[)]$/ { in_case=1; next }
+    in_case && /^    ;;$/ { exit }
+    in_case { print NR": "$0 }
+  ' "$RITE_BIN")
+
+  [ -n "$_case_body" ] || {
+    echo "FAIL: Could not extract dev-and-pr case body from bin/rite" >&2
+    return 1
+  }
+
+  _detect_line=$(echo "$_case_body" | grep "detect_pr_for_issue" | head -1 | grep -oE '^[0-9]+' || true)
+  [ -n "$_detect_line" ] || {
+    echo "FAIL: detect_pr_for_issue call not found in dev-and-pr case" >&2
+    return 1
+  }
+
+  _cbm_line=$(echo "$_case_body" | grep "check_branch_mismatch" | head -1 | grep -oE '^[0-9]+' || true)
+  [ -n "$_cbm_line" ] || {
+    echo "FAIL: check_branch_mismatch call not found in dev-and-pr case" >&2
+    return 1
+  }
+
+  if [ "$_detect_line" -ge "$_cbm_line" ]; then
+    echo "FAIL: detect_pr_for_issue (line $_detect_line) must appear BEFORE check_branch_mismatch (line $_cbm_line)" >&2
+    return 1
+  fi
+}
+
+@test "structural: bin/rite dev-and-pr case propagates exit 19" {
+  _case_body=$(awk '
+    /^  dev-and-pr[)]$/ { in_case=1; next }
+    in_case && /^    ;;$/ { exit }
+    in_case { print $0 }
+  ' "$RITE_BIN")
+
+  [ -n "$_case_body" ] || {
+    echo "FAIL: Could not extract dev-and-pr case body from bin/rite" >&2
+    return 1
+  }
+
+  echo "$_case_body" | grep -qE 'exit 19' || {
+    echo "FAIL: dev-and-pr case does not propagate 'exit 19'" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL: dev-and-pr mismatch guard (#1073)
+# =============================================================================
+
+@test "behavioral: dev-and-pr — mismatched PR exits 19, never reaches claude-workflow.sh" {
+  _script="$BATS_TEST_TMPDIR/test-devpr-mismatch.sh"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUMBER="42"
+PR_NUMBER="456"
+PR_BASE_BRANCH="bigbranch"
+CLAUDE_WORKFLOW_CALLED=false
+
+detect_pr_for_issue() {
+  PR_NUMBER="456"
+  PR_BASE_BRANCH="bigbranch"
+  return 0
+}
+
+resolve_target_branch() { echo "main"; }
+
+handle_branch_mismatch() {
+  local _base="\$3" _target="\$4"
+  echo "ERROR: PR base mismatch: \${_base} != \${_target}" >&2
+  if [ "\$_base" = "main" ]; then
+    echo "ERROR: Re-run: rite \$1" >&2
+  else
+    echo "ERROR: Re-run: rite --branch \${_base} \$1" >&2
+  fi
+  return 19
+}
+
+check_branch_mismatch() {
+  local _issue="\$1" _pr="\${2:-}" _base="\${3:-}"
+  [ -n "\$_pr" ] && [ "\$_pr" != "null" ] || return 0
+  local _target
+  _target=\$(resolve_target_branch "\$_issue" 2>/dev/null || echo "main")
+  local _pbase="\${_base:-}"
+  [ -n "\$_pbase" ] || return 0
+  if [ "\$_pbase" != "\$_target" ]; then
+    set +e
+    handle_branch_mismatch "\$_issue" "\$_pr" "\$_pbase" "\$_target"
+    set -e
+    return 19
+  fi
+  return 0
+}
+
+_dev_pr_cbm=0
+if detect_pr_for_issue "\$ISSUE_NUMBER"; then
+  set +e
+  check_branch_mismatch "\$ISSUE_NUMBER" "\$PR_NUMBER" "\${PR_BASE_BRANCH:-}"
+  _dev_pr_cbm=\$?
+  set -e
+fi
+if [ "\$_dev_pr_cbm" -eq 19 ]; then
+  if [ "\$CLAUDE_WORKFLOW_CALLED" = "true" ]; then
+    echo "FAIL: claude-workflow.sh was called despite mismatch" >&2
+    exit 1
+  fi
+  exit 19
+fi
+
+echo "FAIL: did not exit 19 on mismatch (base=bigbranch target=main)" >&2
+exit 1
+STUB_EOF
+
+  chmod +x "$_script"
+  run bash "$_script"
+  [ "$status" -eq 19 ] || {
+    echo "FAIL: expected exit 19, got $status" >&2
+    echo "$output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: dev-and-pr — no PR proceeds without refusal (exit 0)" {
+  _script="$BATS_TEST_TMPDIR/test-devpr-no-pr.sh"
+
+  cat > "$_script" <<'INLINE_EOF_NOPR'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUMBER="42"
+PR_NUMBER=""
+PR_BASE_BRANCH=""
+
+detect_pr_for_issue() {
+  PR_NUMBER=""
+  PR_BASE_BRANCH=""
+  return 1
+}
+
+check_branch_mismatch() { return 0; }
+
+_dev_pr_cbm=0
+if detect_pr_for_issue "$ISSUE_NUMBER"; then
+  set +e
+  check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}"
+  _dev_pr_cbm=$?
+  set -e
+fi
+
+if [ "$_dev_pr_cbm" -eq 19 ]; then
+  echo "FAIL: got exit 19 but no PR exists — should proceed" >&2
+  exit 1
+fi
+
+exit 0
+INLINE_EOF_NOPR
+
+  chmod +x "$_script"
+  run bash "$_script"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (proceed), got $status" >&2
+    echo "$output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: dev-and-pr — matching PR base proceeds without refusal (exit 0)" {
+  _script="$BATS_TEST_TMPDIR/test-devpr-matching.sh"
+
+  cat > "$_script" <<'INLINE_EOF_MATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUMBER="42"
+PR_NUMBER="456"
+PR_BASE_BRANCH="main"
+
+detect_pr_for_issue() {
+  PR_NUMBER="456"
+  PR_BASE_BRANCH="main"
+  return 0
+}
+
+resolve_target_branch() { echo "main"; }
+
+check_branch_mismatch() {
+  local _issue="$1" _pr="${2:-}" _base="${3:-}"
+  [ -n "$_pr" ] && [ "$_pr" != "null" ] || return 0
+  local _target
+  _target=$(resolve_target_branch "$_issue" 2>/dev/null || echo "main")
+  local _pbase="${_base:-}"
+  [ -n "$_pbase" ] || return 0
+  [ "$_pbase" = "$_target" ] && return 0
+  return 19
+}
+
+_dev_pr_cbm=0
+if detect_pr_for_issue "$ISSUE_NUMBER"; then
+  set +e
+  check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}"
+  _dev_pr_cbm=$?
+  set -e
+fi
+
+if [ "$_dev_pr_cbm" -eq 19 ]; then
+  echo "FAIL: got exit 19 but PR base matches target — should proceed" >&2
+  exit 1
+fi
+
+exit 0
+INLINE_EOF_MATCH
+
+  chmod +x "$_script"
+  run bash "$_script"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: expected exit 0 (proceed), got $status" >&2
     echo "$output" >&2
     return 1
   }
