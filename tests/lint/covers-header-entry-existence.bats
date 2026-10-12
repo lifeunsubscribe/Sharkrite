@@ -27,7 +27,7 @@ _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
 
 # Run the driver in the TEST_REPO and return only Rule 36's lines.
 _run_rule36() {
-  ( cd "$TEST_REPO" && bash "$LINT_SCRIPT" 2>&1 ) | grep 'STALE_TEST_COVERAGE_ENTRY' || true
+  ( cd "$TEST_REPO" && SHARKRITE_LINT_ONLY=25 bash "$LINT_SCRIPT" 2>&1 ) | grep 'STALE_TEST_COVERAGE_ENTRY' || true
 }
 
 @test "STALE_TEST_COVERAGE_ENTRY: flags a covers entry that does not exist on disk" {

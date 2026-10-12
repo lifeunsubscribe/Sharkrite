@@ -88,6 +88,7 @@ EOF
 set -euo pipefail
 VAR=$(echo "$text" | grep "pattern")
 EOF
+  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: this test's PURPOSE is to verify that an empty SHARKRITE_LINT_ONLY triggers a full scan; SHARKRITE_LINT_ONLY= cannot be scoped by definition. File is serial-marked (sharkrite-gate-serial line 3).
   # Empty knob → full scan → Rule 08 fires on the fixture.
   RITE_LINT_EXTRA_DIRS="$FIXTURE_DIR" SHARKRITE_LINT_ONLY= run bash "$LINT_SCRIPT"
   [ "$status" -eq 1 ]

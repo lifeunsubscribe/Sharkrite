@@ -33,7 +33,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=21 run bash "$LINT_SCRIPT"
 }
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ echo "done"'
   # was added to a #!/bin/bash script without the appropriate guard.
   unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
 
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=21 run bash "$LINT_SCRIPT"
 
   local r21_violations
   r21_violations=$(echo "$output" | grep "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" || true)

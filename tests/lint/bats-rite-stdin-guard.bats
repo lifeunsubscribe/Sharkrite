@@ -23,7 +23,7 @@ teardown() { rm -rf "$TEST_REPO"; }
 
 _emit_test_line() { printf '@test "%s" { true; }\n' "${1:-fixture}"; }
 _run_rule37() {
-  ( cd "$TEST_REPO" && bash "$LINT_SCRIPT" 2>&1 ) | grep 'BATS_RITE_STDIN_GUARD' || true
+  ( cd "$TEST_REPO" && SHARKRITE_LINT_ONLY=37 bash "$LINT_SCRIPT" 2>&1 ) | grep 'BATS_RITE_STDIN_GUARD' || true
 }
 
 @test "BATS_RITE_STDIN_GUARD: flags an unguarded run bash …/bin/rite" {

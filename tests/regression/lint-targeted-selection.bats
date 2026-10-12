@@ -1,5 +1,8 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: tools/sharkrite-lint.sh, lib/utils/test-gate.sh
+# sharkrite-gate-serial — contains genuine all-rules sweeps testing the RITE_LINT_FILES
+# targeting mechanism; SHARKRITE_LINT_ONLY would narrow the violation set and defeat
+# the multi-rule coverage assertions.
 #
 # Regression test: targeted lint selection via RITE_LINT_FILES.
 #
@@ -51,6 +54,7 @@ set -euo pipefail
 gh pr list
 EOF
 
+  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: tests that RITE_LINT_FILES unset runs full scan reporting violations from multiple rules (7 and 13); SHARKRITE_LINT_ONLY would defeat the multi-rule coverage assertion; serial-marked
   run "$LINT_SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" =~ "a-bad.sh" ]] || { echo "$output" >&2; return 1; }
@@ -71,6 +75,7 @@ gh pr list
 EOF
 
   export RITE_LINT_FILES="$FIXTURE_DIR/a-bad.sh"
+  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: tests RITE_LINT_FILES restricts-to-one-file behavior across the full rule set; SHARKRITE_LINT_ONLY would bypass the targeted-scope header check; serial-marked
   run "$LINT_SCRIPT"
 
   # a-bad.sh is in scope → its violation is reported, exit non-zero
@@ -93,6 +98,7 @@ EOF
   # RITE_LINT_FILES points at a path NOT under bin/lib/tools and not in
   # RITE_LINT_EXTRA_DIRS — empty intersection.
   export RITE_LINT_FILES="/tmp/this-path-does-not-exist-in-shell-files.sh"
+  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: tests RITE_LINT_FILES empty-intersection exits 0 with notice; SHARKRITE_LINT_ONLY would change the early-exit path and could mask the "no in-scope shell files" notice; serial-marked
   run "$LINT_SCRIPT"
 
   [ "$status" -eq 0 ] || { echo "expected exit 0; got status=$status output:" >&2; echo "$output" >&2; return 1; }
@@ -113,6 +119,7 @@ EOF
   # intersection, and lint proceeds normally over it.
   export RITE_LINT_FILES="$FIXTURE_DIR/nonexistent.sh
 $FIXTURE_DIR/real.sh"
+  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: tests RITE_LINT_FILES silently drops nonexistent entries; uses full suite to verify the "1 file" targeted-scope notice; serial-marked
   run "$LINT_SCRIPT"
 
   [ "$status" -ne 0 ]
@@ -388,7 +395,7 @@ _emit_bats_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   export RITE_LINT_FILES="$_e2e_repo/tests/regression/rule34-fixture.bats"
 
   cd "$_e2e_repo"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=34 run bash "$LINT_SCRIPT"
 
   # The driver must NOT have exited early (no "skipping" message).
   [[ ! "$output" =~ "no in-scope shell files in targeted set" ]] || {
@@ -425,7 +432,7 @@ _emit_bats_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   export RITE_LINT_FILES="$_e2e_repo/tests/regression/rule35-fixture.bats"
 
   cd "$_e2e_repo"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=35 run bash "$LINT_SCRIPT"
 
   # The driver must NOT have exited early.
   [[ ! "$output" =~ "no in-scope shell files in targeted set" ]] || {

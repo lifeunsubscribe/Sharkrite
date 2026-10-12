@@ -107,7 +107,7 @@ EOF
 
   # Run the linter from within the test directory
   # PROJECT_ROOT will resolve to $TEST_DIR via the script's own path detection
-  run bash "$TEST_LINT_SCRIPT" 2>&1
+  SHARKRITE_LINT_ONLY=02 run bash "$TEST_LINT_SCRIPT" 2>&1
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "GIT_PUSH_NO_REFSPEC" ]]
@@ -143,7 +143,7 @@ EOF
 
   # Run the linter from within the test directory
   # PROJECT_ROOT will resolve to $TEST_DIR via the script's own path detection
-  run bash "$TEST_LINT_SCRIPT" 2>&1
+  SHARKRITE_LINT_ONLY=02 run bash "$TEST_LINT_SCRIPT" 2>&1
 
   # Should pass (exit 0) and not mention GIT_PUSH_NO_REFSPEC
   [ "$status" -eq 0 ]
