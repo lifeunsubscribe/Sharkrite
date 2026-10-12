@@ -27,6 +27,9 @@
 #   F — issue with <!-- sharkrite-plan-lint disable cycle-check - Reason: ... -->
 #         → cycle-check skipped, [suppressed] logged, exits per other checks
 #   G — suppression WITHOUT Reason: field → does NOT suppress, warns, runs check
+#   H8a — duplicate non-allowlisted verification command → WARNING naming both titles, exit 0
+#   H8b — shared allowlisted command (make check only) → no WARNING, exit 0
+#   H8c — unique verification commands across issues → no WARNING, exit 0
 
 load '../helpers/setup.bash'
 
@@ -2851,6 +2854,273 @@ FIXTURE
   # Must NOT emit a parallel-file-overlap WARNING (files are disjoint)
   grep -q "parallel-file-overlap:" "$stderr_out" && {
     echo "FAIL: unexpected parallel-file-overlap WARNING for non-overlapping parallel issues" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 — duplicate verification commands across issues
+#
+# Fixture: two issues both carry `grep -rn "aren't live" tests/ returns nothing`
+# in their acceptance criteria. Expected: WARNING naming both titles and the
+# command; exit 0.
+# ---------------------------------------------------------------------------
+
+@test "Check 8: duplicate non-allowlisted verification command — WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-dup-verif.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Remove stale live-check string from screen A
+LABELS: frontend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Remove the stale string from screen A.
+
+**Claude Context**:
+Files to Modify:
+- src/screens/screen_a.py
+
+**Acceptance Criteria**:
+- [ ] String removed: `grep -rn "aren't live" tests/ returns nothing`
+
+**Verification Commands**:
+```bash
+grep -rn "aren't live" tests/ returns nothing
+make check
+```
+
+**Done Definition**: Done when string is absent.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Remove stale live-check string from screen B
+LABELS: frontend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Remove the stale string from screen B.
+
+**Claude Context**:
+Files to Modify:
+- src/screens/screen_b.py
+
+**Acceptance Criteria**:
+- [ ] String removed: `grep -rn "aren't live" tests/ returns nothing`
+
+**Verification Commands**:
+```bash
+grep -rn "aren't live" tests/ returns nothing
+make check
+```
+
+**Done Definition**: Done when string is absent.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (WARNING only, not hard error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for duplicate-verification, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a duplicate-verification WARNING
+  grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" || {
+    echo "FAIL: expected duplicate-verification WARNING in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # WARNING must name both issue titles
+  grep -q "Remove stale live-check string from screen A" "$stderr_out" || {
+    echo "FAIL: WARNING must name the first issue title" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  grep -q "Remove stale live-check string from screen B" "$stderr_out" || {
+    echo "FAIL: WARNING must name the second issue title" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # WARNING must quote the duplicated command
+  grep -q "aren't live" "$stderr_out" || {
+    echo "FAIL: WARNING must include the duplicated command text" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 — allowlisted commands (make check) shared by multiple issues
+# must NOT produce a duplicate-verification WARNING.
+# ---------------------------------------------------------------------------
+
+@test "Check 8: shared allowlisted command (make check) — no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-allowlist.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add widget alpha
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Add widget alpha.
+
+**Claude Context**:
+Files to Modify:
+- src/widget_alpha.py
+
+**Acceptance Criteria**:
+- [ ] Lints clean: `make check`
+
+**Verification Commands**:
+```bash
+make check
+```
+
+**Done Definition**: Done when widget alpha is added.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add widget beta
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Add widget beta.
+
+**Claude Context**:
+Files to Modify:
+- src/widget_beta.py
+
+**Acceptance Criteria**:
+- [ ] Lints clean: `make check`
+
+**Verification Commands**:
+```bash
+make check
+```
+
+**Done Definition**: Done when widget beta is added.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for allowlisted-only shared command, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a duplicate-verification WARNING
+  grep -q "duplicate-verification:" "$stderr_out" && {
+    echo "FAIL: unexpected duplicate-verification WARNING for allowlisted command" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 — issues with entirely distinct verification commands must produce
+# no duplicate-verification WARNING.
+# ---------------------------------------------------------------------------
+
+@test "Check 8: unique verification commands across issues — no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-unique-verif.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add login endpoint
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Add a login endpoint.
+
+**Claude Context**:
+Files to Modify:
+- src/auth/login.py
+
+**Acceptance Criteria**:
+- [ ] Login works: `pytest tests/test_login.py -v`
+
+**Verification Commands**:
+```bash
+pytest tests/test_login.py -v
+```
+
+**Done Definition**: Done when login endpoint is added.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add logout endpoint
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Add a logout endpoint.
+
+**Claude Context**:
+Files to Modify:
+- src/auth/logout.py
+
+**Acceptance Criteria**:
+- [ ] Logout works: `pytest tests/test_logout.py -v`
+
+**Verification Commands**:
+```bash
+pytest tests/test_logout.py -v
+```
+
+**Done Definition**: Done when logout endpoint is added.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for unique verification commands, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a duplicate-verification WARNING
+  grep -q "duplicate-verification:" "$stderr_out" && {
+    echo "FAIL: unexpected duplicate-verification WARNING for unique commands" >&2
     cat "$stderr_out" >&2
     false
   }

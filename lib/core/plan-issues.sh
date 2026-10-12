@@ -1473,6 +1473,7 @@ _lint_provenance_flags() {
 #   <!-- sharkrite-plan-lint disable dangling-ref - Reason: ... -->
 #   <!-- sharkrite-plan-lint disable verification-path - Reason: ... -->
 #   <!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
+#   <!-- sharkrite-plan-lint disable duplicate-verification - Reason: ... -->
 #
 # Reason field is REQUIRED. Missing Reason → suppression rejected, check runs
 # anyway, WARNING emitted. Suppressions are logged visibly to stderr.
@@ -2267,6 +2268,81 @@ _lint_issues_strict() {
         fi
       fi
     done <<< "$_pi_parallel"
+  done
+
+  # Check 8: Duplicate verification commands across issues (WARNING)
+  #
+  # When the same non-trivial verification command appears in two or more issues
+  # it is a deterministic signal that both issues claim the same deliverable.
+  # The model-side prompt guidance (section H) is insufficient alone — this
+  # check provides a deterministic backstop.
+  #
+  # Allowlisted shared setup commands (legitimate in every issue):
+  #   make check      — project-wide lint/type-check
+  #   bats -r tests/  — full test suite
+  #   npm test        — JS/TS default test runner
+  #   pytest          — Python default test runner
+  #
+  # Suppressed per-issue with:
+  #   <!-- sharkrite-plan-lint disable duplicate-verification - Reason: <text> -->
+  #
+  # Seam instruction on WARNING: give ONE issue sole ownership of this
+  # criterion, or differentiate the commands.
+
+  # Commands that legitimately appear in multiple issues (shared CI gates).
+  local _VERIF_ALLOWLIST
+  _VERIF_ALLOWLIST="make check
+bats -r tests/
+npm test
+pytest"
+
+  local _vi=0
+  local _vj=0
+  for _vi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _vi_title="${_titles[$_vi]}"
+    local _vi_cmds="${_verif_cmds[$_vi]}"
+    local _vi_supps="${_suppressions[$_vi]}"
+
+    if echo "$_vi_supps" | grep -qw "duplicate-verification"; then
+      continue
+    fi
+    [ -z "$_vi_cmds" ] && continue
+
+    for _vj in $([ $((_vi + 1)) -le $((_issue_count - 1)) ] && seq $((_vi + 1)) $((_issue_count - 1)) || true); do
+      [ "$_vj" -ge 0 ] && [ "$_vj" -lt "$_issue_count" ] || continue
+      local _vj_title="${_titles[$_vj]}"
+      local _vj_cmds="${_verif_cmds[$_vj]}"
+      local _vj_supps="${_suppressions[$_vj]}"
+
+      if echo "$_vj_supps" | grep -qw "duplicate-verification"; then
+        continue
+      fi
+      [ -z "$_vj_cmds" ] && continue
+
+      # Compare commands pairwise; report first duplicate per (i,j) pair.
+      while IFS= read -r _vcmd; do
+        [ -z "$_vcmd" ] && continue
+        local _vcmd_norm
+        _vcmd_norm=$(echo "$_vcmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s ' ' || true)
+        [ -z "$_vcmd_norm" ] && continue
+
+        # Skip allowlisted shared setup commands
+        if echo "$_VERIF_ALLOWLIST" | grep -qxF "$_vcmd_norm"; then
+          continue
+        fi
+
+        while IFS= read -r _vcmd2; do
+          [ -z "$_vcmd2" ] && continue
+          local _vcmd2_norm
+          _vcmd2_norm=$(echo "$_vcmd2" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s ' ' || true)
+          if [ "$_vcmd_norm" = "$_vcmd2_norm" ]; then
+            print_warning "strict-lint: WARNING: duplicate-verification: '$_vi_title' and '$_vj_title' both carry verification command '${_vcmd_norm}' — give ONE issue sole ownership of this criterion, or differentiate the commands" >&2
+            _warning_count=$((_warning_count + 1))
+            break 2
+          fi
+        done <<< "$_vj_cmds"
+      done <<< "$_vi_cmds"
+    done
   done
 
   # Summary
