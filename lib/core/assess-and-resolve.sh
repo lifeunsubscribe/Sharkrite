@@ -1202,6 +1202,34 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
   fi
 
   if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
+    # ---- Red-main attribution subtraction (issue #1149) ----
+    # When RITE_ACCEPT_RED_MAIN=1, the batch preflight found main itself is red
+    # and saved main's gate findings as the baseline. Failures that also appear
+    # on main are NOT attributable to this branch — they are INFO_ONLY.
+    # Only branch-introduced failures become ACTIONABLE_NOW.
+    #
+    # Attribution matching:
+    #   tests: by test_name (exact match — the description is stable across main/branch)
+    #   lint:  by file+rule (ignoring line number — edits shift lines; the
+    #          file+rule pair identifies the same violation class)
+    #
+    # When attribution mode is active and ALL failures are inherited, the
+    # synthetic empty-findings block (below) is suppressed — there is nothing
+    # for the fix loop to fix.
+    _gate_accept_red_main=false
+    _gate_main_baseline_tests=""
+    _gate_main_baseline_lint_keys=""
+    _gate_inherited_count=0
+    _gate_inherited_summary=""
+    _main_baseline="${_RITE_MAIN_BASELINE_FILE:-${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/gate-main-baseline.json}"
+    if [ "${RITE_ACCEPT_RED_MAIN:-0}" = "1" ] && [ -f "$_main_baseline" ]; then
+      _gate_accept_red_main=true
+      _gate_main_baseline_tests=$(jq -r '(.tests // []) | .[].test_name // empty' \
+        "$_main_baseline" 2>/dev/null || true)
+      _gate_main_baseline_lint_keys=$(jq -r '(.lint // []) | .[] | "\(.file // ""):\(.rule // "")"' \
+        "$_main_baseline" 2>/dev/null || true)
+    fi
+
     # Build [GATE] ACTIONABLE_NOW items from lint failures
     while IFS= read -r _lint_item; do
       _lint_file=$(echo "$_lint_item" | jq -r '.file // ""' 2>/dev/null || true)
@@ -1209,7 +1237,28 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       _lint_rule=$(echo "$_lint_item" | jq -r '.rule // "lint"' 2>/dev/null || true)
       _lint_msg=$(echo "$_lint_item" | jq -r '.message // ""' 2>/dev/null || true)
       if [ -n "$_lint_msg" ]; then
-        GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - ACTIONABLE_NOW
+        # Attribution check: is this lint rule+file also failing on main?
+        _lint_is_inherited=false
+        if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_lint_keys" ]; then
+          _lint_key="${_lint_file}:${_lint_rule}"
+          if printf '%s\n' "$_gate_main_baseline_lint_keys" | grep -qxF "$_lint_key" 2>/dev/null; then
+            _lint_is_inherited=true
+          fi
+        fi
+
+        if [ "$_lint_is_inherited" = "true" ]; then
+          GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - INFO_ONLY
+**Severity:** INFO
+**Category:** Lint failure (main-inherited — not attributable to this branch)
+**Location:** ${_lint_file}:${_lint_line}
+**Reasoning:** This lint violation also fails on \`main\`. Not caused by this branch (RITE_ACCEPT_RED_MAIN=1). Fix main to resolve.
+**Message:** ${_lint_msg}
+
+"
+          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
+          _gate_inherited_summary="${_gate_inherited_summary}[lint] ${_lint_file}:${_lint_rule}; "
+        else
+          GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Lint failure (objective — no LLM categorization needed)
 **Location:** ${_lint_file}:${_lint_line}
@@ -1218,7 +1267,8 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
 **Message:** ${_lint_msg}
 
 "
-        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+          GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        fi
       fi
     done < <(jq -c '.lint[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
 
@@ -1228,7 +1278,29 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
       _test_name=$(echo "$_test_item" | jq -r '.test_name // "unknown test"' 2>/dev/null || true)
       _test_reason=$(echo "$_test_item" | jq -r '.reason // "assertion failed"' 2>/dev/null || true)
       if [ -n "$_test_name" ]; then
-        GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_name} - ACTIONABLE_NOW
+        # Attribution check: is this test name also failing on main?
+        _test_is_inherited=false
+        if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_tests" ]; then
+          if printf '%s\n' "$_gate_main_baseline_tests" | grep -qxF "$_test_name" 2>/dev/null; then
+            _test_is_inherited=true
+          fi
+        fi
+
+        if [ "$_test_is_inherited" = "true" ]; then
+          # Title by test name (#1163): headers must be distinct per finding.
+          GATE_PREPEND_ITEMS+="### [GATE] bats failure (main-inherited): ${_test_name} - INFO_ONLY
+**Severity:** INFO
+**Category:** Test failure (main-inherited — not attributable to this branch)
+**Location:** ${_test_file}
+**Reasoning:** This test also fails on \`main\`. Not caused by this branch (RITE_ACCEPT_RED_MAIN=1). Fix main to resolve.
+**Test:** ${_test_name}
+**Reason:** ${_test_reason}
+
+"
+          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
+          _gate_inherited_summary="${_gate_inherited_summary}${_test_name}; "
+        else
+          GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_name} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Test failure (objective — no LLM categorization needed)
 **Location:** ${_test_file}
@@ -1238,7 +1310,8 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
 **Reason:** ${_test_reason}
 
 "
-        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+          GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        fi
       fi
     done < <(jq -c '.tests[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
 
@@ -1254,7 +1327,12 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
     # 2026-06-30): jest 127 × 3 retries → empty arrays → "ready to merge".
     # The same hole opens for any non-bats runner (pytest/cargo/go) on a plain
     # non-TAP exit-1. (Issue #799)
-    if [ "$GATE_NOW_COUNT" -eq 0 ]; then
+    #
+    # Exception: when RITE_ACCEPT_RED_MAIN=1 and all failures were attributed
+    # to main (inherited), there are no branch-introduced failures. The gate
+    # correctly shows nothing to fix — do not fire the synthetic block.
+    if [ "$GATE_NOW_COUNT" -eq 0 ] && \
+       ! ( [ "$_gate_accept_red_main" = "true" ] && [ "$_gate_inherited_count" -gt 0 ] ); then
       # Read the reason field from the gate JSON if present (e.g. "runner_unavailable").
       # Falls back to a generic description naming the raw exit code.
       _gate_reason_field=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
@@ -1275,6 +1353,10 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
 
     if [ "$GATE_NOW_COUNT" -gt 0 ]; then
       print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
+    fi
+
+    if [ "$_gate_inherited_count" -gt 0 ]; then
+      print_status "${_gate_inherited_count} gate failure(s) attributed to red main (INFO_ONLY, not counted toward fix loop)"
     fi
   elif [ "$_gate_skipped" = "true" ]; then
     # ---- Unverified-skip blocking (issue #1014) ----
