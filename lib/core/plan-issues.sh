@@ -2190,7 +2190,7 @@ _lint_issues_strict() {
   # Same-file-different-function parallelism is legitimate (e.g. three draw
   # functions in one .cpp), so this is a WARNING (not an error) — file-level
   # overlap genuinely isn't always a conflict. Suppressed per-issue with
-  # <!-- sharkrite-plan-lint disable parallel-file-overlap -->.
+  # <!-- sharkrite-plan-lint disable parallel-file-overlap - Reason: <text> -->.
   local _pi=0
   for _pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     local _pi_title="${_titles[$_pi]}"
@@ -2256,7 +2256,13 @@ _lint_issues_strict() {
         done <<< "$_pi_modify"
 
         if [ -n "$_par_shared" ]; then
-          print_warning "strict-lint: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_prefnum}) or suppress with parallel-file-overlap if they edit disjoint functions" >&2
+          local _after_num
+          if [ "$_pi" -lt "$_pj" ]; then
+            _after_num=$((_pi + 1))
+          else
+            _after_num="$_prefnum"
+          fi
+          print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
           _warning_count=$((_warning_count + 1))
         fi
       fi

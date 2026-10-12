@@ -2530,7 +2530,7 @@ FIXTURE
 # then _pi=1 defers to the "lower-ordinal canonical reporter" and also
 # continues — no diag is ever emitted. With the fix, _pi=1 detects that
 # _pj=0 is suppressed and steps up as the emitter.
-# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# Expected: exactly ONE parallel-file-overlap WARNING, exit 0.
 # ---------------------------------------------------------------------------
 
 @test "Fix 3b: suppression on canonical lower-ordinal reporter — higher-ordinal steps up, one WARNING emitted" {
@@ -2594,8 +2594,9 @@ FIXTURE
   # Must emit exactly ONE parallel-file-overlap WARNING.
   # Without the fix: 0 warnings (canonical suppressed, higher deferred — silent).
   # With the fix:    1 warning (higher-ordinal steps up as emitter).
+  # grep only for the WARNING: prefix to avoid matching [suppressed] INFO lines.
   local warn_count
-  warn_count=$(grep -c "parallel-file-overlap:" "$stderr_out" || true)
+  warn_count=$(grep -c "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" || true)
   [ "$warn_count" -eq 1 ] || {
     echo "FAIL: expected exactly 1 parallel-file-overlap WARNING (higher-ordinal steps up), got $warn_count" >&2
     cat "$stderr_out" >&2
@@ -2616,11 +2617,11 @@ FIXTURE
 # Fix 3b (both suppressed) — when BOTH sides have parallel-file-overlap
 # suppressed, no diag should be emitted.
 #
-# Both issues have the suppression marker. No [plan-lint-diag] note.
+# Both issues have the suppression marker. No parallel-file-overlap WARNING.
 # Exit 0.
 # ---------------------------------------------------------------------------
 
-@test "Fix 3b: both sides suppressed — no [plan-lint-diag] emitted, exit 0" {
+@test "Fix 3b: both sides suppressed — no parallel-file-overlap WARNING, exit 0" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fix3b-both.txt"
 
   cat > "$issues_file" <<FIXTURE
@@ -2681,7 +2682,8 @@ FIXTURE
   }
 
   # Must NOT emit any parallel-file-overlap WARNING — both sides suppressed
-  grep -q "parallel-file-overlap:" "$stderr_out" && {
+  # grep only for the WARNING: prefix to avoid false-matching [suppressed] INFO lines.
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
     echo "FAIL: unexpected parallel-file-overlap WARNING when both sides are suppressed" >&2
     cat "$stderr_out" >&2
     false
@@ -2697,7 +2699,7 @@ FIXTURE
 # Issue #2 (ordinal 1) has suppression, issue #1 (ordinal 0) does NOT.
 # The canonical reporter for bidirectional pairs is the lower-ordinal issue.
 # Since _pi=0 is not suppressed, it emits. _pi=1 is suppressed → skipped.
-# Expected: exactly ONE [plan-lint-diag] note, exit 0.
+# Expected: exactly ONE parallel-file-overlap WARNING, exit 0.
 # ---------------------------------------------------------------------------
 
 @test "Fix 3b: suppression on higher-ordinal only — canonical lower-ordinal still emits one WARNING" {
@@ -2759,8 +2761,9 @@ FIXTURE
   }
 
   # Must emit exactly ONE parallel-file-overlap WARNING (from the canonical lower-ordinal)
+  # grep only for the WARNING: prefix to avoid matching [suppressed] INFO lines.
   local warn_count
-  warn_count=$(grep -c "parallel-file-overlap:" "$stderr_out" || true)
+  warn_count=$(grep -c "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" || true)
   [ "$warn_count" -eq 1 ] || {
     echo "FAIL: expected exactly 1 parallel-file-overlap WARNING from canonical lower-ordinal, got $warn_count" >&2
     cat "$stderr_out" >&2
