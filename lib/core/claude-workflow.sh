@@ -1977,7 +1977,16 @@ if [ -z "$ISSUE_NUMBER" ]; then
       fi
       rm -f "$_cw_cached_stderr"
       if [ "$FILE_CHANGES" -eq 0 ]; then
-        FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+        _cw_ls_stderr=$(mktemp)
+        _cw_ls_exit=0
+        FILE_CHANGES=$(git ls-files 2>"$_cw_ls_stderr" | wc -l | tr -d ' ') || _cw_ls_exit=$?
+        if [ "$_cw_ls_exit" -ne 0 ]; then
+          print_error "could not determine tracked files: git ls-files failed"
+          [ -s "$_cw_ls_stderr" ] && print_error "git stderr: $(cat "$_cw_ls_stderr")"
+          rm -f "$_cw_ls_stderr"
+          exit 1
+        fi
+        rm -f "$_cw_ls_stderr"
       fi
     fi
 
@@ -3536,7 +3545,16 @@ if [ $CHANGES_COUNT -eq 0 ]; then
     FILE_CHANGES=$(count_changed_files "" "${_target:-main}") || exit 1
   else
     # No origin/$_target - count all tracked files
-    FILE_CHANGES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+    _cw_ls_stderr=$(mktemp)
+    _cw_ls_exit=0
+    FILE_CHANGES=$(git ls-files 2>"$_cw_ls_stderr" | wc -l | tr -d ' ') || _cw_ls_exit=$?
+    if [ "$_cw_ls_exit" -ne 0 ]; then
+      print_error "could not determine tracked files: git ls-files failed"
+      [ -s "$_cw_ls_stderr" ] && print_error "git stderr: $(cat "$_cw_ls_stderr")"
+      rm -f "$_cw_ls_stderr"
+      exit 1
+    fi
+    rm -f "$_cw_ls_stderr"
   fi
 
   if [ "$FILE_CHANGES" -eq 0 ]; then
