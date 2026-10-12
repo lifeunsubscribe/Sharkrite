@@ -114,7 +114,7 @@
 
 # Unscoped suite warning threshold in seconds (default: 300).
 # When a target repo's full test suite takes this long or longer on a fix cycle,
-# the gate emits a one-time warning recommending scoped selection (sharkrite #975
+# the gate emits a once-per-gate-run warning recommending scoped selection (sharkrite #975
 # / jest --findRelatedTests / vitest related / pytest --testmon).  Repeated
 # occurrences in a week surface as a WARNING in the health report (≥3 in the
 # period). Set to a larger value for projects with intentionally slow suites,

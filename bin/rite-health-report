@@ -291,7 +291,8 @@ GSU_COUNT=$(echo "$GSU_LINES" | grep -c 'GATE_SCOPE_UNSCOPED ' || true)
 # Average duration across unscoped runs (arithmetic in bash, not LLM)
 GSU_AVG_DURATION_S="N/A"
 if [ "${GSU_COUNT:-0}" -gt 0 ] 2>/dev/null; then
-  _gsu_dur_sum=$(echo "$GSU_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+  _gsu_dur_sum=$(echo "$GSU_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+  _gsu_dur_sum=${_gsu_dur_sum:-0}
   GSU_AVG_DURATION_S="$(( _gsu_dur_sum / GSU_COUNT ))s"
 fi
 

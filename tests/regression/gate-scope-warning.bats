@@ -5,7 +5,7 @@
 #
 # A target repo (non-Sharkrite) runs its full test suite on every fix cycle —
 # there is no scoped selection. When the suite exceeds RITE_GATE_SCOPE_WARN_SECONDS
-# the gate emits a one-time print_warning and a [diag] GATE_SCOPE_UNSCOPED line.
+# the gate emits a once-per-gate-run print_warning and a [diag] GATE_SCOPE_UNSCOPED line.
 # Sharkrite's own targeted-selection runs are exempt by construction (_is_sharkrite=true).
 # Issue #1125.
 
@@ -57,7 +57,7 @@ _run_target_gate() {
   _run_target_gate "RITE_GATE_SCOPE_WARN_SECONDS=1" "sleep 2 && true"
   # Gate exits 0 (sleep 2 && true exits 0)
   [ "$status" -eq 0 ]
-  # Warning appears in output (print_warning writes to stdout)
+  # Warning appears in output (print_warning writes to stderr)
   [[ "$output" == *"full test suite every fix cycle"* ]]
   [[ "$output" == *"#975"* ]]
   # Diag line written to log
@@ -80,9 +80,13 @@ exit 0
 STUB
   chmod +x "$STUB_DIR/make"
 
-  # Stub bats: emit a passing TAP and exit 0
+  # Stub bats: sleep so the gate duration reliably exceeds a threshold of 1s,
+  # then emit a passing TAP and exit 0.  The sleep makes the exemption guard
+  # load-bearing: without it the run would finish in ~0s and RITE_GATE_SCOPE_WARN_SECONDS=0
+  # would suppress the warning before _is_sharkrite is ever evaluated.
   cat > "$STUB_DIR/bats" <<'STUB'
 #!/bin/bash
+sleep 2
 printf 'TAP version 13\n1..1\nok 1 smoke\n'
 exit 0
 STUB
@@ -113,7 +117,7 @@ EOF
   run bash -c "
     export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=1125
     export RITE_LOG_FILE='$SR_DIAG_LOG'
-    export RITE_GATE_SCOPE_WARN_SECONDS=0
+    export RITE_GATE_SCOPE_WARN_SECONDS=1
     source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
     source '$RITE_LIB_DIR/utils/test-gate.sh'
     PATH='$STUB_DIR':\$PATH run_test_gate '$SHARKRITE_REPO/gate.json' '$SHARKRITE_REPO'
