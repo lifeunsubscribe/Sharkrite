@@ -1454,11 +1454,19 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     # emoji + Total mirror the old severity rollup that used to print below.
     # Split annotation for ACTIONABLE_NOW when both origins are present (issue #985).
     # Gate-origin count is already tracked in GATE_NOW_COUNT; review = total - gate.
-    if [ "${GATE_NOW_COUNT:-0}" -gt 0 ] && [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]; then
+    #
+    # Compute review-origin count unconditionally (guarded non-negative, mirrors :1443).
+    # Must be outside the cosmetic _now_label conditional so the _diag emission below
+    # reports the correct value when gate is clean (GATE_NOW_COUNT=0, issue #1149).
+    if [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]; then
       _now_review_count=$(( ACTIONABLE_NOW_COUNT - GATE_NOW_COUNT ))
-      _now_label="$ACTIONABLE_NOW_COUNT items (gate=${GATE_NOW_COUNT}, review=${_now_review_count})"
     else
       _now_review_count=0
+    fi
+    # Split annotation is cosmetic only — shown when both origins contribute.
+    if [ "${GATE_NOW_COUNT:-0}" -gt 0 ] && [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]; then
+      _now_label="$ACTIONABLE_NOW_COUNT items (gate=${GATE_NOW_COUNT}, review=${_now_review_count})"
+    else
       _now_label="$ACTIONABLE_NOW_COUNT items"
     fi
 

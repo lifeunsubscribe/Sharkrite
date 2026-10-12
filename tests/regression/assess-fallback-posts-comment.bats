@@ -942,3 +942,51 @@ Subjective review finding.'
   fi
   true
 }
+
+# ---------------------------------------------------------------------------
+# #1149: _now_review_count must be computed unconditionally so the ASSESSMENT
+# diag line reports the correct value when the gate is clean (GATE_NOW_COUNT=0).
+# Pre-fix: the else-branch of the cosmetic _now_label split zeroed _now_review_count,
+# causing the diag to report now_review=0 even when all NOW items were review-origin.
+# ---------------------------------------------------------------------------
+
+@test "#1149 source: _now_review_count computed unconditionally before label split" {
+  local _assess_file="${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  # The guarded-subtraction block `if [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]`
+  # must appear in the file (it sets _now_review_count regardless of gate state).
+  # Two occurrences are expected: the #949 PR-comment path (~line 1443) and the new
+  # unconditional console-path block added by #1149.
+  run grep -c 'if \[ "\$ACTIONABLE_NOW_COUNT" -gt "\${GATE_NOW_COUNT:-0}" \]' "$_assess_file"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: guarded-subtraction pattern not found in assess-and-resolve.sh"
+    false
+  }
+  local _count="$output"
+  [ "$_count" -ge 2 ] || {
+    echo "FAIL: expected >= 2 occurrences of the unconditional guarded-subtraction block"
+    echo "      (one in the #949 PR-comment path, one in the new unconditional console path)"
+    echo "      Found: $_count"
+    false
+  }
+}
+
+@test "#1149 source: gate-clean else-branch does not zero _now_review_count" {
+  local _assess_file="${BATS_TEST_DIRNAME}/../../lib/core/assess-and-resolve.sh"
+  # The cosmetic else-branch (sets _now_label without split annotation) must NOT also
+  # set _now_review_count=0 — that was the bug. Pin: the line immediately before
+  # `_now_label="$ACTIONABLE_NOW_COUNT items"` must not be `_now_review_count=0`.
+  local _label_line
+  _label_line=$(grep -n '_now_label="\$ACTIONABLE_NOW_COUNT items"' "$_assess_file" | head -1 | cut -d: -f1)
+  [ -n "$_label_line" ] || {
+    echo "FAIL: _now_label=\"\$ACTIONABLE_NOW_COUNT items\" not found in assess-and-resolve.sh"
+    false
+  }
+  local _prev_line
+  _prev_line=$(sed -n "$(( _label_line - 1 ))p" "$_assess_file")
+  echo "$_prev_line" | grep -q "_now_review_count=0" && {
+    echo "FAIL: _now_review_count=0 immediately precedes _now_label= — regression to pre-#1149 zeroing pattern"
+    echo "Line $(( _label_line - 1 )): $_prev_line"
+    false
+  }
+  true
+}
