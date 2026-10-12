@@ -37,7 +37,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=22 run bash "$LINT_SCRIPT"
 }
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ my_func() { echo "no exports here"; }
 
 @test "codebase: no lib files have FUNCTION_SENTINEL_GUARD_WITH_EXPORT_F violations" {
   unset RITE_LINT_EXTRA_DIRS
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=22 run bash "$LINT_SCRIPT"
   local r22_lines
   r22_lines=$(echo "$output" | grep "FUNCTION_SENTINEL_GUARD_WITH_EXPORT_F" || true)
   [ -z "$r22_lines" ]

@@ -29,7 +29,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=26 run bash "$LINT_SCRIPT"
 }
 
 # --------------------------------------------------------------------------
@@ -139,7 +139,7 @@ hang() {
 
 @test "codebase: production tree has zero SLEEP_INFINITY_NOT_PORTABLE violations" {
   unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=26 run bash "$LINT_SCRIPT"
   local violations
   violations=$(echo "$output" | grep "SLEEP_INFINITY_NOT_PORTABLE" || true)
   if [ -n "$violations" ]; then

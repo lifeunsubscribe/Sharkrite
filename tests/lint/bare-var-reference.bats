@@ -38,7 +38,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=24 run bash "$LINT_SCRIPT"
 }
 
 # ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ send_email() {
   # reference was introduced in lib/utils/ without safe expansion.
   unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
 
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=24 run bash "$LINT_SCRIPT"
 
   local r24_violations
   r24_violations=$(echo "$output" | grep "BARE_VAR_REFERENCE" || true)

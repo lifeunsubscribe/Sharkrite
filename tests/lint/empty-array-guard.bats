@@ -24,7 +24,7 @@ _run_lint_with_fixture() {
   local name="$1"
   local content="$2"
   printf '%s\n' "$content" > "$FIXTURE_DIR/${name}.sh"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=33 run bash "$LINT_SCRIPT"
 }
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,6 @@ echo "${PIPESTATUS[@]}"'
 }
 
 @test "tree-wide: make-lint currently clean of the rule (all real sites fixed)" {
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=33 run bash "$LINT_SCRIPT"
   [[ "$output" != *"EMPTY_ARRAY_EXPANSION_BASH32"* ]]
 }

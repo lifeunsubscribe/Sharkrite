@@ -388,7 +388,7 @@ _emit_bats_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   export RITE_LINT_FILES="$_e2e_repo/tests/regression/rule34-fixture.bats"
 
   cd "$_e2e_repo"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=34 run bash "$LINT_SCRIPT"
 
   # The driver must NOT have exited early (no "skipping" message).
   [[ ! "$output" =~ "no in-scope shell files in targeted set" ]] || {
@@ -425,7 +425,7 @@ _emit_bats_test_open() { printf '@test "%s" {\n' "${1:-fixture}"; }
   export RITE_LINT_FILES="$_e2e_repo/tests/regression/rule35-fixture.bats"
 
   cd "$_e2e_repo"
-  run bash "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=35 run bash "$LINT_SCRIPT"
 
   # The driver must NOT have exited early.
   [[ ! "$output" =~ "no in-scope shell files in targeted set" ]] || {
