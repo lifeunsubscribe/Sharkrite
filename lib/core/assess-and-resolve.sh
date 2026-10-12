@@ -1455,7 +1455,7 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
     # Split annotation for ACTIONABLE_NOW when both origins are present (issue #985).
     # Gate-origin count is already tracked in GATE_NOW_COUNT; review = total - gate.
     #
-    # Compute review-origin count unconditionally (guarded non-negative, mirrors :1443).
+    # Compute review-origin count unconditionally (guarded non-negative, mirrors ~line 1443).
     # Must be outside the cosmetic _now_label conditional so the _diag emission below
     # reports the correct value when gate is clean (GATE_NOW_COUNT=0, issue #1149).
     if [ "$ACTIONABLE_NOW_COUNT" -gt "${GATE_NOW_COUNT:-0}" ]; then

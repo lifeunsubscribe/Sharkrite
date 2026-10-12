@@ -990,3 +990,41 @@ Subjective review finding.'
   }
   true
 }
+
+@test "#1149 behavioral: ASSESSMENT diag emits now_gate=0 now_review=1 when gate is clean" {
+  rm -rf "$MOCK_LIB_DIR"
+  _setup_mock_lib_tree_now_review_item
+
+  # Clean gate: no RITE_GATE_FINDINGS, no fallback gate file.
+  unset RITE_GATE_FINDINGS
+
+  # Override _diag to capture to RITE_LOG_FILE.
+  # assess-and-resolve.sh does not source logging.sh, so the inherited no-op
+  # stub from setup() persists unless replaced here — replace with a capturing
+  # version before the subprocess call.
+  _diag() { echo "[diag] $1" >> "$RITE_LOG_FILE"; }
+  export -f _diag 2>/dev/null || true
+
+  # Start with an empty log so the assertion below is unambiguous.
+  : > "$RITE_LOG_FILE"
+
+  run_assess_and_resolve 95 60
+
+  # 1 review NOW item, clean gate → exit 2 (fix loop).
+  [ "$status" -eq 2 ] || {
+    echo "FAIL: expected exit 2 (ACTIONABLE_NOW > 0 → fix loop), got $status"
+    echo "Output: ${output:0:1500}"
+    false
+  }
+
+  # The ASSESSMENT diag line must carry now_gate=0 now_review=1 — the #1149
+  # contract: _now_review_count is computed unconditionally before the _diag
+  # emission, even when gate is clean (GATE_NOW_COUNT=0).
+  grep -q "ASSESSMENT.*now_gate=0.*now_review=1" "$RITE_LOG_FILE" || {
+    echo "FAIL: ASSESSMENT diag missing now_gate=0 now_review=1 when gate is clean"
+    echo "      Expected: ...now_gate=0 now_review=1..."
+    echo "Diag log:"
+    cat "$RITE_LOG_FILE"
+    false
+  }
+}
