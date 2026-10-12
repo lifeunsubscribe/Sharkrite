@@ -31,6 +31,10 @@
 #   H8b — shared allowlisted command (make check only) → no WARNING, exit 0
 #   H8c — unique verification commands across issues → no WARNING, exit 0
 #   H8d — issue with duplicate-verification suppression → no WARNING, [suppressed] logged, exit 0
+#   H9a — 2hr estimate without Split rationale line → WARNING naming the issue, exit 0
+#   H9b — 2hr estimate with Split rationale line → no WARNING, exit 0
+#   H9c — 1hr estimate without Split rationale → no WARNING, exit 0
+#   H9d — 2hr with 2hr-split-rationale suppression → no WARNING, [suppressed] logged, exit 0
 
 load '../helpers/setup.bash'
 
@@ -3322,6 +3326,264 @@ FIXTURE
   # Must NOT warn about handler.ts since it is in Files to Modify
   grep -q "verification path not produced\|not in Files to Modify" "$stderr_out" && {
     echo "FAIL: unexpected Check 4 warning for path that is in Files to Modify" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture H9a — 2hr estimate without Split rationale → WARNING, exit 0
+# ---------------------------------------------------------------------------
+
+@test "Fixture H9a: 2hr without Split rationale — WARNING naming the issue, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-h9a.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+BODY:
+**Description**:
+Add all five CRUD endpoints for the user resource.
+
+**Claude Context**:
+Files to Modify:
+- src/routers/users.py
+
+**Acceptance Criteria**:
+- [ ] All endpoints return correct status codes: `pytest tests/test_users.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_users.py
+```
+
+**Done Definition**: Done when all 5 endpoints pass their tests and CI is green.
+
+**Scope Boundary**:
+- DO: implement user CRUD router
+- DO NOT: add auth middleware
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (WARNING, not error)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for 2hr-split-rationale warning, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a WARNING mentioning the check name
+  grep -q "2hr-split-rationale" "$stderr_out" || {
+    echo "FAIL: expected 2hr-split-rationale WARNING in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must name the issue in the warning
+  grep -q "Implement full CRUD router" "$stderr_out" || {
+    echo "FAIL: expected issue title in 2hr-split-rationale WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture H9b — 2hr estimate WITH Split rationale → silent, exit 0
+# ---------------------------------------------------------------------------
+
+@test "Fixture H9b: 2hr with Split rationale line — no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-h9b.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+BODY:
+**Description**:
+Add all five CRUD endpoints for the user resource.
+
+Split rationale: GET list + POST share the same schema validation logic; splitting would duplicate that validation across two PRs with no clean seam.
+
+**Claude Context**:
+Files to Modify:
+- src/routers/users.py
+
+**Acceptance Criteria**:
+- [ ] All endpoints return correct status codes: `pytest tests/test_users.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_users.py
+```
+
+**Done Definition**: Done when all 5 endpoints pass their tests and CI is green.
+
+**Scope Boundary**:
+- DO: implement user CRUD router
+- DO NOT: add auth middleware
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 when Split rationale is present, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit the 2hr-split-rationale warning
+  grep -q "2hr-split-rationale" "$stderr_out" && {
+    echo "FAIL: unexpected 2hr-split-rationale WARNING when Split rationale is present" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture H9c — 1hr estimate without Split rationale → silent, exit 0
+# ---------------------------------------------------------------------------
+
+@test "Fixture H9c: 1hr estimate — no 2hr-split-rationale WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-h9c.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Add GET list endpoint - users
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add the GET /users list endpoint.
+
+**Claude Context**:
+Files to Modify:
+- src/routers/users.py
+
+**Acceptance Criteria**:
+- [ ] Returns 200 with user list: `pytest tests/test_users.py::test_list`
+
+**Verification Commands**:
+```bash
+pytest tests/test_users.py::test_list
+```
+
+**Done Definition**: Done when test_list passes.
+
+**Scope Boundary**:
+- DO: add GET /users endpoint
+- DO NOT: add other CRUD endpoints
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for 1hr issue, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit 2hr-split-rationale warning for a 1hr issue
+  grep -q "2hr-split-rationale" "$stderr_out" && {
+    echo "FAIL: unexpected 2hr-split-rationale WARNING for 1hr issue" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture H9d — 2hr with suppression → no WARNING, [suppressed] logged, exit 0
+# ---------------------------------------------------------------------------
+
+@test "Fixture H9d: 2hr with 2hr-split-rationale suppression — no WARNING, suppressed logged, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-h9d.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+BODY:
+**Description**:
+Add all five CRUD endpoints for the user resource.
+
+<!-- sharkrite-plan-lint disable 2hr-split-rationale - Reason: ADR D3 mandates all user CRUD ships as one atomic PR for the rollback contract -->
+
+**Claude Context**:
+Files to Modify:
+- src/routers/users.py
+
+**Acceptance Criteria**:
+- [ ] All endpoints return correct status codes: `pytest tests/test_users.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_users.py
+```
+
+**Done Definition**: Done when all 5 endpoints pass their tests and CI is green.
+
+**Scope Boundary**:
+- DO: implement user CRUD router
+- DO NOT: add auth middleware
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 with suppression, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit the 2hr-split-rationale WARNING
+  grep -q "WARNING.*2hr-split-rationale" "$stderr_out" && {
+    echo "FAIL: unexpected 2hr-split-rationale WARNING despite suppression" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must log [suppressed] for the rule
+  grep -q "\[suppressed\].*2hr-split-rationale" "$stderr_out" || {
+    echo "FAIL: expected [suppressed] log for 2hr-split-rationale" >&2
     cat "$stderr_out" >&2
     false
   }
