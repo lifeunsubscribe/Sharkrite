@@ -1734,6 +1734,24 @@ case "$_DISPATCH_KEY" in
     normalize_and_resolve "${ARGS[0]}"
     record_run "$ISSUE_NUMBER" "dev-and-pr"
     print_info "Dev + PR: issue #${ISSUE_NUMBER} (work + PR, skip review/merge)"
+
+    # Guard: detect any existing PR and refuse with exit 19 if its base differs
+    # from the effective target branch (#1073). Mirrors the guard run_workflow()
+    # applies before any worktree/PR work. Source workflow-runner.sh to get
+    # check_branch_mismatch() and handle_branch_mismatch() (BASH_SOURCE guard
+    # prevents main() from running; only top-level side effect is ensure_timeout_cmd).
+    source "$RITE_LIB_DIR/core/workflow-runner.sh"
+    _dev_pr_cbm=0
+    if detect_pr_for_issue "$ISSUE_NUMBER"; then
+      set +e
+      check_branch_mismatch "$ISSUE_NUMBER" "$PR_NUMBER" "${PR_BASE_BRANCH:-}" "--dev-and-pr"
+      _dev_pr_cbm=$?
+      set -e
+    fi
+    if [ "$_dev_pr_cbm" -eq 19 ]; then
+      exit 19
+    fi
+
     "$RITE_LIB_DIR/core/claude-workflow.sh" "$ISSUE_NUMBER" --auto
     # Pass $ISSUE_NUMBER so create-pr.sh's resolver can use the state-file tier
     # on resume without requiring the --branch/--base flag to be re-supplied.

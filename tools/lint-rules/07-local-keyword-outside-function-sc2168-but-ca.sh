@@ -34,17 +34,24 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   # Count { and } on this line to track nesting depth.
   # gsub returns the replacement count, allowing us to count characters without
   # a per-char loop (fast, BSD AWK compatible, heredoc-safe).
-  # Strip string literals before counting so braces inside strings, ${param}
-  # expansions, and {a,b} brace-expansions in quoted arguments do not skew depth.
-  # Single-quoted strings have no escape sequences in bash, so the regex is exact.
-  # Double-quoted strings use a heuristic that misses backslash-escaped quotes --
-  # accepted for a lint heuristic; a full parser is out of scope.
-  # ${...} parameter expansions are also stripped: their braces always net to zero
-  # but stripping them avoids false depth drift on complex default expansions.
+  # Strip string literals before counting so braces inside strings and
+  # {a,b} brace-expansions in quoted arguments do not skew depth.
+  # Strip order: single-quoted strings, then backslash-escaped quotes, then
+  # double-quoted strings.
+  # Removing \" before the double-quote pass fixes "${x#\"}" false-positives:
+  # after stripping the escaped quote, "[^"]*" sees balanced outer quotes and
+  # strips the whole expansion cleanly — no orphaned } for the brace counter.
+  # Accepted gaps:
+  #   1. } at the start of a line inside a multi-line string assignment
+  #      — requires a full parser to fix.
+  #   2. "...\\" — a double-quoted string ending with a literal backslash (e.g.
+  #      the value "\\") causes gsub(/\\"/) to consume the closing quote, leaving
+  #      the outer "[^"]*" pass unable to strip that string; any } inside the
+  #      fragment can skew depth by one.
   _stripped = $0
   gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
+  gsub(/\\"/, "", _stripped)
   gsub(/"[^"]*"/, "", _stripped)
-  gsub(/\$\{[^}]*\}/, "", _stripped)
   # Use _stripped copies so $0 is not modified (detection check still uses $0).
   _tmp = _stripped; _ob = gsub(/{/, "", _tmp)
   _tmp = _stripped; _cb = gsub(/}/, "", _tmp)
