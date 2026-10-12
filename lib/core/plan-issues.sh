@@ -1703,9 +1703,10 @@ _lint_issues_strict() {
           fi
           # Also capture backtick commands from acceptance criteria lines
           # Format: - [ ] criterion: `command`
+          # Single-token captures (no space) are identifiers/paths, not commands — skip them.
           if echo "$_vline" | grep -qE '^\s*-\s*\['; then
             local _backtick_cmds
-            _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
+            _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' | grep ' ' || true)
             [ -n "$_backtick_cmds" ] && _issue_verif="${_issue_verif}${_backtick_cmds}"$'\n'
           fi
         done <<< "$_issue_block"
@@ -2323,7 +2324,7 @@ pytest"
       while IFS= read -r _vcmd; do
         [ -z "$_vcmd" ] && continue
         local _vcmd_norm
-        _vcmd_norm=$(echo "$_vcmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s ' ' || true)
+        _vcmd_norm=$(echo "$_vcmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s '[:blank:]' ' ' || true)
         [ -z "$_vcmd_norm" ] && continue
 
         # Skip allowlisted shared setup commands
@@ -2334,7 +2335,7 @@ pytest"
         while IFS= read -r _vcmd2; do
           [ -z "$_vcmd2" ] && continue
           local _vcmd2_norm
-          _vcmd2_norm=$(echo "$_vcmd2" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s ' ' || true)
+          _vcmd2_norm=$(echo "$_vcmd2" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s '[:blank:]' ' ' || true)
           if [ "$_vcmd_norm" = "$_vcmd2_norm" ]; then
             print_warning "strict-lint: WARNING: duplicate-verification: '$_vi_title' and '$_vj_title' both carry verification command '${_vcmd_norm}' — give ONE issue sole ownership of this criterion, or differentiate the commands" >&2
             _warning_count=$((_warning_count + 1))

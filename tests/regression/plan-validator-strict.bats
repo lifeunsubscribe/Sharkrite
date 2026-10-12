@@ -30,6 +30,7 @@
 #   H8a — duplicate non-allowlisted verification command → WARNING naming both titles, exit 0
 #   H8b — shared allowlisted command (make check only) → no WARNING, exit 0
 #   H8c — unique verification commands across issues → no WARNING, exit 0
+#   H8d — issue with duplicate-verification suppression → no WARNING, [suppressed] logged, exit 0
 
 load '../helpers/setup.bash'
 
@@ -3121,6 +3122,103 @@ FIXTURE
   # Must NOT emit a duplicate-verification WARNING
   grep -q "duplicate-verification:" "$stderr_out" && {
     echo "FAIL: unexpected duplicate-verification WARNING for unique commands" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 — issue with duplicate-verification suppression marker must NOT
+# produce a duplicate-verification WARNING; [suppressed] must be logged.
+# ---------------------------------------------------------------------------
+
+@test "Check 8 H8d: duplicate-verification suppression — no WARNING, [suppressed] logged, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-dup-verif-suppressed.txt"
+
+  cat > "$issues_file" <<FIXTURE
+---ISSUE---
+TITLE: Remove stale check from module A (suppressed)
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Remove stale check from module A.
+
+<!-- ${RITE_MARKER_PLAN_LINT} disable duplicate-verification - Reason: modules A and B are verified by the same grep intentionally during the migration window -->
+
+**Claude Context**:
+Files to Modify:
+- src/module_a.py
+
+**Acceptance Criteria**:
+- [ ] Check absent: \`grep -rn "stale-marker" src/ returns nothing\`
+
+**Verification Commands**:
+\`\`\`bash
+grep -rn "stale-marker" src/
+\`\`\`
+
+**Done Definition**: Done when stale-marker is absent from module A.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Remove stale check from module B
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Remove stale check from module B.
+
+**Claude Context**:
+Files to Modify:
+- src/module_b.py
+
+**Acceptance Criteria**:
+- [ ] Check absent: \`grep -rn "stale-marker" src/ returns nothing\`
+
+**Verification Commands**:
+\`\`\`bash
+grep -rn "stale-marker" src/
+\`\`\`
+
+**Done Definition**: Done when stale-marker is absent from module B.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 with duplicate-verification suppressed, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a duplicate-verification WARNING
+  grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" && {
+    echo "FAIL: unexpected duplicate-verification WARNING despite suppression marker" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must log [suppressed] to show suppression was applied
+  grep -q "\[suppressed\]" "$stderr_out" || {
+    echo "FAIL: expected '[suppressed]' in stderr to show suppression was applied" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must mention the rule that was suppressed
+  grep -q "duplicate-verification" "$stderr_out" || {
+    echo "FAIL: expected 'duplicate-verification' in suppression log" >&2
     cat "$stderr_out" >&2
     false
   }
