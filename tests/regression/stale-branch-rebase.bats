@@ -264,6 +264,132 @@ teardown() {
   git push origin --delete "$branch_name" >/dev/null 2>&1 || true
 }
 
+@test "check_stale_branch auto: branch 2x threshold behind, no conflict - rebases not restarts" {
+  # Acceptance criterion (issue #1137): auto mode attempts rebase first regardless of
+  # distance. A clean branch at 2× threshold must rebase and continue (exit 0),
+  # NOT close-and-restart. Reproduces the #1045 incident: PR #1089 was at exactly
+  # the threshold, auto-closed, and the full feature was re-implemented from scratch.
+
+  local branch_name="fix/two-x-threshold-$$"
+  local issue_number="1045"
+  local pr_number="1089"
+
+  export RITE_STALE_BRANCH_THRESHOLD=10  # threshold = 10; we'll put branch 20 behind
+
+  # Create feature branch with 1 work commit (no file conflicts with main)
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature work" > feature-1045.txt
+  git add feature-1045.txt
+  git commit -m "Implement feature #1045" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Advance main 20 commits ahead (2× threshold) with non-conflicting files
+  git checkout main >/dev/null 2>&1
+  local i
+  for i in $(seq 1 20); do
+    echo "main work $i" > "main-advance-${i}.txt"
+    git add "main-advance-${i}.txt"
+    git commit -m "Main advance $i" >/dev/null 2>&1
+  done
+  git push origin main >/dev/null 2>&1
+
+  # Create worktree
+  local worktree_path="$RITE_WORKTREE_DIR/issue-1045"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Run check_stale_branch in auto mode — should rebase (exit 0), NOT restart (exit 11)
+  local exit_code=0
+  check_stale_branch "$worktree_path" "$pr_number" "$issue_number" "auto" 2>/dev/null || exit_code=$?
+
+  # Must NOT close-and-restart (exit 11 would mean PR destroyed and worktree removed)
+  [ "$exit_code" -ne 11 ]
+
+  # Must succeed (exit 0)
+  [ "$exit_code" -eq 0 ]
+
+  # Verify rebase happened — main's new files present in worktree
+  [ -f "$worktree_path/main-advance-1.txt" ]
+  [ -f "$worktree_path/main-advance-20.txt" ]
+
+  # Verify feature work is preserved
+  [ -f "$worktree_path/feature-1045.txt" ]
+
+  # Verify no merge commits (rebase rewrites, no merge commit)
+  local merge_count
+  merge_count=$(git -C "$worktree_path" log origin/main..HEAD --merges --oneline 2>/dev/null | wc -l | tr -d ' ')
+  [ "$merge_count" -eq 0 ]
+
+  # Worktree is still present (PR was NOT destroyed)
+  [ -d "$worktree_path" ]
+
+  # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
+@test "check_stale_branch auto: above threshold with conflict, resolver fails - exits 11 (close+restart)" {
+  # Acceptance criterion (issue #1137): when rebase conflicts and the resolver fails,
+  # auto mode falls back to close-and-restart (exit 11). This was the existing fallback
+  # for below-threshold branches; it is now the universal fallback for all distances.
+
+  local branch_name="fix/conflict-above-threshold-$$"
+  local issue_number="1137"
+  local pr_number="9999"
+
+  export RITE_STALE_BRANCH_THRESHOLD=5     # threshold = 5; branch will be 8 behind
+  export RITE_REBASE_CONFLICT_RESTART_MAX=0  # disable small-branch fast-path
+
+  # Feature branch: modifies README.md (will conflict)
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  local i
+  for i in 1 2 3 4 5; do
+    echo "feature work $i" > "feature-conflict-${i}.txt"
+    git add "feature-conflict-${i}.txt"
+    git commit -m "Feature commit $i" >/dev/null 2>&1
+  done
+  # Final commit: modify README.md to produce conflict
+  echo "Feature README change" >> README.md
+  git add README.md
+  git commit -m "Feature modifies README" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Advance main 8 commits (> threshold 5), last one also modifies README.md
+  git checkout main >/dev/null 2>&1
+  for i in $(seq 1 7); do
+    echo "main advance $i" > "main-conflict-${i}.txt"
+    git add "main-conflict-${i}.txt"
+    git commit -m "Main advance $i" >/dev/null 2>&1
+  done
+  echo "Main README change (conflict)" >> README.md
+  git add README.md
+  git commit -m "Main modifies README" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  # Create worktree
+  local worktree_path="$RITE_WORKTREE_DIR/issue-1137"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Stub the resolver to fail — ensures the conflict-fallback path fires, not LLM resolution
+  # Re-stub after source per test runbook rule 2 (env-guarded libs overwrite pre-source stubs)
+  attempt_claude_merge_resolution() { return 1; }
+
+  # Stub gh_safe so close-and-cleanup doesn't hit GitHub
+  gh_safe() { return 0; }
+
+  # Run check_stale_branch in auto mode — should attempt rebase, fail on conflict,
+  # fall back to close+restart → exit 11
+  local exit_code=0
+  check_stale_branch "$worktree_path" "$pr_number" "$issue_number" "auto" 2>/dev/null || exit_code=$?
+
+  # Must exit 11 (close-and-restart fallback)
+  [ "$exit_code" -eq 11 ]
+
+  # Worktree should be gone (close-and-cleanup removed it)
+  [ ! -d "$worktree_path" ]
+}
+
 @test "check_stale_branch uses rebase for below-threshold branches" {
   # Integration test: check_stale_branch function uses rebase (not merge)
   # Test: Branch is 3 commits behind (below default threshold of 10)
