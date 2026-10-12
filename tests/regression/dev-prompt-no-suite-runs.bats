@@ -6,7 +6,7 @@
 # (claude_provider_dev_session_preamble) + the Workflow Instructions body in
 # claude-workflow.sh. Verifies neither piece invites running the full test suite:
 #   1. The preamble Phase 4 todo does NOT say "Running tests" / "verifying correctness"
-#   2. The Phase 4 heading is "Test Authoring & Syntax Check" (not "Testing & Validation")
+#   2. The Phase 4 heading is "Test Authoring & Syntax Check & Lint" (not "Testing & Validation")
 #   3. No Phase 4 cross-reference frames it as "verify everything works"
 #   4. Phase 4 still affirmatively keeps its real work: write tests + bash -n
 #   5. Phase 4 still prohibits make check / bats / pytest
@@ -49,9 +49,9 @@ setup() {
   true
 }
 
-@test "dev preamble Phase 4 todo is 'Test Authoring & Syntax Check'" {
-  if ! echo "$PREAMBLE" | grep -q 'Phase 4: Test Authoring & Syntax Check'; then
-    echo "FAIL: dev-session preamble Phase 4 todo not renamed to 'Test Authoring & Syntax Check'"
+@test "dev preamble Phase 4 todo is 'Test Authoring & Syntax Check & Lint'" {
+  if ! echo "$PREAMBLE" | grep -q 'Phase 4: Test Authoring & Syntax Check & Lint'; then
+    echo "FAIL: dev-session preamble Phase 4 todo not renamed to 'Test Authoring & Syntax Check & Lint'"
     echo "$PREAMBLE" | grep -i 'Phase 4' || true
     return 1
   fi
@@ -72,13 +72,13 @@ setup() {
 # Workflow Instructions body: heading + cross-refs
 # ---------------------------------------------------------------------------
 
-@test "Phase 4 heading is 'Test Authoring & Syntax Check' (not 'Testing & Validation')" {
+@test "Phase 4 heading is 'Test Authoring & Syntax Check & Lint' (not 'Testing & Validation')" {
   if grep -qE '^### Phase 4: Testing & Validation' "$WORKFLOW_FILE"; then
     echo "FAIL: Phase 4 heading still reads 'Testing & Validation' (invites running tests)"
     return 1
   fi
-  if ! grep -qE '^### Phase 4: Test Authoring & Syntax Check' "$WORKFLOW_FILE"; then
-    echo "FAIL: Phase 4 heading not found / not renamed"
+  if ! grep -qE '^### Phase 4: Test Authoring & Syntax Check & Lint' "$WORKFLOW_FILE"; then
+    echo "FAIL: Phase 4 heading not found / not renamed to '& Lint' form"
     grep -nE '^### Phase 4' "$WORKFLOW_FILE" || true
     return 1
   fi
@@ -105,6 +105,15 @@ setup() {
   true
 }
 
+@test "Phase 4 instructs running the custom linter on changed files (lint carve-out)" {
+  # Source uses \${_lint_sh} variable expansion — grep for the surrounding instruction
+  # text rather than the literal path (which is assembled at runtime via _lint_sh).
+  _p4=$(sed -n '/^### Phase 4:/,/^### Phase 5:/p' "$WORKFLOW_FILE" || true)
+  echo "$_p4" | grep -q 'custom linter' || { echo "FAIL: Phase 4 is missing the 'custom linter' instruction"; return 1; }
+  echo "$_p4" | grep -q '_lint_sh' || { echo "FAIL: Phase 4 is missing the _lint_sh variable reference"; return 1; }
+  true
+}
+
 @test "Phase 4 still prohibits running make check / bats / pytest" {
   _p4=$(sed -n '/^### Phase 4:/,/^### Phase 5:/p' "$WORKFLOW_FILE" || true)
   if ! echo "$_p4" | grep -qiE 'Do NOT run .*make check'; then
@@ -123,7 +132,7 @@ setup() {
 @test "preamble injects the test-authoring runbook when the doc exists" {
   # setup() pinned RITE_INSTALL_DIR to the repo checkout, which ships
   # docs/test-authoring-runbook.md — the shared PREAMBLE must carry it.
-  if ! echo "$PREAMBLE" | grep -qF 'Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check)'; then
+  if ! echo "$PREAMBLE" | grep -qF 'Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check & Lint)'; then
     echo "FAIL: preamble is missing the runbook marker line (injection broken or header reworded)"
     return 1
   fi
@@ -144,7 +153,7 @@ setup() {
     return 1
   fi
   # The rest of the preamble must be intact (todo skeleton unchanged).
-  if ! echo "$_p" | grep -q 'Phase 4: Test Authoring & Syntax Check'; then
+  if ! echo "$_p" | grep -q 'Phase 4: Test Authoring & Syntax Check & Lint'; then
     echo "FAIL: Phase 4 todo line lost in the no-runbook path"
     return 1
   fi

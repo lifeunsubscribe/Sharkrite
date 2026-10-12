@@ -61,7 +61,7 @@ setup() {
 
 @test "load helper output includes the canonical runbook header line" {
   _out=$(claude_provider_load_test_authoring_runbook)
-  echo "$_out" | grep -qF 'Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check)' || {
+  echo "$_out" | grep -qF 'Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check & Lint)' || {
     echo "FAIL: canonical header line absent from helper output"
     echo "--- actual output (first 5 lines) ---"
     echo "$_out" | head -5
@@ -196,7 +196,7 @@ setup() {
   # Render the preamble and verify runbook is still injected — confirming the
   # extraction did not silently break the dev session path.
   _preamble=$(claude_provider_dev_session_preamble true "dummy task")
-  echo "$_preamble" | grep -qF 'Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check)' || {
+  echo "$_preamble" | grep -qF 'Test Authoring Runbook — apply during Phase 4 (Test Authoring & Syntax Check & Lint)' || {
     echo "FAIL: dev-session preamble no longer injects the runbook (extraction broke it)"
     return 1
   }

@@ -106,7 +106,7 @@ _is_path_shaped() {
 #
 # Returns 0 if FILE looks like a test file that should be implicitly allowed
 # during scope-boundary checks.  Authoring tests is an expected part of Phase 4
-# (Test Authoring & Syntax Check), so test files written alongside a source
+# (Test Authoring & Syntax Check & Lint), so test files written alongside a source
 # change must not generate false-positive scope warnings.
 #
 # Matched patterns (case-insensitive, after lowercasing):
