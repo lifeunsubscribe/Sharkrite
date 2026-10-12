@@ -9,7 +9,7 @@
 #
 # Sub-checks (all suppressed with the same marker):
 #   A. sed BRE alternation/quantifiers (\|/\+/\?) — GNU BRE extensions; BSD treats as literals
-#      (sed Q / \w / \W are out of scope — distinct classes, tracked separately)
+#      (sed Q / \w / \W are out of scope — not yet tracked)
 #   B. sed case-conversion (\u \l \U \L) — GNU replacement extension; BSD: garbage
 #   C. date -d without BSD fallback (|| date -v or date -j, or date --version guard)
 #   D. grep -P / --perl-regexp — PCRE mode; absent on stock macOS grep
@@ -59,12 +59,32 @@ for _r39_file in "${SHELL_FILES[@]}"; do
     echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
     # Skip if sed is in ERE mode (-E or any flag cluster containing E)
     echo "$_r39_ltext" | grep -qE '\bsed\b[^|&;#]*-[a-zA-Z]*E' && continue
+    # Scope to the sed-expression portion of the line: strip everything before
+    # the first word-boundary 'sed ' so that \|/\+/\? in preceding grep/awk
+    # arguments are not mistaken for BRE extensions (false-positive guard).
+    _r39_sed_part=$(echo "$_r39_ltext" | awk '{
+      n = length($0)
+      for (i = 1; i <= n-3; i++) {
+        if (substr($0, i, 4) == "sed ") {
+          c = (i > 1) ? substr($0, i-1, 1) : " "
+          if (c == " " || c == "\t" || c == "|" || c == ";" || c == "&" || c == "(" || i == 1) {
+            print substr($0, i); exit
+          }
+        }
+      }
+      print $0
+    }' || true)
     # For \|: skip if \| only appears as \\| — escaped pipe in s/// replacement
-    # (not BRE alternation). Strip all \\| occurrences; if no bare \| remains, skip.
-    if echo "$_r39_ltext" | grep -qF '\|'; then
-      _r39_stripped=$(echo "$_r39_ltext" | sed 's/\\\\|//g' || true)
-      echo "$_r39_stripped" | grep -qF '\|' || continue
+    # (not BRE alternation). Strip all \\| occurrences from the sed portion; if
+    # no BRE extension remains after stripping, skip. Checking all three escapes
+    # here prevents a line with both \\| in replacement and \+/\? in pattern
+    # from being silently skipped.
+    if echo "$_r39_sed_part" | grep -qF '\|'; then
+      _r39_stripped=$(echo "$_r39_sed_part" | sed 's/\\\\|//g' || true)
+      echo "$_r39_stripped" | grep -qE '\\[|+?]' || continue
     fi
+    # Skip if no BRE extension is present in the sed portion at all
+    echo "$_r39_sed_part" | grep -qE '\\[|+?]' || continue
     _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
     print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
       "sed BRE extension (\\|/\\+/\\?) is GNU-only — BSD treats as literals (silent wrong match); use sed -E with unescaped |/+/? for ERE alternation/quantifiers"
