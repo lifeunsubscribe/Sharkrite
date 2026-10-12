@@ -513,6 +513,34 @@ EOF
   [[ "$output" =~ escaped-quote-with-bad-local\.sh ]]
 }
 
+@test "LOCAL_OUTSIDE_FUNCTION: nested-quoted default expansion does not skew depth" {
+  # Regression (#1116 first attempt): "${a:-"{}"}" embeds a double-quoted string
+  # inside the default value of a parameter expansion. The gsub(/\\"/) pre-strip
+  # must not consume the outer closing quote, or the unmatched } in the default
+  # value will decrement depth and make subsequent 'local' appear outside scope.
+
+  cat > "$LINT_FIXTURE_DIR/nested-quoted-default.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+my_func() {
+  local a="x"
+  a="${a:-"{}"}"
+  local b="y"
+}
+my_func
+EOF
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=07 run tools/sharkrite-lint.sh
+
+  # Both locals inside my_func are correct — must not be flagged
+  if [[ "$output" =~ "LOCAL_OUTSIDE_FUNCTION" ]]; then
+    [[ ! "$output" =~ nested-quoted-default\.sh ]] || {
+      false  # LOCAL_OUTSIDE_FUNCTION falsely flagged local after nested-quoted default expansion
+    }
+  fi
+}
+
 @test "GH_UNSAFE_CALL: lowercase heredoc body lines are not scanned for gh calls" {
   # Regression: if the state machine doesn't recognize a lowercase heredoc marker,
   # gh commands in the heredoc body (e.g., prompt text or documentation) get

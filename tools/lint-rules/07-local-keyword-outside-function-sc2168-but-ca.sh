@@ -41,8 +41,13 @@ FNR == 1 { depth = 0; in_heredoc = 0; hd_marker = "" }
   # Removing \" before the double-quote pass fixes "${x#\"}" false-positives:
   # after stripping the escaped quote, "[^"]*" sees balanced outer quotes and
   # strips the whole expansion cleanly — no orphaned } for the brace counter.
-  # Accepted gap: } at the start of a line inside a multi-line string assignment
-  # — requires a full parser to fix.
+  # Accepted gaps:
+  #   1. } at the start of a line inside a multi-line string assignment
+  #      — requires a full parser to fix.
+  #   2. "...\\" — a double-quoted string ending with a literal backslash (e.g.
+  #      the value "\\") causes gsub(/\\"/) to consume the closing quote, leaving
+  #      the outer "[^"]*" pass unable to strip that string; any } inside the
+  #      fragment can skew depth by one.
   _stripped = $0
   gsub(/'"'"'[^'"'"']*'"'"'/, "", _stripped)
   gsub(/\\"/, "", _stripped)
