@@ -8,6 +8,16 @@
 
 set -euo pipefail
 
+# Fail fast on bash 3.2 (macOS system default) — this script uses mapfile which
+# is bash 4+ only. It is designed to run under homebrew bash; bail with a clear
+# message rather than a confusing "mapfile: command not found" later.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "ERROR: sharkrite-lint.sh requires bash 4+ (uses mapfile). Current: bash ${BASH_VERSION}" >&2
+  echo "  Install: brew install bash" >&2
+  echo "  Then ensure /opt/homebrew/bin/bash or /usr/local/bin/bash is on PATH before /bin/bash" >&2
+  exit 1
+fi
+
 # Color output
 RED='\033[0;31m'
 YELLOW='\033[1;33m'

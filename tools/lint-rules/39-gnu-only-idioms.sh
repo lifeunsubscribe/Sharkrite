@@ -1,0 +1,187 @@
+# Sourced by tools/sharkrite-lint.sh (the driver) — not standalone.
+# Shares the driver shell: SHELL_FILES, VIOLATIONS, print_violation, colors.
+
+# Rule 39: GNU-only shell idioms that silently misbehave on BSD/macOS
+#
+# Catches the idiom classes that shipped as silent regressions in #884/#893
+# because the macOS+Linux matrix CI only catches executed paths, not authoring
+# patterns. The rule fires at authoring time so these never reach CI.
+#
+# Sub-checks (all suppressed with the same marker):
+#   A. sed BRE alternation (\|) — GNU BRE extension; BSD treats \| as literals
+#   B. sed case-conversion (\u \l \U \L) — GNU replacement extension; BSD: garbage
+#   C. date -d without BSD fallback (|| date -v or date -j, or date --version guard)
+#   D. grep -P / --perl-regexp — PCRE mode; absent on stock macOS grep
+#   E. stat -c without stat --version guard — GNU stat format; BSD uses stat -f
+#   F. bare timeout invocation without command -v timeout / gtimeout guard
+#   G. mktemp template where XXXXXX is not terminal — BSD creates literal suffix
+#
+# Suppression (preceding line, applies to all sub-checks):
+#   # sharkrite-lint disable GNU_ONLY_IDIOM - Reason: <text>
+#
+# Live regressions that motivated each check:
+#   A: assess-review-issues.sh / plan-issues.sh (BRE \| — BSD ran to EOF or matched nothing)
+#   B: create-pr.sh (sed \u title-case — BSD emitted "uix uogin" literal-u garbage)
+#   F: batch-process-issues.sh (bare timeout — exit 127 misread as timed-out on macOS)
+#   G: bin/rite-full-suite (mktemp .XXXXXX.txt — BSD created literal ".txt" filename)
+
+_gnu_check_suppressed() {
+  local _gc_file="$1" _gc_line="$2"
+  local _gc_start=$(( _gc_line - 2 ))
+  local _gc_end=$(( _gc_line - 1 ))
+  local _gc_prev_text
+  # Look back 2 lines: handles both single-line (comment on line N-1) and
+  # multi-line pipeline continuations (comment on line N-2, assignment on N-1,
+  # flagged command on N — the \| is inside the pipeline continuation).
+  _gc_prev_text=$(sed -n "${_gc_start},${_gc_end}p" "$_gc_file" 2>/dev/null || echo "")
+  echo "$_gc_prev_text" | grep -qE '#.*sharkrite-lint.*disable.*GNU_ONLY_IDIOM'
+}
+
+# ---------------------------------------------------------------------------
+# A. sed BRE alternation (\|)
+# ---------------------------------------------------------------------------
+# GNU BRE extension: \| is alternation. BSD sed treats \| as literal characters
+# (backslash then pipe), so the pattern silently matches the wrong text or nothing.
+# Fix: use sed -E (ERE) with unescaped | for alternation.
+# NOT flagged: sed -E / sed -nE (ERE mode — \| in ERE means literal backslash+pipe)
+echo "Rule 39A: Checking for sed BRE alternation (\\|) — GNU-only..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    # Skip full-line comments
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    # Only flag if this is a sed invocation
+    echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
+    # Skip if sed is in ERE mode (-E or any flag cluster containing E)
+    echo "$_r39_ltext" | grep -qE '\bsed\b[^|&;#]*-[a-zA-Z]*E' && continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "sed BRE alternation (\\|) is a GNU extension — BSD treats \\| as literals (silent wrong match); use sed -E with unescaped | for alternation"
+  done < <(grep -nF '\|' "$_r39_file" 2>/dev/null || true)
+done
+
+# ---------------------------------------------------------------------------
+# B. sed case-conversion escapes (\u \l \U \L)
+# ---------------------------------------------------------------------------
+# GNU sed replacement extension: \u (uppercase next), \l (lowercase next),
+# \U (uppercase all to \E), \L (lowercase all to \E). BSD sed does not support
+# these — it emits literal characters like "u", "l", or corrupts the output.
+# Fix: replace with awk's toupper()/tolower() or tr.
+echo "Rule 39B: Checking for sed case-conversion escapes (\\u \\l \\U \\L) — GNU-only..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "sed case-conversion escape (\\u/\\l/\\U/\\L) is a GNU-only replacement extension; BSD sed emits garbage — use awk toupper()/tolower() or tr instead"
+  done < <(grep -nE 'sed.*\\[uUlL]' "$_r39_file" 2>/dev/null || true)
+done
+
+# ---------------------------------------------------------------------------
+# C. date -d without BSD fallback
+# ---------------------------------------------------------------------------
+# GNU date: date -d "30 days ago" parses relative/absolute expressions.
+# BSD date (macOS): -d is the day-of-month flag, not a date parser.
+# Fix: add a same-line BSD fallback (|| date -v-30d) or wrap in a
+# date --version guard (GNU) with a date -v / date -j (BSD) else branch.
+# NOT flagged: lines that already carry a || date -v or || date -j fallback
+# NOT flagged: lines inside a date --version guard (preceding 3 lines)
+echo "Rule 39C: Checking for date -d without BSD fallback — GNU-only..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    # Same-line BSD fallback: || date -v (offset) or || date -j (custom format)
+    echo "$_r39_ltext" | grep -qE '\|\|[[:space:]]*date[[:space:]]+-[vj]' && continue
+    # date --version guard in the preceding 3 lines
+    _r39_prev3=$(sed -n "$(( _r39_lnum - 3 )),$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
+    echo "$_r39_prev3" | grep -qE 'date --version' && continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "'date -d' is a GNU date extension for parsing date expressions; BSD date interprets -d as day-of-month — add a same-line '|| date -v' fallback or wrap in a 'date --version' guard"
+  done < <(grep -nE '\bdate -d\b' "$_r39_file" 2>/dev/null || true)
+done
+
+# ---------------------------------------------------------------------------
+# D. grep -P / --perl-regexp
+# ---------------------------------------------------------------------------
+# PCRE (Perl-compatible regex) mode is a GNU grep extension; stock macOS grep
+# does not support -P at all (exits with "invalid option -- P" and returns 0 or
+# fails, depending on version). Use -E (ERE) instead for portable patterns.
+echo "Rule 39D: Checking for grep -P / --perl-regexp — GNU-only..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "'grep -P' (PCRE mode) is not available on stock macOS grep — use grep -E (ERE) with a POSIX-compatible pattern instead"
+  done < <(grep -nE '\bgrep\b[^|&;#]*(-[a-zA-Z]*P\b|--perl-regexp)' "$_r39_file" 2>/dev/null || true)
+done
+
+# ---------------------------------------------------------------------------
+# E. stat -c without stat --version guard
+# ---------------------------------------------------------------------------
+# GNU stat: stat -c "%Y" FILE prints the format specified by the -c string.
+# BSD stat (macOS): stat -c is unsupported (exits non-zero with "illegal option").
+# The portable wrapper is portable_stat_mtime() in lib/utils/portable-cmds.sh
+# (which wraps both forms behind a stat --version guard).
+# NOT flagged: inside a stat --version guard (preceding 3 lines)
+echo "Rule 39E: Checking for stat -c without stat --version guard — GNU-only..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    _r39_prev3=$(sed -n "$(( _r39_lnum - 3 )),$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
+    echo "$_r39_prev3" | grep -qE 'stat --version' && continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "'stat -c' is a GNU stat format option; BSD stat uses 'stat -f' — wrap in a 'stat --version' guard or use portable_stat_mtime() from lib/utils/portable-cmds.sh"
+  done < <(grep -nE '\bstat -c\b' "$_r39_file" 2>/dev/null || true)
+done
+
+# ---------------------------------------------------------------------------
+# F. Bare timeout invocation without command -v timeout / gtimeout guard
+# ---------------------------------------------------------------------------
+# The timeout(1) binary is provided by GNU coreutils and is absent on stock
+# macOS (/bin/bash) — on macOS it's only available as gtimeout via coreutils.
+# A bare `timeout N cmd` without a command -v guard exits 127, which callers
+# may misinterpret as a timed-out process.
+# Fix: use run_with_timeout (lib/utils/timeout.sh) — it degrades gracefully.
+# NOT flagged: run_with_timeout (the portable wrapper)
+# NOT flagged: lines inside a `command -v timeout` or `command -v gtimeout`
+#              guard (preceding 3 lines)
+echo "Rule 39F: Checking for bare timeout invocation without command -v guard — GNU-only..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    # run_with_timeout is the portable wrapper — skip
+    echo "$_r39_ltext" | grep -qF 'run_with_timeout' && continue
+    # Skip: timeout inside a quoted echo/print diagnostic string (e.g. "...timeout 30s...")
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*(echo|print_[a-zA-Z_]+)[[:space:]]+"[^"]*\btimeout\b' && continue
+    # command -v timeout / gtimeout guard on this line
+    echo "$_r39_ltext" | grep -qE 'command -v (timeout|gtimeout)' && continue
+    _r39_prev3=$(sed -n "$(( _r39_lnum - 3 )),$((  _r39_lnum - 1 ))p" "$_r39_file" 2>/dev/null || echo "")
+    echo "$_r39_prev3" | grep -qE 'command -v (timeout|gtimeout)' && continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "bare 'timeout' command is absent on stock macOS (coreutils not installed); use run_with_timeout from lib/utils/timeout.sh or guard with 'command -v timeout'"
+  done < <(grep -nE '(^|[[:space:];|&(])(timeout)[[:space:]]+[-0-9$]' "$_r39_file" 2>/dev/null || true)
+done
+
+# ---------------------------------------------------------------------------
+# G. mktemp template where XXXXXX is not the terminal segment
+# ---------------------------------------------------------------------------
+# BSD mktemp requires the XXXXXX placeholder to be at the very end of the
+# template (no suffix). When a suffix follows (e.g. mktemp /tmp/foo_XXXXXX.txt),
+# BSD mktemp uses the template literally — it creates a file named exactly
+# "/tmp/foo_XXXXXX.txt" without replacing XXXXXX, which breaks uniqueness.
+# GNU mktemp accepts suffixes via --suffix but not positionally.
+# Fix: remove the suffix (BSD already uses PID+timestamp for uniqueness), or
+# use mktemp "${TMPDIR:-/tmp}/prefix_$$_XXXXXX" (terminal XXXXXX).
+echo "Rule 39G: Checking for mktemp templates with non-terminal XXXXXX — BSD-broken..."
+for _r39_file in "${SHELL_FILES[@]}"; do
+  while IFS=: read -r _r39_lnum _r39_ltext; do
+    echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
+    _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
+    print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
+      "mktemp template has XXXXXX followed by a suffix — BSD mktemp requires XXXXXX at the end; the template is used literally on BSD, breaking file uniqueness"
+  done < <(grep -nE 'mktemp[^|&;]*XXXXXX[^[:space:]"'"'"']' "$_r39_file" 2>/dev/null || true)
+done
