@@ -61,6 +61,8 @@ export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
 export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
 export RITE_DATA_DIR=".rite"
 export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
+# Pin target branch so batch-env RITE_TARGET_BRANCH (e.g. supervised-ux) cannot leak in
+export RITE_TARGET_BRANCH=main
 
 export PATH="${STUB_BIN}:${PATH}"
 export STUB_CALLS_FILE
@@ -75,6 +77,11 @@ provider_resolve_model()           { printf 'claude-sonnet-4-6\n'; }
 docs_map_ensure()                  { touch "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
 docs_map_path()                    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
 gh_safe()                          { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
+
+# Create origin/main ref pointing at HEAD so _docs_apply_approved can fork a
+# worktree from origin/main. Done immediately before dispatch so any commits
+# added by the test (e.g. the drift-log commit in test 7) are included.
+git -C "${FAKE_PROJECT}" update-ref refs/remotes/origin/main HEAD
 
 # Invoke the requested function with all remaining args
 "$@"
