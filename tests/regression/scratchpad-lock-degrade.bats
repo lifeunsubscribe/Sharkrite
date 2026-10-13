@@ -75,7 +75,12 @@ teardown() {
 # PID that passes the kill -0 liveness check, so waiters cannot stale-reclaim
 # and must run into their acquire timeout.
 hold_lock_with_live_pid() {
-  sleep 60 &
+  # 3>&- closes bats' status descriptor in the child: a background process that
+  # inherits fd 3 keeps bats waiting on it, so an early test failure (teardown
+  # not reached) stalls the run to the gate watchdog, which surfaces as a
+  # non-zero gate exit with no parseable TAP. Same form as
+  # batch-dep-live-lock-defer.bats.
+  sleep 60 3>&- &
   HOLDER_PID=$!
   mkdir "$SCRATCHPAD_FILE.lock"
   echo "$HOLDER_PID" > "$SCRATCHPAD_FILE.lock/pid"
