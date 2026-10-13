@@ -1133,7 +1133,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         # _DEFER_COUNT anti-cycle cap so a stalled foreign session cannot loop
         # this issue forever. Local filesystem check only; no network calls.
         # Deliberate batch-only divergence: single-issue mode has no queue to
-        # defer into. See behavioral-design.md → "Batch Dep-Guard".
+        # defer into. See behavioral-design.md → "Dependency Detection".
         if [ "$DEP_IN_QUEUE" = false ]; then
           _live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
           _live_lock_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"

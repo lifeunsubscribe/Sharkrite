@@ -31,12 +31,12 @@ BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 # Helper: build a minimal script that exercises the open-dep decision block
 # with a configurable lock directory, simulating live-lock and no-lock cases.
 #
-# Args passed via env vars (written into the script body):
-#   LOCK_DIR      path for RITE_LOCK_DIR
-#   DEP_PID       pid to write into the lock pid file (0 = no lock file)
-#   USE_OWN_PID   "true" to write $$ as the lock pid (self-lock test)
-#   DEFER_COUNT   pre-existing defer count for ISSUE_NUM (default 0)
-#   UNIQUE_COUNT  _UNIQUE_ISSUE_COUNT value (default 3)
+# Args (positional):
+#   $1  LOCK_DIR      path for RITE_LOCK_DIR
+#   $2  (unused — reserved for future expansion)
+#   $3  (unused — reserved for future expansion)
+#   $4  DEFER_COUNT   pre-existing defer count for ISSUE_NUM (default 0)
+#   $5  UNIQUE_COUNT  _UNIQUE_ISSUE_COUNT value (default 3)
 # =============================================================================
 _build_live_lock_script() {
   local _script="$BATS_TEST_TMPDIR/test-live-lock-defer.sh"
@@ -116,6 +116,11 @@ SCRIPT_EOF
   echo "$_script"
 }
 
+teardown() {
+  # Kill any background sleep spawned as a foreign session holder
+  kill "${_foreign_pid:-}" 2>/dev/null || true
+}
+
 # =============================================================================
 # BEHAVIORAL
 # =============================================================================
@@ -124,8 +129,9 @@ SCRIPT_EOF
   # Set up a fake lock dir with a live PID (use a background sleep as the holder)
   _lock_dir="$BATS_TEST_TMPDIR/locks-live"
   mkdir -p "$_lock_dir/issue-1.lock"
-  # Start a background sleep as the foreign session holder
-  sleep 60 &
+  # Start a background sleep as the foreign session holder; close fd 3 so an
+  # early assertion failure doesn't let the orphan stall bats' output stream.
+  sleep 60 3>&- &
   _foreign_pid=$!
   echo "$_foreign_pid" > "$_lock_dir/issue-1.lock/pid"
 
@@ -215,7 +221,7 @@ SCRIPT_EOF
   # must not fire — the cap is the hard termination point for all defer paths.
   _lock_dir="$BATS_TEST_TMPDIR/locks-cap"
   mkdir -p "$_lock_dir/issue-1.lock"
-  sleep 60 &
+  sleep 60 3>&- &
   _foreign_pid=$!
   echo "$_foreign_pid" > "$_lock_dir/issue-1.lock/pid"
 
@@ -247,18 +253,10 @@ SCRIPT_EOF
   # This matters if this batch process somehow holds the dep lock itself.
   _lock_dir="$BATS_TEST_TMPDIR/locks-self"
   mkdir -p "$_lock_dir/issue-1.lock"
-  # Write our own PID — the script's $$ comparison must reject this
-  echo "$$" > "$_lock_dir/issue-1.lock/pid"
-
-  _script=$(_build_live_lock_script "$_lock_dir")
-  # The script's own $$ is the test shell's PID; we need to verify the PID-file
-  # pid != $$ check fires. The _build_live_lock_script writes "$$" literally
-  # (the test shell's PID), which the helper script then compares against its own $$.
-  # They will differ (different processes) — this tests that a PID that happens to
-  # match the SCRIPT's $$ is rejected, not the test shell's.
-  #
-  # To test the actual self-PID rejection, we write the script file's own PID into
-  # the lock. We do this by having the script write its PID and re-check:
+  # The script writes its own $$ into the lock at startup, so the pid != $$
+  # guard rejects it. We build a self-contained script rather than using
+  # _build_live_lock_script, because the latter's $$ (test shell) differs from
+  # the spawned script's $$.
   _self_pid_script="$BATS_TEST_TMPDIR/test-self-pid.sh"
   cat > "$_self_pid_script" <<SELF_EOF
 #!/usr/bin/env bash
