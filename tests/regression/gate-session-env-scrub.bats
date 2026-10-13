@@ -24,7 +24,9 @@ setup() {
   # Removing a var from _bats_sandbox would leave it set in the probe and fail.
   _SANDBOX_ARGS=(env)
   while read -r _flag _var; do
-    [ -n "$_var" ] && _SANDBOX_ARGS+=("$_flag" "$_var")
+    if [ -n "$_var" ]; then
+      _SANDBOX_ARGS+=("$_flag" "$_var")
+    fi
   done < <(sed -n '/_bats_sandbox=(env -u/,/)/p' \
       "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -oE -- '-u [A-Z_]+' || true)
   # Scrub BATS_* IPC vars: nested bats without this inherits outer runner FDs
