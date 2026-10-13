@@ -2091,7 +2091,23 @@ run_test_gate() {
     # disabling the timeout and breaking swallowed-test detection (the
     # gate-flake-retry.bats setup mirror DOES scrub it — there the leak is
     # the OUTER runner's value, not a gate-owned export).
+    #
+    # _GATE_BATS_SCRUB_VARS — session-behavioral RITE_* vars that must not
+    # bleed into bats tests. Tests that pass in isolation can fail inside a
+    # gate when an exported session var flips a code path; the lint rule cannot
+    # catch this class (the broken tests contain zero references to the var).
+    # Structural vars (RITE_REPO_ROOT, RITE_LIB_DIR, RITE_PROJECT_ROOT) stay —
+    # Rule 35 suppressions and setup.bash loaders depend on them.
+    # Incidents: RITE_TEST_GATE_SKIP_TRIGGERS=true (#1182, 3 tests × 5 slots);
+    # RITE_TARGET_BRANCH=supervised-ux (#1049/PR #1179, 2 tests × 3 retries).
+    # Note: RITE_TEST_GATE_SKIP_TRIGGERS is consumed by the gate itself BEFORE
+    # the bats invocation (selection phase); scrubbing it from the child env
+    # does not change gate-selection behavior.
+    # Applied by _bats_sandbox below; also dynamic-scoped into _gate_flake_retry_pass.
     local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
+      -u RITE_TARGET_BRANCH -u RITE_TEST_GATE_SKIP_TRIGGERS \
+      -u RITE_STALE_BRANCH_THRESHOLD -u RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
+      -u RITE_ACCEPT_RED_MAIN \
       -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
       -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
       -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)

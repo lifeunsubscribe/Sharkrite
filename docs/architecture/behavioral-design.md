@@ -1762,3 +1762,49 @@ phantom-review shape (no local worktree, verifies Phase 1 targets parent branch)
 
 Direct unit tests for `detect_parent_pr_attachment` outcomes:
 `tests/regression/parent-pr-attachment.bats`.
+
+## Hermetic Bats Env: Session-Behavioral Var Scrub (#1186)
+
+**2026-10-12.** Bats tests inherit the workflow session's environment, so tests
+that pass in isolation can fail inside a gate when an exported session var flips
+a code path. Three incidents on 2026-10-12:
+
+- `RITE_TEST_GATE_SKIP_TRIGGERS=true` (from `post-merge-verify`): broke 3
+  lint-selection tests across 5 slots (#1182).
+- `RITE_TARGET_BRANCH=supervised-ux` (from a `--branch` session): broke both
+  `_docs_apply_approved` tests across 3 retries (#1049, PR #1179).
+
+A lint rule cannot catch this class — the broken tests contain zero references
+to the triggering variable. Prevention is a runtime boundary at the one choke
+point where the gate spawns bats.
+
+**Fix:** `_bats_sandbox` in `run_test_gate` (`lib/utils/test-gate.sh`) was
+extended with a named deny-list (`_GATE_BATS_SCRUB_VARS`) of session-behavioral
+RITE_* vars removed via `env -u` from every bats child:
+
+```
+_GATE_BATS_SCRUB_VARS: RITE_TARGET_BRANCH  RITE_TEST_GATE_SKIP_TRIGGERS
+  RITE_STALE_BRANCH_THRESHOLD  RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD
+  RITE_ACCEPT_RED_MAIN
+```
+
+**Structural vars that are NOT scrubbed:** `RITE_REPO_ROOT`, `RITE_LIB_DIR`,
+`RITE_PROJECT_ROOT`, `BATS_TEST_TIMEOUT` (the gate sets this itself; scrubbing
+it would break per-test timeouts). Rule 35 suppressions and `setup.bash` loaders
+inside tests depend on the structural RITE_* vars passing through.
+
+**Coverage:** Both the main bats invocations (6 sites: full/parallel/serial ×
+pretty/TAP) and the flake-retry invocation in `_gate_flake_retry_pass` use
+`_bats_sandbox` — the flake-retry function accesses it via bash dynamic scoping
+(called from within `run_test_gate` where the local is defined).
+
+**Regression:** `tests/regression/gate-session-env-scrub.bats` — structural
+checks that every deny-listed var appears in `_bats_sandbox`, that structural
+RITE_* vars are absent from the scrub list, that all 7 invocation sites use the
+sandbox, and behavioral probes confirming `RITE_TARGET_BRANCH` is unset and
+`RITE_REPO_ROOT` passes through inside a gate-scrubbed bats run.
+
+**Note on `RITE_TEST_GATE_SKIP_TRIGGERS`:** this var is consumed by the gate's
+own selection phase (before bats is spawned), so scrubbing it from the child
+environment does not alter gate-selection behavior — it only prevents tests from
+seeing it and potentially altering their own behavior.
