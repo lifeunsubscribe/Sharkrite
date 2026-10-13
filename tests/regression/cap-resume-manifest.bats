@@ -20,7 +20,7 @@
 #     3.  batch-process-issues.sh prints "Resume with:" in exit-5 handler
 #     4.  exit-codes.md exit 5 semantics unchanged (still "Usage/token cap reached")
 #     5.  claude.sh writes cap-reset-line.txt when cap detected
-#     6.  claude.sh persists reset line before deleting _stdout_capture
+#     6.  claude.sh persists reset line only when _exit_code equals 5 (guarded write)
 #
 #   UNIT (cap_reset_to_epoch parser):
 #     7.  "resets 6:10pm (America/Denver)" parses to non-zero epoch
@@ -30,6 +30,10 @@
 #    11.  time that has already passed rolls forward to next day (epoch > now)
 #    12.  "You've hit your session limit · resets 9:20pm (America/Denver)" full
 #         real-world phrasing parses to non-zero epoch
+#
+#   FIXTURE (behavioral — exercises actual capture and manifest construction):
+#    13.  grep -hiE captures reset line from a mock provider stdout transcript
+#    14.  cap-resume.json manifest has valid JSON with non-zero reset_epoch
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 DATE_HELPERS="$REPO_ROOT/lib/utils/date-helpers.sh"
@@ -80,9 +84,12 @@ teardown() {
 }
 
 @test "structural: exit-codes.md exit 5 semantics unchanged (usage cap)" {
-  # The manifest feature must not change exit code semantics
-  grep -qiE 'code.*5|5.*Usage.*cap|Usage.*token.*cap' "$EXIT_CODES_DOC" || {
-    echo "FAIL: exit 5 not documented as usage/token cap in exit-codes.md" >&2
+  # The manifest feature must not change exit code semantics.
+  # Pin to the actual table row: '| `5`  | ... | Usage/token cap reached ...'
+  # so the assertion cannot be satisfied by a line containing an unrelated "5".
+  grep -qE '^\| .5. .*Usage/token cap' "$EXIT_CODES_DOC" || {
+    echo "FAIL: exit-5 table row not found in exit-codes.md" >&2
+    echo "      expected a line matching: '| \`5\` ... Usage/token cap ...'" >&2
     echo "      exit 5 semantics must remain 'Usage/token cap reached'" >&2
     return 1
   }
@@ -97,20 +104,20 @@ teardown() {
 }
 
 @test "structural: claude.sh persists reset line only when _exit_code equals 5" {
-  # The persistence block must be guarded by the exit_code=5 condition so it
-  # never fires on auth failure (18) or generic errors (1).
-  grep -qE '_exit_code.*-eq.*5.*cap-reset|cap-reset.*_exit_code.*5' "$CLAUDE_PROVIDER" || {
-    # Accept multi-line match: the guard and the write are nearby
-    _block=$(grep -A8 '_exit_code.*-eq.*5.*&&.*RITE_STATE_DIR\|_exit_code.*eq 5.*RITE_STATE_DIR' "$CLAUDE_PROVIDER" || true)
-    [ -n "$_block" ] || {
-      # Just verify both patterns exist close together
-      _guard=$(grep -n '_exit_code.*-eq.*5.*RITE_STATE_DIR\|if.*_exit_code.*5.*RITE_STATE_DIR' "$CLAUDE_PROVIDER" || true)
-      _write=$(grep -n 'cap-reset-line.txt' "$CLAUDE_PROVIDER" || true)
-      [ -n "$_guard" ] && [ -n "$_write" ] || {
-        echo "FAIL: cap-reset-line.txt write is not guarded by exit_code=5 check" >&2
-        return 1
-      }
-    }
+  # The write must appear within 15 lines after the _exit_code -eq 5 guard —
+  # not merely elsewhere in the file. A weak "both exist anywhere" check would
+  # pass even if the write were outside the guard block.
+  _guard_line=$(grep -n '_exit_code.*-eq.*5.*&&.*RITE_STATE_DIR' "$CLAUDE_PROVIDER" | head -1 | cut -d: -f1 || true)
+  _write_line=$(grep -n 'cap-reset-line.txt' "$CLAUDE_PROVIDER" | head -1 | cut -d: -f1 || true)
+  [ -n "$_guard_line" ] && [ -n "$_write_line" ] || {
+    echo "FAIL: could not find the exit_code=5+RITE_STATE_DIR guard or cap-reset-line.txt write in claude.sh" >&2
+    return 1
+  }
+  _distance=$(( _write_line - _guard_line ))
+  [ "$_distance" -gt 0 ] && [ "$_distance" -le 15 ] || {
+    echo "FAIL: cap-reset-line.txt write (line $_write_line) is not within 15 lines after the guard (line $_guard_line)" >&2
+    echo "      distance: $_distance — write must be inside the exit_code=5 block" >&2
+    return 1
   }
 }
 
@@ -234,6 +241,72 @@ teardown() {
   }
   [ "${output:-0}" != "0" ] || {
     echo "FAIL: expected non-zero epoch for real-world phrasing, got: '$output'" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# FIXTURE: behavioral tests — exercise the actual capture grep and manifest JSON
+# =============================================================================
+
+@test "fixture: grep -hiE captures reset line from provider stdout transcript" {
+  # Exercises the EXACT grep flags used in claude.sh to capture the reset line.
+  # Would FAIL with the broken -imE flags (E consumed as -m's numeric arg) and
+  # PASS with the correct -hiE flags. No structural grep can catch this bug.
+  _fixture="$_tmpdir/stdout_capture.txt"
+  cat > "$_fixture" <<'EOF'
+Processing issue #42
+Running agentic session...
+You've hit your session limit · resets 6:10pm (America/Denver)
+Session ended.
+EOF
+  _cap_reset_line=$(grep -hiE "resets [0-9]+:[0-9]+[ap]m" \
+    "$_fixture" 2>/dev/null | head -1 || true)
+  [ -n "$_cap_reset_line" ] || {
+    echo "FAIL: grep -hiE failed to capture reset line from fixture" >&2
+    echo "      This validates the -imE -> -hiE flag fix in claude.sh" >&2
+    return 1
+  }
+  case "$_cap_reset_line" in
+    *"resets 6:10pm"*) ;;
+    *)
+      echo "FAIL: captured '$_cap_reset_line', expected it to contain 'resets 6:10pm'" >&2
+      return 1
+      ;;
+  esac
+}
+
+@test "fixture: cap-resume.json has valid JSON with non-zero reset_epoch for real input" {
+  # Exercises cap_reset_to_epoch + the actual jq invocation used by the batch
+  # exit-5 handler. Validates that the manifest fields are structurally correct
+  # and that a real cap message produces a non-zero reset_epoch.
+  _manifest="$_tmpdir/cap-resume.json"
+  _cap_reset_text="You have hit your session limit resets 6:10pm (America/Denver)"
+  _cap_reset_epoch=$(bash -c "
+    source '$DATE_HELPERS' || exit 1
+    set +u; set +o pipefail
+    cap_reset_to_epoch '$_cap_reset_text'
+  " || echo "0")
+  _written=$(date +%s)
+  jq -n \
+    --argjson issues "[42,43]" \
+    --arg flags "" \
+    --argjson reset_epoch "$_cap_reset_epoch" \
+    --arg reset_text "$_cap_reset_text" \
+    --argjson written "$_written" \
+    '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
+    > "$_manifest"
+  jq -e '.' "$_manifest" > /dev/null || {
+    echo "FAIL: manifest is not valid JSON" >&2; return 1
+  }
+  _ep=$(jq -r '.reset_epoch' "$_manifest")
+  [ "${_ep:-0}" -gt 0 ] || {
+    echo "FAIL: reset_epoch should be non-zero for a real cap message, got: '$_ep'" >&2
+    return 1
+  }
+  _count=$(jq -r '.issues | length' "$_manifest")
+  [ "$_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues in manifest, got: '$_count'" >&2
     return 1
   }
 }

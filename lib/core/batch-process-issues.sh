@@ -1663,15 +1663,23 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         case " $_seen_remaining " in
           *" $_ri "*) continue ;;
         esac
-        if [ -z "${ISSUE_STATUS[$_ri]:-}" ]; then
-          _remaining+=("$_ri")
-          _seen_remaining="${_seen_remaining}${_ri} "
-        fi
+        # Include not-yet-started, dependency-deferred, and blocked issues —
+        # all represent work the batch still owes. waiting_for_parent is excluded:
+        # that issue's PR is already in-flight and resuming won't re-run it.
+        case "${ISSUE_STATUS[$_ri]:-}" in
+          "" | deferred_for_dep | blocked)
+            _remaining+=("$_ri")
+            _seen_remaining="${_seen_remaining}${_ri} "
+            ;;
+        esac
       done
 
-      # Reconstruct passthrough flags (only --smart-wait is tracked at batch level)
+      # Reconstruct passthrough flags (--smart-wait and --branch for non-main targets)
       _batch_flags=""
       [ "$SMART_WAIT" = "true" ] && _batch_flags="--smart-wait"
+      if [ -n "${RITE_TARGET_BRANCH:-}" ] && [ "${RITE_TARGET_BRANCH}" != "main" ]; then
+        _batch_flags="${_batch_flags:+$_batch_flags }--branch $RITE_TARGET_BRANCH"
+      fi
 
       # Build resume command
       _resume_cmd="rite ${_remaining[*]}"
