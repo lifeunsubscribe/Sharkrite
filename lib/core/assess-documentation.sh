@@ -9,6 +9,20 @@
 
 set -euo pipefail
 
+# Bash 3.2 (macOS system /bin/bash) cannot parse heredoc-in-cmdsubst:
+#   var=$(cat <<EOF ... EOF)
+# The parser corrupts state hundreds of lines downstream. Self-re-exec to
+# bash 4+ before the parser reaches any such construct in this file.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: assess-documentation.sh requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if declare -f assess_internal_changelog >/dev/null 2>&1; then
   return 0 2>/dev/null || true
