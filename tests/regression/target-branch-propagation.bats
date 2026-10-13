@@ -460,3 +460,41 @@ teardown() {
     return 1
   }
 }
+
+# =============================================================================
+# STRUCTURAL: bin/rite — log Command header reproduces --branch (#1191)
+# =============================================================================
+
+@test "structural: bin/rite declares _INVOCATION_FLAGS array before arg loop" {
+  # _INVOCATION_FLAGS must be declared so the Command header can include --branch
+  # and other reproducible invocation flags (#1191).
+  _src=$(cat "$RITE_REPO_ROOT/bin/rite")
+
+  echo "$_src" | grep -q '_INVOCATION_FLAGS=()' || {
+    echo "FAIL: bin/rite missing _INVOCATION_FLAGS=() declaration"
+    return 1
+  }
+}
+
+@test "structural: bin/rite --branch arm accumulates flag into _INVOCATION_FLAGS" {
+  # The --branch) case must push ("--branch" "\$2") into _INVOCATION_FLAGS so the
+  # log Command header reproduces the actual invocation (#1191).
+  _src=$(cat "$RITE_REPO_ROOT/bin/rite")
+
+  echo "$_src" | grep -q '_INVOCATION_FLAGS+=.*"--branch"' || {
+    echo "FAIL: bin/rite --branch arm does not accumulate --branch into _INVOCATION_FLAGS"
+    return 1
+  }
+}
+
+@test "structural: bin/rite log Command header includes _INVOCATION_FLAGS expansion" {
+  # The Command: echo in the log-header block must use \${_inv:+...} so that
+  # --branch (and other reproducible flags) appear when set and the plain-run
+  # output is byte-identical when they are absent (#1191).
+  _src=$(cat "$RITE_REPO_ROOT/bin/rite")
+
+  echo "$_src" | grep -q 'Command: rite.*_inv' || {
+    echo "FAIL: bin/rite Command header does not reference _inv (_INVOCATION_FLAGS expansion)"
+    return 1
+  }
+}
