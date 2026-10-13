@@ -1877,7 +1877,10 @@ phase_merge_pr() {
     if [ "$_merge_gate_exit" -ne 0 ]; then
       if [ -s "$_merge_gate_file" ]; then
         print_error "Merge-decision gate failed — failing tests:"
-        jq -r '(.tests // [])[:20][] | "  - " + (.test_name // "unknown")' "$_merge_gate_file" 2>/dev/null >&2 || true
+        # Order matters: point stdout at the real stderr FIRST, then null jq's
+        # own stderr. The reverse (2>/dev/null >&2) nulls fd2 and then aims
+        # stdout at the already-nulled fd, discarding every reported test name.
+        jq -r '(.tests // [])[:20][] | "  - " + (.test_name // "unknown")' "$_merge_gate_file" >&2 2>/dev/null || true
       fi
       rm -f "$_merge_gate_file"
       print_error "Merge-decision gate failed — full suite has failures; fix before merging"

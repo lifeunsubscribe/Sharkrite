@@ -518,11 +518,12 @@ _run_gate_with_env() {
 
 @test "(#975) RITE_GATE_FORCE_FULL=1: full root npm test runs even with empty diff" {
   _make_two_ws_repo
-  # No second commit — empty diff (origin/main == HEAD)
-  (cd "$TEST_REPO" \
-     && git init -q && git config user.email t@t && git config user.name t \
-     && git add -A && git commit -qm base \
-     && git update-ref refs/remotes/origin/main HEAD) >/dev/null 2>&1
+  # A REAL workspace change, not an empty diff: with an empty diff the cycle
+  # path has no workspace to scope to and runs the root suite anyway, so the
+  # test would pass with the FORCE_FULL guard deleted. With a packages/api
+  # change, unflagged cycle tier scopes to that workspace — making the root
+  # run attributable to RITE_GATE_FORCE_FULL alone.
+  _init_git_with_ws_change "packages/api" "packages/api/src/new-feature.ts"
   mkdir -p "$TEST_REPO/node_modules/.bin"
   printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
   chmod +x "$TEST_REPO/node_modules/.bin/jest"
@@ -559,15 +560,10 @@ _run_gate_with_env() {
   cat > "$STUB_DIR/pnpm" <<'PNPMSTUB'
 #!/bin/bash
 LOG="${INVOCATION_LOG:-/dev/null}"
-FILTER_ARG=""
-SUBCMD=""
-for a in "$@"; do
-  case "$a" in
-    --filter=*) FILTER_ARG="$a" ;;
-    test|install|run) [ -z "$SUBCMD" ] && SUBCMD="$a" ;;
-  esac
-done
-echo "pnpm:${SUBCMD}:${FILTER_ARG}" >> "$LOG"
+# Log raw ordered argv: pnpm requires --filter BEFORE the subcommand, and an
+# order-insensitive extraction would log the same line for the broken form
+# (`pnpm test --filter=...`), making the regression undetectable.
+echo "pnpm:$*" >> "$LOG"
 echo "PASS"
 exit 0
 PNPMSTUB
@@ -582,7 +578,7 @@ PNPMSTUB
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # pnpm must have been invoked with --filter=./packages/api for the workspace test.
-  grep -q "pnpm:test:--filter=\./packages/api" "$TEST_REPO/invocations.log" || {
+  grep -q "^pnpm:--filter=\./packages/api test" "$TEST_REPO/invocations.log" || {
     echo "FAIL: pnpm was not invoked with --filter=./packages/api"
     cat "$TEST_REPO/invocations.log" || true
     false
