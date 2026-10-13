@@ -149,6 +149,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-main-base)
       WORKFLOW_FLAGS+=("--allow-main-base")
+      _INVOCATION_FLAGS+=("--allow-main-base")
       shift
       ;;
     --by-label|--group-by-label)
