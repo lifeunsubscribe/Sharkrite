@@ -202,6 +202,7 @@ _write_census_entry() {
     _census_dir='${_census_dir}'
     _gate_census_file=\"\${_census_dir}/\$BASHPID\"
     touch \"\$_gate_census_file\"
+    # sharkrite-lint disable TRAP_EXIT_IN_BATS_TEST - Reason: this trap text lives inside the quoted bash -c payload and is installed in the CHILD shell; the @test body itself installs no EXIT trap, so bats' result-emitting trap is untouched. Registering it in teardown() would defeat the test, whose whole purpose is observing the child's own trap fire on exit.
     trap 'rm -f \"\${_gate_census_file:-}\"' EXIT
     echo \"pid=\$BASHPID\"
     [ -f \"\$_gate_census_file\" ] && echo 'entry_created' || echo 'entry_missing'

@@ -90,7 +90,15 @@ _run_gate() {
 
   # Gate still fails — block-on-any outcome=failed unchanged
   run jq -r '.exit_code' "$_out"
-  [ "$output" = "1" ]
+  [ "$output" = "1" ] || {
+    # Diagnostic (2026-10-12): this bare assertion failed inside three separate
+    # gates (#975, #1190, #1165) while other batches shared the box, and told us
+    # nothing. Dump the gate verdict so the next occurrence is self-explaining.
+    echo "FAIL: gate exit_code was '$output', expected 1"
+    echo "--- gate JSON ---"; cat "$_out" 2>/dev/null || echo "(unreadable)"
+    echo "--- selection/diag ---"; jq -r '{skipped, exit_code, lint: (.lint|length), tests: (.tests|length)}' "$_out" 2>/dev/null || true
+    false
+  }
 
   # Exactly ONE test finding, not 5 individual ones
   run jq -r '.tests | length' "$_out"
@@ -119,7 +127,15 @@ _run_gate() {
 
   # Gate still fails
   run jq -r '.exit_code' "$_out"
-  [ "$output" = "1" ]
+  [ "$output" = "1" ] || {
+    # Diagnostic (2026-10-12): this bare assertion failed inside three separate
+    # gates (#975, #1190, #1165) while other batches shared the box, and told us
+    # nothing. Dump the gate verdict so the next occurrence is self-explaining.
+    echo "FAIL: gate exit_code was '$output', expected 1"
+    echo "--- gate JSON ---"; cat "$_out" 2>/dev/null || echo "(unreadable)"
+    echo "--- selection/diag ---"; jq -r '{skipped, exit_code, lint: (.lint|length), tests: (.tests|length)}' "$_out" 2>/dev/null || true
+    false
+  }
 
   # 2 findings: 1 real failure + 1 collapsed not-run (not 5 total)
   run jq -r '.tests | length' "$_out"
@@ -148,7 +164,15 @@ _run_gate() {
 
   # Gate fails
   run jq -r '.exit_code' "$_out"
-  [ "$output" = "1" ]
+  [ "$output" = "1" ] || {
+    # Diagnostic (2026-10-12): this bare assertion failed inside three separate
+    # gates (#975, #1190, #1165) while other batches shared the box, and told us
+    # nothing. Dump the gate verdict so the next occurrence is self-explaining.
+    echo "FAIL: gate exit_code was '$output', expected 1"
+    echo "--- gate JSON ---"; cat "$_out" 2>/dev/null || echo "(unreadable)"
+    echo "--- selection/diag ---"; jq -r '{skipped, exit_code, lint: (.lint|length), tests: (.tests|length)}' "$_out" 2>/dev/null || true
+    false
+  }
 
   # Exactly ONE collapsed finding (not zero) even with no plan deficit
   run jq -r '.tests | length' "$_out"
@@ -171,7 +195,15 @@ _run_gate() {
 
   # Gate still fails
   run jq -r '.exit_code' "$_out"
-  [ "$output" = "1" ]
+  [ "$output" = "1" ] || {
+    # Diagnostic (2026-10-12): this bare assertion failed inside three separate
+    # gates (#975, #1190, #1165) while other batches shared the box, and told us
+    # nothing. Dump the gate verdict so the next occurrence is self-explaining.
+    echo "FAIL: gate exit_code was '$output', expected 1"
+    echo "--- gate JSON ---"; cat "$_out" 2>/dev/null || echo "(unreadable)"
+    echo "--- selection/diag ---"; jq -r '{skipped, exit_code, lint: (.lint|length), tests: (.tests|length)}' "$_out" 2>/dev/null || true
+    false
+  }
 
   # With no watchdog, per-test synthesis runs: deficit=2 → 2 findings (not collapsed)
   run jq -r '.tests | length' "$_out"
