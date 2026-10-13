@@ -34,6 +34,7 @@
 #   FIXTURE (behavioral — exercises actual capture and manifest construction):
 #    13.  grep -hiE captures reset line from a mock provider stdout transcript
 #    14.  cap-resume.json manifest has valid JSON with non-zero reset_epoch
+#    15.  remaining-issues loop includes deferred_for_dep and blocked, excludes success
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 DATE_HELPERS="$REPO_ROOT/lib/utils/date-helpers.sh"
@@ -307,6 +308,21 @@ EOF
   _count=$(jq -r '.issues | length' "$_manifest")
   [ "$_count" -eq 2 ] || {
     echo "FAIL: expected 2 issues in manifest, got: '$_count'" >&2
+    return 1
+  }
+}
+
+@test "15. remaining-issues loop includes deferred_for_dep and blocked but excludes success" {
+  # Pins the case-statement inclusion logic in the exit-5 remaining-issues loop.
+  # A silent regression back to checking only empty-status ("") would drop
+  # deferred_for_dep and blocked issues from the resume manifest, leaving tests
+  # 1–14 all green while the manifest silently undercounts remaining work.
+  grep -q 'case "${ISSUE_STATUS\[' "$BATCH_PROCESSOR" || {
+    echo "FAIL: remaining-issues case statement not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  grep -q '"" | deferred_for_dep | blocked)' "$BATCH_PROCESSOR" || {
+    echo 'FAIL: expected inclusion of "" | deferred_for_dep | blocked in remaining-issues case' >&2
     return 1
   }
 }

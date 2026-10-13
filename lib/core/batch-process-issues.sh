@@ -1090,6 +1090,11 @@ send_notification_all "🚀 *Batch Processing Started*
 *Pre-flight Blockers:* ${#PREFLIGHT_BLOCKERS[@]}
 *Mode:* Unsupervised" "normal"
 
+# Clear any stale cap-reset-line.txt from a prior run. If a previous single-issue
+# run hit exit 5 but never consumed this file, it would feed a wrong reset_epoch
+# into the manifest if this batch also caps. Must happen before the issue loop.
+rm -f "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-reset-line.txt" 2>/dev/null || true
+
 # Process each issue
 # Use a while-index loop instead of `for x in "${arr[@]}"` so that appending a
 # deferred issue to ISSUE_LIST (DEP_IN_QUEUE path below) is visible to
