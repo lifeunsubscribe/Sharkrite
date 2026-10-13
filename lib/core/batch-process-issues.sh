@@ -1093,6 +1093,10 @@ send_notification_all "🚀 *Batch Processing Started*
 # Clear any stale cap-reset-line.txt from a prior run. If a previous single-issue
 # run hit exit 5 but never consumed this file, it would feed a wrong reset_epoch
 # into the manifest if this batch also caps. Must happen before the issue loop.
+# Assumption: one batch per repo at a time. A concurrent batch B starting here
+# can delete a just-written reset line from batch A's in-flight exit-5 path,
+# degrading A's manifest to reset_epoch:0. Parallel-batch isolation is deferred
+# to a follow-up issue; this site is not safe for overlapping batches.
 rm -f "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-reset-line.txt" 2>/dev/null || true
 
 # Process each issue
