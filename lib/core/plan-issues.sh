@@ -15,9 +15,12 @@
 
 set -euo pipefail
 
-# Bash 3.2 (macOS system /bin/bash) cannot parse heredoc-in-cmdsubst:
-#   var=$(cat <<EOF ... EOF)
-# The parser corrupts state hundreds of lines downstream.
+# Bash 3.2 (macOS system /bin/bash) cannot parse a here-document nested inside
+# a command substitution: its scanner ends the substitution at the first ")"
+# appearing in the here-document body, corrupting parse state hundreds of lines
+# downstream. (Written as prose deliberately — spelling the construct literally
+# here makes the linter's own here-document tracker open a phantom document and
+# mis-attribute every subsequent `local`.)
 #
 # When SOURCED (bin/rite sources this file after consuming its args):
 #   re-exec cannot help — $0 is the caller and $@ is empty.
