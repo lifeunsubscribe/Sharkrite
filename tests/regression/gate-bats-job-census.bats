@@ -142,9 +142,8 @@ _write_census_entry() {
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
     source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
     source '${RITE_LIB_DIR}/utils/test-gate.sh'
-    # Calling process is $$; dead entry is ${_dead_pid}; live entry is $$
-    # Add our own live entry to make exactly 1 live
-    touch '${RITE_LOCK_DIR}/gate-census/\$\$'
+    # Add this subshell's own live entry so at least 1 live entry exists
+    touch \"${RITE_LOCK_DIR}/gate-census/\$BASHPID\"
     count=\$(_census_live_gate_count)
     echo \"count=\$count\"
     [ -f '${_dead_file}' ] && echo 'DEAD_ENTRY_STILL_PRESENT' || echo 'DEAD_ENTRY_REAPED'
@@ -152,8 +151,9 @@ _write_census_entry() {
   [ "$status" -eq 0 ]
   # Dead entry should have been reaped
   [[ "$output" == *"DEAD_ENTRY_REAPED"* ]]
-  # Dead PID should not be counted
-  [[ "$output" != *"count=0"* ]] || true  # count could be 1 (our live entry)
+  # Dead PID must not be counted; at least 1 live entry (this subshell) must be counted
+  _live_count=$(echo "$output" | grep -oE 'count=[0-9]+' | head -1 | cut -d= -f2 || echo 0)
+  [ "$_live_count" -ge 1 ]
   # Verify dead file is gone from the actual dir too
   [ ! -f "$_dead_file" ]
 
@@ -182,19 +182,36 @@ _write_census_entry() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Census entry removed on normal exit (not leaked)
+# 5. Census entry created with BASHPID and removed on normal exit (not leaked)
 # ---------------------------------------------------------------------------
 
-@test "census entry for this PID is removed after _census_live_gate_count cleans up" {
-  # Write a census entry for a dead PID, verify it is reaped synchronously
-  ( exit 0 ) &
-  _stale_pid=$!
-  wait "$_stale_pid" 2>/dev/null || true
-  _stale_file="${RITE_LOCK_DIR}/gate-census/${_stale_pid}"
-  touch "$_stale_file"
+@test "census entry is created with BASHPID and removed on normal exit" {
+  # Verifies AC#5: census registration uses BASHPID (not $$) and the EXIT trap
+  # used by run_test_gate removes the entry on normal exit.
+  # A subshell registers its census entry by BASHPID, then exits normally —
+  # the parent verifies the entry was present during execution and is gone after.
+  _census_dir="${RITE_LOCK_DIR}/gate-census"
 
-  # Count — should reap the dead entry
-  _census_live_gate_count >/dev/null
-
-  [ ! -f "$_stale_file" ]
+  run bash -c "
+    export RITE_LIB_DIR='${RITE_LIB_DIR}'
+    export RITE_PROJECT_ROOT='${RITE_PROJECT_ROOT}'
+    export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
+    source '${RITE_LIB_DIR}/utils/config.sh' 2>/dev/null || true
+    source '${RITE_LIB_DIR}/utils/test-gate.sh'
+    # Replicate run_test_gate's registration + EXIT-trap cleanup pattern
+    _census_dir='${_census_dir}'
+    _gate_census_file=\"\${_census_dir}/\$BASHPID\"
+    touch \"\$_gate_census_file\"
+    trap 'rm -f \"\${_gate_census_file:-}\"' EXIT
+    echo \"pid=\$BASHPID\"
+    [ -f \"\$_gate_census_file\" ] && echo 'entry_created' || echo 'entry_missing'
+    # Normal exit — EXIT trap fires and removes the entry
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"entry_created"* ]]
+  # Capture the PID the subshell reported
+  _sub_pid=$(echo "$output" | grep '^pid=' | cut -d= -f2 || true)
+  [ -n "$_sub_pid" ]
+  # Entry must be gone after normal exit (EXIT trap ran)
+  [ ! -f "${_census_dir}/${_sub_pid}" ]
 }

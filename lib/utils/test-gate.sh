@@ -608,8 +608,9 @@ _bats_has_report_formatter() {
 # under two-batch oversubscription still holds.
 
 # _census_live_gate_count — count active gate instances via the census dir.
-# Each running gate registers its PID under ${RITE_LOCK_DIR}/gate-census/<pid>.
-# Dead entries (kill -0 returns non-zero) are reaped in the same pass.
+# Each running gate registers its BASHPID (subshell PID, not $$) under
+# ${RITE_LOCK_DIR}/gate-census/<pid>. Dead entries (kill -0 returns non-zero)
+# are reaped in the same pass.
 # Stdout: non-negative integer count of live gates (including this one).
 _census_live_gate_count() {
   local _census_dir="${RITE_LOCK_DIR:-}/gate-census"
@@ -2256,14 +2257,16 @@ run_test_gate() {
     fi
 
     # --- Gate census registration (#1165) ---
-    # Register this gate's PID so _compute_bats_jobs can count concurrent peers
-    # and scale --jobs down when ≥3 gates are active. Only sharkrite gates (which
-    # run bats) register — the non-sharkrite path never calls _compute_bats_jobs.
-    # Cleanup is via the crash-sentinel EXIT trap (rm -f on the specific PID file)
-    # and the explicit rm before trap - EXIT at the end of this function.
+    # Register this gate's BASHPID so _compute_bats_jobs can count concurrent
+    # peers and scale --jobs down when ≥3 gates are active. $$ is the parent
+    # orchestrator's PID (wrong when run_test_gate is backgrounded with &);
+    # $BASHPID is always the current subshell's own PID. Only sharkrite gates
+    # (which run bats) register — the non-sharkrite path never calls
+    # _compute_bats_jobs. Cleanup is via the crash-sentinel EXIT trap (rm -f on
+    # the specific PID file) and the explicit rm before trap - EXIT at the end.
     if [ -n "${RITE_LOCK_DIR:-}" ]; then
       mkdir -p "${RITE_LOCK_DIR}/gate-census" 2>/dev/null || true
-      _gate_census_file="${RITE_LOCK_DIR}/gate-census/$$"
+      _gate_census_file="${RITE_LOCK_DIR}/gate-census/$BASHPID"
       touch "$_gate_census_file" 2>/dev/null || _gate_census_file=""
     fi
 
