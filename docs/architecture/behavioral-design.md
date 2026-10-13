@@ -108,6 +108,7 @@ As a safety net, when tests fail after merge AND after dependency reinstall, `ve
 |---|---|
 | `parent-PR-deferred` | Requires knowledge of the full batch queue (`ISSUE_LIST`). `run_workflow()` processes one issue at a time. Single-issue mode has no guard because the user is presumed to know ordering constraints. |
 | `dep-failed` | Requires the accumulated `ISSUE_STATUS` map from earlier in the same batch. `run_workflow()` cannot see sibling results. |
+| `live-lock-deferred` | Dep issue holds a live lock in a concurrent batch session — defer-to-end rather than skip immediately. Requires local lock-dir inspection (`RITE_LOCK_DIR`), which is batch-orchestrator context. Single-issue mode has no queue to defer into. |
 | `active-process` | Safety guard against two batch sessions racing on the same issue. Single-issue direct invocation allows this intentionally. |
 | `in-current-branch` | Prevents git checkout conflicts during batch execution. Single-issue mode allows because the user is interactive. |
 
@@ -150,7 +151,15 @@ Parses issue body for dependency patterns:
 
 Checks two conditions:
 1. Dependency failed/blocked/skipped in this batch → skip
-2. Dependency issue is still OPEN (PR not merged) → skip
+2. Dependency issue is still OPEN (PR not merged) → defer or skip (see below)
+
+**Open dependency handling — three-tier decision:**
+When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
+1. **Queue-later defer**: dep appears after the current position in `ISSUE_LIST` → re-append the dependent to the end of the queue (`deferred_for_dep` status; bounded by `_DEFER_COUNT` anti-cycle cap).
+2. **Live-lock defer**: dep holds a live issue-lock (`${RITE_LOCK_DIR}/issue-N.lock/pid` exists + `kill -0` succeeds + not this process's own PID) → same re-append, same cap. The foreign session is actively working on the dep and will likely merge before this batch drains. Local filesystem check only; no network calls.
+3. **Skip**: neither condition holds (dep not in queue, no live lock, or cap exhausted) → `dep_failed` skip, same as today.
+
+**Anti-cycle cap:** Both defer paths share `_DEFER_COUNT[ISSUE_NUM]` and the `_UNIQUE_ISSUE_COUNT` bound. A dep whose foreign session stalls and never merges cannot defer the dependent more than `_UNIQUE_ISSUE_COUNT` times.
 
 **Why check open state:** A dependency's PR may have been created in this batch but not yet merged. Processing the dependent issue before the dependency merges causes failures (missing code/models).
 

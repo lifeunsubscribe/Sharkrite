@@ -1105,6 +1105,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     DEP_IN_QUEUE_NUM=""
     FAILED_DEP=""
     DEP_REASON=""
+    _DEP_LIVE_LOCK=false
     for dep_num in $DEP_ISSUES; do
       dep_status="${ISSUE_STATUS[$dep_num]:-}"
       if [ "$dep_status" = "failed" ] || [ "$dep_status" = "blocked" ] || [ "$dep_status" = "not_found" ] || [ "$dep_status" = "dep_failed" ]; then
@@ -1126,6 +1127,28 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         # _DEFER_COUNT[ISSUE_NUM] >= _UNIQUE_ISSUE_COUNT (the frozen operator-supplied
         # count, not the live list length which grows with every deferral).
         _check_dep_queued_later "$dep_num" "$ISSUE_NUM" "$_batch_qi"
+        # If dep is not queued later in this batch, check whether it holds a live
+        # issue-lock — another concurrent batch session is actively working on it
+        # and will likely merge before this batch drains. Reuses the same
+        # _DEFER_COUNT anti-cycle cap so a stalled foreign session cannot loop
+        # this issue forever. Local filesystem check only; no network calls.
+        # Deliberate batch-only divergence: single-issue mode has no queue to
+        # defer into. See behavioral-design.md → "Batch Dep-Guard".
+        if [ "$DEP_IN_QUEUE" = false ]; then
+          _live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
+          _live_lock_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+          if [ "$_live_lock_defer_count" -lt "$_live_lock_max" ]; then
+            _dep_pid_file="${RITE_LOCK_DIR}/issue-${dep_num}.lock/pid"
+            if [ -f "$_dep_pid_file" ]; then
+              _dep_lock_pid=$(cat "$_dep_pid_file" 2>/dev/null || true)
+              if [ -n "$_dep_lock_pid" ] && [ "$_dep_lock_pid" != "$$" ] && kill -0 "$_dep_lock_pid" 2>/dev/null; then
+                DEP_IN_QUEUE=true
+                DEP_IN_QUEUE_NUM="$dep_num"
+                _DEP_LIVE_LOCK=true
+              fi
+            fi
+          fi
+        fi
         if [ "$DEP_IN_QUEUE" = false ]; then
           DEP_FAILED=true
           FAILED_DEP="$dep_num"
@@ -1135,11 +1158,15 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       fi
     done
     if [ "$DEP_IN_QUEUE" = true ]; then
-      # Dep is open but queued later in this batch — append current issue to the
-      # end of the queue so it runs after the dep. The while-index loop (not a
-      # for-in snapshot) picks up the newly appended element.
+      # Dep is open but either queued later in this batch or live-locked in
+      # another concurrent session — append current issue to the end of the
+      # queue. The while-index loop (not a for-in snapshot) picks it up.
       _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
-      print_info "Dependency #$DEP_IN_QUEUE_NUM is queued later — deferring issue #$ISSUE_NUM to after dep (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      if [ "${_DEP_LIVE_LOCK:-false}" = true ]; then
+        print_info "Dependency #$DEP_IN_QUEUE_NUM is live in another batch session — deferring issue #$ISSUE_NUM to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      else
+        print_info "Dependency #$DEP_IN_QUEUE_NUM is queued later — deferring issue #$ISSUE_NUM to after dep (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      fi
       ISSUE_LIST+=("$ISSUE_NUM")
       # Do NOT update TOTAL_ISSUES here — live length is for the loop bound only
       # (line 927 re-computes it each iteration). Reporting uses _UNIQUE_ISSUE_COUNT.
