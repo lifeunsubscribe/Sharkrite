@@ -39,7 +39,7 @@ setup() {
     # Parse fails under bash 3.2 — must carry the BASH_VERSINFO re-exec guard
     # somewhere in the first 30 lines so it fires before the parser reaches the
     # unparseable construct at runtime.
-    if head -30 "$_f" | grep -q 'BASH_VERSINFO'; then
+    if head -30 "$_f" | grep -qE 'BASH_VERSINFO\[0\].*-lt 4'; then
       continue
     fi
     _failures+=("$_f")
@@ -62,10 +62,10 @@ setup() {
 
 @test "assess-documentation.sh carries BASH_VERSINFO guard in first 30 lines" {
   run head -30 "$RITE_REPO_ROOT/lib/core/assess-documentation.sh"
-  [[ "$output" == *"BASH_VERSINFO"* ]]
+  echo "$output" | grep -qE 'BASH_VERSINFO\[0\].*-lt 4'
 }
 
 @test "plan-issues.sh carries BASH_VERSINFO guard in first 30 lines" {
   run head -30 "$RITE_REPO_ROOT/lib/core/plan-issues.sh"
-  [[ "$output" == *"BASH_VERSINFO"* ]]
+  echo "$output" | grep -qE 'BASH_VERSINFO\[0\].*-lt 4'
 }

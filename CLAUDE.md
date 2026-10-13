@@ -422,7 +422,7 @@ Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when 
 
 - `mapfile` / `readarray` (array-population builtins)
 - `declare -A` (associative arrays)
-- **heredoc-in-cmdsubst**: `var=$(cat <<EOF ... EOF)` — bash 3.2's `$(...)` scanner does not understand heredocs inside command substitution; it finds the first `)` inside the heredoc body and corrupts parse state for hundreds of lines downstream (live: `assess-documentation.sh` and `plan-issues.sh`, issues #1163/#1190, 2026-10-11/12). **Fix: add the self-re-exec guard** (option 2 below) — do NOT rewrite the heredocs into 3.2-parseable form.
+- **heredoc-in-cmdsubst**: `var=$(cat <<EOF ... EOF)` — bash 3.2's `$(...)` scanner does not understand heredocs inside command substitution; it finds the first `)` inside the heredoc body and corrupts parse state for hundreds of lines downstream (live: `assess-documentation.sh` and `plan-issues.sh`, issues #1163/#1190, 2026-10-11/12). **Fix for directly-executed scripts: add the self-re-exec guard** (option 2 below) — do NOT rewrite the heredocs into 3.2-parseable form. **For sourced libraries** (e.g. `plan-issues.sh`, `docs-command.sh`, sourced by `bin/rite` after args are consumed): the self-re-exec guard is wrong — `exec "$_newer_bash" "$0" "$@"` re-execs the calling script with empty `$@`, producing a misleading "No issues specified" error. Instead, detect the sourced context with `[ "${BASH_SOURCE[0]}" != "$0" ]` and fail loudly with a clear message (the caller must run under bash 4+).
 
 **Live crash (2026-06-04):** `rite --undo <N>` with follow-up issues exploded with `mapfile: command not found` when run without Homebrew bash on PATH (issue #327). Same class of bug as issue #266 (`TEMP_FILES[@]` empty-array under bash 3.2).
 

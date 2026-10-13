@@ -17,9 +17,17 @@ set -euo pipefail
 
 # Bash 3.2 (macOS system /bin/bash) cannot parse heredoc-in-cmdsubst:
 #   var=$(cat <<EOF ... EOF)
-# The parser corrupts state hundreds of lines downstream. Self-re-exec to
-# bash 4+ before the parser reaches any such construct in this file.
+# The parser corrupts state hundreds of lines downstream.
+#
+# When SOURCED (bin/rite sources this file after consuming its args):
+#   re-exec cannot help — $0 is the caller and $@ is empty.
+#   Fail loudly so the caller is fixed to run under bash 4+.
+# When EXECUTED directly: self-re-exec to bash 4+.
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    echo "Error: plan-issues.sh requires bash 4+ (sourced from $0). Run rite under bash 4+: brew install bash" >&2
+    return 1 2>/dev/null || exit 1
+  fi
   for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
     if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
       exec "$_newer_bash" "$0" "$@"
