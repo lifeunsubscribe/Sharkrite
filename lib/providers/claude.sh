@@ -224,6 +224,18 @@ claude_provider_run_agentic_session() {
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
     _exit_code=18
   fi
+  # When a cap was detected, persist the raw "resets H:MMpm (Zone)" line so
+  # batch-process-issues.sh can parse the reset epoch and write a resume manifest.
+  if [ "$_exit_code" -eq 5 ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+    rm -f "${RITE_STATE_DIR}/cap-reset-line.txt" 2>/dev/null || true
+    local _cap_reset_line
+    _cap_reset_line=$(grep -hiE "resets [0-9]+:[0-9]+[ap]m" \
+      "$_stdout_capture" "$stderr_file" 2>/dev/null | head -1 || true)
+    if [ -n "$_cap_reset_line" ]; then
+      mkdir -p "$RITE_STATE_DIR"
+      printf '%s\n' "$_cap_reset_line" > "${RITE_STATE_DIR}/cap-reset-line.txt"
+    fi
+  fi
   rm -f "$_stdout_capture"
   [ -n "$_settings_file" ] && rm -f "$_settings_file"
 
