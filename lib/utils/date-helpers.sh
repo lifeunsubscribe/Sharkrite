@@ -99,3 +99,59 @@ iso_to_local_display() {
     date -j -f "%Y-%m-%d %H:%M:%S" "$year-$month-$day $time" "+%b %d, %Y - %-I:%M %p %Z" 2>/dev/null || echo "$iso_timestamp"
   fi
 }
+
+# Parse "resets H:MM[ap]m (Zone)" from a usage-cap CLI message and return the
+# corresponding Unix epoch. Rolls forward 24h when the time has already passed
+# (the cap resets tomorrow). Returns "0" on any parse failure — the caller must
+# still write the manifest; "0" is a sentinel meaning "unknown reset time".
+#
+# Input examples:
+#   "You've hit your session limit · resets 6:10pm (America/Denver)"
+#   "Spending cap reached resets 11:20pm"
+#
+# Handles both GNU date (Linux) and BSD date (macOS).
+#
+# Usage:
+#   epoch=$(cap_reset_to_epoch "You've hit your session limit · resets 6:10pm (America/Denver)")
+#
+cap_reset_to_epoch() {
+  local _line="${1:-}"
+  [ -z "$_line" ] && { echo "0"; return 0; }
+
+  # Extract the time component: "6:10pm" or "11:20pm"
+  local _raw_time _tz _epoch _now
+  _raw_time=$(echo "$_line" | grep -ioE '[0-9]+:[0-9]+[ap]m' | head -1 || true)
+  [ -z "$_raw_time" ] && { echo "0"; return 0; }
+
+  # Extract optional IANA timezone from "(America/Denver)" style parens
+  _tz=$(echo "$_line" | grep -oE '\([A-Za-z_][A-Za-z0-9_/+-]+\)' | tr -d '()' | head -1 || true)
+
+  _now=$(date +%s)
+  _epoch=0
+
+  if date --version >/dev/null 2>&1; then
+    # GNU date: accepts "6:10pm" directly; TZ= sets the interpretation timezone
+    if [ -n "$_tz" ]; then
+      _epoch=$(TZ="$_tz" date -d "$_raw_time" "+%s" 2>/dev/null || echo "0")
+    else
+      # sharkrite-lint disable GNU_ONLY_IDIOM - Reason: inside date --version branch; >3 lines from guard due to inner if/else
+      _epoch=$(date -d "$_raw_time" "+%s" 2>/dev/null || echo "0")
+    fi
+  else
+    # BSD date: %p requires uppercase AM/PM
+    local _time_uc
+    _time_uc=$(echo "$_raw_time" | tr '[:lower:]' '[:upper:]')
+    if [ -n "$_tz" ]; then
+      _epoch=$(TZ="$_tz" date -jf "%I:%M%p" "$_time_uc" "+%s" 2>/dev/null || echo "0")
+    else
+      _epoch=$(date -jf "%I:%M%p" "$_time_uc" "+%s" 2>/dev/null || echo "0")
+    fi
+  fi
+
+  [ "$_epoch" = "0" ] && { echo "0"; return 0; }
+
+  # Roll to next day when the reset time has already passed
+  [ "$_epoch" -lt "$_now" ] && _epoch=$((_epoch + 86400))
+
+  echo "$_epoch"
+}

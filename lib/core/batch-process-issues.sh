@@ -55,6 +55,7 @@ source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
+source "$RITE_LIB_DIR/utils/date-helpers.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -1639,12 +1640,73 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
 
     elif [ $EXIT_CODE -eq 5 ]; then
-      # Usage cap reached — abort the entire batch to avoid hammering the API
-      print_error "Issue #$ISSUE_NUM hit usage cap (exit code: 5) — aborting batch"
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
-      echo ""
+      # Usage cap reached — abort batch, write resume manifest, print resume cmd.
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
+
+      # Read reset-line persisted by claude.sh when the cap was detected
+      _cap_state="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+      _cap_reset_file="${_cap_state}/cap-reset-line.txt"
+      _cap_reset_text=$(cat "$_cap_reset_file" 2>/dev/null | head -1 || true)
+      rm -f "$_cap_reset_file" 2>/dev/null || true
+
+      # Parse the reset epoch from the CLI message
+      _cap_reset_epoch=0
+      if [ -n "$_cap_reset_text" ]; then
+        _cap_reset_epoch=$(cap_reset_to_epoch "$_cap_reset_text" || echo "0")
+      fi
+
+      # Remaining issues: current (cap'd) + all not-yet-started in ISSUE_LIST
+      _remaining=("$ISSUE_NUM")
+      _seen_remaining=" $ISSUE_NUM "
+      for _ri in "${ISSUE_LIST[@]}"; do
+        case " $_seen_remaining " in
+          *" $_ri "*) continue ;;
+        esac
+        if [ -z "${ISSUE_STATUS[$_ri]:-}" ]; then
+          _remaining+=("$_ri")
+          _seen_remaining="${_seen_remaining}${_ri} "
+        fi
+      done
+
+      # Reconstruct passthrough flags (only --smart-wait is tracked at batch level)
+      _batch_flags=""
+      [ "$SMART_WAIT" = "true" ] && _batch_flags="--smart-wait"
+
+      # Build resume command
+      _resume_cmd="rite ${_remaining[*]}"
+      [ -n "$_batch_flags" ] && _resume_cmd="$_resume_cmd $_batch_flags"
+
+      # Write the resume manifest so an auto-resume (or the user) can re-run exactly
+      mkdir -p "$_cap_state"
+      _manifest_path="${_cap_state}/cap-resume.json"
+      _written_epoch=$(date +%s)
+      _issues_json=""
+      for _ri in "${_remaining[@]}"; do
+        [ -n "$_issues_json" ] && _issues_json="${_issues_json},"
+        _issues_json="${_issues_json}${_ri}"
+      done
+      jq -n \
+        --argjson issues "[${_issues_json}]" \
+        --arg flags "$_batch_flags" \
+        --argjson reset_epoch "$_cap_reset_epoch" \
+        --arg reset_text "${_cap_reset_text:-}" \
+        --argjson written "$_written_epoch" \
+        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
+        > "$_manifest_path"
+
+      # Print enhanced abort message
+      print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      print_error "Usage cap reached on issue #$ISSUE_NUM — aborting batch"
+      print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo ""
+      if [ -n "$_cap_reset_text" ]; then
+        _reset_display=$(echo "$_cap_reset_text" | grep -ioE "resets [0-9]+:[0-9]+[ap]m( \([^)]+\))?" || echo "$_cap_reset_text")
+        print_info "Cap ${_reset_display}"
+      fi
+      print_info "Resume with: $_resume_cmd"
+      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      echo ""
       break
 
     elif [ $EXIT_CODE -eq 18 ]; then
