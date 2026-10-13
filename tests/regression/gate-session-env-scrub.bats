@@ -19,6 +19,19 @@
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+  # Build _SANDBOX_ARGS mirroring _bats_sandbox in test-gate.sh; used by
+  # behavioral probes so they test the actual deny-list, not a hardcoded subset.
+  # Removing a var from _bats_sandbox would leave it set in the probe and fail.
+  _SANDBOX_ARGS=(env)
+  while read -r _flag _var; do
+    [ -n "$_var" ] && _SANDBOX_ARGS+=("$_flag" "$_var")
+  done < <(sed -n '/_bats_sandbox=(env -u/,/)/p' \
+      "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -oE -- '-u [A-Z_]+' || true)
+  # Scrub BATS_* IPC vars: nested bats without this inherits outer runner FDs
+  # and deadlocks at 120s (#993). Mirrors gate-flake-retry.bats setup().
+  _SANDBOX_ARGS+=(-u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
+    -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
+    -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)
 }
 
 # ---------------------------------------------------------------------------
@@ -44,10 +57,10 @@ setup() {
   _def=$(sed -n '/_bats_sandbox=(env -u/,/)/p' "${RITE_LIB_DIR}/utils/test-gate.sh")
   [ -n "$_def" ]
   for _var in RITE_REPO_ROOT RITE_LIB_DIR RITE_PROJECT_ROOT; do
-    echo "$_def" | grep -q -- "-u $_var" && {
+    if echo "$_def" | grep -q -- "-u $_var"; then
       echo "FAIL: _bats_sandbox must not scrub structural var $_var" >&2
       return 1
-    }
+    fi
   done
 }
 
@@ -81,8 +94,10 @@ setup() {
   [ -z "${RITE_TARGET_BRANCH:-}" ]
 }
 EOF
+  # _SANDBOX_ARGS was built from _bats_sandbox in test-gate.sh (setup()),
+  # so removing -u RITE_TARGET_BRANCH from the sandbox fails this test.
   run env RITE_TARGET_BRANCH=should-not-leak \
-      env -u RITE_TARGET_BRANCH \
+      "${_SANDBOX_ARGS[@]}" \
       bats "$_d/session-env-probe.bats" < /dev/null
   rm -rf "$_d"
   [ "$status" -eq 0 ]
@@ -96,8 +111,10 @@ EOF
   [ -n "${RITE_REPO_ROOT:-}" ]
 }
 EOF
+  # _SANDBOX_ARGS was built from _bats_sandbox in test-gate.sh; RITE_REPO_ROOT
+  # must NOT appear in it, so the var passes through to the probe.
   run env RITE_REPO_ROOT=/tmp/fake-repo-root \
-      env -u RITE_TARGET_BRANCH \
+      "${_SANDBOX_ARGS[@]}" \
       bats "$_d/passthrough-probe.bats" < /dev/null
   rm -rf "$_d"
   [ "$status" -eq 0 ]

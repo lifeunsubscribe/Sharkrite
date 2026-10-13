@@ -1779,8 +1779,10 @@ to the triggering variable. Prevention is a runtime boundary at the one choke
 point where the gate spawns bats.
 
 **Fix:** `_bats_sandbox` in `run_test_gate` (`lib/utils/test-gate.sh`) was
-extended with a named deny-list (`_GATE_BATS_SCRUB_VARS`) of session-behavioral
-RITE_* vars removed via `env -u` from every bats child:
+extended with a deny-list of session-behavioral RITE_* vars removed via `env -u`
+from every bats child. The deny-list is located via the `_GATE_BATS_SCRUB_VARS`
+comment anchor in `test-gate.sh` (not a shell variable — grep for it to find the
+exact `env -u` args):
 
 ```
 _GATE_BATS_SCRUB_VARS: RITE_TARGET_BRANCH  RITE_TEST_GATE_SKIP_TRIGGERS
@@ -1801,8 +1803,9 @@ pretty/TAP) and the flake-retry invocation in `_gate_flake_retry_pass` use
 **Regression:** `tests/regression/gate-session-env-scrub.bats` — structural
 checks that every deny-listed var appears in `_bats_sandbox`, that structural
 RITE_* vars are absent from the scrub list, that all 7 invocation sites use the
-sandbox, and behavioral probes confirming `RITE_TARGET_BRANCH` is unset and
-`RITE_REPO_ROOT` passes through inside a gate-scrubbed bats run.
+sandbox, and behavioral probes that extract the deny-list from `_bats_sandbox`
+via sed and run a nested bats invocation through the same `env -u` chain,
+confirming `RITE_TARGET_BRANCH` is unset and `RITE_REPO_ROOT` passes through.
 
 **Note on `RITE_TEST_GATE_SKIP_TRIGGERS`:** this var is consumed by the gate's
 own selection phase (before bats is spawned), so scrubbing it from the child
