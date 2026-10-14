@@ -2407,7 +2407,13 @@ run_test_gate() {
     # Structural vars (RITE_REPO_ROOT, RITE_LIB_DIR, RITE_PROJECT_ROOT) stay —
     # Rule 35 suppressions and setup.bash loaders depend on them.
     # Incidents: RITE_TEST_GATE_SKIP_TRIGGERS=true (#1182, 3 tests × 5 slots);
-    # RITE_TARGET_BRANCH=supervised-ux (#1049/PR #1179, 2 tests × 3 retries).
+    # RITE_TARGET_BRANCH=supervised-ux (#1049/PR #1179, 2 tests × 3 retries);
+    # RITE_TEST_GATE_DIFF_BASE=origin/main...SHA (#975 workspace tests, 3 tests):
+    #   workflow-runner.sh passes RITE_TEST_GATE_DIFF_BASE inline when launching
+    #   the gate (e.g. origin/main...pre_fix_head); not in the unset list → leaked
+    #   into bats → inner _run_gate_with_env subprocess used it as the diff base →
+    #   git diff silently failed → _nonsr_changed_files empty → no workspace tests
+    #   ran → positive workspace assertions failed.
     # Note: RITE_TEST_GATE_SKIP_TRIGGERS is consumed by the gate itself BEFORE
     # the bats invocation (selection phase); scrubbing it from the child env
     # does not change gate-selection behavior.
@@ -2416,6 +2422,7 @@ run_test_gate() {
       -u RITE_TARGET_BRANCH -u RITE_TEST_GATE_SKIP_TRIGGERS \
       -u RITE_STALE_BRANCH_THRESHOLD -u RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
       -u RITE_ACCEPT_RED_MAIN \
+      -u RITE_TEST_GATE_DIFF_BASE \
       -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
       -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
       -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)

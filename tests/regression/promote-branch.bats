@@ -120,6 +120,17 @@ exit 0
 STUB
   chmod +x "$_lib/core/local-review.sh"
 
+  cat > "$_lib/utils/markers.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f rite_markers_loaded >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+rite_markers_loaded() { return 0; }
+RITE_MARKER_REVIEW="sharkrite-local-review"
+RITE_MARKER_ASSESSMENT="sharkrite-assessment"
+RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
+export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
+STUB
+
   # Recording merge-pr.sh stub: if this file is ever sourced, it sets a flag.
   cat > "$_lib/core/merge-pr.sh" << 'STUB'
 #!/bin/bash
@@ -414,6 +425,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "shape-branch" 2>&1
 RUNEOF
 )
@@ -641,6 +653,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "own-branch" 2>&1
 # Report whether merge-pr.sh was sourced
 echo "MERGE_PR_SOURCED_FLAG=${_MERGE_PR_SH_SOURCED_IN_TEST:-false}"
@@ -737,6 +750,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "pm-branch" 2>&1
 RUNEOF
 )
@@ -823,6 +837,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "prune-branch" 2>&1
 RUNEOF
 )
@@ -926,6 +941,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "sha-recp-branch" 2>&1
 RUNEOF
 )

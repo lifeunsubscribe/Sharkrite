@@ -368,3 +368,47 @@ Done when the finding is addressed."
     false
   }
 }
+
+# ─── Gate-origin findings never become follow-up issues ──────────────────────
+#
+# A [GATE] item means verification could not confirm the change — a failing
+# test, a lint violation, or a gate that could not run. That is a signal to fix
+# or to look, not a unit of tracked work, and the slot already fails loudly when
+# these survive the retry cap. Filing them produced issues nobody could action:
+# of 60 dedup sentinels, 21 were gate-origin and 19 of those came from the two
+# least informative findings. Issue #1156 alone spawned six while failing.
+
+@test "assess-and-resolve.sh: gate-origin headers are skipped before issue creation" {
+  # The per-finding loop must short-circuit on '### [GATE]' headers.
+  run grep -n "'### \[GATE\]'\*)" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: no [GATE] case arm found in the per-finding loop"
+    false
+  }
+}
+
+@test "assess-and-resolve.sh: the gate skip emits a diag and continues" {
+  # Must be observable (diag) and must skip the iteration, not abort the loop.
+  run grep -n -A3 "'### \[GATE\]'\*)" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "FOLLOWUP_SKIPPED_GATE_ORIGIN" || {
+    echo "FAIL: gate skip does not emit FOLLOWUP_SKIPPED_GATE_ORIGIN"
+    echo "$output"
+    false
+  }
+  echo "$output" | grep -qE '^\s*[0-9]+-?\s*continue' || {
+    echo "FAIL: gate skip does not 'continue' — it must skip the finding, not break the loop"
+    echo "$output"
+    false
+  }
+}
+
+@test "assess-and-resolve.sh: review-origin findings are NOT skipped" {
+  # The filter must key on the [GATE] prefix only. A review finding whose title
+  # merely mentions the word gate must still produce a follow-up.
+  run grep -c "'### \[GATE\]'\*)" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$output" = "1" ] || {
+    echo "FAIL: expected exactly one [GATE] filter arm, found $output"
+    false
+  }
+}
