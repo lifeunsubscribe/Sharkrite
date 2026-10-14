@@ -61,6 +61,11 @@ while IFS= read -r bats_file; do
   while IFS= read -r _cov_entry; do
     _cov_entry=$(echo "$_cov_entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [ -z "$_cov_entry" ] && continue
+    # Strip an optional function scope (`path::fn_a|fn_b`, #1229) before the
+    # existence check — the scope narrows WHEN the file is selected, it is not
+    # part of the path. Without this, every scoped header looks stale.
+    _cov_entry="${_cov_entry%%::*}"
+    [ -z "$_cov_entry" ] && continue
     case "$_cov_entry" in *'*'*) continue ;; esac  # glob → exempt
     # Entries resolve relative to CWD, which the driver assumes is the repo root
     # (make lint / the gate both cd to root; the lint-rule tests run from a temp

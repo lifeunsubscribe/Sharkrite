@@ -624,6 +624,14 @@ _compute_bats_jobs() {
 # _parse_test_coverage_header — extract the sharkrite-test-covers paths
 # Looks in the first 15 lines for `# sharkrite-test-covers: <paths>`.
 # Returns the comma-separated path list, or empty string if no header.
+#
+# A path may carry an optional function scope:
+#     lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial
+# which selects this test only when the diff touches one of those top-level
+# functions.  A bare path keeps file-level behavior.  Rationale: test-gate.sh
+# is ~2900 lines / 34 functions and 29 bats files declare it, so a 20-line
+# change selected all 29 — which both wasted time and created the parallel
+# load that made gate-invoking tests flake.
 _parse_test_coverage_header() {
   local bats_file="$1"
   local _header
@@ -647,6 +655,83 @@ _bats_file_is_serial() {
   local bats_file="$1"
   head -15 "$bats_file" 2>/dev/null \
     | grep -qE "^# ${RITE_MARKER_GATE_SERIAL}([[:space:]]|$)"
+}
+
+# _changed_functions_in_file — top-level shell function names touched by the diff
+# Args: $1=project-relative file path, $2=project_root
+# Stdout: newline-separated function names, or empty when attribution is not
+#         possible (no diff, non-shell file, or a change outside any function).
+#
+# Empty output means "unattributable" and callers MUST fail safe by selecting
+# the file's covering tests — precision is an optimization, never a filter that
+# can hide a real regression.
+#
+# Attribution rule: a changed line inside `name() { ... }` belongs to `name`.
+# A changed line in the comment block immediately above a definition (only
+# comments/blanks between) also belongs to that function, since that block
+# documents it — without this, a comment touch-up would deselect every test.
+_changed_functions_in_file() {
+  local _rel="$1" _root="$2"
+  case "$_rel" in
+    *.sh|*.bash) ;;
+    *) echo ""; return 0 ;;
+  esac
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cold-start default for direct/CI invocation; run_workflow seeds origin/<target> per #1037, operator env (RITE_TEST_GATE_DIFF_BASE) still wins. Over-selecting against main errs safe here — an unattributable diff falls back to file-level selection.
+  local _base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
+  local _hunks
+  _hunks=$(git -C "$_root" diff -U0 "${_base}...HEAD" -- "$_rel" 2>/dev/null \
+    | grep -oE '^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)?' || true)
+  [ -z "$_hunks" ] && { echo ""; return 0; }
+
+  # Expand each hunk's +start[,count] into the concrete changed line numbers.
+  local _lines_file
+  _lines_file=$(mktemp "/tmp/rite_fnscope_lines_$$_XXXXXX")
+  printf '%s\n' "$_hunks" | awk '
+    {
+      plus = $3                     # "+start[,count]"
+      sub(/^\+/, "", plus)
+      n = index(plus, ",")
+      if (n > 0) { start = substr(plus, 1, n-1) + 0; count = substr(plus, n+1) + 0 }
+      else       { start = plus + 0; count = 1 }
+      if (count == 0) { print start; next }   # pure deletion: attribute to the site
+      for (i = 0; i < count; i++) print start + i
+    }' > "$_lines_file" 2>/dev/null || true
+
+  [ -s "$_lines_file" ] || { rm -f "$_lines_file"; echo ""; return 0; }
+
+  local _out
+  _out=$(awk -v WANT="$_lines_file" '
+    # Pass 1 is implicit: record per-line enclosing function and definition lines.
+    /^[a-z_][a-z0-9_]*\(\)[[:space:]]*\{/ {
+      fn = $1; sub(/\(\).*/, "", fn)
+      depth = 1; map[NR] = fn; defline[NR] = fn; next
+    }
+    fn != "" {
+      d = gsub(/\{/, "{"); depth += d
+      d = gsub(/\}/, "}"); depth -= d
+      map[NR] = fn
+      if (depth <= 0) fn = ""
+      next
+    }
+    { map[NR] = ""; iscomment[NR] = ($0 ~ /^[[:space:]]*(#|$)/) ? 1 : 0 }
+    END {
+      while ((getline ln < WANT) > 0) {
+        if (ln in map && map[ln] != "") { seen[map[ln]] = 1; continue }
+        # Comment block directly above a definition → attribute to that function.
+        attached = ""
+        for (j = ln; j <= ln + 25; j++) {
+          if (j in defline) { attached = defline[j]; break }
+          if (!(j in iscomment) || iscomment[j] != 1) break
+        }
+        if (attached != "") { seen[attached] = 1; continue }
+        unattributable = 1
+      }
+      if (unattributable) exit 0            # emit nothing → caller fails safe
+      for (k in seen) print k
+    }
+  ' "$_root/$_rel" 2>/dev/null || true)
+  rm -f "$_lines_file"
+  printf '%s\n' "$_out" | grep -vE '^$' || true
 }
 
 # _bats_file_matches_changed — decide if a single bats file should run
@@ -681,17 +766,40 @@ _bats_file_matches_changed() {
   set -- $_header
   unset IFS
   set +f
-  local _pattern _changed
+  local _pattern _changed _path_pat _fn_list _fn _changed_fns
   for _pattern in "$@"; do
     # Trim surrounding whitespace
     _pattern="${_pattern# }"
     _pattern="${_pattern% }"
     [ -z "$_pattern" ] && continue
+    # Optional function scope: `path::fn_a|fn_b` narrows the match to changes
+    # inside the named top-level functions.  A bare `path` keeps file-level
+    # behavior exactly as before (every existing header is unaffected).
+    _path_pat="${_pattern%%::*}"
+    _fn_list=""
+    case "$_pattern" in
+      *::*) _fn_list="${_pattern#*::}" ;;
+    esac
     while IFS= read -r _changed; do
       [ -z "$_changed" ] && continue
       # shellcheck disable=SC2254  # glob expansion in case is intentional
       case "$_changed" in
-        $_pattern) return 0 ;;
+        $_path_pat)
+          [ -z "$_fn_list" ] && return 0          # file-level header: match as before
+          _changed_fns=$(_changed_functions_in_file "$_changed" "${RITE_PROJECT_ROOT:-.}")
+          # Unattributable change (top-level edit, no diff, non-shell file) →
+          # fail safe: behave exactly like a file-level header.
+          [ -z "$_changed_fns" ] && return 0
+          local _fns=()
+          IFS='|' read -r -a _fns <<< "$_fn_list"
+          for _fn in "${_fns[@]+"${_fns[@]}"}"; do
+            _fn="${_fn# }"; _fn="${_fn% }"
+            [ -z "$_fn" ] && continue
+            if printf '%s\n' "$_changed_fns" | grep -qxF "$_fn"; then
+              return 0
+            fi
+          done
+          ;;
       esac
     done <<< "$changed_files"
   done
