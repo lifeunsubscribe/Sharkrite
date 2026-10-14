@@ -2351,11 +2351,9 @@ _lint_issues_strict() {
   # The model-side prompt guidance (section H, now retired) was insufficient alone —
   # this check is the deterministic detector; WARNs at the preview seam rather than blocking.
   #
-  # Allowlisted shared setup commands (legitimate in every issue):
-  #   make check      — project-wide lint/type-check
-  #   bats -r tests/  — full test suite
-  #   npm test        — JS/TS default test runner
-  #   pytest          — Python default test runner
+  # A command carried by many issues is a shared CI gate, not a duplicated deliverable.
+  # The frequency rule (below) exempts such commands ahead of the pairwise comparison;
+  # the hardcoded allowlist then covers small-slate cases where the threshold cannot fire.
   #
   # Suppressed per-issue with:
   #   <!-- sharkrite-plan-lint disable duplicate-verification - Reason: <text> -->
@@ -2363,7 +2361,32 @@ _lint_issues_strict() {
   # Seam instruction on WARNING: give ONE issue sole ownership of this
   # criterion, or differentiate the commands.
 
-  # Commands that legitimately appear in multiple issues (shared CI gates).
+  # How many issues must share a normalized command for it to be classified as a
+  # universal CI gate (exempt from the pairwise duplicate check).
+  # For a slate of ≤5 issues, ≥3 occurrences equals >50% of the slate, so the
+  # frequency rule naturally covers small-slate universal gates without a separate
+  # percentage check.
+  local _VERIF_UNIV_THRESHOLD=3
+
+  # Build a frequency table: how many issues carry each normalized verification command.
+  # Computed before the pairwise loop so the per-command lookup inside it is O(1).
+  # sharkrite-lint disable BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT - Reason: file has a self-re-exec guard at line 29 that ensures bash 4+ before any code runs
+  local -A _verif_cmd_freq=()
+  local _freq_i _freq_cmd _freq_norm
+  for _freq_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _freq_cmds="${_verif_cmds[$_freq_i]}"
+    [ -z "$_freq_cmds" ] && continue
+    while IFS= read -r _freq_cmd; do
+      [ -z "$_freq_cmd" ] && continue
+      _freq_norm=$(echo "$_freq_cmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s '[:blank:]' ' ' || true)
+      [ -z "$_freq_norm" ] && continue
+      case "$_freq_norm" in *' '*) ;; *) continue ;; esac
+      _verif_cmd_freq["$_freq_norm"]=$(( ${_verif_cmd_freq["$_freq_norm"]:-0} + 1 ))
+    done <<< "$_freq_cmds"
+  done
+
+  # Fallback allowlist for small slates where the frequency threshold (≥3) cannot
+  # fire — e.g. a 2-issue plan sharing `npm test` must not warn.
   local _VERIF_ALLOWLIST
   _VERIF_ALLOWLIST="make check
 bats -r tests/
@@ -2402,7 +2425,15 @@ pytest"
         # Single-token entries (no space after normalization) are identifiers/paths, not commands — skip duplicate check
         case "$_vcmd_norm" in *' '*) ;; *) continue ;; esac
 
-        # Skip allowlisted shared setup commands
+        # Skip commands that appear in many issues — they are universal CI gates,
+        # not per-issue deliverables (checked before the allowlist so project-specific
+        # gates like `pnpm typecheck` are exempt without needing an allowlist entry).
+        if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ]; then
+          continue
+        fi
+
+        # Skip allowlisted commands — fallback for small slates where the frequency
+        # threshold cannot fire
         if echo "$_VERIF_ALLOWLIST" | grep -qxF "$_vcmd_norm"; then
           continue
         fi
