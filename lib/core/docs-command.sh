@@ -423,6 +423,12 @@ ${_ue_excerpt}
     _ue_drift_content="$(cat "$_ue_drift_path" 2>/dev/null || true)"
   fi
 
+  # Fetch origin/<target> so the CREATE guard's git cat-file check reflects the
+  # current remote state, not a potentially stale local tracking ref.
+  git -C "$RITE_PROJECT_ROOT" fetch origin "$_ue_target" 2>/dev/null || {
+    print_warning "Could not fetch origin/${_ue_target} — CREATE guard may miss files pushed since last fetch" >&2
+  }
+
   local _ue_accum_fb=""
   local _ue_attempt=0
 
@@ -631,6 +637,19 @@ DOC_UPDATE_EOF
             _ue_pi=$((_ue_pi + 1))
             continue
           fi
+        fi
+      fi
+
+      # Refuse CREATE proposals when the target already exists locally or on
+      # origin/<target>: the model authored content without reading the original,
+      # so accepting would overwrite it wholesale with unreviewed content.
+      if [ "$_ue_p_action" = "CREATE" ]; then
+        local _ue_abs_create_check="${RITE_PROJECT_ROOT}/${_ue_p_file}"
+        if [ -f "$_ue_abs_create_check" ] || \
+            git -C "$RITE_PROJECT_ROOT" cat-file -e "origin/${_ue_target}:${_ue_p_file}" 2>/dev/null; then
+          print_warning "  Auto-skipping CREATE for '${_ue_p_file}': file already exists — use ACTION: EDIT to update an existing file" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
         fi
       fi
 

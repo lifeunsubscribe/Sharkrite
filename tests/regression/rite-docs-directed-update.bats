@@ -5,7 +5,7 @@ BATS_TEST_TIMEOUT=30
 #
 # Tests for the directed-update + reconcile engine (#1049):
 # double-source safety, nothing-before-approval, CREATE new doc,
-# drift burn-down, and changelog-mode compatibility.
+# drift burn-down, changelog-mode compatibility, and proposal guards (#1208).
 #
 # All LLM provider calls are stubbed via post-source function overrides.
 # Stub git push/fetch via PATH-priority stub bin; gh_safe overridden after source.
@@ -352,7 +352,142 @@ DRIFT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 9: coverage header presence (structural check)
+# Acceptance criterion 9 (#1208): CREATE guard — existing local file
+# ---------------------------------------------------------------------------
+
+@test "CREATE proposal targeting an existing local file is auto-skipped with a warning" {
+  # docs/test-doc.md already exists locally (created in setup)
+  local doc_before
+  doc_before="$(cat "$FAKE_PROJECT/docs/test-doc.md")"
+
+  local proposal
+  proposal="$(printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: CREATE' \
+    'FILE: docs/test-doc.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Overwrite test-doc with replacement content' \
+    '---CONTENT---' \
+    '# Replacement Content' \
+    '' \
+    'This should not replace the original.' \
+    '---END---')"
+
+  run bash -c "
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
+    bash '${_DOCS_HELPER}' docs_directed_update 'recreate test-doc' 2>&1
+  " || true
+
+  # Warning must mention the guard fired
+  printf '%s\n' "$output" | grep -qi "Auto-skipping CREATE"
+
+  # File must be byte-identical — guard prevented apply
+  local doc_after
+  doc_after="$(cat "$FAKE_PROJECT/docs/test-doc.md")"
+  [ "$doc_before" = "$doc_after" ]
+
+  # No push or PR-create
+  local push_calls
+  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$push_calls" -eq 0 ]
+  local gh_calls
+  gh_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$gh_calls" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 10 (#1208): CREATE guard — file exists only on origin
+# ---------------------------------------------------------------------------
+
+@test "CREATE proposal targeting a file that exists only on origin is auto-skipped with a warning" {
+  # Commit a new file to the fake project so it appears on origin/main
+  # (the helper's update-ref points origin/main at HEAD after this commit)
+  printf '# Origin-only content\n' > "$FAKE_PROJECT/docs/origin-only.md"
+  git -C "$FAKE_PROJECT" add .
+  git -C "$FAKE_PROJECT" commit -q -m "add origin-only file"
+  # Remove it from the working tree so [ -f ] misses it, but git cat-file
+  # finds it via the refs/remotes/origin/main ref set in the helper
+  rm "$FAKE_PROJECT/docs/origin-only.md"
+
+  local proposal
+  proposal="$(printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: CREATE' \
+    'FILE: docs/origin-only.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Create a doc that already exists on origin' \
+    '---CONTENT---' \
+    '# Origin Only' \
+    '' \
+    'This content must not be applied.' \
+    '---END---')"
+
+  run bash -c "
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
+    bash '${_DOCS_HELPER}' docs_directed_update 'create origin-only doc' 2>&1
+  " || true
+
+  # Warning must mention the guard fired
+  printf '%s\n' "$output" | grep -qi "Auto-skipping CREATE"
+
+  # File must not exist locally after — guard prevented create
+  [ ! -f "$FAKE_PROJECT/docs/origin-only.md" ]
+
+  # No push or PR-create
+  local push_calls
+  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$push_calls" -eq 0 ]
+  local gh_calls
+  gh_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$gh_calls" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 11 (#1208): fetch precedes CREATE guard — structural
+# ---------------------------------------------------------------------------
+
+@test "CREATE guard: fetch line precedes cat-file check line in source (structural)" {
+  local fetch_line cat_file_line
+  fetch_line=$(grep -n 'fetch origin.*_ue_target' "$DOCS_CMD" | head -1 | cut -d: -f1 || true)
+  cat_file_line=$(grep -n 'cat-file.*_ue_target' "$DOCS_CMD" | head -1 | cut -d: -f1 || true)
+  [ -n "$fetch_line" ]
+  [ -n "$cat_file_line" ]
+  [ "$fetch_line" -lt "$cat_file_line" ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 12 (#1208): fetch is called during directed-update run
+# ---------------------------------------------------------------------------
+
+@test "CREATE guard: git fetch is called during a directed-update run (behavioral)" {
+  # Use a new-file proposal (does not exist) to keep the guard from skipping it;
+  # answer n at the preview so nothing is committed — we only care that the
+  # fetch ran before the guard checked origin.
+  local proposal
+  proposal="$(printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: CREATE' \
+    'FILE: docs/fetch-probe-fixture.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Probe fixture for fetch-call assertion' \
+    '---CONTENT---' \
+    '# Fetch Probe' \
+    '' \
+    'This file is used only to trigger the proposal loop.' \
+    '---END---')"
+
+  run bash -c "
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
+    bash '${_DOCS_HELPER}' docs_directed_update 'probe fetch call' <<< 'n'
+  " || true
+
+  local fetch_calls
+  fetch_calls="$(grep -c 'git:fetch' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$fetch_calls" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Coverage header presence (structural check)
 # ---------------------------------------------------------------------------
 
 @test "coverage header is present on this bats file" {

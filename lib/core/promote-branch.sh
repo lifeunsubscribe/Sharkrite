@@ -212,7 +212,7 @@ run_promote() {
   # shell never sits in a directory that later gets removed, avoiding the
   # CWD-after-worktree-removal hazard.
 
-  print_step "Running full unfiltered test suite on branch '$BRANCH'..."
+  print_step "Running targeted verification gate on branch '$BRANCH'..."
   local _wt="${RITE_WORKTREE_DIR}/promote-${BRANCH}"
   mkdir -p "$(dirname "$_wt")"
 
@@ -224,21 +224,51 @@ run_promote() {
 
   git worktree add "$_wt" "origin/$BRANCH"
 
+  # Targeted, not full. A full unfiltered suite never runs inside a workflow
+  # (CLAUDE.md standing rule) — the overnight pipeline owns that. Here the
+  # correct scope is everything the branch changed relative to main, which is
+  # exactly what the gate's targeted selection computes from that diff base.
+  # It also avoids the 20+ min cost that made a promote indistinguishable from
+  # a hang, and the parallel load that produced phantom failures.
+  # Lazy, guarded load: a top-level source would hard-fail in environments that
+  # stub RITE_LIB_DIR (the promote tests build a minimal fake lib), and the gate
+  # is only needed on this path.
+  if ! declare -f run_test_gate >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    source "$RITE_LIB_DIR/utils/test-gate.sh" 2>/dev/null || true
+  fi
   local _fs_exit=0
-  ( cd "$_wt" && RITE_PROJECT_ROOT="$_wt" "$RITE_INSTALL_DIR/bin/rite-full-suite" ) \
+  local _fs_gate_json="${_wt}/.rite-promote-gate.json"
+  ( cd "$_wt" \
+      && RITE_PROJECT_ROOT="$_wt" \
+         RITE_TEST_GATE_DIFF_BASE="origin/main" \
+         PR_NUMBER="${PROMO_PR:-}" \
+         run_test_gate "$_fs_gate_json" "$_wt" ) \
     || _fs_exit=$?
+
+  # Salvage the verdict before the worktree is removed (#1210) — otherwise the
+  # only record of what failed dies with the directory.
+  if [ "$_fs_exit" -ne 0 ] && [ -s "$_fs_gate_json" ]; then
+    mkdir -p "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+    cp "$_fs_gate_json" \
+      "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/promote-gate-${BRANCH//\//-}.json" 2>/dev/null || true
+    print_error "Failing items (verdict saved to .rite/state/promote-gate-${BRANCH//\//-}.json):"
+    jq -r '((.tests // [])[:20][] | "  - test: " + (.test_name // "unknown")),
+           ((.lint  // [])[:20][] | "  - lint: " + (.file // "?") + ":" + ((.line // 0)|tostring) + " " + (.rule // ""))' \
+      "$_fs_gate_json" >&2 2>/dev/null || true
+  fi
 
   # Remove worktree regardless of suite outcome (before aborting on failure)
   git worktree remove "$_wt" --force 2>/dev/null || true
 
   if [ "$_fs_exit" -ne 0 ]; then
-    print_error "Full suite failed on branch '$BRANCH'"
+    print_error "Verification gate failed on branch '$BRANCH'"
     echo "  Fix failing tests or lint on the integration branch, then re-run:" >&2
     echo "    rite --branch $BRANCH <issue>" >&2
     echo "    rite --promote $BRANCH" >&2
     exit 1
   fi
-  print_success "Full suite passed"
+  print_success "Targeted verification gate passed"
   echo ""
 
   # ── Phase 5: CRITICAL hard gate ──────────────────────────────────────────
@@ -255,6 +285,64 @@ run_promote() {
     exit 1
   fi
   print_success "No CRITICAL findings — hard gate passed"
+  echo ""
+
+  # ── Capture non-CRITICAL findings (#1209) ────────────────────────────────
+  #
+  # The promotion review is the ONLY review that sees every constituent issue
+  # integrated together, so cross-issue findings appear nowhere else. Before
+  # this, everything below CRITICAL was posted and then evaporated: promoting
+  # supervised-ux surfaced 4 HIGH / 3 MEDIUM / 5 LOW and none were tracked.
+  #
+  # Deterministic by design — the review already emits machine-readable
+  # `<!-- item:N severity:X -->` markers, so no classifier runs here. One
+  # aggregated issue, never a fix loop: promotion is a gate, and fixing on the
+  # integration branch would land code on main that skipped per-issue review.
+  # Best-effort throughout: promotion has already passed its gates, so nothing
+  # in this block may block, retry, or fail the merge.
+  local _promo_review _promo_noncrit
+  _promo_review=$(gh_safe pr view "$PROMO_PR" --json comments \
+    --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body" 2>/dev/null || true)
+  _promo_noncrit=$(printf '%s' "$_promo_review" \
+    | grep -oE '<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW) -->' | wc -l | tr -d ' ' || true)
+
+  if [ -n "$_promo_review" ] && [ "${_promo_noncrit:-0}" -gt 0 ]; then
+    local _promo_h _promo_m _promo_l
+    _promo_h=$(printf '%s' "$_promo_review" | grep -c 'severity:HIGH'   || true)
+    _promo_m=$(printf '%s' "$_promo_review" | grep -c 'severity:MEDIUM' || true)
+    _promo_l=$(printf '%s' "$_promo_review" | grep -c 'severity:LOW'    || true)
+    print_info "Capturing ${_promo_noncrit} non-CRITICAL promotion finding(s) as a follow-up issue"
+
+    local _promo_body
+    _promo_body="Findings from the promotion review of \`${BRANCH}\` (PR #${PROMO_PR}).
+
+The promotion review is the only review that sees these issues integrated
+together, so these findings appear nowhere else. Promotion proceeded — the
+CRITICAL hard gate passed — and these are captured here rather than lost.
+
+**Severity mix:** ${_promo_h} HIGH, ${_promo_m} MEDIUM, ${_promo_l} LOW
+
+**Triage needed:** each item below is unreviewed by a human and was not
+assessed NOW/LATER/DISMISSED. Close the ones that do not warrant work.
+
+---
+
+${_promo_review}"
+
+    local _promo_issue_url
+    if _promo_issue_url=$(gh_safe issue create \
+          --title "Promotion review follow-ups: ${BRANCH}" \
+          --label "from-review,needs-re-triage" \
+          --body "$_promo_body" 2>/dev/null); then
+      print_success "Promotion findings tracked: ${_promo_issue_url}"
+      _diag "PROMOTE_FOLLOWUP_CREATED branch=${BRANCH} pr=${PROMO_PR} high=${_promo_h} medium=${_promo_m} low=${_promo_l} url=${_promo_issue_url}"
+    else
+      # Never block the merge on bookkeeping — surface the loss loudly instead.
+      print_warning "Could not create the promotion follow-up issue — findings remain only on PR #${PROMO_PR}"
+      _diag "PROMOTE_FOLLOWUP_FAILED branch=${BRANCH} pr=${PROMO_PR} count=${_promo_noncrit}"
+    fi
+    echo ""
+  fi
   echo ""
 
   # ── Phase 6: SHA-verified squash merge (own path — never merge-pr.sh) ────

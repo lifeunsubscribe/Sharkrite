@@ -108,6 +108,7 @@ As a safety net, when tests fail after merge AND after dependency reinstall, `ve
 |---|---|
 | `parent-PR-deferred` | Requires knowledge of the full batch queue (`ISSUE_LIST`). `run_workflow()` processes one issue at a time. Single-issue mode has no guard because the user is presumed to know ordering constraints. |
 | `dep-failed` | Requires the accumulated `ISSUE_STATUS` map from earlier in the same batch. `run_workflow()` cannot see sibling results. |
+| `live-lock-deferred` | Dep issue holds a live lock in a concurrent batch session — defer-to-end rather than skip immediately. Requires local lock-dir inspection (`RITE_LOCK_DIR`), which is batch-orchestrator context. Single-issue mode has no queue to defer into. |
 | `active-process` | Safety guard against two batch sessions racing on the same issue. Single-issue direct invocation allows this intentionally. |
 | `in-current-branch` | Prevents git checkout conflicts during batch execution. Single-issue mode allows because the user is interactive. |
 
@@ -150,7 +151,15 @@ Parses issue body for dependency patterns:
 
 Checks two conditions:
 1. Dependency failed/blocked/skipped in this batch → skip
-2. Dependency issue is still OPEN (PR not merged) → skip
+2. Dependency issue is still OPEN (PR not merged) → defer or skip (see below)
+
+**Open dependency handling — three-tier decision:**
+When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
+1. **Queue-later defer**: dep appears after the current position in `ISSUE_LIST` → re-append the dependent to the end of the queue (`deferred_for_dep` status; bounded by `_DEFER_COUNT` anti-cycle cap).
+2. **Live-lock defer**: dep holds a live issue-lock (`${RITE_LOCK_DIR}/issue-N.lock/pid` exists + `kill -0` succeeds + not this process's own PID) → same re-append, same cap. The foreign session is actively working on the dep and will likely merge before this batch drains. Local filesystem check only; no network calls.
+3. **Skip**: neither condition holds (dep not in queue, no live lock, or cap exhausted) → `dep_failed` skip, same as today.
+
+**Anti-cycle cap:** Both defer paths share `_DEFER_COUNT[ISSUE_NUM]` and the `_UNIQUE_ISSUE_COUNT` bound. A dep whose foreign session stalls and never merges cannot defer the dependent more than `_UNIQUE_ISSUE_COUNT` times.
 
 **Why check open state:** A dependency's PR may have been created in this batch but not yet merged. Processing the dependent issue before the dependency merges causes failures (missing code/models).
 
@@ -777,6 +786,15 @@ On timeout: completed sub-assessments are preserved (their doc files were alread
 ### DO NOT skip the assessment based on diff content
 
 An earlier approach was rejected: checking whether the PR diff touched any `.md` files and skipping the assessment if not. This was wrong because the entire purpose of the assessment is to surface what docs should change based on dev work — even when the dev work only touched `.sh` or `.ts` files. A new security pattern, a new CLI flag, or a new architectural approach all warrant doc updates regardless of whether the dev session touched docs.
+
+### Directed-Update Proposal Guards (#1208)
+
+The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces two safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
+
+- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content).
+- **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
+
+The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. A residual window persists from guard check to apply: the interactive preview session runs between the two, so a file pushed to origin during that session is not caught by this guard (`_docs_apply_approved`'s own fetch at ~line 206 pulls the latest remote state but does not re-run the CREATE check).
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
