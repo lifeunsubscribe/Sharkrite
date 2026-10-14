@@ -3391,6 +3391,28 @@ _sanitize_spike_key() {
   echo "$1" | tr '.' '-' | tr '/' '-' | sed 's/[^a-zA-Z0-9-]//g' | tr '[:upper:]' '[:lower:]' || true
 }
 
+# _normalize_host_to_registrable_domain: strip subdomains, return the registrable domain.
+# api.foo.co → foo.co, auth.api.foo.co → foo.co, api.myservice.co.uk → myservice.co.uk
+# Limitation: uses a hardcoded multi-part TLD list, not a full public-suffix list (PSL).
+# Add entries to the for-loop as needed; a proper PSL lookup is a separate follow-up.
+_normalize_host_to_registrable_domain() {
+  local _h="$1"
+  local _tld _tld_escaped _reg
+  # Hardcoded multi-part TLD list (covers major ccSLD patterns; not exhaustive).
+  for _tld in co.uk com.au co.jp com.br; do
+    _tld_escaped=$(echo "$_tld" | sed 's/\./\\./g' || true)
+    if echo "$_h" | grep -qE "\\.$_tld_escaped$"; then
+      # Extract registrar-label + multi-part TLD (e.g. foo.co.uk from api.foo.co.uk)
+      _reg=$(echo "$_h" | grep -oE "[a-zA-Z0-9][a-zA-Z0-9-]*\\.$_tld_escaped$" || true)
+      echo "${_reg:-$_h}"
+      return
+    fi
+  done
+  # Standard last-two-labels rule (e.g. api.foo.co → foo.co)
+  _reg=$(echo "$_h" | grep -oE '[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]*$' || true)
+  echo "${_reg:-$_h}"
+}
+
 _detect_unverified_integrations() {
   local issues_file="$1"
 
@@ -3455,7 +3477,11 @@ _detect_unverified_integrations() {
           while IFS= read -r _host; do
             [ -z "$_host" ] && continue
             if ! echo "$grounded_hosts" | grep -qxF "$_host" 2>/dev/null; then
-              echo "host${TAB_CHAR}$_host" >> "$candidates_file"
+              # Normalize to registrable domain so subdomain variants (api.foo.co,
+              # auth.foo.co) collapse to one candidate (foo.co) before sort -u dedup.
+              local _host_reg
+              _host_reg=$(_normalize_host_to_registrable_domain "$_host")
+              echo "host${TAB_CHAR}${_host_reg:-$_host}" >> "$candidates_file"
             fi
           done <<< "$_hosts"
         fi
@@ -3626,9 +3652,10 @@ a schema — those are the downstream issue's responsibility.
             _ctype=$(echo "$_candidate_line" | cut -f1)
             local _context_match=false
             if [ "$_ctype" = "host" ]; then
-              # Match only when the name appears after a URL scheme, anchored to
-              # the start of the hostname (avoids foo.example.com matching example.com).
-              echo "$_current_block" | grep -qiE "https?://(www\.)?$(echo "$_name" | sed 's/\./\\./g')" && _context_match=true
+              # _name is a normalized registrable domain (e.g. foo.co); match it as a
+              # hostname suffix so any subdomain variant (api.foo.co, auth.foo.co) in
+              # the block body still triggers the Blocked-by injection.
+              echo "$_current_block" | grep -qiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')" && _context_match=true
             else
               # pkg: match import/require patterns only
               echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true

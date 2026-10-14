@@ -192,10 +192,12 @@ FIXTURE
   echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/api.example.com/sample.json"
   echo "requests==2.28.0" > "$RITE_TEST_TMPDIR/requirements.txt"
 
+  # Use a 2-label domain (simplefin.io) so normalization is identity — this
+  # keeps the test focused on the basic "ungrounded host → spike" path.
   local issues_file="$RITE_TEST_TMPDIR/issues-b.txt"
   write_issues_file "$issues_file" \
     "Integrate with SimpleFIN" \
-    "Call https://simplefin.example.com/accounts to fetch transaction data."
+    "Call https://simplefin.io/accounts to fetch transaction data."
 
   local stderr_out
   stderr_out=$(mktemp)
@@ -218,8 +220,8 @@ FIXTURE
   }
 
   # WARNING must name the ungrounded host
-  grep -q "simplefin.example.com" "$stderr_out" || {
-    echo "FAIL: WARNING does not mention 'simplefin.example.com'" >&2
+  grep -q "simplefin.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention 'simplefin.io'" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -236,7 +238,7 @@ FIXTURE
   # The first issue must be the spike
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture simplefin.example.com" || {
+  echo "$first_title" | grep -qi "spike: capture simplefin.io" || {
     echo "FAIL: first issue is not the spike: $first_title" >&2
     cat "$issues_file" >&2
     false
@@ -398,11 +400,12 @@ JSON
 # ---------------------------------------------------------------------------
 
 @test "Fixture F: spike issue body contains required grounding instructions" {
-  # No fixtures or manifests so the host is ungrounded
+  # No fixtures or manifests so the host is ungrounded.
+  # Use a 2-label domain so normalization is identity.
   local issues_file="$RITE_TEST_TMPDIR/issues-f.txt"
   write_issues_file "$issues_file" \
     "Add banking integration" \
-    "Fetch data from https://bank.example.com/transactions endpoint."
+    "Fetch data from https://bank-api.io/transactions endpoint."
 
   local stderr_out
   stderr_out=$(mktemp)
@@ -448,11 +451,11 @@ JSON
 # ---------------------------------------------------------------------------
 
 @test "Fixture G: downstream issue referencing ungrounded host gets Blocked-by dependency" {
-  # No fixtures for this host
+  # No fixtures for this host. Use a 2-label domain so normalization is identity.
   local issues_file="$RITE_TEST_TMPDIR/issues-g.txt"
   write_issues_file "$issues_file" \
     "Build SimpleFIN client" \
-    "Implement client code for https://simplefin.example.com/accounts endpoint."
+    "Implement client code for https://simplefin.io/accounts endpoint."
 
   local stderr_out
   stderr_out=$(mktemp)
@@ -493,6 +496,7 @@ JSON
 # ---------------------------------------------------------------------------
 
 @test "Fixture H: existing Dependencies line gets spike placeholder appended" {
+  # Use a 2-label domain so normalization is identity.
   local issues_file="$RITE_TEST_TMPDIR/issues-h.txt"
   cat > "$issues_file" <<'FIXTURE'
 ---ISSUE---
@@ -500,7 +504,7 @@ TITLE: Integrate with payment gateway
 LABELS: feature
 TIME: 1hr
 BODY:
-Use https://payments.example.com/charge to charge customers.
+Use https://payments-api.io/charge to charge customers.
 
 **Dependencies**: After #PREV
 ---END---
@@ -1240,6 +1244,246 @@ FIXTURE
   } || true
 
   rm -f "$stdout_out" "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture T: two subdomains of one service produce exactly ONE spike
+#
+# Two issues reference different subdomains of the same registrable domain
+# (api.authsvc.io and admin.authsvc.io → both normalize to authsvc.io).
+# Expected: 3 issues total (1 spike for authsvc.io + 2 originals).
+# The spike title and fixture path use the normalized domain.
+# ---------------------------------------------------------------------------
+
+@test "Fixture T: two subdomains of same service produce exactly one spike" {
+  # No fixtures for authsvc.io subdomains
+  local issues_file="$RITE_TEST_TMPDIR/issues-t.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement authentication
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.authsvc.io/token to obtain an access token.
+---END---
+---ISSUE---
+TITLE: Implement admin panel
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://admin.authsvc.io/users to list users.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE WARNING (both subdomains collapse to one candidate)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING (both subdomains → authsvc.io), got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # WARNING must name the normalized registrable domain
+  grep -q "authsvc.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention normalized domain 'authsvc.io'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have exactly 3 issues (1 spike + 2 originals — not 4)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (1 spike + 2 originals), got $issue_count — subdomain dedup failed" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Spike title must use the normalized domain (authsvc.io), not a subdomain
+  local first_title
+  first_title=$(grep "^TITLE:" "$issues_file" | head -1)
+  echo "$first_title" | grep -qi "spike: capture authsvc.io" || {
+    echo "FAIL: spike title does not use normalized domain 'authsvc.io': $first_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture U: every downstream issue referencing any subdomain variant gets
+#            Blocked-by the single normalized-domain spike
+#
+# Two issues reference different subdomains (api.authsvc.io, admin.authsvc.io).
+# After the pass, both must carry "Blocked by: #SPIKE-authsvc-io".
+# ---------------------------------------------------------------------------
+
+@test "Fixture U: all subdomain-variant issues get Blocked-by the single normalized spike" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-u.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement authentication
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.authsvc.io/token to obtain an access token.
+---END---
+---ISSUE---
+TITLE: Implement admin panel
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://admin.authsvc.io/users to list users.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  # Extract all non-spike blocks (blocks 2 and 3 after spike prepended)
+  local block2 block3
+  block2=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
+  block3=$(awk '/^---ISSUE---/{b++; buf=""} b==3{buf=buf"\n"$0} /^---END---/ && b==3{print buf; exit}' "$issues_file")
+
+  # Both downstream blocks must reference the spike
+  echo "$block2" | grep -q "#SPIKE-authsvc-io" || {
+    echo "FAIL: first downstream issue (api.authsvc.io) missing #SPIKE-authsvc-io" >&2
+    echo "--- block 2 ---" >&2
+    echo "$block2" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  echo "$block3" | grep -q "#SPIKE-authsvc-io" || {
+    echo "FAIL: second downstream issue (admin.authsvc.io) missing #SPIKE-authsvc-io" >&2
+    echo "--- block 3 ---" >&2
+    echo "$block3" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture V: distinct registrable domains still produce distinct spikes
+#
+# One issue references two different registrable domains (svc-a.io, svc-b.io).
+# Expected: 3 issues total (2 spikes + 1 original).
+# ---------------------------------------------------------------------------
+
+@test "Fixture V: distinct registrable domains produce distinct spikes" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-v.txt"
+  write_issues_file "$issues_file" \
+    "Integrate two services" \
+    "Call https://api.svc-a.io/data and https://api.svc-b.io/data for results."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit two WARNINGs (one per distinct registrable domain)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 2 ] || {
+    echo "FAIL: expected 2 WARNINGs for 2 distinct domains, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have 3 issues (2 spikes + 1 original)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (2 spikes + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture W: multi-part TLD (co.uk) — third label becomes registrable domain
+#
+# api.myservice.co.uk normalizes to myservice.co.uk (not co.uk).
+# Expected: 1 spike titled "spike: capture myservice.co.uk ..." and the
+# downstream issue gets Blocked-by #SPIKE-myservice-co-uk.
+# ---------------------------------------------------------------------------
+
+@test "Fixture W: co.uk multi-part TLD — registrable domain is third-from-right label + co.uk" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-w.txt"
+  write_issues_file "$issues_file" \
+    "Integrate with UK payment provider" \
+    "Call https://api.myservice.co.uk/pay to initiate a payment."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # WARNING must name the normalized domain (not the raw subdomain)
+  grep -q "myservice.co.uk" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention normalized domain 'myservice.co.uk'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must not produce a spike for bare 'co.uk' (that would be wrong)
+  grep -q "spike: capture co.uk" "$issues_file" && {
+    echo "FAIL: spike was created for bare 'co.uk' — multi-part TLD normalization is wrong" >&2
+    cat "$issues_file" >&2
+    false
+  } || true
+
+  # Spike title must use the registrable domain myservice.co.uk
+  local first_title
+  first_title=$(grep "^TITLE:" "$issues_file" | head -1)
+  echo "$first_title" | grep -qi "spike: capture myservice.co.uk" || {
+    echo "FAIL: spike title does not use 'myservice.co.uk': $first_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Downstream issue must get Blocked-by the myservice.co.uk spike
+  local downstream_block
+  downstream_block=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
+  echo "$downstream_block" | grep -q "#SPIKE-myservice-co-uk" || {
+    echo "FAIL: downstream issue missing #SPIKE-myservice-co-uk" >&2
+    echo "--- downstream block ---" >&2
+    echo "$downstream_block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
 }
 
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
