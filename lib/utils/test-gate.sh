@@ -601,8 +601,45 @@ _bats_has_report_formatter() {
 # file. GitHub Actions free runners have ~4 cores so auto-detect there still
 # yields 4. Users on truly shared boxes can pin a lower value via
 # RITE_BATS_JOBS=N.
+# Census-based scaling (#1165): at ≥3 concurrent gates (count > 2) jobs are
+# divided by the live gate count (floor, min 2) to prevent timing-sensitive
+# tests from starving past BATS_TEST_TIMEOUT. At ≤2 gates the full-ncpu
+# behaviour is preserved — the #510 result that uncapped beats capped even
+# under two-batch oversubscription still holds.
+
+# _census_live_gate_count — count active gate instances via the census dir.
+# Each running gate registers its BASHPID (subshell PID, not $$) under
+# ${RITE_LOCK_DIR}/gate-census/<pid>. Dead entries (kill -0 returns non-zero)
+# are reaped in the same pass.
+# Stdout: non-negative integer count of live gates (including this one).
+_census_live_gate_count() {
+  local _census_dir="${RITE_LOCK_DIR:-}/gate-census"
+  [ -d "$_census_dir" ] || { echo 0; return 0; }
+  local _count=0 _pid _entry
+  while IFS= read -r _entry; do
+    [ -z "$_entry" ] && continue
+    _pid=$(basename "$_entry")
+    # Validate: must be all digits (PID), skip non-PID filenames
+    case "$_pid" in
+      *[!0-9]*) continue ;;
+    esac
+    if kill -0 "$_pid" 2>/dev/null; then
+      _count=$((_count + 1))
+    else
+      # Reap dead entry — scoped to the specific file, no glob
+      rm -f "$_entry" 2>/dev/null || true
+    fi
+  done < <(find "$_census_dir" -maxdepth 1 -type f 2>/dev/null || true)
+  echo "$_count"
+}
+
+# _compute_bats_jobs — compute the --jobs value for bats.
+# Args: $1 (optional) — pre-computed live gate count from _census_live_gate_count.
+#   When provided the census walk is skipped (avoids a second find). Absent → walks
+#   the census dir directly (useful for standalone calls in tests).
 _compute_bats_jobs() {
-  # Explicit override wins
+  local _census_count="${1:-}"
+  # Explicit override wins unconditionally — census scaling is bypassed.
   if [ -n "${RITE_BATS_JOBS:-}" ]; then
     # Sanitize: must be a positive integer
     if echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
@@ -618,7 +655,20 @@ _compute_bats_jobs() {
   fi
   local _ncpu
   _ncpu=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)
-  echo "$_ncpu"
+  # Census-based scaling: when ≤2 gates are active (including this one), use full
+  # ncpu — preserves the #510 result that uncapped is faster than capped under
+  # dual-batch load. At 3+ gates, divide to prevent BATS_TEST_TIMEOUT starvation.
+  if [ -z "$_census_count" ]; then
+    _census_count=$(_census_live_gate_count)
+  fi
+  local _jobs
+  if [ "${_census_count:-0}" -le 2 ]; then
+    _jobs="$_ncpu"
+  else
+    _jobs=$(( _ncpu / _census_count ))
+    [ "$_jobs" -lt 2 ] && _jobs=2
+  fi
+  echo "$_jobs"
 }
 
 # _parse_test_coverage_header — extract the sharkrite-test-covers paths
@@ -2064,6 +2114,9 @@ run_test_gate() {
   local _lint_raw_file _tests_raw_file
   _lint_raw_file=$(mktemp "/tmp/rite_gate_lint_${PR_NUMBER:-0}_$$_XXXXXX")
   _tests_raw_file=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$_XXXXXX")
+  # Census entry: populated inside the sharkrite path just before _compute_bats_jobs;
+  # initialised empty here so the trap's rm -f is a no-op for non-sharkrite paths.
+  local _gate_census_file=""
   # Register cleanup for this invocation's specific files (never a glob).
   # Also write a valid-JSON crash sentinel if the function exits non-zero before
   # _gate_write_json runs — an empty/absent output_file causes jq to silently
@@ -2073,6 +2126,7 @@ run_test_gate() {
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}" "${_bats_pretty_capture:-}"
+        rm -f "${_gate_census_file:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
@@ -2257,12 +2311,27 @@ run_test_gate() {
       fi
     fi
 
+    # --- Gate census registration (#1165) ---
+    # Register this gate's BASHPID so _compute_bats_jobs can count concurrent
+    # peers and scale --jobs down when ≥3 gates are active. $$ is the parent
+    # orchestrator's PID (wrong when run_test_gate is backgrounded with &);
+    # $BASHPID is always the current subshell's own PID. Only sharkrite gates
+    # (which run bats) register — the non-sharkrite path never calls
+    # _compute_bats_jobs. Cleanup is via the crash-sentinel EXIT trap (rm -f on
+    # the specific PID file) and the explicit rm before trap - EXIT at the end.
+    if [ -n "${RITE_LOCK_DIR:-}" ]; then
+      mkdir -p "${RITE_LOCK_DIR}/gate-census" 2>/dev/null || true
+      _gate_census_file="${RITE_LOCK_DIR}/gate-census/$BASHPID"
+      touch "$_gate_census_file" 2>/dev/null || _gate_census_file=""
+    fi
+
     # --- Bats parallelism (--jobs N) ---
-    # Auto-detect: use GNU parallel if installed (capped at 4 procs); serial
-    # otherwise. RITE_BATS_JOBS=N overrides. File-level parallel only — within
-    # each bats file, tests still run sequentially (bats-core default).
-    local _bats_jobs _bats_jobs_args
-    _bats_jobs=$(_compute_bats_jobs)
+    # Auto-detect: use GNU parallel if installed; scale by census count (#1165).
+    # RITE_BATS_JOBS=N overrides. File-level parallel only — within each bats
+    # file, tests still run sequentially (bats-core default).
+    local _bats_jobs _bats_jobs_args _bats_census
+    _bats_census=$(_census_live_gate_count)
+    _bats_jobs=$(_compute_bats_jobs "$_bats_census")
     if [ "$_bats_jobs" -gt 1 ]; then
       _bats_jobs_args=(--jobs "$_bats_jobs")
       _gate_status "[test-gate] bats: parallel (--jobs ${_bats_jobs})"
@@ -2270,7 +2339,7 @@ run_test_gate() {
       _bats_jobs_args=()
       _gate_status "[test-gate] bats: serial (parallel binary not found; install GNU parallel to enable)"
     fi
-    _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
+    _diag "BATS_JOBS jobs=${_bats_jobs} census=${_bats_census} pr=${PR_NUMBER:-?}"
 
     # bats' pretty formatter shells out to `tput`; with TERM unset (launchd,
     # cron, non-TTY CI) tput errors and bats exits NON-ZERO even when every test
@@ -3138,6 +3207,7 @@ run_test_gate() {
   fi
 
   rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_bats_pretty_capture:-}"
+  rm -f "${_gate_census_file:-}"
   trap - EXIT
 
   # --- Determine overall exit code and outcome ---

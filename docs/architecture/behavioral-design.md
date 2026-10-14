@@ -475,6 +475,20 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 **Enforcement:** `tests/regression/test-gate-targeted-selection.bats` — serial-hinted file is split from parallel batch; non-serial file is not affected; block-on-any is preserved across both batches.
 
+### Bats Parallelism: Census-Scaled `--jobs` (#1165)
+
+**2026-10-12.** Under 3+ concurrent batch runs, each gate's bats invocation spawned `--jobs ncpu`, oversubscribing the box and starving timing-sensitive tests past `BATS_TEST_TIMEOUT` (live: supervised-ux batch 20261011-231056, `_stale_resolve_base_branch` fallback tests failing only under three-batch load).
+
+**The fix: gate census.** Each gate registers its `$BASHPID` (subshell PID — `$$` is the parent orchestrator's PID and is wrong when `run_test_gate` is backgrounded with `&`) under `${RITE_LOCK_DIR}/gate-census/<pid>` at the start of the sharkrite bats section in `run_test_gate`. `_census_live_gate_count` counts entries whose PID passes `kill -0`, reaping dead entries in the same pass. `_compute_bats_jobs` receives the live count and applies: `jobs = ncpu` when `count ≤ 2`, else `max(2, floor(ncpu / count))`. The census entry is removed on normal exit and on crash via the existing crash-sentinel EXIT trap — each gate removes only its own PID-named file (no globs, #345 class).
+
+**Carve-out for ≤2 gates (preserves #510).** The cap of 4 was removed in #510 because uncapped measured faster even with two concurrent batches (33s vs 38s): OS scheduling keeps all cores busy while the cap leaves some idle. That result holds at any count ≤ 2. Scaling kicks in only at count ≥ 3 (≥ 2 *other* active gates).
+
+**`RITE_BATS_JOBS` still wins unconditionally.** An explicit env override bypasses the census formula entirely — the override branch returns before the census count is consulted.
+
+**Diag:** `BATS_JOBS jobs=N census=M pr=P` (extended from the pre-#1165 `jobs=N pr=P` format).
+
+**Enforcement:** `tests/regression/gate-bats-job-census.bats`.
+
 ### Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)
 
 **2026-06-26.** The gate had only an *outer* timeout — `RITE_GATE_WAIT_TIMEOUT` (#654), ~30 min for the whole run. A single hung test therefore stalled the entire gate until that backstop fired. Live trigger: a developer machine's `python3` was a self-exec'ing wrapper (infinite loop); `venv-bootstrap-failure-loud.bats` invoked it and hung, wedging the gate for 30 min on one test.
