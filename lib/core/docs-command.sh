@@ -423,6 +423,12 @@ ${_ue_excerpt}
     _ue_drift_content="$(cat "$_ue_drift_path" 2>/dev/null || true)"
   fi
 
+  # Fetch origin/<target> so the CREATE guard's git cat-file check reflects the
+  # current remote state, not a potentially stale local tracking ref.
+  git -C "$RITE_PROJECT_ROOT" fetch origin "$_ue_target" 2>/dev/null || {
+    print_warning "Could not fetch origin/${_ue_target} — CREATE guard may miss files pushed since last fetch" >&2
+  }
+
   local _ue_accum_fb=""
   local _ue_attempt=0
 

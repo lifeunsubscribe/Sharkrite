@@ -347,8 +347,9 @@ The old section argued that having Claude run tests INSIDE the session is defens
 - 6 findings → 300 + 1440 = 1740s (~29 min)
 - 10+ findings → capped at 1800s (30 min)
 - `RITE_FIX_TIMEOUT` env var overrides (operator escape hatch)
+- **Single retry on no-commit timeout (issue #1172):** when a fix session times out with zero commits *and* the budget is below 1800s, the session is retried exactly once at `min(2 × budget, 1800s)`; a `FIX_TIMEOUT_RETRY` diag line is emitted. A second no-commit timeout, a timeout with commits present, and budgets already at 1800s all follow today's behavior unchanged.
 
-**Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`.
+**Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`, `tests/regression/fix-timeout-retry.bats`.
 
 ### Test Selection by Changed Paths
 
@@ -405,6 +406,27 @@ The old section argued that having Claude run tests INSIDE the session is defens
 **Enforcement:** `tests/regression/gate-block-on-any.bats` — a failing test in the targeted selection fails the gate (exit 1, reported in `tests[]`, not suppressed) + the `_tap_failure_name` canonicalizer. The selection logic (FORCE_FULL opt-in, targeted-by-changed-paths) is pinned separately by `gate-force-full-optin.bats` and `test-gate-targeted-selection.bats`.
 
 **Merge boundary (#718).** Block-on-any now extends to the **merge boundary** as well as the fix loop. Gate findings are injected into the assessment as `### [GATE] … - ACTIONABLE_NOW` items (structured header prefix). At the 3/3 retry cap, `assess-and-resolve.sh` distinguishes `[GATE]`-tagged items (objective test/lint failures) from LLM-severity HIGH review findings: gate-origin items that survive all retries are treated as non-deferrable — they block the merge (`exit 1`, same path as CRITICAL) rather than being filed as tech-debt and merged. Non-gate HIGH review findings continue to follow the existing retry-cap defer+tech-debt path. Live regression: issue #649 — 2 gate failures, loop hit 3/3, HIGH `[GATE]` deferred to #714, PR #712 merged red.
+
+**RETIRED 2026-10-13 — layer 1 removed.** The batch preflight below ran the full unfiltered suite before every batch (10–25 min of fixed cost) and halted the batch on any failure. Because it ran the suite through the gate's `bats --jobs 8` parallel group, the `tests/concurrency/` files — which spawn competing processes by design — starved past the 120s `BATS_TEST_TIMEOUT` and reported a healthy main as red, halting two batches (2026-10-12, 2026-10-13; 26 of 29 "failures" carried `# timeout after 120 s`). Standing rule: **a full suite never runs inside a sharkrite workflow — only in the overnight `rite --full-suite` pipeline.** Layer 2 (attribution subtraction) remains in the code but is dormant: nothing writes the baseline file now. If the red-main problem needs solving again, do it lazily — on an actual gate failure, re-run only the failing tests against main and subtract the ones that fail there too — never with an upfront full suite.
+
+**Red-Main Degradation Contract (#1149).** The block-on-any soundness argument has a precondition: **main must be green**. In target repos that invariant may not hold. Live failure (LeadFlow 2026-07-05, batch rite 401 128 383 340 113 435 431): main had 18+ failing dashboard tests; 51 main-inherited failures fed into `ACTIONABLE_NOW` for issue #401; the fix loop began a capped 30-min attempt to repair the repo's red main inside one issue's PR — and projected the same churn across all 7 batch issues.
+
+The fix is a two-layer defense:
+
+1. **Batch preflight** (`lib/core/batch-process-issues.sh`): before processing any issue, the batch runs the full gate once against a detached `origin/main` worktree (`RITE_GATE_FORCE_FULL=1`). If main is red:
+   - **Without `RITE_ACCEPT_RED_MAIN=1`**: halt immediately (exit 20) with the failing test/lint list and explicit options — fix main, or re-run with `RITE_ACCEPT_RED_MAIN=1` to proceed with attribution.
+   - **With `RITE_ACCEPT_RED_MAIN=1`**: save the baseline gate findings as `${RITE_STATE_DIR}/gate-main-baseline.json`, export `RITE_MAIN_BASELINE_FILE`, and proceed with the attribution path.
+
+2. **Attribution subtraction** (`lib/core/assess-and-resolve.sh`): when `RITE_ACCEPT_RED_MAIN=1` and `RITE_MAIN_BASELINE_FILE` exists, per-issue gate findings are split:
+   - Failures also present in the baseline (`test_name` exact match for tests; `file+rule` match for lint, line-number-agnostic) → `INFO_ONLY` (not counted toward `GATE_NOW_COUNT`, not entered in the fix loop, visible in the assessment but not blocking).
+   - Branch-only failures → `ACTIONABLE_NOW` as usual.
+   - When ALL failures are inherited, the synthetic empty-findings block is suppressed (no phantom "gate exited non-zero but no findings" item fires).
+
+**Green-main repos:** zero behavior change. The preflight is one additional targeted gate run; it exits 0 fast and the rest of the batch proceeds normally.
+
+**Why not delete baseline-diff machinery again?** The deleted baseline-diff (`_compute_baseline_red_names`, #699→Phase 3) was a per-issue per-gate-round probe — it re-ran failing files at the diff base every fix loop iteration to suppress pre-existing reds. The attribution here is a single preflight + one baseline comparison per issue assessment: no per-round probe, no worktree per issue, no per-SHA cache. The cost is one full-suite run per batch start on `origin/main` — paid once, not per-issue, and only when main is actually red.
+
+**Enforcement:** `tests/regression/batch-preflight-green-main.bats`.
 
 ### Full-suite is OPT-IN; the probe is capped (CRITICAL — the "full suite every time" fix)
 
@@ -505,7 +527,7 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 **The contradiction (live regression, dogfood run 2026-06-09, batch issue #495):** #466 moved verification out of the dev session — it added the `--disallowedTools` block for `make`/`bats`/`pytest` and a body prohibition (Phase 4 step 3). But it left Phase 4 *framed* as run-the-suite in three other places: the preamble todo (`Phase 4: Testing & Validation - Running tests and verifying correctness`), the heading (`Testing & Validation`), and a Phase 1 cross-ref (`Skip to Phase 4 (Testing) to verify everything works`). The model builds its todo list from the preamble first, so it committed to a "Running tests" todo and ran `bats -r tests/` in the background, polling `BashOutput` hundreds of times — the exact timeout-burn #466 was meant to kill.
 
-**Contract:** Phase 4 is **Test Authoring & Syntax Check**, not "Testing & Validation". Its only in-session work is (1) write/update unit tests and (2) `bash -n` syntax-check. Every place that *names or references* Phase 4 — preamble skeleton, heading, cross-refs — must use framing that does not invite running the suite. A prohibition in the body is necessary but not sufficient: a contradicting title/todo overrides it because the model acts on the todo it was told to create. When you reword one location, reword all of them.
+**Contract:** Phase 4 is **Test Authoring & Syntax Check & Lint**, not "Testing & Validation". Its in-session work is (1) write/update unit tests, (2) `bash -n` syntax-check, and (3) run `tools/sharkrite-lint.sh` on changed files (deterministic static analysis, not a test runner — bounded 3 passes). `tools/sharkrite-lint.sh` is the only project check tool permitted in-session; `make check`, `bats`, and `pytest` remain denied by the PreToolUse hook. Every place that *names or references* Phase 4 — preamble skeleton, heading, cross-refs — must use framing that does not invite running the suite. A prohibition in the body is necessary but not sufficient: a contradicting title/todo overrides it because the model acts on the todo it was told to create. When you reword one location, reword all of them.
 
 **Collateral fix:** the preamble skeleton previously listed only Phases 0–5, omitting Phase 6 (Verify Scope Boundary, marked REQUIRED in the body). The model's tracked todos therefore never included the scope check. The skeleton now lists Phase 6, and the exit note says "After Phase 6".
 
@@ -514,12 +536,6 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 **Deterministic backstop is broken — `--disallowedTools` is silently inert under `--output-format stream-json` (root-caused 2026-06-10, CLI 2.0.24):** the #495 live bypass is now reproduced. Sharkrite's dev/fix sessions invoke `claude --print --verbose --dangerously-skip-permissions --disallowedTools <list> --output-format stream-json` ([claude.sh](../../lib/providers/claude.sh) `claude_provider_run_agentic_session`). The CLI honors `--disallowedTools` in the default text output format but **ignores it entirely when `--output-format stream-json` is set** — verified deterministically with a sentinel-file Makefile target: text format never executes `make check`, the stream-json form always does. Because every real session uses stream-json, the *entire* deny list (git commit/push, gh, `rm -rf`, ssh, `/etc`, network) has never actually been enforced in production runs. The only thing preventing self-commits etc. has been prompt compliance, not the CLI block — which is why the code comment calling `--disallowedTools` "the primary safety mechanism" is incorrect.
 
 **Fix direction (confirmed working):** a **PreToolUse hook** (passed via `--settings`) *is* enforced under stream-json — verified: a hook returning `permissionDecision: deny` for `make`/`bats`/`pytest` blocks the command in the same stream-json invocation where `--disallowedTools` fails. Migrating the deny list to a sharkrite-managed PreToolUse hook restores a real deterministic backstop. The Phase 4 prompt-framing fix above removes the *invitation* to run the suite; the hook would restore *enforcement*. Until the hook lands, treat the prompt framing as the only active control.
-
-### Supervised commit/push is a single prompt (2026-10-11, issue #1128)
-
-The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — the post-commit gate owns test execution (Phase 4 contract); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
-
-**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a function — deferred to a future refactoring issue; structural verification is the current coverage.
 
 ### Dev test gate is skipped under orchestration (CRITICAL)
 
@@ -681,7 +697,8 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 
 | Task | Nature | Model | Why |
 |------|--------|-------|-----|
-| Code review (`assess-review-issues.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
+| Code review (`local-review.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
+| Finding assessment (`assess-review-issues.sh`) | Classifying each review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED | `RITE_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Three-state classification of already-structured findings — not the reasoning that generated them. Before #1187 it inherited the review model from the review marker, so pinning review to fable-5 silently ran every assessment (the highest-count LLM call in the loop) on fable too |
 | Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
 | Doc assessment (`assess-documentation.sh`) | "Did this diff change API surface X? Update api.md accordingly." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
@@ -695,6 +712,7 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 claude_provider_resolve_model() {
   case "$1" in
     review)         echo "${RITE_REVIEW_MODEL:-claude-opus-4-8}" ;;
+    assessment)     echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     plan)           echo "${RITE_PLAN_MODEL:-claude-opus-4-8}" ;;
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;
@@ -705,7 +723,7 @@ claude_provider_resolve_model() {
 
 Note `plan` defaults to the same model as `review` (opus) *today*, but the point of the separate var is that this equality is not load-bearing: moving `RITE_REVIEW_MODEL` off opus must not drag planning down with it.
 
-**New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on provider defaults — defaults may change, and an empty model silently resolves to the `review` model. Use the provider-agnostic **`provider_resolve_model <role>`** — code in `lib/core`/`lib/utils` must not call the claude-prefixed `claude_provider_resolve_model` directly (enforced by Rule 32, `DIRECT_PROVIDER_CALL`). Pick the role by nature: doc-like (pattern matching, summarization) → `doc_assessment`; bug-detection or nuanced reasoning → `review`; issue generation → `plan`; bucket classification → `triage`.
+**New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on provider defaults — defaults may change, and an empty model silently resolves to the `review` model. Use the provider-agnostic **`provider_resolve_model <role>`** — code in `lib/core`/`lib/utils` must not call the claude-prefixed `claude_provider_resolve_model` directly (enforced by Rule 32, `DIRECT_PROVIDER_CALL`). Pick the role by nature: doc-like (pattern matching, summarization) → `doc_assessment`; bug-detection or nuanced reasoning → `review`; classifying review findings (NOW/LATER/DISMISSED or similar structured verdicts on existing findings) → `assessment`; issue generation → `plan`; bucket classification → `triage`.
 
 ### Wall-clock impact
 
@@ -742,7 +760,12 @@ An earlier approach was rejected: checking whether the PR diff touched any `.md`
 
 ### Directed-Update Proposal Guards (#1208)
 
-The per-proposal preview loop in `docs-command.sh::docs_directed_update` enforces two safety guards before showing the preview: an EDIT proposal targeting a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the excerpt, so applying would truncate unseen content); a CREATE proposal targeting a path that already exists — locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e`) — is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale). Genuinely new paths are unaffected.
+The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces two safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
+
+- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content).
+- **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
+
+The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current — a file pushed to origin between the last fetch and proposal-apply time would otherwise bypass the CREATE guard.
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
@@ -755,6 +778,10 @@ The per-proposal preview loop in `docs-command.sh::docs_directed_update` enforce
 **Rejected approach — commit-distance threshold (`RITE_MID_RUN_REBASE_THRESHOLD`, default 5):** The original #290 design aborted when the branch was more than N commits behind, *without attempting a rebase*, on the assumption that far-behind ⇒ likely-to-conflict. Commit distance is a poor proxy: a branch 50 commits behind that touches isolated files merges instantly; a branch 2 commits behind editing the same lines conflicts hard. On 2026-06-09 this falsely aborted PRs #522 (issue #433, 12 behind) and #525 (issue #439, 11 behind) — both had **zero** conflicting files and would have merged clean — *after* each had already spent a full LLM review. The threshold guarded nothing expensive (a clean rebase is sub-second git regardless of N; only conflict resolution is costly, and that path is reached only on a real conflict). The env var was deleted: distance no longer determines anything. Real protection from #290 (surfacing genuine conflicts before review time) is preserved and *strengthened* — clean far-behind PRs now proceed instead of falsely aborting.
 
 Tests: `tests/regression/mid-run-rebase.bats` (clean drift → no-op, including the 12-behind #433/#439 regression) and `mid-run-rebase-conflict.bats` (real conflict → resolve-or-abort; the resolver is stubbed to fail so the abort contract is deterministic rather than dependent on live Claude availability).
+
+**Resume path — same ruling extended (#1137):** The original `check_stale_branch` (stale-branch.sh) used `RITE_STALE_BRANCH_THRESHOLD` (default: 10) to decide in auto mode whether to attempt a rebase or close-and-restart: branches at/above the threshold were closed immediately without a rebase attempt. Issue #1045 (2026-10-11, batch 135719 slot): a finished, cleanly-rebasable PR sat at exactly 10 commits behind after an evening of unrelated merges — auto-closed, and the entire feature was re-implemented from scratch (~19 min dev + full review cycle) — then that rerun died for separate reasons. The distance-as-proxy flaw is identical: a 10-behind clean branch rebases in sub-second git; a 2-behind conflicted branch is what actually needs the resolver. The ruling is extended: **auto mode always attempts rebase first, regardless of distance. Close-and-restart fires only when the rebase conflicts AND the resolver fails** (or post-rebase verification fails). `RITE_STALE_BRANCH_THRESHOLD` is retained for supervised mode's 5-option prompt threshold. An absurd-divergence guard (`RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD`, default: 100) caps the rebase-first path for truly enormous histories that signal an abandoned branch rather than normal drift.
+
+Tests: `tests/regression/stale-branch-rebase.bats` (clean branch at 2× threshold → rebased, no restart; conflict → resolver → fallback path preserved; hard-restart threshold → exit 11 without rebase attempt).
 
 ---
 
@@ -1746,3 +1773,52 @@ phantom-review shape (no local worktree, verifies Phase 1 targets parent branch)
 
 Direct unit tests for `detect_parent_pr_attachment` outcomes:
 `tests/regression/parent-pr-attachment.bats`.
+
+## Hermetic Bats Env: Session-Behavioral Var Scrub (#1186)
+
+**2026-10-12.** Bats tests inherit the workflow session's environment, so tests
+that pass in isolation can fail inside a gate when an exported session var flips
+a code path. Three incidents on 2026-10-12:
+
+- `RITE_TEST_GATE_SKIP_TRIGGERS=true` (from `post-merge-verify`): broke 3
+  lint-selection tests across 5 slots (#1182).
+- `RITE_TARGET_BRANCH=supervised-ux` (from a `--branch` session): broke both
+  `_docs_apply_approved` tests across 3 retries (#1049, PR #1179).
+
+A lint rule cannot catch this class — the broken tests contain zero references
+to the triggering variable. Prevention is a runtime boundary at the one choke
+point where the gate spawns bats.
+
+**Fix:** `_bats_sandbox` in `run_test_gate` (`lib/utils/test-gate.sh`) was
+extended with a deny-list of session-behavioral RITE_* vars removed via `env -u`
+from every bats child. The deny-list is located via the `_GATE_BATS_SCRUB_VARS`
+comment anchor in `test-gate.sh` (not a shell variable — grep for it to find the
+exact `env -u` args):
+
+```
+_GATE_BATS_SCRUB_VARS: RITE_TARGET_BRANCH  RITE_TEST_GATE_SKIP_TRIGGERS
+  RITE_STALE_BRANCH_THRESHOLD  RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD
+  RITE_ACCEPT_RED_MAIN
+```
+
+**Structural vars that are NOT scrubbed:** `RITE_REPO_ROOT`, `RITE_LIB_DIR`,
+`RITE_PROJECT_ROOT`, `BATS_TEST_TIMEOUT` (the gate sets this itself; scrubbing
+it would break per-test timeouts). Rule 35 suppressions and `setup.bash` loaders
+inside tests depend on the structural RITE_* vars passing through.
+
+**Coverage:** Both the main bats invocations (6 sites: full/parallel/serial ×
+pretty/TAP) and the flake-retry invocation in `_gate_flake_retry_pass` use
+`_bats_sandbox` — the flake-retry function accesses it via bash dynamic scoping
+(called from within `run_test_gate` where the local is defined).
+
+**Regression:** `tests/regression/gate-session-env-scrub.bats` — structural
+checks that every deny-listed var appears in `_bats_sandbox`, that structural
+RITE_* vars are absent from the scrub list, that all 7 invocation sites use the
+sandbox, and behavioral probes that extract the deny-list from `_bats_sandbox`
+via sed and run a nested bats invocation through the same `env -u` chain,
+confirming `RITE_TARGET_BRANCH` is unset and `RITE_REPO_ROOT` passes through.
+
+**Note on `RITE_TEST_GATE_SKIP_TRIGGERS`:** this var is consumed by the gate's
+own selection phase (before bats is spawned), so scrubbing it from the child
+environment does not alter gate-selection behavior — it only prevents tests from
+seeing it and potentially altering their own behavior.
