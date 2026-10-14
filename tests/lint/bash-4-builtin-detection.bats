@@ -275,3 +275,23 @@ echo "done"'
     false
   fi
 }
+
+# ---------------------------------------------------------------------------
+# $BASHPID (bash 4+ VARIABLE, not a builtin) — #1167's slot crashed every gate
+# run with "BASHPID: unbound variable" because set -u aborts on it under bash 3.2.
+# ---------------------------------------------------------------------------
+
+@test "rule fires: bare \$BASHPID in a #!/bin/bash script" {
+  _run_lint_with_fixture "bad-bashpid" '#!/bin/bash
+set -euo pipefail
+census="/tmp/gate-census/$BASHPID"'
+  [[ "$output" == *"BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT"* ]]
+  [[ "$output" == *"bad-bashpid"* ]]
+}
+
+@test "rule silent: \${BASHPID:-\$\$} guarded form" {
+  _run_lint_with_fixture "good-bashpid" '#!/bin/bash
+set -euo pipefail
+census="/tmp/gate-census/${BASHPID:-$$}"'
+  [[ "$output" != *"good-bashpid"* ]]
+}
