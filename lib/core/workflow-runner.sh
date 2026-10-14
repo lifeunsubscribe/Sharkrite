@@ -3188,25 +3188,30 @@ run_workflow() {
 
   # State line: printed after detection so it reflects the actual run mode.
   if [ -n "$skip_to_phase" ]; then
-    local _phase_desc
     case "$skip_to_phase" in
-      merge)          _phase_desc="entering merge" ;;
-      assess-resolve) _phase_desc="entering review/assessment" ;;
-      create-pr)      _phase_desc="entering push/PR" ;;
-      *)              _phase_desc="resuming from ${skip_to_phase}" ;;
+      merge)
+        print_status "Resuming: PR #${PR_NUMBER:-?}, entering merge"
+        print_header "Resume Summary"
+        print_success "Phase 1: Development — complete"
+        print_success "Phase 2: Push & PR — open (issue #${issue_number})"
+        print_success "Phase 3: Review & Assessment — all items resolved"
+        ;;
+      assess-resolve)
+        print_status "Resuming: PR #${PR_NUMBER:-?}, entering review/assessment"
+        print_header "Resume Summary"
+        print_success "Phase 1: Development — complete"
+        print_success "Phase 2: Push & PR — open (issue #${issue_number})"
+        ;;
+      create-pr)
+        print_status "Resuming: PR #${PR_NUMBER:-?}, entering push/PR"
+        print_header "Resume Summary"
+        print_success "Phase 1: Development — complete"
+        ;;
+      *)
+        print_status "Resuming: PR #${PR_NUMBER:-?}, resuming from ${skip_to_phase}"
+        print_header "Resume Summary"
+        ;;
     esac
-    print_status "Resuming: PR #${PR_NUMBER:-?}, ${_phase_desc}"
-    print_header "Resume Summary"
-    if [ "$skip_to_phase" = "merge" ]; then
-      print_success "Phase 1: Development — complete"
-      print_success "Phase 2: Push & PR — open (issue #${issue_number})"
-      print_success "Phase 3: Review & Assessment — all items resolved"
-    elif [ "$skip_to_phase" = "assess-resolve" ]; then
-      print_success "Phase 1: Development — complete"
-      print_success "Phase 2: Push & PR — open (issue #${issue_number})"
-    elif [ "$skip_to_phase" = "create-pr" ]; then
-      print_success "Phase 1: Development — complete"
-    fi
   else
     print_status "Starting full lifecycle (phases 1-5)"
   fi
@@ -3258,6 +3263,7 @@ run_workflow() {
       CURRENT_PR="$PR_NUMBER"
       _diag "PHASE_TRANSITION issue=${issue_number} from=pre-start to=fastpath skip_to=merge"
       skip_to_phase="merge"   # reuse Phase 4 (merge) + Phase 5 (completion)
+      print_status "Fast-path patch applied — entering merge"
     fi
   fi
 

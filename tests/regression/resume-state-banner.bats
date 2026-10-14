@@ -109,3 +109,39 @@ teardown() {
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# 4. Case-arm phase-description mapping contract
+# ---------------------------------------------------------------------------
+@test "structural: case-arm mapping — merge arm contains 'entering merge'" {
+  [ -f "$_WFR" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
+  _arm_line=$(grep -nE '^[[:space:]]+merge\)$' "$_WFR" | head -1 | cut -d: -f1)
+  [ -n "$_arm_line" ] || { echo "FAIL: merge) case arm not found"; return 1; }
+  _end=$(( _arm_line + 4 ))
+  awk "NR>=${_arm_line} && NR<=${_end}" "$_WFR" | grep -q 'entering merge' || {
+    echo "FAIL: 'entering merge' not found in body of merge) case arm"
+    return 1
+  }
+}
+
+@test "structural: case-arm mapping — assess-resolve arm contains 'entering review/assessment'" {
+  [ -f "$_WFR" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
+  _arm_line=$(grep -n 'assess-resolve)' "$_WFR" | head -1 | cut -d: -f1)
+  [ -n "$_arm_line" ] || { echo "FAIL: assess-resolve) case arm not found"; return 1; }
+  _end=$(( _arm_line + 4 ))
+  awk "NR>=${_arm_line} && NR<=${_end}" "$_WFR" | grep -q 'entering review/assessment' || {
+    echo "FAIL: 'entering review/assessment' not found in body of assess-resolve) case arm"
+    return 1
+  }
+}
+
+@test "structural: case-arm mapping — create-pr arm contains 'entering push/PR'" {
+  [ -f "$_WFR" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
+  _arm_line=$(grep -n 'create-pr)' "$_WFR" | head -1 | cut -d: -f1)
+  [ -n "$_arm_line" ] || { echo "FAIL: create-pr) case arm not found"; return 1; }
+  _end=$(( _arm_line + 4 ))
+  awk "NR>=${_arm_line} && NR<=${_end}" "$_WFR" | grep -q 'entering push/PR' || {
+    echo "FAIL: 'entering push/PR' not found in body of create-pr) case arm"
+    return 1
+  }
+}
