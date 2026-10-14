@@ -69,6 +69,8 @@ teardown() {
 }
 
 # Helper: a slate whose checklist plans three issues but only two have blocks.
+# Blocks include a Files to Modify: path (src/app/) so the body-marker test can
+# assert the completion prompt carries the convention, not just the title line.
 _write_partial_slate() {
   cat > "$1" <<'SLATE'
 ```
@@ -83,6 +85,9 @@ LABELS: phase-3,frontend,priority-high
 TIME: 1hr
 BODY:
 **Description**: Parse hardening.
+**Claude Context**:
+Files to Modify:
+- src/app/glance/parse.ts
 **Dependencies**: None
 ---END---
 ---ISSUE---
@@ -91,6 +96,9 @@ LABELS: phase-3,frontend,priority-medium
 TIME: 1hr
 BODY:
 **Description**: Due tab.
+**Claude Context**:
+Files to Modify:
+- src/app/tabs/DueTab.tsx
 **Dependencies**: After #1
 ---END---
 SLATE
@@ -178,11 +186,11 @@ RESPONSE
     echo "FAIL: emitted ordinal #2 not listed in completion prompt" >&2
     false
   }
-  # Already-emitted titles must appear only in the ordinal listing (the ask is
-  # for the missing block only) — the base prompt is "BASE PROMPT" so the only
-  # occurrences are the ordinal list itself.
-  [ "$(grep -c "Harden glance parse" "$STUB_PROMPT_FILE")" -eq 1 ] || {
-    echo "FAIL: emitted title repeated outside the ordinal listing" >&2
+  # Already-emitted titles appear in exactly two places: the ordinal listing and
+  # the TITLE: field of the full block body — the base prompt is "BASE PROMPT"
+  # so those are the only two occurrences.
+  [ "$(grep -c "Harden glance parse" "$STUB_PROMPT_FILE")" -ge 2 ] || {
+    echo "FAIL: emitted title should appear at least twice (ordinal list + block body)" >&2
     false
   }
 }
@@ -273,6 +281,33 @@ SLATE
 
   [ ! -f "$STUB_PROMPT_FILE" ] || {
     echo "FAIL: provider called for zero-block slate (that is _validate_coverage's case)" >&2
+    false
+  }
+}
+
+@test "completion prompt contains body markers from emitted blocks (not just titles)" {
+  local slate="$RITE_TEST_TMPDIR/slate.txt"
+  _write_partial_slate "$slate"
+
+  cat > "$STUB_RESPONSE_FILE" <<'RESPONSE'
+---ISSUE---
+TITLE: Validate on hardware
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: End-to-end validation.
+**Dependencies**: After #1, #2
+---END---
+RESPONSE
+
+  _request_missing_blocks "$slate" "BASE PROMPT" 2>/dev/null
+
+  [ -f "$STUB_PROMPT_FILE" ] || { echo "FAIL: provider never called" >&2; false; }
+
+  # The emitted block bodies (not just titles) must appear in the prompt so the
+  # completion call can see the file-path conventions the primary generation used.
+  grep -q "src/app/glance/parse.ts" "$STUB_PROMPT_FILE" || {
+    echo "FAIL: Files to Modify path from emitted block missing from completion prompt" >&2
     false
   }
 }

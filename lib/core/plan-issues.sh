@@ -2886,6 +2886,18 @@ _request_missing_blocks() {
   _emitted_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' | awk '{printf "#%d %s\n", NR, $0}' || true)
   [ -z "$_emitted_titles" ] && return 0
 
+  # Extract the full already-emitted blocks so the completion call sees the same
+  # file-path and naming conventions the primary generation established.
+  local _emitted_blocks
+  _emitted_blocks=$(awk '
+    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf="" }
+      next
+    }
+  ' "$issues_file" || true)
+
   local _missing_count _missing_list
   _missing_count=$(printf '%s\n' "$_missing" | grep -c . || true)
   _missing_list=$(printf '%s\n' "$_missing" | sed 's/^/  - /' || true)
@@ -2896,6 +2908,7 @@ _request_missing_blocks() {
 **TARGETED COMPLETION — EMIT ONLY THE MISSING BLOCK(S).** A previous response already emitted these issue blocks (ordinal references #N refer to these, in this order):
 ${_emitted_titles}
 
+$([ -n "$_emitted_blocks" ] && printf 'The full content of the already-emitted blocks is provided below for context. File paths, naming conventions, and structural patterns visible in these blocks MUST be followed in any new block you emit:\n%s\n' "$_emitted_blocks")
 The following planned issue(s) from that response's COVERAGE checklist are MISSING their block:
 ${_missing_list}
 
