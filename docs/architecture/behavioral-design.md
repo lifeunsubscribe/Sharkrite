@@ -772,6 +772,15 @@ On timeout: completed sub-assessments are preserved (their doc files were alread
 
 An earlier approach was rejected: checking whether the PR diff touched any `.md` files and skipping the assessment if not. This was wrong because the entire purpose of the assessment is to surface what docs should change based on dev work — even when the dev work only touched `.sh` or `.ts` files. A new security pattern, a new CLI flag, or a new architectural approach all warrant doc updates regardless of whether the dev session touched docs.
 
+### Directed-Update Proposal Guards (#1208)
+
+The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces two safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
+
+- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content).
+- **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
+
+The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. A residual window persists from guard check to apply: the interactive preview session runs between the two, so a file pushed to origin during that session is not caught by this guard (`_docs_apply_approved`'s own fetch at ~line 206 pulls the latest remote state but does not re-run the CREATE check).
+
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
 `mid-run-rebase.sh::check_and_rebase_against_main()` runs at the start of Phase 3 to catch the case where main moved during the run. The decision is driven by **whether the branch actually conflicts with main**, computed with `git merge-tree --write-tree` (a pure in-memory merge — no working tree, commit, force-push, or test-gate re-run):
