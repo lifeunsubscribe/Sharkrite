@@ -1476,7 +1476,7 @@ _lint_provenance_flags() {
 # sides always agree on what constitutes a spike.
 _title_is_spike() {
   local _t="$1"
-  [[ "$_t" =~ ^spike:\ capture\ .+\ sample\ for\ grounding$ ]]
+  [[ "$_t" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]
 }
 
 # =============================================================================
@@ -1553,7 +1553,7 @@ _lint_issues_strict() {
 
   # Non-spike ordinal translation (creation-side contract: #N dep/parallel refs are
   # authored in non-spike ordinal space — spikes are prepended transparently and
-  # don't consume an ordinal slot).  Spike detection: title starts with "spike: ".
+  # don't consume an ordinal slot).  Spike detection: _title_is_spike (canonical planner-emitted form).
   local -a _arr_to_nonspike=()  # per raw array index: non-spike ordinal (0 for spikes)
   local -a _nonspike_to_arr=()  # indexed by (non-spike ordinal - 1): raw 0-based array index
   local _nonspike_count=0

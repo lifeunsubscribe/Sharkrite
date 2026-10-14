@@ -66,8 +66,12 @@ setup() {
   print_error()   { echo "ERROR: $*" >&2; }
   print_header()  { echo "HEADER: $*" >&2; }
 
-  # Extract _lint_issues_strict from plan-issues.sh.
+  # Extract _title_is_spike and _lint_issues_strict from plan-issues.sh.
+  # _title_is_spike must come first because _lint_issues_strict calls it at
+  # classification time (line ~1591); without it the Spi fixtures fail with
+  # "command not found" and _block_is_spike stays false for every block.
   eval "$(awk '
+    /^_title_is_spike[(][)]/ { in_fn=1; depth=0 }
     /^_lint_issues_strict[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {

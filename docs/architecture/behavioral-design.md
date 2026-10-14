@@ -1306,11 +1306,11 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 **Lint and creation share non-spike ordinal space (issue #1150, 2026-10-13):**
 
-When `_detect_unverified_integrations` prepends spike issues, all subsequent `#N` dependency references inside a plan file operate in **non-spike ordinal space**: `#1` means the first non-spike issue, not the first raw issue in the file. Both the strict linter (`_lint_issues_strict`) and the creation-side issue loop (in `create_issues_from_file`) must interpret `#N` the same way; a mismatch causes the linter to approve ordinals the creation side rejects (or vice versa).
+When `_detect_unverified_integrations` prepends spike issues, all subsequent `#N` dependency references inside a plan file operate in **non-spike ordinal space**: `#1` means the first non-spike issue, not the first raw issue in the file. Both the strict linter (`_lint_issues_strict`) and the creation-side issue loop (in `create_issues`) must interpret `#N` the same way; a mismatch causes the linter to approve ordinals the creation side rejects (or vice versa).
 
-**Contract:** `_lint_issues_strict` builds `_nonspike_to_arr` (non-spike ordinal → raw array index) and `_arr_to_nonspike` (raw array index → non-spike ordinal) at parse time. Every #N ordinal check (dangling-ref Check 3, cycle-detection, and parallel-file-overlap Check 7) resolves `#N` through `_nonspike_to_arr[N-1]` to obtain the raw index, then uses `_arr_to_nonspike` to translate back for user-visible messages. The creation side independently builds an `ordinal_map_file` that maps non-spike ordinals to real GitHub issue numbers — same convention. Both sides classify a spike via the shared `_title_is_spike` predicate (`^spike: capture .+ sample for grounding$`).
+**Contract:** `_lint_issues_strict` builds `_nonspike_to_arr` (non-spike ordinal → raw array index) and `_arr_to_nonspike` (raw array index → non-spike ordinal) at parse time. Dangling-ref Check 3 range-checks each `#N` against `[1.._nonspike_count]` without indexing the maps. Cycle-detection and parallel-file-overlap Check 7 resolve `#N` through `_nonspike_to_arr[N-1]` to obtain the raw index, then use `_arr_to_nonspike` to translate back for user-visible messages. The creation side independently builds an `ordinal_map_file` that maps non-spike ordinals to real GitHub issue numbers — same convention. Both sides classify a spike via the shared `_title_is_spike` predicate (`^spike: capture .+ sample for grounding$`).
 
-**Verification:** `grep -n 'non-spike ordinal' docs/architecture/behavioral-design.md`
+**Verification:** `grep -n '_title_is_spike\|_nonspike_to_arr\|_nonspike_count' lib/core/plan-issues.sh`
 
 **Third application — flag-first provenance + deterministic low-signal gate (issue #367, 2026-06-06):**
 
