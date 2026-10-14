@@ -39,6 +39,8 @@ source "$RITE_LIB_DIR/utils/integration-ledger.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 # shellcheck source=/dev/null
 source "$RITE_LIB_DIR/utils/promotion-composer.sh"
+# shellcheck source=/dev/null
+source "$RITE_LIB_DIR/utils/markers.sh"
 
 # ---------------------------------------------------------------------------
 # _promote_field <ledger_line> <field_name>
