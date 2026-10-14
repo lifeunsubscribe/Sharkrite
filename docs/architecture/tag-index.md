@@ -26,6 +26,15 @@
 
 
 
+
 ## DO
 - encountered-issues.md → Dev session deletes unrelated regression tests — scope boundary not enforced
+
+
+## Created
+- behavioral-design.md → Directed-Update Proposal Guards (#1208)
+
+
+## Updated
+- behavioral-design.md → Directed-Update Proposal Guards (#1208)
 
