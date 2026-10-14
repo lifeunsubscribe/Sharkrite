@@ -2908,9 +2908,7 @@ _request_missing_blocks() {
 **TARGETED COMPLETION — EMIT ONLY THE MISSING BLOCK(S).** A previous response already emitted these issue blocks (ordinal references #N refer to these, in this order):
 ${_emitted_titles}
 
-The full content of the already-emitted blocks is provided below for context. File paths, naming conventions, and structural patterns visible in these blocks MUST be followed in any new block you emit:
-${_emitted_blocks}
-
+$([ -n "$_emitted_blocks" ] && printf 'The full content of the already-emitted blocks is provided below for context. File paths, naming conventions, and structural patterns visible in these blocks MUST be followed in any new block you emit:\n%s\n' "$_emitted_blocks")
 The following planned issue(s) from that response's COVERAGE checklist are MISSING their block:
 ${_missing_list}
 

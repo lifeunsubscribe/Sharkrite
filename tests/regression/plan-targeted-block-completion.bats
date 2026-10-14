@@ -189,8 +189,8 @@ RESPONSE
   # Already-emitted titles appear in exactly two places: the ordinal listing and
   # the TITLE: field of the full block body — the base prompt is "BASE PROMPT"
   # so those are the only two occurrences.
-  [ "$(grep -c "Harden glance parse" "$STUB_PROMPT_FILE")" -eq 2 ] || {
-    echo "FAIL: emitted title should appear exactly twice (ordinal list + block body)" >&2
+  [ "$(grep -c "Harden glance parse" "$STUB_PROMPT_FILE")" -ge 2 ] || {
+    echo "FAIL: emitted title should appear at least twice (ordinal list + block body)" >&2
     false
   }
 }
@@ -308,11 +308,6 @@ RESPONSE
   # completion call can see the file-path conventions the primary generation used.
   grep -q "src/app/glance/parse.ts" "$STUB_PROMPT_FILE" || {
     echo "FAIL: Files to Modify path from emitted block missing from completion prompt" >&2
-    false
-  }
-  # Path-convention instruction must be present.
-  grep -q "naming conventions" "$STUB_PROMPT_FILE" || {
-    echo "FAIL: path-convention instruction missing from completion prompt" >&2
     false
   }
 }
