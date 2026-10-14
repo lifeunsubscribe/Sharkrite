@@ -45,7 +45,8 @@ setup() {
   [ -n "$_def" ]
   for _var in RITE_TARGET_BRANCH RITE_TEST_GATE_SKIP_TRIGGERS \
       RITE_STALE_BRANCH_THRESHOLD RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
-      RITE_ACCEPT_RED_MAIN; do
+      RITE_ACCEPT_RED_MAIN \
+      RITE_TEST_GATE_DIFF_BASE; do
     echo "$_def" | grep -q -- "-u $_var" || {
       echo "FAIL: _bats_sandbox deny-list missing -u $_var (_GATE_BATS_SCRUB_VARS)" >&2
       return 1
