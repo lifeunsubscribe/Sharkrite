@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh
 # sharkrite-gate-serial
 # Regression: GATE_SCOPE_UNSCOPED warning fires for slow target-repo gate runs.
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh
 # Issue #784: node test gate false-fails on missing node_modules.
 #
 # rite worktrees never get node_modules (untracked). The non-Sharkrite npm

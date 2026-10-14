@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, Makefile
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh, Makefile
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"

@@ -50,7 +50,10 @@ lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart; target-branch resolver (resolve_target_branch) and origin preflight (ensure_target_branch_exists)
-lib/utils/test-gate.sh           # Post-commit verification gate (make check + bats -r tests/)
+lib/utils/test-gate.sh           # Post-commit verification gate orchestrator (run_test_gate entry point)
+lib/utils/gate-selection.sh      # Gate test/lint selection by changed paths (split from test-gate.sh, issue #1236)
+lib/utils/gate-runners.sh        # Gate runner detection and bootstrap helpers — node/pytest/workspace (split from test-gate.sh, issue #1236)
+lib/utils/gate-verdict.sh        # Gate output formatting, JSON writing, and verdict helpers (split from test-gate.sh, issue #1236)
 ```
 
 ### Workflow Phases

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh, lib/utils/gate-verdict.sh
 # The gate's failure plumbing is TAP-only (^not ok): jest and vitest never emit
 # TAP, so a real node test failure produced test_count=0 and an empty tests[]
 # array — assess-and-resolve.sh fired only the generic "no parseable findings"

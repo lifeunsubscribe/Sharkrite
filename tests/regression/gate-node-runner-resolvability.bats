@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh
 # Issue #807: worktree gate skips the node bootstrap when node_modules is a
 # symlink — the test runner is never installed → runner_unavailable flood.
 #
