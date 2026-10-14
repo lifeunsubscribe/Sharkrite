@@ -83,11 +83,13 @@ setup() {
   eval "$(sed -n "${_start},${_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
 
   # Also load _title_is_spike (used by display_issues for spike classification)
-  local _ts_start
+  local _ts_start _ts_end
   _ts_start=$(grep -n '^_title_is_spike()' \
     "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" | head -1 | cut -d: -f1)
+  _ts_end=$(awk -v s="$_ts_start" 'NR > s && /^}$/{print NR; exit}' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")
   # shellcheck disable=SC1090
-  eval "$(sed -n "${_ts_start},$((${_ts_start} + 3))p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+  eval "$(sed -n "${_ts_start},${_ts_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
 
   # Also load display_issues (preview display with spike-aware numbering)
   local _di_start _di_end
@@ -98,7 +100,6 @@ setup() {
   # shellcheck disable=SC1090
   eval "$(sed -n "${_di_start},${_di_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
 
-  set +u; set +o pipefail
 }
 
 teardown() {

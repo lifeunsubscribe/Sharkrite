@@ -3791,7 +3791,7 @@ display_issues() {
       if [ $issue_num -gt 1 ]; then
         echo ""
       fi
-      echo -e "  ${CYAN}[${_labels[$((issue_num - 1))]}]${NC}"
+      echo -e "  ${CYAN}[${_labels[$((issue_num - 1))]:-$issue_num}]${NC}"
     elif [[ "$line" == "---END---" ]]; then
       continue
     elif [[ "$line" =~ ^TITLE:\ (.+) ]]; then
