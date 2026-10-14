@@ -13,3 +13,11 @@
 - behavioral-design.md → Gate Flake-Retry: One Bounded Serial Re-Run (#938)
 - behavioral-design.md → Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)
 
+
+## Created
+- behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
+
+
+## Updated
+- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
+
