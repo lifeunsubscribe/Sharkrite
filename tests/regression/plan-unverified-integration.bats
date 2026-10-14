@@ -246,11 +246,56 @@ FIXTURE
   # The first issue must be the spike
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture simplefin.io" || {
+  echo "$first_title" | grep -qi "capture simplefin.io sample - fixtures" || {
     echo "FAIL: first issue is not the spike: $first_title" >&2
     cat "$issues_file" >&2
     false
   }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike title format: imperative, ≤50 chars, "Capture <name> sample - fixtures"
+#
+# Validates issue runbook compliance: titles must start with an imperative verb,
+# be ≤50 characters, and follow the canonical spike format (not lowercase
+# "spike: capture …" which was the pre-#1151 form).
+# ---------------------------------------------------------------------------
+
+@test "Spike title is imperative, ≤50 chars, and matches canonical format" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-titlefmt.txt"
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  # Must match the canonical imperative format
+  echo "$spike_title" | grep -q "^Capture .* sample - fixtures$" || {
+    echo "FAIL: spike title does not match canonical format 'Capture <name> sample - fixtures': $spike_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Must be ≤50 characters (runbook hard cap)
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # Must NOT use the old lowercase non-imperative form
+  echo "$spike_title" | grep -qi "^spike: capture" && {
+    echo "FAIL: spike title still uses old lowercase form: $spike_title" >&2
+    false
+  } || true
 
   rm -f "$stderr_out"
 }
@@ -446,6 +491,47 @@ JSON
     echo "$spike_body" >&2
     false
   }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike body uses sanitized fixture key path (fixtures/<key>/) not raw dotted name
+#
+# The fixture path in the spike body must use the sanitized key (dots → hyphens)
+# so the path is safe as a directory name and consistent with how the spike-map
+# key is built.  E.g. "simplefin.io" → "fixtures/simplefin-io/", not
+# "fixtures/simplefin.io/".
+# ---------------------------------------------------------------------------
+
+@test "Spike body fixture path uses sanitized key (dots replaced with hyphens)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fixturepath.txt"
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_body
+  spike_body=$(awk '/^---ISSUE---/{in_block=1} in_block{print} /^---END---/{in_block=0}' "$issues_file" | head -80)
+
+  # Body must reference the sanitized key path (simplefin-io), not the dotted name
+  echo "$spike_body" | grep -q "fixtures/simplefin-io/" || {
+    echo "FAIL: spike body does not use sanitized key path fixtures/simplefin-io/" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  }
+
+  # Must NOT use the unsanitized dotted path
+  echo "$spike_body" | grep -q "fixtures/simplefin\.io/" && {
+    echo "FAIL: spike body uses raw dotted name fixtures/simplefin.io/ — should use sanitized key" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  } || true
 
   rm -f "$stderr_out"
 }
@@ -1090,7 +1176,7 @@ _write_spike_issues_file() {
   local file="$1"
   cat > "$file" <<'FIXTURE'
 ---ISSUE---
-TITLE: spike: capture api.example.com sample for grounding
+TITLE: Capture api.example.com sample - fixtures
 LABELS: spike
 TIME: 30min
 **Description**: Capture sample fixture.
@@ -1322,7 +1408,7 @@ FIXTURE
   # Spike title must use the normalized domain (authsvc.io), not a subdomain
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture authsvc.io" || {
+  echo "$first_title" | grep -qi "capture authsvc.io sample - fixtures" || {
     echo "FAIL: spike title does not use normalized domain 'authsvc.io': $first_title" >&2
     cat "$issues_file" >&2
     false
@@ -1436,7 +1522,7 @@ FIXTURE
 # Fixture W: multi-part TLD (co.uk) — third label becomes registrable domain
 #
 # api.myservice.co.uk normalizes to myservice.co.uk (not co.uk).
-# Expected: 1 spike titled "spike: capture myservice.co.uk ..." and the
+# Expected: 1 spike titled "Capture myservice.co.uk sample - fixtures" and the
 # downstream issue gets Blocked-by #SPIKE-myservice-co-uk.
 # ---------------------------------------------------------------------------
 
@@ -1465,7 +1551,7 @@ FIXTURE
   }
 
   # Must not produce a spike for bare 'co.uk' (that would be wrong)
-  grep -q "spike: capture co.uk" "$issues_file" && {
+  grep -qi "capture co.uk sample - fixtures" "$issues_file" && {
     echo "FAIL: spike was created for bare 'co.uk' — multi-part TLD normalization is wrong" >&2
     cat "$issues_file" >&2
     false
@@ -1474,7 +1560,7 @@ FIXTURE
   # Spike title must use the registrable domain myservice.co.uk
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture myservice.co.uk" || {
+  echo "$first_title" | grep -qi "capture myservice.co.uk sample - fixtures" || {
     echo "FAIL: spike title does not use 'myservice.co.uk': $first_title" >&2
     cat "$issues_file" >&2
     false

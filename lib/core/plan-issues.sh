@@ -1471,11 +1471,15 @@ _lint_provenance_flags() {
 }
 
 # Returns 0 (true) when a title matches the canonical spike form emitted by the
-# planner: "spike: capture <name> sample for grounding".  Shared by _lint_issues_strict
+# planner: "Capture <name> sample - fixtures".  Shared by _lint_issues_strict
 # (classification) and the creation-side issue loop (spike-map building) so both
 # sides always agree on what constitutes a spike.
+# Backward-compat: also matches the pre-#1151 form "spike: capture <name> sample
+# for grounding" so re-runs against old-format issues don't treat them as
+# non-spikes (they would duplicate once at most, then dedup on the next run).
 _title_is_spike() {
   local _t="$1"
+  [[ "$_t" =~ ^Capture\ (.+)\ sample\ -\ fixtures$ ]] || \
   [[ "$_t" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]
 }
 
@@ -3631,7 +3635,7 @@ _detect_unverified_integrations() {
 
     # Build spike issue block
     spikes_block+="---ISSUE---
-TITLE: spike: capture $_name sample for grounding
+TITLE: Capture $_name sample - fixtures
 LABELS: spike, tech-debt
 TIME: 30min
 BODY:
@@ -3644,13 +3648,13 @@ against a hallucinated contract.
 ## Task
 
 Make one real call to \`$_name\`. Capture a secret-scrubbed sample to
-\`fixtures/$_name/\`. Document per-field provenance (what each returned field
+\`fixtures/$_key/\`. Document per-field provenance (what each returned field
 means, whether it is stable across calls, any fields that contain secrets
 that must be scrubbed before committing).
 
 ## Acceptance Criteria
 
-- [ ] Sample exists at \`fixtures/$_name/\`
+- [ ] Sample exists at \`fixtures/$_key/\`
 - [ ] Each field in the sample has a one-line provenance comment in the
   adjacent \`README.md\` (or inline in the JSON as a \`_comment\` key)
 - [ ] No secrets (tokens, credentials, PII) are present in the committed sample
@@ -4453,7 +4457,9 @@ create_issues() {
 
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
-          # _title_is_spike uses the canonical regex; BASH_REMATCH[1] holds the name.
+          # _title_is_spike uses the canonical regex "Capture <name> sample - fixtures"
+          # (plus backward-compat "spike: capture <name> sample for grounding");
+          # BASH_REMATCH[1] holds the name from whichever alternative matched.
           # Spike issues do NOT update prev_issue_num — they are prepended
           # prerequisites and are not part of the sequential #PREV dependency
           # chain the planner authored among the real (non-spike) issues.
