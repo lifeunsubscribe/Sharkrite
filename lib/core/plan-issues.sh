@@ -1540,6 +1540,13 @@ _lint_issues_strict() {
   local -a _times=()           # per-issue: raw TIME value (e.g. "2hr", "30min")
   local -a _has_rationale=()   # per-issue: "true" if Split rationale: line present, "false" otherwise
 
+  # Non-spike ordinal translation (creation-side contract: #N dep/parallel refs are
+  # authored in non-spike ordinal space — spikes are prepended transparently and
+  # don't consume an ordinal slot).  Spike detection: title starts with "spike: ".
+  local -a _arr_to_nonspike=()  # per raw array index: non-spike ordinal (0 for spikes)
+  local -a _nonspike_to_arr=()  # indexed by (non-spike ordinal - 1): raw 0-based array index
+  local _nonspike_count=0
+
   local _in_issue=false
   local _issue_block=""
   local _issue_idx=0
@@ -1567,6 +1574,19 @@ _lint_issues_strict() {
         local _title=""
         _title=$(echo "$_issue_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
         _titles+=("${_title:-}")
+
+        # --- Non-spike ordinal map (matches _detect_unverified_integrations spike convention) ---
+        local _block_is_spike=false
+        case "${_title:-}" in
+          "spike: "*) _block_is_spike=true ;;
+        esac
+        if [ "$_block_is_spike" = false ]; then
+          _nonspike_count=$((_nonspike_count + 1))
+          _nonspike_to_arr+=("$((_issue_idx - 1))")
+          _arr_to_nonspike+=("$_nonspike_count")
+        else
+          _arr_to_nonspike+=("0")
+        fi
 
         # --- Extract LABELS line ---
         local _issue_labels=""
@@ -1837,25 +1857,32 @@ _lint_issues_strict() {
       fi
 
       # Search _titles[] for a case-insensitive match
-      local _found_ordinal=0
+      local _found_ordinal=0   # non-spike ordinal of the matched title (0 for spikes or not found)
+      local _found_title=false  # true when a title match was found (even if it was a spike)
       local _scan_j=0
       for _scan_j in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
         local _candidate_lower
         _candidate_lower=$(echo "${_titles[$_scan_j]}" | tr '[:upper:]' '[:lower:]' || true)
         if [ "$_candidate_lower" = "$_tref_lower" ]; then
-          _found_ordinal=$((_scan_j + 1))  # 1-based ordinal
+          _found_title=true
+          _found_ordinal="${_arr_to_nonspike[$_scan_j]:-0}"  # non-spike ordinal (0 for spikes)
+          if [ "$_found_ordinal" -eq 0 ]; then
+            print_warning "strict-lint: WARNING: title ref #[${_tref}] in '${_referencing_title}' resolves to a spike issue — spike issues have no non-spike ordinal" >&2
+            _warning_count=$((_warning_count + 1))
+          fi
           break
         fi
       done
 
-      if [ "$_found_ordinal" -gt 0 ]; then
-        # Append the resolved ordinal ref to the referring issue's deps
+      if [ "$_found_title" = true ] && [ "$_found_ordinal" -gt 0 ]; then
+        # Append the resolved non-spike ordinal ref to the referring issue's deps
         _deps[$_res_i]="${_deps[$_res_i]}#${_found_ordinal}"$'\n'
-      else
+      elif [ "$_found_title" = false ]; then
         # Unresolved title ref: emit a warning (not captured by numeric dangling-ref check)
         print_warning "strict-lint: WARNING: unresolved title ref: #[${_tref}] in '${_referencing_title}' (no batch issue with that title)" >&2
         _warning_count=$((_warning_count + 1))
       fi
+      # _found_title=true but _found_ordinal=0 means spike — warning already emitted above
     done <<< "$_raw_title_deps"
   done
 
@@ -1901,9 +1928,9 @@ _lint_issues_strict() {
       _refnum=$(echo "$_ref" | sed 's/^#//' || true)
       [ -z "$_refnum" ] && continue
 
-      # Check: is it a valid batch ordinal?
+      # Check: is it a valid non-spike batch ordinal? (#N refs are in non-spike ordinal space)
       local _in_batch=false
-      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_issue_count" ] 2>/dev/null; then
+      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_nonspike_count" ] 2>/dev/null; then
         _in_batch=true
       fi
 
@@ -1914,7 +1941,7 @@ _lint_issues_strict() {
       fi
 
       if [ "$_in_batch" = false ] && [ "$_in_existing" = false ]; then
-        print_warning "strict-lint: ERROR: unresolved Dependencies ref: #${_refnum} in '${_issue_title}' (not in batch [1..${_issue_count}] and not in existing open issues)" >&2
+        print_warning "strict-lint: ERROR: unresolved Dependencies ref: #${_refnum} in '${_issue_title}' (not in batch [1..${_nonspike_count}] and not in existing open issues)" >&2
         _error_count=$((_error_count + 1))
         _strict_exit=1
       fi
@@ -1957,9 +1984,9 @@ _lint_issues_strict() {
       local _refnum
       _refnum=$(echo "$_ref" | sed 's/^#//' || true)
       [ -z "$_refnum" ] && continue
-      # Only batch-internal refs contribute to cycle detection
-      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_issue_count" ] 2>/dev/null; then
-        local _pred_idx=$((_refnum - 1))
+      # Only batch-internal non-spike ordinal refs contribute to cycle detection
+      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_nonspike_count" ] 2>/dev/null; then
+        local _pred_idx="${_nonspike_to_arr[$((_refnum - 1))]}"
         # Issue _i depends on _pred_idx: increment _i's predecessor count
         _pred_count[$_i]=$(( ${_pred_count[$_i]:-0} + 1 ))
         # _pred_idx is a predecessor of _i: add _i to _pred_idx's reverse adjacency
@@ -2020,7 +2047,7 @@ _lint_issues_strict() {
     for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
       if ! echo "${_suppressions[$_i]}" | grep -qw "cycle-check" && \
          [ "${_pred_count[$_i]:-0}" -gt 0 ]; then
-        _cycle_nodes="${_cycle_nodes} #$((_i + 1)) (${_titles[$_i]})"
+        _cycle_nodes="${_cycle_nodes} #${_arr_to_nonspike[$_i]} (${_titles[$_i]})"
       fi
     done
     print_warning "strict-lint: ERROR: dependency cycle detected among:${_cycle_nodes}" >&2
@@ -2249,9 +2276,9 @@ _lint_issues_strict() {
       _prefnum=$(echo "$_pref" | sed 's/^#//' || true)
       [ -z "$_prefnum" ] && continue
 
-      # Only check batch-internal parallel refs (same batch ordinals)
-      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_issue_count" ] 2>/dev/null; then
-        local _pj=$((_prefnum - 1))
+      # Only check batch-internal non-spike parallel refs (#N is a non-spike ordinal)
+      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_nonspike_count" ] 2>/dev/null; then
+        local _pj="${_nonspike_to_arr[$((_prefnum - 1))]}"
         # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
         # annotation that includes its own ordinal would always find a shared
         # file and emit a spurious self-referential warning.
@@ -2261,7 +2288,7 @@ _lint_issues_strict() {
         # issue is the canonical reporter (_pi < _pj).  When only the higher-ordinal
         # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
         # with #1 but #1 does not declare parallel with #2), there is no other
-        # reporter — suppress only if _pj also lists _pi+1 in its parallel refs.
+        # reporter — suppress only if _pj also lists _pi's non-spike ordinal.
         #
         # Fix 3b: suppression on the canonical (lower-ordinal) reporter.
         # If _pj (the lower-ordinal issue) has parallel-file-overlap suppressed,
@@ -2271,7 +2298,8 @@ _lint_issues_strict() {
         if [ "$_pi" -gt "$_pj" ]; then
           local _pj_parallel="${_parallel_with[$_pj]:-}"
           local _pj_supps_check="${_suppressions[$_pj]:-}"
-          if echo "$_pj_parallel" | grep -qxF "#$((_pi + 1))" && \
+          local _pi_ns_ord="${_arr_to_nonspike[$_pi]:-0}"
+          if [ "$_pi_ns_ord" -gt 0 ] && echo "$_pj_parallel" | grep -qxF "#${_pi_ns_ord}" && \
              ! echo "$_pj_supps_check" | grep -qw "parallel-file-overlap"; then
             # Bidirectional: lower ordinal (_pj) will report this pair — skip here
             continue
@@ -2296,9 +2324,9 @@ _lint_issues_strict() {
         if [ -n "$_par_shared" ]; then
           local _after_num
           if [ "$_pi" -lt "$_pj" ]; then
-            _after_num=$((_pi + 1))
+            _after_num="${_arr_to_nonspike[$_pi]}"  # non-spike ordinal of _pi
           else
-            _after_num="$_prefnum"
+            _after_num="$_prefnum"  # non-spike ordinal of _pj (already)
           fi
           print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
           _warning_count=$((_warning_count + 1))
@@ -2794,6 +2822,11 @@ _request_missing_blocks() {
   # Zero-block truncation is _validate_coverage's hard-error case, not ours:
   # with no emitted issues there are no ordinals for the completion to
   # reference, and "complete the missing blocks" degenerates to a full re-roll.
+  # Ordering assumption: awk NR here reflects the pre-spike-injection ordinal space
+  # because _request_missing_blocks (line 1115) runs before _detect_unverified_integrations
+  # (line 1128).  Do not move this call after spike injection without re-examining
+  # the NR numbering — the completion prompt must use the same ordinal space the
+  # planner used when writing the original #N dependency references.
   local _emitted_titles
   _emitted_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' | awk '{printf "#%d %s\n", NR, $0}' || true)
   [ -z "$_emitted_titles" ] && return 0
