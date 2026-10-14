@@ -114,8 +114,14 @@ setup() {
   done
   [ -n "$_newer" ] || skip "no bash 4+ installed to re-exec into"
 
-  # RITE_SOURCE_FUNCTIONS_ONLY stops the body before any side effects; reaching
-  # that return at all proves the re-exec happened and the file parsed.
+  # plan-issues.sh has no program body (it is a pure function library), so
+  # RITE_SOURCE_FUNCTIONS_ONLY=1 is passed only to suppress "No issues
+  # specified" usage errors from the --preview path; there is no guard in
+  # plan-issues.sh itself.  Absence of a syntax error is the real signal that
+  # the re-exec fired and the file parsed cleanly under bash 4+.
+  # NOTE: do NOT add assess-documentation.sh here — it uses the
+  # sourced-context guard (BASH_SOURCE[0] != $0), not a self-re-exec guard,
+  # and direct execution under bash 3.2 is intentionally rejected loudly.
   run /bin/bash -c "RITE_SOURCE_FUNCTIONS_ONLY=1 '$RITE_REPO_ROOT/lib/core/plan-issues.sh' --preview </dev/null"
   echo "$output" | grep -qi "syntax error" && {
     echo "FAIL: direct execution still hit the 3.2 parse bug: $output"
