@@ -15,11 +15,11 @@
 
 
 
+
 ## Created
-- behavioral-design.md → ADR Backfill (bootstrap-docs.sh)
+- behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
 
 
 ## Updated
-- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
 - behavioral-design.md → Post-Merge Dependency Reinstall
 
