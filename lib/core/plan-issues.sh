@@ -3655,6 +3655,7 @@ _detect_unverified_integrations() {
 TITLE: Capture $_display_name sample - fixtures
 LABELS: spike, tech-debt
 TIME: 30min
+SPIKE_KEY: $_key
 BODY:
 ## Background
 
@@ -4368,6 +4369,7 @@ create_issues() {
   local current_labels=""
   local current_body=""
   local current_time=""
+  local current_spike_key=""
   local in_body=false
   local prev_issue_num=""
   # spike_map_file: stores "#SPIKE-<key>=<real-issue-number>" lines.
@@ -4396,6 +4398,7 @@ create_issues() {
       current_labels=""
       current_body=""
       current_time=""
+      current_spike_key=""
       in_body=false
     elif [[ "$line" == "---END---" ]]; then
       if [ -n "$current_title" ]; then
@@ -4417,10 +4420,13 @@ create_issues() {
         fi
 
         # Post-substitution sweep: remove any surviving unresolvable #SPIKE-<key>
-        # placeholders (can occur when a candidate matched via a false substring hit
-        # before the -F fix, or when a spike was emitted but its map entry was never
-        # recorded due to a title mismatch). Strip the whole "Blocked by: #SPIKE-…"
-        # clause rather than leaving a broken reference in the created issue.
+        # placeholders. These should only remain for false-substring candidates
+        # (pre -F fix); a key mismatch here indicates a bug in spike-map round-trip.
+        local _unresolved_keys
+        _unresolved_keys=$(echo "$current_body" | grep -oE '#SPIKE-[a-zA-Z0-9-]+' | sort -u || true)
+        if [ -n "$_unresolved_keys" ]; then
+          print_warning "unresolved spike placeholders in '$current_title' (stripping): $(echo "$_unresolved_keys" | tr '\n' ' ')" >&2
+        fi
         current_body=$(echo "$current_body" | \
           sed -E 's|,? *Blocked by: #SPIKE-[a-zA-Z0-9-]*||g; s|^[[:space:]]*Blocked by: #SPIKE-[a-zA-Z0-9-]*[[:space:]]*$||g' || true)
         # Clean up an empty Dependencies line that results from stripping all refs
@@ -4474,6 +4480,9 @@ create_issues() {
 
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
+          # Prefer the SPIKE_KEY: field emitted by _detect_unverified_integrations
+          # (carries the full unsanitized key); fall back to deriving from the title
+          # for backward-compat with pre-SPIKE_KEY blocks or manually authored spikes.
           # _title_is_spike uses the canonical regex "Capture <name> sample - fixtures"
           # (plus backward-compat "spike: capture <name> sample for grounding");
           # BASH_REMATCH[1] holds the name from whichever alternative matched.
@@ -4481,9 +4490,13 @@ create_issues() {
           # prerequisites and are not part of the sequential #PREV dependency
           # chain the planner authored among the real (non-spike) issues.
           if _title_is_spike "$current_title"; then
-            local _spike_name="${BASH_REMATCH[1]}"
             local _spike_key
-            _spike_key=$(_sanitize_spike_key "$_spike_name")
+            if [ -n "${current_spike_key:-}" ]; then
+              _spike_key="$current_spike_key"
+            else
+              local _spike_name="${BASH_REMATCH[1]}"
+              _spike_key=$(_sanitize_spike_key "$_spike_name")
+            fi
             echo "#SPIKE-${_spike_key}=${issue_num}" >> "$spike_map_file"
           else
             # Only non-spike issues advance the #PREV pointer.
@@ -4504,6 +4517,8 @@ create_issues() {
       current_labels="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^TIME:\ (.+) ]]; then
       current_time="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^SPIKE_KEY:\ (.+) ]]; then
+      current_spike_key="${BASH_REMATCH[1]}"
     elif [[ "$line" == BODY:* ]]; then
       in_body=true
       # Capture anything after "BODY:" on the same line
