@@ -125,6 +125,10 @@ while [[ $# -gt 0 ]]; do
         SYNC_ARGS+=("$1")
         shift
       done
+      _INVOCATION_FLAGS+=("--sync")
+      if [ "${#SYNC_ARGS[@]}" -gt 0 ]; then
+        _INVOCATION_FLAGS+=("${SYNC_ARGS[@]}")
+      fi
       ;;
     --refresh-encountered-issues)
       MODE="refresh-encountered-issues"
@@ -211,6 +215,7 @@ while [[ $# -gt 0 ]]; do
       fi
       PROMOTE_BRANCH="$2"
       MODE="promote"
+      _INVOCATION_FLAGS+=("--promote" "$PROMOTE_BRANCH")
       shift 2
       ;;
     --dry-run)
@@ -386,6 +391,10 @@ while [[ $# -gt 0 ]]; do
         SYNC_ARGS+=("$1")
         shift
       done
+      _INVOCATION_FLAGS+=("sync")
+      if [ "${#SYNC_ARGS[@]}" -gt 0 ]; then
+        _INVOCATION_FLAGS+=("${SYNC_ARGS[@]}")
+      fi
       ;;
     backfill-locks)
       MODE="backfill-locks"
@@ -800,7 +809,6 @@ if [ "$MODE" = "full-suite" ]; then
   exec "$SCRIPT_DIR/rite-full-suite"
 fi
 
-
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
 if [ "$MODE" = "refresh-encountered-issues" ]; then
   source "$RITE_LIB_DIR/utils/encountered-issues-renderer.sh"
@@ -913,7 +921,8 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
   elif [ "$MODE" = "docs" ]; then
     LOG_SLUG="docs"
   elif [ "$MODE" = "promote" ]; then
-    LOG_SLUG="promote-${PROMOTE_BRANCH//\//-}"
+    _promote_slug="${PROMOTE_BRANCH// /-}"
+    LOG_SLUG="promote-${_promote_slug//\//-}"
   elif [ "$MODE" = "sync" ]; then
     if [ "${#SYNC_ARGS[@]}" -eq 0 ]; then
       LOG_SLUG="sync-all"
