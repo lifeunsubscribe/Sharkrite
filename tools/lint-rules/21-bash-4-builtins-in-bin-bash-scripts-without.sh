@@ -3,7 +3,8 @@
 
 # Rule 21: bash 4+ builtins in #!/bin/bash scripts without a version guard
 #
-# `mapfile`, `readarray`, and `declare -A` are bash 4.0+ features. Scripts with
+# `mapfile`, `readarray`, `declare -A` and the `$BASHPID` variable are bash 4.0+
+# features. Scripts with
 # a `#!/bin/bash` shebang run under macOS system bash 3.2 when executed directly
 # (e.g., as a CLI entrypoint) and will crash at the bash-4+ line without the
 # self-re-exec guard pattern established in batch-process-issues.sh:69-77.
@@ -98,6 +99,16 @@ for file in "${SHELL_FILES[@]}"; do
       print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
         "'declare/local -A' (associative array) is bash 4+ only — crashes on macOS system bash 3.2. Add a BASH_VERSINFO re-exec guard (see batch-process-issues.sh:69-77)"
     fi
-  done < <(grep -nE '(mapfile|readarray|declare\s+-[a-zA-Z]*A|local\s+-[a-zA-Z]*A)' "$file" 2>/dev/null || true)
+    # Detect an UNGUARDED $BASHPID reference (bash 4+ variable). Under set -u on
+    # bash 3.2 it is unbound and aborts the script — it does not merely read
+    # empty. Live: the gate census crashed every gate run with
+    # "BASHPID: unbound variable" (issue #1167's slot, 2026-10-13).
+    # ${BASHPID:-$$} and ${BASHPID:-} are correct and exempt.
+    if echo "$line_content" | grep -qE '\$BASHPID\b|\$\{BASHPID\}' \
+       && ! echo "$line_content" | grep -qE '\$\{BASHPID:-'; then
+      print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
+        "bare \$BASHPID is a bash 4+ variable — UNBOUND under set -u on macOS system bash 3.2, which aborts the script. Use \${BASHPID:-\$\$} (or add a BASH_VERSINFO re-exec guard)"
+    fi
+  done < <(grep -nE '(mapfile|readarray|declare\s+-[a-zA-Z]*A|local\s+-[a-zA-Z]*A|BASHPID)' "$file" 2>/dev/null || true)
 done
 

@@ -2321,7 +2321,12 @@ run_test_gate() {
     # the specific PID file) and the explicit rm before trap - EXIT at the end.
     if [ -n "${RITE_LOCK_DIR:-}" ]; then
       mkdir -p "${RITE_LOCK_DIR}/gate-census" 2>/dev/null || true
-      _gate_census_file="${RITE_LOCK_DIR}/gate-census/$BASHPID"
+      # ${BASHPID:-$$}: BASHPID is bash 4+ only, so a bare reference is UNBOUND
+      # under set -u on macOS system bash 3.2 and crashes the gate (live:
+      # issue #1167's slot, 2026-10-13). $$ is a correct fallback here — the
+      # census only needs a stable per-process identity to count concurrent
+      # gates and to remove its own entry.
+      _gate_census_file="${RITE_LOCK_DIR}/gate-census/${BASHPID:-$$}"
       touch "$_gate_census_file" 2>/dev/null || _gate_census_file=""
     fi
 
