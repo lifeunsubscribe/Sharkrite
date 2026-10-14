@@ -2825,14 +2825,13 @@ run_test_gate() {
           echo "[test-gate] workspaces monorepo: all workspace builds succeeded" >> "$_gate_raw_sink"
         fi
       fi
-      # #975: Per-cycle tiered gating for workspaces monorepos.
-      # RITE_GATE_TIER=cycle (default): scoped per-workspace run — only changed workspaces;
-      #   framework-native diff scoping (jest --findRelatedTests / vitest related).
-      # RITE_GATE_TIER=merge: full root npm test (blast-radius, one pass before merge).
-      #   workflow-runner passes this flag for its pre-merge gate call.
+      # #975: Per-cycle scoped gating for workspaces monorepos — only changed
+      # workspaces, with framework-native diff scoping (jest --findRelatedTests
+      # / vitest related).  There is deliberately NO "merge tier" that falls back
+      # to the full root suite: a full unfiltered suite never runs inside a
+      # workflow (CLAUDE.md standing rule); the overnight pipeline owns that.
       local _skip_root_npm_test=false
-      if [ "${RITE_GATE_TIER:-cycle}" = "cycle" ] \
-         && [ "${RITE_GATE_FORCE_FULL:-}" != "1" ] \
+      if [ "${RITE_GATE_FORCE_FULL:-}" != "1" ] \
          && _node_is_workspaces_monorepo "$project_root" \
          && [ "${_gate_reason:-}" != "workspace_build_failed" ]; then
         local _ws_pm

@@ -143,8 +143,6 @@
 #   not need to override it here. Set to "merge" to always run the full suite
 #   (disables workspace scoping for all gate calls in this project).
 #
-# See: docs/architecture/behavioral-design.md → "Tiered Gating"
-# RITE_GATE_TIER=cycle
 
 # Native diff scoping for node workspaces monorepo tests (default: true).
 # When true, the per-cycle tier uses jest --findRelatedTests (or vitest related)

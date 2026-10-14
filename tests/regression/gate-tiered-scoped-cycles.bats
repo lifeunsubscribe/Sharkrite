@@ -5,8 +5,9 @@
 #   - _detect_workspace_runner: jest/vitest from devDependencies, fallback unknown
 #   - _changed_files_to_workspace_dirs: maps diff paths to workspace dirs
 #   - _node_scope_zero_tests: sanity-valve zero-test detection
-#   - per-cycle tier (default RITE_GATE_TIER=cycle): only changed workspace tested
-#   - RITE_GATE_TIER=merge: full root npm test (bypasses workspace scoping)
+#   - per-cycle scoping: only the changed workspace is tested
+#   - there is deliberately NO merge tier: a full unfiltered suite never runs
+#     inside a workflow (CLAUDE.md standing rule) — the overnight pipeline owns it
 #   - unchanged workspace not tested when only affected workspace changed
 #   - RITE_GATE_NATIVE_SCOPING=false: workspace full suite (no findRelatedTests)
 #   - sanity valve: jest 0 tests + non-test source → workspace full suite
@@ -260,7 +261,7 @@ _run_gate_with_env() {
   : > "$TEST_REPO/invocations.log"
   _write_tracking_npm_stub
 
-  _run_gate_with_env "RITE_GATE_TIER=cycle"
+  _run_gate_with_env ""
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # packages/api (changed) must have been tested.
@@ -281,32 +282,21 @@ _run_gate_with_env() {
   [ "$output" = "0" ]
 }
 
-@test "(#975) RITE_GATE_TIER=merge: full root npm test runs (workspace scoping bypassed)" {
-  _make_two_ws_repo
-  # Change packages/api
-  _init_git_with_ws_change "packages/api" "packages/api/src/new-feature.ts"
-  mkdir -p "$TEST_REPO/node_modules/.bin"
-  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
-  chmod +x "$TEST_REPO/node_modules/.bin/jest"
-  mkdir -p "$TEST_REPO/packages/api/node_modules/.bin"
-  cp "$TEST_REPO/node_modules/.bin/jest" "$TEST_REPO/packages/api/node_modules/.bin/jest"
-  chmod +x "$TEST_REPO/packages/api/node_modules/.bin/jest"
-  : > "$TEST_REPO/invocations.log"
-  _write_tracking_npm_stub
-
-  _run_gate_with_env "RITE_GATE_TIER=merge"
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
-
-  # Root npm test must have been called (no --workspace flag).
-  grep -q "npm:test:$" "$TEST_REPO/invocations.log" || {
-    echo "FAIL: root npm test was not invoked for RITE_GATE_TIER=merge"
-    cat "$TEST_REPO/invocations.log" || true
+@test "(#975) no merge tier: workflow never runs a full root suite before merge" {
+  # Standing rule (CLAUDE.md): a full unfiltered suite never runs inside a
+  # workflow — the overnight pipeline owns that. The merge-decision gate that
+  # #975 originally designed was removed before merge; pin its absence so it
+  # cannot be reintroduced silently.
+  run grep -n "RITE_GATE_TIER" "$RITE_REPO_ROOT/lib/utils/test-gate.sh"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: RITE_GATE_TIER reappeared in test-gate.sh: $output"
     false
   }
-
-  [ "$status" -eq 0 ]
-  run jq -r '.exit_code' "$TEST_REPO/gate.json"
-  [ "$output" = "0" ]
+  run grep -nE "run_test_gate .*merge|merge-decision gate" "$RITE_REPO_ROOT/lib/core/workflow-runner.sh"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: a merge-decision gate reappeared in workflow-runner.sh: $output"
+    false
+  }
 }
 
 @test "(#975) per-cycle: unchanged workspace not tested when only one workspace changed" {
@@ -322,7 +312,7 @@ _run_gate_with_env() {
   : > "$TEST_REPO/invocations.log"
   _write_tracking_npm_stub
 
-  _run_gate_with_env "RITE_GATE_TIER=cycle"
+  _run_gate_with_env ""
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # packages/cdk must NOT have been tested (_changed_files_to_workspace_dirs
@@ -348,7 +338,7 @@ _run_gate_with_env() {
   : > "$TEST_REPO/invocations.log"
   _write_tracking_npm_stub
 
-  _run_gate_with_env "RITE_GATE_TIER=cycle RITE_GATE_NATIVE_SCOPING=false"
+  _run_gate_with_env "RITE_GATE_NATIVE_SCOPING=false"
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # workspace test must have been called without --findRelatedTests
@@ -382,7 +372,7 @@ _run_gate_with_env() {
   : > "$TEST_REPO/invocations.log"
   _write_tracking_npm_stub
 
-  _run_gate_with_env "RITE_GATE_TIER=cycle"
+  _run_gate_with_env ""
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # No workspace tests run when only root files changed.
@@ -397,30 +387,6 @@ _run_gate_with_env() {
   [ "$output" = "0" ]
 }
 
-@test "(#975) merge-decision gate failure → gate exits non-zero (blast-radius protection)" {
-  _make_two_ws_repo
-  _init_git_with_ws_change "packages/api" "packages/api/src/new-feature.ts"
-  mkdir -p "$TEST_REPO/node_modules/.bin"
-  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
-  chmod +x "$TEST_REPO/node_modules/.bin/jest"
-  mkdir -p "$TEST_REPO/packages/api/node_modules/.bin"
-  cp "$TEST_REPO/node_modules/.bin/jest" "$TEST_REPO/packages/api/node_modules/.bin/jest"
-  chmod +x "$TEST_REPO/packages/api/node_modules/.bin/jest"
-  : > "$TEST_REPO/invocations.log"
-  # Root test fails (simulates blast-radius failure in another workspace)
-  _write_fail_root_npm_stub
-
-  _run_gate_with_env "RITE_GATE_TIER=merge"
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
-
-  # Gate must block (exit non-zero) when root suite fails.
-  [ "$status" -ne 0 ] || {
-    echo "FAIL: gate should have blocked on root suite failure"
-    false
-  }
-  run jq -r '.exit_code' "$TEST_REPO/gate.json"
-  [ "$output" = "1" ]
-}
 
 # ===========================================================================
 # workflow-runner.sh wiring: phase_merge_pr invokes run_test_gate with
@@ -428,93 +394,6 @@ _run_gate_with_env() {
 # "merge-decision gate runs the full root suite; exactly one full pass per issue").
 # ===========================================================================
 
-@test "(#975) phase_merge_pr: invokes run_test_gate with RITE_GATE_TIER=merge; returns 1 on gate failure" {
-  local _tier_file="$TEST_REPO/gate_tier.txt"
-  local _stub_lib="$TEST_REPO/wf-stub-lib"
-  for _subdir in utils providers core; do
-    mkdir -p "$_stub_lib/$_subdir"
-  done
-  # Stub every module sourced by workflow-runner.sh at top level.
-  for _mod in \
-    utils/doc-consent.sh \
-    utils/notifications.sh \
-    utils/blocker-rules.sh \
-    utils/session-tracker.sh \
-    utils/pr-summary.sh \
-    utils/normalize-issue.sh \
-    utils/markers.sh \
-    utils/pr-detection.sh \
-    utils/pr-refusal.sh \
-    utils/git-helpers.sh \
-    utils/date-helpers.sh \
-    utils/stash-manager.sh \
-    utils/mid-run-rebase.sh \
-    utils/review-helper.sh \
-    utils/divergence-handler.sh \
-    utils/test-gate.sh \
-    utils/colors.sh \
-    utils/logging.sh \
-    providers/provider-interface.sh; do
-    printf '#!/usr/bin/env bash\n# stub\n' > "$_stub_lib/$_mod"
-  done
-  # timeout.sh is sourced + called immediately; stub must define ensure_timeout_cmd.
-  printf '#!/usr/bin/env bash\nensure_timeout_cmd() { true; }\n' > "$_stub_lib/utils/timeout.sh"
-
-  local _repo_root
-  _repo_root="$(cd "$RITE_LIB_DIR/.." && pwd)"
-
-  _result=0
-  (
-    set +e
-    export RITE_LIB_DIR="$_stub_lib"
-    export WORKTREE_PATH="$TEST_REPO"
-    export WORKFLOW_MODE=unsupervised
-    export STASHED_UNRELATED_WORK=false
-
-    print_header()  { true; }
-    print_info()    { true; }
-    print_step()    { true; }
-    print_warning() { true; }
-    print_error()   { true; }
-    print_success() { true; }
-
-    # Source real workflow-runner.sh (all deps replaced by noop stubs above).
-    # shellcheck disable=SC1090
-    source "$_repo_root/lib/core/workflow-runner.sh"
-
-    # run_test_gate: stub records RITE_GATE_TIER and fails (gate failure scenario).
-    run_test_gate() {
-      echo "${RITE_GATE_TIER:-}" > "$_tier_file"
-      return 1
-    }
-
-    # Stubs for functions called before the merge-decision gate.
-    gh_safe()               { echo '{}'; }
-    jq()                    { echo ''; }
-    extract_changes_summary() { echo ''; }
-    check_blockers()        { return 0; }
-    handle_blocker()        { return 0; }
-    verify_pr_head()        { return 0; }
-    detect_divergence()     { return 1; }
-
-    phase_merge_pr 42 101
-  ) || _result=$?
-
-  # run_test_gate was called with RITE_GATE_TIER=merge
-  [ -f "$_tier_file" ] || {
-    echo "FAIL: run_test_gate was never called (phase_merge_pr did not reach merge-gate block)"
-    false
-  }
-  [ "$(cat "$_tier_file")" = "merge" ] || {
-    echo "FAIL: run_test_gate called with RITE_GATE_TIER=$(cat "$_tier_file"), expected merge"
-    false
-  }
-  # phase_merge_pr must return 1 when the merge gate fails
-  [ "$_result" -eq 1 ] || {
-    echo "FAIL: phase_merge_pr returned $_result, expected 1 on gate failure"
-    false
-  }
-}
 
 @test "(#975) RITE_GATE_FORCE_FULL=1: full root npm test runs even with empty diff" {
   _make_two_ws_repo
@@ -574,7 +453,7 @@ PNPMSTUB
   chmod +x "$TEST_REPO/node_modules/.bin/jest"
   : > "$TEST_REPO/invocations.log"
 
-  _run_gate_with_env "RITE_GATE_TIER=cycle RITE_GATE_NATIVE_SCOPING=false"
+  _run_gate_with_env "RITE_GATE_NATIVE_SCOPING=false"
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # pnpm must have been invoked with --filter=./packages/api for the workspace test.
