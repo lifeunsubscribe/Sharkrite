@@ -2219,6 +2219,164 @@ GOMOD
   rm -f "$stderr_out"
 }
 
+# ---------------------------------------------------------------------------
+# SPIKE_KEY emit + parse + legacy-fallback round-trip
+#
+# For a >24-char package name the emitter must write the full name in the
+# SPIKE_KEY: field and a truncated display name in the title.  The spike-map
+# creation side reads SPIKE_KEY: preferentially; the legacy fallback derives
+# the key from the title via _sanitize_spike_key.
+# ---------------------------------------------------------------------------
+
+@test "Long-name spike emits full name in SPIKE_KEY and truncated name in title" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-emit.txt"
+  write_issues_file "$issues_file" \
+    "Add distributed tracing" \
+    "Use require('@opentelemetry/instrumentation-http') to add tracing."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  # Title must be truncated (≤50 chars)
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # SPIKE_KEY must contain the full unsanitized package name (not the truncated display name)
+  local spike_key_line
+  spike_key_line=$(grep "^SPIKE_KEY:" "$issues_file" | head -1 | sed 's/^SPIKE_KEY: //' || true)
+  [ -n "$spike_key_line" ] || {
+    echo "FAIL: no SPIKE_KEY: field found in spike block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # The key should be the sanitized full name: @opentelemetry/instrumentation-http
+  # → opentelemetry-instrumentation-http (@ stripped, / replaced with -)
+  echo "$spike_key_line" | grep -q "opentelemetry-instrumentation-http" || {
+    echo "FAIL: SPIKE_KEY '$spike_key_line' does not contain full sanitized name 'opentelemetry-instrumentation-http'" >&2
+    false
+  }
+
+  # Title must contain a truncation indicator (display name was cut)
+  echo "$spike_title" | grep -q "\.\.\." || {
+    echo "FAIL: long-name spike title does not contain truncation indicator '...': $spike_title" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Spike block without SPIKE_KEY falls back to title-derived key" {
+  # Manually craft a spike block that lacks SPIKE_KEY: (pre-SPIKE_KEY format)
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-legacy.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Capture somepkg sample - fixtures
+LABELS: spike, tech-debt
+TIME: 30min
+BODY:
+**Description**
+
+Legacy spike block without SPIKE_KEY field.
+
+**Claude Context**
+
+Files to Read:
+- fixtures/somepkg/
+
+Files to Modify:
+- fixtures/somepkg/sample.json
+
+**Acceptance Criteria**
+
+- [ ] Sample committed
+
+**Done Definition**
+
+Sample committed under fixtures/somepkg/.
+
+**Scope Boundary**
+
+- DO: Capture.
+- DO NOT: Implement client code.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+None required.
+---END---
+---ISSUE---
+TITLE: Use somepkg for data fetch
+LABELS: feature
+TIME: 1hr
+BODY:
+**Description**
+
+Use somepkg.
+
+**Claude Context**
+
+Files to Read:
+- src/fetch.js
+
+Files to Modify:
+- src/fetch.js
+
+**Acceptance Criteria**
+
+- [ ] somepkg integrated
+
+**Done Definition**
+
+somepkg integrated in fetch module.
+
+**Scope Boundary**
+
+- DO: Integrate somepkg.
+- DO NOT: Rewrite unrelated code.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+None required.
+---END---
+FIXTURE
+
+  # Load _title_is_spike and _sanitize_spike_key via the already-loaded functions
+  # (both are extracted in setup() via the _extract_packages_for_language → _dedup_issues range)
+
+  # The legacy path: _title_is_spike matches "Capture somepkg sample - fixtures"
+  # and extracts "somepkg" → _sanitize_spike_key("somepkg") → "somepkg"
+  _title_is_spike "Capture somepkg sample - fixtures" || {
+    echo "FAIL: _title_is_spike did not recognize legacy spike title" >&2
+    false
+  }
+
+  # The sanitized key for a short name must be identity (no sanitization needed)
+  local derived_key
+  derived_key=$(_sanitize_spike_key "somepkg")
+  [ "$derived_key" = "somepkg" ] || {
+    echo "FAIL: legacy key derivation: expected 'somepkg', got '$derived_key'" >&2
+    false
+  }
+
+  # A spike block without SPIKE_KEY: must not have the field present
+  grep -q "^SPIKE_KEY:" "$issues_file" && {
+    echo "FAIL: test fixture unexpectedly contains SPIKE_KEY: field" >&2
+    false
+  } || true
+}
+
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
   local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
 

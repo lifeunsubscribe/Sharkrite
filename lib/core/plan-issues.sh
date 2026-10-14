@@ -2754,6 +2754,15 @@ _lint_issues_sections() {
             _sattempt=$((_sattempt + 1))
             continue
           fi
+          # Re-inject SPIKE_KEY: if the original had one and the regen dropped it.
+          # LLMs don't know about this sharkrite header field; the TITLE line is
+          # always preserved (mismatch is rejected above), so insert SPIKE_KEY after it.
+          local _sorig_spike_key_line
+          _sorig_spike_key_line=$(printf '%s' "$_sblk" | grep "^SPIKE_KEY: " | head -1 || true)
+          if [ -n "$_sorig_spike_key_line" ] && ! printf '%s' "$_snew_blk" | grep -q "^SPIKE_KEY: "; then
+            _snew_blk=$(printf '%s\n' "$_snew_blk" | awk -v spike="$_sorig_spike_key_line" \
+              '/^TITLE: / { print; print spike; next } { print }' || true)
+          fi
           # Append $'\n': $() strips the trailing newline the regen returns
           _sblocks[$_sidx]="${_snew_blk}"$'\n'
           _any_repaired=true
@@ -3657,31 +3666,44 @@ LABELS: spike, tech-debt
 TIME: 30min
 SPIKE_KEY: $_key
 BODY:
-## Background
+**Description**
 
 An emitted issue references \`$_name\` but no real API sample exists in the
 repo's fixture directories. The downstream implementation would be built
-against a hallucinated contract.
+against a hallucinated contract. This spike captures a secret-scrubbed real
+response and documents per-field provenance so downstream work starts from
+verified data.
 
-## Task
+**Claude Context**
 
-Make one real call to \`$_name\`. Capture a secret-scrubbed sample to
-\`fixtures/$_fixture_path/\`. Document per-field provenance (what each returned field
-means, whether it is stable across calls, any fields that contain secrets
-that must be scrubbed before committing).
+Files to Read:
+- \`fixtures/$_fixture_path/\` (check for any partial sample already present)
 
-## Acceptance Criteria
+Files to Modify:
+- \`fixtures/$_fixture_path/sample.json\` (create or update with captured response)
+- \`fixtures/$_fixture_path/README.md\` (document per-field provenance)
+
+**Acceptance Criteria**
 
 - [ ] Sample exists at \`fixtures/$_fixture_path/\`
 - [ ] Each field in the sample has a one-line provenance comment in the
   adjacent \`README.md\` (or inline in the JSON as a \`_comment\` key)
 - [ ] No secrets (tokens, credentials, PII) are present in the committed sample
 
-## Scope Boundary
+**Done Definition**
 
-**DO**: Capture one representative real response. Scrub secrets. Document fields.
-**DO NOT**: Implement client code, write tests, or validate the sample against
-a schema — those are the downstream issue's responsibility.
+A scrubbed real API response for \`$_name\` is committed under \`fixtures/$_fixture_path/\` with per-field provenance documented.
+
+**Scope Boundary**
+
+- DO: Make one real call to \`$_name\`. Capture a secret-scrubbed response. Document fields.
+- DO NOT: Implement client code, write tests, or validate the sample against a schema.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+No documentation updates required — the fixture artifact is this spike's deliverable.
 ---END---
 "
   done <<< "$unique_candidates"
