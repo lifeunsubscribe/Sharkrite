@@ -3600,9 +3600,14 @@ FIXTURE
 # ordinal space and emit no error.
 # ---------------------------------------------------------------------------
 
-@test "Fixture Spi-1: 2 spikes + impl issue with After #1 — no error (non-spike ordinal resolves to impl-A)" {
+@test "Fixture Spi-1: 2 spikes + impl issue with After #1 — no error, parallel-overlap names non-spike #1" {
   local issues_file="$RITE_TEST_TMPDIR/issues-spi1.txt"
 
+  # Alpha and Beta both modify src/shared.py.  Beta declares itself parallel with
+  # non-spike #1 (= Alpha).  Check 7 must warn "parallel-file-overlap" and name
+  # "Implement Feature Alpha" — not the spike — proving #1 resolved in non-spike
+  # ordinal space.  (On the pre-fix raw-ordinal code, #1 pointed at the first spike,
+  # so the warning would have named that spike instead.)
   cat > "$issues_file" <<'FIXTURE'
 ---ISSUE---
 TITLE: spike: capture external.api sample for grounding
@@ -3644,7 +3649,7 @@ First implementation task.
 
 **Claude Context**:
 Files to Modify:
-- src/alpha.py
+- src/shared.py
 
 **Acceptance Criteria**:
 - [ ] Alpha works: `python -m pytest tests/test_alpha.py`
@@ -3663,11 +3668,11 @@ LABELS: backend,priority-high
 TIME: 1hr
 BODY:
 **Description**:
-Second implementation task, depends on Alpha.
+Second implementation task, runs concurrently with Alpha on shared.py.
 
 **Claude Context**:
 Files to Modify:
-- src/beta.py
+- src/shared.py
 
 **Acceptance Criteria**:
 - [ ] Beta works: `python -m pytest tests/test_beta.py`
@@ -3678,7 +3683,7 @@ Files to Modify:
 **DO**: Implement beta.
 **DO NOT**: Implement alpha.
 
-**Dependencies**: After #1
+**Dependencies**: None (can run in parallel with #1)
 ---END---
 FIXTURE
 
@@ -3687,16 +3692,37 @@ FIXTURE
   local exit_code=0
   _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
 
-  # Must exit 0 — After #1 is non-spike ordinal 1 (= Implement Feature Alpha), valid
+  # Must exit 0 — parallel-file-overlap is a WARNING, not an error
   [ "$exit_code" -eq 0 ] || {
-    echo "FAIL: expected exit 0 for valid non-spike ordinal dep, got $exit_code" >&2
+    echo "FAIL: expected exit 0 (parallel-overlap is a warning), got $exit_code" >&2
     cat "$stderr_out" >&2
     false
   }
 
   # Must NOT emit any dependency error
   grep -qi "unresolved.*dep\|dangling.*ref\|ERROR.*#1" "$stderr_out" && {
-    echo "FAIL: unexpected dependency error for valid non-spike ordinal ref #1" >&2
+    echo "FAIL: unexpected dependency error for non-spike ordinal ref #1" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Check 7 must emit a parallel-file-overlap warning
+  grep -q "parallel-file-overlap" "$stderr_out" || {
+    echo "FAIL: expected parallel-file-overlap WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The warning must name 'Implement Feature Alpha' (non-spike ordinal 1), not a spike
+  grep "parallel-file-overlap" "$stderr_out" | grep -q "Implement Feature Alpha" || {
+    echo "FAIL: parallel-file-overlap warning should name 'Implement Feature Alpha' (non-spike ordinal 1)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The warning must NOT name the spike as the parallel sibling
+  grep "parallel-file-overlap" "$stderr_out" | grep -q "spike:" && {
+    echo "FAIL: parallel-file-overlap warning incorrectly names a spike issue" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -3863,7 +3889,7 @@ TIME: 1hr
 BODY:
 **Description**:
 Adds a chart widget. Can run in parallel with dashboard rendering since they
-touch disjoint sections, but both need dashboard.ts. (can run in parallel with #1)
+touch disjoint sections, but both need dashboard.ts.
 
 **Claude Context**:
 Files to Modify:
@@ -3878,7 +3904,7 @@ Files to Modify:
 **DO**: Add chart widget.
 **DO NOT**: Modify render logic.
 
-**Dependencies**: None
+**Dependencies**: None (can run in parallel with #1)
 ---END---
 FIXTURE
 
@@ -3911,6 +3937,251 @@ FIXTURE
   # The warning must NOT name the spike as the parallel sibling
   grep "parallel-file-overlap" "$stderr_out" | grep -q "spike:" && {
     echo "FAIL: parallel-file-overlap warning incorrectly names a spike issue" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Spi-4 — cycle detection: spike-prepended slate, valid non-spike dep
+# passes cycle check (no false cycle)
+#
+# 2 spikes + A (non-spike #1) + B (non-spike #2) + C (non-spike #3).
+# A depends on non-spike #3 (= C).  Non-spike ordinal space: A→C, valid DAG.
+# Pre-fix raw-ordinal code mapped #3 to raw idx 2 (= A itself), producing a
+# false A→A self-loop that Kahn's reported as a cycle.  New code correctly
+# resolves #3 to raw idx 4 (= C) and finds no cycle.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Spi-4: 2 spikes + A depends on non-spike #3 — no false cycle (passes cycle check)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spi4.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: spike: capture svc.alpha sample for grounding
+LABELS: spike,tech-debt
+TIME: 30min
+BODY:
+## Background
+References `svc.alpha`.
+## Task
+Call `svc.alpha`.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: spike: capture svc.beta sample for grounding
+LABELS: spike,tech-debt
+TIME: 30min
+BODY:
+## Background
+References `svc.beta`.
+## Task
+Call `svc.beta`.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Build Module A
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds module A, depends on module C being ready.
+
+**Claude Context**:
+Files to Modify:
+- src/module_a.py
+
+**Acceptance Criteria**:
+- [ ] Module A works: `python -m pytest tests/test_module_a.py`
+
+**Done Definition**: Done when module A passes tests.
+
+**Scope Boundary**:
+**DO**: Build module A.
+**DO NOT**: Build module B or C.
+
+**Dependencies**: After #3
+---END---
+---ISSUE---
+TITLE: Build Module B
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds module B, independent.
+
+**Claude Context**:
+Files to Modify:
+- src/module_b.py
+
+**Acceptance Criteria**:
+- [ ] Module B works: `python -m pytest tests/test_module_b.py`
+
+**Done Definition**: Done when module B passes tests.
+
+**Scope Boundary**:
+**DO**: Build module B.
+**DO NOT**: Build module A or C.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Build Module C
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds module C, the shared dependency.
+
+**Claude Context**:
+Files to Modify:
+- src/module_c.py
+
+**Acceptance Criteria**:
+- [ ] Module C works: `python -m pytest tests/test_module_c.py`
+
+**Done Definition**: Done when module C passes tests.
+
+**Scope Boundary**:
+**DO**: Build module C.
+**DO NOT**: Build module A or B.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 — After #3 resolves to Build Module C (non-spike ordinal 3),
+  # which is a valid DAG edge A→C with no cycle.
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for valid non-spike ordinal #3 dep (A to C), got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit any cycle or dangling-ref error
+  grep -qi "cycle detected\|unresolved.*#3" "$stderr_out" && {
+    echo "FAIL: unexpected cycle or dangling-ref error for valid non-spike ordinal #3" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Spi-5 — cycle detection: genuine 2-node cycle detected in non-spike space
+#
+# 2 spikes + A (non-spike #1, After #2) + B (non-spike #2, After #1).
+# A-B and B-A form a genuine cycle in non-spike ordinal space.
+# Pre-fix raw-ordinal code mapped A's #2 to raw idx 1 (= spike1) and B's #1
+# to raw idx 0 (= spike0) — no cycle in raw space, so it silently passed.
+# New code correctly builds edges A-B and B-A and reports the cycle.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Spi-5: 2 spikes + genuine A-B cycle in non-spike space — cycle ERROR detected" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spi5.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: spike: capture api.host sample for grounding
+LABELS: spike,tech-debt
+TIME: 30min
+BODY:
+## Background
+References `api.host`.
+## Task
+Call `api.host`.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: spike: capture db.host sample for grounding
+LABELS: spike,tech-debt
+TIME: 30min
+BODY:
+## Background
+References `db.host`.
+## Task
+Call `db.host`.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Setup Schema
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Sets up the schema, depends on the API layer being ready.
+
+**Claude Context**:
+Files to Modify:
+- src/schema.py
+
+**Acceptance Criteria**:
+- [ ] Schema works: `python -m pytest tests/test_schema.py`
+
+**Done Definition**: Done when schema passes tests.
+
+**Scope Boundary**:
+**DO**: Set up schema.
+**DO NOT**: Build API.
+
+**Dependencies**: After #2
+---END---
+---ISSUE---
+TITLE: Build API Layer
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds the API layer, depends on the schema being ready.
+
+**Claude Context**:
+Files to Modify:
+- src/api.py
+
+**Acceptance Criteria**:
+- [ ] API works: `python -m pytest tests/test_api.py`
+
+**Done Definition**: Done when API passes tests.
+
+**Scope Boundary**:
+**DO**: Build API.
+**DO NOT**: Set up schema.
+
+**Dependencies**: After #1
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit non-zero — Setup Schema (#1) and Build API Layer (#2) form a cycle
+  [ "$exit_code" -ne 0 ] || {
+    echo "FAIL: expected non-zero exit for genuine A-B cycle, got 0" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit a cycle-detected ERROR
+  grep -qi "cycle detected" "$stderr_out" || {
+    echo "FAIL: expected 'cycle detected' error for genuine A-B non-spike cycle" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The cycle message must name non-spike ordinals (Setup Schema and Build API Layer),
+  # not the spikes — confirming cycle detection operates in non-spike ordinal space
+  grep -i "cycle detected" "$stderr_out" | grep -qE "Setup Schema|Build API Layer" || {
+    echo "FAIL: cycle error should name the impl issues, not the spikes" >&2
     cat "$stderr_out" >&2
     false
   }

@@ -1470,6 +1470,15 @@ _lint_provenance_flags() {
   return "$_prov_lint_exit"
 }
 
+# Returns 0 (true) when a title matches the canonical spike form emitted by the
+# planner: "spike: capture <name> sample for grounding".  Shared by _lint_issues_strict
+# (classification) and the creation-side issue loop (spike-map building) so both
+# sides always agree on what constitutes a spike.
+_title_is_spike() {
+  local _t="$1"
+  [[ "$_t" =~ ^spike:\ capture\ .+\ sample\ for\ grounding$ ]]
+}
+
 # =============================================================================
 # Strict deterministic validator: graph checks, dangling refs, verification
 # paths, and deferral citations.
@@ -1524,7 +1533,9 @@ _lint_issues_strict() {
   #   - all titles (for cycle/dangling-ref checks)
   #   - per-issue: deps, files-to-modify, verification commands, suppressions
   #
-  # Storage: parallel arrays indexed by issue ordinal (1-based).
+  # Storage: parallel arrays raw-indexed (0-based, all issues including spikes).
+  # Two maps bridge raw indices to non-spike ordinal space: _nonspike_to_arr
+  # (non-spike ordinal → raw idx) and _arr_to_nonspike (raw idx → non-spike ordinal).
   # Bash 3.2 compatible (no associative arrays).
   # -----------------------------------------------------------------------
 
@@ -1575,11 +1586,9 @@ _lint_issues_strict() {
         _title=$(echo "$_issue_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
         _titles+=("${_title:-}")
 
-        # --- Non-spike ordinal map (matches _detect_unverified_integrations spike convention) ---
+        # --- Non-spike ordinal map (canonical spike form: _title_is_spike) ---
         local _block_is_spike=false
-        case "${_title:-}" in
-          "spike: "*) _block_is_spike=true ;;
-        esac
+        _title_is_spike "${_title:-}" && _block_is_spike=true
         if [ "$_block_is_spike" = false ]; then
           _nonspike_count=$((_nonspike_count + 1))
           _nonspike_to_arr+=("$((_issue_idx - 1))")
@@ -1903,7 +1912,7 @@ _lint_issues_strict() {
 
   # Check 3: Dangling ref check
   # For each issue's deps, verify each #N is either:
-  #   (a) a valid ordinal within this batch (1.._issue_count), or
+  #   (a) a valid non-spike ordinal within this batch (1.._nonspike_count), or
   #   (b) an existing open issue number
   # Guard: skip all seq-based per-issue checks when there are no issues.
   # seq 1 0 produces a descending "1 0" range on bash/POSIX — not empty.
@@ -3594,7 +3603,9 @@ a schema — those are the downstream issue's responsibility.
         _in_issue=false
         # Check if this is a spike issue itself (don't self-reference)
         local _is_spike=false
-        echo "$_current_block" | grep -q "^TITLE: spike: " && _is_spike=true
+        local _block_title
+        _block_title=$(echo "$_current_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+        _title_is_spike "${_block_title:-}" && _is_spike=true
 
         if [ "$_is_spike" = false ]; then
           # For each ungrounded candidate, check if this issue body references it.
@@ -4287,11 +4298,11 @@ create_issues() {
 
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
-          # Title format: "spike: capture <name> sample for grounding"
+          # _title_is_spike uses the canonical regex; BASH_REMATCH[1] holds the name.
           # Spike issues do NOT update prev_issue_num — they are prepended
           # prerequisites and are not part of the sequential #PREV dependency
           # chain the planner authored among the real (non-spike) issues.
-          if [[ "$current_title" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]; then
+          if _title_is_spike "$current_title"; then
             local _spike_name="${BASH_REMATCH[1]}"
             local _spike_key
             _spike_key=$(_sanitize_spike_key "$_spike_name")
