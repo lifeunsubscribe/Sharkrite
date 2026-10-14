@@ -1471,11 +1471,15 @@ _lint_provenance_flags() {
 }
 
 # Returns 0 (true) when a title matches the canonical spike form emitted by the
-# planner: "spike: capture <name> sample for grounding".  Shared by _lint_issues_strict
+# planner: "Capture <name> sample - fixtures".  Shared by _lint_issues_strict
 # (classification) and the creation-side issue loop (spike-map building) so both
 # sides always agree on what constitutes a spike.
+# Backward-compat: also matches the pre-#1151 form "spike: capture <name> sample
+# for grounding" so re-runs against old-format issues don't treat them as
+# non-spikes (they would duplicate once at most, then dedup on the next run).
 _title_is_spike() {
   local _t="$1"
+  [[ "$_t" =~ ^Capture\ (.+)\ sample\ -\ fixtures$ ]] || \
   [[ "$_t" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]
 }
 
@@ -2750,6 +2754,15 @@ _lint_issues_sections() {
             _sattempt=$((_sattempt + 1))
             continue
           fi
+          # Re-inject SPIKE_KEY: if the original had one and the regen dropped it.
+          # LLMs don't know about this sharkrite header field; the TITLE line is
+          # always preserved (mismatch is rejected above), so insert SPIKE_KEY after it.
+          local _sorig_spike_key_line
+          _sorig_spike_key_line=$(printf '%s' "$_sblk" | grep "^SPIKE_KEY: " | head -1 || true)
+          if [ -n "$_sorig_spike_key_line" ] && ! printf '%s' "$_snew_blk" | grep -q "^SPIKE_KEY: "; then
+            _snew_blk=$(printf '%s\n' "$_snew_blk" | awk -v spike="$_sorig_spike_key_line" \
+              '/^TITLE: / { print; print spike; next } { print }' || true)
+          fi
           # Append $'\n': $() strips the trailing newline the regen returns
           _sblocks[$_sidx]="${_snew_blk}"$'\n'
           _any_repaired=true
@@ -3613,10 +3626,27 @@ _detect_unverified_integrations() {
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
-    local _name
+    local _type _name
+    _type=$(echo "$_candidate_line" | cut -f1)
     _name=$(echo "$_candidate_line" | cut -f2)
     local _key
     _key=$(_sanitize_spike_key "$_name")
+    # Fixture path: host candidates use the dotted hostname so _build_grounded_hosts
+    # recognises the directory on the next run (its regex requires a dot in the name).
+    # Package candidates use the sanitized key (dots/slashes → hyphens).
+    local _fixture_path
+    if [ "$_type" = "host" ]; then
+      _fixture_path="$_name"
+    else
+      _fixture_path="$_key"
+    fi
+    # Truncate display name so the title stays within the ≤50-char runbook cap.
+    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = 24.
+    local _display_name
+    _display_name="$_name"
+    if [ "${#_name}" -gt 24 ]; then
+      _display_name="${_name:0:21}..."
+    fi
 
     print_warning "unverified external integration: $_name" >&2
 
@@ -3631,35 +3661,49 @@ _detect_unverified_integrations() {
 
     # Build spike issue block
     spikes_block+="---ISSUE---
-TITLE: spike: capture $_name sample for grounding
+TITLE: Capture $_display_name sample - fixtures
 LABELS: spike, tech-debt
 TIME: 30min
+SPIKE_KEY: $_key
 BODY:
-## Background
+**Description**
 
 An emitted issue references \`$_name\` but no real API sample exists in the
 repo's fixture directories. The downstream implementation would be built
-against a hallucinated contract.
+against a hallucinated contract. This spike captures a secret-scrubbed real
+response and documents per-field provenance so downstream work starts from
+verified data.
 
-## Task
+**Claude Context**
 
-Make one real call to \`$_name\`. Capture a secret-scrubbed sample to
-\`fixtures/$_name/\`. Document per-field provenance (what each returned field
-means, whether it is stable across calls, any fields that contain secrets
-that must be scrubbed before committing).
+Files to Read:
+- \`fixtures/$_fixture_path/\` (check for any partial sample already present)
 
-## Acceptance Criteria
+Files to Modify:
+- \`fixtures/$_fixture_path/sample.json\` (create or update with captured response)
+- \`fixtures/$_fixture_path/README.md\` (document per-field provenance)
 
-- [ ] Sample exists at \`fixtures/$_name/\`
+**Acceptance Criteria**
+
+- [ ] Sample exists at \`fixtures/$_fixture_path/\`
 - [ ] Each field in the sample has a one-line provenance comment in the
   adjacent \`README.md\` (or inline in the JSON as a \`_comment\` key)
 - [ ] No secrets (tokens, credentials, PII) are present in the committed sample
 
-## Scope Boundary
+**Done Definition**
 
-**DO**: Capture one representative real response. Scrub secrets. Document fields.
-**DO NOT**: Implement client code, write tests, or validate the sample against
-a schema — those are the downstream issue's responsibility.
+A scrubbed real API response for \`$_name\` is committed under \`fixtures/$_fixture_path/\` with per-field provenance documented.
+
+**Scope Boundary**
+
+- DO: Make one real call to \`$_name\`. Capture a secret-scrubbed sample to \`fixtures/$_fixture_path/sample.json\`. Document per-field provenance.
+- DO NOT: Implement client code, write tests, or validate the sample against a schema.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+No documentation updates required — the fixture artifact is this spike's deliverable.
 ---END---
 "
   done <<< "$unique_candidates"
@@ -4347,6 +4391,7 @@ create_issues() {
   local current_labels=""
   local current_body=""
   local current_time=""
+  local current_spike_key=""
   local in_body=false
   local prev_issue_num=""
   # spike_map_file: stores "#SPIKE-<key>=<real-issue-number>" lines.
@@ -4375,6 +4420,7 @@ create_issues() {
       current_labels=""
       current_body=""
       current_time=""
+      current_spike_key=""
       in_body=false
     elif [[ "$line" == "---END---" ]]; then
       if [ -n "$current_title" ]; then
@@ -4396,10 +4442,13 @@ create_issues() {
         fi
 
         # Post-substitution sweep: remove any surviving unresolvable #SPIKE-<key>
-        # placeholders (can occur when a candidate matched via a false substring hit
-        # before the -F fix, or when a spike was emitted but its map entry was never
-        # recorded due to a title mismatch). Strip the whole "Blocked by: #SPIKE-…"
-        # clause rather than leaving a broken reference in the created issue.
+        # placeholders. These should only remain for false-substring candidates
+        # (pre -F fix); a key mismatch here indicates a bug in spike-map round-trip.
+        local _unresolved_keys
+        _unresolved_keys=$(echo "$current_body" | grep -oE '#SPIKE-[a-zA-Z0-9-]+' | sort -u || true)
+        if [ -n "$_unresolved_keys" ]; then
+          print_warning "unresolved spike placeholders in '$current_title' (stripping): $(echo "$_unresolved_keys" | tr '\n' ' ')" >&2
+        fi
         current_body=$(echo "$current_body" | \
           sed -E 's|,? *Blocked by: #SPIKE-[a-zA-Z0-9-]*||g; s|^[[:space:]]*Blocked by: #SPIKE-[a-zA-Z0-9-]*[[:space:]]*$||g' || true)
         # Clean up an empty Dependencies line that results from stripping all refs
@@ -4453,14 +4502,23 @@ create_issues() {
 
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
-          # _title_is_spike uses the canonical regex; BASH_REMATCH[1] holds the name.
+          # Prefer the SPIKE_KEY: field emitted by _detect_unverified_integrations
+          # (carries the full unsanitized key); fall back to deriving from the title
+          # for backward-compat with pre-SPIKE_KEY blocks or manually authored spikes.
+          # _title_is_spike uses the canonical regex "Capture <name> sample - fixtures"
+          # (plus backward-compat "spike: capture <name> sample for grounding");
+          # BASH_REMATCH[1] holds the name from whichever alternative matched.
           # Spike issues do NOT update prev_issue_num — they are prepended
           # prerequisites and are not part of the sequential #PREV dependency
           # chain the planner authored among the real (non-spike) issues.
           if _title_is_spike "$current_title"; then
-            local _spike_name="${BASH_REMATCH[1]}"
             local _spike_key
-            _spike_key=$(_sanitize_spike_key "$_spike_name")
+            if [ -n "${current_spike_key:-}" ]; then
+              _spike_key="$current_spike_key"
+            else
+              local _spike_name="${BASH_REMATCH[1]}"
+              _spike_key=$(_sanitize_spike_key "$_spike_name")
+            fi
             echo "#SPIKE-${_spike_key}=${issue_num}" >> "$spike_map_file"
           else
             # Only non-spike issues advance the #PREV pointer.
@@ -4481,6 +4539,8 @@ create_issues() {
       current_labels="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^TIME:\ (.+) ]]; then
       current_time="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^SPIKE_KEY:\ (.+) ]]; then
+      current_spike_key="${BASH_REMATCH[1]}"
     elif [[ "$line" == BODY:* ]]; then
       in_body=true
       # Capture anything after "BODY:" on the same line

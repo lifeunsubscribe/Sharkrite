@@ -246,9 +246,100 @@ FIXTURE
   # The first issue must be the spike
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture simplefin.io" || {
+  echo "$first_title" | grep -qi "capture simplefin.io sample - fixtures" || {
     echo "FAIL: first issue is not the spike: $first_title" >&2
     cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike title format: imperative, ≤50 chars, "Capture <name> sample - fixtures"
+#
+# Validates issue runbook compliance: titles must start with an imperative verb,
+# be ≤50 characters, and follow the canonical spike format (not lowercase
+# "spike: capture …" which was the pre-#1151 form).
+# ---------------------------------------------------------------------------
+
+@test "Spike title is imperative, ≤50 chars, and matches canonical format" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-titlefmt.txt"
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  # Must match the canonical imperative format
+  echo "$spike_title" | grep -q "^Capture .* sample - fixtures$" || {
+    echo "FAIL: spike title does not match canonical format 'Capture <name> sample - fixtures': $spike_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Must be ≤50 characters (runbook hard cap)
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # Must NOT use the old lowercase non-imperative form
+  echo "$spike_title" | grep -qi "^spike: capture" && {
+    echo "FAIL: spike title still uses old lowercase form: $spike_title" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike title is capped at ≤50 chars even for long package names
+#
+# A scoped package name like @opentelemetry/instrumentation-http (36 chars)
+# would produce a 62-char title without truncation, violating the runbook cap.
+# The emitter must truncate the display name to keep the title ≤50 chars.
+# ---------------------------------------------------------------------------
+
+@test "Spike title is truncated to ≤50 chars for long package names" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.0.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-longname.txt"
+  write_issues_file "$issues_file" \
+    "Add distributed tracing" \
+    "Use require('@opentelemetry/instrumentation-http') to add tracing."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # Must still match canonical format even after truncation
+  echo "$spike_title" | grep -q "^Capture .* sample - fixtures$" || {
+    echo "FAIL: truncated spike title does not match canonical format: $spike_title" >&2
     false
   }
 
@@ -442,6 +533,49 @@ JSON
   # Must mention "Document per-field provenance"
   echo "$spike_body" | grep -qi "document per-field provenance" || {
     echo "FAIL: spike body does not mention 'Document per-field provenance'" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike body fixture path uses dotted hostname for host candidates
+#
+# Host-candidate fixture paths must use the original dotted hostname
+# (e.g. "fixtures/simplefin.io/") so that _build_grounded_hosts recognises
+# the directory on the next run — its regex requires a dot to distinguish
+# hostnames from plain directory names.  Using the sanitized key
+# ("fixtures/simplefin-io/") would cause the grounding loop to miss the
+# fixture and re-emit the spike on every subsequent `rite plan` run.
+# ---------------------------------------------------------------------------
+
+@test "Spike body fixture path uses dotted hostname for host candidates (grounding-compatible)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fixturepath.txt"
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_body
+  spike_body=$(awk '/^---ISSUE---/{in_block=1} in_block{print} /^---END---/{in_block=0}' "$issues_file" | head -80)
+
+  # Body must reference the dotted hostname path (simplefin.io) for grounding-loop compat
+  echo "$spike_body" | grep -q "fixtures/simplefin\.io/" || {
+    echo "FAIL: spike body does not use dotted hostname path fixtures/simplefin.io/" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  }
+
+  # Must NOT use the sanitized hyphenated path (would never be recognised by _build_grounded_hosts)
+  echo "$spike_body" | grep -q "fixtures/simplefin-io/" && {
+    echo "FAIL: spike body uses sanitized key fixtures/simplefin-io/ — host fixtures must use dotted hostname" >&2
     echo "--- spike body ---" >&2
     echo "$spike_body" >&2
     false
@@ -1090,7 +1224,7 @@ _write_spike_issues_file() {
   local file="$1"
   cat > "$file" <<'FIXTURE'
 ---ISSUE---
-TITLE: spike: capture api.example.com sample for grounding
+TITLE: Capture api.example.com sample - fixtures
 LABELS: spike
 TIME: 30min
 **Description**: Capture sample fixture.
@@ -1322,7 +1456,7 @@ FIXTURE
   # Spike title must use the normalized domain (authsvc.io), not a subdomain
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture authsvc.io" || {
+  echo "$first_title" | grep -qi "capture authsvc.io sample - fixtures" || {
     echo "FAIL: spike title does not use normalized domain 'authsvc.io': $first_title" >&2
     cat "$issues_file" >&2
     false
@@ -1436,7 +1570,7 @@ FIXTURE
 # Fixture W: multi-part TLD (co.uk) — third label becomes registrable domain
 #
 # api.myservice.co.uk normalizes to myservice.co.uk (not co.uk).
-# Expected: 1 spike titled "spike: capture myservice.co.uk ..." and the
+# Expected: 1 spike titled "Capture myservice.co.uk sample - fixtures" and the
 # downstream issue gets Blocked-by #SPIKE-myservice-co-uk.
 # ---------------------------------------------------------------------------
 
@@ -1465,7 +1599,7 @@ FIXTURE
   }
 
   # Must not produce a spike for bare 'co.uk' (that would be wrong)
-  grep -q "spike: capture co.uk" "$issues_file" && {
+  grep -qi "capture co.uk sample - fixtures" "$issues_file" && {
     echo "FAIL: spike was created for bare 'co.uk' — multi-part TLD normalization is wrong" >&2
     cat "$issues_file" >&2
     false
@@ -1474,7 +1608,7 @@ FIXTURE
   # Spike title must use the registrable domain myservice.co.uk
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture myservice.co.uk" || {
+  echo "$first_title" | grep -qi "capture myservice.co.uk sample - fixtures" || {
     echo "FAIL: spike title does not use 'myservice.co.uk': $first_title" >&2
     cat "$issues_file" >&2
     false
@@ -2083,6 +2217,175 @@ GOMOD
   }
 
   rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# SPIKE_KEY emit + parse + legacy-fallback round-trip
+#
+# For a >24-char package name the emitter must write the full name in the
+# SPIKE_KEY: field and a truncated display name in the title.  The spike-map
+# creation side reads SPIKE_KEY: preferentially; the legacy fallback derives
+# the key from the title via _sanitize_spike_key.
+# ---------------------------------------------------------------------------
+
+@test "Long-name spike emits full name in SPIKE_KEY and truncated name in title" {
+  # A manifest must exist for groundedness to be decidable: with no package.json
+  # the grounded set is empty, nothing is classified ungrounded, and no spike is
+  # emitted at all — the test then fails for the wrong reason (missing fixture,
+  # not a key-emission bug). Deliberately omits @opentelemetry/* so the package
+  # under test IS ungrounded.
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "fixture-project",
+  "dependencies": { "express": "^4.18.0" }
+}
+JSON
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-emit.txt"
+  write_issues_file "$issues_file" \
+    "Add distributed tracing" \
+    "Use require('@opentelemetry/instrumentation-http') to add tracing."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  # Title must be truncated (≤50 chars)
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # SPIKE_KEY must contain the full unsanitized package name (not the truncated display name)
+  local spike_key_line
+  spike_key_line=$(grep "^SPIKE_KEY:" "$issues_file" | head -1 | sed 's/^SPIKE_KEY: //' || true)
+  [ -n "$spike_key_line" ] || {
+    echo "FAIL: no SPIKE_KEY: field found in spike block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # The key should be the sanitized full name: @opentelemetry/instrumentation-http
+  # → opentelemetry-instrumentation-http (@ stripped, / replaced with -)
+  echo "$spike_key_line" | grep -q "opentelemetry-instrumentation-http" || {
+    echo "FAIL: SPIKE_KEY '$spike_key_line' does not contain full sanitized name 'opentelemetry-instrumentation-http'" >&2
+    false
+  }
+
+  # Title must contain a truncation indicator (display name was cut)
+  echo "$spike_title" | grep -q "\.\.\." || {
+    echo "FAIL: long-name spike title does not contain truncation indicator '...': $spike_title" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Spike block without SPIKE_KEY falls back to title-derived key" {
+  # Manually craft a spike block that lacks SPIKE_KEY: (pre-SPIKE_KEY format)
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-legacy.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Capture somepkg sample - fixtures
+LABELS: spike, tech-debt
+TIME: 30min
+BODY:
+**Description**
+
+Legacy spike block without SPIKE_KEY field.
+
+**Claude Context**
+
+Files to Read:
+- fixtures/somepkg/
+
+Files to Modify:
+- fixtures/somepkg/sample.json
+
+**Acceptance Criteria**
+
+- [ ] Sample committed
+
+**Done Definition**
+
+Sample committed under fixtures/somepkg/.
+
+**Scope Boundary**
+
+- DO: Capture.
+- DO NOT: Implement client code.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+None required.
+---END---
+---ISSUE---
+TITLE: Use somepkg for data fetch
+LABELS: feature
+TIME: 1hr
+BODY:
+**Description**
+
+Use somepkg.
+
+**Claude Context**
+
+Files to Read:
+- src/fetch.js
+
+Files to Modify:
+- src/fetch.js
+
+**Acceptance Criteria**
+
+- [ ] somepkg integrated
+
+**Done Definition**
+
+somepkg integrated in fetch module.
+
+**Scope Boundary**
+
+- DO: Integrate somepkg.
+- DO NOT: Rewrite unrelated code.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+None required.
+---END---
+FIXTURE
+
+  # Load _title_is_spike and _sanitize_spike_key via the already-loaded functions
+  # (both are extracted in setup() via the _extract_packages_for_language → _dedup_issues range)
+
+  # The legacy path: _title_is_spike matches "Capture somepkg sample - fixtures"
+  # and extracts "somepkg" → _sanitize_spike_key("somepkg") → "somepkg"
+  _title_is_spike "Capture somepkg sample - fixtures" || {
+    echo "FAIL: _title_is_spike did not recognize legacy spike title" >&2
+    false
+  }
+
+  # The sanitized key for a short name must be identity (no sanitization needed)
+  local derived_key
+  derived_key=$(_sanitize_spike_key "somepkg")
+  [ "$derived_key" = "somepkg" ] || {
+    echo "FAIL: legacy key derivation: expected 'somepkg', got '$derived_key'" >&2
+    false
+  }
+
+  # A spike block without SPIKE_KEY: must not have the field present
+  grep -q "^SPIKE_KEY:" "$issues_file" && {
+    echo "FAIL: test fixture unexpectedly contains SPIKE_KEY: field" >&2
+    false
+  } || true
 }
 
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
