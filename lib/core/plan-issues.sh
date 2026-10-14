@@ -3665,13 +3665,13 @@ a schema — those are the downstream issue's responsibility.
               # _name is a normalized registrable domain (e.g. foo.co); match it as a
               # hostname suffix so any subdomain variant (api.foo.co, auth.foo.co) in
               # the block body triggers the Blocked-by injection.
-              # The (/|$) right anchor prevents a prefix-collision false positive where
-              # foo\.co would otherwise match inside foo.com (see Fixture Z).
-              local _matched_hosts
-              _matched_hosts=$(echo "$_current_block" | \
-                grep -oiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')(/|$)" | \
-                tr '[:upper:]' '[:lower:]' | sed 's|https://||; s|http://||; s|/$||' | sort -u || true)
-              [ -n "$_matched_hosts" ] && _context_match=true
+              # The ([^a-zA-Z0-9.-]|$) right anchor is the exact complement of Pass-1's
+              # host-char class, so any URL terminator (space, comma, colon, ?, backtick,
+              # end-of-line) matches — preventing both prefix collisions (foo.com vs foo.co)
+              # and orphaned spikes for prose URLs like "https://api.foo.co for tokens."
+              echo "$_current_block" | \
+                grep -qiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')([^a-zA-Z0-9.-]|$)" && \
+                _context_match=true
             else
               # pkg: match import/require patterns only
               echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true

@@ -28,6 +28,8 @@
 #   Fixture Y — Both subdomains normalize to grounded registrable domain — no spike, no Blocked-by.
 #   Fixture Z — Prefix-collision anchor: fixtures/api.foo.com/ grounded + ungrounded api.foo.co must NOT
 #               inject Blocked-by into the foo.com issue (right-anchor regression guard).
+#   Fixture AA — Prose URL terminator regression: space, comma, ?, :port, and backtick-terminated URLs
+#                all trigger Blocked-by injection (([^a-zA-Z0-9.-]|$) anchor fix).
 
 load '../helpers/setup.bash'
 
@@ -1608,13 +1610,13 @@ FIXTURE
 # Fixture Z: prefix-collision anchor — fixtures/api.foo.com/ grounded +
 #            ungrounded api.foo.co must NOT inject Blocked-by into foo.com issue
 #
-# Regression for the Pass-3 right-anchor fix: without the (/|$) suffix on the
-# context regex, grep -oiE "https?://...foo\.co" matches https://api.foo.com
-# because foo.co is a substring of foo.com.  The grounded foo.com issue would
-# acquire a spurious "Blocked by: #SPIKE-foo-co".
+# Regression for the Pass-3 right-anchor fix: without the ([^a-zA-Z0-9.-]|$)
+# suffix on the context regex, grep -oiE "https?://...foo\.co" matches
+# https://api.foo.com because foo.co is a substring of foo.com.  The grounded
+# foo.com issue would acquire a spurious "Blocked by: #SPIKE-foo-co".
 #
-# With the anchor, https://api.foo.com does NOT match foo\.co(/|$) (next char
-# is 'm', not '/' or end-of-line), so _matched_hosts is empty → no injection.
+# With the anchor, https://api.foo.com does NOT match foo\.co([^a-zA-Z0-9.-]|$)
+# (next char is 'm', a host char), so _context_match stays false → no injection.
 # Expected: 3 issues (1 spike for foo.co + 2 originals); foo.com issue has no
 # Blocked-by; foo.co issue has Blocked-by #SPIKE-foo-co.
 # ---------------------------------------------------------------------------
@@ -1688,6 +1690,203 @@ FIXTURE
     echo "FAIL: foo.co issue missing #SPIKE-foo-co" >&2
     echo "--- foo.co block ---" >&2
     echo "$fooco_block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AA: prose URL terminators — space, comma, ?, :port, and backtick
+#
+# Regression for the ([^a-zA-Z0-9.-]|$) anchor fix: the old (/|$) anchor only
+# matched a slash or end-of-line.  A URL written mid-sentence like
+# "Fetch from https://api.authsvc.io for tokens." ends with a space, which
+# (/|$) does not match, so _context_match stayed false — the implementation
+# issue was not given a Blocked-by dependency on the spike.
+#
+# The ([^a-zA-Z0-9.-]|$) anchor is the exact complement of Pass-1's host-char
+# class, so any non-host character (space, comma, ?, :, backtick) terminates.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AA: prose URL terminators — space-terminated URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-space.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add authsvc token integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Fetch from https://api.authsvc.io for tokens.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # authsvc.io is ungrounded → spike prepended + implementation issue gets Blocked-by
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Implementation issue (block 2) must carry Blocked-by #SPIKE-authsvc-io
+  local impl_block
+  impl_block=$(grep -A9999 "^---ISSUE---$" "$issues_file" | grep -A9999 "Add authsvc" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-authsvc-io" || {
+    echo "FAIL: space-terminated URL — implementation issue missing Blocked-by #SPIKE-authsvc-io" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — comma-terminated URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-comma.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add paymentapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.paymentapi.io, then validate the response.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: comma-terminated URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add paymentapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-paymentapi-io" || {
+    echo "FAIL: comma-terminated URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — query-string URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-query.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add searchapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Query https://api.searchapi.io?q=foo&limit=10 for results.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: query-string URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add searchapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-searchapi-io" || {
+    echo "FAIL: query-string URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — colon-port URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-port.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add internalapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Connect to https://api.internalapi.io:8443/health for status.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: colon-port URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add internalapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-internalapi-io" || {
+    echo "FAIL: colon-port URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — backtick-wrapped URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-backtick.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add notifyapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Use `https://api.notifyapi.io` to send notifications.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: backtick-wrapped URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add notifyapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-notifyapi-io" || {
+    echo "FAIL: backtick-wrapped URL — implementation issue missing Blocked-by" >&2
     cat "$issues_file" >&2
     false
   }
