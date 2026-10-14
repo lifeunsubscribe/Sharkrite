@@ -414,6 +414,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "shape-branch" 2>&1
 RUNEOF
 )
@@ -641,6 +642,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "own-branch" 2>&1
 # Report whether merge-pr.sh was sourced
 echo "MERGE_PR_SOURCED_FLAG=${_MERGE_PR_SH_SOURCED_IN_TEST:-false}"
@@ -737,6 +739,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "pm-branch" 2>&1
 RUNEOF
 )
@@ -823,6 +826,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "prune-branch" 2>&1
 RUNEOF
 )
@@ -926,6 +930,7 @@ gh_safe() {
   esac
   return 0
 }
+run_test_gate() { return 0; }
 run_promote "sha-recp-branch" 2>&1
 RUNEOF
 )

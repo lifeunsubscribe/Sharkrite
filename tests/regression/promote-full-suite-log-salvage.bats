@@ -2,16 +2,16 @@
 # sharkrite-test-covers: lib/core/promote-branch.sh
 # tests/regression/promote-full-suite-log-salvage.bats
 #
-# Regression tests for full-suite log and flag salvage before promote worktree
-# removal (#1210). The gate subshell runs with RITE_PROJECT_ROOT set to the
-# temp worktree, so any rite-full-suite log lands inside the worktree and dies
-# with it unless promote-branch.sh copies it before git worktree remove.
+# Regression tests for gate verdict salvage before promote worktree removal
+# (#1210). run_test_gate writes its verdict JSON to its first arg ($1); if the
+# gate fails and that file is non-empty, promote-branch.sh copies it to the
+# project's .rite/state/ before removing the worktree.
 #
 # Tests verify:
-#   1. Failing gate: full-suite log is copied to project .rite/logs/
-#   2. Failing gate: failure message prints the log path
-#   3. Failing gate: failure flag is copied to project .rite/state/
-#   4. Passing gate: no stray flag copied to project .rite/state/
+#   1. Failing gate: verdict JSON is copied to project .rite/state/
+#   2. Failing gate: failure message names the verdict save path
+#   3. Failing gate: no JSON salvaged when gate exits without writing verdict
+#   4. Passing gate: no stray verdict JSON copied to project .rite/state/
 #   5. Worktree is removed in both failure and success outcomes
 
 load '../helpers/setup'
@@ -168,7 +168,7 @@ teardown() {
 # Failure path: gate writes log + flag to worktree .rite/, then exits 1
 # ===========================================================================
 
-@test "failing gate: full-suite log is salvaged to project .rite/logs/" {
+@test "failing gate: gate JSON verdict is salvaged to project .rite/state/" {
   local _lib="$RITE_TEST_TMPDIR/lib"
   _write_salvage_stubs "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
@@ -207,10 +207,7 @@ gh_safe() {
   return 0
 }
 run_test_gate() {
-  local _wt_root="\${2:-\$(pwd)}"
-  mkdir -p "\$_wt_root/.rite/logs" "\$_wt_root/.rite/state"
-  echo "# promote gate failure transcript for feature-x" > "\$_wt_root/.rite/logs/full-suite-20261012.log"
-  printf 'outcome=failed\ntest_count=3\n' > "\$_wt_root/.rite/state/full-suite-failure.flag"
+  echo '{"tests":[{"test_name":"fake-failing-test"}]}' > "\${1:-/dev/null}"
   return 1
 }
 run_promote "feature-x" 2>&1
@@ -220,15 +217,13 @@ RUNEOF
   run bash "$_runner" 2>&1
   [ "$status" -eq 1 ]
 
-  # Salvaged log must exist under the project's .rite/logs/ with a branch-scoped name
-  local _saved_log=""
-  _saved_log=$(ls "$RITE_TEST_TMPDIR/.rite/logs/full-suite-promote-feature-x-"*.log 2>/dev/null \
-    | head -1 || true)
-  [ -n "$_saved_log" ]
-  grep -q "promote gate failure transcript for feature-x" "$_saved_log"
+  # Verdict JSON must be salvaged to .rite/state/ with a branch-scoped name
+  local _saved_json="$RITE_TEST_TMPDIR/.rite/state/promote-gate-feature-x.json"
+  [ -f "$_saved_json" ]
+  grep -q "fake-failing-test" "$_saved_json"
 }
 
-@test "failing gate: failure message prints the log path" {
+@test "failing gate: failure message names the verdict save path" {
   local _lib="$RITE_TEST_TMPDIR/lib"
   _write_salvage_stubs "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
@@ -267,9 +262,7 @@ gh_safe() {
   return 0
 }
 run_test_gate() {
-  local _wt_root="\${2:-\$(pwd)}"
-  mkdir -p "\$_wt_root/.rite/logs" "\$_wt_root/.rite/state"
-  echo "# gate transcript" > "\$_wt_root/.rite/logs/full-suite-20261013.log"
+  echo '{"tests":[]}' > "\${1:-/dev/null}"
   return 1
 }
 run_promote "feature-x" 2>&1
@@ -279,12 +272,11 @@ RUNEOF
   run bash "$_runner" 2>&1
   [ "$status" -eq 1 ]
 
-  # Failure output must mention "Failure log:" and a path that contains the branch name
-  echo "$output" | grep -q "Failure log:"
-  echo "$output" | grep -q "full-suite-promote-feature-x"
+  # Failure output must mention "verdict saved to" and the branch-scoped save path
+  echo "$output" | grep -q "verdict saved to .rite/state/promote-gate-feature-x.json"
 }
 
-@test "failing gate: full-suite failure flag is salvaged to project .rite/state/" {
+@test "failing gate: no JSON salvaged when gate exits without writing verdict" {
   local _lib="$RITE_TEST_TMPDIR/lib"
   _write_salvage_stubs "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
@@ -322,11 +314,8 @@ gh_safe() {
   esac
   return 0
 }
+# Gate fails without writing the verdict JSON — the [ -s ] guard must suppress the copy
 run_test_gate() {
-  local _wt_root="\${2:-\$(pwd)}"
-  mkdir -p "\$_wt_root/.rite/logs" "\$_wt_root/.rite/state"
-  echo "# transcript" > "\$_wt_root/.rite/logs/full-suite-20261013.log"
-  printf 'outcome=failed\ntest_count=5\n' > "\$_wt_root/.rite/state/full-suite-failure.flag"
   return 1
 }
 run_promote "feature-x" 2>&1
@@ -336,13 +325,12 @@ RUNEOF
   run bash "$_runner" 2>&1
   [ "$status" -eq 1 ]
 
-  # Failure flag must be in the project's .rite/state/
-  local _saved_flag="$RITE_TEST_TMPDIR/.rite/state/full-suite-promote-feature-x.flag"
-  [ -f "$_saved_flag" ]
-  grep -q "test_count=5" "$_saved_flag"
+  # No copy should exist in .rite/state/ when the gate wrote no verdict JSON
+  local _saved_json="$RITE_TEST_TMPDIR/.rite/state/promote-gate-feature-x.json"
+  [ ! -f "$_saved_json" ]
 }
 
-@test "passing gate: no stray flag copied to project .rite/state/" {
+@test "passing gate: no stray verdict JSON copied to project .rite/state/" {
   local _lib="$RITE_TEST_TMPDIR/lib"
   _write_salvage_stubs "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
@@ -391,10 +379,11 @@ RUNEOF
 )
 
   run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
 
-  # A stray flag must NOT be present after a passing promote
-  local _stray_flag="$RITE_TEST_TMPDIR/.rite/state/full-suite-promote-feature-x.flag"
-  [ ! -f "$_stray_flag" ]
+  # A stray verdict JSON must NOT be present after a passing promote
+  local _stray_json="$RITE_TEST_TMPDIR/.rite/state/promote-gate-feature-x.json"
+  [ ! -f "$_stray_json" ]
 }
 
 @test "worktree is removed after gate failure" {
@@ -436,9 +425,6 @@ gh_safe() {
   return 0
 }
 run_test_gate() {
-  local _wt_root="\${2:-\$(pwd)}"
-  mkdir -p "\$_wt_root/.rite/logs"
-  echo "# transcript" > "\$_wt_root/.rite/logs/full-suite-20261013.log"
   return 1
 }
 run_promote "feature-x" 2>&1
@@ -498,6 +484,7 @@ RUNEOF
 )
 
   run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
 
   # Temp worktree must be gone regardless of outcome
   [ ! -d "$_wt_base/promote-feature-x" ]
