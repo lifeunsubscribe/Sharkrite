@@ -657,6 +657,58 @@ _bats_file_is_serial() {
     | grep -qE "^# ${RITE_MARKER_GATE_SERIAL}([[:space:]]|$)"
 }
 
+# _expand_functions_with_callers — widen a changed-function set to its callers
+# Args: $1=source file path; stdin=newline-separated function names
+# Stdout: the input set plus every function that (transitively) calls one of them
+#
+# Why: attribution is syntactic — it reports the function whose body the diff
+# touched. A test scoped to `run_test_gate` must still run when a helper that
+# `run_test_gate` calls is edited, or scoping would silently deselect real
+# coverage. Expanding UPWARD through callers is the direction that preserves
+# that: edit a callee → its callers are implicated → tests naming those callers
+# are selected. The reverse (expanding downward) would over-select without
+# protecting anything.
+_expand_functions_with_callers() {
+  local _file="$1"
+  local _seed_file
+  _seed_file=$(mktemp "/tmp/rite_fnexp_seed_$$_XXXXXX")
+  cat > "$_seed_file"
+  [ -s "$_seed_file" ] || { rm -f "$_seed_file"; return 0; }
+
+  awk -v SEED="$_seed_file" '
+    # Collect each top-level function body keyed by name.
+    /^[a-z_][a-z0-9_]*\(\)[[:space:]]*\{/ {
+      fn = $1; sub(/\(\).*/, "", fn)
+      depth = 1; names[fn] = 1; next
+    }
+    fn != "" {
+      body[fn] = body[fn] "\n" $0
+      d = gsub(/\{/, "{"); depth += d
+      d = gsub(/\}/, "}"); depth -= d
+      if (depth <= 0) fn = ""
+      next
+    }
+    END {
+      while ((getline s < SEED) > 0) if (s != "") changed[s] = 1
+      # Fixpoint: a function whose body references a changed function is itself
+      # implicated. Bounded by the function count, so it always terminates.
+      do {
+        added = 0
+        for (f in names) {
+          if (f in changed) continue
+          for (c in changed) {
+            if (body[f] ~ ("(^|[^A-Za-z0-9_])" c "([^A-Za-z0-9_]|$)")) {
+              changed[f] = 1; added = 1; break
+            }
+          }
+        }
+      } while (added)
+      for (k in changed) print k
+    }
+  ' "$_file" 2>/dev/null || true
+  rm -f "$_seed_file"
+}
+
 # _changed_functions_in_file — top-level shell function names touched by the diff
 # Args: $1=project-relative file path, $2=project_root
 # Stdout: newline-separated function names, or empty when attribution is not
@@ -731,7 +783,10 @@ _changed_functions_in_file() {
     }
   ' "$_root/$_rel" 2>/dev/null || true)
   rm -f "$_lines_file"
-  printf '%s\n' "$_out" | grep -vE '^$' || true
+  # Widen to callers so editing a helper still selects tests that exercise the
+  # functions calling it (see _expand_functions_with_callers).
+  printf '%s\n' "$_out" | grep -vE '^$' \
+    | _expand_functions_with_callers "$_root/$_rel" || true
 }
 
 # _bats_file_matches_changed — decide if a single bats file should run

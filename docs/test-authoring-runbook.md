@@ -89,6 +89,21 @@ parallel load that made those same tests flake. Unattributable changes
 file-level selection: precision is an optimization, never a filter that can
 hide a regression.
 
+**Scoping must follow the dependency graph, not just the name you wrote.** The
+gate expands a changed function to everything that (transitively) calls it, so a
+test scoped to an orchestrator still runs when a helper beneath it changes.
+Honor the same principle anywhere else: `jest --findRelatedTests` follows the
+import graph and `pytest-testmon` tracks executed lines for exactly this reason.
+A scoping scheme that ignores transitivity does not save time, it loses coverage.
+
+**Scope only what is genuinely narrow.** Measured on sharkrite (2026-10-13):
+27 of 32 test-gate.sh coverers invoke the real gate end-to-end, so caller
+expansion correctly implicates them on almost any change — scoping their headers
+narrowed selection from 32 files to 29 and added noise for nothing. Only three
+files exercise a single function directly, and only those were scoped. If a test
+drives the whole pipeline, leave the bare path: the honest fix there is test
+architecture (fewer end-to-end tests), not a more clever header.
+
 **This generalizes — carry it into every repo you build tests for.** Whatever
 the language or runner, wire the tightest *correct* selection the toolchain
 supports, and never settle for "run everything":
