@@ -45,6 +45,12 @@ alpha() {
 beta() {
   echo "beta v1"
 }
+
+# orchestrator calls alpha — a change to alpha must implicate this too
+gamma() {
+  alpha
+  echo "gamma v1"
+}
 TOP_LEVEL_CONST="v1"
 SUT
   ( cd "$TEST_REPO" && git init -q && git config user.email t@t && git config user.name t \
@@ -153,6 +159,36 @@ _write_covering_test() {
 @test "a non-matching path in a scoped header does not select" {
   _make_repo_changing alpha
   _write_covering_test "lib/core/other.sh::alpha"
+  RITE_PROJECT_ROOT="$TEST_REPO" run _bats_file_matches_changed \
+    "$TEST_REPO/tests/regression/cover.bats" "lib/utils/sut.sh"
+  [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Caller expansion (#1230) — scoping must follow the call graph, or a header
+# naming an orchestrator silently loses coverage when a helper it calls changes.
+# ---------------------------------------------------------------------------
+
+@test "changing a callee implicates its caller" {
+  _make_repo_changing alpha
+  run _changed_functions_in_file "lib/utils/sut.sh" "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"* ]]
+  [[ "$output" == *"gamma"* ]]
+  [[ "$output" != *"beta"* ]]
+}
+
+@test "test scoped to the CALLER is selected when the callee changes" {
+  _make_repo_changing alpha
+  _write_covering_test "lib/utils/sut.sh::gamma"
+  RITE_PROJECT_ROOT="$TEST_REPO" run _bats_file_matches_changed \
+    "$TEST_REPO/tests/regression/cover.bats" "lib/utils/sut.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "expansion does not widen to unrelated functions" {
+  _make_repo_changing beta
+  _write_covering_test "lib/utils/sut.sh::gamma"
   RITE_PROJECT_ROOT="$TEST_REPO" run _bats_file_matches_changed \
     "$TEST_REPO/tests/regression/cover.bats" "lib/utils/sut.sh"
   [ "$status" -eq 1 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs
 # sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
 # concurrent-write, and timeout-race tests need the serial group)
 #
