@@ -359,6 +359,7 @@ run_promote() {
     # before the pointer to close any unclosed comment.
     local _promo_review_body="${_promo_review}"
     if [ "${#_promo_review}" -gt 55000 ]; then
+      print_info "Review body exceeds 55000 chars — review truncated in follow-up issue body (full review on PR #${PROMO_PR})"
       local _promo_cut="${_promo_review:0:55000}"
       _promo_cut="${_promo_cut%$'\n'*}"
       _promo_review_body="${_promo_cut}
