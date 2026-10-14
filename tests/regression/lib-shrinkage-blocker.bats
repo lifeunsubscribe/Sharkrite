@@ -2220,3 +2220,78 @@ _create_lib_file() {
     return 1
   }
 }
+
+# ===========================================================================
+# Move-aware exemption (#1236's gate refactor was permanently unlandable)
+#
+# The guard is per-file, so relocating functions out of one lib file into new
+# sibling lib files in the same PR tripped it — every line survives, nothing is
+# lost, yet a deliberate split could never merge. The exemption must suppress
+# ONLY when the deleted content is demonstrably present in files the PR ADDS.
+# ===========================================================================
+
+# Build a diff that MOVES lines: big deletion from an existing lib file plus a
+# new lib file (new file mode) containing those same lines.
+_make_lib_move_diff() {
+  local src="$1" dst="$2" n="$3"
+  printf 'diff --git a/%s b/%s\n' "$src" "$src"
+  printf 'index abc1234..def5678 100755\n'
+  printf -- '--- a/%s\n' "$src"
+  printf -- '+++ b/%s\n' "$src"
+  printf '@@ -1,%d +1,1 @@\n' "$n"
+  local i
+  for i in $(seq 1 "$n"); do printf -- '-moved_function_%d() { echo %d; }\n' "$i" "$i"; done
+  printf 'diff --git a/%s b/%s\n' "$dst" "$dst"
+  printf 'new file mode 100755\n'
+  printf 'index 0000000..abcdef1\n'
+  printf -- '--- /dev/null\n'
+  printf -- '+++ b/%s\n' "$dst"
+  printf '@@ -0,0 +1,%d @@\n' "$n"
+  for i in $(seq 1 "$n"); do printf '+moved_function_%d() { echo %d; }\n' "$i" "$i"; done
+}
+
+@test "detect_lib_shrinkage: does NOT fire when lines MOVE into a new lib file" {
+  local src="lib/utils/test-gate.sh"
+  local dst="lib/utils/gate-verdict.sh"
+  local n=800
+
+  # The exemption reads the ADDED file from disk, so materialize it.
+  mkdir -p "$(dirname "$dst")"
+  local i
+  : > "$dst"
+  for i in $(seq 1 "$n"); do printf 'moved_function_%d() { echo %d; }\n' "$i" "$i" >> "$dst"; done
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      _make_lib_move_diff "$src" "$dst" "$n"
+      return 0
+    fi
+    echo ""; return 0
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "1236"
+  rm -f "$dst"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: a pure move was blocked — a file split can never land"
+    echo "$output"
+    false
+  }
+}
+
+@test "detect_lib_shrinkage: STILL fires for a deletion with no new lib file" {
+  local src="lib/utils/test-gate.sh"
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      _make_lib_diff "$src" 800
+      return 0
+    fi
+    echo ""; return 0
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "260"
+  # The 2026-06-02 overwrite class must remain blocked.
+  [ "$status" -eq 1 ]
+}
