@@ -24,6 +24,8 @@
 #   Fixture Q — Dotless intermediate dir (e.g. "region") does NOT ground as hostname.
 #   Fixture R — Dotted non-hostname dirs (e.g. "v1.2", "2024.01") do NOT ground as hostname.
 #   Fixture S — Real hostname (api.example.com) nested under dotted version dir IS grounded.
+#   Fixture X — Registrable-domain fixture (fixtures/foo.co/) grounds subdomain reference (api.foo.co).
+#   Fixture Y — Issue referencing only a grounded subdomain does NOT get spurious Blocked-by from sibling spike.
 
 load '../helpers/setup.bash'
 
@@ -1482,6 +1484,127 @@ FIXTURE
     cat "$issues_file" >&2
     false
   }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture X: registrable-domain fixture (fixtures/foo.co/) grounds subdomain
+#            reference — no spike
+#
+# Regression for Fix 1: Pass-1 previously compared the raw extracted host
+# (api.foo.co) against the exact grounded-host set ({foo.co}) — an exact-match
+# failure that re-emitted the spike forever even after grounding.
+# Now both sides are normalized before comparison: api.foo.co → foo.co,
+# which matches the fixture-directory entry foo.co.
+# ---------------------------------------------------------------------------
+
+@test "Fixture X: fixtures/foo.co/ grounds an issue referencing https://api.foo.co/ — no spike" {
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/foo.co"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/foo.co/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-x.txt"
+  write_issues_file "$issues_file" \
+    "Integrate with foo service" \
+    "Call https://api.foo.co/v1/resource to fetch data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs — api.foo.co normalizes to grounded foo.co, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Y: issue referencing only a grounded subdomain does NOT get a
+#            spurious Blocked-by from its ungrounded sibling's spike
+#
+# Regression for Fix 2 (Pass-3 groundedness gate): the widened context regex
+# ([a-zA-Z0-9-]+\.)* matches any subdomain of the spike's registrable domain.
+# Without the groundedness gate, an issue referencing only api.foo.co (grounded)
+# would acquire "Blocked by: #SPIKE-foo-co" — the spike created for its
+# ungrounded sibling auth.foo.co.
+#
+# With Fix 1 + Fix 2 together:
+#  - Fix 1: auth.foo.co normalizes to foo.co, which is already grounded via
+#    api.foo.co's fixture → no spike is created.
+#  - Fix 2 (defense-in-depth): even if a spike existed, the Per-block host
+#    groundedness check prevents injection into Issue A.
+# Expected: 2 issues, neither has a Blocked-by.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Y: issue referencing only grounded subdomain gets no spurious Blocked-by from sibling spike" {
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/api.foo.co"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/api.foo.co/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-y.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement foo API client
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.foo.co/data to fetch results.
+---END---
+---ISSUE---
+TITLE: Add foo admin integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://auth.foo.co/admin to manage settings.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # api.foo.co and auth.foo.co both normalize to foo.co, which is grounded
+  # via api.foo.co's fixture — no spike should be emitted.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (no spike) — both subdomains ground to foo.co via api.foo.co fixture; got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Neither issue should carry a Blocked-by dependency
+  grep -q "Blocked by:" "$issues_file" && {
+    echo "FAIL: found spurious 'Blocked by:' in issues file — grounded-only issue acquired spike dependency" >&2
+    cat "$issues_file" >&2
+    false
+  } || true
 
   rm -f "$stderr_out"
 }

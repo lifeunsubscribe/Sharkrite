@@ -3435,6 +3435,16 @@ _detect_unverified_integrations() {
   local grounded_packages grounded_hosts
   grounded_packages=$(_build_grounded_packages | sort -u || true)
   grounded_hosts=$(_build_grounded_hosts | sort -u || true)
+  # Pre-normalize grounded_hosts to registrable domains so that a fixture at
+  # fixtures/foo.co/ grounds any subdomain variant (api.foo.co → foo.co).
+  # Computed once here; used in both Pass-1 and Pass-3 groundedness checks.
+  local grounded_hosts_norm=""
+  if [ -n "$grounded_hosts" ]; then
+    grounded_hosts_norm=$(while IFS= read -r _gh; do
+      [ -z "$_gh" ] && continue
+      _normalize_host_to_registrable_domain "$_gh"
+    done <<< "$grounded_hosts" | sort -u || true)
+  fi
 
   # Collect all issue bodies concatenated (for extraction pass)
   # We parse block-by-block so we can track which issues reference which candidates.
@@ -3476,11 +3486,11 @@ _detect_unverified_integrations() {
         if [ -n "$_hosts" ]; then
           while IFS= read -r _host; do
             [ -z "$_host" ] && continue
-            if ! echo "$grounded_hosts" | grep -qxF "$_host" 2>/dev/null; then
-              # Normalize to registrable domain so subdomain variants (api.foo.co,
-              # auth.foo.co) collapse to one candidate (foo.co) before sort -u dedup.
-              local _host_reg
-              _host_reg=$(_normalize_host_to_registrable_domain "$_host")
+            # Normalize first so that a fixtures/foo.co/ fixture grounds both
+            # api.foo.co and auth.foo.co (all normalize to foo.co before the check).
+            local _host_reg
+            _host_reg=$(_normalize_host_to_registrable_domain "$_host")
+            if ! echo "$grounded_hosts_norm" | grep -qxF "${_host_reg:-$_host}" 2>/dev/null; then
               echo "host${TAB_CHAR}${_host_reg:-$_host}" >> "$candidates_file"
             fi
           done <<< "$_hosts"
@@ -3655,7 +3665,23 @@ a schema — those are the downstream issue's responsibility.
               # _name is a normalized registrable domain (e.g. foo.co); match it as a
               # hostname suffix so any subdomain variant (api.foo.co, auth.foo.co) in
               # the block body still triggers the Blocked-by injection.
-              echo "$_current_block" | grep -qiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')" && _context_match=true
+              # Gate on at least one matched host being ungrounded: a block that only
+              # references grounded subdomains must NOT acquire the spike dependency.
+              local _matched_hosts
+              _matched_hosts=$(echo "$_current_block" | \
+                grep -oiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')" | \
+                sed 's|https://||; s|http://||' | tr '[:upper:]' '[:lower:]' | sort -u || true)
+              if [ -n "$_matched_hosts" ]; then
+                while IFS= read -r _mh; do
+                  [ -z "$_mh" ] && continue
+                  local _mh_reg
+                  _mh_reg=$(_normalize_host_to_registrable_domain "$_mh")
+                  if ! echo "$grounded_hosts_norm" | grep -qxF "${_mh_reg:-$_mh}" 2>/dev/null; then
+                    _context_match=true
+                    break
+                  fi
+                done <<< "$_matched_hosts"
+              fi
             else
               # pkg: match import/require patterns only
               echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true
