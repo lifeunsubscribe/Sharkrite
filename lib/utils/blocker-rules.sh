@@ -313,6 +313,68 @@ detect_credentials_expired() {
   return 0
 }
 
+# _shrinkage_lines_moved_to_new_lib_files — did the deleted content REAPPEAR?
+# Args: $1=diff text, $2=path of the shrinking file
+# Returns: 0 when the deletion looks like a MOVE into lib/ files added by this
+#          same PR, 1 otherwise (the caller then blocks as before).
+#
+# Why this exists: the guard is per-file, so a deliberate split — moving
+# functions out of one lib file into new sibling lib files in the same commit —
+# always tripped it, even though not one line was lost. That made a file split
+# structurally impossible to land (live: #1236's gate refactor, 2026-10-13).
+#
+# Deliberately conservative. It suppresses ONLY when substantive deleted lines
+# are found verbatim in files this PR ADDS under lib/. A genuine overwrite (the
+# 2026-06-02 incident this guard was built for) adds no such file and keeps
+# blocking. Comments, blanks and braces are ignored so trivial scaffolding can
+# never carry the match.
+_shrinkage_lines_moved_to_new_lib_files() {
+  local diff_text="$1"
+  local shrinking_file="$2"
+
+  # Files ADDED by this PR under a production lib path.
+  local added_files
+  added_files=$(printf '%s\n' "$diff_text" \
+    | awk '/^diff --git /{f=$4; sub(/^b\//,"",f); next}
+           /^new file mode/{if (f ~ /^lib\/(core|utils|providers)\//) print f}' \
+    || true)
+  [ -n "$added_files" ] || return 1
+
+  # Substantive lines removed from the shrinking file (skip comments/blanks/braces).
+  local removed
+  removed=$(printf '%s\n' "$diff_text" \
+    | awk -v target="$shrinking_file" '
+        /^diff --git /{ f=$4; sub(/^b\//,"",f); inblk=(f==target); next }
+        inblk && /^-/ && !/^---/ {
+          line=substr($0,2)
+          gsub(/^[[:space:]]+|[[:space:]]+$/,"",line)
+          if (line=="" || line ~ /^#/ || line ~ /^[}{]$/) next
+          print line
+        }' \
+    || true)
+  local removed_count
+  removed_count=$(printf '%s\n' "$removed" | grep -c . || true)
+  [ "${removed_count:-0}" -ge 20 ] || return 1   # too little signal to judge
+
+  # How many of those lines appear verbatim in the added files?
+  local found=0 _line
+  local _added_blob
+  _added_blob=$(printf '%s\n' "$added_files" | while IFS= read -r _af; do
+    [ -n "$_af" ] && [ -f "$_af" ] && cat "$_af"
+  done || true)
+  [ -n "$_added_blob" ] || return 1
+
+  while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    if printf '%s\n' "$_added_blob" | grep -qxF "$_line"; then
+      found=$((found + 1))
+    fi
+  done <<< "$removed"
+
+  # Require a strong majority (>=80%) to call it a move.
+  [ $(( found * 100 / removed_count )) -ge 80 ]
+}
+
 # detect_lib_shrinkage PR_NUMBER
 #
 # Hard gate: fires when a PR deletes a large fraction of a production lib/ file.
@@ -501,6 +563,13 @@ AWKEOF
     while IFS='|' read -r filepath deletions; do
       [ -z "$filepath" ] && continue
       deletions="${deletions:-0}"
+
+      # Move-aware exemption: a split that relocates lines into NEW lib files in
+      # the same PR deletes nothing. Checked before both thresholds.
+      if _shrinkage_lines_moved_to_new_lib_files "$diff_text" "$filepath"; then
+        print_info "lib/ shrinkage: $filepath shrank by $deletions lines, but the content was found in new lib/ files added by this PR — treating as a move, not a deletion" >&2
+        continue
+      fi
 
       # Absolute threshold check
       if [ "$deletions" -gt "$abs_lines" ]; then
