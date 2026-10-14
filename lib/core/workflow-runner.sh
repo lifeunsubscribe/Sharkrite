@@ -2770,7 +2770,7 @@ run_workflow() {
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
-  echo "🚀 Processing issue #${issue_number} (full lifecycle)"
+  echo "🚀 Processing issue #${issue_number}…"
   echo -e "${GREEN}Session initialized (mode: $WORKFLOW_MODE)${NC}"
   echo ""
 
@@ -3186,8 +3186,16 @@ run_workflow() {
     fi
   fi
 
-  # Show skip summary when phases are being skipped
+  # State line: printed after detection so it reflects the actual run mode.
   if [ -n "$skip_to_phase" ]; then
+    local _phase_desc
+    case "$skip_to_phase" in
+      merge)          _phase_desc="entering merge" ;;
+      assess-resolve) _phase_desc="entering review/assessment" ;;
+      create-pr)      _phase_desc="entering push/PR" ;;
+      *)              _phase_desc="resuming from ${skip_to_phase}" ;;
+    esac
+    print_status "Resuming: PR #${PR_NUMBER:-?}, ${_phase_desc}"
     print_header "Resume Summary"
     if [ "$skip_to_phase" = "merge" ]; then
       print_success "Phase 1: Development — complete"
@@ -3199,6 +3207,8 @@ run_workflow() {
     elif [ "$skip_to_phase" = "create-pr" ]; then
       print_success "Phase 1: Development — complete"
     fi
+  else
+    print_status "Starting full lifecycle (phases 1-5)"
   fi
 
   # Phase 0: Pre-start checks.
