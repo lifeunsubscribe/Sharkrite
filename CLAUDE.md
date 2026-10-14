@@ -64,6 +64,7 @@ lib/utils/test-gate.sh           # Post-commit verification gate (make check + b
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - **Block-on-any:** the gate blocks/feeds the fix loop on **any** test failure in the targeted selection. `outcome=passed ⟺ zero failures`. This is sound because `main` is kept green (the green-main work, #707) — so any failure in the selection is this change's to fix. Phase 3 deleted the old baseline-diff machinery (re-run failing files at the diff base, suppress pre-existing reds) once it had nothing to tolerate. See `behavioral-design.md` → "Gate Block-on-Any".
    - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
+   - **No full suites inside a workflow (CRITICAL).** Gate runs are always the targeted selection. A full unfiltered `bats -r tests/` belongs ONLY in the overnight `rite --full-suite` pipeline — never in a batch preflight, a phase gate, or any interactive path. Besides costing 10–25 min per invocation, a full run puts the `tests/concurrency/` suites (which spawn competing processes by design) into the `--jobs 8` parallel group where they starve past `BATS_TEST_TIMEOUT` and report a healthy main as red. This retired the green-main preflight (#916, removed 2026-10-13 after it false-halted two batches). If main-greenness needs checking, do it lazily: re-run only the already-failing tests against main and subtract matches.
    - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
@@ -417,10 +418,11 @@ _dep_state=""
 
 ### macOS bash 3.2 compatibility (CRITICAL)
 
-Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when invoked directly (e.g., from `bin/rite`). Bash 3.2 does **not** have the following bash 4.0+ features:
+Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when invoked directly (e.g., from `bin/rite`). Bash 3.2 does **not** have the following bash 4.0+ features, and also cannot parse:
 
 - `mapfile` / `readarray` (array-population builtins)
 - `declare -A` (associative arrays)
+- **heredoc-in-cmdsubst**: `var=$(cat <<EOF ... EOF)` — bash 3.2's `$(...)` scanner does not understand heredocs inside command substitution; it finds the first `)` inside the heredoc body and corrupts parse state for hundreds of lines downstream (live: `assess-documentation.sh` and `plan-issues.sh`, issues #1163/#1190, 2026-10-11/12). **Fix for directly-executed scripts: add the self-re-exec guard** (option 2 below) — do NOT rewrite the heredocs into 3.2-parseable form. **For sourced libraries** (e.g. `plan-issues.sh`, `docs-command.sh`, sourced by `bin/rite` after args are consumed): the self-re-exec guard is wrong — `exec "$_newer_bash" "$0" "$@"` re-execs the calling script with empty `$@`, producing a misleading "No issues specified" error. Instead, detect the sourced context with `[ "${BASH_SOURCE[0]}" != "$0" ]` and fail loudly with a clear message (the caller must run under bash 4+).
 
 **Live crash (2026-06-04):** `rite --undo <N>` with follow-up issues exploded with `mapfile: command not found` when run without Homebrew bash on PATH (issue #327). Same class of bug as issue #266 (`TEMP_FILES[@]` empty-array under bash 3.2).
 
@@ -455,7 +457,7 @@ Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when 
 
 **Do NOT** change shebangs to `#!/usr/bin/env bash` — the `/bin/bash` shebang is the deliberate Sharkrite choice for scripts in `lib/`, `bin/`, and `tools/`. Write portable code instead.
 
-**Enforcement:** Lint rule `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) in `tools/sharkrite-lint.sh` flags `mapfile`, `readarray`, and `declare -A` in `#!/bin/bash` scripts without a `BASH_VERSINFO` guard. Regression tests: `tests/regression/undo-workflow-bash-3-2-compat.bats` and `tests/lint/bash-4-builtin-detection.bats`.
+**Enforcement:** Lint rule `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) in `tools/sharkrite-lint.sh` flags `mapfile`, `readarray`, and `declare -A` in `#!/bin/bash` scripts without a `BASH_VERSINFO` guard (enumerated builtins only — cannot detect heredoc-in-cmdsubst parse corruption). Regression tests: `tests/regression/undo-workflow-bash-3-2-compat.bats`, `tests/lint/bash-4-builtin-detection.bats`, and `tests/regression/bin-bash-32-parse-sweep.bats` (sweeps every `#!/bin/bash` file in lib/bin/tools: must either `/bin/bash -n` clean OR carry a BASH_VERSINFO guard in its first 30 lines — skipped on Linux CI where `/bin/bash` is not 3.2).
 
 ### .gitignore and symlinks
 
@@ -723,6 +725,18 @@ The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers an
 **There are NO bats full-suite triggers — selection is always targeted.** The original trigger list (gate/lint/Makefile/helpers/fixtures changes → full 165-file run) was removed 2026-06-12: full runs cost hours per fix-loop iteration and drown findings in load flake. Changes to `Makefile`/`tests/fixtures/*` select zero bats files and `tests/helpers/*` selects only its few covering files — an accepted, documented gap until #482's periodic safety net lands. Do NOT re-add trigger paths; pinning tests in `tests/regression/test-gate-targeted-selection.bats` enforce this. The one remaining full-suite path is the no-diff fallback (exploited deliberately by `post-merge-verify.sh`'s main-broken check). Lint full-scan triggers are unaffected (full lint costs seconds). See `docs/architecture/behavioral-design.md` → "Test Selection by Changed Paths".
 
 **Override the diff base** for the selection via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
+
+**Function-scoped headers (#1229).** A covered path may be narrowed to specific top-level functions:
+
+```bash
+# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial
+```
+
+The gate maps the commit's changed line ranges to their enclosing shell function (a changed line in the comment block directly above a definition counts as that function) and selects the file only when a declared function is in that set. A bare path keeps file-level behavior — every pre-existing header is unaffected. **Fail-safe by construction:** a change that cannot be attributed (top-level constant, non-shell file, no computable diff) selects the file exactly as a bare path would. Precision is an optimization, never a filter that can hide a regression.
+
+Adopt it where the ratio is bad: `test-gate.sh` is ~2,900 lines / 34 functions with 29 bats files declaring it, so a 20-line change selected all 29 — wasting gate time and creating the parallel load that made those gate-invoking tests flake.
+
+**This philosophy is not sharkrite-specific.** When sharkrite builds or extends a test framework in ANY repo, it wires the tightest correct selection the toolchain supports (jest `--findRelatedTests`, `pytest-testmon`, per-workspace mapping in monorepos) and never settles for "run everything". The doctrine and per-runner guidance live in `docs/test-authoring-runbook.md`, which is loaded into every dev session (project override: `.rite/test-authoring-runbook.md`).
 
 **Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N` for health-report aggregation (`mode=full` now occurs only when no diff is computable).
 

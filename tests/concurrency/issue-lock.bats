@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/issue-lock.sh
+# sharkrite-gate-serial — spawns competing processes; under the full suite's parallel group these starve past BATS_TEST_TIMEOUT (false red main, #916 preflight)
 # tests/concurrency/issue-lock.bats - Per-issue locking tests
 #
 # Tests that per-issue locking prevents duplicate work on the same issue.

@@ -108,13 +108,13 @@ _sanitize_json_value() {
 # ---------------------------------------------------------------------------
 _parse_lint_line() {
   local raw_line="$1"
-  # sc output format: path/file.sh:LINE:COL: levelXXXX: message
-  # E.g.: lib/foo.sh:42:5: error SC2086: Double quote to prevent globbing
-  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:'; then
+  # gcc format (-f gcc): path/file.sh:LINE:COL: level: message [SCnnnn]
+  # E.g.: lib/foo.sh:42:5: warning: Double quote to prevent globbing. [SC2086]
+  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:[0-9]+:.*\[SC[0-9]+\]'; then
     local file line rule message
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
-    rule=$(echo "$raw_line" | grep -oE 'SC[0-9]+' | head -1 || true)
+    rule=$(echo "$raw_line" | grep -oE '\[SC[0-9]+\]' | tail -1 | tr -d '[]' || true)
     # Strip ANSI/control bytes, then escape for JSON (portable — see helper).
     message=$(_sanitize_json_value "$raw_line" || true)
     # JSON-escape file and line the same way as message to handle unusual paths
@@ -601,8 +601,45 @@ _bats_has_report_formatter() {
 # file. GitHub Actions free runners have ~4 cores so auto-detect there still
 # yields 4. Users on truly shared boxes can pin a lower value via
 # RITE_BATS_JOBS=N.
+# Census-based scaling (#1165): at ≥3 concurrent gates (count > 2) jobs are
+# divided by the live gate count (floor, min 2) to prevent timing-sensitive
+# tests from starving past BATS_TEST_TIMEOUT. At ≤2 gates the full-ncpu
+# behaviour is preserved — the #510 result that uncapped beats capped even
+# under two-batch oversubscription still holds.
+
+# _census_live_gate_count — count active gate instances via the census dir.
+# Each running gate registers its BASHPID (subshell PID, not $$) under
+# ${RITE_LOCK_DIR}/gate-census/<pid>. Dead entries (kill -0 returns non-zero)
+# are reaped in the same pass.
+# Stdout: non-negative integer count of live gates (including this one).
+_census_live_gate_count() {
+  local _census_dir="${RITE_LOCK_DIR:-}/gate-census"
+  [ -d "$_census_dir" ] || { echo 0; return 0; }
+  local _count=0 _pid _entry
+  while IFS= read -r _entry; do
+    [ -z "$_entry" ] && continue
+    _pid=$(basename "$_entry")
+    # Validate: must be all digits (PID), skip non-PID filenames
+    case "$_pid" in
+      *[!0-9]*) continue ;;
+    esac
+    if kill -0 "$_pid" 2>/dev/null; then
+      _count=$((_count + 1))
+    else
+      # Reap dead entry — scoped to the specific file, no glob
+      rm -f "$_entry" 2>/dev/null || true
+    fi
+  done < <(find "$_census_dir" -maxdepth 1 -type f 2>/dev/null || true)
+  echo "$_count"
+}
+
+# _compute_bats_jobs — compute the --jobs value for bats.
+# Args: $1 (optional) — pre-computed live gate count from _census_live_gate_count.
+#   When provided the census walk is skipped (avoids a second find). Absent → walks
+#   the census dir directly (useful for standalone calls in tests).
 _compute_bats_jobs() {
-  # Explicit override wins
+  local _census_count="${1:-}"
+  # Explicit override wins unconditionally — census scaling is bypassed.
   if [ -n "${RITE_BATS_JOBS:-}" ]; then
     # Sanitize: must be a positive integer
     if echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
@@ -618,12 +655,33 @@ _compute_bats_jobs() {
   fi
   local _ncpu
   _ncpu=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)
-  echo "$_ncpu"
+  # Census-based scaling: when ≤2 gates are active (including this one), use full
+  # ncpu — preserves the #510 result that uncapped is faster than capped under
+  # dual-batch load. At 3+ gates, divide to prevent BATS_TEST_TIMEOUT starvation.
+  if [ -z "$_census_count" ]; then
+    _census_count=$(_census_live_gate_count)
+  fi
+  local _jobs
+  if [ "${_census_count:-0}" -le 2 ]; then
+    _jobs="$_ncpu"
+  else
+    _jobs=$(( _ncpu / _census_count ))
+    [ "$_jobs" -lt 2 ] && _jobs=2
+  fi
+  echo "$_jobs"
 }
 
 # _parse_test_coverage_header — extract the sharkrite-test-covers paths
 # Looks in the first 15 lines for `# sharkrite-test-covers: <paths>`.
 # Returns the comma-separated path list, or empty string if no header.
+#
+# A path may carry an optional function scope:
+#     lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial
+# which selects this test only when the diff touches one of those top-level
+# functions.  A bare path keeps file-level behavior.  Rationale: test-gate.sh
+# is ~2900 lines / 34 functions and 29 bats files declare it, so a 20-line
+# change selected all 29 — which both wasted time and created the parallel
+# load that made gate-invoking tests flake.
 _parse_test_coverage_header() {
   local bats_file="$1"
   local _header
@@ -647,6 +705,138 @@ _bats_file_is_serial() {
   local bats_file="$1"
   head -15 "$bats_file" 2>/dev/null \
     | grep -qE "^# ${RITE_MARKER_GATE_SERIAL}([[:space:]]|$)"
+}
+
+# _expand_functions_with_callers — widen a changed-function set to its callers
+# Args: $1=source file path; stdin=newline-separated function names
+# Stdout: the input set plus every function that (transitively) calls one of them
+#
+# Why: attribution is syntactic — it reports the function whose body the diff
+# touched. A test scoped to `run_test_gate` must still run when a helper that
+# `run_test_gate` calls is edited, or scoping would silently deselect real
+# coverage. Expanding UPWARD through callers is the direction that preserves
+# that: edit a callee → its callers are implicated → tests naming those callers
+# are selected. The reverse (expanding downward) would over-select without
+# protecting anything.
+_expand_functions_with_callers() {
+  local _file="$1"
+  local _seed_file
+  _seed_file=$(mktemp "/tmp/rite_fnexp_seed_$$_XXXXXX")
+  cat > "$_seed_file"
+  [ -s "$_seed_file" ] || { rm -f "$_seed_file"; return 0; }
+
+  awk -v SEED="$_seed_file" '
+    # Collect each top-level function body keyed by name.
+    /^[a-z_][a-z0-9_]*\(\)[[:space:]]*\{/ {
+      fn = $1; sub(/\(\).*/, "", fn)
+      depth = 1; names[fn] = 1; next
+    }
+    fn != "" {
+      body[fn] = body[fn] "\n" $0
+      d = gsub(/\{/, "{"); depth += d
+      d = gsub(/\}/, "}"); depth -= d
+      if (depth <= 0) fn = ""
+      next
+    }
+    END {
+      while ((getline s < SEED) > 0) if (s != "") changed[s] = 1
+      # Fixpoint: a function whose body references a changed function is itself
+      # implicated. Bounded by the function count, so it always terminates.
+      do {
+        added = 0
+        for (f in names) {
+          if (f in changed) continue
+          for (c in changed) {
+            if (body[f] ~ ("(^|[^A-Za-z0-9_])" c "([^A-Za-z0-9_]|$)")) {
+              changed[f] = 1; added = 1; break
+            }
+          }
+        }
+      } while (added)
+      for (k in changed) print k
+    }
+  ' "$_file" 2>/dev/null || true
+  rm -f "$_seed_file"
+}
+
+# _changed_functions_in_file — top-level shell function names touched by the diff
+# Args: $1=project-relative file path, $2=project_root
+# Stdout: newline-separated function names, or empty when attribution is not
+#         possible (no diff, non-shell file, or a change outside any function).
+#
+# Empty output means "unattributable" and callers MUST fail safe by selecting
+# the file's covering tests — precision is an optimization, never a filter that
+# can hide a real regression.
+#
+# Attribution rule: a changed line inside `name() { ... }` belongs to `name`.
+# A changed line in the comment block immediately above a definition (only
+# comments/blanks between) also belongs to that function, since that block
+# documents it — without this, a comment touch-up would deselect every test.
+_changed_functions_in_file() {
+  local _rel="$1" _root="$2"
+  case "$_rel" in
+    *.sh|*.bash) ;;
+    *) echo ""; return 0 ;;
+  esac
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cold-start default for direct/CI invocation; run_workflow seeds origin/<target> per #1037, operator env (RITE_TEST_GATE_DIFF_BASE) still wins. Over-selecting against main errs safe here — an unattributable diff falls back to file-level selection.
+  local _base="${RITE_TEST_GATE_DIFF_BASE:-origin/main}"
+  local _hunks
+  _hunks=$(git -C "$_root" diff -U0 "${_base}...HEAD" -- "$_rel" 2>/dev/null \
+    | grep -oE '^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)?' || true)
+  [ -z "$_hunks" ] && { echo ""; return 0; }
+
+  # Expand each hunk's +start[,count] into the concrete changed line numbers.
+  local _lines_file
+  _lines_file=$(mktemp "/tmp/rite_fnscope_lines_$$_XXXXXX")
+  printf '%s\n' "$_hunks" | awk '
+    {
+      plus = $3                     # "+start[,count]"
+      sub(/^\+/, "", plus)
+      n = index(plus, ",")
+      if (n > 0) { start = substr(plus, 1, n-1) + 0; count = substr(plus, n+1) + 0 }
+      else       { start = plus + 0; count = 1 }
+      if (count == 0) { print start; next }   # pure deletion: attribute to the site
+      for (i = 0; i < count; i++) print start + i
+    }' > "$_lines_file" 2>/dev/null || true
+
+  [ -s "$_lines_file" ] || { rm -f "$_lines_file"; echo ""; return 0; }
+
+  local _out
+  _out=$(awk -v WANT="$_lines_file" '
+    # Pass 1 is implicit: record per-line enclosing function and definition lines.
+    /^[a-z_][a-z0-9_]*\(\)[[:space:]]*\{/ {
+      fn = $1; sub(/\(\).*/, "", fn)
+      depth = 1; map[NR] = fn; defline[NR] = fn; next
+    }
+    fn != "" {
+      d = gsub(/\{/, "{"); depth += d
+      d = gsub(/\}/, "}"); depth -= d
+      map[NR] = fn
+      if (depth <= 0) fn = ""
+      next
+    }
+    { map[NR] = ""; iscomment[NR] = ($0 ~ /^[[:space:]]*(#|$)/) ? 1 : 0 }
+    END {
+      while ((getline ln < WANT) > 0) {
+        if (ln in map && map[ln] != "") { seen[map[ln]] = 1; continue }
+        # Comment block directly above a definition → attribute to that function.
+        attached = ""
+        for (j = ln; j <= ln + 25; j++) {
+          if (j in defline) { attached = defline[j]; break }
+          if (!(j in iscomment) || iscomment[j] != 1) break
+        }
+        if (attached != "") { seen[attached] = 1; continue }
+        unattributable = 1
+      }
+      if (unattributable) exit 0            # emit nothing → caller fails safe
+      for (k in seen) print k
+    }
+  ' "$_root/$_rel" 2>/dev/null || true)
+  rm -f "$_lines_file"
+  # Widen to callers so editing a helper still selects tests that exercise the
+  # functions calling it (see _expand_functions_with_callers).
+  printf '%s\n' "$_out" | grep -vE '^$' \
+    | _expand_functions_with_callers "$_root/$_rel" || true
 }
 
 # _bats_file_matches_changed — decide if a single bats file should run
@@ -681,17 +871,40 @@ _bats_file_matches_changed() {
   set -- $_header
   unset IFS
   set +f
-  local _pattern _changed
+  local _pattern _changed _path_pat _fn_list _fn _changed_fns
   for _pattern in "$@"; do
     # Trim surrounding whitespace
     _pattern="${_pattern# }"
     _pattern="${_pattern% }"
     [ -z "$_pattern" ] && continue
+    # Optional function scope: `path::fn_a|fn_b` narrows the match to changes
+    # inside the named top-level functions.  A bare `path` keeps file-level
+    # behavior exactly as before (every existing header is unaffected).
+    _path_pat="${_pattern%%::*}"
+    _fn_list=""
+    case "$_pattern" in
+      *::*) _fn_list="${_pattern#*::}" ;;
+    esac
     while IFS= read -r _changed; do
       [ -z "$_changed" ] && continue
       # shellcheck disable=SC2254  # glob expansion in case is intentional
       case "$_changed" in
-        $_pattern) return 0 ;;
+        $_path_pat)
+          [ -z "$_fn_list" ] && return 0          # file-level header: match as before
+          _changed_fns=$(_changed_functions_in_file "$_changed" "${RITE_PROJECT_ROOT:-.}")
+          # Unattributable change (top-level edit, no diff, non-shell file) →
+          # fail safe: behave exactly like a file-level header.
+          [ -z "$_changed_fns" ] && return 0
+          local _fns=()
+          IFS='|' read -r -a _fns <<< "$_fn_list"
+          for _fn in "${_fns[@]+"${_fns[@]}"}"; do
+            _fn="${_fn# }"; _fn="${_fn% }"
+            [ -z "$_fn" ] && continue
+            if printf '%s\n' "$_changed_fns" | grep -qxF "$_fn"; then
+              return 0
+            fi
+          done
+          ;;
       esac
     done <<< "$changed_files"
   done
@@ -1616,6 +1829,74 @@ _maybe_warn_unscoped_suite() {
 }
 
 # ---------------------------------------------------------------------------
+# _detect_workspace_runner — detect test runner for a workspace package (#975)
+# Args: $1=ws_dir (absolute path)
+# Returns: "jest" | "vitest" | "unknown" on stdout.
+# Priority: devDependencies/dependencies key > test-script first token.
+# ---------------------------------------------------------------------------
+_detect_workspace_runner() {
+  local _dwr_dir="$1"
+  local _dwr_pkg="$_dwr_dir/package.json"
+  [ -f "$_dwr_pkg" ] || { echo "unknown"; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo "unknown"; return 0; }
+  local _dwr_has_jest _dwr_has_vitest
+  _dwr_has_jest=$(jq -r '((.devDependencies // {}) + (.dependencies // {})) | has("jest")' \
+    "$_dwr_pkg" 2>/dev/null || echo "false")
+  _dwr_has_vitest=$(jq -r '((.devDependencies // {}) + (.dependencies // {})) | has("vitest")' \
+    "$_dwr_pkg" 2>/dev/null || echo "false")
+  [ "$_dwr_has_jest" = "true" ] && { echo "jest"; return 0; }
+  [ "$_dwr_has_vitest" = "true" ] && { echo "vitest"; return 0; }
+  local _dwr_first
+  _dwr_first=$(_resolve_node_test_runner "$_dwr_dir")
+  case "${_dwr_first:-}" in
+    jest|vitest) echo "$_dwr_first" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# _changed_files_to_workspace_dirs — map diff paths to affected workspace dirs (#975)
+# Args: $1=project_root  $2=changed_files (newline-separated, relative to root)
+# Stdout: deduplicated workspace-relative dirs with at least one changed file.
+# ---------------------------------------------------------------------------
+_changed_files_to_workspace_dirs() {
+  local _cfd_root="$1"
+  local _cfd_files="$2"
+  [ -n "$_cfd_files" ] || return 0
+  local _cfd_patterns
+  _cfd_patterns=$(_node_workspace_patterns "$_cfd_root")
+  [ -n "$_cfd_patterns" ] || return 0
+  local _cfd_seen="" _cfd_pattern _cfd_dir _cfd_rel
+  while IFS= read -r _cfd_pattern; do
+    [ -n "$_cfd_pattern" ] || continue
+    for _cfd_dir in "$_cfd_root/"$_cfd_pattern; do
+      [ -d "$_cfd_dir" ] || continue
+      [ -f "$_cfd_dir/package.json" ] || continue
+      _cfd_rel="${_cfd_dir#"$_cfd_root/"}"
+      case "$_cfd_seen" in *":${_cfd_rel}:"*) continue ;; esac
+      if printf '%s\n' "$_cfd_files" | grep -q "^${_cfd_rel}/"; then
+        echo "$_cfd_rel"
+        _cfd_seen="${_cfd_seen}:${_cfd_rel}:"
+      fi
+    done
+  done < <(printf '%s\n' "$_cfd_patterns")
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _node_scope_zero_tests — detect when a scoped test run selected 0 tests (#975)
+# Args: $1=raw_output_file
+# Sanity valve: when the scoped run produces 0 tests but non-test source was
+# changed, the per-cycle path falls back to the workspace full suite.
+# ---------------------------------------------------------------------------
+_node_scope_zero_tests() {
+  local _nszt_file="$1"
+  [ -f "$_nszt_file" ] || return 0
+  grep -qE '(No tests found|Tests:[[:space:]]+0 total|Test Suites:[[:space:]]+0 total|No test files found)' \
+    "$_nszt_file" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
@@ -1639,6 +1920,9 @@ run_test_gate() {
      && grep -q "^lint:" "$project_root/Makefile" 2>/dev/null; then
     _is_sharkrite=true
   fi
+  # Set to true when the per-cycle workspace path ran — suppresses the
+  # unscoped-suite warning (#975: scoped cycling IS the solution the warning recommends).
+  local _ran_scoped_cycle=false
 
   # --- Worktree existence guard ---
   # If project_root was removed between gate launch and execution (e.g. worktree deleted
@@ -1830,6 +2114,9 @@ run_test_gate() {
   local _lint_raw_file _tests_raw_file
   _lint_raw_file=$(mktemp "/tmp/rite_gate_lint_${PR_NUMBER:-0}_$$_XXXXXX")
   _tests_raw_file=$(mktemp "/tmp/rite_gate_tests_${PR_NUMBER:-0}_$$_XXXXXX")
+  # Census entry: populated inside the sharkrite path just before _compute_bats_jobs;
+  # initialised empty here so the trap's rm -f is a no-op for non-sharkrite paths.
+  local _gate_census_file=""
   # Register cleanup for this invocation's specific files (never a glob).
   # Also write a valid-JSON crash sentinel if the function exits non-zero before
   # _gate_write_json runs — an empty/absent output_file causes jq to silently
@@ -1839,6 +2126,7 @@ run_test_gate() {
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}" "${_bats_pretty_capture:-}"
+        rm -f "${_gate_census_file:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
@@ -2023,12 +2311,27 @@ run_test_gate() {
       fi
     fi
 
+    # --- Gate census registration (#1165) ---
+    # Register this gate's BASHPID so _compute_bats_jobs can count concurrent
+    # peers and scale --jobs down when ≥3 gates are active. $$ is the parent
+    # orchestrator's PID (wrong when run_test_gate is backgrounded with &);
+    # $BASHPID is always the current subshell's own PID. Only sharkrite gates
+    # (which run bats) register — the non-sharkrite path never calls
+    # _compute_bats_jobs. Cleanup is via the crash-sentinel EXIT trap (rm -f on
+    # the specific PID file) and the explicit rm before trap - EXIT at the end.
+    if [ -n "${RITE_LOCK_DIR:-}" ]; then
+      mkdir -p "${RITE_LOCK_DIR}/gate-census" 2>/dev/null || true
+      _gate_census_file="${RITE_LOCK_DIR}/gate-census/$BASHPID"
+      touch "$_gate_census_file" 2>/dev/null || _gate_census_file=""
+    fi
+
     # --- Bats parallelism (--jobs N) ---
-    # Auto-detect: use GNU parallel if installed (capped at 4 procs); serial
-    # otherwise. RITE_BATS_JOBS=N overrides. File-level parallel only — within
-    # each bats file, tests still run sequentially (bats-core default).
-    local _bats_jobs _bats_jobs_args
-    _bats_jobs=$(_compute_bats_jobs)
+    # Auto-detect: use GNU parallel if installed; scale by census count (#1165).
+    # RITE_BATS_JOBS=N overrides. File-level parallel only — within each bats
+    # file, tests still run sequentially (bats-core default).
+    local _bats_jobs _bats_jobs_args _bats_census
+    _bats_census=$(_census_live_gate_count)
+    _bats_jobs=$(_compute_bats_jobs "$_bats_census")
     if [ "$_bats_jobs" -gt 1 ]; then
       _bats_jobs_args=(--jobs "$_bats_jobs")
       _gate_status "[test-gate] bats: parallel (--jobs ${_bats_jobs})"
@@ -2036,7 +2339,7 @@ run_test_gate() {
       _bats_jobs_args=()
       _gate_status "[test-gate] bats: serial (parallel binary not found; install GNU parallel to enable)"
     fi
-    _diag "BATS_JOBS jobs=${_bats_jobs} pr=${PR_NUMBER:-?}"
+    _diag "BATS_JOBS jobs=${_bats_jobs} census=${_bats_census} pr=${PR_NUMBER:-?}"
 
     # bats' pretty formatter shells out to `tput`; with TERM unset (launchd,
     # cron, non-TTY CI) tput errors and bats exits NON-ZERO even when every test
@@ -2091,7 +2394,23 @@ run_test_gate() {
     # disabling the timeout and breaking swallowed-test detection (the
     # gate-flake-retry.bats setup mirror DOES scrub it — there the leak is
     # the OUTER runner's value, not a gate-owned export).
+    #
+    # _GATE_BATS_SCRUB_VARS — session-behavioral RITE_* vars that must not
+    # bleed into bats tests. Tests that pass in isolation can fail inside a
+    # gate when an exported session var flips a code path; the lint rule cannot
+    # catch this class (the broken tests contain zero references to the var).
+    # Structural vars (RITE_REPO_ROOT, RITE_LIB_DIR, RITE_PROJECT_ROOT) stay —
+    # Rule 35 suppressions and setup.bash loaders depend on them.
+    # Incidents: RITE_TEST_GATE_SKIP_TRIGGERS=true (#1182, 3 tests × 5 slots);
+    # RITE_TARGET_BRANCH=supervised-ux (#1049/PR #1179, 2 tests × 3 retries).
+    # Note: RITE_TEST_GATE_SKIP_TRIGGERS is consumed by the gate itself BEFORE
+    # the bats invocation (selection phase); scrubbing it from the child env
+    # does not change gate-selection behavior.
+    # Applied by _bats_sandbox below; also dynamic-scoped into _gate_flake_retry_pass.
     local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
+      -u RITE_TARGET_BRANCH -u RITE_TEST_GATE_SKIP_TRIGGERS \
+      -u RITE_STALE_BRANCH_THRESHOLD -u RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
+      -u RITE_ACCEPT_RED_MAIN \
       -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
       -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
       -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)
@@ -2575,21 +2894,157 @@ run_test_gate() {
           echo "[test-gate] workspaces monorepo: all workspace builds succeeded" >> "$_gate_raw_sink"
         fi
       fi
-      echo "[test-gate] Running npm test..."
-      # Preserve any non-zero _tests_exit from the workspace build step above:
-      # merge rather than overwrite so both build failures and test failures block.
-      local _npm_test_prior_exit="$_tests_exit"
-      { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
-        | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
-      _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
-      _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
-      [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
-      # jest/vitest never emit TAP: without normalization a real failure
-      # yields test_count=0 and an empty tests[] array, so the fix session
-      # gets no failing test names (LeadFlow PR #587). Synthesize not-ok
-      # lines so the ^not ok count and JSON loop below see the failures.
-      if [ "$_tests_exit" -ne 0 ]; then
-        _normalize_node_test_output "$_tests_raw_file" "$project_root"
+      # #975: Per-cycle scoped gating for workspaces monorepos — only changed
+      # workspaces, with framework-native diff scoping (jest --findRelatedTests
+      # / vitest related).  There is deliberately NO "merge tier" that falls back
+      # to the full root suite: a full unfiltered suite never runs inside a
+      # workflow (CLAUDE.md standing rule); the overnight pipeline owns that.
+      local _skip_root_npm_test=false
+      if [ "${RITE_GATE_FORCE_FULL:-}" != "1" ] \
+         && _node_is_workspaces_monorepo "$project_root" \
+         && [ "${_gate_reason:-}" != "workspace_build_failed" ]; then
+        local _ws_pm
+        _ws_pm=$(_node_pkg_manager "$project_root")
+        local _ws_affected
+        _ws_affected=$(_changed_files_to_workspace_dirs "$project_root" "$_nonsr_changed_files")
+        if [ -z "$_ws_affected" ]; then
+          echo "[test-gate] per-cycle: no workspace source changed — skipping workspace tests" >> "$_gate_raw_sink"
+          # _skip_root_npm_test remains false — root npm test still runs for non-workspace changes
+        else
+          _skip_root_npm_test=true
+          _ran_scoped_cycle=true
+          local _ws_any_fail=false _ws_item
+          while IFS= read -r _ws_item; do
+            [ -n "$_ws_item" ] || continue
+            local _ws_rel="$_ws_item"
+            local _ws_dir="$project_root/$_ws_rel"
+            [ -d "$_ws_dir" ] || continue
+            local _ws_rel_files
+            _ws_rel_files=$(printf '%s\n' "$_nonsr_changed_files" | grep "^${_ws_rel}/" | grep -v '^$' || true)
+            local _ws_runner
+            _ws_runner=$(_detect_workspace_runner "$_ws_dir")
+            local _ws_exit_f _ws_raw_f
+            _ws_exit_f=$(mktemp "/tmp/rite_gate_wsex_${PR_NUMBER:-0}_$$_XXXXXX")
+            _ws_raw_f=$(mktemp "/tmp/rite_gate_wsraw_${PR_NUMBER:-0}_$$_XXXXXX")
+            local _ws_test_exit=0
+            if [ "${RITE_GATE_NATIVE_SCOPING:-true}" != "false" ] && [ "$_ws_runner" != "unknown" ]; then
+              case "$_ws_runner" in
+                jest)
+                  echo "[test-gate] per-cycle: jest --findRelatedTests for workspace '$_ws_rel'" >> "$_gate_raw_sink"
+                  local _ws_abs_files="" _wfa
+                  while IFS= read -r _wfa; do
+                    [ -n "$_wfa" ] || continue
+                    _ws_abs_files="${_ws_abs_files} ${project_root}/${_wfa}"
+                  done < <(printf '%s\n' "$_ws_rel_files")
+                  _ws_abs_files="${_ws_abs_files## }"
+                  if [ "$_ws_pm" = "pnpm" ]; then
+                    # shellcheck disable=SC2086
+                    { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  else
+                    # shellcheck disable=SC2086
+                    { (cd "$project_root" && npm test --workspace="$_ws_rel" -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  fi
+                  _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                  _ws_test_exit=${_ws_test_exit:-1}
+                  # Sanity valve: 0 tests selected with non-test source → workspace full suite.
+                  if [ "$_ws_test_exit" -eq 0 ] && _node_scope_zero_tests "$_ws_raw_f"; then
+                    local _ws_nts
+                    _ws_nts=$(printf '%s\n' "$_ws_rel_files" \
+                      | grep -vE '(\.(test|spec)\.(ts|tsx|js|jsx)$|/__tests__/|/tests?/)' \
+                      | grep -v '^$' || true)
+                    if [ -n "$_ws_nts" ]; then
+                      echo "[test-gate] per-cycle: jest selected 0 tests with non-test source — falling back to workspace full suite" >> "$_gate_raw_sink"
+                      : > "$_ws_raw_f"
+                      if [ "$_ws_pm" = "pnpm" ]; then
+                        { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      else
+                        { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      fi
+                      _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                      _ws_test_exit=${_ws_test_exit:-1}
+                    fi
+                  fi
+                  ;;
+                vitest)
+                  echo "[test-gate] per-cycle: vitest related for workspace '$_ws_rel'" >> "$_gate_raw_sink"
+                  local _ws_vf_files="" _wfv
+                  while IFS= read -r _wfv; do
+                    [ -n "$_wfv" ] || continue
+                    _ws_vf_files="${_ws_vf_files} ${_wfv#"${_ws_rel}/"}"
+                  done < <(printf '%s\n' "$_ws_rel_files")
+                  _ws_vf_files="${_ws_vf_files## }"
+                  # shellcheck disable=SC2086
+                  { (cd "$_ws_dir" && npx vitest related $_ws_vf_files --run 2>&1); echo $? > "$_ws_exit_f"; } \
+                    | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                  _ws_test_exit=${_ws_test_exit:-1}
+                  # Sanity valve
+                  if [ "$_ws_test_exit" -eq 0 ] && _node_scope_zero_tests "$_ws_raw_f"; then
+                    local _ws_nts2
+                    _ws_nts2=$(printf '%s\n' "$_ws_rel_files" \
+                      | grep -vE '(\.(test|spec)\.(ts|tsx|js|jsx)$|/__tests__/|/tests?/)' \
+                      | grep -v '^$' || true)
+                    if [ -n "$_ws_nts2" ]; then
+                      echo "[test-gate] per-cycle: vitest selected 0 tests with non-test source — falling back to workspace full suite" >> "$_gate_raw_sink"
+                      : > "$_ws_raw_f"
+                      if [ "$_ws_pm" = "pnpm" ]; then
+                        { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      else
+                        { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                          | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                      fi
+                      _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+                      _ws_test_exit=${_ws_test_exit:-1}
+                    fi
+                  fi
+                  ;;
+              esac
+            else
+              # Unknown runner or native scoping disabled — workspace full suite.
+              echo "[test-gate] per-cycle: workspace '$_ws_rel' full suite (runner: ${_ws_runner}, native-scoping: ${RITE_GATE_NATIVE_SCOPING:-true})" >> "$_gate_raw_sink"
+              if [ "$_ws_pm" = "pnpm" ]; then
+                { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
+                  | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+              else
+                { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                  | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+              fi
+              _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
+              _ws_test_exit=${_ws_test_exit:-1}
+            fi
+            rm -f "$_ws_exit_f"
+            if [ "$_ws_test_exit" -ne 0 ]; then
+              _normalize_node_test_output "$_ws_raw_f" "$project_root"
+            fi
+            cat "$_ws_raw_f" >> "$_tests_raw_file"
+            rm -f "$_ws_raw_f"
+            [ "$_ws_test_exit" -ne 0 ] && _ws_any_fail=true
+          done < <(printf '%s\n' "$_ws_affected")
+          [ "$_ws_any_fail" = "true" ] && _tests_exit=1
+        fi
+      fi
+      if [ "$_skip_root_npm_test" = "false" ]; then
+        echo "[test-gate] Running npm test..."
+        # Preserve any non-zero _tests_exit from the workspace build step above:
+        # merge rather than overwrite so both build failures and test failures block.
+        local _npm_test_prior_exit="$_tests_exit"
+        { (cd "$project_root" && npm test 2>&1); echo $? > "$_nonsr_exit_file"; } \
+          | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
+        _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
+        _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
+        [ "$_npm_test_prior_exit" -eq 0 ] || _tests_exit=1
+        # jest/vitest never emit TAP: without normalization a real failure
+        # yields test_count=0 and an empty tests[] array, so the fix session
+        # gets no failing test names (LeadFlow PR #587). Synthesize not-ok
+        # lines so the ^not ok count and JSON loop below see the failures.
+        if [ "$_tests_exit" -ne 0 ]; then
+          _normalize_node_test_output "$_tests_raw_file" "$project_root"
+        fi
       fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       echo "[test-gate] Running pytest..."
@@ -2751,6 +3206,7 @@ run_test_gate() {
   fi
 
   rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_bats_pretty_capture:-}"
+  rm -f "${_gate_census_file:-}"
   trap - EXIT
 
   # --- Determine overall exit code and outcome ---
@@ -2817,7 +3273,9 @@ run_test_gate() {
   # (TEST_GATE_SELECTION mode=targeted is only emitted from the _is_sharkrite path).
   # For target repos there is no scoped runner today; this signals when the full
   # suite cost is becoming measurable so the operator can act before it hurts.
-  _maybe_warn_unscoped_suite "$_duration" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "$_is_sharkrite"
+  # Suppress when the #975 per-cycle path ran — scoped cycling IS the solution.
+  [ "${_ran_scoped_cycle:-false}" = "false" ] && \
+    _maybe_warn_unscoped_suite "$_duration" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "$_is_sharkrite"
 
   # --- Compact terminal digest ---
   # Raw runner output went to _gate_raw_sink (summary mode → log only; verbose →

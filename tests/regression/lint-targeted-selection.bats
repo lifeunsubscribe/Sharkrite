@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/sharkrite-lint.sh, lib/utils/test-gate.sh
+# sharkrite-test-covers: tools/sharkrite-lint.sh, lib/utils/test-gate.sh::_select_lint_by_changed_paths
 # sharkrite-gate-serial — contains genuine all-rules sweeps testing the RITE_LINT_FILES
 # targeting mechanism; SHARKRITE_LINT_ONLY would narrow the violation set and defeat
 # the multi-rule coverage assertions.

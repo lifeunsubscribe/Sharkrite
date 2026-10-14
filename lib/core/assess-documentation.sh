@@ -9,6 +9,31 @@
 
 set -euo pipefail
 
+# Bash 3.2 (macOS system /bin/bash) cannot parse a here-document nested inside
+# a command substitution: its scanner ends the substitution at the first ")"
+# appearing in the here-document body, corrupting parse state hundreds of lines
+# downstream. Self-re-exec to bash 4+ before the parser reaches any such
+# construct in this file. (Written as prose deliberately — spelling the
+# construct literally here makes the linter's own here-document tracker open a
+# phantom document and mis-attribute every subsequent `local`.)
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  # When SOURCED, re-exec cannot help: $0 is the caller and $@ is already
+  # consumed, so `exec "$newer" "$0" "$@"` would replace the caller's process
+  # with a bogus invocation (observed: "cannot execute binary file" when $0 is
+  # the shell itself). Fail loudly instead — same contract as plan-issues.sh.
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    echo "Error: assess-documentation.sh requires bash 4+ (sourced from $0). Run rite under bash 4+: brew install bash" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: assess-documentation.sh requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if declare -f assess_internal_changelog >/dev/null 2>&1; then
   return 0 2>/dev/null || true

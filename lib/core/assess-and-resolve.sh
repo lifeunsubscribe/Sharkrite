@@ -1216,6 +1216,10 @@ if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command
     # When attribution mode is active and ALL failures are inherited, the
     # synthetic empty-findings block (below) is suppressed — there is nothing
     # for the fix loop to fix.
+    # DORMANT (2026-10-13): the green-main preflight that wrote this baseline
+    # was removed — full suites run only in the overnight pipeline, never in a
+    # workflow. This reader is kept because it costs nothing when the file is
+    # absent and is the seam for a future lazy attribution pass.
     _gate_accept_red_main=false
     _gate_main_baseline_tests=""
     _gate_main_baseline_lint_keys=""

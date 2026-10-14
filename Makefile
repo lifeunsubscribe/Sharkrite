@@ -34,7 +34,7 @@ shellcheck:
 	@# tools/lint-rules/* are driver-sourced fragments of sharkrite-lint.sh — standalone
 	@# shellcheck would flag SC2154 on every driver-defined var; they are syntax-checked
 	@# by the driver sourcing them under set -e and behavior-checked by tests/lint/. (#919)
-	@find bin lib tools -type f -not -path "tools/lint-rules/*" \( -name "*.sh" -o -path "bin/rite*" -o -path "tools/git-hooks/*" \) -exec shellcheck --severity=warning {} +
+	@find bin lib tools -type f -not -path "tools/lint-rules/*" \( -name "*.sh" -o -path "bin/rite*" -o -path "tools/git-hooks/*" \) -exec shellcheck --severity=warning -f gcc {} +
 
 # Run custom lint rules
 lint:

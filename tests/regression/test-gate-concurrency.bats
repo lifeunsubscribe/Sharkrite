@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs
 # sharkrite-gate-serial — flaked under --jobs 8 (2026-07 audit: process-group/signal,
 # concurrent-write, and timeout-race tests need the serial group)
 #
@@ -185,7 +185,7 @@ EOF
 
 @test "_compute_bats_jobs is called before constructing _bats_jobs_args" {
   # The call must be present and must precede the bats invocations.
-  _call_line=$(grep -n '_bats_jobs=$(_compute_bats_jobs)' "$PROJECT_ROOT/lib/utils/test-gate.sh" | head -1 | cut -d: -f1 || true)
+  _call_line=$(grep -n '_bats_jobs=$(_compute_bats_jobs' "$PROJECT_ROOT/lib/utils/test-gate.sh" | head -1 | cut -d: -f1 || true)
   _first_bats_line=$(grep -n 'bats "${_bats_jobs_args' "$PROJECT_ROOT/lib/utils/test-gate.sh" | head -1 | cut -d: -f1 || true)
   [ -n "$_call_line" ] || { echo "missing _compute_bats_jobs call" >&2; return 1; }
   [ -n "$_first_bats_line" ] || { echo "missing bats invocation with --jobs" >&2; return 1; }

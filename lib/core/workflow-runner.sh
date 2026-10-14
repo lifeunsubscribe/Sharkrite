@@ -1858,6 +1858,12 @@ phase_merge_pr() {
     fi
   fi
 
+  # NOTE: a merge-decision full-suite gate was designed here (#975) and removed
+  # before merge. A full unfiltered suite never runs inside a workflow — that
+  # belongs to the overnight pipeline only (CLAUDE.md, standing rule). The
+  # blast-radius concern it addressed is handled by the per-cycle scoping
+  # ladder plus the overnight run, which reports and files remediation.
+
   # Wait for the background doc assessment (spawned in Phase 3) to finish before
   # invoking merge-pr.sh. Its Layer 2 commits land on this feature branch; we
   # need them on the remote before the squash merge so they ride along atomically.

@@ -407,6 +407,8 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Merge boundary (#718).** Block-on-any now extends to the **merge boundary** as well as the fix loop. Gate findings are injected into the assessment as `### [GATE] … - ACTIONABLE_NOW` items (structured header prefix). At the 3/3 retry cap, `assess-and-resolve.sh` distinguishes `[GATE]`-tagged items (objective test/lint failures) from LLM-severity HIGH review findings: gate-origin items that survive all retries are treated as non-deferrable — they block the merge (`exit 1`, same path as CRITICAL) rather than being filed as tech-debt and merged. Non-gate HIGH review findings continue to follow the existing retry-cap defer+tech-debt path. Live regression: issue #649 — 2 gate failures, loop hit 3/3, HIGH `[GATE]` deferred to #714, PR #712 merged red.
 
+**RETIRED 2026-10-13 — layer 1 removed.** The batch preflight below ran the full unfiltered suite before every batch (10–25 min of fixed cost) and halted the batch on any failure. Because it ran the suite through the gate's `bats --jobs 8` parallel group, the `tests/concurrency/` files — which spawn competing processes by design — starved past the 120s `BATS_TEST_TIMEOUT` and reported a healthy main as red, halting two batches (2026-10-12, 2026-10-13; 26 of 29 "failures" carried `# timeout after 120 s`). Standing rule: **a full suite never runs inside a sharkrite workflow — only in the overnight `rite --full-suite` pipeline.** Layer 2 (attribution subtraction) remains in the code but is dormant: nothing writes the baseline file now. If the red-main problem needs solving again, do it lazily — on an actual gate failure, re-run only the failing tests against main and subtract the ones that fail there too — never with an upfront full suite.
+
 **Red-Main Degradation Contract (#1149).** The block-on-any soundness argument has a precondition: **main must be green**. In target repos that invariant may not hold. Live failure (LeadFlow 2026-07-05, batch rite 401 128 383 340 113 435 431): main had 18+ failing dashboard tests; 51 main-inherited failures fed into `ACTIONABLE_NOW` for issue #401; the fix loop began a capped 30-min attempt to repair the repo's red main inside one issue's PR — and projected the same churn across all 7 batch issues.
 
 The fix is a two-layer defense:
@@ -472,6 +474,20 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 **Files with the hint:** `tests/regression/lib-resource-safety.bats` (sources every lib file twice; parallel-unsafe under load).
 
 **Enforcement:** `tests/regression/test-gate-targeted-selection.bats` — serial-hinted file is split from parallel batch; non-serial file is not affected; block-on-any is preserved across both batches.
+
+### Bats Parallelism: Census-Scaled `--jobs` (#1165)
+
+**2026-10-12.** Under 3+ concurrent batch runs, each gate's bats invocation spawned `--jobs ncpu`, oversubscribing the box and starving timing-sensitive tests past `BATS_TEST_TIMEOUT` (live: supervised-ux batch 20261011-231056, `_stale_resolve_base_branch` fallback tests failing only under three-batch load).
+
+**The fix: gate census.** Each gate registers its `$BASHPID` (subshell PID — `$$` is the parent orchestrator's PID and is wrong when `run_test_gate` is backgrounded with `&`) under `${RITE_LOCK_DIR}/gate-census/<pid>` at the start of the sharkrite bats section in `run_test_gate`. `_census_live_gate_count` counts entries whose PID passes `kill -0`, reaping dead entries in the same pass. `_compute_bats_jobs` receives the live count and applies: `jobs = ncpu` when `count ≤ 2`, else `max(2, floor(ncpu / count))`. The census entry is removed on normal exit and on crash via the existing crash-sentinel EXIT trap — each gate removes only its own PID-named file (no globs, #345 class).
+
+**Carve-out for ≤2 gates (preserves #510).** The cap of 4 was removed in #510 because uncapped measured faster even with two concurrent batches (33s vs 38s): OS scheduling keeps all cores busy while the cap leaves some idle. That result holds at any count ≤ 2. Scaling kicks in only at count ≥ 3 (≥ 2 *other* active gates).
+
+**`RITE_BATS_JOBS` still wins unconditionally.** An explicit env override bypasses the census formula entirely — the override branch returns before the census count is consulted.
+
+**Diag:** `BATS_JOBS jobs=N census=M pr=P` (extended from the pre-#1165 `jobs=N pr=P` format).
+
+**Enforcement:** `tests/regression/gate-bats-job-census.bats`.
 
 ### Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)
 
@@ -1768,3 +1784,52 @@ phantom-review shape (no local worktree, verifies Phase 1 targets parent branch)
 
 Direct unit tests for `detect_parent_pr_attachment` outcomes:
 `tests/regression/parent-pr-attachment.bats`.
+
+## Hermetic Bats Env: Session-Behavioral Var Scrub (#1186)
+
+**2026-10-12.** Bats tests inherit the workflow session's environment, so tests
+that pass in isolation can fail inside a gate when an exported session var flips
+a code path. Three incidents on 2026-10-12:
+
+- `RITE_TEST_GATE_SKIP_TRIGGERS=true` (from `post-merge-verify`): broke 3
+  lint-selection tests across 5 slots (#1182).
+- `RITE_TARGET_BRANCH=supervised-ux` (from a `--branch` session): broke both
+  `_docs_apply_approved` tests across 3 retries (#1049, PR #1179).
+
+A lint rule cannot catch this class — the broken tests contain zero references
+to the triggering variable. Prevention is a runtime boundary at the one choke
+point where the gate spawns bats.
+
+**Fix:** `_bats_sandbox` in `run_test_gate` (`lib/utils/test-gate.sh`) was
+extended with a deny-list of session-behavioral RITE_* vars removed via `env -u`
+from every bats child. The deny-list is located via the `_GATE_BATS_SCRUB_VARS`
+comment anchor in `test-gate.sh` (not a shell variable — grep for it to find the
+exact `env -u` args):
+
+```
+_GATE_BATS_SCRUB_VARS: RITE_TARGET_BRANCH  RITE_TEST_GATE_SKIP_TRIGGERS
+  RITE_STALE_BRANCH_THRESHOLD  RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD
+  RITE_ACCEPT_RED_MAIN
+```
+
+**Structural vars that are NOT scrubbed:** `RITE_REPO_ROOT`, `RITE_LIB_DIR`,
+`RITE_PROJECT_ROOT`, `BATS_TEST_TIMEOUT` (the gate sets this itself; scrubbing
+it would break per-test timeouts). Rule 35 suppressions and `setup.bash` loaders
+inside tests depend on the structural RITE_* vars passing through.
+
+**Coverage:** Both the main bats invocations (6 sites: full/parallel/serial ×
+pretty/TAP) and the flake-retry invocation in `_gate_flake_retry_pass` use
+`_bats_sandbox` — the flake-retry function accesses it via bash dynamic scoping
+(called from within `run_test_gate` where the local is defined).
+
+**Regression:** `tests/regression/gate-session-env-scrub.bats` — structural
+checks that every deny-listed var appears in `_bats_sandbox`, that structural
+RITE_* vars are absent from the scrub list, that all 7 invocation sites use the
+sandbox, and behavioral probes that extract the deny-list from `_bats_sandbox`
+via sed and run a nested bats invocation through the same `env -u` chain,
+confirming `RITE_TARGET_BRANCH` is unset and `RITE_REPO_ROOT` passes through.
+
+**Note on `RITE_TEST_GATE_SKIP_TRIGGERS`:** this var is consumed by the gate's
+own selection phase (before bats is spawned), so scrubbing it from the child
+environment does not alter gate-selection behavior — it only prevents tests from
+seeing it and potentially altering their own behavior.
