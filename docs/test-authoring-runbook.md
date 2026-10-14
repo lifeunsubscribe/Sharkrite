@@ -73,6 +73,39 @@ aspirational). Rule of thumb: every non-glob header entry should have at least
 one reference in a test body. Headerless files are SKIPPED by the gate — always
 include the header on new files, and keep it truthful on existing ones.
 
+**Narrow the header to functions when the source file is large.** A path may
+carry a function scope:
+
+```
+# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial
+```
+
+The gate then selects this file only when the diff touches one of those
+top-level functions. A bare path keeps file-level behavior, so adopt it where
+it pays: a 2,900-line file with 34 functions and 29 covering test files meant a
+20-line change selected all 29 — which wasted gate time AND created the
+parallel load that made those same tests flake. Unattributable changes
+(top-level constants, non-shell files, no computable diff) fall back to
+file-level selection: precision is an optimization, never a filter that can
+hide a regression.
+
+**This generalizes — carry it into every repo you build tests for.** Whatever
+the language or runner, wire the tightest *correct* selection the toolchain
+supports, and never settle for "run everything":
+
+- **jest / vitest** — `--findRelatedTests <changed files>`, or `--changedSince`
+  against the diff base; prefer passing the explicit changed-file list so the
+  runner and the gate agree on what "changed" means.
+- **pytest** — `pytest-testmon` (per-test dependency tracking) or at minimum
+  path-scoped selection of the changed package.
+- **go** — `go test ./<changed package>/...` rather than `./...`.
+- **monorepos** — map changed paths to workspaces and test only those, then let
+  the framework scope within each workspace.
+
+Two invariants when you add scoping anywhere: it must **fail safe** (anything
+unattributable runs the broader set), and a full unfiltered suite must never
+run inside a workflow — that belongs in an overnight pipeline only.
+
 ### 6. Serial hint (prompt-residue; lint heuristic pending)
 
 If a test uses `kill`, background jobs (`&`), sleep-based timing, or concurrency

@@ -717,6 +717,18 @@ The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers an
 
 **Override the diff base** for the selection via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
 
+**Function-scoped headers (#1229).** A covered path may be narrowed to specific top-level functions:
+
+```bash
+# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial
+```
+
+The gate maps the commit's changed line ranges to their enclosing shell function (a changed line in the comment block directly above a definition counts as that function) and selects the file only when a declared function is in that set. A bare path keeps file-level behavior — every pre-existing header is unaffected. **Fail-safe by construction:** a change that cannot be attributed (top-level constant, non-shell file, no computable diff) selects the file exactly as a bare path would. Precision is an optimization, never a filter that can hide a regression.
+
+Adopt it where the ratio is bad: `test-gate.sh` is ~2,900 lines / 34 functions with 29 bats files declaring it, so a 20-line change selected all 29 — wasting gate time and creating the parallel load that made those gate-invoking tests flake.
+
+**This philosophy is not sharkrite-specific.** When sharkrite builds or extends a test framework in ANY repo, it wires the tightest correct selection the toolchain supports (jest `--findRelatedTests`, `pytest-testmon`, per-workspace mapping in monorepos) and never settles for "run everything". The doctrine and per-runner guidance live in `docs/test-authoring-runbook.md`, which is loaded into every dev session (project override: `.rite/test-authoring-runbook.md`).
+
 **Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N` for health-report aggregation (`mode=full` now occurs only when no diff is computable).
 
 When you add a new bats file, include the header — headerless files are skipped by the gate, so a missing header means your tests never run for the code they cover.
