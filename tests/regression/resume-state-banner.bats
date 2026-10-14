@@ -163,3 +163,19 @@ teardown() {
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# 6. Guard polarity: the if-block routes the RESUME path (skip_to_phase set),
+#    not the full-lifecycle path. Inverting to -z flips both branches silently.
+# ---------------------------------------------------------------------------
+@test "structural: skip_to_phase guard uses -n (resume if SET, full lifecycle if UNSET)" {
+  [ -f "$_WFR" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
+  # Pin the exact token form so flipping to -z is caught at the structural level.
+  # The line-order test (test 10) is invariant under polarity inversion — this
+  # test is the only one that detects it.
+  grep -q 'if \[ -n "\$skip_to_phase" \]; then' "$_WFR" || {
+    echo "FAIL: guard 'if [ -n \"\$skip_to_phase\" ]; then' not found in workflow-runner.sh"
+    echo "      If guard was changed to -z, the resume/full-lifecycle branches are swapped."
+    return 1
+  }
+}
