@@ -16,10 +16,3 @@
 
 
 
-## Created
-- behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
-
-
-## Updated
-- behavioral-design.md → Post-Merge Dependency Reinstall
-
