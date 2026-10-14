@@ -258,11 +258,41 @@ run_promote() {
       "$_fs_gate_json" >&2 2>/dev/null || true
   fi
 
+  # Salvage the full-suite transcript and failure flag before the worktree is
+  # removed (#1210). The gate subshell runs with RITE_PROJECT_ROOT="$_wt", so
+  # any rite-full-suite log lands in $_wt/.rite/logs/ — a bare git worktree add
+  # creates no .rite symlink, meaning the log dies with the worktree. Copy to
+  # the real project's .rite/ with a branch-scoped name so the operator can
+  # recover failure details after cleanup.
+  local _salvage_log_path=""
+  if [ "$_fs_exit" -ne 0 ]; then
+    local _wt_fs_log=""
+    _wt_fs_log=$(find "${_wt}/.rite/logs" -maxdepth 1 -name "full-suite-*.log" 2>/dev/null \
+      | head -1 || true)
+    if [ -n "${_wt_fs_log:-}" ]; then
+      local _salvage_date
+      _salvage_date=$(date '+%Y%m%d' || true)
+      local _salvage_dest="$RITE_PROJECT_ROOT/.rite/logs/full-suite-promote-${BRANCH//\//-}-${_salvage_date}.log"
+      mkdir -p "$RITE_PROJECT_ROOT/.rite/logs"
+      if cp "$_wt_fs_log" "$_salvage_dest" 2>/dev/null; then
+        _salvage_log_path="$_salvage_dest"
+      fi
+    fi
+    if [ -f "${_wt}/.rite/state/full-suite-failure.flag" ]; then
+      mkdir -p "$RITE_PROJECT_ROOT/.rite/state"
+      cp "${_wt}/.rite/state/full-suite-failure.flag" \
+        "$RITE_PROJECT_ROOT/.rite/state/full-suite-promote-${BRANCH//\//-}.flag" 2>/dev/null || true
+    fi
+  fi
+
   # Remove worktree regardless of suite outcome (before aborting on failure)
   git worktree remove "$_wt" --force 2>/dev/null || true
 
   if [ "$_fs_exit" -ne 0 ]; then
     print_error "Verification gate failed on branch '$BRANCH'"
+    if [ -n "${_salvage_log_path:-}" ]; then
+      echo "  Failure log: $_salvage_log_path" >&2
+    fi
     echo "  Fix failing tests or lint on the integration branch, then re-run:" >&2
     echo "    rite --branch $BRANCH <issue>" >&2
     echo "    rite --promote $BRANCH" >&2

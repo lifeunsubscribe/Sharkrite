@@ -261,7 +261,7 @@ Chunk 6 (lint backstop)  ── land LAST, after 3+4 ── [SEPARABLE, ordering
 1. **Preflight** — fetch `origin/main` + `origin/<branch>`; verify ledger has ≥1 `promoted=false` entry; assert the branch is not behind main (never auto-syncs — sync is explicit via `rite --sync <branch>`).
 2. **Promotion PR** — compose a narrative PR body via `RITE_PROMOTE_MODEL` (default `claude-opus-4-8`; own var, decoupled from `RITE_REVIEW_MODEL`); create or refresh a `head=<branch> base=main` PR.
 3. **Review** — `local-review.sh` generates and posts a review on the promotion PR.
-4. **Full suite** — `rite-full-suite` runs unfiltered `make check` + `bats -r tests/` inside a temporary worktree on `origin/<branch>`. Failure exits 1 with a remediation command.
+4. **Full suite** — `rite-full-suite` runs unfiltered `make check` + `bats -r tests/` inside a temporary worktree on `origin/<branch>`. Failure exits 1 with a remediation command. On failure, `promote-branch.sh` copies any `full-suite-*.log` from the worktree's `.rite/logs/` to the project's `.rite/logs/full-suite-promote-<branch>-<date>.log` and the `full-suite-failure.flag` to `.rite/state/full-suite-promote-<branch>.flag` before removing the worktree; the saved log path is printed in the error output so the operator can recover failure details after cleanup (#1210).
 5. **CRITICAL hard gate** — `detect_critical_issues` blocks on any CRITICAL review finding.
 6. **SHA-verified squash merge** — `gh api repos/…/pulls/N/merge -f merge_method=squash -f sha=<expected_head>`. A 409/SHA-mismatch means a mid-promote push — abort, never auto-resolve. **This is its own merge path — never routed through `merge-pr.sh`** (see §8.2 rationale).
 
