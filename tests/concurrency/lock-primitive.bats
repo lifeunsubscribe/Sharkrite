@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/lock.sh
+# sharkrite-gate-serial — spawns competing processes; under the full suite's parallel group these starve past BATS_TEST_TIMEOUT (false red main, #916 preflight)
 # Correctness tests for the shared atomic lock primitive (issue #706):
 #   - mutual exclusion under distinct-PID contention (zero lost increments — the
 #     regression the old mkdir-fallback lost under heavy load),

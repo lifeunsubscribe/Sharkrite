@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/stale-branch.sh, lib/utils/divergence-handler.sh
+# sharkrite-gate-serial — spawns competing processes; under the full suite's parallel group these starve past BATS_TEST_TIMEOUT (false red main, #916 preflight)
 # tests/concurrency/stale-branch-push-race.bats - Git push race condition tests
 #
 # Tests that concurrent pushes to the same branch are handled correctly.
