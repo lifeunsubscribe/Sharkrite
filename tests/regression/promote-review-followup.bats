@@ -258,6 +258,171 @@ RUNEOF
 }
 
 # ===========================================================================
+# Group 1b: Emoji-Findings-line (production review format) → follow-up created
+# ===========================================================================
+
+@test "Emoji-Findings-line: production emoji format creates one follow-up issue" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_followup_stubs "$_lib"
+
+  local _call_log="$RITE_TEST_TMPDIR/emoji_calls.log"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-ef"
+  _write_fake_git "$_fake_bin"
+
+  # Production reviews emit emoji prefixes: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | …
+  local _review_file="$RITE_TEST_TMPDIR/fake_review_ef.txt"
+  cat > "$_review_file" << 'REVIEWEOF'
+<!-- sharkrite-local-review model:test timestamp:2026-01-01T00:00:00Z commit:abc -->
+
+## Code Review
+
+Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | 🟡 MEDIUM: 1 | 🟢 LOW: 0
+REVIEWEOF
+
+  local _runner
+  _runner=$(_write_followup_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe()            { return 0; }
+integration_ledger_entries() {
+  printf 'issue=10\tpr=55\tsha=abc000\tmerged_at=2026-01-01T00:00:00Z\tpromoted=false\n'
+}
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context()  { return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues()    { return 0; }
+run_test_gate()             { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        edit)   return 0 ;;
+        view)
+          if [ "\${4:-}" = "--json" ] && [ "\${5:-}" = "comments" ]; then
+            cat "$_review_file"
+          fi
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue)
+      case "\${2:-}" in
+        create)
+          printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
+          echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        comment) return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "test-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  grep -q "ISSUE_CREATE" "$_call_log"
+  grep -q "from-review" "$_call_log"
+  grep -q "needs-re-triage" "$_call_log"
+}
+
+# ===========================================================================
+# Group 1c: Corrupt JSON + valid Findings line → fallback creates follow-up
+# ===========================================================================
+
+@test "corrupt JSON + valid Findings line: priority-2 fallback creates one follow-up issue" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_followup_stubs "$_lib"
+
+  local _call_log="$RITE_TEST_TMPDIR/fallback_calls.log"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-fb"
+  _write_fake_git "$_fake_bin"
+
+  # Malformed JSON block (jq -e '.summary' fails) followed by a valid Findings line.
+  local _review_file="$RITE_TEST_TMPDIR/fake_review_fb.txt"
+  cat > "$_review_file" << 'REVIEWEOF'
+<!-- sharkrite-local-review model:test timestamp:2026-01-01T00:00:00Z commit:abc -->
+
+<!-- sharkrite-review-data
+{not valid json at all
+-->
+
+## Code Review
+
+Findings: CRITICAL: 0 | HIGH: 3 | MEDIUM: 0 | LOW: 1
+REVIEWEOF
+
+  local _runner
+  _runner=$(_write_followup_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe()            { return 0; }
+integration_ledger_entries() {
+  printf 'issue=10\tpr=55\tsha=abc000\tmerged_at=2026-01-01T00:00:00Z\tpromoted=false\n'
+}
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context()  { return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues()    { return 0; }
+run_test_gate()             { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        edit)   return 0 ;;
+        view)
+          if [ "\${4:-}" = "--json" ] && [ "\${5:-}" = "comments" ]; then
+            cat "$_review_file"
+          fi
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue)
+      case "\${2:-}" in
+        create)
+          printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
+          echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        comment) return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "test-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  grep -q "ISSUE_CREATE" "$_call_log"
+  grep -q "from-review" "$_call_log"
+  grep -q "needs-re-triage" "$_call_log"
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+}
+
+# ===========================================================================
 # Group 2: JSON-block parse path → follow-up issue created
 # ===========================================================================
 
