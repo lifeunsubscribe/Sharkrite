@@ -2208,6 +2208,26 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
 
+    # Gate-origin findings never become follow-up issues.
+    #
+    # A [GATE] item means verification could not confirm the change — a failing
+    # test, a lint violation, or a gate that could not run at all. That is a
+    # signal to fix or to look, not a unit of tracked work, and the slot already
+    # fails loudly when these survive the retry cap. Filing them produced issues
+    # nobody could action: of 60 dedup sentinels, 21 were gate-origin and 19 of
+    # those came from the two least informative findings ("bats failure: bats"
+    # and "non-zero exit with no parseable findings"). Issue #1156 alone spawned
+    # six on its way to failing, every one stale within the hour.
+    #
+    # Review-origin ACTIONABLE_LATER items — deliberate human-style deferrals —
+    # are unaffected and remain the healthy inlet.
+    case "$_fh_line" in
+      '### [GATE]'*)
+        _diag "FOLLOWUP_SKIPPED_GATE_ORIGIN issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER:-} header=$(echo "$_fh_line" | cut -c1-80)"
+        continue
+        ;;
+    esac
+
     # --- Extract per-finding fields from FILTERED_CONTENT ---
 
     # Raw title from the header (e.g. "1. Foo bar" or "Fix the thing")
