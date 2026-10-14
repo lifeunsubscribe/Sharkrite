@@ -3696,7 +3696,7 @@ A scrubbed real API response for \`$_name\` is committed under \`fixtures/$_fixt
 
 **Scope Boundary**
 
-- DO: Make one real call to \`$_name\`. Capture a secret-scrubbed response. Document fields.
+- DO: Make one real call to \`$_name\`. Capture a secret-scrubbed sample to \`fixtures/$_fixture_path/sample.json\`. Document per-field provenance.
 - DO NOT: Implement client code, write tests, or validate the sample against a schema.
 
 **Dependencies**: None

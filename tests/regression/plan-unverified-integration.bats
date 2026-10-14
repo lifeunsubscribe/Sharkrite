@@ -2229,6 +2229,17 @@ GOMOD
 # ---------------------------------------------------------------------------
 
 @test "Long-name spike emits full name in SPIKE_KEY and truncated name in title" {
+  # A manifest must exist for groundedness to be decidable: with no package.json
+  # the grounded set is empty, nothing is classified ungrounded, and no spike is
+  # emitted at all — the test then fails for the wrong reason (missing fixture,
+  # not a key-emission bug). Deliberately omits @opentelemetry/* so the package
+  # under test IS ungrounded.
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "fixture-project",
+  "dependencies": { "express": "^4.18.0" }
+}
+JSON
   local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-emit.txt"
   write_issues_file "$issues_file" \
     "Add distributed tracing" \
