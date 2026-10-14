@@ -332,7 +332,9 @@ run_promote() {
         _promo_item_count=$(printf '%s' "$_promo_review" \
           | grep -cE "<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW)" || true)
         if [ "${_promo_item_count:-0}" -gt 0 ]; then
-          _promo_h="${_promo_item_count}"
+          _promo_h=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:HIGH" || true)
+          _promo_m=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:MEDIUM" || true)
+          _promo_l=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:LOW" || true)
           _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} marker_count=${_promo_item_count}"
         fi
       fi
@@ -343,16 +345,25 @@ run_promote() {
     _promo_m="${_promo_m%%[^0-9]*}"; _promo_m="${_promo_m:-0}"
     _promo_l="${_promo_l%%[^0-9]*}"; _promo_l="${_promo_l:-0}"
     _promo_noncrit=$(( _promo_h + _promo_m + _promo_l ))
+    if [ "${_promo_noncrit}" -eq 0 ]; then
+      _diag "PROMOTE_FOLLOWUP_PARSE_ZERO branch=${BRANCH:-} pr=${PROMO_PR:-} review_bytes=${#_promo_review}"
+    fi
   fi
 
   if [ "${_promo_noncrit:-0}" -gt 0 ]; then
     print_info "Capturing ${_promo_noncrit} non-CRITICAL promotion finding(s) as a follow-up issue"
 
     # Truncate review to stay within GitHub's 65536-char issue body limit.
+    # Back off to the last newline so we do not split inside a <!-- --> comment block
+    # (promotion reviews end with a multi-KB sharkrite-review-data block); emit -->
+    # before the pointer to close any unclosed comment.
     local _promo_review_body="${_promo_review}"
     if [ "${#_promo_review}" -gt 55000 ]; then
-      _promo_review_body="${_promo_review:0:55000}
-... (review truncated at 55000 chars — see PR #${PROMO_PR} for the full review)"
+      local _promo_cut="${_promo_review:0:55000}"
+      _promo_cut="${_promo_cut%$'\n'*}"
+      _promo_review_body="${_promo_cut}
+-->
+... (review truncated — see PR #${PROMO_PR} for the full review)"
     fi
 
     local _promo_body

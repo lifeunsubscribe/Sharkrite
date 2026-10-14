@@ -423,6 +423,186 @@ RUNEOF
 }
 
 # ===========================================================================
+# Group 1d: Marker-only review (no JSON, no Findings line) → follow-up created
+# ===========================================================================
+
+@test "marker-only: item-marker-only review creates one follow-up issue" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_followup_stubs "$_lib"
+
+  local _call_log="$RITE_TEST_TMPDIR/marker_calls.log"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-mk"
+  _write_fake_git "$_fake_bin"
+
+  # Review body with only item markers — no JSON block, no Findings line.
+  local _review_file="$RITE_TEST_TMPDIR/fake_review_mk.txt"
+  cat > "$_review_file" << 'REVIEWEOF'
+<!-- sharkrite-local-review model:test timestamp:2026-01-01T00:00:00Z commit:abc -->
+
+## Code Review
+
+<!-- item:1 severity:HIGH -->
+Potential null dereference in foo.sh line 42.
+<!-- item:2 severity:MEDIUM -->
+Missing input validation in bar.sh.
+<!-- item:3 severity:LOW -->
+Unused variable in baz.sh.
+REVIEWEOF
+
+  local _runner
+  _runner=$(_write_followup_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe()            { return 0; }
+integration_ledger_entries() {
+  printf 'issue=10\tpr=55\tsha=abc000\tmerged_at=2026-01-01T00:00:00Z\tpromoted=false\n'
+}
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context()  { return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues()    { return 0; }
+run_test_gate()             { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        edit)   return 0 ;;
+        view)
+          if [ "\${4:-}" = "--json" ] && [ "\${5:-}" = "comments" ]; then
+            cat "$_review_file"
+          fi
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue)
+      case "\${2:-}" in
+        create)
+          printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
+          echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        comment) return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "test-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  # Follow-up issue must be created from marker-only review
+  [ -f "$_call_log" ]
+  grep -q "ISSUE_CREATE" "$_call_log"
+  grep -q "from-review" "$_call_log"
+  grep -q "needs-re-triage" "$_call_log"
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+}
+
+# ===========================================================================
+# Group 1e: Oversized review body (>55000 chars) → truncation pointer appears
+# ===========================================================================
+
+@test "oversized review: body >55000 chars includes truncation pointer" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_followup_stubs "$_lib"
+
+  local _call_log="$RITE_TEST_TMPDIR/trunc_calls.log"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-tr"
+  _write_fake_git "$_fake_bin"
+
+  # Build a review body that exceeds 55000 chars. Use a Findings line so
+  # parsing succeeds, then pad with a large block.
+  local _review_file="$RITE_TEST_TMPDIR/fake_review_tr.txt"
+  {
+    printf '<!-- sharkrite-local-review model:test timestamp:2026-01-01T00:00:00Z commit:abc -->\n\n'
+    printf 'Findings: CRITICAL: 0 | HIGH: 1 | MEDIUM: 0 | LOW: 0\n\n'
+    printf '<!-- sharkrite-review-data\n'
+    # Pad to exceed 55000 chars
+    python3 -c "print('x' * 56000)"
+    printf '\n-->\n'
+  } > "$_review_file"
+
+  local _runner
+  _runner=$(_write_followup_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe()            { return 0; }
+integration_ledger_entries() {
+  printf 'issue=10\tpr=55\tsha=abc000\tmerged_at=2026-01-01T00:00:00Z\tpromoted=false\n'
+}
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context()  { return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues()    { return 0; }
+run_test_gate()             { return 0; }
+_issue_body_file="$RITE_TEST_TMPDIR/issue_body_$$.txt"
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        edit)   return 0 ;;
+        view)
+          if [ "\${4:-}" = "--json" ] && [ "\${5:-}" = "comments" ]; then
+            cat "$_review_file"
+          fi
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue)
+      case "\${2:-}" in
+        create)
+          printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
+          # Capture the --body argument value
+          local _next_is_body=0
+          for _arg in "\$@"; do
+            if [ "\$_next_is_body" = "1" ]; then
+              printf '%s' "\$_arg" > "\$_issue_body_file"
+              _next_is_body=0
+            fi
+            [ "\$_arg" = "--body" ] && _next_is_body=1
+          done
+          echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        comment) return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "test-branch" 2>&1
+echo "BODY_FILE=\$_issue_body_file"
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  grep -q "ISSUE_CREATE" "$_call_log"
+  # Truncation pointer must appear in the output
+  echo "$output" | grep -q "review truncated"
+}
+
+# ===========================================================================
 # Group 2: JSON-block parse path → follow-up issue created
 # ===========================================================================
 
