@@ -3664,24 +3664,14 @@ a schema — those are the downstream issue's responsibility.
             if [ "$_ctype" = "host" ]; then
               # _name is a normalized registrable domain (e.g. foo.co); match it as a
               # hostname suffix so any subdomain variant (api.foo.co, auth.foo.co) in
-              # the block body still triggers the Blocked-by injection.
-              # Gate on at least one matched host being ungrounded: a block that only
-              # references grounded subdomains must NOT acquire the spike dependency.
+              # the block body triggers the Blocked-by injection.
+              # The (/|$) right anchor prevents a prefix-collision false positive where
+              # foo\.co would otherwise match inside foo.com (see Fixture Z).
               local _matched_hosts
               _matched_hosts=$(echo "$_current_block" | \
-                grep -oiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')" | \
-                sed 's|https://||; s|http://||' | tr '[:upper:]' '[:lower:]' | sort -u || true)
-              if [ -n "$_matched_hosts" ]; then
-                while IFS= read -r _mh; do
-                  [ -z "$_mh" ] && continue
-                  local _mh_reg
-                  _mh_reg=$(_normalize_host_to_registrable_domain "$_mh")
-                  if ! echo "$grounded_hosts_norm" | grep -qxF "${_mh_reg:-$_mh}" 2>/dev/null; then
-                    _context_match=true
-                    break
-                  fi
-                done <<< "$_matched_hosts"
-              fi
+                grep -oiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')(/|$)" | \
+                tr '[:upper:]' '[:lower:]' | sed 's|https://||; s|http://||; s|/$||' | sort -u || true)
+              [ -n "$_matched_hosts" ] && _context_match=true
             else
               # pkg: match import/require patterns only
               echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true

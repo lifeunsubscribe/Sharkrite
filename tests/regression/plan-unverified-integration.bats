@@ -25,7 +25,9 @@
 #   Fixture R — Dotted non-hostname dirs (e.g. "v1.2", "2024.01") do NOT ground as hostname.
 #   Fixture S — Real hostname (api.example.com) nested under dotted version dir IS grounded.
 #   Fixture X — Registrable-domain fixture (fixtures/foo.co/) grounds subdomain reference (api.foo.co).
-#   Fixture Y — Issue referencing only a grounded subdomain does NOT get spurious Blocked-by from sibling spike.
+#   Fixture Y — Both subdomains normalize to grounded registrable domain — no spike, no Blocked-by.
+#   Fixture Z — Prefix-collision anchor: fixtures/api.foo.com/ grounded + ungrounded api.foo.co must NOT
+#               inject Blocked-by into the foo.com issue (right-anchor regression guard).
 
 load '../helpers/setup.bash'
 
@@ -1539,21 +1541,14 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
-# Fixture Y: issue referencing only a grounded subdomain does NOT get a
-#            spurious Blocked-by from its ungrounded sibling's spike
+# Fixture Y: both subdomains normalize to the same grounded registrable domain —
+#            no spike is created and neither issue acquires a Blocked-by
 #
-# Regression for Fix 2 (Pass-3 groundedness gate): the widened context regex
-# ([a-zA-Z0-9-]+\.)* matches any subdomain of the spike's registrable domain.
-# Without the groundedness gate, an issue referencing only api.foo.co (grounded)
-# would acquire "Blocked by: #SPIKE-foo-co" — the spike created for its
-# ungrounded sibling auth.foo.co.
-#
-# With Fix 1 + Fix 2 together:
-#  - Fix 1: auth.foo.co normalizes to foo.co, which is already grounded via
-#    api.foo.co's fixture → no spike is created.
-#  - Fix 2 (defense-in-depth): even if a spike existed, the Per-block host
-#    groundedness check prevents injection into Issue A.
+# fixtures/api.foo.co/ grounds api.foo.co; normalization maps api.foo.co and
+# auth.foo.co to foo.co, which is in grounded_hosts_norm.  Pass-1 sees both
+# subdomains as grounded → no candidate → no spike → no Blocked-by injection.
 # Expected: 2 issues, neither has a Blocked-by.
+# (Prefix-collision regression is covered by Fixture Z.)
 # ---------------------------------------------------------------------------
 
 @test "Fixture Y: issue referencing only grounded subdomain gets no spurious Blocked-by from sibling spike" {
@@ -1605,6 +1600,97 @@ FIXTURE
     cat "$issues_file" >&2
     false
   } || true
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Z: prefix-collision anchor — fixtures/api.foo.com/ grounded +
+#            ungrounded api.foo.co must NOT inject Blocked-by into foo.com issue
+#
+# Regression for the Pass-3 right-anchor fix: without the (/|$) suffix on the
+# context regex, grep -oiE "https?://...foo\.co" matches https://api.foo.com
+# because foo.co is a substring of foo.com.  The grounded foo.com issue would
+# acquire a spurious "Blocked by: #SPIKE-foo-co".
+#
+# With the anchor, https://api.foo.com does NOT match foo\.co(/|$) (next char
+# is 'm', not '/' or end-of-line), so _matched_hosts is empty → no injection.
+# Expected: 3 issues (1 spike for foo.co + 2 originals); foo.com issue has no
+# Blocked-by; foo.co issue has Blocked-by #SPIKE-foo-co.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Z: prefix-collision anchor — foo.com issue does not acquire Blocked-by from foo.co spike" {
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/api.foo.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/api.foo.com/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-z.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Integrate with foo.com service
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.foo.com/data to fetch results.
+---END---
+---ISSUE---
+TITLE: Add foo.co admin integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.foo.co/admin to manage settings.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # foo.co is ungrounded → exactly one spike for foo.co
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (1 spike for foo.co + 2 originals), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Spike title must be for foo.co (prefix-collision must not produce a foo.com spike)
+  local first_title
+  first_title=$(grep "^TITLE:" "$issues_file" | head -1)
+  echo "$first_title" | grep -qi "foo\.co" || {
+    echo "FAIL: spike title does not reference foo.co: $first_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # The foo.com issue (block 2 after spike prepended) must NOT carry Blocked-by
+  local foocom_block
+  foocom_block=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
+  echo "$foocom_block" | grep -q "Blocked by:" && {
+    echo "FAIL: foo.com issue acquired spurious Blocked-by from foo.co spike (prefix-collision anchor broken)" >&2
+    echo "--- foo.com block ---" >&2
+    echo "$foocom_block" >&2
+    cat "$issues_file" >&2
+    false
+  } || true
+
+  # The foo.co issue (block 3) must carry Blocked-by #SPIKE-foo-co
+  local fooco_block
+  fooco_block=$(awk '/^---ISSUE---/{b++; buf=""} b==3{buf=buf"\n"$0} /^---END---/ && b==3{print buf; exit}' "$issues_file")
+  echo "$fooco_block" | grep -q "#SPIKE-foo-co" || {
+    echo "FAIL: foo.co issue missing #SPIKE-foo-co" >&2
+    echo "--- foo.co block ---" >&2
+    echo "$fooco_block" >&2
+    cat "$issues_file" >&2
+    false
+  }
 
   rm -f "$stderr_out"
 }
