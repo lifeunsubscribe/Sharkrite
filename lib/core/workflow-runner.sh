@@ -1858,36 +1858,11 @@ phase_merge_pr() {
     fi
   fi
 
-  # Merge-decision gate (#975): full root suite once per issue lifecycle.
-  # Catches blast-radius failures outside the changed workspace scope
-  # (motivating case: LeadFlow #131 — 51 tests failed in an unrelated workspace).
-  # RITE_GATE_TIER=merge tells test-gate.sh to run the full root npm test instead
-  # of the per-cycle workspace-scoped run. For Sharkrite itself (bats path) the
-  # tier flag is a no-op — targeted bats selection already covers the full
-  # relevant subset.
-  # Runs synchronously here so any blast-radius failure surfaces before the merge.
-  if declare -f run_test_gate >/dev/null 2>&1 \
-     && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
-    local _merge_gate_file=""
-    _merge_gate_file=$(mktemp "/tmp/rite_merge_gate_${issue_number:-0}_$$_XXXXXX")
-    print_info "Running merge-decision gate (full suite, blast-radius pass)..."
-    export PR_NUMBER="${pr_number:-}"
-    local _merge_gate_exit=0
-    RITE_GATE_TIER=merge run_test_gate "$_merge_gate_file" "$WORKTREE_PATH" || _merge_gate_exit=$?
-    if [ "$_merge_gate_exit" -ne 0 ]; then
-      if [ -s "$_merge_gate_file" ]; then
-        print_error "Merge-decision gate failed — failing tests:"
-        # Order matters: point stdout at the real stderr FIRST, then null jq's
-        # own stderr. The reverse (2>/dev/null >&2) nulls fd2 and then aims
-        # stdout at the already-nulled fd, discarding every reported test name.
-        jq -r '(.tests // [])[:20][] | "  - " + (.test_name // "unknown")' "$_merge_gate_file" >&2 2>/dev/null || true
-      fi
-      rm -f "$_merge_gate_file"
-      print_error "Merge-decision gate failed — full suite has failures; fix before merging"
-      return 1
-    fi
-    rm -f "$_merge_gate_file"
-  fi
+  # NOTE: a merge-decision full-suite gate was designed here (#975) and removed
+  # before merge. A full unfiltered suite never runs inside a workflow — that
+  # belongs to the overnight pipeline only (CLAUDE.md, standing rule). The
+  # blast-radius concern it addressed is handled by the per-cycle scoping
+  # ladder plus the overnight run, which reports and files remediation.
 
   # Wait for the background doc assessment (spawned in Phase 3) to finish before
   # invoking merge-pr.sh. Its Layer 2 commits land on this feature branch; we
