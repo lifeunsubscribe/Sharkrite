@@ -3557,7 +3557,10 @@ _detect_unverified_integrations() {
               # in the manifest — the case this provenance system was built for.
               local _vendor _grounding_pkg
               _vendor=$(echo "${_host_reg:-$_host}" | sed 's/\..*//' || true)
-              _grounding_pkg=$(echo "$grounded_packages" | grep -iE "(^|[@/.-])${_vendor}([@/.-]|$)" | head -1 || true)
+              _grounding_pkg=""
+              if [ -n "${_vendor:-}" ]; then
+                _grounding_pkg=$(echo "$grounded_packages" | grep -iE "(^|[@/-])${_vendor}([@/-]|$)" | head -1 || true)
+              fi
               if [ -n "${_grounding_pkg:-}" ]; then
                 print_info "host ${_host_reg:-$_host} grounded by SDK package ${_grounding_pkg} — suppressing spike" >&2
               else

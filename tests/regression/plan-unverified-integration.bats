@@ -30,6 +30,8 @@
 #               inject Blocked-by into the foo.com issue (right-anchor regression guard).
 #   Fixture AA — Prose URL terminator regression: space, comma, ?, :port, and backtick-terminated URLs
 #                all trigger Blocked-by injection (([^a-zA-Z0-9.-]|$) anchor fix).
+#   Fixture AD — Go module path host prefix (e.g. "github" from "github.com/stretchr/testify") does NOT
+#                ground a host spike — dot is not a valid vendor-token boundary separator.
 
 load '../helpers/setup.bash'
 
@@ -2012,6 +2014,66 @@ JSON
   }
 
   # Must have 2 issues (spike + original)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AD: Go module path host prefix does NOT ground a host spike
+#
+# Project has go.mod with "github.com/stretchr/testify" — the vendor token for
+# github.com is "github", and the old dot-separator pattern would match
+# "github.com/stretchr/testify" via the dot between "github" and "com".
+# Issue body references https://github.com/user/data-source
+# Expected: one WARNING, spike emitted — "github.com/stretchr/testify" is an
+# unrelated Go module path, not an SDK that grounds the github.com host.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AD: Go module path does not ground host spike via dot-separated vendor token" {
+  cat > "$RITE_TEST_TMPDIR/go.mod" <<'GOMOD'
+module example.com/myapp
+
+go 1.21
+
+require (
+	github.com/stretchr/testify v1.8.4
+	golang.org/x/net v0.17.0
+)
+GOMOD
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-ad.txt"
+  write_issues_file "$issues_file" \
+    "Fetch data from GitHub" \
+    "Retrieve repository metadata from https://github.com/user/data-source using the REST API."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit one WARNING — github.com is not grounded by a github-specific SDK
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING (ungrounded host), got $warning_count — Go module path github.com/stretchr/testify must NOT suppress the spike" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have 2 issues (spike prepended)
   local issue_count
   issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
   [ "$issue_count" -eq 2 ] || {
