@@ -296,24 +296,76 @@ run_promote() {
   # this, everything below CRITICAL was posted and then evaporated: promoting
   # supervised-ux surfaced 4 HIGH / 3 MEDIUM / 5 LOW and none were tracked.
   #
-  # Deterministic by design — the review already emits machine-readable
-  # `<!-- item:N severity:X -->` markers, so no classifier runs here. One
-  # aggregated issue, never a fix loop: promotion is a gate, and fixing on the
-  # integration branch would land code on main that skipped per-issue review.
-  # Best-effort throughout: promotion has already passed its gates, so nothing
-  # in this block may block, retry, or fail the merge.
-  local _promo_review _promo_noncrit
+  # Deterministic by design — the review embeds a sharkrite-review-data JSON
+  # block (or a Findings line) with machine-readable counts; no LLM classifier
+  # runs here. One aggregated issue, never a fix loop: promotion is a gate, and
+  # fixing on the integration branch would land code on main that skipped the
+  # per-issue review cycle.  Best-effort throughout: promotion has already
+  # passed its gates, so nothing in this block may block, retry, or fail the merge.
+  local _promo_review
   _promo_review=$(gh_safe pr view "$PROMO_PR" --json comments \
     --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body" 2>/dev/null || true)
-  _promo_noncrit=$(printf '%s' "$_promo_review" \
-    | grep -oE '<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW) -->' | wc -l | tr -d ' ' || true)
 
-  if [ -n "$_promo_review" ] && [ "${_promo_noncrit:-0}" -gt 0 ]; then
-    local _promo_h _promo_m _promo_l
-    _promo_h=$(printf '%s' "$_promo_review" | grep -c 'severity:HIGH'   || true)
-    _promo_m=$(printf '%s' "$_promo_review" | grep -c 'severity:MEDIUM' || true)
-    _promo_l=$(printf '%s' "$_promo_review" | grep -c 'severity:LOW'    || true)
+  # Parse severity counts from the review's embedded JSON block (priority 1) or
+  # the human Findings line (priority 2) — same dual-parse path as local-review.sh.
+  # Both are deterministic: no LLM call, no timeout risk.
+  local _promo_h=0 _promo_m=0 _promo_l=0 _promo_noncrit=0
+  if [ -n "${_promo_review:-}" ]; then
+    local _promo_json _promo_findings_line
+    _promo_json=$(printf '%s' "$_promo_review" \
+      | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' 2>/dev/null || true)
+    if [ -n "${_promo_json:-}" ] && printf '%s' "$_promo_json" | jq -e '.summary' >/dev/null 2>&1; then
+      _promo_h=$(printf '%s' "$_promo_json" | jq -r '.summary.high // 0' || true)
+      _promo_m=$(printf '%s' "$_promo_json" | jq -r '.summary.medium // 0' || true)
+      _promo_l=$(printf '%s' "$_promo_json" | jq -r '.summary.low // 0' || true)
+    else
+      _promo_findings_line=$(printf '%s' "$_promo_review" \
+        | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
+      if [ -n "${_promo_findings_line:-}" ]; then
+        _promo_h=$(printf '%s' "$_promo_findings_line" | grep -oE "HIGH: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
+        _promo_m=$(printf '%s' "$_promo_findings_line" | grep -oE "MEDIUM: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
+        _promo_l=$(printf '%s' "$_promo_findings_line" | grep -oE "LOW: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
+      else
+        # priority 3: item markers (<!-- item:N severity:HIGH|MEDIUM|LOW -->)
+        # A review with markers but no JSON block or Findings line still has findings.
+        local _promo_item_count
+        _promo_item_count=$(printf '%s' "$_promo_review" \
+          | grep -cE "<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW)" || true)
+        if [ "${_promo_item_count:-0}" -gt 0 ]; then
+          _promo_h=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:HIGH" || true)
+          _promo_m=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:MEDIUM" || true)
+          _promo_l=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:LOW" || true)
+          _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} marker_count=${_promo_item_count}"
+        fi
+      fi
+    fi
+    _promo_h="${_promo_h:-0}"; _promo_m="${_promo_m:-0}"; _promo_l="${_promo_l:-0}"
+    # Strip fractional part that jq may emit (e.g. "2.0" → "2") before arithmetic.
+    _promo_h="${_promo_h%%[^0-9]*}"; _promo_h="${_promo_h:-0}"
+    _promo_m="${_promo_m%%[^0-9]*}"; _promo_m="${_promo_m:-0}"
+    _promo_l="${_promo_l%%[^0-9]*}"; _promo_l="${_promo_l:-0}"
+    _promo_noncrit=$(( _promo_h + _promo_m + _promo_l ))
+    if [ "${_promo_noncrit}" -eq 0 ]; then
+      _diag "PROMOTE_FOLLOWUP_PARSE_ZERO branch=${BRANCH:-} pr=${PROMO_PR:-} review_bytes=${#_promo_review}"
+    fi
+  fi
+
+  if [ "${_promo_noncrit:-0}" -gt 0 ]; then
     print_info "Capturing ${_promo_noncrit} non-CRITICAL promotion finding(s) as a follow-up issue"
+
+    # Truncate review to stay within GitHub's 65536-char issue body limit.
+    # Back off to the last newline so we do not split inside a <!-- --> comment block
+    # (promotion reviews end with a multi-KB sharkrite-review-data block); emit -->
+    # before the pointer to close any unclosed comment.
+    local _promo_review_body="${_promo_review}"
+    if [ "${#_promo_review}" -gt 55000 ]; then
+      print_info "Review body exceeds 55000 chars — review truncated in follow-up issue body (full review on PR #${PROMO_PR})"
+      local _promo_cut="${_promo_review:0:55000}"
+      _promo_cut="${_promo_cut%$'\n'*}"
+      _promo_review_body="${_promo_cut}
+-->
+... (review truncated — see PR #${PROMO_PR} for the full review)"
+    fi
 
     local _promo_body
     _promo_body="Findings from the promotion review of \`${BRANCH}\` (PR #${PROMO_PR}).
@@ -329,7 +381,7 @@ assessed NOW/LATER/DISMISSED. Close the ones that do not warrant work.
 
 ---
 
-${_promo_review}"
+${_promo_review_body}"
 
     local _promo_issue_url
     if _promo_issue_url=$(gh_safe issue create \

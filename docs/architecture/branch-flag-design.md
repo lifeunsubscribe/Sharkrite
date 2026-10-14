@@ -256,14 +256,15 @@ Chunk 6 (lint backstop)  ── land LAST, after 3+4 ── [SEPARABLE, ordering
 
 ### 8.1 Implemented design
 
-`run_promote <branch>` in `lib/core/promote-branch.sh` executes in six phases:
+`run_promote <branch>` in `lib/core/promote-branch.sh` executes in seven phases:
 
 1. **Preflight** — fetch `origin/main` + `origin/<branch>`; verify ledger has ≥1 `promoted=false` entry; assert the branch is not behind main (never auto-syncs — sync is explicit via `rite --sync <branch>`).
 2. **Promotion PR** — compose a narrative PR body via `RITE_PROMOTE_MODEL` (default `claude-opus-4-8`; own var, decoupled from `RITE_REVIEW_MODEL`); create or refresh a `head=<branch> base=main` PR.
 3. **Review** — `local-review.sh` generates and posts a review on the promotion PR.
 4. **Targeted gate** — `run_test_gate` runs `make check` + targeted `bats` selection (the same targeted gate used by the per-issue workflow, scoped to what the integration branch changed relative to `origin/main`) inside a temporary worktree on `origin/<branch>`. Failure exits 1 with a remediation command. The gate writes a JSON verdict to `<worktree>/.rite-promote-gate.json`; on failure, if that file is non-empty, `promote-branch.sh` copies it to `.rite/state/promote-gate-<branch>.json` and prints the failing items before removing the worktree, so the operator can recover details after cleanup (#1210, #1244).
 5. **CRITICAL hard gate** — `detect_critical_issues` blocks on any CRITICAL review finding.
-6. **SHA-verified squash merge** — `gh api repos/…/pulls/N/merge -f merge_method=squash -f sha=<expected_head>`. A 409/SHA-mismatch means a mid-promote push — abort, never auto-resolve. **This is its own merge path — never routed through `merge-pr.sh`** (see §8.2 rationale).
+6. **Capture non-CRITICAL follow-ups** — After the CRITICAL gate passes, parse the promotion review's findings summary (JSON block, Findings line, or item markers; no LLM call). If HIGH + MEDIUM + LOW > 0, create one aggregated GitHub issue titled `Promotion review follow-ups: <branch>`, labelled `from-review` + `needs-re-triage`, with the review in the body (truncated at 55 000 chars with a PR link when larger) so operators can triage without fetching the PR. **Never blocks the merge** — `gh issue create` failure is surfaced as a warning and the merge proceeds (`|| true` throughout). Zero non-CRITICAL findings → no issue, no output change (#1209).
+7. **SHA-verified squash merge** — `gh api repos/…/pulls/N/merge -f merge_method=squash -f sha=<expected_head>`. A 409/SHA-mismatch means a mid-promote push — abort, never auto-resolve. **This is its own merge path — never routed through `merge-pr.sh`** (see §8.2 rationale).
 
 **Post-merge (phase 7):**
 - Mark all `promoted=false` ledger entries `promoted=true` **first** (before branch deletion — a crash after marking leaves a benign orphaned branch; a crash after deletion leaves stale ledger entries that wedge re-runs).
