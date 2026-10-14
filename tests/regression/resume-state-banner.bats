@@ -145,3 +145,21 @@ teardown() {
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# 5. if/else polarity: else-branch (full lifecycle) follows the if-block (resume)
+# ---------------------------------------------------------------------------
+@test "structural: Starting full lifecycle state line appears AFTER Resuming line (else-branch follows if-block)" {
+  [ -f "$_WFR" ] || { echo "FAIL: workflow-runner.sh not found"; return 1; }
+
+  _resume_line=$(grep -n 'Resuming: PR #' "$_WFR" | head -1 | cut -d: -f1)
+  _state_line=$(grep -n 'Starting full lifecycle (phases 1-5)' "$_WFR" | head -1 | cut -d: -f1)
+
+  [ -n "$_resume_line" ] || { echo "FAIL: 'Resuming: PR #' not found in workflow-runner.sh"; return 1; }
+  [ -n "$_state_line" ]  || { echo "FAIL: 'Starting full lifecycle (phases 1-5)' not found in workflow-runner.sh"; return 1; }
+
+  [ "$_state_line" -gt "$_resume_line" ] || {
+    echo "FAIL: 'Starting full lifecycle' (line $_state_line) must come AFTER 'Resuming: PR #' (line $_resume_line) — else-branch must follow the if-block"
+    return 1
+  }
+}
