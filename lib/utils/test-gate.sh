@@ -108,13 +108,13 @@ _sanitize_json_value() {
 # ---------------------------------------------------------------------------
 _parse_lint_line() {
   local raw_line="$1"
-  # sc output format: path/file.sh:LINE:COL: levelXXXX: message
-  # E.g.: lib/foo.sh:42:5: error SC2086: Double quote to prevent globbing
-  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:[0-9]+:.*SC[0-9]+:'; then
+  # gcc format (-f gcc): path/file.sh:LINE:COL: level: message [SCnnnn]
+  # E.g.: lib/foo.sh:42:5: warning: Double quote to prevent globbing. [SC2086]
+  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:[0-9]+:.*\[SC[0-9]+\]'; then
     local file line rule message
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
-    rule=$(echo "$raw_line" | grep -oE 'SC[0-9]+' | head -1 || true)
+    rule=$(echo "$raw_line" | grep -oE '\[SC[0-9]+\]' | tail -1 | tr -d '[]' || true)
     # Strip ANSI/control bytes, then escape for JSON (portable — see helper).
     message=$(_sanitize_json_value "$raw_line" || true)
     # JSON-escape file and line the same way as message to handle unusual paths
