@@ -1304,6 +1304,14 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 `_detect_unverified_integrations` in `lib/core/plan-issues.sh` checks whether external hostnames and package/SDK names referenced in issue bodies are grounded in the project's fixture directories or dependency manifests. Issues that reference un-grounded dependencies get a spike-issue prerequisite prepended (no LLM call). This is a deterministic lookup: "is this hostname/package in the project's known-good set?" is a set membership test, not a language-understanding question.
 
+**Lint and creation share non-spike ordinal space (issue #1150, 2026-10-13):**
+
+When `_detect_unverified_integrations` prepends spike issues, all subsequent `#N` dependency references inside a plan file operate in **non-spike ordinal space**: `#1` means the first non-spike issue, not the first raw issue in the file. Both the strict linter (`_lint_issues_strict`) and the creation-side issue loop (in `create_issues`) must interpret `#N` the same way; a mismatch causes the linter to approve ordinals the creation side rejects (or vice versa).
+
+**Contract:** `_lint_issues_strict` builds `_nonspike_to_arr` (non-spike ordinal → raw array index) and `_arr_to_nonspike` (raw array index → non-spike ordinal) at parse time. Dangling-ref Check 3 range-checks each `#N` against `[1.._nonspike_count]` without indexing the maps. Cycle-detection and parallel-file-overlap Check 7 resolve `#N` through `_nonspike_to_arr[N-1]` to obtain the raw index, then use `_arr_to_nonspike` to translate back for user-visible messages. The creation side independently builds an `ordinal_map_file` that maps non-spike ordinals to real GitHub issue numbers — same convention. Both sides classify a spike via the shared `_title_is_spike` predicate (`^spike: capture .+ sample for grounding$`).
+
+**Verification:** `grep -n '_title_is_spike\|_nonspike_to_arr\|_nonspike_count' lib/core/plan-issues.sh`
+
 **Third application — flag-first provenance + deterministic low-signal gate (issue #367, 2026-06-06):**
 
 `_lint_provenance_flags` in `lib/core/plan-issues.sh` checks whether a `**Field provenance:**` section documents fields whose source is already listed in "Files to Read" (obvious-source, low-signal). The check is: "does any filename from Files to Read appear in the source segment of each provenance entry?" — a string-containment check. If the count of obvious-source entries exceeds the threshold, the run is rejected. This dissolved the cargo-cult "every data issue must have a provenance table" pattern into "model flags non-obvious fields; deterministic linter rejects obvious-source entries as low-signal."
