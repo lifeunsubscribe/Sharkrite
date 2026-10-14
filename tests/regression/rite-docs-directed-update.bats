@@ -443,6 +443,50 @@ DRIFT_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Acceptance criterion 11 (#1208): fetch precedes CREATE guard — structural
+# ---------------------------------------------------------------------------
+
+@test "CREATE guard: fetch line precedes cat-file check line in source (structural)" {
+  local fetch_line cat_file_line
+  fetch_line=$(grep -n 'fetch origin.*_ue_target' "$DOCS_CMD" | head -1 | cut -d: -f1 || true)
+  cat_file_line=$(grep -n 'cat-file.*_ue_target' "$DOCS_CMD" | head -1 | cut -d: -f1 || true)
+  [ -n "$fetch_line" ]
+  [ -n "$cat_file_line" ]
+  [ "$fetch_line" -lt "$cat_file_line" ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 12 (#1208): fetch is called during directed-update run
+# ---------------------------------------------------------------------------
+
+@test "CREATE guard: git fetch is called during a directed-update run (behavioral)" {
+  # Use a new-file proposal (does not exist) to keep the guard from skipping it;
+  # answer n at the preview so nothing is committed — we only care that the
+  # fetch ran before the guard checked origin.
+  local proposal
+  proposal="$(printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: CREATE' \
+    'FILE: docs/fetch-probe-fixture.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Probe fixture for fetch-call assertion' \
+    '---CONTENT---' \
+    '# Fetch Probe' \
+    '' \
+    'This file is used only to trigger the proposal loop.' \
+    '---END---')"
+
+  run bash -c "
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
+    bash '${_DOCS_HELPER}' docs_directed_update 'probe fetch call' <<< 'n'
+  " || true
+
+  local fetch_calls
+  fetch_calls="$(grep -c 'git:fetch' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$fetch_calls" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
 # Coverage header presence (structural check)
 # ---------------------------------------------------------------------------
 

@@ -765,7 +765,7 @@ The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces
 - **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content).
 - **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
 
-The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current — a file pushed to origin between the last fetch and proposal-apply time would otherwise bypass the CREATE guard.
+The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. A residual window persists from guard check to apply: the interactive preview session runs between the two, so a file pushed to origin during that session is not caught by this guard (`_docs_apply_approved`'s own fetch at ~line 206 pulls the latest remote state but does not re-run the CREATE check).
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
