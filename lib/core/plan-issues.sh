@@ -3742,24 +3742,56 @@ _dedup_issues() {
 
 display_issues() {
   local issues_file="$1"
-  local issue_num=0
   local total_time_min=0
 
   echo ""
   print_header "Generated Issues"
 
-  # Count issues first
-  local total_issues
-  total_issues=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  # Pre-pass: classify each issue as spike or implementation to build per-issue
+  # display labels.  Spike issues get "[spike K/total_spikes]"; implementation
+  # issues get "[N/total_nonspike]" (non-spike ordinal space, matching #N refs).
+  # Spike-free batches produce labels identical to the previous [N/M] format.
+  local _pspike_count=0
+  local _pnonspike_count=0
+  local -a _issue_titles=()
+  local _pcurrent_title=""
+  while IFS= read -r _pline; do
+    if [[ "$_pline" == "---ISSUE---" ]]; then
+      _pcurrent_title=""
+    elif [[ "$_pline" =~ ^TITLE:\ (.+) ]]; then
+      _pcurrent_title="${BASH_REMATCH[1]}"
+    elif [[ "$_pline" == "---END---" ]]; then
+      _issue_titles+=("$_pcurrent_title")
+      if _title_is_spike "$_pcurrent_title"; then
+        _pspike_count=$((_pspike_count + 1))
+      else
+        _pnonspike_count=$((_pnonspike_count + 1))
+      fi
+    fi
+  done < "$issues_file"
+
+  # Build the label string for each issue (0-based array, parallel to _issue_titles).
+  local -a _labels=()
+  local _lsc=0 _lnc=0 _li
+  for _li in "${!_issue_titles[@]}"; do
+    if _title_is_spike "${_issue_titles[$_li]}"; then
+      _lsc=$((_lsc + 1))
+      _labels+=("spike $_lsc/$_pspike_count")
+    else
+      _lnc=$((_lnc + 1))
+      _labels+=("$_lnc/$_pnonspike_count")
+    fi
+  done
 
   # Parse and display
+  local issue_num=0
   while IFS= read -r line; do
     if [[ "$line" == "---ISSUE---" ]]; then
       issue_num=$((issue_num + 1))
       if [ $issue_num -gt 1 ]; then
         echo ""
       fi
-      echo -e "  ${CYAN}[$issue_num/$total_issues]${NC}"
+      echo -e "  ${CYAN}[${_labels[$((issue_num - 1))]}]${NC}"
     elif [[ "$line" == "---END---" ]]; then
       continue
     elif [[ "$line" =~ ^TITLE:\ (.+) ]]; then
@@ -3820,6 +3852,12 @@ display_issues() {
     echo "$deferred" | while IFS= read -r dline; do
       echo "  ${dline#- ⏭️ }"
     done
+  fi
+
+  # When spikes are present, note that #N refs are in non-spike ordinal space.
+  # Spike-free batches omit this line (behavior unchanged).
+  if [ "$_pspike_count" -gt 0 ]; then
+    print_info "Note: #N refs count implementation issues only and are rewritten to real issue numbers at creation"
   fi
 }
 

@@ -54,6 +54,10 @@ setup() {
   print_warning() { echo "WARNING: $*" >&2; }
   print_info()    { echo "INFO: $*" >&2; }
   print_success() { echo "SUCCESS: $*" >&2; }
+  print_header()  { echo "=== $* ===" >&2; }
+
+  # Color vars — empty so display_issues output is plain text in tests
+  CYAN="" NC="" BLUE="" DIM=""
 
   # Stub portable_sed_i (provided by portable-cmds.sh; not needed for these tests)
   portable_sed_i() {
@@ -77,6 +81,24 @@ setup() {
 
   # shellcheck disable=SC1090
   eval "$(sed -n "${_start},${_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Also load _title_is_spike (used by display_issues for spike classification)
+  local _ts_start
+  _ts_start=$(grep -n '^_title_is_spike()' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" | head -1 | cut -d: -f1)
+  # shellcheck disable=SC1090
+  eval "$(sed -n "${_ts_start},$((${_ts_start} + 3))p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Also load display_issues (preview display with spike-aware numbering)
+  local _di_start _di_end
+  _di_start=$(grep -n '^display_issues()' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" | head -1 | cut -d: -f1)
+  _di_end=$(awk -v s="$_di_start" 'NR > s && /^}$/{print NR; exit}' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")
+  # shellcheck disable=SC1090
+  eval "$(sed -n "${_di_start},${_di_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  set +u; set +o pipefail
 }
 
 teardown() {
@@ -1043,6 +1065,180 @@ JSON
   }
 
   rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# display_issues preview numbering — spike-aware labels (acceptance criteria
+# for issue #1151: "Show resolved dependency refs in plan preview")
+# ---------------------------------------------------------------------------
+
+# Helper: write a two-issue spike-injected issues file
+_write_spike_issues_file() {
+  local file="$1"
+  cat > "$file" <<'FIXTURE'
+---ISSUE---
+TITLE: spike: capture api.example.com sample for grounding
+LABELS: spike
+TIME: 30min
+**Description**: Capture sample fixture.
+**Done Definition**: Fixture captured.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Integrate with external API
+LABELS: feature,phase-1,priority-medium
+TIME: 1hr
+**Description**: Call the external API.
+**Done Definition**: Integration works.
+**Dependencies**: After #1
+---END---
+---ISSUE---
+TITLE: Write integration tests
+LABELS: feature,phase-1,priority-medium
+TIME: 45min
+**Description**: Write tests.
+**Done Definition**: Tests pass.
+**Dependencies**: After #1
+---END---
+FIXTURE
+}
+
+@test "display_issues: spike-injected preview labels spikes distinctly and numbers impl issues by non-spike ordinal" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-preview.txt"
+  _write_spike_issues_file "$issues_file"
+
+  local stdout_out stderr_out
+  stdout_out=$(mktemp)
+  stderr_out=$(mktemp)
+  display_issues "$issues_file" >"$stdout_out" 2>"$stderr_out"
+  local all_out
+  all_out=$(cat "$stdout_out" "$stderr_out")
+
+  # Spike issue must be labeled [spike 1/1], not [1/3]
+  echo "$all_out" | grep -qF "[spike 1/1]" || {
+    echo "FAIL: expected [spike 1/1] label for spike issue" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # First implementation issue must be labeled [1/2] (non-spike ordinal denominator = 2)
+  echo "$all_out" | grep -qF "[1/2]" || {
+    echo "FAIL: expected [1/2] label for first implementation issue" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # Second implementation issue must be labeled [2/2]
+  echo "$all_out" | grep -qF "[2/2]" || {
+    echo "FAIL: expected [2/2] label for second implementation issue" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # Raw position label [1/3] must NOT appear (spikes removed from impl counter)
+  echo "$all_out" | grep -qF "[1/3]" && {
+    echo "FAIL: found raw position label [1/3] — spikes must not consume impl ordinal slots" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  } || true
+
+  rm -f "$stdout_out" "$stderr_out"
+}
+
+@test "display_issues: spike-injected preview footer has note line about #N refs" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-note.txt"
+  _write_spike_issues_file "$issues_file"
+
+  local stdout_out stderr_out
+  stdout_out=$(mktemp)
+  stderr_out=$(mktemp)
+  display_issues "$issues_file" >"$stdout_out" 2>"$stderr_out"
+  local all_out
+  all_out=$(cat "$stdout_out" "$stderr_out")
+
+  # Footer must contain the note about #N refs
+  echo "$all_out" | grep -q "implementation issues only" || {
+    echo "FAIL: expected note about '#N refs count implementation issues only'" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  echo "$all_out" | grep -q "rewritten to real issue numbers at creation" || {
+    echo "FAIL: expected note about refs being rewritten at creation" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  rm -f "$stdout_out" "$stderr_out"
+}
+
+@test "display_issues: spike-free preview renders exactly as today (no note, same numbering)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-no-spike.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement feature A
+LABELS: feature,phase-1,priority-medium
+TIME: 1hr
+**Description**: Feature A.
+**Done Definition**: Works.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Implement feature B
+LABELS: feature,phase-1,priority-medium
+TIME: 45min
+**Description**: Feature B.
+**Done Definition**: Works.
+**Dependencies**: After #1
+---END---
+FIXTURE
+
+  local stdout_out stderr_out
+  stdout_out=$(mktemp)
+  stderr_out=$(mktemp)
+  display_issues "$issues_file" >"$stdout_out" 2>"$stderr_out"
+  local all_out
+  all_out=$(cat "$stdout_out" "$stderr_out")
+
+  # Issue 1: labeled [1/2] (same as today's [N/M] format)
+  echo "$all_out" | grep -qF "[1/2]" || {
+    echo "FAIL: expected [1/2] label for first issue in spike-free batch" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # Issue 2: labeled [2/2]
+  echo "$all_out" | grep -qF "[2/2]" || {
+    echo "FAIL: expected [2/2] label for second issue in spike-free batch" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # No note line (spike-free batches must not print the note)
+  echo "$all_out" | grep -q "implementation issues only" && {
+    echo "FAIL: spike-free preview must not print the #N note line" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  } || true
+
+  # No [spike …] labels
+  echo "$all_out" | grep -qF "[spike" && {
+    echo "FAIL: spike-free preview must not contain [spike ...] labels" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  } || true
+
+  rm -f "$stdout_out" "$stderr_out"
 }
 
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
