@@ -2376,11 +2376,26 @@ _lint_issues_strict() {
   for _freq_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
     local _freq_cmds="${_verif_cmds[$_freq_i]}"
     [ -z "$_freq_cmds" ] && continue
+    # Reset per-issue seen-set so each command counts at most once per issue,
+    # not once per extracted line (acceptance-criteria backtick + fenced block
+    # both extract the same cmd, so without dedup a 2-issue plan reaches freq=4
+    # and is wrongly classified as a universal gate).
+    local _freq_seen_this=""
     while IFS= read -r _freq_cmd; do
       [ -z "$_freq_cmd" ] && continue
       _freq_norm=$(echo "$_freq_cmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s '[:blank:]' ' ' || true)
       [ -z "$_freq_norm" ] && continue
       case "$_freq_norm" in *' '*) ;; *) continue ;; esac
+      # Skip if already counted for this issue (whole-line match)
+      case "
+${_freq_seen_this}
+" in
+        *"
+${_freq_norm}
+"*) continue ;;
+      esac
+      _freq_seen_this="${_freq_seen_this}
+${_freq_norm}"
       _verif_cmd_freq["$_freq_norm"]=$(( ${_verif_cmd_freq["$_freq_norm"]:-0} + 1 ))
     done <<< "$_freq_cmds"
   done
