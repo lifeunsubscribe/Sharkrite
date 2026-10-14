@@ -3617,10 +3617,27 @@ _detect_unverified_integrations() {
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
-    local _name
+    local _type _name
+    _type=$(echo "$_candidate_line" | cut -f1)
     _name=$(echo "$_candidate_line" | cut -f2)
     local _key
     _key=$(_sanitize_spike_key "$_name")
+    # Fixture path: host candidates use the dotted hostname so _build_grounded_hosts
+    # recognises the directory on the next run (its regex requires a dot in the name).
+    # Package candidates use the sanitized key (dots/slashes → hyphens).
+    local _fixture_path
+    if [ "$_type" = "host" ]; then
+      _fixture_path="$_name"
+    else
+      _fixture_path="$_key"
+    fi
+    # Truncate display name so the title stays within the ≤50-char runbook cap.
+    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = 24.
+    local _display_name
+    _display_name="$_name"
+    if [ "${#_name}" -gt 24 ]; then
+      _display_name="${_name:0:21}..."
+    fi
 
     print_warning "unverified external integration: $_name" >&2
 
@@ -3635,7 +3652,7 @@ _detect_unverified_integrations() {
 
     # Build spike issue block
     spikes_block+="---ISSUE---
-TITLE: Capture $_name sample - fixtures
+TITLE: Capture $_display_name sample - fixtures
 LABELS: spike, tech-debt
 TIME: 30min
 BODY:
@@ -3648,13 +3665,13 @@ against a hallucinated contract.
 ## Task
 
 Make one real call to \`$_name\`. Capture a secret-scrubbed sample to
-\`fixtures/$_key/\`. Document per-field provenance (what each returned field
+\`fixtures/$_fixture_path/\`. Document per-field provenance (what each returned field
 means, whether it is stable across calls, any fields that contain secrets
 that must be scrubbed before committing).
 
 ## Acceptance Criteria
 
-- [ ] Sample exists at \`fixtures/$_key/\`
+- [ ] Sample exists at \`fixtures/$_fixture_path/\`
 - [ ] Each field in the sample has a one-line provenance comment in the
   adjacent \`README.md\` (or inline in the JSON as a \`_comment\` key)
 - [ ] No secrets (tokens, credentials, PII) are present in the committed sample

@@ -295,7 +295,53 @@ FIXTURE
   echo "$spike_title" | grep -qi "^spike: capture" && {
     echo "FAIL: spike title still uses old lowercase form: $spike_title" >&2
     false
-  } || true
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike title is capped at ≤50 chars even for long package names
+#
+# A scoped package name like @opentelemetry/instrumentation-http (36 chars)
+# would produce a 62-char title without truncation, violating the runbook cap.
+# The emitter must truncate the display name to keep the title ≤50 chars.
+# ---------------------------------------------------------------------------
+
+@test "Spike title is truncated to ≤50 chars for long package names" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.0.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-longname.txt"
+  write_issues_file "$issues_file" \
+    "Add distributed tracing" \
+    "Use require('@opentelemetry/instrumentation-http') to add tracing."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # Must still match canonical format even after truncation
+  echo "$spike_title" | grep -q "^Capture .* sample - fixtures$" || {
+    echo "FAIL: truncated spike title does not match canonical format: $spike_title" >&2
+    false
+  }
 
   rm -f "$stderr_out"
 }
@@ -496,15 +542,17 @@ JSON
 }
 
 # ---------------------------------------------------------------------------
-# Spike body uses sanitized fixture key path (fixtures/<key>/) not raw dotted name
+# Spike body fixture path uses dotted hostname for host candidates
 #
-# The fixture path in the spike body must use the sanitized key (dots → hyphens)
-# so the path is safe as a directory name and consistent with how the spike-map
-# key is built.  E.g. "simplefin.io" → "fixtures/simplefin-io/", not
-# "fixtures/simplefin.io/".
+# Host-candidate fixture paths must use the original dotted hostname
+# (e.g. "fixtures/simplefin.io/") so that _build_grounded_hosts recognises
+# the directory on the next run — its regex requires a dot to distinguish
+# hostnames from plain directory names.  Using the sanitized key
+# ("fixtures/simplefin-io/") would cause the grounding loop to miss the
+# fixture and re-emit the spike on every subsequent `rite plan` run.
 # ---------------------------------------------------------------------------
 
-@test "Spike body fixture path uses sanitized key (dots replaced with hyphens)" {
+@test "Spike body fixture path uses dotted hostname for host candidates (grounding-compatible)" {
   local issues_file="$RITE_TEST_TMPDIR/issues-fixturepath.txt"
   write_issues_file "$issues_file" \
     "Build payment integration" \
@@ -517,21 +565,21 @@ JSON
   local spike_body
   spike_body=$(awk '/^---ISSUE---/{in_block=1} in_block{print} /^---END---/{in_block=0}' "$issues_file" | head -80)
 
-  # Body must reference the sanitized key path (simplefin-io), not the dotted name
-  echo "$spike_body" | grep -q "fixtures/simplefin-io/" || {
-    echo "FAIL: spike body does not use sanitized key path fixtures/simplefin-io/" >&2
+  # Body must reference the dotted hostname path (simplefin.io) for grounding-loop compat
+  echo "$spike_body" | grep -q "fixtures/simplefin\.io/" || {
+    echo "FAIL: spike body does not use dotted hostname path fixtures/simplefin.io/" >&2
     echo "--- spike body ---" >&2
     echo "$spike_body" >&2
     false
   }
 
-  # Must NOT use the unsanitized dotted path
-  echo "$spike_body" | grep -q "fixtures/simplefin\.io/" && {
-    echo "FAIL: spike body uses raw dotted name fixtures/simplefin.io/ — should use sanitized key" >&2
+  # Must NOT use the sanitized hyphenated path (would never be recognised by _build_grounded_hosts)
+  echo "$spike_body" | grep -q "fixtures/simplefin-io/" && {
+    echo "FAIL: spike body uses sanitized key fixtures/simplefin-io/ — host fixtures must use dotted hostname" >&2
     echo "--- spike body ---" >&2
     echo "$spike_body" >&2
     false
-  } || true
+  }
 
   rm -f "$stderr_out"
 }
