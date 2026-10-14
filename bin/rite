@@ -800,63 +800,6 @@ if [ "$MODE" = "full-suite" ]; then
   exec "$SCRIPT_DIR/rite-full-suite"
 fi
 
-# Integration branch / issue branch / all-repo sync.
-# Explicit, never automatic. SYNC_ARGS were collected at parse time.
-if [ "$MODE" = "sync" ]; then
-  source "$RITE_LIB_DIR/utils/integration-sync.sh"
-
-  # Typed arg validation: all-digits → issue form; one non-numeric → branch form;
-  # zero args → bare all-repo form; mixed/multiple non-numeric → usage error.
-  _sync_argc=${#SYNC_ARGS[@]}
-  _sync_all_numeric=true
-  _sync_all_branch=true
-  for _sync_a in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
-    if [[ "$_sync_a" =~ ^[0-9]+$ ]]; then _sync_all_branch=false; else _sync_all_numeric=false; fi
-  done
-
-  if [ "$_sync_argc" -eq 0 ]; then
-    # Bare form: sweep all integration branches then all in-flight worktrees
-    sync_all_repos
-    exit $?
-
-  elif [ "$_sync_all_numeric" = true ]; then
-    # Issue form: rebase each feature branch onto its resolver-determined base
-    _sync_overall_rc=0
-    _sync_report=()
-    for _sync_n in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
-      _sync_item_rc=0
-      sync_issue_branch "$_sync_n" || _sync_item_rc=$?
-      [ "$_sync_item_rc" -ne 0 ] && _sync_overall_rc=1
-      _sync_report+=("  issue #${_sync_n}: ${_SYNC_ISSUE_OUTCOME:-?}")
-    done
-    echo ""
-    print_header "Sync Report"
-    for _sync_line in ${_sync_report[@]+"${_sync_report[@]}"}; do
-      echo "$_sync_line"
-    done
-    exit $_sync_overall_rc
-
-  elif [ "$_sync_argc" -eq 1 ] && [ "$_sync_all_branch" = true ]; then
-    # Branch form: #1041 behavior — merge origin/main into integration branch
-    sync_integration_branch "${SYNC_ARGS[0]}"
-    exit $?
-
-  else
-    # Mixed or multiple non-numeric args
-    print_error "--sync: invalid arguments — use one of:"
-    echo "  rite --sync                      # sweep all ledger branches + in-flight worktrees"
-    echo "  rite --sync <branch>             # merge origin/main into integration branch"
-    echo "  rite --sync <N> [<N>...]         # rebase issue feature branches onto their base"
-    exit 1
-  fi
-fi
-
-# Integration branch promotion: open promotion PR, review, full-suite, merge, cleanup.
-if [ "$MODE" = "promote" ]; then
-  source "$RITE_LIB_DIR/core/promote-branch.sh"
-  run_promote "${PROMOTE_BRANCH}"
-  exit $?
-fi
 
 # Refresh encountered-issues catalog: invoke the renderer (no issue number needed)
 if [ "$MODE" = "refresh-encountered-issues" ]; then
@@ -969,6 +912,18 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
     LOG_SLUG="plan"
   elif [ "$MODE" = "docs" ]; then
     LOG_SLUG="docs"
+  elif [ "$MODE" = "promote" ]; then
+    LOG_SLUG="promote-${PROMOTE_BRANCH//\//-}"
+  elif [ "$MODE" = "sync" ]; then
+    if [ "${#SYNC_ARGS[@]}" -eq 0 ]; then
+      LOG_SLUG="sync-all"
+    else
+      _sync_slug_parts=""
+      for _sync_slug_a in "${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}"; do
+        _sync_slug_parts="${_sync_slug_parts:+${_sync_slug_parts}-}${_sync_slug_a//\//-}"
+      done
+      LOG_SLUG="sync-${_sync_slug_parts}"
+    fi
   elif [ ${#BATCH_FILTER_ARGS[@]} -gt 0 ]; then
     # Batch mode: e.g., "batch-label-tech-debt"
     LOG_SLUG="batch-${BATCH_FILTER_ARGS[*]}"
@@ -1019,6 +974,64 @@ if [ -n "$RITE_LOG_FILE" ]; then
 
   export RITE_LOG_FILE
   print_info "Logging to: $RITE_LOG_FILE"
+fi
+
+# Integration branch / issue branch / all-repo sync.
+# Explicit, never automatic. SYNC_ARGS were collected at parse time.
+if [ "$MODE" = "sync" ]; then
+  source "$RITE_LIB_DIR/utils/integration-sync.sh"
+
+  # Typed arg validation: all-digits → issue form; one non-numeric → branch form;
+  # zero args → bare all-repo form; mixed/multiple non-numeric → usage error.
+  _sync_argc=${#SYNC_ARGS[@]}
+  _sync_all_numeric=true
+  _sync_all_branch=true
+  for _sync_a in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
+    if [[ "$_sync_a" =~ ^[0-9]+$ ]]; then _sync_all_branch=false; else _sync_all_numeric=false; fi
+  done
+
+  if [ "$_sync_argc" -eq 0 ]; then
+    # Bare form: sweep all integration branches then all in-flight worktrees
+    sync_all_repos
+    exit $?
+
+  elif [ "$_sync_all_numeric" = true ]; then
+    # Issue form: rebase each feature branch onto its resolver-determined base
+    _sync_overall_rc=0
+    _sync_report=()
+    for _sync_n in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
+      _sync_item_rc=0
+      sync_issue_branch "$_sync_n" || _sync_item_rc=$?
+      [ "$_sync_item_rc" -ne 0 ] && _sync_overall_rc=1
+      _sync_report+=("  issue #${_sync_n}: ${_SYNC_ISSUE_OUTCOME:-?}")
+    done
+    echo ""
+    print_header "Sync Report"
+    for _sync_line in ${_sync_report[@]+"${_sync_report[@]}"}; do
+      echo "$_sync_line"
+    done
+    exit $_sync_overall_rc
+
+  elif [ "$_sync_argc" -eq 1 ] && [ "$_sync_all_branch" = true ]; then
+    # Branch form: #1041 behavior — merge origin/main into integration branch
+    sync_integration_branch "${SYNC_ARGS[0]}"
+    exit $?
+
+  else
+    # Mixed or multiple non-numeric args
+    print_error "--sync: invalid arguments — use one of:"
+    echo "  rite --sync                      # sweep all ledger branches + in-flight worktrees"
+    echo "  rite --sync <branch>             # merge origin/main into integration branch"
+    echo "  rite --sync <N> [<N>...]         # rebase issue feature branches onto their base"
+    exit 1
+  fi
+fi
+
+# Integration branch promotion: open promotion PR, review, full-suite, merge, cleanup.
+if [ "$MODE" = "promote" ]; then
+  source "$RITE_LIB_DIR/core/promote-branch.sh"
+  run_promote "${PROMOTE_BRANCH}"
+  exit $?
 fi
 
 # Handle init mode

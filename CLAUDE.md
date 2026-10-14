@@ -881,8 +881,17 @@ cat .rite/state/full-suite-failure.flag   # See current failure details if any
 
 `.rite/logs/rite-<issue>-<timestamp>.log` is the **full transcript** of the run — everything you would have seen in the terminal, including subprocess output (Claude tool calls with `⚡` indicators, bats per-test output, make check / lint output). Use `tail -f` to watch a running workflow in real time.
 
+Log filename patterns by mode:
+- Issue runs: `rite-<N>-<timestamp>.log` (e.g. `rite-360-20260317-103034.log`)
+- Promote: `rite-promote-<branch>-<timestamp>.log` (e.g. `rite-promote-supervised-ux-20261012-230015.log`)
+- Sync (branch form): `rite-sync-<branch>-<timestamp>.log`
+- Sync (issue form): `rite-sync-<N>-<M>-<timestamp>.log`
+- Sync (bare sweep): `rite-sync-all-<timestamp>.log`
+
 ```bash
-tail -f .rite/logs/rite-360-*.log   # live view during a run
+tail -f .rite/logs/rite-360-*.log          # live view during an issue run
+tail -f .rite/logs/rite-promote-*.log      # live view during a promotion
+tail -f .rite/logs/rite-sync-*.log         # live view during a sync
 ```
 
 **Two-channel write convention** (important when modifying logging code):
