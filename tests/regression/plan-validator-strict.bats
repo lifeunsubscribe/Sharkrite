@@ -3235,6 +3235,152 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Check 8 — universal gate: a command shared by ≥3 issues is a CI gate, not
+# a duplicated deliverable; must produce zero duplicate-verification WARNINGs.
+#
+# Motivating case: orrery run where 15 of 26 warnings fired on `pnpm typecheck`
+# shared across 7 issues.  The hardcoded allowlist does not contain
+# `pnpm typecheck`, so without the frequency rule all 21 pairs would warn.
+# ---------------------------------------------------------------------------
+
+@test "Check 8: command shared by 7 issues is a universal gate — no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-universal-gate.txt"
+
+  local _body
+  _body=""
+  local _i
+  for _i in 1 2 3 4 5 6 7; do
+    _body="${_body}---ISSUE---
+TITLE: Migrate component ${_i} to new type system
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate component ${_i} to the new type system.
+
+**Claude Context**:
+Files to Modify:
+- src/components/comp_${_i}.ts
+
+**Acceptance Criteria**:
+- [ ] Types clean: \`pnpm typecheck\`
+
+**Verification Commands**:
+\`\`\`bash
+pnpm typecheck
+\`\`\`
+
+**Done Definition**: Done when component ${_i} passes typecheck.
+
+**Dependencies**: None
+---END---
+"
+  done
+  printf '%s' "$_body" > "$issues_file"
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The shared `pnpm typecheck` is a universal gate — must produce no duplicate-verification warning
+  grep -q "duplicate-verification:" "$stderr_out" && {
+    echo "FAIL: unexpected duplicate-verification WARNING for universal gate command" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 — 2-issue distinctive duplicate: a command shared by exactly 2
+# issues on a 2-issue slate is NOT a universal gate and must still warn.
+# Regression guard for the #1134 motivating case.
+# ---------------------------------------------------------------------------
+
+@test "Check 8: distinctive command shared by exactly 2 issues still warns — WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-2issue-distinctive.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Fix caching in module A
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Fix caching in module A.
+
+**Claude Context**:
+Files to Modify:
+- src/module_a.py
+
+**Acceptance Criteria**:
+- [ ] Cache cleared: `redis-cli flushdb`
+
+**Verification Commands**:
+```bash
+redis-cli flushdb
+```
+
+**Done Definition**: Done when cache is cleared in module A.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Fix caching in module B
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Fix caching in module B.
+
+**Claude Context**:
+Files to Modify:
+- src/module_b.py
+
+**Acceptance Criteria**:
+- [ ] Cache cleared: `redis-cli flushdb`
+
+**Verification Commands**:
+```bash
+redis-cli flushdb
+```
+
+**Done Definition**: Done when cache is cleared in module B.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Only 2 issues share this command — below the universal gate threshold — must warn
+  grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" || {
+    echo "FAIL: expected duplicate-verification WARNING for 2-issue distinctive duplicate" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Regression: Check 4 receives single-token backtick paths from acceptance criteria
 #
 # A single-token backtick entry (no space) in acceptance criteria — e.g.
