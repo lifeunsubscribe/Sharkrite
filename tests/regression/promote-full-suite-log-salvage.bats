@@ -107,6 +107,17 @@ gather_promotion_context()    { return 0; }
 compose_promotion_pr_body()   { echo "stub promotion body"; return 0; }
 STUB
 
+  cat > "$_lib/utils/markers.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f rite_markers_loaded >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+rite_markers_loaded() { return 0; }
+RITE_MARKER_REVIEW="sharkrite-local-review"
+RITE_MARKER_ASSESSMENT="sharkrite-assessment"
+RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
+export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
+STUB
+
   cat > "$_lib/core/local-review.sh" << 'STUB'
 #!/bin/bash
 exit 0
@@ -183,6 +194,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_base"
+export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -238,6 +250,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_base"
+export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -291,6 +304,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_base"
+export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -345,6 +359,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_base"
+export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -401,6 +416,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_base"
+export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -453,6 +469,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_base"
+export RITE_STATE_DIR="$RITE_TEST_TMPDIR/.rite/state"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail

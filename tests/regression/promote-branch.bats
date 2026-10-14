@@ -120,6 +120,17 @@ exit 0
 STUB
   chmod +x "$_lib/core/local-review.sh"
 
+  cat > "$_lib/utils/markers.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f rite_markers_loaded >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+rite_markers_loaded() { return 0; }
+RITE_MARKER_REVIEW="sharkrite-local-review"
+RITE_MARKER_ASSESSMENT="sharkrite-assessment"
+RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
+export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
+STUB
+
   # Recording merge-pr.sh stub: if this file is ever sourced, it sets a flag.
   cat > "$_lib/core/merge-pr.sh" << 'STUB'
 #!/bin/bash
