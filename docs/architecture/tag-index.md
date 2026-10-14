@@ -14,10 +14,12 @@
 - behavioral-design.md → Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)
 
 
+
 ## Created
-- behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
+- behavioral-design.md → ADR Backfill (bootstrap-docs.sh)
 
 
 ## Updated
 - behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
+- behavioral-design.md → Post-Merge Dependency Reinstall
 
