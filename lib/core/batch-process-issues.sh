@@ -915,6 +915,24 @@ _gmp_gate_file=""
 _gmp_gate_exit=0
 _gmp_skip=false
 
+# Per-SHA memo: the verdict is a pure function of origin/main's tree, so a
+# green result for a given SHA stays valid until main moves.  Without this,
+# every batch re-runs the full ~3400-test suite before touching an issue —
+# 10-25 min of fixed cost even when main has not advanced a commit.
+# Only GREEN is memoized: a red main gets fixed, so a red verdict must always
+# be re-verified on the next batch.
+_gmp_main_sha=$(git -C "$RITE_PROJECT_ROOT" rev-parse origin/main 2>/dev/null || true)
+_gmp_memo_file=""
+if [ -n "$_gmp_main_sha" ]; then
+  _gmp_memo_file="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/green-main-verified-${_gmp_main_sha}"
+  if [ -f "$_gmp_memo_file" ]; then
+    _gmp_skip=true
+    print_success "Main already verified green at ${_gmp_main_sha:0:8} — skipping full-suite preflight"
+    _diag "GREEN_MAIN_PREFLIGHT outcome=memo_hit sha=${_gmp_main_sha}"
+    echo ""
+  fi
+fi
+
 # Check whether a test runner is available at all; skip preflight silently
 # when neither make nor RITE_TEST_COMMAND exists (e.g. a repo with no tests).
 if ! command -v make >/dev/null 2>&1 && [ -z "${RITE_TEST_COMMAND:-}" ]; then
@@ -951,6 +969,12 @@ if [ "$_gmp_skip" = "false" ]; then
 
   if [ "$_gmp_gate_exit" -eq 0 ]; then
     print_success "Main is green — gate block-on-any soundness invariant holds"
+    # Record the verdict for this SHA so sibling batches skip the re-run.
+    if [ -n "${_gmp_memo_file:-}" ]; then
+      mkdir -p "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$_gmp_memo_file" 2>/dev/null || true
+    fi
+    _diag "GREEN_MAIN_PREFLIGHT outcome=green sha=${_gmp_main_sha:-unknown}"
     rm -f "$_gmp_gate_file"
     echo ""
   else

@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/create-followup-issues.sh, lib/utils/issue-lock.sh
+# sharkrite-gate-serial — spawns competing processes; under the full suite's parallel group these starve past BATS_TEST_TIMEOUT (false red main, #916 preflight)
 # tests/concurrency/followup-issue-dedup.bats - Follow-up issue deduplication tests
 #
 # Tests that concurrent follow-up issue creation properly deduplicates via the
