@@ -296,23 +296,42 @@ run_promote() {
   # this, everything below CRITICAL was posted and then evaporated: promoting
   # supervised-ux surfaced 4 HIGH / 3 MEDIUM / 5 LOW and none were tracked.
   #
-  # Deterministic by design — the review already emits machine-readable
-  # `<!-- item:N severity:X -->` markers, so no classifier runs here. One
-  # aggregated issue, never a fix loop: promotion is a gate, and fixing on the
-  # integration branch would land code on main that skipped per-issue review.
-  # Best-effort throughout: promotion has already passed its gates, so nothing
-  # in this block may block, retry, or fail the merge.
-  local _promo_review _promo_noncrit
+  # Deterministic by design — the review embeds a sharkrite-review-data JSON
+  # block (or a Findings line) with machine-readable counts; no LLM classifier
+  # runs here. One aggregated issue, never a fix loop: promotion is a gate, and
+  # fixing on the integration branch would land code on main that skipped the
+  # per-issue review cycle.  Best-effort throughout: promotion has already
+  # passed its gates, so nothing in this block may block, retry, or fail the merge.
+  local _promo_review
   _promo_review=$(gh_safe pr view "$PROMO_PR" --json comments \
     --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body" 2>/dev/null || true)
-  _promo_noncrit=$(printf '%s' "$_promo_review" \
-    | grep -oE '<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW) -->' | wc -l | tr -d ' ' || true)
 
-  if [ -n "$_promo_review" ] && [ "${_promo_noncrit:-0}" -gt 0 ]; then
-    local _promo_h _promo_m _promo_l
-    _promo_h=$(printf '%s' "$_promo_review" | grep -c 'severity:HIGH'   || true)
-    _promo_m=$(printf '%s' "$_promo_review" | grep -c 'severity:MEDIUM' || true)
-    _promo_l=$(printf '%s' "$_promo_review" | grep -c 'severity:LOW'    || true)
+  # Parse severity counts from the review's embedded JSON block (priority 1) or
+  # the human Findings line (priority 2) — same dual-parse path as local-review.sh.
+  # Both are deterministic: no LLM call, no timeout risk.
+  local _promo_h=0 _promo_m=0 _promo_l=0 _promo_noncrit=0
+  if [ -n "${_promo_review:-}" ]; then
+    local _promo_json _promo_findings_line
+    _promo_json=$(printf '%s' "$_promo_review" \
+      | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' 2>/dev/null || true)
+    if [ -n "${_promo_json:-}" ] && printf '%s' "$_promo_json" | jq -e '.summary' >/dev/null 2>&1; then
+      _promo_h=$(printf '%s' "$_promo_json" | jq -r '.summary.high // 0' || true)
+      _promo_m=$(printf '%s' "$_promo_json" | jq -r '.summary.medium // 0' || true)
+      _promo_l=$(printf '%s' "$_promo_json" | jq -r '.summary.low // 0' || true)
+    else
+      _promo_findings_line=$(printf '%s' "$_promo_review" \
+        | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
+      if [ -n "${_promo_findings_line:-}" ]; then
+        _promo_h=$(printf '%s' "$_promo_findings_line" | grep -oE "HIGH: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
+        _promo_m=$(printf '%s' "$_promo_findings_line" | grep -oE "MEDIUM: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
+        _promo_l=$(printf '%s' "$_promo_findings_line" | grep -oE "LOW: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
+      fi
+    fi
+    _promo_h="${_promo_h:-0}"; _promo_m="${_promo_m:-0}"; _promo_l="${_promo_l:-0}"
+    _promo_noncrit=$(( _promo_h + _promo_m + _promo_l ))
+  fi
+
+  if [ "${_promo_noncrit:-0}" -gt 0 ]; then
     print_info "Capturing ${_promo_noncrit} non-CRITICAL promotion finding(s) as a follow-up issue"
 
     local _promo_body
