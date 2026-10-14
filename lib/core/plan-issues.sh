@@ -3550,7 +3550,19 @@ _detect_unverified_integrations() {
             local _host_reg
             _host_reg=$(_normalize_host_to_registrable_domain "$_host")
             if ! echo "$grounded_hosts_norm" | grep -qxF "${_host_reg:-$_host}" 2>/dev/null; then
-              echo "host${TAB_CHAR}${_host_reg:-$_host}" >> "$candidates_file"
+              # Check if the vendor token (first label of the registrable domain,
+              # e.g. "supabase" from supabase.co) appears as a word-boundary token
+              # in any grounded package name (e.g. @supabase/supabase-js).
+              # When matched, the session contract comes from a typed SDK already
+              # in the manifest — the case this provenance system was built for.
+              local _vendor _grounding_pkg
+              _vendor=$(echo "${_host_reg:-$_host}" | sed 's/\..*//' || true)
+              _grounding_pkg=$(echo "$grounded_packages" | grep -iE "(^|[@/.-])${_vendor}([@/.-]|$)" | head -1 || true)
+              if [ -n "${_grounding_pkg:-}" ]; then
+                print_info "host ${_host_reg:-$_host} grounded by SDK package ${_grounding_pkg} — suppressing spike" >&2
+              else
+                echo "host${TAB_CHAR}${_host_reg:-$_host}" >> "$candidates_file"
+              fi
             fi
           done <<< "$_hosts"
         fi

@@ -1894,6 +1894,135 @@ FIXTURE
   rm -f "$stderr_out"
 }
 
+# ---------------------------------------------------------------------------
+# Fixture AB: host spike suppressed when vendor token matches a grounded SDK package
+#
+# Project has package.json with "@supabase/supabase-js" in dependencies.
+# Issue body references https://xyz.supabase.co/rest/v1/...
+# Expected:
+#   - no spike issue (1 issue, not 2)
+#   - no WARNING
+#   - one INFO line naming "@supabase/supabase-js"
+# ---------------------------------------------------------------------------
+
+@test "Fixture AB: host grounded by SDK package suppresses spike and emits INFO" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "express": "^4.18.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-ab.txt"
+  write_issues_file "$issues_file" \
+    "Fetch user records from Supabase" \
+    "Call https://xyz.supabase.co/rest/v1/users to retrieve rows."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit NO WARNING (the host is suppressed, not spiked)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNING lines, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly one INFO line naming the grounding package
+  local info_count
+  info_count=$(grep -c "^INFO:" "$stderr_out" || true)
+  [ "$info_count" -eq 1 ] || {
+    echo "FAIL: expected 1 INFO line (suppression notice), got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  grep -q "@supabase/supabase-js" "$stderr_out" || {
+    echo "FAIL: INFO line does not name the grounding package '@supabase/supabase-js'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have exactly 1 issue (no spike prepended)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AC: host with vendor token but no matching grounded package still spikes
+#
+# Project has package.json with only "express" — no supabase package.
+# Issue body references https://xyz.supabase.co/
+# Expected: one WARNING, spike emitted — vendor-token match requires grounded package.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AC: host vendor token with no matching grounded package still produces spike" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac.txt"
+  write_issues_file "$issues_file" \
+    "Fetch user records from Supabase" \
+    "Call https://xyz.supabase.co/rest/v1/users to retrieve rows."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit one WARNING (supabase.co is not grounded by fixture or SDK)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING for ungrounded host, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have 2 issues (spike + original)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
   local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
 
