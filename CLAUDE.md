@@ -418,10 +418,11 @@ _dep_state=""
 
 ### macOS bash 3.2 compatibility (CRITICAL)
 
-Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when invoked directly (e.g., from `bin/rite`). Bash 3.2 does **not** have the following bash 4.0+ features:
+Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when invoked directly (e.g., from `bin/rite`). Bash 3.2 does **not** have the following bash 4.0+ features, and also cannot parse:
 
 - `mapfile` / `readarray` (array-population builtins)
 - `declare -A` (associative arrays)
+- **heredoc-in-cmdsubst**: `var=$(cat <<EOF ... EOF)` — bash 3.2's `$(...)` scanner does not understand heredocs inside command substitution; it finds the first `)` inside the heredoc body and corrupts parse state for hundreds of lines downstream (live: `assess-documentation.sh` and `plan-issues.sh`, issues #1163/#1190, 2026-10-11/12). **Fix for directly-executed scripts: add the self-re-exec guard** (option 2 below) — do NOT rewrite the heredocs into 3.2-parseable form. **For sourced libraries** (e.g. `plan-issues.sh`, `docs-command.sh`, sourced by `bin/rite` after args are consumed): the self-re-exec guard is wrong — `exec "$_newer_bash" "$0" "$@"` re-execs the calling script with empty `$@`, producing a misleading "No issues specified" error. Instead, detect the sourced context with `[ "${BASH_SOURCE[0]}" != "$0" ]` and fail loudly with a clear message (the caller must run under bash 4+).
 
 **Live crash (2026-06-04):** `rite --undo <N>` with follow-up issues exploded with `mapfile: command not found` when run without Homebrew bash on PATH (issue #327). Same class of bug as issue #266 (`TEMP_FILES[@]` empty-array under bash 3.2).
 
@@ -456,7 +457,7 @@ Scripts with a `#!/bin/bash` shebang are executed by macOS system bash 3.2 when 
 
 **Do NOT** change shebangs to `#!/usr/bin/env bash` — the `/bin/bash` shebang is the deliberate Sharkrite choice for scripts in `lib/`, `bin/`, and `tools/`. Write portable code instead.
 
-**Enforcement:** Lint rule `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) in `tools/sharkrite-lint.sh` flags `mapfile`, `readarray`, and `declare -A` in `#!/bin/bash` scripts without a `BASH_VERSINFO` guard. Regression tests: `tests/regression/undo-workflow-bash-3-2-compat.bats` and `tests/lint/bash-4-builtin-detection.bats`.
+**Enforcement:** Lint rule `BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT` (Rule 21) in `tools/sharkrite-lint.sh` flags `mapfile`, `readarray`, and `declare -A` in `#!/bin/bash` scripts without a `BASH_VERSINFO` guard (enumerated builtins only — cannot detect heredoc-in-cmdsubst parse corruption). Regression tests: `tests/regression/undo-workflow-bash-3-2-compat.bats`, `tests/lint/bash-4-builtin-detection.bats`, and `tests/regression/bin-bash-32-parse-sweep.bats` (sweeps every `#!/bin/bash` file in lib/bin/tools: must either `/bin/bash -n` clean OR carry a BASH_VERSINFO guard in its first 30 lines — skipped on Linux CI where `/bin/bash` is not 3.2).
 
 ### .gitignore and symlinks
 

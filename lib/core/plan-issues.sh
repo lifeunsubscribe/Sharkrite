@@ -15,6 +15,31 @@
 
 set -euo pipefail
 
+# Bash 3.2 (macOS system /bin/bash) cannot parse a here-document nested inside
+# a command substitution: its scanner ends the substitution at the first ")"
+# appearing in the here-document body, corrupting parse state hundreds of lines
+# downstream. (Written as prose deliberately — spelling the construct literally
+# here makes the linter's own here-document tracker open a phantom document and
+# mis-attribute every subsequent `local`.)
+#
+# When SOURCED (bin/rite sources this file after consuming its args):
+#   re-exec cannot help — $0 is the caller and $@ is empty.
+#   Fail loudly so the caller is fixed to run under bash 4+.
+# When EXECUTED directly: self-re-exec to bash 4+.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    echo "Error: plan-issues.sh requires bash 4+ (sourced from $0). Run rite under bash 4+: brew install bash" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "$BASH" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: plan-issues.sh requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if declare -f plan_issues >/dev/null 2>&1; then
   return 0 2>/dev/null || true
