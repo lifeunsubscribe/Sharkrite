@@ -891,11 +891,14 @@ cat .rite/state/full-suite-failure.flag   # See current failure details if any
 
 | Mode | Slug pattern | Example |
 |------|-------------|---------|
-| Issue run (single or batch) | `<issue>` or `<issue>-<issue>` | `rite-360-20261014-103034.log` |
+| Issue run (single or batch by number) | `<issue>` or `<issue>-<issue>` | `rite-360-20261014-103034.log` |
+| `rite --label <filter>` (batch by filter) | `batch-label-<filter>` | `rite-batch-label-tech-debt-20261014-103034.log` |
 | `rite --promote <branch>` | `promote-<branch>` | `rite-promote-supervised-ux-20261014-103034.log` |
 | `rite --sync <branch>` | `sync-<branch>` | `rite-sync-release-1.2-20261014-103034.log` |
 | `rite --sync` (bare sweep) | `sync-all` | `rite-sync-all-20261014-103034.log` |
+| `rite --sync <N> [<N>...]` (issue rebase) | `sync-<N>-<N>` | `rite-sync-42-43-20261014-103034.log` |
 | `rite plan` | `plan` | `rite-plan-20261014-103034.log` |
+| `rite docs` | `docs` | `rite-docs-20261014-103034.log` |
 
 Logs contain everything you would have seen in the terminal, including subprocess output (Claude tool calls with `⚡` indicators, bats per-test output, make check / lint output). Use `tail -f` to watch a running workflow in real time.
 

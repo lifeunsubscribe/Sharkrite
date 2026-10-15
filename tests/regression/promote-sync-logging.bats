@@ -142,6 +142,12 @@ _line_of() {
   _f=$(ls "$_log_dir"/rite-promote-header-check-*.log 2>/dev/null | head -1)
   [ -n "$_f" ]
   grep -q "=== Sharkrite Log ===" "$_f"
+  # Post-tee assertions: these lines only reach the log file when the FIFO tee
+  # is active. Removing the exec tee at bin/rite:969 leaves the header (written
+  # via plain >) intact but drops all subsequent output — so these two greps
+  # catch a disabled or broken tee.
+  grep -q "Logging to:" "$_f"
+  grep -q "Promoting 'header-check' to main" "$_f"
 }
 
 # ---------------------------------------------------------------------------
@@ -169,6 +175,21 @@ _line_of() {
   [ "$_count" -ge 1 ]
 }
 
+@test "rite --sync <branch> log contains tee'd content" {
+  _run_rite_logged --sync "tee-check"
+
+  local _log_dir="$RITE_TEST_TMPDIR/.rite/logs"
+  local _f
+  _f=$(ls "$_log_dir"/rite-sync-tee-check-*.log 2>/dev/null | head -1)
+  [ -n "$_f" ]
+  # Post-tee assertions: these lines only reach the log file when the FIFO tee
+  # is active. Removing the exec tee at bin/rite:969 leaves the header (written
+  # via plain >) intact but drops all subsequent output — so these two greps
+  # catch a disabled or broken tee.
+  grep -q "Logging to:" "$_f"
+  grep -q "Sync Integration Branch: tee-check" "$_f"
+}
+
 # ---------------------------------------------------------------------------
 # Group 6: Behavioral — --no-log suppresses log creation
 # ---------------------------------------------------------------------------
@@ -183,8 +204,8 @@ _line_of() {
     -u ISSUE_NUMBER \
     RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR" \
     RITE_LOCK_DIR="$RITE_TEST_TMPDIR/locks" \
-    bash "$RITE_REPO_ROOT/bin/rite" --no-log --promote "no-log-branch" \
-    < /dev/null 2>&1 || true
+    bash "$RITE_REPO_ROOT/bin/rite" --no-log --promote "no-log-branch" < /dev/null \
+    2>&1 || true
 
   local _count
   _count=$(ls "$_log_dir"/rite-promote-*.log 2>/dev/null | wc -l | tr -d ' ')
