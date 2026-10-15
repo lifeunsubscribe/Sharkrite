@@ -4,7 +4,7 @@
 # Rule 1: guaranteed-output-counter paired with || echo "0" produces double zero.
 # Producers covered: grep -c, wc -l (as final pipeline stage), awk with END block (as final stage).
 # NOT flagged (output-or-nothing producers): grep -o, grep -oE — these legitimately pair with
-# || echo "0" because they produce no output on no match (see CLAUDE.md "grep -c pattern").
+# || true because they produce no output on no match (see CLAUDE.md "grep -c pattern").
 echo "Checking for guaranteed-output-counter with '|| echo \"0\"' pattern..."
 
 # Returns 0 if the content line has any of the three echo-zero forms ("0", '0', bare 0)
@@ -17,7 +17,7 @@ _echo_zero_on_line() {
 }
 
 for file in "${SHELL_FILES[@]}"; do
-  # grep -c always outputs a count (even "0") — use || true instead of || echo "0"
+  # grep -c always outputs a count (even "0") — use || true instead of || true
   while IFS=: read -r line_num line_content; do
     echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
     if _echo_zero_on_line "$line_content"; then
