@@ -2970,8 +2970,16 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
   # Guard: only keep blocks whose TITLE appears in $_missing (same
   # canonical comparison — strip + lowercase — as _coverage_missing_titles).
   # Rejects title-drifted echoes that bypass _dedup_issues and enter the
-  # preview as spurious new issues. Pattern reused from the sibling repair
-  # path's title-change rejection (~line 2749).
+  # preview as spurious new issues.
+  #
+  # Deliberate single-shot drop (no retry): the sibling sections-lint repair
+  # path (~line 2742) retries twice because it is fixing a known block — same
+  # requested title, just missing sections — so a retry on the same TITLE is
+  # reasonable. Here, a title drift means the model ignored the requested title
+  # entirely; retrying would likely produce the same drift, and the missing
+  # title stays in $_missing for the next _request_missing_blocks attempt
+  # anyway. Keeping the partial slate is cheaper than looping on a model that
+  # has already demonstrated it won't honour the constraint.
   local _guarded_blocks="" _cur_block="" _in_block=0
   local _gtitle _gtitle_canon _gm_title _gm_canon _gaccepted
   while IFS= read -r _gline || [ -n "$_gline" ]; do
