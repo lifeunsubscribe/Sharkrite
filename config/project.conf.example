@@ -104,14 +104,20 @@
 
 # Live-lock defer wait (seconds; default: 30).
 # When a dep issue holds a live lock in another concurrent batch session, the
-# dependent issue is deferred to the end of the queue. Before the loop advances,
-# rite sleeps this many seconds to give the foreign session time to merge.
-# Without this wait, small batches (≤ dep-count issues) exhaust all defer slots
-# immediately — the re-appended issue is reached in the next iteration with no
-# wall-clock buffer, so the feature silently delivers no benefit.
-# Set to 0 to disable the wait (reverts to pre-#1220 behavior — silent no-op in
-# small batches).
+# dependent issue is deferred to the end of the queue. A background sleep of
+# this duration starts at defer time, allowing other queued issues to run
+# concurrently. The deferred issue joins the sleep before re-checking the dep,
+# so the foreign session has wall-clock time to merge. Set to 0 to disable the
+# wait (issue still defers, but re-checking starts immediately after processing
+# other queued issues — effective only when other issues provide enough buffer).
 # RITE_LIVE_LOCK_DEFER_WAIT=30
+
+# Maximum live-lock defer cycles per issue (default: 10).
+# Decoupled from batch size so a 2-issue batch gets the same 10 × wait-secs
+# budget as a large one. The queue-later defer path uses _UNIQUE_ISSUE_COUNT
+# (frozen batch size) as its cap; the live-lock path uses this variable.
+# Set to 0 to disable live-lock deferral entirely.
+# RITE_LIVE_LOCK_MAX_DEFERS=10
 
 # Batch gate circuit-breaker threshold (default: 3).
 # When this many consecutive issues fail their post-commit gate with the same

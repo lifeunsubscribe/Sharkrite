@@ -17,6 +17,8 @@
 #    3. Dep open + stale lock (dead PID) → skip (existing behavior unchanged)
 #    4. Cap exhausted + live lock → skip (cap overrides live-lock defer)
 #    5. Dep open + live lock is our own PID → skip (not a foreign session)
+#   10. RITE_LIVE_LOCK_DEFER_WAIT=0 disables background sleep but still defers
+#   11. Queue-later defer path does NOT spawn a background sleep
 #
 #   STRUCTURAL (invariants in the batch source file):
 #    6. _DEP_LIVE_LOCK variable initialized alongside other DEP_ vars
@@ -32,11 +34,11 @@ BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 # with a configurable lock directory, simulating live-lock and no-lock cases.
 #
 # Args (positional):
-#   $1  LOCK_DIR      path for RITE_LOCK_DIR
+#   $1  LOCK_DIR         path for RITE_LOCK_DIR
 #   $2  (unused — reserved for future expansion)
 #   $3  (unused — reserved for future expansion)
-#   $4  DEFER_COUNT   pre-existing defer count for ISSUE_NUM (default 0)
-#   $5  UNIQUE_COUNT  _UNIQUE_ISSUE_COUNT value (default 3)
+#   $4  DEFER_COUNT      pre-existing defer count for ISSUE_NUM (default 0)
+#   $5  MAX_DEFERS       RITE_LIVE_LOCK_MAX_DEFERS value (default 3 for tests)
 # =============================================================================
 _build_live_lock_script() {
   local _script="$BATS_TEST_TMPDIR/test-live-lock-defer.sh"
@@ -54,11 +56,13 @@ _build_live_lock_script() {
 set -euo pipefail
 
 RITE_LOCK_DIR="${1:-$BATS_TEST_TMPDIR/locks}"
+RITE_LIVE_LOCK_MAX_DEFERS="${5:-3}"
 
 ${_fn_body}
 
 declare -A ISSUE_STATUS
 declare -A _DEFER_COUNT
+declare -A _LIVE_LOCK_WAIT_PID
 _UNIQUE_ISSUE_COUNT="${5:-3}"
 _DEFER_COUNT[2]="${4:-0}"
 ISSUE_LIST=(2 3 4)   # dep #1 is NOT later in queue (forces live-lock path)
@@ -76,7 +80,7 @@ if [ "\$dep_issue_state" = "OPEN" ]; then
   # Live-lock check (mirrors batch-process-issues.sh logic)
   if [ "\$DEP_IN_QUEUE" = false ]; then
     _live_lock_defer_count="\${_DEFER_COUNT[\$ISSUE_NUM]:-0}"
-    _live_lock_max="\${_UNIQUE_ISSUE_COUNT:-\${#ISSUE_LIST[@]}}"
+    _live_lock_max="\${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
     if [ "\$_live_lock_defer_count" -lt "\$_live_lock_max" ]; then
       _dep_pid_file="\${RITE_LOCK_DIR}/issue-1.lock/pid"
       if [ -f "\$_dep_pid_file" ]; then
@@ -98,12 +102,22 @@ if [ "\$DEP_IN_QUEUE" = true ]; then
   _DEFER_COUNT[\$ISSUE_NUM]=\$(( \${_DEFER_COUNT[\$ISSUE_NUM]:-0} + 1 ))
   if [ "\${_DEP_LIVE_LOCK:-false}" = true ]; then
     echo "LIVE_LOCK_DEFERRED: issue \$ISSUE_NUM (defer #\${_DEFER_COUNT[\$ISSUE_NUM]})"
+    _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
+    if ! printf '%s' "\$_live_lock_wait" | grep -qE '^[0-9]+\$'; then
+      echo "WARN: RITE_LIVE_LOCK_DEFER_WAIT='\$_live_lock_wait' is not a non-negative integer"
+      _live_lock_wait=30
+    fi
+    if [ "\$_live_lock_wait" -gt 0 ]; then
+      sleep "\$_live_lock_wait" &
+      _LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]=\$!
+    fi
   else
     echo "QUEUE_DEFERRED: issue \$ISSUE_NUM"
   fi
   ISSUE_LIST+=("\$ISSUE_NUM")
   ISSUE_STATUS["\$ISSUE_NUM"]="deferred_for_dep"
   echo "STATUS:deferred_for_dep"
+  echo "WAIT_PID:\${_LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]:-none}"
 elif [ "\$DEP_FAILED" = true ]; then
   echo "SKIPPED: issue \$ISSUE_NUM (dep_failed)"
   ISSUE_STATUS["\$ISSUE_NUM"]="dep_failed"
@@ -384,10 +398,122 @@ SELF_EOF
   # call. The queue-later branch omits it (natural issue-processing time provides
   # the buffer there). This structural check prevents the sleep from being silently
   # removed in a future refactor, which would restore the silent no-op in small batches.
-  awk '/_DEP_LIVE_LOCK.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /ISSUE_LIST.*\+.*ISSUE_NUM/{exit}' \
+  awk '/if.*\[.*_DEP_LIVE_LOCK.*=.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /ISSUE_LIST.*\+.*ISSUE_NUM/{exit}' \
     "$BATCH_PROCESSOR" | grep -qE '^[[:space:]]*sleep[[:space:]]' || {
     echo "FAIL: no sleep call found in the _DEP_LIVE_LOCK=true branch in $BATCH_PROCESSOR" >&2
     echo "      Removing the sleep restores the silent no-op in small batches (issue #1220)" >&2
+    return 1
+  }
+}
+
+@test "behavioral: RITE_LIVE_LOCK_DEFER_WAIT=0 disables background sleep but still defers" {
+  # The =0 opt-out must prevent spawning a background sleep while still deferring
+  # the issue. This is the documented contract for RITE_LIVE_LOCK_DEFER_WAIT=0.
+  _lock_dir="$BATS_TEST_TMPDIR/locks-no-wait"
+  mkdir -p "$_lock_dir/issue-1.lock"
+  sleep 60 3>&- &
+  _foreign_pid=$!
+  echo "$_foreign_pid" > "$_lock_dir/issue-1.lock/pid"
+
+  _script=$(_build_live_lock_script "$_lock_dir")
+  RITE_LIVE_LOCK_DEFER_WAIT=0 run bash "$_script"
+
+  kill "$_foreign_pid" 2>/dev/null || true
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed with status $status: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "LIVE_LOCK_DEFERRED: issue 2" || {
+    echo "FAIL: issue must still be deferred even when RITE_LIVE_LOCK_DEFER_WAIT=0" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "WAIT_PID:none" || {
+    echo "FAIL: RITE_LIVE_LOCK_DEFER_WAIT=0 must not spawn a background sleep (WAIT_PID should be none)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: queue-later defer path does NOT spawn a background sleep" {
+  # The queue-later path omits the sleep — natural issue-processing time provides
+  # the buffer. This verifies the asymmetry: only the live-lock path spawns a sleep.
+  _lock_dir="$BATS_TEST_TMPDIR/locks-queue-later"
+  mkdir -p "$_lock_dir"
+
+  # Build a script where dep #3 IS in the queue after the current position,
+  # forcing the queue-later path (not the live-lock path).
+  _q_script="$BATS_TEST_TMPDIR/test-queue-later-no-sleep.sh"
+  _fn_body=$(awk '
+    /_check_dep_queued_later[(][)]/ { in_fn=1 }
+    in_fn { print }
+    in_fn && /^}$/ { exit }
+  ' "$BATCH_PROCESSOR" || true)
+
+  cat > "$_q_script" <<'QSCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+QSCRIPT_EOF
+  cat >> "$_q_script" <<QSCRIPT_EOF2
+${_fn_body}
+
+declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
+declare -A _LIVE_LOCK_WAIT_PID
+_UNIQUE_ISSUE_COUNT=3
+ISSUE_LIST=(2 3 4)   # dep #3 IS later in queue at index 1
+_batch_qi=1
+
+ISSUE_NUM=2
+DEP_FAILED=false
+DEP_IN_QUEUE=false
+DEP_IN_QUEUE_NUM=""
+_DEP_LIVE_LOCK=false
+
+dep_issue_state="OPEN"
+if [ "\$dep_issue_state" = "OPEN" ]; then
+  # dep #3 is at index 1 in ISSUE_LIST, _batch_qi=1 → will be found after current pos
+  _check_dep_queued_later 3 "\$ISSUE_NUM" "\$_batch_qi"
+fi
+
+if [ "\$DEP_IN_QUEUE" = true ]; then
+  _DEFER_COUNT[\$ISSUE_NUM]=\$(( \${_DEFER_COUNT[\$ISSUE_NUM]:-0} + 1 ))
+  if [ "\${_DEP_LIVE_LOCK:-false}" = true ]; then
+    echo "LIVE_LOCK_DEFERRED: issue \$ISSUE_NUM"
+    _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
+    if [ "\$_live_lock_wait" -gt 0 ]; then
+      sleep "\$_live_lock_wait" &
+      _LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]=\$!
+    fi
+  else
+    echo "QUEUE_DEFERRED: issue \$ISSUE_NUM"
+  fi
+  ISSUE_LIST+=("\$ISSUE_NUM")
+  ISSUE_STATUS["\$ISSUE_NUM"]="deferred_for_dep"
+  echo "STATUS:deferred_for_dep"
+  echo "WAIT_PID:\${_LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]:-none}"
+elif [ "\$DEP_FAILED" = true ]; then
+  echo "SKIPPED: issue \$ISSUE_NUM"
+fi
+QSCRIPT_EOF2
+  chmod +x "$_q_script"
+
+  run bash "$_q_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed with status $status: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "QUEUE_DEFERRED: issue 2" || {
+    echo "FAIL: issue must be QUEUE_DEFERRED when dep is later in queue" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "WAIT_PID:none" || {
+    echo "FAIL: queue-later path must NOT spawn a background sleep (WAIT_PID should be none)" >&2
+    echo "Output: $output" >&2
     return 1
   }
 }

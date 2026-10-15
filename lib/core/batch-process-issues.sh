@@ -758,6 +758,7 @@ declare -A ISSUE_PR
 declare -A ISSUE_BRANCH
 declare -A PR_CHANGES
 declare -A _DEFER_COUNT  # defer counter per issue; anti-cycle cap for DEP_IN_QUEUE path
+declare -A _LIVE_LOCK_WAIT_PID  # background sleep PID per live-lock-deferred issue
 
 # Summary arrays
 SECURITY_UPDATES=()
@@ -1093,6 +1094,16 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     fi
   fi
 
+  # If this issue was previously live-lock deferred, join the background sleep
+  # before re-checking the dep so the foreign session has had wall-clock time to
+  # merge. The sleep runs concurrently with other queue items; the wait here is
+  # near-instant when those items took longer than the sleep duration.
+  _live_lock_wait_pid="${_LIVE_LOCK_WAIT_PID[$ISSUE_NUM]:-}"
+  if [ -n "$_live_lock_wait_pid" ]; then
+    wait "$_live_lock_wait_pid" 2>/dev/null || true
+    unset '_LIVE_LOCK_WAIT_PID[$ISSUE_NUM]'
+  fi
+
   # Check if issue depends on another issue that failed/was skipped in this batch.
   # Extract only from the structured Dependencies: field — NOT the full body.
   # Whole-body grep causes prose examples (e.g. "After #1" in a description)
@@ -1136,7 +1147,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         # defer into. See behavioral-design.md → "Dependency Detection".
         if [ "$DEP_IN_QUEUE" = false ]; then
           _live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
-          _live_lock_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+          _live_lock_max="${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
           if [ "$_live_lock_defer_count" -lt "$_live_lock_max" ]; then
             _dep_pid_file="${RITE_LOCK_DIR}/issue-${dep_num}.lock/pid"
             if [ -f "$_dep_pid_file" ]; then
@@ -1164,15 +1175,19 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
       if [ "${_DEP_LIVE_LOCK:-false}" = true ]; then
         print_info "Dependency #$DEP_IN_QUEUE_NUM is live in another batch session — deferring issue #$ISSUE_NUM to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
-        # Sleep before re-queueing so the foreign session has wall-clock time to
-        # make progress. Without this wait, a small batch exhausts all defer slots
-        # in seconds (one gh issue view per pass) and falls through to dep_failed
-        # without the feature delivering any benefit. The queue-later path omits
+        # Start a background sleep so other queued issues run concurrently during
+        # the wait. The background sleep is joined before re-checking the dep
+        # (see the _LIVE_LOCK_WAIT_PID wait block above). This prevents the sleep
+        # from blocking issues unrelated to this dep. The queue-later path omits
         # the sleep because natural issue-processing time provides the buffer.
         _live_lock_wait="${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
-        if [ "$_live_lock_wait" -gt 0 ] 2>/dev/null; then
-          print_info "Waiting ${_live_lock_wait}s for dependency #${DEP_IN_QUEUE_NUM} session to merge before retrying..."
-          sleep "$_live_lock_wait"
+        if ! printf '%s' "$_live_lock_wait" | grep -qE '^[0-9]+$'; then
+          print_warning "RITE_LIVE_LOCK_DEFER_WAIT='$_live_lock_wait' is not a non-negative integer — ignoring, using default 30"
+          _live_lock_wait=30
+        fi
+        if [ "$_live_lock_wait" -gt 0 ]; then
+          sleep "$_live_lock_wait" &
+          _LIVE_LOCK_WAIT_PID[$ISSUE_NUM]=$!
         fi
       else
         print_info "Dependency #$DEP_IN_QUEUE_NUM is queued later — deferring issue #$ISSUE_NUM to after dep (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
