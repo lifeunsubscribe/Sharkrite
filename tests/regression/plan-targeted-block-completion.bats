@@ -62,6 +62,7 @@ setup() {
     printf '%s' "$1" > "$STUB_PROMPT_FILE"
     cat "$STUB_RESPONSE_FILE" 2>/dev/null || true
   }
+  provider_resolve_model() { echo "test-model"; }
 }
 
 teardown() {
@@ -310,4 +311,113 @@ RESPONSE
     echo "FAIL: Files to Modify path from emitted block missing from completion prompt" >&2
     false
   }
+}
+
+@test "title-drifted echo block rejected: slate unchanged, warning emitted" {
+  local slate="$RITE_TEST_TMPDIR/slate.txt"
+  _write_partial_slate "$slate"
+
+  # Completion returns a block whose title is a reworded variant of "Validate
+  # on hardware" — close enough for a human to recognise but not an exact
+  # canonical match, so it should be rejected by the title guard.
+  cat > "$STUB_RESPONSE_FILE" <<'RESPONSE'
+---ISSUE---
+TITLE: Hardware Validation
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: End-to-end validation on device.
+**Dependencies**: After #1, #2
+---END---
+RESPONSE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _request_missing_blocks "$slate" "BASE PROMPT" 2>"$stderr_out"
+
+  # Slate must be unchanged — drifted block must not be appended
+  [ "$(grep -c '^TITLE:' "$slate")" -eq 2 ] || {
+    echo "FAIL: title-drifted block was appended to slate" >&2
+    cat "$slate" >&2
+    false
+  }
+  ! grep -q "TITLE: Hardware Validation" "$slate" || {
+    echo "FAIL: drifted title appeared in slate" >&2
+    false
+  }
+
+  # Warning must name the unexpected title
+  grep -q "unexpected title" "$stderr_out" || {
+    echo "FAIL: no unexpected-title warning in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  rm -f "$stderr_out"
+}
+
+@test "mixed response: correct block accepted, drifted block rejected" {
+  # Slate is missing TWO blocks (only one emitted).
+  local slate="$RITE_TEST_TMPDIR/slate.txt"
+  cat > "$slate" <<'SLATE'
+```
+COVERAGE:
+- ✅ Harden the parse → Issue "Harden glance parse" [own issue — foundational]
+- ✅ Implement the Due tab → Issue "Implement Due tab"
+- ✅ On-hardware validation → Issue "Validate on hardware"
+- ✅ Performance profiling → Issue "Profile startup performance"
+```
+---ISSUE---
+TITLE: Harden glance parse
+LABELS: phase-3,frontend,priority-high
+TIME: 1hr
+BODY:
+**Description**: Parse hardening.
+**Dependencies**: None
+---END---
+SLATE
+
+  # Completion returns: one correct block + one title-drifted block
+  cat > "$STUB_RESPONSE_FILE" <<'RESPONSE'
+---ISSUE---
+TITLE: Implement Due tab
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: Due tab implementation.
+**Dependencies**: After #1
+---END---
+---ISSUE---
+TITLE: Startup Performance Profile
+LABELS: phase-3,frontend,priority-low
+TIME: 30min
+BODY:
+**Description**: Profile startup.
+**Dependencies**: After #1
+---END---
+RESPONSE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _request_missing_blocks "$slate" "BASE PROMPT" 2>"$stderr_out"
+
+  # "Implement Due tab" is in $_missing — must be appended
+  grep -qx "TITLE: Implement Due tab" "$slate" || {
+    echo "FAIL: correct block was not appended" >&2
+    cat "$slate" >&2
+    false
+  }
+
+  # "Startup Performance Profile" is NOT in $_missing — must be rejected
+  ! grep -q "TITLE: Startup Performance Profile" "$slate" || {
+    echo "FAIL: drifted block was appended despite title mismatch" >&2
+    false
+  }
+
+  # Warning for the rejected block
+  grep -q "unexpected title" "$stderr_out" || {
+    echo "FAIL: no unexpected-title warning for drifted block" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  rm -f "$stderr_out"
 }
