@@ -1148,6 +1148,10 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         if [ "$DEP_IN_QUEUE" = false ]; then
           _live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
           _live_lock_max="${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
+          if ! printf '%s' "$_live_lock_max" | grep -qE '^[0-9]+$'; then
+            print_warning "RITE_LIVE_LOCK_MAX_DEFERS='$_live_lock_max' is not a non-negative integer — ignoring, using default 10"
+            _live_lock_max=10
+          fi
           if [ "$_live_lock_defer_count" -lt "$_live_lock_max" ]; then
             _dep_pid_file="${RITE_LOCK_DIR}/issue-${dep_num}.lock/pid"
             if [ -f "$_dep_pid_file" ]; then
@@ -1186,7 +1190,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
           _live_lock_wait=30
         fi
         if [ "$_live_lock_wait" -gt 0 ]; then
-          sleep "$_live_lock_wait" &
+          sleep "$_live_lock_wait" >/dev/null 2>&1 &
           _LIVE_LOCK_WAIT_PID[$ISSUE_NUM]=$!
         fi
       else

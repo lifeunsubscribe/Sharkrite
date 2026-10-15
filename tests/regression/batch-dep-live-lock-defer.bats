@@ -102,13 +102,13 @@ if [ "\$DEP_IN_QUEUE" = true ]; then
   _DEFER_COUNT[\$ISSUE_NUM]=\$(( \${_DEFER_COUNT[\$ISSUE_NUM]:-0} + 1 ))
   if [ "\${_DEP_LIVE_LOCK:-false}" = true ]; then
     echo "LIVE_LOCK_DEFERRED: issue \$ISSUE_NUM (defer #\${_DEFER_COUNT[\$ISSUE_NUM]})"
-    _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
+    _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-1}"
     if ! printf '%s' "\$_live_lock_wait" | grep -qE '^[0-9]+\$'; then
       echo "WARN: RITE_LIVE_LOCK_DEFER_WAIT='\$_live_lock_wait' is not a non-negative integer"
-      _live_lock_wait=30
+      _live_lock_wait=1
     fi
     if [ "\$_live_lock_wait" -gt 0 ]; then
-      sleep "\$_live_lock_wait" &
+      sleep "\$_live_lock_wait" >/dev/null 2>&1 &
       _LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]=\$!
     fi
   else
@@ -301,7 +301,7 @@ if [ "\$dep_issue_state" = "OPEN" ]; then
   _check_dep_queued_later 1 "\$ISSUE_NUM" "\$_batch_qi"
   if [ "\$DEP_IN_QUEUE" = false ]; then
     _live_lock_defer_count="\${_DEFER_COUNT[\$ISSUE_NUM]:-0}"
-    _live_lock_max="\${_UNIQUE_ISSUE_COUNT:-\${#ISSUE_LIST[@]}}"
+    _live_lock_max="\${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
     if [ "\$_live_lock_defer_count" -lt "\$_live_lock_max" ]; then
       _dep_pid_file="\${RITE_LOCK_DIR}/issue-1.lock/pid"
       if [ -f "\$_dep_pid_file" ]; then
@@ -371,12 +371,13 @@ SELF_EOF
   }
 }
 
-@test "structural: live-lock path uses same _DEFER_COUNT cap as queue-later path" {
-  # Both defer paths must check the same cap vars: _live_lock_defer_count from
-  # _DEFER_COUNT and _live_lock_max from _UNIQUE_ISSUE_COUNT.
+@test "structural: live-lock path has its own _DEFER_COUNT cap via _live_lock_max" {
+  # Both defer paths track _DEFER_COUNT[ISSUE_NUM] to prevent infinite cycles,
+  # but the live-lock cap uses RITE_LIVE_LOCK_MAX_DEFERS (independent of batch
+  # size), not _UNIQUE_ISSUE_COUNT. Check that the cap variables exist.
   grep -q '_live_lock_defer_count\|_live_lock_max' "$BATCH_PROCESSOR" || {
     echo "FAIL: live-lock cap variables not found in $BATCH_PROCESSOR" >&2
-    echo "      The cap must reuse _DEFER_COUNT / _UNIQUE_ISSUE_COUNT to prevent infinite deferral" >&2
+    echo "      The live-lock path must check _DEFER_COUNT via _live_lock_max (RITE_LIVE_LOCK_MAX_DEFERS) to prevent infinite deferral" >&2
     return 1
   }
 }
@@ -398,10 +399,35 @@ SELF_EOF
   # call. The queue-later branch omits it (natural issue-processing time provides
   # the buffer there). This structural check prevents the sleep from being silently
   # removed in a future refactor, which would restore the silent no-op in small batches.
-  awk '/if.*\[.*_DEP_LIVE_LOCK.*=.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /ISSUE_LIST.*\+.*ISSUE_NUM/{exit}' \
+  awk '/if.*\[.*_DEP_LIVE_LOCK.*=.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /^[[:space:]]*fi[[:space:]]*$/{exit}' \
     "$BATCH_PROCESSOR" | grep -qE '^[[:space:]]*sleep[[:space:]]' || {
-    echo "FAIL: no sleep call found in the _DEP_LIVE_LOCK=true branch in $BATCH_PROCESSOR" >&2
-    echo "      Removing the sleep restores the silent no-op in small batches (issue #1220)" >&2
+    echo "FAIL: no sleep call found before the end of the _DEP_LIVE_LOCK=true branch in $BATCH_PROCESSOR" >&2
+    echo "      The sleep must exist in the live-lock branch; if moved past that block it restores the silent no-op (issue #1220)" >&2
+    return 1
+  }
+}
+
+@test "structural: join block wait precedes _extract_dep_issues_from_body in batch source" {
+  # The live-lock wait join (wait "$_live_lock_wait_pid") must exist and must
+  # appear BEFORE _extract_dep_issues_from_body in the batch file. Without the
+  # wait, the deferred issue is re-reached immediately with zero buffer — the
+  # precise silent no-op issue #1220 describes. Deleting the join leaves all
+  # behavioral tests green while restoring the bug.
+  _join_line=$(grep -n 'wait.*_live_lock_wait_pid' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+  _extract_line=$(grep -n '_extract_dep_issues_from_body' "$BATCH_PROCESSOR" | grep -v '^[[:space:]]*#' | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_join_line" ] || {
+    echo "FAIL: 'wait \"\$_live_lock_wait_pid\"' join not found in $BATCH_PROCESSOR" >&2
+    echo "      Without the join, the deferred issue re-enters the dep check with no wall-clock buffer (issue #1220)" >&2
+    return 1
+  }
+  [ -n "$_extract_line" ] || {
+    echo "FAIL: '_extract_dep_issues_from_body' call not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ "$_join_line" -lt "$_extract_line" ] || {
+    echo "FAIL: join wait (line $_join_line) must precede _extract_dep_issues_from_body (line $_extract_line)" >&2
+    echo "      The join must run before the dep re-check so the foreign session has had wall-clock time to merge" >&2
     return 1
   }
 }
@@ -482,9 +508,9 @@ if [ "\$DEP_IN_QUEUE" = true ]; then
   _DEFER_COUNT[\$ISSUE_NUM]=\$(( \${_DEFER_COUNT[\$ISSUE_NUM]:-0} + 1 ))
   if [ "\${_DEP_LIVE_LOCK:-false}" = true ]; then
     echo "LIVE_LOCK_DEFERRED: issue \$ISSUE_NUM"
-    _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
+    _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-1}"
     if [ "\$_live_lock_wait" -gt 0 ]; then
-      sleep "\$_live_lock_wait" &
+      sleep "\$_live_lock_wait" >/dev/null 2>&1 &
       _LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]=\$!
     fi
   else
