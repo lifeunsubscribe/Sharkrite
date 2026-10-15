@@ -50,14 +50,14 @@ if [ -n "$_rf_raw_headers" ]; then
     | sed 's/^### //' \
     | sed 's/ - ACTIONABLE_NOW$//' \
     | tr '[:upper:]' '[:lower:]' \
-    | sed 's/[[:space:]]\+/ /g' \
+    | sed -E 's/[[:space:]]+/ /g' \
     | sed 's/^ //; s/ $//' \
     | sort | uniq -c | sort -k1,1rn -k2 || true)
 
   _rf_title_lines=""
   while IFS= read -r _rf_entry; do
     _rf_count=$(echo "$_rf_entry" | awk '{print $1}' || true)
-    _rf_title=$(echo "$_rf_entry" | sed 's/^[[:space:]]*[0-9]\+[[:space:]]*//' || true)
+    _rf_title=$(echo "$_rf_entry" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]*//' || true)
     if [ -n "$_rf_count" ] && [ -n "$_rf_title" ] \
         && [ "${_rf_count:-0}" -ge "${RITE_HEALTH_RECURRENCE_MIN:-2}" ] 2>/dev/null; then
       _rf_title_lines+="  ${_rf_count}x: ${_rf_title}"$'\n'
@@ -67,12 +67,12 @@ if [ -n "$_rf_raw_headers" ]; then
   _rf_cat_lines=""
   if [ -n "$_rf_raw_cats" ]; then
     _rf_cat_normalized=$(echo "$_rf_raw_cats" \
-      | sed 's/[[:space:]]\+/ /g' \
+      | sed -E 's/[[:space:]]+/ /g' \
       | sed 's/^ //; s/ $//' \
       | sort | uniq -c | sort -k1,1rn -k2 || true)
     while IFS= read -r _rf_entry; do
       _rf_count=$(echo "$_rf_entry" | awk '{print $1}' || true)
-      _rf_cat=$(echo "$_rf_entry" | sed 's/^[[:space:]]*[0-9]\+[[:space:]]*//' || true)
+      _rf_cat=$(echo "$_rf_entry" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]*//' || true)
       if [ -n "$_rf_count" ] && [ -n "$_rf_cat" ] \
           && [ "${_rf_count:-0}" -ge "${_RECURRENCE_CAT_MIN:-4}" ] 2>/dev/null; then
         _rf_cat_lines+="  ${_rf_count}x: ${_rf_cat}"$'\n'
