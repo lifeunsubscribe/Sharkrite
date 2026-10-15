@@ -391,7 +391,7 @@ _docs_update_engine() {
   [ -f "$_ue_map_file" ] && _ue_map_content="$(head -c 8000 "$_ue_map_file" 2>/dev/null || true)"
 
   # Current doc file content excerpts (for EDIT context, capped at 15KB total)
-  local _ue_doc_ctx="" _ue_doc_bytes=0 _ue_doc_cap=15000
+  local _ue_doc_ctx="" _ue_ctx_files="" _ue_doc_bytes=0 _ue_doc_cap=15000
   if [ -f "$_ue_map_file" ]; then
     local _ue_ml
     while IFS= read -r _ue_ml || [ -n "$_ue_ml" ]; do
@@ -412,6 +412,7 @@ ${_ue_excerpt}
       _ue_doc_bytes=$((_ue_doc_bytes + ${#_ue_entry}))
       [ "$_ue_doc_bytes" -gt "$_ue_doc_cap" ] && break
       _ue_doc_ctx="${_ue_doc_ctx}${_ue_entry}"
+      _ue_ctx_files="${_ue_ctx_files}${_ue_fp}"$'\n'
     done < "$_ue_map_file"
   fi
 
@@ -625,9 +626,17 @@ DOC_UPDATE_EOF
           ;;
       esac
 
-      # Refuse EDIT proposals when the file exceeds the 2000-byte excerpt cap:
-      # the model never saw the full content, so accepting would truncate unseen text.
+      # Refuse EDIT proposals when the file was not in the LLM's context:
+      # either dropped by the 15KB budget cap or absent from the docs map entirely.
       if [ "$_ue_p_action" = "EDIT" ]; then
+        case $'\n'"$_ue_ctx_files" in
+          *$'\n'"${_ue_p_file}"$'\n'*) : ;;
+          *)
+            print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file was not included in the context budget (15KB cap) — model never read its content" >&2
+            _ue_pi=$((_ue_pi + 1))
+            continue
+            ;;
+        esac
         local _ue_abs_size_check="${RITE_PROJECT_ROOT}/${_ue_p_file}"
         if [ -f "$_ue_abs_size_check" ]; then
           local _ue_file_size
