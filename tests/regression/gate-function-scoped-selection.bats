@@ -20,6 +20,11 @@ setup() {
   export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/markers.sh" 2>/dev/null || true
+  # portable_sed_i: the fixture mutates files in place, and a bare `sed -i ''`
+  # is BSD-only. portable-cmds.sh guards on `declare -f portable_sed_i`, a
+  # function sentinel, so this source cannot clobber a caller's definition.
+  # shellcheck source=/dev/null
+  source "$RITE_LIB_DIR/utils/portable-cmds.sh"
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/test-gate.sh"
   set +u; set +o pipefail
@@ -57,11 +62,15 @@ SUT
       && git add -A && git commit -qm base \
       && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
   [ -d "$TEST_REPO/.git" ] || fail "fixture git init failed"
+  # portable_sed_i, not a bare `sed -i ''`. The BSD form makes GNU sed read the
+  # empty string as the script and the expression as a filename, so all 14 tests
+  # in this file died on Linux CI with "sed: can't read s/…/: No such file or
+  # directory" while passing on the macOS dev box.
   case "$_which" in
-    alpha)   sed -i '' 's/echo "alpha v1"/echo "alpha v2"/' "$TEST_REPO/lib/utils/sut.sh" ;;
-    beta)    sed -i '' 's/echo "beta v1"/echo "beta v2"/'   "$TEST_REPO/lib/utils/sut.sh" ;;
-    comment) sed -i '' 's/# header comment above beta/# header comment above beta (reworded)/' "$TEST_REPO/lib/utils/sut.sh" ;;
-    toplevel) sed -i '' 's/TOP_LEVEL_CONST="v1"/TOP_LEVEL_CONST="v2"/' "$TEST_REPO/lib/utils/sut.sh" ;;
+    alpha)   portable_sed_i 's/echo "alpha v1"/echo "alpha v2"/' "$TEST_REPO/lib/utils/sut.sh" ;;
+    beta)    portable_sed_i 's/echo "beta v1"/echo "beta v2"/'   "$TEST_REPO/lib/utils/sut.sh" ;;
+    comment) portable_sed_i 's/# header comment above beta/# header comment above beta (reworded)/' "$TEST_REPO/lib/utils/sut.sh" ;;
+    toplevel) portable_sed_i 's/TOP_LEVEL_CONST="v1"/TOP_LEVEL_CONST="v2"/' "$TEST_REPO/lib/utils/sut.sh" ;;
   esac
   ( cd "$TEST_REPO" && git add -A && git commit -qm change ) >/dev/null 2>&1
 }
