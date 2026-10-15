@@ -198,7 +198,7 @@ if [ -n "${RITE_BATS_JOBS:-}" ]; then
   # Non-integer value → fall through to auto-detected _bats_jobs (silent, like test-gate.sh)
 fi
 
-_total_bats=$(cd "$_PROJECT_ROOT" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+_total_bats=$(cd "$_PROJECT_ROOT" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 print_info "Running $_total_bats bats files (parallel jobs: $_bats_jobs)"
 
 set +e

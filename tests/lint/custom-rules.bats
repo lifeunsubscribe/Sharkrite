@@ -73,8 +73,13 @@ create_test_script() {
   [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
-@test "does not flag grep -oE with || echo '0' (output-or-nothing producer)" {
-  printf '%s\n' '#!/usr/bin/env bash' 'MATCH=$(echo "$text" | grep -oE "[0-9]+" || echo "0")' > "$LINT_FIXTURE_DIR/ok-grep-oe.sh"
+@test "does not flag grep -oE with || echo '0' when grep -c || true is also present" {
+  # Both patterns on the same line: the scanner finds the line (grep -c trigger),
+  # but the binding regex must confirm grep -c itself is paired with || echo "0".
+  # Without binding, the grep -oE's || echo "0" would cause a false violation.
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'MATCH=$(echo "$t" | grep -oE "[0-9]+" || echo "0"); COUNT=$(echo "$t" | grep -c "x" || true)' \
+    > "$LINT_FIXTURE_DIR/ok-grep-oe.sh"
 
   cd "$PROJECT_ROOT"
   SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
@@ -82,13 +87,13 @@ create_test_script() {
   [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
-@test "does not flag wc -l piped to tr with || echo '0' (tr is final stage)" {
-  printf '%s\n' '#!/usr/bin/env bash' "COUNT=\$(find . -name '*.sh' | wc -l | tr -d ' ' || echo \"0\")" > "$LINT_FIXTURE_DIR/ok-wc-l-tr.sh"
+@test "flags wc -l piped to tr with || echo '0' (upstream failure still triggers double zero)" {
+  printf '%s\n' '#!/usr/bin/env bash' "COUNT=\$(find . -name '*.sh' | wc -l | tr -d ' ' || echo \"0\")" > "$LINT_FIXTURE_DIR/bad-wc-l-tr.sh"
 
   cd "$PROJECT_ROOT"
   SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
-  [ "$status" -eq 0 ]
-  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
 @test "detects git push without refspec" {

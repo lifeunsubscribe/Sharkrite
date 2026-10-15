@@ -360,7 +360,7 @@ HM_PHASE1_AVG_S=$(echo "$TIMING_LINES" | grep 'END   phase1_development' | grep 
         else if (v ~ /m$/){sub(/m/,"",v); secs+=v*60}
         else if (v ~ /s$/){sub(/s/,"",v); secs+=v} }
       tot+=secs; n++
-    } END {if (n>0) printf "%d", tot/n; else print "0"}' || echo "0")
+    } END {if (n>0) printf "%d", tot/n; else print "0"}' || true)
 
 # rtk average savings percent (from rtk gain json)
 HM_RTK_PCT=$(echo "$RTK_STATS" | jq -r '(.summary.avg_savings_pct // 0)' 2>/dev/null || echo "0")

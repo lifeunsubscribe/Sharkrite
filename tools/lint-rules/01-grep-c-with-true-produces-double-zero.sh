@@ -4,7 +4,7 @@
 # Rule 1: guaranteed-output-counter paired with || echo "0" produces double zero.
 # Producers covered: grep -c, wc -l (as final pipeline stage), awk with END block (as final stage).
 # NOT flagged (output-or-nothing producers): grep -o, grep -oE — these legitimately pair with
-# || true because they produce no output on no match (see CLAUDE.md "grep -c pattern").
+# || echo "0" because they produce no output on no match (see CLAUDE.md "grep -c pattern").
 echo "Checking for guaranteed-output-counter with '|| echo \"0\"' pattern..."
 
 # Returns 0 if the content line has any of the three echo-zero forms ("0", '0', bare 0)
@@ -17,23 +17,24 @@ _echo_zero_on_line() {
 }
 
 for file in "${SHELL_FILES[@]}"; do
-  # grep -c always outputs a count (even "0") — use || true instead of || true
+  # grep -c always outputs a count (even "0") — use || true instead of || echo "0"
+  # [^|]* ensures no pipe between grep -c and ||, i.e. grep -c is the final stage
   while IFS=: read -r line_num line_content; do
     echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
-    if _echo_zero_on_line "$line_content"; then
+    if echo "$line_content" | grep -qE 'grep\s+[^|]*-c[^|]*\|\|\s*echo\s+"0"' ||
+       echo "$line_content" | grep -qE $'grep\s+[^|]*-c[^|]*\|\|\s*echo\s+\'0\'' ||
+       echo "$line_content" | grep -qE 'grep\s+[^|]*-c[^|]*\|\|\s*echo\s+0([^0-9]|$)'; then
       print_violation "$file" "$line_num" "GREP_C_ECHO_ZERO" \
         "grep -c already outputs '0'; use || true instead of || echo \"0\""
     fi
   done < <(grep -n 'grep -c' "$file" 2>/dev/null || true)
 
-  # wc -l as the FINAL pipeline stage always outputs a count — use || true
-  # [^|]* ensures no pipe between wc -l and ||, i.e. wc -l is the final stage
-  # (wc -l | tr -d ' ' || echo "0" is NOT flagged — tr is the final stage there)
+  # wc -l always outputs a count (even through a tr pass-through) — use || true
+  # Under pipefail, an upstream failure propagates non-zero through tr, making || echo "0"
+  # fire even when wc -l already printed "0", producing double zero.
   while IFS=: read -r line_num line_content; do
     echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
-    if echo "$line_content" | grep -qE 'wc\s+-l[^|]*\|\|\s*echo\s+"0"' ||
-       echo "$line_content" | grep -qE $'wc\s+-l[^|]*\|\|\s*echo\s+\'0\'' ||
-       echo "$line_content" | grep -qE 'wc\s+-l[^|]*\|\|\s*echo\s+0([^0-9]|$)'; then
+    if _echo_zero_on_line "$line_content"; then
       print_violation "$file" "$line_num" "GREP_C_ECHO_ZERO" \
         "wc -l always outputs a count; use || true instead of || echo \"0\""
     fi

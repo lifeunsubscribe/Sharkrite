@@ -296,7 +296,7 @@ COUNT=$(find . -name "*.bats" | wc -l || true)
 TOTAL=$(echo "$lines" | awk '{sum += $1} END {print sum+0}' || true)
 ```
 
-`grep -o` / `grep -oE` are different — they output nothing on no match, so `|| echo "0"` is correct there. `wc -l | tr -d ' '` is also safe: if `wc -l` is not the final stage before `||`, the rule does not fire.
+`grep -o` / `grep -oE` are different — they output nothing on no match, so `|| echo "0"` is correct there. `wc -l | tr -d ' ' || echo "0"` is NOT safe: under pipefail an upstream failure propagates through `tr`, firing `|| echo "0"` when `wc -l` already printed `0`, producing double zero. Use `|| true` there too.
 
 Lint rule `GREP_C_ECHO_ZERO` (Rule 1) enforces this for `grep -c`, `wc -l` as final stage, and `awk` with an `END` block as final stage (same-line detection only).
 
