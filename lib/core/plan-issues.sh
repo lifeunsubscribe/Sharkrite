@@ -1470,6 +1470,19 @@ _lint_provenance_flags() {
   return "$_prov_lint_exit"
 }
 
+# Returns 0 (true) when a title matches the canonical spike form emitted by the
+# planner: "Capture <name> sample - fixtures".  Shared by _lint_issues_strict
+# (classification) and the creation-side issue loop (spike-map building) so both
+# sides always agree on what constitutes a spike.
+# Backward-compat: also matches the pre-#1151 form "spike: capture <name> sample
+# for grounding" so re-runs against old-format issues don't treat them as
+# non-spikes (they would duplicate once at most, then dedup on the next run).
+_title_is_spike() {
+  local _t="$1"
+  [[ "$_t" =~ ^Capture\ (.+)\ sample\ -\ fixtures$ ]] || \
+  [[ "$_t" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]
+}
+
 # =============================================================================
 # Strict deterministic validator: graph checks, dangling refs, verification
 # paths, and deferral citations.
@@ -1524,7 +1537,9 @@ _lint_issues_strict() {
   #   - all titles (for cycle/dangling-ref checks)
   #   - per-issue: deps, files-to-modify, verification commands, suppressions
   #
-  # Storage: parallel arrays indexed by issue ordinal (1-based).
+  # Storage: parallel arrays raw-indexed (0-based, all issues including spikes).
+  # Two maps bridge raw indices to non-spike ordinal space: _nonspike_to_arr
+  # (non-spike ordinal → raw idx) and _arr_to_nonspike (raw idx → non-spike ordinal).
   # Bash 3.2 compatible (no associative arrays).
   # -----------------------------------------------------------------------
 
@@ -1539,6 +1554,13 @@ _lint_issues_strict() {
   local -a _parallel_with=()   # per-issue: newline-separated #N refs from "(can run in parallel with #N)" annotations
   local -a _times=()           # per-issue: raw TIME value (e.g. "2hr", "30min")
   local -a _has_rationale=()   # per-issue: "true" if Split rationale: line present, "false" otherwise
+
+  # Non-spike ordinal translation (creation-side contract: #N dep/parallel refs are
+  # authored in non-spike ordinal space — spikes are prepended transparently and
+  # don't consume an ordinal slot).  Spike detection: _title_is_spike (canonical planner-emitted form).
+  local -a _arr_to_nonspike=()  # per raw array index: non-spike ordinal (0 for spikes)
+  local -a _nonspike_to_arr=()  # indexed by (non-spike ordinal - 1): raw 0-based array index
+  local _nonspike_count=0
 
   local _in_issue=false
   local _issue_block=""
@@ -1567,6 +1589,17 @@ _lint_issues_strict() {
         local _title=""
         _title=$(echo "$_issue_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
         _titles+=("${_title:-}")
+
+        # --- Non-spike ordinal map (canonical spike form: _title_is_spike) ---
+        local _block_is_spike=false
+        _title_is_spike "${_title:-}" && _block_is_spike=true
+        if [ "$_block_is_spike" = false ]; then
+          _nonspike_count=$((_nonspike_count + 1))
+          _nonspike_to_arr+=("$((_issue_idx - 1))")
+          _arr_to_nonspike+=("$_nonspike_count")
+        else
+          _arr_to_nonspike+=("0")
+        fi
 
         # --- Extract LABELS line ---
         local _issue_labels=""
@@ -1837,25 +1870,32 @@ _lint_issues_strict() {
       fi
 
       # Search _titles[] for a case-insensitive match
-      local _found_ordinal=0
+      local _found_ordinal=0   # non-spike ordinal of the matched title (0 for spikes or not found)
+      local _found_title=false  # true when a title match was found (even if it was a spike)
       local _scan_j=0
       for _scan_j in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
         local _candidate_lower
         _candidate_lower=$(echo "${_titles[$_scan_j]}" | tr '[:upper:]' '[:lower:]' || true)
         if [ "$_candidate_lower" = "$_tref_lower" ]; then
-          _found_ordinal=$((_scan_j + 1))  # 1-based ordinal
+          _found_title=true
+          _found_ordinal="${_arr_to_nonspike[$_scan_j]:-0}"  # non-spike ordinal (0 for spikes)
+          if [ "$_found_ordinal" -eq 0 ]; then
+            print_warning "strict-lint: WARNING: title ref #[${_tref}] in '${_referencing_title}' resolves to a spike issue — spike issues have no non-spike ordinal" >&2
+            _warning_count=$((_warning_count + 1))
+          fi
           break
         fi
       done
 
-      if [ "$_found_ordinal" -gt 0 ]; then
-        # Append the resolved ordinal ref to the referring issue's deps
+      if [ "$_found_title" = true ] && [ "$_found_ordinal" -gt 0 ]; then
+        # Append the resolved non-spike ordinal ref to the referring issue's deps
         _deps[$_res_i]="${_deps[$_res_i]}#${_found_ordinal}"$'\n'
-      else
+      elif [ "$_found_title" = false ]; then
         # Unresolved title ref: emit a warning (not captured by numeric dangling-ref check)
         print_warning "strict-lint: WARNING: unresolved title ref: #[${_tref}] in '${_referencing_title}' (no batch issue with that title)" >&2
         _warning_count=$((_warning_count + 1))
       fi
+      # _found_title=true but _found_ordinal=0 means spike — warning already emitted above
     done <<< "$_raw_title_deps"
   done
 
@@ -1876,7 +1916,7 @@ _lint_issues_strict() {
 
   # Check 3: Dangling ref check
   # For each issue's deps, verify each #N is either:
-  #   (a) a valid ordinal within this batch (1.._issue_count), or
+  #   (a) a valid non-spike ordinal within this batch (1.._nonspike_count), or
   #   (b) an existing open issue number
   # Guard: skip all seq-based per-issue checks when there are no issues.
   # seq 1 0 produces a descending "1 0" range on bash/POSIX — not empty.
@@ -1901,9 +1941,9 @@ _lint_issues_strict() {
       _refnum=$(echo "$_ref" | sed 's/^#//' || true)
       [ -z "$_refnum" ] && continue
 
-      # Check: is it a valid batch ordinal?
+      # Check: is it a valid non-spike batch ordinal? (#N refs are in non-spike ordinal space)
       local _in_batch=false
-      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_issue_count" ] 2>/dev/null; then
+      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_nonspike_count" ] 2>/dev/null; then
         _in_batch=true
       fi
 
@@ -1914,7 +1954,7 @@ _lint_issues_strict() {
       fi
 
       if [ "$_in_batch" = false ] && [ "$_in_existing" = false ]; then
-        print_warning "strict-lint: ERROR: unresolved Dependencies ref: #${_refnum} in '${_issue_title}' (not in batch [1..${_issue_count}] and not in existing open issues)" >&2
+        print_warning "strict-lint: ERROR: unresolved Dependencies ref: #${_refnum} in '${_issue_title}' (not in batch [1..${_nonspike_count}] and not in existing open issues)" >&2
         _error_count=$((_error_count + 1))
         _strict_exit=1
       fi
@@ -1957,9 +1997,9 @@ _lint_issues_strict() {
       local _refnum
       _refnum=$(echo "$_ref" | sed 's/^#//' || true)
       [ -z "$_refnum" ] && continue
-      # Only batch-internal refs contribute to cycle detection
-      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_issue_count" ] 2>/dev/null; then
-        local _pred_idx=$((_refnum - 1))
+      # Only batch-internal non-spike ordinal refs contribute to cycle detection
+      if [ "$_refnum" -ge 1 ] && [ "$_refnum" -le "$_nonspike_count" ] 2>/dev/null; then
+        local _pred_idx="${_nonspike_to_arr[$((_refnum - 1))]}"
         # Issue _i depends on _pred_idx: increment _i's predecessor count
         _pred_count[$_i]=$(( ${_pred_count[$_i]:-0} + 1 ))
         # _pred_idx is a predecessor of _i: add _i to _pred_idx's reverse adjacency
@@ -2020,7 +2060,7 @@ _lint_issues_strict() {
     for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
       if ! echo "${_suppressions[$_i]}" | grep -qw "cycle-check" && \
          [ "${_pred_count[$_i]:-0}" -gt 0 ]; then
-        _cycle_nodes="${_cycle_nodes} #$((_i + 1)) (${_titles[$_i]})"
+        _cycle_nodes="${_cycle_nodes} #${_arr_to_nonspike[$_i]} (${_titles[$_i]})"
       fi
     done
     print_warning "strict-lint: ERROR: dependency cycle detected among:${_cycle_nodes}" >&2
@@ -2249,9 +2289,9 @@ _lint_issues_strict() {
       _prefnum=$(echo "$_pref" | sed 's/^#//' || true)
       [ -z "$_prefnum" ] && continue
 
-      # Only check batch-internal parallel refs (same batch ordinals)
-      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_issue_count" ] 2>/dev/null; then
-        local _pj=$((_prefnum - 1))
+      # Only check batch-internal non-spike parallel refs (#N is a non-spike ordinal)
+      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_nonspike_count" ] 2>/dev/null; then
+        local _pj="${_nonspike_to_arr[$((_prefnum - 1))]}"
         # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
         # annotation that includes its own ordinal would always find a shared
         # file and emit a spurious self-referential warning.
@@ -2261,7 +2301,7 @@ _lint_issues_strict() {
         # issue is the canonical reporter (_pi < _pj).  When only the higher-ordinal
         # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
         # with #1 but #1 does not declare parallel with #2), there is no other
-        # reporter — suppress only if _pj also lists _pi+1 in its parallel refs.
+        # reporter — suppress only if _pj also lists _pi's non-spike ordinal.
         #
         # Fix 3b: suppression on the canonical (lower-ordinal) reporter.
         # If _pj (the lower-ordinal issue) has parallel-file-overlap suppressed,
@@ -2271,7 +2311,8 @@ _lint_issues_strict() {
         if [ "$_pi" -gt "$_pj" ]; then
           local _pj_parallel="${_parallel_with[$_pj]:-}"
           local _pj_supps_check="${_suppressions[$_pj]:-}"
-          if echo "$_pj_parallel" | grep -qxF "#$((_pi + 1))" && \
+          local _pi_ns_ord="${_arr_to_nonspike[$_pi]:-0}"
+          if [ "$_pi_ns_ord" -gt 0 ] && echo "$_pj_parallel" | grep -qxF "#${_pi_ns_ord}" && \
              ! echo "$_pj_supps_check" | grep -qw "parallel-file-overlap"; then
             # Bidirectional: lower ordinal (_pj) will report this pair — skip here
             continue
@@ -2296,9 +2337,9 @@ _lint_issues_strict() {
         if [ -n "$_par_shared" ]; then
           local _after_num
           if [ "$_pi" -lt "$_pj" ]; then
-            _after_num=$((_pi + 1))
+            _after_num="${_arr_to_nonspike[$_pi]}"  # non-spike ordinal of _pi
           else
-            _after_num="$_prefnum"
+            _after_num="$_prefnum"  # non-spike ordinal of _pj (already)
           fi
           print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
           _warning_count=$((_warning_count + 1))
@@ -2314,11 +2355,9 @@ _lint_issues_strict() {
   # The model-side prompt guidance (section H, now retired) was insufficient alone —
   # this check is the deterministic detector; WARNs at the preview seam rather than blocking.
   #
-  # Allowlisted shared setup commands (legitimate in every issue):
-  #   make check      — project-wide lint/type-check
-  #   bats -r tests/  — full test suite
-  #   npm test        — JS/TS default test runner
-  #   pytest          — Python default test runner
+  # A command carried by many issues is a shared CI gate, not a duplicated deliverable.
+  # The frequency rule (below) exempts such commands ahead of the pairwise comparison;
+  # the hardcoded allowlist then covers small-slate cases where the threshold cannot fire.
   #
   # Suppressed per-issue with:
   #   <!-- sharkrite-plan-lint disable duplicate-verification - Reason: <text> -->
@@ -2326,7 +2365,47 @@ _lint_issues_strict() {
   # Seam instruction on WARNING: give ONE issue sole ownership of this
   # criterion, or differentiate the commands.
 
-  # Commands that legitimately appear in multiple issues (shared CI gates).
+  # How many issues must share a normalized command for it to be classified as a
+  # universal CI gate (exempt from the pairwise duplicate check).
+  # For a slate of ≤5 issues, ≥3 occurrences equals >50% of the slate, so the
+  # frequency rule naturally covers small-slate universal gates without a separate
+  # percentage check.
+  local _VERIF_UNIV_THRESHOLD=3
+
+  # Build a frequency table: how many issues carry each normalized verification command.
+  # Computed before the pairwise loop so the per-command lookup inside it is O(1).
+  # sharkrite-lint disable BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT - Reason: file has a self-re-exec guard at line 29 that ensures bash 4+ before any code runs
+  local -A _verif_cmd_freq=()
+  local _freq_i _freq_cmd _freq_norm
+  for _freq_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _freq_cmds="${_verif_cmds[$_freq_i]}"
+    [ -z "$_freq_cmds" ] && continue
+    # Reset per-issue seen-set so each command counts at most once per issue,
+    # not once per extracted line (acceptance-criteria backtick + fenced block
+    # both extract the same cmd, so without dedup a 2-issue plan reaches freq=4
+    # and is wrongly classified as a universal gate).
+    local _freq_seen_this=""
+    while IFS= read -r _freq_cmd; do
+      [ -z "$_freq_cmd" ] && continue
+      _freq_norm=$(echo "$_freq_cmd" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s '[:blank:]' ' ' || true)
+      [ -z "$_freq_norm" ] && continue
+      case "$_freq_norm" in *' '*) ;; *) continue ;; esac
+      # Skip if already counted for this issue (whole-line match)
+      case "
+${_freq_seen_this}
+" in
+        *"
+${_freq_norm}
+"*) continue ;;
+      esac
+      _freq_seen_this="${_freq_seen_this}
+${_freq_norm}"
+      _verif_cmd_freq["$_freq_norm"]=$(( ${_verif_cmd_freq["$_freq_norm"]:-0} + 1 ))
+    done <<< "$_freq_cmds"
+  done
+
+  # Fallback allowlist for small slates where the frequency threshold (≥3) cannot
+  # fire — e.g. a 2-issue plan sharing `npm test` must not warn.
   local _VERIF_ALLOWLIST
   _VERIF_ALLOWLIST="make check
 bats -r tests/
@@ -2365,7 +2444,15 @@ pytest"
         # Single-token entries (no space after normalization) are identifiers/paths, not commands — skip duplicate check
         case "$_vcmd_norm" in *' '*) ;; *) continue ;; esac
 
-        # Skip allowlisted shared setup commands
+        # Skip commands that appear in many issues — they are universal CI gates,
+        # not per-issue deliverables (checked before the allowlist so project-specific
+        # gates like `pnpm typecheck` are exempt without needing an allowlist entry).
+        if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ]; then
+          continue
+        fi
+
+        # Skip allowlisted commands — fallback for small slates where the frequency
+        # threshold cannot fire
         if echo "$_VERIF_ALLOWLIST" | grep -qxF "$_vcmd_norm"; then
           continue
         fi
@@ -2667,6 +2754,15 @@ _lint_issues_sections() {
             _sattempt=$((_sattempt + 1))
             continue
           fi
+          # Re-inject SPIKE_KEY: if the original had one and the regen dropped it.
+          # LLMs don't know about this sharkrite header field; the TITLE line is
+          # always preserved (mismatch is rejected above), so insert SPIKE_KEY after it.
+          local _sorig_spike_key_line
+          _sorig_spike_key_line=$(printf '%s' "$_sblk" | grep "^SPIKE_KEY: " | head -1 || true)
+          if [ -n "$_sorig_spike_key_line" ] && ! printf '%s' "$_snew_blk" | grep -q "^SPIKE_KEY: "; then
+            _snew_blk=$(printf '%s\n' "$_snew_blk" | awk -v spike="$_sorig_spike_key_line" \
+              '/^TITLE: / { print; print spike; next } { print }' || true)
+          fi
           # Append $'\n': $() strips the trailing newline the regen returns
           _sblocks[$_sidx]="${_snew_blk}"$'\n'
           _any_repaired=true
@@ -2794,9 +2890,26 @@ _request_missing_blocks() {
   # Zero-block truncation is _validate_coverage's hard-error case, not ours:
   # with no emitted issues there are no ordinals for the completion to
   # reference, and "complete the missing blocks" degenerates to a full re-roll.
+  # Ordering assumption: awk NR here reflects the pre-spike-injection ordinal space
+  # because _request_missing_blocks (line 1115) runs before _detect_unverified_integrations
+  # (line 1128).  Do not move this call after spike injection without re-examining
+  # the NR numbering — the completion prompt must use the same ordinal space the
+  # planner used when writing the original #N dependency references.
   local _emitted_titles
   _emitted_titles=$(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' | awk '{printf "#%d %s\n", NR, $0}' || true)
   [ -z "$_emitted_titles" ] && return 0
+
+  # Extract the full already-emitted blocks so the completion call sees the same
+  # file-path and naming conventions the primary generation established.
+  local _emitted_blocks
+  _emitted_blocks=$(awk '
+    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf="" }
+      next
+    }
+  ' "$issues_file" || true)
 
   local _missing_count _missing_list
   _missing_count=$(printf '%s\n' "$_missing" | grep -c . || true)
@@ -2808,6 +2921,7 @@ _request_missing_blocks() {
 **TARGETED COMPLETION — EMIT ONLY THE MISSING BLOCK(S).** A previous response already emitted these issue blocks (ordinal references #N refer to these, in this order):
 ${_emitted_titles}
 
+$([ -n "$_emitted_blocks" ] && printf 'The full content of the already-emitted blocks is provided below for context. File paths, naming conventions, and structural patterns visible in these blocks MUST be followed in any new block you emit:\n%s\n' "$_emitted_blocks")
 The following planned issue(s) from that response's COVERAGE checklist are MISSING their block:
 ${_missing_list}
 
@@ -3349,6 +3463,28 @@ _sanitize_spike_key() {
   echo "$1" | tr '.' '-' | tr '/' '-' | sed 's/[^a-zA-Z0-9-]//g' | tr '[:upper:]' '[:lower:]' || true
 }
 
+# _normalize_host_to_registrable_domain: strip subdomains, return the registrable domain.
+# api.foo.co → foo.co, auth.api.foo.co → foo.co, api.myservice.co.uk → myservice.co.uk
+# Limitation: uses a hardcoded multi-part TLD list, not a full public-suffix list (PSL).
+# Add entries to the for-loop as needed; a proper PSL lookup is a separate follow-up.
+_normalize_host_to_registrable_domain() {
+  local _h="$1"
+  local _tld _tld_escaped _reg
+  # Hardcoded multi-part TLD list (covers major ccSLD patterns; not exhaustive).
+  for _tld in co.uk com.au co.jp com.br; do
+    _tld_escaped=$(echo "$_tld" | sed 's/\./\\./g' || true)
+    if echo "$_h" | grep -qE "\\.$_tld_escaped$"; then
+      # Extract registrar-label + multi-part TLD (e.g. foo.co.uk from api.foo.co.uk)
+      _reg=$(echo "$_h" | grep -oE "[a-zA-Z0-9][a-zA-Z0-9-]*\\.$_tld_escaped$" || true)
+      echo "${_reg:-$_h}"
+      return
+    fi
+  done
+  # Standard last-two-labels rule (e.g. api.foo.co → foo.co)
+  _reg=$(echo "$_h" | grep -oE '[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]*$' || true)
+  echo "${_reg:-$_h}"
+}
+
 _detect_unverified_integrations() {
   local issues_file="$1"
 
@@ -3371,6 +3507,16 @@ _detect_unverified_integrations() {
   local grounded_packages grounded_hosts
   grounded_packages=$(_build_grounded_packages | sort -u || true)
   grounded_hosts=$(_build_grounded_hosts | sort -u || true)
+  # Pre-normalize grounded_hosts to registrable domains so that a fixture at
+  # fixtures/foo.co/ grounds any subdomain variant (api.foo.co → foo.co).
+  # Computed once here; used in both Pass-1 and Pass-3 groundedness checks.
+  local grounded_hosts_norm=""
+  if [ -n "$grounded_hosts" ]; then
+    grounded_hosts_norm=$(while IFS= read -r _gh; do
+      [ -z "$_gh" ] && continue
+      _normalize_host_to_registrable_domain "$_gh"
+    done <<< "$grounded_hosts" | sort -u || true)
+  fi
 
   # Collect all issue bodies concatenated (for extraction pass)
   # We parse block-by-block so we can track which issues reference which candidates.
@@ -3412,8 +3558,27 @@ _detect_unverified_integrations() {
         if [ -n "$_hosts" ]; then
           while IFS= read -r _host; do
             [ -z "$_host" ] && continue
-            if ! echo "$grounded_hosts" | grep -qxF "$_host" 2>/dev/null; then
-              echo "host${TAB_CHAR}$_host" >> "$candidates_file"
+            # Normalize first so that a fixtures/foo.co/ fixture grounds both
+            # api.foo.co and auth.foo.co (all normalize to foo.co before the check).
+            local _host_reg
+            _host_reg=$(_normalize_host_to_registrable_domain "$_host")
+            if ! echo "$grounded_hosts_norm" | grep -qxF "${_host_reg:-$_host}" 2>/dev/null; then
+              # Check if the vendor token (first label of the registrable domain,
+              # e.g. "supabase" from supabase.co) appears as a word-boundary token
+              # in any grounded package name (e.g. @supabase/supabase-js).
+              # When matched, the session contract comes from a typed SDK already
+              # in the manifest — the case this provenance system was built for.
+              local _vendor _grounding_pkg
+              _vendor=$(echo "${_host_reg:-$_host}" | sed 's/\..*//' || true)
+              _grounding_pkg=""
+              if [ -n "${_vendor:-}" ]; then
+                _grounding_pkg=$(echo "$grounded_packages" | grep -iE "(^|[@/-])${_vendor}([@/-]|$)" | head -1 || true)
+              fi
+              if [ -n "${_grounding_pkg:-}" ]; then
+                print_info "host ${_host_reg:-$_host} grounded by SDK package ${_grounding_pkg} — suppressing spike" >&2
+              else
+                echo "host${TAB_CHAR}${_host_reg:-$_host}" >> "$candidates_file"
+              fi
             fi
           done <<< "$_hosts"
         fi
@@ -3461,10 +3626,27 @@ _detect_unverified_integrations() {
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
-    local _name
+    local _type _name
+    _type=$(echo "$_candidate_line" | cut -f1)
     _name=$(echo "$_candidate_line" | cut -f2)
     local _key
     _key=$(_sanitize_spike_key "$_name")
+    # Fixture path: host candidates use the dotted hostname so _build_grounded_hosts
+    # recognises the directory on the next run (its regex requires a dot in the name).
+    # Package candidates use the sanitized key (dots/slashes → hyphens).
+    local _fixture_path
+    if [ "$_type" = "host" ]; then
+      _fixture_path="$_name"
+    else
+      _fixture_path="$_key"
+    fi
+    # Truncate display name so the title stays within the ≤50-char runbook cap.
+    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = 24.
+    local _display_name
+    _display_name="$_name"
+    if [ "${#_name}" -gt 24 ]; then
+      _display_name="${_name:0:21}..."
+    fi
 
     print_warning "unverified external integration: $_name" >&2
 
@@ -3479,35 +3661,49 @@ _detect_unverified_integrations() {
 
     # Build spike issue block
     spikes_block+="---ISSUE---
-TITLE: spike: capture $_name sample for grounding
+TITLE: Capture $_display_name sample - fixtures
 LABELS: spike, tech-debt
 TIME: 30min
+SPIKE_KEY: $_key
 BODY:
-## Background
+**Description**
 
 An emitted issue references \`$_name\` but no real API sample exists in the
 repo's fixture directories. The downstream implementation would be built
-against a hallucinated contract.
+against a hallucinated contract. This spike captures a secret-scrubbed real
+response and documents per-field provenance so downstream work starts from
+verified data.
 
-## Task
+**Claude Context**
 
-Make one real call to \`$_name\`. Capture a secret-scrubbed sample to
-\`fixtures/$_name/\`. Document per-field provenance (what each returned field
-means, whether it is stable across calls, any fields that contain secrets
-that must be scrubbed before committing).
+Files to Read:
+- \`fixtures/$_fixture_path/\` (check for any partial sample already present)
 
-## Acceptance Criteria
+Files to Modify:
+- \`fixtures/$_fixture_path/sample.json\` (create or update with captured response)
+- \`fixtures/$_fixture_path/README.md\` (document per-field provenance)
 
-- [ ] Sample exists at \`fixtures/$_name/\`
+**Acceptance Criteria**
+
+- [ ] Sample exists at \`fixtures/$_fixture_path/\`
 - [ ] Each field in the sample has a one-line provenance comment in the
   adjacent \`README.md\` (or inline in the JSON as a \`_comment\` key)
 - [ ] No secrets (tokens, credentials, PII) are present in the committed sample
 
-## Scope Boundary
+**Done Definition**
 
-**DO**: Capture one representative real response. Scrub secrets. Document fields.
-**DO NOT**: Implement client code, write tests, or validate the sample against
-a schema — those are the downstream issue's responsibility.
+A scrubbed real API response for \`$_name\` is committed under \`fixtures/$_fixture_path/\` with per-field provenance documented.
+
+**Scope Boundary**
+
+- DO: Make one real call to \`$_name\`. Capture a secret-scrubbed sample to \`fixtures/$_fixture_path/sample.json\`. Document per-field provenance.
+- DO NOT: Implement client code, write tests, or validate the sample against a schema.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+No documentation updates required — the fixture artifact is this spike's deliverable.
 ---END---
 "
   done <<< "$unique_candidates"
@@ -3561,7 +3757,9 @@ a schema — those are the downstream issue's responsibility.
         _in_issue=false
         # Check if this is a spike issue itself (don't self-reference)
         local _is_spike=false
-        echo "$_current_block" | grep -q "^TITLE: spike: " && _is_spike=true
+        local _block_title
+        _block_title=$(echo "$_current_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+        _title_is_spike "${_block_title:-}" && _is_spike=true
 
         if [ "$_is_spike" = false ]; then
           # For each ungrounded candidate, check if this issue body references it.
@@ -3582,9 +3780,16 @@ a schema — those are the downstream issue's responsibility.
             _ctype=$(echo "$_candidate_line" | cut -f1)
             local _context_match=false
             if [ "$_ctype" = "host" ]; then
-              # Match only when the name appears after a URL scheme, anchored to
-              # the start of the hostname (avoids foo.example.com matching example.com).
-              echo "$_current_block" | grep -qiE "https?://(www\.)?$(echo "$_name" | sed 's/\./\\./g')" && _context_match=true
+              # _name is a normalized registrable domain (e.g. foo.co); match it as a
+              # hostname suffix so any subdomain variant (api.foo.co, auth.foo.co) in
+              # the block body triggers the Blocked-by injection.
+              # The ([^a-zA-Z0-9.-]|$) right anchor is the exact complement of Pass-1's
+              # host-char class, so any URL terminator (space, comma, colon, ?, backtick,
+              # end-of-line) matches — preventing both prefix collisions (foo.com vs foo.co)
+              # and orphaned spikes for prose URLs like "https://api.foo.co for tokens."
+              echo "$_current_block" | \
+                grep -qiE "https?://([a-zA-Z0-9-]+\.)*$(echo "$_name" | sed 's/\./\\./g')([^a-zA-Z0-9.-]|$)" && \
+                _context_match=true
             else
               # pkg: match import/require patterns only
               echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true
@@ -3698,24 +3903,56 @@ _dedup_issues() {
 
 display_issues() {
   local issues_file="$1"
-  local issue_num=0
   local total_time_min=0
 
   echo ""
   print_header "Generated Issues"
 
-  # Count issues first
-  local total_issues
-  total_issues=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  # Pre-pass: classify each issue as spike or implementation to build per-issue
+  # display labels.  Spike issues get "[spike K/total_spikes]"; implementation
+  # issues get "[N/total_nonspike]" (non-spike ordinal space, matching #N refs).
+  # Spike-free batches produce labels identical to the previous [N/M] format.
+  local _pspike_count=0
+  local _pnonspike_count=0
+  local -a _issue_titles=()
+  local _pcurrent_title=""
+  while IFS= read -r _pline; do
+    if [[ "$_pline" == "---ISSUE---" ]]; then
+      _pcurrent_title=""
+    elif [[ "$_pline" =~ ^TITLE:\ (.+) ]]; then
+      _pcurrent_title="${BASH_REMATCH[1]}"
+    elif [[ "$_pline" == "---END---" ]]; then
+      _issue_titles+=("$_pcurrent_title")
+      if _title_is_spike "$_pcurrent_title"; then
+        _pspike_count=$((_pspike_count + 1))
+      else
+        _pnonspike_count=$((_pnonspike_count + 1))
+      fi
+    fi
+  done < "$issues_file"
+
+  # Build the label string for each issue (0-based array, parallel to _issue_titles).
+  local -a _labels=()
+  local _lsc=0 _lnc=0 _li
+  for _li in "${!_issue_titles[@]}"; do
+    if _title_is_spike "${_issue_titles[$_li]}"; then
+      _lsc=$((_lsc + 1))
+      _labels+=("spike $_lsc/$_pspike_count")
+    else
+      _lnc=$((_lnc + 1))
+      _labels+=("$_lnc/$_pnonspike_count")
+    fi
+  done
 
   # Parse and display
+  local issue_num=0
   while IFS= read -r line; do
     if [[ "$line" == "---ISSUE---" ]]; then
       issue_num=$((issue_num + 1))
       if [ $issue_num -gt 1 ]; then
         echo ""
       fi
-      echo -e "  ${CYAN}[$issue_num/$total_issues]${NC}"
+      echo -e "  ${CYAN}[${_labels[$((issue_num - 1))]:-$issue_num}]${NC}"
     elif [[ "$line" == "---END---" ]]; then
       continue
     elif [[ "$line" =~ ^TITLE:\ (.+) ]]; then
@@ -3776,6 +4013,12 @@ display_issues() {
     echo "$deferred" | while IFS= read -r dline; do
       echo "  ${dline#- ⏭️ }"
     done
+  fi
+
+  # When spikes are present, note that #N refs are in non-spike ordinal space.
+  # Spike-free batches omit this line (behavior unchanged).
+  if [ "$_pspike_count" -gt 0 ]; then
+    print_info "Note: #N refs count implementation issues only and are rewritten to real issue numbers at creation"
   fi
 }
 
@@ -4148,6 +4391,7 @@ create_issues() {
   local current_labels=""
   local current_body=""
   local current_time=""
+  local current_spike_key=""
   local in_body=false
   local prev_issue_num=""
   # spike_map_file: stores "#SPIKE-<key>=<real-issue-number>" lines.
@@ -4176,6 +4420,7 @@ create_issues() {
       current_labels=""
       current_body=""
       current_time=""
+      current_spike_key=""
       in_body=false
     elif [[ "$line" == "---END---" ]]; then
       if [ -n "$current_title" ]; then
@@ -4197,10 +4442,13 @@ create_issues() {
         fi
 
         # Post-substitution sweep: remove any surviving unresolvable #SPIKE-<key>
-        # placeholders (can occur when a candidate matched via a false substring hit
-        # before the -F fix, or when a spike was emitted but its map entry was never
-        # recorded due to a title mismatch). Strip the whole "Blocked by: #SPIKE-…"
-        # clause rather than leaving a broken reference in the created issue.
+        # placeholders. These should only remain for false-substring candidates
+        # (pre -F fix); a key mismatch here indicates a bug in spike-map round-trip.
+        local _unresolved_keys
+        _unresolved_keys=$(echo "$current_body" | grep -oE '#SPIKE-[a-zA-Z0-9-]+' | sort -u || true)
+        if [ -n "$_unresolved_keys" ]; then
+          print_warning "unresolved spike placeholders in '$current_title' (stripping): $(echo "$_unresolved_keys" | tr '\n' ' ')" >&2
+        fi
         current_body=$(echo "$current_body" | \
           sed -E 's|,? *Blocked by: #SPIKE-[a-zA-Z0-9-]*||g; s|^[[:space:]]*Blocked by: #SPIKE-[a-zA-Z0-9-]*[[:space:]]*$||g' || true)
         # Clean up an empty Dependencies line that results from stripping all refs
@@ -4254,14 +4502,23 @@ create_issues() {
 
           # If this is a spike issue, record its placeholder → real number mapping
           # so downstream issues get the correct "Blocked by: #<N>" reference.
-          # Title format: "spike: capture <name> sample for grounding"
+          # Prefer the SPIKE_KEY: field emitted by _detect_unverified_integrations
+          # (carries the full unsanitized key); fall back to deriving from the title
+          # for backward-compat with pre-SPIKE_KEY blocks or manually authored spikes.
+          # _title_is_spike uses the canonical regex "Capture <name> sample - fixtures"
+          # (plus backward-compat "spike: capture <name> sample for grounding");
+          # BASH_REMATCH[1] holds the name from whichever alternative matched.
           # Spike issues do NOT update prev_issue_num — they are prepended
           # prerequisites and are not part of the sequential #PREV dependency
           # chain the planner authored among the real (non-spike) issues.
-          if [[ "$current_title" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]; then
-            local _spike_name="${BASH_REMATCH[1]}"
+          if _title_is_spike "$current_title"; then
             local _spike_key
-            _spike_key=$(_sanitize_spike_key "$_spike_name")
+            if [ -n "${current_spike_key:-}" ]; then
+              _spike_key="$current_spike_key"
+            else
+              local _spike_name="${BASH_REMATCH[1]}"
+              _spike_key=$(_sanitize_spike_key "$_spike_name")
+            fi
             echo "#SPIKE-${_spike_key}=${issue_num}" >> "$spike_map_file"
           else
             # Only non-spike issues advance the #PREV pointer.
@@ -4282,6 +4539,8 @@ create_issues() {
       current_labels="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^TIME:\ (.+) ]]; then
       current_time="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^SPIKE_KEY:\ (.+) ]]; then
+      current_spike_key="${BASH_REMATCH[1]}"
     elif [[ "$line" == BODY:* ]]; then
       in_body=true
       # Capture anything after "BODY:" on the same line
