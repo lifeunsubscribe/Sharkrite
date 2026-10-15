@@ -142,7 +142,7 @@ _line_of() {
   _f=$(ls "$_log_dir"/rite-promote-header-check-*.log 2>/dev/null | head -1)
   [ -n "$_f" ]
   grep -q "=== Sharkrite Log ===" "$_f"
-  # Post-tee assertions: these lines only reach the log file when the FIFO tee
+  # Post-tee assertions: these lines only reach the log file when the exec tee
   # is active. Removing the exec tee at bin/rite:969 leaves the header (written
   # via plain >) intact but drops all subsequent output — so these two greps
   # catch a disabled or broken tee.
@@ -182,7 +182,7 @@ _line_of() {
   local _f
   _f=$(ls "$_log_dir"/rite-sync-tee-check-*.log 2>/dev/null | head -1)
   [ -n "$_f" ]
-  # Post-tee assertions: these lines only reach the log file when the FIFO tee
+  # Post-tee assertions: these lines only reach the log file when the exec tee
   # is active. Removing the exec tee at bin/rite:969 leaves the header (written
   # via plain >) intact but drops all subsequent output — so these two greps
   # catch a disabled or broken tee.
