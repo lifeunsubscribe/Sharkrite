@@ -28,10 +28,11 @@ _RECURRENCE_CAT_MIN=4
 _rf_raw_headers=""
 _rf_raw_cats=""
 for logfile in ${LOGFILES:-}; do
-  _rf_raw_headers+=$(grep -E '^### .* - ACTIONABLE_NOW' "$logfile" 2>/dev/null || true)
+  _rf_raw_headers+=$(grep -E '^### .* - ACTIONABLE_NOW$' "$logfile" 2>/dev/null | grep -v '^### \[GATE\]' || true)
   _rf_raw_headers+=$'\n'
   _rf_raw_cats+=$(awk '
-    /^### .* - ACTIONABLE_NOW/{capture=1; next}
+    /^### \[GATE\]/{capture=0; next}
+    /^### .* - ACTIONABLE_NOW$/{capture=1; next}
     /^### /{capture=0}
     capture && /\*\*Category:\*\*/{
       sub(/.*\*\*Category:\*\*[[:space:]]*/, "")
@@ -221,6 +222,21 @@ teardown() {
 
 @test "RF_BLOCK: no log files produces empty block" {
   run env LOGFILES="" "$RITE_TEST_TMPDIR/compute_rf_block.sh"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# [GATE] exclusion: test-failure headers must not inflate the recurrence tally
+# ---------------------------------------------------------------------------
+
+@test "RF_BLOCK: [GATE] header appearing 2x produces empty block" {
+  printf '### [GATE] ACTIONABLE_NOW: 2 test failures (bats exit 1) - ACTIONABLE_NOW\n' \
+    > "$RITE_TEST_TMPDIR/log1.log"
+  printf '### [GATE] ACTIONABLE_NOW: 2 test failures (bats exit 1) - ACTIONABLE_NOW\n' \
+    > "$RITE_TEST_TMPDIR/log2.log"
+  run env LOGFILES="$RITE_TEST_TMPDIR/log1.log $RITE_TEST_TMPDIR/log2.log" \
+    "$RITE_TEST_TMPDIR/compute_rf_block.sh"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
