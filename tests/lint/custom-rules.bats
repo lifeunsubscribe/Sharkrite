@@ -96,6 +96,20 @@ create_test_script() {
   [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
+@test "does not flag wc -l || true when grep -oE || echo '0' is also present on the line" {
+  # Both patterns on the same line: the scanner finds the line (wc -l trigger),
+  # but the binding regex must confirm wc -l itself is paired with || echo "0".
+  # Without binding, the grep -oE's || echo "0" would cause a false violation.
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'COUNT=$(find . | wc -l || true); MATCH=$(echo "$t" | grep -oE "[0-9]+" || echo "0")' \
+    > "$LINT_FIXTURE_DIR/ok-wc-l-with-oe.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
 @test "detects git push without refspec" {
   printf '%s\n' '#!/usr/bin/env bash' 'git push' > "$LINT_FIXTURE_DIR/bad-push.sh"
 

@@ -7,15 +7,6 @@
 # || echo "0" because they produce no output on no match (see CLAUDE.md "grep -c pattern").
 echo "Checking for guaranteed-output-counter with '|| echo \"0\"' pattern..."
 
-# Returns 0 if the content line has any of the three echo-zero forms ("0", '0', bare 0)
-_echo_zero_on_line() {
-  local content="$1"
-  echo "$content" | grep -qE '\|\|\s*echo\s+"0"' && return 0
-  echo "$content" | grep -qE $'\|\|\s*echo\s+\'0\'' && return 0
-  echo "$content" | grep -qE '\|\|\s*echo\s+0([^0-9]|$)' && return 0
-  return 1
-}
-
 for file in "${SHELL_FILES[@]}"; do
   # grep -c always outputs a count (even "0") — use || true instead of || echo "0"
   # [^|]* ensures no pipe between grep -c and ||, i.e. grep -c is the final stage
@@ -34,7 +25,9 @@ for file in "${SHELL_FILES[@]}"; do
   # fire even when wc -l already printed "0", producing double zero.
   while IFS=: read -r line_num line_content; do
     echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
-    if _echo_zero_on_line "$line_content"; then
+    if echo "$line_content" | grep -qE 'wc[^)]*-l[^)]*\|\|\s*echo\s+"0"' ||
+       echo "$line_content" | grep -qE $'wc[^)]*-l[^)]*\|\|\s*echo\s+\'0\'' ||
+       echo "$line_content" | grep -qE 'wc[^)]*-l[^)]*\|\|\s*echo\s+0([^0-9]|$)'; then
       print_violation "$file" "$line_num" "GREP_C_ECHO_ZERO" \
         "wc -l always outputs a count; use || true instead of || echo \"0\""
     fi
