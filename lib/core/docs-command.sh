@@ -409,12 +409,15 @@ _docs_update_engine() {
 ${_ue_excerpt}
 
 "
+      [ $((_ue_doc_bytes + ${#_ue_entry})) -gt "$_ue_doc_cap" ] && continue
       _ue_doc_bytes=$((_ue_doc_bytes + ${#_ue_entry}))
-      [ "$_ue_doc_bytes" -gt "$_ue_doc_cap" ] && break
       _ue_doc_ctx="${_ue_doc_ctx}${_ue_entry}"
       _ue_ctx_files="${_ue_ctx_files}${_ue_fp}"$'\n'
     done < "$_ue_map_file"
   fi
+  # Advertise only files that entered context so the model doesn't propose
+  # EDIT for cap-skipped or map-absent paths.
+  _ue_map_content="$_ue_ctx_files"
 
   # Drift log content
   local _ue_drift_path
@@ -628,15 +631,19 @@ DOC_UPDATE_EOF
 
       # Refuse EDIT proposals when the file was not in the LLM's context:
       # either dropped by the 15KB budget cap or absent from the docs map entirely.
+      # Guard is skipped when _ue_ctx_files is empty (map absent or empty) so that
+      # a missing map does not block every EDIT proposal wholesale.
       if [ "$_ue_p_action" = "EDIT" ]; then
-        case $'\n'"$_ue_ctx_files" in
-          *$'\n'"${_ue_p_file}"$'\n'*) : ;;
-          *)
-            print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file was not included in the context budget (15KB cap) — model never read its content" >&2
-            _ue_pi=$((_ue_pi + 1))
-            continue
-            ;;
-        esac
+        if [ -n "$_ue_ctx_files" ]; then
+          case $'\n'"$_ue_ctx_files" in
+            *$'\n'"${_ue_p_file}"$'\n'*) : ;;
+            *)
+              print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file not in model context (absent from docs map or excluded by 15KB cap) — model never read its content" >&2
+              _ue_pi=$((_ue_pi + 1))
+              continue
+              ;;
+          esac
+        fi
         local _ue_abs_size_check="${RITE_PROJECT_ROOT}/${_ue_p_file}"
         if [ -f "$_ue_abs_size_check" ]; then
           local _ue_file_size

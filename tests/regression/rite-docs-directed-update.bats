@@ -74,7 +74,7 @@ source "${DOCS_CMD}"
 load_provider()                    { return 0; }
 provider_run_prompt_with_timeout() { printf '%s\n' "${STUB_PROPOSALS:-NO_PROPOSALS_NEEDED}"; }
 provider_resolve_model()           { printf 'claude-sonnet-4-6\n'; }
-docs_map_ensure()                  { touch "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
+docs_map_ensure()                  { [ -s "${FAKE_PROJECT}/.rite/state/docs-map.tsv" ] || printf 'docs/test-doc.md\n' > "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
 docs_map_path()                    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
 gh_safe()                          { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
 
@@ -533,8 +533,8 @@ DRIFT_EOF
     bash '${_DOCS_HELPER}' docs_directed_update 'update dropped doc' 2>&1
   " || true
 
-  # Membership guard must have fired
-  printf '%s\n' "$output" | grep -qi "Auto-skipping EDIT"
+  # Membership guard must have fired (distinctive phrase — not the size guard)
+  printf '%s\n' "$output" | grep -qi "absent from docs map or excluded by 15KB cap"
 
   # File content must be unchanged — guard prevented apply
   local doc_after
