@@ -2967,6 +2967,56 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
     return 0
   fi
 
+  # Guard: only keep blocks whose TITLE appears in $_missing (same
+  # canonical comparison — strip + lowercase — as _coverage_missing_titles).
+  # Rejects title-drifted echoes that bypass _dedup_issues and enter the
+  # preview as spurious new issues.
+  #
+  # Deliberate single-shot drop (no retry): the sibling sections-lint repair
+  # path (~line 2742) retries twice because it is fixing a known block — same
+  # requested title, just missing sections — so a retry on the same TITLE is
+  # reasonable. Here, a title drift means the model ignored the requested title
+  # entirely; retrying would likely produce the same drift, and the missing
+  # title stays in $_missing for the next _request_missing_blocks attempt
+  # anyway. Keeping the partial slate is cheaper than looping on a model that
+  # has already demonstrated it won't honour the constraint.
+  local _guarded_blocks="" _cur_block="" _in_block=0
+  local _gtitle _gtitle_canon _gm_title _gm_canon _gaccepted
+  while IFS= read -r _gline || [ -n "$_gline" ]; do
+    if [ "$_gline" = "---ISSUE---" ]; then
+      _cur_block="$_gline"$'\n'
+      _in_block=1
+    elif [ "$_in_block" = 1 ]; then
+      _cur_block="${_cur_block}${_gline}"$'\n'
+      if [ "$_gline" = "---END---" ]; then
+        _in_block=0
+        _gtitle=$(printf '%s' "$_cur_block" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+        _gtitle_canon=$(printf '%s' "$_gtitle" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+        _gaccepted=false
+        while IFS= read -r _gm_title; do
+          [ -z "$_gm_title" ] && continue
+          _gm_canon=$(printf '%s' "$_gm_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+          if [ "$_gtitle_canon" = "$_gm_canon" ]; then
+            _gaccepted=true
+            break
+          fi
+        done <<< "$_missing"
+        if [ "$_gaccepted" = true ]; then
+          _guarded_blocks="${_guarded_blocks}${_cur_block}"
+        else
+          print_warning "Targeted completion emitted unexpected title '${_gtitle}' — not in missing list, skipping" >&2
+        fi
+        _cur_block=""
+      fi
+    fi
+  done <<< "$_blocks"
+  _blocks="$_guarded_blocks"
+
+  if [ -z "$_blocks" ]; then
+    print_warning "Targeted completion: no accepted blocks after title guard — keeping the partial slate" >&2
+    return 0
+  fi
+
   printf '%s\n' "$_blocks" >> "$issues_file"
 
   local _still_missing

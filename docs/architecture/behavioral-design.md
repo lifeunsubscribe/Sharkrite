@@ -1945,3 +1945,27 @@ The skipped-gone preflight exists because ledger files are never pruned after pr
 **Overall exit code:** 0 if all items synced/current/skipped-by-rail; 1 if any operational failure (fetch/push error) occurred.
 
 **Regression tests:** `tests/regression/sync-integration-branch.bats` — dry-run dispatch for all three forms, design-contract greps (no rebase in `sync_integration_branch`, no stash anywhere, `--force-with-lease` in `sync_issue_branch` only, resolver availability-guarded), and behavioral rail tests (live-lock, dirty-worktree, staleness threshold, conflict-exits-0). **Not yet pinned:** the already-current (Rail 4) exit-0 path and the Phase A skipped-gone preflight behavioral test.
+
+## Targeted Completion — Title Guard (#1188/#1195/#1196)
+
+`rite plan` generates issues in a single LLM pass. When that pass produces fewer blocks than expected (detected by `_coverage_missing_titles`), `_request_missing_blocks` makes a targeted follow-up request asking only for the missing titles.
+
+### Title Guard Contract
+
+Every block returned by `_request_missing_blocks` is checked against the `$_missing` list before it is appended to the slate. The check uses the same canonical comparison as `_coverage_missing_titles`: strip leading/trailing whitespace, lowercase.
+
+- **Accepted:** block's `TITLE:` field matches one of the missing titles → appended.
+- **Rejected:** block's `TITLE:` does not match any missing title → dropped with a warning. This covers title-drifted completions where the model rephrased or fabricated a title rather than honouring the one requested.
+- **All-dropped:** if every returned block is rejected, `_guarded_blocks` is empty → the partial slate (issues generated in the primary pass) is kept unchanged and the function returns 0. No partial output from a drift-only completion leaks into the preview.
+
+The guard is the last filter in the targeted-completion path, applied after `_normalize_issue_markers` and the well-formed-block extraction (`awk ---ISSUE---/---END---`).
+
+### Deliberate Single-Shot Drop (No Retry)
+
+The sibling sections-lint repair path (`_repair_block_sections`, ~line 2742) retries up to twice on title drift: it is fixing an existing block whose title is already known, so asking again with the same title constraint is reasonable. The targeted-completion path takes a different position:
+
+- A title drift here means the model received the exact missing title in its prompt and ignored it — a retry against the same constraint is unlikely to succeed.
+- The missing title remains in `$_missing`; if `_request_missing_blocks` is called again (e.g. by the outer retry loop in `_run_targeted_completion`), it will include the still-missing title again.
+- The partial slate is preserved; the total loss is one block per drifted title, not the whole completion.
+
+Keeping the slate and surfacing a warning is cheaper than looping on a model that has already demonstrated it won't honour the title constraint in this invocation.
