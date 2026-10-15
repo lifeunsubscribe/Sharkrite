@@ -240,3 +240,48 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# ---------------------------------------------------------------------------
+# [GATE]+Category: awk GATE exclusion must suppress Category lines too
+# (mutation coverage for /^### \[GATE\]/{capture=0; next})
+# ---------------------------------------------------------------------------
+
+@test "RF_BLOCK: [GATE] headers with Category lines do not inflate category backstop" {
+  # 4x [GATE] entries each with Category: CodeQuality — without the awk GATE
+  # exclusion rule the category backstop (threshold=4) would fire and produce
+  # non-empty output.  Deleting that one awk line must make this test fail.
+  printf '### [GATE] failure 1 - ACTIONABLE_NOW\n**Category:** CodeQuality\n' \
+    > "$RITE_TEST_TMPDIR/log1.log"
+  printf '### [GATE] failure 2 - ACTIONABLE_NOW\n**Category:** CodeQuality\n' \
+    >> "$RITE_TEST_TMPDIR/log1.log"
+  printf '### [GATE] failure 3 - ACTIONABLE_NOW\n**Category:** CodeQuality\n' \
+    > "$RITE_TEST_TMPDIR/log2.log"
+  printf '### [GATE] failure 4 - ACTIONABLE_NOW\n**Category:** CodeQuality\n' \
+    >> "$RITE_TEST_TMPDIR/log2.log"
+  run env LOGFILES="$RITE_TEST_TMPDIR/log1.log $RITE_TEST_TMPDIR/log2.log" \
+    "$RITE_TEST_TMPDIR/compute_rf_block.sh"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# Drift guard: awk block in compute_rf_block.sh must match production
+# ---------------------------------------------------------------------------
+
+@test "compute_rf_block.sh awk GATE-exclusion block matches production bin/rite-health-report" {
+  # Extract the awk program body (between $(awk ') and the closing ' "...") from
+  # both the production script and the test helper written in setup().
+  # A mismatch means the heredoc copy has drifted from the code it exercises.
+  cat > "$RITE_TEST_TMPDIR/extract_awk.sh" << 'EXTEOF'
+#!/bin/bash
+# Print lines between '$(awk ') and the closing single-quote line (exclusive).
+# \047 = single quote in awk octal escape.
+awk 'BEGIN{f=0} /\$\(awk \047$/{f=1;next} f && /^[[:space:]]*\047 "/{exit} f{print}' "$1"
+EXTEOF
+  chmod +x "$RITE_TEST_TMPDIR/extract_awk.sh"
+
+  _prod=$("$RITE_TEST_TMPDIR/extract_awk.sh" "$RITE_REPO_ROOT/bin/rite-health-report")
+  _test=$("$RITE_TEST_TMPDIR/extract_awk.sh" "$RITE_TEST_TMPDIR/compute_rf_block.sh")
+  [ -n "$_prod" ]  # sanity: extraction must find the block
+  [ "$_prod" = "$_test" ]
+}
