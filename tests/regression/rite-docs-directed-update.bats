@@ -74,7 +74,7 @@ source "${DOCS_CMD}"
 load_provider()                    { return 0; }
 provider_run_prompt_with_timeout() { printf '%s\n' "${STUB_PROPOSALS:-NO_PROPOSALS_NEEDED}"; }
 provider_resolve_model()           { printf 'claude-sonnet-4-6\n'; }
-docs_map_ensure()                  { touch "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
+docs_map_ensure()                  { [ -s "${FAKE_PROJECT}/.rite/state/docs-map.tsv" ] || printf 'docs/test-doc.md\n' > "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
 docs_map_path()                    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
 gh_safe()                          { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
 
@@ -484,6 +484,67 @@ DRIFT_EOF
   local fetch_calls
   fetch_calls="$(grep -c 'git:fetch' "$STUB_CALLS_FILE" 2>/dev/null || true)"
   [ "$fetch_calls" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 13 (#1231): EDIT guard — file dropped by 15KB budget
+# ---------------------------------------------------------------------------
+
+@test "EDIT proposal for a file dropped by the 15KB context budget is auto-skipped" {
+  # Fill the context budget with 7 filler docs.
+  # Each entry: "--- docs/filler-N.md ---\n" (25 bytes) + 2000-byte excerpt + "\n\n" = 2027 bytes.
+  # 7 × 2027 = 14189 bytes consumed — under the 15000-byte cap.
+  # The 8th entry (docs/dropped.md, 800-byte content) adds ~824 bytes → 15013 > 15000 → dropped.
+  local _i
+  local _map_content=""
+  for _i in 1 2 3 4 5 6 7; do
+    awk 'BEGIN{ for(i=0;i<2000;i++) printf "x"; printf "\n" }' \
+      > "$FAKE_PROJECT/docs/filler-${_i}.md"
+    _map_content="${_map_content}docs/filler-${_i}.md
+"
+  done
+
+  # Dropped file: 800 bytes — passes the 2000-byte size guard but is NOT in context
+  awk 'BEGIN{ for(i=0;i<800;i++) printf "x"; printf "\n" }' \
+    > "$FAKE_PROJECT/docs/dropped.md"
+  _map_content="${_map_content}docs/dropped.md
+"
+
+  printf '%s' "$_map_content" > "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+
+  local proposal
+  proposal="$(printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: EDIT' \
+    'FILE: docs/dropped.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Update the dropped doc' \
+    '---CONTENT---' \
+    '# Dropped Doc' \
+    '' \
+    'This content must not be applied.' \
+    '---END---')"
+
+  local doc_before
+  doc_before="$(cat "$FAKE_PROJECT/docs/dropped.md")"
+
+  run bash -c "
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
+    bash '${_DOCS_HELPER}' docs_directed_update 'update dropped doc' 2>&1
+  " || true
+
+  # Membership guard must have fired (distinctive phrase — not the size guard)
+  printf '%s\n' "$output" | grep -qi "absent from docs map or excluded by 15KB cap"
+
+  # File content must be unchanged — guard prevented apply
+  local doc_after
+  doc_after="$(cat "$FAKE_PROJECT/docs/dropped.md")"
+  [ "$doc_before" = "$doc_after" ]
+
+  # No push or PR-create
+  local push_calls
+  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$push_calls" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
