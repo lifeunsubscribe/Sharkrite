@@ -399,7 +399,7 @@ SELF_EOF
   # call. The queue-later branch omits it (natural issue-processing time provides
   # the buffer there). This structural check prevents the sleep from being silently
   # removed in a future refactor, which would restore the silent no-op in small batches.
-  awk '/if.*\[.*_DEP_LIVE_LOCK.*=.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /^[[:space:]]*fi[[:space:]]*$/{exit}' \
+  awk '/if.*\[.*_DEP_LIVE_LOCK.*=.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /^[[:space:]]*else[[:space:]]*$/{exit}' \
     "$BATCH_PROCESSOR" | grep -qE '^[[:space:]]*sleep[[:space:]]' || {
     echo "FAIL: no sleep call found before the end of the _DEP_LIVE_LOCK=true branch in $BATCH_PROCESSOR" >&2
     echo "      The sleep must exist in the live-lock branch; if moved past that block it restores the silent no-op (issue #1220)" >&2
@@ -414,7 +414,7 @@ SELF_EOF
   # precise silent no-op issue #1220 describes. Deleting the join leaves all
   # behavioral tests green while restoring the bug.
   _join_line=$(grep -n 'wait.*_live_lock_wait_pid' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
-  _extract_line=$(grep -n '_extract_dep_issues_from_body' "$BATCH_PROCESSOR" | grep -v '^[[:space:]]*#' | head -1 | cut -d: -f1 || true)
+  _extract_line=$(grep -nE '^[[:space:]]*[^#]*_extract_dep_issues_from_body "\$ISSUE_BODY"' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
 
   [ -n "$_join_line" ] || {
     echo "FAIL: 'wait \"\$_live_lock_wait_pid\"' join not found in $BATCH_PROCESSOR" >&2
