@@ -55,6 +55,42 @@ create_test_script() {
   [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
+@test "detects awk END-print with || echo '0'" {
+  printf '%s\n' '#!/usr/bin/env bash' "COUNT=\$(echo \"\$lines\" | awk '{sum += \$1} END {print sum+0}' || echo \"0\")" > "$LINT_FIXTURE_DIR/bad-awk-end.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "detects wc -l as final stage with || echo '0'" {
+  printf '%s\n' '#!/usr/bin/env bash' 'COUNT=$(find . -name "*.sh" | wc -l || echo "0")' > "$LINT_FIXTURE_DIR/bad-wc-l.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "does not flag grep -oE with || echo '0' (output-or-nothing producer)" {
+  printf '%s\n' '#!/usr/bin/env bash' 'MATCH=$(echo "$text" | grep -oE "[0-9]+" || echo "0")' > "$LINT_FIXTURE_DIR/ok-grep-oe.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "does not flag wc -l piped to tr with || echo '0' (tr is final stage)" {
+  printf '%s\n' '#!/usr/bin/env bash' "COUNT=\$(find . -name '*.sh' | wc -l | tr -d ' ' || echo \"0\")" > "$LINT_FIXTURE_DIR/ok-wc-l-tr.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
 @test "detects git push without refspec" {
   printf '%s\n' '#!/usr/bin/env bash' 'git push' > "$LINT_FIXTURE_DIR/bad-push.sh"
 
