@@ -2028,9 +2028,31 @@ promotion review after the CRITICAL hard gate and before the merge:
 
 | Classification | Disposition |
 |---|---|
-| ACTIONABLE_NOW | one aggregated issue (`Promotion review ACTIONABLE_NOW findings: <branch>`) |
+| ACTIONABLE_NOW | one aggregated issue (`Promotion review ACTIONABLE_NOW findings: <branch>`), deduped |
 | ACTIONABLE_LATER | per-item issues filed by the assessor, deduped |
 | DISMISSED | dropped |
+
+**Both actionable paths dedup, by different routes.** The assessor's own dedup
+lives inside its ACTIONABLE_LATER loop, so NOW items reached the aggregate
+unchecked — and the first live run proved that mattered: promoting
+`plan-quality` re-filed a finding already tracked as #1253, and a second item
+duplicated #1260. `_promote_title_matches_open_issue` now filters the NOW set
+against every open `from-review`/`tech-debt` issue before the aggregate is
+built, and `_promote_strip_tracked_now_blocks` removes the matched blocks from
+the body. When every NOW finding is already tracked, nothing is filed at all.
+
+That filter deliberately reuses the assessor's Stage-1 heuristic — lowercase,
+split on non-alphanumerics, count tokens longer than three characters that
+appear as whole words in an existing title, two or more means the same finding.
+A second, differently-tuned matcher would make the two paths disagree about
+what a duplicate *is*, which is worse than either rule alone. The comparison
+set is every open review/tech-debt issue rather than this PR's, because the
+duplicates a promotion must avoid were filed under the **constituent** issues.
+
+The dedup is best-effort like everything else in Phase 5b: an issue-list fetch
+that fails yields an empty set, nothing is filtered, and the aggregate is filed
+whole — the pre-dedup behaviour, which over-reports rather than losing a
+finding.
 
 Two properties make this the right reuse rather than a parallel classifier:
 

@@ -60,6 +60,73 @@ _promote_field() {
 }
 
 # ---------------------------------------------------------------------------
+# _promote_title_matches_open_issue <finding_title> <issue_list>
+#
+# <issue_list> is "number:title" lines. Echoes the matching issue number, or
+# nothing. Non-zero return means no match.
+#
+# This is deliberately the SAME Stage-1 heuristic assess-review-issues.sh uses
+# for its ACTIONABLE_LATER dedup: lowercase, split on non-alphanumerics, and
+# count tokens longer than 3 characters that appear as whole words in an
+# existing title; 2 or more means the same finding. Reused rather than
+# reinvented — a second, differently-tuned matcher would make the two paths
+# disagree about what a duplicate is, which is worse than either rule alone.
+# ---------------------------------------------------------------------------
+_promote_title_matches_open_issue() {
+  local _ft="$1"
+  local _issue_list="$2"
+  [ -n "${_ft:-}" ] || return 1
+  [ -n "${_issue_list:-}" ] || return 1
+
+  local _ft_words
+  _ft_words=$(printf '%s' "$_ft" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ' || true)
+  [ -n "${_ft_words// /}" ] || return 1
+
+  local _ei_num _ei_title _ei_words _mc _w
+  while IFS=: read -r _ei_num _ei_title; do
+    [ -n "${_ei_num:-}" ] || continue
+    [ -n "${_ei_title:-}" ] || continue
+    _ei_words=$(printf '%s' "$_ei_title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ' || true)
+    _mc=0
+    for _w in $_ft_words; do
+      if [ "${#_w}" -gt 3 ] && printf '%s' "$_ei_words" | grep -qw "$_w" 2>/dev/null; then
+        _mc=$((_mc + 1))
+      fi
+    done
+    if [ "$_mc" -ge 2 ]; then
+      printf '%s' "$_ei_num"
+      return 0
+    fi
+  done <<< "$_issue_list"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# _promote_strip_tracked_now_blocks <assessment_text> <titles_file>
+#
+# Echoes the assessment with every "### <title> - ACTIONABLE_NOW" block whose
+# title appears in <titles_file> removed. Blocks for other states are kept
+# verbatim, so the aggregate issue still reads as a complete assessment minus
+# the findings that are already on file.
+# ---------------------------------------------------------------------------
+_promote_strip_tracked_now_blocks() {
+  local _txt="$1"
+  local _titles_file="$2"
+  printf '%s' "$_txt" | awk -v dupf="$_titles_file" '
+    BEGIN { skip = 0; while ((getline l < dupf) > 0) if (length(l)) dup[l] = 1 }
+    /^### / {
+      t = $0; sub(/^### /, "", t)
+      state = t; sub(/^.* - /, "", state)
+      base = t;  sub(/ - [A-Z_]+$/, "", base)
+      skip = (state == "ACTIONABLE_NOW" && (base in dup)) ? 1 : 0
+      if (!skip) print
+      next
+    }
+    !skip { print }
+  ' || true
+}
+
+# ---------------------------------------------------------------------------
 # run_promote <branch>
 # ---------------------------------------------------------------------------
 run_promote() {
@@ -373,7 +440,59 @@ run_promote() {
       _diag "PROMOTE_ASSESS_COMPLETE branch=${BRANCH:-} pr=${PROMO_PR:-} now=${_promo_now_count} later_issues=${_promo_later_count}"
 
       if [ "${_promo_now_count}" -gt 0 ]; then
-        print_info "Capturing ${_promo_now_count} ACTIONABLE_NOW promotion finding(s) as a follow-up issue"
+        # Dedup the NOW items against issues already on file.
+        #
+        # The assessor's own dedup runs only inside its ACTIONABLE_LATER loop,
+        # so NOW items reached this aggregate unchecked — and the first live
+        # run proved it: promoting plan-quality re-filed a finding that was
+        # already tracked as #1253. The duplicates a promotion must avoid were
+        # filed under the CONSTITUENT issues, so the comparison set is every
+        # open review/tech-debt issue, not just this PR's.
+        #
+        # Best-effort like the rest of Phase 5b: if the issue list cannot be
+        # fetched, nothing is filtered and the aggregate is filed whole — the
+        # pre-dedup behaviour, which over-reports rather than losing a finding.
+        local _promo_open_issues="" _promo_open_fr="" _promo_open_td=""
+        _promo_open_fr=$(gh_safe issue list --state open --label "from-review" \
+          --limit 200 --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true)
+        _promo_open_td=$(gh_safe issue list --state open --label "tech-debt" \
+          --limit 200 --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true)
+        _promo_open_issues=$(printf '%s\n%s' "${_promo_open_fr:-}" "${_promo_open_td:-}" \
+          | grep -v '^$' | sort -u || true)
+
+        local _promo_now_titles
+        _promo_now_titles=$(printf '%s' "$_promo_assess_out" \
+          | sed -n 's/^### \(.*\) - ACTIONABLE_NOW$/\1/p' || true)
+
+        local _promo_dup_file _promo_dup_note="" _promo_kept=0 _promo_dups=0
+        _promo_dup_file=$(mktemp)
+        local _pnt _pdup
+        while IFS= read -r _pnt; do
+          [ -n "${_pnt:-}" ] || continue
+          _pdup=$(_promote_title_matches_open_issue "$_pnt" "${_promo_open_issues:-}" || true)
+          if [ -n "${_pdup:-}" ]; then
+            printf '%s\n' "$_pnt" >> "$_promo_dup_file"
+            _promo_dup_note="${_promo_dup_note}- \`${_pnt}\` — already tracked as #${_pdup}
+"
+            _promo_dups=$((_promo_dups + 1))
+          else
+            _promo_kept=$((_promo_kept + 1))
+          fi
+        done <<< "$_promo_now_titles"
+
+        if [ "${_promo_dups}" -gt 0 ]; then
+          print_info "${_promo_dups} of ${_promo_now_count} ACTIONABLE_NOW finding(s) already tracked — not re-filing those"
+          _diag "PROMOTE_ASSESSED_DEDUP branch=${BRANCH} pr=${PROMO_PR} now=${_promo_now_count} duplicate=${_promo_dups} new=${_promo_kept}"
+          _promo_assess_out=$(_promote_strip_tracked_now_blocks "$_promo_assess_out" "$_promo_dup_file")
+        fi
+        rm -f "$_promo_dup_file"
+
+        if [ "${_promo_kept}" -eq 0 ]; then
+          print_success "All ${_promo_now_count} ACTIONABLE_NOW finding(s) are already tracked — nothing new to file"
+          _diag "PROMOTE_ASSESSED_ALL_TRACKED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_now_count}"
+        else
+
+        print_info "Capturing ${_promo_kept} new ACTIONABLE_NOW promotion finding(s) as a follow-up issue"
 
         # Truncate to stay inside GitHub's 65536-char issue body limit. Backing
         # off to the last newline cannot split a comment block here (assessment
@@ -391,8 +510,10 @@ run_promote() {
 
         local _promo_now_body
         _promo_now_body="Findings from the promotion review of \`${BRANCH}\` (PR #${PROMO_PR}) that the
-assessment classified **ACTIONABLE_NOW** — they survived the same
-NOW/LATER/DISMISSED judgment each constituent issue's review loop applies.
+assessment classified **ACTIONABLE_NOW** and that are not already tracked by
+an open issue — they survived both the NOW/LATER/DISMISSED judgment each
+constituent issue's review loop applies, and a dedup check against every open
+review/tech-debt issue.
 
 The promotion review is the only review that sees these issues integrated
 together, so cross-issue findings appear nowhere else. Promotion proceeded (the
@@ -402,6 +523,9 @@ review cycle.
 
 ACTIONABLE_LATER findings from the same review were filed as their own issues
 (${_promo_later_count} this run). DISMISSED findings were dropped.
+${_promo_dup_note:+
+Already tracked, so not re-filed here:
+${_promo_dup_note}}
 
 ## Time Estimate
 2hr
@@ -456,11 +580,12 @@ ${_promo_now_items}"
               --label "tech-debt" \
               --body "$_promo_now_body" 2>/dev/null); then
           print_success "ACTIONABLE_NOW findings tracked: ${_promo_now_url}"
-          _diag "PROMOTE_ASSESSED_FOLLOWUP_CREATED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_now_count} url=${_promo_now_url}"
+          _diag "PROMOTE_ASSESSED_FOLLOWUP_CREATED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_kept} duplicate=${_promo_dups} url=${_promo_now_url}"
         else
           # Never block the merge on bookkeeping — surface the loss loudly.
           print_warning "Could not create the ACTIONABLE_NOW follow-up issue — findings remain on PR #${PROMO_PR} (review + assessment comments)"
-          _diag "PROMOTE_ASSESSED_FOLLOWUP_FAILED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_now_count}"
+          _diag "PROMOTE_ASSESSED_FOLLOWUP_FAILED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_kept}"
+        fi
         fi
       fi
     fi

@@ -908,7 +908,7 @@ REVIEWEOF
 # Builds and runs a full promote flow against a stub assessor.
 # Sets _call_log / _env_log for the caller to assert on.
 _run_promote_with_assessor() {
-  local _tag="$1" _assess_out="$2" _assess_code="$3" _later="${4:-}"
+  local _tag="$1" _assess_out="$2" _assess_code="$3" _later="${4:-}" _openlist="${5:-}"
   _lib="$RITE_TEST_TMPDIR/lib-$_tag"
   _write_followup_stubs "$_lib"
   _call_log="$RITE_TEST_TMPDIR/${_tag}_issue_calls.log"
@@ -960,6 +960,9 @@ gh_safe() {
         create)
           printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
           echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        list)
+          printf '%s' "$_openlist"
           return 0 ;;
         comment) return 0 ;;
       esac ;;
@@ -1131,4 +1134,123 @@ RUNEOF
   echo "$_region" | grep -q '|| _promo_assess_exit=\$?'
   # No bare exit anywhere in the assessment region.
   ! echo "$_region" | grep -qE '^\s*exit [0-9]'
+}
+
+# ===========================================================================
+# Group 7: ACTIONABLE_NOW dedup at promote (#1294)
+#
+# The assessor's own dedup runs only inside its ACTIONABLE_LATER loop, so NOW
+# items reached the aggregate unchecked. The first live run proved it:
+# promoting plan-quality re-filed a finding already tracked as #1253.
+# ===========================================================================
+
+# Loads ONLY the two pure dedup helpers out of promote-branch.sh. Sourcing the
+# whole orchestrator pulls in config.sh, which has no valid environment in a
+# hermetic test; these functions have no dependencies beyond coreutils.
+_load_promote_dedup_helpers() {
+  eval "$(sed -n '/^_promote_title_matches_open_issue()/,/^}/p' \
+    "$RITE_REPO_ROOT/lib/core/promote-branch.sh")"
+  eval "$(sed -n '/^_promote_strip_tracked_now_blocks()/,/^}/p' \
+    "$RITE_REPO_ROOT/lib/core/promote-branch.sh")"
+}
+
+@test "_promote_title_matches_open_issue: 2+ long-word overlap is a match" {
+  _load_promote_dedup_helpers
+  local _list="1253:Unlisted multi-part suffixes collapse to bare public suffix producing nonsense spikes
+1196:Tally recurring review findings in health report"
+  run _promote_title_matches_open_issue \
+    "Unlisted suffixes collapse to the public suffix" "$_list"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1253" ]
+}
+
+@test "_promote_title_matches_open_issue: fewer than 2 overlapping long words is not a match" {
+  _load_promote_dedup_helpers
+  local _list="1196:Tally recurring review findings in health report"
+  run _promote_title_matches_open_issue \
+    "Spike title truncation collides in _dedup_issues" "$_list"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "_promote_title_matches_open_issue: words of 3 chars or fewer do not count" {
+  _load_promote_dedup_helpers
+  # "the" and "and" overlap but are too short; no long word is shared.
+  local _list="500:the cat and the dog"
+  run _promote_title_matches_open_issue "the bird and the fish" "$_list"
+  [ "$status" -ne 0 ]
+}
+
+@test "_promote_title_matches_open_issue: empty issue list never matches" {
+  _load_promote_dedup_helpers
+  run _promote_title_matches_open_issue "anything plausible here" ""
+  [ "$status" -ne 0 ]
+}
+
+@test "_promote_strip_tracked_now_blocks: removes only the named ACTIONABLE_NOW blocks" {
+  _load_promote_dedup_helpers
+  local _dups="$BATS_TEST_TMPDIR/dups.txt"
+  printf 'Dup finding one\n' > "$_dups"
+  local _txt="### Dup finding one - ACTIONABLE_NOW
+Reasoning: already tracked.
+
+### Keep me - ACTIONABLE_NOW
+Reasoning: genuinely new.
+
+### Dup finding one - ACTIONABLE_LATER
+Reasoning: same title, DIFFERENT state — must survive.
+
+### Other thing - DISMISSED
+Reasoning: kept in the text."
+
+  run _promote_strip_tracked_now_blocks "$_txt" "$_dups"
+  [ "$status" -eq 0 ]
+  # The duplicate NOW block is gone...
+  ! echo "$output" | grep -q "already tracked"
+  # ...but the new NOW block, the same-titled LATER block, and DISMISSED stay.
+  echo "$output" | grep -q "Keep me - ACTIONABLE_NOW"
+  echo "$output" | grep -q "Dup finding one - ACTIONABLE_LATER"
+  echo "$output" | grep -q "DIFFERENT state"
+  echo "$output" | grep -q "Other thing - DISMISSED"
+}
+
+@test "dedup at promote: a NOW finding already tracked is not re-filed; the new one is" {
+  _run_promote_with_assessor "dedup" "### Unlisted suffixes collapse to the public suffix - ACTIONABLE_NOW
+Reasoning: already tracked elsewhere.
+
+### Spike title truncation collides in the key builder - ACTIONABLE_NOW
+Reasoning: genuinely new." 0 "" \
+    "1253:Unlisted multi-part suffixes collapse to bare public suffix producing nonsense spikes"
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "1 of 2 ACTIONABLE_NOW finding(s) already tracked"
+  [ -f "$_call_log" ]
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+  # The filed issue must carry the new finding and name the tracked one as skipped.
+  grep -q "Spike title truncation" "$_call_log"
+  grep -q "already tracked as #1253" "$_call_log"
+  # The duplicate's own reasoning block must NOT be in the body.
+  ! grep -q "already tracked elsewhere" "$_call_log"
+}
+
+@test "dedup at promote: all NOW findings already tracked files nothing at all" {
+  _run_promote_with_assessor "alldup" "### Unlisted suffixes collapse to the public suffix - ACTIONABLE_NOW
+Reasoning: already tracked." 0 "" \
+    "1253:Unlisted multi-part suffixes collapse to bare public suffix producing nonsense spikes"
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "already tracked — nothing new to file"
+  [ ! -f "$_call_log" ] || [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 0 ]
+}
+
+@test "dedup at promote: an unavailable issue list files the aggregate whole" {
+  # Best-effort: a failed list fetch must not drop findings. Empty list → no
+  # filtering → the aggregate is filed exactly as it was before dedup existed.
+  _run_promote_with_assessor "nolist" "### Unlisted suffixes collapse to the public suffix - ACTIONABLE_NOW
+Reasoning: would have matched if the list had loaded." 0 "" ""
+
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+  grep -q "would have matched" "$_call_log"
 }
