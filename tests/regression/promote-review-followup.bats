@@ -847,3 +847,288 @@ RUNEOF
   ! grep -qE "claude_provider_run_agentic_session|run_fix_session|FIX_MODE|FIX_PROMPT" \
     "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 }
+
+# ===========================================================================
+# Group 6: Assessment pass at promote (#1278)
+#
+# Phase 5b runs assess-review-issues.sh on the promotion review so the
+# NOW/LATER/DISMISSED judgment is applied before anything is filed, and so the
+# assessor's cross-PR dedup search can match per-issue follow-ups already on
+# file. These tests pin the three-way outcome:
+#   assessed + NOW items  → one aggregated ACTIONABLE_NOW issue, fallback inert
+#   assessed + none left  → nothing filed (DISMISSED items are dropped)
+#   not assessed          → deterministic raw-review fallback, unchanged
+#
+# Every review body below carries a HIGH+MEDIUM Findings line, so the
+# deterministic fallback WOULD fire if it were not correctly gated. That is
+# what makes "no needs-re-triage issue" a meaningful assertion.
+# ===========================================================================
+
+# Writes a stub assessor into the fake lib's core/ dir.
+#   $1 = lib dir, $2 = stdout to emit, $3 = exit code,
+#   $4 = env-capture log path, $5 = per-item issue numbers to passback (space-sep)
+_write_stub_assessor() {
+  local _lib="$1" _out="$2" _code="$3" _envlog="$4" _later="${5:-}"
+  mkdir -p "$_lib/core"
+  cat > "$_lib/core/assess-review-issues.sh" << STUBEOF
+#!/bin/bash
+# Stub assessor: records its env contract, then emits a canned classification.
+{
+  echo "PR=\${1:-}"
+  echo "REVIEW_FILE_EXISTS=\$( [ -f "\${2:-}" ] && echo yes || echo no )"
+  echo "AUTO=\${3:-}"
+  echo "RITE_ISSUE_NUMBER=[\${RITE_ISSUE_NUMBER-UNSET}]"
+  echo "RITE_RETRY_COUNT=\${RITE_RETRY_COUNT-UNSET}"
+  echo "RITE_REVIEW_JUST_POSTED=\${RITE_REVIEW_JUST_POSTED-UNSET}"
+  echo "RITE_ASSESSMENT_TIMEOUT=\${RITE_ASSESSMENT_TIMEOUT-UNSET}"
+  echo "PER_ITEM_FILE=\${RITE_PER_ITEM_ISSUES_FILE-UNSET}"
+} >> "$_envlog"
+for _n in ${_later}; do
+  echo "\$_n" >> "\${RITE_PER_ITEM_ISSUES_FILE:-/dev/null}"
+done
+cat << 'OUTEOF'
+${_out}
+OUTEOF
+exit ${_code}
+STUBEOF
+  chmod +x "$_lib/core/assess-review-issues.sh"
+}
+
+# Shared review body: HIGH+MEDIUM so the deterministic fallback would fire.
+_write_noncrit_review() {
+  cat > "$1" << 'REVIEWEOF'
+<!-- sharkrite-local-review model:test timestamp:2026-01-01T00:00:00Z commit:abc -->
+
+## Code Review
+
+Findings: CRITICAL: 0 | HIGH: 2 | MEDIUM: 1 | LOW: 0
+REVIEWEOF
+}
+
+# Builds and runs a full promote flow against a stub assessor.
+# Sets _call_log / _env_log for the caller to assert on.
+_run_promote_with_assessor() {
+  local _tag="$1" _assess_out="$2" _assess_code="$3" _later="${4:-}"
+  _lib="$RITE_TEST_TMPDIR/lib-$_tag"
+  _write_followup_stubs "$_lib"
+  _call_log="$RITE_TEST_TMPDIR/${_tag}_issue_calls.log"
+  _env_log="$RITE_TEST_TMPDIR/${_tag}_assessor_env.log"
+  _write_stub_assessor "$_lib" "$_assess_out" "$_assess_code" "$_env_log" "$_later"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-$_tag"
+  _write_fake_git "$_fake_bin"
+  local _review_file="$RITE_TEST_TMPDIR/review_$_tag.txt"
+  _write_noncrit_review "$_review_file"
+
+  local _runner
+  _runner=$(_write_followup_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$_tag"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe()            { return 0; }
+integration_ledger_entries() {
+  printf 'issue=10\tpr=55\tsha=abc000\tmerged_at=2026-01-01T00:00:00Z\tpromoted=false\n'
+}
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context()  { return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues()    { return 0; }
+run_test_gate()             { return 0; }
+ensure_labels_exist()       { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        edit)   return 0 ;;
+        view)
+          if [ "\${4:-}" = "--json" ] && [ "\${5:-}" = "comments" ]; then
+            cat "$_review_file"
+          fi
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue)
+      case "\${2:-}" in
+        create)
+          printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
+          echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        comment) return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "test-branch" 2>&1
+RUNEOF
+)
+  run bash "$_runner" 2>&1
+}
+
+@test "assessment path: ACTIONABLE_NOW items create one aggregated issue and the raw fallback stays inert" {
+  _run_promote_with_assessor "now" "### Unvalidated input - ACTIONABLE_NOW
+Reasoning: missing bounds check.
+
+### Naming nit - DISMISSED
+Reasoning: style preference." 0 ""
+
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  # Exactly one issue — the assessed NOW rollup, not also the raw fallback.
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+  grep -q "ACTIONABLE_NOW" "$_call_log"
+  grep -q "test-branch" "$_call_log"
+  grep -q "from-review" "$_call_log"
+  grep -q "tech-debt" "$_call_log"
+  # The deterministic fallback's label must be absent — it is gated off.
+  ! grep -q "needs-re-triage" "$_call_log"
+}
+
+@test "assessment path: assessor receives the promote env contract (empty RITE_ISSUE_NUMBER widens dedup)" {
+  _run_promote_with_assessor "env" "### Thing - ACTIONABLE_NOW
+Reasoning: x." 0 ""
+
+  [ "$status" -eq 0 ]
+  [ -f "$_env_log" ]
+  grep -q "^PR=55$" "$_env_log"
+  grep -q "^REVIEW_FILE_EXISTS=yes$" "$_env_log"
+  grep -q "^AUTO=--auto$" "$_env_log"
+  # Empty, not unset: the empty value is what widens the Stage-2 dedup search
+  # from "same source issue" to "any open follow-up".
+  grep -q "^RITE_ISSUE_NUMBER=\[\]$" "$_env_log"
+  grep -q "^RITE_RETRY_COUNT=0$" "$_env_log"
+  grep -q "^RITE_REVIEW_JUST_POSTED=true$" "$_env_log"
+  # Promotion reviews span every constituent issue — timeout above the 300s default.
+  grep -q "^RITE_ASSESSMENT_TIMEOUT=600$" "$_env_log"
+  # Passback file must be a real path so ACTIONABLE_LATER issues are countable.
+  ! grep -q "^PER_ITEM_FILE=UNSET$" "$_env_log"
+}
+
+@test "assessment path: ACTIONABLE_LATER per-item issues are counted, not re-filed in aggregate" {
+  # Assessor files its own per-item issues and passes the numbers back; the
+  # aggregate must report that count rather than duplicating those findings.
+  _run_promote_with_assessor "later" "### Later thing - ACTIONABLE_LATER
+Reasoning: defer." 0 "201 202"
+
+  [ "$status" -eq 0 ]
+  # Zero ACTIONABLE_NOW → no aggregate issue at all.
+  [ ! -f "$_call_log" ] || [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 0 ]
+  echo "$output" | grep -q "2 issue(s) filed for ACTIONABLE_LATER"
+}
+
+@test "assessment path: all-DISMISSED review files nothing" {
+  _run_promote_with_assessor "dismissed" "NO_ACTIONABLE_ITEMS" 0 ""
+
+  [ "$status" -eq 0 ]
+  # NO_ACTIONABLE_ITEMS is a successful assessment with zero survivors — the
+  # whole point of assessing at promote. Nothing may be filed.
+  [ ! -f "$_call_log" ] || [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 0 ]
+}
+
+@test "assessment path: assessor failure falls back to the deterministic raw capture" {
+  _run_promote_with_assessor "fail" "" 1 ""
+
+  [ "$status" -eq 0 ]
+  # Fallback fired: the raw-capture issue carries needs-re-triage.
+  [ -f "$_call_log" ]
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+  grep -q "needs-re-triage" "$_call_log"
+}
+
+@test "assessment path: ALL_ITEMS sentinel falls back to the deterministic raw capture" {
+  # ALL_ITEMS means the assessor declined to classify (provider unavailable).
+  # Treating it as a successful assessment would drop every finding.
+  _run_promote_with_assessor "allitems" "ALL_ITEMS" 0 ""
+
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+  grep -q "needs-re-triage" "$_call_log"
+}
+
+@test "assessment path: promote still files nothing when there is no assessor at all" {
+  # Pre-#1278 installs and target repos without the assessor must keep the
+  # deterministic behaviour exactly. No stub assessor is written here.
+  local _lib="$RITE_TEST_TMPDIR/lib-noassessor"
+  _write_followup_stubs "$_lib"
+  [ ! -f "$_lib/core/assess-review-issues.sh" ]
+  local _call_log="$RITE_TEST_TMPDIR/noassessor_calls.log"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-na"
+  _write_fake_git "$_fake_bin"
+  local _review_file="$RITE_TEST_TMPDIR/review_na.txt"
+  _write_noncrit_review "$_review_file"
+
+  local _runner
+  _runner=$(_write_followup_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-na"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe()            { return 0; }
+integration_ledger_entries() {
+  printf 'issue=10\tpr=55\tsha=abc000\tmerged_at=2026-01-01T00:00:00Z\tpromoted=false\n'
+}
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context()  { return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues()    { return 0; }
+run_test_gate()             { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "55"; return 0 ;;
+        edit)   return 0 ;;
+        view)
+          if [ "\${4:-}" = "--json" ] && [ "\${5:-}" = "comments" ]; then
+            cat "$_review_file"
+          fi
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue)
+      case "\${2:-}" in
+        create)
+          printf 'ISSUE_CREATE %s\n' "\$*" >> "$_call_log"
+          echo "https://github.com/owner/repo/issues/99"
+          return 0 ;;
+        comment) return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "test-branch" 2>&1
+RUNEOF
+)
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "$_call_log" ]
+  [ "$(grep -c 'ISSUE_CREATE' "$_call_log")" -eq 1 ]
+  grep -q "needs-re-triage" "$_call_log"
+}
+
+@test "promote-branch.sh assessment is best-effort: no exit on assessor failure" {
+  # The assessor invocation must capture its exit code, never let set -e abort
+  # the promote. Phase 5b has already passed every gate at that point.
+  _region=$(sed -n '/Phase 5b: Assess the promotion review/,/Fallback: deterministic capture/p' \
+    "$RITE_REPO_ROOT/lib/core/promote-branch.sh")
+  [ -n "$_region" ]
+  # Exit code captured, not propagated.
+  echo "$_region" | grep -q '|| _promo_assess_exit=\$?'
+  # No bare exit anywhere in the assessment region.
+  ! echo "$_region" | grep -qE '^\s*exit [0-9]'
+}
