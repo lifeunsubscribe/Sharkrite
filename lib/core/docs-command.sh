@@ -388,10 +388,10 @@ _docs_update_engine() {
   local _ue_map_file
   _ue_map_file="$(docs_map_path)"
   local _ue_map_content=""
-  [ -f "$_ue_map_file" ] && _ue_map_content="$(head -c 8000 "$_ue_map_file" 2>/dev/null || true)"
 
   # Current doc file content excerpts (for EDIT context, capped at 15KB total)
   local _ue_doc_ctx="" _ue_ctx_files="" _ue_doc_bytes=0 _ue_doc_cap=15000
+  local _ue_skipped_cap_files=""
   if [ -f "$_ue_map_file" ]; then
     local _ue_ml
     while IFS= read -r _ue_ml || [ -n "$_ue_ml" ]; do
@@ -409,7 +409,10 @@ _docs_update_engine() {
 ${_ue_excerpt}
 
 "
-      [ $((_ue_doc_bytes + ${#_ue_entry})) -gt "$_ue_doc_cap" ] && continue
+      if [ $((_ue_doc_bytes + ${#_ue_entry})) -gt "$_ue_doc_cap" ]; then
+        _ue_skipped_cap_files="${_ue_skipped_cap_files}  ${_ue_fp}"$'\n'
+        continue
+      fi
       _ue_doc_bytes=$((_ue_doc_bytes + ${#_ue_entry}))
       _ue_doc_ctx="${_ue_doc_ctx}${_ue_entry}"
       _ue_ctx_files="${_ue_ctx_files}${_ue_fp}"$'\n'
@@ -418,6 +421,15 @@ ${_ue_excerpt}
   # Advertise only files that entered context so the model doesn't propose
   # EDIT for cap-skipped or map-absent paths.
   _ue_map_content="$_ue_ctx_files"
+
+  # Warn deterministically when docs were excluded by the budget cap — the model
+  # won't propose EDITs for them (they're not in the advertised list), so the user
+  # needs this information now rather than discovering it via a silent no-op run.
+  if [ -n "$_ue_skipped_cap_files" ]; then
+    print_warning "Some docs were excluded by the 15KB context budget and are not visible to the model:" >&2
+    printf '%s' "$_ue_skipped_cap_files" >&2
+    print_warning "To update these docs, narrow your instruction to target them specifically, or split into separate runs." >&2
+  fi
 
   # Drift log content
   local _ue_drift_path
@@ -463,7 +475,7 @@ You are a documentation writer for a software project.
 
 ${_ue_task_line}
 ${_ue_fb_section}
-Available documentation files (docs-map excerpt):
+Documentation files in model context (EDIT proposals must target only these paths):
 ${_ue_map_content}
 
 Current file contents (excerpts, for EDIT proposals):
@@ -638,7 +650,7 @@ DOC_UPDATE_EOF
           case $'\n'"$_ue_ctx_files" in
             *$'\n'"${_ue_p_file}"$'\n'*) : ;;
             *)
-              print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file not in model context (absent from docs map or excluded by 15KB cap) — model never read its content" >&2
+              print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file not in model context (absent from docs map or excluded by 15KB cap) — model never read its content; rebuild the docs map (rite docs) or narrow the instruction to a doc listed in the context block above" >&2
               _ue_pi=$((_ue_pi + 1))
               continue
               ;;
