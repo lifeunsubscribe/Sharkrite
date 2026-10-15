@@ -211,6 +211,21 @@ gh_safe() {
       fi
     fi
 
+    # Transport-level errors (no HTTP status — TCP/TLS layer never reached GitHub)
+    # Retry with the same backoff as 429/5xx: these are indistinguishable from a
+    # momentary network blip and safe to retry (all gh calls are idempotent here).
+    if echo "$stderr_content" | grep -qiE \
+        "operation timed out|connection reset by peer|connection refused|dial tcp|TLS handshake timeout|i/o timeout|unexpected EOF|temporary failure in name resolution"; then
+      if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
+        local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
+        echo "⚠ gh network error (attempt $attempt/$RITE_GH_MAX_RETRIES), retrying in ${actual_sleep}s..." >&2
+        sleep "$actual_sleep"
+        sleep_secs=$(( sleep_secs * 3 ))
+        attempt=$(( attempt + 1 ))
+        continue
+      fi
+    fi
+
     # Non-transient error — propagate stderr and exit code so caller fails loudly
     # (Do NOT swallow: auth failure, repo not found, malformed args, etc.)
     #
