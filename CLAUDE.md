@@ -278,17 +278,27 @@ SHARKRITE_STASH_MARKER="${SHARKRITE_STASH_MARKER:-sharkrite-stash:}"
 
 ### grep -c pattern (CRITICAL)
 
-`grep -c` always outputs a count (even "0") but returns exit code 1 when count is 0.
+`grep -c`, `wc -l`, and `awk` with an `END` block always output a count or value even when the input is empty or the upstream pipeline fails under `pipefail`. Pairing them with `|| echo "0"` produces a double zero: the command already printed its output, then `|| echo "0"` appends another "0".
 
 ```bash
 # BAD: produces "0\n0" (grep outputs "0", then || echo "0" adds another)
 COUNT=$(echo "$text" | grep -c "pattern" || echo "0")
 
-# GOOD: grep -c already outputs the count, just suppress the exit code
+# BAD: wc -l always outputs a count; same double-zero bug
+COUNT=$(find . -name "*.bats" | wc -l || echo "0")
+
+# BAD: awk END block always runs and prints; same double-zero bug
+TOTAL=$(echo "$lines" | awk '{sum += $1} END {print sum+0}' || echo "0")
+
+# GOOD: all three — suppress the exit code, don't add a second zero
 COUNT=$(echo "$text" | grep -c "pattern" || true)
+COUNT=$(find . -name "*.bats" | wc -l || true)
+TOTAL=$(echo "$lines" | awk '{sum += $1} END {print sum+0}' || true)
 ```
 
-`grep -o` is different — it outputs nothing on no match, so `|| echo "0"` is correct there.
+`grep -o` / `grep -oE` are different — they output nothing on no match, so `|| echo "0"` is correct there. `wc -l | tr -d ' ' || echo "0"` is NOT safe: under pipefail an upstream failure propagates through `tr`, firing `|| echo "0"` when `wc -l` already printed `0`, producing double zero. Use `|| true` there too.
+
+Lint rule `GREP_C_ECHO_ZERO` (Rule 1) enforces this for `grep -c`, `wc -l` as final stage, and `awk` with an `END` block as final stage (same-line detection only).
 
 ### Structured header matching (CRITICAL)
 
@@ -639,7 +649,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 **Single-rule mode (`SHARKRITE_LINT_ONLY`)**: `SHARKRITE_LINT_ONLY=15 tools/sharkrite-lint.sh` sources only the named rule fragment(s) (comma list OK: `34,35`) — ~1s instead of the ~85s full 40-rule scan. **A bats test that invokes the linter MUST scope to the rule(s) it asserts** — unscoped full scans under the gate's `bats --jobs 8` starve the CPU, blow the 120s `BATS_TEST_TIMEOUT`, and drag the gate to its 1800s watchdog (live: batch 155134, 2026-07-18 — 15-42min gates, 3 issues failed on this alone; slot #1021 2026-10-11: 1800s watchdog kill). A typo'd rule number fails loudly (exit 1), so a stale scope can't silently pass. Leave a linter invocation unscoped only for a genuine all-rules cleanliness sweep, and serial-mark that file. **Deterministic enforcement: `UNSCOPED_LINTER_IN_BATS` (Rule 40) rejects unscoped invocations at `make check`** — a bats test that adds an unscoped run will fail CI before merge. Contract pinned by `tests/lint/single-rule-knob.bats`; Rule 40 tests in `tests/lint/unscoped-linter-in-bats.bats`.
 
 **Custom lint rules** (in `tools/sharkrite-lint.sh`) catch patterns shellcheck misses:
-- `grep -c ... || echo "0"` — produces double zero (use `|| true`)
+- `grep -c ... || echo "0"`, `wc -l ... || echo "0"`, `awk '...END...' || echo "0"` — guaranteed-output-counter produces double zero (use `|| true`); `grep -o`/`grep -oE` are output-or-nothing and correctly pair with `|| echo "0"`
 - `git push` without refspec — dangerous in automation
 - `eval` with GitHub API data — security risk
 - Unquoted heredoc in command substitution — use `<<'EOF'`

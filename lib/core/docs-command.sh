@@ -189,7 +189,7 @@ _docs_apply_approved() {
   # Count approved proposals
   local _aa_count=0
   if [ -d "$_aa_dir" ]; then
-    _aa_count="$(find "$_aa_dir" -name 'approved_*.txt' -type f 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
+    _aa_count="$(find "$_aa_dir" -name 'approved_*.txt' -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
   fi
   if [ "$_aa_count" -eq 0 ]; then
     print_info "No approved proposals to apply"

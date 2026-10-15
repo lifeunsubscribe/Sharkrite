@@ -202,8 +202,8 @@ TG_PASSED=$(echo "$TG_LINES" | grep -c 'outcome=passed' || true)
 TG_FAILED=$(echo "$TG_LINES" | grep -c 'outcome=failed' || true)
 TG_SKIPPED=$(echo "$TG_LINES" | grep -c 'outcome=skipped' || true)
 # Sum lint and test failure counts across all gate runs
-TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 
 # --- Pre-parse test gate selection stats (issue #462) ---
 # TEST_GATE_SELECTION diag format: "TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N"
@@ -214,8 +214,8 @@ TGS_TARGETED_RUNS=$(echo "$TGS_LINES" | grep -c 'mode=targeted' || true)
 # Sum selected + total across targeted runs to compute the avg reduction ratio.
 # A reduction ratio < 50% means the optimization is helping; > 50% means too many
 # files lack covers headers and the gate keeps falling back to the full path.
-TGS_SELECTED_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE 'selected=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-TGS_TOTAL_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE ' total=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+TGS_SELECTED_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE 'selected=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+TGS_TOTAL_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE ' total=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 # Pre-compute the avg selection ratio deterministically — arithmetic belongs in
 # bash, not the LLM (same principle as CR_TOP5_ISSUES / CR_MEDIAN_DURATION_S).
 if [ "${TGS_TOTAL_SUM:-0}" -gt 0 ] 2>/dev/null; then
@@ -247,12 +247,12 @@ FSR_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -c 'FULL_SUITE_RUN ' || true)
 FSR_PASSED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=passed' || true)
 FSR_FAILED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=failed' || true)
 # Aggregate lint + test failure counts across all full-suite runs this period
-FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 # Average duration in seconds across all runs (arithmetic in bash, not LLM)
 FSR_AVG_DURATION_S="N/A"
 if [ "$FSR_TOTAL" -gt 0 ] 2>/dev/null; then
-  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
   FSR_AVG_DURATION_S="$(( _fsr_dur_sum / FSR_TOTAL ))s"
 fi
 # Collect names of failing test cases from full-suite runs (from raw log files, not diag lines)
@@ -349,7 +349,7 @@ done
 
 # fix-loop average: mean fix_iterations across WORKFLOW_COMPLETE diag lines
 HM_FIXLOOP_AVG=$(echo "$DIAG_LINES" | grep 'WORKFLOW_COMPLETE' | grep -oE 'fix_iterations=[0-9]+' | grep -oE '[0-9]+' \
-  | awk '{s+=$1; n++} END {if (n>0) printf "%.2f", s/n; else print "0"}' || echo "0")
+  | awk '{s+=$1; n++} END {if (n>0) printf "%.2f", s/n; else print "0"}' || true)
 
 # phase-1 (dev) average duration in seconds, parsed from "END phase1_development (Xh Ym Zs)"
 HM_PHASE1_AVG_S=$(echo "$TIMING_LINES" | grep 'END   phase1_development' | grep -oE '\([0-9hms ]+\)' \
@@ -360,14 +360,14 @@ HM_PHASE1_AVG_S=$(echo "$TIMING_LINES" | grep 'END   phase1_development' | grep 
         else if (v ~ /m$/){sub(/m/,"",v); secs+=v*60}
         else if (v ~ /s$/){sub(/s/,"",v); secs+=v} }
       tot+=secs; n++
-    } END {if (n>0) printf "%d", tot/n; else print "0"}' || echo "0")
+    } END {if (n>0) printf "%d", tot/n; else print "0"}' || true)
 
 # rtk average savings percent (from rtk gain json)
 HM_RTK_PCT=$(echo "$RTK_STATS" | jq -r '(.summary.avg_savings_pct // 0)' 2>/dev/null || echo "0")
 
 # total CRITICAL review findings this week (REVIEW diag lines; correct after #594 severity fix)
 HM_CRITICALS=$(echo "$DIAG_LINES" | grep 'REVIEW ' | grep -oE 'critical=[0-9]+' | grep -oE '[0-9]+' \
-  | awk '{s+=$1} END {print s+0}' || echo "0")
+  | awk '{s+=$1} END {print s+0}' || true)
 
 # Build this week's structured metrics block (emitted into the report below so
 # future runs can parse it). Marker is rite-health-metrics (NOT a sharkrite-*
