@@ -102,6 +102,17 @@
 # Set to 0 to disable the cap entirely (unbounded — original behavior).
 # RITE_MAX_FINDINGS_PER_RUN=20
 
+# Live-lock defer wait (seconds; default: 30).
+# When a dep issue holds a live lock in another concurrent batch session, the
+# dependent issue is deferred to the end of the queue. Before the loop advances,
+# rite sleeps this many seconds to give the foreign session time to merge.
+# Without this wait, small batches (≤ dep-count issues) exhaust all defer slots
+# immediately — the re-appended issue is reached in the next iteration with no
+# wall-clock buffer, so the feature silently delivers no benefit.
+# Set to 0 to disable the wait (reverts to pre-#1220 behavior — silent no-op in
+# small batches).
+# RITE_LIVE_LOCK_DEFER_WAIT=30
+
 # Batch gate circuit-breaker threshold (default: 3).
 # When this many consecutive issues fail their post-commit gate with the same
 # normalized failure signature (sorted unique failing-file set), the batch halts

@@ -366,3 +366,28 @@ SELF_EOF
     return 1
   }
 }
+
+@test "structural: live-lock path reads RITE_LIVE_LOCK_DEFER_WAIT for the wait duration" {
+  # The live-lock defer must sleep for RITE_LIVE_LOCK_DEFER_WAIT seconds
+  # (default 30) after re-queuing. Without this wait, small batches exhaust
+  # all defer slots immediately — the re-appended issue is reached in the next
+  # iteration with no wall-clock buffer for the foreign session to progress.
+  grep -q 'RITE_LIVE_LOCK_DEFER_WAIT' "$BATCH_PROCESSOR" || {
+    echo "FAIL: RITE_LIVE_LOCK_DEFER_WAIT not referenced in $BATCH_PROCESSOR" >&2
+    echo "      The live-lock defer path must sleep to buffer small-batch re-queues" >&2
+    return 1
+  }
+}
+
+@test "structural: live-lock defer path contains a sleep call" {
+  # The live-lock branch (guarded by _DEP_LIVE_LOCK=true) must contain a sleep
+  # call. The queue-later branch omits it (natural issue-processing time provides
+  # the buffer there). This structural check prevents the sleep from being silently
+  # removed in a future refactor, which would restore the silent no-op in small batches.
+  awk '/_DEP_LIVE_LOCK.*true/{found=1} found && /^[[:space:]]*sleep[[:space:]]/{print; exit} found && /ISSUE_LIST.*\+.*ISSUE_NUM/{exit}' \
+    "$BATCH_PROCESSOR" | grep -qE '^[[:space:]]*sleep[[:space:]]' || {
+    echo "FAIL: no sleep call found in the _DEP_LIVE_LOCK=true branch in $BATCH_PROCESSOR" >&2
+    echo "      Removing the sleep restores the silent no-op in small batches (issue #1220)" >&2
+    return 1
+  }
+}

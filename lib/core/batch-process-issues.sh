@@ -1164,6 +1164,16 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
       if [ "${_DEP_LIVE_LOCK:-false}" = true ]; then
         print_info "Dependency #$DEP_IN_QUEUE_NUM is live in another batch session — deferring issue #$ISSUE_NUM to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+        # Sleep before re-queueing so the foreign session has wall-clock time to
+        # make progress. Without this wait, a small batch exhausts all defer slots
+        # in seconds (one gh issue view per pass) and falls through to dep_failed
+        # without the feature delivering any benefit. The queue-later path omits
+        # the sleep because natural issue-processing time provides the buffer.
+        _live_lock_wait="${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
+        if [ "$_live_lock_wait" -gt 0 ] 2>/dev/null; then
+          print_info "Waiting ${_live_lock_wait}s for dependency #${DEP_IN_QUEUE_NUM} session to merge before retrying..."
+          sleep "$_live_lock_wait"
+        fi
       else
         print_info "Dependency #$DEP_IN_QUEUE_NUM is queued later — deferring issue #$ISSUE_NUM to after dep (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
       fi
