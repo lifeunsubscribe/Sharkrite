@@ -63,7 +63,7 @@ fetch_pr_diff() {
   local PR_BASE="$2"
   local PR_HEAD="$3"
 
-  # gh_safe handles transient 5xx/429 retries internally (3 attempts, exponential backoff)
+  # gh_safe handles transient 5xx/429 and transport-level retries internally (3 attempts, exponential backoff)
   local PR_DIFF=""
   local GH_DIFF_ERROR=""
 
@@ -323,7 +323,7 @@ echo "  URL: $PR_URL"
 echo ""
 
 # Get the diff with fallback to local git diff
-# gh_safe handles transient 5xx/429 retries internally (3 attempts, exponential backoff)
+# gh_safe handles transient 5xx/429 and transport-level retries internally (3 attempts, exponential backoff)
 print_status "Fetching PR diff..."
 
 PR_DIFF=$(fetch_pr_diff "$PR_NUMBER" "$PR_BASE" "$PR_HEAD") || exit 1
