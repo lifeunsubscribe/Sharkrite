@@ -564,9 +564,10 @@ rite --promote <branch>    # Promote integration branch to main (PR + review + t
                            # + cleanup). Classify-only — there is NO fix loop at promote: fixing
                            # on the integration branch would land code on main that skipped the
                            # per-issue review cycle. ACTIONABLE_NOW findings become one
-                           # aggregated issue, ACTIONABLE_LATER become per-item issues (deduped
-                           # against the follow-ups the constituent issues already filed), and
-                           # DISMISSED are dropped. If the assessor is unavailable it falls back
+                           # aggregated issue and ACTIONABLE_LATER become per-item issues —
+                           # both deduped against the follow-ups the constituent issues already
+                           # filed — and DISMISSED are dropped. When every surviving finding is
+                           # already tracked, nothing is filed. If the assessor is unavailable it falls back
                            # to capturing the raw review — it never silently loses findings.
                            # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
                            # Captured".
