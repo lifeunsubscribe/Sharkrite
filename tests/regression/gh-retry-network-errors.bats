@@ -169,6 +169,7 @@ EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" =~ "Recovered" ]]
+  [ "$(cat "$attempt_file")" = "2" ]
 }
 
 @test "gh_safe retries on 'unexpected EOF' and succeeds" {
@@ -203,11 +204,54 @@ EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" =~ "Back" ]]
+  [ "$(cat "$attempt_file")" = "2" ]
+}
+
+@test "gh_safe retries on gh DNS failure output ('error connecting to') and succeeds" {
+  local attempt_file="$TEST_TMPDIR/attempts-dns"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo 'error connecting to api.github.com' >&2
+  echo 'check your internet connection' >&2
+  exit 1
+fi
+echo '{"title":"DNS recovered"}'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe pr view 42 --json title)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "DNS recovered" ]]
+  [ "$(cat "$attempt_file")" = "2" ]
 }
 
 @test "gh_safe exhausts transport-error retries and returns non-zero on persistent timeout" {
-  cat > "$STUB_BIN/gh" <<'EOF'
+  local attempt_file="$TEST_TMPDIR/attempts-exhaust"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
 #!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
 echo 'read: operation timed out' >&2
 exit 1
 EOF
@@ -225,6 +269,8 @@ EOF
   "
 
   [ "$status" -ne 0 ]
+  # Must have been called exactly RITE_GH_MAX_RETRIES times (all retries exhausted)
+  [ "$(cat "$attempt_file")" = "3" ]
 }
 
 # ===========================================================================
@@ -265,7 +311,7 @@ EOF
 # ===========================================================================
 # Fix-mode fetch: network error vs genuine absence (structural assert)
 #
-# We verify the source of claude-workflow.sh carries both distinct paths:
+# We verify that claude-workflow.sh carries both distinct paths in its source code:
 #   1. _fetch_exit capture pattern — gh_safe non-zero exit → "network error" message
 #   2. Genuine-absence check — empty result (gh_safe exit 0 + empty) → "No assessment found"
 # This is a structural pin rather than a full behavioral test because exercising
@@ -285,10 +331,13 @@ EOF
   [ "$output" -ge 1 ]
 }
 
-@test "fix-mode fetch emits network-error message on non-zero gh_safe exit" {
+@test "fix-mode fetch emits error message with exit code on non-zero gh_safe exit" {
   local workflow_file="$PROJECT_ROOT/lib/core/claude-workflow.sh"
 
-  run grep -c "network error.*re-run to retry\|re-run to retry.*network error" "$workflow_file"
+  # Message must include the exit code and a re-run directive; "network error" attribution
+  # was removed (#1188) because gh_safe also returns non-zero for auth failures and
+  # malformed --jq, making "network error" misleading for non-retriable failures.
+  run grep -c "Failed to fetch assessment.*exit.*re-run to retry" "$workflow_file"
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
 }

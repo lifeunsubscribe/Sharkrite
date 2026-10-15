@@ -1194,7 +1194,7 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
     REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
       --jq "$_jq_assessment_body") || _fetch_exit=$?
     if [ "$_fetch_exit" -ne 0 ]; then
-      print_error "Failed to fetch assessment (network error) — re-run to retry"
+      print_error "Failed to fetch assessment (exit ${_fetch_exit}) — re-run to retry"
       exit 1
     fi
 
