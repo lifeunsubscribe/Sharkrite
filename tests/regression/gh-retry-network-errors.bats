@@ -243,6 +243,76 @@ EOF
   [ "$(cat "$attempt_file")" = "2" ]
 }
 
+@test "gh_safe retries on ': EOF' (mid-response connection close) and succeeds" {
+  local attempt_file="$TEST_TMPDIR/attempts-eof-bare"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo 'read tcp 10.0.0.1:52345->140.82.114.6:443: read: EOF' >&2
+  exit 1
+fi
+echo '{"title":"EOF recovered"}'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe pr view 42 --json title)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "EOF recovered" ]]
+  [ "$(cat "$attempt_file")" = "2" ]
+}
+
+@test "gh_safe retries on 'context deadline exceeded' (client timeout) and succeeds" {
+  local attempt_file="$TEST_TMPDIR/attempts-deadline"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+if [ "\$count" -lt 2 ]; then
+  echo 'Post "https://api.github.com/graphql": context deadline exceeded' >&2
+  exit 1
+fi
+echo '{"title":"Deadline recovered"}'
+exit 0
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  export RITE_GH_MAX_RETRIES=3
+  export RITE_GH_RETRY_MAX_SLEEP=0
+
+  run bash -c "
+    export PATH='$STUB_BIN:$PATH'
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    result=\$(gh_safe pr view 42 --json title)
+    echo \"\$result\"
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Deadline recovered" ]]
+  [ "$(cat "$attempt_file")" = "2" ]
+}
+
 @test "gh_safe exhausts transport-error retries and returns non-zero on persistent timeout" {
   local attempt_file="$TEST_TMPDIR/attempts-exhaust"
   echo "0" > "$attempt_file"

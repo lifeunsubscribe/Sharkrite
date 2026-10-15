@@ -31,22 +31,12 @@
 #   - PR_COMMENT_NOT_FOUND ("No comments found") → treated as not-found (empty, exit 0)
 #   - Retry sleep intervals: 5s, 15s, 30s (capped by RITE_GH_RETRY_MAX_SLEEP)
 #   - Max attempts controlled by RITE_GH_MAX_RETRIES (default: 3)
-#   - Transport-error strings sourced from gh's printed output, not Go internals:
-#     DNS failures → "error connecting to <host>" / "check your internet connection"
-#     TCP/TLS → "operation timed out", "connection reset by peer", "i/o timeout", etc.
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
 # Configuration (can be overridden by environment or .rite/config)
-#
-# Defaults are set BEFORE the re-source guard. `gh_safe` is exported via
-# `export -f gh_safe` at end-of-file, so subprocesses inherit the function but NOT the
-# vars. If a subprocess re-sources this file, the guard would skip the
-# default-setting block and gh_safe would die with "unbound variable" under
-# set -u. Setting defaults first — and exporting them — keeps subprocesses
-# safe.
-# ---------------------------------------------------------------------------
+# Defaults set BEFORE the re-source guard; subprocess re-sourcing gets env vars
+# even when the guard fires (export -f carries functions, not vars).
 
 # Maximum number of total attempts (1 = no retry)
 : "${RITE_GH_MAX_RETRIES:=3}"
@@ -207,13 +197,20 @@ gh_safe() {
     #
     # Transport strings are sourced from gh's printed output, not Go internals:
     #   DNS failures → "error connecting to <host>" / "check your internet connection"
-    #   TCP/TLS → "operation timed out", "connection reset by peer", "i/o timeout", etc.
+    #   TCP/TLS → "operation timed out", "connection reset by peer", "i/o timeout",
+    #             "TLS handshake timeout", "dial tcp ...: <error>"
+    #   Mid-response close → ": EOF" (connection dropped after response began)
+    #   Client timeout → "context deadline exceeded"
+    # Resolver-layer OS strings ("temporary failure in name resolution",
+    # "dial tcp ... no such host") are not printed verbatim by gh and must not
+    # appear in the regex; transport-layer forms that prefix with "dial tcp" ARE
+    # printed verbatim and appear above.
     local _transient_reason=""
     if echo "$stderr_content" | grep -qiE \
         "HTTP (429|5[0-9][0-9])([^0-9:)]|$)|\(HTTP (429|5[0-9][0-9])\)([^0-9:]|$)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:)]|$)|rate limit|secondary rate|too many requests|server error"; then
       _transient_reason="rate-limited or server error"
     elif echo "$stderr_content" | grep -qiE \
-        "operation timed out|connection reset by peer|connection refused|dial tcp|TLS handshake timeout|i/o timeout|unexpected EOF|error connecting to|check your internet connection"; then
+        "operation timed out|connection reset by peer|connection refused|dial tcp|TLS handshake timeout|i/o timeout|unexpected EOF|: EOF$|context deadline exceeded|error connecting to|check your internet connection"; then
       _transient_reason="network error"
     fi
 
