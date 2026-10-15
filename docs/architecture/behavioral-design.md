@@ -1867,3 +1867,77 @@ confirming `RITE_TARGET_BRANCH` is unset and `RITE_REPO_ROOT` passes through.
 own selection phase (before bats is spawned), so scrubbing it from the child
 environment does not alter gate-selection behavior — it only prevents tests from
 seeing it and potentially altering their own behavior.
+
+---
+
+## `--sync` Typed Dispatch: Grammar, Rail Ordering, and Exit-Code Composability (#1041/#1048)
+
+`rite --sync` resolves to one of three verbs based on its argument type. Dispatch lives in `bin/rite` after the logging setup (the `if [ "$MODE" = "sync" ]` block), with all three functions implemented in `lib/utils/integration-sync.sh`.
+
+| Form | Args | Verb | Implementation |
+|------|------|------|----------------|
+| Branch form | one non-numeric arg | merge `origin/main` into integration branch | `sync_integration_branch` |
+| Issue form | one or more numeric args | rebase each feature branch onto its resolver-determined base | `sync_issue_branch` |
+| Bare form | zero args | sweep all ledger branches then all in-flight worktrees | `sync_all_repos` |
+
+Mixed args (e.g., a branch name plus an issue number) are rejected as a usage error (exit 1). A bare-word alias `rite sync [args]` mirrors `rite --sync [args]` exactly.
+
+### Branch Form — `sync_integration_branch`
+
+Fetches `origin/main` and `origin/<branch>`, checks currency, and if behind: merges `origin/main` into the branch in a temporary detached worktree, then pushes. Three invariants are permanent:
+
+- **Never rebases.** Integration branches are shared and long-lived; live worktrees fork from them, and their SHAs are recorded in the integration ledger. Rebasing would rewrite those SHAs and break in-flight worktrees.
+- **Never force-pushes.** A merge adds commits without rewriting history, so plain `git push` is correct. Force variants are explicitly prohibited.
+- **Never called automatically.** Only an explicit `rite --sync <branch>` triggers this. No workflow phase, batch slot, or other verb may call it.
+
+**Conflict path** mirrors `stale-branch.sh`. If `attempt_claude_merge_resolution` is available (guarded with `declare -f`), it is called inside a subshell that `cd`s into the sync worktree — matching the `stale-branch.sh` pattern exactly. On resolution: `commit_resolved_conflicts` → `verify_post_merge` → push. If the resolver is unavailable or fails, `git merge --abort` cleans up, the temp worktree is removed, and manual instructions are printed.
+
+**Exit codes:**
+- `0` — already current (no-op), merge+push succeeded, or conflict resolved and pushed
+- `1` — fetch failed, remote branch not found, unresolvable conflict, or push failed
+
+**Diagnostic:** `INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|push_failed`
+
+`push_failed` is a distinct outcome from `conflict`. A push rejection after a successful merge is a network/infrastructure failure, not a merge conflict — the distinction matters for health-report aggregation.
+
+### Issue Form — `sync_issue_branch` and Its Four Skip-Rails
+
+Rebases the feature branch for an issue onto its resolver-determined base and force-pushes with `--force-with-lease`. Four skip-rails are checked in order before any network calls or git operations:
+
+1. **Live lock** (Rail 1, cheapest) — `get_locked_issue_numbers` uses kill-0 liveness, so backfill locks (which have no `pid` file) are never returned. If the issue holds a live lock, the session is actively running. Never push under a live session. → `skipped-lock`, exit 0.
+2. **Dirty worktree** (Rail 2) — `git diff --quiet` + `git diff --cached --quiet`. Never stash or touch uncommitted work; only the owner should manage WIP. → `skipped-dirty`, exit 0.
+3. **Staleness threshold** (Rail 3) — `get_commits_behind_main` ≥ `RITE_STALE_BRANCH_THRESHOLD` (default: 10). Branches this far behind need close-and-restart via the workflow's own stale-branch path, not a rebase here. → `skipped-threshold`, exit 0.
+4. **Already current** (Rail 4) — `COMMITS_BEHIND_MAIN == 0`. No rebase needed. → `current`, exit 0.
+
+If all rails pass, the function rebases onto `origin/<base>`. On rebase conflict: abort, exit 0 (informational skip). On push rejection after a successful rebase: exit 1 (operational failure).
+
+`sync_issue_branch` does not invoke Claude conflict resolution or `verify_post_merge`. These workflow-level tools belong to the issue lifecycle, not the lightweight sync path. The issue form is intentionally shallower than the branch form.
+
+**Diagnostic:** `SYNC_ISSUE issue=<N> outcome=skipped-lock|skipped-dirty|skipped-threshold|current|not-found|conflict|synced|push_failed|fetch_failed`
+
+### Exit-Code Composability Contract
+
+The asymmetry between `conflict=exit 0` and `push_failed=exit 1` is intentional:
+
+- **`exit 0` for skips and conflicts** — a conflict or rail-triggered skip is informational; the sync verb's infrastructure is not broken. `sync_all_repos` uses this to continue processing remaining issues without falsely aborting.
+- **`exit 1` for operational failures** — a fetch or push failure is a network/infrastructure error the operator must investigate. `sync_all_repos` propagates these to its overall return code.
+
+**Why conflicts must be exit 0:** both `bin/rite`'s issue-form dispatch and `sync_all_repos`'s Phase B call `sync_issue_branch` in a loop. If a conflict or lock-skip returned exit 1, a single skipped issue would abort the rest of the sweep. Since skips and conflicts are normal, expected outcomes rather than infrastructure failures, they must exit 0.
+
+### Bare Sweep Form — `sync_all_repos`
+
+Runs two phases in sequence. Integration branches are synced first so that feature branch rebases in Phase B target already-current bases within the same sweep.
+
+**Phase A — integration branches:** enumerates `${RITE_STATE_DIR}/integration-branches/*.log` ledger files (absent-safe via `[ -d ]` guard). Branch name is derived by stripping the `.log` suffix — NOT via `basename`, which would truncate slash-containing names like `release/1.2`. Before calling `sync_integration_branch`, each branch is preflight-checked with `git ls-remote --exit-code --heads origin <branch>`:
+
+- Exit 2 → branch gone on remote (promoted and deleted) — lifecycle complete, not an error. → `skipped-gone`, loop continues.
+- Non-zero non-2 → transport error → `_overall_rc=1`, loop continues.
+- Exit 0 → branch exists → call `sync_integration_branch`.
+
+The skipped-gone preflight exists because ledger files are never pruned after promotion; a gone remote is the expected end-state for a promoted integration branch, not a failure. Without this check, `sync_all_repos` would treat a promoted branch as a fetch failure and report the sweep as failed.
+
+**Phase B — in-flight worktrees:** calls `backfill_worktree_locks` (best-effort to establish the worktree→issue mapping for legacy worktrees), then walks `${RITE_LOCK_DIR}/issue-*.lock/cwd` entries. Each entry goes through `sync_issue_branch` with all four rails applied.
+
+**Overall exit code:** 0 if all items synced/current/skipped-by-rail; 1 if any operational failure (fetch/push error) occurred.
+
+**Regression tests:** `tests/regression/sync-integration-branch.bats` — dry-run dispatch for all three forms, design-contract greps (no rebase in `sync_integration_branch`, no stash anywhere, `--force-with-lease` in `sync_issue_branch` only, resolver availability-guarded), behavioral rail tests (live-lock, dirty-worktree, staleness threshold, already-current), and the skipped-gone preflight.
