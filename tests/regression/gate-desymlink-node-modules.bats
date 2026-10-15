@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/post-merge-verify.sh, lib/core/claude-workflow.sh
+# sharkrite-test-covers: lib/utils/gate-runners.sh, lib/utils/post-merge-verify.sh, lib/core/claude-workflow.sh
 # npm ci/install through a symlinked node_modules DESTROYS the symlink TARGET
 # (the main checkout's node_modules): npm's pre-reify rm step readdirs THROUGH
 # the link and recursively deletes each entry of the target, then replaces the

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh::_changed_functions_in_file|_bats_file_matches_changed|_parse_test_coverage_header
+# sharkrite-test-covers: lib/utils/gate-selection.sh::_changed_functions_in_file|_bats_file_matches_changed|_parse_test_coverage_header
 #
 # Function-scoped test selection (#1229).
 #
