@@ -1999,3 +1999,65 @@ dropping the bound. An 11-hour run must not be able to look like a slow call.
 `"$RITE_TIMEOUT_CMD" "$secs"` outside `timeout.sh` reintroduces the defect and
 is rejected by a structural test in
 `tests/regression/claude-timeout.bats`.
+## Promotion Review Is Assessed, Not Just Captured (#1278)
+
+The promotion review is a **fresh audit**, and that is not a bug — it is the
+only review that ever sees every constituent issue integrated together, so
+cross-issue findings appear nowhere else. But the freshness has a cost that
+showed up the first time promote filed its findings (#1273 carried 12 items for
+`supervised-ux`): the promotion PR has no prior review, so `local-review.sh`
+emits no `FIXREVIEW_CONTEXT_SECTION`, and the reviewer re-raises findings each
+constituent issue's own review loop had already judged.
+
+**Why already-reviewed code produces findings again.** Four distinct causes,
+only the last of which was fixable here:
+
+1. **Different diff.** A per-issue review audits one issue against its base.
+   The promotion review audits all of them integrated against `main`.
+2. **Convergence never meant "clean."** A slot converges when zero
+   ACTIONABLE_NOW items remain. DISMISSED and ACTIONABLE_LATER findings were
+   *deliberately* not fixed — the code still reads the same way, so a fresh
+   reviewer finds them again. Dismissed is not fixed.
+3. **Fix commits are new code.** Later rounds legitimately review what earlier
+   rounds produced.
+4. **No memory of prior judgment.** The promotion review had no record of the
+   per-issue assessments, and nothing downstream applied that judgment either.
+
+**The contract.** Phase 5b runs the standard `assess-review-issues.sh` on the
+promotion review after the CRITICAL hard gate and before the merge:
+
+| Classification | Disposition |
+|---|---|
+| ACTIONABLE_NOW | one aggregated issue (`Promotion review ACTIONABLE_NOW findings: <branch>`) |
+| ACTIONABLE_LATER | per-item issues filed by the assessor, deduped |
+| DISMISSED | dropped |
+
+Two properties make this the right reuse rather than a parallel classifier:
+
+- **`RITE_ISSUE_NUMBER` is deliberately empty.** That empty value is what
+  widens the assessor's Stage-2 dedup search from "same source issue" to "any
+  open follow-up" — exactly the scope a promotion needs, because the duplicates
+  it must avoid were filed under the *constituent* issues, not under this PR.
+  This is the mechanism that stops cause 4 above from re-filing work already
+  tracked.
+- **Still classify-only, never a fix loop.** Fixing on the integration branch
+  would land code on `main` that skipped the per-issue review cycle. Promote is
+  a gate; it files issues.
+
+**Degradation is one-directional.** The assessment is best-effort — promotion
+has already passed every gate by then, so nothing in Phase 5b may block, retry,
+or fail the merge. Assessor missing, non-zero exit, empty output, or the
+`ALL_ITEMS` sentinel (which means the provider declined to classify) all fall
+through to the pre-existing deterministic raw-review capture (#1209). A broken
+assessor therefore degrades to "captures more than needed", never to "loses
+findings". Treating `ALL_ITEMS` as a successful assessment would invert that,
+which is why it is tested explicitly.
+
+`RITE_ASSESSMENT_TIMEOUT` defaults to 600s on this path rather than the
+per-issue 300s: a promotion review spans every constituent issue and carries
+several times the findings. An operator override still wins.
+
+**Regression:** `tests/regression/promote-review-followup.bats` Group 6 pins the
+three-way outcome (assessed-with-NOW / assessed-with-nothing / not-assessed),
+the env contract passed to the assessor, and the no-bare-`exit` best-effort
+property of the region.

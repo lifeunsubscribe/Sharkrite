@@ -1,10 +1,16 @@
 #!/bin/bash
 # lib/core/promote-branch.sh
 # Promote orchestrator: opens a promotion PR for an integration branch (base=main,
-# head=<branch>), reviews it with local-review.sh, runs the full unfiltered suite,
-# enforces the CRITICAL hard gate, squash-merges via SHA-verified REST, marks
-# ledger entries promoted, deletes the integration branch, and posts a
-# "Promoted to main in PR #N" comment on each constituent issue.
+# head=<branch>), reviews it with local-review.sh, runs the targeted verification
+# gate (never a full suite — CLAUDE.md standing rule), enforces the CRITICAL hard
+# gate, assesses the remaining findings NOW/LATER/DISMISSED and files only what
+# survives, squash-merges via SHA-verified REST, marks ledger entries promoted,
+# deletes the integration branch, and posts a "Promoted to main in PR #N"
+# comment on each constituent issue.
+#
+# Classify-only by design: there is no fix loop at promote. Fixing on the
+# integration branch would land code on main that skipped the per-issue review
+# cycle, so findings are tracked as issues instead.
 #
 # Entry point: run_promote <branch>
 # Exit 0 = promoted; exit 1 = any preflight/gate/merge failure.
@@ -289,28 +295,200 @@ run_promote() {
   print_success "No CRITICAL findings — hard gate passed"
   echo ""
 
-  # ── Capture non-CRITICAL findings (#1209) ────────────────────────────────
+  # ── Phase 5b: Assess the promotion review (#1278) ────────────────────────
   #
-  # The promotion review is the ONLY review that sees every constituent issue
-  # integrated together, so cross-issue findings appear nowhere else. Before
-  # this, everything below CRITICAL was posted and then evaporated: promoting
-  # supervised-ux surfaced 4 HIGH / 3 MEDIUM / 5 LOW and none were tracked.
+  # The promotion review is a FRESH audit. The promotion PR has no prior
+  # review, so local-review.sh emits no fix-loop verification context and the
+  # reviewer re-raises findings each constituent issue's own review loop
+  # already judged — DISMISSED ones especially, since "dismissed" is not
+  # "fixed" and the code still reads the same way. Running the standard
+  # assessor here applies that judgment once more and, critically, its Stage-2
+  # cross-PR dedup search matches the per-issue follow-ups already on file
+  # instead of filing them a second time. That search is deliberately
+  # unqualified here (see RITE_ISSUE_NUMBER below).
   #
-  # Deterministic by design — the review embeds a sharkrite-review-data JSON
-  # block (or a Findings line) with machine-readable counts; no LLM classifier
-  # runs here. One aggregated issue, never a fix loop: promotion is a gate, and
-  # fixing on the integration branch would land code on main that skipped the
-  # per-issue review cycle.  Best-effort throughout: promotion has already
-  # passed its gates, so nothing in this block may block, retry, or fail the merge.
+  # Division of labour:
+  #   ACTIONABLE_LATER → per-item issues filed by the assessor (deduped)
+  #   ACTIONABLE_NOW   → one aggregated issue filed below. Still no fix loop:
+  #                      fixing on the integration branch would land code on
+  #                      main that skipped the per-issue review cycle.
+  #   DISMISSED        → dropped
+  #
+  # Best-effort: promotion has already passed its gates, so nothing here may
+  # block, retry, or fail the merge. Every failure path falls through to the
+  # deterministic raw-review capture below — the pre-assessment behaviour —
+  # so a broken assessor degrades to "captures more than needed", never to
+  # "loses findings".
   local _promo_review
   _promo_review=$(gh_safe pr view "$PROMO_PR" --json comments \
     --jq "[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].body" 2>/dev/null || true)
+
+  local _promo_assessed=false
+  local _promo_assess_out=""
+  local _promo_later_count=0
+  if [ -n "${_promo_review:-}" ] && [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
+    print_step "Assessing promotion review findings (NOW/LATER/DISMISSED)..."
+    local _promo_review_file
+    _promo_review_file=$(mktemp)
+    printf '%s' "$_promo_review" > "$_promo_review_file"
+    local _promo_items_file
+    _promo_items_file=$(mktemp)
+    local _promo_assess_exit=0
+    # RITE_ISSUE_NUMBER is deliberately empty. A promotion has no single source
+    # issue, and the empty value is exactly what widens the assessor's Stage-2
+    # dedup search from "same source issue" to "any open follow-up" — the scope
+    # a promotion needs, since the duplicates it must avoid were filed under
+    # the constituent issues, not under this PR.
+    # RITE_RETRY_COUNT=0 keeps first-pass rules (the retry-pass convergence
+    # rules do not apply to a PR whose first review this is).
+    # The timeout defaults above the per-issue 300s: a promotion review spans
+    # every constituent issue and so carries several times the findings.
+    _promo_assess_out=$(
+      RITE_ISSUE_NUMBER="" \
+      RITE_RETRY_COUNT=0 \
+      RITE_REVIEW_JUST_POSTED=true \
+      RITE_PER_ITEM_ISSUES_FILE="$_promo_items_file" \
+      RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-600}" \
+      "$RITE_LIB_DIR/core/assess-review-issues.sh" "$PROMO_PR" "$_promo_review_file" --auto
+    ) || _promo_assess_exit=$?
+    rm -f "$_promo_review_file"
+
+    _promo_later_count=$(grep -c . "$_promo_items_file" 2>/dev/null || true)
+    _promo_later_count="${_promo_later_count:-0}"
+    rm -f "$_promo_items_file"
+
+    if [ "$_promo_assess_exit" -ne 0 ] \
+      || [ -z "${_promo_assess_out:-}" ] \
+      || [ "${_promo_assess_out}" = "ALL_ITEMS" ]; then
+      # Assessor errored, timed out, or declined to classify ("ALL_ITEMS").
+      print_warning "Promotion review assessment unavailable — capturing raw findings instead"
+      _diag "PROMOTE_ASSESS_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} exit=${_promo_assess_exit} out_bytes=${#_promo_assess_out}"
+    else
+      _promo_assessed=true
+      local _promo_now_count=0
+      _promo_now_count=$(printf '%s' "$_promo_assess_out" \
+        | grep -c "^### .* - ACTIONABLE_NOW" || true)
+      _promo_now_count="${_promo_now_count:-0}"
+      print_success "Assessment complete: ${_promo_now_count} ACTIONABLE_NOW, ${_promo_later_count} issue(s) filed for ACTIONABLE_LATER"
+      _diag "PROMOTE_ASSESS_COMPLETE branch=${BRANCH:-} pr=${PROMO_PR:-} now=${_promo_now_count} later_issues=${_promo_later_count}"
+
+      if [ "${_promo_now_count}" -gt 0 ]; then
+        print_info "Capturing ${_promo_now_count} ACTIONABLE_NOW promotion finding(s) as a follow-up issue"
+
+        # Truncate to stay inside GitHub's 65536-char issue body limit. Backing
+        # off to the last newline cannot split a comment block here (assessment
+        # output carries no multi-KB sharkrite-review-data block), but the
+        # guard is kept symmetric with the raw-capture path below.
+        local _promo_now_items="${_promo_assess_out}"
+        if [ "${#_promo_assess_out}" -gt 55000 ]; then
+          print_info "Assessment exceeds 55000 chars — truncated in follow-up issue body (full assessment on PR #${PROMO_PR})"
+          local _promo_now_cut="${_promo_assess_out:0:55000}"
+          _promo_now_cut="${_promo_now_cut%$'\n'*}"
+          _promo_now_items="${_promo_now_cut}
+
+... (assessment truncated — see PR #${PROMO_PR} for the full assessment)"
+        fi
+
+        local _promo_now_body
+        _promo_now_body="Findings from the promotion review of \`${BRANCH}\` (PR #${PROMO_PR}) that the
+assessment classified **ACTIONABLE_NOW** — they survived the same
+NOW/LATER/DISMISSED judgment each constituent issue's review loop applies.
+
+The promotion review is the only review that sees these issues integrated
+together, so cross-issue findings appear nowhere else. Promotion proceeded (the
+CRITICAL hard gate passed) and these are tracked here rather than fixed on the
+integration branch, which would land code on main that skipped the per-issue
+review cycle.
+
+ACTIONABLE_LATER findings from the same review were filed as their own issues
+(${_promo_later_count} this run). DISMISSED findings were dropped.
+
+## Time Estimate
+2hr
+
+## Claude Context
+Files to Read:
+- Changed files on PR #${PROMO_PR} (\`gh pr diff ${PROMO_PR} --name-only\`)
+
+Files to Modify:
+- _Determine from each finding below_
+
+## Acceptance Criteria
+- [ ] Every ACTIONABLE_NOW finding below has a fix commit or a written dismissal — verify: \`gh issue view <this issue> --json comments\`
+- [ ] \`make check\` exits 0 — verify: \`make check >/dev/null 2>&1; echo \$?\`
+
+## Verification Commands
+\`\`\`bash
+make check >/dev/null 2>&1; echo \$?
+\`\`\`
+
+## Done Definition
+Every ACTIONABLE_NOW finding listed below has either a fix commit or a recorded reason for dismissal.
+
+## Scope Boundary
+- DO: Address the findings listed below
+- DO NOT: Refactor surrounding code, add features, or modify files no finding names
+
+## Documentation Impact
+Read-only accuracy check of \`docs/architecture/behavioral-design.md\` against any behavioural change a fix introduces.
+
+**Dependencies**: None
+
+---
+
+${_promo_now_items}"
+
+        # Lazy, guarded load: a top-level source would hard-fail in the promote
+        # tests, which build a minimal fake lib dir. Same reason as test-gate.sh
+        # above.
+        if ! declare -f ensure_labels_exist >/dev/null 2>&1; then
+          # shellcheck source=/dev/null
+          source "$RITE_LIB_DIR/utils/labels.sh" 2>/dev/null || true
+        fi
+        if declare -f ensure_labels_exist >/dev/null 2>&1; then
+          ensure_labels_exist "from-review,tech-debt" 2>/dev/null || true
+        fi
+
+        local _promo_now_url
+        if _promo_now_url=$(gh_safe issue create \
+              --title "Promotion review ACTIONABLE_NOW findings: ${BRANCH}" \
+              --label "from-review" \
+              --label "tech-debt" \
+              --body "$_promo_now_body" 2>/dev/null); then
+          print_success "ACTIONABLE_NOW findings tracked: ${_promo_now_url}"
+          _diag "PROMOTE_ASSESSED_FOLLOWUP_CREATED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_now_count} url=${_promo_now_url}"
+        else
+          # Never block the merge on bookkeeping — surface the loss loudly.
+          print_warning "Could not create the ACTIONABLE_NOW follow-up issue — findings remain on PR #${PROMO_PR} (review + assessment comments)"
+          _diag "PROMOTE_ASSESSED_FOLLOWUP_FAILED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_now_count}"
+        fi
+      fi
+    fi
+  fi
+  echo ""
+
+  # ── Fallback: deterministic capture of non-CRITICAL findings (#1209) ─────
+  #
+  # Runs ONLY when Phase 5b could not assess (assessor missing, errored, timed
+  # out, or returned ALL_ITEMS). The promotion review is the ONLY review that
+  # sees every constituent issue integrated together, so cross-issue findings
+  # appear nowhere else. Before #1209, everything below CRITICAL was posted and
+  # then evaporated: promoting supervised-ux surfaced 4 HIGH / 3 MEDIUM / 5 LOW
+  # and none were tracked.
+  #
+  # Deterministic by design — the review embeds a sharkrite-review-data JSON
+  # block (or a Findings line) with machine-readable counts; no LLM classifier
+  # runs on this path, which is why it is the safe fallback for an assessor
+  # that just failed. One aggregated issue, never a fix loop, for the same
+  # reason Phase 5b files one. Best-effort throughout: promotion has already
+  # passed its gates, so nothing in this block may block, retry, or fail the
+  # merge.
 
   # Parse severity counts from the review's embedded JSON block (priority 1) or
   # the human Findings line (priority 2) — same dual-parse path as local-review.sh.
   # Both are deterministic: no LLM call, no timeout risk.
   local _promo_h=0 _promo_m=0 _promo_l=0 _promo_noncrit=0
-  if [ -n "${_promo_review:-}" ]; then
+  if [ -n "${_promo_review:-}" ] && [ "${_promo_assessed:-false}" != "true" ]; then
     local _promo_json _promo_findings_line
     _promo_json=$(printf '%s' "$_promo_review" \
       | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' 2>/dev/null || true)
