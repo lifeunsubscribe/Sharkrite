@@ -92,6 +92,7 @@ teardown() {
 
 @test "Rule 10 pattern matches bare sed -i '' lines" {
   # Verify the regex used by Rule 10 matches the bad pattern
+  # sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: fixture STRING asserted against Rule 10's pattern; never executed as sed.
   local bad_line="  sed -i '' \"s|foo|bar|\" file.txt"
   run grep -qE "sed[[:space:]]+-i[[:space:]]+''" <<< "$bad_line"
   [ "$status" -eq 0 ]
@@ -177,6 +178,7 @@ teardown() {
 @test "Rule 5 pattern regex matches sed -i '' in portable-cmds.sh context" {
   # Rule 5's regex: sed\s+-i\s+''
   # Must still fire if portable-cmds.sh somehow loses its --version guard
+  # sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: fixture STRING asserted against Rule 05's pattern; never executed as sed.
   local bad_line="  sed -i '' \"\$@\""
   run grep -qE "sed[[:space:]]+-i[[:space:]]+''" <<< "$bad_line"
   [ "$status" -eq 0 ]
@@ -197,6 +199,7 @@ teardown() {
 @test "codebase has no bare sed -i without portable_sed_i (outside portable-cmds.sh)" {
   # Search lib/ and bin/ for sed -i '', excluding the canonical implementation
   run bash -c "
+  # sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: grep PATTERN that sweeps lib/ and bin/ for the bad form; never executed as sed.
     grep -rn \"sed -i ''\" '$PROJECT_ROOT/lib' '$PROJECT_ROOT/bin' 2>/dev/null \
       | grep -v 'portable-cmds.sh' \
       | grep -vE ':[0-9]+:[[:space:]]*#' \
