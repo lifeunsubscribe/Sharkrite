@@ -124,6 +124,15 @@
 # runs are exempt by construction.
 # RITE_GATE_SCOPE_WARN_SECONDS=300
 
+# Minimum recurrence count before a review finding class is flagged as a lint-rule
+# candidate in the weekly health report (default: 2).
+# Titles appearing this many times or more across the period's ACTIONABLE_NOW findings
+# are listed in the report's "Recurring findings — lint-rule candidates" sub-section.
+# A separate category backstop (hardcoded at 4) catches reworded recurrences of the
+# same class. Set to a higher value for high-volume projects where occasional repeats
+# are expected noise.
+# RITE_HEALTH_RECURRENCE_MIN=2
+
 # Gate tier for target-repo node workspaces monorepo tests (default: "cycle").
 # Only affects npm/pnpm workspaces repos; single-package and non-node repos
 # are unaffected.

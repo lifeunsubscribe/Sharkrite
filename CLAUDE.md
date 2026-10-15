@@ -845,6 +845,7 @@ The report uses **absolute thresholds** (not before/after comparison):
 - Any phase failing > 30% → WARNING
 - Phase 1 duration avg > 20 min → WATCH
 - rtk savings < 30% → WATCH
+- Recurring finding class (title ≥ `RITE_HEALTH_RECURRENCE_MIN` (default 2) OR category ≥ 4 in the period) → flag as lint-rule candidate
 
 Skips entirely if fewer than 3 workflow completions in the past 7 days.
 
