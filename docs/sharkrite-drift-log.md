@@ -56,3 +56,29 @@ CLAUDE.md's Phase 3 staleness contract now applies to Phase 2's skip-review deci
 
 CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness detection is in `assess-and-resolve.sh` only, but PR #1304 also added SHA-based staleness detection to `workflow-runner.sh`'s Phase 2 review-skip check.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1307 issue:1232 recorded:2026-10-18T21:21:58Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `rite docs "<instructions>"` documentation claims CREATE proposals are applied unconditionally, but PR #1307 added a TOCTOU guard that skips CREATE when the target file already exists in the worktree.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1307 issue:1232 recorded:2026-10-18T21:26:40Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s `rite docs "<instructions>"` description says directed updates "Can CREATE new docs" without mentioning that CREATE is silently skipped when the file already exists (use EDIT instead).
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1307 issue:1232 recorded:2026-10-18T21:31:12Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `_docs_apply_approved` now checks `_aa_action` and refuses CREATE when the file already exists — but CLAUDE.md's `rite docs` description says the apply-path writes unconditionally with no mention of this guard.
+
+`rite docs` directed-update description in CLAUDE.md omits the apply-site CREATE guard that now skips writes when the target file already exists.
+<!-- /sharkrite-doc-drift -->
