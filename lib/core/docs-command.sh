@@ -249,6 +249,15 @@ _docs_apply_approved() {
     esac
 
     local _aa_target_file="${_aa_wt_path}/${_aa_file}"
+
+    # Apply-site TOCTOU guard: refuse CREATE when the file already exists in
+    # the worktree (i.e. it was present on origin at the fetch above).
+    # Mirrors the preview-time guard in _docs_update_engine (lines 646-654).
+    if [ "$_aa_action" = "CREATE" ] && [ -f "$_aa_target_file" ]; then
+      print_warning "Skipping CREATE for '${_aa_file}': file already exists in worktree — use ACTION: EDIT to update an existing file" >&2
+      continue
+    fi
+
     mkdir -p "$(dirname "$_aa_target_file")"
     # Strip trailing newline added by the accumulation loop (printf is idempotent)
     printf '%s' "$_aa_content" > "$_aa_target_file"
