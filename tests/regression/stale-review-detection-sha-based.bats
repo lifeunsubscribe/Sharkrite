@@ -1,16 +1,25 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/review-helper.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/review-helper.sh, lib/core/workflow-runner.sh
 # Regression test for issue #354: Stale-review-loop guard fires on fresh reviews
+# Regression test for issue #1303: Fix loop deadlocks when staleness oracles disagree
 #
-# Root cause: The staleness check in assess-and-resolve.sh used timestamp
+# Root cause (#354): The staleness check in assess-and-resolve.sh used timestamp
 # comparison (review.createdAt vs latest commit time). This is racy — GitHub's
 # API can return stale timestamps, and successive fix iterations may produce
 # commits that post-date a fresh review even when the review actually covers HEAD.
 #
-# Fix: SHA-based staleness detection.
+# Root cause (#1303): Phase 2 (workflow-runner.sh::phase_create_pr) used a
+# timestamp-based oracle to decide "skip push/review", while Phase 3
+# (assess-and-resolve.sh) used a SHA-based oracle to decide "review is stale".
+# When the two oracles disagree (timestamp says current / SHA says stale), Phase 3
+# reroutes to Phase 2, Phase 2 declines to regenerate, and the loop hard-fails
+# after hours of correct completed work (live: issue #1231, 7h23m wasted).
+#
+# Fix (#354): SHA-based staleness detection in assess-and-resolve.sh.
+# Fix (#1303): Phase 2's skip decision now uses extract_review_sha (same oracle).
 #   - local-review.sh embeds the HEAD SHA in the review marker: commit:<sha>
-#   - assess-and-resolve.sh compares that SHA to the current HEAD
-#   - Timestamp comparison is preserved as a fallback for pre-fix reviews
+#   - Both phases compare that SHA to the current HEAD
+#   - Timestamp comparison is preserved as a fallback for pre-#354 reviews
 #
 # These tests verify:
 #   1. extract_review_sha correctly parses the commit: attribute from markers
@@ -20,6 +29,8 @@
 #   5. Review marker written by local-review.sh contains commit: attribute
 #   6. The #341 scenario (multiple iterations, finding counts change) doesn't
 #      produce a false stale verdict
+#   7. Phase 2 skip decision uses the same SHA oracle as Phase 3 (issue #1303)
+#   8. SHA-mismatch: Phase 2 does NOT skip, so Phase 3's reroute can proceed
 
 setup() {
   RITE_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
@@ -484,4 +495,237 @@ Actual review content follows here.\"
   "
   [ "$status" -eq 0 ]
   [[ "$output" == "SAFE_EMPTY_OK" ]]
+}
+
+# =============================================================================
+# Issue #1303: Phase 2 skip decision uses the SHA oracle (not timestamps)
+#
+# These tests exercise the logic introduced in workflow-runner.sh::phase_create_pr
+# to replace the epoch comparison. The logic is extracted here as a shell fragment
+# (same technique as the assess-and-resolve.sh tests above) because phase_create_pr
+# cannot be invoked without a real git + GitHub environment.
+# =============================================================================
+
+@test "phase_create_pr skip logic: SHA match → review is current, skip is valid" {
+  # Simulates the core of the new phase_create_pr skip check:
+  # when the review marker's SHA equals local_head, the skip fires.
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    local_head='abc1234def567890abc1234def567890abc12345'
+
+    # Simulate the review JSON that gh would return (body contains the marker)
+    _skip_review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-10-14T18:00:00Z commit:\${local_head} -->
+
+Review content.\"
+
+    _skip_review_sha=\$(extract_review_sha \"\$_skip_review_body\")
+    _skip_review_sha=\"\${_skip_review_sha:-}\"
+
+    # Apply the same decision as phase_create_pr
+    _would_skip=false
+    if [ -n \"\$_skip_review_sha\" ]; then
+      if [ \"\$_skip_review_sha\" = \"\$local_head\" ]; then
+        _would_skip=true
+      fi
+    fi
+
+    echo \"would_skip=\$_would_skip\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "would_skip=true" ]]
+}
+
+@test "phase_create_pr skip logic: SHA mismatch → review is stale, skip does NOT fire" {
+  # Reproduces the issue #1303 scenario: the review has a SHA, but it does not
+  # match the current HEAD (fix commits were pushed after the review was generated).
+  # Phase 2 must NOT skip — it must regenerate so Phase 3 will see a current review.
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    # The review was generated against the old HEAD (0a8746fb in the live incident)
+    review_head='0a8746fb0a8746fb0a8746fb0a8746fb0a8746fb'
+    # Fix commits were pushed; local_head advanced to a new SHA (324cba0a live)
+    local_head='324cba0a324cba0a324cba0a324cba0a324cba0a'
+
+    _skip_review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-10-14T18:00:00Z commit:\${review_head} -->
+
+Review content.\"
+
+    _skip_review_sha=\$(extract_review_sha \"\$_skip_review_body\")
+    _skip_review_sha=\"\${_skip_review_sha:-}\"
+
+    _would_skip=false
+    if [ -n \"\$_skip_review_sha\" ]; then
+      if [ \"\$_skip_review_sha\" = \"\$local_head\" ]; then
+        _would_skip=true
+      fi
+      # SHA present but mismatched → stale, fall through (would_skip stays false)
+    fi
+
+    echo \"would_skip=\$_would_skip sha_present=\$([ -n \"\$_skip_review_sha\" ] && echo true || echo false)\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "would_skip=false sha_present=true" ]]
+}
+
+@test "phase_create_pr skip logic: no SHA → timestamp fallback path taken" {
+  # Pre-#354 review: no commit: attribute in marker.
+  # Phase 2 must fall back to the timestamp comparison, not treat the review as stale.
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    local_head='abc1234def567890abc1234def567890abc12345'
+
+    # Old marker format (no commit: attribute)
+    _skip_review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-05-01T10:00:00Z -->
+
+Review content.\"
+
+    _skip_review_sha=\$(extract_review_sha \"\$_skip_review_body\")
+    _skip_review_sha=\"\${_skip_review_sha:-}\"
+
+    # Determine which decision path is taken
+    _decision_path=''
+    if [ -n \"\$_skip_review_sha\" ]; then
+      _decision_path='sha'
+    else
+      _decision_path='timestamp_fallback'
+    fi
+
+    echo \"path=\$_decision_path\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "path=timestamp_fallback" ]]
+}
+
+@test "two-oracle agreement: SHA match → both Phase 2 and Phase 3 agree review is current" {
+  # Core contract from issue #1303: when Phase 2's skip oracle and Phase 3's
+  # staleness oracle both use extract_review_sha against the same review body,
+  # they must reach the same conclusion for every input.
+  #
+  # This test verifies the SHA-match case: both phases agree the review is current.
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    current_head='abc1234def567890abc1234def567890abc12345'
+
+    review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-10-14T18:00:00Z commit:\${current_head} -->
+
+Review content.\"
+
+    review_sha=\$(extract_review_sha \"\$review_body\")
+
+    # Phase 2 verdict: skip iff SHA matches
+    phase2_current=false
+    if [ -n \"\$review_sha\" ] && [ \"\$review_sha\" = \"\$current_head\" ]; then
+      phase2_current=true
+    fi
+
+    # Phase 3 verdict: not stale iff SHA matches
+    phase3_current=false
+    if [ -n \"\$review_sha\" ] && [ \"\$review_sha\" = \"\$current_head\" ]; then
+      phase3_current=true
+    fi
+
+    echo \"phase2=\$phase2_current phase3=\$phase3_current agree=\$([ \"\$phase2_current\" = \"\$phase3_current\" ] && echo yes || echo no)\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "phase2=true phase3=true agree=yes" ]]
+}
+
+@test "two-oracle agreement: SHA mismatch → both Phase 2 and Phase 3 agree review is stale" {
+  # Verifies the SHA-mismatch case: both phases agree the review is stale,
+  # so Phase 3's reroute to Phase 2 will be acted upon (Phase 2 won't skip).
+  # This is the exact deadlock scenario from issue #1303.
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR=\"\${RITE_REPO_ROOT}/lib\"
+    source \"\${REVIEW_HELPER_SH}\"
+
+    review_head='0a8746fb0a8746fb0a8746fb0a8746fb0a8746fb'
+    current_head='324cba0a324cba0a324cba0a324cba0a324cba0a'
+
+    review_body=\"<!-- \${RITE_MARKER_REVIEW} model:claude-opus-4-8 timestamp:2026-10-14T18:00:00Z commit:\${review_head} -->
+
+Review content.\"
+
+    review_sha=\$(extract_review_sha \"\$review_body\")
+
+    # Phase 2 verdict: skip only if SHA matches (false when mismatched)
+    phase2_would_skip=false
+    if [ -n \"\$review_sha\" ] && [ \"\$review_sha\" = \"\$current_head\" ]; then
+      phase2_would_skip=true
+    fi
+
+    # Phase 3 verdict: stale if SHA present and does not match
+    phase3_stale=false
+    if [ -n \"\$review_sha\" ] && [ \"\$review_sha\" != \"\$current_head\" ]; then
+      phase3_stale=true
+    fi
+
+    # Deadlock-free contract: Phase 3 reroutes → Phase 2 will regenerate (not skip)
+    deadlock_free=\$([ \"\$phase3_stale\" = 'true' ] && [ \"\$phase2_would_skip\" = 'false' ] && echo yes || echo no)
+    echo \"phase2_skip=\$phase2_would_skip phase3_stale=\$phase3_stale deadlock_free=\$deadlock_free\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "phase2_skip=false phase3_stale=true deadlock_free=yes" ]]
+}
+
+# =============================================================================
+# Structural guard: phase_create_pr wires the SHA oracle, not the epoch oracle
+#
+# The behavioral tests above inline the decision logic as a quoted fragment.
+# That means a revert of phase_create_pr to iso_to_epoch (the #1303 bug) would
+# not be caught by any of them — they all pass regardless of what the real
+# function body contains.
+#
+# This test parses the actual phase_create_pr body and enforces two invariants:
+#   1. extract_review_sha is called (SHA oracle is wired in — positive invariant)
+#   2. iso_to_epoch appears only AFTER extract_review_sha (timestamp is fallback-only)
+# =============================================================================
+
+@test "structural: phase_create_pr calls extract_review_sha before any iso_to_epoch (SHA oracle is primary)" {
+  # Regression guard for issue #1303.
+  # If phase_create_pr is reverted to epoch comparison as the primary skip path,
+  # invariant 1 (missing extract_review_sha) or invariant 2 (wrong ordering) will fail.
+  run bash -c "
+    set -euo pipefail
+    wf=\"\${RITE_REPO_ROOT}/lib/core/workflow-runner.sh\"
+
+    # Extract phase_create_pr body: from function header to first top-level '}'
+    fn_body=\$(awk '/^phase_create_pr\(\) \{/,/^\}/' \"\$wf\")
+
+    # Invariant 1: SHA oracle must be present in the function
+    if ! echo \"\$fn_body\" | grep -q 'extract_review_sha'; then
+      echo 'FAIL: extract_review_sha not found in phase_create_pr — SHA oracle is missing'
+      exit 1
+    fi
+
+    # Invariant 2: iso_to_epoch (timestamp fallback) must appear AFTER extract_review_sha
+    line_sha=\$(echo \"\$fn_body\" | grep -n 'extract_review_sha' | head -1 | cut -d: -f1 || true)
+    line_epoch=\$(echo \"\$fn_body\" | grep -n 'iso_to_epoch' | head -1 | cut -d: -f1 || true)
+
+    if [ -z \"\$line_epoch\" ]; then
+      echo 'PASS: no iso_to_epoch in phase_create_pr (pure SHA-oracle path)'
+      exit 0
+    fi
+
+    if [ \"\$line_epoch\" -gt \"\$line_sha\" ]; then
+      echo 'PASS'
+    else
+      echo \"FAIL: iso_to_epoch (fn-line \$line_epoch) precedes extract_review_sha (fn-line \$line_sha) — timestamp is the primary oracle, not the fallback\"
+      exit 1
+    fi
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == PASS* ]]
 }
