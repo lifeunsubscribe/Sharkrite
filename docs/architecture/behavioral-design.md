@@ -661,7 +661,7 @@ All review comment queries MUST filter by body marker (`contains("<!-- sharkrite
 
 **The canonical staleness check is SHA-based, not timestamp-based.** The 2-reroute guard in `workflow-runner.sh::phase_assess_and_resolve` is defense-in-depth; with correct SHA detection it should rarely fire.
 
-**Every staleness/currency decision in the fix loop uses the SHA oracle.** There are two sites:
+**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the fix loop (a third timestamp-only site, `detect_review_state` in `lib/utils/pr-detection.sh`, is tracked for migration in issue #1305):
 1. `workflow-runner.sh::phase_create_pr` — decides whether to skip the push/review phase (review already current)
 2. `assess-and-resolve.sh` — decides whether a review is stale and must reroute back to Phase 2
 
