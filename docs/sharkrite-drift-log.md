@@ -64,3 +64,11 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `rite docs "<instructions>"` documentation claims CREATE proposals are applied unconditionally, but PR #1307 added a TOCTOU guard that skips CREATE when the target file already exists in the worktree.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1307 issue:1232 recorded:2026-10-18T21:26:40Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s `rite docs "<instructions>"` description says directed updates "Can CREATE new docs" without mentioning that CREATE is silently skipped when the file already exists (use EDIT instead).
+<!-- /sharkrite-doc-drift -->
