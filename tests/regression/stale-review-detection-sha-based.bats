@@ -679,3 +679,53 @@ Review content.\"
   [ "$status" -eq 0 ]
   [[ "$output" == "phase2_skip=false phase3_stale=true deadlock_free=yes" ]]
 }
+
+# =============================================================================
+# Structural guard: phase_create_pr wires the SHA oracle, not the epoch oracle
+#
+# The behavioral tests above inline the decision logic as a quoted fragment.
+# That means a revert of phase_create_pr to iso_to_epoch (the #1303 bug) would
+# not be caught by any of them — they all pass regardless of what the real
+# function body contains.
+#
+# This test parses the actual phase_create_pr body and enforces two invariants:
+#   1. extract_review_sha is called (SHA oracle is wired in — positive invariant)
+#   2. iso_to_epoch appears only AFTER extract_review_sha (timestamp is fallback-only)
+# =============================================================================
+
+@test "structural: phase_create_pr calls extract_review_sha before any iso_to_epoch (SHA oracle is primary)" {
+  # Regression guard for issue #1303.
+  # If phase_create_pr is reverted to epoch comparison as the primary skip path,
+  # invariant 1 (missing extract_review_sha) or invariant 2 (wrong ordering) will fail.
+  run bash -c "
+    set -euo pipefail
+    wf=\"\${RITE_REPO_ROOT}/lib/core/workflow-runner.sh\"
+
+    # Extract phase_create_pr body: from function header to first top-level '}'
+    fn_body=\$(awk '/^phase_create_pr\(\) \{/,/^\}/' \"\$wf\")
+
+    # Invariant 1: SHA oracle must be present in the function
+    if ! echo \"\$fn_body\" | grep -q 'extract_review_sha'; then
+      echo 'FAIL: extract_review_sha not found in phase_create_pr — SHA oracle is missing'
+      exit 1
+    fi
+
+    # Invariant 2: iso_to_epoch (timestamp fallback) must appear AFTER extract_review_sha
+    line_sha=\$(echo \"\$fn_body\" | grep -n 'extract_review_sha' | head -1 | cut -d: -f1 || true)
+    line_epoch=\$(echo \"\$fn_body\" | grep -n 'iso_to_epoch' | head -1 | cut -d: -f1 || true)
+
+    if [ -z \"\$line_epoch\" ]; then
+      echo 'PASS: no iso_to_epoch in phase_create_pr (pure SHA-oracle path)'
+      exit 0
+    fi
+
+    if [ \"\$line_epoch\" -gt \"\$line_sha\" ]; then
+      echo 'PASS'
+    else
+      echo \"FAIL: iso_to_epoch (fn-line \$line_epoch) precedes extract_review_sha (fn-line \$line_sha) — timestamp is the primary oracle, not the fallback\"
+      exit 1
+    fi
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == PASS* ]]
+}
