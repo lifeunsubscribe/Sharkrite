@@ -514,11 +514,17 @@ DRIFT_EOF
 
   run bash -c "
     bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'toctou test' directed main 2>&1
-  " || true
+  "
   rm -rf "$appr_dir"
+
+  # All proposals were skipped — function should exit 0 (all-skipped path)
+  [ "$status" -eq 0 ]
 
   # Apply-site guard must fire and emit a warning
   printf '%s\n' "$output" | grep -qi "Skipping CREATE"
+
+  # Original file content must be unchanged (guard fired before any write)
+  [ "$(cat "$FAKE_PROJECT/docs/test-doc.md")" = "$doc_before" ]
 
   # Nothing was committed or pushed (guard fired before mkdir/write)
   local push_calls
