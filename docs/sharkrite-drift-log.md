@@ -28,3 +28,16 @@ CLAUDE.md's Phase 3 staleness contract now applies to Phase 2's skip-review deci
 
 `workflow-runner.sh`'s Phase 2 skip-review check previously used timestamp-only comparison but now uses the SHA oracle (matching `assess-and-resolve.sh`), while CLAUDE.md still describes the Phase 2 check as timestamp-based.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1304 issue:1303 recorded:2026-10-18T21:00:06Z -->
+**Changed files**: lib/core/workflow-runner.sh, tests/regression/stale-review-detection-sha-based.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md's "Phase 3 — Review Staleness Contract" section says staleness detection is SHA-based in `assess-and-resolve.sh`, but now Phase 2's skip-review check in `workflow-runner.sh` also uses SHA-based detection — the doc doesn't mention this extension to Phase 2's currency check.
+<!-- /sharkrite-doc-drift -->
