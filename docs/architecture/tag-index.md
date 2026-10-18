@@ -35,15 +35,3 @@
 
 
 
-## DO
-- behavioral-design.md → DO NOT skip the assessment based on diff content
-
-
-## Created
-- behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
-
-
-## Updated
-- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
-- behavioral-design.md → Directed-Update Proposal Guards (#1208)
-
