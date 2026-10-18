@@ -356,20 +356,50 @@ _shrinkage_lines_moved_to_new_lib_files() {
   removed_count=$(printf '%s\n' "$removed" | grep -c . || true)
   [ "${removed_count:-0}" -ge 20 ] || return 1   # too little signal to judge
 
-  # How many of those lines appear verbatim in the added files?
-  local found=0 _line
+  # Content the added files bring in, taken from the DIFF's own + lines.
+  #
+  # NOT from the filesystem. Those files exist only in the PR's worktree, so a
+  # `cat` of them returns nothing whenever this runs from any other checkout —
+  # the blob came back empty, no move was ever detected, and the split blocked
+  # exactly as if the content had been dropped. Live: #1236's second attempt
+  # (2026-10-14) deleted 1857 lines from test-gate.sh into three new
+  # lib/utils/gate-*.sh files; the files were correctly identified as added and
+  # then read from a checkout that did not have them. The diff is the only
+  # source that is guaranteed to describe this PR.
+  #
+  # Only + lines of files that are BOTH under a production lib path AND new in
+  # this PR count: a modified lib file's additions must never be able to
+  # satisfy the match.
   local _added_blob
-  _added_blob=$(printf '%s\n' "$added_files" | while IFS= read -r _af; do
-    [ -n "$_af" ] && [ -f "$_af" ] && cat "$_af"
-  done || true)
+  _added_blob=$(printf '%s\n' "$diff_text" \
+    | awk '/^diff --git /{ f=$4; sub(/^b\//,"",f);
+                           inlib=(f ~ /^lib\/(core|utils|providers)\//); isnew=0; next }
+           /^new file mode/{ if (inlib) isnew=1; next }
+           inlib && isnew && /^\+/ && !/^\+\+\+/ {
+             line=substr($0,2)
+             gsub(/^[[:space:]]+|[[:space:]]+$/,"",line)
+             if (line!="" && line !~ /^#/ && line !~ /^[}{]$/) print line
+           }' \
+    | grep -v '^$' || true)
   [ -n "$_added_blob" ] || return 1
 
-  while IFS= read -r _line; do
-    [ -z "$_line" ] && continue
-    if printf '%s\n' "$_added_blob" | grep -qxF "$_line"; then
-      found=$((found + 1))
-    fi
-  done <<< "$removed"
+  # Single grep over both sets rather than one grep per removed line: a real
+  # split moves thousands of lines, and the per-line loop this replaces cost
+  # one subprocess each.  -x -F keeps the comparison exactly as strict (whole
+  # line, literal) as the loop was.  An empty pattern line would match
+  # everything, so the blob is filtered above and re-checked here.
+  local _rm_file _blob_file found
+  _rm_file=$(mktemp)
+  _blob_file=$(mktemp)
+  printf '%s\n' "$removed" | grep -v '^$' > "$_rm_file" || true
+  printf '%s\n' "$_added_blob" | grep -v '^$' > "$_blob_file" || true
+  if [ ! -s "$_blob_file" ] || [ ! -s "$_rm_file" ]; then
+    rm -f "$_rm_file" "$_blob_file"
+    return 1
+  fi
+  found=$(grep -c -x -F -f "$_blob_file" "$_rm_file" || true)
+  found="${found:-0}"
+  rm -f "$_rm_file" "$_blob_file"
 
   # Require a strong majority (>=80%) to call it a move.
   [ $(( found * 100 / removed_count )) -ge 80 ]
