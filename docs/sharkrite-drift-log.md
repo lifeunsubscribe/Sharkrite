@@ -1,0 +1,30 @@
+# Sharkrite Drift Log
+
+**Auto-appended by sharkrite in changelog mode — do not hand-edit entries.**
+
+Each entry records a merge where sharkrite detected that documentation may
+need updating. Entries are machine-parseable blocks delimited by
+`<!-- sharkrite-doc-drift pr:N ... -->` markers.
+
+**Burn-down semantics:** Remove an entry after you have verified or updated
+the implicated documentation. Delete this file when the last entry burns down.
+`rite docs` (#1045) can also drive burn-down automatically.
+
+---
+
+<!-- sharkrite-doc-drift pr:1304 issue:1303 recorded:2026-10-18T20:55:12Z -->
+**Changed files**: lib/core/workflow-runner.sh, tests/regression/stale-review-detection-sha-based.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md states "SHA match → review covers HEAD, assess it (no reroute)" and "No SHA in review → fallback to epoch-seconds timestamp comparison (backward compat for pre-#354 reviews)" as the staleness contract, but attributes it only to `assess-and-resolve.sh` — the PR extended this same SHA-based oracle to `workflow-runner.sh`'s Phase 2 skip-review check, which CLAUDE.md still describes as using only timestamp comparison.
+
+CLAUDE.md's Phase 3 staleness contract now applies to Phase 2's skip-review decision too, but the doc only credits `assess-and-resolve.sh` for the SHA oracle.
+
+`workflow-runner.sh`'s Phase 2 skip-review check previously used timestamp-only comparison but now uses the SHA oracle (matching `assess-and-resolve.sh`), while CLAUDE.md still describes the Phase 2 check as timestamp-based.
+<!-- /sharkrite-doc-drift -->
