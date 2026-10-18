@@ -155,3 +155,105 @@ teardown() {
   "
   [[ "$output" =~ "1800" ]]
 }
+
+# ===========================================================================
+# run_with_timeout SIGKILL escalation (#1299)
+#
+# `timeout N cmd` sends SIGTERM at the deadline then WAITS for cmd to exit. A
+# process that ignores SIGTERM never exits and timeout waits with it forever,
+# so the deadline silently becomes advisory.
+#
+# Live (batch 20261014-184054): every LLM session is wrapped by this helper and
+# every one blew past its deadline — claude_fix_session 2h39m against 1800s,
+# review_generation 4h25m against 600s, claude_dev_session 10h58m. Issues #1231
+# and #1262 ran 7h38m and 11h08m. Phase-boundary caps never fired because a
+# single unbounded call never reaches a boundary.
+# ===========================================================================
+
+_timeout_sut() {
+  RITE_REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  # shellcheck source=/dev/null
+  source "$RITE_REPO_ROOT/lib/utils/timeout.sh"
+  ensure_timeout_cmd >/dev/null 2>&1 || true
+}
+
+# A process that ignores SIGTERM — exactly what outlives a bare `timeout N`.
+_write_term_ignoring_cmd() {
+  cat > "$1" <<'STUBEOF'
+#!/bin/bash
+trap '' TERM
+sleep 60
+STUBEOF
+  chmod +x "$1"
+}
+
+@test "run_with_timeout: passes -k so a TERM-ignoring process is still killed" {
+  _timeout_sut
+  [ -n "${RITE_TIMEOUT_CMD:-}" ] || skip "no timeout command on this host"
+
+  local _stub="$BATS_TEST_TMPDIR/stubborn.sh"
+  _write_term_ignoring_cmd "$_stub"
+
+  local _t0 _elapsed _exit=0
+  _t0=$(date +%s)
+  RITE_TIMEOUT_KILL_AFTER=2 run_with_timeout 2 "$_stub" 2>/dev/null || _exit=$?
+  _elapsed=$(( $(date +%s) - _t0 ))
+
+  # Must die, not hang: deadline 2s + kill-after 2s, with slack for load.
+  [ "$_elapsed" -lt 20 ] || {
+    echo "FAIL: ran ${_elapsed}s against a 2s deadline — -k is not being passed"
+    false
+  }
+  # 137 = 128 + SIGKILL(9). A bare TERM would never have landed.
+  [ "$_exit" -eq 137 ] || [ "$_exit" -eq 124 ]
+}
+
+@test "run_with_timeout: a normal fast command is unaffected" {
+  _timeout_sut
+  local _out
+  _out=$(run_with_timeout 10 /bin/echo "hello" 2>/dev/null)
+  [ "$_out" = "hello" ]
+}
+
+@test "run_with_timeout: non-zero exit from the command is propagated verbatim" {
+  _timeout_sut
+  local _exit=0
+  run_with_timeout 10 /bin/sh -c 'exit 42' 2>/dev/null || _exit=$?
+  [ "$_exit" -eq 42 ]
+}
+
+@test "run_with_timeout: warns once when no timeout command is available" {
+  _timeout_sut
+  # Simulate a host without timeout/gtimeout. Unbounded is survivable; silent
+  # unbounded is not — an 11-hour run must not look like a slow call.
+  local _err
+  _err=$(RITE_TIMEOUT_CMD="" _RITE_TIMEOUT_UNBOUNDED_WARNED="" \
+    run_with_timeout 5 /bin/echo hi 2>&1 >/dev/null)
+  echo "$_err" | grep -qi "unbounded"
+}
+
+@test "run_with_timeout: the unbounded warning is not repeated" {
+  _timeout_sut
+  local _err
+  _err=$(
+    export RITE_TIMEOUT_CMD="" _RITE_TIMEOUT_UNBOUNDED_WARNED=""
+    run_with_timeout 5 /bin/echo a 2>&1 >/dev/null
+    run_with_timeout 5 /bin/echo b 2>&1 >/dev/null
+  )
+  [ "$(echo "$_err" | grep -ci unbounded || true)" -eq 1 ]
+}
+
+@test "structural: every run_with_timeout call site routes through the shared helper" {
+  # The gate already used -k directly and was the only bounded path. Any NEW
+  # bare "$RITE_TIMEOUT_CMD" <secs> invocation outside timeout.sh/test-gate.sh
+  # would reintroduce an unbounded deadline.
+  RITE_REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  local _bare
+  _bare=$(grep -rn '"\$RITE_TIMEOUT_CMD" "\$' "$RITE_REPO_ROOT/lib" 2>/dev/null \
+    | grep -v 'utils/timeout.sh' || true)
+  [ -z "$_bare" ] || {
+    echo "Bare RITE_TIMEOUT_CMD invocation without -k:"
+    echo "$_bare"
+    false
+  }
+}

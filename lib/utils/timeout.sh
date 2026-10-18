@@ -110,13 +110,49 @@ ensure_timeout_cmd() {
 
 # Run a command with timeout if available, without if not.
 # Usage: run_with_timeout SECONDS command [args...]
+#
+# SIGKILL escalation (--kill-after) is NOT optional here.
+#
+# `timeout N cmd` sends SIGTERM at the deadline and then WAITS for cmd to exit.
+# A process that ignores SIGTERM, or that is blocked writing to a pipe whose
+# reader is gone, never exits — and timeout waits with it, forever. The
+# deadline silently becomes advisory.
+#
+# Live (batch 20261014-184054): every LLM session is wrapped by this helper and
+# every one of them blew past its deadline, because `claude` is a node process
+# that does not reliably die on TERM:
+#
+#   claude_fix_session    2h 39m 38s   (deadline 1800s)
+#   review_generation     4h 25m 35s   (deadline  600s)
+#   claude_dev_session   10h 58m  3s   (deadline 1800s)
+#
+# Issue #1231 ran 7h38m and #1262 ran 11h08m as a result. Neither per-issue
+# nor session caps caught it: those are evaluated at phase boundaries, and a
+# single unbounded call never reaches one.
+#
+# test-gate.sh had this right all along — its bats watchdog uses `-k 30`,
+# which is why the gate reliably dies at its 1800s deadline while every LLM
+# call could hang indefinitely. This brings the shared helper to the same
+# contract: TERM at the deadline, KILL `RITE_TIMEOUT_KILL_AFTER` seconds later.
+#
+# GNU coreutils `timeout`/`gtimeout` both support -k; this helper only ever
+# resolves to one of those two (see ensure_timeout_cmd above), so -k is always
+# available when RITE_TIMEOUT_CMD is set.
 run_with_timeout() {
   local timeout_secs="$1"
   shift
 
   if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
-    "$RITE_TIMEOUT_CMD" "$timeout_secs" "$@"
+    "$RITE_TIMEOUT_CMD" -k "${RITE_TIMEOUT_KILL_AFTER:-30}" "$timeout_secs" "$@"
   else
+    # No timeout command: the command runs UNBOUNDED. Say so once per process
+    # rather than letting a missing deadline look like a slow call — the
+    # difference matters when a run is 11 hours in.
+    if [ -z "${_RITE_TIMEOUT_UNBOUNDED_WARNED:-}" ]; then
+      _RITE_TIMEOUT_UNBOUNDED_WARNED=1
+      export _RITE_TIMEOUT_UNBOUNDED_WARNED
+      echo -e "${YELLOW:-}⚠️  No timeout command available — commands run unbounded (install: brew install coreutils)${NC:-}" >&2
+    fi
     "$@"
   fi
 }
