@@ -1945,3 +1945,46 @@ The skipped-gone preflight exists because ledger files are never pruned after pr
 **Overall exit code:** 0 if all items synced/current/skipped-by-rail; 1 if any operational failure (fetch/push error) occurred.
 
 **Regression tests:** `tests/regression/sync-integration-branch.bats` — dry-run dispatch for all three forms, design-contract greps (no rebase in `sync_integration_branch`, no stash anywhere, `--force-with-lease` in `sync_issue_branch` only, resolver availability-guarded), and behavioral rail tests (live-lock, dirty-worktree, staleness threshold, conflict-exits-0). **Not yet pinned:** the already-current (Rail 4) exit-0 path and the Phase A skipped-gone preflight behavioral test.
+
+## A Timeout Without SIGKILL Escalation Is Advisory (#1301)
+
+`timeout N cmd` sends SIGTERM at the deadline and then **waits for cmd to
+exit**. A process that ignores SIGTERM — or that is blocked writing to a pipe
+whose reader is gone — never exits, and `timeout` waits with it indefinitely.
+The deadline silently becomes a suggestion, and the symptom in the logs is
+indistinguishable from a slow call.
+
+Every LLM session routes through `run_with_timeout`, and `claude` is a node
+process that does not reliably die on SIGTERM. Batch `20261014-184054`:
+
+| Session | Deadline | Actual |
+|---|---|---|
+| `claude_fix_session` | 1800s | 2h 39m 38s |
+| `review_generation` | 600s | 4h 25m 35s |
+| `claude_dev_session` | 1800s | 10h 58m 3s |
+
+Issue #1231 ran 7h38m and #1262 ran 11h08m on the back of that.
+
+**The caps did not help, and could not have.** `RITE_MAX_ISSUE_HOURS` (4h) and
+`RITE_MAX_SESSION_HOURS` (12h) are evaluated at phase boundaries. A single
+unbounded call never reaches a boundary, so no cap is ever consulted. Bounding
+the individual call is therefore the only place this can be fixed; the caps
+are a backstop for *accumulated* work, not a watchdog.
+
+**`test-gate.sh` had it right the whole time.** Its bats watchdog uses
+`gtimeout -k 30` (`test-gate.sh:2433`), which is exactly why the gate reliably
+dies at its 1800s deadline while every LLM call could hang. It was the only
+`-k` in the codebase. `run_with_timeout` now carries the same contract: TERM at
+the deadline, KILL `RITE_TIMEOUT_KILL_AFTER` (default 30) seconds later. GNU
+`timeout`/`gtimeout` both support `-k`, and `ensure_timeout_cmd` only ever
+resolves to one of those two, so the flag is always available when
+`RITE_TIMEOUT_CMD` is set.
+
+**Unbounded is survivable; silent unbounded is not.** When no timeout command
+exists at all, the helper now warns once per process instead of quietly
+dropping the bound. An 11-hour run must not be able to look like a slow call.
+
+**Rule:** any deadline enforced with `timeout` carries `-k`. A bare
+`"$RITE_TIMEOUT_CMD" "$secs"` outside `timeout.sh` reintroduces the defect and
+is rejected by a structural test in
+`tests/regression/claude-timeout.bats`.
