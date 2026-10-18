@@ -56,6 +56,7 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/cap-resume.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -1659,6 +1660,11 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       print_info "Resume with: $_resume_cmd"
       print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
+      # Opt-in auto-resume: waits for the cap to reset then execs rite with the
+      # remaining issues. Returns normally (and falls through to break) when the
+      # flag is off, the epoch is unknown/past, or a second cap fires in a resumed
+      # run. See lib/utils/cap-resume.sh for the full gate logic.
+      attempt_cap_autoresume "$_manifest_path"
       break
 
     elif [ $EXIT_CODE -eq 18 ]; then

@@ -21,6 +21,15 @@
 # Maximum hours before session timeout
 # RITE_MAX_SESSION_HOURS=4
 
+# Opt-in auto-resume after a usage-cap abort (default: false).
+# When true, on a batch exit-5 abort with a valid future reset time, sharkrite
+# holds the machine awake (caffeinate, macOS + AC power only) and waits until
+# the cap resets, then re-invokes the remaining issues once. A second cap in the
+# resumed run aborts normally — no reschedule loops. On battery or non-macOS the
+# wait still runs but the machine is not prevented from sleeping; the resume fires
+# on the next wake. See: lib/utils/cap-resume.sh.
+# RITE_CAP_AUTORESUME=false
+
 # Maximum auto-fix retries before creating follow-up issue
 # RITE_MAX_RETRIES=3
 
