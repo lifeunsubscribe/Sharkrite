@@ -171,6 +171,7 @@ EOF
 @test "detects BSD sed without GNU fallback" {
   # For a generic file (not portable-cmds.sh) Rule 10 (BARE_BSD_SED_I) supersedes
   # Rule 5 (BSD_SED_NO_FALLBACK), so assert the rule that actually fires.
+  # sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: fixture STRING written to a temp file so Rule 05 can be asserted to fire on it; never executed as sed.
   printf '%s\n' '#!/usr/bin/env bash' "sed -i '' 's/foo/bar/' file.txt" > "$LINT_FIXTURE_DIR/bad-sed.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
