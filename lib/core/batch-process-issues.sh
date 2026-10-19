@@ -56,6 +56,7 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/cap-resume.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -738,6 +739,10 @@ AUTH_FAILURE_ISSUES=()           # Exit 18: provider auth failure — batch halt
 # Auth-halt flag: set to true when exit 18 triggers a batch halt so the
 # post-loop pass can mark remaining unprocessed issues as skipped:auth.
 _BATCH_AUTH_HALT=false
+
+# Cap-abort flag: set to true when exit 5 breaks the issue loop so the
+# post-loop path can attempt an opt-in auto-resume (lib/utils/cap-resume.sh).
+_CAP_ABORT=false
 
 # Circuit-breaker state (issue #823): consecutive identical gate failures.
 # Tracks the last-seen gate failure signature and the run length so the batch
@@ -1659,6 +1664,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       print_info "Resume with: $_resume_cmd"
       print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
+      _CAP_ABORT=true
       break
 
     elif [ $EXIT_CODE -eq 18 ]; then
@@ -2001,6 +2007,15 @@ if [ "$SESSION_DURATION" != "0" ]; then
 fi
 
 send_notification_all "$NOTIFICATION_MESSAGE" "normal"
+
+# Opt-in auto-resume: if a cap abort occurred and RITE_CAP_AUTORESUME=true,
+# wait for the reset time and exec a fresh rite invocation with the remaining
+# issues.  attempt_cap_autoresume either execs (and does not return) or
+# returns 1 when not eligible — fall through to the normal exit path.
+if [ "${_CAP_ABORT:-false}" = "true" ]; then
+  _cap_manifest="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-resume.json"
+  attempt_cap_autoresume "$_cap_manifest" || true
+fi
 
 # Exit with appropriate code
 # Circuit-breaker trip takes priority — it is a distinct failure mode that
