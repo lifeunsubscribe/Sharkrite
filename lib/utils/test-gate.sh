@@ -1351,9 +1351,13 @@ run_test_gate() {
   # contents, exit codes). No bats/make/git inside; callable in isolation.
   # _gbv_lint_count is set as a side-output by _gate_build_verdict so the
   # terminal digest below can report how many lint findings were found.
+  # Initialize before the call so shellcheck can see the assignment (SC2154
+  # cannot trace the cross-file side-output); _gate_build_verdict overwrites it.
+  local _overall_exit=0
+  _gbv_lint_count=0
   _gate_build_verdict "$_lint_raw_file" "$_tests_raw_file" \
-    "$_lint_exit" "$_tests_exit" "$output_file" "${_gate_reason:-}" "$_gate_head_sha"
-  local _overall_exit=$?
+    "$_lint_exit" "$_tests_exit" "$output_file" "${_gate_reason:-}" "$_gate_head_sha" \
+    || _overall_exit=$?
   _lint_count=$_gbv_lint_count
 
   rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_bats_pretty_capture:-}"

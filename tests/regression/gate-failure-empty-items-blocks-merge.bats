@@ -478,15 +478,18 @@ DRIVER_EOF
 }
 
 @test "test-gate.sh: _gate_write_json called with _gate_reason at end of run_test_gate" {
-  # The _gate_write_json call at the end of run_test_gate must pass _gate_reason
-  # as the 6th argument so the reason field reaches the JSON file.
+  # _gate_reason must be passed to the verdict assembler (_gate_build_verdict) so
+  # it reaches _gate_write_json (which now lives inside gate-verdict.sh).
+  # After #1240, test-gate.sh delegates assembly to _gate_build_verdict; the
+  # invariant is that _gate_reason is forwarded via that call, not via a direct
+  # _gate_write_json call.
   local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
 
-  run grep -n '_gate_write_json.*_gate_reason' "$_script"
+  run grep -n '_gate_build_verdict.*_gate_reason' "$_script"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: _gate_write_json call with _gate_reason not found in test-gate.sh"
-    echo "      The final _gate_write_json call must pass \"\$_gate_reason\" (or"
-    echo "      the variable) as the 6th argument so the reason propagates to JSON."
+    echo "FAIL: _gate_build_verdict call with _gate_reason not found in test-gate.sh"
+    echo "      run_test_gate must forward \"\${_gate_reason:-}\" to _gate_build_verdict"
+    echo "      (arg 6) so the reason field propagates to the JSON output."
     false
   }
 }

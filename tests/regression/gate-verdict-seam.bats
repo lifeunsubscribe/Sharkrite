@@ -27,7 +27,7 @@ setup() {
 _make_lint_raw() {
   local _f="$1"
   printf 'lib/utils/config.sh:10:5: warning: Backtick subshell deprecated. [SC2006]\n' > "$_f"
-  [ -n "${2:-}" ] && printf '%s\n' "$2" >> "$_f"
+  [ -n "${2:-}" ] && printf '%s\n' "$2" >> "$_f" || true
 }
 
 # _make_tests_raw_watchdog — write a post-synthesis watchdog TAP fixture
@@ -87,8 +87,8 @@ _make_tests_raw_watchdog() {
   _make_lint_raw "$_lint_raw"
   printf '1..1\nok 1 passing test\n' > "$_tests_raw"
 
-  _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" ""
-  [ "$?" -eq 1 ]
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
 
   run jq -r '.exit_code' "$_out"
   [ "$output" = "1" ]
@@ -110,7 +110,7 @@ _make_tests_raw_watchdog() {
   _make_lint_raw "$_lint_raw"
   printf '' > "$_tests_raw"
 
-  _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" ""
+  _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" "" || true
 
   [ "${_gbv_lint_count:-unset}" = "1" ]
 
@@ -122,7 +122,7 @@ _make_tests_raw_watchdog() {
   _make_lint_raw "$_lint_raw"
   printf '' > "$_tests_raw"
 
-  _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "runner_unavailable" ""
+  _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "runner_unavailable" "" || true
 
   run jq -r '.reason' "$_out"
   [ "$output" = "runner_unavailable" ]
@@ -140,8 +140,8 @@ _make_tests_raw_watchdog() {
   printf '' > "$_lint_raw"
   _make_tests_raw_watchdog "$_tests_raw"
 
-  _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "tests_not_run" ""
-  [ "$?" -eq 1 ]
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "tests_not_run" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
 
   run jq -r '.exit_code' "$_out"
   [ "$output" = "1" ]
@@ -169,7 +169,7 @@ _make_tests_raw_watchdog() {
   printf '' > "$_lint_raw"
   _make_tests_raw_watchdog "$_tests_raw"
 
-  _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out_seam" "tests_not_run" ""
+  _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out_seam" "tests_not_run" "" || true
 
   # Verify the JSON is valid and has exactly the expected keys/values.
   run jq -e '{exit_code, lint_len: (.lint|length), tests_len: (.tests|length), reason}' "$_out_seam"
