@@ -11,14 +11,17 @@ if declare -f _gate_write_json >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
+# Compute self_dir unconditionally — needed for gate-runners.sh below, which is a
+# co-located new file that may not be in RITE_LIB_DIR on un-reinstalled dev worktrees.
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source config if not already loaded
 if [ -z "${RITE_LIB_DIR:-}" ]; then
-  _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_self_dir/config.sh"
 fi
 
 source "$RITE_LIB_DIR/utils/logging.sh"
-source "$RITE_LIB_DIR/utils/gate-runners.sh"
+source "$_self_dir/gate-runners.sh"
 
 # ---------------------------------------------------------------------------
 # _gate_write_json — emit structured gate result JSON

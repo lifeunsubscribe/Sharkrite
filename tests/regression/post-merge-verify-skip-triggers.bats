@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/post-merge-verify.sh, lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/post-merge-verify.sh, lib/utils/test-gate.sh, lib/utils/gate-selection.sh
 #
 # Regression test: post-merge-verify.sh sets RITE_TEST_GATE_SKIP_TRIGGERS=true
 # when invoking run_test_gate, suppressing the LINT full-scan trigger list for
