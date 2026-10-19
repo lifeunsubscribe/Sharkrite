@@ -6,17 +6,23 @@
 # Called from batch-process-issues.sh after the cap abort and post-loop cleanup,
 # before the final exit.  If eligible (RITE_CAP_AUTORESUME=true, future
 # reset_epoch, no prior resume of this manifest), the function:
-#   1. Marks the manifest resumed=true (one-resume guard — prevents a second
+#   1. Resolves the rite binary (fails fast if not found — before marking resumed)
+#   2. Marks the manifest resumed=true (one-resume guard — prevents a second
 #      cap in the resumed run from re-scheduling endlessly)
-#   2. On macOS with AC power: starts caffeinate -i -t <secs+120> in the
-#      background to hold the machine awake (operator ruling 2026-10-11).
+#   3. On macOS with AC power: starts caffeinate -i -t <secs+120> in the
+#      background to hold the machine awake during the wait period, then execs
+#      the resumed batch under caffeinate -i so sleep prevention carries through.
 #      On battery or non-macOS: skip the hold, print a note, still wait.
-#   3. Waits in a 60-second-tick loop until reset_epoch passes — one long sleep
+#   4. Waits in a 60-second-tick loop until reset_epoch passes — one long sleep
 #      would pause across system sleep; the tick loop fires on next wake, late
 #      but correct.
-#   4. Releases the batch mutex explicitly (exec won't fire EXIT traps).
-#   5. exec's rite with the remaining issues and flags from the manifest, so
-#      the fresh process picks up any merges that landed while we waited.
+#   5. Emits RITE_EXIT diag and removes SESSION_STATE_FILE (exec bypasses the
+#      EXIT trap that would normally do this).
+#   6. Releases the batch mutex explicitly (exec won't fire EXIT traps).
+#   7. Exports _RITE_CAP_RESUMED=1 so the new manifest writer sets resumed=true,
+#      preventing a second cap abort from re-scheduling indefinitely.
+#   8. exec's rite (via caffeinate -i on AC) with the remaining issues and flags
+#      from the manifest, so the fresh process picks up any merges that landed.
 #
 # Returns 1 (does NOT exec) when not eligible — caller falls through to its
 # normal exit path.
@@ -82,6 +88,17 @@ attempt_cap_autoresume() {
     _resume_args+=("${_flag_parts[@]+"${_flag_parts[@]}"}")
   fi
 
+  # Resolve the rite binary BEFORE marking the manifest resumed — a failed exec
+  # (binary not found, exit 127) would burn the one-shot guard with no work done.
+  local _rite_bin
+  _rite_bin=$(command -v rite 2>/dev/null || true)
+  if [ -z "$_rite_bin" ] || [ ! -x "$_rite_bin" ]; then
+    if declare -f print_warning >/dev/null 2>&1; then
+      print_warning "Cap auto-resume: 'rite' not found on PATH — skipping auto-resume"
+    fi
+    return 1
+  fi
+
   # Mark resumed BEFORE the wait so that if the process is interrupted during
   # the wait the guard is already in place.
   local _tmp_manifest
@@ -102,11 +119,13 @@ attempt_cap_autoresume() {
     print_info "Will re-run: rite ${_resume_args[*]}"
   fi
 
-  # Power-aware hold: caffeinate only on AC power.
-  # Holding a battery-powered machine awake burns charge for a deferred run
-  # the user may not have intended; skip the hold and print a note instead.
+  # Power-aware hold: on AC power, start caffeinate for the wait period.
+  # After the wait we exec caffeinate -i <rite> so sleep prevention carries
+  # through the resumed batch.  On battery, skip caffeinate entirely.
   local _caffeinate_pid=""
+  local _on_ac=false
   if _cap_resume_is_on_ac && command -v caffeinate >/dev/null 2>&1; then
+    _on_ac=true
     if declare -f print_info >/dev/null 2>&1; then
       print_info "On AC power — holding machine awake with caffeinate"
     fi
@@ -124,7 +143,8 @@ attempt_cap_autoresume() {
     sleep 60
   done
 
-  # Terminate caffeinate if we started it (it may still have time remaining)
+  # Terminate the wait-period caffeinate background process; on AC the resumed
+  # batch gets its own protection via exec caffeinate -i below.
   if [ -n "$_caffeinate_pid" ]; then
     kill "$_caffeinate_pid" 2>/dev/null || true
   fi
@@ -140,8 +160,23 @@ attempt_cap_autoresume() {
     release_batch_lock
   fi
 
-  # Locate the rite binary and exec the resumed batch.
-  local _rite_bin
-  _rite_bin=$(command -v rite 2>/dev/null || echo "rite")
-  exec "$_rite_bin" "${_resume_args[@]+"${_resume_args[@]}"}"
+  # Emit the RITE_EXIT diag that _cleanup_batch_session would normally emit —
+  # exec bypasses all EXIT traps.  See issue #471.
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "RITE_EXIT code=0 mode=batch reason=cap_autoresume_exec"
+  fi
+  rm -f "${SESSION_STATE_FILE:-}"
+
+  # Export resumed marker: the re-invoked batch's manifest writer reads this to
+  # set resumed=true on any subsequent cap manifest, blocking a second cap from
+  # triggering another auto-resume loop.
+  export _RITE_CAP_RESUMED=1
+
+  # Exec the resumed batch.  On AC power, wrap in caffeinate -i so the machine
+  # stays awake for the entire resumed run (not just the wait period).
+  if [ "$_on_ac" = "true" ]; then
+    exec caffeinate -i "$_rite_bin" "${_resume_args[@]+"${_resume_args[@]}"}"
+  else
+    exec "$_rite_bin" "${_resume_args[@]+"${_resume_args[@]}"}"
+  fi
 }

@@ -1643,13 +1643,18 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         [ -n "$_issues_json" ] && _issues_json="${_issues_json},"
         _issues_json="${_issues_json}${_ri}"
       done
+      # Propagate resumed=true when already in a resumed run so a second cap in
+      # the resumed batch does not trigger another auto-resume loop.
+      _resumed_val="false"
+      [ "${_RITE_CAP_RESUMED:-}" = "1" ] && _resumed_val="true"
       jq -n \
         --argjson issues "[${_issues_json}]" \
         --arg flags "$_batch_flags" \
         --argjson reset_epoch "$_cap_reset_epoch" \
         --arg reset_text "${_cap_reset_text:-}" \
         --argjson written "$_written_epoch" \
-        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
+        --argjson resumed "$_resumed_val" \
+        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written, resumed: $resumed}' \
         > "$_manifest_path"
 
       # Print enhanced abort message

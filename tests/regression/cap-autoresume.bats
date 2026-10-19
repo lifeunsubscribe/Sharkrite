@@ -36,6 +36,11 @@ setup() {
     }
   done
   _tmpdir=$(mktemp -d)
+  # Capture jq's real directory so PATH-restricted bash -c subshells can still
+  # find it; Homebrew macOS installs jq in /opt/homebrew/bin or /usr/local/bin,
+  # not /usr/bin, so a hard-coded /usr/bin:/bin PATH causes jq calls to fail or
+  # silently fall back to the || echo "0" defaults, breaking epoch comparisons.
+  _jq_dir=$(dirname "$(command -v jq 2>/dev/null || echo "/usr/bin/jq")")
 }
 
 teardown() {
@@ -160,11 +165,20 @@ exit 0
 STUB
   chmod +x "$_tmpdir/rite"
 
-  # Stub caffeinate: records that it was called
+  # Stub caffeinate: records invocation; when given a non-flag positional arg
+  # (i.e. exec caffeinate -i <rite> <issues>) proxies to it so rite runs.
   cat > "$_tmpdir/caffeinate" <<'STUB'
 #!/bin/bash
 echo "caffeinate: $*" >> "$CAFFEINATE_LOG"
-# Run briefly in background (simulated); exit immediately so we don't block
+# Collect positional (non-flag) args to exec the wrapped command, if any.
+_pos_args=()
+for _a in "$@"; do
+  case "$_a" in
+    -*) continue ;;
+    *) _pos_args+=("$_a") ;;
+  esac
+done
+[ "${#_pos_args[@]}" -gt 0 ] && exec "${_pos_args[@]}"
 exit 0
 STUB
   chmod +x "$_tmpdir/caffeinate"
@@ -187,7 +201,7 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir:/usr/bin:/bin'
+    export PATH='$_tmpdir:$_jq_dir:/usr/bin:/bin'
     export RITE_CAP_AUTORESUME=true
     export MARKER_FILE='$_tmpdir/exec-marker'
     export CAFFEINATE_LOG='$_tmpdir/caffeinate.log'
@@ -255,7 +269,7 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir:/usr/bin:/bin'
+    export PATH='$_tmpdir:$_jq_dir:/usr/bin:/bin'
     export RITE_CAP_AUTORESUME=true
     export MARKER_FILE='$_tmpdir/exec-marker'
     export CAFFEINATE_LOG='$_tmpdir/caffeinate.log'
