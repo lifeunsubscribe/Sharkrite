@@ -485,7 +485,9 @@ DRIVER_EOF
   # _gate_write_json call.
   local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
 
-  run grep -n '_gate_build_verdict.*_gate_reason' "$_script"
+  # The call uses backslash continuation so _gate_build_verdict and _gate_reason
+  # appear on separate lines; grep -A2 fetches the next two lines to find both.
+  run bash -c "grep -A2 '_gate_build_verdict' '$_script' | grep -q '_gate_reason'"
   [ "$status" -eq 0 ] || {
     echo "FAIL: _gate_build_verdict call with _gate_reason not found in test-gate.sh"
     echo "      run_test_gate must forward \"\${_gate_reason:-}\" to _gate_build_verdict"
