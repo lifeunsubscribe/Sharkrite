@@ -82,3 +82,12 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 
 `rite docs` directed-update description in CLAUDE.md omits the apply-site CREATE guard that now skips writes when the target file already exists.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1313 issue:1262 recorded:2026-10-19T23:58:01Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-targeted-block-completion.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s description of `_dedup_issues` as the deduplification mechanism for near-duplicate plan blocks is now incomplete — the title-guard in `plan-issues.sh` is the actual rejection point for reworded near-duplicates before they reach `_dedup_issues`.
+<!-- /sharkrite-doc-drift -->
