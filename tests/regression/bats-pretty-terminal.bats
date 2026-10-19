@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, Makefile
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh, Makefile
 # Regression test: bats --pretty for terminal output (issue #484, #542)
 #
 # Verifies:

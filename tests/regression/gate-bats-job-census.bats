@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/gate-selection.sh
 # sharkrite-gate-serial
 # Regression test: gate census-scaled bats --jobs (#1165)
 #

@@ -117,6 +117,18 @@ _assert_double_source() {
   _assert_double_source "lib/utils/format-review.sh"
 }
 
+@test "lib/utils/gate-runners.sh sources twice without error" {
+  _assert_double_source "lib/utils/gate-runners.sh"
+}
+
+@test "lib/utils/gate-selection.sh sources twice without error" {
+  _assert_double_source "lib/utils/gate-selection.sh"
+}
+
+@test "lib/utils/gate-verdict.sh sources twice without error" {
+  _assert_double_source "lib/utils/gate-verdict.sh"
+}
+
 @test "lib/utils/gh-retry.sh sources twice without error" {
   _assert_double_source "lib/utils/gh-retry.sh"
 }

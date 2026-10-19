@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/assess-and-resolve.sh, lib/core/workflow-runner.sh, lib/utils/review-helper.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/assess-and-resolve.sh, lib/core/workflow-runner.sh, lib/utils/review-helper.sh, lib/utils/gate-verdict.sh
 # Regression for #985/#986: gate verdict and assessment cache must be pinned to
 # the HEAD SHA that produced them. A passing verdict from SHA A must not authorize
 # a merge or phase-skip when the PR is now at SHA B.

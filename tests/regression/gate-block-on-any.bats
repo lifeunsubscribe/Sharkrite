@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/assess-and-resolve.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/assess-and-resolve.sh, lib/utils/gate-verdict.sh
 # Phase 3: the gate blocks on ANY test failure in the targeted selection.
 # Issue #718: block-on-any extended to the merge boundary (assess-and-resolve
 # retry-cap) — [GATE] ACTIONABLE_NOW findings at 3/3 retries block merge.

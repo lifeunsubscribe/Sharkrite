@@ -50,7 +50,10 @@ lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
 lib/utils/stale-branch.sh        # Stale branch detection, merge-main or close-and-restart; target-branch resolver (resolve_target_branch) and origin preflight (ensure_target_branch_exists)
-lib/utils/test-gate.sh           # Post-commit verification gate (make check + bats -r tests/)
+lib/utils/test-gate.sh           # Post-commit verification gate — entry point (run_test_gate); sources the three files below
+lib/utils/gate-selection.sh      # Test/lint selection by changed paths (extracted from test-gate.sh, issue #1236)
+lib/utils/gate-runners.sh        # Runner helpers: node/pytest detection, workspace bootstrap, _gate_status (extracted from test-gate.sh, issue #1236)
+lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthesis (extracted from test-gate.sh, issue #1236)
 ```
 
 ### Workflow Phases
@@ -734,7 +737,7 @@ The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers an
 
 The gate maps the commit's changed line ranges to their enclosing shell function (a changed line in the comment block directly above a definition counts as that function) and selects the file only when a declared function is in that set. A bare path keeps file-level behavior — every pre-existing header is unaffected. **Fail-safe by construction:** a change that cannot be attributed (top-level constant, non-shell file, no computable diff) selects the file exactly as a bare path would. Precision is an optimization, never a filter that can hide a regression.
 
-Adopt it where the ratio is bad: `test-gate.sh` is ~2,900 lines / 34 functions with 29 bats files declaring it, so a 20-line change selected all 29 — wasting gate time and creating the parallel load that made those gate-invoking tests flake.
+Adopt it where the ratio is bad: before the #1236 split, `test-gate.sh` was ~2,900 lines / 34 functions with 29 bats files declaring it, so a 20-line change selected all 29 — wasting gate time and creating the parallel load that made those gate-invoking tests flake.
 
 **This philosophy is not sharkrite-specific.** When sharkrite builds or extends a test framework in ANY repo, it wires the tightest correct selection the toolchain supports (jest `--findRelatedTests`, `pytest-testmon`, per-workspace mapping in monorepos) and never settles for "run everything". The doctrine and per-runner guidance live in `docs/test-authoring-runbook.md`, which is loaded into every dev session (project override: `.rite/test-authoring-runbook.md`).
 
