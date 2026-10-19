@@ -2967,7 +2967,54 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
     return 0
   fi
 
-  printf '%s\n' "$_blocks" >> "$issues_file"
+  # Title-guard: reject any appended block whose TITLE does not match an entry
+  # in $_missing.  A title-drifted echo block bypasses _dedup_issues (which
+  # only catches canonical exact-title matches) and _validate_coverage (which
+  # never strips blocks that lack a checklist title), so this is the sole
+  # rejection point for reworded near-duplicates before they enter the slate.
+  # Uses the same canonicalization (_missing_canon) as _coverage_missing_titles.
+  local _missing_canon=""
+  while IFS= read -r _m; do
+    [ -z "$_m" ] && continue
+    local _mc
+    _mc=$(printf '%s' "$_m" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    [ -n "$_mc" ] && _missing_canon="${_missing_canon}${_mc}"$'\n'
+  done <<< "$_missing"
+
+  local _filtered_blocks=""
+  local _blk_buf=""
+  local _in_blk=false
+  local _rejected_count=0
+  while IFS= read -r _line; do
+    if [ "$_line" = "---ISSUE---" ]; then
+      _in_blk=true
+      _blk_buf="${_line}"$'\n'
+    elif [ "$_in_blk" = true ]; then
+      _blk_buf="${_blk_buf}${_line}"$'\n'
+      if [ "$_line" = "---END---" ]; then
+        _in_blk=false
+        local _blk_title
+        _blk_title=$(printf '%s' "$_blk_buf" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+        local _blk_canon
+        _blk_canon=$(printf '%s' "$_blk_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+        if [ -n "$_blk_canon" ] && printf '%s' "$_missing_canon" | grep -qxF "$_blk_canon"; then
+          _filtered_blocks="${_filtered_blocks}${_blk_buf}"
+        else
+          print_warning "Targeted completion: block TITLE '${_blk_title:-<empty>}' not in missing list — rejecting to prevent echo" >&2
+          _rejected_count=$((_rejected_count + 1))
+        fi
+        _blk_buf=""
+      fi
+    fi
+  done < <(printf '%s\n' "$_blocks")
+
+  if [ -z "$_filtered_blocks" ]; then
+    print_warning "Targeted completion: all ${_rejected_count} block(s) rejected by title-guard — keeping the partial slate" >&2
+    return 0
+  fi
+  [ "${_rejected_count}" -gt 0 ] && \
+    print_warning "Targeted completion: rejected ${_rejected_count} echo block(s) with unrecognized title(s)" >&2
+  printf '%s' "$_filtered_blocks" >> "$issues_file"
 
   local _still_missing
   _still_missing=$(_coverage_missing_titles "$issues_file" || true)
