@@ -18,6 +18,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 source "$RITE_LIB_DIR/utils/logging.sh"
+source "$RITE_LIB_DIR/utils/gate-runners.sh"
 
 # ---------------------------------------------------------------------------
 # _gate_write_json — emit structured gate result JSON
@@ -157,8 +158,13 @@ _gate_flake_retry_pass() {
   [ -z "$_fr_names" ] && { echo 1; return 0; }
 
   # Map names -> files across the selection (targeted path only).
+  # _parallel_files/_serial_files/_bats_sandbox are dynamically scoped from
+  # run_test_gate (caller sets them as locals; bash dynamic scoping passes them).
+  # shellcheck disable=SC2154
   local _fr_selection=()
+  # shellcheck disable=SC2154
   _fr_selection+=("${_parallel_files[@]+"${_parallel_files[@]}"}")
+  # shellcheck disable=SC2154
   _fr_selection+=("${_serial_files[@]+"${_serial_files[@]}"}")
   if [ "${#_fr_selection[@]}" -eq 0 ]; then
     echo 1; return 0
@@ -190,6 +196,7 @@ _gate_flake_retry_pass() {
   while IFS= read -r _fr_hit; do
     [ -n "$_fr_hit" ] && _fr_file_arr+=("$_fr_hit")
   done <<< "$_fr_files"
+  # shellcheck disable=SC2154
   { (cd "$_fr_root" && "${_bats_sandbox[@]+"${_bats_sandbox[@]}"}" \
       bats "${_fr_file_arr[@]+"${_fr_file_arr[@]}"}" < /dev/null 2>&1); \
     echo $? > "${_fr_retry_raw}.exit"; } >> "$_fr_retry_raw" || true

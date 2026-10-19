@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/test-gate.sh, lib/utils/gate-verdict.sh
 # Regression guard for issue #799: a gate result with a non-zero exit_code and
 # zero parseable lint/test items must NOT silently merge — it must synthesize a
 # non-deferrable [GATE] ACTIONABLE_NOW block item.
@@ -464,12 +464,13 @@ DRIVER_EOF
 @test "test-gate.sh: _gate_write_json includes reason field in non-skipped failure path" {
   # The updated _gate_write_json must emit the reason field in the JSON output
   # when reason is non-empty and skipped=false.  Assert the elif branch exists.
-  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
+  # After the #1236 split, _gate_write_json lives in gate-verdict.sh (not test-gate.sh).
+  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/gate-verdict.sh"
 
   # Look for the elif branch that handles the non-skipped+reason case.
   run grep -n 'elif \[ -n "\$reason" \]' "$_script"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: 'elif [ -n \"\$reason\" ]' branch not found in _gate_write_json"
+    echo "FAIL: 'elif [ -n \"\$reason\" ]' branch not found in _gate_write_json (gate-verdict.sh)"
     echo "      The function must include a non-skipped+reason path that emits"
     echo "      the reason field into the JSON for assess-and-resolve.sh to read."
     false

@@ -737,7 +737,7 @@ The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers an
 
 The gate maps the commit's changed line ranges to their enclosing shell function (a changed line in the comment block directly above a definition counts as that function) and selects the file only when a declared function is in that set. A bare path keeps file-level behavior — every pre-existing header is unaffected. **Fail-safe by construction:** a change that cannot be attributed (top-level constant, non-shell file, no computable diff) selects the file exactly as a bare path would. Precision is an optimization, never a filter that can hide a regression.
 
-Adopt it where the ratio is bad: `test-gate.sh` is ~2,900 lines / 34 functions with 29 bats files declaring it, so a 20-line change selected all 29 — wasting gate time and creating the parallel load that made those gate-invoking tests flake.
+Adopt it where the ratio is bad: before the #1236 split, `test-gate.sh` was ~2,900 lines / 34 functions with 29 bats files declaring it, so a 20-line change selected all 29 — wasting gate time and creating the parallel load that made those gate-invoking tests flake.
 
 **This philosophy is not sharkrite-specific.** When sharkrite builds or extends a test framework in ANY repo, it wires the tightest correct selection the toolchain supports (jest `--findRelatedTests`, `pytest-testmon`, per-workspace mapping in monorepos) and never settles for "run everything". The doctrine and per-runner guidance live in `docs/test-authoring-runbook.md`, which is loaded into every dev session (project override: `.rite/test-authoring-runbook.md`).
 

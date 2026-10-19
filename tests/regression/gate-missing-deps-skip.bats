@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh
 # Verifies that the pytest loud-skip logic (issue #744) correctly distinguishes
 # missing-dep/no-tests env failures from real test failures.
 #

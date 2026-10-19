@@ -219,10 +219,10 @@ _compute_bats_jobs() {
 # A path may carry an optional function scope:
 #     lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial
 # which selects this test only when the diff touches one of those top-level
-# functions.  A bare path keeps file-level behavior.  Rationale: test-gate.sh
-# is ~2900 lines / 34 functions and 29 bats files declare it, so a 20-line
-# change selected all 29 — which both wasted time and created the parallel
-# load that made gate-invoking tests flake.
+# functions.  A bare path keeps file-level behavior.  Rationale: before the
+# #1236 split, test-gate.sh was ~2900 lines / 34 functions with 29 bats files
+# declaring it, so a 20-line change selected all 29 — which both wasted time
+# and created the parallel load that made gate-invoking tests flake.
 _parse_test_coverage_header() {
   local bats_file="$1"
   local _header

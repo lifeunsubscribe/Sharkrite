@@ -8,7 +8,9 @@
 set -euo pipefail
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f _gate_status >/dev/null 2>&1; then
+# Sentinel is _node_pkg_manager (not _gate_status: _gate_status is stub-attractive
+# in gate-flake-retry.bats and a pre-source stub would skip the whole file silently).
+if declare -f _node_pkg_manager >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
