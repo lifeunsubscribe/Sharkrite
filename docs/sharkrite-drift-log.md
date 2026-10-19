@@ -56,3 +56,15 @@ CLAUDE.md's function-scoped-headers example cites `test-gate.sh` as "~2,900 line
 
 CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial` points to the wrong file — both functions were extracted to `lib/utils/gate-selection.sh` by PR #1276.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-19T23:57:41Z -->
+**Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md architecture table at line 56 attributes `gate-verdict.sh` as "(extracted from test-gate.sh, issue #1236)" but this extraction was done in issue #1240 (this PR), not #1236.
+
+`gate-verdict.sh` description in CLAUDE.md cites issue #1236 as the extraction source, but it was extracted in issue #1240.
+<!-- /sharkrite-doc-drift -->
