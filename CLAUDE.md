@@ -584,6 +584,11 @@ rite --promote <branch>    # Promote integration branch to main (PR + review + t
                            # to capturing the raw review — it never silently loses findings.
                            # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
                            # Captured".
+rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged ledger SHA onto a
+                           # temp branch off origin/main, runs the targeted gate, and merges it
+                           # through its own PR. A conflict aborts with an entanglement message
+                           # (rite --promote <branch> is the fallback). No issue arg → full-branch
+                           # path above, byte-identical.
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.

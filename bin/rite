@@ -63,6 +63,7 @@ BATCH_FILTER_ARGS=()
 SUPERVISED=false
 SYNC_ARGS=()
 PROMOTE_BRANCH=""
+PROMOTE_ISSUE=""
 _INVOCATION_FLAGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -204,7 +205,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --promote)
-      # Open a promotion PR for an integration branch and merge it to main
+      # Open a promotion PR for an integration branch and merge it to main.
+      # Optional trailing issue number: --promote <branch> <issue>
       if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
         print_error "--promote requires a branch name"
         exit 1
@@ -212,6 +214,16 @@ while [[ $# -gt 0 ]]; do
       PROMOTE_BRANCH="$2"
       MODE="promote"
       shift 2
+      # Consume optional trailing numeric issue number (single-issue promote path)
+      case "${1:-}" in
+        [0-9]*)
+          # Verify all digits (not just leading digit) before consuming
+          case "${1:-}" in
+            *[!0-9]*) ;;
+            *) PROMOTE_ISSUE="${1:-}"; shift ;;
+          esac
+          ;;
+      esac
       ;;
     --dry-run)
       # Already parsed above
@@ -1032,7 +1044,7 @@ fi
 # Integration branch promotion: open promotion PR, review, full-suite, merge, cleanup.
 if [ "$MODE" = "promote" ]; then
   source "$RITE_LIB_DIR/core/promote-branch.sh"
-  run_promote "${PROMOTE_BRANCH}"
+  run_promote "${PROMOTE_BRANCH}" "${PROMOTE_ISSUE:-}"
   exit $?
 fi
 

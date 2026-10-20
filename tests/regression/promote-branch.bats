@@ -980,6 +980,85 @@ RUNEOF
 }
 
 # ===========================================================================
+# Group 10: Single-issue path invokes merge-pr.sh (pin for #1273)
+# ===========================================================================
+
+@test "single-issue promote invokes merge-pr.sh exactly once with the promotion PR number" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/si_merge.log"
+  local _wt_dir="$RITE_TEST_TMPDIR/wt-si-merge"
+  mkdir -p "$_wt_dir"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-si"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+case "${1:-}" in
+  fetch) exit 0 ;;
+  worktree)
+    [ "${2:-}" = "add" ] && mkdir -p "${4:-${3:-}}"
+    exit 0 ;;
+  cherry-pick) exit 0 ;;
+  push)  printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"; exit 0 ;;
+  branch) exit 0 ;;
+  rev-list) echo "0"; exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  # Override merge-pr.sh stub to record the PR number it was called with
+  cat > "$_lib/core/merge-pr.sh" << MERGESTUB
+#!/bin/bash
+printf 'MERGE_PR_CALLED_WITH pr=%s\n' "\${1:-?}" >> "$_call_log"
+exit 0
+MERGESTUB
+  chmod +x "$_lib/core/merge-pr.sh"
+
+  local _runner
+  _runner=$(_write_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$_wt_dir"
+export _PROMOTE_CALLLOG="$_call_log"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() {
+  printf 'LEDGER_MARKED branch=%s issue=%s\n' "\$1" "\$2" >> "$_call_log"
+}
+run_test_gate() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        create) echo "333"; return 0 ;;
+      esac ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+promote_single_issue "si-test-branch" "42" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+
+  # merge-pr.sh must have been invoked exactly once with the promotion PR number
+  _merge_count=$(grep -c "MERGE_PR_CALLED_WITH" "$_call_log" || true)
+  [ "$_merge_count" -eq 1 ]
+  grep -q "MERGE_PR_CALLED_WITH pr=333" "$_call_log"
+}
+
+# ===========================================================================
 # Structural: coverage header must be present and accurate
 # ===========================================================================
 

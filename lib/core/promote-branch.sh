@@ -12,7 +12,10 @@
 # integration branch would land code on main that skipped the per-issue review
 # cycle, so findings are tracked as issues instead.
 #
-# Entry point: run_promote <branch>
+# Entry points:
+#   run_promote <branch>         — full-branch promote (#1050)
+#   run_promote <branch> <issue> — single-issue cherry-pick promote (#1273)
+#   promote_single_issue <branch> <issue> — called internally by run_promote
 # Exit 0 = promoted; exit 1 = any preflight/gate/merge failure.
 
 set -euo pipefail
@@ -127,10 +130,221 @@ _promote_strip_tracked_now_blocks() {
 }
 
 # ---------------------------------------------------------------------------
-# run_promote <branch>
+# promote_single_issue <branch> <issue>
+#
+# Cherry-picks ONE staged ledger SHA onto a temp branch off origin/main and
+# merges it through its own gated PR.
+#
+# Design: a cherry-pick conflict is the deterministic signal that the issue is
+# entangled with unpromoted work — abort verbosely, never force-resolve.
+# ---------------------------------------------------------------------------
+promote_single_issue() {
+  local _si_branch="${1:?promote_single_issue: branch argument required}"
+  local _si_issue="${2:?promote_single_issue: issue argument required}"
+
+  print_header "Single-issue promote: #${_si_issue} from '${_si_branch}' to main"
+  echo ""
+
+  # ── Ledger lookup ─────────────────────────────────────────────────────────
+
+  print_step "Looking up issue #${_si_issue} in ledger for '${_si_branch}'..."
+  local _si_entries=""
+  _si_entries=$(integration_ledger_entries "$_si_branch" 2>/dev/null || true)
+
+  if [ -z "${_si_entries:-}" ]; then
+    print_error "No ledger found for branch '${_si_branch}'"
+    echo "  Staged issues for this branch: (none)" >&2
+    exit 1
+  fi
+
+  # Walk entries to find the target issue
+  local _si_sha="" _si_pr="" _si_promoted=""
+  local _si_staged_nums=""
+  while IFS= read -r _si_line; do
+    [ -n "${_si_line:-}" ] || continue
+    local _si_fissue
+    _si_fissue=$(_promote_field "$_si_line" "issue" || true)
+    local _si_fpromoted
+    _si_fpromoted=$(_promote_field "$_si_line" "promoted" || true)
+    if [ "${_si_fissue:-}" = "$_si_issue" ]; then
+      _si_sha=$(_promote_field "$_si_line" "sha" || true)
+      _si_pr=$(_promote_field "$_si_line" "pr" || true)
+      _si_promoted="${_si_fpromoted:-false}"
+    fi
+    if [ "${_si_fpromoted:-}" = "false" ]; then
+      _si_staged_nums="${_si_staged_nums:+${_si_staged_nums} }${_si_fissue}"
+    fi
+  done <<< "$_si_entries"
+
+  if [ -z "${_si_sha:-}" ]; then
+    print_error "Issue #${_si_issue} not found in the ledger for '${_si_branch}'"
+    echo "  Staged issues on this branch: ${_si_staged_nums:-none}" >&2
+    exit 1
+  fi
+
+  # Idempotent: already promoted → exit 0 with info
+  if [ "${_si_promoted:-}" = "true" ]; then
+    print_info "Issue #${_si_issue} was already promoted from '${_si_branch}' — nothing to do"
+    return 0
+  fi
+
+  print_success "Found ledger entry: issue=#${_si_issue} pr=#${_si_pr} sha=${_si_sha}"
+  echo ""
+
+  # ── Fetch ──────────────────────────────────────────────────────────────────
+
+  print_step "Fetching latest state from origin..."
+  git_fetch_safe origin main
+
+  # ── Temp worktree off main ─────────────────────────────────────────────────
+
+  local _si_wt_name="promote-${_si_branch}-i${_si_issue}"
+  local _si_wt="${RITE_WORKTREE_DIR}/${_si_wt_name}"
+
+  # Clean up any leftover temp worktree from a prior aborted run
+  if [ -d "$_si_wt" ]; then
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+  fi
+  mkdir -p "$(dirname "$_si_wt")"
+
+  print_step "Creating temp worktree '${_si_wt_name}' off origin/main..."
+  git worktree add -b "$_si_wt_name" "$_si_wt" origin/main
+
+  # ── Cherry-pick ────────────────────────────────────────────────────────────
+
+  print_step "Cherry-picking ${_si_sha} (issue #${_si_issue})..."
+  local _si_cp_exit=0
+  ( cd "$_si_wt" && git cherry-pick "$_si_sha" ) || _si_cp_exit=$?
+
+  if [ "$_si_cp_exit" -ne 0 ]; then
+    # Conflict = entanglement — abort verbosely, never force
+    ( cd "$_si_wt" && git cherry-pick --abort 2>/dev/null || true )
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    print_error "Issue #${_si_issue} is entangled with unpromoted issues on '${_si_branch}' — its squash commit does not apply cleanly to main. Promote the full branch (rite --promote ${_si_branch}) or resolve manually."
+    exit 1
+  fi
+
+  print_success "Cherry-pick applied cleanly"
+  echo ""
+
+  # ── Targeted gate ─────────────────────────────────────────────────────────
+
+  print_step "Running targeted verification gate on cherry-picked commit..."
+  if ! declare -f run_test_gate >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    source "$RITE_LIB_DIR/utils/test-gate.sh" 2>/dev/null || true
+  fi
+  local _si_gate_exit=0
+  local _si_gate_json="${_si_wt}/.rite-si-promote-gate.json"
+  ( cd "$_si_wt" \
+      && RITE_PROJECT_ROOT="$_si_wt" \
+         RITE_TEST_GATE_DIFF_BASE=origin/main \
+         PR_NUMBER="" \
+         run_test_gate "$_si_gate_json" "$_si_wt" ) \
+    || _si_gate_exit=$?
+
+  if [ "$_si_gate_exit" -ne 0 ]; then
+    if [ -s "$_si_gate_json" ]; then
+      mkdir -p "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+      cp "$_si_gate_json" \
+        "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/si-promote-gate-${_si_branch//\//-}-i${_si_issue}.json" 2>/dev/null || true
+    fi
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    print_error "Targeted gate failed for issue #${_si_issue} — no PR created"
+    echo "  Fix the failing tests on '${_si_branch}' first:" >&2
+    echo "    rite --branch ${_si_branch} ${_si_issue}" >&2
+    exit 1
+  fi
+  print_success "Targeted verification gate passed"
+  echo ""
+
+  # ── Push temp branch + create PR ──────────────────────────────────────────
+
+  print_step "Pushing temp branch '${_si_wt_name}'..."
+  ( cd "$_si_wt" && git push origin "${_si_wt_name}" )
+
+  local _si_pr_body
+  _si_pr_body="Cherry-picked from integration branch '${_si_branch}' (original PR #${_si_pr}, ledger SHA ${_si_sha}).
+
+Closes #${_si_issue}"
+
+  local _si_promo_pr_url=""
+  _si_promo_pr_url=$(gh_safe pr create \
+    --base main \
+    --head "$_si_wt_name" \
+    --title "Single-issue promote: #${_si_issue} from '${_si_branch}'" \
+    --body "$_si_pr_body" 2>/dev/null || true)
+  local _si_promo_pr=""
+  _si_promo_pr=$(printf '%s' "${_si_promo_pr_url:-}" | grep -oE '[0-9]+$' || true)
+  if [ -z "${_si_promo_pr:-}" ]; then
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    print_error "Failed to create promotion PR for issue #${_si_issue}"
+    exit 1
+  fi
+  print_success "Created promotion PR #${_si_promo_pr}"
+  echo ""
+
+  # ── Merge through normal path ──────────────────────────────────────────────
+  #
+  # Route through merge-pr.sh (hard gates apply). The single-issue PR carries
+  # exactly one Closes #N, so merge-pr.sh's head -1 extraction is correct here.
+
+  local _MERGE_PR="${RITE_LIB_DIR}/core/merge-pr.sh"
+  local _si_merge_exit=0
+  bash "$_MERGE_PR" "$_si_promo_pr" --auto || _si_merge_exit=$?
+
+  # CWD-after-worktree-removal contract: merge-pr.sh removes the worktree;
+  # cd back to project root before any subsequent gh/git call.
+  cd "$RITE_PROJECT_ROOT" || cd /
+
+  if [ "$_si_merge_exit" -ne 0 ]; then
+    print_error "Merge failed for promotion PR #${_si_promo_pr} (exit ${_si_merge_exit})"
+    echo "  The temp branch '${_si_wt_name}' and PR #${_si_promo_pr} remain for inspection." >&2
+    exit 1
+  fi
+
+  # ── Post-merge bookkeeping ─────────────────────────────────────────────────
+
+  # Mark the ledger entry promoted=true in place
+  integration_ledger_mark_promoted "$_si_branch" "$_si_issue" 2>/dev/null || true
+
+  # Post per-issue promotion comment (already-closed is a no-op on GitHub)
+  gh_safe issue comment "$_si_issue" \
+    --body "Promoted to main in PR #${_si_promo_pr}" 2>/dev/null || true
+
+  # Clean up temp worktree and branch (merge-pr.sh may have already done this)
+  git worktree remove "$_si_wt" --force 2>/dev/null || true
+  git branch -D "$_si_wt_name" 2>/dev/null || true
+  git worktree prune 2>/dev/null || true
+
+  echo ""
+  print_success "Issue #${_si_issue} promoted to main via PR #${_si_promo_pr}"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# run_promote <branch> [issue]
+#
+# With no issue arg: full-branch promote (#1050 path, byte-identical).
+# With an issue arg: routes to promote_single_issue.
 # ---------------------------------------------------------------------------
 run_promote() {
   local BRANCH="${1:?run_promote: branch argument required}"
+  local _si_issue_arg="${2:-}"
+
+  # Single-issue path: explicit issue number → cherry-pick promote
+  if [ -n "${_si_issue_arg:-}" ]; then
+    promote_single_issue "$BRANCH" "$_si_issue_arg"
+    return $?
+  fi
 
   print_header "Promoting '$BRANCH' to main"
   echo ""
