@@ -286,11 +286,11 @@ FSR_DIAG_LINES=$(echo "$FSR_DIAG_LINES" | sed '/^$/d' || true)
 FSR_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -c 'FULL_SUITE_RUN ' || true)
 FSR_PASSED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=passed' || true)
 FSR_FAILED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=failed' || true)
-FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 FSR_AVG_DURATION_S="N/A"
 if [ "${FSR_TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
   FSR_AVG_DURATION_S="$(( _fsr_dur_sum / FSR_TOTAL ))s"
 fi
 
@@ -536,6 +536,82 @@ EOF
   # (no ANSI escape bytes) — verifies the stripped copy is used for extraction too.
   grep -q 'lib/utils/foo.sh' "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
   grep -q 'lib/utils/bar.sh' "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
+}
+
+# ---------------------------------------------------------------------------
+# Regression: FSR aggregation blocks must not produce double-zero ("0\n0")
+# when no matching tokens exist in the diag lines.
+#
+# Root cause: awk's END block always fires and prints sum+0 (= "0") even on
+# empty input, then `|| echo "0"` appended a second "0" — producing "0\n0".
+# `$(( 0\n0 / FSR_TOTAL ))` is an arithmetic syntax error that kills the
+# health report silently. Fix: use `|| true` so the second zero is never added.
+#
+# Test strategy: write FSR diag lines that contain outcome=/lint_count=/
+# test_count= but NO duration_s= field. With the bug, `_fsr_dur_sum` would be
+# "0\n0" and the avg-duration arithmetic would crash. With the fix it is "0".
+# ---------------------------------------------------------------------------
+@test "health-report: FSR aggregation does not produce double-zero when fields are absent" {
+  cat > "$RITE_TEST_TMPDIR/compute_fsr_nodur.sh" << 'HELPEREOF'
+#!/bin/bash
+set -euo pipefail
+
+LOGS_DIR="${FSR_LOGS_DIR:-}"
+WEEK_AGO_EPOCH="${FSR_WEEK_AGO:-0}"
+
+FSR_DIAG_LINES=""
+if [ -d "$LOGS_DIR" ]; then
+  while IFS= read -r logfile; do
+    _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}' | tail -1 || true)
+    if [ -n "$_log_date" ]; then
+      FSR_DIAG_LINES+=$(grep '\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
+      FSR_DIAG_LINES+=$'\n'
+    fi
+  done < <(find "$LOGS_DIR" -name "*.log" -type f 2>/dev/null | sort)
+fi
+FSR_DIAG_LINES=$(echo "$FSR_DIAG_LINES" | sed '/^$/d' || true)
+
+FSR_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -c 'FULL_SUITE_RUN ' || true)
+FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+FSR_AVG_DURATION_S="N/A"
+if [ "${FSR_TOTAL:-0}" -gt 0 ] 2>/dev/null; then
+  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+  # This arithmetic must not crash: _fsr_dur_sum must be "0", not "0\n0"
+  FSR_AVG_DURATION_S="$(( _fsr_dur_sum / FSR_TOTAL ))s"
+fi
+
+echo "FSR_TOTAL=$FSR_TOTAL"
+echo "FSR_LINT_TOTAL=$FSR_LINT_TOTAL"
+echo "FSR_TEST_TOTAL=$FSR_TEST_TOTAL"
+echo "FSR_AVG_DURATION_S=$FSR_AVG_DURATION_S"
+HELPEREOF
+  chmod +x "$RITE_TEST_TMPDIR/compute_fsr_nodur.sh"
+
+  local _logs_dir="$RITE_TEST_TMPDIR/logs-nodur"
+  mkdir -p "$_logs_dir"
+
+  # Diag line intentionally missing duration_s= — triggers the latent bug with || echo "0"
+  cat > "$_logs_dir/full-suite-20261019.log" << 'EOF'
+[diag] 02:00:01 | FULL_SUITE_RUN outcome=passed lint_count=0 test_count=0
+EOF
+
+  run env \
+    FSR_LOGS_DIR="$_logs_dir" \
+    "$RITE_TEST_TMPDIR/compute_fsr_nodur.sh"
+
+  # Script must NOT crash (the double-zero arithmetic error would have set status != 0)
+  [ "$status" -eq 0 ]
+
+  # FSR_TOTAL must be 1 (one diag line)
+  echo "$output" | grep -q "^FSR_TOTAL=1$"
+
+  # Aggregates default to 0 when no matching fields
+  echo "$output" | grep -q "^FSR_LINT_TOTAL=0$"
+  echo "$output" | grep -q "^FSR_TEST_TOTAL=0$"
+
+  # Average duration must be "0s" — not an arithmetic error
+  echo "$output" | grep -q "^FSR_AVG_DURATION_S=0s$"
 }
 
 @test "bin/rite --full-suite dispatches to rite-full-suite" {
