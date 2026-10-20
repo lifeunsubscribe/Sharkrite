@@ -3212,15 +3212,14 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
-# Ordinal collision regression: After #12 must not satisfy the After #1 check.
+# Ordinal collision regression: After #11 must not satisfy the After #1 check.
 #
-# Fixture: issue #12 (ordinal 12) modifies src/x.py.  Issue #13 modifies
-# src/x.py and declares parallel with #12.  Issue #13 already has "After #12"
-# from a prior chain.  The auto-chain pass should NOT treat "After #12" as
-# satisfying the "add After #1" step when ordinal 1 is different from 12.
+# Fixture: issue #12 (ordinal 12) modifies src/common.py with a pre-existing
+# "After #11" dependency.  The auto-chain pass should NOT treat "After #11" as
+# satisfying the "add After #1" step when ordinal 1 is different from 11.
 #
 # This tests the word-boundary grep fix: grep -qE "After #N([^0-9]|$)" must
-# not match "After #12" when N=1.
+# not match "After #11" when N=1.
 # ---------------------------------------------------------------------------
 
 @test "Ordinal collision: After #12 does not satisfy After #1 check — both rewrites distinct" {
@@ -3228,8 +3227,8 @@ FIXTURE
 
   # Build a fixture with 12 non-spike issues so ordinals 1 and 12 both exist.
   # Issue 1 (ordinal 1) modifies src/common.py.
-  # Issue 12 (ordinal 12) modifies src/common.py — parallel with #1.
-  # After auto-chain: issue 12 gets "After #1" (not confused by "After #12" elsewhere).
+  # Issue 12 (ordinal 12) modifies src/common.py — parallel with #1, pre-existing After #11.
+  # After auto-chain: issue 12 gets "After #1" (not confused by "After #11" elsewhere).
   local _fixture=""
   _fixture="${_fixture}---ISSUE---
 TITLE: Issue Ordinal One
@@ -3293,7 +3292,7 @@ Files to Modify:
 
 **Done Definition**: Done when complete.
 
-**Dependencies**: After #12 (can run in parallel with #1)
+**Dependencies**: After #11 (can run in parallel with #1)
 ---END---
 "
   printf '%s' "$_fixture" > "$issues_file"
@@ -3323,16 +3322,16 @@ Files to Modify:
     false
   }
 
-  # After #1 must be a word-boundary match — not accidentally matching After #12 as After #1
+  # After #1 must be a word-boundary match — not accidentally matching After #11 as After #1
   sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #1([^0-9]|$)" || {
     echo "FAIL: 'After #1' not found as a whole-number ref (word-boundary check)" >&2
     cat "$issues_file" >&2
     false
   }
 
-  # After #12 must survive — the word-boundary guard must not have consumed or removed it
-  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #12([^0-9]|$)" || {
-    echo "FAIL: 'After #12' was not preserved after auto-chain rewrite" >&2
+  # After #11 must survive — the word-boundary guard must not have consumed or removed it
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #11([^0-9]|$)" || {
+    echo "FAIL: 'After #11' was not preserved after auto-chain rewrite" >&2
     cat "$issues_file" >&2
     false
   }
