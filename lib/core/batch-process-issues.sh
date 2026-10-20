@@ -758,7 +758,8 @@ declare -A ISSUE_PR
 declare -A ISSUE_BRANCH
 declare -A PR_CHANGES
 declare -A _DEFER_COUNT  # defer counter per issue; anti-cycle cap for DEP_IN_QUEUE path
-declare -A _LIVE_LOCK_WAIT_PID  # background sleep PID per live-lock-deferred issue
+declare -A _LIVE_LOCK_WAIT_PID  # background sleep PID per dep-live-lock-deferred issue
+declare -A _PARENT_LIVE_LOCK_WAIT_PID  # background sleep PID per parent-live-lock-deferred issue
 
 # Summary arrays
 SECURITY_UPDATES=()
@@ -1032,6 +1033,16 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   ISSUE_BODY="${ISSUE_BODY:-}"
   PARENT_PR=""
 
+  # If this issue was previously live-lock deferred because its parent issue was
+  # live in another batch session, join the background sleep before re-checking
+  # the parent PR state so the foreign session has had wall-clock time to merge.
+  # Mirrors the dep live-lock wait join below (lines ~1097-1105).
+  _parent_live_lock_wait_pid="${_PARENT_LIVE_LOCK_WAIT_PID[$ISSUE_NUM]:-}"
+  if [ -n "$_parent_live_lock_wait_pid" ]; then
+    wait "$_parent_live_lock_wait_pid" 2>/dev/null || true
+    unset '_PARENT_LIVE_LOCK_WAIT_PID[$ISSUE_NUM]'
+  fi
+
   # Require digits in the outer guard too — otherwise issue bodies that DOCUMENT
   # the marker format (e.g. "sharkrite-parent-pr:N" as an example) trigger the
   # inner extraction, which returns empty, which under set -e + pipefail kills
@@ -1068,6 +1079,48 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
           print_success "Parent issue #$PARENT_ISSUE is in queue - this is a follow-up pair"
           print_info "Follow-up work will update parent issue #$PARENT_ISSUE's PR before merging parent"
         else
+          # PARENT_IN_QUEUE=false: check for a live issue-lock on the parent
+          # before skipping. If the parent issue is actively being worked in a
+          # concurrent batch session it will likely merge before this batch
+          # drains — defer rather than skip. Same logic as the DEP_ISSUES
+          # live-lock path below; same _DEFER_COUNT anti-cycle cap.
+          # Deliberate batch-only divergence: single-issue mode has no queue to
+          # defer into. See behavioral-design.md → "Dependency Detection".
+          _parent_live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
+          _parent_live_lock_max="${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
+          if ! printf '%s' "$_parent_live_lock_max" | grep -qE '^[0-9]+$'; then
+            print_warning "RITE_LIVE_LOCK_MAX_DEFERS='$_parent_live_lock_max' is not a non-negative integer — ignoring, using default 10"
+            _parent_live_lock_max=10
+          fi
+          _PARENT_LIVE_LOCK=false
+          if [ -n "$PARENT_ISSUE" ] && [ "$_parent_live_lock_defer_count" -lt "$_parent_live_lock_max" ]; then
+            _parent_pid_file="${RITE_LOCK_DIR}/issue-${PARENT_ISSUE}.lock/pid"
+            if [ -f "$_parent_pid_file" ]; then
+              _parent_lock_pid=$(cat "$_parent_pid_file" 2>/dev/null || true)
+              if [ -n "$_parent_lock_pid" ] && [ "$_parent_lock_pid" != "$$" ] && kill -0 "$_parent_lock_pid" 2>/dev/null; then
+                _PARENT_LIVE_LOCK=true
+              fi
+            fi
+          fi
+          if [ "${_PARENT_LIVE_LOCK:-false}" = true ]; then
+            _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
+            print_info "Parent issue #$PARENT_ISSUE is live in another batch session — deferring issue #$ISSUE_NUM to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+            _live_lock_wait="${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
+            if ! printf '%s' "$_live_lock_wait" | grep -qE '^[0-9]+$'; then
+              print_warning "RITE_LIVE_LOCK_DEFER_WAIT='$_live_lock_wait' is not a non-negative integer — ignoring, using default 30"
+              _live_lock_wait=30
+            fi
+            if [ "$_live_lock_wait" -gt 0 ]; then
+              sleep "$_live_lock_wait" >/dev/null 2>&1 &
+              _PARENT_LIVE_LOCK_WAIT_PID[$ISSUE_NUM]=$!
+            fi
+            ISSUE_LIST+=("$ISSUE_NUM")
+            ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_parent"
+            echo ""
+            _gate_consec_count=0; _gate_consec_sig=""
+            continue
+          fi
+          # No live lock on parent (or cap exhausted): fall through to skip.
           # Deliberate divergence from single-issue mode: batch skips follow-up
           # issues whose parent PR is still open AND the parent issue is not in
           # this batch. This is an orchestrator-level decision that requires
@@ -1607,11 +1660,11 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         case " $_seen_remaining " in
           *" $_ri "*) continue ;;
         esac
-        # Include not-yet-started, dependency-deferred, and blocked issues —
-        # all represent work the batch still owes. waiting_for_parent is excluded:
-        # that issue's PR is already in-flight and resuming won't re-run it.
+        # Include not-yet-started, dependency-deferred, parent-deferred, and blocked
+        # issues — all represent work the batch still owes. waiting_for_parent is
+        # excluded: that issue's PR is already in-flight and resuming won't re-run it.
         case "${ISSUE_STATUS[$_ri]:-}" in
-          "" | deferred_for_dep | blocked)
+          "" | deferred_for_dep | deferred_for_parent | blocked)
             _remaining+=("$_ri")
             _seen_remaining="${_seen_remaining}${_ri} "
             ;;
@@ -1789,20 +1842,25 @@ if [ "$_BATCH_AUTH_HALT" = "true" ]; then
   done
 fi
 
-# Post-loop: issues still in deferred_for_dep state were never retried because
-# the batch halted early (circuit-breaker, session-hours, auth halt, or error).
-# Move each unique such issue to SKIPPED so it appears in summary accounting.
-# ISSUE_LIST may contain the same issue multiple times (one entry per defer);
-# track seen numbers to add each exactly once.
+# Post-loop: issues still in deferred_for_dep or deferred_for_parent state were
+# never retried because the batch halted early (circuit-breaker, session-hours,
+# auth halt, or error). Move each unique such issue to SKIPPED so it appears in
+# summary accounting. ISSUE_LIST may contain the same issue multiple times (one
+# entry per defer); track seen numbers to add each exactly once.
 _seen_deferred=""
 for _deferred_num in "${ISSUE_LIST[@]}"; do
-  if [ "${ISSUE_STATUS[$_deferred_num]:-}" = "deferred_for_dep" ]; then
+  _deferred_status="${ISSUE_STATUS[$_deferred_num]:-}"
+  if [ "$_deferred_status" = "deferred_for_dep" ] || [ "$_deferred_status" = "deferred_for_parent" ]; then
     case " $_seen_deferred " in
       *" $_deferred_num "*) continue ;;
     esac
     _seen_deferred="$_seen_deferred $_deferred_num"
     SKIPPED_ISSUES+=("$_deferred_num")
-    ISSUE_STATUS["$_deferred_num"]="dep_deferred_incomplete"
+    if [ "$_deferred_status" = "deferred_for_dep" ]; then
+      ISSUE_STATUS["$_deferred_num"]="dep_deferred_incomplete"
+    else
+      ISSUE_STATUS["$_deferred_num"]="parent_deferred_incomplete"
+    fi
   fi
 done
 

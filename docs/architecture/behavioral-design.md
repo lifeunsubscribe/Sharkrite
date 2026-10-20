@@ -108,7 +108,7 @@ As a safety net, when tests fail after merge AND after dependency reinstall, `ve
 |---|---|
 | `parent-PR-deferred` | Requires knowledge of the full batch queue (`ISSUE_LIST`). `run_workflow()` processes one issue at a time. Single-issue mode has no guard because the user is presumed to know ordering constraints. |
 | `dep-failed` | Requires the accumulated `ISSUE_STATUS` map from earlier in the same batch. `run_workflow()` cannot see sibling results. |
-| `live-lock-deferred` | Dep issue holds a live lock in a concurrent batch session — defer-to-end rather than skip immediately. Requires local lock-dir inspection (`RITE_LOCK_DIR`), which is batch-orchestrator context. Single-issue mode has no queue to defer into. |
+| `live-lock-deferred` | Dep issue *or* parent issue holds a live lock in a concurrent batch session — defer-to-end rather than skip immediately. Applies to both the `DEP_ISSUES=` guard (dep path) and the `PARENT_IN_QUEUE=false` guard (parent-PR path). Requires local lock-dir inspection (`RITE_LOCK_DIR`), which is batch-orchestrator context. Single-issue mode has no queue to defer into. |
 | `active-process` | Safety guard against two batch sessions racing on the same issue. Single-issue direct invocation allows this intentionally. |
 | `in-current-branch` | Prevents git checkout conflicts during batch execution. Single-issue mode allows because the user is interactive. |
 
@@ -162,6 +162,8 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 **Anti-cycle cap:** Both defer paths share `_DEFER_COUNT[ISSUE_NUM]` as the cycle counter, but use **different bounds**: the queue-later path is bounded by `_UNIQUE_ISSUE_COUNT` (frozen operator-supplied issue count); the live-lock path is bounded by `RITE_LIVE_LOCK_MAX_DEFERS` (default 10), independent of batch size — a 2-issue batch gets the same cap as a large one. A dep whose foreign session stalls and never merges cannot defer the dependent more than `RITE_LIVE_LOCK_MAX_DEFERS` times.
 
 **Why check open state:** A dependency's PR may have been created in this batch but not yet merged. Processing the dependent issue before the dependency merges causes failures (missing code/models).
+
+**Parent-PR live-lock path (follow-up issues):** The same live-lock defer logic applies to the `PARENT_IN_QUEUE=false` branch. When a follow-up issue's parent PR is still open and the parent issue is not in this batch, `batch-process-issues.sh` checks whether the parent issue holds a live lock before skipping. If the parent holds a live lock, the follow-up is deferred to end of queue (`deferred_for_parent` status) with the same `RITE_LIVE_LOCK_DEFER_WAIT` background sleep and `RITE_LIVE_LOCK_MAX_DEFERS` cap. The `_PARENT_LIVE_LOCK_WAIT_PID` join runs on re-entry before the parent PR state is re-checked. Without this, concurrent batches where one batch owns the parent issue silently skip the follow-up even though the parent is actively merging.
 
 ### Session Timer
 

@@ -543,3 +543,206 @@ QSCRIPT_EOF2
     return 1
   }
 }
+
+# =============================================================================
+# PARENT-PR LIVE-LOCK PATH
+# =============================================================================
+#
+# The PARENT_IN_QUEUE=false branch has the same root cause as the dep path:
+# it ignores a live foreign issue-lock and skips immediately. The following
+# tests verify that the parent-PR path applies the same live-lock defer logic.
+#
+# Tests:
+#  12. Parent PR open + parent issue holds live lock → deferred_for_parent (not waiting_for_parent)
+#  13. Parent PR open + no lock file → waiting_for_parent (existing behavior unchanged)
+#  14. Parent PR open + parent live lock, cap exhausted → waiting_for_parent (cap overrides)
+#  15. structural: _PARENT_LIVE_LOCK_WAIT_PID declared in batch source
+#  16. structural: parent live lock wait join precedes the parent-PR marker check
+
+# =============================================================================
+# Helper: build a minimal script that exercises the PARENT_IN_QUEUE=false
+# decision block with a configurable lock directory.
+#
+# Args (positional):
+#   $1  LOCK_DIR         path for RITE_LOCK_DIR
+#   $2  DEFER_COUNT      pre-existing defer count for ISSUE_NUM (default 0)
+#   $3  MAX_DEFERS       RITE_LIVE_LOCK_MAX_DEFERS value (default 3 for tests)
+# =============================================================================
+_build_parent_live_lock_script() {
+  local _script="$BATS_TEST_TMPDIR/test-parent-live-lock-defer.sh"
+
+  cat > "$_script" <<SCRIPT_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+RITE_LOCK_DIR="${1:-$BATS_TEST_TMPDIR/parent-locks}"
+RITE_LIVE_LOCK_MAX_DEFERS="${3:-3}"
+
+declare -A ISSUE_STATUS
+declare -A _DEFER_COUNT
+declare -A _PARENT_LIVE_LOCK_WAIT_PID
+_DEFER_COUNT[5]="${2:-0}"
+
+ISSUE_NUM=5
+PARENT_ISSUE=3
+
+# Simulate PARENT_IN_QUEUE=false (parent is not in this batch)
+PARENT_IN_QUEUE=false
+
+_parent_live_lock_defer_count="\${_DEFER_COUNT[\$ISSUE_NUM]:-0}"
+_parent_live_lock_max="\${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
+_PARENT_LIVE_LOCK=false
+if [ -n "\$PARENT_ISSUE" ] && [ "\$_parent_live_lock_defer_count" -lt "\$_parent_live_lock_max" ]; then
+  _parent_pid_file="\${RITE_LOCK_DIR}/issue-\${PARENT_ISSUE}.lock/pid"
+  if [ -f "\$_parent_pid_file" ]; then
+    _parent_lock_pid=\$(cat "\$_parent_pid_file" 2>/dev/null || true)
+    if [ -n "\$_parent_lock_pid" ] && [ "\$_parent_lock_pid" != "\$\$" ] && kill -0 "\$_parent_lock_pid" 2>/dev/null; then
+      _PARENT_LIVE_LOCK=true
+    fi
+  fi
+fi
+
+if [ "\${_PARENT_LIVE_LOCK:-false}" = true ]; then
+  _DEFER_COUNT[\$ISSUE_NUM]=\$(( \${_DEFER_COUNT[\$ISSUE_NUM]:-0} + 1 ))
+  echo "PARENT_LIVE_LOCK_DEFERRED: issue \$ISSUE_NUM (defer #\${_DEFER_COUNT[\$ISSUE_NUM]})"
+  _live_lock_wait="\${RITE_LIVE_LOCK_DEFER_WAIT:-1}"
+  if ! printf '%s' "\$_live_lock_wait" | grep -qE '^[0-9]+\$'; then
+    _live_lock_wait=1
+  fi
+  if [ "\$_live_lock_wait" -gt 0 ]; then
+    sleep "\$_live_lock_wait" >/dev/null 2>&1 &
+    _PARENT_LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]=\$!
+  fi
+  ISSUE_STATUS["\$ISSUE_NUM"]="deferred_for_parent"
+  echo "STATUS:deferred_for_parent"
+  echo "WAIT_PID:\${_PARENT_LIVE_LOCK_WAIT_PID[\$ISSUE_NUM]:-none}"
+else
+  ISSUE_STATUS["\$ISSUE_NUM"]="waiting_for_parent"
+  echo "SKIPPED: issue \$ISSUE_NUM (waiting_for_parent)"
+  echo "STATUS:waiting_for_parent"
+fi
+SCRIPT_EOF
+  chmod +x "$_script"
+  echo "$_script"
+}
+
+@test "behavioral: parent PR open + parent holds live lock → deferred_for_parent (not skipped)" {
+  _lock_dir="$BATS_TEST_TMPDIR/parent-locks-live"
+  mkdir -p "$_lock_dir/issue-3.lock"
+  sleep 60 3>&- &
+  _foreign_pid=$!
+  echo "$_foreign_pid" > "$_lock_dir/issue-3.lock/pid"
+
+  _script=$(_build_parent_live_lock_script "$_lock_dir")
+  run bash "$_script"
+
+  kill "$_foreign_pid" 2>/dev/null || true
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed with status $status: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "PARENT_LIVE_LOCK_DEFERRED: issue 5" || {
+    echo "FAIL: issue #5 should be PARENT_LIVE_LOCK_DEFERRED when parent #3 holds a live lock" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "SKIPPED" || {
+    echo "FAIL: issue #5 must NOT be skipped when parent has a live lock" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "STATUS:deferred_for_parent" || {
+    echo "FAIL: ISSUE_STATUS must be 'deferred_for_parent' for parent-live-lock deferred issue" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: parent PR open + no lock file → waiting_for_parent (existing behavior unchanged)" {
+  _lock_dir="$BATS_TEST_TMPDIR/parent-locks-empty"
+  mkdir -p "$_lock_dir"
+
+  _script=$(_build_parent_live_lock_script "$_lock_dir")
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed with status $status: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "SKIPPED: issue 5" || {
+    echo "FAIL: issue #5 should be SKIPPED (waiting_for_parent) when parent has no lock file" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "DEFERRED" || {
+    echo "FAIL: issue #5 must NOT be deferred when parent has no lock" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "STATUS:waiting_for_parent" || {
+    echo "FAIL: ISSUE_STATUS must be 'waiting_for_parent' when no lock present" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: parent live lock + cap exhausted → waiting_for_parent (cap overrides)" {
+  _lock_dir="$BATS_TEST_TMPDIR/parent-locks-cap"
+  mkdir -p "$_lock_dir/issue-3.lock"
+  sleep 60 3>&- &
+  _foreign_pid=$!
+  echo "$_foreign_pid" > "$_lock_dir/issue-3.lock/pid"
+
+  # DEFER_COUNT=3 >= MAX_DEFERS=3 → cap exhausted
+  _script=$(_build_parent_live_lock_script "$_lock_dir" "3" "3")
+  run bash "$_script"
+
+  kill "$_foreign_pid" 2>/dev/null || true
+
+  [ "$status" -eq 0 ] || {
+    echo "Script failed with status $status: $output" >&2
+    return 1
+  }
+  echo "$output" | grep -q "SKIPPED: issue 5" || {
+    echo "FAIL: issue #5 should be SKIPPED when defer cap is exhausted (even with live lock)" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "DEFERRED" || {
+    echo "FAIL: issue must NOT be deferred when parent live-lock cap is exhausted" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "structural: _PARENT_LIVE_LOCK_WAIT_PID declared in batch source" {
+  grep -q '_PARENT_LIVE_LOCK_WAIT_PID' "$BATCH_PROCESSOR" || {
+    echo "FAIL: '_PARENT_LIVE_LOCK_WAIT_PID' not found in $BATCH_PROCESSOR" >&2
+    echo "      The parent live-lock path must use a separate wait-PID array from the dep path" >&2
+    return 1
+  }
+}
+
+@test "structural: parent live lock wait join precedes parent-PR marker check" {
+  # The _PARENT_LIVE_LOCK_WAIT_PID join must appear BEFORE the RITE_MARKER_PARENT_PR
+  # grep in the batch file. Without the join, a re-deferred issue is re-reached
+  # immediately with zero buffer for the foreign session to merge.
+  _join_line=$(grep -n '_PARENT_LIVE_LOCK_WAIT_PID\[' "$BATCH_PROCESSOR" | grep 'wait\|_parent_live_lock_wait_pid=' | head -1 | cut -d: -f1 || true)
+  _marker_line=$(grep -n 'RITE_MARKER_PARENT_PR.*\[0-9\]' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_join_line" ] || {
+    echo "FAIL: _PARENT_LIVE_LOCK_WAIT_PID wait join not found in $BATCH_PROCESSOR" >&2
+    echo "      Without the join, the deferred issue re-enters the parent check with no wall-clock buffer" >&2
+    return 1
+  }
+  [ -n "$_marker_line" ] || {
+    echo "FAIL: RITE_MARKER_PARENT_PR marker check not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ "$_join_line" -lt "$_marker_line" ] || {
+    echo "FAIL: parent live-lock wait join (line $_join_line) must precede RITE_MARKER_PARENT_PR check (line $_marker_line)" >&2
+    echo "      The join must run before the parent PR re-check so the foreign session has had wall-clock time to merge" >&2
+    return 1
+  }
+}
