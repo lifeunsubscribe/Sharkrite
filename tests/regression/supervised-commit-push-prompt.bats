@@ -75,12 +75,8 @@ setup() {
 # Structural: y/n/e behavioral contracts — verified via code inspection
 # (Main-flow commit+push body is inline at lib/core/claude-workflow.sh:3775,
 # not a callable function; behavioral tests blocked until it is extracted.
-# OPERATOR ACTION REQUIRED BEFORE MERGE: file a tracking issue to extract
-# lib/core/claude-workflow.sh:3775 — the "Commit and push N file(s)? [y/n/e]"
-# inline main-body prompt — into a callable function and add behavioral y/n/e
-# main-flow tests; cite that issue number here and in behavioral-design.md
-# § "Supervised commit/push"; consolidate with test-gate-parallel.bats
-# RITE_GATE_FINDINGS deferral)
+# Tracked by issue #1368, which also covers the RITE_GATE_FINDINGS builder
+# extraction deferred in test-gate-parallel.bats.)
 # ---------------------------------------------------------------------------
 
 @test "structural: n path calls 'exit 0' (aborts without committing)" {
