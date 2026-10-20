@@ -224,6 +224,18 @@ while [[ $# -gt 0 ]]; do
           esac
           ;;
       esac
+      # Reject a second numeric arg — --promote accepts at most one issue number
+      case "${1:-}" in
+        [0-9]*)
+          case "${1:-}" in
+            *[!0-9]*) ;;
+            *)
+              print_error "--promote accepts at most one issue number (got extra: ${1:-})"
+              exit 1
+              ;;
+          esac
+          ;;
+      esac
       ;;
     --dry-run)
       # Already parsed above

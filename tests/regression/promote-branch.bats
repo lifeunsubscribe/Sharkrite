@@ -999,7 +999,7 @@ RUNEOF
 case "${1:-}" in
   fetch) exit 0 ;;
   worktree)
-    [ "${2:-}" = "add" ] && mkdir -p "${4:-${3:-}}"
+    [ "${2:-}" = "add" ] && mkdir -p "${5:-${4:-}}"
     exit 0 ;;
   cherry-pick) exit 0 ;;
   push)  printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"; exit 0 ;;

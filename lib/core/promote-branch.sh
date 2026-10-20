@@ -195,6 +195,17 @@ promote_single_issue() {
 
   print_step "Fetching latest state from origin..."
   git_fetch_safe origin main
+  git_fetch_safe origin "$_si_branch" || {
+    print_error "Failed to fetch '$_si_branch' from origin — SHA ${_si_sha} may not exist locally"
+    echo "  Re-run after checking network: rite --promote ${_si_branch} ${_si_issue}" >&2
+    exit 1
+  }
+  # Guard: the ledger SHA must exist locally after fetching the integration branch.
+  if ! git cat-file -e "$_si_sha" 2>/dev/null; then
+    print_error "Ledger SHA ${_si_sha} not found after fetching '${_si_branch}' — ledger may be stale"
+    echo "  Re-run: rite --promote ${_si_branch} ${_si_issue}" >&2
+    exit 1
+  fi
 
   # ── Temp worktree off main ─────────────────────────────────────────────────
 
@@ -216,15 +227,29 @@ promote_single_issue() {
 
   print_step "Cherry-picking ${_si_sha} (issue #${_si_issue})..."
   local _si_cp_exit=0
-  ( cd "$_si_wt" && git cherry-pick "$_si_sha" ) || _si_cp_exit=$?
+  local _si_cp_stderr=""
+  _si_cp_stderr=$( cd "$_si_wt" && git cherry-pick "$_si_sha" 2>&1 ) || _si_cp_exit=$?
 
   if [ "$_si_cp_exit" -ne 0 ]; then
-    # Conflict = entanglement — abort verbosely, never force
+    # Distinguish conflict (entanglement) from other failures.
+    # CHERRY_PICK_HEAD exists when a conflict left cherry-pick in progress.
+    local _si_is_conflict=false
+    if [ -f "$_si_wt/.git/CHERRY_PICK_HEAD" ]; then
+      _si_is_conflict=true
+    fi
     ( cd "$_si_wt" && git cherry-pick --abort 2>/dev/null || true )
     git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
     git branch -D "$_si_wt_name" 2>/dev/null || true
     git worktree prune 2>/dev/null || true
-    print_error "Issue #${_si_issue} is entangled with unpromoted issues on '${_si_branch}' — its squash commit does not apply cleanly to main. Promote the full branch (rite --promote ${_si_branch}) or resolve manually."
+    if [ "$_si_is_conflict" = "true" ]; then
+      print_error "Issue #${_si_issue} is entangled with unpromoted issues on '${_si_branch}' — its squash commit does not apply cleanly to main. Promote the full branch (rite --promote ${_si_branch}) or resolve manually."
+    else
+      print_error "Cherry-pick of ${_si_sha} failed (exit ${_si_cp_exit}) — not a merge conflict"
+      if [ -n "${_si_cp_stderr:-}" ]; then
+        echo "  $(printf '%s' "$_si_cp_stderr" | head -3)" >&2
+      fi
+      echo "  Check that the SHA exists and re-run: rite --promote ${_si_branch} ${_si_issue}" >&2
+    fi
     exit 1
   fi
 
@@ -236,7 +261,11 @@ promote_single_issue() {
   print_step "Running targeted verification gate on cherry-picked commit..."
   if ! declare -f run_test_gate >/dev/null 2>&1; then
     # shellcheck source=/dev/null
-    source "$RITE_LIB_DIR/utils/test-gate.sh" 2>/dev/null || true
+    source "$RITE_LIB_DIR/utils/test-gate.sh"
+    if ! declare -f run_test_gate >/dev/null 2>&1; then
+      print_error "run_test_gate not defined after sourcing test-gate.sh — gate cannot run"
+      exit 1
+    fi
   fi
   local _si_gate_exit=0
   local _si_gate_json="${_si_wt}/.rite-si-promote-gate.json"
@@ -299,7 +328,10 @@ Closes #${_si_issue}"
 
   local _MERGE_PR="${RITE_LIB_DIR}/core/merge-pr.sh"
   local _si_merge_exit=0
-  bash "$_MERGE_PR" "$_si_promo_pr" --auto || _si_merge_exit=$?
+  # --allow-main-base: the single-issue promotion PR always targets main;
+  # without this flag, merge-pr.sh's integration-branch guard refuses the merge
+  # because the session's resolved target branch is the integration branch.
+  bash "$_MERGE_PR" "$_si_promo_pr" --auto --allow-main-base || _si_merge_exit=$?
 
   # CWD-after-worktree-removal contract: merge-pr.sh removes the worktree;
   # cd back to project root before any subsequent gh/git call.
@@ -313,8 +345,15 @@ Closes #${_si_issue}"
 
   # ── Post-merge bookkeeping ─────────────────────────────────────────────────
 
-  # Mark the ledger entry promoted=true in place
-  integration_ledger_mark_promoted "$_si_branch" "$_si_issue" 2>/dev/null || true
+  # Mark the ledger entry promoted=true in place.
+  # A failure here leaves the ledger at promoted=false for a commit already on
+  # main — rite --status would show the issue still awaiting promotion and a
+  # retry would hit the empty-cherry-pick path. Surface the failure explicitly.
+  if ! integration_ledger_mark_promoted "$_si_branch" "$_si_issue"; then
+    local _ledger_path="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/../integration-branches/${_si_branch//\//-}.log"
+    print_error "Ledger mark-promoted failed for issue #${_si_issue} on '${_si_branch}' — PR #${_si_promo_pr} was merged but the ledger was NOT updated"
+    echo "  Manual fix: edit ${_ledger_path} and set promoted=true on the issue=${_si_issue} line" >&2
+  fi
 
   # Post per-issue promotion comment (already-closed is a no-op on GitHub)
   gh_safe issue comment "$_si_issue" \
@@ -524,7 +563,11 @@ run_promote() {
   # is only needed on this path.
   if ! declare -f run_test_gate >/dev/null 2>&1; then
     # shellcheck source=/dev/null
-    source "$RITE_LIB_DIR/utils/test-gate.sh" 2>/dev/null || true
+    source "$RITE_LIB_DIR/utils/test-gate.sh"
+    if ! declare -f run_test_gate >/dev/null 2>&1; then
+      print_error "run_test_gate not defined after sourcing test-gate.sh — gate cannot run"
+      exit 1
+    fi
   fi
   local _fs_exit=0
   local _fs_gate_json="${_wt}/.rite-promote-gate.json"

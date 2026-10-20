@@ -291,7 +291,7 @@ case "${1:-}" in
   worktree)
     case "${2:-}" in
       add)
-        mkdir -p "${4:-${3:-}}"
+        mkdir -p "${5:-${4:-}}"
         printf 'GIT_WORKTREE_ADD %s\n' "$*" >> "${_SI_CALLLOG:-/dev/null}"
         exit 0 ;;
       remove)
@@ -371,7 +371,7 @@ case "${1:-}" in
   worktree)
     case "${2:-}" in
       add)
-        mkdir -p "${4:-${3:-}}"
+        mkdir -p "${5:-${4:-}}"
         printf 'GIT_WORKTREE_ADD %s\n' "$*" >> "${_SI_CALLLOG:-/dev/null}"
         exit 0 ;;
       remove)
