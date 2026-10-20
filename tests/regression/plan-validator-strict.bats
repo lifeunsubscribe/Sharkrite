@@ -3406,11 +3406,11 @@ Files to Modify:
 - src/widgets/widget_a.py
 
 **Acceptance Criteria**:
-- [ ] Migration passes: `db-migrate --validate widget_a`
+- [ ] Migration passes: `db-migrate --validate widgets`
 
 **Verification Commands**:
 ```bash
-db-migrate --validate widget_a
+db-migrate --validate widgets
 ```
 
 **Done Definition**: Done when widget A migration passes validation.
@@ -3430,11 +3430,11 @@ Files to Modify:
 - src/widgets/widget_b.py
 
 **Acceptance Criteria**:
-- [ ] Migration passes: `db-migrate --validate widget_b`
+- [ ] Migration passes: `db-migrate --validate widgets`
 
 **Verification Commands**:
 ```bash
-db-migrate --validate widget_b
+db-migrate --validate widgets
 ```
 
 **Done Definition**: Done when widget B migration passes validation.
@@ -3454,11 +3454,11 @@ Files to Modify:
 - src/widgets/widget_c.py
 
 **Acceptance Criteria**:
-- [ ] Migration passes: `db-migrate --validate widget_c`
+- [ ] Migration passes: `db-migrate --validate widgets`
 
 **Verification Commands**:
 ```bash
-db-migrate --validate widget_c
+db-migrate --validate widgets
 ```
 
 **Done Definition**: Done when widget C migration passes validation.
