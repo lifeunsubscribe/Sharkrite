@@ -301,6 +301,22 @@ CLAUDE.md's Phase 3 staleness description says "SHA match → review covers HEAD
 `behavioral-design.md:708` quotes the sentinel test name as `"…— accepted divergence from Phase 3"` but the actual bats test name ends `"— divergence from Phase 3 (issue #1306)"`.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1327 issue:1051 recorded:2026-10-20T05:58:18Z -->
+**Changed files**: CLAUDE.md, bin/rite, lib/core/promote-branch.sh, tests/regression/promote-branch.bats, tests/regression/promote-single-issue-cherry-pick.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues-system.md — "Encountered Issues System"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/architecture/tag-index.md — "Tag Index"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+**Suspected inaccuracy**: `branch-flag-design.md:276` documents the command as `rite --promote <branch> --cherry-pick <issue>`, but the shipped implementation uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1330 issue:1168 recorded:2026-10-20T06:09:51Z -->
 **Changed files**: lib/core/batch-process-issues.sh, tests/regression/batch-cross-batch-overlap.bats
 **Implicated docs**:
@@ -325,6 +341,40 @@ CLAUDE.md's "Diagnostic logging" section omits `OVERLAP_DEFER` from its list of 
 **Suspected inaccuracy**: The CLAUDE.md diagnostic logging section lists known `[diag]` line types but does not include `OVERLAP_DEFER`, which was added by this PR.
 
 CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER` diag line introduced by PR #1330.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1327 issue:1051 recorded:2026-10-20T06:21:10Z -->
+**Changed files**: CLAUDE.md, bin/rite, lib/core/promote-branch.sh, tests/regression/promote-branch.bats, tests/regression/promote-single-issue-cherry-pick.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues-system.md — "Encountered Issues System"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/architecture/tag-index.md — "Tag Index"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+**Suspected inaccuracy**: The drift log already identifies the inaccuracy: `branch-flag-design.md:276` documents the command as `rite --promote <branch> --cherry-pick <issue>`, but the shipped implementation uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
+
+`branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1327 issue:1051 recorded:2026-10-20T06:29:28Z -->
+**Changed files**: CLAUDE.md, bin/rite, lib/core/promote-branch.sh, tests/regression/promote-branch.bats, tests/regression/promote-single-issue-cherry-pick.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues-system.md — "Encountered Issues System"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/architecture/tag-index.md — "Tag Index"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+**Suspected inaccuracy**: `branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T06:31:59Z -->
