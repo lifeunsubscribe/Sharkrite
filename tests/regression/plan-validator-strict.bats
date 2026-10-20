@@ -77,6 +77,7 @@ setup() {
     /^_title_is_spike[(][)]/ { in_fn=1; depth=0 }
     /^_transform_dep_line[(][)]/ { in_fn=1; depth=0 }
     /^_autochain_rewrite_deps[(][)]/ { in_fn=1; depth=0 }
+    /^_autochain_remove_par_annotation[(][)]/ { in_fn=1; depth=0 }
     /^_lint_issues_strict[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
@@ -3292,7 +3293,7 @@ Files to Modify:
 
 **Done Definition**: Done when complete.
 
-**Dependencies**: None (can run in parallel with #1)
+**Dependencies**: After #12 (can run in parallel with #1)
 ---END---
 "
   printf '%s' "$_fixture" > "$issues_file"
@@ -3329,7 +3330,117 @@ Files to Modify:
     false
   }
 
+  # After #12 must survive — the word-boundary guard must not have consumed or removed it
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #12([^0-9]|$)" || {
+    echo "FAIL: 'After #12' was not preserved after auto-chain rewrite" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
   rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# _autochain_remove_par_annotation: earlier issue's parallel annotation removed
+# when _pi < _pj (the auto-chain targets the later issue).
+#
+# Fixture: Issue Alpha (ordinal 1) annotates "(can run in parallel with #2)"
+# and both modify src/shared.py.  _pi=1 < _pj=2 path fires:
+#   _autochain_rewrite_deps adds After #1 to Issue Beta
+#   _autochain_remove_par_annotation removes (can run in parallel with #2) from Issue Alpha
+#
+# Also asserts second-pass idempotency: re-running _lint_issues_strict on the
+# rewritten file exits 0 and emits no additional auto-chain INFO.
+# ---------------------------------------------------------------------------
+
+@test "Auto-chain _pi<_pj: earlier-issue parallel annotation removed; second-pass idempotent" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-early-annotation.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Issue Alpha
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+First issue.
+
+**Claude Context**:
+Files to Modify:
+- src/shared.py
+
+**Acceptance Criteria**:
+- [ ] Done: `true`
+
+**Done Definition**: Done when present.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Issue Beta
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Second issue.
+
+**Claude Context**:
+Files to Modify:
+- src/shared.py
+
+**Acceptance Criteria**:
+- [ ] Done: `true`
+
+**Done Definition**: Done when second.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue Beta must have been auto-chained with After #1
+  sed -n '/^TITLE: Issue Beta/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
+    echo "FAIL: expected 'Issue Beta' to have After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Issue Alpha's parallel annotation referencing Beta (#2) must have been removed
+  sed -n '/^TITLE: Issue Alpha/,/^---END---$/p' "$issues_file" | grep -q "can run in parallel with #2" && {
+    echo "FAIL: expected 'Issue Alpha' parallel annotation to be removed" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Second pass: idempotency — no auto-chain rewrites on re-run
+  local stderr_out2
+  stderr_out2=$(mktemp)
+  local exit_code2=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out2" || exit_code2=$?
+
+  [ "$exit_code2" -eq 0 ] || {
+    echo "FAIL: second pass expected exit 0, got $exit_code2" >&2
+    cat "$stderr_out2" >&2
+    false
+  }
+
+  grep -q "auto-chained" "$stderr_out2" && {
+    echo "FAIL: second pass should not emit auto-chain INFO" >&2
+    cat "$stderr_out2" >&2
+    false
+  }
+
+  rm -f "$stderr_out" "$stderr_out2"
 }
 
 # ---------------------------------------------------------------------------

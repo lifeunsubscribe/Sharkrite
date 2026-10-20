@@ -557,15 +557,5 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 - docs/configuration.md — "Configuration"
 - CLAUDE.md — "Sharkrite Development Guide"
-**Suspected inaccuracy**: CLAUDE.md line 438 says the fix for sourced libraries needing bash 4+ is to `detect the sourced context with [ "${BASH_SOURCE[0]}" != "$0" ] and fail loudly` — but the PR added a `BASH_VERSINFO` check with `return 1` to `gate-runners.sh` without using the `BASH_SOURCE[0] != $0` detection. This is an inaccuracy in CLAUDE.md's documented pattern vs. what was actually shipped.
-
-However, the more concrete documentation inaccuracy is about `plan-issues.sh`: CLAUDE.md line 438 lists `plan-issues.sh` as an example sourced library where the self-re-exec guard is wrong and the `BASH_SOURCE[0] != $0` pattern should be used. But the PR added `_transform_dep_line` and `_autochain_rewrite_deps` functions to `plan-issues.sh` — let me check if `plan-issues.sh` now has a bash 3.2 guard that's different from what's documented.
-
-CLAUDE.md line 438 documents `plan-issues.sh` and `docs-command.sh` as the examples of sourced libraries using the `BASH_SOURCE[0]` pattern. The PR's changes to `gate-runners.sh` added a new `BASH_VERSINFO` guard with `return 1` — a pattern not documented in CLAUDE.md — meaning `gate-runners.sh` is now listed in the architecture table but CLAUDE.md's bash 3.2 section doesn't mention it uses this variant guard.
-
-The most concrete inaccuracy: CLAUDE.md documents `plan-issues.sh` as one of the live-crash examples for heredoc-in-cmdsubst (issue #1190, 2026-10-12), but the PR added new functions to `plan-issues.sh`. The bash 3.2 guard variant added to `gate-runners.sh` (`return 1` without `BASH_SOURCE[0]` check) is undocumented.
-
-CLAUDE.md's bash 3.2 section says sourced libraries should use `[ "${BASH_SOURCE[0]}" != "$0" ]` and fail loudly, but `gate-runners.sh` now uses a bare `BASH_VERSINFO` check with `return 1` — a third pattern not described in CLAUDE.md's documented options.
-
-CLAUDE.md's bash 3.2 guidance omits `gate-runners.sh` as a sourced library requiring bash 4+, though it now enforces this with a `BASH_VERSINFO` guard using `return 1` instead of the documented `BASH_SOURCE[0]` detection pattern.
+**Suspected inaccuracy**: CLAUDE.md's bash 3.2 guidance omits `gate-runners.sh` as a sourced library requiring bash 4+; `gate-runners.sh` now enforces this with a `BASH_VERSINFO` guard using `return 1` — a third pattern not described in CLAUDE.md's documented options (the documented options are: self-re-exec guard for directly-executed scripts, and `BASH_SOURCE[0] != $0` + loud failure for sourced libraries).
 <!-- /sharkrite-doc-drift -->
