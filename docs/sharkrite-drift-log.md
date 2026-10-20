@@ -588,3 +588,39 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 
 `CLAUDE.md` states `parallel-file-overlap` triggers a warning only; it now auto-chains the later issue's `**Dependencies**` line when neither issue carries a `plan-lint suppress` marker.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1364 issue:1360 recorded:2026-10-20T20:55:11Z -->
+**Changed files**: CLAUDE.md, lib/core/assess-review-issues.sh, lib/core/local-review.sh, lib/core/plan-issues.sh, lib/utils/promotion-composer.sh, lib/utils/sanitize-output.sh, tests/regression/lib-resource-safety.bats, tests/regression/pipestatus-after-substitution.bats, tests/regression/sanitize-rtk-wrappers.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/review-system.md — "Review System"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1364 issue:1360 recorded:2026-10-20T20:58:43Z -->
+**Changed files**: CLAUDE.md, lib/core/assess-review-issues.sh, lib/core/local-review.sh, lib/core/plan-issues.sh, lib/utils/promotion-composer.sh, lib/utils/sanitize-output.sh, tests/regression/lib-resource-safety.bats, tests/regression/pipestatus-after-substitution.bats, tests/regression/sanitize-rtk-wrappers.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/review-system.md — "Review System"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md says sanitization covers "four highest-leak GitHub-write seams (issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies)" but the actual call sites are: `local-review.sh` (review output), `assess-review-issues.sh` (follow-up issue body), `plan-issues.sh` (plan issue body), and `promotion-composer.sh` (promotion PR body). That's 4 seams but the CLAUDE.md description doesn't accurately list them — it says "review PR comments" but `local-review.sh` sanitizes the review output itself (not comments), and it doesn't mention plan issues.
+
+CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies" but the actual seams include `plan-issues.sh` (plan issue bodies) instead of or in addition to "issue bodies," and `local-review.sh` sanitizes the review output (not PR comments).
+
+`CLAUDE.md` lists "review PR comments" as one of the four sanitized seams, but `local-review.sh` sanitizes the raw review output before it is posted, not the PR comment itself.
+<!-- /sharkrite-doc-drift -->
