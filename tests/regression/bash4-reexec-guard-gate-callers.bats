@@ -167,3 +167,40 @@ PROBE
     return 1
   }
 }
+
+# =============================================================================
+# SWEEP — the rule, not a list
+#
+# #1374 guarded the five entry points known at the time. That was a list, and
+# the list was incomplete: lib/core/create-pr.sh died the same way one phase
+# later, under /bin/bash, in the middle of a live batch. The guard is inert
+# when a file is sourced, so the correct scope is a RULE — every executable
+# #!/bin/bash file in lib/ carries it — not an enumeration of known callers.
+# =============================================================================
+
+@test "sweep: every executable #!/bin/bash file in lib/ carries the guard" {
+  _missing=""
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    head -1 "$_f" | grep -q '^#!/bin/bash' || continue
+    grep -q 'BASH_VERSINFO\[0\]' "$_f" || _missing="$_missing
+  $_f"
+  done < <(find "$REPO_ROOT/lib" -name '*.sh' -perm -u+x | sort)
+
+  [ -z "$_missing" ] || {
+    echo "FAIL: executable #!/bin/bash file(s) in lib/ with no bash-4 guard:$_missing" >&2
+    echo "" >&2
+    echo "      Anything runnable can be spawned as a subprocess under" >&2
+    echo "      /bin/bash (3.2 on macOS) and will die the moment it reaches" >&2
+    echo "      gate-runners.sh. The guard is a no-op when sourced, so there" >&2
+    echo "      is no cost to carrying it." >&2
+    return 1
+  }
+}
+
+# NOTE: the "parses under /bin/bash" invariant for the whole tree already lives
+# in tests/regression/bin-bash-32-parse-sweep.bats, which correctly accepts
+# EITHER a clean 3.2 parse OR a BASH_VERSINFO guard. assess-documentation.sh and
+# plan-issues.sh are deliberately unparseable under 3.2 (heredoc-in-cmdsubst,
+# issues #1163/#1190) and rely on that second arm. Duplicating it more strictly
+# here would just re-fail those two for a reason that is already handled.
