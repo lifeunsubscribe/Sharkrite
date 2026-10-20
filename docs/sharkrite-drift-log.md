@@ -455,6 +455,14 @@ CLAUDE.md's fix-session timeout formula (`300 + 240 × ACTIONABLE_NOW_COUNT` sec
 **Suspected inaccuracy**: `---END---` as a proposal terminator is documented nowhere, but the proposal format now uses a per-generation unique end token (`---END-RANDOMRANDOM---`) instead of the hardcoded `---END---`, so any doc or CLAUDE.md section describing the directed-update proposal format with `---END---` as the block terminator is now inaccurate.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T15:51:57Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s gate architecture section describes `_changed_files_to_workspace_dirs` glob expansion as "Single-level glob, e.g. `packages/*` → direct subdirs only" with `maxdepth 1`, but the code now computes depth dynamically for multi-segment patterns like `packages/*/*`.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1345 issue:1250 recorded:2026-10-20T16:00:00Z -->
 **Changed files**: lib/core/assess-and-resolve.sh, lib/core/local-review.sh, lib/core/promote-branch.sh, lib/utils/format-review.sh, tests/helpers/promote-stubs.bash, tests/integration/assess-and-resolve-dedup.bats, tests/regression/assess-fallback-posts-comment.bats, tests/regression/format-review-pretty.bats, tests/regression/promote-review-followup.bats, tests/regression/promote-single-issue-cherry-pick.bats
 **Implicated docs**:
@@ -487,6 +495,18 @@ CLAUDE.md's fix-session timeout formula (`300 + 240 × ACTIONABLE_NOW_COUNT` sec
 **Suspected inaccuracy**: `CLAUDE.md`'s "Review severity parsing" convention says the canonical approach is to grep the Findings summary line, but the new shared `parse_review_severity_counts()` in `format-review.sh` (3-tier: JSON block → Findings line → item markers) is now the required call site.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T16:12:13Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The diff shows the PR replaced shell glob expansion (`for _dir in "$_pr/"$_pattern`) with `find`-based expansion so that `**` patterns and mid-segment globs resolve correctly, and added `!exclusion` pattern support. The CLAUDE.md architecture comment for `gate-runners.sh` describes its functions as "node/pytest detection, workspace bootstrap, _gate_status" — it says nothing about glob/find-based expansion or `!exclusion` patterns. But more concretely, the old code had an inline comment saying "`set -f` is NOT used here; patterns like `packages/*` must expand. A non-matching glob yields the literal pattern, which we filter out with the `-d` test" — that behavior is now gone (replaced by `find`).
+
+CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell glob expansion, but the PR replaced shell glob expansion with `find`-based directory traversal that also supports `**` depth-traversal and `!`-prefixed exclusion patterns.
+
+`gate-runners.sh`'s workspace pattern expansion now uses `find`-based traversal supporting `**` and `!exclusion` patterns, not shell glob expansion that falls back to the literal pattern on no-match.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1331 issue:1203 recorded:2026-10-20T16:25:20Z -->
 **Changed files**: lib/core/claude-workflow.sh, lib/utils/config.sh, tests/regression/fix-timeout-retry.bats
 **Implicated docs**:
@@ -502,4 +522,20 @@ CLAUDE.md's fix-session timeout formula (`300 + 240 × ACTIONABLE_NOW_COUNT` sec
 **Suspected inaccuracy**: Based on the diff, PR #1331 added a retry loop to the dev-session no-commit timeout path with a cap of 14400s, but `behavioral-design.md` line 389 describes the no-commit retry as applying only to fix sessions with `min(2 × budget, 1800s)`.
 
 `behavioral-design.md` line 389 claims the no-commit timeout retry applies only to "fix session" capped at `min(2×budget, 1800s)`, but dev sessions now also retry with a cap of 14400s.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T16:33:55Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `gate-runners.sh`'s workspace pattern expansion now uses `find`-based traversal supporting `**` and `!exclusion` patterns, not shell glob expansion that falls back to the literal pattern on no-match.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T16:40:34Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md` states `gate-runners.sh` handles "workspace bootstrap" via shell glob expansion that falls back to the literal pattern on no-match, but PR #1344 changed it to `find`-based traversal supporting `**` and `!exclusion` patterns.
 <!-- /sharkrite-doc-drift -->
