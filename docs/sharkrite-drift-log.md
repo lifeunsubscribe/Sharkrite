@@ -721,3 +721,24 @@ Now I have enough context. The PR changed the log-capture description from "FIFO
 
 `_detect_unverified_integrations` docs say grounding is a set-membership fixture/manifest check, but PR #1376 added a never-external exclusion (`localhost`, `127.0.0.1`, `example.com`, etc.) that filters candidates before the grounded-set check runs.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T22:31:46Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: Now I have the full picture. The PR #1334 changed the `behavioral-design.md` Enforcement line to say the behavioral main-flow tests are "tracked by issue #1368" — but the bats comment was also updated to reference `lib/core/claude-workflow.sh:3775` as the concrete inline location. The behavioral-design.md does NOT include this line number — it only says "extracting the inline commit+push body into a callable function."
+
+The most likely documentation inaccuracy: the `behavioral-design.md` Enforcement line says the deferral is "tracked by issue #1368" but previously the bats comment said `~line 3668` for the location; the updated bats comment now says line `3775`. The doc itself doesn't specify the line number, but the prior PR body said `~line 3668`. This is a minor inconsistency between the doc's claim and reality.
+
+More significantly: the `behavioral-design.md` line at ~549 was also changed from "FIFO-tee" to "nested-procsub tee" — and CLAUDE.md documents the log capture as using "nested-procsub tee" (`exec > >(tee >(strip_ansi >> FILE))`). So that was actually fixing an inaccuracy.
+
+The most directly introduced inaccuracy would be: the `behavioral-design.md` Enforcement line now says "tracked by issue #1368" — if issue #1368 was never actually filed or has different scope, the doc would be claiming something false. But the commit message says "Cite issue #1368 at the three deferral sites" suggesting it WAS filed.
+
+The real remaining inaccuracy is the old bats comment said the inline body is at `~line 3668` (from the PR description) but the updated comment says `3775`. Since `behavioral-design.md` references the test files but doesn't include the line number, the doc is fine. The doc itself has no line-number claim.
+
+Looking at the diff again more carefully — the behavioral-design.md Enforcement line changed from open deferral to "tracked by issue #1368." The most likely inaccuracy introduced is that the doc now asserts the RITE_GATE_FINDINGS builder extraction is also covered by issue #1368, when the original deferred issue was specifically about the supervised commit+push prompt extraction. The doc bundles two distinct concerns under one issue number.
+
+`behavioral-design.md §"Supervised commit/push"` Enforcement line claims issue #1368 "also covers the `RITE_GATE_FINDINGS` builder extraction deferred in `test-gate-parallel.bats`" — this might be inaccurate if #1368's scope is narrower.
+
+`behavioral-design.md §"Supervised commit/push"` Enforcement now claims issue #1368 covers the `RITE_GATE_FINDINGS` builder extraction, but #1368 may only track the commit+push body extraction.
+<!-- /sharkrite-doc-drift -->
