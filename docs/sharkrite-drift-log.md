@@ -575,3 +575,10 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 **Suspected inaccuracy**: `behavioral-design.md` cites the inline prompt location as `claude-workflow.sh:3775` but the prior recorded line was `3747`, which may now be stale if the file shifted.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T19:37:50Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` claims behavioral main-flow y/n/e tests are "deferred to a future refactoring issue," but PR #1334 updated this to cite issue #1169 specifically.
+<!-- /sharkrite-doc-drift -->
