@@ -311,3 +311,116 @@ RESPONSE
     false
   }
 }
+
+@test "title-guard: drifted completion block rejected, slate unchanged, warning emitted" {
+  local slate="$RITE_TEST_TMPDIR/slate.txt"
+  _write_partial_slate "$slate"
+
+  # Completion returns a block with a reworded title — not in $_missing
+  cat > "$STUB_RESPONSE_FILE" <<'RESPONSE'
+---ISSUE---
+TITLE: Validate the hardware (echo with drift)
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: End-to-end validation.
+**Dependencies**: After #1, #2
+---END---
+RESPONSE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _request_missing_blocks "$slate" "BASE PROMPT" 2>"$stderr_out"
+
+  # Slate must be unchanged: only the two original blocks
+  [ "$(grep -c '^TITLE:' "$slate")" -eq 2 ] || {
+    echo "FAIL: slate grew despite title-drifted block in response" >&2
+    cat "$slate" >&2
+    false
+  }
+  # Warning must name the rejection
+  grep -q "not in missing list\|rejecting to prevent echo\|title-guard" "$stderr_out" || {
+    echo "FAIL: expected title-guard rejection warning" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  rm -f "$stderr_out"
+}
+
+@test "title-guard: mixed response — valid block appended, drifted block rejected" {
+  local slate="$RITE_TEST_TMPDIR/slate.txt"
+
+  # Partial slate missing two blocks (Validate on hardware + Add export feature)
+  cat > "$slate" <<'SLATE'
+```
+COVERAGE:
+- ✅ Harden the parse → Issue "Harden glance parse" [own issue — foundational]
+- ✅ Implement the Due tab → Issue "Implement Due tab"
+- ✅ On-hardware validation → Issue "Validate on hardware"
+- ✅ Add export feature → Issue "Add export feature"
+```
+---ISSUE---
+TITLE: Harden glance parse
+LABELS: phase-3,frontend,priority-high
+TIME: 1hr
+BODY:
+**Description**: Parse hardening.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Implement Due tab
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: Due tab.
+**Dependencies**: After #1
+---END---
+SLATE
+
+  # Completion returns one valid block and one title-drifted echo
+  cat > "$STUB_RESPONSE_FILE" <<'RESPONSE'
+---ISSUE---
+TITLE: Validate on hardware
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: End-to-end validation.
+**Dependencies**: After #1, #2
+---END---
+---ISSUE---
+TITLE: Add export features (echo with drift)
+LABELS: phase-3,frontend,priority-medium
+TIME: 1hr
+BODY:
+**Description**: Export.
+**Dependencies**: After #1
+---END---
+RESPONSE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _request_missing_blocks "$slate" "BASE PROMPT" 2>"$stderr_out"
+
+  # Exactly one new block appended: the valid one
+  [ "$(grep -c '^TITLE:' "$slate")" -eq 3 ] || {
+    echo "FAIL: expected 3 TITLE lines (2 original + 1 valid completion), got $(grep -c '^TITLE:' "$slate")" >&2
+    cat "$slate" >&2
+    false
+  }
+  grep -qx "TITLE: Validate on hardware" "$slate" || {
+    echo "FAIL: valid block not appended to slate" >&2
+    false
+  }
+  # Drifted block must not appear in the slate
+  ! grep -q "Add export features (echo with drift)" "$slate" || {
+    echo "FAIL: title-drifted block leaked into slate" >&2
+    false
+  }
+  # Warning must name the rejection
+  grep -q "not in missing list\|rejecting to prevent echo\|title-guard" "$stderr_out" || {
+    echo "FAIL: expected title-guard rejection warning" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+  rm -f "$stderr_out"
+}

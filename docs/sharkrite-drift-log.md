@@ -83,6 +83,15 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 `rite docs` directed-update description in CLAUDE.md omits the apply-site CREATE guard that now skips writes when the target file already exists.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1313 issue:1262 recorded:2026-10-19T23:58:01Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-targeted-block-completion.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s description of `_dedup_issues` as the deduplification mechanism for near-duplicate plan blocks is now incomplete — the title-guard in `plan-issues.sh` is the actual rejection point for reworded near-duplicates before they reach `_dedup_issues`.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T00:02:31Z -->
 **Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
 **Implicated docs**:
@@ -113,4 +122,29 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 - README.md — "🦈 Sharkrite"
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `CLAUDE.md:497` says the auto-resume feature is "macOS AC only" but `cap-resume.sh` re-invokes the batch on battery too — only the `caffeinate` hold is skipped on battery/non-macOS.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1315 issue:1293 recorded:2026-10-20T00:34:37Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` previously had no section for `_normalize_host_to_registrable_domain`. PR #1315 added the "Host-normalization contract" entry (item 3 "Known multi-part suffixes handled explicitly") documenting `co.uk`, `co.in`, `vercel.app`, `herokuapp.com`, and related suffixes. No prior doc content existed for this function — no inaccuracy to reconcile; doc is current.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1315 issue:1293 recorded:2026-10-20T00:45:30Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md states the multi-part TLD list covers only `co.uk com.au co.jp com.br`, but PR #1315 expanded it to also include `co.in`, `co.nz`, `co.za`, `net.au`, `org.au`, `org.uk`, `vercel.app`, `herokuapp.com`, `github.io`, and `netlify.app`.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1315 issue:1293 recorded:2026-10-20T00:50:28Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
 <!-- /sharkrite-doc-drift -->

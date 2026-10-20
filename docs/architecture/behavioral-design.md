@@ -1327,6 +1327,21 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 **Why `.` is excluded from the separator class:** Fixture AD exercises a `go.mod` containing `github.com/stretchr/testify`. The vendor token extracted from the `github.com` host is `github` (first label of the registrable domain). If `.` were included in the separator class alongside `@`, `/`, and `-`, the boundary regex `(^|[@/.-])github([@/.-]|$)` would match `github.com/stretchr/testify` — `github` sits at the start of the string, bounded on the right by `.` — causing the `github.com` host to be wrongly suppressed. The grounding mechanism is host-prefix self-grounding: the vendor token must match a package that is an SDK for that host (e.g., `@supabase/supabase-js` grounds `supabase.co`). A Go module path whose first domain label happens to equal the vendor token is not such an SDK. Excluding `.` confines the suppression to genuine SDK packages while rejecting coincidental Go module path matches. The accepted trade-off: a package name that uses `.` as a word-boundary separator (present in Go module paths by construction) would not ground a host even if it were the intended SDK. The `-` separator is retained because real SDK packages use it as a token boundary: `google-auth` grounds `*.google.com`, `stripe-python` grounds `*.stripe.com`.
 
+**Host-normalization contract — `_normalize_host_to_registrable_domain` (issue #1293, 2026-10-19):**
+
+`_normalize_host_to_registrable_domain` maps an extracted hostname to its registrable domain so that subdomain variants (`api.foo.co`, `auth.foo.co`) collapse to one key (`foo.co`) for fixture-grounding and spike-dedup purposes.  The function is **fail-closed**: when the suffix structure is unknown, it returns the host unchanged rather than producing a bare public suffix.  This guard substantially reduces the risk of a missing list entry silently collapsing a distinct service onto a public-suffix key, though it covers only the SLD keywords explicitly listed in the guard regex — suffixes outside that set still fall through to the two-label rule.
+
+Four specific behaviors are guaranteed:
+
+1. **Trailing dot stripped before any other processing.** FQDN form `api.authsvc.io.` normalizes identically to `api.authsvc.io`.  Without this, a sentence-final URL yields two spike keys for one service.
+2. **IP literals returned unchanged.** A host whose dot-separated labels are all numeric (e.g. `10.0.0.5`) is returned as-is — no registrable-domain concept applies to an IP.
+3. **Known multi-part suffixes handled explicitly.** A hardcoded list covers ccSLD patterns (`co.uk`, `co.in`, …) and common hosting suffixes (`vercel.app`, `herokuapp.com`, …).  For a host ending in one of these suffixes the registrable domain is `<registrar-label>.<suffix>`.
+4. **Unknown ccSLD-like patterns return the host unchanged.** After the multi-part list, the last-two-labels rule is applied.  If the result matches `^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$` — a known SLD keyword followed by a 2-letter ccTLD that is not in the hardcoded list — the function returns the original host rather than emitting a bare public suffix.  This is the fail-closed guard for patterns the list does not yet cover; SLD keywords outside this alternation still fall through to the two-label rule.
+
+The unverified-integration warning names **both** the normalized domain and the originating hostname (e.g. `unverified external integration: payments.io (from: api.payments.io)`), so an operator can locate the reference in the planning doc without cross-referencing subdomains.
+
+**Verify:** `grep -n 'registrable domain' docs/architecture/behavioral-design.md`
+
 **Lint and creation share non-spike ordinal space (issue #1150, 2026-10-13):**
 
 When `_detect_unverified_integrations` prepends spike issues, all subsequent `#N` dependency references inside a plan file operate in **non-spike ordinal space**: `#1` means the first non-spike issue, not the first raw issue in the file. Both the strict linter (`_lint_issues_strict`) and the creation-side issue loop (in `create_issues`) must interpret `#N` the same way; a mismatch causes the linter to approve ordinals the creation side rejects (or vice versa).
@@ -2083,3 +2098,42 @@ several times the findings. An operator override still wins.
 three-way outcome (assessed-with-NOW / assessed-with-nothing / not-assessed),
 the env contract passed to the assessor, and the no-bare-`exit` best-effort
 property of the region.
+
+## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
+
+`attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the
+working tree**". It cannot stage: the session prompt says "do NOT run git add",
+and the caller stages via `commit_resolved_conflicts` afterwards. So at
+verification time every known conflict path is still unmerged in the index, by
+design.
+
+Step-6 Check 1 asserted the opposite — `git diff --diff-filter=U` must be
+empty — which is only true if something staged, which only the session could
+have done, which the prompt forbids. **The check could only pass when the
+session disobeyed.**
+
+Check 1 came from #435. #932 moved staging out of the session and added the
+no-git-add instruction, but left the assertion behind. Once sessions actually
+complied, every Claude conflict resolution failed immediately after producing a
+correct one — live: #1231 (PR #1299) and #1143 (PR #1312), both 2026-10-19,
+both correctly merging append-only drift-log entries and independent bats
+tests, both discarded with "Unresolved files remain after Claude session".
+
+**The corrected split of responsibility:**
+
+| Check | Question | Oracle |
+|---|---|---|
+| 1 | Is every unmerged path one the session was given? | index vs `_cr_conflict_files` |
+| 2 | Is every given path marker-free? | working-tree content |
+
+Together those are the real contract. Check 1 still catches a conflict that
+appeared after the path list was captured, or one the session introduced; Check
+2 catches a resolution that left markers behind. Neither tests staging, because
+staging is a later step's job.
+
+**Rule:** a verification step asserts only what the steps before it were
+responsible for establishing. Asserting a postcondition that a *later* step
+owns means the check is reading the wrong stage of the pipeline, and a check
+that can only pass by accident is worse than no check — it fails closed on
+correct work. The prompt text and Check 1's premise are coupled, so
+`tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.

@@ -1567,6 +1567,65 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Fixture V2: single issue with two distinct ungrounded hosts — block boundaries
+# must be intact after the Dependencies append branch fires twice.
+#
+# One issue references svc-a.io and svc-b.io.  After pass-3, the issue's block
+# must end with a standalone ---END--- line (not glued to the next ---ISSUE---).
+# ---------------------------------------------------------------------------
+
+@test "Fixture V2: two-distinct-hosts in one issue preserves block boundaries after Dependencies append" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-v2.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Integrate two services
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.svc-a.io/data and https://api.svc-b.io/data for results.
+---END---
+---ISSUE---
+TITLE: Follow-up work
+LABELS: feature
+TIME: 30min
+BODY:
+No external calls here.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Block separators must be intact: ---END--- must always appear on its own line.
+  # If the trailing newline is lost from the sed-append path, ---END---
+  # gets glued to the following ---ISSUE--- on the same line.
+  grep -q "^---END---$" "$issues_file" || {
+    echo "FAIL: ---END--- does not appear on its own line — block boundary corrupted by Dependencies append" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Verify issue count is correct: 2 spikes + 2 originals = 4
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 4 ] || {
+    echo "FAIL: expected 4 issues (2 spikes + 2 originals), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Fixture W: multi-part TLD (co.uk) — third label becomes registrable domain
 #
 # api.myservice.co.uk normalizes to myservice.co.uk (not co.uk).
@@ -2386,6 +2445,120 @@ FIXTURE
     echo "FAIL: test fixture unexpectedly contains SPIKE_KEY: field" >&2
     false
   } || true
+}
+
+# ---------------------------------------------------------------------------
+# Table-driven unit tests for _normalize_host_to_registrable_domain (#1293)
+#
+# These tests exercise the function directly (not through _detect_unverified_integrations)
+# so each behavioral defect is caught at the unit level, independent of end-to-end setup.
+#
+# The setup() already loads _normalize_host_to_registrable_domain via the
+# _extract_packages_for_language → _dedup_issues line-range eval.
+# ---------------------------------------------------------------------------
+
+@test "registrable domain: standard last-two-labels strips subdomain (api.authsvc.io → authsvc.io)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.authsvc.io")
+  [ "$result" = "authsvc.io" ] || {
+    echo "FAIL: expected 'authsvc.io', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: trailing dot normalizes identically to same host without dot" {
+  local with_dot without_dot
+  with_dot=$(_normalize_host_to_registrable_domain "api.authsvc.io.")
+  without_dot=$(_normalize_host_to_registrable_domain "api.authsvc.io")
+  [ "$with_dot" = "$without_dot" ] || {
+    echo "FAIL: 'api.authsvc.io.' → '$with_dot', 'api.authsvc.io' → '$without_dot' (should be equal)" >&2
+    false
+  }
+  # Both must resolve to the registrable domain, not the full subdomain
+  [ "$with_dot" = "authsvc.io" ] || {
+    echo "FAIL: trailing-dot form expected 'authsvc.io', got '$with_dot'" >&2
+    false
+  }
+}
+
+@test "registrable domain: IP literal is returned unchanged (10.0.0.5 → 10.0.0.5)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "10.0.0.5")
+  [ "$result" = "10.0.0.5" ] || {
+    echo "FAIL: expected '10.0.0.5', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: unlisted ccSLD suffix returns host unchanged (api.foo.co.ve → api.foo.co.ve)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.foo.co.ve")
+  [ "$result" = "api.foo.co.ve" ] || {
+    echo "FAIL: expected 'api.foo.co.ve' (fail-closed), got '$result'" >&2
+    false
+  }
+  # Must NOT return the bare public suffix co.ve
+  [ "$result" != "co.ve" ] || {
+    echo "FAIL: result is bare public suffix 'co.ve'" >&2
+    false
+  }
+}
+
+@test "registrable domain: known hosting suffix (vercel.app) extracts user subdomain correctly" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.myapp.vercel.app")
+  [ "$result" = "myapp.vercel.app" ] || {
+    echo "FAIL: expected 'myapp.vercel.app', got '$result'" >&2
+    false
+  }
+  # Must NOT return the bare hosting suffix vercel.app
+  [ "$result" != "vercel.app" ] || {
+    echo "FAIL: result is bare hosting suffix 'vercel.app'" >&2
+    false
+  }
+}
+
+@test "registrable domain: known multi-part TLD (co.uk) extracts third-from-right label" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.myservice.co.uk")
+  [ "$result" = "myservice.co.uk" ] || {
+    echo "FAIL: expected 'myservice.co.uk', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: already-registrable host is returned as-is (authsvc.io → authsvc.io)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "authsvc.io")
+  [ "$result" = "authsvc.io" ] || {
+    echo "FAIL: expected 'authsvc.io', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: warning names both originating hostname and normalized domain" {
+  # Integration test: _detect_unverified_integrations emits a warning that includes
+  # both the registrable domain AND the original subdomain that triggered it.
+  local issues_file="$RITE_TEST_TMPDIR/issues-warn-orig.txt"
+  write_issues_file "$issues_file" \
+    "Integrate payment API" \
+    "Call https://api.payments.io/v1/charge to initiate a charge."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  # Warning must include BOTH the normalized domain and the originating hostname in
+  # the structured "(from: ...)" format — matching only the full phrase prevents a
+  # regression where "payments.io" passes because "api.payments.io" is present as a
+  # substring even if the normalized domain itself was omitted from the warning.
+  grep -q "payments\.io (from: api\.payments\.io)" "$stderr_out" || {
+    echo "FAIL: WARNING does not name normalized domain 'payments.io' alongside originating hostname 'api.payments.io'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
 }
 
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
