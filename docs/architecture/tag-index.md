@@ -39,13 +39,12 @@
 
 
 
+
 ## Created
-- behavioral-design.md → Directed-Update Proposal Guards (#1208)
-- behavioral-design.md → ADR Backfill (bootstrap-docs.sh)
+- behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
 
 
 ## Updated
-- behavioral-design.md → Decision: How Sharkrite Maintains Its Own Docs
 - behavioral-design.md → Directed-Update Proposal Guards (#1208)
 - behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
 
