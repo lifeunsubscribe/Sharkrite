@@ -2966,7 +2966,7 @@ FIXTURE
 
   # The parallel annotation must have been removed from issue #2's Dependencies
   grep "Add Auth Middleware" "$issues_file" || true  # title still present
-  grep -A5 "Add Auth Middleware" "$issues_file" | grep -q "can run in parallel with #1" && {
+  sed -n '/^TITLE: Add Auth Middleware/,/^---END---$/p' "$issues_file" | grep -q "can run in parallel with #1" && {
     echo "FAIL: parallel annotation not removed from issue #2's Dependencies" >&2
     cat "$issues_file" >&2
     false
@@ -3075,7 +3075,7 @@ FIXTURE
 
   # B must be rewritten: After #1
   grep "Extend Schema A with Indexes" "$issues_file" || true
-  grep -A10 "Extend Schema A with Indexes" "$issues_file" | grep -q "After #1" || {
+  sed -n '/^TITLE: Extend Schema A with Indexes/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
     echo "FAIL: expected B (Extend Schema A) to have After #1" >&2
     cat "$issues_file" >&2
     false
@@ -3083,7 +3083,7 @@ FIXTURE
 
   # C must be rewritten: After #2
   grep "Add Schema B Relations" "$issues_file" || true
-  grep -A10 "Add Schema B Relations" "$issues_file" | grep -q "After #2" || {
+  sed -n '/^TITLE: Add Schema B Relations/,/^---END---$/p' "$issues_file" | grep -q "After #2" || {
     echo "FAIL: expected C (Add Schema B Relations) to have After #2" >&2
     cat "$issues_file" >&2
     false
@@ -3201,8 +3201,130 @@ FIXTURE
   }
 
   # impl-B (Add DB Indexes) must be rewritten with After #1 in the file
-  grep -A10 "Add DB Indexes" "$issues_file" | grep -q "After #1" || {
+  sed -n '/^TITLE: Add DB Indexes/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
     echo "FAIL: expected 'Add DB Indexes' to be rewritten with After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Ordinal collision regression: After #12 must not satisfy the After #1 check.
+#
+# Fixture: issue #12 (ordinal 12) modifies src/x.py.  Issue #13 modifies
+# src/x.py and declares parallel with #12.  Issue #13 already has "After #12"
+# from a prior chain.  The auto-chain pass should NOT treat "After #12" as
+# satisfying the "add After #1" step when ordinal 1 is different from 12.
+#
+# This tests the word-boundary grep fix: grep -qE "After #N([^0-9]|$)" must
+# not match "After #12" when N=1.
+# ---------------------------------------------------------------------------
+
+@test "Ordinal collision: After #12 does not satisfy After #1 check — both rewrites distinct" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ordinal-collision.txt"
+
+  # Build a fixture with 12 non-spike issues so ordinals 1 and 12 both exist.
+  # Issue 1 (ordinal 1) modifies src/common.py.
+  # Issue 12 (ordinal 12) modifies src/common.py — parallel with #1.
+  # After auto-chain: issue 12 gets "After #1" (not confused by "After #12" elsewhere).
+  local _fixture=""
+  _fixture="${_fixture}---ISSUE---
+TITLE: Issue Ordinal One
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+First issue.
+
+**Claude Context**:
+Files to Modify:
+- src/common.py
+
+**Acceptance Criteria**:
+- [ ] Done: \`true\`
+
+**Done Definition**: Done when present.
+
+**Dependencies**: None
+---END---
+"
+  # Issues 2-11: placeholders that don't touch src/common.py
+  local _i
+  for _i in 2 3 4 5 6 7 8 9 10 11; do
+    _fixture="${_fixture}---ISSUE---
+TITLE: Placeholder Issue ${_i}
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**:
+Placeholder.
+
+**Claude Context**:
+Files to Modify:
+- src/other_${_i}.py
+
+**Acceptance Criteria**:
+- [ ] Done: \`true\`
+
+**Done Definition**: Done.
+
+**Dependencies**: None
+---END---
+"
+  done
+  # Issue 12 (ordinal 12): modifies src/common.py, parallel with ordinal #1
+  _fixture="${_fixture}---ISSUE---
+TITLE: Issue Ordinal Twelve
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Twelfth issue.
+
+**Claude Context**:
+Files to Modify:
+- src/common.py
+
+**Acceptance Criteria**:
+- [ ] Done: \`true\`
+
+**Done Definition**: Done when complete.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+"
+  printf '%s' "$_fixture" > "$issues_file"
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit INFO auto-chain naming issue 12 and After #1
+  grep -q "auto-chained.*parallel-file-overlap" "$stderr_out" || {
+    echo "FAIL: expected auto-chain INFO" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue Ordinal Twelve must now have After #1 (not a substring match false-positive)
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
+    echo "FAIL: expected 'Issue Ordinal Twelve' to have After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # After #1 must be a word-boundary match — not accidentally matching After #12 as After #1
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #1([^0-9]|$)" || {
+    echo "FAIL: 'After #1' not found as a whole-number ref (word-boundary check)" >&2
     cat "$issues_file" >&2
     false
   }

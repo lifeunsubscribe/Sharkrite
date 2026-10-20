@@ -1522,12 +1522,15 @@ _transform_dep_line() {
   _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref}, /(can run in parallel with /" || true)
   # Last ref of multiple: "..., #N)" → remove ", #N"
   _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref})/)/g" || true)
+  # Middle ref of 3+: "(... #A, #N, #B ...)" → "(... #A, #B ...)"
+  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref},/,/g" || true)
   # Clean up now-empty paren group
   _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with )//" || true)
   _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with )//" || true)
 
   # Step 2: add After #N if not already present.
-  if ! echo "$_tdl_content" | grep -qF "$_tdl_after_tag"; then
+  # Use a word-boundary regex to avoid substring collision (#1 matching inside #12).
+  if ! echo "$_tdl_content" | grep -qE "After #${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
         # Replace "None" keyword with the After tag, preserving trailing content
@@ -1589,6 +1592,56 @@ _autochain_rewrite_deps() {
   done < "$_ard_file" > "$_ard_tmp"
 
   mv "$_ard_tmp" "$_ard_file"
+}
+
+# =============================================================================
+# _autochain_remove_par_annotation — remove a parallel-with ref from an issue's
+# Dependencies line WITHOUT adding an After tag.
+#
+# Used to clean up the earlier issue's stale "can run in parallel with #N"
+# annotation after the later issue has been rewritten to "After #N".
+#
+# Args: $1=issues_file  $2=title  $3=ref_num (ordinal to remove from annotation)
+# =============================================================================
+
+_autochain_remove_par_annotation() {
+  local _arpa_file="$1"
+  local _arpa_title="$2"
+  local _arpa_ref_num="$3"
+  local _arpa_par_ref="#${_arpa_ref_num}"
+
+  local _arpa_tmp
+  _arpa_tmp=$(mktemp)
+  local _arpa_in_target=false
+  local _arpa_dep_done=false
+
+  while IFS= read -r _arpa_line; do
+    if [ "$_arpa_line" = "---ISSUE---" ]; then
+      _arpa_in_target=false
+      _arpa_dep_done=false
+    elif [ "$_arpa_line" = "TITLE: ${_arpa_title}" ]; then
+      _arpa_in_target=true
+    elif [ "$_arpa_line" = "---END---" ]; then
+      _arpa_in_target=false
+    fi
+
+    if [ "$_arpa_in_target" = true ] && [ "$_arpa_dep_done" = false ] && \
+       echo "$_arpa_line" | grep -qE '^\*\*Dependencies\*\*:'; then
+      _arpa_dep_done=true
+      # Apply only annotation-removal sed patterns (no After tag added).
+      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with ${_arpa_par_ref})//" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref})//" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref}, /(can run in parallel with /" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref})/)/g" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref},/,/g" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with )//" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with )//" || true)
+    fi
+
+    printf '%s\n' "$_arpa_line"
+  done < "$_arpa_file" > "$_arpa_tmp"
+
+  mv "$_arpa_tmp" "$_arpa_file"
 }
 
 # =============================================================================
@@ -2462,6 +2515,8 @@ _lint_issues_strict() {
             if [ "$_pi" -lt "$_pj" ]; then
               # _pj is the later issue (higher ordinal)
               _autochain_rewrite_deps "$issues_file" "$_pj_title" "$_after_num"
+              # Clean up _pi's stale parallel annotation referencing _pj (bidirectional case).
+              _autochain_remove_par_annotation "$issues_file" "$_pi_title" "$_prefnum"
               print_info "[auto-chained] parallel-file-overlap: '$_pj_title' rewired After #${_after_num} ('$_pi_title'); both modify '${_par_shared}'" >&2
             else
               # _pi is the later issue (higher ordinal)

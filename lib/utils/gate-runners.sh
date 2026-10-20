@@ -7,6 +7,14 @@
 
 set -euo pipefail
 
+# Bash 3.2 (macOS system /bin/bash) cannot parse nested process substitutions
+# of the form used in this file (case + <(...) inside an outer <(...)).
+# This file is always sourced; the caller must run under bash 4+.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "ERROR: lib/utils/gate-runners.sh requires bash 4+. Install via: brew install bash" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 # Sentinel is _node_pkg_manager (not _gate_status: _gate_status is stub-attractive
 # in gate-flake-retry.bats and a pre-source stub would skip the whole file silently).
