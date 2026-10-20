@@ -42,12 +42,3 @@
 
 
 
-## Guard
-- conventions.md → defensive-sourcing-must-be-idempotent
-- conventions.md → Variable-sentinel re-source guards for lib files that export -f
-- conventions.md → Guard bare RITE_* path vars under set -u
-
-
-## DO
-- encountered-issues.md → Dev session deletes unrelated regression tests — scope boundary not enforced
-
