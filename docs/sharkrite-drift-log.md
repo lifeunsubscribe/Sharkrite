@@ -164,3 +164,19 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 
 CLAUDE.md's "macOS AC only" description of cap auto-resume is incorrect — the feature waits and re-invokes on battery and non-macOS too, skipping only the `caffeinate` hold.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T04:31:48Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `README.md:147` shows `RITE_MAX_SESSION_HOURS` default as `4`, while the actual default in `config.sh` and all documentation is `12`. This is the inaccuracy.
+
+`README.md` documents `RITE_MAX_SESSION_HOURS` default as `4` but the actual default is `12` (set in `config.sh`, `blocker-rules.sh`, `batch-process-issues.sh`, and `configuration.md`).
+<!-- /sharkrite-doc-drift -->
