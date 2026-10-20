@@ -2553,6 +2553,10 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
           rm -f "$_finding_body_file"
           _new_issue_num=$(echo "$_new_issue_url" | grep -oE '[0-9]+$' || true)
           _new_issue_num="${_new_issue_num:-}"
+          # Telemetry for the batch reporter's "Issues Created" line and for
+          # health-report aggregation of follow-up volume. Emitted only on a
+          # confirmed creation (a URL came back), never on the orphan path.
+          _diag "FOLLOWUP_CREATED issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER:-} followup=${_new_issue_num:-unknown}"
 
           if [ -n "$_new_issue_num" ]; then
             FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_new_issue_num} "
