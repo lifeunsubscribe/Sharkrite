@@ -456,6 +456,9 @@ ${_ue_excerpt}
 
   local _ue_accum_fb=""
   local _ue_attempt=0
+  # Per-generation unique end token prevents content containing ---END--- from
+  # being mistaken for the proposal delimiter (issue #1233).
+  local _ue_end_token="---END-${RANDOM}${RANDOM}---"
 
   while [ "$_ue_attempt" -lt 5 ]; do
     _ue_attempt=$((_ue_attempt + 1))
@@ -503,7 +506,7 @@ DRIFT_REFS: <space-separated pr:N entries from drift log this change addresses, 
 DESCRIPTION: <one-line summary of what changes and why>
 ---CONTENT---
 <complete new content of the file>
----END---
+${_ue_end_token}
 
 For a NEW file to CREATE:
 ---PROPOSAL---
@@ -513,7 +516,7 @@ DRIFT_REFS: none
 DESCRIPTION: <one-line summary>
 ---CONTENT---
 <complete content of the new file>
----END---
+${_ue_end_token}
 
 If no changes are needed, output only the line: NO_PROPOSALS_NEEDED
 DOC_UPDATE_EOF
@@ -567,7 +570,7 @@ DOC_UPDATE_EOF
         "---CONTENT---")
           [ "$_ue_in_prop" = "1" ] && _ue_in_content=1
           ;;
-        "---END---")
+        "${_ue_end_token}")
           if [ "$_ue_in_prop" = "1" ] && [ -n "$_ue_cur_file" ]; then
             _ue_prop_count=$((_ue_prop_count + 1))
             {

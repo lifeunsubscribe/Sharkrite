@@ -853,6 +853,22 @@ The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces
 
 The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. **Apply-site defense-in-depth (#1232):** `_docs_apply_approved` mirrors this guard: after forking the worktree from `origin/<target>` (with its own `git fetch` at ~line 206), it re-checks `[ -f "$_aa_target_file" ]` before writing any CREATE proposal. A file pushed to origin during the interactive preview session will be present in the worktree (the fetch pulled it) and the apply-site guard refuses the write with a warning. This shrinks the window from the full preview session to the fetch-to-write interval, provided the apply-site fetch succeeds (the fetch is `|| true`; on network failure the worktree may not contain the newest origin files, so the residual window degrades back to the full preview session (the last successfully fetched origin/<target> state)).
 
+### Proposal Format: Per-Generation End Token (#1233)
+
+The proposal wire format uses a delimiter line to mark the end of each proposal's content block. A fixed delimiter like `---END---` is unsafe: any proposal whose content includes that literal string on a line by itself is silently truncated at parse time — self-referential risk since `docs/architecture/behavioral-design.md` (this file) and bats test fixtures both contain `---END---` lines.
+
+**Fix:** `_docs_update_engine` generates a per-call unique end token before the feedback loop:
+
+```bash
+local _ue_end_token="---END-${RANDOM}${RANDOM}---"
+```
+
+The token is injected into the `DOC_UPDATE_EOF` prompt heredoc so the LLM knows which string to use as the end marker, and into the case pattern that detects the end-of-proposal during parsing. Because bash case patterns expand variables, `"${_ue_end_token}"` matches the generated string at runtime.
+
+**Why this approach over escaping:** An escaping scheme (e.g. replace `---END---` in content with `\---END---`, unescape on parse) requires the LLM to reliably apply the escaping rule — which it may not do when the content contains `---END---` in a code block or diff output. The per-generation token approach eliminates the collision opportunity entirely: the token is never in any existing document, so content cannot accidentally match it.
+
+**Scope:** only the `_docs_update_engine` LLM-output parser and its prompt. The saved proposal files (written by the parser, read by `_docs_apply_approved`) use EOF as their implicit delimiter and are unaffected.
+
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
 `mid-run-rebase.sh::check_and_rebase_against_main()` runs at the start of Phase 3 to catch the case where main moved during the run. The decision is driven by **whether the branch actually conflicts with main**, computed with `git merge-tree --write-tree` (a pure in-memory merge — no working tree, commit, force-push, or test-gate re-run):
