@@ -383,3 +383,14 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 **Suspected inaccuracy**: `behavioral-design.md` says behavioral y/n/e main-flow tests are "deferred to #1169" but PR #1334 removed that issue citation, replacing it with "file a tracking issue" (no issue number).
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T06:41:18Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md:599` says behavioral tests for the main-flow commit+push prompt are "deferred" pending extraction of `claude-workflow.sh:3747` into a callable function, but the PR updated `supervised-commit-push-prompt.bats` to cite line 3747 as the specific inline location — meaning the doc now accurately describes the defer but may misstate whether a tracking issue already exists or remains unfiled.
+
+The doc at line 599 still says "operator must file tracking issue" and "consolidate with the `assess-and-resolve.sh` RITE_GATE_FINDINGS builder extraction deferred in `tests/regression/test-gate-parallel.bats`" — but the PR added that RITE_GATE_FINDINGS deferral comment to `test-gate-parallel.bats` for the first time, meaning the doc referenced a deferral in that file before the file actually contained it.
+
+`behavioral-design.md:599` cross-references a deferral in `tests/regression/test-gate-parallel.bats` that did not exist until this PR added it, so the doc pre-dated and drove the test comment rather than describing existing test state.
+<!-- /sharkrite-doc-drift -->
