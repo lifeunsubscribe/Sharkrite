@@ -382,5 +382,4 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 **Implicated docs**:
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 - CLAUDE.md — "Sharkrite Development Guide"
-**Suspected inaccuracy**: `CLAUDE.md`'s `rite docs` description claims the proposal format uses `---END---` as the delimiter, but PR #1341 replaced it with a per-generation unique token `---END-${RANDOM}${RANDOM}---`.
 <!-- /sharkrite-doc-drift -->

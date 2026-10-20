@@ -81,7 +81,7 @@ provider_run_prompt_with_timeout() {
   # content the way ---END--- could (enabling round-trip tests for ---END--- in
   # content — see acceptance criterion 16).
   local _end_tok
-  _end_tok="$(printf '%s\n' "$_prompt" | grep -oE '---END-[0-9]+---' | head -1 || true)"
+  _end_tok="$(printf '%s\n' "$_prompt" | grep -oE -- '---END-[0-9]+---' | head -1 || true)"
   if [ -n "$_end_tok" ]; then
     printf '%s\n' "$_stub" | sed "s/@@END@@/${_end_tok}/"
   else
