@@ -376,3 +376,11 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 - docs/configuration.md — "Configuration"
 **Suspected inaccuracy**: `branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1341 issue:1233 recorded:2026-10-20T15:09:11Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s `rite docs` description claims the proposal format uses `---END---` as the delimiter, but PR #1341 replaced it with a per-generation unique token `---END-${RANDOM}${RANDOM}---`.
+<!-- /sharkrite-doc-drift -->
