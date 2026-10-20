@@ -125,6 +125,19 @@ RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
 export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
 STUB
 
+  cat > "$_lib/utils/format-review.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_FORMAT_REVIEW_LOADED=true
+strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
+parse_review_severity_counts() {
+  _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; _PRC_TIER=0
+}
+STUB
+
   # merge-pr.sh stub: records calls and exits 0
   cat > "$_lib/core/merge-pr.sh" << 'STUB'
 #!/bin/bash

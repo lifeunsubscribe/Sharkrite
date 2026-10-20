@@ -882,6 +882,9 @@ ${_promo_now_items}"
     parse_review_severity_counts "${_promo_review:-}"
     _promo_h=$_PRC_HIGH; _promo_m=$_PRC_MEDIUM; _promo_l=$_PRC_LOW
     _promo_noncrit=$(( _promo_h + _promo_m + _promo_l ))
+    if [ "${_PRC_TIER:-0}" -eq 3 ]; then
+      _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} tier=3 review_bytes=${#_promo_review}"
+    fi
     if [ "${_promo_noncrit}" -eq 0 ]; then
       _diag "PROMOTE_FOLLOWUP_PARSE_ZERO branch=${BRANCH:-} pr=${PROMO_PR:-} review_bytes=${#_promo_review}"
     fi

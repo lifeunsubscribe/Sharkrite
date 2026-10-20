@@ -231,7 +231,10 @@ _fr_fallback_clean() {
 # Arg 1: review body text
 #
 # Sets globals (overwritten on every call):
-#   _PRC_CRITICAL  _PRC_HIGH  _PRC_MEDIUM  _PRC_LOW
+#   _PRC_CRITICAL  _PRC_HIGH  _PRC_MEDIUM  _PRC_LOW  _PRC_TIER
+#
+# _PRC_TIER indicates which tier supplied the counts:
+#   1 = JSON block, 2 = Findings line, 3 = item markers, 0 = no data found
 #
 # 3-tier parse — identical logic in every caller:
 #   Tier 1: embedded sharkrite-review-data JSON block (.summary.{critical,…})
@@ -242,7 +245,7 @@ _fr_fallback_clean() {
 # ---------------------------------------------------------------------------
 parse_review_severity_counts() {
   local _review="${1:-}"
-  _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0
+  _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; _PRC_TIER=0
 
   # Tier 1: JSON block — most reliable; present in all reviews since the
   # sharkrite-review-data marker was introduced.
@@ -259,6 +262,7 @@ parse_review_severity_counts() {
     _PRC_HIGH="${_PRC_HIGH%%[^0-9]*}";         _PRC_HIGH="${_PRC_HIGH:-0}"
     _PRC_MEDIUM="${_PRC_MEDIUM%%[^0-9]*}";     _PRC_MEDIUM="${_PRC_MEDIUM:-0}"
     _PRC_LOW="${_PRC_LOW%%[^0-9]*}";           _PRC_LOW="${_PRC_LOW:-0}"
+    _PRC_TIER=1
     return 0
   fi
 
@@ -273,6 +277,7 @@ parse_review_severity_counts() {
     _PRC_HIGH=$(printf '%s' "$_fl"     | grep -oE "HIGH: *[0-9]+"     | grep -oE "[0-9]+" | head -1 || echo "0")
     _PRC_MEDIUM=$(printf '%s' "$_fl"   | grep -oE "MEDIUM: *[0-9]+"   | grep -oE "[0-9]+" | head -1 || echo "0")
     _PRC_LOW=$(printf '%s' "$_fl"      | grep -oE "LOW: *[0-9]+"      | grep -oE "[0-9]+" | head -1 || echo "0")
+    _PRC_TIER=2
     return 0
   fi
 
@@ -286,6 +291,7 @@ parse_review_severity_counts() {
     _PRC_HIGH=$(printf '%s' "$_review"     | grep -cE "<!-- item:[0-9]+ severity:HIGH"     || true)
     _PRC_MEDIUM=$(printf '%s' "$_review"   | grep -cE "<!-- item:[0-9]+ severity:MEDIUM"   || true)
     _PRC_LOW=$(printf '%s' "$_review"      | grep -cE "<!-- item:[0-9]+ severity:LOW"      || true)
+    _PRC_TIER=3
   fi
 }
 
