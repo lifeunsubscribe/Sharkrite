@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: bin/rite
+# sharkrite-test-covers: bin/rite, CLAUDE.md
 # tests/regression/promote-sync-logging.bats
 #
 # Regression: --promote and --sync create named log files via the standard
-# FIFO tee (issue #1211). The fix moved their dispatch below the logging
+# nested-procsub tee (issue #1211). The fix moved their dispatch below the logging
 # setup block; prior to the fix both modes dispatched early and exited
 # before logging was initialised, leaving no transcript.
 #
@@ -53,6 +53,18 @@ _line_of() {
 }
 
 # ---------------------------------------------------------------------------
+# Group 0: Documentation accuracy — CLAUDE.md log-capture description
+# Pins that CLAUDE.md documents the actual nested-procsub pattern, not the
+# aspirational FIFO that was never implemented (issue #1277).
+# ---------------------------------------------------------------------------
+
+@test "CLAUDE.md: log capture documented as nested procsub, not FIFO" {
+  # Pre-#1277, CLAUDE.md claimed a FIFO was implemented; pin the correction.
+  grep -q "nested process-substitution" "$RITE_REPO_ROOT/CLAUDE.md"
+  ! grep -qF "FIFO-based tee (implemented" "$RITE_REPO_ROOT/CLAUDE.md"
+}
+
+# ---------------------------------------------------------------------------
 # Group 1: Structural — exemption list
 # The exemption is a single if-statement that matches both "status" and
 # "health-report".  Promote and sync must not appear on that line.
@@ -80,12 +92,12 @@ _line_of() {
 
 # ---------------------------------------------------------------------------
 # Group 2: Structural — dispatch order
-# The logging-setup block (FIFO tee) must appear before both dispatches.
+# The logging-setup block (nested-procsub tee) must appear before both dispatches.
 # Use a unique text fragment from each landmark to get its line number.
 # ---------------------------------------------------------------------------
 
 @test "bin/rite: promote dispatch line appears after logging-setup line" {
-  # Landmark: the FIFO tee that captures output to the log file.
+  # Landmark: the nested-procsub tee that captures output to the log file.
   local _log_line _dispatch_line
   _log_line=$(_line_of 'exec > >(tee >(strip_ansi')
   # Promote dispatch: the source line that loads promote-branch.sh.

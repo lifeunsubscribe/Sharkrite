@@ -625,6 +625,34 @@ CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review 
 `CLAUDE.md` lists "review PR comments" as one of the four sanitized seams, but `local-review.sh` sanitizes the raw review output before it is posted, not the PR comment itself.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:31:07Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `docs/architecture/behavioral-design.md` may still describe the log-capture mechanism as a FIFO-based tee rather than the nested-procsub pattern that CLAUDE.md now documents.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:35:40Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md` still describes `bin/rite` as using a FIFO-based tee, but PR #1358 changed the implementation to a nested process-substitution pattern (`exec > >(tee >(strip_ansi >> FILE))`).
+
+`behavioral-design.md` claims `bin/rite` uses a FIFO-based tee to prevent tail-truncation, but the implementation was changed to nested process-substitution with a known truncation race.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:02:36Z -->
 **Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
 **Implicated docs**:
@@ -632,6 +660,23 @@ CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review 
 - docs/configuration.md — "Configuration"
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `behavioral-design.md`'s never-external paragraph contains a stray `**Verify:**` grep line accidentally committed from the issue's Documentation Impact section, not behavioral documentation.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T22:04:25Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The test file exists and covers `bin/rite-full-suite` — so CLAUDE.md's reference to it for the "prior attempt at a FIFO+explicit-`wait` pattern in `bin/rite-full-suite` caused a deadlock" claim appears plausible. 
+
+Now I have enough context. The PR changed the log-capture description from "FIFO-based (implemented)" to "nested-procsub (FIFO not implemented, has tail-truncation race)". CLAUDE.md now says FIFO was "not implemented" and still mentions a deadlock test in `full-suite-subcommand.bats`. That test actually covers `bin/rite-full-suite` safety-net behavior, not the FIFO deadlock — so CLAUDE.md's claim that `tests/regression/full-suite-subcommand.bats` documents the FIFO+wait deadlock is the most likely inaccuracy introduced by this PR.
+
+`CLAUDE.md`'s "Log capture pattern" section claims `tests/regression/full-suite-subcommand.bats` documents the FIFO+explicit-`wait` deadlock, but that file covers the full-suite safety-net behavior, not the FIFO deadlock.
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:07:24Z -->

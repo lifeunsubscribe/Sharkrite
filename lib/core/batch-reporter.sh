@@ -44,6 +44,32 @@ _batch_compute_totals() {
 #         AUTH_FAILURE_ISSUES (optional, defaults to empty),
 #         TOTAL_DURATION (optional)
 # ---------------------------------------------------------------------------
+# _batch_followups_created — issue numbers created by this batch, newline-separated
+# Source: FOLLOWUP_CREATED diag lines in this run's log. _diag writes directly to
+# RITE_LOG_FILE, and every slot in the batch inherits that path, so the batch log
+# is a complete and self-scoped record — no GitHub query, no cross-batch bleed.
+# Empty when there is no log (e.g. --no-log) or no follow-ups were created.
+#
+# Both per-issue creation sites emit this diag: the rolled-up follow-up in
+# assess-and-resolve.sh and the ACTIONABLE_LATER per-item issue in
+# assess-review-issues.sh. Instrumenting only one undercounts whichever shape a
+# batch's findings took.
+#
+# The leading '| ' is the _diag record separator, and it is load-bearing: it
+# pins the match to the START of the message so the promote-path siblings
+# (PROMOTE_FOLLOWUP_CREATED, PROMOTE_ASSESSED_FOLLOWUP_CREATED) cannot match on
+# a suffix. They carry no followup= field today, so the numeric guard alone
+# happens to exclude them — anchoring means a future field rename cannot
+# silently fold promote counts into a batch's total.
+_batch_followups_created() {
+  [ -n "${RITE_LOG_FILE:-}" ] || return 0
+  [ -f "${RITE_LOG_FILE:-}" ] || return 0
+  grep -oE '\| FOLLOWUP_CREATED .*followup=[0-9]+' "$RITE_LOG_FILE" 2>/dev/null \
+    | grep -oE 'followup=[0-9]+' \
+    | cut -d= -f2 \
+    | sort -un || true
+}
+
 _batch_print_stats() {
   local _cleanup_warning_count=${#MERGED_CLEANUP_FAILED[@]}
   # ALREADY_CLOSED_AT_START_ISSUES may not be declared in older test fixtures;
@@ -85,6 +111,14 @@ _batch_print_stats() {
   echo "Failed:           ${#FAILED_ISSUES[@]}"
   echo "Blocked:          ${#BLOCKED_ISSUES[@]}"
   echo "Skipped:          ${#SKIPPED_ISSUES[@]}"
+  local _fu_list _fu_count
+  _fu_list=$(_batch_followups_created)
+  _fu_count=$(printf '%s\n' "$_fu_list" | grep -c . || true)
+  if [ "${_fu_count:-0}" -gt 0 ]; then
+    echo "Issues Created:   ${_fu_count} (follow-ups: $(printf '%s' "$_fu_list" | tr '\n' ' ' | sed 's/ $//' | sed 's/ /, #/g; s/^/#/'))"
+  else
+    echo "Issues Created:   0"
+  fi
   if [ -n "${TOTAL_DURATION:-}" ]; then
     echo "Total Duration:   ${TOTAL_DURATION}s ($((TOTAL_DURATION / 60))m)"
   fi
