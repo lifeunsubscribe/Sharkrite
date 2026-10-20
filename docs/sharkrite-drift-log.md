@@ -64,9 +64,9 @@ CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_b
 - docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
 - docs/test-authoring-runbook.md — "Test Authoring Runbook"
 - CLAUDE.md — "Sharkrite Development Guide"
-**Suspected inaccuracy**: The CLAUDE.md architecture table at line 56 attributes `gate-verdict.sh` as "(extracted from test-gate.sh, issue #1236)" but this extraction was done in issue #1240 (this PR), not #1236.
+**Suspected inaccuracy**: The CLAUDE.md architecture table description for `gate-verdict.sh` does not mention `_gate_build_verdict`, which was added to that file in issue #1240 (this PR). The file itself was correctly extracted from test-gate.sh in issue #1236; only the description is incomplete.
 
-`gate-verdict.sh` description in CLAUDE.md cites issue #1236 as the extraction source, but it was extracted in issue #1240.
+`gate-verdict.sh` description in CLAUDE.md should additionally mention `_gate_build_verdict` added in #1240.
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:04:39Z -->
