@@ -3390,10 +3390,10 @@ else
   # Set timeout for Claude Code (configurable via RITE_CLAUDE_TIMEOUT, default 2 hours)
   CLAUDE_TIMEOUT=${RITE_CLAUDE_TIMEOUT:-7200}
   _timer_start "claude_dev_session"
-  print_status "Launching Sharkrite (timeout: ${CLAUDE_TIMEOUT}s)..."
 
   # Both modes run in FOREGROUND for streaming output
   CLAUDE_EXIT_CODE=0
+  CLAUDE_STDERR_FILE=""
 
   # Safety gate: provider must support tool restrictions for unsupervised mode
   if [ "$AUTO_MODE" = true ] && ! provider_supports_tool_restrictions; then
@@ -3403,72 +3403,100 @@ else
     exit 1
   fi
 
-  # Capture provider stderr for diagnostics
-  CLAUDE_STDERR_FILE=$(mktemp)
+  _dev_attempt=0
+  while true; do
+    _dev_attempt=$(( _dev_attempt + 1 ))
+    print_status "Launching Sharkrite (timeout: ${CLAUDE_TIMEOUT}s)..."
 
-  provider_run_agentic_session "$CLAUDE_PROMPT" "$CLAUDE_TIMEOUT" "$AUTO_MODE" "$CLAUDE_STDERR_FILE"
-  CLAUDE_EXIT_CODE=$?
-
-  # Handle exit codes
-  if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
-    # Timeout
-    print_error "Sharkrite timed out after ${CLAUDE_TIMEOUT}s"
-    print_status "Checking for uncommitted work..."
-
-    if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
-      print_warning "Found uncommitted changes - committing before exit"
-      # Fall through to post-workflow to commit changes
-    else
-      print_error "No changes detected - workflow failed"
-      exit 1
-    fi
-  elif [ $CLAUDE_EXIT_CODE -eq 127 ]; then
-    # Command not found - this is a setup error, not recoverable
-    print_error "Command not found (exit code 127)"
-    print_error "This usually means a required tool is missing."
-    print_info "Check that the '$(provider_name)' CLI is installed"
-    exit 127
-  elif [ $CLAUDE_EXIT_CODE -eq 5 ]; then
-    # Usage cap reached — claude_provider_run_agentic_session detected the
-    # "Spending cap reached" / "usage limit reached" message in the CLI's
-    # output and translated it into exit 5. Propagate so the batch processor
-    # aborts the rest of the batch instead of burning ~40s per remaining
-    # issue on doomed dev-session restarts.
-    # See: lib/core/batch-process-issues.sh exit-5 handler.
-    print_error "Claude usage cap reached during dev session — aborting batch"
-    if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
-      echo "Provider message:"
-      grep -iE "spending cap|usage limit|rate limit|[0-9]+-hour limit" "$CLAUDE_STDERR_FILE" | head -3 || true
-    fi
-    exit 5
-  elif [ $CLAUDE_EXIT_CODE -eq 18 ]; then
-    # Provider auth failure — claude_provider_run_agentic_session detected the
-    # auth fingerprint ("Invalid API key · Please run /login" or equivalent 401
-    # class message) and translated it into exit 18. Propagate so the batch
-    # processor halts immediately with a remediation hint instead of burning
-    # ~2min per remaining issue on guaranteed-futile dev-session restarts.
-    # Single-issue mode: exit 18 surfaces the clear auth error to the operator.
-    # See: lib/core/batch-process-issues.sh exit-18 handler.
-    # See: docs/architecture/exit-codes.md — exit 18.
-    print_error "$(provider_name) is not authenticated — dev session cannot start"
-    print_info "Run: claude /login"
+    # Capture provider stderr for diagnostics (fresh file each attempt)
     rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
-    exit 18
-  elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
-    print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
-    if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
-      echo "Provider stderr:"
-      cat "$CLAUDE_STDERR_FILE"
-    fi
-    print_status "Checking for uncommitted work..."
+    CLAUDE_STDERR_FILE=$(mktemp)
 
-    if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
-      print_warning "Found uncommitted changes - will attempt to save work"
-      # Fall through to post-workflow to commit changes
-    else
-      exit 1
+    set +e
+    provider_run_agentic_session "$CLAUDE_PROMPT" "$CLAUDE_TIMEOUT" "$AUTO_MODE" "$CLAUDE_STDERR_FILE"
+    CLAUDE_EXIT_CODE=$?
+    set -e
+
+    # Handle exit codes
+    if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
+      # Timeout
+      print_error "Sharkrite timed out after ${CLAUDE_TIMEOUT}s"
+      print_status "Checking for uncommitted work..."
+
+      if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
+        print_warning "Found uncommitted changes - committing before exit"
+        break
+      else
+        # No commits: retry once at double budget when below the cap.
+        # Context-heavy dev sessions can exhaust their budget loading context
+        # before making a single edit; a doubled budget recovers these without
+        # requiring manual re-runs.
+        if [ "$_dev_attempt" -eq 1 ]; then
+          _retry_budget=$(( CLAUDE_TIMEOUT * 2 ))
+          # Cap at 4h (14400s). Note: a 14400s retry session adds up to 4h of
+          # issue time, which can silently trip RITE_MAX_ISSUE_HOURS (default 4h)
+          # during the retry and stall an otherwise-successful recovery at the
+          # merge gate with no clear cause. If retries are hitting the session
+          # cap, raise RITE_MAX_ISSUE_HOURS proportionally (e.g. to 8h when
+          # RITE_CLAUDE_TIMEOUT is already near 7200s).
+          [ "$_retry_budget" -gt 14400 ] && _retry_budget=14400
+          _diag "DEV_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
+          print_info "No changes before timeout — retrying at double budget (${_retry_budget}s)..."
+          CLAUDE_TIMEOUT=$_retry_budget
+          continue
+        fi
+        print_error "No changes detected - workflow failed"
+        exit 1
+      fi
+    elif [ $CLAUDE_EXIT_CODE -eq 127 ]; then
+      # Command not found - this is a setup error, not recoverable
+      print_error "Command not found (exit code 127)"
+      print_error "This usually means a required tool is missing."
+      print_info "Check that the '$(provider_name)' CLI is installed"
+      exit 127
+    elif [ $CLAUDE_EXIT_CODE -eq 5 ]; then
+      # Usage cap reached — claude_provider_run_agentic_session detected the
+      # "Spending cap reached" / "usage limit reached" message in the CLI's
+      # output and translated it into exit 5. Propagate so the batch processor
+      # aborts the rest of the batch instead of burning ~40s per remaining
+      # issue on doomed dev-session restarts.
+      # See: lib/core/batch-process-issues.sh exit-5 handler.
+      print_error "Claude usage cap reached during dev session — aborting batch"
+      if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
+        echo "Provider message:"
+        grep -iE "spending cap|usage limit|rate limit|[0-9]+-hour limit" "$CLAUDE_STDERR_FILE" | head -3 || true
+      fi
+      exit 5
+    elif [ $CLAUDE_EXIT_CODE -eq 18 ]; then
+      # Provider auth failure — claude_provider_run_agentic_session detected the
+      # auth fingerprint ("Invalid API key · Please run /login" or equivalent 401
+      # class message) and translated it into exit 18. Propagate so the batch
+      # processor halts immediately with a remediation hint instead of burning
+      # ~2min per remaining issue on guaranteed-futile dev-session restarts.
+      # Single-issue mode: exit 18 surfaces the clear auth error to the operator.
+      # See: lib/core/batch-process-issues.sh exit-18 handler.
+      # See: docs/architecture/exit-codes.md — exit 18.
+      print_error "$(provider_name) is not authenticated — dev session cannot start"
+      print_info "Run: claude /login"
+      rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
+      exit 18
+    elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
+      print_error "Sharkrite exited with error code $CLAUDE_EXIT_CODE"
+      if [ -f "${CLAUDE_STDERR_FILE:-}" ] && [ -s "${CLAUDE_STDERR_FILE:-}" ]; then
+        echo "Provider stderr:"
+        cat "$CLAUDE_STDERR_FILE"
+      fi
+      print_status "Checking for uncommitted work..."
+
+      if [ "$(git status --porcelain | { grep -v "\.gitignore$" || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
+        print_warning "Found uncommitted changes - will attempt to save work"
+        break
+      else
+        exit 1
+      fi
     fi
-  fi
+    break
+  done
 
   _timer_end "claude_dev_session"
 
