@@ -148,3 +148,19 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T04:27:30Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Now I have a clear picture. The config example (lines 43-44) says "On battery or non-macOS: skips the hold but still waits and resumes." The CLAUDE.md line 497 says "macOS AC only, via `caffeinate`" — implying it only runs on macOS AC power. But the actual behavior is that it resumes on battery too (just without the caffeinate hold). The CLAUDE.md description "macOS AC only" is the inaccuracy — the feature works on non-AC/non-macOS too, just without caffeinate.
+
+CLAUDE.md's "macOS AC only" description of cap auto-resume is incorrect — the feature waits and re-invokes on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
