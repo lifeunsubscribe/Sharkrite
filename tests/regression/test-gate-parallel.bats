@@ -287,9 +287,11 @@ EOF
 # rather than invoking assess-and-resolve.sh directly (the inline body is not a
 # callable function). A regression that reverts the real builder without touching
 # this copy leaves these tests passing. Replacing the inline copy with an end-to-end
-# invocation via RITE_GATE_FINDINGS is deferred — needs a focused PR (file a
-# tracking issue; consolidate with the supervised commit+push behavioral extraction
-# deferral in supervised-commit-push-prompt.bats and behavioral-design.md).
+# invocation via RITE_GATE_FINDINGS is deferred — operator must file tracking issue;
+# gh issue create is blocked in fix sessions so this cite is pending out-of-band
+# issue filing; consolidate with the supervised commit+push behavioral extraction
+# deferred in supervised-commit-push-prompt.bats and behavioral-design.md
+# § "Supervised commit/push".
 # ---------------------------------------------------------------------------
 
 @test "gate test-failure builder: two distinct test_names produce distinct ACTIONABLE_NOW headers" {
