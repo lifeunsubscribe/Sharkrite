@@ -31,6 +31,7 @@
 #   H8b — shared allowlisted command (make check only) → no WARNING, exit 0
 #   H8c — unique verification commands across issues → no WARNING, exit 0
 #   H8d — issue with duplicate-verification suppression → no WARNING, [suppressed] logged, exit 0
+#   H8e — distinctive command shared by all 3 issues on a 3-issue slate → WARNING (not silently exempted), exit 0
 #   H9a — 2hr estimate without Split rationale line → WARNING naming the issue, exit 0
 #   H9b — 2hr estimate with Split rationale line → no WARNING, exit 0
 #   H9c — 1hr estimate without Split rationale → no WARNING, exit 0
@@ -3373,6 +3374,114 @@ FIXTURE
   # Only 2 issues share this command — below the universal gate threshold — must warn
   grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" || {
     echo "FAIL: expected duplicate-verification WARNING for 2-issue distinctive duplicate" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 H8e — 3-of-3 distinctive duplicate: a command shared by ALL 3 issues
+# on a 3-issue slate reaches freq=3 (== _VERIF_UNIV_THRESHOLD) but must NOT be
+# silently exempted.  Without the _VERIF_UNIV_MIN_SLATE=4 floor, the absolute
+# threshold fires on the strongest-possible duplicate signal and produces no
+# warning — defeating Check 8's purpose for small slates.
+# ---------------------------------------------------------------------------
+
+@test "Check 8 H8e: distinctive command shared by all 3 issues on a 3-issue slate — WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-3of3-distinctive.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Migrate widget A to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget A to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_a.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widget_a`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widget_a
+```
+
+**Done Definition**: Done when widget A migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget B to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget B to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_b.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widget_b`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widget_b
+```
+
+**Done Definition**: Done when widget B migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget C to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget C to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_c.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widget_c`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widget_c
+```
+
+**Done Definition**: Done when widget C migration passes validation.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # All 3 issues share a distinctive command — freq reaches the absolute threshold
+  # but the slate is too small for the frequency exemption.  Must warn.
+  grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" || {
+    echo "FAIL: expected duplicate-verification WARNING for 3-of-3 distinctive duplicate on small slate" >&2
     cat "$stderr_out" >&2
     false
   }
