@@ -1036,7 +1036,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   # If this issue was previously live-lock deferred because its parent issue was
   # live in another batch session, join the background sleep before re-checking
   # the parent PR state so the foreign session has had wall-clock time to merge.
-  # Mirrors the dep live-lock wait join below (lines ~1097-1105).
+  # Mirrors the dep live-lock wait join below (_LIVE_LOCK_WAIT_PID path).
   _parent_live_lock_wait_pid="${_PARENT_LIVE_LOCK_WAIT_PID[$ISSUE_NUM]:-}"
   if [ -n "$_parent_live_lock_wait_pid" ]; then
     wait "$_parent_live_lock_wait_pid" 2>/dev/null || true
