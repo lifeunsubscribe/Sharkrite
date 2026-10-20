@@ -38,10 +38,8 @@
 #    15.  remaining-issues loop includes deferred_for_dep and blocked, excludes success
 #
 #   PARALLEL ISOLATION (per-batch filename prevents race under concurrent batches):
-#    16.  two batches with different RITE_BATCH_IDs write to distinct manifest paths
-#    17.  two batches with different RITE_BATCH_IDs write to distinct reset-line files
-#    18.  claude.sh uses RITE_BATCH_ID suffix so batch mode produces per-batch filenames
-#    19.  startup cleanup removes only the fixed-name fallback (no glob that re-introduces race)
+#    16.  claude.sh uses RITE_BATCH_ID suffix so batch mode produces per-batch filenames
+#    17.  startup cleanup removes only the fixed-name fallback (no glob that re-introduces race)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 DATE_HELPERS="$REPO_ROOT/lib/utils/date-helpers.sh"
@@ -342,81 +340,6 @@ EOF
 # PARALLEL ISOLATION: per-batch filename prevents race under concurrent batches
 # =============================================================================
 
-@test "parallel: two batches with different RITE_BATCH_IDs write to distinct manifest paths" {
-  # Simulates the collision that happened before per-batch naming:
-  # batch A and batch B both exit with code 5 at the same moment and write to
-  # cap-resume.json — the second write silently drops the first batch's issues.
-  # After the fix each batch writes to its own cap-resume-${RITE_BATCH_ID}.json.
-  _state_a="$_tmpdir/state_a"
-  _state_b="$_tmpdir/state_b"
-  mkdir -p "$_state_a" "$_state_b"
-
-  # Batch A
-  BATCH_ID_A="1700000000-100-42"
-  jq -n \
-    --argjson issues "[10,11]" \
-    --arg flags "" \
-    --argjson reset_epoch 0 \
-    --arg reset_text "" \
-    --argjson written 1700000000 \
-    '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
-    > "${_state_a}/cap-resume-${BATCH_ID_A}.json"
-
-  # Batch B (different ID — simulates a concurrent parallel batch group)
-  BATCH_ID_B="1700000001-200-77"
-  jq -n \
-    --argjson issues "[20,21]" \
-    --arg flags "" \
-    --argjson reset_epoch 0 \
-    --arg reset_text "" \
-    --argjson written 1700000001 \
-    '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
-    > "${_state_a}/cap-resume-${BATCH_ID_B}.json"
-
-  # Both files must exist and contain their respective issues — no overwrite
-  _count_a=$(jq -r '.issues | length' "${_state_a}/cap-resume-${BATCH_ID_A}.json")
-  _count_b=$(jq -r '.issues | length' "${_state_a}/cap-resume-${BATCH_ID_B}.json")
-  [ "$_count_a" -eq 2 ] || {
-    echo "FAIL: batch A manifest has $_count_a issues, expected 2" >&2
-    return 1
-  }
-  [ "$_count_b" -eq 2 ] || {
-    echo "FAIL: batch B manifest has $_count_b issues, expected 2" >&2
-    return 1
-  }
-  # Confirm they are distinct files
-  _issues_a=$(jq -r '.issues | @csv' "${_state_a}/cap-resume-${BATCH_ID_A}.json")
-  _issues_b=$(jq -r '.issues | @csv' "${_state_a}/cap-resume-${BATCH_ID_B}.json")
-  [ "$_issues_a" != "$_issues_b" ] || {
-    echo "FAIL: batch A and batch B manifests have identical issue lists — no isolation" >&2
-    return 1
-  }
-}
-
-@test "parallel: two batches with different RITE_BATCH_IDs write to distinct reset-line files" {
-  # Same isolation guarantee for cap-reset-line-${RITE_BATCH_ID}.txt.
-  _state="$_tmpdir/state"
-  mkdir -p "$_state"
-
-  BATCH_ID_A="1700000000-100-42"
-  BATCH_ID_B="1700000001-200-77"
-  printf 'resets 6:10pm (America/Denver)\n' > "${_state}/cap-reset-line-${BATCH_ID_A}.txt"
-  printf 'resets 9:20pm (America/New_York)\n' > "${_state}/cap-reset-line-${BATCH_ID_B}.txt"
-
-  _text_a=$(cat "${_state}/cap-reset-line-${BATCH_ID_A}.txt")
-  _text_b=$(cat "${_state}/cap-reset-line-${BATCH_ID_B}.txt")
-  [ "$_text_a" != "$_text_b" ] || {
-    echo "FAIL: both batches read the same reset-line text — no isolation" >&2
-    return 1
-  }
-  case "$_text_a" in *"6:10pm"*) ;; *)
-    echo "FAIL: batch A reset-line '$_text_a' does not contain '6:10pm'" >&2; return 1 ;;
-  esac
-  case "$_text_b" in *"9:20pm"*) ;; *)
-    echo "FAIL: batch B reset-line '$_text_b' does not contain '9:20pm'" >&2; return 1 ;;
-  esac
-}
-
 @test "parallel: claude.sh uses RITE_BATCH_ID suffix so batch mode produces per-batch filenames" {
   # Structural pin: the conditional expansion ${RITE_BATCH_ID:+-${RITE_BATCH_ID}}
   # must be present in claude.sh so that:
@@ -434,7 +357,7 @@ EOF
   # single-issue-mode fallback) — NOT a wildcard that would delete a concurrent
   # batch's per-batch file.  A glob like 'cap-reset-line-*.txt' at startup would
   # re-introduce the race in the other direction.
-  _cleanup_line=$(grep -n 'rm -f.*cap-reset-line' "$BATCH_PROCESSOR" | head -1 | cut -d: -f2 || true)
+  _cleanup_line=$(grep -n 'rm -f.*cap-reset-line' "$BATCH_PROCESSOR" | head -1 | cut -d: -f2- || true)
   case "${_cleanup_line:-}" in
     *cap-reset-line.txt*) ;;
     *'*'*)
