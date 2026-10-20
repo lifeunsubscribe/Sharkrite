@@ -531,3 +531,11 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `gate-runners.sh`'s workspace pattern expansion now uses `find`-based traversal supporting `**` and `!exclusion` patterns, not shell glob expansion that falls back to the literal pattern on no-match.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T16:40:34Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md` states `gate-runners.sh` handles "workspace bootstrap" via shell glob expansion that falls back to the literal pattern on no-match, but PR #1344 changed it to `find`-based traversal supporting `**` and `!exclusion` patterns.
+<!-- /sharkrite-doc-drift -->
