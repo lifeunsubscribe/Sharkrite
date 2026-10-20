@@ -225,6 +225,77 @@ _run_gate_with_env() {
   [[ "$output" == *"packages/cdk"* ]]
 }
 
+@test "(#1213) _changed_files_to_workspace_dirs: pnpm packages/** — nested workspace matched" {
+  # packages/** pattern must expand recursively (not just one level).
+  # packages/feature/api is two levels deep and must be matched.
+  printf 'lockfileVersion: '"'"'9.0'"'"'\npackages:\n  - '"'"'packages/**'"'"'\n' > "$TEST_REPO/pnpm-lock.yaml"
+  printf 'packages:\n  - '"'"'packages/**'"'"'\n' > "$TEST_REPO/pnpm-workspace.yaml"
+  mkdir -p "$TEST_REPO/packages/feature/api"
+  printf '{"name":"@mono/feature-api","version":"1.0.0","scripts":{"test":"jest"}}\n' \
+    > "$TEST_REPO/packages/feature/api/package.json"
+  mkdir -p "$TEST_REPO/packages/top"
+  printf '{"name":"@mono/top","version":"1.0.0","scripts":{"test":"jest"}}\n' \
+    > "$TEST_REPO/packages/top/package.json"
+  local files
+  files=$(printf '%s\n' "packages/feature/api/src/handler.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"packages/feature/api"* ]]
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: pnpm packages/** — shallow workspace still matched" {
+  # packages/** must also match single-level packages (regression guard: ** must
+  # not accidentally skip packages/top which is only one level deep).
+  printf 'packages:\n  - '"'"'packages/**'"'"'\n' > "$TEST_REPO/pnpm-workspace.yaml"
+  printf 'lockfileVersion: '"'"'9.0'"'"'\n' > "$TEST_REPO/pnpm-lock.yaml"
+  mkdir -p "$TEST_REPO/packages/top"
+  printf '{"name":"@mono/top","version":"1.0.0","scripts":{"test":"jest"}}\n' \
+    > "$TEST_REPO/packages/top/package.json"
+  local files
+  files=$(printf '%s\n' "packages/top/src/index.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"packages/top"* ]]
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: pnpm !exclusion — excluded workspace not emitted" {
+  # !packages/internal/** must prevent internal packages from appearing in the
+  # affected-workspace list, even when source files inside them changed.
+  printf 'packages:\n  - '"'"'packages/**'"'"'\n  - '"'"'!packages/internal/**'"'"'\n' \
+    > "$TEST_REPO/pnpm-workspace.yaml"
+  printf 'lockfileVersion: '"'"'9.0'"'"'\n' > "$TEST_REPO/pnpm-lock.yaml"
+  mkdir -p "$TEST_REPO/packages/api"
+  printf '{"name":"@mono/api","version":"1.0.0","scripts":{"test":"jest"}}\n' \
+    > "$TEST_REPO/packages/api/package.json"
+  mkdir -p "$TEST_REPO/packages/internal/auth"
+  printf '{"name":"@mono/internal-auth","version":"1.0.0","scripts":{"test":"jest"}}\n' \
+    > "$TEST_REPO/packages/internal/auth/package.json"
+  # Change files in both included and excluded workspaces
+  local files
+  files=$(printf '%s\n' "packages/api/src/foo.ts" "packages/internal/auth/src/token.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  # Included workspace appears
+  [[ "$output" == *"packages/api"* ]]
+  # Excluded workspace must NOT appear
+  [[ "$output" != *"packages/internal/auth"* ]]
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: pnpm !exclusion — only-excluded change yields empty" {
+  # When only changed files are in an excluded workspace, result should be empty.
+  printf 'packages:\n  - '"'"'packages/**'"'"'\n  - '"'"'!packages/internal/**'"'"'\n' \
+    > "$TEST_REPO/pnpm-workspace.yaml"
+  printf 'lockfileVersion: '"'"'9.0'"'"'\n' > "$TEST_REPO/pnpm-lock.yaml"
+  mkdir -p "$TEST_REPO/packages/internal/utils"
+  printf '{"name":"@mono/internal-utils","version":"1.0.0","scripts":{"test":"jest"}}\n' \
+    > "$TEST_REPO/packages/internal/utils/package.json"
+  local files
+  files=$(printf '%s\n' "packages/internal/utils/src/helper.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "(#975) _node_scope_zero_tests: jest 'No tests found' output → returns 0" {
   local f
   f=$(mktemp)
