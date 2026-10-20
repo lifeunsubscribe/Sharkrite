@@ -2252,3 +2252,29 @@ make.
 looks similar but is accumulate-**in-place**: one entry per convention title,
 with later PR numbers appended to that entry's References line. A naive union
 would duplicate titles. It needs its own design and deliberately has no merger.
+
+## Output Sanitization: stripping operator-local commands from generated artifacts
+
+**Root cause.** `claude --print` (the provider call used for issue planning, review generation, assessment follow-ups, and promotion PR bodies) loads the operator's user-global `~/.claude/CLAUDE.md`. That file carries RTK hook instructions, so the model authors `rtk grep`, `rtk proxy git status`, etc. into generated text. Those commands are unrunnable for any human or CI without the operator's personal rtk hook installed — they leak into published GitHub issue bodies and PR comments.
+
+**Why input-side suppression is wrong.** Suppressing `~/.claude/CLAUDE.md` at the provider-call level (via a hypothetical `--no-user-config` flag) is not available and would also lose auth context. Output-side sanitization at the seam where LLM output becomes a GitHub artifact is the correct fix.
+
+**The helper: `sanitize_generated_commands`** (`lib/utils/sanitize-output.sh`).
+
+Strips `rtk proxy <cmd>` → `<cmd>` and `rtk <cmd>` → `<cmd>` at command positions:
+line-start, after `` ` ``, `$(`, `| `, `&& `. Prose mentions of "rtk" not at a command
+position are untouched. Emits one `print_info` line to stderr reporting the count when
+anything is rewritten.
+
+**Grounded exception.** When `git grep -qlw rtk` in the project root succeeds, the
+target repo genuinely ships rtk commands — sanitization is skipped. This prevents
+sharkrite from mangling its own generated bodies (sharkrite's `CLAUDE.md` documents
+rtk and the project's tracked files reference it).
+
+**Applied seams** (each is a one-line call immediately before the GitHub write):
+- `lib/core/plan-issues.sh` — issue body before `gh issue create --body-file`
+- `lib/core/assess-review-issues.sh` — follow-up issue body before `gh issue create --body-file`
+- `lib/core/local-review.sh` — review output before the PR comment `--body-file`
+- `lib/utils/promotion-composer.sh` — LLM narrative before `printf` emits it to stdout
+
+**Extension point.** The helper is intentionally rtk-specific (rtk is the live failure class; a generic "unknown tool" detector is unbounded). To handle another operator-local tool, add a parallel check inside `sanitize_generated_commands` — see the comment in `lib/utils/sanitize-output.sh`.

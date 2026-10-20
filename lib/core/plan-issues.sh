@@ -57,6 +57,13 @@ if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 fi
 
+# Source output sanitizer (strips operator-local rtk wrappers from generated bodies)
+if ! declare -f sanitize_generated_commands >/dev/null 2>&1; then
+  if [ -n "${RITE_LIB_DIR:-}" ]; then
+    source "$RITE_LIB_DIR/utils/sanitize-output.sh"
+  fi
+fi
+
 # Source provider abstraction
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -4746,6 +4753,11 @@ create_issues() {
             gh_safe label create "$label" --force < /dev/null &>/dev/null || true
           done
           gh_args+=(--label "$current_labels")
+        fi
+
+        # Strip operator-local rtk wrapper commands before publishing to GitHub.
+        if declare -f sanitize_generated_commands >/dev/null 2>&1; then
+          current_body=$(sanitize_generated_commands "$current_body")
         fi
 
         # Write body to temp file to avoid shell interpretation of backticks,

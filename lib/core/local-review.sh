@@ -235,6 +235,7 @@ source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/review-helper.sh"
 source "$RITE_LIB_DIR/utils/format-review.sh"
+source "$RITE_LIB_DIR/utils/sanitize-output.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
@@ -706,6 +707,9 @@ echo ""
 # everything before the first ^## .*Code Review line. Fail-open: unstructured
 # reviews (no matching heading) pass through unchanged.
 REVIEW_OUTPUT=$(strip_pre_review_narration "$REVIEW_OUTPUT")
+
+# Strip operator-local rtk wrapper commands before posting to the PR comment.
+REVIEW_OUTPUT=$(sanitize_generated_commands "$REVIEW_OUTPUT")
 
 # Add marker with model metadata for assessment consistency.
 # The commit: attribute records the HEAD SHA at review generation time.

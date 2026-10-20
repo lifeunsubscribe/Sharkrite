@@ -822,6 +822,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Phase 1 (development)** is where savings happen: `git status`, `git diff`, test runs, `grep`, `cat`, `ls`, etc.
 - **Phases 2-5** are unaffected. All Sharkrite `gh` calls use `--json` which rtk passes through unfiltered.
 - **stdin piping** (fix-review mode) is unaffected — the hook only rewrites command strings, not stdin.
+- **Generated artifacts are sanitized.** Because `claude --print` loads the operator's `~/.claude/CLAUDE.md` (which carries the RTK hook instructions), LLM-generated text can contain `rtk`-wrapped commands that are unrunnable without the operator's hook. `sanitize_generated_commands` (`lib/utils/sanitize-output.sh`) strips these at the four GitHub-write seams (issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies). Repos whose tracked files reference rtk are exempt (grounded exception). See `behavioral-design.md` → "Output Sanitization".
 
 ### Configuration
 
