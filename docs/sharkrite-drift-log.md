@@ -165,6 +165,24 @@ CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_b
 **Suspected inaccuracy**: `CLAUDE.md`'s description of `_dedup_issues` as the deduplification mechanism for near-duplicate plan blocks is now incomplete — the title-guard in `plan-issues.sh` is the actual rejection point for reworded near-duplicates before they reach `_dedup_issues`.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T00:02:31Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md says "holds the machine awake (macOS AC only, via `caffeinate`)" but the actual code in `cap-resume.sh` also **re-invokes the batch** on battery — it only skips the caffeinate hold, not the entire resume. The resume still happens on battery, just without keeping the machine awake.
+
+`CLAUDE.md:497` says "holds the machine awake (macOS AC only, via `caffeinate`) and re-invokes the remaining batch" — this implies the entire feature is AC-only, but the code skips only the caffeinate hold on battery while still waiting and re-invoking on any platform.
+
+`CLAUDE.md:497` says the feature is "macOS AC only" but cap-resume.sh re-invokes the batch on battery too — only the caffeinate hold is skipped on battery/non-macOS.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:04:39Z -->
 **Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
 **Implicated docs**:
@@ -173,6 +191,20 @@ CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_b
 - docs/test-authoring-runbook.md — "Test Authoring Runbook"
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T00:07:15Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md:497` says the auto-resume feature is "macOS AC only" but `cap-resume.sh` re-invokes the batch on battery too — only the `caffeinate` hold is skipped on battery/non-macOS.
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:09:53Z -->
@@ -247,6 +279,38 @@ The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — 
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T04:27:30Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Now I have a clear picture. The config example (lines 43-44) says "On battery or non-macOS: skips the hold but still waits and resumes." The CLAUDE.md line 497 says "macOS AC only, via `caffeinate`" — implying it only runs on macOS AC power. But the actual behavior is that it resumes on battery too (just without the caffeinate hold). The CLAUDE.md description "macOS AC only" is the inaccuracy — the feature works on non-AC/non-macOS too, just without caffeinate.
+
+CLAUDE.md's "macOS AC only" description of cap auto-resume is incorrect — the feature waits and re-invokes on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T04:31:48Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `README.md:147` shows `RITE_MAX_SESSION_HOURS` default as `4`, while the actual default in `config.sh` and all documentation is `12`. This is the inaccuracy.
+
+`README.md` documents `RITE_MAX_SESSION_HOURS` default as `4` but the actual default is `12` (set in `config.sh`, `blocker-rules.sh`, `batch-process-issues.sh`, and `configuration.md`).
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1323 issue:1127 recorded:2026-10-20T05:11:37Z -->
@@ -741,4 +805,32 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 `behavioral-design.md §"Supervised commit/push"` Enforcement line claims issue #1368 "also covers the `RITE_GATE_FINDINGS` builder extraction deferred in `test-gate-parallel.bats`" — this might be inaccurate if #1368's scope is narrower.
 
 `behavioral-design.md §"Supervised commit/push"` Enforcement now claims issue #1368 covers the `RITE_GATE_FINDINGS` builder extraction, but #1368 may only track the commit+push body extraction.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T22:43:49Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s "macOS AC only" description of `RITE_CAP_AUTORESUME` is wrong — `cap-resume.sh` waits and re-invokes the batch on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T22:48:10Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s "macOS AC only" qualifier on `RITE_CAP_AUTORESUME` is wrong — `cap-resume.sh` waits and re-invokes the batch on battery and non-macOS too, skipping only the `caffeinate` hold.
 <!-- /sharkrite-doc-drift -->
