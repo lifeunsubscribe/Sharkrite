@@ -1180,19 +1180,50 @@ phase_create_pr() {
     get_latest_work_commit_time "." "$PR_NUMBER"
     latest_local_commit_time="$LATEST_COMMIT_TIME"
 
-    local latest_review_time _jq_latest_review_time
-    _jq_latest_review_time="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0].createdAt // \"\""
-    latest_review_time=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_latest_review_time")
+    # Fetch the latest review comment (body + timestamp) for currency check.
+    # We need the full object (not just createdAt) so we can extract the embedded
+    # commit SHA and apply the same oracle that assess-and-resolve.sh uses.
+    # Using the same oracle prevents the deadlock where Phase 2 says "current"
+    # and Phase 3 says "stale" (issue #1303 / live: batch 20261014-184054).
+    local _skip_review_json _jq_skip_review
+    _jq_skip_review="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_REVIEW}\"))] | sort_by(.createdAt) | reverse | .[0]"
+    _skip_review_json=$(gh_safe pr view "$PR_NUMBER" --json comments --jq "$_jq_skip_review" || true)
+    _skip_review_json="${_skip_review_json:-}"
 
-    if [ -n "$latest_review_time" ] && [ -n "$latest_local_commit_time" ]; then
-      # Compare as epoch seconds (not lexicographic) for reliable cross-format comparison.
-      # Matches the epoch comparison in assess-and-resolve.sh.
-      local review_epoch commit_epoch
-      review_epoch=$(iso_to_epoch "$latest_review_time")
-      commit_epoch=$(iso_to_epoch "$latest_local_commit_time")
-      if [ "$review_epoch" -gt 0 ] && [ "$commit_epoch" -gt 0 ] && [ "$review_epoch" -gt "$commit_epoch" ]; then
-        print_info "Issue #$issue_number already has a current review — skipping push/review phase"
-        return 0
+    if [ -n "$_skip_review_json" ] && [ "$_skip_review_json" != "null" ]; then
+      local _skip_review_body _skip_review_sha
+      _skip_review_body=$(echo "$_skip_review_json" | jq -r '.body // ""' 2>/dev/null || true)
+      # extract_review_sha is defined in lib/utils/review-helper.sh (sourced at top
+      # of workflow-runner.sh). Returns the commit: SHA from the marker, or empty for
+      # pre-#354 reviews that predate SHA embedding.
+      _skip_review_sha=$(extract_review_sha "$_skip_review_body")
+      _skip_review_sha="${_skip_review_sha:-}"
+
+      if [ -n "$_skip_review_sha" ]; then
+        # SHA oracle (same as assess-and-resolve.sh): review covers HEAD iff SHAs match.
+        # local_head == remote_head here (we are inside that branch), so local_head
+        # is the authoritative PR HEAD — no GitHub API call needed.
+        if [ "$_skip_review_sha" = "$local_head" ]; then
+          print_info "Issue #$issue_number already has a current review — skipping push/review phase"
+          return 0
+        fi
+        # SHA present but mismatched → review is stale; fall through to re-review.
+      else
+        # No commit: attribute — pre-#354 review; fall back to timestamp comparison.
+        if [ -n "$latest_local_commit_time" ]; then
+          local _skip_ts_review _skip_ts_review_e _skip_ts_commit_e
+          _skip_ts_review=$(echo "$_skip_review_json" | jq -r '.createdAt // ""' 2>/dev/null || true)
+          _skip_ts_review="${_skip_ts_review:-}"
+          if [ -n "$_skip_ts_review" ]; then
+            _skip_ts_review_e=$(iso_to_epoch "$_skip_ts_review")
+            _skip_ts_commit_e=$(iso_to_epoch "$latest_local_commit_time")
+            if [ "$_skip_ts_review_e" -gt 0 ] && [ "$_skip_ts_commit_e" -gt 0 ] && \
+               [ "$_skip_ts_review_e" -gt "$_skip_ts_commit_e" ]; then
+              print_info "Issue #$issue_number already has a current review — skipping push/review phase"
+              return 0
+            fi
+          fi
+        fi
       fi
     fi
   else

@@ -6,7 +6,9 @@
 #   gh_safe <gh-args...>   — drop-in replacement for raw gh calls
 #
 # Behavior:
-#   - Retries on 429 (rate-limited) and 5xx server errors with exponential backoff
+#   - Retries on 429 (rate-limited), 5xx server errors, and transport-level failures
+#     (TCP/TLS errors, DNS — "error connecting to"/"check your internet connection")
+#     with exponential backoff; all three classes share the same backoff loop
 #   - Returns empty output (exit 0) on 404 / "not found" for READ operations only
 #     (view, list, diff, status, checks — resource may not exist yet, that's ok)
 #   - Propagates real exit code on 404 for WRITE operations
@@ -27,21 +29,14 @@
 # Notes:
 #   - Captures stderr to distinguish "not found" from "rate limited"
 #   - PR_COMMENT_NOT_FOUND ("No comments found") → treated as not-found (empty, exit 0)
-#   - 429 sleep intervals: 5s, 15s, 30s (capped by RITE_GH_RETRY_MAX_SLEEP)
+#   - Retry sleep intervals: 5s, 15s, 30s (capped by RITE_GH_RETRY_MAX_SLEEP)
 #   - Max attempts controlled by RITE_GH_MAX_RETRIES (default: 3)
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
 # Configuration (can be overridden by environment or .rite/config)
-#
-# Defaults are set BEFORE the re-source guard. `gh_safe` is exported via
-# `export -f gh_safe` at end-of-file, so subprocesses inherit the function but NOT the
-# vars. If a subprocess re-sources this file, the guard would skip the
-# default-setting block and gh_safe would die with "unbound variable" under
-# set -u. Setting defaults first — and exporting them — keeps subprocesses
-# safe.
-# ---------------------------------------------------------------------------
+# Defaults set BEFORE the re-source guard; subprocess re-sourcing gets env vars
+# even when the guard fires (export -f carries functions, not vars).
 
 # Maximum number of total attempts (1 = no retry)
 : "${RITE_GH_MAX_RETRIES:=3}"
@@ -159,9 +154,10 @@ gh_safe() {
       fi
     fi
 
-    # Rate-limited (429) or GitHub server errors (5xx) — retry with backoff
+    # Transient failure: rate-limited (429), server error (5xx), or transport-level (TCP/TLS/DNS)
+    # All three classes share the same backoff loop; only the log message differs.
     #
-    # Regex framing: HTTP status codes are matched in three forms:
+    # 429/5xx regex framing: HTTP status codes are matched in three forms:
     #
     #   1. HTTP-prefixed:       "HTTP 503", "(HTTP 429)" — gh pr diff / API errors
     #   2. Bare parenthesised:  "(503)", "(429)"         — gh CLI "Service Unavailable (503)"
@@ -198,17 +194,34 @@ gh_safe() {
     #
     # Text-based tokens (rate limit, server error, etc.) are long enough to be
     # unambiguous and need no additional anchoring.
+    #
+    # Transport strings are sourced from gh's printed output, not Go internals:
+    #   DNS failures → "error connecting to <host>" / "check your internet connection"
+    #   TCP/TLS → "operation timed out", "connection reset by peer", "i/o timeout",
+    #             "TLS handshake timeout", "dial tcp ...: <error>"
+    #   Mid-response close → ": EOF" (connection dropped after response began)
+    #   Client timeout → "context deadline exceeded"
+    # Resolver-layer OS strings ("temporary failure in name resolution",
+    # "dial tcp ... no such host") are not printed verbatim by gh and must not
+    # appear in the regex; transport-layer forms that prefix with "dial tcp" ARE
+    # printed verbatim and appear above.
+    local _transient_reason=""
     if echo "$stderr_content" | grep -qiE \
         "HTTP (429|5[0-9][0-9])([^0-9:)]|$)|\(HTTP (429|5[0-9][0-9])\)([^0-9:]|$)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:)]|$)|rate limit|secondary rate|too many requests|server error"; then
-      if [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
-        # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
-        local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
-        echo "⚠ gh rate-limited or server error (attempt $attempt/$RITE_GH_MAX_RETRIES), retrying in ${actual_sleep}s..." >&2
-        sleep "$actual_sleep"
-        sleep_secs=$(( sleep_secs * 3 ))
-        attempt=$(( attempt + 1 ))
-        continue
-      fi
+      _transient_reason="rate-limited or server error"
+    elif echo "$stderr_content" | grep -qiE \
+        "operation timed out|connection reset by peer|connection refused|dial tcp|TLS handshake timeout|i/o timeout|unexpected EOF|: EOF$|context deadline exceeded|error connecting to|check your internet connection"; then
+      _transient_reason="network error"
+    fi
+
+    if [ -n "$_transient_reason" ] && [ "$attempt" -lt "$RITE_GH_MAX_RETRIES" ]; then
+      # Cap sleep at RITE_GH_RETRY_MAX_SLEEP
+      local actual_sleep=$(( sleep_secs < RITE_GH_RETRY_MAX_SLEEP ? sleep_secs : RITE_GH_RETRY_MAX_SLEEP ))
+      echo "⚠ gh ${_transient_reason} (attempt $attempt/$RITE_GH_MAX_RETRIES), retrying in ${actual_sleep}s..." >&2
+      sleep "$actual_sleep"
+      sleep_secs=$(( sleep_secs * 3 ))
+      attempt=$(( attempt + 1 ))
+      continue
     fi
 
     # Non-transient error — propagate stderr and exit code so caller fails loudly

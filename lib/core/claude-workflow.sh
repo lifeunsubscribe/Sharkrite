@@ -1190,8 +1190,13 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   if [ -n "$FIX_PR_NUMBER" ]; then
     print_status "Fetching latest assessment for issue #${ISSUE_NUMBER:-?}..."
     _jq_assessment_body="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
+    _fetch_exit=0
     REVIEW_CONTENT=$(gh_safe pr view "$FIX_PR_NUMBER" --json comments \
-      --jq "$_jq_assessment_body" || true)
+      --jq "$_jq_assessment_body") || _fetch_exit=$?
+    if [ "$_fetch_exit" -ne 0 ]; then
+      print_error "Failed to fetch assessment (exit ${_fetch_exit}) — re-run to retry"
+      exit 1
+    fi
 
     # Strip the assessment header metadata (everything before the --- separator)
     # to give Claude just the assessment items

@@ -28,6 +28,14 @@
 # Default is 300s. Raise to 600 if assessments time out during heavy provider load.
 # RITE_ASSESSMENT_TIMEOUT=300
 
+# Seconds between SIGTERM and SIGKILL for any command run under a timeout.
+# `timeout N cmd` sends TERM at the deadline and then WAITS for cmd to exit, so
+# a process that ignores TERM runs unbounded and the deadline is advisory only.
+# Live (2026-10-14): LLM sessions ran 2h39m / 4h25m / 10h58m against 1800s /
+# 600s / 1800s deadlines, and two issues took 7h38m and 11h08m as a result.
+# Raise only if a provider legitimately needs longer to flush on shutdown.
+# RITE_TIMEOUT_KILL_AFTER=30
+
 # =============================================================================
 # Notifications (optional)
 # =============================================================================

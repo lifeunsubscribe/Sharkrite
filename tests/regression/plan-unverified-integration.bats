@@ -24,6 +24,14 @@
 #   Fixture Q — Dotless intermediate dir (e.g. "region") does NOT ground as hostname.
 #   Fixture R — Dotted non-hostname dirs (e.g. "v1.2", "2024.01") do NOT ground as hostname.
 #   Fixture S — Real hostname (api.example.com) nested under dotted version dir IS grounded.
+#   Fixture X — Registrable-domain fixture (fixtures/foo.co/) grounds subdomain reference (api.foo.co).
+#   Fixture Y — Both subdomains normalize to grounded registrable domain — no spike, no Blocked-by.
+#   Fixture Z — Prefix-collision anchor: fixtures/api.foo.com/ grounded + ungrounded api.foo.co must NOT
+#               inject Blocked-by into the foo.com issue (right-anchor regression guard).
+#   Fixture AA — Prose URL terminator regression: space, comma, ?, :port, and backtick-terminated URLs
+#                all trigger Blocked-by injection (([^a-zA-Z0-9.-]|$) anchor fix).
+#   Fixture AD — Go module path host prefix (e.g. "github" from "github.com/stretchr/testify") does NOT
+#                ground a host spike — dot is not a valid vendor-token boundary separator.
 
 load '../helpers/setup.bash'
 
@@ -54,6 +62,10 @@ setup() {
   print_warning() { echo "WARNING: $*" >&2; }
   print_info()    { echo "INFO: $*" >&2; }
   print_success() { echo "SUCCESS: $*" >&2; }
+  print_header()  { echo "=== $* ===" >&2; }
+
+  # Color vars — empty so display_issues output is plain text in tests
+  CYAN="" NC="" BLUE="" DIM=""
 
   # Stub portable_sed_i (provided by portable-cmds.sh; not needed for these tests)
   portable_sed_i() {
@@ -77,6 +89,25 @@ setup() {
 
   # shellcheck disable=SC1090
   eval "$(sed -n "${_start},${_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Also load _title_is_spike (used by display_issues for spike classification)
+  local _ts_start _ts_end
+  _ts_start=$(grep -n '^_title_is_spike()' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" | head -1 | cut -d: -f1)
+  _ts_end=$(awk -v s="$_ts_start" 'NR > s && /^}$/{print NR; exit}' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")
+  # shellcheck disable=SC1090
+  eval "$(sed -n "${_ts_start},${_ts_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Also load display_issues (preview display with spike-aware numbering)
+  local _di_start _di_end
+  _di_start=$(grep -n '^display_issues()' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" | head -1 | cut -d: -f1)
+  _di_end=$(awk -v s="$_di_start" 'NR > s && /^}$/{print NR; exit}' \
+    "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")
+  # shellcheck disable=SC1090
+  eval "$(sed -n "${_di_start},${_di_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
 }
 
 teardown() {
@@ -169,10 +200,12 @@ FIXTURE
   echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/api.example.com/sample.json"
   echo "requests==2.28.0" > "$RITE_TEST_TMPDIR/requirements.txt"
 
+  # Use a 2-label domain (simplefin.io) so normalization is identity — this
+  # keeps the test focused on the basic "ungrounded host → spike" path.
   local issues_file="$RITE_TEST_TMPDIR/issues-b.txt"
   write_issues_file "$issues_file" \
     "Integrate with SimpleFIN" \
-    "Call https://simplefin.example.com/accounts to fetch transaction data."
+    "Call https://simplefin.io/accounts to fetch transaction data."
 
   local stderr_out
   stderr_out=$(mktemp)
@@ -195,8 +228,8 @@ FIXTURE
   }
 
   # WARNING must name the ungrounded host
-  grep -q "simplefin.example.com" "$stderr_out" || {
-    echo "FAIL: WARNING does not mention 'simplefin.example.com'" >&2
+  grep -q "simplefin.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention 'simplefin.io'" >&2
     cat "$stderr_out" >&2
     false
   }
@@ -213,9 +246,100 @@ FIXTURE
   # The first issue must be the spike
   local first_title
   first_title=$(grep "^TITLE:" "$issues_file" | head -1)
-  echo "$first_title" | grep -qi "spike: capture simplefin.example.com" || {
+  echo "$first_title" | grep -qi "capture simplefin.io sample - fixtures" || {
     echo "FAIL: first issue is not the spike: $first_title" >&2
     cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike title format: imperative, ≤50 chars, "Capture <name> sample - fixtures"
+#
+# Validates issue runbook compliance: titles must start with an imperative verb,
+# be ≤50 characters, and follow the canonical spike format (not lowercase
+# "spike: capture …" which was the pre-#1151 form).
+# ---------------------------------------------------------------------------
+
+@test "Spike title is imperative, ≤50 chars, and matches canonical format" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-titlefmt.txt"
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  # Must match the canonical imperative format
+  echo "$spike_title" | grep -q "^Capture .* sample - fixtures$" || {
+    echo "FAIL: spike title does not match canonical format 'Capture <name> sample - fixtures': $spike_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Must be ≤50 characters (runbook hard cap)
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # Must NOT use the old lowercase non-imperative form
+  echo "$spike_title" | grep -qi "^spike: capture" && {
+    echo "FAIL: spike title still uses old lowercase form: $spike_title" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Spike title is capped at ≤50 chars even for long package names
+#
+# A scoped package name like @opentelemetry/instrumentation-http (36 chars)
+# would produce a 62-char title without truncation, violating the runbook cap.
+# The emitter must truncate the display name to keep the title ≤50 chars.
+# ---------------------------------------------------------------------------
+
+@test "Spike title is truncated to ≤50 chars for long package names" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.0.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-longname.txt"
+  write_issues_file "$issues_file" \
+    "Add distributed tracing" \
+    "Use require('@opentelemetry/instrumentation-http') to add tracing."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # Must still match canonical format even after truncation
+  echo "$spike_title" | grep -q "^Capture .* sample - fixtures$" || {
+    echo "FAIL: truncated spike title does not match canonical format: $spike_title" >&2
     false
   }
 
@@ -375,11 +499,12 @@ JSON
 # ---------------------------------------------------------------------------
 
 @test "Fixture F: spike issue body contains required grounding instructions" {
-  # No fixtures or manifests so the host is ungrounded
+  # No fixtures or manifests so the host is ungrounded.
+  # Use a 2-label domain so normalization is identity.
   local issues_file="$RITE_TEST_TMPDIR/issues-f.txt"
   write_issues_file "$issues_file" \
     "Add banking integration" \
-    "Fetch data from https://bank.example.com/transactions endpoint."
+    "Fetch data from https://bank-api.io/transactions endpoint."
 
   local stderr_out
   stderr_out=$(mktemp)
@@ -417,6 +542,49 @@ JSON
 }
 
 # ---------------------------------------------------------------------------
+# Spike body fixture path uses dotted hostname for host candidates
+#
+# Host-candidate fixture paths must use the original dotted hostname
+# (e.g. "fixtures/simplefin.io/") so that _build_grounded_hosts recognises
+# the directory on the next run — its regex requires a dot to distinguish
+# hostnames from plain directory names.  Using the sanitized key
+# ("fixtures/simplefin-io/") would cause the grounding loop to miss the
+# fixture and re-emit the spike on every subsequent `rite plan` run.
+# ---------------------------------------------------------------------------
+
+@test "Spike body fixture path uses dotted hostname for host candidates (grounding-compatible)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fixturepath.txt"
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_body
+  spike_body=$(awk '/^---ISSUE---/{in_block=1} in_block{print} /^---END---/{in_block=0}' "$issues_file" | head -80)
+
+  # Body must reference the dotted hostname path (simplefin.io) for grounding-loop compat
+  echo "$spike_body" | grep -q "fixtures/simplefin\.io/" || {
+    echo "FAIL: spike body does not use dotted hostname path fixtures/simplefin.io/" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  }
+
+  # Must NOT use the sanitized hyphenated path (would never be recognised by _build_grounded_hosts)
+  echo "$spike_body" | grep -q "fixtures/simplefin-io/" && {
+    echo "FAIL: spike body uses sanitized key fixtures/simplefin-io/ — host fixtures must use dotted hostname" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Fixture G: downstream issue referencing ungrounded host gets "Blocked by:"
 #
 # After the pass:
@@ -425,11 +593,11 @@ JSON
 # ---------------------------------------------------------------------------
 
 @test "Fixture G: downstream issue referencing ungrounded host gets Blocked-by dependency" {
-  # No fixtures for this host
+  # No fixtures for this host. Use a 2-label domain so normalization is identity.
   local issues_file="$RITE_TEST_TMPDIR/issues-g.txt"
   write_issues_file "$issues_file" \
     "Build SimpleFIN client" \
-    "Implement client code for https://simplefin.example.com/accounts endpoint."
+    "Implement client code for https://simplefin.io/accounts endpoint."
 
   local stderr_out
   stderr_out=$(mktemp)
@@ -470,6 +638,7 @@ JSON
 # ---------------------------------------------------------------------------
 
 @test "Fixture H: existing Dependencies line gets spike placeholder appended" {
+  # Use a 2-label domain so normalization is identity.
   local issues_file="$RITE_TEST_TMPDIR/issues-h.txt"
   cat > "$issues_file" <<'FIXTURE'
 ---ISSUE---
@@ -477,7 +646,7 @@ TITLE: Integrate with payment gateway
 LABELS: feature
 TIME: 1hr
 BODY:
-Use https://payments.example.com/charge to charge customers.
+Use https://payments-api.io/charge to charge customers.
 
 **Dependencies**: After #PREV
 ---END---
@@ -1038,6 +1207,1353 @@ JSON
     echo "FAIL: expected 1 issue (no spike) because api.example.com is grounded;" \
          "got $issue_count (real hostname nested under version dir was not found)" >&2
     cat "$issues_file" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# display_issues preview numbering — spike-aware labels (acceptance criteria
+# for issue #1151: "Show resolved dependency refs in plan preview")
+# ---------------------------------------------------------------------------
+
+# Helper: write a two-issue spike-injected issues file
+_write_spike_issues_file() {
+  local file="$1"
+  cat > "$file" <<'FIXTURE'
+---ISSUE---
+TITLE: Capture api.example.com sample - fixtures
+LABELS: spike
+TIME: 30min
+**Description**: Capture sample fixture.
+**Done Definition**: Fixture captured.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Integrate with external API
+LABELS: feature,phase-1,priority-medium
+TIME: 1hr
+**Description**: Call the external API.
+**Done Definition**: Integration works.
+**Dependencies**: After #1
+---END---
+---ISSUE---
+TITLE: Write integration tests
+LABELS: feature,phase-1,priority-medium
+TIME: 45min
+**Description**: Write tests.
+**Done Definition**: Tests pass.
+**Dependencies**: After #1
+---END---
+FIXTURE
+}
+
+@test "display_issues: spike-injected preview labels spikes distinctly and numbers impl issues by non-spike ordinal" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-preview.txt"
+  _write_spike_issues_file "$issues_file"
+
+  local stdout_out stderr_out
+  stdout_out=$(mktemp)
+  stderr_out=$(mktemp)
+  display_issues "$issues_file" >"$stdout_out" 2>"$stderr_out"
+  local all_out
+  all_out=$(cat "$stdout_out" "$stderr_out")
+
+  # Spike issue must be labeled [spike 1/1], not [1/3]
+  echo "$all_out" | grep -qF "[spike 1/1]" || {
+    echo "FAIL: expected [spike 1/1] label for spike issue" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # First implementation issue must be labeled [1/2] (non-spike ordinal denominator = 2)
+  echo "$all_out" | grep -qF "[1/2]" || {
+    echo "FAIL: expected [1/2] label for first implementation issue" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # Second implementation issue must be labeled [2/2]
+  echo "$all_out" | grep -qF "[2/2]" || {
+    echo "FAIL: expected [2/2] label for second implementation issue" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # Raw position label [1/3] must NOT appear (spikes removed from impl counter)
+  echo "$all_out" | grep -qF "[1/3]" && {
+    echo "FAIL: found raw position label [1/3] — spikes must not consume impl ordinal slots" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  } || true
+
+  rm -f "$stdout_out" "$stderr_out"
+}
+
+@test "display_issues: spike-injected preview footer has note line about #N refs" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-note.txt"
+  _write_spike_issues_file "$issues_file"
+
+  local stdout_out stderr_out
+  stdout_out=$(mktemp)
+  stderr_out=$(mktemp)
+  display_issues "$issues_file" >"$stdout_out" 2>"$stderr_out"
+  local all_out
+  all_out=$(cat "$stdout_out" "$stderr_out")
+
+  # Footer must contain the note about #N refs
+  echo "$all_out" | grep -q "implementation issues only" || {
+    echo "FAIL: expected note about '#N refs count implementation issues only'" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  echo "$all_out" | grep -q "rewritten to real issue numbers at creation" || {
+    echo "FAIL: expected note about refs being rewritten at creation" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  rm -f "$stdout_out" "$stderr_out"
+}
+
+@test "display_issues: spike-free preview renders exactly as today (no note, same numbering)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-no-spike.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement feature A
+LABELS: feature,phase-1,priority-medium
+TIME: 1hr
+**Description**: Feature A.
+**Done Definition**: Works.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Implement feature B
+LABELS: feature,phase-1,priority-medium
+TIME: 45min
+**Description**: Feature B.
+**Done Definition**: Works.
+**Dependencies**: After #1
+---END---
+FIXTURE
+
+  local stdout_out stderr_out
+  stdout_out=$(mktemp)
+  stderr_out=$(mktemp)
+  display_issues "$issues_file" >"$stdout_out" 2>"$stderr_out"
+  local all_out
+  all_out=$(cat "$stdout_out" "$stderr_out")
+
+  # Issue 1: labeled [1/2] (same as today's [N/M] format)
+  echo "$all_out" | grep -qF "[1/2]" || {
+    echo "FAIL: expected [1/2] label for first issue in spike-free batch" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # Issue 2: labeled [2/2]
+  echo "$all_out" | grep -qF "[2/2]" || {
+    echo "FAIL: expected [2/2] label for second issue in spike-free batch" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  }
+
+  # No note line (spike-free batches must not print the note)
+  echo "$all_out" | grep -q "implementation issues only" && {
+    echo "FAIL: spike-free preview must not print the #N note line" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  } || true
+
+  # No [spike …] labels
+  echo "$all_out" | grep -qF "[spike" && {
+    echo "FAIL: spike-free preview must not contain [spike ...] labels" >&2
+    echo "--- display output ---" >&2
+    echo "$all_out" >&2
+    false
+  } || true
+
+  rm -f "$stdout_out" "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture T: two subdomains of one service produce exactly ONE spike
+#
+# Two issues reference different subdomains of the same registrable domain
+# (api.authsvc.io and admin.authsvc.io → both normalize to authsvc.io).
+# Expected: 3 issues total (1 spike for authsvc.io + 2 originals).
+# The spike title and fixture path use the normalized domain.
+# ---------------------------------------------------------------------------
+
+@test "Fixture T: two subdomains of same service produce exactly one spike" {
+  # No fixtures for authsvc.io subdomains
+  local issues_file="$RITE_TEST_TMPDIR/issues-t.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement authentication
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.authsvc.io/token to obtain an access token.
+---END---
+---ISSUE---
+TITLE: Implement admin panel
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://admin.authsvc.io/users to list users.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly ONE WARNING (both subdomains collapse to one candidate)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING (both subdomains → authsvc.io), got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # WARNING must name the normalized registrable domain
+  grep -q "authsvc.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention normalized domain 'authsvc.io'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have exactly 3 issues (1 spike + 2 originals — not 4)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (1 spike + 2 originals), got $issue_count — subdomain dedup failed" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Spike title must use the normalized domain (authsvc.io), not a subdomain
+  local first_title
+  first_title=$(grep "^TITLE:" "$issues_file" | head -1)
+  echo "$first_title" | grep -qi "capture authsvc.io sample - fixtures" || {
+    echo "FAIL: spike title does not use normalized domain 'authsvc.io': $first_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture U: every downstream issue referencing any subdomain variant gets
+#            Blocked-by the single normalized-domain spike
+#
+# Two issues reference different subdomains (api.authsvc.io, admin.authsvc.io).
+# After the pass, both must carry "Blocked by: #SPIKE-authsvc-io".
+# ---------------------------------------------------------------------------
+
+@test "Fixture U: all subdomain-variant issues get Blocked-by the single normalized spike" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-u.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement authentication
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.authsvc.io/token to obtain an access token.
+---END---
+---ISSUE---
+TITLE: Implement admin panel
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://admin.authsvc.io/users to list users.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  # Extract all non-spike blocks (blocks 2 and 3 after spike prepended)
+  local block2 block3
+  block2=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
+  block3=$(awk '/^---ISSUE---/{b++; buf=""} b==3{buf=buf"\n"$0} /^---END---/ && b==3{print buf; exit}' "$issues_file")
+
+  # Both downstream blocks must reference the spike
+  echo "$block2" | grep -q "#SPIKE-authsvc-io" || {
+    echo "FAIL: first downstream issue (api.authsvc.io) missing #SPIKE-authsvc-io" >&2
+    echo "--- block 2 ---" >&2
+    echo "$block2" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  echo "$block3" | grep -q "#SPIKE-authsvc-io" || {
+    echo "FAIL: second downstream issue (admin.authsvc.io) missing #SPIKE-authsvc-io" >&2
+    echo "--- block 3 ---" >&2
+    echo "$block3" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture V: distinct registrable domains still produce distinct spikes
+#
+# One issue references two different registrable domains (svc-a.io, svc-b.io).
+# Expected: 3 issues total (2 spikes + 1 original).
+# ---------------------------------------------------------------------------
+
+@test "Fixture V: distinct registrable domains produce distinct spikes" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-v.txt"
+  write_issues_file "$issues_file" \
+    "Integrate two services" \
+    "Call https://api.svc-a.io/data and https://api.svc-b.io/data for results."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit two WARNINGs (one per distinct registrable domain)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 2 ] || {
+    echo "FAIL: expected 2 WARNINGs for 2 distinct domains, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have 3 issues (2 spikes + 1 original)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (2 spikes + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture V2: single issue with two distinct ungrounded hosts — block boundaries
+# must be intact after the Dependencies append branch fires twice.
+#
+# One issue references svc-a.io and svc-b.io.  After pass-3, the issue's block
+# must end with a standalone ---END--- line (not glued to the next ---ISSUE---).
+# ---------------------------------------------------------------------------
+
+@test "Fixture V2: two-distinct-hosts in one issue preserves block boundaries after Dependencies append" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-v2.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Integrate two services
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.svc-a.io/data and https://api.svc-b.io/data for results.
+---END---
+---ISSUE---
+TITLE: Follow-up work
+LABELS: feature
+TIME: 30min
+BODY:
+No external calls here.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Block separators must be intact: ---END--- must always appear on its own line.
+  # If the trailing newline is lost from the sed-append path, ---END---
+  # gets glued to the following ---ISSUE--- on the same line.
+  grep -q "^---END---$" "$issues_file" || {
+    echo "FAIL: ---END--- does not appear on its own line — block boundary corrupted by Dependencies append" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Verify issue count is correct: 2 spikes + 2 originals = 4
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 4 ] || {
+    echo "FAIL: expected 4 issues (2 spikes + 2 originals), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture W: multi-part TLD (co.uk) — third label becomes registrable domain
+#
+# api.myservice.co.uk normalizes to myservice.co.uk (not co.uk).
+# Expected: 1 spike titled "Capture myservice.co.uk sample - fixtures" and the
+# downstream issue gets Blocked-by #SPIKE-myservice-co-uk.
+# ---------------------------------------------------------------------------
+
+@test "Fixture W: co.uk multi-part TLD — registrable domain is third-from-right label + co.uk" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-w.txt"
+  write_issues_file "$issues_file" \
+    "Integrate with UK payment provider" \
+    "Call https://api.myservice.co.uk/pay to initiate a payment."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # WARNING must name the normalized domain (not the raw subdomain)
+  grep -q "myservice.co.uk" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention normalized domain 'myservice.co.uk'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must not produce a spike for bare 'co.uk' (that would be wrong)
+  grep -qi "capture co.uk sample - fixtures" "$issues_file" && {
+    echo "FAIL: spike was created for bare 'co.uk' — multi-part TLD normalization is wrong" >&2
+    cat "$issues_file" >&2
+    false
+  } || true
+
+  # Spike title must use the registrable domain myservice.co.uk
+  local first_title
+  first_title=$(grep "^TITLE:" "$issues_file" | head -1)
+  echo "$first_title" | grep -qi "capture myservice.co.uk sample - fixtures" || {
+    echo "FAIL: spike title does not use 'myservice.co.uk': $first_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Downstream issue must get Blocked-by the myservice.co.uk spike
+  local downstream_block
+  downstream_block=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
+  echo "$downstream_block" | grep -q "#SPIKE-myservice-co-uk" || {
+    echo "FAIL: downstream issue missing #SPIKE-myservice-co-uk" >&2
+    echo "--- downstream block ---" >&2
+    echo "$downstream_block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture X: registrable-domain fixture (fixtures/foo.co/) grounds subdomain
+#            reference — no spike
+#
+# Regression for Fix 1: Pass-1 previously compared the raw extracted host
+# (api.foo.co) against the exact grounded-host set ({foo.co}) — an exact-match
+# failure that re-emitted the spike forever even after grounding.
+# Now both sides are normalized before comparison: api.foo.co → foo.co,
+# which matches the fixture-directory entry foo.co.
+# ---------------------------------------------------------------------------
+
+@test "Fixture X: fixtures/foo.co/ grounds an issue referencing https://api.foo.co/ — no spike" {
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/foo.co"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/foo.co/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-x.txt"
+  write_issues_file "$issues_file" \
+    "Integrate with foo service" \
+    "Call https://api.foo.co/v1/resource to fetch data."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs — api.foo.co normalizes to grounded foo.co, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Y: both subdomains normalize to the same grounded registrable domain —
+#            no spike is created and neither issue acquires a Blocked-by
+#
+# fixtures/api.foo.co/ grounds api.foo.co; normalization maps api.foo.co and
+# auth.foo.co to foo.co, which is in grounded_hosts_norm.  Pass-1 sees both
+# subdomains as grounded → no candidate → no spike → no Blocked-by injection.
+# Expected: 2 issues, neither has a Blocked-by.
+# (Prefix-collision regression is covered by Fixture Z.)
+# ---------------------------------------------------------------------------
+
+@test "Fixture Y: issue referencing only grounded subdomain gets no spurious Blocked-by from sibling spike" {
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/api.foo.co"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/api.foo.co/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-y.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Implement foo API client
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.foo.co/data to fetch results.
+---END---
+---ISSUE---
+TITLE: Add foo admin integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://auth.foo.co/admin to manage settings.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # api.foo.co and auth.foo.co both normalize to foo.co, which is grounded
+  # via api.foo.co's fixture — no spike should be emitted.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (no spike) — both subdomains ground to foo.co via api.foo.co fixture; got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Neither issue should carry a Blocked-by dependency
+  grep -q "Blocked by:" "$issues_file" && {
+    echo "FAIL: found spurious 'Blocked by:' in issues file — grounded-only issue acquired spike dependency" >&2
+    cat "$issues_file" >&2
+    false
+  } || true
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture Z: prefix-collision anchor — fixtures/api.foo.com/ grounded +
+#            ungrounded api.foo.co must NOT inject Blocked-by into foo.com issue
+#
+# Regression for the Pass-3 right-anchor fix: without the ([^a-zA-Z0-9.-]|$)
+# suffix on the context regex, grep -oiE "https?://...foo\.co" matches
+# https://api.foo.com because foo.co is a substring of foo.com.  The grounded
+# foo.com issue would acquire a spurious "Blocked by: #SPIKE-foo-co".
+#
+# With the anchor, https://api.foo.com does NOT match foo\.co([^a-zA-Z0-9.-]|$)
+# (next char is 'm', a host char), so _context_match stays false → no injection.
+# Expected: 3 issues (1 spike for foo.co + 2 originals); foo.com issue has no
+# Blocked-by; foo.co issue has Blocked-by #SPIKE-foo-co.
+# ---------------------------------------------------------------------------
+
+@test "Fixture Z: prefix-collision anchor — foo.com issue does not acquire Blocked-by from foo.co spike" {
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/api.foo.com"
+  echo '{"data": "sample"}' > "$RITE_TEST_TMPDIR/fixtures/api.foo.com/sample.json"
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-z.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Integrate with foo.com service
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.foo.com/data to fetch results.
+---END---
+---ISSUE---
+TITLE: Add foo.co admin integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.foo.co/admin to manage settings.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # foo.co is ungrounded → exactly one spike for foo.co
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (1 spike for foo.co + 2 originals), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Spike title must be for foo.co (prefix-collision must not produce a foo.com spike)
+  local first_title
+  first_title=$(grep "^TITLE:" "$issues_file" | head -1)
+  echo "$first_title" | grep -qi "foo\.co" || {
+    echo "FAIL: spike title does not reference foo.co: $first_title" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # The foo.com issue (block 2 after spike prepended) must NOT carry Blocked-by
+  local foocom_block
+  foocom_block=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
+  echo "$foocom_block" | grep -q "Blocked by:" && {
+    echo "FAIL: foo.com issue acquired spurious Blocked-by from foo.co spike (prefix-collision anchor broken)" >&2
+    echo "--- foo.com block ---" >&2
+    echo "$foocom_block" >&2
+    cat "$issues_file" >&2
+    false
+  } || true
+
+  # The foo.co issue (block 3) must carry Blocked-by #SPIKE-foo-co
+  local fooco_block
+  fooco_block=$(awk '/^---ISSUE---/{b++; buf=""} b==3{buf=buf"\n"$0} /^---END---/ && b==3{print buf; exit}' "$issues_file")
+  echo "$fooco_block" | grep -q "#SPIKE-foo-co" || {
+    echo "FAIL: foo.co issue missing #SPIKE-foo-co" >&2
+    echo "--- foo.co block ---" >&2
+    echo "$fooco_block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AA: prose URL terminators — space, comma, ?, :port, and backtick
+#
+# Regression for the ([^a-zA-Z0-9.-]|$) anchor fix: the old (/|$) anchor only
+# matched a slash or end-of-line.  A URL written mid-sentence like
+# "Fetch from https://api.authsvc.io for tokens." ends with a space, which
+# (/|$) does not match, so _context_match stayed false — the implementation
+# issue was not given a Blocked-by dependency on the spike.
+#
+# The ([^a-zA-Z0-9.-]|$) anchor is the exact complement of Pass-1's host-char
+# class, so any non-host character (space, comma, ?, :, backtick) terminates.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AA: prose URL terminators — space-terminated URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-space.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add authsvc token integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Fetch from https://api.authsvc.io for tokens.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # authsvc.io is ungrounded → spike prepended + implementation issue gets Blocked-by
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Implementation issue (block 2) must carry Blocked-by #SPIKE-authsvc-io
+  local impl_block
+  impl_block=$(grep -A9999 "^---ISSUE---$" "$issues_file" | grep -A9999 "Add authsvc" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-authsvc-io" || {
+    echo "FAIL: space-terminated URL — implementation issue missing Blocked-by #SPIKE-authsvc-io" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — comma-terminated URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-comma.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add paymentapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.paymentapi.io, then validate the response.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: comma-terminated URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add paymentapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-paymentapi-io" || {
+    echo "FAIL: comma-terminated URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — query-string URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-query.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add searchapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Query https://api.searchapi.io?q=foo&limit=10 for results.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: query-string URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add searchapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-searchapi-io" || {
+    echo "FAIL: query-string URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — colon-port URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-port.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add internalapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Connect to https://api.internalapi.io:8443/health for status.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: colon-port URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add internalapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-internalapi-io" || {
+    echo "FAIL: colon-port URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AA: prose URL terminators — backtick-wrapped URL injects Blocked-by" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-aa-backtick.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Add notifyapi integration
+LABELS: feature
+TIME: 1hr
+BODY:
+Use `https://api.notifyapi.io` to send notifications.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: backtick-wrapped URL — expected 2 issues, got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  local impl_block
+  impl_block=$(grep -A9999 "Add notifyapi" "$issues_file" | head -20)
+  echo "$impl_block" | grep -q "#SPIKE-notifyapi-io" || {
+    echo "FAIL: backtick-wrapped URL — implementation issue missing Blocked-by" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AB: host spike suppressed when vendor token matches a grounded SDK package
+#
+# Project has package.json with "@supabase/supabase-js" in dependencies.
+# Issue body references https://xyz.supabase.co/rest/v1/...
+# Expected:
+#   - no spike issue (1 issue, not 2)
+#   - no WARNING
+#   - one INFO line naming "@supabase/supabase-js"
+# ---------------------------------------------------------------------------
+
+@test "Fixture AB: host grounded by SDK package suppresses spike and emits INFO" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "express": "^4.18.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-ab.txt"
+  write_issues_file "$issues_file" \
+    "Fetch user records from Supabase" \
+    "Call https://xyz.supabase.co/rest/v1/users to retrieve rows."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit NO WARNING (the host is suppressed, not spiked)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNING lines, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly one INFO line naming the grounding package
+  local info_count
+  info_count=$(grep -c "^INFO:" "$stderr_out" || true)
+  [ "$info_count" -eq 1 ] || {
+    echo "FAIL: expected 1 INFO line (suppression notice), got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  grep -q "@supabase/supabase-js" "$stderr_out" || {
+    echo "FAIL: INFO line does not name the grounding package '@supabase/supabase-js'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have exactly 1 issue (no spike prepended)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AC: host with vendor token but no matching grounded package still spikes
+#
+# Project has package.json with only "express" — no supabase package.
+# Issue body references https://xyz.supabase.co/
+# Expected: one WARNING, spike emitted — vendor-token match requires grounded package.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AC: host vendor token with no matching grounded package still produces spike" {
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
+JSON
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac.txt"
+  write_issues_file "$issues_file" \
+    "Fetch user records from Supabase" \
+    "Call https://xyz.supabase.co/rest/v1/users to retrieve rows."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit one WARNING (supabase.co is not grounded by fixture or SDK)
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING for ungrounded host, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have 2 issues (spike + original)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AD: Go module path host prefix does NOT ground a host spike
+#
+# Project has go.mod with "github.com/stretchr/testify" — the vendor token for
+# github.com is "github", and the old dot-separator pattern would match
+# "github.com/stretchr/testify" via the dot between "github" and "com".
+# Issue body references https://github.com/user/data-source
+# Expected: one WARNING, spike emitted — "github.com/stretchr/testify" is an
+# unrelated Go module path, not an SDK that grounds the github.com host.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AD: Go module path does not ground host spike via dot-separated vendor token" {
+  cat > "$RITE_TEST_TMPDIR/go.mod" <<'GOMOD'
+module example.com/myapp
+
+go 1.21
+
+require (
+	github.com/stretchr/testify v1.8.4
+	golang.org/x/net v0.17.0
+)
+GOMOD
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-ad.txt"
+  write_issues_file "$issues_file" \
+    "Fetch data from GitHub" \
+    "Retrieve repository metadata from https://github.com/user/data-source using the REST API."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit one WARNING — github.com is not grounded by a github-specific SDK
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING (ungrounded host), got $warning_count — Go module path github.com/stretchr/testify must NOT suppress the spike" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have 2 issues (spike prepended)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (1 spike + 1 original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# SPIKE_KEY emit + parse + legacy-fallback round-trip
+#
+# For a >24-char package name the emitter must write the full name in the
+# SPIKE_KEY: field and a truncated display name in the title.  The spike-map
+# creation side reads SPIKE_KEY: preferentially; the legacy fallback derives
+# the key from the title via _sanitize_spike_key.
+# ---------------------------------------------------------------------------
+
+@test "Long-name spike emits full name in SPIKE_KEY and truncated name in title" {
+  # A manifest must exist for groundedness to be decidable: with no package.json
+  # the grounded set is empty, nothing is classified ungrounded, and no spike is
+  # emitted at all — the test then fails for the wrong reason (missing fixture,
+  # not a key-emission bug). Deliberately omits @opentelemetry/* so the package
+  # under test IS ungrounded.
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "fixture-project",
+  "dependencies": { "express": "^4.18.0" }
+}
+JSON
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-emit.txt"
+  write_issues_file "$issues_file" \
+    "Add distributed tracing" \
+    "Use require('@opentelemetry/instrumentation-http') to add tracing."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local spike_title
+  spike_title=$(grep "^TITLE:" "$issues_file" | head -1 | sed 's/^TITLE: //' || true)
+
+  # Title must be truncated (≤50 chars)
+  local title_len
+  title_len=${#spike_title}
+  [ "$title_len" -le 50 ] || {
+    echo "FAIL: spike title is $title_len chars (limit 50): $spike_title" >&2
+    false
+  }
+
+  # SPIKE_KEY must contain the full unsanitized package name (not the truncated display name)
+  local spike_key_line
+  spike_key_line=$(grep "^SPIKE_KEY:" "$issues_file" | head -1 | sed 's/^SPIKE_KEY: //' || true)
+  [ -n "$spike_key_line" ] || {
+    echo "FAIL: no SPIKE_KEY: field found in spike block" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # The key should be the sanitized full name: @opentelemetry/instrumentation-http
+  # → opentelemetry-instrumentation-http (@ stripped, / replaced with -)
+  echo "$spike_key_line" | grep -q "opentelemetry-instrumentation-http" || {
+    echo "FAIL: SPIKE_KEY '$spike_key_line' does not contain full sanitized name 'opentelemetry-instrumentation-http'" >&2
+    false
+  }
+
+  # Title must contain a truncation indicator (display name was cut)
+  echo "$spike_title" | grep -q "\.\.\." || {
+    echo "FAIL: long-name spike title does not contain truncation indicator '...': $spike_title" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Spike block without SPIKE_KEY falls back to title-derived key" {
+  # Manually craft a spike block that lacks SPIKE_KEY: (pre-SPIKE_KEY format)
+  local issues_file="$RITE_TEST_TMPDIR/issues-spike-key-legacy.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Capture somepkg sample - fixtures
+LABELS: spike, tech-debt
+TIME: 30min
+BODY:
+**Description**
+
+Legacy spike block without SPIKE_KEY field.
+
+**Claude Context**
+
+Files to Read:
+- fixtures/somepkg/
+
+Files to Modify:
+- fixtures/somepkg/sample.json
+
+**Acceptance Criteria**
+
+- [ ] Sample committed
+
+**Done Definition**
+
+Sample committed under fixtures/somepkg/.
+
+**Scope Boundary**
+
+- DO: Capture.
+- DO NOT: Implement client code.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+None required.
+---END---
+---ISSUE---
+TITLE: Use somepkg for data fetch
+LABELS: feature
+TIME: 1hr
+BODY:
+**Description**
+
+Use somepkg.
+
+**Claude Context**
+
+Files to Read:
+- src/fetch.js
+
+Files to Modify:
+- src/fetch.js
+
+**Acceptance Criteria**
+
+- [ ] somepkg integrated
+
+**Done Definition**
+
+somepkg integrated in fetch module.
+
+**Scope Boundary**
+
+- DO: Integrate somepkg.
+- DO NOT: Rewrite unrelated code.
+
+**Dependencies**: None
+
+**Documentation Impact**
+
+None required.
+---END---
+FIXTURE
+
+  # Load _title_is_spike and _sanitize_spike_key via the already-loaded functions
+  # (both are extracted in setup() via the _extract_packages_for_language → _dedup_issues range)
+
+  # The legacy path: _title_is_spike matches "Capture somepkg sample - fixtures"
+  # and extracts "somepkg" → _sanitize_spike_key("somepkg") → "somepkg"
+  _title_is_spike "Capture somepkg sample - fixtures" || {
+    echo "FAIL: _title_is_spike did not recognize legacy spike title" >&2
+    false
+  }
+
+  # The sanitized key for a short name must be identity (no sanitization needed)
+  local derived_key
+  derived_key=$(_sanitize_spike_key "somepkg")
+  [ "$derived_key" = "somepkg" ] || {
+    echo "FAIL: legacy key derivation: expected 'somepkg', got '$derived_key'" >&2
+    false
+  }
+
+  # A spike block without SPIKE_KEY: must not have the field present
+  grep -q "^SPIKE_KEY:" "$issues_file" && {
+    echo "FAIL: test fixture unexpectedly contains SPIKE_KEY: field" >&2
+    false
+  } || true
+}
+
+# ---------------------------------------------------------------------------
+# Table-driven unit tests for _normalize_host_to_registrable_domain (#1293)
+#
+# These tests exercise the function directly (not through _detect_unverified_integrations)
+# so each behavioral defect is caught at the unit level, independent of end-to-end setup.
+#
+# The setup() already loads _normalize_host_to_registrable_domain via the
+# _extract_packages_for_language → _dedup_issues line-range eval.
+# ---------------------------------------------------------------------------
+
+@test "registrable domain: standard last-two-labels strips subdomain (api.authsvc.io → authsvc.io)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.authsvc.io")
+  [ "$result" = "authsvc.io" ] || {
+    echo "FAIL: expected 'authsvc.io', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: trailing dot normalizes identically to same host without dot" {
+  local with_dot without_dot
+  with_dot=$(_normalize_host_to_registrable_domain "api.authsvc.io.")
+  without_dot=$(_normalize_host_to_registrable_domain "api.authsvc.io")
+  [ "$with_dot" = "$without_dot" ] || {
+    echo "FAIL: 'api.authsvc.io.' → '$with_dot', 'api.authsvc.io' → '$without_dot' (should be equal)" >&2
+    false
+  }
+  # Both must resolve to the registrable domain, not the full subdomain
+  [ "$with_dot" = "authsvc.io" ] || {
+    echo "FAIL: trailing-dot form expected 'authsvc.io', got '$with_dot'" >&2
+    false
+  }
+}
+
+@test "registrable domain: IP literal is returned unchanged (10.0.0.5 → 10.0.0.5)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "10.0.0.5")
+  [ "$result" = "10.0.0.5" ] || {
+    echo "FAIL: expected '10.0.0.5', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: unlisted ccSLD suffix returns host unchanged (api.foo.co.ve → api.foo.co.ve)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.foo.co.ve")
+  [ "$result" = "api.foo.co.ve" ] || {
+    echo "FAIL: expected 'api.foo.co.ve' (fail-closed), got '$result'" >&2
+    false
+  }
+  # Must NOT return the bare public suffix co.ve
+  [ "$result" != "co.ve" ] || {
+    echo "FAIL: result is bare public suffix 'co.ve'" >&2
+    false
+  }
+}
+
+@test "registrable domain: known hosting suffix (vercel.app) extracts user subdomain correctly" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.myapp.vercel.app")
+  [ "$result" = "myapp.vercel.app" ] || {
+    echo "FAIL: expected 'myapp.vercel.app', got '$result'" >&2
+    false
+  }
+  # Must NOT return the bare hosting suffix vercel.app
+  [ "$result" != "vercel.app" ] || {
+    echo "FAIL: result is bare hosting suffix 'vercel.app'" >&2
+    false
+  }
+}
+
+@test "registrable domain: known multi-part TLD (co.uk) extracts third-from-right label" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.myservice.co.uk")
+  [ "$result" = "myservice.co.uk" ] || {
+    echo "FAIL: expected 'myservice.co.uk', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: already-registrable host is returned as-is (authsvc.io → authsvc.io)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "authsvc.io")
+  [ "$result" = "authsvc.io" ] || {
+    echo "FAIL: expected 'authsvc.io', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: warning names both originating hostname and normalized domain" {
+  # Integration test: _detect_unverified_integrations emits a warning that includes
+  # both the registrable domain AND the original subdomain that triggered it.
+  local issues_file="$RITE_TEST_TMPDIR/issues-warn-orig.txt"
+  write_issues_file "$issues_file" \
+    "Integrate payment API" \
+    "Call https://api.payments.io/v1/charge to initiate a charge."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  # Warning must include BOTH the normalized domain and the originating hostname in
+  # the structured "(from: ...)" format — matching only the full phrase prevents a
+  # regression where "payments.io" passes because "api.payments.io" is present as a
+  # substring even if the normalized domain itself was omitted from the warning.
+  grep -q "payments\.io (from: api\.payments\.io)" "$stderr_out" || {
+    echo "FAIL: WARNING does not name normalized domain 'payments.io' alongside originating hostname 'api.payments.io'" >&2
     cat "$stderr_out" >&2
     false
   }

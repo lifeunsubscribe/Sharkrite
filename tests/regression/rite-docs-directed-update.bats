@@ -487,6 +487,52 @@ DRIFT_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Acceptance criterion 13 (#1232): apply-site TOCTOU guard
+# ---------------------------------------------------------------------------
+
+@test "_docs_apply_approved skips CREATE when file already exists in worktree" {
+  # docs/test-doc.md is committed in setup's initial commit and will be present
+  # in any worktree forked from origin/main.  Simulate the TOCTOU scenario: an
+  # approved CREATE proposal arrives at the apply site but the file already
+  # exists in the freshly-created worktree (it was pushed between preview and apply).
+  local doc_before
+  doc_before="$(cat "$FAKE_PROJECT/docs/test-doc.md")"
+
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  # Approved proposal targeting a file that already exists on origin/main
+  printf '%s\n' \
+    'ACTION: CREATE' \
+    'FILE: docs/test-doc.md' \
+    'DRIFT_REFS: none' \
+    '---CONTENT---' \
+    '# TOCTOU overwrite attempt' \
+    '' \
+    'This write must be blocked by the apply-site guard.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'toctou test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  # All proposals were skipped — function should exit 0 (all-skipped path)
+  [ "$status" -eq 0 ]
+
+  # Apply-site guard must fire and emit a warning
+  printf '%s\n' "$output" | grep -qi "Skipping CREATE"
+
+  # Original file content must be unchanged (guard fired before any write)
+  [ "$(cat "$FAKE_PROJECT/docs/test-doc.md")" = "$doc_before" ]
+
+  # Nothing was committed or pushed (guard fired before mkdir/write)
+  local push_calls
+  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$push_calls" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Coverage header presence (structural check)
 # ---------------------------------------------------------------------------
 

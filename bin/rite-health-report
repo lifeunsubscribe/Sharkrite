@@ -30,6 +30,14 @@ DISPLAY_MODE=false
 # Override for high- or low-volume projects via RITE_HEALTH_MIN_WORKFLOWS.
 MIN_WORKFLOWS="${RITE_HEALTH_MIN_WORKFLOWS:-3}"
 
+# Minimum times a finding title (or category) must appear across the period's logs
+# before it's flagged as a lint-rule candidate in the health report.
+# Override per project via RITE_HEALTH_RECURRENCE_MIN (default 2).
+RITE_HEALTH_RECURRENCE_MIN="${RITE_HEALTH_RECURRENCE_MIN:-2}"
+# Category backstop: coarser signal for reworded recurrences — flag when a
+# finding category appears this many times or more (not user-configurable).
+_RECURRENCE_CAT_MIN=4
+
 # Model for the health-report synthesis — DECOUPLED from RITE_REVIEW_MODEL.
 # The report is not code review: most of it is templating pre-computed stats
 # and applying fixed thresholds, with a thin interpretive tail (Trends, Insights,
@@ -202,8 +210,8 @@ TG_PASSED=$(echo "$TG_LINES" | grep -c 'outcome=passed' || true)
 TG_FAILED=$(echo "$TG_LINES" | grep -c 'outcome=failed' || true)
 TG_SKIPPED=$(echo "$TG_LINES" | grep -c 'outcome=skipped' || true)
 # Sum lint and test failure counts across all gate runs
-TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+TG_LINT_TOTAL=$(echo "$TG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+TG_TEST_TOTAL=$(echo "$TG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 
 # --- Pre-parse test gate selection stats (issue #462) ---
 # TEST_GATE_SELECTION diag format: "TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N"
@@ -214,8 +222,8 @@ TGS_TARGETED_RUNS=$(echo "$TGS_LINES" | grep -c 'mode=targeted' || true)
 # Sum selected + total across targeted runs to compute the avg reduction ratio.
 # A reduction ratio < 50% means the optimization is helping; > 50% means too many
 # files lack covers headers and the gate keeps falling back to the full path.
-TGS_SELECTED_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE 'selected=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-TGS_TOTAL_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE ' total=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+TGS_SELECTED_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE 'selected=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+TGS_TOTAL_SUM=$(echo "$TGS_LINES" | grep 'mode=targeted' | grep -oE ' total=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 # Pre-compute the avg selection ratio deterministically — arithmetic belongs in
 # bash, not the LLM (same principle as CR_TOP5_ISSUES / CR_MEDIAN_DURATION_S).
 if [ "${TGS_TOTAL_SUM:-0}" -gt 0 ] 2>/dev/null; then
@@ -247,12 +255,12 @@ FSR_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -c 'FULL_SUITE_RUN ' || true)
 FSR_PASSED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=passed' || true)
 FSR_FAILED=$(echo "$FSR_DIAG_LINES" | grep -c 'outcome=failed' || true)
 # Aggregate lint + test failure counts across all full-suite runs this period
-FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
-FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+FSR_LINT_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'lint_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
+FSR_TEST_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -oE 'test_count=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
 # Average duration in seconds across all runs (arithmetic in bash, not LLM)
 FSR_AVG_DURATION_S="N/A"
 if [ "$FSR_TOTAL" -gt 0 ] 2>/dev/null; then
-  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || echo "0")
+  _fsr_dur_sum=$(echo "$FSR_DIAG_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
   FSR_AVG_DURATION_S="$(( _fsr_dur_sum / FSR_TOTAL ))s"
 fi
 # Collect names of failing test cases from full-suite runs (from raw log files, not diag lines)
@@ -294,6 +302,89 @@ if [ "${GSU_COUNT:-0}" -gt 0 ] 2>/dev/null; then
   _gsu_dur_sum=$(echo "$GSU_LINES" | grep -oE 'duration_s=[0-9]+' | grep -oE '[0-9]+' | awk '{sum += $1} END {print sum+0}' || true)
   _gsu_dur_sum=${_gsu_dur_sum:-0}
   GSU_AVG_DURATION_S="$(( _gsu_dur_sum / GSU_COUNT ))s"
+fi
+
+# --- Pre-parse recurring ACTIONABLE_NOW findings ---
+# Harvests ^### .* - ACTIONABLE_NOW headers from raw log content (assessment output
+# embedded in rite-*.log), not from diag lines.  No LLM — pure grep/sort/uniq.
+# Two parallel signals:
+#   Title tally  — exact-normalized match; precise signal for identical findings.
+#   Category tally — coarse backstop for differently-worded findings of the same class.
+# RF_BLOCK is non-empty only when at least one class meets its threshold; the
+# SYSTEM_PROMPT instructs the model to omit the section entirely when it is empty.
+_rf_raw_headers=""
+_rf_raw_cats=""
+for logfile in "${RECENT_LOGS[@]+"${RECENT_LOGS[@]}"}"; do
+  # Anchored grep — never matches reasoning text that merely mentions ACTIONABLE_NOW;
+  # excludes [GATE] test-failure headers which are not review findings.
+  _rf_raw_headers+=$(grep -E '^### .* - ACTIONABLE_NOW$' "$logfile" 2>/dev/null | grep -v '^### \[GATE\]' || true)
+  _rf_raw_headers+=$'\n'
+  # Extract **Category:** values that follow an ACTIONABLE_NOW header.
+  # awk resets capture on any new ### header, so only the first Category: per finding
+  # is captured and categories from LATER/DISMISSED findings are excluded.
+  _rf_raw_cats+=$(awk '
+    /^### \[GATE\]/{capture=0; next}
+    /^### .* - ACTIONABLE_NOW$/{capture=1; next}
+    /^### /{capture=0}
+    capture && /\*\*Category:\*\*/{
+      sub(/.*\*\*Category:\*\*[[:space:]]*/, "")
+      print tolower($0)
+      capture=0
+    }
+  ' "$logfile" 2>/dev/null || true)
+  _rf_raw_cats+=$'\n'
+done
+_rf_raw_headers=$(echo "$_rf_raw_headers" | sed '/^$/d' || true)
+_rf_raw_cats=$(echo "$_rf_raw_cats" | sed '/^$/d' || true)
+
+RF_BLOCK=""
+if [ -n "$_rf_raw_headers" ]; then
+  # Normalize title: strip "### " prefix + " - ACTIONABLE_NOW" suffix, lowercase,
+  # collapse internal whitespace, trim leading/trailing spaces.
+  _rf_normalized=$(echo "$_rf_raw_headers" \
+    | sed 's/^### //' \
+    | sed 's/ - ACTIONABLE_NOW$//' \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[[:space:]]+/ /g' \
+    | sed 's/^ //; s/ $//' \
+    | sort | uniq -c | sort -k1,1rn -k2 || true)
+
+  _rf_title_lines=""
+  while IFS= read -r _rf_entry; do
+    _rf_count=$(echo "$_rf_entry" | awk '{print $1}' || true)
+    _rf_title=$(echo "$_rf_entry" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]*//' || true)
+    if [ -n "$_rf_count" ] && [ -n "$_rf_title" ] \
+        && [ "${_rf_count:-0}" -ge "${RITE_HEALTH_RECURRENCE_MIN:-2}" ] 2>/dev/null; then
+      _rf_title_lines+="  ${_rf_count}x: ${_rf_title}"$'\n'
+    fi
+  done <<< "$_rf_normalized"
+
+  _rf_cat_lines=""
+  if [ -n "$_rf_raw_cats" ]; then
+    _rf_cat_normalized=$(echo "$_rf_raw_cats" \
+      | sed -E 's/[[:space:]]+/ /g' \
+      | sed 's/^ //; s/ $//' \
+      | sort | uniq -c | sort -k1,1rn -k2 || true)
+    while IFS= read -r _rf_entry; do
+      _rf_count=$(echo "$_rf_entry" | awk '{print $1}' || true)
+      _rf_cat=$(echo "$_rf_entry" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]*//' || true)
+      if [ -n "$_rf_count" ] && [ -n "$_rf_cat" ] \
+          && [ "${_rf_count:-0}" -ge "${_RECURRENCE_CAT_MIN:-4}" ] 2>/dev/null; then
+        _rf_cat_lines+="  ${_rf_count}x: ${_rf_cat}"$'\n'
+      fi
+    done <<< "$_rf_cat_normalized"
+  fi
+
+  if [ -n "$_rf_title_lines" ] || [ -n "$_rf_cat_lines" ]; then
+    RF_BLOCK="Recurring finding classes — lint-rule candidates"
+    RF_BLOCK+=" (title threshold: ${RITE_HEALTH_RECURRENCE_MIN}+, category threshold: ${_RECURRENCE_CAT_MIN}+):"
+    if [ -n "$_rf_title_lines" ]; then
+      RF_BLOCK+=$'\n'"By title (exact-normalized match):"$'\n'"${_rf_title_lines}"
+    fi
+    if [ -n "$_rf_cat_lines" ]; then
+      RF_BLOCK+=$'\n'"By category (coarse backstop for reworded recurrences):"$'\n'"${_rf_cat_lines}"
+    fi
+  fi
 fi
 
 # --- Count workflow completions (minimum data gate) ---
@@ -349,7 +440,7 @@ done
 
 # fix-loop average: mean fix_iterations across WORKFLOW_COMPLETE diag lines
 HM_FIXLOOP_AVG=$(echo "$DIAG_LINES" | grep 'WORKFLOW_COMPLETE' | grep -oE 'fix_iterations=[0-9]+' | grep -oE '[0-9]+' \
-  | awk '{s+=$1; n++} END {if (n>0) printf "%.2f", s/n; else print "0"}' || echo "0")
+  | awk '{s+=$1; n++} END {if (n>0) printf "%.2f", s/n; else print "0"}' || true)
 
 # phase-1 (dev) average duration in seconds, parsed from "END phase1_development (Xh Ym Zs)"
 HM_PHASE1_AVG_S=$(echo "$TIMING_LINES" | grep 'END   phase1_development' | grep -oE '\([0-9hms ]+\)' \
@@ -360,14 +451,14 @@ HM_PHASE1_AVG_S=$(echo "$TIMING_LINES" | grep 'END   phase1_development' | grep 
         else if (v ~ /m$/){sub(/m/,"",v); secs+=v*60}
         else if (v ~ /s$/){sub(/s/,"",v); secs+=v} }
       tot+=secs; n++
-    } END {if (n>0) printf "%d", tot/n; else print "0"}' || echo "0")
+    } END {if (n>0) printf "%d", tot/n; else print "0"}' || true)
 
 # rtk average savings percent (from rtk gain json)
 HM_RTK_PCT=$(echo "$RTK_STATS" | jq -r '(.summary.avg_savings_pct // 0)' 2>/dev/null || echo "0")
 
 # total CRITICAL review findings this week (REVIEW diag lines; correct after #594 severity fix)
 HM_CRITICALS=$(echo "$DIAG_LINES" | grep 'REVIEW ' | grep -oE 'critical=[0-9]+' | grep -oE '[0-9]+' \
-  | awk '{s+=$1} END {print s+0}' || echo "0")
+  | awk '{s+=$1} END {print s+0}' || true)
 
 # Build this week's structured metrics block (emitted into the report below so
 # future runs can parse it). Marker is rite-health-metrics (NOT a sharkrite-*
@@ -438,6 +529,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
    - Any issue hitting max fix iterations (3) → flag that specific issue
    - Review finding 0 issues consistently → WATCH (review prompt may be too lenient)
    - CRITICAL findings appearing → flag
+   - Recurring finding classes: if RF_BLOCK (see data section) is non-empty, include a "Recurring findings — lint-rule candidates" sub-section listing each entry with its count and the note "Consider promoting to a sharkrite lint rule to catch this class in-session — each promoted rule eliminates those fix iterations permanently." If RF_BLOCK is empty, omit this sub-section entirely (do NOT say "no recurring findings" or similar).
 6. **Test Gate** — Summarize post-commit verification gate stats using the pre-parsed stats provided:
    - Show: Total gate runs, outcome breakdown (passed/failed/skipped), lint failures total, bats test failures total
    - Thresholds:
@@ -485,6 +577,7 @@ Analyze the provided data and produce a concise markdown health report. Be direc
 - Pre-parsed test gate selection stats: TGS_TOTAL_RUNS, TGS_TARGETED_RUNS, TGS_FULL_RUNS, TGS_SELECTED_SUM, TGS_TOTAL_SUM (counts)
 - Pre-parsed full-suite run stats: FSR_TOTAL, FSR_PASSED, FSR_FAILED (counts); FSR_LINT_TOTAL, FSR_TEST_TOTAL (aggregate failures); FSR_AVG_DURATION_S (formatted string); FSR_FAILURE_FLAG_EXISTS (true/false); FSR_FAILING_TESTS (raw text)
 - Pre-parsed unscoped suite warning stats: GSU_COUNT (occurrences in period); GSU_AVG_DURATION_S (average full-suite duration)
+- Recurring finding tally: RF_BLOCK (pre-computed; empty string when no class meets the threshold — omit the sub-section entirely in that case)
 
 ## Constraints
 
@@ -577,6 +670,10 @@ $RTK_STATS
 ## Recent Sharkrite Tool Changes (past 7 days)
 
 $SHARKRITE_CHANGES
+
+## Recurring Finding Classes (pre-parsed, past 7 days)
+
+$RF_BLOCK
 
 ## Week-over-Week Trends (pre-computed — exact numbers, do NOT parse prior prose)
 

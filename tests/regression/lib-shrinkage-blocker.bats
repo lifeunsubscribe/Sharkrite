@@ -2255,11 +2255,42 @@ _make_lib_move_diff() {
   local dst="lib/utils/gate-verdict.sh"
   local n=800
 
-  # The exemption reads the ADDED file from disk, so materialize it.
+  # The added file is deliberately NOT materialized on disk. The exemption must
+  # read the moved content out of the diff, which is the only artifact that
+  # describes the PR. An earlier version read it with `cat "$dst"` and this test
+  # created the file to satisfy that read — encoding the bug as a precondition.
+  # In production the added file lives in the PR's worktree, so the read came
+  # back empty and every split blocked (live: #1236, 2026-10-14).
+  [ ! -f "$dst" ]
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      _make_lib_move_diff "$src" "$dst" "$n"
+      return 0
+    fi
+    echo ""; return 0
+  }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "1236"
+
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: a pure move was blocked — a file split can never land"
+    echo "$output"
+    false
+  }
+}
+
+@test "detect_lib_shrinkage: move detection ignores a same-named file left on disk" {
+  # Stronger form of the above: a file with the right NAME but unrelated
+  # content sitting in cwd must not influence the verdict either way. The diff
+  # is the sole source of truth, so the move is still detected.
+  local src="lib/utils/test-gate.sh"
+  local dst="lib/utils/gate-verdict.sh"
+  local n=800
+
   mkdir -p "$(dirname "$dst")"
-  local i
-  : > "$dst"
-  for i in $(seq 1 "$n"); do printf 'moved_function_%d() { echo %d; }\n' "$i" "$i" >> "$dst"; done
+  printf 'totally_unrelated_content_not_in_the_diff() { :; }\n' > "$dst"
 
   gh_safe() {
     if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
@@ -2273,11 +2304,44 @@ _make_lib_move_diff() {
   run detect_lib_shrinkage "1236"
   rm -f "$dst"
 
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: a pure move was blocked — a file split can never land"
-    echo "$output"
-    false
+  [ "$status" -eq 0 ]
+}
+
+@test "detect_lib_shrinkage: additions to a MODIFIED lib file cannot satisfy the move match" {
+  # Only files NEW in this PR may absorb a deletion. If a modified sibling's
+  # added lines counted, a genuine overwrite could be laundered by appending
+  # the deleted content to any existing lib file — which is the 2026-06-02
+  # incident class, not a split.
+  local src="lib/utils/test-gate.sh"
+  local sibling="lib/utils/gate-verdict.sh"
+  local n=800
+
+  gh_safe() {
+    if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+      # Same shape as _make_lib_move_diff but the second file is MODIFIED
+      # (index line with a mode, no "new file mode" header).
+      printf 'diff --git a/%s b/%s\n' "$src" "$src"
+      printf 'index abc1234..def5678 100755\n'
+      printf -- '--- a/%s\n' "$src"
+      printf -- '+++ b/%s\n' "$src"
+      printf '@@ -1,%d +1,1 @@\n' "$n"
+      local i
+      for i in $(seq 1 "$n"); do printf -- '-moved_function_%d() { echo %d; }\n' "$i" "$i"; done
+      printf 'diff --git a/%s b/%s\n' "$sibling" "$sibling"
+      printf 'index 1111111..2222222 100755\n'
+      printf -- '--- a/%s\n' "$sibling"
+      printf -- '+++ b/%s\n' "$sibling"
+      printf '@@ -1,1 +1,%d @@\n' "$n"
+      for i in $(seq 1 "$n"); do printf '+moved_function_%d() { echo %d; }\n' "$i" "$i"; done
+      return 0
+    fi
+    echo ""; return 0
   }
+  export -f gh_safe
+
+  run detect_lib_shrinkage "260"
+  # Must still block: no file was ADDED, so this is not a split.
+  [ "$status" -eq 1 ]
 }
 
 @test "detect_lib_shrinkage: STILL fires for a deletion with no new lib file" {

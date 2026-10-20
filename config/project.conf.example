@@ -102,6 +102,23 @@
 # Set to 0 to disable the cap entirely (unbounded — original behavior).
 # RITE_MAX_FINDINGS_PER_RUN=20
 
+# Live-lock defer wait (seconds; default: 30).
+# When a dep issue holds a live lock in another concurrent batch session, the
+# dependent issue is deferred to the end of the queue. A background sleep of
+# this duration starts at defer time, allowing other queued issues to run
+# concurrently. The deferred issue joins the sleep before re-checking the dep,
+# so the foreign session has wall-clock time to merge. Set to 0 to disable the
+# wait (issue still defers, but re-checking starts immediately after processing
+# other queued issues — effective only when other issues provide enough buffer).
+# RITE_LIVE_LOCK_DEFER_WAIT=30
+
+# Maximum live-lock defer cycles per issue (default: 10).
+# Decoupled from batch size so a 2-issue batch gets the same 10 × wait-secs
+# budget as a large one. The queue-later defer path uses _UNIQUE_ISSUE_COUNT
+# (frozen batch size) as its cap; the live-lock path uses this variable.
+# Set to 0 to disable live-lock deferral entirely.
+# RITE_LIVE_LOCK_MAX_DEFERS=10
+
 # Batch gate circuit-breaker threshold (default: 3).
 # When this many consecutive issues fail their post-commit gate with the same
 # normalized failure signature (sorted unique failing-file set), the batch halts
@@ -123,6 +140,15 @@
 # Only affects target repos (non-Sharkrite); Sharkrite's own targeted-selection
 # runs are exempt by construction.
 # RITE_GATE_SCOPE_WARN_SECONDS=300
+
+# Minimum recurrence count before a review finding class is flagged as a lint-rule
+# candidate in the weekly health report (default: 2).
+# Titles appearing this many times or more across the period's ACTIONABLE_NOW findings
+# are listed in the report's "Recurring findings — lint-rule candidates" sub-section.
+# A separate category backstop (hardcoded at 4) catches reworded recurrences of the
+# same class. Set to a higher value for high-volume projects where occasional repeats
+# are expected noise.
+# RITE_HEALTH_RECURRENCE_MIN=2
 
 # Gate tier for target-repo node workspaces monorepo tests (default: "cycle").
 # Only affects npm/pnpm workspaces repos; single-package and non-node repos

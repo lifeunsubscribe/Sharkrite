@@ -55,6 +55,61 @@ create_test_script() {
   [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
 }
 
+@test "detects awk END-print with || echo '0'" {
+  printf '%s\n' '#!/usr/bin/env bash' "COUNT=\$(echo \"\$lines\" | awk '{sum += \$1} END {print sum+0}' || echo \"0\")" > "$LINT_FIXTURE_DIR/bad-awk-end.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "detects wc -l as final stage with || echo '0'" {
+  printf '%s\n' '#!/usr/bin/env bash' 'COUNT=$(find . -name "*.sh" | wc -l || echo "0")' > "$LINT_FIXTURE_DIR/bad-wc-l.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "does not flag grep -oE with || echo '0' when grep -c || true is also present" {
+  # Both patterns on the same line: the scanner finds the line (grep -c trigger),
+  # but the binding regex must confirm grep -c itself is paired with || echo "0".
+  # Without binding, the grep -oE's || echo "0" would cause a false violation.
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'MATCH=$(echo "$t" | grep -oE "[0-9]+" || echo "0"); COUNT=$(echo "$t" | grep -c "x" || true)' \
+    > "$LINT_FIXTURE_DIR/ok-grep-oe.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "flags wc -l piped to tr with || echo '0' (upstream failure still triggers double zero)" {
+  printf '%s\n' '#!/usr/bin/env bash' "COUNT=\$(find . -name '*.sh' | wc -l | tr -d ' ' || echo \"0\")" > "$LINT_FIXTURE_DIR/bad-wc-l-tr.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
+@test "does not flag wc -l || true when grep -oE || echo '0' is also present on the line" {
+  # Both patterns on the same line: the scanner finds the line (wc -l trigger),
+  # but the binding regex must confirm wc -l itself is paired with || echo "0".
+  # Without binding, the grep -oE's || echo "0" would cause a false violation.
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'COUNT=$(find . | wc -l || true); MATCH=$(echo "$t" | grep -oE "[0-9]+" || echo "0")' \
+    > "$LINT_FIXTURE_DIR/ok-wc-l-with-oe.sh"
+
+  cd "$PROJECT_ROOT"
+  SHARKRITE_LINT_ONLY=01 run tools/sharkrite-lint.sh
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "GREP_C_ECHO_ZERO" ]]
+}
+
 @test "detects git push without refspec" {
   printf '%s\n' '#!/usr/bin/env bash' 'git push' > "$LINT_FIXTURE_DIR/bad-push.sh"
 
@@ -116,6 +171,7 @@ EOF
 @test "detects BSD sed without GNU fallback" {
   # For a generic file (not portable-cmds.sh) Rule 10 (BARE_BSD_SED_I) supersedes
   # Rule 5 (BSD_SED_NO_FALLBACK), so assert the rule that actually fires.
+  # sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: fixture STRING written to a temp file so Rule 05 can be asserted to fire on it; never executed as sed.
   printf '%s\n' '#!/usr/bin/env bash' "sed -i '' 's/foo/bar/' file.txt" > "$LINT_FIXTURE_DIR/bad-sed.sh"
 
   # Should fail (lint script exits non-zero and output contains error)
