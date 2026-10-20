@@ -921,20 +921,83 @@ _changed_files_to_workspace_dirs() {
   local _cfd_patterns
   _cfd_patterns=$(_node_workspace_patterns "$_cfd_root")
   [ -n "$_cfd_patterns" ] || return 0
-  local _cfd_seen="" _cfd_pattern _cfd_dir _cfd_rel
+
+  # Split patterns into include (normal) and exclude (!-prefixed) lists.
+  # Bash glob expansion is not used here because:
+  #   1. ** without `set -o globstar` only matches one level — pnpm's dominant
+  #      `packages/**` layout silently misses nested workspaces (e.g.
+  #      packages/scope/component). find handles any depth correctly.
+  #   2. !exclusion patterns like `!packages/legacy` would need to expand a path
+  #      starting with `!`, which never matches a real directory — the exclusion
+  #      semantics are lost entirely under glob expansion.
+  local _cfd_include_pats="" _cfd_exclude_pats="" _cfd_p
+  while IFS= read -r _cfd_p; do
+    [ -n "$_cfd_p" ] || continue
+    case "$_cfd_p" in
+      !*) _cfd_exclude_pats="${_cfd_exclude_pats}${_cfd_p#!}"$'\n' ;;
+      *)  _cfd_include_pats="${_cfd_include_pats}${_cfd_p}"$'\n' ;;
+    esac
+  done < <(printf '%s\n' "$_cfd_patterns")
+
+  local _cfd_seen="" _cfd_pattern _cfd_dir _cfd_rel _cfd_base _cfd_dirs
+
   while IFS= read -r _cfd_pattern; do
     [ -n "$_cfd_pattern" ] || continue
-    for _cfd_dir in "$_cfd_root/"$_cfd_pattern; do
+
+    # Expand the include pattern using find rather than bash glob expansion so
+    # that ** correctly matches any depth and * matches only one level.
+    # Patterns typically take the form `packages/**`, `apps/*`, or a literal path.
+    case "$_cfd_pattern" in
+      *"**"*)
+        # Strip from ** onward to get the base directory, e.g. packages/** → packages
+        _cfd_base="${_cfd_root}/${_cfd_pattern%%\*\**}"
+        _cfd_base="${_cfd_base%/}"
+        [ -d "$_cfd_base" ] || continue
+        _cfd_dirs=$(find "$_cfd_base" -mindepth 1 -type d 2>/dev/null || true)
+        ;;
+      *"*"*)
+        # Single-level glob, e.g. packages/* → direct subdirs only
+        _cfd_base="${_cfd_root}/${_cfd_pattern%%\**}"
+        _cfd_base="${_cfd_base%/}"
+        [ -d "$_cfd_base" ] || continue
+        _cfd_dirs=$(find "$_cfd_base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
+        ;;
+      *)
+        # Literal path (no glob) — treat as an exact workspace directory
+        _cfd_base="${_cfd_root}/${_cfd_pattern}"
+        [ -d "$_cfd_base" ] || continue
+        _cfd_dirs="$_cfd_base"
+        ;;
+    esac
+
+    [ -n "$_cfd_dirs" ] || continue
+
+    while IFS= read -r _cfd_dir; do
+      [ -n "$_cfd_dir" ] || continue
       [ -d "$_cfd_dir" ] || continue
       [ -f "$_cfd_dir/package.json" ] || continue
       _cfd_rel="${_cfd_dir#"$_cfd_root/"}"
+
+      # Skip directories that match a !exclusion pattern.
+      local _cfd_excl _cfd_skip=false
+      while IFS= read -r _cfd_excl; do
+        [ -n "$_cfd_excl" ] || continue
+        case "$_cfd_rel" in
+          "$_cfd_excl"|"$_cfd_excl/"*) _cfd_skip=true; break ;;
+        esac
+      done < <(printf '%s\n' "${_cfd_exclude_pats:-}")
+      [ "$_cfd_skip" = "true" ] && continue
+
+      # Dedup across patterns
       case "$_cfd_seen" in *":${_cfd_rel}:"*) continue ;; esac
+
       if printf '%s\n' "$_cfd_files" | grep -q "^${_cfd_rel}/"; then
         echo "$_cfd_rel"
         _cfd_seen="${_cfd_seen}:${_cfd_rel}:"
       fi
-    done
-  done < <(printf '%s\n' "$_cfd_patterns")
+    done < <(printf '%s\n' "$_cfd_dirs")
+
+  done < <(printf '%s\n' "$_cfd_include_pats")
   return 0
 }
 
