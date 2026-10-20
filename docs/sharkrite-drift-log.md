@@ -82,3 +82,21 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 
 `rite docs` directed-update description in CLAUDE.md omits the apply-site CREATE guard that now skips writes when the target file already exists.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T00:02:31Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md says "holds the machine awake (macOS AC only, via `caffeinate`)" but the actual code in `cap-resume.sh` also **re-invokes the batch** on battery — it only skips the caffeinate hold, not the entire resume. The resume still happens on battery, just without keeping the machine awake.
+
+`CLAUDE.md:497` says "holds the machine awake (macOS AC only, via `caffeinate`) and re-invokes the remaining batch" — this implies the entire feature is AC-only, but the code skips only the caffeinate hold on battery while still waiting and re-invoking on any platform.
+
+`CLAUDE.md:497` says the feature is "macOS AC only" but cap-resume.sh re-invokes the batch on battery too — only the caffeinate hold is skipped on battery/non-macOS.
+<!-- /sharkrite-doc-drift -->
