@@ -15,130 +15,7 @@
 #   5. Worktree is removed in both failure and success outcomes
 
 load '../helpers/setup'
-
-# ---------------------------------------------------------------------------
-# Shared fake lib stubs (minimal — only deps promote-branch.sh sources)
-# ---------------------------------------------------------------------------
-_write_salvage_stubs() {
-  local _lib="$1"
-  mkdir -p "$_lib/utils" "$_lib/core" "$_lib/providers"
-
-  cat > "$_lib/utils/config.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f _pb_salvage_cfg >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-_pb_salvage_cfg() { true; }
-RITE_DATA_DIR="${RITE_DATA_DIR:-.rite}"
-RITE_PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(pwd)}"
-RITE_LIB_DIR="${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/.."}"
-RITE_PROJECT_NAME="${RITE_PROJECT_NAME:-fake-project}"
-RITE_INSTALL_DIR="${RITE_INSTALL_DIR:-$(dirname "${BASH_SOURCE[0]}")/../..}"
-RITE_STATE_DIR="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
-RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-/tmp/test-worktrees}"
-export RITE_DATA_DIR RITE_PROJECT_ROOT RITE_LIB_DIR RITE_PROJECT_NAME
-export RITE_INSTALL_DIR RITE_STATE_DIR RITE_WORKTREE_DIR
-STUB
-
-  cat > "$_lib/utils/colors.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f print_info >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-print_header()  { echo "=== $* ==="; }
-print_info()    { echo "[INFO] $*"; }
-print_step()    { echo "[STEP] $*"; }
-print_success() { echo "[OK] $*"; }
-print_warning() { echo "[WARN] $*" >&2; }
-print_error()   { echo "[ERROR] $*" >&2; }
-STUB
-
-  cat > "$_lib/utils/logging.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f _diag >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-_diag() { true; }
-verbose_header()  { true; }
-verbose_info()    { true; }
-STUB
-
-  cat > "$_lib/utils/gh-retry.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f gh_safe >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-gh_safe() { true; }
-STUB
-
-  cat > "$_lib/utils/git-helpers.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f git_fetch_safe >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-git_fetch_safe() { return 0; }
-rmdir_empty_worktree_container() { return 0; }
-STUB
-
-  cat > "$_lib/utils/blocker-rules.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f detect_critical_issues >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-detect_critical_issues() { return 0; }
-STUB
-
-  cat > "$_lib/utils/integration-ledger.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f integration_ledger_append >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-integration_ledger_append()        { return 0; }
-integration_ledger_entries()       { return 0; }
-integration_ledger_mark_promoted() { return 0; }
-STUB
-
-  cat > "$_lib/providers/provider-interface.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f provider_resolve_model >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-provider_resolve_model()           { echo "claude-sonnet-4-6"; }
-provider_run_prompt_with_timeout() { echo "stub narrative"; return 0; }
-STUB
-
-  cat > "$_lib/utils/promotion-composer.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f compose_promotion_pr_body >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-gather_promotion_context()    { return 0; }
-compose_promotion_pr_body()   { echo "stub promotion body"; return 0; }
-STUB
-
-  cat > "$_lib/utils/markers.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f rite_markers_loaded >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-rite_markers_loaded() { return 0; }
-RITE_MARKER_REVIEW="sharkrite-local-review"
-RITE_MARKER_ASSESSMENT="sharkrite-assessment"
-RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
-export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
-STUB
-
-  cat > "$_lib/core/local-review.sh" << 'STUB'
-#!/bin/bash
-exit 0
-STUB
-  chmod +x "$_lib/core/local-review.sh"
-
-  cat > "$_lib/core/merge-pr.sh" << 'STUB'
-#!/bin/bash
-_MERGE_PR_SH_SOURCED_IN_TEST=true
-STUB
-}
-
-# ---------------------------------------------------------------------------
-# Helper: write a runner script, chmod it, return its path.
-# ---------------------------------------------------------------------------
-_write_salvage_runner() {
-  local _path="$RITE_TEST_TMPDIR/runner_salvage_$$.sh"
-  cat > "$_path"
-  chmod +x "$_path"
-  echo "$_path"
-}
+load '../helpers/promote-stubs'
 
 # ---------------------------------------------------------------------------
 # Helper: build the fake git binary that handles worktree add/remove.
@@ -181,14 +58,14 @@ teardown() {
 
 @test "failing gate: gate JSON verdict is salvaged to project .rite/state/" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-fail"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -237,14 +114,14 @@ RUNEOF
 
 @test "failing gate: failure message names the verdict save path" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-msg"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -291,14 +168,14 @@ RUNEOF
 
 @test "failing gate: no JSON salvaged when gate exits without writing verdict" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-flag"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -346,14 +223,14 @@ RUNEOF
 
 @test "passing gate: no stray verdict JSON copied to project .rite/state/" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-pass"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -403,14 +280,14 @@ RUNEOF
 
 @test "worktree is removed after gate failure" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-wt-fail"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -456,14 +333,14 @@ RUNEOF
 
 @test "worktree is removed after gate success" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-wt-pass"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"

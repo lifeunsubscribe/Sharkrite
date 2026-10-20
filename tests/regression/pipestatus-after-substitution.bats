@@ -60,6 +60,13 @@ CONFIG_EOF
 BLUE=""; GREEN=""; RED=""; YELLOW=""; NC=""
 COLORS_EOF
 
+  # Stub sanitize-output.sh — assess-review-issues.sh sources this at load time
+  # (added in issue #1359-1360). Passthrough: no rtk wrappers in test inputs.
+  cat > "$RITE_LIB_DIR/utils/sanitize-output.sh" <<'SANITIZE_EOF'
+#!/bin/bash
+sanitize_generated_commands() { printf '%s' "${1:-}"; }
+SANITIZE_EOF
+
   # Stub logging.sh — _timer_start/_timer_end no-ops.
   cat > "$RITE_LIB_DIR/utils/logging.sh" <<'LOGGING_EOF'
 #!/bin/bash

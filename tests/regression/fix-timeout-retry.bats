@@ -164,7 +164,59 @@ teardown() {
 # BEHAVIORAL: verify the retry loop actually fires with a doubled budget
 # =============================================================================
 
-@test "behavioral: first no-commit timeout retries at double budget; second timeout exits 1" {
+# =============================================================================
+# DEV SESSION — structural, unit, and behavioral mirrors of the fix-session tests
+# =============================================================================
+
+@test "dev-structural: retry arm checks _dev_attempt -eq 1" {
+  grep -q '_dev_attempt.*-eq 1' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: '_dev_attempt -eq 1' guard not found in claude-workflow.sh" >&2
+    echo "      First-attempt retry guard must be present in dev session" >&2
+    return 1
+  }
+}
+
+@test "dev-structural: retry arm fires on first attempt at any budget (no budget cap guard)" {
+  # Dev session default is 7200s — no fixed cap like fix session's 1800s — so the
+  # retry must fire unconditionally on the first attempt without a budget threshold.
+  if grep -q 'CLAUDE_TIMEOUT.*-lt 1800' "$CLAUDE_WORKFLOW"; then
+    echo "FAIL: dev session has a CLAUDE_TIMEOUT -lt 1800 budget cap guard" >&2
+    echo "      This guard makes retry dead code at the 7200s default budget" >&2
+    return 1
+  fi
+  grep -q '_dev_attempt.*-eq 1' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: '_dev_attempt -eq 1' first-attempt guard not found in claude-workflow.sh" >&2
+    return 1
+  }
+}
+
+@test "dev-structural: DEV_TIMEOUT_RETRY diag line emitted on retry" {
+  grep -q 'DEV_TIMEOUT_RETRY' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: 'DEV_TIMEOUT_RETRY' diag not found in claude-workflow.sh" >&2
+    echo "      _diag DEV_TIMEOUT_RETRY must be emitted when dev session retries" >&2
+    return 1
+  }
+}
+
+@test "dev-structural: dev session retry budget capped at 14400s" {
+  grep -A1 '_retry_budget=$(( CLAUDE_TIMEOUT \* 2 ))' "$CLAUDE_WORKFLOW" | grep -q '_retry_budget=14400' || \
+  grep -q '_retry_budget.*-gt 14400.*_retry_budget=14400' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: dev session retry budget cap (14400s) not found in claude-workflow.sh" >&2
+    echo "      min(2×budget, 14400) cap must be applied to dev session retry" >&2
+    return 1
+  }
+}
+
+@test "dev-structural: uncommitted-changes arm breaks out of dev retry loop" {
+  # After 'Found uncommitted changes - committing before exit' there must be a break
+  grep -A1 'Found uncommitted changes - committing before exit' "$CLAUDE_WORKFLOW" | grep -q 'break' || {
+    echo "FAIL: 'break' not found after uncommitted-changes message in dev session" >&2
+    echo "      Committed-work timeout must exit the loop without retrying" >&2
+    return 1
+  }
+}
+
+@test "behavioral: fix first no-commit timeout retries at double budget; second timeout exits 1" {
   _btest_tmpdir=$(mktemp -d)
   _budgets="$_btest_tmpdir/budgets"
   _calls="$_btest_tmpdir/calls"
@@ -227,6 +279,89 @@ while true; do
       exit 1
     fi
   elif [ $FIX_EXIT_CODE -ne 0 ]; then
+    :
+  fi
+  break
+done
+HARNESS
+
+  chmod +x "$_btest_tmpdir/harness.sh"
+  run bash "$_btest_tmpdir/harness.sh"
+
+  [ "$status" -eq 1 ]
+
+  _call_count=$(wc -l < "$_calls" | tr -d ' ')
+  [ "$_call_count" -eq 2 ]
+
+  _b1=$(sed -n '1p' "$_budgets")
+  _b2=$(sed -n '2p' "$_budgets")
+  [ "$_b2" -eq $(( _b1 * 2 )) ]
+}
+
+@test "behavioral: dev first no-commit timeout retries at double budget; second timeout exits 1" {
+  _btest_tmpdir=$(mktemp -d)
+  _budgets="$_btest_tmpdir/budgets"
+  _calls="$_btest_tmpdir/calls"
+  touch "$_budgets" "$_calls"
+  export _RITE_TEST_BUDGETS="$_budgets"
+  export _RITE_TEST_CALLS="$_calls"
+
+  # Harness mirrors the dev-session while loop from lib/core/claude-workflow.sh
+  # with stubbed dependencies so control flow can be asserted.
+  cat > "$_btest_tmpdir/harness.sh" << 'HARNESS'
+#!/bin/bash
+set -uo pipefail
+
+provider_run_agentic_session() {
+  echo "$2" >> "$_RITE_TEST_BUDGETS"
+  echo "call" >> "$_RITE_TEST_CALLS"
+  return 124
+}
+provider_name()                       { echo "stub"; }
+provider_supports_tool_restrictions() { return 0; }
+print_status()  { :; }
+print_warning() { :; }
+print_info()    { :; }
+print_error()   { :; }
+_diag()         { :; }
+_timer_start()  { :; }
+git() {
+  if [ "${1:-}" = "status" ]; then printf ''; return 0; fi
+  command git "$@"
+}
+
+AUTO_MODE=true
+CLAUDE_PROMPT="test prompt"
+ISSUE_NUMBER=99
+CLAUDE_TIMEOUT=540
+CLAUDE_STDERR_FILE=""
+
+_dev_attempt=0
+while true; do
+  _dev_attempt=$(( _dev_attempt + 1 ))
+  rm -f "${CLAUDE_STDERR_FILE:-}" 2>/dev/null || true
+  CLAUDE_STDERR_FILE=$(mktemp)
+  set +e
+  provider_run_agentic_session "$CLAUDE_PROMPT" "$CLAUDE_TIMEOUT" "$AUTO_MODE" "$CLAUDE_STDERR_FILE"
+  CLAUDE_EXIT_CODE=$?
+  set -e
+  if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
+    if [ "$(git status --porcelain | { grep -v '\.gitignore$' || true; } | wc -l | tr -d ' ')" -gt 0 ]; then
+      print_warning "Found uncommitted changes - committing before exit"
+      break
+    else
+      if [ "$_dev_attempt" -eq 1 ]; then
+        _retry_budget=$(( CLAUDE_TIMEOUT * 2 ))
+        [ "$_retry_budget" -gt 14400 ] && _retry_budget=14400
+        _diag "DEV_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
+        print_info "No changes before timeout — retrying at double budget (${_retry_budget}s)..."
+        CLAUDE_TIMEOUT=$_retry_budget
+        continue
+      fi
+      print_error "No changes detected - workflow failed"
+      exit 1
+    fi
+  elif [ $CLAUDE_EXIT_CODE -ne 0 ]; then
     :
   fi
   break

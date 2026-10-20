@@ -549,7 +549,7 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 **But routing it to the log UNCONDITIONALLY made foreground gates look like a hang** (live regression — user report 2026-06-24): a foreground gate (post-merge-verify, fastpath, standalone) running a multi-minute bats suite with NOTHING else printing reads as a freeze. With no concurrent output to protect, a silent gap is strictly worse than the "test spam" it avoids. So routing is now **conditional**:
 
 - **`RITE_GATE_BACKGROUND=1`** (set by the two concurrent `run_test_gate &` launches in `workflow-runner.sh` Phase 2/3) → `_gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"`: raw to the log only, terminal gets the digest. No interleave with the concurrent review stream.
-- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite FIFO-tee still captures it into the log). The digest still prints as a recap.
+- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite nested-procsub tee still captures it into the log). The digest still prints as a recap.
 
 The rule: **only suppress the live stream when something else is competing for the terminal.** Any new `run_test_gate` caller that runs concurrent with other terminal output must set `RITE_GATE_BACKGROUND=1`; foreground callers must not.
 
@@ -862,6 +862,22 @@ The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces
 - **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
 
 The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. **Apply-site defense-in-depth (#1232):** `_docs_apply_approved` mirrors this guard: after forking the worktree from `origin/<target>` (with its own `git fetch` at ~line 206), it re-checks `[ -f "$_aa_target_file" ]` before writing any CREATE proposal. A file pushed to origin during the interactive preview session will be present in the worktree (the fetch pulled it) and the apply-site guard refuses the write with a warning. This shrinks the window from the full preview session to the fetch-to-write interval, provided the apply-site fetch succeeds (the fetch is `|| true`; on network failure the worktree may not contain the newest origin files, so the residual window degrades back to the full preview session (the last successfully fetched origin/<target> state)).
+
+### Proposal Format: Per-Generation End Token (#1233)
+
+The proposal wire format uses a delimiter line to mark the end of each proposal's content block. A fixed delimiter like `---END---` is unsafe: any proposal whose content contains the `---END---` string (and future content documenting the format verbatim would place it on its own line) is silently truncated at parse time — self-referential risk since `docs/architecture/behavioral-design.md` (this file) and bats test fixtures both reference the `---END---` string.
+
+**Fix:** `_docs_update_engine` generates a per-call unique end token before the feedback loop:
+
+```bash
+local _ue_end_token="---END-${RANDOM}${RANDOM}---"
+```
+
+The token is injected into the `DOC_UPDATE_EOF` prompt heredoc so the LLM knows which string to use as the end marker, and into the case pattern that detects the end-of-proposal during parsing. Because bash case patterns expand variables, `"${_ue_end_token}"` matches the generated string at runtime.
+
+**Why this approach over escaping:** An escaping scheme (e.g. replace `---END---` in content with `\---END---`, unescape on parse) requires the LLM to reliably apply the escaping rule — which it may not do when the content contains `---END---` in a code block or diff output. The per-generation token approach eliminates the collision opportunity entirely: the token is never in any existing document, so content cannot accidentally match it.
+
+**Scope:** only the `_docs_update_engine` LLM-output parser and its prompt. The saved proposal files (written by the parser, read by `_docs_apply_approved`) use EOF as their implicit delimiter and are unaffected.
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
@@ -1378,6 +1394,9 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 **Second application — deterministic integration check (issue #351, 2026-06-05):**
 
 `_detect_unverified_integrations` in `lib/core/plan-issues.sh` checks whether external hostnames and package/SDK names referenced in issue bodies are grounded in the project's fixture directories or dependency manifests. Issues that reference un-grounded dependencies get a spike-issue prerequisite prepended (no LLM call). This is a deterministic lookup: "is this hostname/package in the project's known-good set?" is a set membership test, not a language-understanding question.
+
+**Never-external host exclusion (issue #1370, 2026-10-20):** Before reaching the fixture/SDK grounded-set check, each extracted host candidate is filtered against a categorical never-external set. Hosts in this set cannot be real external integrations regardless of what the issue body says, so they are silently skipped — no spike, no warning. The never-external set covers: loopback names (`localhost`, `127.0.0.1`, `0.0.0.0`), `.local` and `.localhost` suffixes (mDNS/link-local), and RFC 2606 documentation names (`example.com`, `example.net`, `example.org`, and any subdomain thereof, plus `*.test`, `*.example`, `*.invalid`). IPv6 loopback (`[::1]`) cannot reach this check — the host-char class `[a-zA-Z0-9.-]` excludes `[` and `:` — so it is inert by construction. Private IP ranges (10.x, 192.168.x) are not excluded here; no IP parsing is performed beyond the IPv4 loopback literal. Live failure that motivated this fix: orrery 2026-10-20 — `http://localhost:54324` (Inbucket) in a verification command produced a "Capture localhost sample - fixtures" spike and put `Blocked by: #SPIKE-localhost` on the magic-link issue.
+**Verify:** `grep -n 'never-external\|loopback' docs/architecture/behavioral-design.md`
 
 **SDK-grounded host suppression (issue #1155, 2026-10-14):** A host candidate that passes the fixture check is additionally checked against the manifest's grounded packages before being spiked. The vendor token — the first label of the registrable domain (e.g. `supabase` from `supabase.co`) — is matched at word boundaries (`[@/-]` separators) against each grounded package name (e.g. `@supabase/supabase-js`). When matched, the session contract comes from a typed SDK already in the manifest; the host is not an unverified external feed, so no spike is emitted. An INFO line names the grounding package. The suppression check requires the package to be grounded (present in the manifest), not merely mentioned in issue bodies.
 
@@ -2246,3 +2265,29 @@ make.
 looks similar but is accumulate-**in-place**: one entry per convention title,
 with later PR numbers appended to that entry's References line. A naive union
 would duplicate titles. It needs its own design and deliberately has no merger.
+
+## Output Sanitization: stripping operator-local commands from generated artifacts
+
+**Root cause.** `claude --print` (the provider call used for issue planning, review generation, assessment follow-ups, and promotion PR bodies) loads the operator's user-global `~/.claude/CLAUDE.md`. That file carries RTK hook instructions, so the model authors `rtk grep`, `rtk proxy git status`, etc. into generated text. Those commands are unrunnable for any human or CI without the operator's personal rtk hook installed — they leak into published GitHub issue bodies and PR comments.
+
+**Why input-side suppression is wrong.** Suppressing `~/.claude/CLAUDE.md` at the provider-call level (via a hypothetical `--no-user-config` flag) is not available and would also lose auth context. Output-side sanitization at the seam where LLM output becomes a GitHub artifact is the correct fix.
+
+**The helper: `sanitize_generated_commands`** (`lib/utils/sanitize-output.sh`).
+
+Strips `rtk proxy <cmd>` → `<cmd>` and `rtk <cmd>` → `<cmd>` at command positions:
+line-start, after `` ` ``, `$(`, `| `, `&& `. Prose mentions of "rtk" not at a command
+position are untouched. Emits one `print_info` line to stderr reporting the count when
+anything is rewritten.
+
+**Grounded exception.** When `git grep -qlw rtk` in the project root succeeds, the
+target repo genuinely ships rtk commands — sanitization is skipped. This prevents
+sharkrite from mangling its own generated bodies (sharkrite's `CLAUDE.md` documents
+rtk and the project's tracked files reference it).
+
+**Applied seams — the four highest-leak GitHub-write sites** (each is a one-line call immediately before the GitHub write; additional write sites remain unsanitized — see issue #1360 ACTIONABLE_LATER findings):
+- `lib/core/plan-issues.sh` — issue body before `gh issue create --body-file`
+- `lib/core/assess-review-issues.sh` — follow-up issue body before `gh issue create --body-file`
+- `lib/core/local-review.sh` — review output before the PR comment `--body-file`
+- `lib/utils/promotion-composer.sh` — LLM narrative before `printf` emits it to stdout
+
+**Extension point.** The helper is intentionally rtk-specific (rtk is the live failure class; a generic "unknown tool" detector is unbounded). To handle another operator-local tool, add a parallel check inside `sanitize_generated_commands` — see the comment in `lib/utils/sanitize-output.sh`.

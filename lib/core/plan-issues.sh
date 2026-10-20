@@ -57,6 +57,13 @@ if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/utils/portable-cmds.sh"
 fi
 
+# Source output sanitizer (strips operator-local rtk wrappers from generated bodies)
+if ! declare -f sanitize_generated_commands >/dev/null 2>&1; then
+  if [ -n "${RITE_LIB_DIR:-}" ]; then
+    source "$RITE_LIB_DIR/utils/sanitize-output.sh"
+  fi
+fi
+
 # Source provider abstraction
 if [ -n "${RITE_LIB_DIR:-}" ]; then
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -1484,6 +1491,167 @@ _title_is_spike() {
 }
 
 # =============================================================================
+# _transform_dep_line — rewrite a **Dependencies**: line to add After #N and
+# remove the corresponding parallel-with annotation.
+#
+# Args: $1=line  $2=after_num (non-spike ordinal)
+#
+# Handles all annotation shapes:
+#   sole ref:    "(can run in parallel with #N)"         → removed
+#   first ref:   "(can run in parallel with #N, ...)"    → "#N, " removed
+#   last ref:    "(..., #N)"                              → ", #N" removed
+#   empty group: "(can run in parallel with )" artifact  → removed
+#
+# If After #N already present, the add step is skipped (idempotent).
+# Non-inline Dependencies lines (header-only, no ": ") are returned unchanged.
+# =============================================================================
+
+_transform_dep_line() {
+  local _tdl_line="$1"
+  local _tdl_after_num="$2"
+  local _tdl_prefix="**Dependencies**: "
+  local _tdl_after_tag="After #${_tdl_after_num}"
+  local _tdl_par_ref="#${_tdl_after_num}"
+
+  local _tdl_content
+  _tdl_content="${_tdl_line#"$_tdl_prefix"}"
+  # Not an inline Dependencies line — return unchanged
+  if [ "$_tdl_content" = "$_tdl_line" ]; then
+    printf '%s\n' "$_tdl_line"
+    return
+  fi
+
+  # Step 1: remove par_ref from the parallel-with annotation (all shapes).
+  # Sole ref: " (can run in parallel with #N)"
+  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with ${_tdl_par_ref})//" || true)
+  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref})//" || true)
+  # First ref of multiple: "(can run in parallel with #N, ..." → remove "#N, "
+  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref}, /(can run in parallel with /" || true)
+  # Last ref of multiple: "..., #N)" → remove ", #N"
+  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref})/)/g" || true)
+  # Middle ref of 3+: "(... #A, #N, #B ...)" → "(... #A, #B ...)"
+  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref},/,/g" || true)
+  # Clean up now-empty paren group
+  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with )//" || true)
+  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with )//" || true)
+
+  # Step 2: add After #N if not already present.
+  # Use a word-boundary regex to avoid substring collision (#1 matching inside #12).
+  if ! echo "$_tdl_content" | grep -qE "After #${_tdl_after_num}([^0-9]|$)"; then
+    case "$_tdl_content" in
+      None|"None "*|"None,")
+        # Replace "None" keyword with the After tag, preserving trailing content
+        _tdl_content="${_tdl_after_tag}${_tdl_content#None}"
+        ;;
+      *)
+        _tdl_content="${_tdl_after_tag}, ${_tdl_content}"
+        ;;
+    esac
+  fi
+
+  # Step 3: clean up trailing comma/space artifacts from removal.
+  _tdl_content=$(echo "$_tdl_content" | sed 's/, *$//' || true)
+  _tdl_content=$(echo "$_tdl_content" | sed 's/[[:space:]]*$//' || true)
+  _tdl_content=$(echo "$_tdl_content" | sed 's/  */ /g' || true)
+
+  printf '%s\n' "${_tdl_prefix}${_tdl_content}"
+}
+
+# =============================================================================
+# _autochain_rewrite_deps — rewrite the Dependencies line for a named issue
+# in the issues file, adding After #N and removing the parallel annotation.
+#
+# Args: $1=issues_file  $2=later_title  $3=after_num
+#
+# Reads the file line-by-line, transforms the first **Dependencies**: line in
+# the block whose TITLE matches later_title, writes to a temp file, then
+# atomically replaces the original.  Idempotent: if After #N is already
+# present and the annotation already absent, the file is unchanged.
+# =============================================================================
+
+_autochain_rewrite_deps() {
+  local _ard_file="$1"
+  local _ard_title="$2"
+  local _ard_after_num="$3"
+
+  local _ard_tmp
+  _ard_tmp=$(mktemp)
+  local _ard_in_target=false
+  local _ard_dep_rewritten=false
+
+  while IFS= read -r _ard_line; do
+    if [ "$_ard_line" = "---ISSUE---" ]; then
+      _ard_in_target=false
+      _ard_dep_rewritten=false
+    elif [ "$_ard_line" = "TITLE: ${_ard_title}" ]; then
+      _ard_in_target=true
+    elif [ "$_ard_line" = "---END---" ]; then
+      _ard_in_target=false
+    fi
+
+    if [ "$_ard_in_target" = true ] && [ "$_ard_dep_rewritten" = false ] && \
+       echo "$_ard_line" | grep -qE '^\*\*Dependencies\*\*:'; then
+      _ard_dep_rewritten=true
+      _ard_line=$(_transform_dep_line "$_ard_line" "$_ard_after_num")
+    fi
+
+    printf '%s\n' "$_ard_line"
+  done < "$_ard_file" > "$_ard_tmp"
+
+  mv "$_ard_tmp" "$_ard_file"
+}
+
+# =============================================================================
+# _autochain_remove_par_annotation — remove a parallel-with ref from an issue's
+# Dependencies line WITHOUT adding an After tag.
+#
+# Used to clean up the earlier issue's stale "can run in parallel with #N"
+# annotation after the later issue has been rewritten to "After #N".
+#
+# Args: $1=issues_file  $2=title  $3=ref_num (ordinal to remove from annotation)
+# =============================================================================
+
+_autochain_remove_par_annotation() {
+  local _arpa_file="$1"
+  local _arpa_title="$2"
+  local _arpa_ref_num="$3"
+  local _arpa_par_ref="#${_arpa_ref_num}"
+
+  local _arpa_tmp
+  _arpa_tmp=$(mktemp)
+  local _arpa_in_target=false
+  local _arpa_dep_done=false
+
+  while IFS= read -r _arpa_line; do
+    if [ "$_arpa_line" = "---ISSUE---" ]; then
+      _arpa_in_target=false
+      _arpa_dep_done=false
+    elif [ "$_arpa_line" = "TITLE: ${_arpa_title}" ]; then
+      _arpa_in_target=true
+    elif [ "$_arpa_line" = "---END---" ]; then
+      _arpa_in_target=false
+    fi
+
+    if [ "$_arpa_in_target" = true ] && [ "$_arpa_dep_done" = false ] && \
+       echo "$_arpa_line" | grep -qE '^\*\*Dependencies\*\*:'; then
+      _arpa_dep_done=true
+      # Apply only annotation-removal sed patterns (no After tag added).
+      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with ${_arpa_par_ref})//" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref})//" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref}, /(can run in parallel with /" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref})/)/g" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref},/,/g" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with )//" || true)
+      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with )//" || true)
+    fi
+
+    printf '%s\n' "$_arpa_line"
+  done < "$_arpa_file" > "$_arpa_tmp"
+
+  mv "$_arpa_tmp" "$_arpa_file"
+}
+
+# =============================================================================
 # Strict deterministic validator: graph checks, dangling refs, verification
 # paths, and deferral citations.
 #
@@ -2341,8 +2509,28 @@ _lint_issues_strict() {
           else
             _after_num="$_prefnum"  # non-spike ordinal of _pj (already)
           fi
-          print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
-          _warning_count=$((_warning_count + 1))
+          # Check whether the PEER issue (_pj) also carries a suppress marker.
+          # Either side suppressed → warn-only (disjoint-functions escape hatch).
+          # Neither side suppressed → deterministic auto-chain rewrite.
+          local _pj_supps_eff="${_suppressions[$_pj]:-}"
+          if echo "$_pj_supps_eff" | grep -qw "parallel-file-overlap"; then
+            # Peer (_pj) is suppressed — warn-only
+            print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
+            _warning_count=$((_warning_count + 1))
+          else
+            # Neither side suppressed — auto-chain: rewrite the later issue.
+            if [ "$_pi" -lt "$_pj" ]; then
+              # _pj is the later issue (higher ordinal)
+              _autochain_rewrite_deps "$issues_file" "$_pj_title" "$_after_num"
+              # Clean up _pi's stale parallel annotation referencing _pj (bidirectional case).
+              _autochain_remove_par_annotation "$issues_file" "$_pi_title" "$_prefnum"
+              print_info "[auto-chained] parallel-file-overlap: '$_pj_title' rewired After #${_after_num} ('$_pi_title'); both modify '${_par_shared}'" >&2
+            else
+              # _pi is the later issue (higher ordinal)
+              _autochain_rewrite_deps "$issues_file" "$_pi_title" "$_after_num"
+              print_info "[auto-chained] parallel-file-overlap: '$_pi_title' rewired After #${_after_num} ('$_pj_title'); both modify '${_par_shared}'" >&2
+            fi
+          fi
         fi
       fi
     done <<< "$_pi_parallel"
@@ -2367,10 +2555,17 @@ _lint_issues_strict() {
 
   # How many issues must share a normalized command for it to be classified as a
   # universal CI gate (exempt from the pairwise duplicate check).
-  # For a slate of ≤5 issues, ≥3 occurrences equals >50% of the slate, so the
-  # frequency rule naturally covers small-slate universal gates without a separate
-  # percentage check.
+  # On slates of ≤3 issues the frequency exemption is disabled entirely by the
+  # _VERIF_UNIV_MIN_SLATE floor below; the allowlist handles their known-safe
+  # commands (make check, npm test, etc.).
   local _VERIF_UNIV_THRESHOLD=3
+  # Minimum slate size for the absolute-frequency exemption to fire.
+  # Without this floor, a 3-issue slate where all 3 share a distinctive command
+  # reaches freq=3 ≥ threshold=3 and is silently exempted — the strongest possible
+  # duplicate signal becomes invisible.  With min-slate=4, slates of 1-3 issues
+  # never trigger the frequency path; the allowlist below handles their known-safe
+  # commands (make check, npm test, etc.).
+  local _VERIF_UNIV_MIN_SLATE=4
 
   # Build a frequency table: how many issues carry each normalized verification command.
   # Computed before the pairwise loop so the per-command lookup inside it is O(1).
@@ -2447,7 +2642,9 @@ pytest"
         # Skip commands that appear in many issues — they are universal CI gates,
         # not per-issue deliverables (checked before the allowlist so project-specific
         # gates like `pnpm typecheck` are exempt without needing an allowlist entry).
-        if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ]; then
+        # The min-slate floor prevents the absolute threshold from firing on tiny slates
+        # where freq==slate-size (3-of-3 = 100% duplicate signal, not a universal gate).
+        if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ] && [ "$_issue_count" -ge "$_VERIF_UNIV_MIN_SLATE" ]; then
           continue
         fi
 
@@ -3631,6 +3828,19 @@ _detect_unverified_integrations() {
         if [ -n "$_hosts" ]; then
           while IFS= read -r _host; do
             [ -z "$_host" ] && continue
+            # Never-external check: loopback and RFC 2606 documentation hosts are
+            # categorically impossible external integrations — skip them before the
+            # grounded-set lookup so they never produce a fixture-capture spike.
+            # (Live: localhost:54324/Inbucket in a verification command spawned a spike.)
+            # IPv6 loopback ([::1]) cannot reach this branch — the host-char class
+            # [a-zA-Z0-9.-] excludes '[' and ':' — so it is inert by construction.
+            case "$_host" in
+              localhost|127.0.0.1|0.0.0.0) continue ;;
+              *.local|*.localhost) continue ;;
+              *.test|*.example|*.invalid) continue ;;
+              example.com|example.net|example.org) continue ;;
+              *.example.com|*.example.net|*.example.org) continue ;;
+            esac
             # Normalize first so that a fixtures/foo.co/ fixture grounds both
             # api.foo.co and auth.foo.co (all normalize to foo.co before the check).
             local _host_reg
@@ -4556,6 +4766,11 @@ create_issues() {
             gh_safe label create "$label" --force < /dev/null &>/dev/null || true
           done
           gh_args+=(--label "$current_labels")
+        fi
+
+        # Strip operator-local rtk wrapper commands before publishing to GitHub.
+        if declare -f sanitize_generated_commands >/dev/null 2>&1; then
+          current_body=$(sanitize_generated_commands "$current_body")
         fi
 
         # Write body to temp file to avoid shell interpretation of backticks,

@@ -19,6 +19,28 @@
 
 set -euo pipefail
 
+# Bash 4+ re-exec guard (issue #1361 fallout — see #1374).
+#
+# lib/utils/gate-runners.sh nests `case` statements inside process
+# substitutions, which bash 3.2 cannot parse, so it refuses to load under 3.2.
+# On macOS /bin/bash IS 3.2, so any #!/bin/bash file that reaches it — directly
+# or through test-gate.sh / gate-verdict.sh — dies before doing any work.
+#
+# #1374 guarded the five entry points known at the time and missed the rest:
+# create-pr.sh then died the same way one phase later. Rather than chase them
+# one at a time, every executable #!/bin/bash file in lib/ now carries this.
+# It is inert when the file is sourced (the BASH_SOURCE test is false), so it
+# costs nothing for the ones that are only ever libraries.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if declare -f check_assessment_freshness >/dev/null 2>&1; then
   return 0 2>/dev/null || true
@@ -33,6 +55,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
+source "$RITE_LIB_DIR/utils/sanitize-output.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 # issue-lock.sh: provides derive_followup_finding_key and write_followup_evidence
@@ -1437,6 +1460,7 @@ ${SCOPE_DO_BULLETS}
 _Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
 _Parent PR: #${PR_NUMBER}_"
 
+          ISSUE_BODY=$(sanitize_generated_commands "$ISSUE_BODY")
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
           ensure_labels_exist "tech-debt,from-review,${_priority_label}"
@@ -1454,6 +1478,14 @@ _Parent PR: #${PR_NUMBER}_"
             if [ -n "$NEW_ISSUE" ]; then
               CREATED_ISSUES="${CREATED_ISSUES}#${NEW_ISSUE} "
               print_success "  Created issue #$NEW_ISSUE"
+              # Telemetry for the batch reporter's "Issues Created" line. Must
+              # match the emission in assess-and-resolve.sh: this is the OTHER
+              # follow-up creation site in the per-issue path (ACTIONABLE_LATER
+              # per-item issues), so instrumenting only one undercounts a batch
+              # whose findings came out per-item rather than rolled up.
+              if declare -f _diag >/dev/null 2>&1; then
+                _diag "FOLLOWUP_CREATED issue=${RITE_ISSUE_NUMBER:-} pr=${PR_NUMBER:-} followup=${NEW_ISSUE}"
+              fi
               # Passback: write issue number to temp file so assess-and-resolve.sh
               # knows per-item issues were filed and can skip the consolidated rollup.
               if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then

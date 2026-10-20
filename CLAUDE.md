@@ -822,6 +822,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Phase 1 (development)** is where savings happen: `git status`, `git diff`, test runs, `grep`, `cat`, `ls`, etc.
 - **Phases 2-5** are unaffected. All Sharkrite `gh` calls use `--json` which rtk passes through unfiltered.
 - **stdin piping** (fix-review mode) is unaffected — the hook only rewrites command strings, not stdin.
+- **Generated artifacts are sanitized.** Because `claude --print` loads the operator's `~/.claude/CLAUDE.md` (which carries the RTK hook instructions), LLM-generated text can contain `rtk`-wrapped commands that are unrunnable without the operator's hook. `sanitize_generated_commands` (`lib/utils/sanitize-output.sh`) strips these at the four highest-leak GitHub-write seams (issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies); additional write sites remain unsanitized. Repos whose tracked files reference rtk are exempt (grounded exception). See `behavioral-design.md` → "Output Sanitization".
 
 ### Configuration
 
@@ -942,11 +943,11 @@ tail -f .rite/logs/rite-sync-*.log           # live view during a sync
 
 **Two-channel write convention** (important when modifying logging code):
 
-1. **Human-readable output** (Claude tool indicators, bats results, lint output, `print_info`/`print_step`/etc.) → write to stdout/stderr. The FIFO-based tee in `bin/rite` captures everything that flows through the inherited stdout fd into the log file automatically. Subprocesses inherit the fd; no special handling needed.
+1. **Human-readable output** (Claude tool indicators, bats results, lint output, `print_info`/`print_step`/etc.) → write to stdout/stderr. The nested-procsub tee (`exec > >(tee >(strip_ansi >> FILE))`) in `bin/rite` captures everything that flows through the inherited stdout fd into the log file automatically. Subprocesses inherit the fd; no special handling needed.
 
 2. **Structured metadata** (`[diag]`, `[timing]`, `[rtk]` lines) → `_diag`, `_timer_start/_end`, `_rtk_snapshot` write directly to `$RITE_LOG_FILE` via `>>`. This is intentional: these events must appear in the log even in `--verbose` mode (where stdout is the terminal, not the tee). **Do NOT also print them to stdout** — the tee would capture them a second time, producing duplicates. Note: in verbose+logged mode the single-appearance guarantee depends on the `if/elif` exclusivity inside `_diag` and `_timer_*` (exactly one branch executes per call, so the direct-write path fires once and stdout is skipped); the direct-write-only convention is necessary but not sufficient on its own.
 
-**FIFO-based tee (implemented in `bin/rite`):** The log capture uses a named FIFO (`mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX"` — `XXXXXX` must be at the end; BSD `mktemp -u` does not support suffixes after the template) rather than the simpler nested-process-substitution pattern `exec > >(tee >(strip_ansi >> FILE))`. The nested pattern loses data: the inner `>(...)` process exits before the outer tee flushes, truncating the last kilobytes of output. The FIFO keeps the `strip_ansi` reader alive for exactly as long as the tee write end is open.
+**Log capture pattern (`bin/rite`):** The log capture uses the nested process-substitution `exec > >(tee >(strip_ansi >> FILE))`. The outer `>(tee …)` redirects stdout to `tee`, which writes to the terminal and to the inner `>(strip_ansi >> FILE)` procsub; `strip_ansi` strips ANSI escape codes before appending to the log file. This pattern has a theoretical tail-truncation race: bash does not wait for process-substitution subprocesses to drain before exiting, so the last few bytes of output could be lost if the procsubs are still draining when the shell exits. A FIFO-based alternative was considered to close this race — by having a named-FIFO reader (`strip_ansi >> FILE < FIFO &`) that drains naturally when tee closes the write end — but was not implemented; a prior attempt at a FIFO+explicit-`wait` pattern in `bin/rite-full-suite` caused a deadlock (the procsub keeps the write fd open until the shell exits, so a pre-exit `wait` hangs forever — see `tests/regression/full-suite-subcommand.bats`). If tail truncation is observed in practice, the correct fix is a FIFO without an explicit `wait`: start `strip_ansi >> FILE < FIFO &` in the background, then `exec > >(tee FIFO)`, and let the reader drain on its own when the write end closes. BSD `mktemp -u` does not support suffixes after the template, so use `mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX"` (six X's at the end, no suffix).
 
 ### Diagnostic logging
 
@@ -955,6 +956,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
 - `ASSESSMENT` — per-issue assessment counts (NOW/LATER/DISMISSED)
 - `REVIEW` — review severity counts (CRITICAL/HIGH/MEDIUM/LOW)
+- `FOLLOWUP_CREATED` — a follow-up issue was filed (source issue, PR, new issue number). Emitted by BOTH per-issue creation sites (`assess-and-resolve.sh` rollup, `assess-review-issues.sh` ACTIONABLE_LATER per-item); the batch reporter harvests these for its `Issues Created` line. The promote path has its own `PROMOTE_FOLLOWUP_CREATED` / `PROMOTE_ASSESSED_FOLLOWUP_CREATED` and is deliberately excluded from a batch's total.
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)

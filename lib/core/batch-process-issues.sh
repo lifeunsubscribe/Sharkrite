@@ -1102,13 +1102,12 @@ send_notification_all "🚀 *Batch Processing Started*
 *Pre-flight Blockers:* ${#PREFLIGHT_BLOCKERS[@]}
 *Mode:* Unsupervised" "normal"
 
-# Clear any stale cap-reset-line.txt from a prior run. If a previous single-issue
-# run hit exit 5 but never consumed this file, it would feed a wrong reset_epoch
-# into the manifest if this batch also caps. Must happen before the issue loop.
-# Assumption: one batch per repo at a time. A concurrent batch B starting here
-# can delete a just-written reset line from batch A's in-flight exit-5 path,
-# degrading A's manifest to reset_epoch:0. Parallel-batch isolation is deferred
-# to a follow-up issue; this site is not safe for overlapping batches.
+# Clear any stale fixed-name cap-reset-line.txt from a prior single-issue run.
+# In batch mode the file is now named cap-reset-line-${RITE_BATCH_ID}.txt (unique
+# per invocation), so parallel batch groups cannot clobber each other.  The
+# fixed-name fallback is only written by single-issue (non-batch) runs where
+# RITE_BATCH_ID is absent; clearing it here prevents a stale single-issue file
+# from feeding a wrong reset_epoch if this batch also caps.
 rm -f "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-reset-line.txt" 2>/dev/null || true
 
 # Process each issue
@@ -1748,15 +1747,19 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+      increment_failed   # session tracker: invariant_violated counts as processed
 
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort batch, write resume manifest, print resume cmd.
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
+      increment_failed   # session tracker: usage_cap counts as processed
 
-      # Read reset-line persisted by claude.sh when the cap was detected
+      # Read reset-line persisted by claude.sh when the cap was detected.
+      # RITE_BATCH_ID is always set in batch context (see top of this file), so the
+      # per-batch filename is always used here — parallel groups get their own file.
       _cap_state="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
-      _cap_reset_file="${_cap_state}/cap-reset-line.txt"
+      _cap_reset_file="${_cap_state}/cap-reset-line-${RITE_BATCH_ID}.txt"
       _cap_reset_text=$(cat "$_cap_reset_file" 2>/dev/null | head -1 || true)
       rm -f "$_cap_reset_file" 2>/dev/null || true
 
@@ -1795,9 +1798,10 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       _resume_cmd="rite ${_remaining[*]}"
       [ -n "$_batch_flags" ] && _resume_cmd="$_resume_cmd $_batch_flags"
 
-      # Write the resume manifest so an auto-resume (or the user) can re-run exactly
+      # Write the resume manifest so an auto-resume (or the user) can re-run exactly.
+      # Per-batch filename prevents parallel groups from overwriting each other's manifest.
       mkdir -p "$_cap_state"
-      _manifest_path="${_cap_state}/cap-resume.json"
+      _manifest_path="${_cap_state}/cap-resume-${RITE_BATCH_ID}.json"
       _written_epoch=$(date +%s)
       _issues_json=""
       for _ri in "${_remaining[@]}"; do
@@ -1847,6 +1851,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
+      increment_failed   # session tracker: auth_failure counts as processed
       AUTH_FAILURE_ISSUES+=("$ISSUE_NUM")
       _BATCH_AUTH_HALT=true
       break
@@ -1874,6 +1879,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
+      increment_failed   # session tracker: failed counts as processed
     fi
   fi
 
@@ -2095,6 +2101,7 @@ NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
 • Failed: ${#FAILED_ISSUES[@]} ❌
 • Blocked: ${#BLOCKED_ISSUES[@]} 🚨
 • Skipped: ${#SKIPPED_ISSUES[@]} ⏭️
+• Issues Created: $(_batch_followups_created | grep -c . || true) 📋
 • Duration: $(_format_elapsed "$TOTAL_DURATION")
 • Success Rate: $((COMPLETED_ISSUES * 100 / TOTAL_ISSUES))%"
 

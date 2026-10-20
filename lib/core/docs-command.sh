@@ -456,6 +456,9 @@ ${_ue_excerpt}
 
   local _ue_accum_fb=""
   local _ue_attempt=0
+  # Per-generation unique end token prevents content containing ---END--- from
+  # being mistaken for the proposal delimiter (issue #1233).
+  local _ue_end_token="---END-${RANDOM}${RANDOM}---"
 
   while [ "$_ue_attempt" -lt 5 ]; do
     _ue_attempt=$((_ue_attempt + 1))
@@ -503,7 +506,7 @@ DRIFT_REFS: <space-separated pr:N entries from drift log this change addresses, 
 DESCRIPTION: <one-line summary of what changes and why>
 ---CONTENT---
 <complete new content of the file>
----END---
+${_ue_end_token}
 
 For a NEW file to CREATE:
 ---PROPOSAL---
@@ -513,7 +516,7 @@ DRIFT_REFS: none
 DESCRIPTION: <one-line summary>
 ---CONTENT---
 <complete content of the new file>
----END---
+${_ue_end_token}
 
 If no changes are needed, output only the line: NO_PROPOSALS_NEEDED
 DOC_UPDATE_EOF
@@ -561,13 +564,21 @@ DOC_UPDATE_EOF
     while IFS= read -r _ue_rl || [ -n "$_ue_rl" ]; do
       case "$_ue_rl" in
         "---PROPOSAL---")
-          _ue_in_prop=1; _ue_in_content=0
-          _ue_cur_action=""; _ue_cur_file=""; _ue_cur_drift=""; _ue_cur_desc=""; _ue_cur_content=""
+          if [ "$_ue_in_content" = "1" ]; then
+            _ue_cur_content="${_ue_cur_content}${_ue_rl}"$'\n'
+          else
+            _ue_in_prop=1; _ue_in_content=0
+            _ue_cur_action=""; _ue_cur_file=""; _ue_cur_drift=""; _ue_cur_desc=""; _ue_cur_content=""
+          fi
           ;;
         "---CONTENT---")
-          [ "$_ue_in_prop" = "1" ] && _ue_in_content=1
+          if [ "$_ue_in_content" = "1" ]; then
+            _ue_cur_content="${_ue_cur_content}${_ue_rl}"$'\n'
+          else
+            [ "$_ue_in_prop" = "1" ] && _ue_in_content=1
+          fi
           ;;
-        "---END---")
+        "${_ue_end_token}")
           if [ "$_ue_in_prop" = "1" ] && [ -n "$_ue_cur_file" ]; then
             _ue_prop_count=$((_ue_prop_count + 1))
             {
@@ -600,6 +611,9 @@ DOC_UPDATE_EOF
     rm -f "$_ue_raw_file"
 
     if [ "$_ue_prop_count" -eq 0 ]; then
+      if printf '%s\n' "$_ue_proposals_raw" | grep -q "^---PROPOSAL---$"; then
+        print_warning "Model output contained '---PROPOSAL---' markers but zero complete proposals were parsed — model may have used '---END---' instead of expected end token '${_ue_end_token}'; re-run to generate a new unique end token" >&2
+      fi
       print_info "No actionable proposals in LLM output"
       rm -rf "$_ue_props_dir"
       return 0

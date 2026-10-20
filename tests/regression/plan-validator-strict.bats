@@ -31,10 +31,14 @@
 #   H8b — shared allowlisted command (make check only) → no WARNING, exit 0
 #   H8c — unique verification commands across issues → no WARNING, exit 0
 #   H8d — issue with duplicate-verification suppression → no WARNING, [suppressed] logged, exit 0
+#   H8e — distinctive command shared by all 3 issues on a 3-issue slate → WARNING (not silently exempted), exit 0
 #   H9a — 2hr estimate without Split rationale line → WARNING naming the issue, exit 0
 #   H9b — 2hr estimate with Split rationale line → no WARNING, exit 0
 #   H9c — 1hr estimate without Split rationale → no WARNING, exit 0
 #   H9d — 2hr with 2hr-split-rationale suppression → no WARNING, [suppressed] logged, exit 0
+#   AC1 — unsuppressed overlap → auto-chain INFO + file rewritten, no WARNING, exit 0
+#   AC4 — three-way transitive A←B←C → B gets After #1, C gets After #2, exit 0
+#   AC5 — spike-prepended slate → auto-chain uses non-spike ordinal in rewrite, exit 0
 
 load '../helpers/setup.bash'
 
@@ -66,12 +70,14 @@ setup() {
   print_error()   { echo "ERROR: $*" >&2; }
   print_header()  { echo "HEADER: $*" >&2; }
 
-  # Extract _title_is_spike and _lint_issues_strict from plan-issues.sh.
-  # _title_is_spike must come first because _lint_issues_strict calls it at
-  # classification time (line ~1591); without it the Spi fixtures fail with
-  # "command not found" and _block_is_spike stays false for every block.
+  # Extract helper functions and _lint_issues_strict from plan-issues.sh.
+  # Order matters: _title_is_spike and the two auto-chain helpers must be
+  # defined before _lint_issues_strict, which calls all three.
   eval "$(awk '
     /^_title_is_spike[(][)]/ { in_fn=1; depth=0 }
+    /^_transform_dep_line[(][)]/ { in_fn=1; depth=0 }
+    /^_autochain_rewrite_deps[(][)]/ { in_fn=1; depth=0 }
+    /^_autochain_remove_par_annotation[(][)]/ { in_fn=1; depth=0 }
     /^_lint_issues_strict[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
@@ -2871,6 +2877,572 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# AC1 — auto-chain basic: unsuppressed parallel-file-overlap is deterministically
+# rewritten (not warned).
+#
+# Two issues, neither suppressed, both modify src/auth.ts.  Issue #2 declares
+# "(can run in parallel with #1)".  Expected:
+#   - exit 0
+#   - INFO (not WARNING) about parallel-file-overlap for the rewrite
+#   - issues_file rewritten: issue #2's Dependencies → "After #1"
+#   - no WARNING: parallel-file-overlap line in stderr
+# ---------------------------------------------------------------------------
+
+@test "AC1: unsuppressed parallel-file-overlap — auto-chain rewrites file, emits INFO not WARNING" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac1.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Setup Auth Routes
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Sets up the base auth routes in src/auth.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+
+**Acceptance Criteria**:
+- [ ] Routes registered: `npm test -- --testPathPattern=auth`
+
+**Done Definition**: Done when routes are registered.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Auth Middleware
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds middleware to src/auth.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+
+**Acceptance Criteria**:
+- [ ] Middleware active: `npm test -- --testPathPattern=middleware`
+
+**Done Definition**: Done when middleware is active.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit an INFO (auto-chained) message, not a WARNING for this overlap
+  grep -q "parallel-file-overlap" "$stderr_out" || {
+    echo "FAIL: expected parallel-file-overlap in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a WARNING for parallel-file-overlap (auto-chain path, not warn-only)
+  grep -q "WARNING: parallel-file-overlap" "$stderr_out" && {
+    echo "FAIL: unexpected WARNING for parallel-file-overlap (expected auto-chain INFO)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issues file must have been rewritten: issue #2 now has After #1
+  grep -q "After #1" "$issues_file" || {
+    echo "FAIL: expected 'After #1' in rewritten issues file" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # The parallel annotation must have been removed from issue #2's Dependencies
+  grep "Add Auth Middleware" "$issues_file" || true  # title still present
+  sed -n '/^TITLE: Add Auth Middleware/,/^---END---$/p' "$issues_file" | grep -q "can run in parallel with #1" && {
+    echo "FAIL: parallel annotation not removed from issue #2's Dependencies" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# AC4 — three-way transitive: A←B←C resolved sequentially.
+#
+# A (ordinal 1) creates src/a.py.  B (ordinal 2) modifies src/a.py and
+# src/b.py, declared parallel with #1.  C (ordinal 3) modifies src/b.py,
+# declared parallel with #2.  None have suppression markers.
+# Expected after auto-chain:
+#   - B's Dependencies → "After #1"
+#   - C's Dependencies → "After #2"
+#   - Two INFO lines in stderr
+#   - exit 0
+# ---------------------------------------------------------------------------
+
+@test "AC4: three-way transitive A←B←C — both B and C get chained in sequence" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac4.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Create Schema A
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Creates src/schema_a.py.
+
+**Claude Context**:
+Files to Modify:
+- src/schema_a.py
+
+**Acceptance Criteria**:
+- [ ] Schema present: `python -m pytest tests/test_schema_a.py`
+
+**Done Definition**: Done when schema A is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Extend Schema A with Indexes
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Extends src/schema_a.py with indexes; also creates src/schema_b.py.
+
+**Claude Context**:
+Files to Modify:
+- src/schema_a.py
+- src/schema_b.py
+
+**Acceptance Criteria**:
+- [ ] Indexes present: `python -m pytest tests/test_indexes.py`
+
+**Done Definition**: Done when indexes exist.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+---ISSUE---
+TITLE: Add Schema B Relations
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds foreign-key relations to src/schema_b.py.
+
+**Claude Context**:
+Files to Modify:
+- src/schema_b.py
+
+**Acceptance Criteria**:
+- [ ] Relations present: `python -m pytest tests/test_relations.py`
+
+**Done Definition**: Done when relations exist.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit two INFO auto-chain messages
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -eq 2 ] || {
+    echo "FAIL: expected 2 auto-chain INFO messages, got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # B must be rewritten: After #1
+  grep "Extend Schema A with Indexes" "$issues_file" || true
+  sed -n '/^TITLE: Extend Schema A with Indexes/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
+    echo "FAIL: expected B (Extend Schema A) to have After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # C must be rewritten: After #2
+  grep "Add Schema B Relations" "$issues_file" || true
+  sed -n '/^TITLE: Add Schema B Relations/,/^---END---$/p' "$issues_file" | grep -q "After #2" || {
+    echo "FAIL: expected C (Add Schema B Relations) to have After #2" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # No parallel-file-overlap WARNING (all auto-chained)
+  grep -q "WARNING: parallel-file-overlap" "$stderr_out" && {
+    echo "FAIL: unexpected WARNING for parallel-file-overlap (expected auto-chain)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# AC5 — spike + non-spike ordinal: auto-chain uses non-spike ordinal #N
+# when spikes are prepended to the slate.
+#
+# 1 spike + impl-A (non-spike ordinal 1, modifies src/x.py) + impl-B
+# (non-spike ordinal 2, modifies src/x.py, parallel with #1).  Neither
+# impl has a suppression marker.
+# Expected:
+#   - exit 0
+#   - impl-B rewritten to "After #1" (non-spike ordinal 1 = impl-A)
+#   - INFO names impl-A and impl-B (not the spike)
+# ---------------------------------------------------------------------------
+
+@test "AC5: spike-prepended slate — auto-chain uses non-spike ordinal in rewrite" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac5.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: spike: capture svc.db sample for grounding
+LABELS: spike,tech-debt
+TIME: 30min
+BODY:
+## Background
+References `svc.db`.
+## Task
+Call `svc.db`.
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Create DB Schema
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Creates the initial schema in src/db_schema.py.
+
+**Claude Context**:
+Files to Modify:
+- src/db_schema.py
+
+**Acceptance Criteria**:
+- [ ] Schema created: `python -m pytest tests/test_schema.py`
+
+**Done Definition**: Done when schema is created.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add DB Indexes
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds indexes to src/db_schema.py — same file as schema creation.
+
+**Claude Context**:
+Files to Modify:
+- src/db_schema.py
+
+**Acceptance Criteria**:
+- [ ] Indexes added: `python -m pytest tests/test_indexes.py`
+
+**Done Definition**: Done when indexes are added.
+
+**Dependencies**: None (can run in parallel with #1)
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit INFO about auto-chain naming the non-spike issues
+  grep -q "auto-chained.*parallel-file-overlap" "$stderr_out" || {
+    echo "FAIL: expected auto-chain INFO in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The INFO must mention "After #1" (non-spike ordinal 1 = Create DB Schema)
+  grep "auto-chained" "$stderr_out" | grep -q "After #1" || {
+    echo "FAIL: expected 'After #1' in auto-chain INFO (non-spike ordinal)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The INFO must NOT name the spike
+  grep "auto-chained" "$stderr_out" | grep -q "spike:" && {
+    echo "FAIL: auto-chain INFO incorrectly names the spike issue" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # impl-B (Add DB Indexes) must be rewritten with After #1 in the file
+  sed -n '/^TITLE: Add DB Indexes/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
+    echo "FAIL: expected 'Add DB Indexes' to be rewritten with After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Ordinal collision regression: After #11 must not satisfy the After #1 check.
+#
+# Fixture: issue #12 (ordinal 12) modifies src/common.py with a pre-existing
+# "After #11" dependency.  The auto-chain pass should NOT treat "After #11" as
+# satisfying the "add After #1" step when ordinal 1 is different from 11.
+#
+# This tests the word-boundary grep fix: grep -qE "After #N([^0-9]|$)" must
+# not match "After #11" when N=1.
+# ---------------------------------------------------------------------------
+
+@test "Ordinal collision: After #12 does not satisfy After #1 check — both rewrites distinct" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ordinal-collision.txt"
+
+  # Build a fixture with 12 non-spike issues so ordinals 1 and 12 both exist.
+  # Issue 1 (ordinal 1) modifies src/common.py.
+  # Issue 12 (ordinal 12) modifies src/common.py — parallel with #1, pre-existing After #11.
+  # After auto-chain: issue 12 gets "After #1" (not confused by "After #11" elsewhere).
+  local _fixture=""
+  _fixture="${_fixture}---ISSUE---
+TITLE: Issue Ordinal One
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+First issue.
+
+**Claude Context**:
+Files to Modify:
+- src/common.py
+
+**Acceptance Criteria**:
+- [ ] Done: \`true\`
+
+**Done Definition**: Done when present.
+
+**Dependencies**: None
+---END---
+"
+  # Issues 2-11: placeholders that don't touch src/common.py
+  local _i
+  for _i in 2 3 4 5 6 7 8 9 10 11; do
+    _fixture="${_fixture}---ISSUE---
+TITLE: Placeholder Issue ${_i}
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**:
+Placeholder.
+
+**Claude Context**:
+Files to Modify:
+- src/other_${_i}.py
+
+**Acceptance Criteria**:
+- [ ] Done: \`true\`
+
+**Done Definition**: Done.
+
+**Dependencies**: None
+---END---
+"
+  done
+  # Issue 12 (ordinal 12): modifies src/common.py, parallel with ordinal #1
+  _fixture="${_fixture}---ISSUE---
+TITLE: Issue Ordinal Twelve
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Twelfth issue.
+
+**Claude Context**:
+Files to Modify:
+- src/common.py
+
+**Acceptance Criteria**:
+- [ ] Done: \`true\`
+
+**Done Definition**: Done when complete.
+
+**Dependencies**: After #11 (can run in parallel with #1)
+---END---
+"
+  printf '%s' "$_fixture" > "$issues_file"
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit INFO auto-chain naming issue 12 and After #1
+  grep -q "auto-chained.*parallel-file-overlap" "$stderr_out" || {
+    echo "FAIL: expected auto-chain INFO" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue Ordinal Twelve must now have After #1 (not a substring match false-positive)
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
+    echo "FAIL: expected 'Issue Ordinal Twelve' to have After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # After #1 must be a word-boundary match — not accidentally matching After #11 as After #1
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #1([^0-9]|$)" || {
+    echo "FAIL: 'After #1' not found as a whole-number ref (word-boundary check)" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # After #11 must survive — the word-boundary guard must not have consumed or removed it
+  sed -n '/^TITLE: Issue Ordinal Twelve/,/^---END---$/p' "$issues_file" | grep -qE "After #11([^0-9]|$)" || {
+    echo "FAIL: 'After #11' was not preserved after auto-chain rewrite" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# _autochain_remove_par_annotation: earlier issue's parallel annotation removed
+# when _pi < _pj (the auto-chain targets the later issue).
+#
+# Fixture: Issue Alpha (ordinal 1) annotates "(can run in parallel with #2)"
+# and both modify src/shared.py.  _pi=1 < _pj=2 path fires:
+#   _autochain_rewrite_deps adds After #1 to Issue Beta
+#   _autochain_remove_par_annotation removes (can run in parallel with #2) from Issue Alpha
+#
+# Also asserts second-pass idempotency: re-running _lint_issues_strict on the
+# rewritten file exits 0 and emits no additional auto-chain INFO.
+# ---------------------------------------------------------------------------
+
+@test "Auto-chain _pi<_pj: earlier-issue parallel annotation removed; second-pass idempotent" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-early-annotation.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Issue Alpha
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+First issue.
+
+**Claude Context**:
+Files to Modify:
+- src/shared.py
+
+**Acceptance Criteria**:
+- [ ] Done: `true`
+
+**Done Definition**: Done when present.
+
+**Dependencies**: None (can run in parallel with #2)
+---END---
+---ISSUE---
+TITLE: Issue Beta
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Second issue.
+
+**Claude Context**:
+Files to Modify:
+- src/shared.py
+
+**Acceptance Criteria**:
+- [ ] Done: `true`
+
+**Done Definition**: Done when second.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue Beta must have been auto-chained with After #1
+  sed -n '/^TITLE: Issue Beta/,/^---END---$/p' "$issues_file" | grep -q "After #1" || {
+    echo "FAIL: expected 'Issue Beta' to have After #1" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Issue Alpha's parallel annotation referencing Beta (#2) must have been removed
+  sed -n '/^TITLE: Issue Alpha/,/^---END---$/p' "$issues_file" | grep -q "can run in parallel with #2" && {
+    echo "FAIL: expected 'Issue Alpha' parallel annotation to be removed" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Second pass: idempotency — no auto-chain rewrites on re-run
+  local stderr_out2
+  stderr_out2=$(mktemp)
+  local exit_code2=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out2" || exit_code2=$?
+
+  [ "$exit_code2" -eq 0 ] || {
+    echo "FAIL: second pass expected exit 0, got $exit_code2" >&2
+    cat "$stderr_out2" >&2
+    false
+  }
+
+  grep -q "auto-chained" "$stderr_out2" && {
+    echo "FAIL: second pass should not emit auto-chain INFO" >&2
+    cat "$stderr_out2" >&2
+    false
+  }
+
+  rm -f "$stderr_out" "$stderr_out2"
+}
+
+# ---------------------------------------------------------------------------
 # Check 8 — duplicate verification commands across issues
 #
 # Fixture: two issues both carry `grep -rn "aren't live" tests/ returns nothing`
@@ -3373,6 +3945,114 @@ FIXTURE
   # Only 2 issues share this command — below the universal gate threshold — must warn
   grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" || {
     echo "FAIL: expected duplicate-verification WARNING for 2-issue distinctive duplicate" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Check 8 H8e — 3-of-3 distinctive duplicate: a command shared by ALL 3 issues
+# on a 3-issue slate reaches freq=3 (== _VERIF_UNIV_THRESHOLD) but must NOT be
+# silently exempted.  Without the _VERIF_UNIV_MIN_SLATE=4 floor, the absolute
+# threshold fires on the strongest-possible duplicate signal and produces no
+# warning — defeating Check 8's purpose for small slates.
+# ---------------------------------------------------------------------------
+
+@test "Check 8 H8e: distinctive command shared by all 3 issues on a 3-issue slate — WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-3of3-distinctive.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Migrate widget A to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget A to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_a.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget A migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget B to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget B to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_b.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget B migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget C to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget C to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_c.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget C migration passes validation.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # All 3 issues share a distinctive command — freq reaches the absolute threshold
+  # but the slate is too small for the frequency exemption.  Must warn.
+  grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out" || {
+    echo "FAIL: expected duplicate-verification WARNING for 3-of-3 distinctive duplicate on small slate" >&2
     cat "$stderr_out" >&2
     false
   }
