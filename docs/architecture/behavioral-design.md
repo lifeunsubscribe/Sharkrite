@@ -2271,7 +2271,7 @@ target repo genuinely ships rtk commands — sanitization is skipped. This preve
 sharkrite from mangling its own generated bodies (sharkrite's `CLAUDE.md` documents
 rtk and the project's tracked files reference it).
 
-**Applied seams** (each is a one-line call immediately before the GitHub write):
+**Applied seams — the four highest-leak GitHub-write sites** (each is a one-line call immediately before the GitHub write; additional write sites remain unsanitized — see issue #1360 ACTIONABLE_LATER findings):
 - `lib/core/plan-issues.sh` — issue body before `gh issue create --body-file`
 - `lib/core/assess-review-issues.sh` — follow-up issue body before `gh issue create --body-file`
 - `lib/core/local-review.sh` — review output before the PR comment `--body-file`

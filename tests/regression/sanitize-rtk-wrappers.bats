@@ -66,7 +66,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "sanitize_generated_commands: rtk after backtick → command only" {
   local body
-  body=$(printf 'Run \`rtk grep -rn "x" src/\` to find it')
+  body='Run `rtk grep -rn "x" src/` to find it'
   run sanitize_generated_commands "$body"
   [ "$status" -eq 0 ]
   [[ "$output" == 'Run `grep -rn "x" src/` to find it' ]]

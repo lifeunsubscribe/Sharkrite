@@ -40,6 +40,13 @@ if ! declare -f print_info >/dev/null 2>&1; then
     # shellcheck source=/dev/null
     source "$RITE_LIB_DIR/utils/colors.sh"
   fi
+  # Fallback: guard against the RITE_LIB_DIR-unset case where colors.sh was
+  # unavailable. Without this, a call to sanitize_generated_commands that
+  # rewrites anything would exit 127 inside a $() substitution — the silent-death
+  # pattern documented in CLAUDE.md "Silent death: pipelines inside $()".
+  if ! declare -f print_info >/dev/null 2>&1; then
+    print_info() { printf '[INFO] %s\n' "$*" >&2; }
+  fi
 fi
 
 # sanitize_generated_commands <body> [project_root]

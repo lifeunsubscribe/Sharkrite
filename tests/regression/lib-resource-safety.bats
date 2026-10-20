@@ -37,6 +37,9 @@ setup() {
   # RITE_REPO_ROOT is the sharkrite source root
   RITE_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
   export RITE_REPO_ROOT
+  # Export RITE_LIB_DIR so lazy-loading lib files (e.g. promotion-composer.sh)
+  # find newly-added utils in the repo rather than the installed ~/.rite/lib.
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 }
 
 # ---------------------------------------------------------------------------
