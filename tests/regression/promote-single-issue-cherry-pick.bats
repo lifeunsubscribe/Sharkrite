@@ -307,7 +307,15 @@ case "${1:-}" in
     if [ "${2:-}" = "--abort" ]; then
       exit 0
     fi
+    # Create CHERRY_PICK_HEAD to simulate a conflict (real git does this).
+    touch "${_SI_CHERRY_PICK_HEAD_PATH:-/dev/null}" 2>/dev/null || true
     exit 1 ;;
+  rev-parse)
+    if [ "${2:-}" = "--git-path" ] && [ "${3:-}" = "CHERRY_PICK_HEAD" ]; then
+      echo "${_SI_CHERRY_PICK_HEAD_PATH:-/dev/null}"
+      exit 0
+    fi
+    echo "abc1234500000000000000000000000000000000"; exit 0 ;;
   branch)
     printf 'GIT_BRANCH %s\n' "$*" >> "${_SI_CALLLOG:-/dev/null}"
     exit 0 ;;
@@ -325,6 +333,7 @@ export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_WORKTREE_DIR="$_wt_dir"
 export _SI_CALLLOG="$_call_log"
+export _SI_CHERRY_PICK_HEAD_PATH="$RITE_TEST_TMPDIR/fake-cherry-pick-head"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail

@@ -233,8 +233,12 @@ promote_single_issue() {
   if [ "$_si_cp_exit" -ne 0 ]; then
     # Distinguish conflict (entanglement) from other failures.
     # CHERRY_PICK_HEAD exists when a conflict left cherry-pick in progress.
+    # In a linked worktree .git is a file pointer, so CHERRY_PICK_HEAD lives at
+    # the path git itself reports — use rev-parse --git-path to find it.
     local _si_is_conflict=false
-    if [ -f "$_si_wt/.git/CHERRY_PICK_HEAD" ]; then
+    local _si_cp_head_path=""
+    _si_cp_head_path=$( cd "$_si_wt" && git rev-parse --git-path CHERRY_PICK_HEAD 2>/dev/null || true )
+    if [ -n "${_si_cp_head_path:-}" ] && [ -f "${_si_cp_head_path}" ]; then
       _si_is_conflict=true
     fi
     ( cd "$_si_wt" && git cherry-pick --abort 2>/dev/null || true )
@@ -350,7 +354,7 @@ Closes #${_si_issue}"
   # main — rite --status would show the issue still awaiting promotion and a
   # retry would hit the empty-cherry-pick path. Surface the failure explicitly.
   if ! integration_ledger_mark_promoted "$_si_branch" "$_si_issue"; then
-    local _ledger_path="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/../integration-branches/${_si_branch//\//-}.log"
+    local _ledger_path="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/integration-branches/${_si_branch}.log"
     print_error "Ledger mark-promoted failed for issue #${_si_issue} on '${_si_branch}' — PR #${_si_promo_pr} was merged but the ledger was NOT updated"
     echo "  Manual fix: edit ${_ledger_path} and set promoted=true on the issue=${_si_issue} line" >&2
   fi
@@ -665,14 +669,19 @@ run_promote() {
     # the constituent issues, not under this PR.
     # RITE_RETRY_COUNT=0 keeps first-pass rules (the retry-pass convergence
     # rules do not apply to a PR whose first review this is).
-    # The timeout defaults above the per-issue 300s: a promotion review spans
-    # every constituent issue and so carries several times the findings.
+    # The timeout must be at least 600s: a promotion review spans every
+    # constituent issue and so carries several times the findings. Never let a
+    # per-issue RITE_ASSESSMENT_TIMEOUT=300 set by the outer env shrink it.
+    local _promo_assess_timeout=600
+    if [ "${RITE_ASSESSMENT_TIMEOUT:-0}" -gt 600 ] 2>/dev/null; then
+      _promo_assess_timeout="${RITE_ASSESSMENT_TIMEOUT}"
+    fi
     _promo_assess_out=$(
       RITE_ISSUE_NUMBER="" \
       RITE_RETRY_COUNT=0 \
       RITE_REVIEW_JUST_POSTED=true \
       RITE_PER_ITEM_ISSUES_FILE="$_promo_items_file" \
-      RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-600}" \
+      RITE_ASSESSMENT_TIMEOUT="${_promo_assess_timeout}" \
       "$RITE_LIB_DIR/core/assess-review-issues.sh" "$PROMO_PR" "$_promo_review_file" --auto
     ) || _promo_assess_exit=$?
     rm -f "$_promo_review_file"
