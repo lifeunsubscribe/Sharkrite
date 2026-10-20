@@ -227,3 +227,91 @@ ${stripped}"
   first_line=$(printf '%s\n' "$assembled_comment" | head -1)
   [[ "$first_line" == "$marker_line" ]]
 }
+
+# ===========================================================================
+# parse_review_severity_counts — shared 3-tier parse helper
+# ===========================================================================
+
+@test "parse_review_severity_counts: tier 1 — extracts counts from JSON block" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  local _body
+  _body='## Code Review
+
+<!-- sharkrite-review-data
+{"summary":{"critical":1,"high":2,"medium":3,"low":4,"verdict":"NEEDS_WORK"},"items":[]}
+-->
+'
+  parse_review_severity_counts "$_body"
+  [ "$_PRC_CRITICAL" -eq 1 ]
+  [ "$_PRC_HIGH"     -eq 2 ]
+  [ "$_PRC_MEDIUM"   -eq 3 ]
+  [ "$_PRC_LOW"      -eq 4 ]
+}
+
+@test "parse_review_severity_counts: tier 2 — Findings line with emoji (production format)" {
+  local _body
+  _body='## Code Review
+
+Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | 🟡 MEDIUM: 1 | 🟢 LOW: 0
+'
+  parse_review_severity_counts "$_body"
+  [ "$_PRC_CRITICAL" -eq 0 ]
+  [ "$_PRC_HIGH"     -eq 2 ]
+  [ "$_PRC_MEDIUM"   -eq 1 ]
+  [ "$_PRC_LOW"      -eq 0 ]
+}
+
+@test "parse_review_severity_counts: tier 2 — plain Findings line (no emoji)" {
+  local _body
+  _body='Findings: CRITICAL: 0 | HIGH: 3 | MEDIUM: 2 | LOW: 1'
+  parse_review_severity_counts "$_body"
+  [ "$_PRC_CRITICAL" -eq 0 ]
+  [ "$_PRC_HIGH"     -eq 3 ]
+  [ "$_PRC_MEDIUM"   -eq 2 ]
+  [ "$_PRC_LOW"      -eq 1 ]
+}
+
+@test "parse_review_severity_counts: tier 3 — item markers when no JSON or Findings line" {
+  local _body
+  _body='## Code Review
+
+<!-- item:1 severity:HIGH -->
+Some finding
+<!-- item:2 severity:MEDIUM -->
+Another finding
+<!-- item:3 severity:LOW -->
+Minor note
+<!-- item:4 severity:CRITICAL -->
+Critical item
+'
+  parse_review_severity_counts "$_body"
+  [ "$_PRC_CRITICAL" -eq 1 ]
+  [ "$_PRC_HIGH"     -eq 1 ]
+  [ "$_PRC_MEDIUM"   -eq 1 ]
+  [ "$_PRC_LOW"      -eq 1 ]
+}
+
+@test "parse_review_severity_counts: returns zeros when review has no parseable counts" {
+  parse_review_severity_counts "No counts anywhere in this review body."
+  [ "$_PRC_CRITICAL" -eq 0 ]
+  [ "$_PRC_HIGH"     -eq 0 ]
+  [ "$_PRC_MEDIUM"   -eq 0 ]
+  [ "$_PRC_LOW"      -eq 0 ]
+}
+
+@test "parse_review_severity_counts: tier 1 preferred over tier 2 when both present" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  local _body
+  _body='Findings: CRITICAL: 9 | HIGH: 9 | MEDIUM: 9 | LOW: 9
+
+<!-- sharkrite-review-data
+{"summary":{"critical":0,"high":1,"medium":0,"low":0,"verdict":"NEEDS_WORK"},"items":[]}
+-->
+'
+  parse_review_severity_counts "$_body"
+  # JSON takes precedence; Findings line values (9) should be ignored
+  [ "$_PRC_CRITICAL" -eq 0 ]
+  [ "$_PRC_HIGH"     -eq 1 ]
+  [ "$_PRC_MEDIUM"   -eq 0 ]
+  [ "$_PRC_LOW"      -eq 0 ]
+}

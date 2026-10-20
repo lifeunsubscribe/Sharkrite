@@ -40,6 +40,7 @@ source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+source "$RITE_LIB_DIR/utils/format-review.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -906,40 +907,33 @@ echo ""
 # (RITE_ASSESSMENT_MODEL, default sonnet) — do not reintroduce an export here.
 
 # =============================================================================
-# Extract structured JSON from review (new format with sharkrite-review-data)
-# Falls back to markdown parsing for older reviews
+# Extract review severity counts and structured JSON
 # =============================================================================
 
-extract_review_json() {
-  local review_body="$1"
-  # Extract JSON from <!-- sharkrite-review-data ... --> block
-  local json_block=$(echo "$review_body" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
-  if [ -n "$json_block" ] && echo "$json_block" | jq empty 2>/dev/null; then
-    echo "$json_block"
-  else
-    echo ""
-  fi
-}
+# Shared 3-tier parse: JSON block → Findings summary line → item markers.
+# Replaces the former JSON-only count extraction that lacked the Findings-line
+# and item-marker fallback tiers present in local-review.sh and promote-branch.sh.
+parse_review_severity_counts "$REVIEW_BODY"
+JSON_CRITICAL=$_PRC_CRITICAL
+JSON_HIGH=$_PRC_HIGH
+JSON_MEDIUM=$_PRC_MEDIUM
+JSON_LOW=$_PRC_LOW
 
-REVIEW_JSON_DATA=$(extract_review_json "$REVIEW_BODY")
-
-if [ -n "$REVIEW_JSON_DATA" ]; then
+# Extract the full JSON block separately — needed for verdict, item count, and
+# the RITE_REVIEW_JSON export used by downstream tools.
+REVIEW_JSON_DATA=$(echo "$REVIEW_BODY" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
+if [ -n "$REVIEW_JSON_DATA" ] && echo "$REVIEW_JSON_DATA" | jq empty 2>/dev/null; then
   print_info "Found structured review data (JSON format)"
-  # Parse counts from JSON
-  JSON_CRITICAL=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.critical // 0' 2>/dev/null || echo "0")
-  JSON_HIGH=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.high // 0' 2>/dev/null || echo "0")
-  JSON_MEDIUM=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.medium // 0' 2>/dev/null || echo "0")
-  JSON_LOW=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.low // 0' 2>/dev/null || echo "0")
   JSON_VERDICT=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.verdict // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
   JSON_ITEMS_COUNT=$(echo "$REVIEW_JSON_DATA" | jq -r '.items | length // 0' 2>/dev/null || echo "0")
-
   print_info "JSON summary: CRITICAL=$JSON_CRITICAL HIGH=$JSON_HIGH MEDIUM=$JSON_MEDIUM LOW=$JSON_LOW"
   print_info "JSON verdict: $JSON_VERDICT (${JSON_ITEMS_COUNT} items)"
-
-  # Export for use by downstream tools
   export RITE_REVIEW_JSON="$REVIEW_JSON_DATA"
   export RITE_REVIEW_FORMAT="json"
 else
+  REVIEW_JSON_DATA=""
+  JSON_VERDICT="UNKNOWN"
+  JSON_ITEMS_COUNT="0"
   print_info "No structured JSON found - will use markdown parsing"
   export RITE_REVIEW_FORMAT="markdown"
 fi
