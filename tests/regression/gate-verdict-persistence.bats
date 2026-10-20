@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh
 # Regression for #944: an empty re-selection must never overwrite a failing
 # verdict. The fix-loop re-gate deliberately narrows its diff base to the fix
 # commit, so a fix touching only uncovered paths computed an EMPTY selection
@@ -73,9 +73,16 @@ setup() {
   run grep -n 'if \[ "\$_outcome" = "passed" \]' "$GATE"
   [ "$status" -eq 0 ]
   grep -A1 'if \[ "\$_outcome" = "passed" \]' "$GATE" | grep -qF 'rm -f "$_vp_state_file"'
-  # Synthetics never persist (a swallow is not a re-runnable failure):
-  run grep -cF "grep -v '^\\[tests_not_run\\]'" "$GATE"
-  [ "$output" -ge 2 ]   # flake-retry (#945) + verdict persistence (#944) both exclude synthetics
+  # Synthetics never persist (a swallow is not a re-runnable failure).
+  # After the #1236 split, one occurrence lives in gate-verdict.sh (flake-retry #945)
+  # and one in test-gate.sh (verdict persistence #944) — check both files.
+  _tg_count=$(grep -cF "grep -v '^\[tests_not_run\]'" "$GATE" || true)
+  _gv_count=$(grep -cF "grep -v '^\[tests_not_run\]'" "${RITE_REPO_ROOT}/lib/utils/gate-verdict.sh" || true)
+  _total=$(( ${_tg_count:-0} + ${_gv_count:-0} ))
+  [ "$_total" -ge 2 ] || {
+    echo "FAIL: expected ≥2 tests_not_run exclusions across test-gate.sh+gate-verdict.sh, got $_total" >&2
+    return 1
+  }
 }
 
 # --- #983: gather-failure fallback (persist full selection when names unmap) ---

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/test-gate.sh, lib/utils/gate-verdict.sh
 # Regression guard for issue #799: a gate result with a non-zero exit_code and
 # zero parseable lint/test items must NOT silently merge — it must synthesize a
 # non-deferrable [GATE] ACTIONABLE_NOW block item.
@@ -464,12 +464,13 @@ DRIVER_EOF
 @test "test-gate.sh: _gate_write_json includes reason field in non-skipped failure path" {
   # The updated _gate_write_json must emit the reason field in the JSON output
   # when reason is non-empty and skipped=false.  Assert the elif branch exists.
-  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
+  # After the #1236 split, _gate_write_json lives in gate-verdict.sh (not test-gate.sh).
+  local _script="${BATS_TEST_DIRNAME}/../../lib/utils/gate-verdict.sh"
 
   # Look for the elif branch that handles the non-skipped+reason case.
   run grep -n 'elif \[ -n "\$reason" \]' "$_script"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: 'elif [ -n \"\$reason\" ]' branch not found in _gate_write_json"
+    echo "FAIL: 'elif [ -n \"\$reason\" ]' branch not found in _gate_write_json (gate-verdict.sh)"
     echo "      The function must include a non-skipped+reason path that emits"
     echo "      the reason field into the JSON for assess-and-resolve.sh to read."
     false
@@ -477,15 +478,20 @@ DRIVER_EOF
 }
 
 @test "test-gate.sh: _gate_write_json called with _gate_reason at end of run_test_gate" {
-  # The _gate_write_json call at the end of run_test_gate must pass _gate_reason
-  # as the 6th argument so the reason field reaches the JSON file.
+  # _gate_reason must be passed to the verdict assembler (_gate_build_verdict) so
+  # it reaches _gate_write_json (which now lives inside gate-verdict.sh).
+  # After #1240, test-gate.sh delegates assembly to _gate_build_verdict; the
+  # invariant is that _gate_reason is forwarded via that call, not via a direct
+  # _gate_write_json call.
   local _script="${BATS_TEST_DIRNAME}/../../lib/utils/test-gate.sh"
 
-  run grep -n '_gate_write_json.*_gate_reason' "$_script"
+  # The call uses backslash continuation so _gate_build_verdict and _gate_reason
+  # appear on separate lines; grep -A2 fetches the next two lines to find both.
+  run bash -c "grep -A2 '_gate_build_verdict' '$_script' | grep -q '_gate_reason'"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: _gate_write_json call with _gate_reason not found in test-gate.sh"
-    echo "      The final _gate_write_json call must pass \"\$_gate_reason\" (or"
-    echo "      the variable) as the 6th argument so the reason propagates to JSON."
+    echo "FAIL: _gate_build_verdict call with _gate_reason not found in test-gate.sh"
+    echo "      run_test_gate must forward \"\${_gate_reason:-}\" to _gate_build_verdict"
+    echo "      (arg 6) so the reason field propagates to the JSON output."
     false
   }
 }

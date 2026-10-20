@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/post-merge-verify.sh, lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/post-merge-verify.sh, lib/utils/test-gate.sh, lib/utils/gate-runners.sh, lib/utils/gate-verdict.sh, lib/utils/gate-selection.sh
 # Regression test for: Fix tee'd pipeline test_exit in post-merge-verify
 #
 # Bug: post-merge-verify.sh used `$?` after a pipeline (`... | sed`) without
@@ -48,10 +48,13 @@ LOG_EOF
   # Copy real markers.sh — needed by test-gate.sh for RITE_MARKER_TEST_COVERS
   cp "${REAL_RITE_ROOT}/lib/utils/markers.sh" "$RITE_LIB_DIR/utils/"
 
-  # Copy test-gate.sh — post-merge-verify.sh sources it at load time, so every
-  # test that sources post-merge-verify.sh needs it present (not just the few
-  # that copy it explicitly). Without this, tests 1-3 fail at the source line.
+  # Copy test-gate.sh and its #1236-split sub-files — post-merge-verify.sh sources
+  # test-gate.sh at load time, and test-gate.sh sources gate-selection.sh,
+  # gate-runners.sh, and gate-verdict.sh. All four must be present.
   cp "${REAL_RITE_ROOT}/lib/utils/test-gate.sh" "$RITE_LIB_DIR/utils/"
+  cp "${REAL_RITE_ROOT}/lib/utils/gate-selection.sh" "$RITE_LIB_DIR/utils/"
+  cp "${REAL_RITE_ROOT}/lib/utils/gate-runners.sh" "$RITE_LIB_DIR/utils/"
+  cp "${REAL_RITE_ROOT}/lib/utils/gate-verdict.sh" "$RITE_LIB_DIR/utils/"
 
   # Copy actual post-merge-verify.sh from the real repo
   cp "${REAL_RITE_ROOT}/lib/utils/post-merge-verify.sh" "$RITE_LIB_DIR/utils/"

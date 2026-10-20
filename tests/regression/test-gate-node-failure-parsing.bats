@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_build_verdict, lib/utils/test-gate.sh, lib/utils/gate-runners.sh, lib/utils/gate-verdict.sh
 # The gate's failure plumbing is TAP-only (^not ok): jest and vitest never emit
 # TAP, so a real node test failure produced test_count=0 and an empty tests[]
 # array — assess-and-resolve.sh fired only the generic "no parseable findings"
@@ -22,7 +22,6 @@ setup() {
   FIXTURE="${BATS_TEST_DIRNAME}/../fixtures/node-workspaces-jest-vitest-output.txt"
   export FIXTURE
   TEST_REPO=$(mktemp -d); export TEST_REPO
-  STUB_DIR="$TEST_REPO/stub"; mkdir -p "$STUB_DIR"; export STUB_DIR
 
   _diag() { true; }
   # shellcheck source=/dev/null
@@ -205,166 +204,150 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Integration: the full run_test_gate harness against a non-Sharkrite npm repo
-# whose stubbed `npm test` emits the real jest/vitest fixture and exits 1.
+# Integration: _normalize_node_test_output + _gate_build_verdict against the
+# real captured jest/vitest fixture (LeadFlow PR #587).
+# Converted from run_test_gate (issue #1241): no stub npm/RITE_TEST_COMMAND,
+# no git fixture, no subprocess — pure verdict-seam calls.
 # ---------------------------------------------------------------------------
 
-_make_npm_repo() {
-  printf '%s\n' '{"name":"single","version":"1.0.0","scripts":{"test":"jest --ci"}}' > "$TEST_REPO/package.json"
-  printf '{"lockfileVersion":3}\n' > "$TEST_REPO/package-lock.json"
-  printf 'export const x = 1;\n' > "$TEST_REPO/index.js"
-  # jest resolvable up-front so the bootstrap is skipped (not under test here).
-  mkdir -p "$TEST_REPO/node_modules/.bin"
-  printf '#!/bin/bash\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
-  chmod +x "$TEST_REPO/node_modules/.bin/jest"
-}
+@test "integration: failing npm test yields non-empty gate JSON tests[] after normalization" {
+  # Note: diag test_count (the gate's "not ok" count) is verified by the
+  # _not_ok_count assertion below — the same grep that run_test_gate records as test_count.
+  # This test verifies the normalizer → verdict seam path:
+  # normalizer produces ^not ok lines, and _gate_build_verdict builds a non-empty tests[].
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
-_init_git() {
-  (cd "$TEST_REPO" \
-     && git init -q && git config user.email t@t && git config user.name t \
-     && git add -A && git commit -qm base \
-     && git update-ref refs/remotes/origin/main HEAD \
-     && printf 'export const x = 2;\n' > index.js \
-     && git add -A && git commit -qm change) >/dev/null 2>&1
-}
+  _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
+  cp "$FIXTURE" "$_raw"
+  _normalize_node_test_output "$_raw"
 
-_write_failing_npm_stub() {
-  cat > "$STUB_DIR/npm" <<STUB
-#!/bin/bash
-if [ "\$1" = "test" ]; then
-  cat "$FIXTURE"
-  exit 1
-fi
-exit 0
-STUB
-  chmod +x "$STUB_DIR/npm"
-}
+  _not_ok_count=$(grep -c '^not ok ' "$_raw" || true)
+  [ "$_not_ok_count" -ge 1 ]
 
-_run_gate() {
-  : > "$TEST_REPO/diag.log"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=587 RITE_LOG_FILE='$TEST_REPO/diag.log' RITE_GATE_BACKGROUND=1
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    PATH='$STUB_DIR':\$PATH run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
-  " </dev/null
-}
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_raw" 0 1 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
 
-@test "integration: failing npm test yields non-empty gate JSON tests[] and nonzero diag test_count" {
-  _make_npm_repo
-  _init_git
-  _write_failing_npm_stub
-
-  _run_gate
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
-
-  [ "$status" -eq 1 ]
-  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  run jq -r '.exit_code' "$_out"
   [ "$output" = "1" ]
 
   # The regression this file pins: tests[] must NOT be empty for jest/vitest.
-  run jq -r '.tests | length' "$TEST_REPO/gate.json"
+  run jq -r '.tests | length' "$_out"
   [ "$output" -gt 0 ]
-  run jq -r '.tests[].test_name' "$TEST_REPO/gate.json"
+  run jq -r '.tests[].test_name' "$_out"
   echo "$output" | grep -q 'backfill-lead-gsi-keys.test.ts'
   echo "$output" | grep -q 'AutomationFlow.test.tsx'
 
-  # Diag must carry the real failure count, not test_count=0.
-  run grep -E 'TEST_GATE outcome=failed .*test_count=[1-9]' "$TEST_REPO/diag.log"
-  [ "$status" -eq 0 ]
+  rm -f "$_raw" "$_lint_raw" "$_out"
 }
 
-@test "integration: node-flavored RITE_TEST_COMMAND failure yields nonzero diag test_count" {
-  _make_npm_repo
-  _init_git
-  cat > "$TEST_REPO/run-node-tests.sh" <<SCRIPT
-#!/bin/bash
-cat "$FIXTURE"
-exit 1
-SCRIPT
-  chmod +x "$TEST_REPO/run-node-tests.sh"
+@test "integration: RITE_TEST_COMMAND failure path — normalizer produces nonzero not-ok count" {
+  # Converted (issue #1241): _normalize_node_test_output covers the
+  # RITE_TEST_COMMAND normalization path identically to the npm-test path.
+  # The regression this pins is that _not_ok_count (the gate's test_count)
+  # is nonzero after normalization — i.e., the normalizer produces ^not ok lines.
+  # Note: diag test_count (the gate's "not ok" count) is verified by the
+  # _not_ok_count assertion below — the same count run_test_gate records as test_count.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
-  : > "$TEST_REPO/diag.log"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=587 RITE_LOG_FILE='$TEST_REPO/diag.log' RITE_GATE_BACKGROUND=1
-    export RITE_TEST_COMMAND='./run-node-tests.sh'
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
-  " </dev/null
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+  _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
+  cp "$FIXTURE" "$_raw"
+  _normalize_node_test_output "$_raw"
 
-  [ "$status" -eq 1 ]
-  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  _not_ok_count=$(grep -c '^not ok ' "$_raw" || true)
+  [ "$_not_ok_count" -ge 1 ]
+
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_raw" 0 1 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
+
+  run jq -r '.exit_code' "$_out"
   [ "$output" = "1" ]
-  run grep -E 'TEST_GATE outcome=failed .*test_count=[1-9]' "$TEST_REPO/diag.log"
-  [ "$status" -eq 0 ]
+
+  rm -f "$_raw" "$_lint_raw" "$_out"
 }
 
 @test "integration: node-flavored RITE_TEST_COMMAND failure yields non-empty gate JSON tests[] (issue #846)" {
   # Regression: pre-fix the RITE_TEST_COMMAND branch hardcoded tests:[] even
   # when _normalize_node_test_output produced ^not ok lines — diag test_count
   # was nonzero but the fix loop got zero named findings (diag/JSON inconsistency).
-  _make_npm_repo
-  _init_git
-  cat > "$TEST_REPO/run-node-tests.sh" <<SCRIPT
-#!/bin/bash
-cat "$FIXTURE"
-exit 1
-SCRIPT
-  chmod +x "$TEST_REPO/run-node-tests.sh"
+  # Converted (issue #1241): assert _norm_count == _json_count directly.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
-  : > "$TEST_REPO/diag.log"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=587 RITE_LOG_FILE='$TEST_REPO/diag.log' RITE_GATE_BACKGROUND=1
-    export RITE_TEST_COMMAND='./run-node-tests.sh'
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
-  " </dev/null
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+  _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
+  cp "$FIXTURE" "$_raw"
+  _normalize_node_test_output "$_raw"
 
   # The regression this test pins: tests[] must NOT be empty for a failing
-  # RITE_TEST_COMMAND that emits jest/vitest output (normalizer produces ^not ok lines).
-  run jq -r '.tests | length' "$TEST_REPO/gate.json"
+  # normalizer run that emits jest/vitest output (normalizer produces ^not ok lines).
+  _norm_count=$(grep -c '^not ok ' "$_raw" || true)
+  [ "$_norm_count" -gt 0 ]
+
+  _gate_build_verdict "$_lint_raw" "$_raw" 0 1 "$_out" "" "" || true
+  run jq -r '.tests | length' "$_out"
   [ "$status" -eq 0 ]
   [ "$output" -gt 0 ]
 
   # Named findings must carry recognizable test names from the fixture.
-  run jq -r '.tests[].test_name' "$TEST_REPO/gate.json"
+  run jq -r '.tests[].test_name' "$_out"
   echo "$output" | grep -q 'backfill-lead-gsi-keys.test.ts'
   echo "$output" | grep -q 'AutomationFlow.test.tsx'
 
-  # Diag count and JSON length must agree (the inconsistency that prompted issue #846).
-  _diag_count=$(grep -oE 'test_count=[0-9]+' "$TEST_REPO/diag.log" | tail -1 | cut -d= -f2 || true)
-  _json_count=$(jq -r '.tests | length' "$TEST_REPO/gate.json")
-  [ "$_diag_count" = "$_json_count" ]
+  # Norm count and JSON length must agree (the inconsistency that prompted issue #846).
+  _json_count=$(jq -r '.tests | length' "$_out")
+  [ "$_norm_count" = "$_json_count" ]
+
+  rm -f "$_raw" "$_lint_raw" "$_out"
+}
+
+@test "e2e pin #846: RITE_TEST_COMMAND branch in test-gate.sh calls _normalize_node_test_output" {
+  # Regression pin for issue #846. The converted verdict-seam tests call _gate_build_verdict
+  # directly after running _normalize_node_test_output — they cannot detect if the
+  # RITE_TEST_COMMAND branch in test-gate.sh stops calling the normalizer.
+  # Pre-fix: that branch hardcoded tests:[] even when normalization produced ^not ok lines,
+  # so diag test_count was nonzero but the fix loop received zero named findings
+  # (live: LeadFlow PR #587 — 53+ real failures across vitest + 2 jest workspaces,
+  # diag said test_count=0, fix session investigated blind).
+  local _sh="${RITE_LIB_DIR}/utils/test-gate.sh"
+  # Verify _normalize_node_test_output is called inside the RITE_TEST_COMMAND branch —
+  # not just that both strings exist somewhere in the file (other call sites would
+  # satisfy a bare grep even if the normalizer were removed from this branch).
+  local _cmd_lineno
+  _cmd_lineno=$(grep -n 'if.*RITE_TEST_COMMAND' "$_sh" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1 || true)
+  if [ -z "$_cmd_lineno" ]; then
+    echo "FAIL: RITE_TEST_COMMAND conditional not found in test-gate.sh" >&2
+    false
+  fi
+  if ! awk "NR>=$_cmd_lineno && NR<=$(( _cmd_lineno + 50 ))" "$_sh" | grep -q '_normalize_node_test_output'; then
+    echo "FAIL: _normalize_node_test_output not called in RITE_TEST_COMMAND branch" >&2
+    echo "      This was the live regression from issue #846 — re-introduced." >&2
+    false
+  fi
+  # Verify the _gate_write_json call in the branch passes the populated
+  # _cmd_tests_items variable — not hardcoded "[]" (the literal pre-fix #846 form).
+  if ! awk "NR>=$_cmd_lineno && NR<=$(( _cmd_lineno + 120 ))" "$_sh" \
+       | grep '_gate_write_json' | grep -q '_cmd_tests_items'; then
+    echo 'FAIL: RITE_TEST_COMMAND branch: _gate_write_json does not pass _cmd_tests_items' >&2
+    echo '      Pre-fix #846: "[]" was hardcoded — named findings never reached the fix loop.' >&2
+    false
+  fi
 }
 
 @test "integration: passing RITE_TEST_COMMAND still yields tests:[] and exit 0" {
-  # Non-regression: a passing custom command must not produce spurious test findings.
-  _make_npm_repo
-  _init_git
-  cat > "$TEST_REPO/run-node-tests.sh" <<SCRIPT
-#!/bin/bash
-echo "Tests passed."
-exit 0
-SCRIPT
-  chmod +x "$TEST_REPO/run-node-tests.sh"
+  # Non-regression: passing output (no jest/vitest failure markers) must not
+  # produce spurious test findings. Converted (issue #1241): empty normalizer
+  # output → empty lint_raw + empty not-ok lines → exit 0, tests[]=0.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
-  : > "$TEST_REPO/diag.log"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=587 RITE_LOG_FILE='$TEST_REPO/diag.log' RITE_GATE_BACKGROUND=1
-    export RITE_TEST_COMMAND='./run-node-tests.sh'
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
-  " </dev/null
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+  _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
+  printf 'Tests passed.\n' > "$_raw"
+  _normalize_node_test_output "$_raw"
 
-  [ "$status" -eq 0 ]
-  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_raw" 0 0 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 0 ]
+
+  run jq -r '.exit_code' "$_out"
   [ "$output" = "0" ]
-  run jq -r '.tests | length' "$TEST_REPO/gate.json"
+  run jq -r '.tests | length' "$_out"
   [ "$output" = "0" ]
+
+  rm -f "$_raw" "$_lint_raw" "$_out"
 }

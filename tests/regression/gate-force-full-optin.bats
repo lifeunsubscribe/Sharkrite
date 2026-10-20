@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-selection.sh
 # Regression: FORCE_FULL (the full ~181-file bats suite) is OPT-IN ONLY.
 #
 # The recurring "the full suite runs every time" regression came from a shared
