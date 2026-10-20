@@ -50,6 +50,7 @@ source "$RITE_LIB_DIR/providers/provider-interface.sh"
 source "$RITE_LIB_DIR/utils/promotion-composer.sh"
 # shellcheck source=/dev/null
 source "$RITE_LIB_DIR/utils/markers.sh"
+source "$RITE_LIB_DIR/utils/format-review.sh"
 
 # ---------------------------------------------------------------------------
 # _promote_field <ledger_line> <field_name>
@@ -875,45 +876,15 @@ ${_promo_now_items}"
   # passed its gates, so nothing in this block may block, retry, or fail the
   # merge.
 
-  # Parse severity counts from the review's embedded JSON block (priority 1) or
-  # the human Findings line (priority 2) — same dual-parse path as local-review.sh.
-  # Both are deterministic: no LLM call, no timeout risk.
+  # Parse severity counts via the shared 3-tier helper (JSON → Findings → item markers).
   local _promo_h=0 _promo_m=0 _promo_l=0 _promo_noncrit=0
   if [ -n "${_promo_review:-}" ] && [ "${_promo_assessed:-false}" != "true" ]; then
-    local _promo_json _promo_findings_line
-    _promo_json=$(printf '%s' "$_promo_review" \
-      | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' 2>/dev/null || true)
-    if [ -n "${_promo_json:-}" ] && printf '%s' "$_promo_json" | jq -e '.summary' >/dev/null 2>&1; then
-      _promo_h=$(printf '%s' "$_promo_json" | jq -r '.summary.high // 0' || true)
-      _promo_m=$(printf '%s' "$_promo_json" | jq -r '.summary.medium // 0' || true)
-      _promo_l=$(printf '%s' "$_promo_json" | jq -r '.summary.low // 0' || true)
-    else
-      _promo_findings_line=$(printf '%s' "$_promo_review" \
-        | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
-      if [ -n "${_promo_findings_line:-}" ]; then
-        _promo_h=$(printf '%s' "$_promo_findings_line" | grep -oE "HIGH: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
-        _promo_m=$(printf '%s' "$_promo_findings_line" | grep -oE "MEDIUM: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
-        _promo_l=$(printf '%s' "$_promo_findings_line" | grep -oE "LOW: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
-      else
-        # priority 3: item markers (<!-- item:N severity:HIGH|MEDIUM|LOW -->)
-        # A review with markers but no JSON block or Findings line still has findings.
-        local _promo_item_count
-        _promo_item_count=$(printf '%s' "$_promo_review" \
-          | grep -cE "<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW)" || true)
-        if [ "${_promo_item_count:-0}" -gt 0 ]; then
-          _promo_h=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:HIGH" || true)
-          _promo_m=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:MEDIUM" || true)
-          _promo_l=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:LOW" || true)
-          _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} marker_count=${_promo_item_count}"
-        fi
-      fi
-    fi
-    _promo_h="${_promo_h:-0}"; _promo_m="${_promo_m:-0}"; _promo_l="${_promo_l:-0}"
-    # Strip fractional part that jq may emit (e.g. "2.0" → "2") before arithmetic.
-    _promo_h="${_promo_h%%[^0-9]*}"; _promo_h="${_promo_h:-0}"
-    _promo_m="${_promo_m%%[^0-9]*}"; _promo_m="${_promo_m:-0}"
-    _promo_l="${_promo_l%%[^0-9]*}"; _promo_l="${_promo_l:-0}"
+    parse_review_severity_counts "${_promo_review:-}"
+    _promo_h=$_PRC_HIGH; _promo_m=$_PRC_MEDIUM; _promo_l=$_PRC_LOW
     _promo_noncrit=$(( _promo_h + _promo_m + _promo_l ))
+    if [ "${_PRC_TIER:-0}" -eq 3 ]; then
+      _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} tier=3 review_bytes=${#_promo_review}"
+    fi
     if [ "${_promo_noncrit}" -eq 0 ]; then
       _diag "PROMOTE_FOLLOWUP_PARSE_ZERO branch=${BRANCH:-} pr=${PROMO_PR:-} review_bytes=${#_promo_review}"
     fi

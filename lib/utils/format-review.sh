@@ -225,6 +225,76 @@ _fr_fallback_clean() {
   ' "$file"
 }
 
+# ---------------------------------------------------------------------------
+# parse_review_severity_counts: extract CRITICAL/HIGH/MEDIUM/LOW from a review.
+#
+# Arg 1: review body text
+#
+# Sets globals (overwritten on every call):
+#   _PRC_CRITICAL  _PRC_HIGH  _PRC_MEDIUM  _PRC_LOW  _PRC_TIER
+#
+# _PRC_TIER indicates which tier supplied the counts:
+#   1 = JSON block, 2 = Findings line, 3 = item markers, 0 = no data found
+#
+# 3-tier parse — identical logic in every caller:
+#   Tier 1: embedded sharkrite-review-data JSON block (.summary.{critical,…})
+#   Tier 2: human-readable Findings summary line (emoji-tolerant regex)
+#   Tier 3: <!-- item:N severity:SEVERITY --> HTML-comment markers
+#
+# Fractional jq output (e.g. "2.0") is stripped to an integer before return.
+# ---------------------------------------------------------------------------
+parse_review_severity_counts() {
+  local _review="${1:-}"
+  _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; _PRC_TIER=0
+
+  # Tier 1: JSON block — most reliable; present in all reviews since the
+  # sharkrite-review-data marker was introduced.
+  local _json
+  _json=$(printf '%s' "$_review" \
+    | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' 2>/dev/null || true)
+  if [ -n "${_json:-}" ] && printf '%s' "$_json" | jq -e '.summary' >/dev/null 2>&1; then
+    _PRC_CRITICAL=$(printf '%s' "$_json" | jq -r '.summary.critical // 0' || echo "0")
+    _PRC_HIGH=$(printf '%s' "$_json"     | jq -r '.summary.high     // 0' || echo "0")
+    _PRC_MEDIUM=$(printf '%s' "$_json"   | jq -r '.summary.medium   // 0' || echo "0")
+    _PRC_LOW=$(printf '%s' "$_json"      | jq -r '.summary.low      // 0' || echo "0")
+    # Strip fractional part that jq may emit (e.g. "2.0" → "2").
+    _PRC_CRITICAL="${_PRC_CRITICAL%%[^0-9]*}"; _PRC_CRITICAL="${_PRC_CRITICAL:-0}"
+    _PRC_HIGH="${_PRC_HIGH%%[^0-9]*}";         _PRC_HIGH="${_PRC_HIGH:-0}"
+    _PRC_MEDIUM="${_PRC_MEDIUM%%[^0-9]*}";     _PRC_MEDIUM="${_PRC_MEDIUM:-0}"
+    _PRC_LOW="${_PRC_LOW%%[^0-9]*}";           _PRC_LOW="${_PRC_LOW:-0}"
+    _PRC_TIER=1
+    return 0
+  fi
+
+  # Tier 2: human-readable Findings summary line.
+  # Regex is emoji-tolerant — production reviews emit emoji between fields:
+  #   "Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | 🟡 MEDIUM: 1 | 🟢 LOW: 0"
+  local _fl
+  _fl=$(printf '%s' "$_review" \
+    | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
+  if [ -n "${_fl:-}" ]; then
+    _PRC_CRITICAL=$(printf '%s' "$_fl" | grep -oE "CRITICAL: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
+    _PRC_HIGH=$(printf '%s' "$_fl"     | grep -oE "HIGH: *[0-9]+"     | grep -oE "[0-9]+" | head -1 || echo "0")
+    _PRC_MEDIUM=$(printf '%s' "$_fl"   | grep -oE "MEDIUM: *[0-9]+"   | grep -oE "[0-9]+" | head -1 || echo "0")
+    _PRC_LOW=$(printf '%s' "$_fl"      | grep -oE "LOW: *[0-9]+"      | grep -oE "[0-9]+" | head -1 || echo "0")
+    _PRC_TIER=2
+    return 0
+  fi
+
+  # Tier 3: item-marker count (<!-- item:N severity:SEVERITY -->).
+  # Covers reviews that have markers but no JSON block or Findings line.
+  local _mc
+  _mc=$(printf '%s' "$_review" \
+    | grep -cE "<!-- item:[0-9]+ severity:(CRITICAL|HIGH|MEDIUM|LOW)" || true)
+  if [ "${_mc:-0}" -gt 0 ]; then
+    _PRC_CRITICAL=$(printf '%s' "$_review" | grep -cE "<!-- item:[0-9]+ severity:CRITICAL" || true)
+    _PRC_HIGH=$(printf '%s' "$_review"     | grep -cE "<!-- item:[0-9]+ severity:HIGH"     || true)
+    _PRC_MEDIUM=$(printf '%s' "$_review"   | grep -cE "<!-- item:[0-9]+ severity:MEDIUM"   || true)
+    _PRC_LOW=$(printf '%s' "$_review"      | grep -cE "<!-- item:[0-9]+ severity:LOW"      || true)
+    _PRC_TIER=3
+  fi
+}
+
 # Run main logic only when executed directly (not sourced).
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   REVIEW_FILE="${1:-}"

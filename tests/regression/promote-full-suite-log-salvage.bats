@@ -17,21 +17,6 @@
 load '../helpers/setup'
 load '../helpers/promote-stubs'
 
-# Thin wrapper: delegates all stub writing to the shared base in promote-stubs.bash.
-_write_salvage_stubs() {
-  _write_promote_stubs_base "$1"
-}
-
-# ---------------------------------------------------------------------------
-# Helper: write a runner script, chmod it, return its path.
-# ---------------------------------------------------------------------------
-_write_salvage_runner() {
-  local _path="$RITE_TEST_TMPDIR/runner_salvage_$$.sh"
-  cat > "$_path"
-  chmod +x "$_path"
-  echo "$_path"
-}
-
 # ---------------------------------------------------------------------------
 # Helper: build the fake git binary that handles worktree add/remove.
 # Creates the worktree dir on "add" and deletes it on "remove" so the
@@ -73,14 +58,14 @@ teardown() {
 
 @test "failing gate: gate JSON verdict is salvaged to project .rite/state/" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-fail"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -129,14 +114,14 @@ RUNEOF
 
 @test "failing gate: failure message names the verdict save path" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-msg"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -183,14 +168,14 @@ RUNEOF
 
 @test "failing gate: no JSON salvaged when gate exits without writing verdict" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-flag"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -238,14 +223,14 @@ RUNEOF
 
 @test "passing gate: no stray verdict JSON copied to project .rite/state/" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-pass"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -295,14 +280,14 @@ RUNEOF
 
 @test "worktree is removed after gate failure" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-wt-fail"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -348,14 +333,14 @@ RUNEOF
 
 @test "worktree is removed after gate success" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_salvage_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
   local _entry="issue=42	pr=97	sha=abc123	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _wt_base="$RITE_TEST_TMPDIR/worktrees"
   local _fake_bin="$RITE_TEST_TMPDIR/fakebin-wt-pass"
   _write_fake_git "$_fake_bin"
 
   local _runner
-  _runner=$(_write_salvage_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"

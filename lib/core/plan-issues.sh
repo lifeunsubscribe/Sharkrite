@@ -2367,10 +2367,17 @@ _lint_issues_strict() {
 
   # How many issues must share a normalized command for it to be classified as a
   # universal CI gate (exempt from the pairwise duplicate check).
-  # For a slate of ≤5 issues, ≥3 occurrences equals >50% of the slate, so the
-  # frequency rule naturally covers small-slate universal gates without a separate
-  # percentage check.
+  # On slates of ≤3 issues the frequency exemption is disabled entirely by the
+  # _VERIF_UNIV_MIN_SLATE floor below; the allowlist handles their known-safe
+  # commands (make check, npm test, etc.).
   local _VERIF_UNIV_THRESHOLD=3
+  # Minimum slate size for the absolute-frequency exemption to fire.
+  # Without this floor, a 3-issue slate where all 3 share a distinctive command
+  # reaches freq=3 ≥ threshold=3 and is silently exempted — the strongest possible
+  # duplicate signal becomes invisible.  With min-slate=4, slates of 1-3 issues
+  # never trigger the frequency path; the allowlist below handles their known-safe
+  # commands (make check, npm test, etc.).
+  local _VERIF_UNIV_MIN_SLATE=4
 
   # Build a frequency table: how many issues carry each normalized verification command.
   # Computed before the pairwise loop so the per-command lookup inside it is O(1).
@@ -2447,7 +2454,9 @@ pytest"
         # Skip commands that appear in many issues — they are universal CI gates,
         # not per-issue deliverables (checked before the allowlist so project-specific
         # gates like `pnpm typecheck` are exempt without needing an allowlist entry).
-        if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ]; then
+        # The min-slate floor prevents the absolute threshold from firing on tiny slates
+        # where freq==slate-size (3-of-3 = 100% duplicate signal, not a universal gate).
+        if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ] && [ "$_issue_count" -ge "$_VERIF_UNIV_MIN_SLATE" ]; then
           continue
         fi
 

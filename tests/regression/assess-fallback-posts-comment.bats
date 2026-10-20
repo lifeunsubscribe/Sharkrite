@@ -161,12 +161,17 @@ exit 1
 ASSESS_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
 
-  # Override: format-review.sh — no-op display stub.
+  # Override: format-review.sh — sourceable no-op stub (also safe when executed).
+  # Must define parse_review_severity_counts since assess-and-resolve.sh sources
+  # this file at startup and then calls the function for count extraction.
   rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
   cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
 #!/usr/bin/env bash
-# Stub format-review.sh: no-op.
-exit 0
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_FORMAT_REVIEW_LOADED=true
+strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
+parse_review_severity_counts() { _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; }
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then exit 0; fi
 FORMAT_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/utils/format-review.sh"
 }
@@ -483,12 +488,17 @@ exit 0
 ASSESS_SUCCESS_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
 
-  # Override: format-review.sh — no-op display stub.
+  # Override: format-review.sh — sourceable no-op stub (also safe when executed).
+  # Must define parse_review_severity_counts since assess-and-resolve.sh sources
+  # this file at startup and then calls the function for count extraction.
   rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
   cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
 #!/usr/bin/env bash
-# Stub format-review.sh: no-op.
-exit 0
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_FORMAT_REVIEW_LOADED=true
+strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
+parse_review_severity_counts() { _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; }
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then exit 0; fi
 FORMAT_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/utils/format-review.sh"
 }
@@ -745,12 +755,17 @@ exit 0
 ASSESS_NOW_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
 
-  # Override: format-review.sh — no-op display stub.
+  # Override: format-review.sh — sourceable no-op stub (also safe when executed).
+  # Must define parse_review_severity_counts since assess-and-resolve.sh sources
+  # this file at startup and then calls the function for count extraction.
   rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
   cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
 #!/usr/bin/env bash
-# Stub format-review.sh: no-op.
-exit 0
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_FORMAT_REVIEW_LOADED=true
+strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
+parse_review_severity_counts() { _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; }
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then exit 0; fi
 FORMAT_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/utils/format-review.sh"
 }

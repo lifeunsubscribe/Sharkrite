@@ -130,9 +130,35 @@ RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
 export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
 STUB
 
+  cat > "$_lib/utils/format-review.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then
+  return 0 2>/dev/null || true
+fi
+_RITE_FORMAT_REVIEW_LOADED=true
+strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
+parse_review_severity_counts() {
+  _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; _PRC_TIER=0
+}
+STUB
+
   # Recording merge-pr.sh stub: if this file is ever sourced, it sets a flag.
   cat > "$_lib/core/merge-pr.sh" << 'STUB'
 #!/bin/bash
 _MERGE_PR_SH_SOURCED_IN_TEST=true
 STUB
+}
+
+# ---------------------------------------------------------------------------
+# Helper: write a runner script to a temp path, chmod +x, echo the path.
+# The caller provides the script body via stdin (heredoc); this helper owns
+# the temp-file lifecycle so test bodies stay concise.
+# Requires $RITE_TEST_TMPDIR (set by setup_test_tmpdir in setup()).
+# ---------------------------------------------------------------------------
+_write_promote_runner() {
+  local _path="$RITE_TEST_TMPDIR/runner_$$.sh"
+  cat > "$_path"
+  chmod +x "$_path"
+  echo "$_path"
 }
