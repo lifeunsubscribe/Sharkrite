@@ -331,3 +331,20 @@ CLAUDE.md's Phase 3 staleness description says "SHA match → review covers HEAD
 
 `RITE_MAX_ISSUE_HOURS` default of 4h may now be silently tripped by the no-commit timeout retry path, which adds up to 4h of extra issue time before any work is committed.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1331 issue:1203 recorded:2026-10-20T06:19:06Z -->
+**Changed files**: lib/core/claude-workflow.sh, lib/utils/config.sh, tests/regression/fix-timeout-retry.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/research/rtk-assessment.md — "RTK (Rust Token Killer) — Sharkrite Compatibility Assessment"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents the fix-timeout retry at `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s), but PR #1331 added a parallel no-commit retry path for the **dev session** that retries at `2×RITE_CLAUDE_TIMEOUT` (default 7200s), capped at 14400s — a distinct retry mechanism not mentioned in any documentation.
+
+CLAUDE.md's fix-session timeout formula (`300 + 240 × ACTIONABLE_NOW_COUNT` seconds, capped 1800s) no longer covers the full retry picture: dev sessions now also retry once at double budget (up to 14400s) on no-commit timeout.
+<!-- /sharkrite-doc-drift -->
