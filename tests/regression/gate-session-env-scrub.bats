@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh
 #
 # Regression: session-behavioral RITE_* vars must not bleed into bats tests
 # spawned by the gate (_GATE_BATS_SCRUB_VARS deny-list, #1186).
@@ -68,14 +68,17 @@ setup() {
 }
 
 @test "structural: _bats_sandbox is used at both the main and flake-retry invocation sites" {
-  # The main path (6 bats calls) and the flake-retry (1 call) must all use
-  # _bats_sandbox — a single definition covers both because _gate_flake_retry_pass
-  # is called from within run_test_gate where _bats_sandbox is defined as a local
-  # (bash dynamic scoping).
-  _uses=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh")
+  # The main path (6 bats calls in test-gate.sh) and the flake-retry (1 call in
+  # gate-verdict.sh) must all use _bats_sandbox — a single definition in
+  # run_test_gate covers both because _gate_flake_retry_pass is called from within
+  # run_test_gate where _bats_sandbox is defined as a local (bash dynamic scoping).
+  # After the #1236 split, the flake-retry call lives in gate-verdict.sh.
+  _uses_main=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
+  _uses_flake=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/gate-verdict.sh" || true)
+  _uses=$(( ${_uses_main:-0} + ${_uses_flake:-0} ))
   # 6 main + 1 flake-retry = 7 minimum
   [ "${_uses:-0}" -ge 7 ] || {
-    echo "FAIL: expected ≥7 _bats_sandbox uses (6 main + 1 flake-retry), got ${_uses}" >&2
+    echo "FAIL: expected ≥7 _bats_sandbox uses (6 test-gate.sh + 1 gate-verdict.sh), got ${_uses}" >&2
     return 1
   }
 }

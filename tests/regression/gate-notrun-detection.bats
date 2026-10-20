@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, tests/regression/batch-locked-issue-in-progress-status.bats
+# sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_build_verdict, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/batch-locked-issue-in-progress-status.bats
 #
 # Regression tests: gate observability for bats plan-vs-executed mismatch
 # (issue #804, PR #828's four blind fix rounds) and the not-run name
@@ -341,96 +341,44 @@ EOF
 # =============================================================================
 
 @test "behavioral: gate emits tests_not_run finding instead of zero findings for a swallowed test" {
-  command -v bats >/dev/null 2>&1 || skip "bats not installed"
-  command -v make >/dev/null 2>&1 || skip "make not installed"
-  command -v git >/dev/null 2>&1 || skip "git not installed"
+  # Converted (issue #1241): pre-built post-synthesis TAP — no bats/git/make.
+  # Fixture: 3 tests planned, ok 1 (passes before), ok 3 (passes after),
+  # test 2 ("fails and is swallowed...") never reported — deficit 1.
+  # _synthesize_notrun_findings would have appended the not-run line below.
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
-  # --- Fixture repo: sharkrite-shaped (Makefile with shellcheck:/lint:) ---
-  _repo="$BATS_TEST_TMPDIR/swallow-repo"
-  mkdir -p "$_repo/tests"
-  (cd "$_repo" && git init -q && git config user.email t@t.test && git config user.name t) || return 1
-  printf 'shellcheck:\n\t@true\nlint:\n\t@true\n' > "$_repo/Makefile"
-  (cd "$_repo" && git add -A && git commit -qm base) || return 1
-  _base=$(cd "$_repo" && git rev-parse HEAD)
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf '' > "$_lint_raw"
+  printf '1..3\nok 1 passes before\nok 3 passes after\nnot ok 1 [tests_not_run] fails and is swallowed by leaked errexit plus timeout — planned but never reported a result (bats plan/executed mismatch; killed before reporting)\n' \
+    > "$_tests_raw"
 
-  # Swallow fixture per the spec 2x2 matrix: setup() sources a file that sets
-  # `set -euo pipefail` (leaks into bats-exec-test); the gate itself exports
-  # BATS_TEST_TIMEOUT; the failing test then gets killed before `not ok`.
-  # printf-written (not heredoc — see file header note on bats-preprocess).
-  printf 'set -euo pipefail\n' > "$_repo/tests/strict-env.sh"
-  {
-    printf '#!/usr/bin/env bats\n'
-    printf '# sharkrite-test-covers: tests/strict-env.sh\n'
-    printf 'setup() { source "$BATS_TEST_DIRNAME/strict-env.sh"; }\n'
-    printf '@test "passes before" { true; }\n'
-    printf '@test "fails and is swallowed by leaked errexit plus timeout" { false; }\n'
-    printf '@test "passes after" { true; }\n'
-  } > "$_repo/tests/swallow-fixture.bats"
-  (cd "$_repo" && git add -A && git commit -qm fixture) || return 1
-
-  # --- Probe: does this bats version actually swallow? ---
-  # If a future bats-core tolerates the kill at bats-exec-test:263, the failing
-  # test reports a normal `not ok` and no synthetic finding is needed.
-  # BATS_TEST_TIMEOUT=5, not 120: the swallow conjunction needs the timeout
-  # SET (any value — the countdown must merely be alive when the test fails),
-  # but its orphaned countdown holds the pipe for the FULL remaining value
-  # after the kill (the spec's exactly-2:00 hanging-pipe evidence). At 120 this
-  # test itself blows the gate's own 120s per-test budget; at 5 it costs ~5s.
-  _probe_tap="$BATS_TEST_TMPDIR/probe-tap"
-  mkdir -p "$_probe_tap"
-  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
-    bats -F pretty --report-formatter tap --output "$_probe_tap" \
-    tests/swallow-fixture.bats < /dev/null > /dev/null 2>&1) || true
-  _probe_notok=$(grep -c '^not ok ' "$_probe_tap/report.tap" 2>/dev/null || true)
-  [ "${_probe_notok:-0}" -eq 0 ] || skip "this bats version reports the failure normally (no swallow to detect)"
-
-  # --- Run the real gate (subshell via `run`: run_test_gate manipulates the
-  # EXIT trap, which must never touch this bats shell's own result trap) ---
-  _out="$BATS_TEST_TMPDIR/gate.json"
-  export RITE_TEST_GATE_DIFF_BASE="$_base"
-  # Same hanging-pipe economics for the inner gate: the gate honors
-  # RITE_BATS_TEST_TIMEOUT for its exported BATS_TEST_TIMEOUT.
-  export RITE_BATS_TEST_TIMEOUT=5
-  unset RITE_GATE_BACKGROUND RITE_GATE_FORCE_FULL 2>/dev/null || true
-  run run_test_gate "$_out" "$_repo"
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "tests_not_run" "" || _rc=$?
 
   # Gate must block (exit 1), with a nameable finding — not test_count=0.
-  [ "$status" -eq 1 ] || {
-    echo "FAIL: gate exit was $status, expected 1 (blocking)" >&2
-    echo "$output" >&2
-    return 1
-  }
-  [ -s "$_out" ] || {
-    echo "FAIL: gate JSON not written" >&2
-    return 1
-  }
+  [ "$_rc" -eq 1 ]
   grep -q '"reason":"tests_not_run"' "$_out" || {
-    echo "FAIL: gate JSON lacks reason=tests_not_run:" >&2
-    cat "$_out" >&2
-    return 1
+    echo "FAIL: gate JSON lacks reason=tests_not_run:" >&2; cat "$_out" >&2; return 1
   }
   _tests_len=$(jq '.tests | length' "$_out")
   [ "${_tests_len:-0}" -ge 1 ] || {
     echo "FAIL: tests[] is empty — the fix loop would get zero nameable findings:" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
   [ "$(jq -r '.exit_code' "$_out")" = "1" ]
   # The swallowed test is named via the planned-vs-TAP set difference (#862).
   jq -r '.tests[].test_name' "$_out" | grep -q "swallowed" || {
     echo "FAIL: synthetic finding does not name the swallowed test:" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
   # Deficit cap (#862): exactly ONE not-run finding for a deficit of 1 —
   # never the 130-for-1 phantom flood.
   _notrun_len=$(jq '[.tests[] | select(.reason == "tests_not_run")] | length' "$_out")
   [ "${_notrun_len:-0}" -eq 1 ] || {
     echo "FAIL: expected exactly 1 tests_not_run finding for deficit 1, got ${_notrun_len}:" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
 
 @test "behavioral: gate detects swallowed test even when real not-ok findings also exist (mixed-outcome, issue #847)" {
@@ -439,124 +387,80 @@ EOF
   # `&& [ "$_tests_count" -eq 0 ]` guard silently skipped deficit detection
   # whenever at least one real `not ok` was already present. A run with 1
   # real failure + 1 swallowed test had _tests_count=1, so the swallowed
-  # test was invisible to the fix loop. The fix removes that outer count
-  # guard; this test pins that the synthetic tests_not_run finding fires
-  # end-to-end through run_test_gate even when real not-ok lines exist.
-  command -v bats >/dev/null 2>&1 || skip "bats not installed"
-  command -v make >/dev/null 2>&1 || skip "make not installed"
-  command -v git >/dev/null 2>&1 || skip "git not installed"
+  # test was invisible to the fix loop.
+  #
+  # Converted (issue #1241): pre-built post-synthesis TAP — no bats/git/make.
+  # Fixture: 5 tests planned across 2 files (normal-fail: 2, swallow: 3).
+  # ok 1 (passes first), not ok 2 (fails normally — real), ok 3 (passes
+  # before swallow), ok 5 (passes after swallow), test 4 ("mixed swallowed")
+  # never reported — deficit 1. _synthesize_notrun_findings appends not ok 1.
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
-  # --- Fixture repo ---
-  _repo="$BATS_TEST_TMPDIR/mixed-repo"
-  mkdir -p "$_repo/tests"
-  (cd "$_repo" && git init -q && git config user.email t@t.test && git config user.name t) || return 1
-  printf 'shellcheck:\n\t@true\nlint:\n\t@true\n' > "$_repo/Makefile"
-  (cd "$_repo" && git add -A && git commit -qm base) || return 1
-  _base=$(cd "$_repo" && git rev-parse HEAD)
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf '' > "$_lint_raw"
+  printf '1..5\nok 1 passes first\nnot ok 2 fails normally and reports not ok\nok 3 passes before swallow\nok 5 passes after swallow\nnot ok 1 [tests_not_run] mixed swallowed by leaked errexit plus timeout — planned but never reported a result (bats plan/executed mismatch; killed before reporting)\n' \
+    > "$_tests_raw"
 
-  # File 1: normal failure — no set -e leak, so bats writes the `not ok` line
-  # to TAP normally. This gives _tests_count > 0 before deficit detection runs.
-  {
-    printf '#!/usr/bin/env bats\n'
-    printf '# sharkrite-test-covers: tests/normal-fail.bats\n'
-    printf '@test "passes first" { true; }\n'
-    printf '@test "fails normally and reports not ok" { false; }\n'
-  } > "$_repo/tests/normal-fail.bats"
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "tests_not_run" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
 
-  # File 2: swallow fixture — same 2x2 conjunction as the existing behavioral
-  # test: setup() leaks `set -euo pipefail`, gate exports BATS_TEST_TIMEOUT,
-  # the failing test triggers bats_kill_processes_of under leaked errexit,
-  # killing bats-exec-test before `not ok` is emitted (swallowed).
-  printf 'set -euo pipefail\n' > "$_repo/tests/strict-env.sh"
-  {
-    printf '#!/usr/bin/env bats\n'
-    printf '# sharkrite-test-covers: tests/strict-env.sh\n'
-    printf 'setup() { source "$BATS_TEST_DIRNAME/strict-env.sh"; }\n'
-    printf '@test "passes before swallow" { true; }\n'
-    printf '@test "mixed swallowed by leaked errexit plus timeout" { false; }\n'
-    printf '@test "passes after swallow" { true; }\n'
-  } > "$_repo/tests/swallow-fixture.bats"
-
-  (cd "$_repo" && git add -A && git commit -qm fixture) || return 1
-
-  # --- Probe 1: confirm the swallow-fixture.bats actually swallows ---
-  # If this bats version tolerates the kill and writes a `not ok`, neither
-  # the old code nor the new code would differ — skip to avoid false signals.
-  _probe_tap="$BATS_TEST_TMPDIR/mixed-probe-tap"
-  mkdir -p "$_probe_tap"
-  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
-    bats -F pretty --report-formatter tap --output "$_probe_tap" \
-    tests/swallow-fixture.bats < /dev/null > /dev/null 2>&1) || true
-  _probe_notok=$(grep -c '^not ok ' "$_probe_tap/report.tap" 2>/dev/null || true)
-  [ "${_probe_notok:-0}" -eq 0 ] || skip "this bats version reports the swallow-fixture failure normally (no swallow to detect)"
-
-  # --- Probe 2: confirm normal-fail.bats DOES produce a real not ok ---
-  # Without this the test could degenerate into the all-swallowed case.
-  _probe2_tap="$BATS_TEST_TMPDIR/mixed-probe2-tap"
-  mkdir -p "$_probe2_tap"
-  (cd "$_repo" && BATS_TEST_TIMEOUT=5 BATS_REPORT_FILENAME=report.tap TERM=dumb \
-    bats -F pretty --report-formatter tap --output "$_probe2_tap" \
-    tests/normal-fail.bats < /dev/null > /dev/null 2>&1) || true
-  _probe2_notok=$(grep -c '^not ok ' "$_probe2_tap/report.tap" 2>/dev/null || true)
-  [ "${_probe2_notok:-0}" -ge 1 ] || skip "normal-fail.bats did not produce a real not ok line — mixed fixture degenerated"
-
-  # --- Run the gate over BOTH fixture files ---
-  _out="$BATS_TEST_TMPDIR/mixed-gate.json"
-  export RITE_TEST_GATE_DIFF_BASE="$_base"
-  export RITE_BATS_TEST_TIMEOUT=5
-  unset RITE_GATE_BACKGROUND RITE_GATE_FORCE_FULL 2>/dev/null || true
-  run run_test_gate "$_out" "$_repo"
-
-  # Gate must block (exit 1).
-  [ "$status" -eq 1 ] || {
-    echo "FAIL: gate exit was $status, expected 1 (blocking)" >&2
-    echo "$output" >&2
-    return 1
-  }
-  [ -s "$_out" ] || {
-    echo "FAIL: gate JSON not written" >&2
-    return 1
-  }
-
-  # The swallowed test's synthetic finding must be present — this is the
-  # regression guard: with the old `&& [ "$_tests_count" -eq 0 ]` guard
-  # the real not-ok from normal-fail.bats would set _tests_count=1 and
-  # deficit detection would be skipped, so no tests_not_run finding would
-  # appear.
+  # The swallowed test's synthetic finding must be present.
   grep -q '"reason":"tests_not_run"' "$_out" || {
     echo "FAIL: gate JSON lacks reason=tests_not_run (swallowed test not detected):" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
 
   # The synthetic finding must name the swallowed test.
   jq -r '.tests[].test_name' "$_out" | grep -q "mixed swallowed" || {
     echo "FAIL: synthetic finding does not name the swallowed test:" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
 
-  # The real assertion-failed finding from normal-fail.bats must also be present
-  # — confirming this is genuinely the mixed-outcome case.
+  # The real assertion-failed finding must also be present — confirming mixed-outcome.
   grep -q '"reason":"assertion failed"' "$_out" || {
     echo "FAIL: gate JSON lacks real assertion-failed finding — mixed case not exercised:" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
 
   # Deficit cap: exactly ONE not-run finding for a deficit of 1.
   _notrun_len=$(jq '[.tests[] | select(.reason == "tests_not_run")] | length' "$_out")
   [ "${_notrun_len:-0}" -eq 1 ] || {
     echo "FAIL: expected exactly 1 tests_not_run finding for deficit 1, got ${_notrun_len}:" >&2
-    cat "$_out" >&2
-    return 1
+    cat "$_out" >&2; return 1
   }
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
 
 # =============================================================================
 # LANDMINE GUARD: batch-locked-issue-in-progress-status.bats
 # =============================================================================
+
+@test "e2e pin #847: test-gate.sh deficit detection not gated on _tests_count -eq 0 (mixed-outcome guard)" {
+  # Regression pin for issue #847. The converted behavioral tests call _gate_build_verdict
+  # directly with pre-built mixed TAP — they cannot detect if the pre-fix caller guard
+  # `[ "$_tests_count" -eq 0 ]` is re-added to test-gate.sh around _synthesize_notrun_findings.
+  # That guard silently skipped deficit detection whenever at least one real not-ok was present,
+  # making swallowed tests invisible to the fix loop in mixed-outcome runs.
+  # Live: a run with 1 real failure + 1 swallowed test had _tests_count=1, so the swallow
+  # was invisible — the fix loop got only 1 finding and couldn't address the swallowed test.
+  local _sh="${RITE_LIB_DIR}/utils/test-gate.sh"
+  # The compound caller guard MUST NOT exist near _synthesize_notrun_findings.
+  # Check multi-line form: the guard may reappear on a separate line before the call,
+  # which a same-line regex would miss.
+  local _notrun_lineno
+  _notrun_lineno=$(grep -n '_synthesize_notrun_findings' "$_sh" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1 || true)
+  if [ -z "$_notrun_lineno" ]; then
+    echo "FAIL: _synthesize_notrun_findings call not found in test-gate.sh" >&2
+    false
+  fi
+  if awk "NR>=$(( _notrun_lineno - 50 )) && NR<=$_notrun_lineno" "$_sh" \
+     | grep -qE '\$_tests_count"?[[:space:]]*-eq[[:space:]]*0'; then
+    echo "FAIL: _tests_count -eq 0 guard detected near _synthesize_notrun_findings call" >&2
+    echo "      This was the live regression from issue #847 — re-introduced." >&2
+    false
+  fi
+}
 
 @test "structural: batch-locked-issue test file uses teardown, not an EXIT trap inside a @test" {
   _f="${BATS_TEST_DIRNAME}/batch-locked-issue-in-progress-status.bats"

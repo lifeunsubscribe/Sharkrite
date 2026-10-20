@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh, lib/core/workflow-runner.sh
 # Issue #975: tiered gating — per-cycle scoped workspace runs + merge-decision
 # full suite.  Covers:
 #   - _detect_workspace_runner: jest/vitest from devDependencies, fallback unknown
