@@ -211,8 +211,9 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "integration: failing npm test yields non-empty gate JSON tests[] after normalization" {
-  # Note: diag test_count is not asserted here; it is verified in tests that call
-  # run_test_gate directly. This test verifies the normalizer → verdict seam path:
+  # Note: diag test_count (the gate's "not ok" count) is verified by the
+  # _not_ok_count assertion below — the same grep that run_test_gate records as test_count.
+  # This test verifies the normalizer → verdict seam path:
   # normalizer produces ^not ok lines, and _gate_build_verdict builds a non-empty tests[].
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
@@ -244,8 +245,8 @@ EOF
   # RITE_TEST_COMMAND normalization path identically to the npm-test path.
   # The regression this pins is that _not_ok_count (the gate's test_count)
   # is nonzero after normalization — i.e., the normalizer produces ^not ok lines.
-  # Note: diag test_count assertions belong in run_test_gate-based e2e tests;
-  # this test verifies the normalizer-count via the verdict seam only.
+  # Note: diag test_count (the gate's "not ok" count) is verified by the
+  # _not_ok_count assertion below — the same count run_test_gate records as test_count.
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
   _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
@@ -306,8 +307,20 @@ EOF
   # (live: LeadFlow PR #587 — 53+ real failures across vitest + 2 jest workspaces,
   # diag said test_count=0, fix session investigated blind).
   local _sh="${RITE_LIB_DIR}/utils/test-gate.sh"
-  grep -q '_normalize_node_test_output' "$_sh"
-  grep -q 'RITE_TEST_COMMAND' "$_sh"
+  # Verify _normalize_node_test_output is called inside the RITE_TEST_COMMAND branch —
+  # not just that both strings exist somewhere in the file (other call sites would
+  # satisfy a bare grep even if the normalizer were removed from this branch).
+  local _cmd_lineno
+  _cmd_lineno=$(grep -n 'if.*RITE_TEST_COMMAND' "$_sh" | grep -v '^\s*#' | head -1 | cut -d: -f1 || true)
+  if [ -z "$_cmd_lineno" ]; then
+    echo "FAIL: RITE_TEST_COMMAND conditional not found in test-gate.sh" >&2
+    false
+  fi
+  if ! awk "NR>=$_cmd_lineno && NR<=$(( _cmd_lineno + 50 ))" "$_sh" | grep -q '_normalize_node_test_output'; then
+    echo "FAIL: _normalize_node_test_output not called in RITE_TEST_COMMAND branch" >&2
+    echo "      This was the live regression from issue #846 — re-introduced." >&2
+    false
+  fi
 }
 
 @test "integration: passing RITE_TEST_COMMAND still yields tests:[] and exit 0" {

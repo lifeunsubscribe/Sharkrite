@@ -445,10 +445,18 @@ EOF
   # Live: a run with 1 real failure + 1 swallowed test had _tests_count=1, so the swallow
   # was invisible — the fix loop got only 1 finding and couldn't address the swallowed test.
   local _sh="${RITE_LIB_DIR}/utils/test-gate.sh"
-  # The compound caller guard MUST NOT exist adjacent to _synthesize_notrun_findings.
-  # If this grep succeeds, the pre-fix guard has been re-introduced.
-  if grep -qE '\$_tests_count[[:space:]]*-eq[[:space:]]*0.*_synthesize_notrun|_synthesize_notrun.*\$_tests_count[[:space:]]*-eq[[:space:]]*0' "$_sh"; then
-    echo "FAIL: _tests_count -eq 0 guard detected adjacent to _synthesize_notrun_findings call" >&2
+  # The compound caller guard MUST NOT exist near _synthesize_notrun_findings.
+  # Check multi-line form: the guard may reappear on a separate line before the call,
+  # which a same-line regex would miss.
+  local _notrun_lineno
+  _notrun_lineno=$(grep -n '_synthesize_notrun_findings' "$_sh" | grep -v '^\s*#' | head -1 | cut -d: -f1 || true)
+  if [ -z "$_notrun_lineno" ]; then
+    echo "FAIL: _synthesize_notrun_findings call not found in test-gate.sh" >&2
+    false
+  fi
+  if awk "NR>=$(( _notrun_lineno - 50 )) && NR<=$_notrun_lineno" "$_sh" \
+     | grep -qE '\$_tests_count[[:space:]]*-eq[[:space:]]*0'; then
+    echo "FAIL: _tests_count -eq 0 guard detected near _synthesize_notrun_findings call" >&2
     echo "      This was the live regression from issue #847 — re-introduced." >&2
     false
   fi
