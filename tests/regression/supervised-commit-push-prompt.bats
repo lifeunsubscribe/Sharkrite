@@ -74,7 +74,10 @@ setup() {
 # ---------------------------------------------------------------------------
 # Structural: y/n/e behavioral contracts — verified via code inspection
 # (Main-flow commit+push body is inline, not a callable function; structural
-# verification is the feasible coverage until it is extracted — deferred to #1169)
+# verification is the feasible coverage until it is extracted — needs a
+# dedicated tracking issue: extract inline body into a callable function then
+# add behavioral y/n/e tests; see behavioral-design.md § "Supervised commit/push"
+# and test-gate-parallel.bats RITE_GATE_FINDINGS deferral for consolidation)
 # ---------------------------------------------------------------------------
 
 @test "structural: n path calls 'exit 0' (aborts without committing)" {
