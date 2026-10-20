@@ -1484,6 +1484,114 @@ _title_is_spike() {
 }
 
 # =============================================================================
+# _transform_dep_line — rewrite a **Dependencies**: line to add After #N and
+# remove the corresponding parallel-with annotation.
+#
+# Args: $1=line  $2=after_num (non-spike ordinal)
+#
+# Handles all annotation shapes:
+#   sole ref:    "(can run in parallel with #N)"         → removed
+#   first ref:   "(can run in parallel with #N, ...)"    → "#N, " removed
+#   last ref:    "(..., #N)"                              → ", #N" removed
+#   empty group: "(can run in parallel with )" artifact  → removed
+#
+# If After #N already present, the add step is skipped (idempotent).
+# Non-inline Dependencies lines (header-only, no ": ") are returned unchanged.
+# =============================================================================
+
+_transform_dep_line() {
+  local _tdl_line="$1"
+  local _tdl_after_num="$2"
+  local _tdl_prefix="**Dependencies**: "
+  local _tdl_after_tag="After #${_tdl_after_num}"
+  local _tdl_par_ref="#${_tdl_after_num}"
+
+  local _tdl_content
+  _tdl_content="${_tdl_line#"$_tdl_prefix"}"
+  # Not an inline Dependencies line — return unchanged
+  if [ "$_tdl_content" = "$_tdl_line" ]; then
+    printf '%s\n' "$_tdl_line"
+    return
+  fi
+
+  # Step 1: remove par_ref from the parallel-with annotation (all shapes).
+  # Sole ref: " (can run in parallel with #N)"
+  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with ${_tdl_par_ref})//" || true)
+  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref})//" || true)
+  # First ref of multiple: "(can run in parallel with #N, ..." → remove "#N, "
+  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref}, /(can run in parallel with /" || true)
+  # Last ref of multiple: "..., #N)" → remove ", #N"
+  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref})/)/g" || true)
+  # Clean up now-empty paren group
+  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with )//" || true)
+  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with )//" || true)
+
+  # Step 2: add After #N if not already present.
+  if ! echo "$_tdl_content" | grep -qF "$_tdl_after_tag"; then
+    case "$_tdl_content" in
+      None|"None "*|"None,")
+        # Replace "None" keyword with the After tag, preserving trailing content
+        _tdl_content="${_tdl_after_tag}${_tdl_content#None}"
+        ;;
+      *)
+        _tdl_content="${_tdl_after_tag}, ${_tdl_content}"
+        ;;
+    esac
+  fi
+
+  # Step 3: clean up trailing comma/space artifacts from removal.
+  _tdl_content=$(echo "$_tdl_content" | sed 's/, *$//' || true)
+  _tdl_content=$(echo "$_tdl_content" | sed 's/[[:space:]]*$//' || true)
+  _tdl_content=$(echo "$_tdl_content" | sed 's/  */ /g' || true)
+
+  printf '%s\n' "${_tdl_prefix}${_tdl_content}"
+}
+
+# =============================================================================
+# _autochain_rewrite_deps — rewrite the Dependencies line for a named issue
+# in the issues file, adding After #N and removing the parallel annotation.
+#
+# Args: $1=issues_file  $2=later_title  $3=after_num
+#
+# Reads the file line-by-line, transforms the first **Dependencies**: line in
+# the block whose TITLE matches later_title, writes to a temp file, then
+# atomically replaces the original.  Idempotent: if After #N is already
+# present and the annotation already absent, the file is unchanged.
+# =============================================================================
+
+_autochain_rewrite_deps() {
+  local _ard_file="$1"
+  local _ard_title="$2"
+  local _ard_after_num="$3"
+
+  local _ard_tmp
+  _ard_tmp=$(mktemp)
+  local _ard_in_target=false
+  local _ard_dep_rewritten=false
+
+  while IFS= read -r _ard_line; do
+    if [ "$_ard_line" = "---ISSUE---" ]; then
+      _ard_in_target=false
+      _ard_dep_rewritten=false
+    elif [ "$_ard_line" = "TITLE: ${_ard_title}" ]; then
+      _ard_in_target=true
+    elif [ "$_ard_line" = "---END---" ]; then
+      _ard_in_target=false
+    fi
+
+    if [ "$_ard_in_target" = true ] && [ "$_ard_dep_rewritten" = false ] && \
+       echo "$_ard_line" | grep -qE '^\*\*Dependencies\*\*:'; then
+      _ard_dep_rewritten=true
+      _ard_line=$(_transform_dep_line "$_ard_line" "$_ard_after_num")
+    fi
+
+    printf '%s\n' "$_ard_line"
+  done < "$_ard_file" > "$_ard_tmp"
+
+  mv "$_ard_tmp" "$_ard_file"
+}
+
+# =============================================================================
 # Strict deterministic validator: graph checks, dangling refs, verification
 # paths, and deferral citations.
 #
@@ -2341,8 +2449,26 @@ _lint_issues_strict() {
           else
             _after_num="$_prefnum"  # non-spike ordinal of _pj (already)
           fi
-          print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
-          _warning_count=$((_warning_count + 1))
+          # Check whether the PEER issue (_pj) also carries a suppress marker.
+          # Either side suppressed → warn-only (disjoint-functions escape hatch).
+          # Neither side suppressed → deterministic auto-chain rewrite.
+          local _pj_supps_eff="${_suppressions[$_pj]:-}"
+          if echo "$_pj_supps_eff" | grep -qw "parallel-file-overlap"; then
+            # Peer (_pj) is suppressed — warn-only
+            print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
+            _warning_count=$((_warning_count + 1))
+          else
+            # Neither side suppressed — auto-chain: rewrite the later issue.
+            if [ "$_pi" -lt "$_pj" ]; then
+              # _pj is the later issue (higher ordinal)
+              _autochain_rewrite_deps "$issues_file" "$_pj_title" "$_after_num"
+              print_info "[auto-chained] parallel-file-overlap: '$_pj_title' rewired After #${_after_num} ('$_pi_title'); both modify '${_par_shared}'" >&2
+            else
+              # _pi is the later issue (higher ordinal)
+              _autochain_rewrite_deps "$issues_file" "$_pi_title" "$_after_num"
+              print_info "[auto-chained] parallel-file-overlap: '$_pi_title' rewired After #${_after_num} ('$_pj_title'); both modify '${_par_shared}'" >&2
+            fi
+          fi
         fi
       fi
     done <<< "$_pi_parallel"
