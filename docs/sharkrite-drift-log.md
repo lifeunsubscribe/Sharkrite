@@ -96,9 +96,5 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 **Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
 **Implicated docs**:
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
-- docs/configuration.md — "Configuration"
-- CLAUDE.md — "Sharkrite Development Guide"
-**Suspected inaccuracy**: CLAUDE.md states the multi-part TLD list in `_normalize_host_to_registrable_domain` covers `co.uk com.au co.jp com.br`, but PR #1315 expanded it to also include `co.in`, `co.nz`, `co.za`, `net.au`, `org.au`, `org.uk`, `vercel.app`, `herokuapp.com`, `github.io`, and `netlify.app`.
-
-The hardcoded multi-part TLD list `co.uk com.au co.jp com.br` in `_normalize_host_to_registrable_domain` now also covers `co.in`, `co.nz`, `co.za`, `net.au`, `org.au`, `org.uk`, `vercel.app`, `herokuapp.com`, `github.io`, and `netlify.app`.
+**Suspected inaccuracy**: `behavioral-design.md` previously had no section for `_normalize_host_to_registrable_domain`. PR #1315 added the "Host-normalization contract" entry (item 3 "Known multi-part suffixes handled explicitly") documenting `co.uk`, `co.in`, `vercel.app`, `herokuapp.com`, and related suffixes. No prior doc content existed for this function — no inaccuracy to reconcile; doc is current.
 <!-- /sharkrite-doc-drift -->
