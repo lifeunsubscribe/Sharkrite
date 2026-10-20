@@ -73,8 +73,10 @@ setup() {
 
 # ---------------------------------------------------------------------------
 # Structural: y/n/e behavioral contracts — verified via code inspection
-# (Main-flow commit+push body is inline, not a callable function; structural
-# verification is the feasible coverage until it is extracted — behavioral-design.md)
+# (Main-flow commit+push body is inline at lib/core/claude-workflow.sh:3775,
+# not a callable function; behavioral tests blocked until it is extracted.
+# Tracked by issue #1368, which also covers the RITE_GATE_FINDINGS builder
+# extraction deferred in test-gate-parallel.bats.)
 # ---------------------------------------------------------------------------
 
 @test "structural: n path calls 'exit 0' (aborts without committing)" {
