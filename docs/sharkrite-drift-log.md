@@ -408,3 +408,18 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 
 `behavioral-design.md` calls `lib/utils/format-review.sh` "238 lines" and "200+ line review formatter," but it is now 329 lines after the shared `parse_review_severity_counts` function was added.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1345 issue:1250 recorded:2026-10-20T16:05:20Z -->
+**Changed files**: lib/core/assess-and-resolve.sh, lib/core/local-review.sh, lib/core/promote-branch.sh, lib/utils/format-review.sh, tests/helpers/promote-stubs.bash, tests/integration/assess-and-resolve-dedup.bats, tests/regression/assess-fallback-posts-comment.bats, tests/regression/format-review-pretty.bats, tests/regression/promote-review-followup.bats, tests/regression/promote-single-issue-cherry-pick.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/review-system.md — "Review System"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s "Review severity parsing" convention says the canonical approach is to grep the Findings summary line, but the new shared `parse_review_severity_counts()` in `format-review.sh` (3-tier: JSON block → Findings line → item markers) is now the required call site.
+<!-- /sharkrite-doc-drift -->
