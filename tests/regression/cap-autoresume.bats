@@ -91,6 +91,22 @@ teardown() {
   }
 }
 
+@test "structural: attempt_cap_autoresume call site passes \$_manifest_path not fixed cap-resume.json" {
+  # The manifest writer uses a per-batch filename (cap-resume-${RITE_BATCH_ID}.json).
+  # The call site must pass $_manifest_path, not re-derive the old fixed name —
+  # otherwise the [ -f ] check inside attempt_cap_autoresume always fails and the
+  # feature never fires.
+  grep -n 'attempt_cap_autoresume' "$BATCH_PROCESSOR" | grep -q 'cap-resume\.json' && {
+    echo "FAIL: attempt_cap_autoresume call site still uses literal 'cap-resume.json'" >&2
+    echo "      Pass \$_manifest_path (set by the cap-abort writer) instead" >&2
+    return 1
+  }
+  grep -q 'attempt_cap_autoresume.*_manifest_path' "$BATCH_PROCESSOR" || {
+    echo "FAIL: attempt_cap_autoresume call site does not pass \$_manifest_path" >&2
+    return 1
+  }
+}
+
 @test "structural: batch-process-issues.sh propagates _RITE_CAP_RESUMED=1 → manifest resumed=true" {
   # cap-resume.sh exports _RITE_CAP_RESUMED=1 before exec; the manifest writer in
   # batch-process-issues.sh must read it and write resumed=true in the next run's

@@ -2191,8 +2191,7 @@ send_notification_all "$NOTIFICATION_MESSAGE" "normal"
 # issues.  attempt_cap_autoresume either execs (and does not return) or
 # returns 1 when not eligible — fall through to the normal exit path.
 if [ "${_CAP_ABORT:-false}" = "true" ]; then
-  _cap_manifest="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-resume.json"
-  attempt_cap_autoresume "$_cap_manifest" || true
+  attempt_cap_autoresume "${_manifest_path:-}" || true
 fi
 
 # Exit with appropriate code
