@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: bin/rite
+# sharkrite-test-covers: bin/rite, CLAUDE.md
 # tests/regression/promote-sync-logging.bats
 #
 # Regression: --promote and --sync create named log files via the standard
@@ -60,8 +60,8 @@ _line_of() {
 
 @test "CLAUDE.md: log capture documented as nested procsub, not FIFO" {
   # Pre-#1277, CLAUDE.md claimed a FIFO was implemented; pin the correction.
-  ! grep -qF "FIFO-based tee (implemented" "$RITE_REPO_ROOT/CLAUDE.md"
   grep -q "nested process-substitution" "$RITE_REPO_ROOT/CLAUDE.md"
+  ! grep -qF "FIFO-based tee (implemented" "$RITE_REPO_ROOT/CLAUDE.md"
 }
 
 # ---------------------------------------------------------------------------

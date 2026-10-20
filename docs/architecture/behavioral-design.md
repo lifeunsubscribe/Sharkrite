@@ -549,7 +549,7 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 **But routing it to the log UNCONDITIONALLY made foreground gates look like a hang** (live regression — user report 2026-06-24): a foreground gate (post-merge-verify, fastpath, standalone) running a multi-minute bats suite with NOTHING else printing reads as a freeze. With no concurrent output to protect, a silent gap is strictly worse than the "test spam" it avoids. So routing is now **conditional**:
 
 - **`RITE_GATE_BACKGROUND=1`** (set by the two concurrent `run_test_gate &` launches in `workflow-runner.sh` Phase 2/3) → `_gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"`: raw to the log only, terminal gets the digest. No interleave with the concurrent review stream.
-- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite FIFO-tee still captures it into the log). The digest still prints as a recap.
+- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite nested-procsub tee still captures it into the log). The digest still prints as a recap.
 
 The rule: **only suppress the live stream when something else is competing for the terminal.** Any new `run_test_gate` caller that runs concurrent with other terminal output must set `RITE_GATE_BACKGROUND=1`; foreground callers must not.
 
