@@ -624,3 +624,12 @@ CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review 
 
 `CLAUDE.md` lists "review PR comments" as one of the four sanitized seams, but `local-review.sh` sanitizes the raw review output before it is posted, not the PR comment itself.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:02:36Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md`'s never-external paragraph contains a stray `**Verify:**` grep line accidentally committed from the issue's Documentation Impact section, not behavioral documentation.
+<!-- /sharkrite-doc-drift -->
