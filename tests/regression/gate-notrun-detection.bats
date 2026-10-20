@@ -436,6 +436,24 @@ EOF
 # LANDMINE GUARD: batch-locked-issue-in-progress-status.bats
 # =============================================================================
 
+@test "e2e pin #847: test-gate.sh deficit detection not gated on _tests_count -eq 0 (mixed-outcome guard)" {
+  # Regression pin for issue #847. The converted behavioral tests call _gate_build_verdict
+  # directly with pre-built mixed TAP — they cannot detect if the pre-fix caller guard
+  # `[ "$_tests_count" -eq 0 ]` is re-added to test-gate.sh around _synthesize_notrun_findings.
+  # That guard silently skipped deficit detection whenever at least one real not-ok was present,
+  # making swallowed tests invisible to the fix loop in mixed-outcome runs.
+  # Live: a run with 1 real failure + 1 swallowed test had _tests_count=1, so the swallow
+  # was invisible — the fix loop got only 1 finding and couldn't address the swallowed test.
+  local _sh="${RITE_LIB_DIR}/utils/test-gate.sh"
+  # The compound caller guard MUST NOT exist adjacent to _synthesize_notrun_findings.
+  # If this grep succeeds, the pre-fix guard has been re-introduced.
+  if grep -qE '\$_tests_count[[:space:]]*-eq[[:space:]]*0.*_synthesize_notrun|_synthesize_notrun.*\$_tests_count[[:space:]]*-eq[[:space:]]*0' "$_sh"; then
+    echo "FAIL: _tests_count -eq 0 guard detected adjacent to _synthesize_notrun_findings call" >&2
+    echo "      This was the live regression from issue #847 — re-introduced." >&2
+    false
+  fi
+}
+
 @test "structural: batch-locked-issue test file uses teardown, not an EXIT trap inside a @test" {
   _f="${BATS_TEST_DIRNAME}/batch-locked-issue-in-progress-status.bats"
   # A `trap ... EXIT` inside a @test body clobbers bats' result-emitting EXIT

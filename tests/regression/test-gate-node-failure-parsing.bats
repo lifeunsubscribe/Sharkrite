@@ -210,7 +210,10 @@ EOF
 # no git fixture, no subprocess — pure verdict-seam calls.
 # ---------------------------------------------------------------------------
 
-@test "integration: failing npm test yields non-empty gate JSON tests[] and nonzero diag test_count" {
+@test "integration: failing npm test yields non-empty gate JSON tests[] after normalization" {
+  # Note: diag test_count is not asserted here; it is verified in tests that call
+  # run_test_gate directly. This test verifies the normalizer → verdict seam path:
+  # normalizer produces ^not ok lines, and _gate_build_verdict builds a non-empty tests[].
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
   _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
@@ -236,11 +239,13 @@ EOF
   rm -f "$_raw" "$_lint_raw" "$_out"
 }
 
-@test "integration: node-flavored RITE_TEST_COMMAND failure yields nonzero diag test_count" {
+@test "integration: RITE_TEST_COMMAND failure path — normalizer produces nonzero not-ok count" {
   # Converted (issue #1241): _normalize_node_test_output covers the
   # RITE_TEST_COMMAND normalization path identically to the npm-test path.
   # The regression this pins is that _not_ok_count (the gate's test_count)
   # is nonzero after normalization — i.e., the normalizer produces ^not ok lines.
+  # Note: diag test_count assertions belong in run_test_gate-based e2e tests;
+  # this test verifies the normalizer-count via the verdict seam only.
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
 
   _raw=$(mktemp); _lint_raw=$(mktemp); _out=$(mktemp)
@@ -290,6 +295,19 @@ EOF
   [ "$_norm_count" = "$_json_count" ]
 
   rm -f "$_raw" "$_lint_raw" "$_out"
+}
+
+@test "e2e pin #846: RITE_TEST_COMMAND branch in test-gate.sh calls _normalize_node_test_output" {
+  # Regression pin for issue #846. The converted verdict-seam tests call _gate_build_verdict
+  # directly after running _normalize_node_test_output — they cannot detect if the
+  # RITE_TEST_COMMAND branch in test-gate.sh stops calling the normalizer.
+  # Pre-fix: that branch hardcoded tests:[] even when normalization produced ^not ok lines,
+  # so diag test_count was nonzero but the fix loop received zero named findings
+  # (live: LeadFlow PR #587 — 53+ real failures across vitest + 2 jest workspaces,
+  # diag said test_count=0, fix session investigated blind).
+  local _sh="${RITE_LIB_DIR}/utils/test-gate.sh"
+  grep -q '_normalize_node_test_output' "$_sh"
+  grep -q 'RITE_TEST_COMMAND' "$_sh"
 }
 
 @test "integration: passing RITE_TEST_COMMAND still yields tests:[] and exit 0" {

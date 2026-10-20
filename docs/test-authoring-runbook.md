@@ -168,7 +168,9 @@ verdict-only and must keep `run_test_gate`.
 ```bash
 @test "description of the gate JSON behavior" {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
-  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  _lint_raw="$BATS_TEST_TMPDIR/lint.raw"
+  _tests_raw="$BATS_TEST_TMPDIR/tests.raw"
+  _out="$BATS_TEST_TMPDIR/out.json"
 
   # Pre-built lint raw (empty = make check passed)
   printf '' > "$_lint_raw"
@@ -181,8 +183,6 @@ verdict-only and must keep `run_test_gate`.
 
   run jq -r '.exit_code' "$_out"; [ "$output" = "1" ]
   run jq -r '.tests | length' "$_out"; [ "$output" -ge 1 ]
-
-  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
 ```
 
@@ -195,8 +195,8 @@ verdict-only and must keep `run_test_gate`.
   `_synthesize_notrun_findings`)
 - `lint_exit` / `tests_exit` — original process exit codes (1 = failure)
 - `out_json` — path for the output JSON
-- `reason` — optional forced reason for all test findings (e.g. `"tests_not_run"`
-  for watchdog-kill tests); empty string uses per-line parsing
+- `reason` — top-level verdict reason (mirroring `_gate_reason` in `run_test_gate`);
+  per-finding reasons always derive from the `[tests_not_run]` prefix
 - `head_sha` — optional SHA embedded in the JSON; empty string is fine for tests
 
 **TAP fixture content for watchdog tests.** Copy the exact text from
@@ -211,7 +211,7 @@ not ok 1 [tests_not_run] watchdog killed bats group after 1800s — N tests not 
 
 ```
 1..N
-not ok 1 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch; killed before reporting)
+not ok 1 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch) — test name unresolvable; check the run log
 ```
 
 **Setup.** Source only `gate-verdict.sh` (not `test-gate.sh`) and add the

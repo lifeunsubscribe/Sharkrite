@@ -29,6 +29,7 @@ setup() {
 # =============================================================================
 
 @test "watchdog kill — N not-run tests collapsed into exactly 1 finding" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf '' > "$_lint_raw"
   # Post-synthesis TAP: bats exited 124, run_test_gate collapsed 5 not-run tests
@@ -62,6 +63,7 @@ setup() {
 @test "watchdog kill with real failures — per-test failures kept, not-run collapsed to 1" {
   # Post-synthesis TAP: 5 planned, 1 real failure, then watchdog kills (exits 124).
   # TAP deficit = 5 - 1 = 4; real failure stays; 4 not-run collapsed to 1.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf '' > "$_lint_raw"
   printf '1..5\nnot ok 1 real failing test\nnot ok 2 [tests_not_run] watchdog killed bats group after 1800s — 4 tests not run; root cause is gate runtime, not the tests (reduce selection cost: add # sharkrite-gate-serial to load-heavy files, or scope lint rules with SHARKRITE_LINT_ONLY=N)\n' \
@@ -92,11 +94,13 @@ setup() {
 
 @test "watchdog kill with no TAP plan — gate produces exactly 1 not-run finding" {
   # Post-synthesis TAP: bats killed before emitting the plan line (SIGKILL = exit 137),
-  # empty TAP. _fr_watchdog=true with deficit=0; run_test_gate emits a single
-  # collapsed finding naming "0 tests not run".
+  # empty TAP. _fr_watchdog=true; run_test_gate emits a single collapsed finding.
+  # The gate floors the not-run count to 1 even when deficit arithmetic yields 0
+  # (no plan line → no arithmetic basis; the watchdog itself is the evidence).
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf '' > "$_lint_raw"
-  printf 'not ok 1 [tests_not_run] watchdog killed bats group after 1800s — 0 tests not run; root cause is gate runtime, not the tests (reduce selection cost: add # sharkrite-gate-serial to load-heavy files, or scope lint rules with SHARKRITE_LINT_ONLY=N)\n' \
+  printf 'not ok 1 [tests_not_run] watchdog killed bats group after 1800s — 1 tests not run; root cause is gate runtime, not the tests (reduce selection cost: add # sharkrite-gate-serial to load-heavy files, or scope lint rules with SHARKRITE_LINT_ONLY=N)\n' \
     > "$_tests_raw"
 
   _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "tests_not_run" "" || _rc=$?
@@ -117,11 +121,13 @@ setup() {
 
 @test "no watchdog kill — normal exit 1 still uses per-test not-run synthesis" {
   # Post-synthesis TAP: plan/executed mismatch but no watchdog (exits 1, not 124).
-  # _synthesize_notrun_findings emits per-test [tests_not_run] lines (deficit=2).
-  # 2 planned, 0 reported = deficit 2 via exit 1 (swallowed test, not watchdog).
+  # _synthesize_notrun_findings emits ambiguous-path [tests_not_run] lines (deficit=2).
+  # 2 planned, 0 reported = deficit 2 via exit 1 (swallowed tests, not watchdog).
+  # Fixture uses the exact gate-verdict.sh:527 ambiguous-path format.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf '' > "$_lint_raw"
-  printf '1..2\nnot ok 1 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch; killed before reporting)\nnot ok 2 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch; killed before reporting)\n' \
+  printf '1..2\nnot ok 1 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch) — test name unresolvable; check the run log\nnot ok 2 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch) — test name unresolvable; check the run log\n' \
     > "$_tests_raw"
 
   _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "" "" || _rc=$?
@@ -165,4 +171,20 @@ setup() {
   # The collapse and synthesis are in separate branches — both if and else present
   # in the not-run block — verify _fr_watchdog guards the split
   grep -q '_fr_watchdog.*false.*=.*true\|_fr_watchdog:-false' "$_sh"
+}
+
+@test "e2e pin #1130: test-gate.sh detects bats exit codes 124 and 137 as watchdog kills" {
+  # Regression pin for issue #1130. The converted behavioral tests call _gate_build_verdict
+  # directly with pre-collapsed TAP — they cannot detect if the watchdog-kill detection
+  # is removed from run_test_gate in test-gate.sh. Without this wiring a watchdog kill
+  # falls through to _synthesize_notrun_findings, flooding the fix loop with N individual
+  # findings instead of 1 collapsed one (live: batch 20261011-174713 slot #1021 —
+  # 690 not-run findings buried 5 real ones, gate ran to its 1800s watchdog).
+  local _sh="$RITE_REPO_ROOT/lib/utils/test-gate.sh"
+  # test-gate.sh must detect both bats exit 124 (BATS_TEST_TIMEOUT watchdog) and
+  # exit 137 (SIGKILL from OOM or external kill).
+  grep -qE '\b124\b' "$_sh"
+  grep -qE '\b137\b' "$_sh"
+  # Those detections must lead to _fr_watchdog=true, which gates the collapse path.
+  grep -q '_fr_watchdog=true' "$_sh"
 }

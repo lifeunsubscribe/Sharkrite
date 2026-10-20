@@ -34,6 +34,7 @@ teardown() { rm -rf "${TEST_REPO:-}"; }
 @test "block-on-any: a failing test in the targeted selection fails the gate" {
   # Converted (issue #1241): pre-built TAP fixture — no stub runner, no git fixture.
   # TAP from a bats run that emits 1..1 + not ok 1, exits 1.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf '' > "$_lint_raw"
   printf 'TAP version 13\n1..1\nnot ok 1 deliberately failing test\n' > "$_tests_raw"

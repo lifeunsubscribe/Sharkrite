@@ -42,6 +42,7 @@ setup() {
 
 @test "gate: shellcheck gcc violation produces lint[] finding with SC code, file, line" {
   # Converted (issue #1241): pre-built lint raw output — no stub make/bats/git.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf 'lib/core/docs-command.sh:42:3: warning: In POSIX sh, trap argument should be a simple string. [SC2064]\n' \
     > "$_lint_raw"
@@ -68,6 +69,7 @@ setup() {
 
 @test "gate: lint_count in TEST_GATE diag counts shellcheck violations" {
   # Converted (issue #1241): pre-built lint raw output with 2 violations.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf 'lib/a.sh:10:1: warning: message one [SC2064]\nlib/b.sh:20:1: warning: message two [SC2064]\n' \
     > "$_lint_raw"
@@ -83,6 +85,7 @@ setup() {
 
 @test "gate: zero shellcheck violations leaves lint[] empty" {
   # Converted (issue #1241): empty lint raw output — no stub make/bats/git.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
   _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
   printf '' > "$_lint_raw"
   printf 'TAP version 13\n1..1\nok 1 stub\n' > "$_tests_raw"
