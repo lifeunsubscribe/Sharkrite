@@ -582,3 +582,142 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 **Suspected inaccuracy**: `behavioral-design.md` claims behavioral main-flow y/n/e tests are "deferred to a future refactoring issue," but PR #1334 updated this to cite issue #1169 specifically.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T19:57:05Z -->
+**Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md's bash 3.2 guidance omits `gate-runners.sh` as a sourced library requiring bash 4+; `gate-runners.sh` now enforces this with a `BASH_VERSINFO` guard using `return 1` — a third pattern not described in CLAUDE.md's documented options (the documented options are: self-re-exec guard for directly-executed scripts, and `BASH_SOURCE[0] != $0` + loud failure for sourced libraries).
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T20:10:04Z -->
+**Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md` documents the `parallel-file-overlap` detector as warn-only, but PR #1361 changed it to auto-rewrite the later issue's `Dependencies` line when neither side carries a suppress marker.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T20:19:40Z -->
+**Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md's description of `_lint_issues_strict` says it emits a warning for parallel-file-overlap; PR #1361 changed it to auto-chain the later issue instead of warning when neither side is suppressed.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T20:23:11Z -->
+**Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents that when a parallel-file-overlap is detected, the behavior is to emit a `print_warning` — but PR #1361 changed this to auto-chain the later issue (rewrite its Dependencies line) when neither side carries a suppress marker, with a warning only when a suppress marker exists.
+
+`CLAUDE.md` states `parallel-file-overlap` triggers a warning only; it now auto-chains the later issue's `**Dependencies**` line when neither issue carries a `plan-lint suppress` marker.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1364 issue:1360 recorded:2026-10-20T20:55:11Z -->
+**Changed files**: CLAUDE.md, lib/core/assess-review-issues.sh, lib/core/local-review.sh, lib/core/plan-issues.sh, lib/utils/promotion-composer.sh, lib/utils/sanitize-output.sh, tests/regression/lib-resource-safety.bats, tests/regression/pipestatus-after-substitution.bats, tests/regression/sanitize-rtk-wrappers.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/review-system.md — "Review System"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1364 issue:1360 recorded:2026-10-20T20:58:43Z -->
+**Changed files**: CLAUDE.md, lib/core/assess-review-issues.sh, lib/core/local-review.sh, lib/core/plan-issues.sh, lib/utils/promotion-composer.sh, lib/utils/sanitize-output.sh, tests/regression/lib-resource-safety.bats, tests/regression/pipestatus-after-substitution.bats, tests/regression/sanitize-rtk-wrappers.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/review-system.md — "Review System"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md says sanitization covers "four highest-leak GitHub-write seams (issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies)" but the actual call sites are: `local-review.sh` (review output), `assess-review-issues.sh` (follow-up issue body), `plan-issues.sh` (plan issue body), and `promotion-composer.sh` (promotion PR body). That's 4 seams but the CLAUDE.md description doesn't accurately list them — it says "review PR comments" but `local-review.sh` sanitizes the review output itself (not comments), and it doesn't mention plan issues.
+
+CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies" but the actual seams include `plan-issues.sh` (plan issue bodies) instead of or in addition to "issue bodies," and `local-review.sh` sanitizes the review output (not PR comments).
+
+`CLAUDE.md` lists "review PR comments" as one of the four sanitized seams, but `local-review.sh` sanitizes the raw review output before it is posted, not the PR comment itself.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:31:07Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `docs/architecture/behavioral-design.md` may still describe the log-capture mechanism as a FIFO-based tee rather than the nested-procsub pattern that CLAUDE.md now documents.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:35:40Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md` still describes `bin/rite` as using a FIFO-based tee, but PR #1358 changed the implementation to a nested process-substitution pattern (`exec > >(tee >(strip_ansi >> FILE))`).
+
+`behavioral-design.md` claims `bin/rite` uses a FIFO-based tee to prevent tail-truncation, but the implementation was changed to nested process-substitution with a known truncation race.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:02:36Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md`'s never-external paragraph contains a stray `**Verify:**` grep line accidentally committed from the issue's Documentation Impact section, not behavioral documentation.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T22:04:25Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The test file exists and covers `bin/rite-full-suite` — so CLAUDE.md's reference to it for the "prior attempt at a FIFO+explicit-`wait` pattern in `bin/rite-full-suite` caused a deadlock" claim appears plausible. 
+
+Now I have enough context. The PR changed the log-capture description from "FIFO-based (implemented)" to "nested-procsub (FIFO not implemented, has tail-truncation race)". CLAUDE.md now says FIFO was "not implemented" and still mentions a deadlock test in `full-suite-subcommand.bats`. That test actually covers `bin/rite-full-suite` safety-net behavior, not the FIFO deadlock — so CLAUDE.md's claim that `tests/regression/full-suite-subcommand.bats` documents the FIFO+wait deadlock is the most likely inaccuracy introduced by this PR.
+
+`CLAUDE.md`'s "Log capture pattern" section claims `tests/regression/full-suite-subcommand.bats` documents the FIFO+explicit-`wait` deadlock, but that file covers the full-suite safety-net behavior, not the FIFO deadlock.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:07:24Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The behavioral-design.md at line 1386 describes `_detect_unverified_integrations` as checking whether hostnames "are grounded in the project's fixture directories or dependency manifests" — but PR #1376 added a categorical never-external exclusion step that happens *before* the grounded-set check. The documentation doesn't mention this loopback/RFC-2606 exclusion layer.
+
+`_detect_unverified_integrations` docs say grounding is a set-membership fixture/manifest check, but PR #1376 added a never-external exclusion (`localhost`, `127.0.0.1`, `example.com`, etc.) that filters candidates before the grounded-set check runs.
+<!-- /sharkrite-doc-drift -->

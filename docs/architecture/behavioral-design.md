@@ -549,7 +549,7 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 **But routing it to the log UNCONDITIONALLY made foreground gates look like a hang** (live regression — user report 2026-06-24): a foreground gate (post-merge-verify, fastpath, standalone) running a multi-minute bats suite with NOTHING else printing reads as a freeze. With no concurrent output to protect, a silent gap is strictly worse than the "test spam" it avoids. So routing is now **conditional**:
 
 - **`RITE_GATE_BACKGROUND=1`** (set by the two concurrent `run_test_gate &` launches in `workflow-runner.sh` Phase 2/3) → `_gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"`: raw to the log only, terminal gets the digest. No interleave with the concurrent review stream.
-- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite FIFO-tee still captures it into the log). The digest still prints as a recap.
+- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite nested-procsub tee still captures it into the log). The digest still prints as a recap.
 
 The rule: **only suppress the live stream when something else is competing for the terminal.** Any new `run_test_gate` caller that runs concurrent with other terminal output must set `RITE_GATE_BACKGROUND=1`; foreground callers must not.
 
@@ -1384,6 +1384,9 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 **Second application — deterministic integration check (issue #351, 2026-06-05):**
 
 `_detect_unverified_integrations` in `lib/core/plan-issues.sh` checks whether external hostnames and package/SDK names referenced in issue bodies are grounded in the project's fixture directories or dependency manifests. Issues that reference un-grounded dependencies get a spike-issue prerequisite prepended (no LLM call). This is a deterministic lookup: "is this hostname/package in the project's known-good set?" is a set membership test, not a language-understanding question.
+
+**Never-external host exclusion (issue #1370, 2026-10-20):** Before reaching the fixture/SDK grounded-set check, each extracted host candidate is filtered against a categorical never-external set. Hosts in this set cannot be real external integrations regardless of what the issue body says, so they are silently skipped — no spike, no warning. The never-external set covers: loopback names (`localhost`, `127.0.0.1`, `0.0.0.0`), `.local` and `.localhost` suffixes (mDNS/link-local), and RFC 2606 documentation names (`example.com`, `example.net`, `example.org`, and any subdomain thereof, plus `*.test`, `*.example`, `*.invalid`). IPv6 loopback (`[::1]`) cannot reach this check — the host-char class `[a-zA-Z0-9.-]` excludes `[` and `:` — so it is inert by construction. Private IP ranges (10.x, 192.168.x) are not excluded here; no IP parsing is performed beyond the IPv4 loopback literal. Live failure that motivated this fix: orrery 2026-10-20 — `http://localhost:54324` (Inbucket) in a verification command produced a "Capture localhost sample - fixtures" spike and put `Blocked by: #SPIKE-localhost` on the magic-link issue.
+**Verify:** `grep -n 'never-external\|loopback' docs/architecture/behavioral-design.md`
 
 **SDK-grounded host suppression (issue #1155, 2026-10-14):** A host candidate that passes the fixture check is additionally checked against the manifest's grounded packages before being spiked. The vendor token — the first label of the registrable domain (e.g. `supabase` from `supabase.co`) — is matched at word boundaries (`[@/-]` separators) against each grounded package name (e.g. `@supabase/supabase-js`). When matched, the session contract comes from a typed SDK already in the manifest; the host is not an unverified external feed, so no spike is emitted. An INFO line names the grounding package. The suppression check requires the package to be grounded (present in the manifest), not merely mentioned in issue bodies.
 
@@ -2252,3 +2255,29 @@ make.
 looks similar but is accumulate-**in-place**: one entry per convention title,
 with later PR numbers appended to that entry's References line. A naive union
 would duplicate titles. It needs its own design and deliberately has no merger.
+
+## Output Sanitization: stripping operator-local commands from generated artifacts
+
+**Root cause.** `claude --print` (the provider call used for issue planning, review generation, assessment follow-ups, and promotion PR bodies) loads the operator's user-global `~/.claude/CLAUDE.md`. That file carries RTK hook instructions, so the model authors `rtk grep`, `rtk proxy git status`, etc. into generated text. Those commands are unrunnable for any human or CI without the operator's personal rtk hook installed — they leak into published GitHub issue bodies and PR comments.
+
+**Why input-side suppression is wrong.** Suppressing `~/.claude/CLAUDE.md` at the provider-call level (via a hypothetical `--no-user-config` flag) is not available and would also lose auth context. Output-side sanitization at the seam where LLM output becomes a GitHub artifact is the correct fix.
+
+**The helper: `sanitize_generated_commands`** (`lib/utils/sanitize-output.sh`).
+
+Strips `rtk proxy <cmd>` → `<cmd>` and `rtk <cmd>` → `<cmd>` at command positions:
+line-start, after `` ` ``, `$(`, `| `, `&& `. Prose mentions of "rtk" not at a command
+position are untouched. Emits one `print_info` line to stderr reporting the count when
+anything is rewritten.
+
+**Grounded exception.** When `git grep -qlw rtk` in the project root succeeds, the
+target repo genuinely ships rtk commands — sanitization is skipped. This prevents
+sharkrite from mangling its own generated bodies (sharkrite's `CLAUDE.md` documents
+rtk and the project's tracked files reference it).
+
+**Applied seams — the four highest-leak GitHub-write sites** (each is a one-line call immediately before the GitHub write; additional write sites remain unsanitized — see issue #1360 ACTIONABLE_LATER findings):
+- `lib/core/plan-issues.sh` — issue body before `gh issue create --body-file`
+- `lib/core/assess-review-issues.sh` — follow-up issue body before `gh issue create --body-file`
+- `lib/core/local-review.sh` — review output before the PR comment `--body-file`
+- `lib/utils/promotion-composer.sh` — LLM narrative before `printf` emits it to stdout
+
+**Extension point.** The helper is intentionally rtk-specific (rtk is the live failure class; a generic "unknown tool" detector is unbounded). To handle another operator-local tool, add a parallel check inside `sanitize_generated_commands` — see the comment in `lib/utils/sanitize-output.sh`.

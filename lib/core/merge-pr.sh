@@ -11,6 +11,28 @@
 
 set -euo pipefail
 
+# Bash 4+ re-exec guard (issue #1361 fallout — see #1374).
+#
+# lib/utils/gate-runners.sh nests `case` statements inside process
+# substitutions, which bash 3.2 cannot parse, so it refuses to load under 3.2.
+# On macOS /bin/bash IS 3.2, so any #!/bin/bash file that reaches it — directly
+# or through test-gate.sh / gate-verdict.sh — dies before doing any work.
+#
+# #1374 guarded the five entry points known at the time and missed the rest:
+# create-pr.sh then died the same way one phase later. Rather than chase them
+# one at a time, every executable #!/bin/bash file in lib/ now carries this.
+# It is inert when the file is sourced (the BASH_SOURCE test is false), so it
+# costs nothing for the ones that are only ever libraries.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if [ "${_RITE_MERGE_PR_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
@@ -51,6 +73,15 @@ source "$RITE_LIB_DIR/utils/integration-ledger.sh"
 
 # Source provider abstraction
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
+# conflict-resolver.sh is an optional dependency, sourced the same way
+# stale-branch.sh does it: when present, attempt_claude_merge_resolution and
+# commit_resolved_conflicts become available to the CONFLICTING bail path
+# below. Guarded with -f so a trimmed install still loads merge-pr.sh; that
+# path checks `declare -f` before calling.
+if [ -f "$RITE_LIB_DIR/utils/conflict-resolver.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+fi
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 
 # ---------------------------------------------------------------------------
@@ -743,9 +774,68 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
         VALIDATION_FAILED=true
       fi
     else
-      git merge --abort 2>/dev/null || true
-      print_error "PR has merge conflicts that could not be auto-resolved"
-      VALIDATION_FAILED=true
+      # A plain `git merge` failing is NOT the end of the road. This is the
+      # second place drift-log/doc conflicts surface, and until now it was the
+      # only one with no resolver behind it: stale-branch.sh and
+      # mid-run-rebase.sh both call attempt_claude_merge_resolution on their
+      # bail paths, this site just aborted.
+      #
+      # Live cost: #1221 and #1203 failed here three runs in a row on
+      # "CONFLICT (content): Merge conflict in docs/sharkrite-drift-log.md" —
+      # the exact conflict shape that #1319's deterministic union merge
+      # resolves without a provider call. That merger lives inside
+      # attempt_claude_merge_resolution, so reaching it requires calling the
+      # resolver, which this path never did.
+      #
+      # The resolver handles being entered from a failed-and-aborted merge:
+      # its Step 3 re-runs the merge to recreate conflict markers regardless of
+      # entry state (see its header contract).
+      _mpr_resolved=false
+      if declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+        print_status "Attempting conflict resolution before giving up..."
+        _mpr_resolver_exit=0
+        attempt_claude_merge_resolution \
+          --branch-name "$PR_HEAD" \
+          --issue-number "${ISSUE_NUMBER:-}" \
+          --pr-number "${PR_NUMBER:-}" \
+          --merge-target "origin/$PR_BASE" || _mpr_resolver_exit=$?
+
+        if [ "$_mpr_resolver_exit" -eq 5 ]; then
+          # Usage cap is batch-blocking — propagate rather than masking it as a
+          # merge failure, so the batch halts instead of shredding its queue.
+          print_error "Provider usage cap reached during conflict resolution"
+          exit 5
+        fi
+
+        if [ "$_mpr_resolver_exit" -eq 0 ]; then
+          # The resolver writes resolutions but cannot stage or commit them
+          # (#1317) — the caller completes the handoff.
+          if commit_resolved_conflicts "$(pwd)"; then
+            if git push origin "$PR_HEAD" 2>/dev/null; then
+              print_success "Conflicts resolved and pushed — re-checking mergeable state"
+              sleep 3
+              PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
+              PR_MERGEABLE="${PR_MERGEABLE:-UNKNOWN}"
+              if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
+                print_success "PR is now mergeable"
+                _mpr_resolved=true
+              else
+                print_error "PR still not mergeable after resolution (state: $PR_MERGEABLE)"
+              fi
+            else
+              print_error "Push failed after conflict resolution"
+            fi
+          else
+            print_error "Failed to commit resolved conflicts"
+          fi
+        fi
+      fi
+
+      if [ "$_mpr_resolved" != "true" ]; then
+        git merge --abort 2>/dev/null || true
+        print_error "PR has merge conflicts that could not be auto-resolved"
+        VALIDATION_FAILED=true
+      fi
     fi
   else
     print_info "Mergeable state is uncertain, will attempt merge anyway"

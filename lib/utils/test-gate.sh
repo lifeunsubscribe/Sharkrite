@@ -110,10 +110,10 @@ run_test_gate() {
   #     BACKGROUND gate (RITE_GATE_BACKGROUND=1): raw output → log file to
   #       avoid interleaving with the concurrent review stream.
   #     FOREGROUND gate: raw output → /dev/stdout so live progress is visible
-  #       and the run doesn't look frozen. FIFO-tee still captures it.
+  #       and the run doesn't look frozen. Nested-procsub tee still captures it.
   local _gate_raw_sink
   if [ "$_gate_verbose" = "false" ]; then
-    # Summary mode: direct-append to log; NOT through the FIFO tee.
+    # Summary mode: direct-append to log; NOT through the nested-procsub tee.
     _gate_raw_sink="${RITE_LOG_FILE:-/dev/null}"
   elif [ "${RITE_GATE_BACKGROUND:-}" = "1" ]; then
     # Verbose + background: route to log to avoid interleaving.
