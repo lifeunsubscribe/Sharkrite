@@ -323,6 +323,52 @@ BODY
 # STRUCTURAL
 # =============================================================================
 
+@test "behavioral: resumed issue's own worktree excluded — no self-deferral" {
+  # Worktree path ends with "-42": basename matches *[-_]42, triggering the own-
+  # worktree exclusion added for the resume path.  Without the fix the issue
+  # would defer against itself up to _UNIQUE_ISSUE_COUNT times.
+  local _repo="$BATS_TEST_TMPDIR/repo-resume-$$"
+  local _own_wt="$BATS_TEST_TMPDIR/wt-ft-issue-42"
+
+  mkdir -p "$_repo"
+  git -C "$_repo" init -q
+  git -C "$_repo" config user.email "test@sharkrite.test"
+  git -C "$_repo" config user.name "Sharkrite Test"
+
+  printf 'init\n' > "$_repo/README.md"
+  git -C "$_repo" add README.md
+  git -C "$_repo" commit -q -m "Initial commit"
+
+  git -C "$_repo" branch "ft-issue-42"
+  git -C "$_repo" worktree add -q "$_own_wt" "ft-issue-42"
+
+  # Commit touching the same file the issue declares in Files-to-Modify
+  mkdir -p "$_own_wt/lib/core"
+  printf 'changed\n' > "$_own_wt/lib/core/batch-process-issues.sh"
+  git -C "$_own_wt" add "lib/core/batch-process-issues.sh"
+  git -C "$_own_wt" commit -q -m "WIP for issue 42"
+
+  _body="$BATS_TEST_TMPDIR/body-resume-$$-.md"
+  cat > "$_body" <<'BODY'
+**Files to Modify:**
+- `lib/core/batch-process-issues.sh` — resume of issue 42
+BODY
+
+  _script=$(_build_overlap_script "$_repo" "$_body")
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script exited $status: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "PROCEEDED: issue 42" || {
+    echo "FAIL: issue should PROCEED — own worktree must not trigger self-deferral; got: $output" >&2
+    return 1
+  }
+  ! echo "$output" | grep -q "OVERLAP_DEFERRED" || {
+    echo "FAIL: issue must NOT defer against its own worktree; got: $output" >&2; return 1
+  }
+}
+
 @test "structural: new overlap block contains no gh or curl calls (local git only)" {
   # Extract lines between the overlap-check comment marker and the next
   # section comment, then verify no network tool is invoked.

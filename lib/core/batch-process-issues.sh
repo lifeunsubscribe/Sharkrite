@@ -501,6 +501,15 @@ _ftm_file_overlap() {
     # Skip this batch's own checkout
     [ "$_wt_dir" = "$_ftm_main_wt" ] && continue
     [ "$_wt_dir" = "$_ftm_self_wt" ] && continue
+    # Skip the current issue's own pre-existing worktree (resume path) to
+    # prevent self-deferral. Whole-token match prevents substring collisions
+    # (e.g. issue 9 must not skip a worktree for issue 99).
+    if [ -n "${ISSUE_NUM:-}" ]; then
+      _wt_basename=$(basename "$_wt_dir")
+      case "$_wt_basename" in
+        *[-_]${ISSUE_NUM}[-_]*|*[-_]${ISSUE_NUM}) continue;;
+      esac
+    fi
 
     # Resolve the diff base for this worktree (see resolution order above)
     _wt_base=$(git -C "$_wt_dir" merge-base HEAD origin/main 2>/dev/null || \
@@ -530,7 +539,8 @@ _ftm_file_overlap() {
         case "$_wt_file" in "${_decl_cmp}/"*) _matched=true; break;; esac
         # Glob match (declared contains * or ?)
         case "$_decl_cmp" in *'*'*|*'?'*)
-          case "$_wt_file" in "$_decl_cmp") _matched=true; break;; esac
+          # shellcheck disable=SC2254
+          case "$_wt_file" in $_decl_cmp) _matched=true; break;; esac
         esac
       done < <(printf '%s\n' "$_wt_changed")
 
@@ -1364,7 +1374,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
     if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
       _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
-      print_warning "⚠️ Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
       ISSUE_LIST+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
       if declare -f _diag >/dev/null 2>&1; then
@@ -1374,7 +1384,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       _gate_consec_count=0; _gate_consec_sig=""
       continue
     else
-      print_warning "⚠️ Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
+      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
       if declare -f _diag >/dev/null 2>&1; then
         _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
       fi
