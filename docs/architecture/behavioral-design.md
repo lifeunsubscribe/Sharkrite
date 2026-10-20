@@ -2083,3 +2083,42 @@ several times the findings. An operator override still wins.
 three-way outcome (assessed-with-NOW / assessed-with-nothing / not-assessed),
 the env contract passed to the assessor, and the no-bare-`exit` best-effort
 property of the region.
+
+## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
+
+`attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the
+working tree**". It cannot stage: the session prompt says "do NOT run git add",
+and the caller stages via `commit_resolved_conflicts` afterwards. So at
+verification time every known conflict path is still unmerged in the index, by
+design.
+
+Step-6 Check 1 asserted the opposite — `git diff --diff-filter=U` must be
+empty — which is only true if something staged, which only the session could
+have done, which the prompt forbids. **The check could only pass when the
+session disobeyed.**
+
+Check 1 came from #435. #932 moved staging out of the session and added the
+no-git-add instruction, but left the assertion behind. Once sessions actually
+complied, every Claude conflict resolution failed immediately after producing a
+correct one — live: #1231 (PR #1299) and #1143 (PR #1312), both 2026-10-19,
+both correctly merging append-only drift-log entries and independent bats
+tests, both discarded with "Unresolved files remain after Claude session".
+
+**The corrected split of responsibility:**
+
+| Check | Question | Oracle |
+|---|---|---|
+| 1 | Is every unmerged path one the session was given? | index vs `_cr_conflict_files` |
+| 2 | Is every given path marker-free? | working-tree content |
+
+Together those are the real contract. Check 1 still catches a conflict that
+appeared after the path list was captured, or one the session introduced; Check
+2 catches a resolution that left markers behind. Neither tests staging, because
+staging is a later step's job.
+
+**Rule:** a verification step asserts only what the steps before it were
+responsible for establishing. Asserting a postcondition that a *later* step
+owns means the check is reading the wrong stage of the pipeline, and a check
+that can only pass by accident is worse than no check — it fails closed on
+correct work. The prompt text and Check 1's premise are coupled, so
+`tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.
