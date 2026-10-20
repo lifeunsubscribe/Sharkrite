@@ -132,3 +132,11 @@ CLAUDE.md's "Phase 3 — Review Staleness Contract" section claims staleness det
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1299 issue:1231 recorded:2026-10-20T04:26:42Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
