@@ -163,6 +163,36 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 
 **Why check open state:** A dependency's PR may have been created in this batch but not yet merged. Processing the dependent issue before the dependency merges causes failures (missing code/models).
 
+### Cross-Batch File Overlap: Warn and Reorder
+
+Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every other in-flight worktree. On intersection, the issue is re-appended to the end of the queue (warn-and-reorder, never skip).
+
+**Invariants (warn-only contract):**
+- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place with the warning only.
+- The check is **local git only** — `git worktree list` + `git -C <wt> diff --name-only <base>...HEAD`. No network calls, no `gh` invocations.
+- A missing or empty `Files to Modify:` section is a **silent no-op**.
+
+**Overlap detection — `_ftm_file_overlap ISSUE_BODY`:**
+1. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
+2. Enumerate all worktrees via `git worktree list`, skipping the main checkout and current directory.
+3. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
+4. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
+5. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
+6. First intersection wins — records `_OVERLAP_FILES` (comma-joined matches) and `_OVERLAP_WT` (worktree path).
+
+**Deferral — shared `_DEFER_COUNT` cap:**
+The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used by the dep-defer path also gate the overlap defer. This prevents an issue from cycling forever when the overlapping worktree never clears. Cap exhausted → the issue runs in place after printing the warning; it is NOT skipped or blocked.
+
+**Dep-chain cohesion (free):** A deferred issue's position moves to the end of the queue. Any in-batch children whose dep is this issue will self-defer via `_check_dep_queued_later` — no extra code needed.
+
+**Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
+
+**Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
+
+**Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
+
+**Verification:** `grep -n "OVERLAP_DEFER" docs/architecture/behavioral-design.md` returns this paragraph.
+
 ### Session Timer
 
 `init_session` resets the session clock. workflow-runner does NOT call `init_session` when `BATCH_MODE=true` — the batch owns the session timer. Without this, each child workflow-runner resets the clock and the batch summary shows "Duration: 2s."
@@ -663,23 +693,23 @@ All review comment queries MUST filter by body marker (`contains("<!-- sharkrite
 
 **The canonical staleness check is SHA-based, not timestamp-based.** The 2-reroute guard in `workflow-runner.sh::phase_assess_and_resolve` is defense-in-depth; with correct SHA detection it should rarely fire.
 
-**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the fix loop (a third timestamp-only site, `detect_review_state` in `lib/utils/pr-detection.sh`, is tracked for migration in issue #1305):
+**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the orchestrated fix loop (`detect_review_state` in `lib/utils/pr-detection.sh` is the standalone-path site — timestamp-only, tracked for migration in issue #1305):
 1. `workflow-runner.sh::phase_create_pr` — decides whether to skip the push/review phase (review already current)
 2. `assess-and-resolve.sh` — decides whether a review is stale and must reroute back to Phase 2
 
-Both sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
+Both orchestrated-loop sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
 
 **Primary check (SHA-based):** `local-review.sh` embeds the HEAD SHA at review generation time into the review marker:
 ```
 <!-- sharkrite-local-review model:X timestamp:Y commit:<sha> -->
 ```
-Both sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
+Both orchestrated-loop sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
 - `review_sha == HEAD_sha` → review covers HEAD, no reroute / skip is valid
 - `review_sha` is ancestor of HEAD → review is genuinely stale (fix commits were pushed after review), do not skip / reroute to Phase 2
 - `review_sha` not in ancestry chain → likely a force-push, treat as stale
 - No `review_sha` (pre-#354 review) → fall back to timestamp comparison
 
-**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both sites.
+**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both orchestrated-loop sites.
 
 **Why timestamps alone are insufficient (issue #354):**
 Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind the local git commit timestamp by seconds to minutes (API eventual consistency). In a fix-loop iteration, a fix commit pushed at T+1 and a new review generated at T+2 can still appear "stale" if the API returns T+1 as the review timestamp but the local commit time reads T+2. SHAs are deterministic: the review either covers this commit or it doesn't.
@@ -688,11 +718,24 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 **Live deadlock (2026-10-14, issue #1303 / PR #1304):** Phase 2's timestamp-based "current" check and Phase 3's SHA-based "stale" check disagreed. Phase 3 rerouted to Phase 2; Phase 2 declined to regenerate. Hard-fail after 7h23m on a correct, clean PR. Fix: align Phase 2's skip decision to the same SHA oracle as Phase 3.
 
-**Do NOT replace SHA comparison with timestamp comparison** at either site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
+**Standalone-path deadlock risk (`detect_review_state`, issue #1305).** `detect_review_state` in `lib/utils/pr-detection.sh` uses timestamp-only comparison (the same racy check that caused the #354 false-positive). The standalone `--review-latest` path calls it to decide whether to skip regeneration; `--status` calls it to display review currency. When GitHub API `createdAt` post-dates the local commit time but the review's embedded SHA mismatches HEAD, both `--review-latest` and `--status` incorrectly report "current": `--review-latest` refuses to regenerate and `--status` shows a false "Current" verdict. `--assess-and-fix` is not deadlocked by this (its `assess-and-resolve.sh` SHA oracle detects the stale review, returns exit 3, and the standalone fix loop triggers a fresh review), but `--review-latest` and `--status` in isolation will mislead the user. This is the same oracle-disagreement class as #1303, reproduced via the manual path.
+
+**Do NOT replace SHA comparison with timestamp comparison** at either orchestrated-loop site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
 
 **Do NOT remove timestamp comparison.** It's still used for display (`--status` timestamp output) and as a backward-compat fallback for pre-#354 reviews. Only remove it from the *primary staleness decision* path.
 
 **Do NOT increase the reroute cap from 2.** The guard isn't the bug; the detection is. Bumping the cap delays failure without addressing root cause.
+
+**Accepted head-resolution divergence between Phase 2 and Phase 3 (issue #1306).** Both orchestrated-loop sites use the same SHA oracle (`extract_review_sha`) to _compare_ a review's embedded SHA against the branch HEAD. However, they resolve what "HEAD" means through different authorities:
+
+- **Phase 2** (`workflow-runner.sh::phase_create_pr`): uses `git rev-parse HEAD` (local git). It only enters the currency check when `local_head == remote_head` (confirmed-equal tracking refs), so local git is sufficient for the common case.
+- **Phase 3** (`assess-and-resolve.sh`): uses `resolve_pr_head_sha`, which queries the GitHub API (`headRefOid`) first and falls back to local git only when the API is unavailable and the local branch name matches.
+
+The residual deadlock window: an external force-push to the PR branch followed by a stale local tracking ref (git fetch not yet run) can leave both `git rev-parse HEAD` and `git rev-parse origin/<branch>` pointing at the pre-force-push SHA. Phase 2 enters the currency check, compares the review SHA against the stale local SHA, sees a match ("current"), and skips the push/review phase. Phase 3 then calls the GitHub API, sees the post-force-push SHA, and declares the review stale — rerouting back to Phase 2, which again skips, producing a deadlock.
+
+This window is narrow in practice (requires an external force-push — rare in a single-operator workflow) and is partially protected by the issue lock (concurrent external pushes are uncommon). The full fix — calling `resolve_pr_head_sha` in Phase 2 too — exceeds the time budget of the issue that introduced the SHA oracle alignment (#1303); issue #1306 documented the divergence and added the sentinel, but the Phase 2 migration itself needs a new follow-on issue.
+
+The structural sentinel test `"phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — accepted divergence from Phase 3"` in `tests/regression/stale-review-detection-sha-based.bats` documents this accepted condition and will fire when the Phase 2 migration lands.
 
 ### LOW Severity Threshold
 

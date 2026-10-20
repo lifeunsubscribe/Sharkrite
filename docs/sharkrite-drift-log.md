@@ -249,6 +249,58 @@ The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — 
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1323 issue:1127 recorded:2026-10-20T05:11:37Z -->
+**Changed files**: lib/utils/gate-runners.sh, lib/utils/test-gate.sh, tests/regression/gate-pytest-testmon-bootstrap.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The runbook at line 114 says pytest-testmon requires the user to wire it manually ("or at minimum path-scoped selection"), but the PR now auto-provisions pytest-testmon into the venv when `RITE_GATE_NATIVE_SCOPING` is enabled — the runbook no longer reflects that sharkrite handles the installation automatically.
+
+`docs/test-authoring-runbook.md:114` says pytest repos must wire `pytest-testmon` themselves, but the gate now auto-provisions it into the venv when `RITE_GATE_NATIVE_SCOPING` is enabled (default: `true`).
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1323 issue:1127 recorded:2026-10-20T05:16:09Z -->
+**Changed files**: lib/utils/gate-runners.sh, lib/utils/test-gate.sh, tests/regression/gate-pytest-testmon-bootstrap.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `docs/test-authoring-runbook.md:114` says pytest repos must wire `pytest-testmon` themselves, but the gate now auto-provisions it into the venv when `RITE_GATE_NATIVE_SCOPING` is enabled (default: `true`).
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1329 issue:1306 recorded:2026-10-20T05:36:11Z -->
+**Changed files**: lib/core/workflow-runner.sh, tests/regression/stale-review-detection-sha-based.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md states Phase 3 uses SHA-based staleness detection via `extract_review_sha` compared to current HEAD, but the PR documents that Phase 3 actually resolves HEAD via `resolve_pr_head_sha` (GitHub API first), while Phase 2 uses `git rev-parse HEAD` — meaning CLAUDE.md's description "SHA match → review covers HEAD, assess it" omits that Phase 3 and Phase 2 use different HEAD oracles, which can diverge and deadlock.
+
+CLAUDE.md's Phase 3 staleness description says "SHA match → review covers HEAD" without noting Phase 3 resolves HEAD via the GitHub API (`resolve_pr_head_sha`) rather than local git, diverging from Phase 2's `git rev-parse HEAD`.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1329 issue:1306 recorded:2026-10-20T05:39:43Z -->
+**Changed files**: lib/core/workflow-runner.sh, tests/regression/stale-review-detection-sha-based.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The behavioral-design.md at line 708 quotes the sentinel test name as `"...— accepted divergence from Phase 3"` but the actual test name in the bats file is `"...— divergence from Phase 3 (issue #1306)"` — the word "accepted" is dropped and `(issue #1306)` is appended.
+
+`behavioral-design.md:708` quotes the sentinel test name as `"…— accepted divergence from Phase 3"` but the actual bats test name ends `"— divergence from Phase 3 (issue #1306)"`.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1327 issue:1051 recorded:2026-10-20T05:58:18Z -->
 **Changed files**: CLAUDE.md, bin/rite, lib/core/promote-branch.sh, tests/regression/promote-branch.bats, tests/regression/promote-single-issue-cherry-pick.bats
 **Implicated docs**:
@@ -263,6 +315,32 @@ The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — 
 - docs/audit-2026-06-02-dropped-followups.md — "Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)"
 - docs/configuration.md — "Configuration"
 **Suspected inaccuracy**: `branch-flag-design.md:276` documents the command as `rite --promote <branch> --cherry-pick <issue>`, but the shipped implementation uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1330 issue:1168 recorded:2026-10-20T06:09:51Z -->
+**Changed files**: lib/core/batch-process-issues.sh, tests/regression/batch-cross-batch-overlap.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md diagnostic logging section at lines 950-956 lists the diag line types but does NOT include `OVERLAP_DEFER` — the new diag line added by this PR. That's the documentation inaccuracy.
+
+CLAUDE.md's "Diagnostic logging" section omits `OVERLAP_DEFER` from its list of structured `[diag]` line types emitted by the batch.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1330 issue:1168 recorded:2026-10-20T06:14:44Z -->
+**Changed files**: lib/core/batch-process-issues.sh, tests/regression/batch-cross-batch-overlap.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md diagnostic logging section lists known `[diag]` line types but does not include `OVERLAP_DEFER`, which was added by this PR.
+
+CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER` diag line introduced by PR #1330.
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1327 issue:1051 recorded:2026-10-20T06:21:10Z -->
