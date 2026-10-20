@@ -568,3 +568,10 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T19:31:14Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` cites the inline prompt location as `claude-workflow.sh:3775` but the prior recorded line was `3747`, which may now be stale if the file shifted.
+<!-- /sharkrite-doc-drift -->
