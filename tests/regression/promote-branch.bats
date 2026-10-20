@@ -19,25 +19,6 @@
 load '../helpers/setup'
 load '../helpers/promote-stubs'
 
-# Thin wrapper: delegates all stub writing to the shared base in promote-stubs.bash.
-# Set _PROMOTE_CALLLOG before running a runner if you need to assert local-review.sh
-# was called (the stub appends "local-review-called pr=$1" to that path).
-_write_promote_stubs() {
-  _write_promote_stubs_base "$1"
-}
-
-# ---------------------------------------------------------------------------
-# Helper: write a small runner script, chmod it, and echo its path.
-# The caller provides the body (a heredoc expansion); this helper just
-# handles the temp-file lifecycle so tests stay concise.
-# ---------------------------------------------------------------------------
-_write_runner() {
-  local _path="$RITE_TEST_TMPDIR/runner_$$.sh"
-  cat > "$_path"
-  chmod +x "$_path"
-  echo "$_path"
-}
-
 setup() {
   setup_test_tmpdir
 }
@@ -100,10 +81,10 @@ _init_bare_repo_for_arg_test() {
 
 @test "preflight: absent ledger aborts with 'nothing to promote'" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -123,14 +104,14 @@ RUNEOF
 
 @test "preflight: zero unpromoted entries aborts with 'nothing to promote'" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   # A ledger entry that is already promoted=true
   local _already
   _already="issue=10	pr=20	sha=aaa000	merged_at=2026-01-01T00:00:00Z	promoted=true"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -150,7 +131,7 @@ RUNEOF
 
 @test "preflight: behind-main abort message contains 'rite --sync <branch>'" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
 
@@ -173,7 +154,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -199,7 +180,7 @@ RUNEOF
 
 @test "re-run reuses an existing open promotion PR (gh pr edit, not create)" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/calls.log"
@@ -224,7 +205,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -274,7 +255,7 @@ RUNEOF
 
 @test "first-time promotion: gh pr create called without --json, PR number parsed from URL" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/pr_shape.log"
@@ -299,7 +280,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -354,7 +335,7 @@ RUNEOF
 
 @test "full-suite failure aborts before merge API call" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/merge_calls.log"
@@ -379,7 +360,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -427,7 +408,7 @@ RUNEOF
 
 @test "CRITICAL findings abort before merge API call" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/critical_merge.log"
@@ -451,7 +432,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -499,7 +480,7 @@ RUNEOF
 
 @test "full-branch promote never invokes merge-pr.sh" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/own_path.log"
@@ -525,7 +506,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -587,7 +568,7 @@ RUNEOF
 
 @test "post-merge: ledger marked, branch deleted, issue comments posted" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   # Two unpromoted entries
   local _e1="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
@@ -619,7 +600,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -689,7 +670,7 @@ RUNEOF
 
 @test "git worktree prune is called regardless of whether a stale worktree existed" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/prune_pin.log"
@@ -718,7 +699,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -767,7 +748,7 @@ RUNEOF
 
 @test "supervised sync re-captures _branch_sha before passing to merge API" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   # integration-sync.sh stub needed for the supervised sync code path
   cat > "$_lib/utils/integration-sync.sh" << 'STUB'
@@ -821,7 +802,7 @@ GITEOF
   chmod +x "$_fake_bin/git"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
@@ -873,7 +854,7 @@ RUNEOF
 
 @test "single-issue promote invokes merge-pr.sh exactly once with the promotion PR number" {
   local _lib="$RITE_TEST_TMPDIR/lib"
-  _write_promote_stubs "$_lib"
+  _write_promote_stubs_base "$_lib"
 
   local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
   local _call_log="$RITE_TEST_TMPDIR/si_merge.log"
@@ -907,7 +888,7 @@ MERGESTUB
   chmod +x "$_lib/core/merge-pr.sh"
 
   local _runner
-  _runner=$(_write_runner << RUNEOF
+  _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
 set -euo pipefail
 export RITE_LIB_DIR="$_lib"
