@@ -1,21 +1,17 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, Makefile
+# sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_build_verdict, lib/utils/gate-verdict.sh, Makefile
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
-  TEST_REPO=$(mktemp -d); export TEST_REPO
-  STUB_DIR="$TEST_REPO/stub"; mkdir -p "$STUB_DIR"
 
   _diag() { true; }
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
-  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: test-gate.sh uses a function-sentinel guard (declare -f run_test_gate); pre-source _diag() stub is preserved on source.
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: gate-verdict.sh uses a function-sentinel guard (declare -f _gate_write_json); pre-source _diag() stub is preserved on source.
   # shellcheck source=/dev/null
-  source "$RITE_LIB_DIR/utils/test-gate.sh"
+  source "$RITE_LIB_DIR/utils/gate-verdict.sh"
   set +u; set +o pipefail
 }
-
-teardown() { rm -rf "${TEST_REPO:-}"; }
 
 # ─── Unit: _parse_lint_line handles shellcheck gcc format ─────────────────────
 
@@ -45,188 +41,60 @@ teardown() { rm -rf "${TEST_REPO:-}"; }
 # ─── Integration: full gate emits lint findings from shellcheck failure ────────
 
 @test "gate: shellcheck gcc violation produces lint[] finding with SC code, file, line" {
-  # Stub make: shellcheck emits a gcc-format violation, lint passes.
-  cat > "$STUB_DIR/make" <<'STUB'
-#!/bin/bash
-case "${*}" in
-  *shellcheck*)
-    echo "lib/core/docs-command.sh:42:3: warning: In POSIX sh, trap argument should be a simple string. [SC2064]"
-    exit 1
-    ;;
-  *lint*)
-    echo "Running custom lint rules..."
-    exit 0
-    ;;
-esac
-exit 0
-STUB
-  chmod +x "$STUB_DIR/make"
+  # Converted (issue #1241): pre-built lint raw output — no stub make/bats/git.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf 'lib/core/docs-command.sh:42:3: warning: In POSIX sh, trap argument should be a simple string. [SC2064]\n' \
+    > "$_lint_raw"
+  printf 'TAP version 13\n1..1\nok 1 stub\n' > "$_tests_raw"
 
-  # Stub bats (no-op, all tests pass)
-  cat > "$STUB_DIR/bats" <<'STUB'
-#!/bin/bash
-printf 'TAP version 13\n1..1\nok 1 stub\n'
-exit 0
-STUB
-  chmod +x "$STUB_DIR/bats"
-
-  # Minimal sharkrite repo with git history for diff base
-  cat > "$TEST_REPO/Makefile" <<'EOF'
-.PHONY: shellcheck lint
-shellcheck:
-	@echo ok
-lint:
-	@echo ok
-EOF
-  mkdir -p "$TEST_REPO/lib/utils" "$TEST_REPO/tests/regression"
-  printf '#!/bin/bash\nfoo() { echo hi; }\n' > "$TEST_REPO/lib/utils/foo.sh"
-  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/foo.sh\n@test "x" { true; }\n' \
-    > "$TEST_REPO/tests/regression/foo.bats"
-  (cd "$TEST_REPO" \
-     && git init -q && git config user.email t@t && git config user.name t \
-     && git add -A && git commit -qm base \
-     && git update-ref refs/remotes/origin/main HEAD \
-     && printf '#!/bin/bash\nfoo() { echo changed; }\n' > lib/utils/foo.sh \
-     && git add -A && git commit -qm change) >/dev/null 2>&1
-
-  local gate_json="$TEST_REPO/gate.json"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=1190
-    _diag() { true; }; export -f _diag 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    PATH='$STUB_DIR':\$PATH run_test_gate '$gate_json' '$TEST_REPO'
-  " </dev/null
-  [ -f "$gate_json" ] || skip "gate fixture did not run in this environment (see #709)"
-
-  # Gate must fail (shellcheck non-zero)
-  [ "$status" -eq 1 ]
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
 
   # lint[] must contain at least one item with SC2064
-  run jq -r '.lint | length' "$gate_json"
+  run jq -r '.lint | length' "$_out"
   [ "$output" -ge 1 ]
 
-  run jq -r '.lint[0].rule' "$gate_json"
+  run jq -r '.lint[0].rule' "$_out"
   [ "$output" = "SC2064" ]
 
-  run jq -r '.lint[0].file' "$gate_json"
+  run jq -r '.lint[0].file' "$_out"
   [ "$output" = "lib/core/docs-command.sh" ]
 
-  run jq -r '.lint[0].line' "$gate_json"
+  run jq -r '.lint[0].line' "$_out"
   [ "$output" = "42" ]
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
 
 @test "gate: lint_count in TEST_GATE diag counts shellcheck violations" {
-  # Stub make: shellcheck emits TWO gcc violations, lint passes.
-  cat > "$STUB_DIR/make" <<'STUB'
-#!/bin/bash
-case "${*}" in
-  *shellcheck*)
-    printf 'lib/a.sh:10:1: warning: message one [SC2064]\n'
-    printf 'lib/b.sh:20:1: warning: message two [SC2064]\n'
-    exit 1
-    ;;
-  *lint*)
-    exit 0
-    ;;
-esac
-exit 0
-STUB
-  chmod +x "$STUB_DIR/make"
+  # Converted (issue #1241): pre-built lint raw output with 2 violations.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf 'lib/a.sh:10:1: warning: message one [SC2064]\nlib/b.sh:20:1: warning: message two [SC2064]\n' \
+    > "$_lint_raw"
+  printf 'TAP version 13\n1..1\nok 1 stub\n' > "$_tests_raw"
 
-  cat > "$STUB_DIR/bats" <<'STUB'
-#!/bin/bash
-printf 'TAP version 13\n1..1\nok 1 stub\n'
-exit 0
-STUB
-  chmod +x "$STUB_DIR/bats"
+  _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" "" || true
 
-  cat > "$TEST_REPO/Makefile" <<'EOF'
-.PHONY: shellcheck lint
-shellcheck:
-	@echo ok
-lint:
-	@echo ok
-EOF
-  mkdir -p "$TEST_REPO/lib/utils" "$TEST_REPO/tests/regression"
-  printf '#!/bin/bash\nfoo() { echo hi; }\n' > "$TEST_REPO/lib/utils/foo.sh"
-  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/foo.sh\n@test "x" { true; }\n' \
-    > "$TEST_REPO/tests/regression/foo.bats"
-  (cd "$TEST_REPO" \
-     && git init -q && git config user.email t@t && git config user.name t \
-     && git add -A && git commit -qm base \
-     && git update-ref refs/remotes/origin/main HEAD \
-     && printf '#!/bin/bash\nfoo() { echo changed; }\n' > lib/utils/foo.sh \
-     && git add -A && git commit -qm change) >/dev/null 2>&1
-
-  local gate_json="$TEST_REPO/gate.json"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=1190
-    _diag() { true; }; export -f _diag 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    PATH='$STUB_DIR':\$PATH run_test_gate '$gate_json' '$TEST_REPO'
-  " </dev/null
-  [ -f "$gate_json" ] || skip "gate fixture did not run in this environment (see #709)"
-
-  run jq -r '.lint | length' "$gate_json"
+  run jq -r '.lint | length' "$_out"
   [ "$output" -eq 2 ]
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
 
 @test "gate: zero shellcheck violations leaves lint[] empty" {
-  # Stub make: shellcheck passes cleanly, lint passes.
-  cat > "$STUB_DIR/make" <<'STUB'
-#!/bin/bash
-case "${*}" in
-  *shellcheck*)
-    echo "Running shellcheck..."
-    exit 0
-    ;;
-  *lint*)
-    echo "Running custom lint rules..."
-    exit 0
-    ;;
-esac
-exit 0
-STUB
-  chmod +x "$STUB_DIR/make"
+  # Converted (issue #1241): empty lint raw output — no stub make/bats/git.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf '' > "$_lint_raw"
+  printf 'TAP version 13\n1..1\nok 1 stub\n' > "$_tests_raw"
 
-  cat > "$STUB_DIR/bats" <<'STUB'
-#!/bin/bash
-printf 'TAP version 13\n1..1\nok 1 stub\n'
-exit 0
-STUB
-  chmod +x "$STUB_DIR/bats"
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 0 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 0 ]
 
-  cat > "$TEST_REPO/Makefile" <<'EOF'
-.PHONY: shellcheck lint
-shellcheck:
-	@echo ok
-lint:
-	@echo ok
-EOF
-  mkdir -p "$TEST_REPO/lib/utils" "$TEST_REPO/tests/regression"
-  printf '#!/bin/bash\nfoo() { echo hi; }\n' > "$TEST_REPO/lib/utils/foo.sh"
-  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/foo.sh\n@test "x" { true; }\n' \
-    > "$TEST_REPO/tests/regression/foo.bats"
-  (cd "$TEST_REPO" \
-     && git init -q && git config user.email t@t && git config user.name t \
-     && git add -A && git commit -qm base \
-     && git update-ref refs/remotes/origin/main HEAD \
-     && printf '#!/bin/bash\nfoo() { echo changed; }\n' > lib/utils/foo.sh \
-     && git add -A && git commit -qm change) >/dev/null 2>&1
-
-  local gate_json="$TEST_REPO/gate.json"
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=1190
-    _diag() { true; }; export -f _diag 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    PATH='$STUB_DIR':\$PATH run_test_gate '$gate_json' '$TEST_REPO'
-  " </dev/null
-  [ -f "$gate_json" ] || skip "gate fixture did not run in this environment (see #709)"
-
-  [ "$status" -eq 0 ]
-  run jq -r '.lint | length' "$gate_json"
+  run jq -r '.lint | length' "$_out"
   [ "$output" -eq 0 ]
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
