@@ -431,3 +431,15 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `CLAUDE.md`'s "Review severity parsing" convention says the canonical approach is to grep the Findings summary line, but the new shared `parse_review_severity_counts()` in `format-review.sh` (3-tier: JSON block → Findings line → item markers) is now the required call site.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T16:12:13Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The diff shows the PR replaced shell glob expansion (`for _dir in "$_pr/"$_pattern`) with `find`-based expansion so that `**` patterns and mid-segment globs resolve correctly, and added `!exclusion` pattern support. The CLAUDE.md architecture comment for `gate-runners.sh` describes its functions as "node/pytest detection, workspace bootstrap, _gate_status" — it says nothing about glob/find-based expansion or `!exclusion` patterns. But more concretely, the old code had an inline comment saying "`set -f` is NOT used here; patterns like `packages/*` must expand. A non-matching glob yields the literal pattern, which we filter out with the `-d` test" — that behavior is now gone (replaced by `find`).
+
+CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell glob expansion, but the PR replaced shell glob expansion with `find`-based directory traversal that also supports `**` depth-traversal and `!`-prefixed exclusion patterns.
+
+`gate-runners.sh`'s workspace pattern expansion now uses `find`-based traversal supporting `**` and `!exclusion` patterns, not shell glob expansion that falls back to the literal pattern on no-match.
+<!-- /sharkrite-doc-drift -->
