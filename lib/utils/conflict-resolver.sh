@@ -372,8 +372,75 @@ attempt_claude_merge_resolution() {
     fi
   fi
 
+  # ── Step 3b: Deterministic pre-pass for append-only artifacts ──
+  #
+  # Some conflicts have exactly one correct resolution and need no judgment.
+  # The drift log is append-only: every entry is a self-delimited block with
+  # its own recorded: ISO8601 timestamp, entries are mutually independent, and
+  # burn-down removes whole blocks. The resolution is therefore the union of
+  # both sides ordered by timestamp — computable, not a matter of opinion.
+  #
+  # Resolving these here means a batch whose only conflict is the drift log
+  # never pays for a provider session at all. Two of the three conflicts in
+  # dogfooding logs were exactly that (#1231 pr:1299, #1143 pr:1312), each
+  # burning a 60-274s session to arrive at this function's output.
+  #
+  # Every handler must be total and must fail CLOSED: if it cannot prove the
+  # conflict is the shape it understands, it returns non-zero and the path
+  # stays in the LLM list. A deterministic merge is only allowed to replace
+  # judgment where there is no judgment to make.
+  local _cr_deterministic=0
+  local _cr_llm_files=""
+  # Declared before the deterministic branch because BOTH arms set it: the
+  # all-deterministic arm skips the session and reports success directly.
+  local _cr_session_exit=0
+  local _cr_dp _cr_driftrel
+  while IFS= read -r _cr_dp; do
+    [ -n "$_cr_dp" ] || continue
+    # Load the drift-log library once so both the path accessor and the merge
+    # function are available. It owns the path literal (Rule 19 allowlists it),
+    # which keeps a "sharkrite-*" string out of this file entirely.
+    if ! declare -f drift_log_relpath >/dev/null 2>&1; then
+      # shellcheck source=/dev/null
+      source "${RITE_LIB_DIR:-}/utils/drift-log.sh" 2>/dev/null || true
+    fi
+    _cr_driftrel=""
+    if declare -f drift_log_relpath >/dev/null 2>&1; then
+      _cr_driftrel=$(drift_log_relpath || true)
+    fi
+
+    if [ -n "${_cr_driftrel:-}" ] \
+       && { [ "$_cr_dp" = "$_cr_driftrel" ] || [ "${_cr_dp%/$_cr_driftrel}" != "$_cr_dp" ]; } \
+       && declare -f drift_log_union_merge >/dev/null 2>&1 \
+       && drift_log_union_merge "$_cr_dp"; then
+      _cr_deterministic=$((_cr_deterministic + 1))
+      continue
+    fi
+    _cr_llm_files="${_cr_llm_files}${_cr_dp}
+"
+  done <<< "$_cr_conflict_files"
+
+  if [ "$_cr_deterministic" -gt 0 ]; then
+    _cr_info "Resolved ${_cr_deterministic} append-only conflict(s) deterministically — no provider call" >&2
+    # _diag lives in logging.sh, which this file does not source — the callers
+    # (stale-branch.sh, mid-run-rebase.sh) do. Guarded so a direct caller that
+    # has not loaded it still works.
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "CONFLICT_RESOLVER_DETERMINISTIC issue=${_cr_issue_number:-} pr=${_cr_pr_number:-} resolved=${_cr_deterministic} llm_remaining=$(printf '%s' "${_cr_llm_files:-}" | grep -c . || true)"
+    fi
+  fi
+
+  # Everything resolved without the LLM — skip Steps 4-5 entirely and go
+  # straight to verification, which is oracle-agnostic about HOW a path was
+  # resolved.
+  _cr_llm_files=$(printf '%s' "$_cr_llm_files" | grep -v '^$' || true)
+  if [ -z "${_cr_llm_files:-}" ]; then
+    _cr_info "All conflicts resolved deterministically — skipping provider session" >&2
+    _cr_session_exit=0
+  else
+
   _cr_status "Conflicts to resolve via Claude:" >&2
-  echo "$_cr_conflict_files" | sed 's/^/  /' >&2
+  echo "$_cr_llm_files" | sed 's/^/  /' >&2
 
   # ── Step 4: Build prompt ──
   local _cr_prompt="You are in a git worktree with merge conflicts that need resolution.
@@ -452,7 +519,6 @@ the resolved files after this session ends."
   local _cr_stderr_file
   _cr_stderr_file=$(mktemp)
 
-  local _cr_session_exit=0
   provider_run_agentic_session "$_cr_prompt" "$_cr_timeout" true "$_cr_stderr_file" || _cr_session_exit=$?
 
   # Check for usage cap — provider_run_agentic_session sets exit 5 for usage cap
@@ -476,6 +542,8 @@ the resolved files after this session ends."
     _cr_warning "Conflict resolution session timed out"
   fi
   rm -f "$_cr_stderr_file"
+  fi
+  # ── end of the "some paths need the LLM" branch ──
 
   # ── Step 6: Verify resolution ──
 
@@ -537,10 +605,33 @@ the resolved files after this session ends."
   # would be accepted (#533). Stripping CR keeps the regex exactly as documented
   # (no relaxed anchor → no trailing-space false positives) and is portable —
   # unlike '\r?', which GNU grep -E treats as a literal 'r'.
+  # FENCE-AWARE: a line inside a ``` block is documentation, not a marker.
+  #
+  # docs/architecture/behavioral-design.md documents this very conflict shape
+  # with a literal example at column 0 inside a fenced block (added by #1319).
+  # A plain grep matches it, so EVERY conflict touching that file became
+  # permanently unresolvable — and it is the most frequently conflicted file in
+  # the repo. Live: #1221, where the resolver session itself reported "the
+  # remaining <<<<<<< at line 2225 is inside a documentation code block, not an
+  # actual conflict marker" and this check overrode it, failing the rebase.
+  #
+  # Tradeoff, stated deliberately: a REAL conflict region that opens inside an
+  # already-open fence is skipped by this scan. That is the safer direction of
+  # the two. Index-level truth is Check 1's job (it compares unmerged paths
+  # against the conflict list), and `git merge`'s own exit status gates entry
+  # here at all; this scan exists only to catch a resolution that left markers
+  # behind in a file git now considers resolved. Failing closed on documented
+  # examples blocks real work every time, while the skipped case needs a
+  # conflict to begin mid-fence AND to survive Check 1.
   local _cr_marker_found=false
   while IFS= read -r _cr_f; do
     [ -z "$_cr_f" ] && continue
-    if tr -d '\r' < "$_cr_f" 2>/dev/null | grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])'; then
+    [ -f "$_cr_f" ] || continue
+    if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
+        /^```/ { fence = !fence; next }
+        !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+      '; then
       _cr_error "Conflict markers remain in: $_cr_f"
       _cr_marker_found=true
     fi

@@ -37,6 +37,9 @@ setup() {
   # RITE_REPO_ROOT is the sharkrite source root
   RITE_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
   export RITE_REPO_ROOT
+  # Export RITE_LIB_DIR so lazy-loading lib files (e.g. promotion-composer.sh)
+  # find newly-added utils in the repo rather than the installed ~/.rite/lib.
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 }
 
 # ---------------------------------------------------------------------------
@@ -115,6 +118,18 @@ _assert_double_source() {
 
 @test "lib/utils/format-review.sh sources twice without error" {
   _assert_double_source "lib/utils/format-review.sh"
+}
+
+@test "lib/utils/gate-runners.sh sources twice without error" {
+  _assert_double_source "lib/utils/gate-runners.sh"
+}
+
+@test "lib/utils/gate-selection.sh sources twice without error" {
+  _assert_double_source "lib/utils/gate-selection.sh"
+}
+
+@test "lib/utils/gate-verdict.sh sources twice without error" {
+  _assert_double_source "lib/utils/gate-verdict.sh"
 }
 
 @test "lib/utils/gh-retry.sh sources twice without error" {

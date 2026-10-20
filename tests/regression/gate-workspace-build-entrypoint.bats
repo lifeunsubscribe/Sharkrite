@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh
 # Issue #822: Build workspace packages in node gate bootstrap.
 #
 # A workspace package whose package.json `main` / `exports` field points at a

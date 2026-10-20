@@ -163,6 +163,36 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 
 **Why check open state:** A dependency's PR may have been created in this batch but not yet merged. Processing the dependent issue before the dependency merges causes failures (missing code/models).
 
+### Cross-Batch File Overlap: Warn and Reorder
+
+Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every other in-flight worktree. On intersection, the issue is re-appended to the end of the queue (warn-and-reorder, never skip).
+
+**Invariants (warn-only contract):**
+- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place with the warning only.
+- The check is **local git only** — `git worktree list` + `git -C <wt> diff --name-only <base>...HEAD`. No network calls, no `gh` invocations.
+- A missing or empty `Files to Modify:` section is a **silent no-op**.
+
+**Overlap detection — `_ftm_file_overlap ISSUE_BODY`:**
+1. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
+2. Enumerate all worktrees via `git worktree list`, skipping the main checkout and current directory.
+3. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
+4. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
+5. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
+6. First intersection wins — records `_OVERLAP_FILES` (comma-joined matches) and `_OVERLAP_WT` (worktree path).
+
+**Deferral — shared `_DEFER_COUNT` cap:**
+The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used by the dep-defer path also gate the overlap defer. This prevents an issue from cycling forever when the overlapping worktree never clears. Cap exhausted → the issue runs in place after printing the warning; it is NOT skipped or blocked.
+
+**Dep-chain cohesion (free):** A deferred issue's position moves to the end of the queue. Any in-batch children whose dep is this issue will self-defer via `_check_dep_queued_later` — no extra code needed.
+
+**Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
+
+**Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
+
+**Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
+
+**Verification:** `grep -n "OVERLAP_DEFER" docs/architecture/behavioral-design.md` returns this paragraph.
+
 ### Session Timer
 
 `init_session` resets the session clock. workflow-runner does NOT call `init_session` when `BATCH_MODE=true` — the batch owns the session timer. Without this, each child workflow-runner resets the clock and the batch summary shows "Duration: 2s."
@@ -408,6 +438,8 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Mechanism** (`lib/utils/test-gate.sh::run_test_gate`): the targeted bats run's exit code drives the outcome directly — `_tests_exit != 0 → _tests_blocking=1 → outcome=failed`. The findings JSON `tests[]` contains every `not ok` (parsed from the TAP report), and the digest names them via `_extract_tap_failure_names` → `_tap_failure_name` (the two TAP-name helpers retained from the baseline era). `FORCE_FULL` and the no-diff post-merge path always blocked on any failure; the targeted path now matches them — one rule everywhere.
 
+**Three-stage gate shape (#1240).** `run_test_gate` has three distinct stages: (1) **plan/select** — compute changed paths and select bats files (`gate-selection.sh`); (2) **execute** — run make shellcheck + make lint + bats, handle watchdog kills, flake retry, and not-run synthesis (`gate-runners.sh`, inline in `run_test_gate`); (3) **assemble** — parse raw output files and write the findings JSON. Stage 3 is **pure**: `_gate_build_verdict` (`gate-verdict.sh`) reads `_lint_raw_file` + `_tests_raw_file` + exit codes and writes the JSON via `_gate_write_json`, with no bats/make/git invocations. All watchdog/notrun synthesis is done in stage 2 before the call; `_gate_build_verdict` sees only the final `not ok` lines. Callable in isolation for unit-testing the JSON shape without a real test runner.
+
 **Diag:** `[diag] TEST_GATE outcome=passed|failed lint_count=N test_count=N duration_s=N pr=N` — `test_count` is the failing-test count (= the blocking count, since all failures block).
 
 **Gotcha (retained helper, pinned by tests):** `_tap_failure_name` must `printf '%s\n'` (not `'%s'`) — BSD `sed` preserves the absence of a trailing newline, so a newline-less line yields a name with no newline and a loop concatenates adjacent names.
@@ -517,7 +549,7 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 **But routing it to the log UNCONDITIONALLY made foreground gates look like a hang** (live regression — user report 2026-06-24): a foreground gate (post-merge-verify, fastpath, standalone) running a multi-minute bats suite with NOTHING else printing reads as a freeze. With no concurrent output to protect, a silent gap is strictly worse than the "test spam" it avoids. So routing is now **conditional**:
 
 - **`RITE_GATE_BACKGROUND=1`** (set by the two concurrent `run_test_gate &` launches in `workflow-runner.sh` Phase 2/3) → `_gate_raw_sink="${RITE_LOG_FILE:-/dev/stdout}"`: raw to the log only, terminal gets the digest. No interleave with the concurrent review stream.
-- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite FIFO-tee still captures it into the log). The digest still prints as a recap.
+- **default / foreground** → `_gate_raw_sink="/dev/stdout"`: raw streams **live** to the terminal so progress is visible (the bin/rite nested-procsub tee still captures it into the log). The digest still prints as a recap.
 
 The rule: **only suppress the live stream when something else is competing for the terminal.** Any new `run_test_gate` caller that runs concurrent with other terminal output must set `RITE_GATE_BACKGROUND=1`; foreground callers must not.
 
@@ -564,7 +596,7 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — the post-commit gate owns test execution (Phase 4 contract); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
 
-**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a function — deferred to a future refactoring issue; structural verification is the current coverage.
+**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a callable function — tracked by issue #1368, which also covers the `RITE_GATE_FINDINGS` builder extraction deferred in `tests/regression/test-gate-parallel.bats`; structural verification is the current coverage.
 
 ### Dev test gate is skipped under orchestration (CRITICAL)
 
@@ -661,23 +693,23 @@ All review comment queries MUST filter by body marker (`contains("<!-- sharkrite
 
 **The canonical staleness check is SHA-based, not timestamp-based.** The 2-reroute guard in `workflow-runner.sh::phase_assess_and_resolve` is defense-in-depth; with correct SHA detection it should rarely fire.
 
-**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the fix loop (a third timestamp-only site, `detect_review_state` in `lib/utils/pr-detection.sh`, is tracked for migration in issue #1305):
+**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the orchestrated fix loop (`detect_review_state` in `lib/utils/pr-detection.sh` is the standalone-path site — timestamp-only, tracked for migration in issue #1305):
 1. `workflow-runner.sh::phase_create_pr` — decides whether to skip the push/review phase (review already current)
 2. `assess-and-resolve.sh` — decides whether a review is stale and must reroute back to Phase 2
 
-Both sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
+Both orchestrated-loop sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
 
 **Primary check (SHA-based):** `local-review.sh` embeds the HEAD SHA at review generation time into the review marker:
 ```
 <!-- sharkrite-local-review model:X timestamp:Y commit:<sha> -->
 ```
-Both sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
+Both orchestrated-loop sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
 - `review_sha == HEAD_sha` → review covers HEAD, no reroute / skip is valid
 - `review_sha` is ancestor of HEAD → review is genuinely stale (fix commits were pushed after review), do not skip / reroute to Phase 2
 - `review_sha` not in ancestry chain → likely a force-push, treat as stale
 - No `review_sha` (pre-#354 review) → fall back to timestamp comparison
 
-**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both sites.
+**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both orchestrated-loop sites.
 
 **Why timestamps alone are insufficient (issue #354):**
 Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind the local git commit timestamp by seconds to minutes (API eventual consistency). In a fix-loop iteration, a fix commit pushed at T+1 and a new review generated at T+2 can still appear "stale" if the API returns T+1 as the review timestamp but the local commit time reads T+2. SHAs are deterministic: the review either covers this commit or it doesn't.
@@ -686,11 +718,24 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 **Live deadlock (2026-10-14, issue #1303 / PR #1304):** Phase 2's timestamp-based "current" check and Phase 3's SHA-based "stale" check disagreed. Phase 3 rerouted to Phase 2; Phase 2 declined to regenerate. Hard-fail after 7h23m on a correct, clean PR. Fix: align Phase 2's skip decision to the same SHA oracle as Phase 3.
 
-**Do NOT replace SHA comparison with timestamp comparison** at either site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
+**Standalone-path deadlock risk (`detect_review_state`, issue #1305).** `detect_review_state` in `lib/utils/pr-detection.sh` uses timestamp-only comparison (the same racy check that caused the #354 false-positive). The standalone `--review-latest` path calls it to decide whether to skip regeneration; `--status` calls it to display review currency. When GitHub API `createdAt` post-dates the local commit time but the review's embedded SHA mismatches HEAD, both `--review-latest` and `--status` incorrectly report "current": `--review-latest` refuses to regenerate and `--status` shows a false "Current" verdict. `--assess-and-fix` is not deadlocked by this (its `assess-and-resolve.sh` SHA oracle detects the stale review, returns exit 3, and the standalone fix loop triggers a fresh review), but `--review-latest` and `--status` in isolation will mislead the user. This is the same oracle-disagreement class as #1303, reproduced via the manual path.
+
+**Do NOT replace SHA comparison with timestamp comparison** at either orchestrated-loop site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
 
 **Do NOT remove timestamp comparison.** It's still used for display (`--status` timestamp output) and as a backward-compat fallback for pre-#354 reviews. Only remove it from the *primary staleness decision* path.
 
 **Do NOT increase the reroute cap from 2.** The guard isn't the bug; the detection is. Bumping the cap delays failure without addressing root cause.
+
+**Accepted head-resolution divergence between Phase 2 and Phase 3 (issue #1306).** Both orchestrated-loop sites use the same SHA oracle (`extract_review_sha`) to _compare_ a review's embedded SHA against the branch HEAD. However, they resolve what "HEAD" means through different authorities:
+
+- **Phase 2** (`workflow-runner.sh::phase_create_pr`): uses `git rev-parse HEAD` (local git). It only enters the currency check when `local_head == remote_head` (confirmed-equal tracking refs), so local git is sufficient for the common case.
+- **Phase 3** (`assess-and-resolve.sh`): uses `resolve_pr_head_sha`, which queries the GitHub API (`headRefOid`) first and falls back to local git only when the API is unavailable and the local branch name matches.
+
+The residual deadlock window: an external force-push to the PR branch followed by a stale local tracking ref (git fetch not yet run) can leave both `git rev-parse HEAD` and `git rev-parse origin/<branch>` pointing at the pre-force-push SHA. Phase 2 enters the currency check, compares the review SHA against the stale local SHA, sees a match ("current"), and skips the push/review phase. Phase 3 then calls the GitHub API, sees the post-force-push SHA, and declares the review stale — rerouting back to Phase 2, which again skips, producing a deadlock.
+
+This window is narrow in practice (requires an external force-push — rare in a single-operator workflow) and is partially protected by the issue lock (concurrent external pushes are uncommon). The full fix — calling `resolve_pr_head_sha` in Phase 2 too — exceeds the time budget of the issue that introduced the SHA oracle alignment (#1303); issue #1306 documented the divergence and added the sentinel, but the Phase 2 migration itself needs a new follow-on issue.
+
+The structural sentinel test `"phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — accepted divergence from Phase 3"` in `tests/regression/stale-review-detection-sha-based.bats` documents this accepted condition and will fire when the Phase 2 migration lands.
 
 ### LOW Severity Threshold
 
@@ -800,12 +845,29 @@ An earlier approach was rejected: checking whether the PR diff touched any `.md`
 
 ### Directed-Update Proposal Guards (#1208)
 
-The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces two safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
+The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces three safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
 
-- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content).
+- **EDIT on a file not in the model's context (absent from docs map or excluded by 15KB cap)** — the context assembly loop in `_docs_update_engine` caps the total doc context at 15KB. Files that would push the total over the cap are skipped via `continue` (prospective-total check) and never sent to the model; files absent from the docs-map inventory are also never loaded. The guard tracks which paths entered `_ue_ctx_files` (a newline-delimited string built alongside `_ue_doc_ctx`). After context assembly, `_ue_map_content` is set to `_ue_ctx_files` (the advertise-only list) so the model's "Documentation files in model context" prompt section contains only in-context paths — the model will not propose EDIT for a cap-excluded file it was never told about. If it does propose one anyway, the guard catches it: a proposed EDIT targeting a path absent from `_ue_ctx_files` is auto-skipped with a warning. When `_ue_ctx_files` is empty (docs map absent or empty), the membership check is skipped entirely to avoid blocking all EDIT proposals wholesale. Files excluded by the cap also trigger a deterministic pre-call warning so the user is informed immediately rather than discovering a silent no-op after the LLM run.
+- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content). This check fires only for files that passed the context-membership check above.
 - **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
 
 The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. **Apply-site defense-in-depth (#1232):** `_docs_apply_approved` mirrors this guard: after forking the worktree from `origin/<target>` (with its own `git fetch` at ~line 206), it re-checks `[ -f "$_aa_target_file" ]` before writing any CREATE proposal. A file pushed to origin during the interactive preview session will be present in the worktree (the fetch pulled it) and the apply-site guard refuses the write with a warning. This shrinks the window from the full preview session to the fetch-to-write interval, provided the apply-site fetch succeeds (the fetch is `|| true`; on network failure the worktree may not contain the newest origin files, so the residual window degrades back to the full preview session (the last successfully fetched origin/<target> state)).
+
+### Proposal Format: Per-Generation End Token (#1233)
+
+The proposal wire format uses a delimiter line to mark the end of each proposal's content block. A fixed delimiter like `---END---` is unsafe: any proposal whose content contains the `---END---` string (and future content documenting the format verbatim would place it on its own line) is silently truncated at parse time — self-referential risk since `docs/architecture/behavioral-design.md` (this file) and bats test fixtures both reference the `---END---` string.
+
+**Fix:** `_docs_update_engine` generates a per-call unique end token before the feedback loop:
+
+```bash
+local _ue_end_token="---END-${RANDOM}${RANDOM}---"
+```
+
+The token is injected into the `DOC_UPDATE_EOF` prompt heredoc so the LLM knows which string to use as the end marker, and into the case pattern that detects the end-of-proposal during parsing. Because bash case patterns expand variables, `"${_ue_end_token}"` matches the generated string at runtime.
+
+**Why this approach over escaping:** An escaping scheme (e.g. replace `---END---` in content with `\---END---`, unescape on parse) requires the LLM to reliably apply the escaping rule — which it may not do when the content contains `---END---` in a code block or diff output. The per-generation token approach eliminates the collision opportunity entirely: the token is never in any existing document, so content cannot accidentally match it.
+
+**Scope:** only the `_docs_update_engine` LLM-output parser and its prompt. The saved proposal files (written by the parser, read by `_docs_apply_approved`) use EOF as their implicit delimiter and are unaffected.
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
@@ -1322,6 +1384,9 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 **Second application — deterministic integration check (issue #351, 2026-06-05):**
 
 `_detect_unverified_integrations` in `lib/core/plan-issues.sh` checks whether external hostnames and package/SDK names referenced in issue bodies are grounded in the project's fixture directories or dependency manifests. Issues that reference un-grounded dependencies get a spike-issue prerequisite prepended (no LLM call). This is a deterministic lookup: "is this hostname/package in the project's known-good set?" is a set membership test, not a language-understanding question.
+
+**Never-external host exclusion (issue #1370, 2026-10-20):** Before reaching the fixture/SDK grounded-set check, each extracted host candidate is filtered against a categorical never-external set. Hosts in this set cannot be real external integrations regardless of what the issue body says, so they are silently skipped — no spike, no warning. The never-external set covers: loopback names (`localhost`, `127.0.0.1`, `0.0.0.0`), `.local` and `.localhost` suffixes (mDNS/link-local), and RFC 2606 documentation names (`example.com`, `example.net`, `example.org`, and any subdomain thereof, plus `*.test`, `*.example`, `*.invalid`). IPv6 loopback (`[::1]`) cannot reach this check — the host-char class `[a-zA-Z0-9.-]` excludes `[` and `:` — so it is inert by construction. Private IP ranges (10.x, 192.168.x) are not excluded here; no IP parsing is performed beyond the IPv4 loopback literal. Live failure that motivated this fix: orrery 2026-10-20 — `http://localhost:54324` (Inbucket) in a verification command produced a "Capture localhost sample - fixtures" spike and put `Blocked by: #SPIKE-localhost` on the magic-link issue.
+**Verify:** `grep -n 'never-external\|loopback' docs/architecture/behavioral-design.md`
 
 **SDK-grounded host suppression (issue #1155, 2026-10-14):** A host candidate that passes the fixture check is additionally checked against the manifest's grounded packages before being spiked. The vendor token — the first label of the registrable domain (e.g. `supabase` from `supabase.co`) — is matched at word boundaries (`[@/-]` separators) against each grounded package name (e.g. `@supabase/supabase-js`). When matched, the session contract comes from a typed SDK already in the manifest; the host is not an unverified external feed, so no spike is emitted. An INFO line names the grounding package. The suppression check requires the package to be grounded (present in the manifest), not merely mentioned in issue bodies.
 
@@ -2137,3 +2202,82 @@ owns means the check is reading the wrong stage of the pipeline, and a check
 that can only pass by accident is worse than no check — it fails closed on
 correct work. The prompt text and Check 1's premise are coupled, so
 `tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.
+
+## Deterministic Conflict Mergers Read Stage Blobs, Not the Conflicted File (#1319)
+
+Some merge conflicts have exactly one correct resolution and need no judgment.
+The drift log is the clearest case: append-only, each entry a self-delimited
+block with its own `recorded:` ISO8601 timestamp, entries mutually
+independent, burn-down removing whole blocks. The resolution is the union of
+both sides ordered by timestamp — computable, so no provider call is justified.
+Two of three conflicts in dogfooding logs were this file (#1231 pr:1299 at
+274s, #1143 pr:1312 at 60s), both sessions arriving at exactly that answer.
+
+`attempt_claude_merge_resolution` now runs a deterministic pre-pass before
+building its prompt, and skips the session entirely when nothing is left for
+it.
+
+**Entries come from git's stage blobs, never from the conflicted file.** This
+is the correctness argument, and it was learned by getting it wrong. When both
+sides append at the same spot, git emits a line-level hunk and **deduplicates
+the shared closing delimiter**:
+
+```
+<<<<<<< HEAD
+<!-- sharkrite-doc-drift pr:1304 ... -->
+**Changed files**: ...
+=======
+<!-- sharkrite-doc-drift pr:1312 ... -->
+**Changed files**: ...
+>>>>>>> side
+<!-- /sharkrite-doc-drift -->      ← ONE closer for TWO entries
+```
+
+Strip the markers and you have two openers and one closer — structurally
+damaged. The first implementation did that and **silently dropped the first
+entry**. For an append-only log, losing an entry is the worst outcome
+available: it is indistinguishable from burn-down, so nobody notices.
+`git show :2:<path>` (ours) and `:3:<path>` (theirs) each return a complete,
+well-formed log, which is what the merger parses.
+
+The general principle: a conflicted file is a *presentation* of two versions,
+not a container of both. Anything that needs the versions must ask git for the
+versions.
+
+**Every deterministic merger must fail closed.** If it cannot prove the
+conflict is the shape it understands — no conflict stages, an unreadable
+stage, zero entries found (so the conflict is in header prose) — it returns
+non-zero and the path stays in the LLM list with the file untouched. A
+deterministic merge may only replace judgment where there is no judgment to
+make.
+
+**Not every accumulating doc qualifies.** `docs/architecture/conventions.md`
+looks similar but is accumulate-**in-place**: one entry per convention title,
+with later PR numbers appended to that entry's References line. A naive union
+would duplicate titles. It needs its own design and deliberately has no merger.
+
+## Output Sanitization: stripping operator-local commands from generated artifacts
+
+**Root cause.** `claude --print` (the provider call used for issue planning, review generation, assessment follow-ups, and promotion PR bodies) loads the operator's user-global `~/.claude/CLAUDE.md`. That file carries RTK hook instructions, so the model authors `rtk grep`, `rtk proxy git status`, etc. into generated text. Those commands are unrunnable for any human or CI without the operator's personal rtk hook installed — they leak into published GitHub issue bodies and PR comments.
+
+**Why input-side suppression is wrong.** Suppressing `~/.claude/CLAUDE.md` at the provider-call level (via a hypothetical `--no-user-config` flag) is not available and would also lose auth context. Output-side sanitization at the seam where LLM output becomes a GitHub artifact is the correct fix.
+
+**The helper: `sanitize_generated_commands`** (`lib/utils/sanitize-output.sh`).
+
+Strips `rtk proxy <cmd>` → `<cmd>` and `rtk <cmd>` → `<cmd>` at command positions:
+line-start, after `` ` ``, `$(`, `| `, `&& `. Prose mentions of "rtk" not at a command
+position are untouched. Emits one `print_info` line to stderr reporting the count when
+anything is rewritten.
+
+**Grounded exception.** When `git grep -qlw rtk` in the project root succeeds, the
+target repo genuinely ships rtk commands — sanitization is skipped. This prevents
+sharkrite from mangling its own generated bodies (sharkrite's `CLAUDE.md` documents
+rtk and the project's tracked files reference it).
+
+**Applied seams — the four highest-leak GitHub-write sites** (each is a one-line call immediately before the GitHub write; additional write sites remain unsanitized — see issue #1360 ACTIONABLE_LATER findings):
+- `lib/core/plan-issues.sh` — issue body before `gh issue create --body-file`
+- `lib/core/assess-review-issues.sh` — follow-up issue body before `gh issue create --body-file`
+- `lib/core/local-review.sh` — review output before the PR comment `--body-file`
+- `lib/utils/promotion-composer.sh` — LLM narrative before `printf` emits it to stdout
+
+**Extension point.** The helper is intentionally rtk-specific (rtk is the live failure class; a generic "unknown tool" detector is unbounded). To handle another operator-local tool, add a parallel check inside `sanitize_generated_commands` — see the comment in `lib/utils/sanitize-output.sh`.

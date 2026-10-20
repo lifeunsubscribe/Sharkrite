@@ -10,6 +10,28 @@
 
 set -euo pipefail
 
+# Bash 4+ re-exec guard (issue #1361 fallout — see #1374).
+#
+# lib/utils/gate-runners.sh nests `case` statements inside process
+# substitutions, which bash 3.2 cannot parse, so it refuses to load under 3.2.
+# On macOS /bin/bash IS 3.2, so any #!/bin/bash file that reaches it — directly
+# or through test-gate.sh / gate-verdict.sh — dies before doing any work.
+#
+# #1374 guarded the five entry points known at the time and missed the rest:
+# create-pr.sh then died the same way one phase later. Rather than chase them
+# one at a time, every executable #!/bin/bash file in lib/ now carries this.
+# It is inert when the file is sourced (the BASH_SOURCE test is false), so it
+# costs nothing for the ones that are only ever libraries.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if declare -f parse_rite_config >/dev/null 2>&1; then
   return 0 2>/dev/null || true
@@ -154,6 +176,11 @@ RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-w
 #   4h of active work was correct intuition but the old implementation measured file age,
 #   not work. 12h of actual rite automation is a conservative daily budget.
 # RITE_MAX_ISSUE_HOURS: per-issue cap — protects against fix-loop runaway on a single issue.
+#   Interaction with RITE_CLAUDE_TIMEOUT: when the no-commit retry path fires (claude-workflow.sh),
+#   the retry budget can be up to 2×RITE_CLAUDE_TIMEOUT, capped at 14400s. A 14400s retry adds
+#   up to 4h of issue time, which silently trips this 4h default and stalls an otherwise-successful
+#   unattended recovery at the merge gate. If you raise RITE_CLAUDE_TIMEOUT above 7200s, raise
+#   RITE_MAX_ISSUE_HOURS proportionally (e.g. to 8h) so the retry path can complete.
 # RITE_MAX_ISSUES_PER_SESSION removed — was a stale heuristic with a misleading
 # "Approaching token limit" message; see detect_session_limit() in blocker-rules.sh.
 RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-12}"

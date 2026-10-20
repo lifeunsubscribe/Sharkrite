@@ -54,6 +54,22 @@ fi
 # Resolved against git rev-parse --show-toplevel so the path lands in the
 # feature worktree when the script is cd'd there (assess-documentation.sh:88).
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# drift_log_relpath
+#
+# The drift log's repo-RELATIVE path. drift_log_path returns an absolute path,
+# but callers matching against `git diff --name-only` / `git status --porcelain`
+# output need the relative form.
+#
+# Lives here because drift-log.sh owns the format AND the location, and because
+# it is the one file Rule 19 (RAW_MARKER_LITERAL) allowlists for the literal —
+# so every other caller can match the path without embedding a "sharkrite-*"
+# string of its own.
+# ---------------------------------------------------------------------------
+drift_log_relpath() {
+  echo "docs/sharkrite-drift-log.md"
+}
+
 drift_log_path() {
   local repo_root
   # Fall back to RITE_PROJECT_ROOT if git is unavailable (e.g. test stubs).
@@ -224,4 +240,141 @@ drift_log_entry_count() {
   # grep -c returns exit 1 when count is 0 — || true is the correct idiom
   # (see CLAUDE.md "grep -c pattern").
   grep -c "<!-- ${_marker} pr:[0-9]" "$log_path" || true
+}
+
+# ===================================================================
+# PUBLIC: drift_log_union_merge <log_path>
+# ===================================================================
+#
+# Resolve a merge-conflicted drift log deterministically, in place.
+#
+# A drift log is append-only and its entries are independent: each is a
+# self-delimited block carrying its own `recorded:` ISO8601 timestamp, and
+# burn-down removes whole blocks. So a conflict here has exactly one correct
+# resolution — the union of both sides, ordered by `recorded:` — and it needs
+# no judgment and no LLM call. Two of the three conflicts observed in
+# dogfooding logs were this file (#1231 pr:1299, #1143 pr:1312), each costing
+# a 60-274s provider session to reach the answer computed here.
+#
+# Entries come from git's STAGE BLOBS (`git show :2:` ours, `:3:` theirs), not
+# from the conflicted working-tree file. That is the whole correctness
+# argument: each stage is a complete, well-formed drift log, whereas the
+# conflicted file is not safely parseable. When both sides append at the same
+# spot, git emits a line-level hunk and DEDUPLICATES the shared closing
+# delimiter:
+#
+#   <<<<<<< HEAD
+#   <!-- sharkrite-doc-drift pr:1304 ... -->
+#   **Changed files**: ...
+#   =======
+#   <!-- sharkrite-doc-drift pr:1312 ... -->
+#   **Changed files**: ...
+#   >>>>>>> side
+#   <!-- /sharkrite-doc-drift -->      <-- ONE closer for TWO entries
+#
+# Stripping markers from that yields two openers and one closer — structurally
+# damaged, and an earlier version of this function silently dropped the first
+# entry. Losing an append-only entry is the worst outcome available here, so
+# the working-tree file is never parsed for content.
+#
+# Dedupe is on the whole block, so an entry on both sides appears once. Two
+# DIFFERENT entries sharing a timestamp both survive, in ours-then-theirs
+# order (`sort -s` is stable).
+#
+# Returns:
+#   0 = file rewritten with the merged union (no conflict markers remain)
+#   1 = not safely mergeable; caller should fall back to the LLM resolver
+#       (no conflict stages — not a real merge conflict; either stage
+#       unreadable; or zero entries found across both sides, meaning the
+#       conflict is in the header prose rather than in entries)
+drift_log_union_merge() {
+  local _dlm_path="${1:-}"
+  [ -n "$_dlm_path" ] || return 1
+  [ -f "$_dlm_path" ] || return 1
+
+  # Both conflict stages must exist. If they do not, this is not an
+  # ours/theirs content conflict and we have nothing authoritative to union.
+  local _dlm_ours _dlm_theirs
+  _dlm_ours=$(mktemp) || return 1
+  _dlm_theirs=$(mktemp) || { rm -f "$_dlm_ours"; return 1; }
+  if ! git show ":2:${_dlm_path}" > "$_dlm_ours" 2>/dev/null \
+     || ! git show ":3:${_dlm_path}" > "$_dlm_theirs" 2>/dev/null; then
+    rm -f "$_dlm_ours" "$_dlm_theirs"
+    return 1
+  fi
+
+  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (defined in markers.sh), not a user config var; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention for all marker constants (see markers.sh); ledger is frozen per 2026-07-14 rule
+  local _dlm_marker="${RITE_MARKER_DOC_DRIFT:-sharkrite-doc-drift}"
+
+  # Extract entry blocks from one well-formed log: "<ts>\x01<block lines...>",
+  # one entry per output line, \x01 standing in for newline.
+  _dlm_extract() {
+    awk -v m="$2" '
+      index($0, "<!-- " m " pr:") == 1 {
+        inblk = 1; buf = $0
+        ts = $0
+        if (match(ts, /recorded:[^ ]+/)) { ts = substr(ts, RSTART + 9, RLENGTH - 9) } else { ts = "0000" }
+        next
+      }
+      inblk && index($0, "<!-- /" m " -->") == 1 {
+        printf "%s\x01%s\x01%s\n", ts, buf, $0
+        inblk = 0; buf = ""; next
+      }
+      inblk { buf = buf "\x01" $0; next }
+    ' "$1" 2>/dev/null || true
+  }
+
+  local _dlm_blocks
+  _dlm_blocks=$(
+    _dlm_extract "$_dlm_ours" "$_dlm_marker"
+    _dlm_extract "$_dlm_theirs" "$_dlm_marker"
+  )
+  rm -f "$_dlm_ours" "$_dlm_theirs"
+
+  # No entries on either side → the conflict is not about entries.
+  [ -n "${_dlm_blocks:-}" ] || return 1
+
+  local _dlm_sorted
+  _dlm_sorted=$(printf '%s\n' "$_dlm_blocks" | sort -s -t $'\x01' -k1,1 | cut -d $'\x01' -f2- || true)
+  [ -n "${_dlm_sorted:-}" ] || return 1
+
+  local _dlm_tmp
+  _dlm_tmp=$(mktemp) || return 1
+
+  # Regenerate the canonical header rather than salvaging it from the
+  # conflicted file: it is fixed boilerplate, identical on both sides, and
+  # reusing _drift_log_bootstrap keeps one definition of it.
+  _drift_log_bootstrap "$_dlm_tmp" >/dev/null 2>&1 || {
+    rm -f "$_dlm_tmp"
+    return 1
+  }
+
+  local _dlm_seen
+  _dlm_seen=$(mktemp) || { rm -f "$_dlm_tmp"; return 1; }
+  local _dlm_line _dlm_count=0
+  while IFS= read -r _dlm_line; do
+    [ -n "$_dlm_line" ] || continue
+    if grep -qxF "$_dlm_line" "$_dlm_seen" 2>/dev/null; then
+      continue
+    fi
+    printf '%s\n' "$_dlm_line" >> "$_dlm_seen"
+    printf '\n' >> "$_dlm_tmp"
+    printf '%s' "$_dlm_line" | tr '\001' '\n' >> "$_dlm_tmp"
+    printf '\n' >> "$_dlm_tmp"
+    _dlm_count=$((_dlm_count + 1))
+  done <<< "$_dlm_sorted"
+  rm -f "$_dlm_seen"
+
+  if [ "$_dlm_count" -eq 0 ]; then
+    rm -f "$_dlm_tmp"
+    return 1
+  fi
+
+  cat "$_dlm_tmp" > "$_dlm_path" || { rm -f "$_dlm_tmp"; return 1; }
+  rm -f "$_dlm_tmp"
+
+  if declare -f print_info >/dev/null 2>&1; then
+    print_info "Drift log merged deterministically: ${_dlm_count} entry(ies), union ordered by recorded:" >&2
+  fi
+  return 0
 }

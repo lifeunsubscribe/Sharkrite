@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh::_gate_flake_retry_pass|_gate_status
+# sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_flake_retry_pass, lib/utils/gate-runners.sh::_gate_status
 # sharkrite-gate-serial — spawns real inner bats runs (runbook rule 6); under --jobs load these
 # time out at the 120s per-test budget (live: blocked issue #871's gate, 2026-07-05)
 # Regression for #938: one bounded serial retry of failing bats files.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh, lib/core/workflow-runner.sh
 # Issue #975: tiered gating — per-cycle scoped workspace runs + merge-decision
 # full suite.  Covers:
 #   - _detect_workspace_runner: jest/vitest from devDependencies, fallback unknown
@@ -11,6 +11,9 @@
 #   - unchanged workspace not tested when only affected workspace changed
 #   - RITE_GATE_NATIVE_SCOPING=false: workspace full suite (no findRelatedTests)
 #   - sanity valve: jest 0 tests + non-test source → workspace full suite
+# Issue #1213: ** and !exclusion workspace patterns mis-expand
+#   - packages/** (pnpm dominant layout) finds nested workspaces via find, not glob
+#   - !exclusion patterns suppress matched dirs from _changed_files_to_workspace_dirs
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -223,6 +226,80 @@ _run_gate_with_env() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"packages/api"* ]]
   [[ "$output" == *"packages/cdk"* ]]
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: pnpm ** pattern finds nested workspace" {
+  # pnpm-workspace.yaml uses packages/** (dominant layout); without find-based
+  # expansion bash glob ** only matches one level, missing packages/scope/component.
+  mkdir -p "$TEST_REPO/packages/scope/component"
+  printf '%s\n' '{"name":"root","private":true}' > "$TEST_REPO/package.json"
+  printf 'packages:\n  - packages/**\n' > "$TEST_REPO/pnpm-workspace.yaml"
+  printf '%s\n' '{"name":"component","version":"1.0.0"}' \
+    > "$TEST_REPO/packages/scope/component/package.json"
+  local files
+  files=$(printf '%s\n' "packages/scope/component/src/index.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"packages/scope/component"* ]] || {
+    echo "FAIL: nested workspace packages/scope/component not found; output: $output"
+    false
+  }
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: ** pattern does not emit non-workspace subdirs" {
+  mkdir -p "$TEST_REPO/packages/api"
+  mkdir -p "$TEST_REPO/packages/no-pkg-json"
+  printf '%s\n' '{"name":"root","private":true}' > "$TEST_REPO/package.json"
+  printf 'packages:\n  - packages/**\n' > "$TEST_REPO/pnpm-workspace.yaml"
+  printf '%s\n' '{"name":"api","version":"1.0.0"}' > "$TEST_REPO/packages/api/package.json"
+  # packages/no-pkg-json has no package.json — must not be returned
+  local files
+  files=$(printf '%s\n' "packages/api/src/foo.ts" "packages/no-pkg-json/README.md")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"packages/api"* ]]
+  [[ "$output" != *"packages/no-pkg-json"* ]] || {
+    echo "FAIL: non-workspace dir without package.json was returned; output: $output"
+    false
+  }
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: !exclusion pattern suppresses matching workspace" {
+  # pnpm-workspace.yaml with !packages/legacy — changes to that dir must not
+  # be returned even though packages/* would otherwise match it.
+  mkdir -p "$TEST_REPO/packages/api"
+  mkdir -p "$TEST_REPO/packages/legacy"
+  printf '%s\n' '{"name":"root","private":true}' > "$TEST_REPO/package.json"
+  printf 'packages:\n  - packages/*\n  - "!packages/legacy"\n' \
+    > "$TEST_REPO/pnpm-workspace.yaml"
+  printf '%s\n' '{"name":"api","version":"1.0.0"}' > "$TEST_REPO/packages/api/package.json"
+  printf '%s\n' '{"name":"legacy","version":"0.0.1"}' > "$TEST_REPO/packages/legacy/package.json"
+  local files
+  files=$(printf '%s\n' "packages/legacy/src/old.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || {
+    echo "FAIL: excluded workspace packages/legacy was returned; output: $output"
+    false
+  }
+}
+
+@test "(#1213) _changed_files_to_workspace_dirs: !exclusion does not suppress non-excluded workspace" {
+  mkdir -p "$TEST_REPO/packages/api"
+  mkdir -p "$TEST_REPO/packages/legacy"
+  printf '%s\n' '{"name":"root","private":true}' > "$TEST_REPO/package.json"
+  printf 'packages:\n  - packages/*\n  - "!packages/legacy"\n' \
+    > "$TEST_REPO/pnpm-workspace.yaml"
+  printf '%s\n' '{"name":"api","version":"1.0.0"}' > "$TEST_REPO/packages/api/package.json"
+  printf '%s\n' '{"name":"legacy","version":"0.0.1"}' > "$TEST_REPO/packages/legacy/package.json"
+  local files
+  files=$(printf '%s\n' "packages/api/src/index.ts")
+  run _changed_files_to_workspace_dirs "$TEST_REPO" "$files"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"packages/api"* ]] || {
+    echo "FAIL: non-excluded workspace packages/api was not returned; output: $output"
+    false
+  }
 }
 
 @test "(#975) _node_scope_zero_tests: jest 'No tests found' output → returns 0" {

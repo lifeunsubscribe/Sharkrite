@@ -429,6 +429,138 @@ _check_dep_queued_later() {
 }
 
 # ---------------------------------------------------------------------------
+# _ftm_file_overlap ISSUE_BODY
+#
+# Parse the issue body's "Files to Modify:" section and check whether any
+# declared path intersects the changed files of another in-flight worktree.
+#
+# Detection is local-only: git worktree list + git -C <wt> diff — no network
+# calls. Excludes the main checkout and the current working directory from
+# the worktree scan (this batch's own). An empty or missing "Files to
+# Modify:" section is a silent no-op (returns without setting either global).
+#
+# Diff base resolution order (most-to-least specific):
+#   1. merge-base HEAD origin/main  (production: remote ref)
+#   2. merge-base HEAD main         (tests / no remote configured)
+#   3. rev-list --max-parents=0     (first commit — last resort)
+# Any worktree for which the base cannot be resolved is skipped silently.
+#
+# On overlap, sets globals _OVERLAP_FILES (comma-joined matching paths) and
+# _OVERLAP_WT (path of the first overlapping worktree).
+# Returns 0 always; caller inspects _OVERLAP_FILES for non-empty.
+#
+# Globals written: _OVERLAP_FILES, _OVERLAP_WT
+# Deliberate batch-only behavior: single-issue mode has no queue to defer
+# into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
+# ---------------------------------------------------------------------------
+_ftm_file_overlap() {
+  local _issue_body="${1:-}"
+  _OVERLAP_FILES=""
+  _OVERLAP_WT=""
+
+  # Step 1: extract the "Files to Modify:" section from the issue body.
+  # Matches: "Files to Modify:", "**Files to Modify:**", with optional
+  # trailing colon.  Section ends at a blank line or a new section header.
+  _ftm_section=$(printf '%s\n' "$_issue_body" | awk '
+    /^[[:space:]]*(\*\*)?Files to Modify:?(\*\*)?[[:space:]]*$/ { in_s=1; next }
+    in_s && /^[[:space:]]*$/ { in_s=0; next }
+    in_s && /^(##|[*][*][A-Z]|[A-Z][A-Za-z])/ { in_s=0; next }
+    in_s { print }
+  ' || true)
+
+  [ -z "$_ftm_section" ] && return 0
+
+  # Step 2: extract file paths — first backtick-quoted token per list item.
+  _parsed_paths=""
+  while IFS= read -r _ftm_line; do
+    # Only process list items starting with optional whitespace + "- "
+    case "$_ftm_line" in -\ *|\ *-\ *) ;; *) continue;; esac
+    # Extract first backtick-quoted token
+    _raw="${_ftm_line#*\`}"
+    _fpath="${_raw%%\`*}"
+    # No backtick found: fall back to first whitespace-delimited word after "- "
+    if [ -z "$_fpath" ] || [ "$_fpath" = "$_raw" ]; then
+      _fpath="${_ftm_line#*- }"
+      _fpath="${_fpath%% *}"
+    fi
+    [ -z "$_fpath" ] && continue
+    # Require at least one path separator or dot to filter prose tokens
+    case "$_fpath" in */*|*.*) ;; *) continue;; esac
+    _parsed_paths="${_parsed_paths}${_fpath}
+"
+  done < <(printf '%s\n' "$_ftm_section")
+
+  [ -z "$_parsed_paths" ] && return 0
+
+  # Step 3: enumerate other in-flight worktrees (local git only).
+  _ftm_main_wt=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  _ftm_self_wt=$(pwd)
+
+  while IFS= read -r _wt_line; do
+    _wt_dir="${_wt_line%% *}"
+    [ -d "$_wt_dir" ] || continue
+    # Skip this batch's own checkout
+    [ "$_wt_dir" = "$_ftm_main_wt" ] && continue
+    [ "$_wt_dir" = "$_ftm_self_wt" ] && continue
+    # Skip the current issue's own pre-existing worktree (resume path) to
+    # prevent self-deferral. Whole-token match prevents substring collisions
+    # (e.g. issue 9 must not skip a worktree for issue 99).
+    if [ -n "${ISSUE_NUM:-}" ]; then
+      _wt_basename=$(basename "$_wt_dir")
+      case "$_wt_basename" in
+        *[-_]${ISSUE_NUM}[-_]*|*[-_]${ISSUE_NUM}) continue;;
+      esac
+    fi
+
+    # Resolve the diff base for this worktree (see resolution order above)
+    _wt_base=$(git -C "$_wt_dir" merge-base HEAD origin/main 2>/dev/null || \
+               git -C "$_wt_dir" merge-base HEAD main 2>/dev/null || \
+               git -C "$_wt_dir" rev-list --max-parents=0 HEAD 2>/dev/null || true)
+    [ -z "$_wt_base" ] && continue
+
+    # Files changed on this worktree's branch vs its base
+    _wt_changed=$(git -C "$_wt_dir" diff --name-only "${_wt_base}...HEAD" 2>/dev/null || true)
+    [ -z "$_wt_changed" ] && continue
+
+    # Step 4: intersect declared paths with this worktree's changed files
+    _overlap_list=""
+    while IFS= read -r _decl_path; do
+      [ -z "$_decl_path" ] && continue
+      _decl_cmp="${_decl_path%/}"   # strip trailing slash for comparison
+      [ -z "$_decl_cmp" ] && continue
+
+      _matched=false
+      while IFS= read -r _wt_file; do
+        [ -z "$_wt_file" ] && continue
+        # Exact match
+        if [ "$_wt_file" = "$_decl_cmp" ]; then
+          _matched=true; break
+        fi
+        # Directory prefix match (declared is a directory)
+        case "$_wt_file" in "${_decl_cmp}/"*) _matched=true; break;; esac
+        # Glob match (declared contains * or ?)
+        case "$_decl_cmp" in *'*'*|*'?'*)
+          # shellcheck disable=SC2254
+          case "$_wt_file" in $_decl_cmp) _matched=true; break;; esac
+        esac
+      done < <(printf '%s\n' "$_wt_changed")
+
+      if [ "$_matched" = true ]; then
+        _overlap_list="${_overlap_list:+${_overlap_list},}${_decl_cmp}"
+      fi
+    done < <(printf '%s\n' "$_parsed_paths")
+
+    if [ -n "$_overlap_list" ]; then
+      _OVERLAP_FILES="$_overlap_list"
+      _OVERLAP_WT="$_wt_dir"
+      return 0
+    fi
+  done < <(git worktree list 2>/dev/null || true)
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
@@ -975,13 +1107,12 @@ send_notification_all "🚀 *Batch Processing Started*
 *Pre-flight Blockers:* ${#PREFLIGHT_BLOCKERS[@]}
 *Mode:* Unsupervised" "normal"
 
-# Clear any stale cap-reset-line.txt from a prior run. If a previous single-issue
-# run hit exit 5 but never consumed this file, it would feed a wrong reset_epoch
-# into the manifest if this batch also caps. Must happen before the issue loop.
-# Assumption: one batch per repo at a time. A concurrent batch B starting here
-# can delete a just-written reset line from batch A's in-flight exit-5 path,
-# degrading A's manifest to reset_epoch:0. Parallel-batch isolation is deferred
-# to a follow-up issue; this site is not safe for overlapping batches.
+# Clear any stale fixed-name cap-reset-line.txt from a prior single-issue run.
+# In batch mode the file is now named cap-reset-line-${RITE_BATCH_ID}.txt (unique
+# per invocation), so parallel batch groups cannot clobber each other.  The
+# fixed-name fallback is only written by single-issue (non-batch) runs where
+# RITE_BATCH_ID is absent; clearing it here prevents a stale single-issue file
+# from feeding a wrong reset_epoch if this batch also caps.
 rm -f "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-reset-line.txt" 2>/dev/null || true
 
 # Process each issue
@@ -1227,6 +1358,40 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       # Non-failure outcome: reset consecutive gate-failure streak before skipping.
       _gate_consec_count=0; _gate_consec_sig=""
       continue
+    fi
+  fi
+
+  # ---------------------------------------------------------------------------
+  # Per-slot cross-batch file overlap check: warn and reorder when this
+  # issue's declared Files-to-Modify intersect an in-flight worktree's diff.
+  # Local git only — no network calls. Missing/empty "Files to Modify:"
+  # section is a silent no-op. Bounded by the shared _DEFER_COUNT anti-cycle
+  # cap (_UNIQUE_ISSUE_COUNT); cap exhausted → warning + run in place.
+  # Deliberate batch-only divergence: single-issue mode has no queue to defer
+  # into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
+  # ---------------------------------------------------------------------------
+  _OVERLAP_FILES=""
+  _OVERLAP_WT=""
+  _ftm_file_overlap "$ISSUE_BODY"
+  if [ -n "${_OVERLAP_FILES:-}" ]; then
+    _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
+    _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+    if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
+      _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
+      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      ISSUE_LIST+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
+      if declare -f _diag >/dev/null 2>&1; then
+        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT")"
+      fi
+      echo ""
+      _gate_consec_count=0; _gate_consec_sig=""
+      continue
+    else
+      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
+      if declare -f _diag >/dev/null 2>&1; then
+        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
+      fi
     fi
   fi
 
@@ -1587,15 +1752,19 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+      increment_failed   # session tracker: invariant_violated counts as processed
 
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort batch, write resume manifest, print resume cmd.
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
+      increment_failed   # session tracker: usage_cap counts as processed
 
-      # Read reset-line persisted by claude.sh when the cap was detected
+      # Read reset-line persisted by claude.sh when the cap was detected.
+      # RITE_BATCH_ID is always set in batch context (see top of this file), so the
+      # per-batch filename is always used here — parallel groups get their own file.
       _cap_state="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
-      _cap_reset_file="${_cap_state}/cap-reset-line.txt"
+      _cap_reset_file="${_cap_state}/cap-reset-line-${RITE_BATCH_ID}.txt"
       _cap_reset_text=$(cat "$_cap_reset_file" 2>/dev/null | head -1 || true)
       rm -f "$_cap_reset_file" 2>/dev/null || true
 
@@ -1634,9 +1803,10 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       _resume_cmd="rite ${_remaining[*]}"
       [ -n "$_batch_flags" ] && _resume_cmd="$_resume_cmd $_batch_flags"
 
-      # Write the resume manifest so an auto-resume (or the user) can re-run exactly
+      # Write the resume manifest so an auto-resume (or the user) can re-run exactly.
+      # Per-batch filename prevents parallel groups from overwriting each other's manifest.
       mkdir -p "$_cap_state"
-      _manifest_path="${_cap_state}/cap-resume.json"
+      _manifest_path="${_cap_state}/cap-resume-${RITE_BATCH_ID}.json"
       _written_epoch=$(date +%s)
       _issues_json=""
       for _ri in "${_remaining[@]}"; do
@@ -1692,6 +1862,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
+      increment_failed   # session tracker: auth_failure counts as processed
       AUTH_FAILURE_ISSUES+=("$ISSUE_NUM")
       _BATCH_AUTH_HALT=true
       break
@@ -1719,6 +1890,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
+      increment_failed   # session tracker: failed counts as processed
     fi
   fi
 
@@ -1940,6 +2112,7 @@ NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
 • Failed: ${#FAILED_ISSUES[@]} ❌
 • Blocked: ${#BLOCKED_ISSUES[@]} 🚨
 • Skipped: ${#SKIPPED_ISSUES[@]} ⏭️
+• Issues Created: $(_batch_followups_created | grep -c . || true) 📋
 • Duration: $(_format_elapsed "$TOTAL_DURATION")
 • Success Rate: $((COMPLETED_ISSUES * 100 / TOTAL_ISSUES))%"
 

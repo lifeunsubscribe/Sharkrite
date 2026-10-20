@@ -21,6 +21,31 @@
 
 set -euo pipefail
 
+# Bash 4+ re-exec guard (issue #1361 fallout).
+#
+# This script carries a #!/bin/bash shebang, which on macOS is system bash
+# 3.2. It sources lib/utils/test-gate.sh, which sources lib/utils/gate-runners.sh,
+# and that file is not 3.2-parseable: it nests `case` statements (with their
+# `;;` terminators) inside process substitutions, which 3.2's parser rejects
+# outright. gate-runners.sh therefore refuses to load under 3.2 and every
+# invocation of this script dies with "requires bash 4+" before doing any work.
+#
+# Re-exec under a bash 4+ interpreter when one is available. The guard matches
+# the established pattern in batch-process-issues.sh, with one addition: it
+# fires ONLY when this file is being EXECUTED, never when it is sourced.
+# `exec "$_newer_bash" "$0" "$@"` in a sourced context would re-exec the
+# CALLER with the wrong argument vector (see CLAUDE.md -> "macOS bash 3.2
+# compatibility", the plan-issues.sh/docs-command.sh note).
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if [ "${_RITE_ASSESS_AND_RESOLVE_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
@@ -40,6 +65,7 @@ source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/portable-cmds.sh"
+source "$RITE_LIB_DIR/utils/format-review.sh"
 
 # Source PR detection for shared commit timestamp utility
 source "$RITE_LIB_DIR/utils/pr-detection.sh"
@@ -906,40 +932,33 @@ echo ""
 # (RITE_ASSESSMENT_MODEL, default sonnet) — do not reintroduce an export here.
 
 # =============================================================================
-# Extract structured JSON from review (new format with sharkrite-review-data)
-# Falls back to markdown parsing for older reviews
+# Extract review severity counts and structured JSON
 # =============================================================================
 
-extract_review_json() {
-  local review_body="$1"
-  # Extract JSON from <!-- sharkrite-review-data ... --> block
-  local json_block=$(echo "$review_body" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
-  if [ -n "$json_block" ] && echo "$json_block" | jq empty 2>/dev/null; then
-    echo "$json_block"
-  else
-    echo ""
-  fi
-}
+# Shared 3-tier parse: JSON block → Findings summary line → item markers.
+# Replaces the former JSON-only count extraction that lacked the Findings-line
+# and item-marker fallback tiers present in local-review.sh and promote-branch.sh.
+parse_review_severity_counts "$REVIEW_BODY"
+JSON_CRITICAL=$_PRC_CRITICAL
+JSON_HIGH=$_PRC_HIGH
+JSON_MEDIUM=$_PRC_MEDIUM
+JSON_LOW=$_PRC_LOW
 
-REVIEW_JSON_DATA=$(extract_review_json "$REVIEW_BODY")
-
-if [ -n "$REVIEW_JSON_DATA" ]; then
+# Extract the full JSON block separately — needed for verdict, item count, and
+# the RITE_REVIEW_JSON export used by downstream tools.
+REVIEW_JSON_DATA=$(echo "$REVIEW_BODY" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
+if [ -n "$REVIEW_JSON_DATA" ] && echo "$REVIEW_JSON_DATA" | jq empty 2>/dev/null; then
   print_info "Found structured review data (JSON format)"
-  # Parse counts from JSON
-  JSON_CRITICAL=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.critical // 0' 2>/dev/null || echo "0")
-  JSON_HIGH=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.high // 0' 2>/dev/null || echo "0")
-  JSON_MEDIUM=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.medium // 0' 2>/dev/null || echo "0")
-  JSON_LOW=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.low // 0' 2>/dev/null || echo "0")
   JSON_VERDICT=$(echo "$REVIEW_JSON_DATA" | jq -r '.summary.verdict // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
   JSON_ITEMS_COUNT=$(echo "$REVIEW_JSON_DATA" | jq -r '.items | length // 0' 2>/dev/null || echo "0")
-
   print_info "JSON summary: CRITICAL=$JSON_CRITICAL HIGH=$JSON_HIGH MEDIUM=$JSON_MEDIUM LOW=$JSON_LOW"
   print_info "JSON verdict: $JSON_VERDICT (${JSON_ITEMS_COUNT} items)"
-
-  # Export for use by downstream tools
   export RITE_REVIEW_JSON="$REVIEW_JSON_DATA"
   export RITE_REVIEW_FORMAT="json"
 else
+  REVIEW_JSON_DATA=""
+  JSON_VERDICT="UNKNOWN"
+  JSON_ITEMS_COUNT="0"
   print_info "No structured JSON found - will use markdown parsing"
   export RITE_REVIEW_FORMAT="markdown"
 fi
@@ -2559,6 +2578,10 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
           rm -f "$_finding_body_file"
           _new_issue_num=$(echo "$_new_issue_url" | grep -oE '[0-9]+$' || true)
           _new_issue_num="${_new_issue_num:-}"
+          # Telemetry for the batch reporter's "Issues Created" line and for
+          # health-report aggregation of follow-up volume. Emitted only on a
+          # confirmed creation (a URL came back), never on the orphan path.
+          _diag "FOLLOWUP_CREATED issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER:-} followup=${_new_issue_num:-unknown}"
 
           if [ -n "$_new_issue_num" ]; then
             FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_new_issue_num} "

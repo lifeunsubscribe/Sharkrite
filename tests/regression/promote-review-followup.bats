@@ -133,6 +133,16 @@ STUB
 #!/bin/bash
 _MERGE_PR_SH_SOURCED_IN_TEST=true
 STUB
+
+  # format-review.sh: redirect to the real file so parse_review_severity_counts
+  # runs with actual logic (tests verify parse-driven issue creation).
+  # The real file sources colors.sh and markers.sh from $RITE_LIB_DIR (= $_lib),
+  # both of which are already stubbed above.
+  cat > "$_lib/utils/format-review.sh" << FORMAT_STUB
+#!/bin/bash
+# shellcheck source=/dev/null
+source "$RITE_REPO_ROOT/lib/utils/format-review.sh"
+FORMAT_STUB
 }
 
 # ---------------------------------------------------------------------------

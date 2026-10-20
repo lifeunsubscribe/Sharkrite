@@ -12,10 +12,38 @@
 # integration branch would land code on main that skipped the per-issue review
 # cycle, so findings are tracked as issues instead.
 #
-# Entry point: run_promote <branch>
+# Entry points:
+#   run_promote <branch>         — full-branch promote (#1050)
+#   run_promote <branch> <issue> — single-issue cherry-pick promote (#1273)
+#   promote_single_issue <branch> <issue> — called internally by run_promote
 # Exit 0 = promoted; exit 1 = any preflight/gate/merge failure.
 
 set -euo pipefail
+
+# Bash 4+ re-exec guard (issue #1361 fallout).
+#
+# This script carries a #!/bin/bash shebang, which on macOS is system bash
+# 3.2. It sources lib/utils/test-gate.sh, which sources lib/utils/gate-runners.sh,
+# and that file is not 3.2-parseable: it nests `case` statements (with their
+# `;;` terminators) inside process substitutions, which 3.2's parser rejects
+# outright. gate-runners.sh therefore refuses to load under 3.2 and every
+# invocation of this script dies with "requires bash 4+" before doing any work.
+#
+# Re-exec under a bash 4+ interpreter when one is available. The guard matches
+# the established pattern in batch-process-issues.sh, with one addition: it
+# fires ONLY when this file is being EXECUTED, never when it is sourced.
+# `exec "$_newer_bash" "$0" "$@"` in a sourced context would re-exec the
+# CALLER with the wrong argument vector (see CLAUDE.md -> "macOS bash 3.2
+# compatibility", the plan-issues.sh/docs-command.sh note).
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if [ "${_RITE_PROMOTE_BRANCH_LOADED:-}" = "true" ]; then
@@ -47,6 +75,7 @@ source "$RITE_LIB_DIR/providers/provider-interface.sh"
 source "$RITE_LIB_DIR/utils/promotion-composer.sh"
 # shellcheck source=/dev/null
 source "$RITE_LIB_DIR/utils/markers.sh"
+source "$RITE_LIB_DIR/utils/format-review.sh"
 
 # ---------------------------------------------------------------------------
 # _promote_field <ledger_line> <field_name>
@@ -127,10 +156,264 @@ _promote_strip_tracked_now_blocks() {
 }
 
 # ---------------------------------------------------------------------------
-# run_promote <branch>
+# promote_single_issue <branch> <issue>
+#
+# Cherry-picks ONE staged ledger SHA onto a temp branch off origin/main and
+# merges it through its own gated PR.
+#
+# Design: a cherry-pick conflict is the deterministic signal that the issue is
+# entangled with unpromoted work — abort verbosely, never force-resolve.
+# ---------------------------------------------------------------------------
+promote_single_issue() {
+  local _si_branch="${1:?promote_single_issue: branch argument required}"
+  local _si_issue="${2:?promote_single_issue: issue argument required}"
+
+  print_header "Single-issue promote: #${_si_issue} from '${_si_branch}' to main"
+  echo ""
+
+  # ── Ledger lookup ─────────────────────────────────────────────────────────
+
+  print_step "Looking up issue #${_si_issue} in ledger for '${_si_branch}'..."
+  local _si_entries=""
+  _si_entries=$(integration_ledger_entries "$_si_branch" 2>/dev/null || true)
+
+  if [ -z "${_si_entries:-}" ]; then
+    print_error "No ledger found for branch '${_si_branch}'"
+    echo "  Staged issues for this branch: (none)" >&2
+    exit 1
+  fi
+
+  # Walk entries to find the target issue
+  local _si_sha="" _si_pr="" _si_promoted=""
+  local _si_staged_nums=""
+  while IFS= read -r _si_line; do
+    [ -n "${_si_line:-}" ] || continue
+    local _si_fissue
+    _si_fissue=$(_promote_field "$_si_line" "issue" || true)
+    local _si_fpromoted
+    _si_fpromoted=$(_promote_field "$_si_line" "promoted" || true)
+    if [ "${_si_fissue:-}" = "$_si_issue" ]; then
+      _si_sha=$(_promote_field "$_si_line" "sha" || true)
+      _si_pr=$(_promote_field "$_si_line" "pr" || true)
+      _si_promoted="${_si_fpromoted:-false}"
+    fi
+    if [ "${_si_fpromoted:-}" = "false" ]; then
+      _si_staged_nums="${_si_staged_nums:+${_si_staged_nums} }${_si_fissue}"
+    fi
+  done <<< "$_si_entries"
+
+  if [ -z "${_si_sha:-}" ]; then
+    print_error "Issue #${_si_issue} not found in the ledger for '${_si_branch}'"
+    echo "  Staged issues on this branch: ${_si_staged_nums:-none}" >&2
+    exit 1
+  fi
+
+  # Idempotent: already promoted → exit 0 with info
+  if [ "${_si_promoted:-}" = "true" ]; then
+    print_info "Issue #${_si_issue} was already promoted from '${_si_branch}' — nothing to do"
+    return 0
+  fi
+
+  print_success "Found ledger entry: issue=#${_si_issue} pr=#${_si_pr} sha=${_si_sha}"
+  echo ""
+
+  # ── Fetch ──────────────────────────────────────────────────────────────────
+
+  print_step "Fetching latest state from origin..."
+  git_fetch_safe origin main
+  git_fetch_safe origin "$_si_branch" || {
+    print_error "Failed to fetch '$_si_branch' from origin — SHA ${_si_sha} may not exist locally"
+    echo "  Re-run after checking network: rite --promote ${_si_branch} ${_si_issue}" >&2
+    exit 1
+  }
+  # Guard: the ledger SHA must exist locally after fetching the integration branch.
+  if ! git cat-file -e "$_si_sha" 2>/dev/null; then
+    print_error "Ledger SHA ${_si_sha} not found after fetching '${_si_branch}' — ledger may be stale"
+    echo "  Re-run: rite --promote ${_si_branch} ${_si_issue}" >&2
+    exit 1
+  fi
+
+  # ── Temp worktree off main ─────────────────────────────────────────────────
+
+  local _si_wt_name="promote-${_si_branch}-i${_si_issue}"
+  local _si_wt="${RITE_WORKTREE_DIR}/${_si_wt_name}"
+
+  # Clean up any leftover temp worktree from a prior aborted run
+  if [ -d "$_si_wt" ]; then
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+  fi
+  mkdir -p "$(dirname "$_si_wt")"
+
+  print_step "Creating temp worktree '${_si_wt_name}' off origin/main..."
+  git worktree add -b "$_si_wt_name" "$_si_wt" origin/main
+
+  # ── Cherry-pick ────────────────────────────────────────────────────────────
+
+  print_step "Cherry-picking ${_si_sha} (issue #${_si_issue})..."
+  local _si_cp_exit=0
+  local _si_cp_stderr=""
+  _si_cp_stderr=$( cd "$_si_wt" && git cherry-pick "$_si_sha" 2>&1 ) || _si_cp_exit=$?
+
+  if [ "$_si_cp_exit" -ne 0 ]; then
+    # Distinguish conflict (entanglement) from other failures.
+    # CHERRY_PICK_HEAD exists when a conflict left cherry-pick in progress.
+    # In a linked worktree .git is a file pointer, so CHERRY_PICK_HEAD lives at
+    # the path git itself reports — use rev-parse --git-path to find it.
+    local _si_is_conflict=false
+    local _si_cp_head_path=""
+    _si_cp_head_path=$( cd "$_si_wt" && git rev-parse --git-path CHERRY_PICK_HEAD 2>/dev/null || true )
+    if [ -n "${_si_cp_head_path:-}" ] && [ -f "${_si_cp_head_path}" ]; then
+      _si_is_conflict=true
+    fi
+    ( cd "$_si_wt" && git cherry-pick --abort 2>/dev/null || true )
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    if [ "$_si_is_conflict" = "true" ]; then
+      print_error "Issue #${_si_issue} is entangled with unpromoted issues on '${_si_branch}' — its squash commit does not apply cleanly to main. Promote the full branch (rite --promote ${_si_branch}) or resolve manually."
+    else
+      print_error "Cherry-pick of ${_si_sha} failed (exit ${_si_cp_exit}) — not a merge conflict"
+      if [ -n "${_si_cp_stderr:-}" ]; then
+        echo "  $(printf '%s' "$_si_cp_stderr" | head -3)" >&2
+      fi
+      echo "  Check that the SHA exists and re-run: rite --promote ${_si_branch} ${_si_issue}" >&2
+    fi
+    exit 1
+  fi
+
+  print_success "Cherry-pick applied cleanly"
+  echo ""
+
+  # ── Targeted gate ─────────────────────────────────────────────────────────
+
+  print_step "Running targeted verification gate on cherry-picked commit..."
+  if ! declare -f run_test_gate >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    source "$RITE_LIB_DIR/utils/test-gate.sh"
+    if ! declare -f run_test_gate >/dev/null 2>&1; then
+      print_error "run_test_gate not defined after sourcing test-gate.sh — gate cannot run"
+      exit 1
+    fi
+  fi
+  local _si_gate_exit=0
+  local _si_gate_json="${_si_wt}/.rite-si-promote-gate.json"
+  ( cd "$_si_wt" \
+      && RITE_PROJECT_ROOT="$_si_wt" \
+         RITE_TEST_GATE_DIFF_BASE=origin/main \
+         PR_NUMBER="" \
+         run_test_gate "$_si_gate_json" "$_si_wt" ) \
+    || _si_gate_exit=$?
+
+  if [ "$_si_gate_exit" -ne 0 ]; then
+    if [ -s "$_si_gate_json" ]; then
+      mkdir -p "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+      cp "$_si_gate_json" \
+        "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/si-promote-gate-${_si_branch//\//-}-i${_si_issue}.json" 2>/dev/null || true
+    fi
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    print_error "Targeted gate failed for issue #${_si_issue} — no PR created"
+    echo "  Fix the failing tests on '${_si_branch}' first:" >&2
+    echo "    rite --branch ${_si_branch} ${_si_issue}" >&2
+    exit 1
+  fi
+  print_success "Targeted verification gate passed"
+  echo ""
+
+  # ── Push temp branch + create PR ──────────────────────────────────────────
+
+  print_step "Pushing temp branch '${_si_wt_name}'..."
+  ( cd "$_si_wt" && git push origin "${_si_wt_name}" )
+
+  local _si_pr_body
+  _si_pr_body="Cherry-picked from integration branch '${_si_branch}' (original PR #${_si_pr}, ledger SHA ${_si_sha}).
+
+Closes #${_si_issue}"
+
+  local _si_promo_pr_url=""
+  _si_promo_pr_url=$(gh_safe pr create \
+    --base main \
+    --head "$_si_wt_name" \
+    --title "Single-issue promote: #${_si_issue} from '${_si_branch}'" \
+    --body "$_si_pr_body" 2>/dev/null || true)
+  local _si_promo_pr=""
+  _si_promo_pr=$(printf '%s' "${_si_promo_pr_url:-}" | grep -oE '[0-9]+$' || true)
+  if [ -z "${_si_promo_pr:-}" ]; then
+    git worktree remove "$_si_wt" --force 2>/dev/null || rm -rf "$_si_wt"
+    git branch -D "$_si_wt_name" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    print_error "Failed to create promotion PR for issue #${_si_issue}"
+    exit 1
+  fi
+  print_success "Created promotion PR #${_si_promo_pr}"
+  echo ""
+
+  # ── Merge through normal path ──────────────────────────────────────────────
+  #
+  # Route through merge-pr.sh (hard gates apply). The single-issue PR carries
+  # exactly one Closes #N, so merge-pr.sh's head -1 extraction is correct here.
+
+  local _MERGE_PR="${RITE_LIB_DIR}/core/merge-pr.sh"
+  local _si_merge_exit=0
+  # --allow-main-base: the single-issue promotion PR always targets main;
+  # without this flag, merge-pr.sh's integration-branch guard refuses the merge
+  # because the session's resolved target branch is the integration branch.
+  bash "$_MERGE_PR" "$_si_promo_pr" --auto --allow-main-base || _si_merge_exit=$?
+
+  # CWD-after-worktree-removal contract: merge-pr.sh removes the worktree;
+  # cd back to project root before any subsequent gh/git call.
+  cd "$RITE_PROJECT_ROOT" || cd /
+
+  if [ "$_si_merge_exit" -ne 0 ]; then
+    print_error "Merge failed for promotion PR #${_si_promo_pr} (exit ${_si_merge_exit})"
+    echo "  The temp branch '${_si_wt_name}' and PR #${_si_promo_pr} remain for inspection." >&2
+    exit 1
+  fi
+
+  # ── Post-merge bookkeeping ─────────────────────────────────────────────────
+
+  # Mark the ledger entry promoted=true in place.
+  # A failure here leaves the ledger at promoted=false for a commit already on
+  # main — rite --status would show the issue still awaiting promotion and a
+  # retry would hit the empty-cherry-pick path. Surface the failure explicitly.
+  if ! integration_ledger_mark_promoted "$_si_branch" "$_si_issue"; then
+    local _ledger_path="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/integration-branches/${_si_branch}.log"
+    print_error "Ledger mark-promoted failed for issue #${_si_issue} on '${_si_branch}' — PR #${_si_promo_pr} was merged but the ledger was NOT updated"
+    echo "  Manual fix: edit ${_ledger_path} and set promoted=true on the issue=${_si_issue} line" >&2
+  fi
+
+  # Post per-issue promotion comment (already-closed is a no-op on GitHub)
+  gh_safe issue comment "$_si_issue" \
+    --body "Promoted to main in PR #${_si_promo_pr}" 2>/dev/null || true
+
+  # Clean up temp worktree and branch (merge-pr.sh may have already done this)
+  git worktree remove "$_si_wt" --force 2>/dev/null || true
+  git branch -D "$_si_wt_name" 2>/dev/null || true
+  git worktree prune 2>/dev/null || true
+
+  echo ""
+  print_success "Issue #${_si_issue} promoted to main via PR #${_si_promo_pr}"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# run_promote <branch> [issue]
+#
+# With no issue arg: full-branch promote (#1050 path, byte-identical).
+# With an issue arg: routes to promote_single_issue.
 # ---------------------------------------------------------------------------
 run_promote() {
   local BRANCH="${1:?run_promote: branch argument required}"
+  local _si_issue_arg="${2:-}"
+
+  # Single-issue path: explicit issue number → cherry-pick promote
+  if [ -n "${_si_issue_arg:-}" ]; then
+    promote_single_issue "$BRANCH" "$_si_issue_arg"
+    return $?
+  fi
 
   print_header "Promoting '$BRANCH' to main"
   echo ""
@@ -310,7 +593,11 @@ run_promote() {
   # is only needed on this path.
   if ! declare -f run_test_gate >/dev/null 2>&1; then
     # shellcheck source=/dev/null
-    source "$RITE_LIB_DIR/utils/test-gate.sh" 2>/dev/null || true
+    source "$RITE_LIB_DIR/utils/test-gate.sh"
+    if ! declare -f run_test_gate >/dev/null 2>&1; then
+      print_error "run_test_gate not defined after sourcing test-gate.sh — gate cannot run"
+      exit 1
+    fi
   fi
   local _fs_exit=0
   local _fs_gate_json="${_wt}/.rite-promote-gate.json"
@@ -408,14 +695,19 @@ run_promote() {
     # the constituent issues, not under this PR.
     # RITE_RETRY_COUNT=0 keeps first-pass rules (the retry-pass convergence
     # rules do not apply to a PR whose first review this is).
-    # The timeout defaults above the per-issue 300s: a promotion review spans
-    # every constituent issue and so carries several times the findings.
+    # The timeout must be at least 600s: a promotion review spans every
+    # constituent issue and so carries several times the findings. Never let a
+    # per-issue RITE_ASSESSMENT_TIMEOUT=300 set by the outer env shrink it.
+    local _promo_assess_timeout=600
+    if [ "${RITE_ASSESSMENT_TIMEOUT:-0}" -gt 600 ] 2>/dev/null; then
+      _promo_assess_timeout="${RITE_ASSESSMENT_TIMEOUT}"
+    fi
     _promo_assess_out=$(
       RITE_ISSUE_NUMBER="" \
       RITE_RETRY_COUNT=0 \
       RITE_REVIEW_JUST_POSTED=true \
       RITE_PER_ITEM_ISSUES_FILE="$_promo_items_file" \
-      RITE_ASSESSMENT_TIMEOUT="${RITE_ASSESSMENT_TIMEOUT:-600}" \
+      RITE_ASSESSMENT_TIMEOUT="${_promo_assess_timeout}" \
       "$RITE_LIB_DIR/core/assess-review-issues.sh" "$PROMO_PR" "$_promo_review_file" --auto
     ) || _promo_assess_exit=$?
     rm -f "$_promo_review_file"
@@ -609,45 +901,15 @@ ${_promo_now_items}"
   # passed its gates, so nothing in this block may block, retry, or fail the
   # merge.
 
-  # Parse severity counts from the review's embedded JSON block (priority 1) or
-  # the human Findings line (priority 2) — same dual-parse path as local-review.sh.
-  # Both are deterministic: no LLM call, no timeout risk.
+  # Parse severity counts via the shared 3-tier helper (JSON → Findings → item markers).
   local _promo_h=0 _promo_m=0 _promo_l=0 _promo_noncrit=0
   if [ -n "${_promo_review:-}" ] && [ "${_promo_assessed:-false}" != "true" ]; then
-    local _promo_json _promo_findings_line
-    _promo_json=$(printf '%s' "$_promo_review" \
-      | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' 2>/dev/null || true)
-    if [ -n "${_promo_json:-}" ] && printf '%s' "$_promo_json" | jq -e '.summary' >/dev/null 2>&1; then
-      _promo_h=$(printf '%s' "$_promo_json" | jq -r '.summary.high // 0' || true)
-      _promo_m=$(printf '%s' "$_promo_json" | jq -r '.summary.medium // 0' || true)
-      _promo_l=$(printf '%s' "$_promo_json" | jq -r '.summary.low // 0' || true)
-    else
-      _promo_findings_line=$(printf '%s' "$_promo_review" \
-        | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
-      if [ -n "${_promo_findings_line:-}" ]; then
-        _promo_h=$(printf '%s' "$_promo_findings_line" | grep -oE "HIGH: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
-        _promo_m=$(printf '%s' "$_promo_findings_line" | grep -oE "MEDIUM: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
-        _promo_l=$(printf '%s' "$_promo_findings_line" | grep -oE "LOW: *[0-9]+" | grep -oE "[0-9]+" | head -1 || true)
-      else
-        # priority 3: item markers (<!-- item:N severity:HIGH|MEDIUM|LOW -->)
-        # A review with markers but no JSON block or Findings line still has findings.
-        local _promo_item_count
-        _promo_item_count=$(printf '%s' "$_promo_review" \
-          | grep -cE "<!-- item:[0-9]+ severity:(HIGH|MEDIUM|LOW)" || true)
-        if [ "${_promo_item_count:-0}" -gt 0 ]; then
-          _promo_h=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:HIGH" || true)
-          _promo_m=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:MEDIUM" || true)
-          _promo_l=$(printf '%s' "$_promo_review" | grep -cE "<!-- item:[0-9]+ severity:LOW" || true)
-          _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} marker_count=${_promo_item_count}"
-        fi
-      fi
-    fi
-    _promo_h="${_promo_h:-0}"; _promo_m="${_promo_m:-0}"; _promo_l="${_promo_l:-0}"
-    # Strip fractional part that jq may emit (e.g. "2.0" → "2") before arithmetic.
-    _promo_h="${_promo_h%%[^0-9]*}"; _promo_h="${_promo_h:-0}"
-    _promo_m="${_promo_m%%[^0-9]*}"; _promo_m="${_promo_m:-0}"
-    _promo_l="${_promo_l%%[^0-9]*}"; _promo_l="${_promo_l:-0}"
+    parse_review_severity_counts "${_promo_review:-}"
+    _promo_h=$_PRC_HIGH; _promo_m=$_PRC_MEDIUM; _promo_l=$_PRC_LOW
     _promo_noncrit=$(( _promo_h + _promo_m + _promo_l ))
+    if [ "${_PRC_TIER:-0}" -eq 3 ]; then
+      _diag "PROMOTE_FOLLOWUP_PARSE_FALLBACK branch=${BRANCH:-} pr=${PROMO_PR:-} tier=3 review_bytes=${#_promo_review}"
+    fi
     if [ "${_promo_noncrit}" -eq 0 ]; then
       _diag "PROMOTE_FOLLOWUP_PARSE_ZERO branch=${BRANCH:-} pr=${PROMO_PR:-} review_bytes=${#_promo_review}"
     fi
