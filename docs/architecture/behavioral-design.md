@@ -802,9 +802,10 @@ An earlier approach was rejected: checking whether the PR diff touched any `.md`
 
 ### Directed-Update Proposal Guards (#1208)
 
-The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces two safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
+The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces three safety guards before showing the preview. `_docs_update_engine` serves both directed (`rite docs "<instructions>"`) and reconcile (`docs_reconcile_drift`) call paths — the guards apply in both modes:
 
-- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content).
+- **EDIT on a file not in the model's context (absent from docs map or excluded by 15KB cap)** — the context assembly loop in `_docs_update_engine` caps the total doc context at 15KB. Files that would push the total over the cap are skipped via `continue` (prospective-total check) and never sent to the model; files absent from the docs-map inventory are also never loaded. The guard tracks which paths entered `_ue_ctx_files` (a newline-delimited string built alongside `_ue_doc_ctx`). After context assembly, `_ue_map_content` is set to `_ue_ctx_files` (the advertise-only list) so the model's "Documentation files in model context" prompt section contains only in-context paths — the model will not propose EDIT for a cap-excluded file it was never told about. If it does propose one anyway, the guard catches it: a proposed EDIT targeting a path absent from `_ue_ctx_files` is auto-skipped with a warning. When `_ue_ctx_files` is empty (docs map absent or empty), the membership check is skipped entirely to avoid blocking all EDIT proposals wholesale. Files excluded by the cap also trigger a deterministic pre-call warning so the user is informed immediately rather than discovering a silent no-op after the LLM run.
+- **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content). This check fires only for files that passed the context-membership check above.
 - **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
 
 The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. **Apply-site defense-in-depth (#1232):** `_docs_apply_approved` mirrors this guard: after forking the worktree from `origin/<target>` (with its own `git fetch` at ~line 206), it re-checks `[ -f "$_aa_target_file" ]` before writing any CREATE proposal. A file pushed to origin during the interactive preview session will be present in the worktree (the fetch pulled it) and the apply-site guard refuses the write with a warning. This shrinks the window from the full preview session to the fetch-to-write interval, provided the apply-site fetch succeeds (the fetch is `|| true`; on network failure the worktree may not contain the newest origin files, so the residual window degrades back to the full preview session (the last successfully fetched origin/<target> state)).
@@ -2139,3 +2140,56 @@ owns means the check is reading the wrong stage of the pipeline, and a check
 that can only pass by accident is worse than no check — it fails closed on
 correct work. The prompt text and Check 1's premise are coupled, so
 `tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.
+
+## Deterministic Conflict Mergers Read Stage Blobs, Not the Conflicted File (#1319)
+
+Some merge conflicts have exactly one correct resolution and need no judgment.
+The drift log is the clearest case: append-only, each entry a self-delimited
+block with its own `recorded:` ISO8601 timestamp, entries mutually
+independent, burn-down removing whole blocks. The resolution is the union of
+both sides ordered by timestamp — computable, so no provider call is justified.
+Two of three conflicts in dogfooding logs were this file (#1231 pr:1299 at
+274s, #1143 pr:1312 at 60s), both sessions arriving at exactly that answer.
+
+`attempt_claude_merge_resolution` now runs a deterministic pre-pass before
+building its prompt, and skips the session entirely when nothing is left for
+it.
+
+**Entries come from git's stage blobs, never from the conflicted file.** This
+is the correctness argument, and it was learned by getting it wrong. When both
+sides append at the same spot, git emits a line-level hunk and **deduplicates
+the shared closing delimiter**:
+
+```
+<<<<<<< HEAD
+<!-- sharkrite-doc-drift pr:1304 ... -->
+**Changed files**: ...
+=======
+<!-- sharkrite-doc-drift pr:1312 ... -->
+**Changed files**: ...
+>>>>>>> side
+<!-- /sharkrite-doc-drift -->      ← ONE closer for TWO entries
+```
+
+Strip the markers and you have two openers and one closer — structurally
+damaged. The first implementation did that and **silently dropped the first
+entry**. For an append-only log, losing an entry is the worst outcome
+available: it is indistinguishable from burn-down, so nobody notices.
+`git show :2:<path>` (ours) and `:3:<path>` (theirs) each return a complete,
+well-formed log, which is what the merger parses.
+
+The general principle: a conflicted file is a *presentation* of two versions,
+not a container of both. Anything that needs the versions must ask git for the
+versions.
+
+**Every deterministic merger must fail closed.** If it cannot prove the
+conflict is the shape it understands — no conflict stages, an unreadable
+stage, zero entries found (so the conflict is in header prose) — it returns
+non-zero and the path stays in the LLM list with the file untouched. A
+deterministic merge may only replace judgment where there is no judgment to
+make.
+
+**Not every accumulating doc qualifies.** `docs/architecture/conventions.md`
+looks similar but is accumulate-**in-place**: one entry per convention title,
+with later PR numbers appended to that entry's References line. A naive union
+would duplicate titles. It needs its own design and deliberately has no merger.
