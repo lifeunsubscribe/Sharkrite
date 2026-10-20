@@ -594,9 +594,19 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 ### Supervised commit/push is a single prompt (2026-10-11, issue #1128)
 
-The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — the post-commit gate owns test execution (Phase 4 contract); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
+The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — `_run_dev_test_gate` runs the gate unconditionally for all non-orchestrated runs (auto and supervised standalone alike); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
 
 **Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a function — deferred to a future refactoring issue; structural verification is the current coverage.
+
+### Supervised standalone full-suite carve-out (2026-10-20, issue #1273)
+
+**The situation:** `_run_dev_test_gate` now runs unconditionally for all non-orchestrated standalone runs (auto and supervised alike). In the sharkrite repo itself (dogfood), this triggers runner fallthrough to `make test` (full bats suite) — directly violating the CRITICAL "no full suite in an interactive path" doctrine.
+
+**Why it is accepted:** Standalone supervised has no Phase 2/3 targeted gate to fall back on; `_run_dev_test_gate` is its only pre-commit verification. For non-sharkrite target repos (the normal case), the runner selects only the test framework relevant to the project's changed files, so the full-bats-suite problem is sharkrite-specific.
+
+**Mitigation for sharkrite dogfood runs:** Set `RITE_SKIP_TESTS=true` when running supervised standalone in the sharkrite repo to skip the full suite and rely solely on the post-commit targeted gate from whatever orchestration context calls it next. The `RITE_SKIP_TESTS` path is already the canonical operator escape hatch and is honored before any runner is reached.
+
+**Future fix direction:** Add sharkrite-specific targeted-selection logic to `_run_dev_test_gate` so standalone runs use `gate-selection.sh` rather than the full runner. That is a larger refactor tracked separately; this note is the acknowledgment required by the reword-all-locations contract.
 
 ### Dev test gate is skipped under orchestration (CRITICAL)
 
