@@ -1319,33 +1319,7 @@ run_test_gate() {
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)
   fi
 
-  # --- Build JSON arrays from raw output ---
-  local _lint_items="["
-  local _first_lint=true
-  while IFS= read -r _raw; do
-    _item=$(_parse_lint_line "$_raw" 2>/dev/null || true)
-    if [ -n "$_item" ]; then
-      [ "$_first_lint" = "true" ] || _lint_items+=","
-      _lint_items+="$_item"
-      _first_lint=false
-      _lint_count=$(( _lint_count + 1 ))
-    fi
-  done < "$_lint_raw_file"
-  _lint_items+="]"
-
-  local _tests_items="["
-  local _first_test=true
-  while IFS= read -r _raw; do
-    _item=$(_parse_bats_failure_line "$_raw" 2>/dev/null || true)
-    if [ -n "$_item" ]; then
-      [ "$_first_test" = "true" ] || _tests_items+=","
-      _tests_items+="$_item"
-      _first_test=false
-    fi
-  done < "$_tests_raw_file"
-  _tests_items+="]"
-
-  # --- Capture terminal-digest inputs before the raw TAP file is removed ---
+  # --- Capture terminal-digest inputs before raw files are removed ---
   # Block-on-any: every failure blocks, so name them all.
   local _bats_pass=0 _bats_fail_total=0 _summary_names=""
   local _nonsr_fail_count=0 _nonsr_fail_names=""
@@ -1363,22 +1337,39 @@ run_test_gate() {
     fi
   fi
 
+  # Capture HEAD SHA for verdict SHA-pinning (#986) before raw file cleanup.
+  # Readers (assess-and-resolve.sh) verify this SHA against the PR's current
+  # HEAD before consuming a passing verdict — a PASS from a superseded commit
+  # must not authorize a merge or phase-skip at a later SHA.
+  local _gate_head_sha
+  _gate_head_sha=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)
+  _gate_head_sha="${_gate_head_sha:-}"
+
+  # --- Pure assembly: raw runner output → findings JSON (#1240) ---
+  # Delegates the JSON-array build + overall-exit determination + write to
+  # _gate_build_verdict (gate-verdict.sh) — a pure function of (raw file
+  # contents, exit codes). No bats/make/git inside; callable in isolation.
+  # _gbv_lint_count is set as a side-output by _gate_build_verdict so the
+  # terminal digest below can report how many lint findings were found.
+  # Initialize before the call so shellcheck can see the assignment (SC2154
+  # cannot trace the cross-file side-output); _gate_build_verdict overwrites it.
+  local _overall_exit=0
+  _gbv_lint_count=0
+  _gate_build_verdict "$_lint_raw_file" "$_tests_raw_file" \
+    "$_lint_exit" "$_tests_exit" "$output_file" "${_gate_reason:-}" "$_gate_head_sha" \
+    || _overall_exit=$?
+  _lint_count=$_gbv_lint_count
+
   rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_bats_pretty_capture:-}"
   rm -f "${_gate_census_file:-}"
   trap - EXIT
 
-  # --- Determine overall exit code and outcome ---
+  # --- Outcome label from assembly result ---
   # Block-on-any: the targeted suite is green on main, so ANY failure in the
   # selection is this change's to fix. (FORCE_FULL / no-diff always blocked on
   # any failure; the targeted path now matches — no new-vs-pre-existing split.)
-  local _overall_exit=0
   local _outcome="passed"
-  local _tests_blocking=0
-  [ "$_tests_exit" -ne 0 ] && _tests_blocking=1
-  if [ "$_lint_exit" -ne 0 ] || [ "$_tests_blocking" -ne 0 ]; then
-    _overall_exit=1
-    _outcome="failed"
-  fi
+  [ "$_overall_exit" -ne 0 ] && _outcome="failed"
 
   local _gate_end
   _gate_end=$(date +%s)
@@ -1485,18 +1476,5 @@ run_test_gate() {
     fi
   fi
 
-  # Capture HEAD SHA at gate completion time for SHA-pinning (issue #986).
-  # Readers (assess-and-resolve.sh) verify this SHA against the PR's current
-  # HEAD before consuming a passing verdict — a PASS from a superseded commit
-  # must not authorize a merge or phase-skip at a later SHA.
-  # Uses the same project_root git context that drove the test run itself.
-  local _gate_head_sha
-  _gate_head_sha=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)
-  _gate_head_sha="${_gate_head_sha:-}"
-
-  # Pass _gate_reason (may be empty) so _gate_write_json can include it in the
-  # JSON when a named failure reason was recorded (e.g. runner_unavailable).
-  # Pass _gate_head_sha for SHA-pinning (#986).
-  _gate_write_json "$output_file" "$_lint_items" "$_tests_items" "$_overall_exit" "false" "$_gate_reason" "$_gate_head_sha"
   return "$_overall_exit"
 }

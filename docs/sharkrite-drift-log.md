@@ -56,3 +56,45 @@ CLAUDE.md's function-scoped-headers example cites `test-gate.sh` as "~2,900 line
 
 CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial` points to the wrong file — both functions were extracted to `lib/utils/gate-selection.sh` by PR #1276.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-19T23:57:41Z -->
+**Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md architecture table description for `gate-verdict.sh` does not mention `_gate_build_verdict`, which was added to that file in issue #1240 (this PR). The file itself was correctly extracted from test-gate.sh in issue #1236; only the description is incomplete.
+
+`gate-verdict.sh` description in CLAUDE.md should additionally mention `_gate_build_verdict` added in #1240.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:04:39Z -->
+**Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:09:53Z -->
+**Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The functions `_compute_bats_jobs` and `_bats_file_is_serial` were already in `gate-selection.sh` (extracted by an earlier issue #1236). The `test-authoring-runbook.md` example still says `lib/utils/test-gate.sh::_compute_bats_jobs|_bats_file_is_serial` but those functions now live in `lib/utils/gate-selection.sh`.
+
+`CLAUDE.md` line 740 also repeats this stale reference. But the most concrete inaccuracy introduced by PR #1311 specifically relates to what it changed: the architecture table entry for `gate-verdict.sh`.
+
+The CLAUDE.md says `gate-verdict.sh` was "extracted from test-gate.sh, issue #1236" — but looking at the branch name `b1236-1240-1241`, gate-verdict.sh is the third extraction and corresponds to issue #1241, not #1236.
+
+`CLAUDE.md` line 56: `lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthesis (extracted from test-gate.sh, issue #1236)`
+
+The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — this file was extracted by PR #1311 for issue #1241, not #1236.
+
+`CLAUDE.md` line 56 attributes `gate-verdict.sh` extraction to issue #1236, but it was extracted by PR #1311 for issue #1241 (the third in the batch `b1236-1240-1241`).
+<!-- /sharkrite-doc-drift -->

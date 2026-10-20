@@ -531,3 +531,81 @@ _synthesize_notrun_findings() {
   printf 'named=%s emitted=%s\n' "$_named" "$_emitted"
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# _gate_build_verdict — pure assembly: raw runner output → findings JSON
+#
+# Reads lint and test raw output files, builds findings JSON arrays using the
+# existing parsers, determines the overall gate exit code, and writes the
+# result via _gate_write_json.  Spawns no test-runner subprocesses (no
+# bats / make / git).  Idempotent for the same inputs.
+#
+# The caller is responsible for all pre-assembly steps (runner execution,
+# watchdog-kill synthesis, flake retry, not-run detection) and post-assembly
+# steps (terminal digest, verdict persistence, diag emission).  By the time
+# this function is called, _tests_raw_file must already contain any synthetic
+# "not ok" lines appended by those steps; _tests_exit must already be 1
+# (not 124/137) when a watchdog kill occurred.
+#
+# Side-output: sets _gbv_lint_count (count of parseable lint findings) as a
+# shell variable in the calling scope for the caller's terminal digest.
+#
+# Args:
+#   $1  lint_raw_file   path to raw lint + shellcheck output (use /dev/null if empty)
+#   $2  tests_raw_file  path to raw TAP output (synthetic lines already appended)
+#   $3  lint_exit       lint runner aggregate exit code
+#   $4  tests_exit      test runner exit code (after all post-run processing)
+#   $5  output_json     destination path for the findings JSON
+#   $6  reason          optional named failure reason (may be "")
+#   $7  head_sha        optional HEAD commit SHA for verdict pinning (may be "")
+#
+# Returns: 0 if all passed, 1 if any failure found.
+# ---------------------------------------------------------------------------
+_gate_build_verdict() {
+  local _gbv_lint_file="$1"
+  local _gbv_tests_file="$2"
+  local _gbv_lint_exit="$3"
+  local _gbv_tests_exit="$4"
+  local _gbv_output="$5"
+  local _gbv_reason="${6:-}"
+  local _gbv_head_sha="${7:-}"
+
+  # Build lint JSON array from raw shellcheck + custom-lint output.
+  local _gbv_lint_items="["
+  local _gbv_first_lint=true
+  local _gbv_item
+  _gbv_lint_count=0
+  while IFS= read -r _raw; do
+    _gbv_item=$(_parse_lint_line "$_raw" 2>/dev/null || true)
+    if [ -n "$_gbv_item" ]; then
+      [ "$_gbv_first_lint" = "true" ] || _gbv_lint_items+=","
+      _gbv_lint_items+="$_gbv_item"
+      _gbv_first_lint=false
+      _gbv_lint_count=$(( _gbv_lint_count + 1 ))
+    fi
+  done < "$_gbv_lint_file"
+  _gbv_lint_items+="]"
+
+  # Build tests JSON array from the TAP output (synthetic not-ok lines included).
+  local _gbv_tests_items="["
+  local _gbv_first_test=true
+  while IFS= read -r _raw; do
+    _gbv_item=$(_parse_bats_failure_line "$_raw" 2>/dev/null || true)
+    if [ -n "$_gbv_item" ]; then
+      [ "$_gbv_first_test" = "true" ] || _gbv_tests_items+=","
+      _gbv_tests_items+="$_gbv_item"
+      _gbv_first_test=false
+    fi
+  done < "$_gbv_tests_file"
+  _gbv_tests_items+="]"
+
+  # Determine overall exit: any lint or test failure blocks (block-on-any).
+  local _gbv_overall_exit=0
+  if [ "$_gbv_lint_exit" -ne 0 ] || [ "$_gbv_tests_exit" -ne 0 ]; then
+    _gbv_overall_exit=1
+  fi
+
+  _gate_write_json "$_gbv_output" "$_gbv_lint_items" "$_gbv_tests_items" \
+    "$_gbv_overall_exit" "false" "$_gbv_reason" "$_gbv_head_sha"
+  return "$_gbv_overall_exit"
+}
