@@ -261,3 +261,16 @@ The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — 
 
 `behavioral-design.md` line 166 claims the new parent-live-lock path defers with `deferred_for_parent` status, but omits that `waiting_for_parent` remains the skip status when no live lock is detected or the cap is exhausted.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1328 issue:1221 recorded:2026-10-20T05:46:02Z -->
+**Changed files**: lib/core/batch-process-issues.sh, tests/regression/batch-dep-live-lock-defer.bats, tests/regression/cap-resume-manifest.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The drift log already captured this. The key inaccuracy is that `behavioral-design.md` line 166 describes the `PARENT_IN_QUEUE=false` branch as only deferring with `deferred_for_parent` status, but omits that `waiting_for_parent` remains the existing skip-status when no live lock is detected or the cap is exhausted — making the doc incomplete about the branching logic.
+
+`behavioral-design.md` line 166 omits that `waiting_for_parent` remains the skip status when no live lock is detected or `RITE_LIVE_LOCK_MAX_DEFERS` is exhausted — presenting `deferred_for_parent` as the sole outcome of the `PARENT_IN_QUEUE=false` branch.
+<!-- /sharkrite-doc-drift -->
