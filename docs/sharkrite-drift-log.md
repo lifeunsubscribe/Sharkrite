@@ -523,3 +523,11 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 
 `behavioral-design.md` line 389 claims the no-commit timeout retry applies only to "fix session" capped at `min(2×budget, 1800s)`, but dev sessions now also retry with a cap of 14400s.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T16:33:55Z -->
+**Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `gate-runners.sh`'s workspace pattern expansion now uses `find`-based traversal supporting `**` and `!exclusion` patterns, not shell glob expansion that falls back to the literal pattern on no-match.
+<!-- /sharkrite-doc-drift -->
