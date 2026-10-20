@@ -71,10 +71,13 @@ setup() {
   print_header()  { echo "HEADER: $*" >&2; }
 
   # Extract helper functions and _lint_issues_strict from plan-issues.sh.
-  # Order matters: _title_is_spike and the two auto-chain helpers must be
+  # Order matters: _title_is_spike and the auto-chain helpers must be
   # defined before _lint_issues_strict, which calls all three.
+  # _strip_par_ref must be defined before _transform_dep_line and
+  # _autochain_remove_par_annotation, which both delegate to it.
   eval "$(awk '
     /^_title_is_spike[(][)]/ { in_fn=1; depth=0 }
+    /^_strip_par_ref[(][)]/ { in_fn=1; depth=0 }
     /^_transform_dep_line[(][)]/ { in_fn=1; depth=0 }
     /^_autochain_rewrite_deps[(][)]/ { in_fn=1; depth=0 }
     /^_autochain_remove_par_annotation[(][)]/ { in_fn=1; depth=0 }
@@ -5012,6 +5015,209 @@ FIXTURE
   # not the spikes — confirming cycle detection operates in non-spike ordinal space
   grep -i "cycle detected" "$stderr_out" | grep -qE "Setup Schema|Build API Layer" || {
     echo "FAIL: cycle error should name the impl issues, not the spikes" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# AC-prose — orrery-shape regression: prose-embedded parallel annotation.
+#
+# Reproduces the exact orrery round-4 failure: issue #3 has
+# "After #1 (needs one working sign-in method for a session; can run in
+# parallel with #4, #5, #7)" and issues #4, #5, #7 all modify src/session.ts.
+#
+# Before the fix, the shape-enumerated seds removed the comma-preceded refs
+# (#5 and #7) but left #4 (the first ref after "with "), producing the stale
+# residue "After #5, After #4, After #3 (…; can run in parallel with #4)".
+#
+# After the fix, all three refs are stripped and the prose is intact.
+#
+# Fixture: 7 non-spike issues; ordinals 3, 4, 5, 7 all modify src/session.ts.
+# Issues #4, #5, #7 have "Dependencies: None" (unidirectional annotation).
+# ---------------------------------------------------------------------------
+
+@test "AC-prose: orrery-shape prose-embedded annotation — all refs removed, prose intact" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac-prose.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Bootstrap Auth Config
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Creates the auth configuration.
+
+**Claude Context**:
+Files to Modify:
+- src/auth-config.ts
+
+**Acceptance Criteria**:
+- [ ] Config present: `npm test -- --testPathPattern=auth-config`
+
+**Done Definition**: Done when auth config is bootstrapped.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Env Loader
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Adds environment variable loader, not related to session.
+
+**Claude Context**:
+Files to Modify:
+- src/env-loader.ts
+
+**Acceptance Criteria**:
+- [ ] Env loader works: `npm test -- --testPathPattern=env`
+
+**Done Definition**: Done when env loader is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Setup Session Store
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Sets up the session store in src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Session store works: `npm test -- --testPathPattern=session`
+
+**Done Definition**: Done when session store is set up.
+
+**Dependencies**: After #1 (needs one working sign-in method for a session; can run in parallel with #4, #5, #7)
+---END---
+---ISSUE---
+TITLE: Add Session Middleware
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds middleware layer to src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Middleware active: `npm test -- --testPathPattern=session-middleware`
+
+**Done Definition**: Done when middleware is active.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Session Expiry
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds expiry handling to src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Expiry works: `npm test -- --testPathPattern=session-expiry`
+
+**Done Definition**: Done when expiry is implemented.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Logging Helper
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Adds a logging helper unrelated to the session module.
+
+**Claude Context**:
+Files to Modify:
+- src/logging.ts
+
+**Acceptance Criteria**:
+- [ ] Logging works: `npm test -- --testPathPattern=logging`
+
+**Done Definition**: Done when logging helper is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Session Rotation
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds session rotation logic to src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Rotation works: `npm test -- --testPathPattern=session-rotation`
+
+**Done Definition**: Done when rotation is implemented.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit three INFO auto-chain messages (one per shared-file pair)
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -ge 3 ] || {
+    echo "FAIL: expected at least 3 auto-chain INFO messages, got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue #3 (Setup Session Store) must retain its prose annotation intact
+  sed -n '/^TITLE: Setup Session Store/,/^---END---$/p' "$issues_file" | \
+    grep -q "needs one working sign-in method for a session" || {
+      echo "FAIL: prose annotation not preserved in issue #3's Dependencies" >&2
+      cat "$issues_file" >&2
+      false
+    }
+
+  # Issue #3 must have NO remaining 'can run in parallel with' refs
+  sed -n '/^TITLE: Setup Session Store/,/^---END---$/p' "$issues_file" | \
+    grep -q "can run in parallel with" && {
+      echo "FAIL: stale 'can run in parallel with' annotation survived in issue #3's Dependencies" >&2
+      cat "$issues_file" >&2
+      false
+    }
+
+  # No WARNING: parallel-file-overlap — all three pairs were auto-chained
+  grep -q "WARNING: parallel-file-overlap" "$stderr_out" && {
+    echo "FAIL: unexpected WARNING for parallel-file-overlap (expected auto-chain INFO)" >&2
     cat "$stderr_out" >&2
     false
   }

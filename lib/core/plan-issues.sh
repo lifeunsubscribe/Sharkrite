@@ -1491,16 +1491,90 @@ _title_is_spike() {
 }
 
 # =============================================================================
+# _strip_par_ref — remove one #N ref from a "can run in parallel with" annotation.
+#
+# Tokenizes the ref list after the literal phrase instead of enumerating
+# shape-specific sed patterns, so prose embedded before the phrase is handled:
+#   "(needs context; can run in parallel with #4, #5, #7)"  → #4 stripped correctly
+#   "(can run in parallel with #1)"                         → whole group removed
+#
+# When the filtered list empties, the phrase is dropped along with an immediately-
+# preceding "; " or " " separator.  When the enclosing paren held only the phrase,
+# the paren itself is also dropped.
+#
+# Args: $1=line  $2=par_ref (e.g. "#4")
+# Output: modified line on stdout (unchanged when phrase absent or ref not present)
+# =============================================================================
+
+_strip_par_ref() {
+  local _spr_line="$1"
+  local _spr_ref="$2"
+
+  case "$_spr_line" in
+    *"can run in parallel with"*) ;;
+    *) printf '%s\n' "$_spr_line"; return ;;
+  esac
+
+  printf '%s\n' "$_spr_line" | awk -v ref="$_spr_ref" '
+  {
+    line = $0
+    kw   = "can run in parallel with "
+    kid  = index(line, kw)
+    if (kid == 0) { print; next }
+
+    before   = substr(line, 1, kid - 1)
+    after_kw = substr(line, kid + length(kw))
+
+    cp = index(after_kw, ")")
+    if (cp == 0) { print; next }
+
+    ref_list = substr(after_kw, 1, cp - 1)
+    tail     = substr(after_kw, cp)
+
+    n     = split(ref_list, toks, /[[:space:]]*,[[:space:]]*/)
+    found    = 0
+    new_list = ""
+    for (i = 1; i <= n; i++) {
+      tok = toks[i]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", tok)
+      if (tok == ref) {
+        found = 1
+      } else if (tok != "") {
+        new_list = (new_list == "") ? tok : (new_list ", " tok)
+      }
+    }
+
+    if (!found) { print; next }
+
+    if (new_list != "") {
+      print before kw new_list tail
+      next
+    }
+
+    sub(/[[:space:]]*;[[:space:]]*$/, "", before)
+    sub(/[[:space:]]+$/,              "", before)
+
+    if (before ~ /\($/) {
+      sub(/[[:space:]]*\($/, "", before)
+      print before substr(tail, 2)
+    } else {
+      print before tail
+    }
+  }
+  ' || true
+}
+
+# =============================================================================
 # _transform_dep_line — rewrite a **Dependencies**: line to add After #N and
 # remove the corresponding parallel-with annotation.
 #
 # Args: $1=line  $2=after_num (non-spike ordinal)
 #
-# Handles all annotation shapes:
-#   sole ref:    "(can run in parallel with #N)"         → removed
-#   first ref:   "(can run in parallel with #N, ...)"    → "#N, " removed
-#   last ref:    "(..., #N)"                              → ", #N" removed
-#   empty group: "(can run in parallel with )" artifact  → removed
+# Handles all annotation shapes including prose-embedded:
+#   "(can run in parallel with #N)"                           → whole group removed
+#   "(can run in parallel with #N, ...)"                      → #N removed
+#   "(..., #N)"                                               → #N removed
+#   "(prose; can run in parallel with #N, ...)"               → #N removed, prose intact
 #
 # If After #N already present, the add step is skipped (idempotent).
 # Non-inline Dependencies lines (header-only, no ": ") are returned unchanged.
@@ -1521,19 +1595,9 @@ _transform_dep_line() {
     return
   fi
 
-  # Step 1: remove par_ref from the parallel-with annotation (all shapes).
-  # Sole ref: " (can run in parallel with #N)"
-  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with ${_tdl_par_ref})//" || true)
-  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref})//" || true)
-  # First ref of multiple: "(can run in parallel with #N, ..." → remove "#N, "
-  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref}, /(can run in parallel with /" || true)
-  # Last ref of multiple: "..., #N)" → remove ", #N"
-  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref})/)/g" || true)
-  # Middle ref of 3+: "(... #A, #N, #B ...)" → "(... #A, #B ...)"
-  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref},/,/g" || true)
-  # Clean up now-empty paren group
-  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with )//" || true)
-  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with )//" || true)
+  # Step 1: remove par_ref from the parallel-with annotation (all shapes, including
+  # prose-embedded: "(prose; can run in parallel with #N, ...)").
+  _tdl_content=$(_strip_par_ref "$_tdl_content" "$_tdl_par_ref")
 
   # Step 2: add After #N if not already present.
   # Use a word-boundary regex to avoid substring collision (#1 matching inside #12).
@@ -1635,14 +1699,7 @@ _autochain_remove_par_annotation() {
     if [ "$_arpa_in_target" = true ] && [ "$_arpa_dep_done" = false ] && \
        echo "$_arpa_line" | grep -qE '^\*\*Dependencies\*\*:'; then
       _arpa_dep_done=true
-      # Apply only annotation-removal sed patterns (no After tag added).
-      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with ${_arpa_par_ref})//" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref})//" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref}, /(can run in parallel with /" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref})/)/g" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref},/,/g" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with )//" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with )//" || true)
+      _arpa_line=$(_strip_par_ref "$_arpa_line" "$_arpa_par_ref")
     fi
 
     printf '%s\n' "$_arpa_line"
