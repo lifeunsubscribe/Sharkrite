@@ -300,3 +300,17 @@ CLAUDE.md's Phase 3 staleness description says "SHA match → review covers HEAD
 
 `behavioral-design.md:708` quotes the sentinel test name as `"…— accepted divergence from Phase 3"` but the actual bats test name ends `"— divergence from Phase 3 (issue #1306)"`.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1331 issue:1203 recorded:2026-10-20T06:10:31Z -->
+**Changed files**: lib/core/claude-workflow.sh, tests/regression/fix-timeout-retry.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/research/rtk-assessment.md — "RTK (Rust Token Killer) — Sharkrite Compatibility Assessment"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md states the fix timeout is `300 + 240 × ACTIONABLE_NOW_COUNT` seconds, but the retry adds a dev-session retry at double the original `CLAUDE_TIMEOUT` budget (capped at 14400s), which is a new behaviour not documented there.
+<!-- /sharkrite-doc-drift -->
