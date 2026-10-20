@@ -1567,6 +1567,65 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Fixture V2: single issue with two distinct ungrounded hosts — block boundaries
+# must be intact after the Dependencies append branch fires twice.
+#
+# One issue references svc-a.io and svc-b.io.  After pass-3, the issue's block
+# must end with a standalone ---END--- line (not glued to the next ---ISSUE---).
+# ---------------------------------------------------------------------------
+
+@test "Fixture V2: two-distinct-hosts in one issue preserves block boundaries after Dependencies append" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-v2.txt"
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Integrate two services
+LABELS: feature
+TIME: 1hr
+BODY:
+Call https://api.svc-a.io/data and https://api.svc-b.io/data for results.
+---END---
+---ISSUE---
+TITLE: Follow-up work
+LABELS: feature
+TIME: 30min
+BODY:
+No external calls here.
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Block separators must be intact: ---END--- must always appear on its own line.
+  # If the trailing newline is lost from the sed-append path, ---END---
+  # gets glued to the following ---ISSUE--- on the same line.
+  grep -q "^---END---$" "$issues_file" || {
+    echo "FAIL: ---END--- does not appear on its own line — block boundary corrupted by Dependencies append" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Verify issue count is correct: 2 spikes + 2 originals = 4
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 4 ] || {
+    echo "FAIL: expected 4 issues (2 spikes + 2 originals), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Fixture W: multi-part TLD (co.uk) — third label becomes registrable domain
 #
 # api.myservice.co.uk normalizes to myservice.co.uk (not co.uk).
@@ -2431,16 +2490,16 @@ FIXTURE
   }
 }
 
-@test "registrable domain: unlisted ccSLD suffix returns host unchanged (api.foo.co.in → api.foo.co.in)" {
+@test "registrable domain: unlisted ccSLD suffix returns host unchanged (api.foo.co.ve → api.foo.co.ve)" {
   local result
-  result=$(_normalize_host_to_registrable_domain "api.foo.co.in")
-  [ "$result" = "api.foo.co.in" ] || {
-    echo "FAIL: expected 'api.foo.co.in' (fail-closed), got '$result'" >&2
+  result=$(_normalize_host_to_registrable_domain "api.foo.co.ve")
+  [ "$result" = "api.foo.co.ve" ] || {
+    echo "FAIL: expected 'api.foo.co.ve' (fail-closed), got '$result'" >&2
     false
   }
-  # Must NOT return the bare public suffix co.in
-  [ "$result" != "co.in" ] || {
-    echo "FAIL: result is bare public suffix 'co.in'" >&2
+  # Must NOT return the bare public suffix co.ve
+  [ "$result" != "co.ve" ] || {
+    echo "FAIL: result is bare public suffix 'co.ve'" >&2
     false
   }
 }
@@ -2489,16 +2548,12 @@ FIXTURE
   stderr_out=$(mktemp)
   _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
 
-  # Warning must include the normalized domain
-  grep -q "payments.io" "$stderr_out" || {
-    echo "FAIL: WARNING does not mention normalized domain 'payments.io'" >&2
-    cat "$stderr_out" >&2
-    false
-  }
-
-  # Warning must ALSO include the originating hostname
-  grep -q "api.payments.io" "$stderr_out" || {
-    echo "FAIL: WARNING does not mention originating hostname 'api.payments.io'" >&2
+  # Warning must include BOTH the normalized domain and the originating hostname in
+  # the structured "(from: ...)" format — matching only the full phrase prevents a
+  # regression where "payments.io" passes because "api.payments.io" is present as a
+  # substring even if the normalized domain itself was omitted from the warning.
+  grep -q "payments\.io (from: api\.payments\.io)" "$stderr_out" || {
+    echo "FAIL: WARNING does not name normalized domain 'payments.io' alongside originating hostname 'api.payments.io'" >&2
     cat "$stderr_out" >&2
     false
   }

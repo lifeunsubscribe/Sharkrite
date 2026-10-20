@@ -3551,7 +3551,7 @@ _normalize_host_to_registrable_domain() {
   # unchanged rather than guessing — defects 1-3 all stem from this fallback
   # firing on input the list does not cover.
   _reg=$(echo "$_h" | grep -oE '[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]*$' || true)
-  if [ -n "$_reg" ] && echo "$_reg" | grep -qE '^(co|com|net|org|gov|edu|ac|sch)\.[a-z]{2}$'; then
+  if [ -n "$_reg" ] && echo "$_reg" | grep -qE '^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$'; then
     echo "$_h"
     return
   fi
@@ -3679,9 +3679,13 @@ _detect_unverified_integrations() {
     fi
   done < "$issues_file"
 
-  # De-duplicate the candidates file (same host/pkg may appear in multiple issues)
+  # De-duplicate the candidates file (same host/pkg may appear in multiple issues).
+  # Sort on fields 1-2 (type + normalized-domain) only, ignoring the third field
+  # (original hostname).  This collapses subdomain variants that share a registrable
+  # domain (api.foo.co + auth.foo.co → one "host<TAB>foo.co" candidate) so that
+  # only one spike and one WARNING are emitted per service.
   local unique_candidates
-  unique_candidates=$(sort -u "$candidates_file" || true)
+  unique_candidates=$(sort -t"$TAB_CHAR" -k1,2 -u "$candidates_file" || true)
   rm -f "$candidates_file"
 
   # If no unverified candidates, nothing to do
@@ -3874,9 +3878,13 @@ No documentation updates required — the fixture artifact is this spike's deliv
             if [ "$_context_match" = true ]; then
               # Check if block already has a Dependencies line
               if echo "$_current_block" | grep -q "^\*\*Dependencies\*\*:"; then
-                # Append to existing Dependencies line
+                # Append to existing Dependencies line.
+                # Command substitution strips the trailing newline; restore it
+                # explicitly so the ---END--- separator stays on its own line.
                 _current_block=$(echo "$_current_block" | \
                   sed "s|^\(\*\*Dependencies\*\*:.*\)|\1, Blocked by: ${_placeholder}|" || true)
+                _current_block="${_current_block}
+"
               else
                 # Insert a Dependencies line before ---END---
                 # BSD sed (macOS) does not interpret \n in replacement strings;

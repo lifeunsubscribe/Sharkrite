@@ -1329,14 +1329,14 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 **Host-normalization contract — `_normalize_host_to_registrable_domain` (issue #1293, 2026-10-19):**
 
-`_normalize_host_to_registrable_domain` maps an extracted hostname to its registrable domain so that subdomain variants (`api.foo.co`, `auth.foo.co`) collapse to one key (`foo.co`) for fixture-grounding and spike-dedup purposes.  The function is **fail-closed**: when the suffix structure is unknown, it returns the host unchanged rather than producing a bare public suffix.  This invariant makes it impossible for a missing list entry to silently collapse a distinct service onto a public-suffix key.
+`_normalize_host_to_registrable_domain` maps an extracted hostname to its registrable domain so that subdomain variants (`api.foo.co`, `auth.foo.co`) collapse to one key (`foo.co`) for fixture-grounding and spike-dedup purposes.  The function is **fail-closed**: when the suffix structure is unknown, it returns the host unchanged rather than producing a bare public suffix.  This guard substantially reduces the risk of a missing list entry silently collapsing a distinct service onto a public-suffix key, though it covers only the SLD keywords explicitly listed in the guard regex — suffixes outside that set still fall through to the two-label rule.
 
 Four specific behaviors are guaranteed:
 
 1. **Trailing dot stripped before any other processing.** FQDN form `api.authsvc.io.` normalizes identically to `api.authsvc.io`.  Without this, a sentence-final URL yields two spike keys for one service.
 2. **IP literals returned unchanged.** A host whose dot-separated labels are all numeric (e.g. `10.0.0.5`) is returned as-is — no registrable-domain concept applies to an IP.
 3. **Known multi-part suffixes handled explicitly.** A hardcoded list covers ccSLD patterns (`co.uk`, `co.in`, …) and common hosting suffixes (`vercel.app`, `herokuapp.com`, …).  For a host ending in one of these suffixes the registrable domain is `<registrar-label>.<suffix>`.
-4. **Unknown ccSLD-like patterns return the host unchanged.** After the multi-part list, the last-two-labels rule is applied.  If the result matches `^(co|com|net|org|gov|edu|ac|sch)\.[a-z]{2}$` — a known SLD keyword followed by a 2-letter ccTLD that is not in the hardcoded list — the function returns the original host rather than emitting a bare public suffix.  This is the fail-closed guard for patterns the list does not yet cover.
+4. **Unknown ccSLD-like patterns return the host unchanged.** After the multi-part list, the last-two-labels rule is applied.  If the result matches `^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$` — a known SLD keyword followed by a 2-letter ccTLD that is not in the hardcoded list — the function returns the original host rather than emitting a bare public suffix.  This is the fail-closed guard for patterns the list does not yet cover; SLD keywords outside this alternation still fall through to the two-label rule.
 
 The unverified-integration warning names **both** the normalized domain and the originating hostname (e.g. `unverified external integration: payments.io (from: api.payments.io)`), so an operator can locate the reference in the planning doc without cross-referencing subdomains.
 
